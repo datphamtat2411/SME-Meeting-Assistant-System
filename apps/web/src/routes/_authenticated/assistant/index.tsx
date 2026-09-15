@@ -1,15 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { ProductPlaceholder } from '@/components/layout/product-placeholder'
+import { AssistantPage } from '@/features/assistant'
 
 export const Route = createFileRoute('/_authenticated/assistant/')({
-  component: AssistantPlaceholder,
+  component: AssistantPage,
 })
-
-function AssistantPlaceholder() {
-  return (
-    <ProductPlaceholder
-      title='AI Assistant'
-      description='Meeting knowledge assistance will be available here.'
-    />
-  )
-}

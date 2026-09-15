@@ -1108,9 +1108,133 @@ export const ragSources: RagSource[] = [
     timestampMs: 46500,
     excerpt: 'Thêm cảnh báo khi thời gian xử lý transcript vượt quá mười phút.',
   },
+  {
+    id: 'rag-customer-action-followup',
+    meetingId: 'meeting-02-customer-feedback',
+    sourceType: 'action_item',
+    segmentId: 'segment-customer-05',
+    timestampMs: 96500,
+    excerpt:
+      'Lan sẽ đặt lịch buổi theo dõi với nhóm khách hàng sau khi có bản cải tiến đầu tiên.',
+  },
+  {
+    id: 'rag-customer-action-guide',
+    meetingId: 'meeting-02-customer-feedback',
+    sourceType: 'action_item',
+    segmentId: 'segment-customer-02',
+    timestampMs: 22500,
+    excerpt:
+      'Thu sẽ cập nhật tài liệu hướng dẫn đầu việc trước ngày 17/09/2026.',
+  },
+  {
+    id: 'rag-engineering-action-runbook',
+    meetingId: 'meeting-03-engineering-sync',
+    sourceType: 'action_item',
+    segmentId: 'segment-engineering-02',
+    timestampMs: 21500,
+    excerpt:
+      'Huy phụ trách cập nhật runbook trạng thái transcript trước ngày 18/09/2026.',
+  },
+  {
+    id: 'rag-budget-action-approval',
+    meetingId: 'meeting-09-quarterly-budget',
+    sourceType: 'action_item',
+    segmentId: 'segment-budget-03',
+    timestampMs: 45500,
+    excerpt:
+      'Lan phụ trách gửi đề xuất ngân sách quý 4 để các bên liên quan xác nhận.',
+  },
+  {
+    id: 'rag-budget-decision-infrastructure',
+    meetingId: 'meeting-09-quarterly-budget',
+    sourceType: 'decision',
+    segmentId: 'segment-budget-03',
+    timestampMs: 45500,
+    excerpt:
+      'Đề xuất ngân sách quý 4 sẽ bao gồm phần tăng chi phí hạ tầng cho các bản ghi dài.',
+  },
 ]
 
 export const assistantConversations: AssistantConversation[] = [
+  {
+    id: 'conversation-global-decisions',
+    title: 'Quyết định quan trọng gần đây',
+    messages: [
+      {
+        id: 'message-global-decisions-01',
+        conversationId: 'conversation-global-decisions',
+        role: 'user',
+        content: 'Những quyết định quan trọng gần đây là gì?',
+        createdAt: '2026-09-15T09:00:00+07:00',
+      },
+      {
+        id: 'message-global-decisions-02',
+        conversationId: 'conversation-global-decisions',
+        role: 'assistant',
+        content:
+          'Các cuộc họp gần đây đã chốt ưu tiên transcript tiếng Việt và đầu việc có người phụ trách; gom phản hồi khách hàng theo chủ đề; thêm cảnh báo khi xử lý transcript quá mười phút; và tăng dự toán hạ tầng quý 4 cho bản ghi dài.',
+        createdAt: '2026-09-15T09:00:08+07:00',
+        sourceIds: [
+          'rag-hero-decision-priority',
+          'rag-customer-decision',
+          'rag-engineering-action',
+          'rag-budget-decision-infrastructure',
+        ],
+      },
+    ],
+  },
+  {
+    id: 'conversation-global-my-actions',
+    title: 'Đầu việc chưa hoàn thành của tôi',
+    messages: [
+      {
+        id: 'message-global-actions-01',
+        conversationId: 'conversation-global-my-actions',
+        role: 'user',
+        content: 'Tôi còn những action item nào chưa hoàn thành?',
+        createdAt: '2026-09-14T16:30:00+07:00',
+      },
+      {
+        id: 'message-global-actions-02',
+        conversationId: 'conversation-global-my-actions',
+        role: 'assistant',
+        content:
+          'Nguyễn Lan còn 2 đầu việc: đặt lịch trao đổi tiếp theo với khách hàng trước 24/09/2026 và gửi đề xuất ngân sách để xác nhận trước 19/09/2026.',
+        createdAt: '2026-09-14T16:30:06+07:00',
+        sourceIds: [
+          'rag-customer-action-followup',
+          'rag-budget-action-approval',
+        ],
+      },
+    ],
+  },
+  {
+    id: 'conversation-global-deadlines',
+    title: 'Các deadline sắp tới',
+    messages: [
+      {
+        id: 'message-global-deadlines-01',
+        conversationId: 'conversation-global-deadlines',
+        role: 'user',
+        content: 'Những deadline nào được thống nhất gần đây?',
+        createdAt: '2026-09-13T10:15:00+07:00',
+      },
+      {
+        id: 'message-global-deadlines-02',
+        conversationId: 'conversation-global-deadlines',
+        role: 'assistant',
+        content:
+          'Các mốc gần nhất gồm cập nhật tài liệu hướng dẫn đầu việc ngày 17/09, cập nhật runbook transcript ngày 18/09, thêm cảnh báo xử lý ngày 19/09 và phỏng vấn khách hàng SME ngày 20/09/2026.',
+        createdAt: '2026-09-13T10:15:07+07:00',
+        sourceIds: [
+          'rag-customer-action-guide',
+          'rag-engineering-action-runbook',
+          'rag-engineering-action',
+          'rag-hero-action-research',
+        ],
+      },
+    ],
+  },
   {
     id: 'conversation-hero-roadmap',
     meetingId: 'meeting-01-product-roadmap',
