@@ -1,15 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { ProductPlaceholder } from '@/components/layout/product-placeholder'
+import { ActionItemsPage } from '@/features/action-items'
 
 export const Route = createFileRoute('/_authenticated/action-items/')({
-  component: ActionItemsPlaceholder,
+  component: ActionItemsPage,
 })
-
-function ActionItemsPlaceholder() {
-  return (
-    <ProductPlaceholder
-      title='Action Items'
-      description='Action-item tracking will be available here.'
-    />
-  )
-}

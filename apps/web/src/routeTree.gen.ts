@@ -46,6 +46,7 @@ import { Route as AuthenticatedSettingsAppearanceRouteImport } from './routes/_a
 import { Route as AuthenticatedSettingsAccountRouteImport } from './routes/_authenticated/settings/account'
 import { Route as AuthenticatedMeetingsMeetingIdRouteImport } from './routes/_authenticated/meetings/$meetingId'
 import { Route as AuthenticatedErrorsErrorRouteImport } from './routes/_authenticated/errors/$error'
+import { Route as AuthenticatedMeetingsMeetingIdLiveRouteImport } from './routes/_authenticated/meetings/$meetingId.live'
 
 const ClerkRouteRoute = ClerkRouteRouteImport.update({
   id: '/clerk',
@@ -244,6 +245,12 @@ const AuthenticatedErrorsErrorRoute =
     path: '/errors/$error',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
+const AuthenticatedMeetingsMeetingIdLiveRoute =
+  AuthenticatedMeetingsMeetingIdLiveRouteImport.update({
+    id: '/live',
+    path: '/live',
+    getParentRoute: () => AuthenticatedMeetingsMeetingIdRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AuthenticatedIndexRoute
@@ -260,7 +267,7 @@ export interface FileRoutesByFullPath {
   '/500': typeof errors500Route
   '/503': typeof errors503Route
   '/errors/$error': typeof AuthenticatedErrorsErrorRoute
-  '/meetings/$meetingId': typeof AuthenticatedMeetingsMeetingIdRoute
+  '/meetings/$meetingId': typeof AuthenticatedMeetingsMeetingIdRouteWithChildren
   '/settings/account': typeof AuthenticatedSettingsAccountRoute
   '/settings/appearance': typeof AuthenticatedSettingsAppearanceRoute
   '/settings/display': typeof AuthenticatedSettingsDisplayRoute
@@ -280,6 +287,7 @@ export interface FileRoutesByFullPath {
   '/settings/': typeof AuthenticatedSettingsIndexRoute
   '/tasks/': typeof AuthenticatedTasksIndexRoute
   '/users/': typeof AuthenticatedUsersIndexRoute
+  '/meetings/$meetingId/live': typeof AuthenticatedMeetingsMeetingIdLiveRoute
 }
 export interface FileRoutesByTo {
   '/clerk': typeof ClerkAuthenticatedRouteRouteWithChildren
@@ -295,7 +303,7 @@ export interface FileRoutesByTo {
   '/503': typeof errors503Route
   '/': typeof AuthenticatedIndexRoute
   '/errors/$error': typeof AuthenticatedErrorsErrorRoute
-  '/meetings/$meetingId': typeof AuthenticatedMeetingsMeetingIdRoute
+  '/meetings/$meetingId': typeof AuthenticatedMeetingsMeetingIdRouteWithChildren
   '/settings/account': typeof AuthenticatedSettingsAccountRoute
   '/settings/appearance': typeof AuthenticatedSettingsAppearanceRoute
   '/settings/display': typeof AuthenticatedSettingsDisplayRoute
@@ -315,6 +323,7 @@ export interface FileRoutesByTo {
   '/settings': typeof AuthenticatedSettingsIndexRoute
   '/tasks': typeof AuthenticatedTasksIndexRoute
   '/users': typeof AuthenticatedUsersIndexRoute
+  '/meetings/$meetingId/live': typeof AuthenticatedMeetingsMeetingIdLiveRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -335,7 +344,7 @@ export interface FileRoutesById {
   '/(errors)/503': typeof errors503Route
   '/_authenticated/': typeof AuthenticatedIndexRoute
   '/_authenticated/errors/$error': typeof AuthenticatedErrorsErrorRoute
-  '/_authenticated/meetings/$meetingId': typeof AuthenticatedMeetingsMeetingIdRoute
+  '/_authenticated/meetings/$meetingId': typeof AuthenticatedMeetingsMeetingIdRouteWithChildren
   '/_authenticated/settings/account': typeof AuthenticatedSettingsAccountRoute
   '/_authenticated/settings/appearance': typeof AuthenticatedSettingsAppearanceRoute
   '/_authenticated/settings/display': typeof AuthenticatedSettingsDisplayRoute
@@ -355,6 +364,7 @@ export interface FileRoutesById {
   '/_authenticated/settings/': typeof AuthenticatedSettingsIndexRoute
   '/_authenticated/tasks/': typeof AuthenticatedTasksIndexRoute
   '/_authenticated/users/': typeof AuthenticatedUsersIndexRoute
+  '/_authenticated/meetings/$meetingId/live': typeof AuthenticatedMeetingsMeetingIdLiveRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -393,6 +403,7 @@ export interface FileRouteTypes {
     | '/settings/'
     | '/tasks/'
     | '/users/'
+    | '/meetings/$meetingId/live'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/clerk'
@@ -428,6 +439,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/tasks'
     | '/users'
+    | '/meetings/$meetingId/live'
   id:
     | '__root__'
     | '/_authenticated'
@@ -467,6 +479,7 @@ export interface FileRouteTypes {
     | '/_authenticated/settings/'
     | '/_authenticated/tasks/'
     | '/_authenticated/users/'
+    | '/_authenticated/meetings/$meetingId/live'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -745,6 +758,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedErrorsErrorRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/meetings/$meetingId/live': {
+      id: '/_authenticated/meetings/$meetingId/live'
+      path: '/live'
+      fullPath: '/meetings/$meetingId/live'
+      preLoaderRoute: typeof AuthenticatedMeetingsMeetingIdLiveRouteImport
+      parentRoute: typeof AuthenticatedMeetingsMeetingIdRoute
+    }
   }
 }
 
@@ -771,11 +791,26 @@ const AuthenticatedSettingsRouteRouteWithChildren =
     AuthenticatedSettingsRouteRouteChildren,
   )
 
+interface AuthenticatedMeetingsMeetingIdRouteChildren {
+  AuthenticatedMeetingsMeetingIdLiveRoute: typeof AuthenticatedMeetingsMeetingIdLiveRoute
+}
+
+const AuthenticatedMeetingsMeetingIdRouteChildren: AuthenticatedMeetingsMeetingIdRouteChildren =
+  {
+    AuthenticatedMeetingsMeetingIdLiveRoute:
+      AuthenticatedMeetingsMeetingIdLiveRoute,
+  }
+
+const AuthenticatedMeetingsMeetingIdRouteWithChildren =
+  AuthenticatedMeetingsMeetingIdRoute._addFileChildren(
+    AuthenticatedMeetingsMeetingIdRouteChildren,
+  )
+
 interface AuthenticatedRouteRouteChildren {
   AuthenticatedSettingsRouteRoute: typeof AuthenticatedSettingsRouteRouteWithChildren
   AuthenticatedIndexRoute: typeof AuthenticatedIndexRoute
   AuthenticatedErrorsErrorRoute: typeof AuthenticatedErrorsErrorRoute
-  AuthenticatedMeetingsMeetingIdRoute: typeof AuthenticatedMeetingsMeetingIdRoute
+  AuthenticatedMeetingsMeetingIdRoute: typeof AuthenticatedMeetingsMeetingIdRouteWithChildren
   AuthenticatedActionItemsIndexRoute: typeof AuthenticatedActionItemsIndexRoute
   AuthenticatedAppsIndexRoute: typeof AuthenticatedAppsIndexRoute
   AuthenticatedAssistantIndexRoute: typeof AuthenticatedAssistantIndexRoute
@@ -793,7 +828,8 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedSettingsRouteRoute: AuthenticatedSettingsRouteRouteWithChildren,
   AuthenticatedIndexRoute: AuthenticatedIndexRoute,
   AuthenticatedErrorsErrorRoute: AuthenticatedErrorsErrorRoute,
-  AuthenticatedMeetingsMeetingIdRoute: AuthenticatedMeetingsMeetingIdRoute,
+  AuthenticatedMeetingsMeetingIdRoute:
+    AuthenticatedMeetingsMeetingIdRouteWithChildren,
   AuthenticatedActionItemsIndexRoute: AuthenticatedActionItemsIndexRoute,
   AuthenticatedAppsIndexRoute: AuthenticatedAppsIndexRoute,
   AuthenticatedAssistantIndexRoute: AuthenticatedAssistantIndexRoute,

@@ -9,6 +9,7 @@ import {
   Clock3,
   MapPin,
   Plus,
+  Radio,
   Search as SearchIcon,
   Users,
 } from 'lucide-react'
@@ -357,16 +358,29 @@ function MeetingRow({ meeting }: { meeting: Meeting }) {
         <MeetingStatusBadge status={meeting.status} />
       </TableCell>
       <TableCell className='text-end'>
-        <Button asChild variant='ghost' size='sm'>
-          <Link
-            to='/meetings/$meetingId'
-            params={{ meetingId: meeting.id }}
-            aria-label={`View ${meeting.title}`}
-          >
-            View
-            <ArrowUpRight />
-          </Link>
-        </Button>
+        <div className='flex justify-end gap-1'>
+          {meeting.status === 'in_progress' && (
+            <Button asChild variant='outline' size='sm'>
+              <Link
+                to='/meetings/$meetingId/live'
+                params={{ meetingId: meeting.id }}
+              >
+                <Radio />
+                Live
+              </Link>
+            </Button>
+          )}
+          <Button asChild variant='ghost' size='sm'>
+            <Link
+              to='/meetings/$meetingId'
+              params={{ meetingId: meeting.id }}
+              aria-label={`View ${meeting.title}`}
+            >
+              View
+              <ArrowUpRight />
+            </Link>
+          </Button>
+        </div>
       </TableCell>
     </TableRow>
   )

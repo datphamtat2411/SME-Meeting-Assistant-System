@@ -686,7 +686,7 @@ function TranscriptTab({
   )
 }
 
-function TranscriptSegmentRow({
+export function TranscriptSegmentRow({
   segment,
   highlighted,
 }: {
@@ -1201,7 +1201,7 @@ function MeetingStatusBadge({ status }: { status: MeetingStatus }) {
   )
 }
 
-function ParticipantAvatar({
+export function ParticipantAvatar({
   member,
   className,
 }: {

@@ -1183,3 +1183,17 @@ export const getActionItemsByMeetingId = (meetingId: string) =>
 
 export const getTranscriptByMeetingId = (meetingId: string) =>
   transcriptSegments.filter((segment) => segment.meetingId === meetingId)
+
+export const updateMeetingProcessingState = (
+  meetingId: string,
+  status: Meeting['status'],
+  processingStage: Meeting['processingStage']
+) => {
+  const meeting = getMeetingById(meetingId)
+  if (!meeting) {
+    return
+  }
+
+  meeting.status = status
+  meeting.processingStage = processingStage
+}
