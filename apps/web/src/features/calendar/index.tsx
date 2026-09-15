@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { ArrowUpRight, CalendarDays, Clock3, MapPin, Users } from 'lucide-react'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
   Card,
@@ -19,14 +18,11 @@ import { Search } from '@/components/search'
 import { ThemeSwitch } from '@/components/theme-switch'
 import {
   getRoomById,
-  members,
+  currentDemoUser,
   meetings,
   type Meeting,
-  type MeetingStatus,
 } from '@/features/meetings/data'
-
-const currentDemoUser =
-  members.find((member) => member.id === 'member-nguyen-lan') ?? members[0]
+import { MeetingStatusBadge } from '@/features/meetings/components/meeting-status-badge'
 
 const timeZone = 'Asia/Ho_Chi_Minh'
 const calendarDateFormatter = new Intl.DateTimeFormat('en-US', {
@@ -41,27 +37,6 @@ const calendarTimeFormatter = new Intl.DateTimeFormat('en-US', {
   minute: '2-digit',
   timeZone,
 })
-
-const meetingStatusLabels: Record<MeetingStatus, string> = {
-  scheduled: 'Upcoming',
-  in_progress: 'Live',
-  processing: 'Processing',
-  completed: 'Completed',
-  cancelled: 'Cancelled',
-}
-
-const meetingStatusStyles: Record<MeetingStatus, string> = {
-  scheduled:
-    'border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-900 dark:bg-sky-950 dark:text-sky-300',
-  in_progress:
-    'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300',
-  processing:
-    'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300',
-  completed:
-    'border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300',
-  cancelled:
-    'border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300',
-}
 
 type CalendarView = 'my' | 'all'
 
@@ -181,12 +156,7 @@ function CalendarMeetingCard({ meeting }: { meeting: Meeting }) {
             <h3 className='font-semibold group-hover:text-primary'>
               {meeting.title}
             </h3>
-            <Badge
-              variant='outline'
-              className={meetingStatusStyles[meeting.status]}
-            >
-              {meetingStatusLabels[meeting.status]}
-            </Badge>
+            <MeetingStatusBadge status={meeting.status} />
           </div>
           <div className='flex flex-wrap gap-x-4 gap-y-2 text-sm text-muted-foreground'>
             <span className='inline-flex items-center gap-1.5'>

@@ -13,6 +13,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { SignOutDialog } from '@/components/sign-out-dialog'
+import { currentDemoUser } from '@/features/meetings/data'
 
 export function ProfileDropdown() {
   const [open, setOpen] = useDialogState()
@@ -21,10 +22,17 @@ export function ProfileDropdown() {
     <>
       <DropdownMenu modal={false}>
         <DropdownMenuTrigger asChild>
-          <Button variant='ghost' className='relative h-8 w-8 rounded-full'>
+          <Button
+            variant='ghost'
+            className='relative h-8 w-8 rounded-full'
+            aria-label='Open user menu'
+          >
             <Avatar className='h-8 w-8'>
-              <AvatarImage src='/avatars/01.png' alt='Nguyen Minh Anh' />
-              <AvatarFallback>NM</AvatarFallback>
+              <AvatarImage
+                src={currentDemoUser.avatar ?? undefined}
+                alt={currentDemoUser.name}
+              />
+              <AvatarFallback>NL</AvatarFallback>
             </Avatar>
           </Button>
         </DropdownMenuTrigger>
@@ -32,10 +40,10 @@ export function ProfileDropdown() {
           <DropdownMenuLabel className='font-normal'>
             <div className='flex flex-col gap-1.5'>
               <p className='text-sm leading-none font-medium'>
-                Nguyen Minh Anh
+                {currentDemoUser.name}
               </p>
               <p className='text-xs leading-none text-muted-foreground'>
-                minh.anh@sme.local
+                {currentDemoUser.email}
               </p>
             </div>
           </DropdownMenuLabel>
@@ -49,17 +57,10 @@ export function ProfileDropdown() {
             </DropdownMenuItem>
             <DropdownMenuItem asChild>
               <Link to='/settings'>
-                Billing
-                <DropdownMenuShortcut>⌘B</DropdownMenuShortcut>
-              </Link>
-            </DropdownMenuItem>
-            <DropdownMenuItem asChild>
-              <Link to='/settings'>
                 Settings
                 <DropdownMenuShortcut>⌘S</DropdownMenuShortcut>
               </Link>
             </DropdownMenuItem>
-            <DropdownMenuItem>New Workspace</DropdownMenuItem>
           </DropdownMenuGroup>
           <DropdownMenuSeparator />
           <DropdownMenuItem variant='destructive' onClick={() => setOpen(true)}>

@@ -26,6 +26,7 @@ import { ThemeSwitch } from '@/components/theme-switch'
 import {
   actionItems,
   assistantConversations,
+  currentDemoUser,
   getMeetingById,
   getMemberById,
   keyDecisions,
@@ -35,9 +36,6 @@ import {
   type AssistantMessage,
   type RagSource,
 } from '@/features/meetings/data'
-
-const currentDemoUser =
-  members.find((member) => member.id === 'member-nguyen-lan') ?? members[0]
 
 const suggestedQuestions = [
   'Những quyết định quan trọng gần đây là gì?',

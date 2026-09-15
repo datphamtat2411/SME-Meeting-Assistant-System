@@ -103,6 +103,9 @@ export const members: Member[] = [
   },
 ]
 
+export const currentDemoUser =
+  members.find((member) => member.id === 'member-nguyen-lan') ?? members[0]
+
 export const meetingRooms: MeetingRoom[] = [
   {
     id: 'room-hoa-sen',
@@ -1296,6 +1299,10 @@ export const mockMeetingData = {
 export const getMeetingById = (meetingId: string) =>
   meetings.find((meeting) => meeting.id === meetingId)
 
+export const addMeeting = (meeting: Meeting) => {
+  meetings.unshift(meeting)
+}
+
 export const getMemberById = (memberId: string) =>
   members.find((member) => member.id === memberId)
 
@@ -1304,6 +1311,16 @@ export const getRoomById = (roomId: string) =>
 
 export const getActionItemsByMeetingId = (meetingId: string) =>
   actionItems.filter((actionItem) => actionItem.meetingId === meetingId)
+
+export const updateActionItemStatus = (
+  actionItemId: string,
+  status: ActionItem['status']
+) => {
+  const actionItem = actionItems.find((item) => item.id === actionItemId)
+  if (actionItem) {
+    actionItem.status = status
+  }
+}
 
 export const getTranscriptByMeetingId = (meetingId: string) =>
   transcriptSegments.filter((segment) => segment.meetingId === meetingId)

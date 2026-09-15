@@ -64,12 +64,17 @@ import {
   type AssistantMessage,
   type KeyDecision,
   type Meeting,
+  type MeetingStatus,
   type MeetingRoom,
   type Member,
-  type MeetingStatus,
   type RagSource,
   type TranscriptSegment,
 } from './data'
+import {
+  MeetingStatusBadge,
+  meetingStatusLabels,
+  meetingStatusStyles,
+} from './components/meeting-status-badge'
 
 type WorkspaceTab = 'overview' | 'transcript' | 'action-items' | 'ask-ai'
 
@@ -85,27 +90,6 @@ const timeFormatter = new Intl.DateTimeFormat('en-US', {
   minute: '2-digit',
   timeZone,
 })
-
-const statusLabels: Record<MeetingStatus, string> = {
-  scheduled: 'Upcoming',
-  in_progress: 'Live',
-  processing: 'Processing',
-  completed: 'Completed',
-  cancelled: 'Cancelled',
-}
-
-const statusStyles: Record<MeetingStatus, string> = {
-  scheduled:
-    'border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-900 dark:bg-sky-950 dark:text-sky-300',
-  in_progress:
-    'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300',
-  processing:
-    'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300',
-  completed:
-    'border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300',
-  cancelled:
-    'border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300',
-}
 
 const sourceTypeLabels: Record<RagSource['sourceType'], string> = {
   transcript: 'Transcript',
@@ -1099,9 +1083,9 @@ function LifecycleState({ meeting }: { meeting: Meeting }) {
         </div>
         <Badge
           variant='outline'
-          className={cn('mt-4', statusStyles[meeting.status])}
+          className={cn('mt-4', meetingStatusStyles[meeting.status])}
         >
-          {statusLabels[meeting.status]}
+          {meetingStatusLabels[meeting.status]}
         </Badge>
         <h2 className='mt-4 text-lg font-semibold'>
           {meeting.status === 'scheduled'
@@ -1190,14 +1174,6 @@ function ExportMinutesMenu({
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
-  )
-}
-
-function MeetingStatusBadge({ status }: { status: MeetingStatus }) {
-  return (
-    <Badge variant='outline' className={statusStyles[status]}>
-      {statusLabels[status]}
-    </Badge>
   )
 }
 

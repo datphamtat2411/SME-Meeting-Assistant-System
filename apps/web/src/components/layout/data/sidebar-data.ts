@@ -1,34 +1,25 @@
 import {
   Bot,
   CalendarDays,
-  Construction,
   DoorOpen,
   LayoutDashboard,
-  Monitor,
-  Bug,
-  FileX,
   HelpCircle,
-  Lock,
-  Bell,
   ListChecks,
   Palette,
-  ServerOff,
   Settings,
   Video,
-  Wrench,
   UserCog,
-  UserX,
   Users,
-  ShieldCheck,
   Command,
 } from 'lucide-react'
+import { currentDemoUser } from '@/features/meetings/data'
 import { type SidebarData } from '../types'
 
 export const sidebarData: SidebarData = {
   user: {
-    name: 'Nguyen Minh Anh',
-    email: 'minh.anh@sme.local',
-    avatar: '/avatars/shadcn.jpg',
+    name: currentDemoUser.name,
+    email: currentDemoUser.email,
+    avatar: currentDemoUser.avatar ?? '',
   },
   teams: [
     {
@@ -79,68 +70,6 @@ export const sidebarData: SidebarData = {
       ],
     },
     {
-      title: 'Pages',
-      items: [
-        {
-          title: 'Auth',
-          icon: ShieldCheck,
-          items: [
-            {
-              title: 'Sign In',
-              url: '/sign-in',
-            },
-            {
-              title: 'Sign In (2 Col)',
-              url: '/sign-in-2',
-            },
-            {
-              title: 'Sign Up',
-              url: '/sign-up',
-            },
-            {
-              title: 'Forgot Password',
-              url: '/forgot-password',
-            },
-            {
-              title: 'OTP',
-              url: '/otp',
-            },
-          ],
-        },
-        {
-          title: 'Errors',
-          icon: Bug,
-          items: [
-            {
-              title: 'Unauthorized',
-              url: '/errors/unauthorized',
-              icon: Lock,
-            },
-            {
-              title: 'Forbidden',
-              url: '/errors/forbidden',
-              icon: UserX,
-            },
-            {
-              title: 'Not Found',
-              url: '/errors/not-found',
-              icon: FileX,
-            },
-            {
-              title: 'Internal Server Error',
-              url: '/errors/internal-server-error',
-              icon: ServerOff,
-            },
-            {
-              title: 'Maintenance Error',
-              url: '/errors/maintenance-error',
-              icon: Construction,
-            },
-          ],
-        },
-      ],
-    },
-    {
       title: 'Other',
       items: [
         {
@@ -153,24 +82,9 @@ export const sidebarData: SidebarData = {
               icon: UserCog,
             },
             {
-              title: 'Account',
-              url: '/settings/account',
-              icon: Wrench,
-            },
-            {
               title: 'Appearance',
               url: '/settings/appearance',
               icon: Palette,
-            },
-            {
-              title: 'Notifications',
-              url: '/settings/notifications',
-              icon: Bell,
-            },
-            {
-              title: 'Display',
-              url: '/settings/display',
-              icon: Monitor,
             },
           ],
         },

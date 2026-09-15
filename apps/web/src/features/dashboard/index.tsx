@@ -31,41 +31,18 @@ import { Search } from '@/components/search'
 import { ThemeSwitch } from '@/components/theme-switch'
 import {
   actionItems,
+  currentDemoUser,
   getMemberById,
   getRoomById,
   keyDecisions,
   meetingSummaries,
   meetings,
-  members,
   type ActionItem,
   type ActionItemPriority,
   type Meeting,
-  type MeetingStatus,
 } from '@/features/meetings/data'
+import { MeetingStatusBadge } from '@/features/meetings/components/meeting-status-badge'
 
-const currentDemoUser =
-  members.find((member) => member.id === 'member-nguyen-lan') ?? members[0]
-
-const meetingStatusLabels: Record<MeetingStatus, string> = {
-  scheduled: 'Scheduled',
-  in_progress: 'In progress',
-  processing: 'Processing',
-  completed: 'Completed',
-  cancelled: 'Cancelled',
-}
-
-const meetingStatusStyles: Record<MeetingStatus, string> = {
-  scheduled:
-    'border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-900 dark:bg-sky-950 dark:text-sky-300',
-  in_progress:
-    'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300',
-  processing:
-    'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300',
-  completed:
-    'border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300',
-  cancelled:
-    'border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300',
-}
 
 const actionPriorityLabels: Record<ActionItemPriority, string> = {
   low: 'Low',
@@ -443,14 +420,6 @@ function MeetingMeta({
         </p>
       </div>
     </div>
-  )
-}
-
-function MeetingStatusBadge({ status }: { status: MeetingStatus }) {
-  return (
-    <Badge variant='outline' className={meetingStatusStyles[status]}>
-      {meetingStatusLabels[status]}
-    </Badge>
   )
 }
 

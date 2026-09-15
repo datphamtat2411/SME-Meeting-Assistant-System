@@ -65,17 +65,16 @@ import { Search } from '@/components/search'
 import { ThemeSwitch } from '@/components/theme-switch'
 import {
   actionItems as sharedActionItems,
+  currentDemoUser,
   getMemberById,
   getMeetingById,
   members,
+  updateActionItemStatus,
   type ActionItem,
   type ActionItemPriority,
   type ActionItemStatus,
   type Member,
 } from '@/features/meetings/data'
-
-const currentDemoUser =
-  members.find((member) => member.id === 'member-nguyen-lan') ?? members[0]
 
 const actionStatusLabels: Record<ActionItemStatus, string> = {
   todo: 'To do',
@@ -168,6 +167,7 @@ export function ActionItemsPage() {
         item.id === actionItemId ? { ...item, status } : item
       )
     )
+    updateActionItemStatus(actionItemId, status)
     toast.success('Action item status updated', {
       description: `${actionItem.title} is now ${actionStatusLabels[status].toLocaleLowerCase()}.`,
     })
