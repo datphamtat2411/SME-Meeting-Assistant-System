@@ -1,15 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { ProductPlaceholder } from '@/components/layout/product-placeholder'
+import { MembersPage } from '@/features/members'
 
 export const Route = createFileRoute('/_authenticated/members/')({
-  component: MembersPlaceholder,
+  component: MembersPage,
 })
-
-function MembersPlaceholder() {
-  return (
-    <ProductPlaceholder
-      title='Members'
-      description='Workspace member management will be available here.'
-    />
-  )
-}
