@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import java.util.concurrent.TimeUnit;
@@ -18,7 +19,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 @SpringBootTest
 @AutoConfigureMockMvc
-@Import(HttpMetricsTests.MetricsController.class)
+@Import({ HttpMetricsTests.MetricsController.class, PostgresTestConfiguration.class })
 class HttpMetricsTests {
 
 	@Autowired

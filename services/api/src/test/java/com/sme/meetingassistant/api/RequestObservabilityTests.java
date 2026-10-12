@@ -8,6 +8,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.sme.meetingassistant.api.observability.RequestIdContext;
+import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
@@ -31,7 +32,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 
 @SpringBootTest
 @AutoConfigureMockMvc
-@Import(RequestObservabilityTests.TestController.class)
+@Import({ RequestObservabilityTests.TestController.class, PostgresTestConfiguration.class })
 @ExtendWith(OutputCaptureExtension.class)
 class RequestObservabilityTests {
 

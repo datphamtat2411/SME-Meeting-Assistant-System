@@ -3,12 +3,15 @@ package com.sme.meetingassistant.api;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.sme.meetingassistant.api.config.RuntimeProperties;
+import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.context.annotation.Import;
 
 @SpringBootTest
+@Import(PostgresTestConfiguration.class)
 class CoreRuntimeConfigurationTests {
 
 	@Autowired
@@ -24,7 +27,7 @@ class CoreRuntimeConfigurationTests {
 	@Test
 	void missingEnvironmentFailsStartupWithAnActionablePropertyReference() {
 		new ApplicationContextRunner()
-				.withUserConfiguration(MeetingAssistantApiApplication.class)
+				.withUserConfiguration(MeetingAssistantApiApplication.class, PostgresTestConfiguration.class)
 				.withPropertyValues("app.runtime.environment=")
 				.run(context -> {
 					assertThat(context).hasFailed();
