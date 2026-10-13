@@ -5,6 +5,7 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import java.util.Enumeration;
 import org.springframework.core.Ordered;
 import org.springframework.web.filter.OncePerRequestFilter;
 
@@ -39,13 +40,38 @@ public class SecurityHeadersFilter extends OncePerRequestFilter implements Order
 		response.setHeader("X-Content-Type-Options", "nosniff");
 		response.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
 		response.setHeader("X-Frame-Options", "DENY");
-		if (this.hsts.isEnabled() && request.isSecure()) {
+		if (this.hsts.isEnabled() && isExternallySecure(request)) {
 			String value = "max-age=" + this.hsts.getMaxAge().toSeconds();
 			if (this.hsts.isIncludeSubdomains()) {
 				value += "; includeSubDomains";
 			}
 			response.setHeader("Strict-Transport-Security", value);
 		}
+	}
+
+	private boolean isExternallySecure(HttpServletRequest request) {
+		return request.isSecure() || isTrustedForwardedHttps(request);
+	}
+
+	private boolean isTrustedForwardedHttps(HttpServletRequest request) {
+		if (!this.hsts.isTrustedProxy(request.getRemoteAddr())) {
+			return false;
+		}
+
+		Enumeration<String> forwardedProtocols = request.getHeaders("X-Forwarded-Proto");
+		if (forwardedProtocols == null || !forwardedProtocols.hasMoreElements()) {
+			return false;
+		}
+		String forwardedProtocol = forwardedProtocols.nextElement();
+		if (forwardedProtocols.hasMoreElements() || forwardedProtocol == null
+				|| !"https".equalsIgnoreCase(forwardedProtocol.strip())) {
+			return false;
+		}
+
+		// Forwarded is not a supported protocol source; rejecting it avoids a second,
+		// potentially contradictory protocol claim at this trust boundary.
+		Enumeration<String> forwardedHeaders = request.getHeaders("Forwarded");
+		return forwardedHeaders == null || !forwardedHeaders.hasMoreElements();
 	}
 
 }

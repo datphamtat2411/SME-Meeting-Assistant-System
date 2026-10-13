@@ -18,6 +18,20 @@ PostgreSQL
 
 Cross-cutting concerns include security, validation, exception handling, configuration, and integration adapters.
 
+## Proxy-Aware HSTS
+
+HSTS remains disabled unless explicitly enabled. When enabled, direct HTTPS requests receive HSTS, and forwarded HTTPS is accepted only when the immediate peer address is in `app.http.security.hsts.trusted-proxies` and supplies one canonical `X-Forwarded-Proto: https` value. The allowlist contains verified IP addresses only and is separate from request-ID proxy trust.
+
+Proxy-aware HSTS assumes that:
+
+- The public entry point terminates HTTPS with a valid TLS configuration.
+- The approved reverse proxy strips client-supplied `Forwarded` and `X-Forwarded-*` headers.
+- The proxy sets a canonical `X-Forwarded-Proto` for the actual external scheme.
+- The backend is reachable only through the approved ingress path or is otherwise protected from direct untrusted access.
+- Only verified proxy IP addresses are configured in the application allowlist.
+
+The application allowlist is an additional safeguard, not a replacement for network isolation or correct ingress configuration.
+
 ## Business Modules
 
 Main API areas include:
@@ -71,4 +85,3 @@ Cross-feature collaboration uses exposed application interfaces or events. Indep
 - Processing status and business lifecycle state are tracked separately.
 
 Exact classes, tables, message contracts, and implementation details remain task-specific.
-

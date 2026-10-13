@@ -1,8 +1,10 @@
 package com.sme.meetingassistant.api.config;
 
+import java.net.InetAddress;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.time.Duration;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -207,6 +209,10 @@ public class HttpSecurityProperties {
 
 		private boolean includeSubdomains = true;
 
+		private List<String> trustedProxies = List.of();
+
+		private Set<String> normalizedTrustedProxies = Set.of();
+
 		public boolean isEnabled() {
 			return this.enabled;
 		}
@@ -231,10 +237,84 @@ public class HttpSecurityProperties {
 			this.includeSubdomains = includeSubdomains;
 		}
 
+		public List<String> getTrustedProxies() {
+			return this.trustedProxies;
+		}
+
+		public void setTrustedProxies(List<String> trustedProxies) {
+			this.trustedProxies = trustedProxies == null ? List.of()
+					: trustedProxies.stream().map(value -> value == null ? null : value.trim()).toList();
+		}
+
+		public boolean isTrustedProxy(String remoteAddress) {
+			String normalizedRemoteAddress = normalizeIpAddress(remoteAddress);
+			return normalizedRemoteAddress != null && this.normalizedTrustedProxies.contains(normalizedRemoteAddress);
+		}
+
 		private void validate() {
-			if (this.maxAge == null || this.maxAge.isNegative() || this.maxAge.isZero()) {
-				throw new IllegalArgumentException("app.http.security.hsts.max-age must be greater than zero");
+			if (this.maxAge == null || this.maxAge.getSeconds() <= 0) {
+				throw new IllegalArgumentException(
+						"app.http.security.hsts.max-age must produce a positive whole number of seconds");
 			}
+
+			Set<String> normalizedProxies = new HashSet<>();
+			for (String trustedProxy : this.trustedProxies) {
+				String normalizedProxy = normalizeIpAddress(trustedProxy);
+				if (normalizedProxy == null || trustedProxy == null || trustedProxy.isBlank()
+						|| trustedProxy.contains("*")) {
+					throw invalidTrustedProxy(trustedProxy);
+				}
+				normalizedProxies.add(normalizedProxy);
+			}
+			this.normalizedTrustedProxies = Set.copyOf(normalizedProxies);
+		}
+
+		private static String normalizeIpAddress(String value) {
+			if (value == null || value.isBlank()) {
+				return null;
+			}
+			String candidate = value.trim();
+			if (candidate.indexOf(':') < 0) {
+				if (!isIpv4Literal(candidate)) {
+					return null;
+				}
+			}
+			else if (!candidate.matches("[0-9A-Fa-f:.]+")) {
+				return null;
+			}
+			try {
+				return InetAddress.getByName(candidate).getHostAddress();
+			}
+			catch (java.net.UnknownHostException exception) {
+				return null;
+			}
+		}
+
+		private static boolean isIpv4Literal(String value) {
+			String[] octets = value.split("\\.", -1);
+			if (octets.length != 4) {
+				return false;
+			}
+			for (String octet : octets) {
+				if (octet.isEmpty() || !octet.chars().allMatch(Character::isDigit)) {
+					return false;
+				}
+				try {
+					if (Integer.parseInt(octet) > 255) {
+						return false;
+					}
+				}
+				catch (NumberFormatException exception) {
+					return false;
+				}
+			}
+			return true;
+		}
+
+		private static IllegalArgumentException invalidTrustedProxy(String value) {
+			return new IllegalArgumentException(
+					"app.http.security.hsts.trusted-proxies must contain only explicit IP addresses; invalid value: "
+							+ value);
 		}
 
 	}

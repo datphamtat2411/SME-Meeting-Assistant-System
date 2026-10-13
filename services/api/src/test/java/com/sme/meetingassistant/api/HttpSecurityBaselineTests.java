@@ -18,6 +18,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.test.web.servlet.request.RequestPostProcessor;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -54,6 +55,19 @@ class HttpSecurityBaselineTests {
 				.andExpect(header().string("X-Content-Type-Options", "nosniff"))
 				.andExpect(header().string("Referrer-Policy", "strict-origin-when-cross-origin"))
 				.andExpect(header().string("X-Frame-Options", "DENY"))
+				.andExpect(header().doesNotExist("Strict-Transport-Security"));
+	}
+
+	@Test
+	void disabledHstsRemainsAbsentForDirectAndForwardedHttps() throws Exception {
+		this.mockMvc.perform(get(API_PATH).secure(true).with(remoteAddress("198.51.100.10")))
+				.andExpect(status().isOk())
+				.andExpect(header().doesNotExist("Strict-Transport-Security"));
+
+		this.mockMvc.perform(get(API_PATH)
+					.header("X-Forwarded-Proto", "https")
+					.with(remoteAddress("127.0.0.1")))
+				.andExpect(status().isOk())
 				.andExpect(header().doesNotExist("Strict-Transport-Security"));
 	}
 
@@ -116,6 +130,13 @@ class HttpSecurityBaselineTests {
 		assertThat(result.getResponse().getHeader("X-Frame-Options")).isEqualTo("DENY");
 		assertThat(result.getResponse().getHeader("Strict-Transport-Security")).isNull();
 		assertThat(result.getResponse().getHeader(RequestIdContext.HEADER_NAME)).isNotBlank();
+	}
+
+	private static RequestPostProcessor remoteAddress(String remoteAddress) {
+		return request -> {
+			request.setRemoteAddr(remoteAddress);
+			return request;
+		};
 	}
 
 	@RestController

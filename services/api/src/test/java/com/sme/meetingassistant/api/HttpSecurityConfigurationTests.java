@@ -80,7 +80,69 @@ class HttpSecurityConfigurationTests {
 				});
 	}
 
+	@Test
+	void directHttpsDeploymentDoesNotRequireTrustedProxyList() {
+		this.contextRunner
+				.withPropertyValues(
+						"app.runtime.environment=test",
+						"app.http.security.cors.allowed-origins=http://localhost:3000",
+						"app.http.security.hsts.enabled=true",
+						"app.http.security.hsts.trusted-proxies=")
+				.run(context -> assertThat(context).hasNotFailed());
+	}
+
+	@Test
+	void invalidHstsTrustedProxyEntriesAreRejected() {
+		assertInvalidHstsProperty("app.http.security.hsts.trusted-proxies", "proxy.example.com");
+		assertInvalidHstsProperty("app.http.security.hsts.trusted-proxies", "192.0.2.0/24");
+	}
+
+	@Test
+	void wildcardHstsTrustedProxyEntriesAreRejected() {
+		assertInvalidHstsProperty("app.http.security.hsts.trusted-proxies", "*");
+	}
+
+	@Test
+	void blankHstsTrustedProxyEntriesAreRejected() {
+		this.contextRunner
+				.withPropertyValues(
+						"app.runtime.environment=test",
+						"app.http.security.cors.allowed-origins=http://localhost:3000",
+						"app.http.security.hsts.trusted-proxies[0]= ")
+				.run(context -> {
+					assertThat(context).hasFailed();
+					assertThat(context.getStartupFailure())
+							.hasStackTraceContaining("app.http.security.hsts.trusted-proxies");
+				});
+	}
+
+	@Test
+	void subSecondHstsMaxAgeIsRejected() {
+		this.contextRunner
+				.withPropertyValues(
+						"app.runtime.environment=test",
+						"app.http.security.cors.allowed-origins=http://localhost:3000",
+						"app.http.security.hsts.max-age=500ms")
+				.run(context -> {
+					assertThat(context).hasFailed();
+					assertThat(context.getStartupFailure())
+							.hasStackTraceContaining("app.http.security.hsts.max-age");
+				});
+	}
+
 	private void assertInvalidCorsProperty(String property, String value) {
+		this.contextRunner
+				.withPropertyValues(
+						"app.runtime.environment=test",
+						"app.http.security.cors.allowed-origins=http://localhost:3000",
+						property + "=" + value)
+				.run(context -> {
+					assertThat(context).hasFailed();
+					assertThat(context.getStartupFailure()).hasStackTraceContaining(property);
+				});
+	}
+
+	private void assertInvalidHstsProperty(String property, String value) {
 		this.contextRunner
 				.withPropertyValues(
 						"app.runtime.environment=test",
