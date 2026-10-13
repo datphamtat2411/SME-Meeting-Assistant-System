@@ -48,6 +48,29 @@ Clients rely on HTTP status and `code`, not human-readable `message` text.
 429 → rate limit exceeded
 ```
 
+Generic HTTP failures use stable transport codes in the common error envelope:
+
+| HTTP | Code |
+| ---: | --- |
+| 400 | `MALFORMED_REQUEST` |
+| 401 | `AUTH_REQUIRED` |
+| 403 | `AUTHZ_FORBIDDEN` |
+| 404 | `NOT_FOUND` |
+| 405 | `METHOD_NOT_ALLOWED` |
+| 406 | `NOT_ACCEPTABLE` |
+| 409 | `CONFLICT` |
+| 412 | `PRECONDITION_FAILED` |
+| 413 | `PAYLOAD_TOO_LARGE` |
+| 415 | `UNSUPPORTED_MEDIA_TYPE` |
+| 422 | `VALIDATION_FAILED` |
+| 429 | `RATE_LIMIT_EXCEEDED` |
+| 500 | `INTERNAL_ERROR` |
+| 502 | `INTERNAL_BAD_GATEWAY` |
+| 503 | `INTERNAL_SERVICE_UNAVAILABLE` |
+| 504 | `INTERNAL_GATEWAY_TIMEOUT` |
+
+Other 4xx statuses use `CLIENT_ERROR`; other 5xx statuses use `INTERNAL_ERROR`.
+
 `GET` is read-only; `POST` creates or invokes business operations; `PATCH` applies partial updates.
 Use `DELETE` only for actual approved removal, not lifecycle transitions such as meeting cancellation.
 Ordinary business operations return the response envelope rather than `204 No Content`.
@@ -91,4 +114,3 @@ Retry-sensitive creation or job-trigger endpoints may use `Idempotency-Key`; con
 ## Boundary
 
 This file records shared HTTP conventions, not an endpoint catalog. Feature paths, DTO fields, authorization specifics, and error codes are defined by the active Task Specification and implemented contract.
-

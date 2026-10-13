@@ -15,25 +15,32 @@ import com.sme.meetingassistant.api.observability.RequestIdContext;
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.Map;
+import java.util.UUID;
+import org.hamcrest.Matchers;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.ModelAttribute;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.ErrorResponseException;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 import tools.jackson.databind.JsonNode;
@@ -125,39 +132,141 @@ class CommonApiContractTests {
  }
 
  @Test
- void methodParameterValidationUsesTheSameStructuredEnvelope() throws Exception {
-  MvcResult result = this.mockMvc.perform(get("/api/v1/contract/parameter").param("query", ""))
-    .andExpect(status().isUnprocessableEntity())
-    .andReturn();
+  void methodParameterValidationUsesTheSameStructuredEnvelope() throws Exception {
+   MvcResult result = this.mockMvc.perform(get("/api/v1/contract/parameter").param("query", ""))
+     .andExpect(status().isUnprocessableEntity())
+     .andReturn();
 
   JsonNode json = assertError(result, HttpStatus.UNPROCESSABLE_ENTITY, ApiErrorCode.VALIDATION_FAILED,
     "Request validation failed.");
-  assertThat(json.path("errors").toString()).contains("query", "NOT_BLANK");
- }
+   assertThat(json.path("errors").toString()).contains("query", "NOT_BLANK");
+  }
+
+  @Test
+  void returnValueValidationFailureIsAnInternalErrorNotClientValidation() throws Exception {
+   MvcResult result = this.mockMvc.perform(get("/api/v1/contract/invalid-return"))
+     .andExpect(status().isInternalServerError())
+     .andReturn();
+
+   assertError(result, HttpStatus.INTERNAL_SERVER_ERROR, ApiErrorCode.INTERNAL_ERROR,
+     "An unexpected error occurred.");
+   assertThat(result.getResponse().getContentAsString()).doesNotContain("NotNull", "invalid return value");
+  }
 
  @Test
- void modelAttributeBindingValidationUsesTheSameStructuredEnvelope() throws Exception {
-  MvcResult result = this.mockMvc.perform(get("/api/v1/contract/binding").param("name", ""))
-    .andExpect(status().isUnprocessableEntity())
-    .andReturn();
+  void modelAttributeBindingValidationUsesTheSameStructuredEnvelope() throws Exception {
+   MvcResult result = this.mockMvc.perform(get("/api/v1/contract/binding").param("name", ""))
+     .andExpect(status().isUnprocessableEntity())
+     .andReturn();
 
   JsonNode json = assertError(result, HttpStatus.UNPROCESSABLE_ENTITY, ApiErrorCode.VALIDATION_FAILED,
     "Request validation failed.");
-  assertThat(json.path("errors").toString()).contains("name", "NOT_BLANK");
+   assertThat(json.path("errors").toString()).contains("name", "NOT_BLANK");
+  }
+
+  @Test
+  void authenticationAndAuthorizationStatusesUseStableCodesAndPreserveHeaders() throws Exception {
+   MvcResult unauthorized = this.mockMvc.perform(get("/api/v1/contract/unauthorized")).andReturn();
+   assertError(unauthorized, HttpStatus.UNAUTHORIZED, ApiErrorCode.AUTH_REQUIRED, "Authentication is required.");
+   assertThat(unauthorized.getResponse().getHeader(HttpHeaders.WWW_AUTHENTICATE))
+     .isEqualTo("Bearer realm=\"api\"");
+
+   MvcResult forbidden = this.mockMvc.perform(get("/api/v1/contract/forbidden")).andReturn();
+   assertError(forbidden, HttpStatus.FORBIDDEN, ApiErrorCode.AUTHZ_FORBIDDEN,
+     "Access to this resource is forbidden.");
  }
 
  @Test
- void frameworkStatusesArePreservedWithStableSafeCodes() throws Exception {
-  assertError(this.mockMvc.perform(get("/api/v1/contract/not-found")).andReturn(), HttpStatus.NOT_FOUND,
-    ApiErrorCode.NOT_FOUND, "The requested resource was not found.");
+ void genuinelyUnsupportedMethodUsesSpringDispatchAndPreservesAllowHeader() throws Exception {
+  MvcResult result = this.mockMvc.perform(post("/api/v1/contract/method-only")
+      .header(RequestIdContext.HEADER_NAME, REQUEST_ID)
+      .with(remoteAddress(TRUSTED_REMOTE_ADDRESS)))
+    .andExpect(status().isMethodNotAllowed())
+    .andExpect(header().string(HttpHeaders.ALLOW, Matchers.containsString("GET")))
+    .andReturn();
+
+  assertError(result, HttpStatus.METHOD_NOT_ALLOWED, ApiErrorCode.METHOD_NOT_ALLOWED,
+    "The HTTP method is not supported for this resource.");
+ }
+
+ @Test
+ void rateLimitStatusUsesAStableCodeAndPreservesRetryAfterHeader() throws Exception {
+  MvcResult result = this.mockMvc.perform(get("/api/v1/contract/rate-limit")).andReturn();
+
+  assertError(result, HttpStatus.TOO_MANY_REQUESTS, ApiErrorCode.RATE_LIMIT_EXCEEDED, "Too many requests.");
+  assertThat(result.getResponse().getHeader(HttpHeaders.RETRY_AFTER)).isEqualTo("60");
+ }
+
+ @Test
+ void malformedTransportParametersUseSafeBadRequestClassification() throws Exception {
+  MvcResult invalidInteger = this.mockMvc.perform(get("/api/v1/contract/integer").param("value", "not-an-integer"))
+    .andReturn();
+  assertError(invalidInteger, HttpStatus.BAD_REQUEST, ApiErrorCode.MALFORMED_REQUEST,
+    "Request body is malformed or unreadable.");
+
+  MvcResult missingParameter = this.mockMvc.perform(get("/api/v1/contract/required")).andReturn();
+  assertError(missingParameter, HttpStatus.BAD_REQUEST, ApiErrorCode.MALFORMED_REQUEST,
+    "Request body is malformed or unreadable.");
+
+  MvcResult invalidUuid = this.mockMvc.perform(get("/api/v1/contract/uuid/not-a-uuid")).andReturn();
+  assertError(invalidUuid, HttpStatus.BAD_REQUEST, ApiErrorCode.MALFORMED_REQUEST,
+    "Request body is malformed or unreadable.");
+
+  assertThat(invalidInteger.getResponse().getContentAsString())
+    .doesNotContain("NumberFormatException", "MethodArgumentTypeMismatchException", "java.lang");
+  assertThat(missingParameter.getResponse().getContentAsString())
+    .doesNotContain("MissingServletRequestParameterException", "java.lang");
+  assertThat(invalidUuid.getResponse().getContentAsString())
+    .doesNotContain("UUID", "MethodArgumentTypeMismatchException", "java.lang");
+ }
+
+ @Test
+  void frameworkStatusesArePreservedWithStableSafeCodes() throws Exception {
+   assertError(this.mockMvc.perform(get("/api/v1/contract/not-found")).andReturn(), HttpStatus.NOT_FOUND,
+     ApiErrorCode.NOT_FOUND, "The requested resource was not found.");
   assertError(this.mockMvc.perform(get("/api/v1/contract/conflict")).andReturn(), HttpStatus.CONFLICT,
     ApiErrorCode.CONFLICT, "The request conflicts with the current state.");
   assertError(this.mockMvc.perform(get("/api/v1/contract/precondition")).andReturn(),
     HttpStatus.PRECONDITION_FAILED, ApiErrorCode.PRECONDITION_FAILED, "The request precondition failed.");
-  assertError(this.mockMvc.perform(post("/api/v1/contract/media")
-      .contentType(MediaType.TEXT_PLAIN)
-      .content("not-json")).andReturn(), HttpStatus.UNSUPPORTED_MEDIA_TYPE,
-    ApiErrorCode.UNSUPPORTED_MEDIA_TYPE, "The request media type is not supported.");
+   assertError(this.mockMvc.perform(post("/api/v1/contract/media")
+       .contentType(MediaType.TEXT_PLAIN)
+       .content("not-json")).andReturn(), HttpStatus.UNSUPPORTED_MEDIA_TYPE,
+     ApiErrorCode.UNSUPPORTED_MEDIA_TYPE, "The request media type is not supported.");
+
+   MvcResult unsupportedMediaType = this.mockMvc.perform(post("/api/v1/contract/media")
+       .contentType(MediaType.TEXT_PLAIN)
+       .content("not-json")).andReturn();
+   assertThat(unsupportedMediaType.getResponse().getHeader(HttpHeaders.ACCEPT))
+     .contains(MediaType.APPLICATION_JSON_VALUE);
+ }
+
+ @Test
+ void additionalStandardStatusesUseStableTransportCodes() throws Exception {
+  assertError(this.mockMvc.perform(get("/api/v1/contract/not-acceptable")
+      .accept(MediaType.TEXT_PLAIN)).andReturn(), HttpStatus.NOT_ACCEPTABLE,
+    ApiErrorCode.NOT_ACCEPTABLE, "The requested response representation is not available.");
+  assertError(this.mockMvc.perform(get("/api/v1/contract/payload-too-large")).andReturn(),
+    HttpStatus.PAYLOAD_TOO_LARGE, ApiErrorCode.PAYLOAD_TOO_LARGE,
+    "The request payload exceeds the permitted limit.");
+  assertError(this.mockMvc.perform(get("/api/v1/contract/bad-gateway")).andReturn(), HttpStatus.BAD_GATEWAY,
+    ApiErrorCode.INTERNAL_BAD_GATEWAY, "An upstream service returned an invalid response.");
+  assertError(this.mockMvc.perform(get("/api/v1/contract/service-unavailable")).andReturn(),
+    HttpStatus.SERVICE_UNAVAILABLE, ApiErrorCode.INTERNAL_SERVICE_UNAVAILABLE,
+    "The service is temporarily unavailable.");
+  assertError(this.mockMvc.perform(get("/api/v1/contract/gateway-timeout")).andReturn(),
+    HttpStatus.GATEWAY_TIMEOUT, ApiErrorCode.INTERNAL_GATEWAY_TIMEOUT,
+    "An upstream service timed out.");
+ }
+
+ @Test
+ void unrecognizedFrameworkStatusesRemainClassifiedByHttpFamily() throws Exception {
+  assertError(this.mockMvc.perform(get("/api/v1/contract/unrecognized-client-error")).andReturn(),
+    HttpStatus.I_AM_A_TEAPOT, ApiErrorCode.CLIENT_ERROR, "The request could not be processed.");
+
+  MvcResult unrecognizedServerError = this.mockMvc.perform(get("/api/v1/contract/unrecognized-server-error"))
+    .andReturn();
+  assertError(unrecognizedServerError, HttpStatusCode.valueOf(599), ApiErrorCode.INTERNAL_ERROR,
+    "An unexpected error occurred.");
  }
 
  @Test
@@ -176,7 +285,8 @@ class CommonApiContractTests {
     .doesNotContain("SQL password", "IllegalStateException", "secret-value");
  }
 
- private JsonNode assertError(MvcResult result, HttpStatus status, ApiErrorCode code, String message) throws Exception {
+  private JsonNode assertError(MvcResult result, HttpStatusCode status, ApiErrorCode code, String message)
+    throws Exception {
   assertThat(result.getResponse().getStatus()).isEqualTo(status.value());
   JsonNode json = this.objectMapper.readTree(result.getResponse().getContentAsString());
   assertThat(json.path("success").asBoolean()).isFalse();
@@ -197,7 +307,7 @@ class CommonApiContractTests {
 
  @RestController
  @RequestMapping("/api/v1/contract")
- static class ContractController {
+  static class ContractController {
 
   private final ApiResponseFactory responseFactory;
 
@@ -220,10 +330,57 @@ class CommonApiContractTests {
    return this.responseFactory.success("Accepted", query);
   }
 
-  @GetMapping("/binding")
-  ApiResponse<String> binding(@Valid @ModelAttribute BindingRequest request) {
-   return this.responseFactory.success("Accepted", request.getName());
-  }
+   @GetMapping("/binding")
+   ApiResponse<String> binding(@Valid @ModelAttribute BindingRequest request) {
+    return this.responseFactory.success("Accepted", request.getName());
+   }
+
+   @GetMapping("/invalid-return")
+   @NotNull
+   String invalidReturn() {
+    return null;
+   }
+
+   @GetMapping("/unauthorized")
+   ApiResponse<String> unauthorized() {
+    ErrorResponseException exception = new ErrorResponseException(HttpStatus.UNAUTHORIZED);
+    exception.setDetail("sensitive auth detail");
+    exception.getHeaders().set(HttpHeaders.WWW_AUTHENTICATE, "Bearer realm=\"api\"");
+    throw exception;
+   }
+
+   @GetMapping("/forbidden")
+   ApiResponse<String> forbidden() {
+    throw new ResponseStatusException(HttpStatus.FORBIDDEN, "sensitive authorization detail");
+   }
+
+   @GetMapping("/method-only")
+   ApiResponse<String> methodOnly() {
+    return this.responseFactory.success("Accepted", "get");
+   }
+
+   @GetMapping("/rate-limit")
+   ApiResponse<String> rateLimit() {
+    ErrorResponseException exception = new ErrorResponseException(HttpStatus.TOO_MANY_REQUESTS);
+    exception.setDetail("sensitive rate-limit detail");
+    exception.getHeaders().set(HttpHeaders.RETRY_AFTER, "60");
+    throw exception;
+   }
+
+   @GetMapping("/integer")
+   ApiResponse<String> integer(@RequestParam int value) {
+    return this.responseFactory.success("Accepted", Integer.toString(value));
+   }
+
+   @GetMapping("/required")
+   ApiResponse<String> required(@RequestParam String value) {
+    return this.responseFactory.success("Accepted", value);
+   }
+
+   @GetMapping("/uuid/{id}")
+   ApiResponse<String> uuid(@PathVariable UUID id) {
+    return this.responseFactory.success("Accepted", id.toString());
+   }
 
   @GetMapping("/not-found")
   ApiResponse<String> notFound() {
@@ -240,10 +397,45 @@ class CommonApiContractTests {
    throw new ResponseStatusException(HttpStatus.PRECONDITION_FAILED, "sensitive precondition detail");
   }
 
-  @PostMapping(value = "/media", consumes = MediaType.APPLICATION_JSON_VALUE)
-  ApiResponse<String> media(@RequestBody Map<String, Object> request) {
-   return this.responseFactory.success("Accepted", request.toString());
-  }
+   @PostMapping(value = "/media", consumes = MediaType.APPLICATION_JSON_VALUE)
+   ApiResponse<String> media(@RequestBody Map<String, Object> request) {
+    return this.responseFactory.success("Accepted", request.toString());
+   }
+
+   @GetMapping(value = "/not-acceptable", produces = MediaType.APPLICATION_JSON_VALUE)
+   ApiResponse<String> notAcceptable() {
+    return this.responseFactory.success("Accepted", "json");
+   }
+
+   @GetMapping("/payload-too-large")
+   ApiResponse<String> payloadTooLarge() {
+    throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE, "sensitive payload detail");
+   }
+
+   @GetMapping("/bad-gateway")
+   ApiResponse<String> badGateway() {
+    throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "sensitive upstream detail");
+   }
+
+   @GetMapping("/service-unavailable")
+   ApiResponse<String> serviceUnavailable() {
+    throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "sensitive availability detail");
+   }
+
+   @GetMapping("/gateway-timeout")
+   ApiResponse<String> gatewayTimeout() {
+    throw new ResponseStatusException(HttpStatus.GATEWAY_TIMEOUT, "sensitive timeout detail");
+   }
+
+   @GetMapping("/unrecognized-client-error")
+   ApiResponse<String> unrecognizedClientError() {
+    throw new ResponseStatusException(HttpStatus.I_AM_A_TEAPOT, "sensitive client detail");
+   }
+
+   @GetMapping("/unrecognized-server-error")
+   ApiResponse<String> unrecognizedServerError() {
+    throw new ResponseStatusException(HttpStatusCode.valueOf(599), "sensitive server detail");
+   }
 
   @GetMapping("/unexpected")
   ApiResponse<String> unexpected() {
