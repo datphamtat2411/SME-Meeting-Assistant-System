@@ -1,0 +1,12 @@
+package com.sme.meetingassistant.api.common;
+
+public enum ApiErrorCode {
+	SUCCESS,
+	MALFORMED_REQUEST,
+	VALIDATION_FAILED,
+	NOT_FOUND,
+	CONFLICT,
+	PRECONDITION_FAILED,
+	UNSUPPORTED_MEDIA_TYPE,
+	INTERNAL_ERROR
+}
