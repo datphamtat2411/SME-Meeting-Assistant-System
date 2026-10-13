@@ -7,14 +7,16 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.sme.meetingassistant.api.observability.RequestIdContext;
+import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
+import com.zaxxer.hikari.HikariDataSource;
 import java.time.Duration;
+import java.util.Map;
+import javax.sql.DataSource;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.context.annotation.Bean;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.ActiveProfiles;
@@ -29,7 +31,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
 		"spring.datasource.hikari.minimum-idle=0"
 })
 @AutoConfigureMockMvc
-@Import(DatabaseReadinessIntegrationTests.IsolatedPostgresConfiguration.class)
+@Import(PostgresTestConfiguration.class)
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class DatabaseReadinessIntegrationTests {
 
@@ -39,10 +41,23 @@ class DatabaseReadinessIntegrationTests {
 	private MockMvc mockMvc;
 
 	@Autowired
+	private ApplicationContext applicationContext;
+
+	@Autowired
+	private DataSource dataSource;
+
+	@Autowired
 	private PostgreSQLContainer<?> postgresContainer;
 
 	@Test
 	void databaseOutageMakesReadinessUnavailableWithoutAffectingLiveness() throws Exception {
+		Map<String, PostgreSQLContainer> postgresContainers =
+				this.applicationContext.getBeansOfType(PostgreSQLContainer.class);
+		assertThat(postgresContainers).hasSize(1);
+		assertThat(postgresContainers.values().iterator().next()).isSameAs(this.postgresContainer);
+		assertThat(this.dataSource).isInstanceOf(HikariDataSource.class);
+		assertThat(((HikariDataSource) this.dataSource).getJdbcUrl()).isEqualTo(this.postgresContainer.getJdbcUrl());
+
 		assertHealth("/actuator/health/readiness", 200, "UP");
 		assertHealth("/actuator/health/liveness", 200, "UP");
 
@@ -83,16 +98,4 @@ class DatabaseReadinessIntegrationTests {
 		assertThat(lastResult.getResponse().getStatus()).isEqualTo(503);
 		return lastResult;
 	}
-
-	@TestConfiguration(proxyBeanMethods = false)
-	static class IsolatedPostgresConfiguration {
-
-		@Bean
-		@ServiceConnection
-		PostgreSQLContainer<?> postgresContainer() {
-			return new PostgreSQLContainer<>("postgres:17");
-		}
-
-	}
-
 }
