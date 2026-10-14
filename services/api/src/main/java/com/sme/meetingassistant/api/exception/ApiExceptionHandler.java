@@ -56,34 +56,42 @@ public class ApiExceptionHandler {
 	private static final String INTERNAL_MESSAGE = "An unexpected error occurred.";
 
 	private final ApiResponseFactory responseFactory;
+	private final Http500DiagnosticLogger diagnosticLogger;
 
-	public ApiExceptionHandler(ApiResponseFactory responseFactory) {
+	public ApiExceptionHandler(ApiResponseFactory responseFactory, Http500DiagnosticLogger diagnosticLogger) {
 		this.responseFactory = responseFactory;
+		this.diagnosticLogger = diagnosticLogger;
 	}
 
 	@ExceptionHandler(Exception.class)
 	public ResponseEntity<ApiResponse<Void>> handle(Exception exception) {
+		ResponseEntity<ApiResponse<Void>> response;
 		if (isReturnValueValidationFailure(exception)) {
-			return response(HttpStatus.INTERNAL_SERVER_ERROR, ApiErrorCode.INTERNAL_ERROR, INTERNAL_MESSAGE, null);
+			response = response(HttpStatus.INTERNAL_SERVER_ERROR, ApiErrorCode.INTERNAL_ERROR, INTERNAL_MESSAGE, null);
 		}
-
-		if (isMalformedRequest(exception)) {
-			return response(HttpStatus.BAD_REQUEST, ApiErrorCode.MALFORMED_REQUEST, MALFORMED_MESSAGE, null);
+		else if (isMalformedRequest(exception)) {
+			response = response(HttpStatus.BAD_REQUEST, ApiErrorCode.MALFORMED_REQUEST, MALFORMED_MESSAGE, null);
 		}
-
-		List<ApiFieldError> validationErrors = validationErrors(exception);
-		if (validationErrors != null) {
-			return response(HttpStatus.UNPROCESSABLE_ENTITY, ApiErrorCode.VALIDATION_FAILED, VALIDATION_MESSAGE,
+		else {
+			List<ApiFieldError> validationErrors = validationErrors(exception);
+			if (validationErrors != null) {
+				response = response(HttpStatus.UNPROCESSABLE_ENTITY, ApiErrorCode.VALIDATION_FAILED, VALIDATION_MESSAGE,
 					validationErrors);
+			}
+			else if (exception instanceof ErrorResponse errorResponse) {
+				HttpStatusCode status = errorResponse.getStatusCode();
+				ErrorDescriptor descriptor = errorDescriptor(status);
+				response = response(errorStatus(status), descriptor, errorResponse.getHeaders());
+			}
+			else {
+				response = response(HttpStatus.INTERNAL_SERVER_ERROR, ApiErrorCode.INTERNAL_ERROR, INTERNAL_MESSAGE, null);
+			}
 		}
 
-		if (exception instanceof ErrorResponse errorResponse) {
-			HttpStatusCode status = errorResponse.getStatusCode();
-			ErrorDescriptor descriptor = errorDescriptor(status);
-			return response(errorStatus(status), descriptor, errorResponse.getHeaders());
+		if (response.getStatusCode().value() == HttpStatus.INTERNAL_SERVER_ERROR.value()) {
+			this.diagnosticLogger.log(exception);
 		}
-
-		return response(HttpStatus.INTERNAL_SERVER_ERROR, ApiErrorCode.INTERNAL_ERROR, INTERNAL_MESSAGE, null);
+		return response;
 	}
 
 	private static boolean isReturnValueValidationFailure(Exception exception) {

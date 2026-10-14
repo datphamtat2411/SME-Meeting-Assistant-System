@@ -146,13 +146,38 @@ class CommonApiContractTests {
 
   @Test
   void returnValueValidationFailureIsAnInternalErrorNotClientValidation() throws Exception {
-   MvcResult result = this.mockMvc.perform(get("/api/v1/contract/invalid-return"))
+    MvcResult result = this.mockMvc.perform(get("/api/v1/contract/invalid-return"))
+      .andExpect(status().isInternalServerError())
+      .andReturn();
+
+   assertError(result, HttpStatus.INTERNAL_SERVER_ERROR, ApiErrorCode.INTERNAL_ERROR,
+     "An unexpected error occurred.");
+    assertThat(result.getResponse().getContentAsString()).doesNotContain("NotNull", "invalid return value");
+   }
+
+  @Test
+  void explicitHttp500ExceptionsKeepTheSanitizedInternalErrorContract() throws Exception {
+   MvcResult result = this.mockMvc.perform(get("/api/v1/contract/http-500"))
+     .andExpect(status().isInternalServerError())
+     .andExpect(header().exists(RequestIdContext.HEADER_NAME))
+     .andReturn();
+
+   assertError(result, HttpStatus.INTERNAL_SERVER_ERROR, ApiErrorCode.INTERNAL_ERROR,
+     "An unexpected error occurred.");
+   assertThat(result.getResponse().getContentAsString())
+     .doesNotContain("framework exception details", "ResponseStatusException", "java.lang");
+  }
+
+  @Test
+  void nestedUnexpectedExceptionsKeepTheSanitizedInternalErrorContract() throws Exception {
+   MvcResult result = this.mockMvc.perform(get("/api/v1/contract/nested"))
      .andExpect(status().isInternalServerError())
      .andReturn();
 
    assertError(result, HttpStatus.INTERNAL_SERVER_ERROR, ApiErrorCode.INTERNAL_ERROR,
      "An unexpected error occurred.");
-   assertThat(result.getResponse().getContentAsString()).doesNotContain("NotNull", "invalid return value");
+   assertThat(result.getResponse().getContentAsString())
+     .doesNotContain("outer failure details", "root failure details", "IllegalStateException", "IllegalArgumentException");
   }
 
  @Test
@@ -343,6 +368,17 @@ class CommonApiContractTests {
     return null;
    }
 
+   @GetMapping("/http-500")
+   ApiResponse<String> http500() {
+    throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "framework exception details");
+   }
+
+   @GetMapping("/nested")
+   ApiResponse<String> nested() {
+    throw new IllegalStateException("outer failure details",
+      new IllegalArgumentException("root failure details"));
+   }
+
    @GetMapping("/unauthorized")
    ApiResponse<String> unauthorized() {
     ErrorResponseException exception = new ErrorResponseException(HttpStatus.UNAUTHORIZED);
@@ -439,10 +475,11 @@ class CommonApiContractTests {
     throw new ResponseStatusException(HttpStatusCode.valueOf(599), "sensitive server detail");
    }
 
-  @GetMapping("/unexpected")
-  ApiResponse<String> unexpected() {
-   throw new IllegalStateException("SQL password=secret-value");
-  }
+   @GetMapping("/unexpected")
+   ApiResponse<String> unexpected() {
+    throw new IllegalStateException(
+      "password=private-secret; token=private-token; transcript=confidential-meeting");
+   }
 
  }
 

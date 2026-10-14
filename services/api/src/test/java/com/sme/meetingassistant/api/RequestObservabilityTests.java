@@ -9,6 +9,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.sme.meetingassistant.api.observability.RequestIdContext;
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
@@ -17,6 +20,7 @@ import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.test.context.ActiveProfiles;
@@ -27,6 +31,8 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.server.ResponseStatusException;
 
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -143,7 +149,107 @@ class RequestObservabilityTests {
 				.contains("\"route\":\"/test/body\"")
 				.contains("\"status\":200")
 				.contains("\"outcome\":\"SUCCESS\"")
+				.doesNotContain("\"event\":\"api.http_500\"")
 				.doesNotContain(sensitiveContent);
+	}
+
+	@Test
+	void unexpectedHttp500EmitsOneSafeDiagnosticWithCanonicalCorrelation(CapturedOutput output) throws Exception {
+		String suppliedRequestId = UUID.randomUUID().toString();
+		String before = output.getOut();
+
+		MvcResult result = this.mockMvc.perform(get("/test/unexpected")
+				.header(RequestIdContext.HEADER_NAME, suppliedRequestId)
+				.with(remoteAddress(TRUSTED_REMOTE_ADDRESS)))
+				.andExpect(status().isInternalServerError())
+				.andExpect(header().string(RequestIdContext.HEADER_NAME, suppliedRequestId))
+				.andReturn();
+
+		assertThat(result.getResponse().getContentAsString())
+				.doesNotContain("password=private-secret", "private-token", "confidential-meeting", "IllegalStateException");
+		String logs = outputSince(output, before);
+		assertThat(countOccurrences(logs, "\"event\":\"api.http_500\"")).isEqualTo(1);
+		assertThat(logs)
+				.contains("\"level\":\"ERROR\"")
+				.contains("\"event\":\"api.http_500\"")
+				.contains("\"status\":500")
+				.contains("\"errorCode\":\"INTERNAL_ERROR\"")
+				.contains("\"exceptionType\":\"java.lang.IllegalStateException\"")
+				.contains("\"rootCauseType\":\"java.lang.IllegalStateException\"")
+				.contains("\"failureLocation\":\"com.sme.meetingassistant.api.")
+				.contains("\"requestId\":\"" + suppliedRequestId + "\"")
+				.contains("\"message\":\"HTTP 500 exception handled\"")
+				.contains("\"message\":\"HTTP request completed\"")
+				.doesNotContain("private-secret", "private-token", "confidential-meeting", "\"stack_trace\"", "\"throwable\"");
+	}
+
+	@Test
+	void nestedExceptionsRecordTheRootCauseWithoutRecordingCauseMessages(CapturedOutput output) throws Exception {
+		String before = output.getOut();
+
+		this.mockMvc.perform(get("/test/nested"))
+				.andExpect(status().isInternalServerError());
+
+		String logs = outputSince(output, before);
+		assertThat(countOccurrences(logs, "\"event\":\"api.http_500\"")).isEqualTo(1);
+		assertThat(logs)
+				.contains("\"exceptionType\":\"java.lang.IllegalStateException\"")
+				.contains("\"rootCauseType\":\"java.lang.IllegalArgumentException\"")
+				.doesNotContain("outer failure details", "root failure details", "\"stack_trace\"");
+	}
+
+	@Test
+	void explicitHttp500ExceptionsEmitOneSanitizedDiagnostic(CapturedOutput output) throws Exception {
+		String before = output.getOut();
+
+		this.mockMvc.perform(get("/test/http-500"))
+				.andExpect(status().isInternalServerError());
+
+		String logs = outputSince(output, before);
+		assertThat(countOccurrences(logs, "\"event\":\"api.http_500\"")).isEqualTo(1);
+		assertThat(logs)
+				.contains("\"exceptionType\":\"org.springframework.web.server.ResponseStatusException\"")
+				.contains("\"rootCauseType\":\"org.springframework.web.server.ResponseStatusException\"")
+				.doesNotContain("framework exception details", "\"stack_trace\"");
+	}
+
+	@Test
+	void returnValueValidationFailuresRemainInternalErrorsAndEmitOneDiagnostic(CapturedOutput output) throws Exception {
+		String before = output.getOut();
+
+		MvcResult result = this.mockMvc.perform(get("/test/invalid-return"))
+				.andExpect(status().isInternalServerError())
+				.andReturn();
+
+		assertThat(result.getResponse().getContentAsString())
+				.contains("\"code\":\"INTERNAL_ERROR\"")
+				.contains("An unexpected error occurred.")
+				.doesNotContain("NotNull", "invalid return value");
+		String logs = outputSince(output, before);
+		assertThat(countOccurrences(logs, "\"event\":\"api.http_500\"")).isEqualTo(1);
+		assertThat(logs)
+				.contains("\"exceptionType\":\"org.springframework.web.method.annotation.HandlerMethodValidationException\"")
+				.doesNotContain("NotNull", "invalid return value", "\"stack_trace\"");
+	}
+
+	@Test
+	void ordinaryClientErrorsKeepCompletionLogsWithoutHttp500Diagnostics(CapturedOutput output) throws Exception {
+		String before = output.getOut();
+
+		this.mockMvc.perform(post("/test/validated-body")
+				.contentType(MediaType.APPLICATION_JSON)
+				.content("{"))
+				.andExpect(status().isBadRequest());
+		this.mockMvc.perform(get("/test/integer").param("value", "not-an-integer"))
+				.andExpect(status().isBadRequest());
+		this.mockMvc.perform(get("/test/validated-parameter").param("value", ""))
+				.andExpect(status().isUnprocessableEntity());
+		this.mockMvc.perform(get("/test/missing"))
+				.andExpect(status().isNotFound());
+
+		String logs = outputSince(output, before);
+		assertThat(countOccurrences(logs, "\"event\":\"api.http_500\"")).isZero();
+		assertThat(logs).contains("\"message\":\"HTTP request completed\"");
 	}
 
 	private static RequestPostProcessor remoteAddress(String remoteAddress) {
@@ -156,6 +262,21 @@ class RequestObservabilityTests {
 	private static void assertCanonicalUuid(String requestId) {
 		assertThat(requestId).isNotNull();
 		assertThat(UUID.fromString(requestId).toString()).isEqualTo(requestId);
+	}
+
+	private static String outputSince(CapturedOutput output, String before) {
+		String current = output.getOut();
+		return current.startsWith(before) ? current.substring(before.length()) : current;
+	}
+
+	private static int countOccurrences(String value, String token) {
+		int count = 0;
+		int offset = 0;
+		while ((offset = value.indexOf(token, offset)) >= 0) {
+			count++;
+			offset += token.length();
+		}
+		return count;
 	}
 
 	@RestController
@@ -171,11 +292,57 @@ class RequestObservabilityTests {
 			return ResponseEntity.internalServerError().body("failure");
 		}
 
+		@GetMapping("/test/unexpected")
+		String unexpected() {
+			throw new IllegalStateException(
+					"password=private-secret; token=private-token; transcript=confidential-meeting");
+		}
+
+		@GetMapping("/test/nested")
+		String nested() {
+			throw new IllegalStateException("outer failure details",
+					new IllegalArgumentException("root failure details"));
+		}
+
+		@GetMapping("/test/http-500")
+		String http500() {
+			throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "framework exception details");
+		}
+
+		@GetMapping("/test/invalid-return")
+		@NotNull
+		String invalidReturn() {
+			return null;
+		}
+
+		@PostMapping("/test/validated-body")
+		String validatedBody(@Valid @RequestBody BodyRequest request) {
+			return request.value();
+		}
+
+		@GetMapping("/test/integer")
+		String integer(@RequestParam int value) {
+			return Integer.toString(value);
+		}
+
+		@GetMapping("/test/validated-parameter")
+		String validatedParameter(@RequestParam(defaultValue = "") @NotBlank String value) {
+			return value;
+		}
+
+		@GetMapping("/test/missing")
+		String missing() {
+			throw new ResponseStatusException(HttpStatus.NOT_FOUND, "sensitive missing resource detail");
+		}
+
 		@PostMapping("/test/body")
 		String body(@RequestBody String ignoredBody) {
 			return "accepted";
 		}
 
+	}
+
+	record BodyRequest(@NotBlank String value) {
 	}
 
 }
