@@ -23,8 +23,11 @@ For explicitly cross-package tasks, apply each package's rules only to its work.
 
 ## PLAN
 
+PLAN owns discovery and task-specific decisions.
 Follow the Task Specification's locked scope and contracts.
-Discover only task-related code, tests, config, migrations, and dependencies.
+Inspect only task-related code, tests, config, migrations, and dependencies.
+
+Always pick the best solution, not just the easiest one to get it done, but avoid over-engineering
 
 Keep `plan.md` concise. Prefer:
 
@@ -46,9 +49,19 @@ After implementation, run only the narrowest relevant tests.
 Do not run full suites, full builds, startup, or manual checks unless the task
 or plan explicitly justifies them.
 
-If tests pass, run `git status --short`, report, and stop.
-If they fail, investigate only the related failure, make one corrective pass,
-and rerun the same test command once. If it still fails, report and stop.
+If the focused test passes:
+
+* do not run any additional or broader tests;
+* do not perform any other verification;
+* run one final `git status --short`;
+* report and stop.
+
+If the focused test fails:
+
+* investigate only the task-related failure;
+* make one corrective pass;
+* rerun the same focused test command once;
+* if it still fails, report the blocker and stop.
 
 ## Git
 
