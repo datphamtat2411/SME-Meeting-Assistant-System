@@ -37,7 +37,18 @@ class MeetingControllerTests {
 			.andExpect(header().exists("Location"))
 			.andExpect(jsonPath("$.success").value(true))
 			.andExpect(jsonPath("$.data.title").value("Planning"))
-			.andExpect(jsonPath("$.data.status").value("DRAFT"));
+			.andExpect(jsonPath("$.data.status").value("DRAFT"))
+			.andExpect(jsonPath("$.data.version").value(0));
+
+		String location = this.mockMvc.perform(post("/api/v1/meetings")
+				.principal(() -> callerId.toString())
+				.contentType(MediaType.APPLICATION_JSON)
+				.content("{\"title\":\"With description\",\"description\":\"Description\"}"))
+			.andExpect(status().isCreated())
+			.andExpect(jsonPath("$.data.version").value(0))
+			.andReturn().getResponse().getHeader("Location");
+		this.mockMvc.perform(get(location).principal(() -> callerId.toString()))
+			.andExpect(status().isOk()).andExpect(header().string("ETag", "\"0\""));
 	}
 
 	@Test

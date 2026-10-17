@@ -4,6 +4,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
@@ -32,6 +33,8 @@ class MeetingParticipantControllerTests {
 		UUID participant = UUID.randomUUID();
 		String meetingUrl = createMeeting(organizer);
 		String participantsUrl = meetingUrl + "/participants";
+		this.mockMvc.perform(get(meetingUrl).principal(() -> organizer.toString()))
+			.andExpect(status().isOk()).andExpect(header().string("ETag", "\"0\""));
 
 		String participantLocation = this.mockMvc.perform(post(participantsUrl).principal(() -> organizer.toString())
 				.contentType(MediaType.APPLICATION_JSON)
@@ -39,12 +42,16 @@ class MeetingParticipantControllerTests {
 			.andExpect(status().isCreated())
 			.andExpect(jsonPath("$.data.status").value("INVITED"))
 			.andReturn().getResponse().getHeader("Location");
+		this.mockMvc.perform(get(meetingUrl).principal(() -> organizer.toString()))
+			.andExpect(status().isOk()).andExpect(header().string("ETag", "\"1\""));
 
 		this.mockMvc.perform(get(participantsUrl).principal(() -> organizer.toString()))
 			.andExpect(status().isOk()).andExpect(jsonPath("$.data[0].userId").value(participant.toString()));
 
 		this.mockMvc.perform(delete(participantLocation).principal(() -> organizer.toString()))
 			.andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("REMOVED"));
+		this.mockMvc.perform(get(meetingUrl).principal(() -> organizer.toString()))
+			.andExpect(status().isOk()).andExpect(header().string("ETag", "\"2\""));
 		this.mockMvc.perform(get(participantsUrl).principal(() -> organizer.toString()))
 			.andExpect(status().isOk()).andExpect(jsonPath("$.data[0].status").value("REMOVED"));
 	}

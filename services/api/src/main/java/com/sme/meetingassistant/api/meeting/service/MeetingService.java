@@ -35,10 +35,9 @@ public class MeetingService {
 	}
 
 	public MeetingDetailResponse createMeeting(CreateMeetingRequest request, UUID organizerId) {
-		MeetingEntity meeting = this.meetingRepository.saveAndFlush(new MeetingEntity(request.title().trim(), organizerId));
-		if (request.description() != null) {
-			meeting.updateDetails(meeting.getTitle(), request.description().trim());
-		}
+		String description = request.description() == null ? null : request.description().trim();
+		MeetingEntity meeting = this.meetingRepository
+				.saveAndFlush(new MeetingEntity(request.title().trim(), description, organizerId));
 		return detail(meeting);
 	}
 

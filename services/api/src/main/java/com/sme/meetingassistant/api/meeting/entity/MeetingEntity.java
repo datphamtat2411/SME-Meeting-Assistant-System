@@ -60,8 +60,13 @@ public class MeetingEntity {
 	}
 
 	public MeetingEntity(String title, UUID organizerId) {
+		this(title, null, organizerId);
+	}
+
+	public MeetingEntity(String title, String description, UUID organizerId) {
 		this.id = UUID.randomUUID();
 		this.title = title;
+		this.description = description;
 		this.organizerId = organizerId;
 	}
 

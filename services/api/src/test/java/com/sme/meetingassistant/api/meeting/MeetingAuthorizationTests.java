@@ -3,6 +3,7 @@ package com.sme.meetingassistant.api.meeting;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
 import java.util.UUID;
@@ -39,6 +40,8 @@ class MeetingAuthorizationTests {
 
 		this.mockMvc.perform(get(meetingUrl).principal(() -> organizer.toString())).andExpect(status().isOk());
 		this.mockMvc.perform(get(meetingUrl).principal(() -> participant.toString())).andExpect(status().isOk());
+		this.mockMvc.perform(get("/api/v1/meetings").principal(() -> participant.toString()))
+			.andExpect(status().isOk()).andExpect(jsonPath("$.meta.pagination.totalElements").value(1));
 		this.mockMvc.perform(get(meetingUrl).principal(() -> stranger.toString())).andExpect(status().isNotFound());
 	}
 
