@@ -24,7 +24,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 @Service
 @Transactional
-public class MeetingService {
+public class MeetingService implements MeetingAccess {
 
 	private final MeetingRepository meetingRepository;
 	private final MeetingParticipantRepository participantRepository;
@@ -51,6 +51,12 @@ public class MeetingService {
 			throw new ResponseStatusException(HttpStatus.NOT_FOUND);
 		}
 		return detail(meeting);
+	}
+
+	@Override
+	@Transactional(readOnly = true)
+	public void requireAccessible(UUID meetingId, UUID callerId) {
+		getMeetingById(meetingId, callerId);
 	}
 
 	public MeetingDetailResponse updateMeeting(UUID meetingId, UUID callerId, String ifMatch,
