@@ -20,6 +20,7 @@ public class OrganizationMembershipEntity {
     @PreUpdate void onUpdate(){updatedAt=OffsetDateTime.now(ZoneOffset.UTC);}
     public UUID getId(){return id;} public UUID getOrganizationId(){return organizationId;} public UUID getUserId(){return userId;}
     public OrganizationRole getRole(){return role;} public String getStatus(){return status;}
+    public OffsetDateTime getCreatedAt(){return createdAt;} public OffsetDateTime getUpdatedAt(){return updatedAt;}
     public void changeRole(OrganizationRole role){this.role=role;this.status="ACTIVE";}
     public void remove(){this.status="REMOVED";}
 }

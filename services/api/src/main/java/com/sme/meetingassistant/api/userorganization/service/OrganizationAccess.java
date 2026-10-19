@@ -22,6 +22,10 @@ public class OrganizationAccess {
         if(!roles.contains(member.getRole())) throw new ResponseStatusException(HttpStatus.FORBIDDEN);
         return member;
     }
-    public void requireMember(UUID orgId,UUID userId){requireRole(orgId,userId,OrganizationRole.OWNER,OrganizationRole.ADMIN,OrganizationRole.MEMBER);}
-    public void requireManager(UUID orgId,UUID userId){requireRole(orgId,userId,OrganizationRole.OWNER,OrganizationRole.ADMIN);}
+    public OrganizationMembershipEntity requireMember(UUID orgId,UUID userId){
+        return requireRole(orgId,userId,OrganizationRole.OWNER,OrganizationRole.ADMIN,OrganizationRole.MEMBER);
+    }
+    public OrganizationMembershipEntity requireManager(UUID orgId,UUID userId){
+        return requireRole(orgId,userId,OrganizationRole.OWNER,OrganizationRole.ADMIN);
+    }
 }
