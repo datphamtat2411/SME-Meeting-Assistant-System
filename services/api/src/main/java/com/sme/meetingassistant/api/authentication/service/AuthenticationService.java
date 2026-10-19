@@ -8,6 +8,7 @@ import com.sme.meetingassistant.api.userorganization.repository.UserAccountRepos
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
+import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.Base64;
@@ -32,13 +33,13 @@ public class AuthenticationService {
     private final AuthenticationManager authenticationManager;
     private final PasswordEncoder passwordEncoder;
     private final JwtTokenService jwtTokens;
-    private final java.time.Duration refreshTtl;
+    private final Duration refreshTtl;
 
     public AuthenticationService(UserAccountRepository users, RefreshTokenRepository refreshTokens,
             AuthenticationManager authenticationManager, PasswordEncoder passwordEncoder, JwtTokenService jwtTokens,
-            @Value("${app.auth.refresh-ttl:P30D}") java.time.Duration refreshTtl) {
+            @Value("${app.auth.refresh-ttl:P30D}") String refreshTtl) {
         this.users = users; this.refreshTokens = refreshTokens; this.authenticationManager = authenticationManager;
-        this.passwordEncoder = passwordEncoder; this.jwtTokens = jwtTokens; this.refreshTtl = refreshTtl;
+        this.passwordEncoder = passwordEncoder; this.jwtTokens = jwtTokens; this.refreshTtl = Duration.parse(refreshTtl);
     }
 
     @Transactional

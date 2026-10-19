@@ -86,6 +86,8 @@ public class AuthenticationSecurityConfiguration {
 	SecurityFilterChain apiSecurity(HttpSecurity http,
 			@Value("${app.auth.http-enforcement-enabled:true}") boolean httpEnforcementEnabled) throws Exception {
 		http.csrf(AbstractHttpConfigurer::disable)
+				// HSTS/other baseline headers are owned by SecurityHeadersFilter + app.http.security.*.
+				.headers(headers -> headers.httpStrictTransportSecurity(hsts -> hsts.disable()))
 				.sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS));
 
 		if (httpEnforcementEnabled) {
