@@ -28,7 +28,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 @Service
 @Transactional
-public class TranscriptService {
+public class TranscriptService implements TranscriptEvidenceAccess {
 
 	private final MeetingAccess meetingAccess;
 	private final TranscriptRepository transcriptRepository;
@@ -132,6 +132,17 @@ public class TranscriptService {
 	private TranscriptEntity transcript(UUID meetingId, UUID transcriptId) {
 		return this.transcriptRepository.findByIdAndMeetingId(transcriptId, meetingId)
 				.orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+	}
+
+	@Override
+	@Transactional(readOnly = true)
+	public void requireEvidenceBelongsToTranscript(UUID meetingId, UUID transcriptId, List<UUID> segmentIds) {
+		transcript(meetingId, transcriptId);
+		Set<UUID> uniqueIds = new HashSet<>(segmentIds);
+		if (uniqueIds.size() != segmentIds.size()
+				|| uniqueIds.stream().anyMatch(id -> this.segmentRepository.findByIdAndTranscriptId(id, transcriptId).isEmpty())) {
+			throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY);
+		}
 	}
 
 	private TranscriptResponse response(TranscriptEntity transcript, List<TranscriptSegmentEntity> segments) {

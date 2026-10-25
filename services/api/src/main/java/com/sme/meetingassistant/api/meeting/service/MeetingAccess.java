@@ -6,4 +6,6 @@ public interface MeetingAccess {
 
 	void requireAccessible(UUID meetingId, UUID callerId);
 
+	void requireAssignee(UUID meetingId, UUID assigneeId);
+
 }

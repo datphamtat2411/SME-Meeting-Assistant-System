@@ -59,6 +59,18 @@ public class MeetingService implements MeetingAccess {
 		getMeetingById(meetingId, callerId);
 	}
 
+	@Override
+	@Transactional(readOnly = true)
+	public void requireAssignee(UUID meetingId, UUID assigneeId) {
+		MeetingEntity meeting = this.meetingRepository.findById(meetingId)
+				.orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+		if (!meeting.getOrganizerId().equals(assigneeId)
+				&& !this.participantRepository.existsByMeetingIdAndUserIdAndStatusIn(meetingId, assigneeId,
+						List.of(ParticipantStatus.INVITED, ParticipantStatus.ACCEPTED))) {
+			throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY);
+		}
+	}
+
 	public MeetingDetailResponse updateMeeting(UUID meetingId, UUID callerId, String ifMatch,
 			UpdateMeetingRequest request) {
 		MeetingEntity meeting = this.meetingRepository.findByIdAndOrganizerId(meetingId, callerId)
