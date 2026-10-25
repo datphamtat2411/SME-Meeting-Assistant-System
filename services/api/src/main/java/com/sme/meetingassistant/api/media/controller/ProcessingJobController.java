@@ -3,6 +3,7 @@ package com.sme.meetingassistant.api.media.controller;
 import com.sme.meetingassistant.api.common.ApiResponse;
 import com.sme.meetingassistant.api.common.ApiResponseFactory;
 import com.sme.meetingassistant.api.media.dto.ProcessingJobResponse;
+import com.sme.meetingassistant.api.media.dto.ProcessingJobAttemptResponse;
 import com.sme.meetingassistant.api.media.service.ProcessingJobService;
 import com.sme.meetingassistant.api.meeting.security.CallerContextResolver;
 import jakarta.validation.constraints.NotBlank;
@@ -10,6 +11,7 @@ import jakarta.validation.constraints.Size;
 import java.net.URI;
 import java.security.Principal;
 import java.util.UUID;
+import java.util.List;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -48,6 +50,30 @@ public class ProcessingJobController {
 	@GetMapping("/api/v1/processing-jobs/{jobId}")
 	public ApiResponse<ProcessingJobResponse> get(@PathVariable UUID jobId, Principal principal) {
 		return this.responseFactory.success(this.jobService.get(jobId,
+				this.callerContextResolver.resolve(principal).userId()));
+	}
+
+	@PostMapping("/api/v1/processing-jobs/{jobId}/retry")
+	public ResponseEntity<ApiResponse<ProcessingJobResponse>> retry(@PathVariable UUID jobId,
+			@RequestHeader("Idempotency-Key") @NotBlank @Size(max = 255) String idempotencyKey, Principal principal) {
+		ProcessingJobResponse job = this.jobService.retry(jobId,
+				this.callerContextResolver.resolve(principal).userId(), idempotencyKey);
+		return ResponseEntity.accepted().location(URI.create("/api/v1/processing-jobs/" + job.id()))
+				.body(this.responseFactory.success(job));
+	}
+
+	@PostMapping("/api/v1/processing-jobs/{jobId}/reprocess")
+	public ResponseEntity<ApiResponse<ProcessingJobResponse>> reprocess(@PathVariable UUID jobId,
+			@RequestHeader("Idempotency-Key") @NotBlank @Size(max = 255) String idempotencyKey, Principal principal) {
+		ProcessingJobResponse job = this.jobService.reprocess(jobId,
+				this.callerContextResolver.resolve(principal).userId(), idempotencyKey);
+		return ResponseEntity.accepted().location(URI.create("/api/v1/processing-jobs/" + job.id()))
+				.body(this.responseFactory.success(job));
+	}
+
+	@GetMapping("/api/v1/processing-jobs/{jobId}/attempts")
+	public ApiResponse<List<ProcessingJobAttemptResponse>> attempts(@PathVariable UUID jobId, Principal principal) {
+		return this.responseFactory.success(this.jobService.getAttempts(jobId,
 				this.callerContextResolver.resolve(principal).userId()));
 	}
 

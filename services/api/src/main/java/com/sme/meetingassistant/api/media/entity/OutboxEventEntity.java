@@ -37,6 +37,9 @@ public class OutboxEventEntity {
 	@Column(name = "published_at")
 	private OffsetDateTime publishedAt;
 
+	@Column(name = "next_attempt_at", nullable = false)
+	private OffsetDateTime nextAttemptAt;
+
 	@Column(name = "delivery_attempts", nullable = false)
 	private int deliveryAttempts;
 
@@ -47,16 +50,24 @@ public class OutboxEventEntity {
 	}
 
 	public OutboxEventEntity(UUID aggregateId, String eventType, String payload) {
+		this(aggregateId, eventType, payload, null);
+	}
+
+	public OutboxEventEntity(UUID aggregateId, String eventType, String payload, OffsetDateTime nextAttemptAt) {
 		this.id = UUID.randomUUID();
 		this.aggregateType = "PROCESSING_JOB";
 		this.aggregateId = aggregateId;
 		this.eventType = eventType;
 		this.payload = payload;
+		this.nextAttemptAt = nextAttemptAt;
 	}
 
 	@PrePersist
 	void onCreate() {
 		this.createdAt = OffsetDateTime.now(ZoneOffset.UTC);
+		if (this.nextAttemptAt == null) {
+			this.nextAttemptAt = this.createdAt;
+		}
 	}
 
 	public UUID getId() { return this.id; }

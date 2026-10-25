@@ -12,6 +12,8 @@ import jakarta.persistence.Version;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.UUID;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.server.ResponseStatusException;
 
 @Entity
 @Table(name = "processing_jobs")
@@ -32,6 +34,19 @@ public class ProcessingJobEntity {
 
 	@Column(name = "attempt_count", nullable = false)
 	private int attemptCount;
+
+	@Column(name = "max_attempts", nullable = false)
+	private int maxAttempts = 3;
+
+	@Column(name = "next_attempt_at", nullable = false)
+	private OffsetDateTime nextAttemptAt;
+
+	@Column(name = "parent_job_id")
+	private UUID parentJobId;
+
+	@Enumerated(EnumType.STRING)
+	@Column(name = "request_type", nullable = false, length = 24)
+	private ProcessingJobRequestType requestType = ProcessingJobRequestType.INITIAL;
 
 	@Column(name = "failure_code", length = 100)
 	private String failureCode;
@@ -61,11 +76,20 @@ public class ProcessingJobEntity {
 		this.requestedBy = requestedBy;
 	}
 
+	public ProcessingJobEntity(UUID mediaId, UUID requestedBy, UUID parentJobId, ProcessingJobRequestType requestType) {
+		this(mediaId, requestedBy);
+		this.parentJobId = parentJobId;
+		this.requestType = requestType;
+	}
+
 	@PrePersist
 	void onCreate() {
 		OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
 		this.createdAt = now;
 		this.updatedAt = now;
+		if (this.nextAttemptAt == null) {
+			this.nextAttemptAt = now;
+		}
 	}
 
 	@PreUpdate
@@ -84,4 +108,60 @@ public class ProcessingJobEntity {
 	public OffsetDateTime getStartedAt() { return this.startedAt; }
 	public OffsetDateTime getFinishedAt() { return this.finishedAt; }
 	public long getVersion() { return this.version; }
+	public int getMaxAttempts() { return this.maxAttempts; }
+	public OffsetDateTime getNextAttemptAt() { return this.nextAttemptAt; }
+	public UUID getParentJobId() { return this.parentJobId; }
+	public ProcessingJobRequestType getRequestType() { return this.requestType; }
+
+	public int startAttempt(OffsetDateTime now) {
+		if (this.status != ProcessingJobStatus.QUEUED || this.nextAttemptAt.isAfter(now)) {
+			throw new ResponseStatusException(HttpStatus.CONFLICT);
+		}
+		if (this.attemptCount >= this.maxAttempts) {
+			this.status = ProcessingJobStatus.FAILED;
+			this.finishedAt = now;
+			throw new ResponseStatusException(HttpStatus.CONFLICT);
+		}
+		this.attemptCount++;
+		this.status = ProcessingJobStatus.RUNNING;
+		this.startedAt = now;
+		this.finishedAt = null;
+		this.nextAttemptAt = now;
+		this.failureCode = null;
+		return this.attemptCount;
+	}
+
+	public void complete(OffsetDateTime now) {
+		if (this.status != ProcessingJobStatus.RUNNING) {
+			throw new ResponseStatusException(HttpStatus.CONFLICT);
+		}
+		this.status = ProcessingJobStatus.SUCCEEDED;
+		this.finishedAt = now;
+		this.failureCode = null;
+	}
+
+	public OffsetDateTime fail(String code, boolean retryable, OffsetDateTime now) {
+		if (this.status != ProcessingJobStatus.RUNNING) {
+			throw new ResponseStatusException(HttpStatus.CONFLICT);
+		}
+		this.failureCode = code;
+		this.finishedAt = now;
+		if (retryable && this.attemptCount < this.maxAttempts) {
+			long delaySeconds = Math.min(1L << Math.max(0, this.attemptCount - 1), 300L);
+			this.nextAttemptAt = now.plusSeconds(delaySeconds);
+			this.status = ProcessingJobStatus.QUEUED;
+			return this.nextAttemptAt;
+		}
+		this.status = ProcessingJobStatus.FAILED;
+		return null;
+	}
+
+	public void retryNow(OffsetDateTime now) {
+		if (this.status != ProcessingJobStatus.FAILED || this.attemptCount >= this.maxAttempts) {
+			throw new ResponseStatusException(HttpStatus.CONFLICT);
+		}
+		this.status = ProcessingJobStatus.QUEUED;
+		this.finishedAt = null;
+		this.nextAttemptAt = now;
+	}
 }
