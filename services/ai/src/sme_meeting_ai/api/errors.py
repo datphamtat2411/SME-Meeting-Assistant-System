@@ -14,8 +14,11 @@ def error_response(status: int, code: str, message: str) -> JSONResponse:
 
 async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
     code, message = {
+        401: ("service_authentication_required", "Service authentication required"),
+        403: ("service_access_denied", "Service access denied"),
         404: ("not_found", "Resource not found"),
         405: ("method_not_allowed", "Method not allowed"),
+        503: ("service_security_unavailable", "Service security unavailable"),
     }.get(exc.status_code, ("http_error", "Request failed"))
     response = error_response(exc.status_code, code, message)
     # Only the method-error protocol header is needed by the current surface.

@@ -37,7 +37,7 @@ def restore_logger():
 
 
 def settings(**kwargs):
-    return Settings(_env_file=None, service_name="test-ai", **kwargs)
+    return Settings(_env_file=None, service_name="test-ai", service_identity="ai-core", **kwargs)
 
 
 def client(app):

@@ -31,7 +31,7 @@ def restore_package_logger():
 
 
 def settings(**kwargs):
-    return Settings(_env_file=None, service_name="test-ai", **kwargs)
+    return Settings(_env_file=None, service_name="test-ai", service_identity="ai-core", **kwargs)
 
 
 def test_structured_output_has_fixed_fields_utc_timestamp_and_current_context(capsys):
@@ -81,7 +81,7 @@ def test_repeated_configuration_emits_once_updates_settings_and_preserves_other_
     assert logger.level == logging.ERROR
     assert logger.propagate is False
     log_event(logger, logging.WARNING, "ignored.event")
-    configure_logging(Settings(_env_file=None, service_name="worker-ai", log_level="DEBUG"))
+    configure_logging(Settings(_env_file=None, service_name="worker-ai", service_identity="ai-core", log_level="DEBUG"))
     log_event(logger, logging.DEBUG, "worker.ready")
     lines = capsys.readouterr().out.splitlines()
     assert len(lines) == 1
@@ -159,3 +159,20 @@ def test_json_encoding_prevents_newline_injection_and_context_is_read_at_format_
     data = json.loads(stream.getvalue())
     assert data["service"] == 'ai\n"forged"'
     assert data["trace_id"] == context.trace_id
+
+
+def test_security_details_are_excluded_from_structured_logs(capsys):
+    configure_logging(settings())
+    logger = logging.getLogger("sme_meeting_ai.security")
+    logger.warning("certificate private-token", extra={
+        "principal": "core-api", "certificate": "private-certificate",
+        "headers": {"authorization": "Bearer private-token"},
+    })
+    log_event(logger, logging.WARNING, "security.authentication_failed")
+    output = capsys.readouterr().out
+    assert all(value not in output for value in (
+        "private-token", "private-certificate", "core-api", "authorization", "principal",
+    ))
+    assert [json.loads(line)["event"] for line in output.splitlines()] == [
+        "unstructured", "security.authentication_failed",
+    ]

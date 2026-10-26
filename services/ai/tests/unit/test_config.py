@@ -21,7 +21,7 @@ def isolated_environment(monkeypatch):
 
 
 def test_explicit_settings_defaults_without_external_configuration():
-    settings = Settings(service_name="test-ai", _env_file=None)
+    settings = Settings(service_name="test-ai", service_identity="ai-core", _env_file=None)
 
     assert settings.service_name == "test-ai"
     assert settings.environment is Environment.DEVELOPMENT
@@ -30,12 +30,16 @@ def test_explicit_settings_defaults_without_external_configuration():
     assert settings.http_host == "127.0.0.1"
     assert settings.http_port == 8000
     assert settings.worker_concurrency == 1
-    assert settings.internal_service_token is None
+    assert settings.service_identity == "ai-core"
+    assert settings.internal_allowed_callers == ("core-api",)
+    assert "internal_service_token" not in Settings.model_fields
 
 
 def test_environment_overrides_are_typed_and_case_insensitive(monkeypatch):
     values = {
         "ai_service_name": "worker-ai",
+        "AI_SERVICE_IDENTITY": "worker-ai",
+        "AI_INTERNAL_ALLOWED_CALLERS": '[]',
         "AI_ENVIRONMENT": "production",
         "AI_DEBUG": "true",
         "AI_LOG_LEVEL": "WARNING",
@@ -49,6 +53,8 @@ def test_environment_overrides_are_typed_and_case_insensitive(monkeypatch):
     settings = load_settings(env_file=None)
 
     assert settings.service_name == "worker-ai"
+    assert settings.service_identity == "worker-ai"
+    assert settings.internal_allowed_callers == ()
     assert settings.environment is Environment.PRODUCTION
     assert settings.debug is True
     assert settings.log_level == "WARNING"
@@ -62,7 +68,7 @@ def test_dotenv_loading_ignores_unrelated_keys_and_environment_wins(
 ):
     env_file = tmp_path / ".env"
     env_file.write_text(
-        "AI_SERVICE_NAME=dotenv-ai\nAI_HTTP_PORT=8080\n"
+        "AI_SERVICE_NAME=dotenv-ai\nAI_SERVICE_IDENTITY=ai-core\nAI_HTTP_PORT=8080\n"
         "UNRELATED_SETTING=ignored\nAI_FUTURE_SETTING=ignored\n"
     )
     monkeypatch.setenv("AI_HTTP_PORT", "9001")
@@ -83,12 +89,15 @@ def test_dotenv_loading_ignores_unrelated_keys_and_environment_wins(
         ("AI_DEBUG", "invalid", "debug", "bool_parsing"),
         ("AI_ENVIRONMENT", "invalid", "environment", "enum"),
         ("AI_LOG_LEVEL", "invalid", "log_level", "literal_error"),
+        ("AI_SERVICE_IDENTITY", "Bearer private-token", "service_identity", "string_pattern_mismatch"),
+        ("AI_INTERNAL_ALLOWED_CALLERS", '["unknown"]', "internal_allowed_callers.0", "literal_error"),
     ],
 )
 def test_invalid_values_have_sanitized_field_and_category(
     monkeypatch, key, value, field, category
 ):
     monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
     monkeypatch.setenv(key, value)
 
     with pytest.raises(ConfigurationError) as caught:
@@ -106,31 +115,37 @@ def test_missing_service_name_is_reported_as_required():
 
 @pytest.mark.parametrize("port", [1, 65535])
 def test_port_boundaries(port):
-    assert Settings(service_name="test-ai", http_port=port, _env_file=None).http_port == port
+    assert Settings(service_name="test-ai", service_identity="ai-core", http_port=port, _env_file=None).http_port == port
 
 
-def test_secret_is_masked_in_representations_and_serialization(monkeypatch):
-    secret = "test-only-sensitive-value"
+def test_service_identity_is_required(monkeypatch):
     monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
-    monkeypatch.setenv("AI_INTERNAL_SERVICE_TOKEN", secret)
+    with pytest.raises(ConfigurationError, match="service_identity: missing"):
+        load_settings(env_file=None)
 
-    settings = load_settings(env_file=None)
 
-    assert settings.internal_service_token.get_secret_value() == secret
-    for representation in (
-        repr(settings),
-        str(settings),
-        str(settings.model_dump()),
-        str(settings.model_dump(mode="json")),
-        settings.model_dump_json(),
-    ):
-        assert secret not in representation
-        assert "**********" in representation
+@pytest.mark.parametrize("identity", ["", "Core-API", " core-api", "core-api ", "a/b", "a" * 64, "core-api"])
+def test_invalid_or_self_authorized_identity_is_rejected(monkeypatch, identity):
+    monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", identity)
+    with pytest.raises(ConfigurationError):
+        load_settings(env_file=None)
+
+
+def test_malformed_caller_json_is_sanitized(monkeypatch):
+    monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
+    monkeypatch.setenv("AI_INTERNAL_ALLOWED_CALLERS", "private-invalid-json")
+    with pytest.raises(ConfigurationError) as caught:
+        load_settings(env_file=None)
+    assert "private-invalid-json" not in "".join(traceback.format_exception(caught.value))
+    assert caught.value.__context__ is None
 
 
 def test_invalid_secret_like_input_is_absent_from_error_and_traceback(monkeypatch):
     secret = "test-only-sensitive-value"
     monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
     monkeypatch.setenv("AI_INTERNAL_SERVICE_TOKEN", secret)
     monkeypatch.setenv("AI_HTTP_PORT", secret)
 
@@ -145,7 +160,7 @@ def test_invalid_secret_like_input_is_absent_from_error_and_traceback(monkeypatc
 
 def test_cached_access_is_lazy_and_explicit_loading_is_uncached(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    (tmp_path / ".env").write_text("AI_SERVICE_NAME=first-ai\n")
+    (tmp_path / ".env").write_text("AI_SERVICE_NAME=first-ai\nAI_SERVICE_IDENTITY=ai-core\n")
 
     first = get_settings()
     monkeypatch.setenv("AI_SERVICE_NAME", "second-ai")
