@@ -3,7 +3,6 @@
 from fastapi import APIRouter, Request
 from starlette.responses import JSONResponse
 
-
 router = APIRouter(prefix="/health")
 
 

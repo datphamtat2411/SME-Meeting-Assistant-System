@@ -29,6 +29,10 @@ def test_explicit_settings_defaults_without_external_configuration():
     assert settings.log_level == "INFO"
     assert settings.http_host == "127.0.0.1"
     assert settings.http_port == 8000
+    assert settings.http_shutdown_timeout_seconds == 30
+    assert settings.tls_cert_file is None
+    assert settings.tls_key_file is None
+    assert settings.tls_client_ca_file is None
     assert settings.worker_concurrency == 1
     assert settings.worker_shutdown_timeout_seconds == 30
     assert settings.service_identity == "ai-core"
@@ -46,6 +50,7 @@ def test_environment_overrides_are_typed_and_case_insensitive(monkeypatch):
         "AI_LOG_LEVEL": "WARNING",
         "AI_HTTP_HOST": "0.0.0.0",
         "AI_HTTP_PORT": "9000",
+        "AI_HTTP_SHUTDOWN_TIMEOUT_SECONDS": "12.5",
         "AI_WORKER_CONCURRENCY": "4",
         "AI_WORKER_SHUTDOWN_TIMEOUT_SECONDS": "12.5",
     }
@@ -62,6 +67,7 @@ def test_environment_overrides_are_typed_and_case_insensitive(monkeypatch):
     assert settings.log_level == "WARNING"
     assert settings.http_host == "0.0.0.0"
     assert settings.http_port == 9000
+    assert settings.http_shutdown_timeout_seconds == 12.5
     assert settings.worker_concurrency == 4
     assert settings.worker_shutdown_timeout_seconds == 12.5
 
@@ -88,6 +94,11 @@ def test_dotenv_loading_ignores_unrelated_keys_and_environment_wins(
         ("AI_HTTP_PORT", "0", "http_port", "greater_than_equal"),
         ("AI_HTTP_PORT", "65536", "http_port", "less_than_equal"),
         ("AI_HTTP_PORT", "invalid", "http_port", "int_parsing"),
+        ("AI_HTTP_SHUTDOWN_TIMEOUT_SECONDS", "0", "http_shutdown_timeout_seconds", "greater_than"),
+        ("AI_HTTP_SHUTDOWN_TIMEOUT_SECONDS", "301", "http_shutdown_timeout_seconds", "less_than_equal"),
+        ("AI_HTTP_SHUTDOWN_TIMEOUT_SECONDS", "private-value", "http_shutdown_timeout_seconds", "float_parsing"),
+        ("AI_HTTP_SHUTDOWN_TIMEOUT_SECONDS", "nan", "http_shutdown_timeout_seconds", "finite_number"),
+        ("AI_HTTP_SHUTDOWN_TIMEOUT_SECONDS", "inf", "http_shutdown_timeout_seconds", "finite_number"),
         ("AI_WORKER_CONCURRENCY", "0", "worker_concurrency", "greater_than"),
         ("AI_WORKER_SHUTDOWN_TIMEOUT_SECONDS", "0", "worker_shutdown_timeout_seconds", "greater_than"),
         ("AI_WORKER_SHUTDOWN_TIMEOUT_SECONDS", "301", "worker_shutdown_timeout_seconds", "less_than_equal"),
@@ -132,6 +143,29 @@ def test_worker_shutdown_timeout_boundaries(timeout):
         worker_shutdown_timeout_seconds=timeout, _env_file=None,
     )
     assert settings.worker_shutdown_timeout_seconds == timeout
+
+
+@pytest.mark.parametrize("timeout", [0.01, 300])
+def test_http_shutdown_timeout_boundaries(timeout):
+    settings = Settings(
+        service_name="test-ai", service_identity="ai-core",
+        http_shutdown_timeout_seconds=timeout, _env_file=None,
+    )
+    assert settings.http_shutdown_timeout_seconds == timeout
+
+
+@pytest.mark.parametrize("present", [
+    ("AI_TLS_CERT_FILE",), ("AI_TLS_KEY_FILE",), ("AI_TLS_CLIENT_CA_FILE",),
+    ("AI_TLS_CERT_FILE", "AI_TLS_KEY_FILE"),
+])
+def test_partial_tls_configuration_is_rejected(monkeypatch, present):
+    monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
+    for field in present:
+        monkeypatch.setenv(field, "/external/private-path")
+    with pytest.raises(ConfigurationError) as caught:
+        load_settings(env_file=None)
+    assert "/external/private-path" not in str(caught.value)
 
 
 def test_service_identity_is_required(monkeypatch):

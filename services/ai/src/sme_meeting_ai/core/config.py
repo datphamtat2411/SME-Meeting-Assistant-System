@@ -8,7 +8,6 @@ from typing import Annotated, Literal, Self
 from pydantic import Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict, SettingsError
 
-
 SERVICE_IDENTITY_PATTERN = r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
 ServiceIdentity = Annotated[str, Field(pattern=SERVICE_IDENTITY_PATTERN, max_length=63)]
 
@@ -44,10 +43,23 @@ class Settings(BaseSettings):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     http_host: str = "127.0.0.1"
     http_port: int = Field(default=8000, ge=1, le=65535)
+    http_shutdown_timeout_seconds: float = Field(
+        default=30, gt=0, le=300, allow_inf_nan=False,
+    )
+    tls_cert_file: Path | None = None
+    tls_key_file: Path | None = None
+    tls_client_ca_file: Path | None = None
     worker_concurrency: int = Field(default=1, gt=0)
     worker_shutdown_timeout_seconds: float = Field(
         default=30, gt=0, le=300, allow_inf_nan=False,
     )
+
+    @model_validator(mode="after")
+    def complete_tls_configuration(self) -> Self:
+        paths = (self.tls_cert_file, self.tls_key_file, self.tls_client_ca_file)
+        if any(path is not None for path in paths) and any(path is None for path in paths):
+            raise ValueError("TLS requires server certificate, key and client CA")
+        return self
 
     @model_validator(mode="after")
     def distinct_service_identity(self) -> Self:

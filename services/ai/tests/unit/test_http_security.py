@@ -9,9 +9,11 @@ import pytest
 from fastapi import Depends
 
 from sme_meeting_ai.api import create_app
-from sme_meeting_ai.api.security import VerifiedServiceIdentity, require_internal_operation
+from sme_meeting_ai.api.security import (
+    VerifiedServiceIdentity,
+    require_internal_operation,
+)
 from sme_meeting_ai.core.config import ConfigurationError, Settings
-
 
 SECRET = "private-certificate-token"
 

@@ -7,11 +7,20 @@ from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException
 
-from sme_meeting_ai.core.config import ConfigurationError, Environment, Settings, get_settings
+from sme_meeting_ai.core.config import (
+    ConfigurationError,
+    Environment,
+    Settings,
+    get_settings,
+)
 from sme_meeting_ai.core.runtime import RuntimeState
 from sme_meeting_ai.observability import configure_logging
 
-from .errors import http_exception_handler, unexpected_exception_handler, validation_exception_handler
+from .errors import (
+    http_exception_handler,
+    unexpected_exception_handler,
+    validation_exception_handler,
+)
 from .health import router
 from .middleware import RequestMiddleware
 from .security import (

@@ -14,7 +14,6 @@ from sme_meeting_ai.observability.context import (
 )
 from sme_meeting_ai.observability.logging import log_event
 
-
 logger = logging.getLogger(__name__)
 
 

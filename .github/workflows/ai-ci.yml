@@ -61,3 +61,9 @@ jobs:
 
       - name: Build wheel and source distribution
         run: uv build
+
+      - name: Build locked runtime image
+        run: docker build --tag sme-ai:smoke .
+
+      - name: Smoke test independent runtime roles
+        run: uv run python tests/container_smoke.py

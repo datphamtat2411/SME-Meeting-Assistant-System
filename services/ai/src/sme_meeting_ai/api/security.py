@@ -27,7 +27,6 @@ from starlette.types import Scope
 from sme_meeting_ai.core.config import SERVICE_IDENTITY_PATTERN
 from sme_meeting_ai.observability import log_event
 
-
 logger = logging.getLogger("sme_meeting_ai.security")
 OperationPolicy = Mapping[str, Set[str]]
 

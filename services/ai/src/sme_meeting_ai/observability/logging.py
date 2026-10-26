@@ -10,7 +10,6 @@ from sme_meeting_ai.core.config import Settings, get_settings
 
 from .context import get_correlation_context
 
-
 _EVENT = re.compile(r"[a-z0-9_.-]{1,128}")
 _HANDLER_TAG = "_sme_meeting_ai_json_handler"
 _EVENT_KEY = "_sme_meeting_ai_event"

@@ -7,7 +7,6 @@ from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 
-
 _TRACE_ID = re.compile(r"[0-9a-f]{32}")
 _SPAN_ID = re.compile(r"[0-9a-f]{16}")
 _FLAGS = re.compile(r"[0-9a-f]{2}")

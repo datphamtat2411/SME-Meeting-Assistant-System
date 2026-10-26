@@ -15,7 +15,6 @@ from sme_meeting_ai.observability import (
     set_correlation_context,
 )
 
-
 TRACE = "1234567890abcdef1234567890abcdef"
 SPAN = "1234567890abcdef"
 TRACEPARENT = f"00-{TRACE}-{SPAN}-01"

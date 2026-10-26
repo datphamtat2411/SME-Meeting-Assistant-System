@@ -15,7 +15,6 @@ from sme_meeting_ai.observability import (
 
 from .errors import unexpected_exception_handler
 
-
 logger = logging.getLogger("sme_meeting_ai.http")
 
 

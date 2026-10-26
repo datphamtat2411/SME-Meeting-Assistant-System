@@ -3,9 +3,14 @@ name = "sme-meeting-ai"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi[standard]>=0.143.0",
+    "fastapi>=0.143.0",
     "pydantic-settings>=2.15.0",
+    "uvicorn>=0.54.0",
 ]
+
+[project.scripts]
+sme-ai-http = "sme_meeting_ai.api.__main__:main"
+sme-ai-worker = "sme_meeting_ai.workers.__main__:main"
 
 [dependency-groups]
 dev = [
