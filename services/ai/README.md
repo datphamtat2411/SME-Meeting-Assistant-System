@@ -140,14 +140,16 @@ ownership/permissions to the consuming service; rotate short-lived certificates
 and restart the HTTP process to reload them. Certificate issuance/renewal and
 Core API's client configuration remain deployment responsibilities.
 
-For development-only server renewal, see
+For development-only server and dedicated probe renewal, see
 [Development PKI operations](docs/DEV-PKI-OPERATIONS.md). It provides the host
 `dev-pki-renew.sh check|renew` CLI, user-systemd templates, migration from an ad hoc
-timer, and recovery steps. Host `DEV_PKI_*` settings stay outside the application
-environment; `AI_TLS_*` remain container paths. A successful no-op never restarts;
-actual replacement preserves UID `10001` ACL access and requires authenticated
-mTLS readiness with a separate development probe identity. This workflow does
-not provision or validate production PKI.
+timer, and recovery steps. Both certificates use the same hourly timer and lock.
+Host `DEV_PKI_*` settings stay outside the application environment; `AI_TLS_*`
+remain container paths. Probe renewal is independent and never restarts AI Core;
+server replacement alone restarts it, with a configurable 40-second default stop
+grace. Replacements preserve ownership, permissions and ACLs, and require
+authenticated mTLS readiness with the separate development probe identity. This
+workflow does not provision or validate production PKI.
 
 If you do not know whether certificates exist, confirm with the deployment/CA
 owner that the server certificate, matching private key, client CA, and Core API
