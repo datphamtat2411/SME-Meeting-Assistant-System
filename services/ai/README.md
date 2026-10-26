@@ -116,25 +116,38 @@ available; staging/production still fail closed before readiness. Partial,
 unreadable, mismatched or invalid TLS material fails startup with a sanitized
 nonzero result.
 
-Mount each file read-only using deployment secret injection, for example add
-the following arguments to the restricted `docker run` command above, replacing
-the paths with real deployment files and selecting `AI_ENVIRONMENT=production`:
+Mount one read-only directory containing only the server chain, server key, and
+client trust bundle. This supports atomic certificate replacement; individual-file
+bind mounts can retain the old inode. For example, add the following arguments
+to the restricted `docker run` command above, replacing the host path with the
+externally provisioned server-material directory and selecting the intended
+`AI_ENVIRONMENT`:
 
 ```sh
---mount type=bind,src=/external/ai-server.crt,dst=/run/secrets/ai-server.crt,readonly \
---mount type=bind,src=/external/ai-server.key,dst=/run/secrets/ai-server.key,readonly \
---mount type=bind,src=/external/client-ca.crt,dst=/run/secrets/client-ca.crt,readonly \
--e AI_TLS_CERT_FILE=/run/secrets/ai-server.crt \
--e AI_TLS_KEY_FILE=/run/secrets/ai-server.key \
--e AI_TLS_CLIENT_CA_FILE=/run/secrets/client-ca.crt
+--mount type=bind,src=/external/ai-core-server,dst=/run/secrets/ai-core,readonly \
+-e AI_TLS_CERT_FILE=/run/secrets/ai-core/ai-server.crt \
+-e AI_TLS_KEY_FILE=/run/secrets/ai-core/ai-server.key \
+-e AI_TLS_CLIENT_CA_FILE=/run/secrets/ai-core/client-ca.crt
 ```
 
 Core API must independently trust the server CA, verify the AI Core hostname,
 and present its own client certificate/private key. Never share the server key
-with Core API or mount the CA signing key into either service. Restrict key file
+with Core API or mount CA signing keys, provisioner credentials, or Core API's
+private key into AI Core. The server issuer CA and client trust CA can differ;
+`AI_TLS_CLIENT_CA_FILE` is not automatically the issuer of the server certificate.
+Restrict key file
 ownership/permissions to the consuming service; rotate short-lived certificates
 and restart the HTTP process to reload them. Certificate issuance/renewal and
 Core API's client configuration remain deployment responsibilities.
+
+For development-only server renewal, see
+[Development PKI operations](docs/DEV-PKI-OPERATIONS.md). It provides the host
+`dev-pki-renew.sh check|renew` CLI, user-systemd templates, migration from an ad hoc
+timer, and recovery steps. Host `DEV_PKI_*` settings stay outside the application
+environment; `AI_TLS_*` remain container paths. A successful no-op never restarts;
+actual replacement preserves UID `10001` ACL access and requires authenticated
+mTLS readiness with a separate development probe identity. This workflow does
+not provision or validate production PKI.
 
 If you do not know whether certificates exist, confirm with the deployment/CA
 owner that the server certificate, matching private key, client CA, and Core API
