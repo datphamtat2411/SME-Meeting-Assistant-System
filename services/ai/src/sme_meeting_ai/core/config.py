@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     http_host: str = "127.0.0.1"
     http_port: int = Field(default=8000, ge=1, le=65535)
     worker_concurrency: int = Field(default=1, gt=0)
+    worker_shutdown_timeout_seconds: float = Field(
+        default=30, gt=0, le=300, allow_inf_nan=False,
+    )
 
     @model_validator(mode="after")
     def distinct_service_identity(self) -> Self:

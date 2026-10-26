@@ -30,6 +30,7 @@ def test_explicit_settings_defaults_without_external_configuration():
     assert settings.http_host == "127.0.0.1"
     assert settings.http_port == 8000
     assert settings.worker_concurrency == 1
+    assert settings.worker_shutdown_timeout_seconds == 30
     assert settings.service_identity == "ai-core"
     assert settings.internal_allowed_callers == ("core-api",)
     assert "internal_service_token" not in Settings.model_fields
@@ -46,6 +47,7 @@ def test_environment_overrides_are_typed_and_case_insensitive(monkeypatch):
         "AI_HTTP_HOST": "0.0.0.0",
         "AI_HTTP_PORT": "9000",
         "AI_WORKER_CONCURRENCY": "4",
+        "AI_WORKER_SHUTDOWN_TIMEOUT_SECONDS": "12.5",
     }
     for key, value in values.items():
         monkeypatch.setenv(key, value)
@@ -61,6 +63,7 @@ def test_environment_overrides_are_typed_and_case_insensitive(monkeypatch):
     assert settings.http_host == "0.0.0.0"
     assert settings.http_port == 9000
     assert settings.worker_concurrency == 4
+    assert settings.worker_shutdown_timeout_seconds == 12.5
 
 
 def test_dotenv_loading_ignores_unrelated_keys_and_environment_wins(
@@ -86,6 +89,10 @@ def test_dotenv_loading_ignores_unrelated_keys_and_environment_wins(
         ("AI_HTTP_PORT", "65536", "http_port", "less_than_equal"),
         ("AI_HTTP_PORT", "invalid", "http_port", "int_parsing"),
         ("AI_WORKER_CONCURRENCY", "0", "worker_concurrency", "greater_than"),
+        ("AI_WORKER_SHUTDOWN_TIMEOUT_SECONDS", "0", "worker_shutdown_timeout_seconds", "greater_than"),
+        ("AI_WORKER_SHUTDOWN_TIMEOUT_SECONDS", "301", "worker_shutdown_timeout_seconds", "less_than_equal"),
+        ("AI_WORKER_SHUTDOWN_TIMEOUT_SECONDS", "private-value", "worker_shutdown_timeout_seconds", "float_parsing"),
+        ("AI_WORKER_SHUTDOWN_TIMEOUT_SECONDS", "nan", "worker_shutdown_timeout_seconds", "finite_number"),
         ("AI_DEBUG", "invalid", "debug", "bool_parsing"),
         ("AI_ENVIRONMENT", "invalid", "environment", "enum"),
         ("AI_LOG_LEVEL", "invalid", "log_level", "literal_error"),
@@ -116,6 +123,15 @@ def test_missing_service_name_is_reported_as_required():
 @pytest.mark.parametrize("port", [1, 65535])
 def test_port_boundaries(port):
     assert Settings(service_name="test-ai", service_identity="ai-core", http_port=port, _env_file=None).http_port == port
+
+
+@pytest.mark.parametrize("timeout", [0.01, 300])
+def test_worker_shutdown_timeout_boundaries(timeout):
+    settings = Settings(
+        service_name="test-ai", service_identity="ai-core",
+        worker_shutdown_timeout_seconds=timeout, _env_file=None,
+    )
+    assert settings.worker_shutdown_timeout_seconds == timeout
 
 
 def test_service_identity_is_required(monkeypatch):
