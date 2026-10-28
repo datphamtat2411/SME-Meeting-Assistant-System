@@ -107,6 +107,15 @@ public class UserEntity {
         deactivatedAt = null;
     }
 
+    /** Recovery reset keeps the account ACTIVE and invalidates old credentials externally. */
+    public void resetPasswordVerifier(String verifier, OffsetDateTime changedAt) {
+        if (accountStatus != AccountStatus.ACTIVE || verifier == null || !verifier.startsWith("$argon2id$")) {
+            throw new IllegalStateException("Only active Argon2id account credentials can be reset");
+        }
+        passwordHash = verifier;
+        credentialChangedAt = Objects.requireNonNull(changedAt, "changedAt");
+    }
+
     /** Updated only after a verified successful login in the authentication service. */
     public void recordSuccessfulLogin(OffsetDateTime at) {
         this.lastLoginAt = Objects.requireNonNull(at, "at");

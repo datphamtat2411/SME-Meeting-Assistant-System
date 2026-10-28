@@ -40,7 +40,9 @@ public final class BrowserCsrfProtectionFilter extends OncePerRequestFilter {
             chain.doFilter(req, res);
             return;
         }
-        if (req.getRequestURI().equals("/api/v1/auth/account-setup")) {
+        if (req.getRequestURI().equals("/api/v1/auth/account-setup")
+                || req.getRequestURI().equals("/api/v1/auth/password-recovery")
+                || req.getRequestURI().equals("/api/v1/auth/password-reset")) {
             chain.doFilter(req, res); // no browser-authenticated session in initial setup
             return;
         }

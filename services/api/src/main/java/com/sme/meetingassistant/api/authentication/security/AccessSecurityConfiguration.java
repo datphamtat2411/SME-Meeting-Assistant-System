@@ -56,7 +56,9 @@ public class AccessSecurityConfiguration {
                 String method = request.getMethod();
                 if ("GET".equals(method) || "HEAD".equals(method)
                         || "OPTIONS".equals(method) || "TRACE".equals(method)
-                        || request.getRequestURI().equals("/api/v1/auth/account-setup")) return false;
+                        || request.getRequestURI().equals("/api/v1/auth/account-setup")
+                        || request.getRequestURI().equals("/api/v1/auth/password-recovery")
+                        || request.getRequestURI().equals("/api/v1/auth/password-reset")) return false;
                 if (AuthTransport.mobile(request) && AuthTransport.validMobile(request)) return false;
                 if (transportEnabled && (request.getRequestURI().equals("/api/v1/auth/login")
                     || request.getRequestURI().equals("/api/v1/auth/refresh")
@@ -65,7 +67,8 @@ public class AccessSecurityConfiguration {
             }));
         http.authorizeHttpRequests(auth -> auth
             .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
-            .requestMatchers(HttpMethod.POST, "/api/v1/auth/account-setup").permitAll()
+            .requestMatchers(HttpMethod.POST, "/api/v1/auth/account-setup",
+                "/api/v1/auth/password-recovery", "/api/v1/auth/password-reset").permitAll()
             .requestMatchers(HttpMethod.GET, "/api/v1/auth/csrf").permitAll()
             .requestMatchers(HttpMethod.POST, "/api/v1/auth/login", "/api/v1/auth/refresh").permitAll()
             .requestMatchers(HttpMethod.POST, "/api/v1/auth/logout").permitAll()
@@ -73,7 +76,9 @@ public class AccessSecurityConfiguration {
             .anyRequest().authenticated());
         BearerTokenResolver resolver = request -> {
             String route = request.getRequestURI();
-            if (route.equals("/api/v1/auth/login") || route.equals("/api/v1/auth/refresh")
+            if (route.equals("/api/v1/auth/password-recovery")
+                    || route.equals("/api/v1/auth/password-reset")
+                    || route.equals("/api/v1/auth/login") || route.equals("/api/v1/auth/refresh")
                     || (route.equals("/api/v1/auth/logout") && !AuthTransport.mobile(request))) return null;
             String authorization = request.getHeader("Authorization");
             if (authorization != null) {
