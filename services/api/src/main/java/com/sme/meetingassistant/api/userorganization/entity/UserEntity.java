@@ -107,6 +107,29 @@ public class UserEntity {
         deactivatedAt = null;
     }
 
+    /** Deactivation preserves references and irreversible session revocation is handled atomically by T05. */
+    public void deactivate(OffsetDateTime at) {
+        if (accountStatus != AccountStatus.ACTIVE) {
+            throw new IllegalStateException("Only active accounts may be deactivated");
+        }
+        accountStatus = AccountStatus.INACTIVE;
+        deactivatedAt = Objects.requireNonNull(at, "at");
+    }
+
+    /**
+     * Reactivation never restores old sessions. Only accounts with a previously
+     * verified Argon2id credential may return directly to ACTIVE.
+     */
+    public void reactivate() {
+        if (accountStatus != AccountStatus.INACTIVE
+                || passwordHash == null || !passwordHash.startsWith("$argon2id$")
+                || credentialChangedAt == null) {
+            throw new IllegalStateException("Account is not eligible for direct reactivation");
+        }
+        accountStatus = AccountStatus.ACTIVE;
+        deactivatedAt = null;
+    }
+
     /** Recovery reset keeps the account ACTIVE and invalidates old credentials externally. */
     public void resetPasswordVerifier(String verifier, OffsetDateTime changedAt) {
         if (accountStatus != AccountStatus.ACTIVE || verifier == null || !verifier.startsWith("$argon2id$")) {

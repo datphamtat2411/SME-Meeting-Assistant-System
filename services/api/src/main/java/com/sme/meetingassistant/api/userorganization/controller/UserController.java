@@ -20,7 +20,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
-/** Canonical organizational users only. Deactivation/reactivation belongs to T05. */
+/** Canonical organizational users only. Deactivation/reactivation and session revocation are handled transactionally by T05. */
 @Validated
 @RestController
 @RequestMapping("/api/v1/users")
@@ -58,6 +58,24 @@ public class UserController {
         return ResponseEntity.ok()
             .header(HttpHeaders.ETAG, UserVersionTags.forUser(user))
             .body(responses.success(users.view(user, true)));
+    }
+
+    @PostMapping("/{userId}/deactivate")
+    public ResponseEntity<ApiResponse<UserDtos.UserView>> deactivate(@PathVariable UUID userId,
+            @RequestHeader(value = HttpHeaders.IF_MATCH, required = false) String ifMatch) {
+        var changed = users.deactivate(userId, ifMatch);
+        return ResponseEntity.ok()
+            .header(HttpHeaders.ETAG, UserVersionTags.forUser(changed))
+            .body(responses.success(users.view(changed, true)));
+    }
+
+    @PostMapping("/{userId}/reactivate")
+    public ResponseEntity<ApiResponse<UserDtos.UserView>> reactivate(@PathVariable UUID userId,
+            @RequestHeader(value = HttpHeaders.IF_MATCH, required = false) String ifMatch) {
+        var changed = users.reactivate(userId, ifMatch);
+        return ResponseEntity.ok()
+            .header(HttpHeaders.ETAG, UserVersionTags.forUser(changed))
+            .body(responses.success(users.view(changed, true)));
     }
 
     @PatchMapping("/{userId}")
