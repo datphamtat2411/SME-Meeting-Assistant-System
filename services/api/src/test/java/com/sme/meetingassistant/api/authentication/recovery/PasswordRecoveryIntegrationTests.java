@@ -217,6 +217,27 @@ class PasswordRecoveryIntegrationTests {
         assertThat(newSession.sessionId()).isNotEqualTo(session1.sessionId());
     }
 
+    @Test void compromisedLongPasswordCannotConsumeRecoveryTokenOrChangeVerifier()
+            throws Exception {
+        String recovery = recoveryEmailToken(active.getEmail());
+        String oldHash = users.findById(active.getId()).orElseThrow().getPasswordHash();
+        reset(recovery, "1q2w3e4r5t6y7u8i9o0p", 422);
+        reset(recovery, "SME Meeting Assistant 2026!", 422);
+        assertThat(jdbc.queryForObject(
+            "SELECT used_at FROM password_reset_tokens WHERE id=?",
+            OffsetDateTime.class, tokenId())).isNull();
+        assertThat(users.findById(active.getId()).orElseThrow().getPasswordHash())
+            .isEqualTo(oldHash);
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM audit_events
+             WHERE entity_id=? AND action_code='PASSWORD_RESET_COMPLETED'
+            """, Integer.class, active.getId())).isZero();
+
+        reset(recovery, SECOND, 200);
+        assertThat(hasher.matches(SECOND,users.findById(active.getId())
+            .orElseThrow().getPasswordHash())).isTrue();
+    }
+
     @Test void expiredRevokedInvalidAndForeignPurposeTokensNeverChangePassword() throws Exception {
         String raw=recoveryEmailToken(active.getEmail());
         reset("wrong-token",SECOND,422);

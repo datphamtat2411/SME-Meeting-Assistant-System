@@ -164,6 +164,24 @@ class AccountSetupIntegrationTests {
     }
 
     @Test
+    void compromisedLongPasswordRejectsSetupWithoutConsumingOneTimeAuthorization()
+            throws Exception {
+        UUID id = createPending();
+        String setup = token(id);
+        submit(setup, "1q2w3e4r5t6y7u8i9o0p", 422);
+        assertThat(users.findById(id).orElseThrow().getAccountStatus())
+            .isEqualTo(AccountStatus.PENDING_SETUP);
+        assertThat(jdbc.queryForObject(
+            "SELECT used_at FROM account_setup_tokens WHERE id=?",
+            OffsetDateTime.class, tokenId(id))).isNull();
+
+        // Same authorization remains usable for a strong password.
+        submit(setup, "Một mật khẩu dài và riêng biệt cho lần kích hoạt 🚀", 200);
+        assertThat(users.findById(id).orElseThrow().getAccountStatus())
+            .isEqualTo(AccountStatus.ACTIVE);
+    }
+
+    @Test
     void passwordPolicyAccepts128UnicodeCodePointsButRejectsWeakOrShort() throws Exception {
         UUID id = createPending();
         String bearer = token(id);
