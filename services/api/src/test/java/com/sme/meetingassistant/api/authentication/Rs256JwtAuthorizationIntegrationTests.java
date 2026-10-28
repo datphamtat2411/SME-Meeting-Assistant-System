@@ -164,6 +164,27 @@ class Rs256JwtAuthorizationIntegrationTests {
     }
 
     @Test
+    void previousTrustedPublicKeyVerifiesJwtDuringRotationOverlap() throws Exception {
+        // TEST-ONLY predecessor key. Production reads only current private key.
+        String pem;
+        try (var input = new org.springframework.core.io.ClassPathResource(
+                "auth/test-previous-private.pem").getInputStream()) {
+            pem = new String(input.readAllBytes(), java.nio.charset.StandardCharsets.US_ASCII);
+        }
+        byte[] pkcs8 = java.util.Base64.getDecoder().decode(pem
+            .replace("-----BEGIN PRIVATE KEY-----", "")
+            .replace("-----END PRIVATE KEY-----", "")
+            .replaceAll("\\s", ""));
+        var previousKey = (java.security.interfaces.RSAPrivateKey) java.security.KeyFactory
+            .getInstance("RSA").generatePrivate(new java.security.spec.PKCS8EncodedKeySpec(pkcs8));
+        SignedJWT predecessor = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.RS256)
+            .keyID("test-previous-2026").type(com.nimbusds.jose.JOSEObjectType.JWT)
+            .build(), claims().build());
+        predecessor.sign(new RSASSASigner(previousKey));
+        expectAccess(predecessor.serialize(), 200);
+    }
+
+    @Test
     void revokedExpiredInactiveOrMismatchedSessionRejectsSignedJwt() throws Exception {
         live.revoke(OffsetDateTime.now(ZoneOffset.UTC), "LOGOUT");
         sessions.flush();
