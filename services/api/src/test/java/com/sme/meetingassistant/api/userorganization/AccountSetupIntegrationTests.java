@@ -313,14 +313,16 @@ class AccountSetupIntegrationTests {
         UUID id = createPending();
         UUID oldId = tokenId(id);
         String originalTag = tag(id);
-        UserEntity employee = users.saveAndFlush(new UserEntity(
+        UserEntity employee = new UserEntity(
             "employee-reissue-" + UUID.randomUUID() + "@example.com",
-            "Employee", GlobalRole.EMPLOYEE, null));
+            "Employee", GlobalRole.EMPLOYEE, null);
+        ReflectionTestUtils.setField(employee, "passwordHash", "fixture-verifier");
         ReflectionTestUtils.setField(employee, "accountStatus", AccountStatus.ACTIVE);
         employee = users.saveAndFlush(employee);
-        UserEntity manager = users.saveAndFlush(new UserEntity(
+        UserEntity manager = new UserEntity(
             "manager-reissue-" + UUID.randomUUID() + "@example.com",
-            "Manager", GlobalRole.DEPARTMENT_MANAGER, null));
+            "Manager", GlobalRole.DEPARTMENT_MANAGER, null);
+        ReflectionTestUtils.setField(manager, "passwordHash", "fixture-verifier");
         ReflectionTestUtils.setField(manager, "accountStatus", AccountStatus.ACTIVE);
         manager = users.saveAndFlush(manager);
         reissue(id, employee, originalTag, 403);
