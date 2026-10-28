@@ -36,7 +36,11 @@ public class TestPrincipalSecurityBridge extends OncePerRequestFilter {
             Principal supplied = request.getUserPrincipal();
             String name = supplied == null ? null : supplied.getName();
             if (name == null && (request.getRequestURI().startsWith("/api/v1/contract/")
-                    || request.getRequestURI().equals("/api/v1/security-test"))) {
+                    || request.getRequestURI().equals("/api/v1/security-test")
+                    || request.getRequestURI().startsWith("/hsts-test/")
+                    || request.getRequestURI().startsWith("/test/")
+                    || request.getRequestURI().startsWith("/test-metrics/")
+                    || request.getRequestURI().equals("/does-not-exist"))) {
                 name = "00000000-0000-0000-0000-000000000001";
             }
             try {

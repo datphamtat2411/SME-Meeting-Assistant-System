@@ -26,6 +26,8 @@ public class AccessSecurityConfiguration {
     @Bean
     SecurityFilterChain apiAccessSecurity(HttpSecurity http, JwtDecoder jwtDecoder) throws Exception {
         http.sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS));
+        // HSTS is exclusively managed by existing trusted-proxy-aware SecurityHeadersFilter.
+        http.headers(headers -> headers.httpStrictTransportSecurity(hsts -> hsts.disable()));
         // Bearer is not an automatically attached browser credential. Keep CSRF active for
         // any future cookie-bearing request, including before P4-T05 cookie auth is shipped.
         http.csrf(csrf -> csrf.requireCsrfProtectionMatcher(request -> {
