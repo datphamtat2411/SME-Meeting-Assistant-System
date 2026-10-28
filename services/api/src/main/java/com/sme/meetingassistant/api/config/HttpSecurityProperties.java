@@ -17,7 +17,7 @@ public class HttpSecurityProperties {
 
 	private static final Set<String> BOUNDED_METHODS = Set.of("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS");
 	private static final Set<String> BOUNDED_REQUEST_HEADERS = Set.of("accept", "content-type", "authorization",
-			"x-csrf-token", "idempotency-key", "if-match", "x-request-id");
+			"x-csrf-token", "x-auth-transport", "idempotency-key", "if-match", "x-request-id");
 	private static final Set<String> BOUNDED_EXPOSED_HEADERS = Set.of("etag", "location", "x-request-id");
 
 	private Cors cors = new Cors();
@@ -104,7 +104,7 @@ public class HttpSecurityProperties {
 		private List<String> allowedMethods = List.of("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS");
 
 		private List<String> allowedHeaders = List.of("Accept", "Content-Type", "Authorization", "X-CSRF-Token",
-				"Idempotency-Key", "If-Match", "X-Request-Id");
+				"Idempotency-Key", "If-Match", "X-Request-Id", "X-Auth-Transport");
 
 		private List<String> exposedHeaders = List.of("ETag", "Location", "X-Request-Id");
 
