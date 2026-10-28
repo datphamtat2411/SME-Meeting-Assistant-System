@@ -16,7 +16,8 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
 
 /**
@@ -28,6 +29,7 @@ import org.springframework.web.server.ResponseStatusException;
 @ConditionalOnProperty(prefix="app.auth.transport",name="enabled",havingValue="true")
 public class AuthAbuseGuard {
     private final JdbcTemplate jdbc;
+    private final TransactionTemplate transactions;
     private final TrustedClientSource sources;
     private final AuthSecurityEventRecorder audit;
     private final byte[] key;
@@ -36,7 +38,7 @@ public class AuthAbuseGuard {
     private final int pairBackoffThreshold, maxPairBackoffSeconds;
 
     public AuthAbuseGuard(JdbcTemplate jdbc, TrustedClientSource sources,
-            AuthSecurityEventRecorder audit,
+            AuthSecurityEventRecorder audit, PlatformTransactionManager transactionManager,
             @Value("${app.auth.abuse.hashing-key:}") String configuredKey,
             @Value("${app.auth.abuse.login-ip-limit:30}") int loginIpLimit,
             @Value("${app.auth.abuse.login-window-seconds:600}") int loginWindowSeconds,
@@ -47,6 +49,7 @@ public class AuthAbuseGuard {
             @Value("${app.auth.abuse.refresh-credential-limit:12}") int refreshCredentialLimit,
             @Value("${app.auth.abuse.refresh-credential-window-seconds:60}") int refreshCredentialWindowSeconds) {
         this.jdbc=jdbc; this.sources=sources; this.audit=audit;
+        this.transactions=new TransactionTemplate(transactionManager);
         this.loginIpLimit=positive(loginIpLimit,1,10000);
         this.refreshIpLimit=positive(refreshIpLimit,1,10000);
         this.refreshCredentialLimit=positive(refreshCredentialLimit,1,1000);
@@ -71,64 +74,71 @@ public class AuthAbuseGuard {
     public record Admission(String sourceHash,String pairHash) {}
 
     /** Accepted attempts are counted even if the password is invalid. */
-    @Transactional
     public Admission loginAdmission(HttpServletRequest request,String account) {
         String sourceHash=fingerprint("ip",sources.from(request));
         String pairHash=fingerprint("account-source",sourceHash+"|"+
             (account==null?"invalid":account.trim().toLowerCase(java.util.Locale.ROOT)));
-        boolean ipAllowed=recordRolling("LOGIN_IP",sourceHash,loginIpLimit,loginWindowSeconds);
-        boolean pairAllowed=pairAllowed(pairHash);
-        if (!ipAllowed || !pairAllowed) {
+        // Commit the admission decision and release advisory/connection locks before
+        // emitting audit in a separate connection or returning a public 429.
+        Boolean permitted=transactions.execute(status -> {
+            boolean ipAllowed=recordRolling("LOGIN_IP",sourceHash,loginIpLimit,loginWindowSeconds);
+            boolean pairPermitted=pairAllowed(pairHash);
+            return ipAllowed && pairPermitted;
+        });
+        if (!Boolean.TRUE.equals(permitted)) {
             audit.record(AuthSecurityEventRecorder.Action.LOGIN_THROTTLED,null,sourceHash);
             throw throttled(Math.max(2,loginWindowSeconds / 10));
         }
         return new Admission(sourceHash,pairHash);
     }
 
-    @Transactional
     public void loginFailed(Admission admission) {
-        // Serialize account-source counters across API workers, independently of the IP window.
-        lock("PAIR|"+admission.pairHash());
-        OffsetDateTime now=OffsetDateTime.now(ZoneOffset.UTC);
-        var state=jdbc.query("""
-            SELECT failure_count,updated_at FROM auth_login_failure_backoff
-             WHERE pair_hash=? FOR UPDATE
-            """,(rs,n)->new Failure(rs.getInt(1),
-                rs.getObject(2,OffsetDateTime.class)),admission.pairHash());
-        int failures=state.isEmpty() || state.getFirst().updatedAt().isBefore(now.minusHours(1))
-            ? 1 : Math.min(state.getFirst().count()+1,1000000);
-        int delay=failures<pairBackoffThreshold ? 0
-            : Math.min(maxPairBackoffSeconds,
-                (int)Math.min(1L << Math.min(failures-pairBackoffThreshold+1,20),
-                    (long)maxPairBackoffSeconds));
-        jdbc.update("""
-            INSERT INTO auth_login_failure_backoff(pair_hash,failure_count,blocked_until,updated_at)
-            VALUES (?,?,?,?)
-            ON CONFLICT(pair_hash) DO UPDATE SET failure_count=EXCLUDED.failure_count,
-                blocked_until=EXCLUDED.blocked_until,updated_at=EXCLUDED.updated_at
-            """,admission.pairHash(),failures,now.plusSeconds(delay),now);
+        transactions.executeWithoutResult(status -> {
+            // Serialize account-source backoff independently of the IP window.
+            lock("PAIR|"+admission.pairHash());
+            OffsetDateTime now=OffsetDateTime.now(ZoneOffset.UTC);
+            var state=jdbc.query("""
+                SELECT failure_count,updated_at FROM auth_login_failure_backoff
+                 WHERE pair_hash=? FOR UPDATE
+                """,(rs,n)->new Failure(rs.getInt(1),
+                    rs.getObject(2,OffsetDateTime.class)),admission.pairHash());
+            int failures=state.isEmpty() || state.getFirst().updatedAt().isBefore(now.minusHours(1))
+                ? 1 : Math.min(state.getFirst().count()+1,1000000);
+            int delay=failures<pairBackoffThreshold ? 0
+                : Math.min(maxPairBackoffSeconds,
+                    (int)Math.min(1L << Math.min(failures-pairBackoffThreshold+1,20),
+                        (long)maxPairBackoffSeconds));
+            jdbc.update("""
+                INSERT INTO auth_login_failure_backoff(pair_hash,failure_count,blocked_until,updated_at)
+                VALUES (?,?,?,?)
+                ON CONFLICT(pair_hash) DO UPDATE SET failure_count=EXCLUDED.failure_count,
+                    blocked_until=EXCLUDED.blocked_until,updated_at=EXCLUDED.updated_at
+                """,admission.pairHash(),failures,now.plusSeconds(delay),now);
+        });
         audit.record(AuthSecurityEventRecorder.Action.LOGIN_DENIED,null,admission.sourceHash());
     }
 
-    @Transactional
     public void loginSucceeded(Admission admission,UUID userId) {
-        jdbc.update("DELETE FROM auth_login_failure_backoff WHERE pair_hash=?",
-            admission.pairHash());
+        transactions.executeWithoutResult(status -> jdbc.update(
+            "DELETE FROM auth_login_failure_backoff WHERE pair_hash=?",
+            admission.pairHash()));
         audit.record(AuthSecurityEventRecorder.Action.LOGIN_SUCCEEDED,userId,admission.sourceHash());
         audit.record(AuthSecurityEventRecorder.Action.LOGIN_SESSION_CREATED,userId,admission.sourceHash());
     }
 
-    @Transactional
     public Admission refreshAdmission(HttpServletRequest request,String opaqueToken) {
         String source=fingerprint("ip",sources.from(request));
         String presented=opaqueToken==null?"missing":opaqueToken;
         String credential=fingerprint("refresh-credential",presented.length()>256
             ? "oversized" : presented);
-        boolean sourceAllowed=recordRolling("REFRESH_IP",source,
-            refreshIpLimit,refreshWindowSeconds);
-        boolean tokenAllowed=recordRolling("REFRESH_CREDENTIAL",credential,
-            refreshCredentialLimit,refreshCredentialWindowSeconds);
-        if (!sourceAllowed || !tokenAllowed) {
+        Boolean permitted=transactions.execute(status -> {
+            boolean sourceAllowed=recordRolling("REFRESH_IP",source,
+                refreshIpLimit,refreshWindowSeconds);
+            boolean tokenAllowed=recordRolling("REFRESH_CREDENTIAL",credential,
+                refreshCredentialLimit,refreshCredentialWindowSeconds);
+            return sourceAllowed && tokenAllowed;
+        });
+        if (!Boolean.TRUE.equals(permitted)) {
             audit.record(AuthSecurityEventRecorder.Action.REFRESH_THROTTLED,null,source);
             throw throttled(Math.max(2,refreshCredentialWindowSeconds / 2));
         }
