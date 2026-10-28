@@ -300,4 +300,142 @@ class AuthTransportHttpIntegrationTests {
             .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "POST"))
             .andExpect(status().isForbidden());
     }
+
+    @Test
+    void webLogoutWithAccessOnlyRevokesLiveSessionAndClearsEveryCookie() throws Exception {
+        var original = webLogin();
+        Cookie access = cookie(original, AuthTransport.ACCESS);
+        Cookie signedCsrf = cookie(original, AuthTransport.CSRF);
+        var result = mvc.perform(post("/api/v1/auth/logout")
+            .header(HttpHeaders.ORIGIN, ORIGIN)
+            .header("X-CSRF-Token", signedCsrf.getValue())
+            .cookie(access, signedCsrf))
+            .andExpect(status().isOk()).andReturn();
+        for (String name : List.of(AuthTransport.ACCESS, AuthTransport.REFRESH, AuthTransport.CSRF)) {
+            assertThat(setCookieHeader(result, name)).contains("Max-Age=0");
+        }
+        assertThat(sessions.countByUserIdAndStatus(user.getId(), AuthSessionStatus.ACTIVE))
+            .isZero(); // missing refresh must not leave the live access session behind
+        mvc.perform(get("/api/v1/me/profile").cookie(access))
+            .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void unknownRefreshPlusVerifiedAccessRequiresSessionCsrfAndRevokesItsSession()
+            throws Exception {
+        var prelogin = bootstrap();
+        var original = webLogin();
+        Cookie access = cookie(original, AuthTransport.ACCESS);
+        Cookie signedCsrf = cookie(original, AuthTransport.CSRF);
+        Cookie unknown = new Cookie(AuthTransport.REFRESH, "Z".repeat(64));
+
+        // An unrelated prelogin token must never authorize logout of a live
+        // session just because its refresh cookie is corrupt or missing.
+        mvc.perform(post("/api/v1/auth/logout")
+            .header(HttpHeaders.ORIGIN, ORIGIN)
+            .header("X-CSRF-Token", cookie(prelogin, AuthTransport.CSRF).getValue())
+            .cookie(access, unknown, cookie(prelogin, AuthTransport.CSRF)))
+            .andExpect(status().isForbidden());
+        mvc.perform(post("/api/v1/auth/logout")
+            .header(HttpHeaders.ORIGIN, "https://evil.invalid")
+            .header("X-CSRF-Token", signedCsrf.getValue())
+            .cookie(access, unknown, signedCsrf))
+            .andExpect(status().isForbidden());
+        assertThat(sessions.countByUserIdAndStatus(user.getId(), AuthSessionStatus.ACTIVE))
+            .isEqualTo(1);
+
+        // A fresh bootstrap binds to the verified access session even without
+        // its refresh cookie; it remains possible to sign out this way.
+        var rebootstrap = mvc.perform(get("/api/v1/auth/csrf")
+            .header(HttpHeaders.ORIGIN, ORIGIN).cookie(access, unknown))
+            .andExpect(status().isOk()).andReturn();
+        mvc.perform(post("/api/v1/auth/logout")
+            .header(HttpHeaders.ORIGIN, ORIGIN)
+            .header("X-CSRF-Token", cookie(rebootstrap, AuthTransport.CSRF).getValue())
+            .cookie(access, unknown, cookie(rebootstrap, AuthTransport.CSRF)))
+            .andExpect(status().isOk());
+        assertThat(sessions.countByUserIdAndStatus(user.getId(), AuthSessionStatus.ACTIVE))
+            .isZero();
+    }
+
+    @Test
+    void unknownRefreshWithoutVerifiedAccessNeedsFreshPreloginCsrfToClearCookies()
+            throws Exception {
+        var original = webLogin(); // unrelated valid session must not be revoked
+        Cookie unknown = new Cookie(AuthTransport.REFRESH, "Q".repeat(64));
+        var bootstrap = mvc.perform(get("/api/v1/auth/csrf")
+            .header(HttpHeaders.ORIGIN, ORIGIN).cookie(unknown))
+            .andExpect(status().isOk()).andReturn();
+        Cookie prelogin = cookie(bootstrap, AuthTransport.CSRF);
+        mvc.perform(post("/api/v1/auth/logout")
+            .header(HttpHeaders.ORIGIN, ORIGIN).cookie(unknown, prelogin))
+            .andExpect(status().isForbidden()); // still requires CSRF header
+        mvc.perform(post("/api/v1/auth/logout")
+            .header(HttpHeaders.ORIGIN, "https://evil.invalid")
+            .header("X-CSRF-Token", prelogin.getValue())
+            .cookie(unknown, prelogin))
+            .andExpect(status().isForbidden());
+        mvc.perform(post("/api/v1/auth/logout")
+            .header(HttpHeaders.ORIGIN, ORIGIN).header("Sec-Fetch-Site", "cross-site")
+            .header("X-CSRF-Token", prelogin.getValue())
+            .cookie(unknown, prelogin))
+            .andExpect(status().isForbidden());
+
+        var result = mvc.perform(post("/api/v1/auth/logout")
+            .header(HttpHeaders.ORIGIN, ORIGIN)
+            .header("X-CSRF-Token", prelogin.getValue())
+            .cookie(unknown, prelogin))
+            .andExpect(status().isOk()).andReturn();
+        for (String name : List.of(AuthTransport.ACCESS, AuthTransport.REFRESH, AuthTransport.CSRF)) {
+            assertThat(setCookieHeader(result, name)).contains("Max-Age=0");
+        }
+        assertThat(sessions.countByUserIdAndStatus(user.getId(), AuthSessionStatus.ACTIVE))
+            .isEqualTo(1);
+        mvc.perform(get("/api/v1/me/profile")
+            .cookie(cookie(original, AuthTransport.ACCESS))).andExpect(status().isOk());
+
+        // Repeated logout without credentials converges safely to local logout.
+        var noCredentials = bootstrap();
+        mvc.perform(post("/api/v1/auth/logout")
+            .header(HttpHeaders.ORIGIN, ORIGIN)
+            .header("X-CSRF-Token", cookie(noCredentials, AuthTransport.CSRF).getValue())
+            .cookie(cookie(noCredentials, AuthTransport.CSRF)))
+            .andExpect(status().isOk())
+            .andExpect(r -> assertThat(setCookieHeader(r, AuthTransport.ACCESS))
+                .contains("Max-Age=0"));
+    }
+
+    @Test
+    void revokedSessionAccessOnlyCanClearCookiesButCannotReuseOldSessionCsrf()
+            throws Exception {
+        var original = webLogin();
+        Cookie access = cookie(original, AuthTransport.ACCESS);
+        Cookie staleCsrf = cookie(original, AuthTransport.CSRF);
+        var session = sessions.findByUserIdAndStatusOrderByCreatedAtAsc(
+            user.getId(), AuthSessionStatus.ACTIVE).getFirst();
+        session.revoke(OffsetDateTime.now(ZoneOffset.UTC), "TEST_LOGOUT");
+        sessions.saveAndFlush(session);
+
+        // JWT no longer identifies a live server session. Reject a stale
+        // session-bound CSRF token; do not parse or trust its raw JWT claims.
+        mvc.perform(post("/api/v1/auth/logout")
+            .header(HttpHeaders.ORIGIN, ORIGIN)
+            .header("X-CSRF-Token", staleCsrf.getValue())
+            .cookie(access, staleCsrf))
+            .andExpect(status().isForbidden());
+        var cleanBootstrap = mvc.perform(get("/api/v1/auth/csrf")
+            .header(HttpHeaders.ORIGIN, ORIGIN).cookie(access))
+            .andExpect(status().isOk()).andReturn();
+        var newCsrf = cookie(cleanBootstrap, AuthTransport.CSRF);
+        var cleared = mvc.perform(post("/api/v1/auth/logout")
+            .header(HttpHeaders.ORIGIN, ORIGIN)
+            .header("X-CSRF-Token", newCsrf.getValue())
+            .cookie(access, newCsrf))
+            .andExpect(status().isOk()).andReturn();
+        assertThat(setCookieHeader(cleared, AuthTransport.ACCESS)).contains("Max-Age=0");
+        assertThat(setCookieHeader(cleared, AuthTransport.REFRESH)).contains("Max-Age=0");
+        assertThat(setCookieHeader(cleared, AuthTransport.CSRF)).contains("Max-Age=0");
+        mvc.perform(get("/api/v1/me/profile").cookie(access))
+            .andExpect(status().isUnauthorized());
+    }
 }

@@ -38,6 +38,7 @@ public class AccessSecurityConfiguration {
     @Bean
     SecurityFilterChain apiAccessSecurity(HttpSecurity http, JwtDecoder jwtDecoder,
             ObjectProvider<SessionCsrfTokens> csrfTokens, RefreshSessionLocator locator,
+            ObjectProvider<WebLogoutIdentityResolver> logoutIdentity,
             HttpSecurityProperties properties, AuthSecurityFailureHandler failures,
             @Value("${app.auth.transport.enabled:false}") boolean transportEnabled) throws Exception {
         http.sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS));
@@ -92,7 +93,8 @@ public class AccessSecurityConfiguration {
             .authenticationEntryPoint(failures)
             .bearerTokenResolver(resolver).jwt(jwt -> jwt.decoder(jwtDecoder)));
         if (transportEnabled) {
-            http.addFilterAfter(new BrowserCsrfProtectionFilter(csrfTokens.getObject(), locator, properties, failures),
+            http.addFilterAfter(new BrowserCsrfProtectionFilter(csrfTokens.getObject(), locator,
+                    logoutIdentity.getObject(), properties, failures),
                 BearerTokenAuthenticationFilter.class);
         }
         return http.build();

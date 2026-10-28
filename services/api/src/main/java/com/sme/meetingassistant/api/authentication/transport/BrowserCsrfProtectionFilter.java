@@ -22,13 +22,16 @@ public final class BrowserCsrfProtectionFilter extends OncePerRequestFilter {
     private static final Set<String> SAFE = Set.of("GET", "HEAD", "OPTIONS", "TRACE");
     private final SessionCsrfTokens tokens;
     private final RefreshSessionLocator locator;
+    private final WebLogoutIdentityResolver logoutIdentity;
     private final Set<String> trustedOrigins;
     private final AuthSecurityFailureHandler failures;
 
     public BrowserCsrfProtectionFilter(SessionCsrfTokens tokens, RefreshSessionLocator locator,
-            HttpSecurityProperties properties, AuthSecurityFailureHandler failures) {
+            WebLogoutIdentityResolver logoutIdentity, HttpSecurityProperties properties,
+            AuthSecurityFailureHandler failures) {
         this.tokens = tokens;
         this.locator = locator;
+        this.logoutIdentity = logoutIdentity;
         this.trustedOrigins = Set.copyOf(properties.getCors().getAllowedOrigins());
         this.failures = failures;
     }
@@ -72,10 +75,15 @@ public final class BrowserCsrfProtectionFilter extends OncePerRequestFilter {
         String binding;
         if (req.getRequestURI().equals("/api/v1/auth/login")) {
             binding = "prelogin";
-        } else if (req.getRequestURI().equals("/api/v1/auth/refresh") ||
-                req.getRequestURI().equals("/api/v1/auth/logout")) {
+        } else if (req.getRequestURI().equals("/api/v1/auth/refresh")) {
             var identity = locator.identify(AuthTransport.cookie(req, AuthTransport.REFRESH));
             binding = identity == null ? null : identity.sessionId().toString();
+        } else if (req.getRequestURI().equals("/api/v1/auth/logout")) {
+            // Verified live session -> session-bound CSRF, including access-only
+            // browser state. No usable session -> fresh prelogin CSRF is still
+            // mandatory before clearing abandoned cookies.
+            var identity = logoutIdentity.identify(req);
+            binding = identity == null ? "prelogin" : identity.sessionId().toString();
         } else {
             Authentication auth = SecurityContextHolder.getContext().getAuthentication();
             binding = auth instanceof JwtAuthenticationToken jwt

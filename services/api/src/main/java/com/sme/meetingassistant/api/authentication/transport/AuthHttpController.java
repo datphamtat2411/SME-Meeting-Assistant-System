@@ -38,18 +38,18 @@ public class AuthHttpController {
     private final RefreshSessionService refresh;
     private final Rs256AccessTokenService jwt;
     private final SessionCsrfTokens csrf;
-    private final RefreshSessionLocator locator;
+    private final WebLogoutIdentityResolver logoutIdentity;
     private final ApiResponseFactory responses;
 
     public AuthHttpController(LoginAdmissionService login, RefreshSessionService refresh,
-            Rs256AccessTokenService jwt, SessionCsrfTokens csrf, RefreshSessionLocator locator,
+            Rs256AccessTokenService jwt, SessionCsrfTokens csrf, WebLogoutIdentityResolver logoutIdentity,
             ApiResponseFactory responses, AuthAbuseGuard abuse) {
         this.login = login;
         this.abuse = abuse;
         this.refresh = refresh;
         this.jwt = jwt;
         this.csrf = csrf;
-        this.locator = locator;
+        this.logoutIdentity = logoutIdentity;
         this.responses = responses;
     }
 
@@ -63,7 +63,7 @@ public class AuthHttpController {
     public ResponseEntity<ApiResponse<CsrfBootstrap>> csrf(HttpServletRequest request,
             HttpServletResponse response) {
         String binding = "prelogin";
-        var identity = locator.identify(AuthTransport.cookie(request, AuthTransport.REFRESH));
+        var identity = logoutIdentity.identify(request);
         if (identity != null) binding = identity.sessionId().toString();
         String value = csrf.issue(binding);
         AuthTransport.setCsrf(response, value);
@@ -152,7 +152,7 @@ public class AuthHttpController {
                 java.util.UUID.fromString(jwtAuth.getToken().getClaimAsString("sid")));
             abuse.logEvent(AuthSecurityEventRecorder.Action.SESSION_LOGGED_OUT, currentUser, request);
         } else {
-            var current = locator.identify(AuthTransport.cookie(request, AuthTransport.REFRESH));
+            var current = logoutIdentity.identify(request);
             if (current != null) {
                 refresh.logout(current.userId(), current.sessionId());
                 abuse.logEvent(AuthSecurityEventRecorder.Action.SESSION_LOGGED_OUT,
