@@ -63,7 +63,7 @@ Build and run the locked, non-editable, runtime-only image:
 ```sh
 docker build --tag sme-ai:local .
 docker run --rm --name sme-ai-http \
-  --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+  --read-only --tmpfs /tmp:rw,noexec,nosuid,size=160m \
   --cap-drop=ALL --security-opt=no-new-privileges:true \
   --cpus=1 --memory=256m --pids-limit=64 --stop-timeout=40 \
   -p 127.0.0.1:8000:8000 \
@@ -170,6 +170,70 @@ image, repository or `.env.example`. Do not expose AI Core directly to Web or
 Mobile. The plaintext development example above is local-only.
 
 ### Focused verification
+
+For audio decoding and normalization only (requires local `ffmpeg` and `ffprobe`):
+
+```sh
+uv run ruff check src tests
+uv run pytest tests/unit/test_config.py tests/unit/test_audio_preprocessing.py tests/integration/test_audio_preprocessing.py
+```
+
+### Audio decoding and normalization
+
+`sme_meeting_ai.audio` provides synchronous, file-backed normalization of local
+WAV/PCM, MP3, M4A/MP4/AAC, and WebM/Matroska/Opus. Actual streams determine
+acceptance; ambiguous audio, unsupported codecs, and video are rejected.
+Install the Debian `ffmpeg` package for both decoder tools; it is included and
+checked in the runtime image and CI. The implementation targets Linux/POSIX.
+
+```python
+from pathlib import Path
+from sme_meeting_ai.audio import AudioNormalizer, AudioSource
+from sme_meeting_ai.core.config import load_settings
+
+normalizer = AudioNormalizer(load_settings())
+source = AudioSource(source_id="opaque-media-id", path=Path("/media/original"))
+with normalizer.normalize(source) as audio:
+    # Consume audio.path within this scope, or explicitly close() after use.
+    sample_count = audio.sample_count
+    exact_duration = audio.duration  # Fraction(sample_count, 16000)
+```
+
+Output is WAV/PCM16, mono, 16 kHz. All decoded audio, including leading/trailing
+silence and codec padding emitted by the decoder, is retained. Channels are
+downmixed; timestamp compensation is disabled and sample bounds are zero-based,
+half-open `[0, sample_count)`. Container duration is preflight evidence only.
+Source metadata and decoder/configuration provenance accompany the artifact.
+Original files are opened read-only and remain owned by the caller. Only validated
+complete output is published; failed processing removes partial artifacts.
+`AudioProcessingError.category` is `VALIDATION`, `DECODING`, `TIMEOUT`, or `RESOURCE`,
+without raw paths, decoder diagnostics, or media content.
+
+| Setting | Default | Allowed range |
+| --- | --- | --- |
+| `AI_AUDIO_MAX_INPUT_BYTES` | 536870912 | 1–2147483648 |
+| `AI_AUDIO_MAX_DURATION_SECONDS` | 3600 | finite, >0, ≤14400 |
+| `AI_AUDIO_MAX_OUTPUT_BYTES` | 134217728 | 1–1073741824 |
+| `AI_AUDIO_PROBE_TIMEOUT_SECONDS` | 10 | finite, >0, ≤120 |
+| `AI_AUDIO_DECODE_TIMEOUT_SECONDS` | 900 | finite, >0, ≤3600 |
+| `AI_AUDIO_TEMP_DIR` | `/tmp` | existing writable directory at processing time |
+
+Each child has a 512 MiB address-space ceiling, one decoder thread, a CPU limit
+derived from its timeout, bounded stdout/stderr, and a hard output-file limit.
+Wall-clock deadlines and growing output/sample limits are monitored; exceeding
+limits kills and reaps the process group instead of returning shortened audio.
+Executables resolve only from `/usr/bin:/bin`, with a minimal environment and
+file-only media protocols. No media dependency is added to Python.
+
+Plan temporary capacity for **all concurrently owned artifacts**, at least
+`AI_AUDIO_MAX_OUTPUT_BYTES` per artifact plus filesystem overhead. At 32,000 PCM
+bytes/second, one hour needs about 110 MiB. The `160m` example tmpfs accommodates
+one default artifact; tmpfs also counts toward container memory, so audio workloads
+need memory for that storage, the decoder, and Python (for example `--memory=1g`
+for a single normalization). A bounded disk-backed mount can instead supply
+`AI_AUDIO_TEMP_DIR`. The HTTP smoke workload does not perform normalization.
+
+### Runtime verification
 
 ```sh
 uv run ruff check src tests

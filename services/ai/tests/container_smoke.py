@@ -10,7 +10,7 @@ from pathlib import Path
 from tls_support import create_test_pki
 
 COMMON = [
-    "--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,size=16m",
+    "--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,size=160m",
     "--cap-drop=ALL", "--security-opt=no-new-privileges:true",
     "--cpus=1", "--memory=256m", "--pids-limit=64",
     "-e", "AI_SERVICE_NAME=smoke-ai", "-e", "AI_SERVICE_IDENTITY=ai-core",
@@ -68,6 +68,12 @@ def main():
             wait_ready(http, PROBE.format("ready", "ready"))
             assert probe(http, PROBE.format("live", "ok")) == 0
             assert probe(http, "import os; assert os.getuid()==10001") == 0
+            assert probe(http, (
+                "import shutil,subprocess; "
+                "assert shutil.which('ffmpeg') and shutil.which('ffprobe'); "
+                "[subprocess.run([tool,'-version'],check=True,capture_output=True,timeout=5) "
+                "for tool in ('ffmpeg','ffprobe')]"
+            )) == 0
             state = json.loads(docker("inspect", http))[0]
             host = state["HostConfig"]
             assert state["Config"]["User"] == "10001:10001"

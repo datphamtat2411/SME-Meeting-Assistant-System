@@ -53,6 +53,18 @@ class Settings(BaseSettings):
     worker_shutdown_timeout_seconds: float = Field(
         default=30, gt=0, le=300, allow_inf_nan=False,
     )
+    audio_max_input_bytes: int = Field(default=536870912, gt=0, le=2147483648)
+    audio_max_duration_seconds: float = Field(
+        default=3600, gt=0, le=14400, allow_inf_nan=False,
+    )
+    audio_max_output_bytes: int = Field(default=134217728, gt=0, le=1073741824)
+    audio_probe_timeout_seconds: float = Field(
+        default=10, gt=0, le=120, allow_inf_nan=False,
+    )
+    audio_decode_timeout_seconds: float = Field(
+        default=900, gt=0, le=3600, allow_inf_nan=False,
+    )
+    audio_temp_dir: Path = Path("/tmp")
 
     @model_validator(mode="after")
     def complete_tls_configuration(self) -> Self:

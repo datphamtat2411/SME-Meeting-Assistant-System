@@ -53,6 +53,13 @@ jobs:
       - name: Synchronize dependencies
         run: uv sync --locked
 
+      - name: Install and check audio decoder tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ffmpeg
+          ffmpeg -version
+          ffprobe -version
+
       - name: Lint AI package
         run: uv run ruff check src tests
 

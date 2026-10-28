@@ -38,6 +38,12 @@ def test_explicit_settings_defaults_without_external_configuration():
     assert settings.service_identity == "ai-core"
     assert settings.internal_allowed_callers == ("core-api",)
     assert "internal_service_token" not in Settings.model_fields
+    assert settings.audio_max_input_bytes == 536870912
+    assert settings.audio_max_duration_seconds == 3600
+    assert settings.audio_max_output_bytes == 134217728
+    assert settings.audio_probe_timeout_seconds == 10
+    assert settings.audio_decode_timeout_seconds == 900
+    assert str(settings.audio_temp_dir) == "/tmp"
 
 
 def test_environment_overrides_are_typed_and_case_insensitive(monkeypatch):
@@ -220,3 +226,42 @@ def test_cached_access_is_lazy_and_explicit_loading_is_uncached(tmp_path, monkey
     assert load_settings().service_name == "second-ai"
     get_settings.cache_clear()
     assert get_settings().service_name == "second-ai"
+
+
+@pytest.mark.parametrize("field,maximum", [
+    ("audio_max_input_bytes", 2147483648),
+    ("audio_max_output_bytes", 1073741824),
+    ("audio_max_duration_seconds", 14400),
+    ("audio_probe_timeout_seconds", 120),
+    ("audio_decode_timeout_seconds", 3600),
+])
+@pytest.mark.parametrize("value", ["0", "-1", "nan", "inf", "private-invalid", "over"])
+def test_audio_limits_are_positive_finite_bounded(monkeypatch, field, maximum, value):
+    monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
+    monkeypatch.setenv(f"AI_{field.upper()}", str(maximum + 1) if value == "over" else value)
+    with pytest.raises(ConfigurationError) as caught:
+        load_settings(env_file=None)
+    assert field in str(caught.value)
+    assert "private-invalid" not in "".join(traceback.format_exception(caught.value))
+    assert caught.value.__context__ is None
+
+
+def test_audio_environment_and_temp_directory_loading_is_lazy(monkeypatch, tmp_path):
+    missing = tmp_path / "not-created"
+    monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
+    monkeypatch.setenv("AI_AUDIO_MAX_INPUT_BYTES", "1000")
+    monkeypatch.setenv("AI_AUDIO_MAX_DURATION_SECONDS", "0.5")
+    monkeypatch.setenv("AI_AUDIO_MAX_OUTPUT_BYTES", "2000")
+    monkeypatch.setenv("AI_AUDIO_PROBE_TIMEOUT_SECONDS", "0.25")
+    monkeypatch.setenv("AI_AUDIO_DECODE_TIMEOUT_SECONDS", "1.5")
+    monkeypatch.setenv("AI_AUDIO_TEMP_DIR", str(missing))
+    settings = load_settings(env_file=None)
+    assert settings.audio_max_input_bytes == 1000
+    assert settings.audio_max_duration_seconds == 0.5
+    assert settings.audio_max_output_bytes == 2000
+    assert settings.audio_probe_timeout_seconds == 0.25
+    assert settings.audio_decode_timeout_seconds == 1.5
+    assert settings.audio_temp_dir == missing
+    assert not missing.exists()
