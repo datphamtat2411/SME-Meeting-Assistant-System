@@ -9,6 +9,8 @@ import com.sme.meetingassistant.api.userorganization.entity.*;
 import com.sme.meetingassistant.api.userorganization.repository.*;
 import com.sme.meetingassistant.api.userorganization.service.*;
 import java.security.Principal;
+import org.springframework.http.MediaType;
+import org.springframework.context.annotation.Profile;
 import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
@@ -25,7 +27,7 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 /** Full MVC + authorization + real PostgreSQL persistence; principal is server-supplied in tests. */
-@ActiveProfiles("test")
+@ActiveProfiles({"test", "t02-authorization-tests"})
 @SpringBootTest
 @AutoConfigureMockMvc
 @Import({PostgresTestConfiguration.class, OrganizationalAuthorizationIntegrationTests.AuthorizationTestController.class})
@@ -36,8 +38,6 @@ class OrganizationalAuthorizationIntegrationTests {
     @Autowired private UserRepository users;
     @Autowired private OrganizationalUnitRepository units;
     @Autowired private ManagerScopeUnitRepository grants;
-    @Autowired private OrganizationalAuthorizationService auth;
-    @Autowired private ManagerScopeAssignmentService assignments;
 
     private OrganizationalUnitEntity parent;
     private OrganizationalUnitEntity child;
@@ -175,6 +175,53 @@ class OrganizationalAuthorizationIntegrationTests {
     }
 
     @Test
+    void replacingScopesRejectsNullElementsWithoutServerErrorOrPartialWrites() throws Exception {
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post(
+            "/api/v1/test/org-grants/" + manager.getId() + "/batch")
+            .principal(principal(admin.getId()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("[null]"))
+            .andExpect(status().isBadRequest());
+
+        assertThat(grants.existsByIdUserIdAndIdOrgUnitId(manager.getId(), child.getId())).isTrue();
+        assertThat(grants.existsByIdUserIdAndIdOrgUnitId(manager.getId(), parent.getId())).isFalse();
+    }
+
+    @Test
+    void replacingScopesRejectsMissingBodyWithoutPartialWrites() throws Exception {
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post(
+            "/api/v1/test/org-grants/" + manager.getId() + "/batch")
+            .principal(principal(admin.getId())))
+            .andExpect(status().isBadRequest());
+
+        assertThat(grants.existsByIdUserIdAndIdOrgUnitId(manager.getId(), child.getId())).isTrue();
+    }
+
+    @Test
+    void replacingScopesRejectsUnknownUnitWithoutErasingExistingGrant() throws Exception {
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post(
+            "/api/v1/test/org-grants/" + manager.getId() + "/batch")
+            .principal(principal(admin.getId()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(json.writeValueAsString(Set.of(UUID.randomUUID()))))
+            .andExpect(status().isUnprocessableEntity());
+
+        assertThat(grants.existsByIdUserIdAndIdOrgUnitId(manager.getId(), child.getId())).isTrue();
+    }
+
+    @Test
+    void replacingScopesAllowsIntentionalEmptySetToRevokeAllGrants() throws Exception {
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post(
+            "/api/v1/test/org-grants/" + manager.getId() + "/batch")
+            .principal(principal(admin.getId()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("[]"))
+            .andExpect(status().isOk());
+
+        assertThat(grants.findByIdUserId(manager.getId())).isEmpty();
+    }
+
+    @Test
     void managerCannotEscalateScopeByClaimingAnUnrelatedUnitId() {
         // Scope is deliberately exact, not derived from a parent's tree position.
         var approved = grants.findByIdUserId(manager.getId()).stream()
@@ -184,6 +231,7 @@ class OrganizationalAuthorizationIntegrationTests {
     }
 
     @org.springframework.web.bind.annotation.RestController
+    @Profile("t02-authorization-tests")
     static class AuthorizationTestController {
         private final OrganizationalAuthorizationService authorization;
         private final ManagerScopeAssignmentService assignments;
@@ -201,6 +249,12 @@ class OrganizationalAuthorizationIntegrationTests {
         String grant(@org.springframework.web.bind.annotation.PathVariable UUID managerId,
                      @org.springframework.web.bind.annotation.PathVariable UUID unitId) {
             assignments.replaceManagerScopes(managerId, Set.of(unitId));
+            return "updated";
+        }
+        @org.springframework.web.bind.annotation.PostMapping("/api/v1/test/org-grants/{managerId}/batch")
+        String grantBatch(@org.springframework.web.bind.annotation.PathVariable UUID managerId,
+                          @org.springframework.web.bind.annotation.RequestBody(required = false) Set<UUID> unitIds) {
+            assignments.replaceManagerScopes(managerId, unitIds);
             return "updated";
         }
     }

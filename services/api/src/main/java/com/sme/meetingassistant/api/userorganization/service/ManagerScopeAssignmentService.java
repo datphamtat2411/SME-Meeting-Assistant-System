@@ -6,6 +6,7 @@ import com.sme.meetingassistant.api.userorganization.entity.OrganizationalUnitSt
 import com.sme.meetingassistant.api.userorganization.repository.ManagerScopeUnitRepository;
 import com.sme.meetingassistant.api.userorganization.repository.OrganizationalUnitRepository;
 import com.sme.meetingassistant.api.userorganization.repository.UserRepository;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
@@ -37,7 +38,7 @@ public class ManagerScopeAssignmentService {
     @Transactional
     public void replaceManagerScopes(UUID targetManagerId, Set<UUID> approvedUnitIds) {
         UUID grantorId = authorization.requireAdministrator().getId();
-        if (targetManagerId == null || approvedUnitIds == null || approvedUnitIds.contains(null)) {
+        if (targetManagerId == null || approvedUnitIds == null || approvedUnitIds.stream().anyMatch(Objects::isNull)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST);
         }
         var manager = users.findById(targetManagerId)
