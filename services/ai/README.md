@@ -332,7 +332,159 @@ or FFmpeg needed):
 uv run pytest tests/unit/test_config.py tests/unit/test_audio_detection.py tests/unit/test_vad_backend.py
 ```
 
-Model-quality and Vietnamese evaluation are deferred to Task 05.
+### Preprocessing quality evaluation and regression
+
+`tests/evaluation` evaluates the existing normalization → real Silero VAD →
+speech-map pipeline against **independently labeled, privacy/legal-approved
+Vietnamese fixtures**. Provision both dataset and Silero v5-compatible single-file
+ONNX model locally through the approved dataset/model owner. The suite has no
+download or network fallback. Raw audio and private annotations stay outside the
+repository. No approved dataset or model is bundled.
+
+#### Dataset contract and provisioning
+
+Start from `tests/evaluation/manifest.example.json`, placing the reviewed manifest
+at `<fixture-root>/manifest.json`. This is a deliberately **non-runnable template**:
+its approvals are false, and its sample labels/counts/digests are placeholders.
+Replace them with reviewed fixture metadata, independent labels and real hashes;
+only the dataset owner may attest privacy/legal approval and its `approval_version`.
+Use opaque IDs/versions, with no names, transcripts, free-text notes or diagnostics.
+Unknown fields and duplicate JSON keys are rejected.
+
+- Pin `dataset_id`, `dataset_version`, `labeling_guideline_version`, per-fixture
+  `annotation_version`, and lowercase SHA-256 of the original source file bytes.
+  `path` is relative to the explicit fixture root; escapes and symlink media are
+  rejected. All source digests are verified before and after processing.
+- `labels` partition the **entire** normalized 16 kHz timeline with absolute integer
+  half-open `start_sample`/`end_sample` bounds. Allowed labels are `speech`, `silence`,
+  `noise`, `music`, `ambiguous`. Human reviewers must independently establish labels
+  (`annotation_origin: independent-human`) from Vietnamese recordings, never from
+  VAD output. Mark disputed or uncertain annotation regions `ambiguous`; do not
+  force a speech/silence decision. `critical`/`material` are speech-only flags for
+  missed-speech reporting, without private explanations.
+- Set the independently established exact `sample_count` after full normalization.
+  Two `anchors` identify leading and trailing content: first starts at 0, last ends
+  at `sample_count`; each pins SHA-256 of the corresponding **little-endian PCM16
+  sample bytes**, without WAV headers. Prepare these using the reviewed reference
+  decode, not the output of the evaluation run. Re-approve/version references when
+  decoder changes alter them. No resampling or timestamp tolerance is assumed.
+- Required condition tags across the dataset: `silence`, `weak-distant-speech`,
+  `background-noise`, `music`, `continuous-speech`, `recording-boundaries`,
+  `long-audio`, `historical-regression`. Speech conditions require Vietnamese
+  recordings and independent human labels. Boundary fixtures must label speech
+  at both recording edges; the historical silent-speech-loss fixture must contain
+  critical/material speech. Tags attest reviewed conditions, not inferred acoustic
+  classifications. `long_audio_min_samples` is the dataset owner's declared long
+  workload duration; long-tagged fixtures must reach it within configured limits.
+
+Optional deterministic, non-sensitive controls may cover silence, noise, tonal
+music, and long duration. During explicit dataset preparation, call the test-local
+`tests/evaluation/fixture_builder.py` helper from Python, started from this
+directory with `PYTHONPATH=tests uv run python`:
+
+```python
+from pathlib import Path
+from evaluation.fixture_builder import build_control
+
+entry = build_control(Path("/secure/datasets/staging/noise.wav"), "noise", sample_count=16037)
+```
+
+The parent directory must already exist. The helper refuses overwrites, writes a
+deterministic WAV, and returns its manifest entry including hashes and anchors.
+Kinds are `silence`, `noise`, `music`, `long-audio`; the last is a silent long
+control. Music is a tonal/chord control, not evidence of representative real-music
+coverage. Controls use `kind: synthetic`, `language: none`, and
+`annotation_origin: synthetic-control`; they cannot satisfy speech conditions.
+Review and include entries in the approved manifest explicitly. Evaluation never
+creates or substitutes fixtures. Add representative approved recordings as needed
+within these conditions; deterministic controls do not establish speech quality.
+
+#### Running and interpreting results
+
+Ordinary pytest runs exclude the `evaluation` marker and need no dataset/model.
+The deterministic support tests use contract-only evidence to check arithmetic,
+validation, integrity failures and serialization; actual-model evaluation has no
+fake VAD adapter. Focused checks, from `services/ai`:
+
+```sh
+uv run ruff check src tests/evaluation
+uv run pytest tests/evaluation/test_evaluation_support.py
+uv run pytest tests/unit/test_audio_preprocessing.py tests/unit/test_audio_detection.py tests/unit/test_speech_map.py tests/unit/test_preprocessing_pipeline.py tests/integration/test_audio_preprocessing.py
+```
+
+With local `ffmpeg`/`ffprobe`, an approved fixture root and pinned model:
+
+```sh
+AI_SERVICE_NAME=sme-meeting-ai \
+AI_SERVICE_IDENTITY=ai-core \
+AI_AUDIO_VAD_MODEL_PATH=/secure/models/silero-vad.onnx \
+AI_AUDIO_VAD_MODEL_SHA256=<sha256> \
+uv run pytest -m evaluation tests/evaluation/test_preprocessing_quality.py \
+  --evaluation-fixture-root /secure/datasets/vietnamese-preprocessing-v1 \
+  --evaluation-output /secure/results/preprocessing-quality.json
+```
+
+For repeatable local configuration, copy `.env.example` to `.env` if it does not
+already exist and set the real model path and SHA-256 there. Load it explicitly
+on each run; no repeated shell exports are needed:
+
+```sh
+uv run --env-file .env pytest -m evaluation tests/evaluation/test_preprocessing_quality.py \
+  --evaluation-fixture-root /secure/datasets/vietnamese-preprocessing-v1 \
+  --evaluation-output /secure/results/preprocessing-quality.json
+```
+
+`uv` passes the file's values as process environment variables. Keep JSON values
+quoted as in the template, and retain `AI_AUDIO_VAD_FRAME_SAMPLES=512`, the only
+supported frame size. The local `.env` is Git-ignored; model path and SHA-256
+remain unset until the model is actually provisioned.
+
+Supply the selected model ID/version with `AI_AUDIO_VAD_MODEL_ID` and
+`AI_AUDIO_VAD_MODEL_VERSION` when different from the existing defaults. This suite
+requires the model path **and** expected SHA-256, ignores implicit `.env` files,
+and fails closed for missing assets/options, approvals, condition coverage,
+digest mismatches, incomplete evidence or integrity violations. The output parent
+must exist outside the fixture root; do not use the model file as output. Existing
+audio/VAD/storage settings apply, including the three speech-map settings in
+`.env.example`; size/duration/time limits must accommodate the approved long case.
+Artifacts are closed after every fixture and the backend closes after the run.
+
+The deterministic JSON report contains dataset/manifest/annotation/source digests,
+an evaluation ID derived from those plus pipeline/model/configuration provenance,
+decoder/stage versions, model ID/version/actual digest/backend, runtime versions,
+and all effective stage settings (temporary-storage location is an opaque hash).
+It contains no source paths, media, transcripts, free-text annotations, per-frame
+provider output or diagnostics. Fixture results are sorted; timestamps and elapsed
+times are omitted so identical inputs/configuration/runtime produce identical JSON.
+
+Speech coverage uses independent speech labels intersected with candidate
+`speech_intervals`. Missed samples/regions, largest miss, critical/material losses,
+unprotected misses and uncertain/likely-non-speech evidence expose the historical
+silent-loss failure without ASR. False positives use confirmed silence/noise/music
+denominators, with separate noise/music counts and rates. Ambiguity is excluded
+from both confirmed denominators and reported explicitly. Zero denominators yield
+`null`, never an invented perfect score. Uncertainty is reported separately for
+every label, including overlap with candidate speech. High-energy non-speech and
+uncertain VAD frames must remain visible in uncertainty intervals and warnings.
+
+Timing matches each independent speech interval only to overlapping candidates:
+onset is the first candidate start minus labeled start; offset is the last candidate
+end minus labeled end. Signed errors use integer samples and reduced rational
+seconds (`numerator`/`denominator`), with match counts for merged/split intervals.
+Completely missed intervals have null timing errors. Boundary padding is checked
+exactly for containment, coalescing and clipping to `[0, sample_count)`; this is
+an integrity check, not a guarantee that all labeled boundary speech was detected.
+
+`quality_gates: []` reports **`UNESTABLISHED`**, not a quality pass. No probabilistic
+threshold is supplied by the suite. To apply reviewed gates, the dataset owner may
+provide entries with `metric`, one rational `minimum` or `maximum`, and a required
+opaque `basis_version` identifying the supporting evidence. Supported metrics are
+`coverage_rate`, `missed_samples`, `largest_missed_samples`, `false_positive_rate`.
+Gates apply to each fixture; undefined metrics remain `UNESTABLISHED`. Supplied
+gates are reported as `PASS`/`FAIL`/`UNESTABLISHED`; an explicit failure fails pytest
+**after** writing the full report. Use `-rP` to display the printed gate status for
+passing runs, or inspect `quality_gate_status` in the JSON output. This evaluation
+does not execute ASR, train a model, tune thresholds or change preprocessing.
 
 ### Runtime verification
 

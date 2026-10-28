@@ -1,5 +1,6 @@
 import os
 import traceback
+from pathlib import Path
 
 import pytest
 
@@ -92,6 +93,20 @@ def test_dotenv_loading_ignores_unrelated_keys_and_environment_wins(
 
     assert settings.service_name == "dotenv-ai"
     assert settings.http_port == 9001
+
+
+def test_example_dotenv_loads_documented_defaults():
+    env_file = Path(__file__).resolve().parents[2] / ".env.example"
+
+    settings = load_settings(env_file=env_file)
+
+    assert settings.service_name == "sme-meeting-ai"
+    assert settings.service_identity == "ai-core"
+    assert settings.internal_allowed_callers == ("core-api",)
+    assert settings.audio_vad_frame_samples == 512
+    assert type(settings.audio_vad_frame_samples) is int
+    assert settings.audio_vad_model_path is None
+    assert settings.audio_vad_model_sha256 is None
 
 
 @pytest.mark.parametrize(
@@ -288,6 +303,43 @@ def test_vad_defaults_and_lazy_model_configuration(monkeypatch, tmp_path):
     assert settings.audio_vad_model_sha256 == "a" * 64
     assert settings.audio_vad_timeout_seconds == 12.5
     assert not missing.exists()
+
+
+@pytest.mark.parametrize("source", ["environment", "dotenv"])
+def test_fixed_vad_frame_size_loads_from_text_configuration(monkeypatch, tmp_path, source):
+    monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
+    env_file = None
+    if source == "environment":
+        monkeypatch.setenv("AI_AUDIO_VAD_FRAME_SAMPLES", "512")
+    else:
+        env_file = tmp_path / ".env"
+        env_file.write_text("AI_AUDIO_VAD_FRAME_SAMPLES=512\n")
+
+    settings = load_settings(env_file=env_file)
+
+    assert settings.audio_vad_frame_samples == 512
+    assert type(settings.audio_vad_frame_samples) is int
+
+
+@pytest.mark.parametrize("source", ["environment", "dotenv"])
+@pytest.mark.parametrize("value", ["256", "1024", "512.0", "512.5", "true", "private-invalid"])
+def test_unsupported_vad_frame_text_is_rejected_and_sanitized(monkeypatch, tmp_path, source, value):
+    monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
+    env_file = None
+    if source == "environment":
+        monkeypatch.setenv("AI_AUDIO_VAD_FRAME_SAMPLES", value)
+    else:
+        env_file = tmp_path / ".env"
+        env_file.write_text(f"AI_AUDIO_VAD_FRAME_SAMPLES={value}\n")
+
+    with pytest.raises(ConfigurationError) as caught:
+        load_settings(env_file=env_file)
+
+    assert str(caught.value) == "Invalid configuration: audio_vad_frame_samples: literal_error"
+    assert value not in "".join(traceback.format_exception(caught.value))
+    assert caught.value.__context__ is None
 
 
 @pytest.mark.parametrize("field,maximum", [

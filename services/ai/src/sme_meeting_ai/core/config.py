@@ -5,7 +5,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal, Self
 
-from pydantic import Field, ValidationError, model_validator
+from pydantic import Field, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict, SettingsError
 
 SERVICE_IDENTITY_PATTERN = r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
@@ -92,6 +92,12 @@ class Settings(BaseSettings):
     audio_speech_map_energy_floor_dbfs: float = Field(
         default=-50, ge=-120, le=0, allow_inf_nan=False,
     )
+
+    @field_validator("audio_vad_frame_samples", mode="before")
+    @classmethod
+    def parse_vad_frame_samples(cls, value: object) -> object:
+        # Environment/dotenv values are text; retain the fixed Silero contract.
+        return 512 if isinstance(value, str) and value == "512" else value
 
     @model_validator(mode="after")
     def ordered_vad_probability_bands(self) -> Self:

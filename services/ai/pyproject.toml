@@ -27,6 +27,10 @@ build-backend = "uv_build"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-m 'not evaluation'"
+markers = [
+    "evaluation: real preprocessing inference against approved external Vietnamese fixtures and a pinned local model",
+]
 
 [tool.ruff]
 target-version = "py312"
