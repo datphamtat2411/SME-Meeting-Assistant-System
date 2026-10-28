@@ -32,7 +32,13 @@ naming conflict. In the room migration `rooms.organization_id` references
 4. Deactivating canonical users retains historical meeting organizer and
    participant references. No physical user delete, no cascade of meeting
    history or change to T05 session revocation.
-5. `scripts/check_flyway_compatibility.py` takes independent checkout
+5. A second PostgreSQL upgrade test installs only canonical V1 into an
+   isolated schema, inserts a real PENDING_SETUP user, then executes Flyway
+   migrations V20–V23 and `Flyway.validate()`. It verifies the existing
+   V1 checksum and row survive intact, all later tables are present, and
+   no legacy `user_accounts` table is created. The schema is dropped
+   after testing; no shared DB is modified.
+6. `scripts/check_flyway_compatibility.py` takes independent checkout
    paths, detects duplicate Flyway versions (including identical duplicates),
    duplicate CREATE TABLE ownership and old SaaS identity references. It
    returns **nonzero** for conflicts rather than silently renumbering them.
