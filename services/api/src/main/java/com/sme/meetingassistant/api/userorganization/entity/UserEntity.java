@@ -96,6 +96,15 @@ public class UserEntity {
         primaryOrgUnitId = orgUnitId;
     }
 
+    public void assignGlobalRole(GlobalRole newRole) {
+        globalRole = Objects.requireNonNull(newRole, "globalRole");
+    }
+
+    /** Mark management-scope replacement as a user-state change for HTTP ETag concurrency. */
+    public void markManagementScopeChanged() {
+        updatedAt = OffsetDateTime.now(ZoneOffset.UTC);
+    }
+
     public UUID getId() { return id; }
     public String getEmail() { return email; }
     public String getEmailNormalized() { return emailNormalized; }
