@@ -3,6 +3,8 @@ package com.sme.meetingassistant.api.userorganization.setup;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.io.IOException;
+import java.util.Arrays;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
@@ -27,6 +29,28 @@ class AccountSetupPasswordPolicyTests {
         rejects("123456789123456789".replace("1", "１"));
     }
 
+    @Test void bundledResourceDigestRejectsChangesWithoutCountingEntries() throws IOException {
+        byte[] original;
+        try (var stream = AccountSetupPasswordPolicy.class.getResourceAsStream(
+                "/security/common-compromised-passwords.txt")) {
+            assertThat(stream).isNotNull();
+            original = stream.readAllBytes();
+        }
+        AccountSetupPasswordPolicy.verifyBlocklistIntegrity(original);
+
+        byte[] changed = original.clone();
+        changed[changed.length - 2] ^= 1; // Same length/count, different content.
+        assertThatThrownBy(() -> AccountSetupPasswordPolicy.verifyBlocklistIntegrity(changed))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessageContaining("integrity");
+
+        byte[] truncated = Arrays.copyOf(original, original.length - 2);
+        assertThatThrownBy(() -> AccountSetupPasswordPolicy.verifyBlocklistIntegrity(truncated))
+            .isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> AccountSetupPasswordPolicy.verifyBlocklistIntegrity(null))
+            .isInstanceOf(IllegalStateException.class);
+    }
+
     @Test void previouslyBlockedPasswordsRemainRejected() {
         rejects("passwordpassword");
         rejects("password123456789");
@@ -40,6 +64,13 @@ class AccountSetupPasswordPolicyTests {
         rejects("department_manager_2027");
         rejects("Human-Resources-2026");
         rejects("Phong Nhan Su 2026!");
+        rejects("Phòng Nhân Sự 2026!");
+        rejects("Phòng Kế Toán 2026!");
+        rejects("Nhân Sự 2026!!!!");
+        rejects("Kế Toán 2026!!!!!");
+        rejects("Ban Điều Hành 2026!");
+        rejects("SME Meeting Assistant System 2026!");
+        rejects("Meeting Assistant System 2026!");
         rejects("phongketoan2026");
         rejects("2026MeetingAssistant");
         rejects("marketingmarketing");
@@ -48,6 +79,8 @@ class AccountSetupPasswordPolicyTests {
     @Test void legitimateUnicodeSpacesAndLongPassphrasesRemainAllowed() {
         policy.validate("Một câu mật khẩu dài có dấu và dấu cách 🔐");
         policy.validate("My team discussed marketing but chose another strong passphrase 🚀");
+        policy.validate("Cuộc họp của Phòng Nhân Sự đã thảo luận phương án mới 🔐");
+        policy.validate("Sáng nay Ban Điều Hành đã thống nhất kế hoạch tiếp theo 🔐");
         policy.validate("🚀".repeat(128));
         policy.validate("!".repeat(128)); // Collapsed comparison must not reject empty strings.
         policy.validate("This is a long password with no digit or special punctuation");

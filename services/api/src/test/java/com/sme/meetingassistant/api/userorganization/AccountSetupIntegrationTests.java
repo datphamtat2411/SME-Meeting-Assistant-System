@@ -169,6 +169,8 @@ class AccountSetupIntegrationTests {
         UUID id = createPending();
         String setup = token(id);
         submit(setup, "1q2w3e4r5t6y7u8i9o0p", 422);
+        submit(setup, "Phòng Nhân Sự 2026!", 422);
+        submit(setup, "SME Meeting Assistant System 2026!", 422);
         assertThat(users.findById(id).orElseThrow().getAccountStatus())
             .isEqualTo(AccountStatus.PENDING_SETUP);
         assertThat(jdbc.queryForObject(

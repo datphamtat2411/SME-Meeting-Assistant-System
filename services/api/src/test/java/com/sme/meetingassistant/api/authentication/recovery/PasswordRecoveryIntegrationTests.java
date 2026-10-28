@@ -223,6 +223,8 @@ class PasswordRecoveryIntegrationTests {
         String oldHash = users.findById(active.getId()).orElseThrow().getPasswordHash();
         reset(recovery, "1q2w3e4r5t6y7u8i9o0p", 422);
         reset(recovery, "SME Meeting Assistant 2026!", 422);
+        reset(recovery, "Phòng Kế Toán 2026!", 422);
+        reset(recovery, "SME Meeting Assistant System 2026!", 422);
         assertThat(jdbc.queryForObject(
             "SELECT used_at FROM password_reset_tokens WHERE id=?",
             OffsetDateTime.class, tokenId())).isNull();

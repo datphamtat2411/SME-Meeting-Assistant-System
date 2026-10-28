@@ -31,18 +31,34 @@ The next blocklist update is a controlled security policy/data change.
 - License: `https://github.com/danielmiessler/SecLists/blob/1a7bb9127eca9e6ff2fc0301c597fe6e16a0cb56/LICENSE` (Copyright © 2018 Daniel Miessler; MIT)
 - Selection: retain only lines with 15–128 Unicode code points, normalize
   NFKC, lower-case under Locale.ROOT, deduplicate and sort.
-  This produces **329 lines** out of 99,840 upstream candidates. Shorter
-  entries cannot pass the existing 15-code-point minimum, so do not need
-  to ship in the application. The previous 14 locally blocked values remain.
+  This produces **329 source candidate lines** out of 99,840. Two
+  `$hex[...]` entries encode `http://ads` and `http://www`, both shorter
+  than 15 characters when decoded, so the reviewed bundled snapshot retains
+  **327 entries**. The previous 14 locally blocked values remain.
 - Resource path: `src/main/resources/security/common-compromised-passwords.txt`.
   Check in the snapshot; never fetch it at runtime.
-- A missing/partial blocklist **fails application initialization**, rather
-  than allowing password setup/reset without the agreed controls.
+- **Pinned UTF-8 SHA-256 resource digest:**
+  `103e8b4890736ea3447ab53bce03381fc2697293a0339a5cfd83e28ff3f71cca`.
+  This exact digest is verified at application startup before parsing.
+  Missing, modified, truncated or corrupted resources fail initialization;
+  entry count alone is not treated as an integrity guarantee.
 
-To refresh, review the upstream candidate source and licensing, pin a new
-SHA, regenerate the subset with exactly the above rules, diff with the
-previous file, review false positives and run the focused + full API tests.
-Do **not** download a floating `master` asset during startup or CI.
+To refresh: review upstream provenance/license and pin a specific new commit;
+download the source for that commit outside the running application; decode
+`$hex[...]` candidates before checking password length (do not include their
+literal encoded form); retain candidates with 15–128 Unicode code points;
+NFKC-normalize, lowercase using locale-independent semantics, deduplicate
+and sort; preserve the reviewed header format. Diff and review the updated
+snapshot for malformed/irrelevant records and false positives. Compute the
+SHA-256 of the **exact final UTF-8 resource bytes**, update the pinned
+`RESOURCE_SHA256` in the policy and this document together, then run focused
+and complete CI tests. Do not silently update the resource, and do **not**
+download a floating `master` asset at startup or in CI.
+
+The 327-entry corpus is an intentionally **bounded baseline**. Passing the
+check does not establish that a password was never leaked. Source selection,
+coverage trade-offs and the release update cadence require explicit
+product/security-owner approval; this document does not claim such approval.
 
 ## Context-specific controls
 
@@ -50,8 +66,13 @@ Reject simple strings made of (up to two copies of) project/product,
 organization identity, role and common department names plus small numeric
 affixes. Examples: `SME Meeting Assistant 2026!`,
 `department_manager_2027`, `Phong Nhan Su 2026!`.
-The matching is anchored to **only** those simple patterns, not a blanket
-ban on every strong passphrase containing a role or department word.
+The common-password comparison uses NFKC case-folding and a punctuation-
+collapsed copy. Context matching separately removes Unicode combining marks,
+maps Vietnamese `đ` to `d`, and checks full-password, anchored numeric
+variants. This rejects `Phòng Nhân Sự 2026!`, `Phòng Kế Toán 2026!` and
+`SME Meeting Assistant System 2026!`, while allowing long passphrases that
+only mention these words. The original accepted password is still passed
+**unchanged** to Argon2id; no password normalization occurs at hashing.
 
 Because there is no tenant/organization-name field in the current canonical
 PR3 identity model, this baseline uses the known SME/product/project labels
@@ -63,7 +84,11 @@ avoid accepting caller-provided arbitrary names as policy authority.
 
 - Validate a long compromised value found in pinned SecLists (not in
   the previous inline set), including case/punctuation/Unicode-width variants.
-- Reject product, role and department year/symbol variants.
+- Reject product, role and department year/symbol variants, including
+  Vietnamese diacritics, `đ/Đ`, and the full product name.
+- Keep valid passphrases with contextual terms and all allowed Unicode intact.
+- Verify the exact pinned SHA-256 accepts the current resource and rejects
+  byte modifications, truncation and missing data.
 - Preserve 15–128 Unicode-code-point, whitespace and no-composition rules.
 - Real HTTP setup and recovery rejection must leave one-time tokens unused,
   existing account/password state unchanged and no reset audit record.
