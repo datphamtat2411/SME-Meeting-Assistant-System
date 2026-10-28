@@ -107,6 +107,11 @@ public class UserEntity {
         deactivatedAt = null;
     }
 
+    /** Updated only after a verified successful login in the authentication service. */
+    public void recordSuccessfulLogin(OffsetDateTime at) {
+        this.lastLoginAt = Objects.requireNonNull(at, "at");
+    }
+
     public void assignGlobalRole(GlobalRole newRole) {
         globalRole = Objects.requireNonNull(newRole, "globalRole");
     }
