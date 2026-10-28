@@ -45,6 +45,7 @@ class AuthTransportHttpIntegrationTests {
     @Autowired UserRepository users;
     @Autowired AuthSessionRepository sessions;
     @Autowired AccountSetupPasswordHasher hasher;
+    @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
     private UserEntity user;
 
     @BeforeEach void userFixture() {
@@ -161,6 +162,39 @@ class AuthTransportHttpIntegrationTests {
             .contentType(MediaType.APPLICATION_JSON).content(loginBody))
             .andExpect(status().isForbidden());
         assertThat(sessions.countByUserIdAndStatus(user.getId(), AuthSessionStatus.ACTIVE)).isZero();
+    }
+
+    @Test
+    void sessionCsrfFromAnotherBrowserSessionCannotAuthorizeMutation() throws Exception {
+        var first = webLogin();
+        var second = webLogin();
+        mvc.perform(patch("/api/v1/me/profile")
+            .cookie(cookie(second, AuthTransport.ACCESS), cookie(first, AuthTransport.CSRF))
+            .header(HttpHeaders.ORIGIN, ORIGIN)
+            .header("X-CSRF-Token", cookie(first, AuthTransport.CSRF).getValue())
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(json(Map.of("displayName", "Cross-session attack"))))
+            .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void webRefreshWorksWithExpiredAccessCookieAndCapsNewCookieAtSessionExpiry() throws Exception {
+        var original = webLogin();
+        var session = sessions.findByUserIdAndStatusOrderByCreatedAtAsc(
+            user.getId(), AuthSessionStatus.ACTIVE).getFirst();
+        jdbc.update("UPDATE auth_sessions SET absolute_expires_at=clock_timestamp() + INTERVAL '5 minutes' WHERE id=?",
+            session.getId());
+        // This test does not require an access JWT to perform refresh.
+        var response = mvc.perform(post("/api/v1/auth/refresh")
+            .header(HttpHeaders.ORIGIN, ORIGIN)
+            .header("X-CSRF-Token", cookie(original, AuthTransport.CSRF).getValue())
+            .cookie(cookie(original, AuthTransport.REFRESH), cookie(original, AuthTransport.CSRF)))
+            .andExpect(status().isOk()).andReturn();
+        String accessSetCookie = setCookieHeader(response, AuthTransport.ACCESS);
+        var maxAge = java.util.regex.Pattern.compile("Max-Age=(\\d+)").matcher(accessSetCookie);
+        assertThat(maxAge.find()).isTrue();
+        assertThat(Long.parseLong(maxAge.group(1))).isLessThanOrEqualTo(300L);
+        assertThat(data(response).path("sessionStatus").asText()).isEqualTo("ACTIVE");
     }
 
     @Test

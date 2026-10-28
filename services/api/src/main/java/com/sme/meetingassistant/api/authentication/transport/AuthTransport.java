@@ -45,8 +45,10 @@ public final class AuthTransport {
         return cookie(request, ACCESS) != null || cookie(request, REFRESH) != null;
     }
 
-    public static void setAccess(HttpServletResponse response, String value) {
-        add(response, ACCESS, value, "/", Duration.ofMinutes(10), true);
+    public static void setAccess(HttpServletResponse response, String value, Duration maxLifetime) {
+        Duration ttl = maxLifetime.compareTo(Duration.ofMinutes(10)) < 0
+            ? maxLifetime : Duration.ofMinutes(10);
+        add(response, ACCESS, value, "/", ttl, true);
     }
 
     public static void setRefresh(HttpServletResponse response, String value, Duration ttl) {

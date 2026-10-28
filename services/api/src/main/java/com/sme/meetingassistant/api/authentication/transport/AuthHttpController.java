@@ -80,7 +80,9 @@ public class AuthHttpController {
             return ResponseEntity.ok().cacheControl(CacheControl.noStore())
                 .body(responses.success(new MobileTokens(access, admitted.refreshToken(), "Bearer", 600)));
         }
-        AuthTransport.setAccess(response, access);
+        AuthTransport.setAccess(response, access,
+            Duration.between(OffsetDateTime.now(ZoneOffset.UTC),
+                admitted.absoluteSessionExpiresAt()));
         AuthTransport.setRefresh(response, admitted.refreshToken(),
             Duration.between(OffsetDateTime.now(ZoneOffset.UTC), admitted.refreshExpiresAt()));
         String signedCsrf = csrf.issue(admitted.sessionId().toString());
@@ -103,7 +105,9 @@ public class AuthHttpController {
             return ResponseEntity.ok().cacheControl(CacheControl.noStore())
                 .body(responses.success(new MobileTokens(access, rotated.refreshToken(), "Bearer", 600)));
         }
-        AuthTransport.setAccess(response, access);
+        AuthTransport.setAccess(response, access,
+            Duration.between(OffsetDateTime.now(ZoneOffset.UTC),
+                rotated.absoluteSessionExpiresAt()));
         AuthTransport.setRefresh(response, rotated.refreshToken(),
             Duration.between(OffsetDateTime.now(ZoneOffset.UTC), rotated.refreshExpiresAt()));
         String signedCsrf = csrf.issue(rotated.sessionId().toString());
