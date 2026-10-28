@@ -34,7 +34,9 @@ public class WebLogoutIdentityResolver {
     }
 
     public RefreshSessionLocator.SessionIdentity identify(HttpServletRequest request) {
-        var viaRefresh = refresh.identify(AuthTransport.cookie(request, AuthTransport.REFRESH));
+        // A known *historical* refresh token must not select an unrelated
+        // session ahead of a currently verified access JWT.
+        var viaRefresh = refresh.identifyUsable(AuthTransport.cookie(request, AuthTransport.REFRESH));
         if (viaRefresh != null) return viaRefresh;
 
         String rawAccess = AuthTransport.cookie(request, AuthTransport.ACCESS);

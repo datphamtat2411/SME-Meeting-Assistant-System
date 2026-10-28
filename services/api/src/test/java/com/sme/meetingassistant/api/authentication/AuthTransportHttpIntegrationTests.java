@@ -438,4 +438,113 @@ class AuthTransportHttpIntegrationTests {
         mvc.perform(get("/api/v1/me/profile").cookie(access))
             .andExpect(status().isUnauthorized());
     }
+    /**
+     * A previous session A may leave an old cookie in the browser while a new
+     * session B supplies a still-valid access JWT. Only *usable* refresh
+     * credentials may outrank B's verified access identity during Web logout.
+     */
+    private void staleRefreshMustNotShadowValidAccessSession(String state) throws Exception {
+        var prior = webLogin();
+        UUID priorId = sessions.findByUserIdAndStatusOrderByCreatedAtAsc(
+            user.getId(), AuthSessionStatus.ACTIVE).getFirst().getId();
+        switch (state) {
+            case "CONSUMED" -> assertThat(jdbc.update("""
+                UPDATE refresh_tokens SET consumed_at=clock_timestamp()
+                 WHERE session_id=? AND consumed_at IS NULL
+                """, priorId)).isEqualTo(1);
+            case "REVOKED" -> assertThat(jdbc.update("""
+                UPDATE refresh_tokens SET revoked_at=clock_timestamp()
+                 WHERE session_id=? AND revoked_at IS NULL
+                """, priorId)).isEqualTo(1);
+            case "EXPIRED" -> assertThat(jdbc.update("""
+                UPDATE refresh_tokens
+                   SET issued_at=clock_timestamp()-INTERVAL '2 hours',
+                       expires_at=clock_timestamp()-INTERVAL '1 hour'
+                 WHERE session_id=?
+                """, priorId)).isEqualTo(1);
+            case "REVOKED_SESSION" -> {
+                var session = sessions.findById(priorId).orElseThrow();
+                session.revoke(OffsetDateTime.now(ZoneOffset.UTC), "TEST_OLD_SESSION");
+                sessions.saveAndFlush(session);
+            }
+            default -> throw new IllegalArgumentException(state);
+        }
+
+        var current = webLogin();
+        UUID currentId = sessions.findByUserIdAndStatusOrderByCreatedAtAsc(
+            user.getId(), AuthSessionStatus.ACTIVE).stream()
+            .map(s -> s.getId()).filter(id -> !id.equals(priorId))
+            .findFirst().orElseThrow();
+        Cookie currentAccess = cookie(current, AuthTransport.ACCESS);
+        Cookie staleRefresh = cookie(prior, AuthTransport.REFRESH);
+
+        // CSRF bootstrap and logout must agree on CURRENT session B, never
+        // silently promote historical session A merely by matching its hash.
+        var bootstrapped = mvc.perform(get("/api/v1/auth/csrf")
+            .header(HttpHeaders.ORIGIN, ORIGIN).cookie(currentAccess, staleRefresh))
+            .andExpect(status().isOk()).andReturn();
+        Cookie boundCsrf = cookie(bootstrapped, AuthTransport.CSRF);
+        assertThat(boundCsrf.getValue()).isNotEqualTo(cookie(current, AuthTransport.CSRF).getValue());
+        var result = mvc.perform(post("/api/v1/auth/logout")
+            .header(HttpHeaders.ORIGIN, ORIGIN)
+            .header("X-CSRF-Token", boundCsrf.getValue())
+            .cookie(currentAccess, staleRefresh, boundCsrf))
+            .andExpect(status().isOk()).andReturn();
+
+        for (String name : List.of(AuthTransport.ACCESS, AuthTransport.REFRESH, AuthTransport.CSRF)) {
+            assertThat(setCookieHeader(result, name)).contains("Max-Age=0");
+        }
+        assertThat(sessions.findById(currentId).orElseThrow().getStatus())
+            .isEqualTo(AuthSessionStatus.REVOKED);
+        assertThat(sessions.findById(priorId).orElseThrow().getStatus())
+            .isEqualTo("REVOKED_SESSION".equals(state)
+                ? AuthSessionStatus.REVOKED : AuthSessionStatus.ACTIVE);
+        mvc.perform(get("/api/v1/me/profile").cookie(currentAccess))
+            .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void consumedRefreshCookieCannotShadowLiveAccessSession() throws Exception {
+        staleRefreshMustNotShadowValidAccessSession("CONSUMED");
+    }
+
+    @Test
+    void revokedRefreshCookieCannotShadowLiveAccessSession() throws Exception {
+        staleRefreshMustNotShadowValidAccessSession("REVOKED");
+    }
+
+    @Test
+    void expiredRefreshCookieCannotShadowLiveAccessSession() throws Exception {
+        staleRefreshMustNotShadowValidAccessSession("EXPIRED");
+    }
+
+    @Test
+    void revokedRefreshSessionCannotShadowAnotherLiveAccessSession() throws Exception {
+        staleRefreshMustNotShadowValidAccessSession("REVOKED_SESSION");
+    }
+
+    @Test
+    void consumedRefreshStillReachesRotationReplayDetectionAndRevokesFamily()
+            throws Exception {
+        var initial = webLogin();
+        Cookie oldRefresh = cookie(initial, AuthTransport.REFRESH);
+        Cookie originalCsrf = cookie(initial, AuthTransport.CSRF);
+
+        mvc.perform(post("/api/v1/auth/refresh")
+            .header(HttpHeaders.ORIGIN, ORIGIN)
+            .header("X-CSRF-Token", originalCsrf.getValue())
+            .cookie(oldRefresh, originalCsrf))
+            .andExpect(status().isOk());
+
+        // Unlike logout, refresh must accept a historical CSRF binding,
+        // allowing the transaction layer to recognize a consumed-token replay.
+        mvc.perform(post("/api/v1/auth/refresh")
+            .header(HttpHeaders.ORIGIN, ORIGIN)
+            .header("X-CSRF-Token", originalCsrf.getValue())
+            .cookie(oldRefresh, originalCsrf))
+            .andExpect(status().isUnauthorized());
+        assertThat(sessions.countByUserIdAndStatus(user.getId(), AuthSessionStatus.ACTIVE))
+            .isZero();
+    }
+
 }
