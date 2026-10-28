@@ -65,6 +65,33 @@ class Settings(BaseSettings):
         default=900, gt=0, le=3600, allow_inf_nan=False,
     )
     audio_temp_dir: Path = Path("/tmp")
+    audio_vad_model_path: Path | None = None
+    audio_vad_model_id: str = Field(
+        default="silero-vad", min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_.-]+$",
+    )
+    audio_vad_model_version: str = Field(
+        default="5", min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_.-]+$",
+    )
+    audio_vad_model_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    audio_vad_frame_samples: Literal[512] = 512
+    audio_vad_speech_threshold: float = Field(
+        default=0.60, ge=0, le=1, allow_inf_nan=False,
+    )
+    audio_vad_non_speech_threshold: float = Field(
+        default=0.35, ge=0, le=1, allow_inf_nan=False,
+    )
+    audio_vad_timeout_seconds: float = Field(
+        default=900, gt=0, le=3600, allow_inf_nan=False,
+    )
+    audio_vad_model_max_bytes: int = Field(default=16777216, gt=0, le=268435456)
+    audio_vad_max_concurrent_recordings: int = Field(default=1, gt=0, le=16)
+    audio_evidence_max_bytes: int = Field(default=16777216, gt=0, le=1073741824)
+
+    @model_validator(mode="after")
+    def ordered_vad_probability_bands(self) -> Self:
+        if self.audio_vad_non_speech_threshold >= self.audio_vad_speech_threshold:
+            raise ValueError("VAD non-speech threshold must be below speech threshold")
+        return self
 
     @model_validator(mode="after")
     def complete_tls_configuration(self) -> Self:

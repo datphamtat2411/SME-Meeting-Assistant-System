@@ -265,3 +265,62 @@ def test_audio_environment_and_temp_directory_loading_is_lazy(monkeypatch, tmp_p
     assert settings.audio_decode_timeout_seconds == 1.5
     assert settings.audio_temp_dir == missing
     assert not missing.exists()
+
+
+def test_vad_defaults_and_lazy_model_configuration(monkeypatch, tmp_path):
+    monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
+    defaults = load_settings(env_file=None)
+    assert defaults.audio_vad_model_path is None
+    assert defaults.audio_vad_model_id == "silero-vad"
+    assert defaults.audio_vad_model_version == "5"
+    assert defaults.audio_vad_model_sha256 is None
+    assert defaults.audio_vad_frame_samples == 512
+    assert defaults.audio_vad_speech_threshold == 0.60
+    assert defaults.audio_vad_non_speech_threshold == 0.35
+    assert defaults.audio_vad_max_concurrent_recordings == 1
+    missing = tmp_path / "not-provisioned.onnx"
+    monkeypatch.setenv("AI_AUDIO_VAD_MODEL_PATH", str(missing))
+    monkeypatch.setenv("AI_AUDIO_VAD_MODEL_SHA256", "a" * 64)
+    monkeypatch.setenv("AI_AUDIO_VAD_TIMEOUT_SECONDS", "12.5")
+    settings = load_settings(env_file=None)
+    assert settings.audio_vad_model_path == missing
+    assert settings.audio_vad_model_sha256 == "a" * 64
+    assert settings.audio_vad_timeout_seconds == 12.5
+    assert not missing.exists()
+
+
+@pytest.mark.parametrize("field,maximum", [
+    ("audio_vad_timeout_seconds", 3600),
+    ("audio_vad_model_max_bytes", 268435456),
+    ("audio_vad_max_concurrent_recordings", 16),
+    ("audio_evidence_max_bytes", 1073741824),
+])
+@pytest.mark.parametrize("value", ["0", "-1", "nan", "inf", "private-invalid", "over"])
+def test_vad_resource_limits_are_finite_and_bounded(monkeypatch, field, maximum, value):
+    monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
+    monkeypatch.setenv(f"AI_{field.upper()}", str(maximum + 1) if value == "over" else value)
+    with pytest.raises(ConfigurationError) as caught:
+        load_settings(env_file=None)
+    assert field in str(caught.value)
+    assert "private-invalid" not in "".join(traceback.format_exception(caught.value))
+    assert caught.value.__context__ is None
+
+
+@pytest.mark.parametrize("overrides", [
+    {"audio_vad_frame_samples": 256},
+    {"audio_vad_frame_samples": 1024},
+    {"audio_vad_speech_threshold": float("nan")},
+    {"audio_vad_non_speech_threshold": float("inf")},
+    {"audio_vad_speech_threshold": 1.01},
+    {"audio_vad_non_speech_threshold": -0.01},
+    {"audio_vad_non_speech_threshold": 0.6},
+    {"audio_vad_non_speech_threshold": 0.8},
+    {"audio_vad_model_id": "private/path"},
+    {"audio_vad_model_version": ""},
+    {"audio_vad_model_sha256": "not-a-digest"},
+])
+def test_vad_contract_thresholds_and_identity_are_validated(overrides):
+    with pytest.raises(ValueError):
+        Settings(service_name="test-ai", service_identity="ai-core", _env_file=None, **overrides)

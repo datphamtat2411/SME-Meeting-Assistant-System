@@ -8,6 +8,8 @@ class AudioErrorCategory(StrEnum):
     DECODING = "DECODING"
     TIMEOUT = "TIMEOUT"
     RESOURCE = "RESOURCE"
+    MODEL_UNAVAILABLE = "MODEL_UNAVAILABLE"
+    INFERENCE = "INFERENCE"
 
 
 class AudioProcessingError(Exception):

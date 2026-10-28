@@ -233,6 +233,107 @@ need memory for that storage, the decoder, and Python (for example `--memory=1g`
 for a single normalization). A bounded disk-backed mount can instead supply
 `AI_AUDIO_TEMP_DIR`. The HTTP smoke workload does not perform normalization.
 
+### Speech detection and energy evidence
+
+`AudioEvidenceDetector` independently validates local WAV/PCM16, mono, 16 kHz
+input and emits VAD probability-band evidence alongside RMS and dBFS. It does
+not decode or modify the audio. All frames use absolute, zero-based, half-open
+sample bounds and exact `Fraction(sample, 16000)` times. A final short frame is
+zero-padded **only for the model**; energy and end time cover real samples only,
+and `padding_samples` records the difference. Leading/trailing silence and even
+a zero-sample PCM WAV are valid results.
+
+VAD probabilities at or above the speech threshold are `likely-speech`; those
+at or below the non-speech threshold are `likely-non-speech`. The band between
+them is `uncertain`. These are evidence labels, not ground truth. RMS is relative
+to PCM full scale (`sample / 32768`), and dBFS is `20 * log10(RMS)`; digital
+silence has RMS 0 and dBFS negative infinity. Energy never establishes speech:
+weak speech, loud noise, and music can disagree with the VAD evidence.
+
+```python
+from pathlib import Path
+from sme_meeting_ai.audio import AudioEvidenceDetector, AudioSource, SileroVadBackend
+from sme_meeting_ai.core.config import load_settings
+
+settings = load_settings()
+backend = SileroVadBackend.from_settings(settings)  # One session per worker.
+try:
+    detector = AudioEvidenceDetector(settings, backend)
+    source = AudioSource("opaque-recording-id", Path("/media/normalized.wav"))
+    with detector.detect(source, expected_sample_count=None) as evidence:
+        for frame in evidence.iter_frames():
+            consume(frame)  # Consume lazily; iter_frames() can be replayed.
+finally:
+    backend.close()
+```
+
+Evidence is stored as versioned 45-byte records in a private temporary artifact,
+not a recording-sized Python list. Context exit or explicit `close()` removes
+the artifact. PCM reads and inference use one 512-sample frame at a time.
+The artifact retains source identity, exact sample/frame counts, per-label frame
+counters, model ID/version/actual SHA-256, backend, detector version, and effective
+thresholds/resource limits. Paths and provider diagnostics are excluded from
+provenance and public errors. Failed processing removes partial evidence and
+returns no truncated result. In addition to `VALIDATION`, `TIMEOUT`, and `RESOURCE`,
+detection can fail with sanitized `MODEL_UNAVAILABLE` or `INFERENCE` categories.
+
+Provision a pinned, single-file **Silero v5-compatible ONNX** model externally.
+The adapter accepts float32 `input` `[1, 576]` (64 context + 512 real/padded
+samples), float32 recurrent `state` `[2, 1, 128]`, and scalar int64 `sr=16000`;
+outputs are float32 `output` `[1, 1]` and `stateN` `[2, 1, 128]`. Compatible
+dynamic axes are allowed. Other contracts and external-tensor assets are
+unsupported. NumPy and CPU ONNX Runtime are locked Python dependencies;
+there is no Torch, model download, model copied into the image, or network model
+fallback. Set the expected SHA-256 to verify the provisioned bytes before loading;
+the actual digest is always retained, even if the optional expected value is unset.
+For example, supply these options to a worker container with externally selected
+model version and digest:
+
+```sh
+--mount type=bind,src=/external/models/silero-vad.onnx,dst=/run/models/silero-vad.onnx,readonly \
+-e AI_AUDIO_VAD_MODEL_PATH=/run/models/silero-vad.onnx \
+-e AI_AUDIO_VAD_MODEL_ID=silero-vad -e AI_AUDIO_VAD_MODEL_VERSION=5 \
+-e AI_AUDIO_VAD_MODEL_SHA256=<expected-sha256>
+```
+
+| Setting | Default | Allowed range |
+| --- | --- | --- |
+| `AI_AUDIO_VAD_MODEL_PATH` | unset | required at explicit backend loading; local read-only regular file |
+| `AI_AUDIO_VAD_MODEL_ID` | `silero-vad` | 1–128 alphanumeric, `.`, `_`, `-` characters |
+| `AI_AUDIO_VAD_MODEL_VERSION` | `5` | same as model ID |
+| `AI_AUDIO_VAD_MODEL_SHA256` | unset | optional 64-character lowercase hex digest |
+| `AI_AUDIO_VAD_FRAME_SAMPLES` | 512 | exactly 512 for the supported model contract |
+| `AI_AUDIO_VAD_SPEECH_THRESHOLD` | 0.60 | finite, 0–1 |
+| `AI_AUDIO_VAD_NON_SPEECH_THRESHOLD` | 0.35 | finite, 0–1, strictly below speech threshold |
+| `AI_AUDIO_VAD_TIMEOUT_SECONDS` | 900 | finite, >0, ≤3600 |
+| `AI_AUDIO_VAD_MODEL_MAX_BYTES` | 16777216 | 1–268435456 |
+| `AI_AUDIO_VAD_MAX_CONCURRENT_RECORDINGS` | 1 | 1–16 per backend |
+| `AI_AUDIO_EVIDENCE_MAX_BYTES` | 16777216 | 1–1073741824 per artifact |
+
+Detection also enforces `AI_AUDIO_MAX_INPUT_BYTES`,
+`AI_AUDIO_MAX_DURATION_SECONDS`, and `AI_AUDIO_TEMP_DIR`. One hour of evidence
+uses about 4.83 MiB, in addition to the unchanged PCM artifact and model/session
+memory. Plan temporary capacity for all concurrently owned artifacts; the evidence
+cap applies to each result, including retained results after inference completes.
+Inference uses one intra-op and one inter-op thread, sequential execution, bounded
+recording concurrency, and fresh recurrent/context state per recording. One
+recording-level watchdog terminates in-flight ONNX execution at the deadline.
+
+`audio.vad.silero_vad_resource(settings)` is an async context manager for worker
+ownership: an injected `lambda: silero_vad_resource(settings)` resource factory
+loads one backend and closes it on worker shutdown. The worker entrypoint still
+has no execution hook. Detection adds no speech-map construction, ASR, HTTP,
+RabbitMQ, S3, or job orchestration.
+
+Focused deterministic verification (fake VAD streams and ONNX sessions; no model
+or FFmpeg needed):
+
+```sh
+uv run pytest tests/unit/test_config.py tests/unit/test_audio_detection.py tests/unit/test_vad_backend.py
+```
+
+Model-quality and Vietnamese evaluation are deferred to Task 05.
+
 ### Runtime verification
 
 ```sh
