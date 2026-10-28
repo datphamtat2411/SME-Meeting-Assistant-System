@@ -249,9 +249,12 @@ class RefreshSessionIntegrationTests {
     void inactiveAccountCannotRefreshAndRevokedParentCannotBeReused() {
         var owner = activeUser();
         var admission = loggedIn(owner, AuthClientType.MOBILE);
-        org.springframework.test.util.ReflectionTestUtils.setField(owner,
+        // Login updates last_login_at and the @Version column; use a fresh
+        // canonical entity rather than the stale pre-login test fixture.
+        var latest = users.findById(owner.getId()).orElseThrow();
+        org.springframework.test.util.ReflectionTestUtils.setField(latest,
             "accountStatus", AccountStatus.INACTIVE);
-        users.saveAndFlush(owner);
+        users.saveAndFlush(latest);
         rejects(() -> refresh.rotate(admission.refreshToken(), AuthClientType.MOBILE));
         refresh.revokeAllForUser(owner.getId(), "ACCOUNT_DEACTIVATED");
         rejects(() -> refresh.rotate(admission.refreshToken(), AuthClientType.MOBILE));
