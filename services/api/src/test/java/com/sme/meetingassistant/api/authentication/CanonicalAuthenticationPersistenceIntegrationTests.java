@@ -242,6 +242,53 @@ class CanonicalAuthenticationPersistenceIntegrationTests {
                 now, now.plusMinutes(30))).isInstanceOf(DataIntegrityViolationException.class);
     }
 
+
+    @Test
+    void expiredSessionStatusIsDurableAndCannotRecordNewActivity() {
+        AuthSessionEntity family = session(user());
+        family.expire();
+        sessions.flush();
+        entityManager.clear();
+
+        AuthSessionEntity loaded = sessions.findById(family.getId()).orElseThrow();
+        assertThat(loaded.getStatus()).isEqualTo(AuthSessionStatus.EXPIRED);
+        assertThat(loaded.getRevokedAt()).isNull();
+        assertThatThrownBy(() -> loaded.recordActivity(OffsetDateTime.now(ZoneOffset.UTC)))
+            .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void invalidRevokeReasonDoesNotMutateSessionState() {
+        AuthSessionEntity family = session(user());
+        assertThatThrownBy(() -> family.revoke(OffsetDateTime.now(ZoneOffset.UTC), ""))
+            .isInstanceOf(IllegalArgumentException.class);
+        assertThat(family.getStatus()).isEqualTo(AuthSessionStatus.ACTIVE);
+        assertThat(family.getRevokedAt()).isNull();
+        assertThat(family.getRevokeReason()).isNull();
+    }
+
+    @Test
+    void duplicatePasswordResetVerifierIsRejectedByDatabase() throws Exception {
+        UserEntity owner = user();
+        OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
+        resetTokens.saveAndFlush(new PasswordResetTokenEntity(owner.getId(),
+            verifier("recovery-duplicate"), now, now.plusMinutes(30)));
+        assertThatThrownBy(() -> resetTokens.saveAndFlush(new PasswordResetTokenEntity(
+            owner.getId(), verifier("recovery-duplicate"), now, now.plusMinutes(30))))
+            .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void expiredRecoveryVerifierRemainsInHistoryButCannotBeConsumed() throws Exception {
+        UserEntity owner = user();
+        OffsetDateTime requested = OffsetDateTime.now(ZoneOffset.UTC).minusHours(1);
+        PasswordResetTokenEntity token = resetTokens.saveAndFlush(new PasswordResetTokenEntity(
+            owner.getId(), verifier("expired-recovery"), requested, requested.plusMinutes(30)));
+        assertThatThrownBy(() -> token.consume(OffsetDateTime.now(ZoneOffset.UTC)))
+            .isInstanceOf(IllegalStateException.class);
+        assertThat(resetTokens.findById(token.getId()).orElseThrow().getUsedAt()).isNull();
+    }
+
     @Test
     void revokeSessionPreservesHistoricalRefreshLineage() throws Exception {
         AuthSessionEntity family = session(user());

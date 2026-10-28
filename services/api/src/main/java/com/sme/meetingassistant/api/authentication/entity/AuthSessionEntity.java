@@ -69,11 +69,12 @@ public class AuthSessionEntity {
 
     public void revoke(OffsetDateTime at, String reason) {
         if (status != AuthSessionStatus.ACTIVE) return;
-        this.status = AuthSessionStatus.REVOKED;
-        this.revokedAt = Objects.requireNonNull(at, "at");
+        Objects.requireNonNull(at, "at");
         if (reason == null || reason.isBlank() || reason.length() > 64) {
             throw new IllegalArgumentException("Stable revoke reason required");
         }
+        this.status = AuthSessionStatus.REVOKED;
+        this.revokedAt = at;
         this.revokeReason = reason;
     }
 
