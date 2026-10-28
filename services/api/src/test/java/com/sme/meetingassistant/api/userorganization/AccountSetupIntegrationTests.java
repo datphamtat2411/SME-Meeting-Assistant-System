@@ -327,6 +327,9 @@ class AccountSetupIntegrationTests {
         manager = users.saveAndFlush(manager);
         reissue(id, employee, originalTag, 403);
         reissue(id, manager, originalTag, 403);
+        mvc.perform(post("/api/v1/users/" + id + "/account-setup/reissue")
+            .header(HttpHeaders.IF_MATCH, originalTag))
+            .andExpect(status().isUnauthorized());
         reissue(id, admin, null, 428);
         reissue(id, admin, "\"u-"+id+"-999999\"", 412);
         reissue(UUID.randomUUID(), admin, originalTag, 404);
@@ -356,6 +359,42 @@ class AccountSetupIntegrationTests {
         // Successful completion removes eligibility permanently.
         submit(codec.issue(originalId), "A fresh password that activates this user 2026!", 200);
         reissue(id, admin, tag(id), 409);
+    }
+
+    @Test
+    void repeatedDeadInvitationsAreBoundedByPerAccountDailyQuota() throws Exception {
+        UUID id = createPending();
+        UUID originalId = tokenId(id);
+        String match = tag(id);
+        jdbc.update("""
+            UPDATE account_setup_tokens
+               SET requested_at=now()-INTERVAL '2 minutes',
+                   expires_at=now()+INTERVAL '22 hours'
+             WHERE id=?
+            """, originalId);
+        jdbc.update("UPDATE email_deliveries SET status='DEAD' WHERE related_entity_id=?",
+            originalId);
+        // Five historical reissues plus the initial issuance within 24h.
+        for (int i = 0; i < 5; i++) {
+            UUID historicalId = UUID.randomUUID();
+            OffsetDateTime issued = OffsetDateTime.now(java.time.ZoneOffset.UTC)
+                .minusMinutes(10 + i);
+            jdbc.update("""
+                INSERT INTO account_setup_tokens(id,user_id,token_hash,requested_at,expires_at)
+                VALUES(?,?,?,?,?)
+                """, historicalId, id, codec.sha256(codec.issue(historicalId)),
+                issued, issued.plusHours(24));
+        }
+
+        reissue(id, admin, match, 429);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM account_setup_tokens WHERE user_id=?",
+            Integer.class, id)).isEqualTo(6);
+        assertThat(jdbc.queryForObject("""
+            SELECT COUNT(*) FROM audit_events
+             WHERE action_code='ACCOUNT_SETUP_REISSUED' AND entity_id=?
+            """, Integer.class, id)).isZero();
+        assertThat(jdbc.queryForObject("SELECT revoked_at FROM account_setup_tokens WHERE id=?",
+            OffsetDateTime.class, originalId)).isNull();
     }
 
     @Test

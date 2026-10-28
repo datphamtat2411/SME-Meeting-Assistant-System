@@ -132,10 +132,15 @@ public class AccountSetupService {
         // Match the user-first lock ordering used by reissue/lifecycle mutations.
         // Read ownership without locking, then lock the canonical user row
         // before locking the token, to avoid opposite-order DB deadlocks.
-        var owners = jdbc.query("SELECT user_id FROM account_setup_tokens WHERE id=?",
-            (rs, row) -> rs.getObject("user_id", UUID.class), tokenId);
-        if (owners.size() != 1) invalid();
-        var account = users.findByIdForSessionAdmission(owners.getFirst())
+        var owners = jdbc.query(
+            "SELECT user_id,token_hash FROM account_setup_tokens WHERE id=?",
+            (rs, row) -> new OwnerRow(
+                rs.getObject("user_id", UUID.class), rs.getString("token_hash")), tokenId);
+        // Reject invalid capability proofs before taking the user row lock.
+        // The authoritative token check still happens after both locks.
+        if (owners.size() != 1
+                || !tokens.verify(tokenId, presented, owners.getFirst().tokenHash())) invalid();
+        var account = users.findByIdForSessionAdmission(owners.getFirst().userId())
             .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY));
         if (account.getAccountStatus() != AccountStatus.PENDING_SETUP) invalid();
 
@@ -164,6 +169,8 @@ public class AccountSetupService {
     private static void invalid() {
         throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "Invalid setup authorization");
     }
+
+    private record OwnerRow(UUID userId, String tokenHash) {}
 
     private record PriorInvitation(OffsetDateTime requestedAt, OffsetDateTime expiresAt,
                                    OffsetDateTime usedAt, OffsetDateTime revokedAt,

@@ -41,7 +41,8 @@ still deliverable/usable invitation, 429 reissue cooldown or quota.
 
 A reissue locks the user row first. Initial setup completion now obtains
 the same user lock **before** its token-row lock. This avoids opposite-order
-row locks and makes completion and reissue mutually exclusive. A stale
+row locks and makes completion and reissue mutually exclusive. An invalid bearer signature is rejected
+before taking a user-row lock, then checked again under lock. A stale
 administrator `If-Match` cannot silently revoke a newer invitation.
 Neither action can activate an account using a revoked or consumed token.
 
@@ -62,7 +63,7 @@ Neither action can activate an account using a revoked or consumed token.
 
 PostgreSQL integration tests cover expired token recovery, DEAD delivery
 replacement, one-time invalidation, SMTP rendering, anonymous/role denials,
-missing/stale ETag, rate controls, audit, and ACTIVE-account rejection.
+missing/stale ETag, cooldown + daily quota, audit, and ACTIVE-account rejection.
 Full API Maven verification and PR CI must pass before review sign-off.
 
 **Dependency:** F03 password-policy approval is still separately required
