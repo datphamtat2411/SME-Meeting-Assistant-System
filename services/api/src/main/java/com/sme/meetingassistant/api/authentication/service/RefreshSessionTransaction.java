@@ -70,6 +70,11 @@ public class RefreshSessionTransaction {
         // A consumed token is evidence of replay, even if it has since expired.
         if (previous.getConsumedAt() != null || previous.getReplacedByTokenId() != null) {
             revokeFamily(session, now, REFRESH_REUSE);
+            jdbc.update("""
+                INSERT INTO audit_events(id,occurred_at,actor_user_id,actor_type,
+                  action_code,entity_type,entity_id)
+                VALUES (?,?,?,'SYSTEM','REFRESH_REPLAY_DETECTED','AUTH_SESSION',?)
+                """,UUID.randomUUID(),now,user.getId(),session.getId());
             return null; // the enclosing transaction commits the compromise response
         }
         if (previous.getRevokedAt() != null) return null;

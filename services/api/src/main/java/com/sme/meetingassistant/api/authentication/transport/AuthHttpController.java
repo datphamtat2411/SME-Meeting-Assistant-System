@@ -1,6 +1,8 @@
 package com.sme.meetingassistant.api.authentication.transport;
 
 import com.sme.meetingassistant.api.authentication.entity.AuthClientType;
+import com.sme.meetingassistant.api.authentication.abuse.AuthAbuseGuard;
+import com.sme.meetingassistant.api.authentication.abuse.AuthSecurityEventRecorder;
 import com.sme.meetingassistant.api.authentication.security.Rs256AccessTokenService;
 import com.sme.meetingassistant.api.authentication.service.LoginAdmissionService;
 import com.sme.meetingassistant.api.authentication.service.RefreshSessionService;
@@ -31,6 +33,7 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/api/v1/auth")
 @ConditionalOnProperty(prefix = "app.auth.transport", name = "enabled", havingValue = "true")
 public class AuthHttpController {
+    private final AuthAbuseGuard abuse;
     private final LoginAdmissionService login;
     private final RefreshSessionService refresh;
     private final Rs256AccessTokenService jwt;
@@ -40,8 +43,9 @@ public class AuthHttpController {
 
     public AuthHttpController(LoginAdmissionService login, RefreshSessionService refresh,
             Rs256AccessTokenService jwt, SessionCsrfTokens csrf, RefreshSessionLocator locator,
-            ApiResponseFactory responses) {
+            ApiResponseFactory responses, AuthAbuseGuard abuse) {
         this.login = login;
+        this.abuse = abuse;
         this.refresh = refresh;
         this.jwt = jwt;
         this.csrf = csrf;
@@ -73,8 +77,17 @@ public class AuthHttpController {
         boolean mobile = AuthTransport.mobile(request);
         if (mobile && !AuthTransport.validMobile(request)) throw AuthTransport.invalid();
         if (!mobile && request.getHeader(HttpHeaders.AUTHORIZATION) != null) throw AuthTransport.invalid();
-        var admitted = login.authenticateAndAdmit(payload.email(), payload.password(),
-            mobile ? AuthClientType.MOBILE : AuthClientType.WEB);
+        // Enforce the rolling source cap and pair backoff BEFORE Argon2id.
+        var admission = abuse.loginAdmission(request, payload.email());
+        LoginAdmissionService.AdmittedLogin admitted;
+        try {
+            admitted = login.authenticateAndAdmit(payload.email(), payload.password(),
+                mobile ? AuthClientType.MOBILE : AuthClientType.WEB);
+        } catch (org.springframework.web.server.ResponseStatusException rejected) {
+            abuse.loginFailed(admission);
+            throw rejected;
+        }
+        abuse.loginSucceeded(admission, admitted.userId());
         String access = jwt.issue(admitted.userId(), admitted.sessionId());
         if (mobile) {
             return ResponseEntity.ok().cacheControl(CacheControl.noStore())
@@ -99,7 +112,17 @@ public class AuthHttpController {
         String presented = mobile
             ? mobileRefreshHeader(request.getHeader(HttpHeaders.AUTHORIZATION))
             : AuthTransport.cookie(request, AuthTransport.REFRESH);
-        var rotated = refresh.rotate(presented, mobile ? AuthClientType.MOBILE : AuthClientType.WEB);
+        // Throttle guessing/replay before token hashing, DB locks and rotation.
+        var refreshAdmission = abuse.refreshAdmission(request, presented);
+        RefreshSessionService.RotatedRefresh rotated;
+        try {
+            rotated = refresh.rotate(presented,
+                mobile ? AuthClientType.MOBILE : AuthClientType.WEB);
+        } catch (org.springframework.web.server.ResponseStatusException rejected) {
+            abuse.refreshOutcome(refreshAdmission, null, false);
+            throw rejected;
+        }
+        abuse.refreshOutcome(refreshAdmission, rotated.userId(), true);
         String access = jwt.issue(rotated.userId(), rotated.sessionId());
         if (mobile) {
             return ResponseEntity.ok().cacheControl(CacheControl.noStore())
@@ -124,11 +147,17 @@ public class AuthHttpController {
             if (!AuthTransport.validMobile(request) ||
                     !(authentication instanceof JwtAuthenticationToken jwtAuth))
                 throw AuthTransport.invalid();
-            refresh.logout(java.util.UUID.fromString(jwtAuth.getToken().getSubject()),
+            java.util.UUID currentUser = java.util.UUID.fromString(jwtAuth.getToken().getSubject());
+            refresh.logout(currentUser,
                 java.util.UUID.fromString(jwtAuth.getToken().getClaimAsString("sid")));
+            abuse.logEvent(AuthSecurityEventRecorder.Action.SESSION_LOGGED_OUT, currentUser, request);
         } else {
             var current = locator.identify(AuthTransport.cookie(request, AuthTransport.REFRESH));
-            if (current != null) refresh.logout(current.userId(), current.sessionId());
+            if (current != null) {
+                refresh.logout(current.userId(), current.sessionId());
+                abuse.logEvent(AuthSecurityEventRecorder.Action.SESSION_LOGGED_OUT,
+                    current.userId(), request);
+            }
             AuthTransport.clear(response);
         }
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
