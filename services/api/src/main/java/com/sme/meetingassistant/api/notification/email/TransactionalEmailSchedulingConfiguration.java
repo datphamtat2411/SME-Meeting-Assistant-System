@@ -1,12 +1,12 @@
-package com.sme.meetingassistant.api.userorganization.setup;
+package com.sme.meetingassistant.api.notification.email;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
-/** Disable via APP_ACCOUNT_SETUP_WORKER_ENABLED=false in integration tests and operational maintenance. */
+/** One switch controls polling for every transactional email purpose. */
 @Configuration(proxyBeanMethods = false)
-@ConditionalOnProperty(prefix = "app.account-setup", name = "worker-enabled",
+@ConditionalOnProperty(prefix = "app.email.delivery", name = "worker-enabled",
                        havingValue = "true", matchIfMissing = true)
 @EnableScheduling
-public class AccountSetupSchedulingConfiguration {}
+public class TransactionalEmailSchedulingConfiguration { }

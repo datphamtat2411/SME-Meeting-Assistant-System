@@ -9,6 +9,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
+import com.sme.meetingassistant.api.notification.email.TransactionalEmailDeliveryWorker;
 import com.sme.meetingassistant.api.userorganization.entity.*;
 import com.sme.meetingassistant.api.userorganization.repository.UserRepository;
 import com.sme.meetingassistant.api.userorganization.setup.*;
@@ -49,7 +50,7 @@ class AccountSetupIntegrationTests {
     @Autowired private UserRepository users;
     @Autowired private AccountSetupTokenCodec codec;
     @Autowired private AccountSetupPasswordHasher hasher;
-    @Autowired private AccountSetupDeliveryWorker worker;
+    @Autowired private TransactionalEmailDeliveryWorker worker;
     @MockitoBean private JavaMailSender smtp;
 
     private UserEntity admin;
