@@ -149,9 +149,14 @@ class AuthTransportHttpIntegrationTests {
     void loginCsrfPreventsForcedBrowserSession() throws Exception {
         var start = bootstrap();
         String loginBody = json(Map.of("email", user.getEmail(), "password", PASS));
-        mvc.perform(post("/api/v1/auth/login").header(HttpHeaders.ORIGIN, ORIGIN)
+        var missingCsrf = mvc.perform(post("/api/v1/auth/login")
+            .header(HttpHeaders.ORIGIN, ORIGIN)
             .contentType(MediaType.APPLICATION_JSON).content(loginBody))
-            .andExpect(status().isForbidden());
+            .andExpect(status().isForbidden()).andReturn();
+        assertThat(mapper.readTree(missingCsrf.getResponse().getContentAsString())
+            .path("code").asText()).isEqualTo("AUTHZ_FORBIDDEN");
+        assertThat(missingCsrf.getResponse().getHeader(HttpHeaders.CACHE_CONTROL))
+            .contains("no-store");
         mvc.perform(post("/api/v1/auth/login").header(HttpHeaders.ORIGIN, ORIGIN)
             .cookie(cookie(start, AuthTransport.CSRF))
             .contentType(MediaType.APPLICATION_JSON).content(loginBody))
@@ -230,6 +235,14 @@ class AuthTransportHttpIntegrationTests {
             });
         mvc.perform(get("/api/v1/me/profile").cookie(cookie(original, AuthTransport.ACCESS)))
             .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void unauthenticatedApiReturnsCanonicalErrorEnvelope() throws Exception {
+        var denied = mvc.perform(get("/api/v1/me/profile"))
+            .andExpect(status().isUnauthorized()).andReturn();
+        assertThat(mapper.readTree(denied.getResponse().getContentAsString())
+            .path("code").asText()).isEqualTo("AUTH_REQUIRED");
     }
 
     @Test

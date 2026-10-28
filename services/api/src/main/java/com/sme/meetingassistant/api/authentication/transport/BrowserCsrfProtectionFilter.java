@@ -23,12 +23,14 @@ public final class BrowserCsrfProtectionFilter extends OncePerRequestFilter {
     private final SessionCsrfTokens tokens;
     private final RefreshSessionLocator locator;
     private final Set<String> trustedOrigins;
+    private final AuthSecurityFailureHandler failures;
 
     public BrowserCsrfProtectionFilter(SessionCsrfTokens tokens, RefreshSessionLocator locator,
-            HttpSecurityProperties properties) {
+            HttpSecurityProperties properties, AuthSecurityFailureHandler failures) {
         this.tokens = tokens;
         this.locator = locator;
         this.trustedOrigins = Set.copyOf(properties.getCors().getAllowedOrigins());
+        this.failures = failures;
     }
 
     @Override
@@ -45,7 +47,7 @@ public final class BrowserCsrfProtectionFilter extends OncePerRequestFilter {
 
         if (AuthTransport.mobile(req)) {
             if (!AuthTransport.validMobile(req)) {
-                res.sendError(HttpServletResponse.SC_FORBIDDEN);
+                failures.forbidden(res);
                 return;
             }
             chain.doFilter(req, res);
@@ -62,7 +64,7 @@ public final class BrowserCsrfProtectionFilter extends OncePerRequestFilter {
             return;
         }
         if (!validOrigin(req)) {
-            res.sendError(HttpServletResponse.SC_FORBIDDEN);
+            failures.forbidden(res);
             return;
         }
         String binding;
@@ -79,7 +81,7 @@ public final class BrowserCsrfProtectionFilter extends OncePerRequestFilter {
         }
         if (!tokens.valid(binding, AuthTransport.cookie(req, AuthTransport.CSRF),
                 req.getHeader("X-CSRF-Token"))) {
-            res.sendError(HttpServletResponse.SC_FORBIDDEN);
+            failures.forbidden(res);
             return;
         }
         chain.doFilter(req, res);

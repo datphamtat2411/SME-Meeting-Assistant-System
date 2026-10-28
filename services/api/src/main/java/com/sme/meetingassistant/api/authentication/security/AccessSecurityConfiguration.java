@@ -38,9 +38,10 @@ public class AccessSecurityConfiguration {
     @Bean
     SecurityFilterChain apiAccessSecurity(HttpSecurity http, JwtDecoder jwtDecoder,
             ObjectProvider<SessionCsrfTokens> csrfTokens, RefreshSessionLocator locator,
-            HttpSecurityProperties properties,
+            HttpSecurityProperties properties, AuthSecurityFailureHandler failures,
             @Value("${app.auth.transport.enabled:false}") boolean transportEnabled) throws Exception {
         http.sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS));
+        http.exceptionHandling(ex -> ex.accessDeniedHandler(failures));
         // Existing trusted-proxy-aware filter is the sole HSTS authority.
         http.headers(headers -> headers.httpStrictTransportSecurity(hsts -> hsts.disable()));
         var csrfCookie = CookieCsrfTokenRepository.withHttpOnlyFalse();
@@ -83,9 +84,10 @@ public class AccessSecurityConfiguration {
             return AuthTransport.cookie(request, AuthTransport.ACCESS);
         };
         http.oauth2ResourceServer(resource -> resource
+            .authenticationEntryPoint(failures)
             .bearerTokenResolver(resolver).jwt(jwt -> jwt.decoder(jwtDecoder)));
         if (transportEnabled) {
-            http.addFilterAfter(new BrowserCsrfProtectionFilter(csrfTokens.getObject(), locator, properties),
+            http.addFilterAfter(new BrowserCsrfProtectionFilter(csrfTokens.getObject(), locator, properties, failures),
                 BearerTokenAuthenticationFilter.class);
         }
         return http.build();
