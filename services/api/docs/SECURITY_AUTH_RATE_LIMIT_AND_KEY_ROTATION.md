@@ -10,8 +10,14 @@ JWT signing pair, CSRF signing key, trusted CORS origins, HTTPS ingress and
 request/correlation handling have been provisioned and smoke-tested.
 
 Recovery remains separately controlled by `APP_AUTH_RECOVERY_ENABLED`.
-P4-T08 is responsible for integration with other PR lifecycles and cross-PR
-authorization tests. PR #3 T05 is not included here.
+This document records the original P4-T07 scope: T05 was not part of that PR.
+On the later PR #3/#4 remediation stack, T05 user lifecycle/session revocation
+is implemented and tested. F03 adds the shared pinned password blocklist
+(subject to product/security-owner corpus approval); F04 adds administrator-only
+setup reissue (subject to additive API contract approval). Neither changes
+the rate-limit or RS256 rotation policies recorded here. Cross-module Flyway,
+meeting-content authorization and deployment acceptance remain open; see
+`PR3_T06_CROSS_PR_MIGRATION_AND_AUTHORIZATION_GATE.md`.
 
 ## Authentication throttling (configuration-driven)
 
@@ -107,5 +113,6 @@ token payloads. Missing/bad JWT signing keys already fail startup in P4-T03.
 
 This task specifically hardens authentication/recovery entry points.
 Non-auth AI/media rate limits remain owned by their own modules and are not
-implemented in this API authentication PR. P4-T08 remains responsible for
-end-to-end lifecycle and cross-module security matrix acceptance.
+implemented in this API authentication PR. The later T05 integration covers
+user lifecycle commands; P4-T08 and PR3-T06 document the remaining
+cross-module security and deployment acceptance gates.

@@ -1,5 +1,14 @@
 # P4-T08 — Authentication boundary, regression evidence, lifecycle integration gate
 
+> **Historical checkpoint and current state:** The T05 hard stop below describes
+> what was *not yet implemented in the original P4-T08 PR*. On the later
+> PR #3/#4 remediation stack (through F04, PR #30), `UserManagementService`
+> now implements T05 lifecycle commands with transactional session revocation
+> and PostgreSQL integration tests. This does **not** close cross-PR
+> meeting/media authorization, Flyway migration reconciliation, or deployment
+> acceptance; those remain gated by `PR3_T06_CROSS_PR_MIGRATION_AND_AUTHORIZATION_GATE.md`.
+> F03 corpus approval and F04 additive API approval are also outstanding.
+
 ## Contract
 
 `GET /api/v1/auth/me` (API-EP-AUTH-004) returns a **read-only** Common API Response
@@ -13,7 +22,8 @@ Returned fields: `userId`, `email`, `displayName`, `globalRole`,
 `accountStatus`, `primaryOrgUnitId`,
 `directoryManagementScope: {allUnits,unitIds}`, and
 `session: {id,clientType,createdAt,lastSeenAt,absoluteExpiresAt}`.
-For scoped managers, `directoryManagementScope.unitIds` includes only presently ACTIVE organizational units; a deactivated unit's historical manager grant remains stored but is not exposed as a currently usable capability.\nIt does **not** return refresh/access tokens, password/verifier hashes,
+For scoped managers, `directoryManagementScope.unitIds` includes only presently ACTIVE organizational units; a deactivated unit's historical manager grant remains stored but is not exposed as a currently usable capability.
+It does **not** return refresh/access tokens, password/verifier hashes,
 server-internal client metadata, or any implicit meeting-content privileges.
 The endpoint is not a replacement for PR #3 T03's `/api/v1/me/profile`.
 Response uses `Cache-Control: no-store`.
@@ -25,7 +35,8 @@ and PostgreSQL/Testcontainers:
 - Anonymous, untrusted identity headers and random UUIDs are rejected.
 - Mobile bearer and Web cookie resolve to the **same** canonical identity and
   authenticated session; response has no secrets or meeting permission claims.
-- Current directory grants exclude INACTIVE organizational units without removing historical grant rows.\n- Explicitly EXPIRED and absolute-expired server sessions deny valid JWTs.\n- Manager directory grants are exact, with object-level `/users/{id}` denial
+- Current directory grants exclude INACTIVE organizational units without removing historical grant rows.
+- Explicitly EXPIRED and absolute-expired server sessions deny valid JWTs.\n- Manager directory grants are exact, with object-level `/users/{id}` denial
   for an out-of-scope target and server-filtered directory lists.
 - Administrator directory-management capability is **not** meeting-content access.
 - After an actual committed role/scope/account-state mutation **plus** explicit
@@ -39,11 +50,11 @@ The existing P4-T01…T07 integration suites additionally check Argon2id login,
 session cap, JWT signature/claims/kid rotation, refresh rotation/replay,
 Web cookies/CSRF, recovery+audit, throttling, and concurrency.
 
-## Hard stop: PR #3 T05 is NOT implemented or modified here
+## Historical T08 hard stop: PR #3 T05 was not implemented in this PR
 
-**The lifecycle contract is tested, but production T05 wiring is NOT present.**
-PR #3 T05 remains paused per project direction. Once the owner explicitly
-authorizes its implementation, the **PR #3 lifecycle command transaction** must:
+**At the original P4-T08 checkpoint, production T05 wiring was not present.**
+The following was the required follow-up contract, later implemented on the
+stacked PR #3 lifecycle branch:
 
 1. Lock the canonical affected `users` row, apply deactivate/reactivate or
    role/scope mutation in the PR #3 userorganization domain.
@@ -60,10 +71,13 @@ authorizes its implementation, the **PR #3 lifecycle command transaction** must:
 5. Keep role/scope writes and revocation atomic; do not publish a success
    response or commit user role changes when revocation fails.
 
-Until that approved cross-owned code and tests are landed, SEC-SESS-008/010
-are **integration-open**, even though auth's revocation service works.
-Live role queries already prevent stale JWT **authority claims**, but do not
-replace the mandated session revocation on authority changes.
+At that earlier checkpoint, SEC-SESS-008/010 were **integration-open** despite
+auth's revocation service being available. The later T05 implementation now
+connects actual user commands to same-transaction session-family revocation;
+current-branch regression evidence is documented in
+`PR3_T05_LIFECYCLE_INTEGRATION_AND_ACCEPTANCE.md`. Live role queries alone
+still do not substitute for that revocation, and combined module/deployment
+acceptance remains open.
 
 ## Explicit requirement acceptance state
 
@@ -91,7 +105,9 @@ replace the mandated session revocation on authority changes.
 
 ## Global repository integration that remains open
 
-- **PR #3 T05 lifecycle:** explicitly gated above.
+- **PR #3 T05 lifecycle:** now implemented and PostgreSQL-tested in the later
+  stacked PR #3/#4 branch; the hard stop above is historical, not the
+  current status. Combined meeting/security integration remains open.
 - **PR #2 meeting/media module:** no combined API branch with its actual meeting
   content endpoints was built in this PR; administrator **must not** automatically
   gain access to transcripts/audio/summaries/exports. Re-test with the actual
