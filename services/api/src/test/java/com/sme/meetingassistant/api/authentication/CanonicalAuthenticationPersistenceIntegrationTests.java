@@ -74,8 +74,8 @@ class CanonicalAuthenticationPersistenceIntegrationTests {
 
         assertThat(jdbc.queryForObject("""
             SELECT count(*) FROM flyway_schema_history
-            WHERE version IN ('1','20','21') AND success
-            """, Integer.class)).isEqualTo(3);
+            WHERE version IN ('1','2','3','4') AND success
+            """, Integer.class)).isEqualTo(4);
         assertThat(jdbc.queryForObject("""
             SELECT count(*) - count(DISTINCT version) FROM flyway_schema_history
             WHERE version IS NOT NULL

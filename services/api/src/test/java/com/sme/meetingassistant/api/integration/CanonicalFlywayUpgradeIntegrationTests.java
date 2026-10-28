@@ -29,7 +29,7 @@ class CanonicalFlywayUpgradeIntegrationTests {
     @Autowired JdbcTemplate jdbc;
 
     @Test
-    void v1PersistedIdentityUpgradesThroughV23WithoutChangingHistoryOrData() {
+    void v1PersistedIdentityUpgradesThroughV4WithoutChangingHistoryOrData() {
         String schema="t06_upgrade_"+UUID.randomUUID().toString().replace("-","");
         try {
             Flyway initial=Flyway.configure()
@@ -65,7 +65,7 @@ class CanonicalFlywayUpgradeIntegrationTests {
                 SELECT version FROM %s.flyway_schema_history
                 WHERE success AND version IS NOT NULL ORDER BY installed_rank
                 """.formatted(schema),String.class);
-            assertThat(versions).containsExactly("1","20","21","22","23");
+            assertThat(versions).containsExactly("1","2","3","4");
             assertThat(jdbc.queryForObject("""
                 SELECT checksum FROM %s.flyway_schema_history WHERE version='1'
                 """.formatted(schema),Integer.class)).isEqualTo(originalChecksum);

@@ -47,7 +47,7 @@ class CrossPrMeetingSchemaIntegrationTests {
             SELECT version FROM flyway_schema_history
              WHERE success AND version IS NOT NULL ORDER BY installed_rank
             """,String.class);
-        assertThat(versions).containsExactly("1","20","21","22","23");
+        assertThat(versions).containsExactly("1","2","3","4");
         assertThat(Set.copyOf(versions)).hasSize(versions.size());
         var applied=jdbc.queryForList("""
             SELECT script FROM flyway_schema_history

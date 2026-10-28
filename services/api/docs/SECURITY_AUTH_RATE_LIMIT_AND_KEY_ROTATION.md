@@ -5,7 +5,7 @@
 The P4-T07 controls are implemented in `services/api/` and use PostgreSQL as the
 shared source of truth. Auth HTTP transport remains opt-in:
 `APP_AUTH_TRANSPORT_ENABLED=false` by default. Enable it **only after**
-the database has migrated through V23, the distinct auth-abuse HMAC key,
+the compact PR #3/#4 database has migrated through V4, the distinct auth-abuse HMAC key,
 JWT signing pair, CSRF signing key, trusted CORS origins, HTTPS ingress and
 request/correlation handling have been provisioned and smoke-tested.
 

@@ -8,7 +8,7 @@ are reconciled. Do not treat a green isolated T06 check as production readiness.
 
 | Source | Migration files | Integration finding |
 |---|---|---|
-| PR3 T05 + P4 T08 stack | canonical V1, V20, V21, V22, V23 | Canonical `users`, `organizational_units`, `auth_sessions`, account setup, recovery, abuse |
+| PR3 T05 + P4 T08 compact integration branch | canonical V1–V4 | Canonical `users`, `organizational_units`, `auth_sessions`, account setup, recovery, abuse |
 | PR1 meeting operations (`api/module-meeting-operations`) | *different* V1 | Collision with canonical V1; meetings.organizer_id and participants.user_id are bare UUID |
 | PR2 -> PR7 -> PR8 -> PR9 -> PR10 -> PR6 (`api/module-notification`) | V1 through V7 | Meeting/media/transcript/intelligence/action/notification chain; V1 collision, integrated entity/session permissions not yet verified |
 | PR5 room scheduling (`api/module-room-scheduling`) | *legacy* V1, V3 | Collisions with canonical V1 and media V3, references `user_accounts` / `organizations` instead of canonical `users` / `organizational_units` |
@@ -21,7 +21,7 @@ naming conflict. In the room migration `rooms.organization_id` references
 ## What this checkpoint actually verifies
 
 1. The local PR3/P4 Flyway chain is unique and applied once in PostgreSQL 17:
-   `V1,V20,V21,V22,V23`. Existing files are not edited.
+   `V1,V2,V3,V4` in the PR3/PR4 compact-baseline branch. Prior stacked PR\n   migrations remain unchanged; this new branch supplies a replacement baseline\n   only for a fresh schema or an eligible canonical-V1-only schema.
 2. The exact original PR1 meeting V1 SQL is preserved as a **test-only**
    source fixture, not renamed and shipped as a new production migration.
    A PostgreSQL Testcontainers test creates its tables transactionally.
@@ -34,7 +34,7 @@ naming conflict. In the room migration `rooms.organization_id` references
    history or change to T05 session revocation.
 5. A second PostgreSQL upgrade test installs only canonical V1 into an
    isolated schema, inserts a real PENDING_SETUP user, then executes Flyway
-   migrations V20–V23 and `Flyway.validate()`. It verifies the existing
+   migrations V2–V4 and `Flyway.validate()`. It verifies the existing
    V1 checksum and row survive intact, all later tables are present, and
    no legacy `user_accounts` table is created. The schema is dropped
    after testing; no shared DB is modified.
@@ -73,25 +73,18 @@ identity V1 require an explicit data-preserving reconciliation/migration plan.
 There is no safe universal automatic rename. Record a schema backup,
 per-table row counts, old identities and FK orphan checks before deployment.
 
-For a **fresh, never-deployed** combined Core API database only, a proposed
-ordered allocation after canonical V23 is:
+The PR #3/#4-only integration branch has deliberately compacted its **own**
+migration history into V1 (identity), V2 (setup/email), V3 (session and
+recovery persistence) and V4 (security audit and abuse controls). This is a
+**pre-merge re-baseline**, not a live-database repair. See
+`docs/PR3_PR4_COMPACT_FLYWAY_BASELINE_POLICY.md` for the precise gate.
 
-| Proposed fresh-composition slot | Owner | Source now |
-|---|---|---|
-| V24 | Meeting operations | PR1 V1, adapted to `users` FKs |
-| V25 | Media processing | PR2 V2, adapted to canonical users |
-| V26 | Attempts/artifacts | PR7 V3 |
-| V27 | Transcript review | PR8 V4 |
-| V28 | Meeting intelligence | PR9 V5 |
-| V29 | Action items | PR10 V6 |
-| V30 | In-app notification | PR6 V7 |
-| V31+ (not a direct copy) | Room scheduling | PR5 legacy V1/V3 must be redesigned against `organizational_units`, `users` and meetings |
-
-These are **proposed slots**, not reserved repository migrations, and no
-versions are changed by this PR. Any approved, composed migration must be
-owned by the owning domain team, explicitly tested against a fresh database
-AND a representative existing deployed schema, and must not change old
-applied checksum semantics.
+No versions have been allocated or rewritten for Meeting, Media, Transcript,
+Intelligence, Action Items, Notification or Room. Their existing V1–V7 files
+are still owned by their branches. When these modules are integrated later,
+they must join one repository-wide migration sequence with their own
+data-preserving reconciliation and verification. This PR does not attempt
+to silently resolve their conflicts.
 
 ## Runtime authorization integration required before closing T06
 

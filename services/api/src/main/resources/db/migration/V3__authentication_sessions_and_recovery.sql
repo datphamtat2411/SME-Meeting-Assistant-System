@@ -1,6 +1,5 @@
--- P4-T01: canonical authentication persistence on the unmerged T04 identity stack.
--- V21 is deliberately additive after T04 V20; no edits to pre-existing migrations.
--- Cross-PR Flyway version reconciliation and deployed-database upgrades remain separate.
+-- Canonical PR #3/#4 authentication: server sessions, rotating refresh and reset credentials.
+-- Fresh pre-merge baseline only; never rewrite an applied Flyway checksum.
 CREATE TABLE auth_sessions (
     id UUID PRIMARY KEY,
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
@@ -59,12 +58,15 @@ CREATE TABLE password_reset_tokens (
     expires_at TIMESTAMPTZ NOT NULL,
     used_at TIMESTAMPTZ,
     revoked_at TIMESTAMPTZ,
+    delivery_nonce BYTEA,
     CONSTRAINT ux_password_reset_token_hash UNIQUE (token_hash),
     CONSTRAINT ck_password_reset_token_hash CHECK (
         length(token_hash) = 64 AND token_hash ~ '^[0-9a-f]{64}$'),
     CONSTRAINT ck_password_reset_token_ttl CHECK (
         expires_at > requested_at
-        AND expires_at <= requested_at + INTERVAL '30 minutes')
+        AND expires_at <= requested_at + INTERVAL '30 minutes'),
+    CONSTRAINT ck_password_reset_nonce CHECK (
+        delivery_nonce IS NULL OR octet_length(delivery_nonce) = 32)
 );
 CREATE INDEX ix_password_reset_tokens_user_requested
     ON password_reset_tokens(user_id,requested_at DESC);
