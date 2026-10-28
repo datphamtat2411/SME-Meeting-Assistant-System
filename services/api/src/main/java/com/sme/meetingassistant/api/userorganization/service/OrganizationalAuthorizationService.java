@@ -9,7 +9,6 @@ import com.sme.meetingassistant.api.userorganization.repository.OrganizationalUn
 import com.sme.meetingassistant.api.userorganization.repository.UserRepository;
 import java.util.Set;
 import java.util.UUID;
-import java.util.stream.Collectors;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -59,9 +58,8 @@ public class OrganizationalAuthorizationService {
             return ManagementScope.unrestricted();
         }
         if (actor.getGlobalRole() == GlobalRole.DEPARTMENT_MANAGER) {
-            Set<UUID> ids = scopeUnits.findByIdUserId(actor.getId()).stream()
-                .map(scope -> scope.getId().getOrgUnitId())
-                .collect(Collectors.toUnmodifiableSet());
+            Set<UUID> ids = Set.copyOf(scopeUnits.findGrantedUnitIdsByUserIdAndStatus(
+                actor.getId(), OrganizationalUnitStatus.ACTIVE));
             return ManagementScope.restricted(ids);
         }
         throw new ResponseStatusException(HttpStatus.FORBIDDEN);
@@ -70,19 +68,12 @@ public class OrganizationalAuthorizationService {
     /** For mutations against a specific active unit, a department manager needs an exact grant. */
     @Transactional(readOnly = true)
     public void requireManagementOfActiveUnit(UUID unitId) {
-        UserEntity actor = requireActiveActor();
-        if (unitId == null || !units.existsByIdAndStatus(unitId, OrganizationalUnitStatus.ACTIVE)) {
-            // Do not disclose existence or inactivity to unauthorized actors.
+        ManagementScope effectiveScope = requireDirectoryManagementScope();
+        if (unitId == null || !units.existsByIdAndStatus(unitId, OrganizationalUnitStatus.ACTIVE)
+                || !effectiveScope.includes(unitId)) {
+            // Inactive/missing units and out-of-scope units convey no authority.
             throw new ResponseStatusException(HttpStatus.FORBIDDEN);
         }
-        if (actor.getGlobalRole() == GlobalRole.ADMINISTRATOR) {
-            return;
-        }
-        if (actor.getGlobalRole() == GlobalRole.DEPARTMENT_MANAGER &&
-                scopeUnits.existsByIdUserIdAndIdOrgUnitId(actor.getId(), unitId)) {
-            return;
-        }
-        throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     }
 
     public record ManagementScope(boolean allUnits, Set<UUID> unitIds) {

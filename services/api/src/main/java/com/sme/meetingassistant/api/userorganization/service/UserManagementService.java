@@ -260,9 +260,7 @@ public class UserManagementService {
             .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
         if (!management.allUnits() &&
             (target.getGlobalRole() != GlobalRole.EMPLOYEE
-                || !management.includes(target.getPrimaryOrgUnitId())
-                || !units.existsByIdAndStatus(target.getPrimaryOrgUnitId(),
-                    OrganizationalUnitStatus.ACTIVE))) {
+                || !management.includes(target.getPrimaryOrgUnitId()))) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND);
         }
         return target;

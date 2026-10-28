@@ -5,14 +5,11 @@ import com.sme.meetingassistant.api.authentication.entity.AuthSessionStatus;
 import com.sme.meetingassistant.api.authentication.repository.AuthSessionRepository;
 import com.sme.meetingassistant.api.userorganization.entity.AccountStatus;
 import com.sme.meetingassistant.api.userorganization.entity.GlobalRole;
-import com.sme.meetingassistant.api.userorganization.entity.OrganizationalUnitStatus;
 import com.sme.meetingassistant.api.userorganization.repository.UserRepository;
-import com.sme.meetingassistant.api.userorganization.repository.OrganizationalUnitRepository;
 import com.sme.meetingassistant.api.userorganization.service.OrganizationalAuthorizationService;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.Set;
-import java.util.stream.Collectors;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
@@ -34,15 +31,12 @@ import org.springframework.web.server.ResponseStatusException;
 public class AuthIdentityContextService {
     private final UserRepository users;
     private final AuthSessionRepository sessions;
-    private final OrganizationalUnitRepository units;
     private final OrganizationalAuthorizationService directoryAuthorization;
 
     public AuthIdentityContextService(UserRepository users, AuthSessionRepository sessions,
-            OrganizationalUnitRepository units,
             OrganizationalAuthorizationService directoryAuthorization) {
         this.users = users;
         this.sessions = sessions;
-        this.units = units;
         this.directoryAuthorization = directoryAuthorization;
     }
 
@@ -81,16 +75,9 @@ public class AuthIdentityContextService {
                 || user.getGlobalRole() == GlobalRole.DEPARTMENT_MANAGER) {
             var scope = directoryAuthorization.requireDirectoryManagementScope();
             allDirectoryUnits = scope.allUnits();
-            // A persisted manager grant to a deactivated organizational unit is
-            // historical authority, not a currently usable management capability.
-            // Directory mutations already require an ACTIVE unit. Keep /auth/me
-            // aligned with that enforcement without changing PR #3 grant records.
-            if (!scope.allUnits() && !scope.unitIds().isEmpty()) {
-                grantedDirectoryUnits = units.findAllById(scope.unitIds()).stream()
-                    .filter(unit -> unit.getStatus() == OrganizationalUnitStatus.ACTIVE)
-                    .map(unit -> unit.getId())
-                    .collect(Collectors.toUnmodifiableSet());
-            }
+            // Same effective active grant set as User Directory and management
+            // mutations. Historical grants remain persisted but never authorize.
+            grantedDirectoryUnits = scope.unitIds();
         }
         return new AuthContext(user.getId(), user.getEmail(), user.getDisplayName(),
             user.getGlobalRole(), user.getAccountStatus(), user.getPrimaryOrgUnitId(),
