@@ -96,6 +96,17 @@ public class UserEntity {
         primaryOrgUnitId = orgUnitId;
     }
 
+    public void completeInitialSetup(String verifier, OffsetDateTime changedAt) {
+        if (accountStatus != AccountStatus.PENDING_SETUP || verifier == null
+                || !verifier.startsWith("$argon2id$")) {
+            throw new IllegalStateException("Initial setup requires pending account and Argon2id verifier");
+        }
+        passwordHash = verifier;
+        credentialChangedAt = Objects.requireNonNull(changedAt);
+        accountStatus = AccountStatus.ACTIVE;
+        deactivatedAt = null;
+    }
+
     public void assignGlobalRole(GlobalRole newRole) {
         globalRole = Objects.requireNonNull(newRole, "globalRole");
     }

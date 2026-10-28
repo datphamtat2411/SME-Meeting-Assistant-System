@@ -1,6 +1,7 @@
 package com.sme.meetingassistant.api.userorganization.service;
 
 import com.sme.meetingassistant.api.userorganization.dto.UserDtos;
+import com.sme.meetingassistant.api.userorganization.setup.AccountSetupService;
 import com.sme.meetingassistant.api.userorganization.entity.AccountStatus;
 import com.sme.meetingassistant.api.userorganization.entity.GlobalRole;
 import com.sme.meetingassistant.api.userorganization.entity.OrganizationalUnitStatus;
@@ -32,15 +33,18 @@ public class UserManagementService {
     private final OrganizationalUnitRepository units;
     private final ManagerScopeUnitRepository scopeRepository;
     private final ManagerScopeAssignmentService scopeAssignments;
+    private final AccountSetupService setup;
 
     public UserManagementService(OrganizationalAuthorizationService authorization,
             UserRepository users, OrganizationalUnitRepository units,
-            ManagerScopeUnitRepository scopeRepository, ManagerScopeAssignmentService scopeAssignments) {
+            ManagerScopeUnitRepository scopeRepository, ManagerScopeAssignmentService scopeAssignments,
+            AccountSetupService setup) {
         this.authorization = authorization;
         this.users = users;
         this.units = units;
         this.scopeRepository = scopeRepository;
         this.scopeAssignments = scopeAssignments;
+        this.setup = setup;
     }
 
     @Transactional(readOnly = true)
@@ -129,6 +133,7 @@ public class UserManagementService {
             created.markManagementScopeChanged();
             created = users.saveAndFlush(created);
         }
+        setup.enqueueInitialSetup(created);
         return created;
     }
 
