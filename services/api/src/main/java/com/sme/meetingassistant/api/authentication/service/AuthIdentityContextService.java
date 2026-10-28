@@ -3,15 +3,16 @@ package com.sme.meetingassistant.api.authentication.service;
 import com.sme.meetingassistant.api.authentication.entity.AuthClientType;
 import com.sme.meetingassistant.api.authentication.entity.AuthSessionStatus;
 import com.sme.meetingassistant.api.authentication.repository.AuthSessionRepository;
-import com.sme.meetingassistant.api.authentication.security.SessionAuthority;
 import com.sme.meetingassistant.api.userorganization.entity.AccountStatus;
 import com.sme.meetingassistant.api.userorganization.entity.GlobalRole;
 import com.sme.meetingassistant.api.userorganization.repository.UserRepository;
 import com.sme.meetingassistant.api.userorganization.service.OrganizationalAuthorizationService;
 import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.Set;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.stereotype.Service;
@@ -26,17 +27,16 @@ import org.springframework.web.server.ResponseStatusException;
  * Directory-management grants MUST NEVER be interpreted as meeting-content grants.
  */
 @Service
+@ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 public class AuthIdentityContextService {
     private final UserRepository users;
     private final AuthSessionRepository sessions;
-    private final SessionAuthority liveSessions;
     private final OrganizationalAuthorizationService directoryAuthorization;
 
     public AuthIdentityContextService(UserRepository users, AuthSessionRepository sessions,
-            SessionAuthority liveSessions, OrganizationalAuthorizationService directoryAuthorization) {
+            OrganizationalAuthorizationService directoryAuthorization) {
         this.users = users;
         this.sessions = sessions;
-        this.liveSessions = liveSessions;
         this.directoryAuthorization = directoryAuthorization;
     }
 
@@ -60,9 +60,14 @@ public class AuthIdentityContextService {
                 && current.getStatus() == AuthSessionStatus.ACTIVE)
             .orElseThrow(AuthIdentityContextService::unauthorized);
 
-        // Recheck even though LiveRs256JwtDecoder already verified this access token.
-        // No revoked/inactive/expired identity projection may be returned.
-        if (!liveSessions.isLive(userId, sessionId)) throw unauthorized();
+        // LiveRs256JwtDecoder already performed the authoritative DB check before
+        // this controller. Re-evaluate the session's persisted temporal boundaries
+        // without touching last_seen_at in this read-only projection transaction.
+        OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
+        OffsetDateTime lastActivity = session.getLastSeenAt() == null
+            ? session.getCreatedAt() : session.getLastSeenAt();
+        if (!now.isBefore(session.getAbsoluteExpiresAt())
+                || !now.isBefore(lastActivity.plusDays(7))) throw unauthorized();
 
         boolean allDirectoryUnits = false;
         Set<UUID> grantedDirectoryUnits = Set.of();

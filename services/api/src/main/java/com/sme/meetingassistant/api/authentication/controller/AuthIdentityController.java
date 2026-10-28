@@ -5,6 +5,7 @@ import com.sme.meetingassistant.api.authentication.service.AuthIdentityContextSe
 import com.sme.meetingassistant.api.common.ApiResponse;
 import com.sme.meetingassistant.api.common.ApiResponseFactory;
 import org.springframework.http.CacheControl;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -16,6 +17,7 @@ import org.springframework.web.bind.annotation.RestController;
  * The profile editing endpoint remains /api/v1/me/profile (PR #3 T03).
  */
 @RestController
+@ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 @RequestMapping("/api/v1/auth")
 public class AuthIdentityController {
     private final AuthIdentityContextService identities;
