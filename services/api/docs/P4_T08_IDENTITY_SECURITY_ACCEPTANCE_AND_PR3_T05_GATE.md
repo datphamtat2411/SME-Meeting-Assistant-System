@@ -13,7 +13,7 @@ Returned fields: `userId`, `email`, `displayName`, `globalRole`,
 `accountStatus`, `primaryOrgUnitId`,
 `directoryManagementScope: {allUnits,unitIds}`, and
 `session: {id,clientType,createdAt,lastSeenAt,absoluteExpiresAt}`.
-It does **not** return refresh/access tokens, password/verifier hashes,
+For scoped managers, `directoryManagementScope.unitIds` includes only presently ACTIVE organizational units; a deactivated unit's historical manager grant remains stored but is not exposed as a currently usable capability.\nIt does **not** return refresh/access tokens, password/verifier hashes,
 server-internal client metadata, or any implicit meeting-content privileges.
 The endpoint is not a replacement for PR #3 T03's `/api/v1/me/profile`.
 Response uses `Cache-Control: no-store`.
@@ -25,7 +25,7 @@ and PostgreSQL/Testcontainers:
 - Anonymous, untrusted identity headers and random UUIDs are rejected.
 - Mobile bearer and Web cookie resolve to the **same** canonical identity and
   authenticated session; response has no secrets or meeting permission claims.
-- Manager directory grants are exact, with object-level `/users/{id}` denial
+- Current directory grants exclude INACTIVE organizational units without removing historical grant rows.\n- Explicitly EXPIRED and absolute-expired server sessions deny valid JWTs.\n- Manager directory grants are exact, with object-level `/users/{id}` denial
   for an out-of-scope target and server-filtered directory lists.
 - Administrator directory-management capability is **not** meeting-content access.
 - After an actual committed role/scope/account-state mutation **plus** explicit

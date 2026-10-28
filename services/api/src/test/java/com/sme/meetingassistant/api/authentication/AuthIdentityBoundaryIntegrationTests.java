@@ -190,6 +190,57 @@ class AuthIdentityBoundaryIntegrationTests {
     }
 
     @Test
+    void inactiveOrganizationalUnitsDoNotAppearAsUsableManagementGrants() throws Exception {
+        var current = orgUnits.saveAndFlush(new OrganizationalUnitEntity(
+            "current-"+UUID.randomUUID(), "Active Management Unit", null));
+        var inactive = orgUnits.saveAndFlush(new OrganizationalUnitEntity(
+            "inactive-"+UUID.randomUUID(), "Retired Management Unit", null));
+        var manager = account(GlobalRole.DEPARTMENT_MANAGER, current.getId());
+        scopes.saveAndFlush(new ManagerScopeUnitEntity(manager.getId(),current.getId(),null));
+        scopes.saveAndFlush(new ManagerScopeUnitEntity(manager.getId(),inactive.getId(),null));
+        var loginSession = admit(manager,AuthClientType.MOBILE);
+        String jwt = bearer(loginSession,accessTokens);
+
+        // A former authorized unit becomes inactive while the current session is live.
+        inactive.deactivate();
+        orgUnits.saveAndFlush(inactive);
+
+        var projected = data(me(jwt)).path("directoryManagementScope");
+        assertThat(projected.path("allUnits").asBoolean()).isFalse();
+        assertThat(projected.path("unitIds").size()).isEqualTo(1);
+        assertThat(projected.path("unitIds").get(0).asText()).isEqualTo(current.getId().toString());
+        // The historical grant row was not deleted by the identity projection.
+        assertThat(scopes.existsByIdUserIdAndIdOrgUnitId(manager.getId(),inactive.getId()))
+            .isTrue();
+        mvc.perform(get("/api/v1/organizational-units")
+            .header(HttpHeaders.AUTHORIZATION,"Bearer "+jwt))
+            .andExpect(status().isOk());
+    }
+
+    @Test
+    void revokedAndAbsoluteExpiredSessionsAreRejectedEvenWithUnexpiredAccessJwt() throws Exception {
+        var user=account(GlobalRole.EMPLOYEE,null);
+        var current=admit(user,AuthClientType.MOBILE);
+        String token=bearer(current,accessTokens);
+
+        jdbc.update("UPDATE auth_sessions SET status='EXPIRED' WHERE id=?",current.sessionId());
+        denied(token);
+        var another=admit(user,AuthClientType.MOBILE);
+        String next=bearer(another,accessTokens);
+
+        // Alter a test-only session to be past its absolute expiration.
+        // A DB-level consistency check may require moving the creation instant too.
+        jdbc.update("""
+            UPDATE auth_sessions
+               SET created_at=clock_timestamp()-INTERVAL '31 days',
+                   last_seen_at=clock_timestamp()-INTERVAL '1 minute',
+                   absolute_expires_at=clock_timestamp()-INTERVAL '2 days'
+             WHERE id=?
+            """,another.sessionId());
+        denied(next);
+    }
+
+    @Test
     void roleChangeAndExplicitSessionRevocationAreAtomicInFutureLifecycleContract() throws Exception {
         var admin=account(GlobalRole.ADMINISTRATOR,null);
         var first=admit(admin,AuthClientType.MOBILE);
