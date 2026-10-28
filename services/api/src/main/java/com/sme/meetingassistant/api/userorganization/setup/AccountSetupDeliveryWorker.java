@@ -48,14 +48,14 @@ public class AccountSetupDeliveryWorker {
     public boolean deliverOne() {
         List<Delivery> claimed = jdbc.query("""
             UPDATE email_deliveries SET status = 'SENDING',
-                attempt_count = attempt_count + 1, updated_at = CURRENT_TIMESTAMP
+                attempt_count = attempt_count + 1, updated_at = clock_timestamp()
             WHERE id = (
                 SELECT id FROM email_deliveries
                 WHERE notification_type = 'ACCOUNT_SETUP'
                   AND ((status IN ('PENDING','FAILED')
-                        AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP))
+                        AND (next_attempt_at IS NULL OR next_attempt_at <= clock_timestamp()))
                        OR (status = 'SENDING'
-                           AND updated_at < CURRENT_TIMESTAMP - INTERVAL '5 minutes'))
+                           AND updated_at < clock_timestamp() - INTERVAL '5 minutes'))
                 ORDER BY created_at,id LIMIT 1 FOR UPDATE SKIP LOCKED
             ) RETURNING id,related_entity_id,recipient_email,attempt_count
             """, (rs,n) -> new Delivery(
@@ -72,9 +72,9 @@ public class AccountSetupDeliveryWorker {
             }
             send(job);
             jdbc.update("""
-                UPDATE email_deliveries SET status='SENT',sent_at=CURRENT_TIMESTAMP,
+                UPDATE email_deliveries SET status='SENT',sent_at=clock_timestamp(),
                     last_error_code=NULL,last_error_summary=NULL,next_attempt_at=NULL,
-                    updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='SENDING'
+                    updated_at=clock_timestamp() WHERE id=? AND status='SENDING'
                 """, job.id());
         } catch (RuntimeException sendingError) {
             // No SMTP/token/recipient details, stack trace, or provider response is persisted.
@@ -84,9 +84,9 @@ public class AccountSetupDeliveryWorker {
             } else {
                 jdbc.update("""
                     UPDATE email_deliveries SET status='FAILED',
-                        next_attempt_at=CURRENT_TIMESTAMP + (? * INTERVAL '1 minute'),
+                        next_attempt_at=clock_timestamp() + (? * INTERVAL '1 minute'),
                         last_error_code='SMTP_DELIVERY_FAILED',last_error_summary=NULL,
-                        updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='SENDING'
+                        updated_at=clock_timestamp() WHERE id=? AND status='SENDING'
                     """, delayMinutes, job.id());
             }
         }
@@ -97,7 +97,7 @@ public class AccountSetupDeliveryWorker {
         if (tokenId == null) return false;
         Integer found = jdbc.queryForObject("""
             SELECT COUNT(*) FROM account_setup_tokens t JOIN users u ON u.id=t.user_id
-            WHERE t.id=? AND t.expires_at>CURRENT_TIMESTAMP
+            WHERE t.id=? AND t.expires_at>clock_timestamp()
               AND t.used_at IS NULL AND t.revoked_at IS NULL AND u.account_status='PENDING_SETUP'
             """, Integer.class, tokenId);
         return found != null && found == 1;
@@ -125,7 +125,7 @@ public class AccountSetupDeliveryWorker {
     private void markDead(UUID id, String code) {
         jdbc.update("""
             UPDATE email_deliveries SET status='DEAD',last_error_code=?,last_error_summary=NULL,
-                next_attempt_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='SENDING'
+                next_attempt_at=NULL,updated_at=clock_timestamp() WHERE id=? AND status='SENDING'
             """, code, id);
     }
 

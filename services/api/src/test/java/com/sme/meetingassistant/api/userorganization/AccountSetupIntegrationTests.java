@@ -152,10 +152,10 @@ class AccountSetupIntegrationTests {
         String bearer = token(userId);
         submit("not-a-token", "A sufficiently strong Unicode password 2026", 422);
         submit(bearer + "x", "A sufficiently strong Unicode password 2026", 422);
-        jdbc.update("UPDATE account_setup_tokens SET expires_at = requested_at + INTERVAL '1 second' WHERE id=?",
+        jdbc.update("UPDATE account_setup_tokens SET requested_at = now() - INTERVAL '30 hours', expires_at = now() - INTERVAL '6 hours' WHERE id=?",
             tokenId(userId));
         submit(bearer, "A sufficiently strong Unicode password 2026", 422);
-        jdbc.update("UPDATE account_setup_tokens SET revoked_at=now(),expires_at=requested_at + INTERVAL '24 hours' WHERE id=?",
+        jdbc.update("UPDATE account_setup_tokens SET requested_at=now(), expires_at=now() + INTERVAL '24 hours', revoked_at=now() WHERE id=?",
             tokenId(userId));
         submit(bearer, "A sufficiently strong Unicode password 2026", 422);
         assertThat(users.findById(userId).orElseThrow().getAccountStatus())
