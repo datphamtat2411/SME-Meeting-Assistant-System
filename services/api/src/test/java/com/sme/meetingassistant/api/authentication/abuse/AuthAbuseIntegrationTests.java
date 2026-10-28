@@ -48,6 +48,7 @@ class AuthAbuseIntegrationTests {
     @Autowired MockMvc mvc;
     @Autowired ObjectMapper json;
     @Autowired JdbcTemplate jdbc;
+    @Autowired AuthAbuseGuard guard;
     @Autowired UserRepository users;
     @Autowired AuthSessionRepository sessions;
     @Autowired AccountSetupPasswordHasher passwords;
@@ -131,6 +132,52 @@ class AuthAbuseIntegrationTests {
             SELECT coalesce(string_agg(metadata::text||action_code,','),'') FROM audit_events
             """,String.class);
         assertThat(persisted).doesNotContain(token,PASSWORD,user.getEmail(),remote);
+    }
+
+    @Test void concurrentAdmissionsAcrossThreadsNeverExceedSharedPostgresLimit() throws Exception {
+        int total=8;
+        var start=new java.util.concurrent.CountDownLatch(1);
+        var ready=new java.util.concurrent.CountDownLatch(total);
+        var executor=java.util.concurrent.Executors.newFixedThreadPool(total);
+        try {
+            var futures=new java.util.ArrayList<java.util.concurrent.Future<Boolean>>();
+            for(int i=0;i<total;i++) {
+                final int index=i;
+                futures.add(executor.submit(()->{
+                    var request=new org.springframework.mock.web.MockHttpServletRequest();
+                    request.setRemoteAddr(remote);
+                    ready.countDown();
+                    if(!start.await(20,java.util.concurrent.TimeUnit.SECONDS))
+                        throw new IllegalStateException("Parallel admission gate timed out");
+                    try {
+                        guard.loginAdmission(request,"parallel-"+index+"@example.com");
+                        return true;
+                    } catch (org.springframework.web.server.ResponseStatusException throttled) {
+                        assertThat(throttled.getStatusCode())
+                            .isEqualTo(org.springframework.http.HttpStatus.TOO_MANY_REQUESTS);
+                        return false;
+                    }
+                }));
+            }
+            assertThat(ready.await(20,java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+            int allowed=0;
+            for(var future:futures) {
+                if(future.get(60,java.util.concurrent.TimeUnit.SECONDS)) allowed++;
+            }
+            assertThat(allowed).isEqualTo(5);
+            var probe=new org.springframework.mock.web.MockHttpServletRequest();
+            probe.setRemoteAddr(remote);
+            assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM auth_abuse_attempts
+                 WHERE attempt_class='LOGIN_IP' AND key_hash=?
+                """,Long.class,guard.sourceFingerprint(probe))).isEqualTo(5L);
+        } finally {
+            start.countDown();
+            executor.shutdownNow();
+            assertThat(executor.awaitTermination(20,java.util.concurrent.TimeUnit.SECONDS))
+                .isTrue();
+        }
     }
 
     @Test void successfulLoginAndLogoutGenerateStructuredAuditWithoutSecrets() throws Exception {
