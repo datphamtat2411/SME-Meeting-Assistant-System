@@ -49,6 +49,7 @@ class AccountSetupPasswordPolicyTests {
         policy.validate("Một câu mật khẩu dài có dấu và dấu cách 🔐");
         policy.validate("My team discussed marketing but chose another strong passphrase 🚀");
         policy.validate("🚀".repeat(128));
+        policy.validate("!".repeat(128)); // Collapsed comparison must not reject empty strings.
         policy.validate("This is a long password with no digit or special punctuation");
         rejects("🚀".repeat(129));
         rejects("short");

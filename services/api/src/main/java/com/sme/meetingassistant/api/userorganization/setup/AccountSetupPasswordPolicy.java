@@ -55,7 +55,10 @@ public class AccountSetupPasswordPolicy {
         // Argon2id unchanged, preserving Unicode and whitespace semantics.
         String folded = fold(password);
         String collapsed = collapse(folded);
-        if (COMMON.exact().contains(folded) || COMMON.collapsed().contains(collapsed)) reject();
+        // Pure Unicode-symbol passwords can be valid. Never treat the empty
+        // collapsed representation as a weak-password dictionary match.
+        if (COMMON.exact().contains(folded)
+                || (!collapsed.isEmpty() && COMMON.collapsed().contains(collapsed))) reject();
 
         for (String root : CONTEXT) {
             String word = Pattern.quote(root);
@@ -78,7 +81,10 @@ public class AccountSetupPasswordPolicy {
         // Ensure accidental resource truncation cannot silently weaken policy.
         if (exact.size() < 300) throw new IllegalStateException("Password blocklist incomplete");
         var collapsed = new HashSet<String>();
-        for (String value : exact) collapsed.add(collapse(value));
+        for (String value : exact) {
+            String candidate = collapse(value);
+            if (!candidate.isEmpty()) collapsed.add(candidate);
+        }
         return new Blocklist(Set.copyOf(exact), Set.copyOf(collapsed));
     }
 
