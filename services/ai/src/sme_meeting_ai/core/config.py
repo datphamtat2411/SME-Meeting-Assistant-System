@@ -86,6 +86,12 @@ class Settings(BaseSettings):
     audio_vad_model_max_bytes: int = Field(default=16777216, gt=0, le=268435456)
     audio_vad_max_concurrent_recordings: int = Field(default=1, gt=0, le=16)
     audio_evidence_max_bytes: int = Field(default=16777216, gt=0, le=1073741824)
+    # Sample limits match the maximum supported four-hour normalized timeline.
+    audio_speech_map_boundary_padding_samples: int = Field(default=1600, ge=0, le=230400000)
+    audio_speech_map_merge_gap_samples: int = Field(default=512, ge=0, le=230400000)
+    audio_speech_map_energy_floor_dbfs: float = Field(
+        default=-50, ge=-120, le=0, allow_inf_nan=False,
+    )
 
     @model_validator(mode="after")
     def ordered_vad_probability_bands(self) -> Self:

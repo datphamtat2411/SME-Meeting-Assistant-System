@@ -324,3 +324,58 @@ def test_vad_resource_limits_are_finite_and_bounded(monkeypatch, field, maximum,
 def test_vad_contract_thresholds_and_identity_are_validated(overrides):
     with pytest.raises(ValueError):
         Settings(service_name="test-ai", service_identity="ai-core", _env_file=None, **overrides)
+
+
+def test_speech_map_defaults_and_environment_overrides(monkeypatch):
+    monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
+    defaults = load_settings(env_file=None)
+    assert defaults.audio_speech_map_boundary_padding_samples == 1600
+    assert defaults.audio_speech_map_merge_gap_samples == 512
+    assert defaults.audio_speech_map_energy_floor_dbfs == -50
+
+    monkeypatch.setenv("AI_AUDIO_SPEECH_MAP_BOUNDARY_PADDING_SAMPLES", "123")
+    monkeypatch.setenv("AI_AUDIO_SPEECH_MAP_MERGE_GAP_SAMPLES", "456")
+    monkeypatch.setenv("AI_AUDIO_SPEECH_MAP_ENERGY_FLOOR_DBFS", "-62.5")
+    settings = load_settings(env_file=None)
+    assert settings.audio_speech_map_boundary_padding_samples == 123
+    assert settings.audio_speech_map_merge_gap_samples == 456
+    assert settings.audio_speech_map_energy_floor_dbfs == -62.5
+
+
+@pytest.mark.parametrize("field", [
+    "audio_speech_map_boundary_padding_samples", "audio_speech_map_merge_gap_samples",
+])
+@pytest.mark.parametrize("value", [0, 230400000])
+def test_speech_map_sample_setting_boundaries(field, value):
+    settings = Settings(
+        service_name="test-ai", service_identity="ai-core", _env_file=None,
+        **{field: value},
+    )
+    assert getattr(settings, field) == value
+
+
+@pytest.mark.parametrize("value", [-120, 0])
+def test_speech_map_energy_floor_boundaries(value):
+    settings = Settings(
+        service_name="test-ai", service_identity="ai-core", _env_file=None,
+        audio_speech_map_energy_floor_dbfs=value,
+    )
+    assert settings.audio_speech_map_energy_floor_dbfs == value
+
+
+@pytest.mark.parametrize("field,values", [
+    ("audio_speech_map_boundary_padding_samples", ["-1", "230400001", "0.5", "nan", "inf"]),
+    ("audio_speech_map_merge_gap_samples", ["-1", "230400001", "0.5", "nan", "inf"]),
+    ("audio_speech_map_energy_floor_dbfs", ["-120.01", "0.01", "nan", "inf", "-inf"]),
+])
+def test_speech_map_invalid_settings_are_sanitized(monkeypatch, field, values):
+    monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
+    for value in [*values, "private-invalid"]:
+        monkeypatch.setenv(f"AI_{field.upper()}", value)
+        with pytest.raises(ConfigurationError) as caught:
+            load_settings(env_file=None)
+        assert field in str(caught.value)
+        assert "private-invalid" not in "".join(traceback.format_exception(caught.value))
+        assert caught.value.__context__ is None
