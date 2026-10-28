@@ -231,7 +231,7 @@ class PasswordRecoveryIntegrationTests {
         reset(raw,SECOND,422);
         jdbc.update("""
             UPDATE password_reset_tokens SET requested_at=clock_timestamp(),
-              expires_at=clock_timestamp()+INTERVAL '30 minutes',
+              expires_at=clock_timestamp()+INTERVAL '25 minutes',
               revoked_at=clock_timestamp() WHERE id=?
             """,tokenId());
         reset(raw,SECOND,422);
