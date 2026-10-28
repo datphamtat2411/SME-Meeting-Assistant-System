@@ -153,7 +153,7 @@ class UserManagementApiIntegrationTests {
         mvc.perform(post("/api/v1/users").principal(principal(manager))
             .contentType(MediaType.APPLICATION_JSON)
             .content(json(Map.of("email", "allowed-" + UUID.randomUUID() + "@example.com",
-                "displayName", "Allowed", "primaryOrgUnitId", finance.getId())))
+                "displayName", "Allowed", "primaryOrgUnitId", finance.getId()))))
             .andExpect(status().isCreated());
         mvc.perform(post("/api/v1/users").principal(principal(manager))
             .contentType(MediaType.APPLICATION_JSON)
@@ -164,7 +164,7 @@ class UserManagementApiIntegrationTests {
         mvc.perform(post("/api/v1/users").principal(principal(manager))
             .contentType(MediaType.APPLICATION_JSON)
             .content(json(Map.of("email", "outside-" + UUID.randomUUID() + "@example.com",
-                "displayName", "Outside", "primaryOrgUnitId", engineering.getId())))
+                "displayName", "Outside", "primaryOrgUnitId", engineering.getId()))))
             .andExpect(status().isForbidden());
     }
 
