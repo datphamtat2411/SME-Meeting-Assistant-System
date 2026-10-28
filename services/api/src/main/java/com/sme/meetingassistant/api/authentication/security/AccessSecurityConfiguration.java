@@ -77,7 +77,8 @@ public class AccessSecurityConfiguration {
             .anyRequest().authenticated());
         BearerTokenResolver resolver = request -> {
             String route = request.getRequestURI();
-            if (route.equals("/api/v1/auth/password-recovery")
+            if (route.equals("/api/v1/auth/csrf")
+                    || route.equals("/api/v1/auth/password-recovery")
                     || route.equals("/api/v1/auth/password-reset")
                     || route.equals("/api/v1/auth/login") || route.equals("/api/v1/auth/refresh")
                     || (route.equals("/api/v1/auth/logout") && !AuthTransport.mobile(request))) return null;
