@@ -211,6 +211,23 @@ public class UserManagementService {
         }
     }
 
+    /**
+     * Explicit ADMINISTRATOR-only repair of expired/dead initial setup.
+     * No new session, password, role, or access right is issued.
+     */
+    @Transactional
+    public UserEntity reissueInitialSetup(UUID userId, String ifMatch) {
+        UserEntity actor = authorization.requireAdministrator();
+        UserEntity target = users.findByIdForSessionAdmission(userId)
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+        UserVersionTags.requireMatch(target, ifMatch);
+        setup.reissueInitialSetup(target);
+        target.markInitialSetupReissued();
+        UserEntity changed = users.saveAndFlush(target);
+        recordLifecycleEvent("ACCOUNT_SETUP_REISSUED", actor.getId(), changed.getId());
+        return changed;
+    }
+
     /** POST /users/{id}/deactivate — permanent session-family invalidation, no data deletion. */
     @Transactional
     public UserEntity deactivate(UUID userId, String ifMatch) {

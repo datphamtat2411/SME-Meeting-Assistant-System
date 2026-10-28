@@ -14,6 +14,7 @@ import jakarta.validation.constraints.Size;
 import java.net.URI;
 import java.util.List;
 import java.util.UUID;
+import org.springframework.http.CacheControl;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -58,6 +59,16 @@ public class UserController {
         return ResponseEntity.ok()
             .header(HttpHeaders.ETAG, UserVersionTags.forUser(user))
             .body(responses.success(users.view(user, true)));
+    }
+
+    /** Secure admin repair; never return or persist the raw invitation link. */
+    @PostMapping("/{userId}/account-setup/reissue")
+    public ResponseEntity<ApiResponse<UserDtos.UserView>> reissueInitialSetup(@PathVariable UUID userId,
+            @RequestHeader(value = HttpHeaders.IF_MATCH, required = false) String ifMatch) {
+        var changed = users.reissueInitialSetup(userId, ifMatch);
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+            .header(HttpHeaders.ETAG, UserVersionTags.forUser(changed))
+            .body(responses.success(users.view(changed, true)));
     }
 
     @PostMapping("/{userId}/deactivate")

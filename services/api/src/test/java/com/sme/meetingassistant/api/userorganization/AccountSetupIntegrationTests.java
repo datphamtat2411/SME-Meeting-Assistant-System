@@ -5,6 +5,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -25,6 +26,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
+import org.springframework.http.HttpHeaders;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.mail.MailSendException;
 import org.springframework.mail.SimpleMailMessage;
@@ -89,6 +91,28 @@ class AccountSetupIntegrationTests {
 
     private String token(UUID userId) {
         return codec.issue(tokenId(userId));
+    }
+
+    private UUID latestTokenId(UUID userId) {
+        return jdbc.queryForObject("""
+            SELECT id FROM account_setup_tokens WHERE user_id=?
+             ORDER BY requested_at DESC,id DESC LIMIT 1
+            """, UUID.class, userId);
+    }
+
+    private String tag(UUID userId) throws Exception {
+        return mvc.perform(get("/api/v1/users/" + userId)
+            .principal((Principal) () -> admin.getId().toString()))
+            .andExpect(status().isOk()).andReturn()
+            .getResponse().getHeader(HttpHeaders.ETAG);
+    }
+
+    private org.springframework.test.web.servlet.MvcResult reissue(UUID userId,
+            UserEntity actor, String ifMatch, int expectedStatus) throws Exception {
+        var request = post("/api/v1/users/" + userId + "/account-setup/reissue")
+            .principal((Principal) () -> actor.getId().toString());
+        if (ifMatch != null) request.header(HttpHeaders.IF_MATCH, ifMatch);
+        return mvc.perform(request).andExpect(status().is(expectedStatus)).andReturn();
     }
 
     private void submit(String token, String password, int statusCode) throws Exception {
@@ -214,6 +238,136 @@ class AccountSetupIntegrationTests {
         assertThat(worker.deliverOne()).isTrue();
         assertThat(jdbc.queryForObject("SELECT status FROM email_deliveries WHERE related_entity_id=?",
             String.class, tokenId(id))).isEqualTo("SENT");
+    }
+
+    @Test
+    void expiredInvitationCanBeReissuedAtomicallyWithAuditAndOneUsableToken() throws Exception {
+        UUID id = createPending();
+        UUID oldId = tokenId(id);
+        String oldBearer = codec.issue(oldId);
+        String before = tag(id);
+        jdbc.update("""
+            UPDATE account_setup_tokens
+               SET requested_at=now()-INTERVAL '26 hours',
+                   expires_at=now()-INTERVAL '2 hours'
+             WHERE id=?
+            """, oldId);
+
+        var response = reissue(id, admin, before, 200);
+        UUID newId = latestTokenId(id);
+        assertThat(newId).isNotEqualTo(oldId);
+        assertThat(response.getResponse().getHeader(HttpHeaders.ETAG)).isNotEqualTo(before);
+        assertThat(response.getResponse().getHeader(HttpHeaders.CACHE_CONTROL)).contains("no-store");
+        assertThat(response.getResponse().getContentAsString())
+            .doesNotContain(codec.issue(newId), "tokenHash", "passwordHash", "setupToken");
+        assertThat(jdbc.queryForObject(
+            "SELECT revoked_at FROM account_setup_tokens WHERE id=?", OffsetDateTime.class, oldId))
+            .isNotNull();
+        assertThat(jdbc.queryForObject(
+            "SELECT status FROM email_deliveries WHERE related_entity_id=?", String.class, oldId))
+            .isEqualTo("DEAD");
+        assertThat(jdbc.queryForObject(
+            "SELECT status FROM email_deliveries WHERE related_entity_id=?", String.class, newId))
+            .isEqualTo("PENDING");
+        assertThat(jdbc.queryForObject("""
+            SELECT COUNT(*) FROM audit_events
+             WHERE action_code='ACCOUNT_SETUP_REISSUED' AND actor_user_id=? AND entity_id=?
+            """, Integer.class, admin.getId(), id)).isEqualTo(1);
+
+        submit(oldBearer, "Old reissued link cannot activate the account 2026!", 422);
+        assertThat(worker.deliverOne()).isTrue();
+        ArgumentCaptor<SimpleMailMessage> mail = ArgumentCaptor.forClass(SimpleMailMessage.class);
+        verify(smtp).send(mail.capture());
+        assertThat(mail.getValue().getText()).contains("#token=" + codec.issue(newId));
+        assertThat(mail.getValue().getText()).doesNotContain(oldBearer);
+        submit(codec.issue(newId), "New unique setup credential with several words 2026!", 200);
+        assertThat(users.findById(id).orElseThrow().getAccountStatus()).isEqualTo(AccountStatus.ACTIVE);
+    }
+
+    @Test
+    void deadDeliveryGetsFreshTokenButStillValidDeliveryCannotBeReissued() throws Exception {
+        UUID id = createPending();
+        UUID oldId = tokenId(id);
+        String match = tag(id);
+        reissue(id, admin, match, 409); // Still deliverable: do not invalidate arbitrarily.
+        jdbc.update("""
+            UPDATE account_setup_tokens
+               SET requested_at=now()-INTERVAL '2 minutes',
+                   expires_at=now()+INTERVAL '22 hours'
+             WHERE id=?
+            """, oldId);
+        jdbc.update("""
+            UPDATE email_deliveries SET status='DEAD',last_error_code='SMTP_DELIVERY_FAILED'
+             WHERE related_entity_id=?
+            """, oldId);
+        reissue(id, admin, match, 200);
+        assertThat(latestTokenId(id)).isNotEqualTo(oldId);
+        assertThat(jdbc.queryForObject(
+            "SELECT revoked_at FROM account_setup_tokens WHERE id=?", OffsetDateTime.class, oldId))
+            .isNotNull();
+        assertThat(users.findById(id).orElseThrow().getPasswordHash()).isNull();
+    }
+
+    @Test
+    void reissueRequiresAdminAndOptimisticPreconditionWithoutSideEffects() throws Exception {
+        UUID id = createPending();
+        UUID oldId = tokenId(id);
+        String originalTag = tag(id);
+        UserEntity employee = users.saveAndFlush(new UserEntity(
+            "employee-reissue-" + UUID.randomUUID() + "@example.com",
+            "Employee", GlobalRole.EMPLOYEE, null));
+        ReflectionTestUtils.setField(employee, "accountStatus", AccountStatus.ACTIVE);
+        employee = users.saveAndFlush(employee);
+        UserEntity manager = users.saveAndFlush(new UserEntity(
+            "manager-reissue-" + UUID.randomUUID() + "@example.com",
+            "Manager", GlobalRole.DEPARTMENT_MANAGER, null));
+        ReflectionTestUtils.setField(manager, "accountStatus", AccountStatus.ACTIVE);
+        manager = users.saveAndFlush(manager);
+        reissue(id, employee, originalTag, 403);
+        reissue(id, manager, originalTag, 403);
+        reissue(id, admin, null, 428);
+        reissue(id, admin, "\"u-"+id+"-999999\"", 412);
+        reissue(UUID.randomUUID(), admin, originalTag, 404);
+        assertThat(jdbc.queryForObject(
+            "SELECT COUNT(*) FROM account_setup_tokens WHERE user_id=?", Integer.class, id))
+            .isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+            SELECT COUNT(*) FROM audit_events
+             WHERE action_code='ACCOUNT_SETUP_REISSUED' AND entity_id=?
+            """, Integer.class, id)).isZero();
+        assertThat(jdbc.queryForObject(
+            "SELECT revoked_at FROM account_setup_tokens WHERE id=?", OffsetDateTime.class, oldId))
+            .isNull();
+    }
+
+    @Test
+    void recentDeadInvitationThrottledAndActivatedAccountCannotBeReissued() throws Exception {
+        UUID id = createPending();
+        UUID originalId = tokenId(id);
+        String before = tag(id);
+        jdbc.update("UPDATE email_deliveries SET status='DEAD' WHERE related_entity_id=?", originalId);
+        reissue(id, admin, before, 429); // One-minute cooldown.
+        assertThat(latestTokenId(id)).isEqualTo(originalId);
+        assertThat(jdbc.queryForObject("SELECT revoked_at FROM account_setup_tokens WHERE id=?",
+            OffsetDateTime.class, originalId)).isNull();
+
+        // Successful completion removes eligibility permanently.
+        submit(codec.issue(originalId), "A fresh password that activates this user 2026!", 200);
+        reissue(id, admin, tag(id), 409);
+    }
+
+    @Test
+    void pendingAccountWithMissingInvitationCanBeRepaired() throws Exception {
+        UserEntity pending = users.saveAndFlush(new UserEntity(
+            "no-token-" + UUID.randomUUID() + "@example.com",
+            "No Token", GlobalRole.EMPLOYEE, null));
+        String match = tag(pending.getId());
+        reissue(pending.getId(), admin, match, 200);
+        UUID id = latestTokenId(pending.getId());
+        assertThat(jdbc.queryForObject("SELECT status FROM email_deliveries WHERE related_entity_id=?",
+            String.class, id)).isEqualTo("PENDING");
+        assertThat(users.findById(pending.getId()).orElseThrow().getAccountStatus())
+            .isEqualTo(AccountStatus.PENDING_SETUP);
     }
 
     @Test

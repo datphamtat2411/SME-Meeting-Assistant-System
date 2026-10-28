@@ -53,11 +53,92 @@ public class AccountSetupService {
             "account-setup:" + tokenId, now, now, now);
     }
 
+    /**
+     * Administrator-initiated repair for an expired or undeliverable invitation.
+     * The caller MUST already hold the target users row lock and be authorized;
+     * token revocation, abandoned delivery intents, and new intent are atomic.
+     */
+    @Transactional
+    public void reissueInitialSetup(UserEntity user) {
+        if (user.getAccountStatus() != AccountStatus.PENDING_SETUP
+                || user.getPasswordHash() != null || user.getCredentialChangedAt() != null) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                "Only accounts awaiting initial setup are eligible");
+        }
+        OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
+        var previous = jdbc.query("""
+            SELECT t.requested_at,t.expires_at,t.used_at,t.revoked_at,
+                (SELECT d.status FROM email_deliveries d
+                  WHERE d.notification_type='ACCOUNT_SETUP' AND d.related_entity_id=t.id
+                  ORDER BY d.created_at DESC,d.id DESC LIMIT 1) AS delivery_status
+              FROM account_setup_tokens t
+             WHERE t.user_id=?
+             ORDER BY t.requested_at DESC,t.id DESC LIMIT 1
+            """, (rs, row) -> new PriorInvitation(
+                rs.getObject("requested_at", OffsetDateTime.class),
+                rs.getObject("expires_at", OffsetDateTime.class),
+                rs.getObject("used_at", OffsetDateTime.class),
+                rs.getObject("revoked_at", OffsetDateTime.class),
+                rs.getString("delivery_status")), user.getId());
+
+        if (!previous.isEmpty()) {
+            PriorInvitation last = previous.getFirst();
+            boolean expired = !now.isBefore(last.expiresAt());
+            boolean undeliverable = last.revokedAt() != null
+                || last.deliveryStatus() == null || "DEAD".equals(last.deliveryStatus());
+            if (last.usedAt() != null || (!expired && !undeliverable)) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "An initial setup invitation is still being delivered or is usable");
+            }
+
+            // Restrict repeated privileged issuance, even when an SMTP handler
+            // immediately marks every delivery DEAD.
+            if (now.isBefore(last.requestedAt().plusMinutes(1))) {
+                throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS,
+                    "Account setup invitation was recently issued");
+            }
+        }
+        Integer issuedLastDay = jdbc.queryForObject("""
+            SELECT COUNT(*) FROM account_setup_tokens
+             WHERE user_id=? AND requested_at>?
+            """, Integer.class, user.getId(), now.minusHours(24));
+        // Includes initial issuance: at most five administrator reissues/day.
+        if (issuedLastDay != null && issuedLastDay >= 6) {
+            throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS,
+                "Account setup reissue limit reached");
+        }
+
+        jdbc.update("""
+            UPDATE account_setup_tokens SET revoked_at=?
+             WHERE user_id=? AND used_at IS NULL AND revoked_at IS NULL
+            """, now, user.getId());
+        // The worker may already have claimed a job: a late old email link is
+        // harmless because its verifier has been revoked in the same commit.
+        jdbc.update("""
+            UPDATE email_deliveries SET status='DEAD',
+                last_error_code='SETUP_REISSUED',last_error_summary=NULL,
+                next_attempt_at=NULL,updated_at=?
+             WHERE notification_type='ACCOUNT_SETUP' AND recipient_user_id=?
+               AND status IN ('PENDING','FAILED','SENDING')
+            """, now, user.getId());
+        enqueueInitialSetup(user);
+    }
+
     @Transactional
     public void completeSetup(String presented, String password) {
         passwordPolicy.validate(password);
         UUID tokenId = tokens.parseId(presented);
         if (tokenId == null) invalid();
+        // Match the user-first lock ordering used by reissue/lifecycle mutations.
+        // Read ownership without locking, then lock the canonical user row
+        // before locking the token, to avoid opposite-order DB deadlocks.
+        var owners = jdbc.query("SELECT user_id FROM account_setup_tokens WHERE id=?",
+            (rs, row) -> rs.getObject("user_id", UUID.class), tokenId);
+        if (owners.size() != 1) invalid();
+        var account = users.findByIdForSessionAdmission(owners.getFirst())
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY));
+        if (account.getAccountStatus() != AccountStatus.PENDING_SETUP) invalid();
+
         var records = jdbc.query("""
             SELECT user_id,token_hash,expires_at,used_at,revoked_at
             FROM account_setup_tokens WHERE id = ? FOR UPDATE
@@ -69,12 +150,10 @@ public class AccountSetupService {
                 rs.getObject("revoked_at", OffsetDateTime.class)), tokenId);
         if (records.size() != 1) invalid();
         var record = records.getFirst();
+        if (!record.userId().equals(account.getId())) invalid();
         OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
         if (record.usedAt() != null || record.revokedAt() != null || !now.isBefore(record.expiresAt())
                 || !tokens.verify(tokenId, presented, record.tokenHash())) invalid();
-        var account = users.findById(record.userId())
-            .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY));
-        if (account.getAccountStatus() != AccountStatus.PENDING_SETUP) invalid();
         account.completeInitialSetup(hasher.hash(password), now);
         users.saveAndFlush(account);
         int consumed = jdbc.update("UPDATE account_setup_tokens SET used_at = ? WHERE id = ? AND used_at IS NULL",
@@ -85,6 +164,10 @@ public class AccountSetupService {
     private static void invalid() {
         throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "Invalid setup authorization");
     }
+
+    private record PriorInvitation(OffsetDateTime requestedAt, OffsetDateTime expiresAt,
+                                   OffsetDateTime usedAt, OffsetDateTime revokedAt,
+                                   String deliveryStatus) {}
 
     private record TokenRow(UUID userId, String tokenHash, OffsetDateTime expiresAt,
                             OffsetDateTime usedAt, OffsetDateTime revokedAt) {}

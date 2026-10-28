@@ -148,6 +148,14 @@ public class UserEntity {
         globalRole = Objects.requireNonNull(newRole, "globalRole");
     }
 
+    /** Force a new entity version so stale administrator reissue requests cannot replay. */
+    public void markInitialSetupReissued() {
+        if (accountStatus != AccountStatus.PENDING_SETUP) {
+            throw new IllegalStateException("Only pending accounts may reissue setup");
+        }
+        updatedAt = OffsetDateTime.now(ZoneOffset.UTC);
+    }
+
     /** Mark management-scope replacement as a user-state change for HTTP ETag concurrency. */
     public void markManagementScopeChanged() {
         updatedAt = OffsetDateTime.now(ZoneOffset.UTC);
