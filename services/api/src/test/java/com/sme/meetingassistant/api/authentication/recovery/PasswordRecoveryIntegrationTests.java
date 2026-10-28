@@ -70,6 +70,21 @@ class PasswordRecoveryIntegrationTests {
     private UserEntity active;
     private String source;
 
+    @org.junit.jupiter.api.AfterEach
+    void cleanupPendingDeliveries() {
+        // Non-transactional tests verify real commits. Prevent one test's pending
+        // security email from being claimed by another test's shared worker.
+        if (active != null) {
+            jdbc.update("""
+                UPDATE email_deliveries SET status='DEAD',
+                    last_error_code='TEST_TEARDOWN',next_attempt_at=NULL,
+                    updated_at=clock_timestamp()
+                WHERE recipient_user_id=? AND notification_type='PASSWORD_RECOVERY'
+                  AND status IN ('PENDING','FAILED')
+                """,active.getId());
+        }
+    }
+
     @BeforeEach void setupUser() {
         source="198.51.100."+IP_COUNTER.incrementAndGet();
         UserEntity account=new UserEntity("recover-"+UUID.randomUUID()+"@example.com",
@@ -91,7 +106,9 @@ class PasswordRecoveryIntegrationTests {
         var capture=ArgumentCaptor.forClass(SimpleMailMessage.class);
         verify(smtp,atLeastOnce()).send(capture.capture());
         String body=capture.getAllValues().getLast().getText();
-        return body.split("#token=",2)[1].split("\\n",2)[0];
+        String bearer=body.split("#token=",2)[1].split("\\n",2)[0];
+        assertThat(codec.parseId(bearer)).isEqualTo(tokenId());
+        return bearer;
     }
     private MvcResult reset(String token,String password,int status) throws Exception {
         return mvc.perform(post("/api/v1/auth/password-reset")
@@ -117,9 +134,15 @@ class PasswordRecoveryIntegrationTests {
             "accountStatus",AccountStatus.INACTIVE);
         users.saveAndFlush(inactive);
         var denied=request(inactive.getEmail());
-        assertThat(eligible.getResponse().getContentAsString())
-            .isEqualTo(absent.getResponse().getContentAsString())
-            .isEqualTo(denied.getResponse().getContentAsString());
+        // Common API Response deliberately includes a unique requestId/timestamp.
+        // Compare only the neutral public contract rather than per-request metadata.
+        var eligibleJson=json.readTree(eligible.getResponse().getContentAsString());
+        var missingJson=json.readTree(absent.getResponse().getContentAsString());
+        var deniedJson=json.readTree(denied.getResponse().getContentAsString());
+        assertThat(eligibleJson.path("data")).isEqualTo(missingJson.path("data"))
+            .isEqualTo(deniedJson.path("data"));
+        assertThat(eligibleJson.path("code")).isEqualTo(missingJson.path("code"))
+            .isEqualTo(deniedJson.path("code"));
         assertThat(eligible.getResponse().getHeader(HttpHeaders.CACHE_CONTROL))
             .contains("no-store");
         assertThat(jdbc.queryForObject("""
