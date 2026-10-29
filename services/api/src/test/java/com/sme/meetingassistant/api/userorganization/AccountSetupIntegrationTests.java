@@ -361,40 +361,103 @@ class AccountSetupIntegrationTests {
         reissue(id, admin, tag(id), 409);
     }
 
-    @Test
-    void repeatedDeadInvitationsAreBoundedByPerAccountDailyQuota() throws Exception {
-        UUID id = createPending();
-        UUID originalId = tokenId(id);
-        String match = tag(id);
+    private void makeInvitationDeadAndPastCooldown(UUID tokenId) {
         jdbc.update("""
             UPDATE account_setup_tokens
                SET requested_at=now()-INTERVAL '2 minutes',
                    expires_at=now()+INTERVAL '22 hours'
              WHERE id=?
-            """, originalId);
+            """, tokenId);
         jdbc.update("UPDATE email_deliveries SET status='DEAD' WHERE related_entity_id=?",
-            originalId);
-        // Five historical reissues plus the initial issuance within 24h.
-        for (int i = 0; i < 5; i++) {
-            UUID historicalId = UUID.randomUUID();
-            OffsetDateTime issued = OffsetDateTime.now(java.time.ZoneOffset.UTC)
-                .minusMinutes(10 + i);
-            jdbc.update("""
-                INSERT INTO account_setup_tokens(id,user_id,token_hash,requested_at,expires_at)
-                VALUES(?,?,?,?,?)
-                """, historicalId, id, codec.sha256(codec.issue(historicalId)),
-                issued, issued.plusHours(24));
-        }
+            tokenId);
+    }
 
+    private void performFiveReissuesAndMakeLatestEligible(UUID userId) throws Exception {
+        for (int i = 0; i < 5; i++) {
+            UUID previousId = latestTokenId(userId);
+            reissue(userId, admin, tag(userId), 200);
+            UUID replacementId = latestTokenId(userId);
+            assertThat(replacementId).isNotEqualTo(previousId);
+            // Simulate elapsed cooldown and an undeliverable replacement email.
+            makeInvitationDeadAndPastCooldown(replacementId);
+        }
+    }
+
+    @Test
+    void repeatedDeadInvitationsAreBoundedByPerAccountDailyQuota() throws Exception {
+        UUID id = createPending();
+        makeInvitationDeadAndPastCooldown(tokenId(id));
+        performFiveReissuesAndMakeLatestEligible(id);
+
+        UUID latest = latestTokenId(id);
+        String match = tag(id);
         reissue(id, admin, match, 429);
+        assertThat(tag(id)).isEqualTo(match);
+        assertThat(latestTokenId(id)).isEqualTo(latest);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM account_setup_tokens WHERE user_id=?",
             Integer.class, id)).isEqualTo(6);
         assertThat(jdbc.queryForObject("""
             SELECT COUNT(*) FROM audit_events
              WHERE action_code='ACCOUNT_SETUP_REISSUED' AND entity_id=?
-            """, Integer.class, id)).isZero();
+            """, Integer.class, id)).isEqualTo(5);
         assertThat(jdbc.queryForObject("SELECT revoked_at FROM account_setup_tokens WHERE id=?",
-            OffsetDateTime.class, originalId)).isNull();
+            OffsetDateTime.class, latest)).isNull();
+    }
+
+    @Test
+    void originalInvitationOutsideRollingWindowDoesNotPermitSixthReissue() throws Exception {
+        UUID id = createPending();
+        UUID originalId = tokenId(id);
+        jdbc.update("""
+            UPDATE account_setup_tokens
+               SET requested_at=now()-INTERVAL '26 hours',
+                   expires_at=now()-INTERVAL '2 hours'
+             WHERE id=?
+            """, originalId);
+        performFiveReissuesAndMakeLatestEligible(id);
+
+        UUID latest = latestTokenId(id);
+        String match = tag(id);
+        reissue(id, admin, match, 429);
+        assertThat(tag(id)).isEqualTo(match);
+        assertThat(latestTokenId(id)).isEqualTo(latest);
+        assertThat(jdbc.queryForObject("""
+            SELECT COUNT(*) FROM account_setup_tokens
+             WHERE user_id=? AND requested_at>now()-INTERVAL '24 hours'
+            """, Integer.class, id)).isEqualTo(5);
+        assertThat(jdbc.queryForObject("""
+            SELECT COUNT(*) FROM audit_events
+             WHERE action_code='ACCOUNT_SETUP_REISSUED' AND entity_id=?
+            """, Integer.class, id)).isEqualTo(5);
+    }
+
+    @Test
+    void quotaAllowsAnotherReissueWhenOldestAuditEventExitsRollingWindow() throws Exception {
+        UUID id = createPending();
+        makeInvitationDeadAndPastCooldown(tokenId(id));
+        performFiveReissuesAndMakeLatestEligible(id);
+        UUID oldestAuditId = jdbc.queryForObject("""
+            SELECT id FROM audit_events
+             WHERE entity_type='USER' AND entity_id=?
+               AND action_code='ACCOUNT_SETUP_REISSUED'
+             ORDER BY occurred_at ASC,id ASC LIMIT 1
+            """, UUID.class, id);
+        jdbc.update("UPDATE audit_events SET occurred_at=now()-INTERVAL '25 hours' WHERE id=?",
+            oldestAuditId);
+
+        UUID previous = latestTokenId(id);
+        reissue(id, admin, tag(id), 200);
+        assertThat(latestTokenId(id)).isNotEqualTo(previous);
+        assertThat(jdbc.queryForObject("""
+            SELECT COUNT(*) FROM audit_events
+             WHERE entity_type='USER' AND entity_id=?
+               AND action_code='ACCOUNT_SETUP_REISSUED'
+               AND occurred_at>now()-INTERVAL '24 hours'
+            """, Integer.class, id)).isEqualTo(5);
+        assertThat(jdbc.queryForObject("""
+            SELECT COUNT(*) FROM audit_events
+             WHERE action_code='ACCOUNT_SETUP_REISSUED' AND entity_id=?
+            """, Integer.class, id)).isEqualTo(6);
     }
 
     @Test
