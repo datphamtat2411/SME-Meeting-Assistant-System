@@ -62,20 +62,29 @@ public class PasswordRecoveryService {
         if(admission.isEmpty()) return;
         if(email==null || email.isBlank() || email.length()>320) return;
         String normalized=EmailNormalizer.normalize(email);
-        var candidate=users.findByEmailNormalized(normalized);
-        if(candidate.isEmpty()) {
-            // Comparable inexpensive capability work for unknown users.
+        // One indexed lookup + canonical user-row lock. Previously the eligible
+        // branch performed a separate JPA email lookup and locked JPA reload,
+        // making it unnecessarily slower than the unknown-account path.
+        var candidates=jdbc.query("""
+            SELECT id,email,account_status,password_hash FROM users
+             WHERE email_normalized=? FOR UPDATE
+            """,(rs,n)->new RecoveryAccount(
+                rs.getObject("id",UUID.class),rs.getString("email"),
+                AccountStatus.valueOf(rs.getString("account_status")),
+                rs.getString("password_hash")),normalized);
+        if(candidates.isEmpty()) {
+            // Bounded best-effort crypto parity, not a constant-time guarantee.
             tokens.verifier(tokens.issue(UUID.randomUUID(),tokens.nonce()));
             return;
         }
-        var owner=users.findByIdForSessionAdmission(candidate.get().getId()).orElse(null);
-        if(owner==null || owner.getAccountStatus()!=AccountStatus.ACTIVE
-                || owner.getPasswordHash()==null || !owner.getPasswordHash().startsWith("$argon2id$"))
+        RecoveryAccount owner=candidates.getFirst();
+        if(owner.status()!=AccountStatus.ACTIVE
+                || owner.passwordHash()==null || !owner.passwordHash().startsWith("$argon2id$"))
             return;
         Long recent=jdbc.queryForObject("""
             SELECT count(*) FROM password_reset_tokens
-             WHERE user_id=? AND requested_at>? 
-            """,Long.class,owner.getId(),now.minusHours(1));
+             WHERE user_id=? AND requested_at>?
+            """,Long.class,owner.id(),now.minusHours(1));
         if(recent!=null && recent>=3) return;
         UUID id=UUID.randomUUID();
         byte[] nonce=tokens.nonce();
@@ -84,14 +93,14 @@ public class PasswordRecoveryService {
             INSERT INTO password_reset_tokens
               (id,user_id,token_hash,requested_at,expires_at,delivery_nonce)
             VALUES (?,?,?,?,?,?)
-            """,id,owner.getId(),verifier,now,now.plusMinutes(30),nonce);
+            """,id,owner.id(),verifier,now,now.plusMinutes(30),nonce);
         jdbc.update("""
             INSERT INTO email_deliveries(
               id,notification_type,recipient_user_id,recipient_email,
               related_entity_type,related_entity_id,status,dedupe_key,attempt_count,
               next_attempt_at,created_at,updated_at)
             VALUES (?,'PASSWORD_RECOVERY',?,?,'PASSWORD_RESET',?,'PENDING',?,0,?,?,?)
-            """,UUID.randomUUID(),owner.getId(),owner.getEmail(),id,
+            """,UUID.randomUUID(),owner.id(),owner.email(),id,
             "password-recovery:"+id,now,now,now);
     }
 
@@ -139,6 +148,7 @@ public class PasswordRecoveryService {
         throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
             "Invalid or expired password recovery authorization");
     }
+    private record RecoveryAccount(UUID id,String email,AccountStatus status,String passwordHash) {}
     private record ResetRow(String hash,byte[] nonce,OffsetDateTime expiresAt,
                              OffsetDateTime usedAt,OffsetDateTime revokedAt) {}
 }
