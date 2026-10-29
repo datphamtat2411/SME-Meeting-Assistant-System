@@ -20,6 +20,44 @@ the rate-limit or RS256 rotation policies recorded here. Cross-module Flyway,
 meeting-content authorization and deployment acceptance remain open; see
 `PR3_T06_CROSS_PR_MIGRATION_AND_AUTHORIZATION_GATE.md`.
 
+## Password recovery timing (CLOSE-02 / SEC-REC-002)
+
+`SEC-REC-002` is a SHOULD: the anonymous recovery endpoint must avoid a
+trivially distinguishable nonexistent-account fast path, without claiming
+perfect constant-time execution for a database-backed conditional workflow.
+
+**Decision:** minimize the eligible-request path rather than slowing down
+unknown addresses. Recovery request now uses **one indexed, row-locked JDBC
+lookup by `email_normalized`**, replacing the previous separate JPA lookup
+and locked JPA reload. The same canonical user-row lock, account eligibility,
+transactional reset-token/email outbox writes, per-IP/per-account throttles,
+and neutral public response remain unchanged. Unknown identities still
+receive the same neutral response and no reset token or outbound email.
+
+**Measured evidence (GitHub Actions, Java 21 + PostgreSQL/Testcontainers +
+MockMvc, eight HTTP requests per class, alternating eligible/unknown order):**
+
+| Run | Eligible median | Unknown median | Median ratio | CI |
+| --- | ---: | ---: | ---: | --- |
+| Original request path | 5,850 μs | 3,877 μs | 1.51× | [40811914347](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/actions/runs/40811914347) |
+| Single locked query | 3,849 μs | 3,462 μs | 1.11× | [40812281490](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/actions/runs/40812281490) |
+
+The revised run passed **260 tests, 0 failures, 0 errors, 0 skipped**.
+Results are **diagnostic, not a timing-security proof**: these are small
+samples on potentially different CI runner loads, using in-process MockMvc,
+not controlled public-network latency tests. The test reports timings
+without brittle timing assertions. A production-like, controlled
+multiple-run comparison remains appropriate before internet exposure.
+
+**Explicitly rejected:** `Thread.sleep`, random jitter, synthetic
+database writes for unknown identities, a second recovery queue/worker or
+new migration solely to mask response timing. Such changes add load,
+denial-of-service risk or complexity without a reliable security guarantee.
+Existing 20 requests/hour per source and 3 eligible requests/hour per
+account are complementary rate limits, not proof against distributed
+enumeration. Do not claim that HTTP response neutrality alone guarantees
+the absence of timing side channels.
+
 ## Authentication throttling (configuration-driven)
 
 | Control | Production baseline | Property / env override |
