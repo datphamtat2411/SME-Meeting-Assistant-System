@@ -62,6 +62,56 @@ account are complementary rate limits, not proof against distributed
 enumeration. Do not claim that HTTP response neutrality alone guarantees
 the absence of timing side channels.
 
+## Setup and password-recovery token retention (CLOSE-03 / SEC-AUTHRET-002)
+
+`SEC-AUTHRET-002` and `DB-RET-007` recommend removing (or irreversibly
+minimizing) one-time account setup / password recovery token verifiers once
+they have been unusable for 30 days. This branch implements **physical purge
+of token records only**, with no Flyway migration and no change to the
+longer-lived security audit policy.
+
+- **Opt-in control:** `APP_AUTH_TOKEN_RETENTION_ENABLED=true`
+  (`app.auth.token-retention.enabled`, default **false**).
+  Turn it on after reviewing rollout, backup retention and operating
+  schedules. It works independently of `APP_AUTH_RECOVERY_ENABLED` and
+  `APP_EMAIL_DELIVERY_WORKER_ENABLED`.
+- **Scheduling:** first run after one hour by default; subsequent runs have
+  one-hour fixed delay. The initial delay and interval are configurable via
+  `APP_AUTH_TOKEN_RETENTION_INITIAL_DELAY_MS` and
+  `APP_AUTH_TOKEN_RETENTION_POLL_DELAY_MS`. The component uses Spring's
+  existing scheduler; no second outbound worker, queue, or database table.
+- **Eligibility:** a setup or reset token is selected if `expires_at`,
+  `used_at` or `revoked_at` is **older than 30 days**. Token TTLs remain
+  24 hours for setup and 30 minutes for password recovery. No active/
+  recently expired token qualifies.
+- **Batching and multi-instance safety:** each database transaction locks
+  up to 200 candidates per purpose with `FOR UPDATE SKIP LOCKED`, retires
+  associated obsolete outbound mail intents, and deletes the token records
+  atomically. Up to ten bounded batches are attempted per scheduled run
+  (maximum 2,000 per purpose per run). Multiple API instances can run
+  safely without an in-memory distributed lock.
+- **Delivery consistency:** only associated `ACCOUNT_SETUP` and
+  `PASSWORD_RECOVERY` deliveries in `PENDING`, `FAILED` or `SENDING`
+  are marked `DEAD` with `TOKEN_RETENTION_PURGED`. Their metadata is
+  retained. `SENT` and `DEAD` history is retained unchanged. The email
+  handler already checks token validity before preparing a link; expired
+  links cannot be made usable by this purge.
+- **Strict boundaries:** no user, organization, `email_deliveries`,
+  `audit_events`, `auth_sessions`, `refresh_tokens`, meeting data or
+  new migration is deleted. There is no raw-token storage or token material
+  in cleanup logs. Existing setup-reissue quota still uses audit records
+  with a separate 365-day audit retention baseline.
+
+**Operations:** Monitor `Auth technical retention cleanup` log lines
+(counts only), database errors and old-token row counts. A failure rolls
+back its current batch; the scheduler retries on the next invocation.
+Do not set very short intervals on all instances or treat this job as a
+replacement for controlled email-delivery/audit log retention. On a new
+environment, first confirm canonical V1–V4 are installed and run the
+PostgreSQL `AuthTokenRetentionIntegrationTests`. The scheduled component
+has no public HTTP endpoint. Historical `email_deliveries.related_entity_id`
+is an intentionally non-FK reference and may outlive purged token rows.
+
 ## Authentication throttling (configuration-driven)
 
 | Control | Production baseline | Property / env override |
