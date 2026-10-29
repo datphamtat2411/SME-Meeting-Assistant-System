@@ -1,6 +1,7 @@
 package com.sme.meetingassistant.api.integration;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
 import java.util.List;
@@ -29,7 +30,7 @@ class CanonicalFlywayUpgradeIntegrationTests {
     @Autowired JdbcTemplate jdbc;
 
     @Test
-    void v1PersistedIdentityUpgradesThroughV5WithoutChangingHistoryOrData() {
+    void v1PersistedIdentityUpgradesThroughV8WithoutChangingHistoryOrData() {
         String schema="t06_upgrade_"+UUID.randomUUID().toString().replace("-","");
         try {
             Flyway initial=Flyway.configure()
@@ -65,7 +66,7 @@ class CanonicalFlywayUpgradeIntegrationTests {
                 SELECT version FROM %s.flyway_schema_history
                 WHERE success AND version IS NOT NULL ORDER BY installed_rank
                 """.formatted(schema),String.class);
-            assertThat(versions).containsExactly("1","2","3","4","5","6","7");
+            assertThat(versions).containsExactly("1","2","3","4","5","6","7","8");
             assertThat(jdbc.queryForObject("""
                 SELECT checksum FROM %s.flyway_schema_history WHERE version='1'
                 """.formatted(schema),Integer.class)).isEqualTo(originalChecksum);
@@ -89,4 +90,69 @@ class CanonicalFlywayUpgradeIntegrationTests {
             jdbc.execute("DROP SCHEMA IF EXISTS "+schema+" CASCADE");
         }
     }
+
+    @Test
+    void v7HistoricalUnavailableOutcomesUpgradeToSkippedWithoutHidingSmtpFailures() {
+        String schema = "t07_upgrade_" + UUID.randomUUID().toString().replace("-", "");
+        try {
+            Flyway before = Flyway.configure()
+                .dataSource(dataSource)
+                .schemas(schema)
+                .locations("classpath:db/migration")
+                .target(MigrationVersion.fromVersion("7"))
+                .load();
+            before.migrate();
+
+            UUID unavailable = UUID.randomUUID();
+            UUID exhausted = UUID.randomUUID();
+            jdbc.update("""
+                INSERT INTO %s.email_deliveries
+                    (id,notification_type,recipient_email,status,dedupe_key,last_error_code,
+                     created_at,updated_at)
+                VALUES (?,'MEETING_SCHEDULED','user@example.invalid','DEAD',?,
+                        'DELIVERY_ACTION_UNAVAILABLE',clock_timestamp(),clock_timestamp())
+                """.formatted(schema), unavailable, "t07:" + unavailable);
+            jdbc.update("""
+                INSERT INTO %s.email_deliveries
+                    (id,notification_type,recipient_email,status,dedupe_key,last_error_code,
+                     created_at,updated_at)
+                VALUES (?,'MEETING_SCHEDULED','user@example.invalid','DEAD',?,
+                        'SMTP_DELIVERY_FAILED',clock_timestamp(),clock_timestamp())
+                """.formatted(schema), exhausted, "t07:" + exhausted);
+
+            Flyway upgraded = Flyway.configure()
+                .dataSource(dataSource)
+                .schemas(schema)
+                .locations("classpath:db/migration")
+                .load();
+            upgraded.migrate();
+            upgraded.validate();
+
+            assertThat(jdbc.queryForObject("""
+                SELECT status FROM %s.email_deliveries WHERE id=?
+                """.formatted(schema), String.class, unavailable)).isEqualTo("SKIPPED");
+            assertThat(jdbc.queryForObject("""
+                SELECT skip_reason FROM %s.email_deliveries WHERE id=?
+                """.formatted(schema), String.class, unavailable))
+                    .isEqualTo("ACTION_NO_LONGER_ELIGIBLE");
+            assertThat(jdbc.queryForObject("""
+                SELECT last_error_code FROM %s.email_deliveries WHERE id=?
+                """.formatted(schema), String.class, unavailable)).isNull();
+            assertThat(jdbc.queryForObject("""
+                SELECT status FROM %s.email_deliveries WHERE id=?
+                """.formatted(schema), String.class, exhausted)).isEqualTo("DEAD");
+            assertThat(jdbc.queryForObject("""
+                SELECT last_error_code FROM %s.email_deliveries WHERE id=?
+                """.formatted(schema), String.class, exhausted)).isEqualTo("SMTP_DELIVERY_FAILED");
+
+            assertThatThrownBy(() -> jdbc.update("""
+                UPDATE %s.email_deliveries
+                   SET status='SKIPPED',skip_reason=NULL WHERE id=?
+                """.formatted(schema), exhausted))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        } finally {
+            jdbc.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE");
+        }
+    }
+
 }
