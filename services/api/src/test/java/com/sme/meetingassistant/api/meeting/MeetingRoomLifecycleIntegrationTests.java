@@ -109,7 +109,7 @@ class MeetingRoomLifecycleIntegrationTests {
     }
     private MvcResult patch(UUID actor,UUID meeting,String version,Map<String,Object> changes)
             throws Exception {
-        return mvc.perform(patch("/api/v1/meetings/"+meeting).principal(principal(actor))
+        return mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch("/api/v1/meetings/"+meeting).principal(principal(actor))
             .header(HttpHeaders.IF_MATCH,version).contentType(MediaType.APPLICATION_JSON)
             .content(json.writeValueAsString(changes))).andExpect(status().isOk()).andReturn();
     }
@@ -163,7 +163,7 @@ class MeetingRoomLifecycleIntegrationTests {
         MvcResult original=schedule(organizer,id(first),etag(first));
         schedule(other,id(second),etag(second));
 
-        mvc.perform(patch("/api/v1/meetings/"+id(first))
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch("/api/v1/meetings/"+id(first))
             .principal(principal(organizer)).header(HttpHeaders.IF_MATCH,etag(original))
             .contentType(MediaType.APPLICATION_JSON)
             .content(json.writeValueAsString(Map.of("roomId",roomB,"title","must not persist"))))
@@ -181,7 +181,7 @@ class MeetingRoomLifecycleIntegrationTests {
         MvcResult created=draft(organizer,roomA,NINE,TEN);
         UUID id=id(created);
         MvcResult scheduled=schedule(organizer,id,etag(created));
-        MvcResult roomless=mvc.perform(patch("/api/v1/meetings/"+id)
+        MvcResult roomless=mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch("/api/v1/meetings/"+id)
             .principal(principal(organizer)).header(HttpHeaders.IF_MATCH,etag(scheduled))
             .contentType(MediaType.APPLICATION_JSON).content("{\"roomId\":null}"))
             .andExpect(status().isOk()).andReturn();
@@ -255,17 +255,17 @@ class MeetingRoomLifecycleIntegrationTests {
         MvcResult original=draft(organizer,roomA,NINE,TEN);
         UUID id=id(original);
         MvcResult booked=schedule(organizer,id,etag(original));
-        mvc.perform(patch("/api/v1/meetings/"+id)
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch("/api/v1/meetings/"+id)
             .principal(principal(other)).header(HttpHeaders.IF_MATCH,etag(booked))
             .contentType(MediaType.APPLICATION_JSON)
             .content("{\"scheduledStartAt\":\"2030-09-10T11:00:00Z\"}"))
             .andExpect(status().isNotFound());
-        mvc.perform(patch("/api/v1/meetings/"+id)
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch("/api/v1/meetings/"+id)
             .principal(principal(administrator)).header(HttpHeaders.IF_MATCH,etag(booked))
             .contentType(MediaType.APPLICATION_JSON)
             .content("{\"roomId\":null}"))
             .andExpect(status().isNotFound());
-        mvc.perform(patch("/api/v1/meetings/"+id)
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch("/api/v1/meetings/"+id)
             .principal(principal(organizer)).header(HttpHeaders.IF_MATCH,etag(original))
             .contentType(MediaType.APPLICATION_JSON)
             .content("{\"roomId\":null}"))
