@@ -29,6 +29,13 @@ class AccountSetupPasswordPolicyTests {
         rejects("123456789123456789".replace("1", "１"));
     }
 
+    @Test void compromisedCandidateIsComparedAsWholePasswordNotSubstring() {
+        rejects("1q2w3e4r5t6y7u8i9o0p");
+        // Screening whole passwords must not penalize a long legitimate
+        // passphrase merely because it quotes a weak password as an example.
+        policy.validate("This phrase mentions 1q2w3e4r5t6y7u8i9o0p as an example.");
+    }
+
     @Test void bundledResourceDigestRejectsChangesWithoutCountingEntries() throws IOException {
         byte[] original;
         try (var stream = AccountSetupPasswordPolicy.class.getResourceAsStream(
