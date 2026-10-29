@@ -19,9 +19,12 @@ Meeting, room, participant, schedule, action-item and AI business APIs are
 still separate modules requiring integration. Cross-PR Flyway reconciliation,
 meeting-content authorization and deployment secrets remain gated.
 The F03 offline blocklist baseline and F04 additive API contract are
-design-approved for this project, **not** production rollout authorizations; see `docs/PR3_T06_CROSS_PR_MIGRATION_AND_AUTHORIZATION_GATE.md`,
-`docs/F03_PASSWORD_BLOCKLIST_POLICY.md`, and
-`docs/F04_ACCOUNT_SETUP_REISSUE.md`.
+design-approved for this project, **not** production rollout authorizations.
+See `docs/PR3_PR4_FINAL_ACCEPTANCE.md` for scoped acceptance, CI evidence
+and open merge/release gates; the underlying policies remain in
+`docs/F03_PASSWORD_BLOCKLIST_POLICY.md`,
+`docs/F04_ACCOUNT_SETUP_REISSUE.md`, and
+`docs/PR3_T06_CROSS_PR_MIGRATION_AND_AUTHORIZATION_GATE.md`.
 
 ## 2. Prerequisites
 
