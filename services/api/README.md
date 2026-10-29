@@ -2,23 +2,29 @@
 
 ## 1. Overview
 
-The Core API is the Spring Boot backend for the SME Meeting Assistant system. It
-is currently a feature-first application foundation rather than a completed
-business API.
+The Core API is the Java 21 / Spring Boot 4.1.1 backend for SME Meeting Assistant.
+On this **unmerged PR #3/#4 remediation stack**, it provides:
 
-Implemented foundation capabilities include:
+- Canonical organizational users, units, directory-management scope, and
+  user lifecycle commands (including transactional session revocation).
+- Pending-account setup, administrator reissue of expired/undeliverable setup
+  invitations (F04), and a shared transactional email delivery worker.
+- RS256 authentication/session/refresh services, opt-in Web/Mobile login
+  transport, and separately opt-in password recovery.
+- PostgreSQL/Flyway V1–V4, security and abuse controls, request observability,
+  health probes, validated credentialed CORS, and optional proxy-aware HSTS.
 
-- Java 21 and Spring Boot 4.1.1 application startup
-- PostgreSQL datasource configuration with Flyway migration validation
-- Liveness and database-backed readiness health probes
-- Request observability, security headers, and validated credentialed CORS
-- Optional HSTS configuration for deployments with verified HTTPS
-
-The production migration location, `src/main/resources/db/migration`, currently
-contains no business schema migrations. The API therefore does not yet provide
-completed users, meetings, rooms, participants, schedules, action items, or AI
-integration workflows. Those are planned business capabilities, not endpoints
-to use during local bootstrap.
+These are **branch implementation capabilities, not production approval**.
+Meeting, room, participant, schedule, action-item and AI business APIs are
+still separate modules requiring integration. Cross-PR Flyway reconciliation,
+meeting-content authorization and deployment secrets remain gated.
+The F03 offline blocklist baseline and F04 additive API contract are
+design-approved for this project, **not** production rollout authorizations.
+See `docs/PR3_PR4_FINAL_ACCEPTANCE.md` for scoped acceptance, CI evidence
+and open merge/release gates; the underlying policies remain in
+`docs/F03_PASSWORD_BLOCKLIST_POLICY.md`,
+`docs/F04_ACCOUNT_SETUP_REISSUE.md`, and
+`docs/PR3_T06_CROSS_PR_MIGRATION_AND_AUTHORIZATION_GATE.md`.
 
 ## 2. Prerequisites
 
@@ -29,6 +35,7 @@ Install or make available:
 - Docker Compose v2
 - Git
 - A shell that can run the Maven Wrapper
+- OpenSSL (only if generating a development-only RSA keypair locally)
 
 A separate Maven installation is not required. The repository includes
 `services/api/mvnw` and `services/api/mvnw.cmd`.
@@ -43,9 +50,8 @@ docker info
 ```
 
 On WSL2, Docker Desktop WSL integration or a properly configured Docker Engine
-must be available to the WSL distribution. The current Core API foundation does
-not require Android, Flutter, Node.js, RabbitMQ, Qdrant, or the AI service to
-start.
+must be available to the WSL distribution. Starting this API alone does not
+require Android, Flutter, Node.js, RabbitMQ, Qdrant, or the AI service.
 
 ## 3. Local PostgreSQL Setup
 
@@ -102,6 +108,48 @@ browser client is actually served from a different origin.
 | `APP_ENVIRONMENT` | Select application runtime environment semantics |
 | `APP_HTTP_SECURITY_CORS_ALLOWED_ORIGINS` | Configure explicit browser origins |
 
+**JWT keys are required at startup even when the login transport is disabled.**
+For an isolated local development environment, create a disposable RSA keypair
+**outside the repository** (or supply an existing approved development keypair):
+
+```bash
+KEY_DIR="$(mktemp -d)"
+chmod 700 "$KEY_DIR"
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$KEY_DIR/jwt-private.pem"
+openssl pkey -in "$KEY_DIR/jwt-private.pem" -pubout -out "$KEY_DIR/jwt-public.pem"
+chmod 600 "$KEY_DIR/jwt-private.pem"
+
+export APP_AUTH_JWT_PRIVATE_KEY_LOCATION="file:$KEY_DIR/jwt-private.pem"
+export APP_AUTH_JWT_PUBLIC_KEY_LOCATION="file:$KEY_DIR/jwt-public.pem"
+export APP_AUTH_JWT_KEY_ID="local-dev-key"
+export APP_AUTH_JWT_ISSUER="https://issuer.local.invalid"
+export APP_AUTH_JWT_AUDIENCE="sme-core-api-local"
+export APP_ACCOUNT_SETUP_SIGNING_KEY="$(openssl rand -base64 32)"
+
+# Optional for basic local startup; do not send real transactional emails.
+export APP_AUTH_TRANSPORT_ENABLED=false
+export APP_AUTH_RECOVERY_ENABLED=false
+export APP_EMAIL_DELIVERY_WORKER_ENABLED=false
+```
+
+These are development-only values. Protect the private key, never commit it,
+and do not reuse the example issuer, generated keys or setup secret in a shared
+environment. For actual invitation delivery, additionally configure an approved
+HTTPS `APP_ACCOUNT_SETUP_URL`, `APP_EMAIL_DELIVERY_SENDER`, Spring Mail SMTP
+settings, and enable the worker. `APP_ACCOUNT_SETUP_SIGNING_KEY` must be a
+separate Base64-encoded secret of at least 32 random bytes.
+
+To enable login/refresh/logout intentionally, set
+`APP_AUTH_TRANSPORT_ENABLED=true` **only after** provisioning independent
+`APP_AUTH_CSRF_SIGNING_KEY` and `APP_AUTH_ABUSE_HASHING_KEY` secrets, validating
+the trusted HTTPS/CORS/CSRF deployment boundary, and applying V1–V4.
+Password recovery additionally requires `APP_AUTH_RECOVERY_ENABLED=true`,
+a distinct `APP_AUTH_RECOVERY_SIGNING_KEY`, an approved HTTPS
+`APP_AUTH_RECOVERY_RESET_URL`, and working transactional email.
+Do not enable either transport simply to bypass initial account provisioning;
+there is no public registration endpoint. See
+`docs/SECURITY_AUTH_RATE_LIMIT_AND_KEY_ROTATION.md` for rollout conditions.
+
 For direct local HTTP, leave HSTS disabled, which is the application default.
 Only enable `APP_HTTP_SECURITY_HSTS_ENABLED` after verifying an HTTPS setup.
 Do not use the `test` Spring profile to run the normal local API; that profile
@@ -124,9 +172,13 @@ The default address is `http://localhost:8080`. Startup proceeds as follows:
 3. Flyway validates and applies available migrations.
 4. The application starts accepting HTTP requests.
 
-Because the current production migration directory has no business schema
-migrations, startup does not create completed business tables or populate
-business seed data.
+Flyway now applies the canonical User/Auth schema: V1 identity/organization,
+V2 account setup and email delivery, V3 sessions/refresh/recovery, and V4
+security/audit/abuse controls. This baseline is safe only for a **new schema**
+or an explicitly verified **canonical-V1-only** history; it must not be
+applied over conflicting PR branch Flyway histories. Do not use `repair`,
+`baselineOnMigrate` or `outOfOrder` to conceal a collision. See
+`docs/PR3_PR4_COMPACT_FLYWAY_BASELINE_POLICY.md`.
 
 For native Windows, run `mvnw.cmd spring-boot:run` from `services\api`. Command
 Prompt uses syntax such as `set DB_URL=value`; PowerShell uses syntax such as
@@ -155,9 +207,12 @@ normal business API response envelope.
 Swagger UI and public OpenAPI documentation are disabled by default by
 `springdoc.api-docs.enabled=false` and `springdoc.swagger-ui.enabled=false`.
 They are available only when explicitly enabled through supported Spring
-configuration.
-Do not assume business or authentication endpoints exist; this bootstrap guide
-only relies on the health probes.
+configuration. Health probes confirm process/database readiness, **not**
+authentication or cross-module production acceptance. User/organization and
+account setup endpoints exist on this branch but protected operations require
+an authorized active identity; login transport and recovery remain disabled
+by default. Use the feature documents and OpenAPI under an approved test
+configuration to verify their contracts.
 
 ## 7. Run Tests
 
@@ -211,6 +266,10 @@ not the default development shutdown workflow.
 | `DB_URL` or datasource settings are missing | Export `DB_URL`, `DB_USERNAME`, and `DB_PASSWORD` in the same shell that launches Maven. |
 | Runtime environment validation fails | Set a non-empty `APP_ENVIRONMENT`, normally `development` for local HTTP. |
 | CORS configuration validation fails | Set an explicit approved origin, such as `APP_HTTP_SECURITY_CORS_ALLOWED_ORIGINS=http://localhost:3000`; do not use an empty or wildcard origin with credentialed CORS. |
+| Startup rejects RS256 keys or issuer/audience | Provide matching RSA private/public PEM files (2048+ bits), a unique `APP_AUTH_JWT_KEY_ID`, `APP_AUTH_JWT_ISSUER` and `APP_AUTH_JWT_AUDIENCE`; these are required even with login transport disabled. |
+| Setup invitation creation fails | Configure a separate valid Base64 `APP_ACCOUNT_SETUP_SIGNING_KEY`; for mail delivery also configure an approved HTTPS setup URL and SMTP sender. |
+| Login/recovery endpoints are unavailable | Confirm the relevant opt-in flag and its independent signing/abuse secrets, HTTPS/CSRF prerequisites, and approved rollout; do not disable security to expose them. |
+| Flyway reports a checksum/version conflict | Stop and inspect `flyway_schema_history` against the compact baseline policy. Do not alter applied migrations or force a repair. |
 | The application starts but readiness is `DOWN` | Check `docker compose ... ps`, PostgreSQL container health, the `DB_URL` host port, and matching credentials. Do not disable database health checks. |
 | Testcontainers cannot start | Verify `docker info` and, on WSL2, Docker Desktop integration or Docker Engine access. |
 

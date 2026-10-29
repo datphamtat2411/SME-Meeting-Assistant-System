@@ -1,0 +1,69 @@
+name: AI CI
+
+on:
+  push:
+    branches:
+      - develop
+      - 'ai/**'
+    paths:
+      - 'services/ai/**'
+      - '.github/workflows/ai-ci.yml'
+  pull_request:
+    branches:
+      - develop
+      - 'ai/**'
+    paths:
+      - 'services/ai/**'
+      - '.github/workflows/ai-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ai-verify:
+    name: AI verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: services/ai
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version-file: services/ai/.python-version
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: services/ai/uv.lock
+
+      - name: Synchronize dependencies
+        run: uv sync --locked
+
+      - name: Lint AI package
+        run: uv run ruff check src tests
+
+      - name: Test AI package
+        run: uv run pytest tests
+
+      - name: Build wheel and source distribution
+        run: uv build
+
+      - name: Build locked runtime image
+        run: docker build --tag sme-ai:smoke .
+
+      - name: Smoke test independent runtime roles
+        run: uv run python tests/container_smoke.py

@@ -1,0 +1,17 @@
+# Allow only locked package build inputs; exclude secrets, models and artifacts.
+**
+!pyproject.toml
+!uv.lock
+!src/
+!src/**
+**/__pycache__/
+**/*.pyc
+**/.env*
+**/*.pem
+**/*.key
+**/*.crt
+**/models/
+**/*.bin
+**/*.pt
+**/*.onnx
+**/*.safetensors

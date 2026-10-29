@@ -1,0 +1,12 @@
+[Unit]
+Description=Development AI Core certificate renewal and conditional restart
+
+[Service]
+Type=oneshot
+EnvironmentFile=%h/.config/sme-ai/dev-pki.env
+ExecStart=%h/.local/libexec/sme-ai/dev-pki-renew.sh renew
+UMask=0077
+# The script bounds CA, Docker, and probe calls and owns rollback. Do not add post-hooks.
+# No service timeout: a systemd deadline could interrupt safe recovery.
+TimeoutStartSec=infinity
+NoNewPrivileges=true

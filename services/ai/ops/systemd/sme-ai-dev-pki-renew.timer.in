@@ -1,0 +1,12 @@
+[Unit]
+Description=Development AI Core certificate renewal schedule
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=5m
+AccuracySec=1m
+Unit=sme-ai-dev-pki-renew.service
+
+[Install]
+WantedBy=timers.target

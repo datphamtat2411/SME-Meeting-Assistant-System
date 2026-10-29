@@ -1,0 +1,1 @@
+"""SME Meeting AI package."""
