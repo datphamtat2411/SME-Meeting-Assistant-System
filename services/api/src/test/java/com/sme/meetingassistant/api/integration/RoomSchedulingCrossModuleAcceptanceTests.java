@@ -106,8 +106,13 @@ class RoomSchedulingCrossModuleAcceptanceTests {
     }
     private JsonNode roomAvailability(UUID who, UUID room, String start, String end)
             throws Exception {
+        // Room stable ID is not the independently generated unique room code.
+        // Query the canonical resource before selecting an availability row.
+        MvcResult detail=mvc.perform(get("/api/v1/rooms/"+room).principal(as(who)))
+            .andExpect(status().isOk()).andReturn();
+        String code=body(detail).path("code").asText();
         MvcResult r=mvc.perform(get("/api/v1/rooms/availability").principal(as(who))
-            .param("start",start).param("end",end).param("q",room.toString()))
+            .param("start",start).param("end",end).param("q",code))
             .andExpect(status().isOk()).andReturn();
         JsonNode rooms=body(r);
         assertThat(rooms).hasSize(1);
