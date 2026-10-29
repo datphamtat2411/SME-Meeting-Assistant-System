@@ -4,6 +4,54 @@
 This is a narrow, additive API extension to the canonical user-management
 surface, not a second signup mechanism or password-reset endpoint.
 
+## Contract decision (2026-10-29)
+
+**Decision: APPROVED as a narrowly scoped additive organizational-user API
+contract**, following project-owner delegation of the design review. This
+records contract/design approval, not a formal GitHub code-review approval,
+production rollout approval, or an assertion that the separately maintained
+canonical requirements file has already been edited.
+
+**Why this is the right scope:** An invitation can expire or exhaust SMTP
+retries while its user remains `PENDING_SETUP`. Without a recovery command,
+an administrator cannot safely restore initial access. Reissuing is not
+registration, password recovery, or creating another user; it is an explicit
+administrative action on the existing account. The command reuses the
+canonical account, existing single-use setup token, durable email intent,
+audit trail, and concurrency controls. A second invitation subsystem,
+self-service anonymous resend endpoint, extra token table, and a new email
+worker are deliberately rejected.
+
+**Contract rationale and operational meaning:**
+- The strong `If-Match` plus current administrator authorization and the
+  locked target user make repeated or concurrent attempts fail safely; an
+  `Idempotency-Key` store would add no useful protection for this command.
+- HTTP 200 means the account's replacement authorization and outbound email
+  intent have committed; it **does not** promise SMTP delivery. Follow-up
+  delivery/retry/DEAD states remain owned by the existing worker.
+- `409` protects a usable or in-progress invitation; `429` protects the
+  one-minute cooldown and five successful reissues per rolling 24 hours.
+  Initial issuance does not consume the reissue quota.
+- Quota accounting uses committed `ACCOUNT_SETUP_REISSUED` audit rows. The
+  security-audit retention baseline (365 days) exceeds the required 24-hour
+  counting window; any future audit cleanup must preserve at least that
+  window and the audit integrity contract.
+
+**Canonical requirement alignment:** This is an approved extension under
+`RE02-API.md` section 22, which explicitly permits new endpoints for validated
+needs. The controlled canonical endpoint catalog should record:
+
+| Proposed catalog ID | Method | Path | Purpose |
+| --- | --- | --- | --- |
+| `API-EP-USER-008` | POST | `/api/v1/users/{userId}/account-setup/reissue` | Reissue an expired, revoked, undeliverable or missing initial account-setup invitation for a credentialless `PENDING_SETUP` user, by an authenticated administrator with `If-Match`. |
+
+That source-document synchronization is tracked separately; this branch
+does not claim to edit the canonical requirements outside this repository.
+
+**Still open:** F03 password-corpus/security-owner approval, any rollout
+configuration and cross-PR T06 integration checks. None is implicitly
+approved by this F04 decision.
+
 ## Endpoint
 
 `POST /api/v1/users/{userId}/account-setup/reissue`
