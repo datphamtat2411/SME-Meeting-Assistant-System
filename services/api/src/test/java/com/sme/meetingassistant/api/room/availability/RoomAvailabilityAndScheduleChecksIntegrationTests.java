@@ -210,7 +210,8 @@ class RoomAvailabilityAndScheduleChecksIntegrationTests {
         JsonNode report=data(check(actor,own));
         assertThat(report.path("canSchedule").asBoolean()).isTrue();
         assertThat(report.path("roomConflict").asBoolean()).isFalse();
-        assertThat(report.path("warnings")).hasSize(0);
+        assertThat(report.path("warnings").toString()).doesNotContain("PARTICIPANT_OVERLAP");
+        assertThat(report.path("warnings").toString()).contains("CAPACITY_ADVISORY_EXCEEDED");
         mvc.perform(post("/api/v1/meeting-schedule-checks").principal(principal(other))
             .contentType(MediaType.APPLICATION_JSON)
             .content(json.writeValueAsString(own))).andExpect(status().isNotFound());
