@@ -309,6 +309,36 @@ class AccountSetupIntegrationTests {
     }
 
     @Test
+    void skippedUndeliverableSetupIntentCanBeReissuedAfterCooldown() throws Exception {
+        UUID id = createPending();
+        UUID oldId = tokenId(id);
+        String match = tag(id);
+        jdbc.update("""
+            UPDATE account_setup_tokens
+               SET requested_at=now()-INTERVAL '2 minutes',
+                   expires_at=now()+INTERVAL '22 hours'
+             WHERE id=?
+            """, oldId);
+        jdbc.update("""
+            UPDATE email_deliveries
+               SET status='SKIPPED',skip_reason='ACTION_NO_LONGER_ELIGIBLE',
+                   next_attempt_at=NULL,last_error_code=NULL
+             WHERE related_entity_id=?
+            """, oldId);
+        reissue(id, admin, match, 200);
+        assertThat(latestTokenId(id)).isNotEqualTo(oldId);
+        assertThat(jdbc.queryForObject("""
+            SELECT status FROM email_deliveries WHERE related_entity_id=?
+            """,String.class,oldId)).isEqualTo("SKIPPED");
+        assertThat(jdbc.queryForObject("""
+            SELECT revoked_at FROM account_setup_tokens WHERE id=?
+            """,OffsetDateTime.class,oldId)).isNotNull();
+        assertThat(jdbc.queryForObject("""
+            SELECT status FROM email_deliveries WHERE related_entity_id=?
+            """,String.class,latestTokenId(id))).isEqualTo("PENDING");
+    }
+
+    @Test
     void reissueRequiresAdminAndOptimisticPreconditionWithoutSideEffects() throws Exception {
         UUID id = createPending();
         UUID oldId = tokenId(id);
@@ -483,7 +513,7 @@ class AccountSetupIntegrationTests {
         submit(token(id), "A strong password that was accepted 2026", 200);
         assertThat(worker.deliverOne()).isTrue();
         assertThat(jdbc.queryForObject("SELECT status FROM email_deliveries WHERE related_entity_id=?",
-            String.class, tokenId(id))).isEqualTo("DEAD");
+            String.class, tokenId(id))).isEqualTo("SKIPPED");
         org.mockito.Mockito.verifyNoInteractions(smtp);
     }
 }

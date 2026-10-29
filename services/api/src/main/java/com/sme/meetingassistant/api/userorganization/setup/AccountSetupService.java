@@ -85,7 +85,9 @@ public class AccountSetupService {
             PriorInvitation last = previous.getFirst();
             boolean expired = !now.isBefore(last.expiresAt());
             boolean undeliverable = last.revokedAt() != null
-                || last.deliveryStatus() == null || "DEAD".equals(last.deliveryStatus());
+                || last.deliveryStatus() == null
+                || "DEAD".equals(last.deliveryStatus())
+                || "SKIPPED".equals(last.deliveryStatus());
             if (last.usedAt() != null || (!expired && !undeliverable)) {
                 throw new ResponseStatusException(HttpStatus.CONFLICT,
                     "An initial setup invitation is still being delivered or is usable");
