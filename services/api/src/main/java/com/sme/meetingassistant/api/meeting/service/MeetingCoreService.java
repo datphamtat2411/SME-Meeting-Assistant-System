@@ -78,6 +78,15 @@ public class MeetingCoreService {
         return meeting;
     }
 
+    /**
+     * Organizer-only schedule preview boundary. A known meeting ID never grants
+     * permission to exclude someone else's reservation from availability.
+     */
+    @Transactional(readOnly = true)
+    public MeetingEntity previewOwned(UUID meetingId) {
+        return owned(meetingId);
+    }
+
     @Transactional(readOnly = true)
     public Page<MeetingView> list(MeetingStatus status, String q, UUID organizerId, UUID roomId,
             OffsetDateTime from, OffsetDateTime to, Pageable pageable) {
