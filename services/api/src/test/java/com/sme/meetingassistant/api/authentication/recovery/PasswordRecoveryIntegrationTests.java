@@ -124,6 +124,66 @@ class PasswordRecoveryIntegrationTests {
             """,UUID.class,active.getId());
     }
 
+
+    /**
+     * CLOSE-02 diagnostic only: measure end-to-end HTTP latency on PostgreSQL.
+     * No millisecond assertion: CI hosts, garbage collection and database load
+     * cannot guarantee absolute response-time thresholds.
+     */
+    @Test void diagnosticRecoveryEnumerationTiming() throws Exception {
+        java.util.List<UUID> additionalAccounts=new java.util.ArrayList<>();
+        long[] eligibleNanos=new long[8];
+        long[] unknownNanos=new long[8];
+        try {
+            // Warm controller, JDBC and SQL paths without consuming the account
+            // quota of any measured eligible account.
+            request("missing-warmup-"+UUID.randomUUID()+"@example.com");
+            request("missing-warmup-"+UUID.randomUUID()+"@example.com");
+            for (int i=0;i<8;i++) {
+                String suffix=UUID.randomUUID().toString();
+                String presentEmail="timed-"+suffix+"@example.com";
+                String absentEmail="ghost-"+suffix+"@example.com";
+                UserEntity candidate=new UserEntity(presentEmail,
+                    "Timing Probe",GlobalRole.EMPLOYEE,null);
+                candidate.completeInitialSetup(active.getPasswordHash(),
+                    OffsetDateTime.now(ZoneOffset.UTC));
+                additionalAccounts.add(users.saveAndFlush(candidate).getId());
+                if (i%2==0) {
+                    eligibleNanos[i]=timeRecoveryRequest(presentEmail);
+                    unknownNanos[i]=timeRecoveryRequest(absentEmail);
+                } else {
+                    unknownNanos[i]=timeRecoveryRequest(absentEmail);
+                    eligibleNanos[i]=timeRecoveryRequest(presentEmail);
+                }
+            }
+            java.util.Arrays.sort(eligibleNanos);
+            java.util.Arrays.sort(unknownNanos);
+            System.out.printf(java.util.Locale.ROOT,
+                "CLOSE-02 baseline HTTP recovery timing (8 samples each, us): "+
+                "eligible median=%d p75=%d; unknown median=%d p75=%d; "+
+                "eligible/unknown median ratio=%.2f%n",
+                eligibleNanos[4]/1_000,eligibleNanos[6]/1_000,
+                unknownNanos[4]/1_000,unknownNanos[6]/1_000,
+                (double)eligibleNanos[4]/Math.max(1,unknownNanos[4]));
+        } finally {
+            for (UUID id:additionalAccounts) {
+                jdbc.update("""
+                    UPDATE email_deliveries SET status='DEAD',
+                        last_error_code='TEST_TEARDOWN',next_attempt_at=NULL,
+                        updated_at=clock_timestamp()
+                     WHERE recipient_user_id=? AND notification_type='PASSWORD_RECOVERY'
+                       AND status IN ('PENDING','FAILED')
+                    """,id);
+            }
+        }
+    }
+
+    private long timeRecoveryRequest(String email) throws Exception {
+        long start=System.nanoTime();
+        request(email);
+        return System.nanoTime()-start;
+    }
+
     @Test void neutralResponseForUnknownInactiveAndActiveAccounts() throws Exception {
         var eligible=request(active.getEmail());
         var absent=request("missing-"+UUID.randomUUID()+"@example.com");
