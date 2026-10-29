@@ -100,6 +100,19 @@ class AuthTokenRetentionIntegrationTests {
         UUID recentSetup = setupToken(user,29);
         UUID oldReset = resetToken(user,31);
         UUID recentReset = resetToken(user,29);
+        // A genuinely unexpired setup invitation and reset authorization must survive.
+        setup.enqueueInitialSetup(users.findById(user).orElseThrow());
+        UUID liveSetup=jdbc.queryForObject("""
+            SELECT id FROM account_setup_tokens
+             WHERE user_id=? AND expires_at>clock_timestamp()
+            """,UUID.class,user);
+        UUID liveReset=UUID.randomUUID();
+        OffsetDateTime liveNow=OffsetDateTime.now(ZoneOffset.UTC);
+        jdbc.update("""
+            INSERT INTO password_reset_tokens
+                (id,user_id,token_hash,requested_at,expires_at)
+            VALUES (?,?,?,?,?)
+            """,liveReset,user,verifier(),liveNow,liveNow.plusMinutes(30));
         UUID oldSetupDelivery = delivery("ACCOUNT_SETUP","ACCOUNT_SETUP",user,oldSetup,"PENDING");
         UUID recentSetupDelivery = delivery("ACCOUNT_SETUP","ACCOUNT_SETUP",user,recentSetup,"PENDING");
         UUID oldResetDelivery = delivery("PASSWORD_RECOVERY","PASSWORD_RESET",user,oldReset,"FAILED");
@@ -118,6 +131,8 @@ class AuthTokenRetentionIntegrationTests {
         assertThat(tokenCount("password_reset_tokens",oldReset)).isZero();
         assertThat(tokenCount("account_setup_tokens",recentSetup)).isEqualTo(1);
         assertThat(tokenCount("password_reset_tokens",recentReset)).isEqualTo(1);
+        assertThat(tokenCount("account_setup_tokens",liveSetup)).isEqualTo(1);
+        assertThat(tokenCount("password_reset_tokens",liveReset)).isEqualTo(1);
         assertThat(deliveryStatus(oldSetupDelivery)).isEqualTo("DEAD");
         assertThat(deliveryStatus(oldResetDelivery)).isEqualTo("DEAD");
         assertThat(deliveryStatus(recentSetupDelivery)).isEqualTo("PENDING");
