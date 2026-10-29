@@ -98,12 +98,16 @@ public class AccountSetupService {
                     "Account setup invitation was recently issued");
             }
         }
-        Integer issuedLastDay = jdbc.queryForObject("""
-            SELECT COUNT(*) FROM account_setup_tokens
-             WHERE user_id=? AND requested_at>?
+        // Each successful administrator reissue records an audit event in the
+        // same transaction as the replacement token. Initial issuance has no
+        // ACCOUNT_SETUP_REISSUED event and must not consume the reissue quota.
+        Integer reissuesLastDay = jdbc.queryForObject("""
+            SELECT COUNT(*) FROM audit_events
+             WHERE entity_type='USER' AND entity_id=?
+               AND action_code='ACCOUNT_SETUP_REISSUED'
+               AND occurred_at>?
             """, Integer.class, user.getId(), now.minusHours(24));
-        // Includes initial issuance: at most five administrator reissues/day.
-        if (issuedLastDay != null && issuedLastDay >= 6) {
+        if (reissuesLastDay != null && reissuesLastDay >= 5) {
             throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS,
                 "Account setup reissue limit reached");
         }
