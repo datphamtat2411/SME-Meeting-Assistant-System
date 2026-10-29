@@ -19,12 +19,12 @@ class CompactAuthFlywayBaselineIntegrationTests {
     @Autowired JdbcTemplate jdbc;
 
     @Test
-    void exactlyFourSequentialMigrationsOwnTheCanonicalIdentityAndAuthSchema() {
+    void canonicalAuthMigrationsRemainFirstFourAndRoomCatalogIsFifth() {
         List<String> versions = jdbc.queryForList("""
             SELECT version FROM flyway_schema_history
             WHERE success AND version IS NOT NULL ORDER BY installed_rank
             """,String.class);
-        assertThat(versions).containsExactly("1","2","3","4");
+        assertThat(versions).containsExactly("1","2","3","4","5");
         assertThat(jdbc.queryForList("""
             SELECT script FROM flyway_schema_history WHERE success
              AND version IS NOT NULL ORDER BY installed_rank
@@ -32,7 +32,8 @@ class CompactAuthFlywayBaselineIntegrationTests {
                 "V1__create_canonical_identity_and_organizational_units.sql",
                 "V2__account_setup_and_email_delivery.sql",
                 "V3__authentication_sessions_and_recovery.sql",
-                "V4__authentication_security_controls.sql");
+                "V4__authentication_security_controls.sql",
+                "V5__create_canonical_room_catalog.sql");
     }
 
     @Test
