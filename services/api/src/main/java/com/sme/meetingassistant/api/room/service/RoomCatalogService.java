@@ -57,7 +57,6 @@ public class RoomCatalogService {
      */
     @Transactional(propagation = Propagation.MANDATORY)
     public void requireReservableWithPrior(UUID destinationId, UUID priorId) {
-        if (destinationId == null) throw conflict();
         List<UUID> ids = java.util.stream.Stream.of(destinationId, priorId)
             .filter(Objects::nonNull).distinct()
             .sorted(Comparator.comparing(UUID::toString)).toList();

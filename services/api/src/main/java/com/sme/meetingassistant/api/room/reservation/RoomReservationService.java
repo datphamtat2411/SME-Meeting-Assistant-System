@@ -42,17 +42,23 @@ public class RoomReservationService {
                 && meeting.status()!=MeetingStatus.IN_PROGRESS) throw conflict();
         OffsetDateTime start=meeting.start(), end=meeting.end();
         if(start==null || end==null || !start.toInstant().isBefore(end.toInstant())) throw conflict();
-        RoomReservation active=reservations.lockActive(meetingId).orElse(null);
         UUID roomId=meeting.roomId();
+        // Lock ROOM rows in stable order BEFORE locking reservation rows.
+        // Otherwise concurrent A -> B and B -> A reschedules can deadlock:
+        // A holds reservation A and waits on B, B holds reservation B and
+        // waits on A. The canonical Meeting row is already locked.
+        UUID priorRoomId=reservations.activeRoomId(meetingId).orElse(null);
+        if (roomId != null || priorRoomId != null) {
+            rooms.requireReservableWithPrior(roomId, priorRoomId);
+        }
+        RoomReservation active=reservations.lockActive(meetingId).orElse(null);
+        if (active!=null && priorRoomId!=null && !active.roomId().equals(priorRoomId)) {
+            throw conflict(); // external writer changed the row during lock admission
+        }
         if (active!=null && roomId!=null && active.roomId().equals(roomId)
                 && active.start().toInstant().equals(start.toInstant())
                 && active.end().toInstant().equals(end.toInstant())) {
             return Optional.of(active);
-        }
-        // Admission locks the target room in the same transaction, serializing
-        // with deactivation. The GiST constraint remains the final DB guarantee.
-        if (roomId!=null) {
-            rooms.requireReservableWithPrior(roomId, active == null ? null : active.roomId());
         }
         if (active!=null) reservations.release(active);
         if (roomId==null) return Optional.empty();

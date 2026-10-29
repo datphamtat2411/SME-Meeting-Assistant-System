@@ -13,6 +13,17 @@ public class RoomReservationStore {
     private final JdbcTemplate jdbc;
     public RoomReservationStore(JdbcTemplate jdbc) { this.jdbc=jdbc; }
 
+    /**
+     * Non-locking read used ONLY to plan stable room-row lock order.
+     * The active reservation is re-read with FOR UPDATE afterward.
+     */
+    public Optional<UUID> activeRoomId(UUID meetingId) {
+        return jdbc.query("""
+            SELECT room_id FROM room_reservations
+            WHERE meeting_id=? AND status='ACTIVE'
+            """, (rs,i)->rs.getObject("room_id",UUID.class),meetingId).stream().findFirst();
+    }
+
     public Optional<RoomReservation> lockActive(UUID meetingId) {
         return jdbc.query("""
             SELECT id,meeting_id,room_id,lower(reserved_period) AS starts,

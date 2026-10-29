@@ -341,4 +341,56 @@ class MeetingRoomLifecycleIntegrationTests {
         assertThat(reservations(id(reuse),"ACTIVE")).isEqualTo(1);
     }
 
+
+    @Test @Timeout(45)
+    void concurrentCrossRoomSwapRejectsBothConflictsWithoutDeadlocking() throws Exception {
+        MvcResult aDraft=draft(organizer,roomA,NINE,TEN);
+        MvcResult bDraft=draft(other,roomB,NINE,TEN);
+        UUID a=id(aDraft), b=id(bDraft);
+        MvcResult aBooked=schedule(organizer,a,etag(aDraft));
+        MvcResult bBooked=schedule(other,b,etag(bDraft));
+        String ta=etag(aBooked), tb=etag(bBooked);
+        var ready=new CountDownLatch(2);
+        var begin=new CountDownLatch(1);
+        ExecutorService pool=Executors.newFixedThreadPool(2);
+        try {
+            Future<Integer> fa=pool.submit(()->{
+                ready.countDown();
+                if(!begin.await(10,TimeUnit.SECONDS)) throw new AssertionError("gate");
+                return mvc.perform(
+                    org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch(
+                    "/api/v1/meetings/"+a)
+                    .principal(principal(organizer)).header(HttpHeaders.IF_MATCH,ta)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(json.writeValueAsString(Map.of("roomId",roomB))))
+                    .andReturn().getResponse().getStatus();
+            });
+            Future<Integer> fb=pool.submit(()->{
+                ready.countDown();
+                if(!begin.await(10,TimeUnit.SECONDS)) throw new AssertionError("gate");
+                return mvc.perform(
+                    org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch(
+                    "/api/v1/meetings/"+b)
+                    .principal(principal(other)).header(HttpHeaders.IF_MATCH,tb)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(json.writeValueAsString(Map.of("roomId",roomA))))
+                    .andReturn().getResponse().getStatus();
+            });
+            assertThat(ready.await(10,TimeUnit.SECONDS)).isTrue();
+            begin.countDown();
+            assertThat(fa.get(30,TimeUnit.SECONDS)).isEqualTo(409);
+            assertThat(fb.get(30,TimeUnit.SECONDS)).isEqualTo(409);
+            assertThat(jdbc.queryForObject("SELECT room_id FROM meetings WHERE id=?",
+                UUID.class,a)).isEqualTo(roomA);
+            assertThat(jdbc.queryForObject("SELECT room_id FROM meetings WHERE id=?",
+                UUID.class,b)).isEqualTo(roomB);
+            assertThat(reservations(a,"ACTIVE")).isEqualTo(1);
+            assertThat(reservations(b,"ACTIVE")).isEqualTo(1);
+            assertThat(reservations(a,"RELEASED")+reservations(b,"RELEASED")).isZero();
+            assertThat(email(a,"MEETING_RESCHEDULED")+email(b,"MEETING_RESCHEDULED")).isZero();
+        } finally {
+            begin.countDown(); pool.shutdownNow();
+        }
+    }
+
 }
