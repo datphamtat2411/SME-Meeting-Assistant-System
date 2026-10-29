@@ -2,15 +2,19 @@
 
 > **Historical checkpoint and current state:** The T05 hard stop below describes
 > what was *not yet implemented in the original P4-T08 PR*. On the later
-> PR #3/#4 remediation stack (through F04, PR #30), `UserManagementService`
-> now implements T05 lifecycle commands with transactional session revocation
-> and PostgreSQL integration tests. This does **not** close cross-PR
+> PR #3/#4 remediation stack (through CLOSE-04, PR #36),
+> `UserManagementService` now implements T05 lifecycle commands with
+> transactional session revocation and PostgreSQL integration tests.
+> This does **not** close cross-PR
 > meeting/media authorization, Flyway migration reconciliation, or deployment
 > acceptance; those remain gated by `PR3_T06_CROSS_PR_MIGRATION_AND_AUTHORIZATION_GATE.md`.
 > F03 limited offline password-blocklist baseline approval is recorded
 > in `F03_PASSWORD_BLOCKLIST_POLICY.md`; F04 additive API contract design
 > approval is recorded in `F04_ACCOUNT_SETUP_REISSUE.md`. The F04 canonical
 > endpoint catalog synchronization and production rollout approval remain separate.
+> The current scoped acceptance matrix, head-specific CI evidence and
+> remaining CLOSE-07/08/09 gates are in `PR3_PR4_FINAL_ACCEPTANCE.md`.
+> This is a Draft, unmerged User/Auth stack, not a composed release.
 
 ## Contract
 
