@@ -7,9 +7,10 @@
 > and PostgreSQL integration tests. This does **not** close cross-PR
 > meeting/media authorization, Flyway migration reconciliation, or deployment
 > acceptance; those remain gated by `PR3_T06_CROSS_PR_MIGRATION_AND_AUTHORIZATION_GATE.md`.
-> F03 corpus approval is outstanding; F04 additive API contract design
-> approval is recorded in `F04_ACCOUNT_SETUP_REISSUE.md`. Canonical requirement
-> catalog synchronization and production rollout approval remain separate.
+> F03 limited offline password-blocklist baseline approval is recorded
+> in `F03_PASSWORD_BLOCKLIST_POLICY.md`; F04 additive API contract design
+> approval is recorded in `F04_ACCOUNT_SETUP_REISSUE.md`. The F04 canonical
+> endpoint catalog synchronization and production rollout approval remain separate.
 
 ## Contract
 
