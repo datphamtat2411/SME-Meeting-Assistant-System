@@ -5,10 +5,9 @@ import com.sme.meetingassistant.api.meeting.entity.*;
 import com.sme.meetingassistant.api.meeting.repository.*;
 import com.sme.meetingassistant.api.meeting.notification.MeetingNotificationService;
 import com.sme.meetingassistant.api.room.entity.RoomStatus;
-import com.sme.meetingassistant.api.room.repository.RoomRepository;
-import com.sme.meetingassistant.api.userorganization.entity.AccountStatus;
+import com.sme.meetingassistant.api.room.service.RoomCatalogService;
 import com.sme.meetingassistant.api.userorganization.entity.UserEntity;
-import com.sme.meetingassistant.api.userorganization.repository.UserRepository;
+import com.sme.meetingassistant.api.userorganization.service.OrganizationalIdentityLookup;
 import com.sme.meetingassistant.api.userorganization.service.OrganizationalAuthorizationService;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -30,13 +29,13 @@ public class MeetingCoreService {
 
     private final MeetingRepository meetings;
     private final MeetingParticipantRepository participants;
-    private final RoomRepository rooms;
-    private final UserRepository users;
+    private final RoomCatalogService rooms;
+    private final OrganizationalIdentityLookup users;
     private final OrganizationalAuthorizationService authorization;
     private final MeetingNotificationService notifications;
 
     public MeetingCoreService(MeetingRepository meetings, MeetingParticipantRepository participants,
-            RoomRepository rooms, UserRepository users, OrganizationalAuthorizationService authorization,
+            RoomCatalogService rooms, OrganizationalIdentityLookup users, OrganizationalAuthorizationService authorization,
             MeetingNotificationService notifications) {
         this.meetings = meetings; this.participants = participants;
         this.rooms = rooms; this.users = users;
@@ -234,12 +233,12 @@ public class MeetingCoreService {
         }
     }
     private void eligible(UUID id) {
-        if (users.findById(id).filter(u->u.getAccountStatus()==AccountStatus.ACTIVE).isEmpty()) {
+        if (!users.isActive(id)) {
             throw invalid();
         }
     }
     private void validateDraftRoom(UUID id) {
-        if (id != null && rooms.findById(id).filter(r->r.getStatus()==RoomStatus.ACTIVE).isEmpty()) throw invalid();
+        if (id != null && rooms.get(id).getStatus() != RoomStatus.ACTIVE) throw invalid();
     }
     private static void validateSchedule(OffsetDateTime start, OffsetDateTime end) {
         if ((start == null) != (end == null) || (start != null && !start.isBefore(end))) throw invalid();

@@ -4,8 +4,7 @@ import com.sme.meetingassistant.api.meeting.entity.MeetingEntity;
 import com.sme.meetingassistant.api.meeting.entity.MeetingStatus;
 import com.sme.meetingassistant.api.meeting.repository.MeetingParticipantRepository;
 import com.sme.meetingassistant.api.meeting.repository.MeetingRepository;
-import com.sme.meetingassistant.api.userorganization.entity.AccountStatus;
-import com.sme.meetingassistant.api.userorganization.repository.UserRepository;
+import com.sme.meetingassistant.api.userorganization.service.OrganizationalIdentityLookup;
 import com.sme.meetingassistant.api.notification.email.TransactionalEmailHandler;
 import java.util.*;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -18,10 +17,10 @@ public class MeetingNotificationService {
     private final JdbcTemplate jdbc;
     private final MeetingParticipantRepository participants;
     private final MeetingRepository meetings;
-    private final UserRepository users;
+    private final OrganizationalIdentityLookup users;
 
     public MeetingNotificationService(JdbcTemplate jdbc, MeetingParticipantRepository participants,
-            MeetingRepository meetings, UserRepository users) {
+            MeetingRepository meetings, OrganizationalIdentityLookup users) {
         this.jdbc = jdbc; this.participants = participants;
         this.meetings = meetings; this.users = users;
     }
@@ -36,8 +35,8 @@ public class MeetingNotificationService {
             recipients.add(participant.getUserId());
         }
         for (UUID id : recipients) {
-            var user = users.findById(id).orElse(null);
-            if (user == null || user.getAccountStatus() != AccountStatus.ACTIVE) continue;
+            var user = users.activeRecipient(id).orElse(null);
+            if (user == null) continue;
             String key = "meeting:" + meeting.getId() + ":" + notificationType
                 + ":" + meeting.getVersion() + ":" + id;
             jdbc.update("""
@@ -45,7 +44,7 @@ public class MeetingNotificationService {
                     related_entity_type,related_entity_id,status,dedupe_key,created_at,updated_at)
                 VALUES (?, ?, ?, ?, 'MEETING', ?, 'PENDING', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 ON CONFLICT (dedupe_key) DO NOTHING
-                """, UUID.randomUUID(), notificationType, id, user.getEmail(), meeting.getId(), key);
+                """, UUID.randomUUID(), notificationType, id, user.email(), meeting.getId(), key);
         }
     }
 
@@ -54,11 +53,10 @@ public class MeetingNotificationService {
             MeetingStatus requiredStatus) {
         var meeting = meetings.findById(meetingId).orElse(null);
         if (meeting == null || meeting.getStatus() != requiredStatus) return Optional.empty();
-        var user = users.findByEmailNormalized(email.trim().toLowerCase(Locale.ROOT)).orElse(null);
-        if (user == null || user.getAccountStatus() != AccountStatus.ACTIVE
-                || !user.getEmail().equalsIgnoreCase(email)) return Optional.empty();
-        if (!meeting.getOrganizerUserId().equals(user.getId())
-                && !participants.existsByMeetingIdAndUserIdAndRemovedAtIsNull(meetingId,user.getId())) {
+        var user = users.activeRecipientByEmail(email).orElse(null);
+        if (user == null) return Optional.empty();
+        if (!meeting.getOrganizerUserId().equals(user.id())
+                && !participants.existsByMeetingIdAndUserIdAndRemovedAtIsNull(meetingId,user.id())) {
             return Optional.empty();
         }
         String subject = requiredStatus == MeetingStatus.CANCELLED
