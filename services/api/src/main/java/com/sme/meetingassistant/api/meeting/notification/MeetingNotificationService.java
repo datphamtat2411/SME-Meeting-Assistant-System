@@ -27,7 +27,7 @@ public class MeetingNotificationService {
 
     /** Must be called inside the business transaction; never sends SMTP synchronously. */
     public void enqueue(MeetingEntity meeting, String notificationType) {
-        if (!Set.of("MEETING_SCHEDULED","MEETING_CANCELLED").contains(notificationType))
+        if (!Set.of("MEETING_SCHEDULED","MEETING_RESCHEDULED","MEETING_CANCELLED").contains(notificationType))
             throw new IllegalArgumentException("Unsupported meeting email event");
         Set<UUID> recipients = new LinkedHashSet<>();
         recipients.add(meeting.getOrganizerUserId());
@@ -50,7 +50,7 @@ public class MeetingNotificationService {
 
     @Transactional(readOnly = true)
     public Optional<TransactionalEmailHandler.Content> compose(UUID meetingId, String email,
-            MeetingStatus requiredStatus) {
+            MeetingStatus requiredStatus, String eventType) {
         var meeting = meetings.findById(meetingId).orElse(null);
         if (meeting == null || meeting.getStatus() != requiredStatus) return Optional.empty();
         var user = users.activeRecipientByEmail(email).orElse(null);
@@ -59,13 +59,23 @@ public class MeetingNotificationService {
                 && !participants.existsByMeetingIdAndUserIdAndRemovedAtIsNull(meetingId,user.id())) {
             return Optional.empty();
         }
-        String subject = requiredStatus == MeetingStatus.CANCELLED
-            ? "Meeting cancelled" : "Meeting scheduled";
+        String subject = switch (eventType) {
+            case "MEETING_CANCELLED" -> "Meeting cancelled";
+            case "MEETING_RESCHEDULED" -> "Meeting rescheduled";
+            case "MEETING_SCHEDULED" -> "Meeting scheduled";
+            default -> throw new IllegalArgumentException("Unknown meeting notification");
+        };
         // Email content remains deliberately minimal; full sensitive meeting information
         // is only available through an authorized authenticated API.
-        String message = requiredStatus == MeetingStatus.CANCELLED
-            ? "A meeting you are associated with has been cancelled. Sign in for details."
-            : "A meeting you are associated with has been scheduled. Sign in for details.";
+        String message = switch (eventType) {
+            case "MEETING_CANCELLED" ->
+                "A meeting you are associated with has been cancelled. Sign in for details.";
+            case "MEETING_RESCHEDULED" ->
+                "A meeting you are associated with has changed its schedule. Sign in for details.";
+            case "MEETING_SCHEDULED" ->
+                "A meeting you are associated with has been scheduled. Sign in for details.";
+            default -> throw new IllegalArgumentException("Unknown meeting notification");
+        };
         return Optional.of(new TransactionalEmailHandler.Content(subject,message));
     }
 }

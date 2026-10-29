@@ -51,7 +51,9 @@ public class RoomReservationService {
         }
         // Admission locks the target room in the same transaction, serializing
         // with deactivation. The GiST constraint remains the final DB guarantee.
-        if (roomId!=null) rooms.requireReservable(roomId);
+        if (roomId!=null) {
+            rooms.requireReservableWithPrior(roomId, active == null ? null : active.roomId());
+        }
         if (active!=null) reservations.release(active);
         if (roomId==null) return Optional.empty();
         try {

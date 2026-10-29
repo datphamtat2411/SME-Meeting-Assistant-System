@@ -164,7 +164,7 @@ class MeetingCoreIntegrationTests {
         assertThat(body(ended).path("data").path("scheduledStartAt").asText()).isEqualTo("2030-06-01T09:00:00Z");
     }
 
-    @Test void scheduledRoomIsBlockedUntilReservationAuthorityExists() throws Exception {
+    @Test void scheduledRoomCreatesAuthoritativeReservationAtomically() throws Exception {
         RoomEntity room=rooms.saveAndFlush(new RoomEntity("R-"+UUID.randomUUID(),"Briefing",null,10,null));
         MvcResult created=mvc.perform(post("/api/v1/meetings").principal(principal(organizer))
             .contentType(MediaType.APPLICATION_JSON)
@@ -173,13 +173,17 @@ class MeetingCoreIntegrationTests {
                 "scheduledEndAt","2030-06-01T11:00:00Z"))))
             .andExpect(status().isCreated()).andReturn();
         String id=body(created).path("data").path("id").asText();
-        mvc.perform(post("/api/v1/meetings/"+id+"/schedule").principal(principal(organizer))
+        MvcResult scheduled=mvc.perform(post("/api/v1/meetings/"+id+"/schedule")
+            .principal(principal(organizer))
             .header(HttpHeaders.IF_MATCH,created.getResponse().getHeader(HttpHeaders.ETAG)))
-            .andExpect(status().isConflict());
+            .andExpect(status().isOk()).andReturn();
+        assertThat(body(scheduled).path("data").path("status").asText()).isEqualTo("SCHEDULED");
         assertThat(meetings.findById(UUID.fromString(id)).orElseThrow().getStatus())
-            .isEqualTo(MeetingStatus.DRAFT);
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM email_deliveries WHERE related_entity_id=?",
-            Integer.class, UUID.fromString(id))).isZero();
+            .isEqualTo(MeetingStatus.SCHEDULED);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM room_reservations WHERE meeting_id=? AND status='ACTIVE'",
+            Integer.class, UUID.fromString(id))).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM email_deliveries WHERE related_entity_id=? AND notification_type='MEETING_SCHEDULED'",
+            Integer.class, UUID.fromString(id))).isEqualTo(1);
     }
 
     @Test void patchIsPartialAndRequiresCurrentEtagAndMaterialScheduledEditsAreBlocked() throws Exception {
