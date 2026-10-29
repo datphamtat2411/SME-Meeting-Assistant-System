@@ -13,8 +13,9 @@ requirements, implementation claims, approvals and independently completed
 GitHub CI checks. It **does not** constitute a formal GitHub code review,
 a merge authorization, a database upgrade authorization or production
 acceptance. CLOSE-07 has verified the full **isolated User/Auth** suite at the final
-implementation/acceptance baseline (details below). CLOSE-08 and CLOSE-09
-still control safe landing and closure of superseded PRs.
+implementation/acceptance baseline (details below). CLOSE-08 subsequently
+landed the scoped User/Auth stack on `develop` through PR #39 (record below);
+CLOSE-09 still controls closure of superseded original PRs.
 
 The five lean, shared **agent-context** documents (`docs/TESTING.md`,
 `docs/API.md`, `docs/PRODUCT.md`, `docs/ARCHITECTURE.md`, `docs/DATA.md`)
@@ -73,12 +74,38 @@ this document merely to embed its own CI run ID. Any later Java, test,
 dependency, workflow or migration changes invalidate this sign-off until
 verification is rerun against the new HEAD.
 
+## CLOSE-08 — verified clean landing to develop (2026-10-29)
+
+**Completed:** [PR #39](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/pull/39)
+was squash-merged to `develop` as commit
+`29a5e9c74893bd68e4df214a97e838f7b6082dbd`, from one scoped
+landing commit `04c04c3564d95ad16040dca92c07058da642da7b`
+based on pre-merge `develop` `c45c217cbc2ba4dd6c8434bc56d42d12d2752730`.
+The [landing PR CI](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/actions/runs/40820543518)
+ran `./mvnw -B -ntp verify` on Java 21 + Docker/PostgreSQL
+and **passed all 265 tests with zero failures/errors/skips**.
+
+The transplant compared the diverged histories: 122 changed files confined
+to `services/api/**`, **zero overlapping target changes**, all corresponding
+User/Auth source blob SHAs reproduced exactly, and no unrelated `develop`
+blobs changed. Independent AI work and its workflow remained intact.
+The landing introduced only canonical User/Auth Flyway V1–V4, not
+unreconciled Meeting/Room/Media migrations. The five global agent-context
+docs remain lean: only the previously accepted three F05 HTTP-precondition
+lines in `docs/API.md` differ from the earlier `develop` copy.
+
+GitHub's `develop` ruleset required a PR, no minimum approving reviews,
+and resolution of any review threads (none outstanding). The merge was
+completed via that PR; **no independent reviewer approval is claimed**.
+The successful branch merge does **not** certify database deployment,
+external `RE02-API.md` catalog synchronization, T06 cross-module
+authorization/integration or production rollout.
+
 ## Open gates — do not silently mark complete
 
 | Gate | Requirement before closing it | Owner / next checkpoint |
 | --- | --- | --- |
 | F04 canonical contract sync | Add approved `API-EP-USER-008` to controlled `RE02-API.md` endpoint catalog; current repository F04 doc contains the approved proposal, **not** a change to that external canonical source | Requirements owner; before final contract-controlled release |
-| CLOSE-08 | Review and land a clean User/Auth branch only on an approved target; reconcile against current target tree and check all mandatory reviews | Merge owner |
 | CLOSE-09 | Close/supersede original PR #3/#4 **only after** verified safe landing; do not merge outdated originals or Draft stack out of order | Repository maintainer |
 | T06 cross-module | Resolve conflicting Meeting/Room/Media Flyway versions and canonical user/organization FKs; verify meeting-content authorization, room transactions and real composed API tests | [T06 integration gate](PR3_T06_CROSS_PR_MIGRATION_AND_AUTHORIZATION_GATE.md) / future feature landing |
 | Database rollout | Inspect `flyway_schema_history` for every persistent environment, back up, and prohibit V1–V4 reuse over conflicting V1/V20–V23 histories | [Flyway baseline policy](PR3_PR4_COMPACT_FLYWAY_BASELINE_POLICY.md) |
@@ -101,8 +128,10 @@ T06 runtime authorization test remains necessary.
   above remain explicit.
 - **CLOSE-07 isolated regression sign-off:** PASS on the recorded code
   baseline; evidence-only stacked PR CI must also pass before landing.
-- **Next action:** CLOSE-08 handles safe User/Auth landing; CLOSE-09 handles
-  superseded original PR closure after verified merge.
+- **CLOSE-08 clean landing:** COMPLETED through merged PR #39;
+  no deployment or independent reviewer approval implied.
+- **Next action:** CLOSE-09 verifies the merged state and then handles
+  supersession/closure of the original PR #3/#4 and obsolete Draft stack.
 
 No migration, API implementation, credential policy corpus, or agent-context
 document is modified by this acceptance record.
