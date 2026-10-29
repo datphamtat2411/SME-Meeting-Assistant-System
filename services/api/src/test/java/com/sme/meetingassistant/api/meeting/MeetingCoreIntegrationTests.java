@@ -251,4 +251,38 @@ class MeetingCoreIntegrationTests {
             .header(HttpHeaders.IF_MATCH,cancelled.getResponse().getHeader(HttpHeaders.ETAG)))
             .andExpect(status().isConflict());
     }
+
+    @Test void cancelledDraftWithPlannedDatesDoesNotEmitCommittedCancellationEmail() throws Exception {
+        MvcResult created=mvc.perform(post("/api/v1/meetings").principal(principal(organizer))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("{\"title\":\"Provisional only\","
+                + "\"scheduledStartAt\":\"2030-06-01T09:00:00Z\","
+                + "\"scheduledEndAt\":\"2030-06-01T10:00:00Z\"}"))
+            .andExpect(status().isCreated()).andReturn();
+        UUID id=UUID.fromString(body(created).path("data").path("id").asText());
+        mvc.perform(post("/api/v1/meetings/"+id+"/cancel")
+            .principal(principal(organizer))
+            .header(HttpHeaders.IF_MATCH,created.getResponse().getHeader(HttpHeaders.ETAG)))
+            .andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM email_deliveries WHERE related_entity_id=?
+            """,Integer.class,id)).isZero();
+    }
+
+    @Test void duplicateActiveParticipationAndIneligibleIdentityAreRejected() throws Exception {
+        MvcResult created=create();
+        UUID id=UUID.fromString(body(created).path("data").path("id").asText());
+        String tag=created.getResponse().getHeader(HttpHeaders.ETAG);
+        mvc.perform(post("/api/v1/meetings/"+id+"/participants")
+            .principal(principal(organizer)).header(HttpHeaders.IF_MATCH,tag)
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(json.writeValueAsString(Map.of("userId",member.getId()))))
+            .andExpect(status().isConflict());
+        mvc.perform(post("/api/v1/meetings/"+id+"/participants")
+            .principal(principal(organizer)).header(HttpHeaders.IF_MATCH,tag)
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(json.writeValueAsString(Map.of("userId",pending.getId()))))
+            .andExpect(status().isUnprocessableEntity());
+    }
+
 }

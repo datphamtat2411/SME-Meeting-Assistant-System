@@ -12,6 +12,7 @@ import com.sme.meetingassistant.api.userorganization.service.OrganizationalAutho
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.*;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
@@ -174,10 +175,11 @@ public class MeetingCoreService {
             throw conflict();
         }
         // All scheduled meetings owned by T02 are roomless, hence no reservation to release.
+        boolean wasScheduled = meeting.getStatus() == MeetingStatus.SCHEDULED;
         meeting.cancel(OffsetDateTime.now(ZoneOffset.UTC),
             request == null ? null : optional(request.reason()));
         MeetingEntity committed = flush(meeting);
-        if (committed.getScheduledStartAt() != null) notifications.enqueue(committed, "MEETING_CANCELLED");
+        if (wasScheduled) notifications.enqueue(committed, "MEETING_CANCELLED");
         return committed;
     }
 
@@ -189,7 +191,12 @@ public class MeetingCoreService {
         if (userId == null) throw invalid();
         eligible(userId);
         if (participants.existsByMeetingIdAndUserIdAndRemovedAtIsNull(meetingId, userId)) throw conflict();
-        var record = participants.saveAndFlush(new MeetingParticipantEntity(meetingId, userId, meeting.getOrganizerUserId()));
+        MeetingParticipantEntity record;
+        try {
+            record = participants.saveAndFlush(new MeetingParticipantEntity(meetingId, userId, meeting.getOrganizerUserId()));
+        } catch (DataIntegrityViolationException duplicate) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, null, duplicate);
+        }
         meeting.touch(); flush(meeting);
         return ParticipantView.from(record);
     }
