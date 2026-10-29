@@ -10,6 +10,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
+import jakarta.persistence.EntityManager;
 import com.sme.meetingassistant.api.userorganization.entity.GlobalRole;
 import com.sme.meetingassistant.api.userorganization.entity.UserEntity;
 import com.sme.meetingassistant.api.userorganization.repository.UserRepository;
@@ -50,6 +51,7 @@ class TransactionalEmailDeliveryIntegrationTests {
     @Autowired UserRepository users;
     @Autowired AccountSetupService setup;
     @Autowired TransactionalEmailDeliveryWorker worker;
+    @Autowired EntityManager entityManager;
     @MockitoBean JavaMailSender smtp;
 
     @TestConfiguration(proxyBeanMethods = false)
@@ -220,6 +222,9 @@ class TransactionalEmailDeliveryIntegrationTests {
             UPDATE meeting_participants SET removed_at=clock_timestamp(),removed_by_user_id=?
             WHERE id=?
             """, ownerId, membershipId);
+        // Simulate the next worker delivery's fresh persistence context. The
+        // real API removal and SMTP worker execute in separate transactions.
+        entityManager.clear();
         UUID removalId = UUID.randomUUID();
         jdbc.update("""
             INSERT INTO email_deliveries(id,notification_type,recipient_user_id,recipient_email,
