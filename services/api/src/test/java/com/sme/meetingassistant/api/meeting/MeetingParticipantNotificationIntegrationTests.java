@@ -24,6 +24,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.ObjectMapper;
 
 /**
@@ -44,6 +46,7 @@ class MeetingParticipantNotificationIntegrationTests {
     @Autowired ObjectMapper json;
     @Autowired MeetingParticipantAddedEmailHandler addedHandler;
     @Autowired MeetingParticipantRemovedEmailHandler removedHandler;
+    @Autowired PlatformTransactionManager txManager;
     UUID owner, member, other;
     String memberEmail;
 
@@ -278,6 +281,55 @@ class MeetingParticipantNotificationIntegrationTests {
         remove(mid,member,tag(now));
         assertThat(deliveries(mid,"MEETING_PARTICIPANT_ADDED","PENDING",member)).isZero();
         assertThat(deliveries(mid,"MEETING_PARTICIPANT_REMOVED","PENDING",member)).isZero();
+    }
+
+    @Test void rolledBackParticipantAddDoesNotPersistMembershipOrEmail() throws Exception {
+        MvcResult created=draft();
+        UUID mid=id(created);
+        MvcResult booked=action(mid,"schedule",tag(created));
+        String version=tag(booked);
+        new TransactionTemplate(txManager).executeWithoutResult(tx -> {
+            try {
+                add(mid,member,version);
+                assertThat(deliveries(mid,"MEETING_PARTICIPANT_ADDED","PENDING",member))
+                    .isEqualTo(1);
+                tx.setRollbackOnly();
+            } catch (Exception error) {
+                throw new IllegalStateException(error);
+            }
+        });
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM meeting_participants
+            WHERE meeting_id=? AND user_id=? AND removed_at IS NULL
+            """,Integer.class,mid,member)).isZero();
+        assertThat(deliveries(mid,"MEETING_PARTICIPANT_ADDED","PENDING",member)).isZero();
+        assertThat(tag(detail(mid))).isEqualTo(version);
+    }
+
+    @Test void rolledBackRemovalPreservesMembershipAndOriginalInvitation() throws Exception {
+        MvcResult created=draft(member);
+        UUID mid=id(created);
+        MvcResult booked=action(mid,"schedule",tag(created));
+        String version=tag(booked);
+        new TransactionTemplate(txManager).executeWithoutResult(tx -> {
+            try {
+                remove(mid,member,version);
+                assertThat(deliveries(mid,"MEETING_PARTICIPANT_REMOVED","PENDING",member))
+                    .isEqualTo(1);
+                tx.setRollbackOnly();
+            } catch (Exception error) {
+                throw new IllegalStateException(error);
+            }
+        });
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM meeting_participants
+            WHERE meeting_id=? AND user_id=? AND removed_at IS NULL
+            """,Integer.class,mid,member)).isEqualTo(1);
+        assertThat(scheduled(mid,"PENDING",member)).isEqualTo(1);
+        assertThat(deliveries(mid,"MEETING_PARTICIPANT_REMOVED","PENDING",member)).isZero();
+        mvc.perform(get("/api/v1/meetings/"+mid).principal(as(member)))
+            .andExpect(status().isOk());
+        assertThat(tag(detail(mid))).isEqualTo(version);
     }
 
     @Test void inactiveRecipientCannotReceivePendingMembershipEmails() throws Exception {

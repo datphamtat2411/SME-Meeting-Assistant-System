@@ -47,8 +47,9 @@ All mutations, supersession updates, and new intent inserts occur within the exi
 ## Review & acceptance
 
 - [x] HTTP/PostgreSQL integration coverage: DRAFT, SCHEDULED add/remove, authorization loss/privacy, targeted queued invitation skip, remove/re-add, reschedule/cancel, stale If-Match, duplicate add, IN_PROGRESS behavior, account deactivation.
-- [x] Existing shared SMTP delivery worker is used, with no new producer-specific worker.
-- [ ] Full Maven verify on exact T08 HEAD, including real PostgreSQL Testcontainers.
+- [x] Existing shared SMTP delivery worker is used, with no new producer-specific worker. A mocked SMTP integration case verifies real handler dispatch, send state and minimal email content.
+- [x] Explicit outer-transaction rollback tests cover both adding and removing membership, proving outbox and membership state roll back together.
+- [ ] Full Maven verify on final T08 HEAD, including real PostgreSQL Testcontainers. Preliminary complete run #267 passed 350 tests (0 failures/errors), prior to two added rollback tests.
 - [ ] Independent review of removal privacy and email-recipient eligibility.
 - [ ] Product owner accepts that add/remove email applies to SCHEDULED, not DRAFT/IN_PROGRESS.
 - [ ] T09 end-to-end gate and owner-approved stacked merge order; **do not merge yet**.
