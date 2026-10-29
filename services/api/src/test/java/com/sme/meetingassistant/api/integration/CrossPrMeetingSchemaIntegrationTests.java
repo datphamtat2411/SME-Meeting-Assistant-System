@@ -35,7 +35,7 @@ class CrossPrMeetingSchemaIntegrationTests {
             SELECT version FROM flyway_schema_history WHERE success AND version IS NOT NULL
             ORDER BY installed_rank
             """,String.class);
-        assertThat(versions).containsExactly("1","2","3","4","5","6");
+        assertThat(versions).containsExactly("1","2","3","4","5","6","7");
         assertThat(Set.copyOf(versions)).hasSize(versions.size());
         var applied=jdbc.queryForList("""
             SELECT script FROM flyway_schema_history WHERE success AND version IS NOT NULL
@@ -43,7 +43,8 @@ class CrossPrMeetingSchemaIntegrationTests {
             """,String.class);
         assertThat(applied.getFirst()).contains("canonical_identity");
         assertThat(applied.get(4)).isEqualTo("V5__create_canonical_room_catalog.sql");
-        assertThat(applied.get(5)).isEqualTo("V6__create_canonical_meeting_core.sql");
+        assertThat(applied.get(5)).isEqualTo("V6__create_canonical_meeting_core.sql",
+                "V7__create_canonical_room_reservations.sql");
         assertThat(jdbc.queryForObject("SELECT to_regclass('public.user_accounts') IS NULL",Boolean.class)).isTrue();
     }
 

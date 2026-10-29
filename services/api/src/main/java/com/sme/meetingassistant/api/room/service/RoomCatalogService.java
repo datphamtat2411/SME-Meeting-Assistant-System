@@ -19,6 +19,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.web.server.ResponseStatusException;
 
 @Service
@@ -32,6 +33,14 @@ public class RoomCatalogService {
     public RoomCatalogService(RoomRepository rooms, OrganizationalAuthorizationService authorization) {
         this.rooms = rooms;
         this.authorization = authorization;
+    }
+
+    /** Internal room admission gate; T04 must call only from an authorized meeting command. */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void requireReservable(UUID roomId) {
+        RoomEntity room = rooms.findForReservation(roomId)
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT));
+        if (room.getStatus() != RoomStatus.ACTIVE) throw conflict();
     }
 
     public RoomEntity create(CreateRoomRequest request) {

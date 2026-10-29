@@ -24,7 +24,7 @@ class CompactAuthFlywayBaselineIntegrationTests {
             SELECT version FROM flyway_schema_history
             WHERE success AND version IS NOT NULL ORDER BY installed_rank
             """,String.class);
-        assertThat(versions).containsExactly("1","2","3","4","5","6");
+        assertThat(versions).containsExactly("1","2","3","4","5","6","7");
         assertThat(jdbc.queryForList("""
             SELECT script FROM flyway_schema_history WHERE success
              AND version IS NOT NULL ORDER BY installed_rank
@@ -34,7 +34,8 @@ class CompactAuthFlywayBaselineIntegrationTests {
                 "V3__authentication_sessions_and_recovery.sql",
                 "V4__authentication_security_controls.sql",
                 "V5__create_canonical_room_catalog.sql",
-                "V6__create_canonical_meeting_core.sql");
+                "V6__create_canonical_meeting_core.sql",
+                "V7__create_canonical_room_reservations.sql");
     }
 
     @Test
