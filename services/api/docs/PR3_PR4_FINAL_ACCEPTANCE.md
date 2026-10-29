@@ -101,12 +101,32 @@ The successful branch merge does **not** certify database deployment,
 external `RE02-API.md` catalog synchronization, T06 cross-module
 authorization/integration or production rollout.
 
+## CLOSE-09 — original PR supersession and room handoff (2026-10-29)
+
+**Completed:** The original legacy [PR #3](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/pull/3)
+and [PR #4](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/pull/4)
+were closed **without merge**, together with superseded User/Auth Draft
+PRs #11–#38. Their review/source branches were not deleted. The canonical
+replacement remains merged [PR #39](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/pull/39)
+plus [PR #40](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/pull/40),
+with final `develop` commit
+`8684cddcf96a42e448b20dced59573c7f35711f3` and
+[passing 265-test CI](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/actions/runs/40821324706).
+No historical User/Auth Draft PR should be merged after this landing.
+
+**Room handoff:** [PR #5](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/pull/5)
+remains **Draft/Open** with a migration/identity/authorization blocker and
+explicit reconciliation checklist in its discussion. Its legacy V1/V3
+migrations, `user_accounts` / `organizations` references and meeting
+reservation permissions must be reworked on top of canonical develop.
+This closure does **not** complete T06 or authorize Room, Meeting or Media
+integration; the remaining gates below are unchanged.
+
 ## Open gates — do not silently mark complete
 
 | Gate | Requirement before closing it | Owner / next checkpoint |
 | --- | --- | --- |
 | F04 canonical contract sync | Add approved `API-EP-USER-008` to controlled `RE02-API.md` endpoint catalog; current repository F04 doc contains the approved proposal, **not** a change to that external canonical source | Requirements owner; before final contract-controlled release |
-| CLOSE-09 | Close/supersede original PR #3/#4 **only after** verified safe landing; do not merge outdated originals or Draft stack out of order | Repository maintainer |
 | T06 cross-module | Resolve conflicting Meeting/Room/Media Flyway versions and canonical user/organization FKs; verify meeting-content authorization, room transactions and real composed API tests | [T06 integration gate](PR3_T06_CROSS_PR_MIGRATION_AND_AUTHORIZATION_GATE.md) / future feature landing |
 | Database rollout | Inspect `flyway_schema_history` for every persistent environment, back up, and prohibit V1–V4 reuse over conflicting V1/V20–V23 histories | [Flyway baseline policy](PR3_PR4_COMPACT_FLYWAY_BASELINE_POLICY.md) |
 | Security and operations | Controlled staging checks of recovery timing; production secrets, HTTPS/CORS/CSRF, transport/recovery rollout and token-retention opt-in/backup policy | Security / deployment owner |
@@ -130,8 +150,9 @@ T06 runtime authorization test remains necessary.
   baseline; evidence-only stacked PR CI must also pass before landing.
 - **CLOSE-08 clean landing:** COMPLETED through merged PR #39;
   no deployment or independent reviewer approval implied.
-- **Next action:** CLOSE-09 verifies the merged state and then handles
-  supersession/closure of the original PR #3/#4 and obsolete Draft stack.
+- **CLOSE-09 supersession:** COMPLETED: PR #3/#4 and old User/Auth
+  Draft chain closed without merge; PR #5 remains open for a new canonical
+  integration pass. T06, contract-catalog and production gates remain open.
 
 No migration, API implementation, credential policy corpus, or agent-context
 document is modified by this acceptance record.
