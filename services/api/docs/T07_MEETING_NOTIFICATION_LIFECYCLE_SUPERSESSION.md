@@ -35,7 +35,7 @@ Under the existing `MeetingCoreService` transaction, after a successful domain m
 - **Metadata-only change / draft edits:** no supersession.
 - **Rollback / conflict / stale ETag:** skip and enqueue operations roll back with Meeting and Room Reservation.
 - **Already SENT:** do not rewrite history.
-- **Security/account-action emails:** never superseded by Meeting lifecycle rules.
+- **Security/account-action emails:** never superseded by Meeting lifecycle rules. The existing account-setup reissue eligibility check accepts both DEAD and SKIPPED as undeliverable when authorized to issue a fresh token; it does not let Meeting supersession mutate account email intents.
 
 Only `PENDING` and `FAILED` are updated in the atomic supersession SQL. `SENDING` is protected from forceful state changes, because an SMTP send may already be in progress. The existing handler still rechecks current eligibility at compose time. In-flight delivery races and at-least-once SMTP duplicates cannot be eliminated transactionally across PostgreSQL and SMTP; T07 makes no exactly-once promise.
 
