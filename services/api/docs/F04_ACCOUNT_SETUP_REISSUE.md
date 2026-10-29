@@ -48,9 +48,10 @@ needs. The controlled canonical endpoint catalog should record:
 That source-document synchronization is tracked separately; this branch
 does not claim to edit the canonical requirements outside this repository.
 
-**Still open:** F03 password-corpus/security-owner approval, any rollout
-configuration and cross-PR T06 integration checks. None is implicitly
-approved by this F04 decision.
+**Still open:** production rollout configuration and cross-PR T06
+integration checks. F03 initial offline password-corpus design approval is
+recorded separately in `F03_PASSWORD_BLOCKLIST_POLICY.md`. Neither scoped
+design approval implies deployment readiness.
 
 ## Endpoint
 
@@ -116,5 +117,6 @@ replacement, one-time invalidation, SMTP rendering, anonymous/role denials,
 missing/stale ETag, cooldown + daily quota, audit, and ACTIVE-account rejection.
 Full API Maven verification and PR CI must pass before review sign-off.
 
-**Dependency:** F03 password-policy approval is still separately required
-before releasing the stacked PR chain.
+**Dependency:** F03's initial offline password-blocklist design baseline
+has since been approved under CLOSE-04; final stacked PR code review and
+deployment acceptance remain separate.
