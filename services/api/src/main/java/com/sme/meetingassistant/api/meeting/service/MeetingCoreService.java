@@ -230,7 +230,9 @@ public class MeetingCoreService {
         } catch (DataIntegrityViolationException duplicate) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, null, duplicate);
         }
-        meeting.touch(); flush(meeting);
+        meeting.touch();
+        MeetingEntity committed = flush(meeting);
+        notifications.participantAdded(committed, record);
         return ParticipantView.from(record);
     }
 
@@ -244,7 +246,9 @@ public class MeetingCoreService {
             .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
         participant.remove(meeting.getOrganizerUserId());
         participants.flush();
-        meeting.touch(); flush(meeting);
+        meeting.touch();
+        MeetingEntity committed = flush(meeting);
+        notifications.participantRemoved(committed, participant);
     }
 
     @Transactional(readOnly = true)
