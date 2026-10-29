@@ -119,7 +119,7 @@ class TransactionalEmailDeliveryIntegrationTests {
 
     @Test
     void unsupportedNotificationTypeIsNotClaimedOrDropped() {
-        UUID unsupported = queue("MEETING_SCHEDULED", UUID.randomUUID());
+        UUID unsupported = queue("UNREGISTERED_EVENT", UUID.randomUUID());
         assertThat(worker.deliverOne()).isFalse();
         assertThat(status(unsupported)).isEqualTo("PENDING");
         assertThat(jdbc.queryForObject("""
