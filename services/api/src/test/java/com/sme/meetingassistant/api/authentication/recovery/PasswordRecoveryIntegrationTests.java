@@ -159,7 +159,7 @@ class PasswordRecoveryIntegrationTests {
             java.util.Arrays.sort(eligibleNanos);
             java.util.Arrays.sort(unknownNanos);
             System.out.printf(java.util.Locale.ROOT,
-                "CLOSE-02 baseline HTTP recovery timing (8 samples each, us): "+
+                "CLOSE-02 diagnostic HTTP recovery timing (8 samples each, us): "+
                 "eligible median=%d p75=%d; unknown median=%d p75=%d; "+
                 "eligible/unknown median ratio=%.2f%n",
                 eligibleNanos[4]/1_000,eligibleNanos[6]/1_000,
