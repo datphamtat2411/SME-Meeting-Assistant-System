@@ -4,35 +4,43 @@ import com.sme.meetingassistant.api.observability.RequestIdContext;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
+import org.springframework.data.domain.Page;
 import org.springframework.stereotype.Component;
 
 @Component
 public class ApiResponseFactory {
+    private static final String DEFAULT_SUCCESS_MESSAGE = "Request completed successfully.";
 
-	private static final String DEFAULT_SUCCESS_MESSAGE = "Request completed successfully.";
+    public <T> ApiResponse<T> success(T data) {
+        return success(DEFAULT_SUCCESS_MESSAGE, data);
+    }
 
-	public <T> ApiResponse<T> success(T data) {
-		return success(DEFAULT_SUCCESS_MESSAGE, data);
-	}
+    public <T> ApiResponse<T> success(String message, T data) {
+        return new ApiResponse<>(true, ApiErrorCode.SUCCESS.name(), message, data, metadata(), null);
+    }
 
-	public <T> ApiResponse<T> success(String message, T data) {
-		return new ApiResponse<>(true, ApiErrorCode.SUCCESS.name(), message, data, metadata(), null);
-	}
+    /** The page must already be filtered using the caller's current authorization scope. */
+    public <T> ApiResponse<List<T>> successPage(Page<T> authorizedPage) {
+        return new ApiResponse<>(true, ApiErrorCode.SUCCESS.name(), DEFAULT_SUCCESS_MESSAGE,
+            authorizedPage.getContent(),
+            new ApiMeta(RequestIdContext.currentRequestId(), OffsetDateTime.now(ZoneOffset.UTC),
+                ApiPagination.from(authorizedPage)),
+            null);
+    }
 
-	public <T> ApiResponse<T> error(ApiErrorCode code, String message) {
-		return error(code.name(), message, null);
-	}
+    public <T> ApiResponse<T> error(ApiErrorCode code, String message) {
+        return error(code.name(), message, null);
+    }
 
-	public <T> ApiResponse<T> error(ApiErrorCode code, String message, List<ApiFieldError> errors) {
-		return error(code.name(), message, errors);
-	}
+    public <T> ApiResponse<T> error(ApiErrorCode code, String message, List<ApiFieldError> errors) {
+        return error(code.name(), message, errors);
+    }
 
-	public <T> ApiResponse<T> error(String code, String message, List<ApiFieldError> errors) {
-		return new ApiResponse<>(false, code, message, null, metadata(), errors);
-	}
+    public <T> ApiResponse<T> error(String code, String message, List<ApiFieldError> errors) {
+        return new ApiResponse<>(false, code, message, null, metadata(), errors);
+    }
 
-	private static ApiMeta metadata() {
-		return new ApiMeta(RequestIdContext.currentRequestId(), OffsetDateTime.now(ZoneOffset.UTC));
-	}
-
+    private static ApiMeta metadata() {
+        return new ApiMeta(RequestIdContext.currentRequestId(), OffsetDateTime.now(ZoneOffset.UTC));
+    }
 }
