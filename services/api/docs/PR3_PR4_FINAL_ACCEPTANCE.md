@@ -12,8 +12,9 @@ unmerged PR #3/#4 remediation stack.** This records consistency of
 requirements, implementation claims, approvals and independently completed
 GitHub CI checks. It **does not** constitute a formal GitHub code review,
 a merge authorization, a database upgrade authorization or production
-acceptance. CLOSE-07 must still verify the **final** combined HEAD; CLOSE-08
-and CLOSE-09 control safe landing and closure of superseded PRs.
+acceptance. CLOSE-07 has verified the full **isolated User/Auth** suite at the final
+implementation/acceptance baseline (details below). CLOSE-08 and CLOSE-09
+still control safe landing and closure of superseded PRs.
 
 The five lean, shared **agent-context** documents (`docs/TESTING.md`,
 `docs/API.md`, `docs/PRODUCT.md`, `docs/ARCHITECTURE.md`, `docs/DATA.md`)
@@ -43,12 +44,40 @@ reported **265 tests, zero failures, errors and skips; BUILD SUCCESS**.
 That is evidence for the isolated stacked User/Auth suite, not a substitute
 for the combined final regression or production smoke tests.
 
+## CLOSE-07 — final isolated User/Auth regression evidence (2026-10-29)
+
+**Verification result: PASS for the User/Organization + Authentication
+remediation stack at code/acceptance HEAD
+`b18d3e6abca68e7f0a51a42b01834cf92cf7096d`** ([PR #37](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/pull/37),
+[API CI run 40818089325](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/actions/runs/40818089325),
+job 123263844958). GitHub job `API verification` completed successfully:
+`docker info`, then `./mvnw -B -ntp verify` on **Java 21**.
+**265 tests executed, 0 failures, 0 errors, 0 skips, BUILD SUCCESS**.
+
+Job logs list PostgreSQL/Testcontainers integration test classes for the
+canonical V1–V4 Flyway baseline, canonical-V1-only upgrade and test-only
+cross-PR meeting-schema fixture. Security regression classes cover:
+RS256 JWT trust/authorization, verified session identity and lifecycle,
+Web/Mobile transport and CSRF/logout, login/refresh replay and concurrency,
+rate limits/trusted proxies, setup/reissue quota, recovery timing/neutrality,
+password-policy/blocklist, 30-day token cleanup, and transactional email
+delivery. They also cover active management scope and account/role changes.
+The isolated CI workflow is a **single full Maven verification**, not a
+composed Meeting/Media/Room application or a deployed-environment security
+test; it does not resolve T06 or database rollout collisions.
+
+**Evidence change only:** The next stacked Draft PR records this result in
+documentation and re-runs the same full CI on its own HEAD. Its final
+head-specific check is linked in that PR, avoiding a circular commit to
+this document merely to embed its own CI run ID. Any later Java, test,
+dependency, workflow or migration changes invalidate this sign-off until
+verification is rerun against the new HEAD.
+
 ## Open gates — do not silently mark complete
 
 | Gate | Requirement before closing it | Owner / next checkpoint |
 | --- | --- | --- |
 | F04 canonical contract sync | Add approved `API-EP-USER-008` to controlled `RE02-API.md` endpoint catalog; current repository F04 doc contains the approved proposal, **not** a change to that external canonical source | Requirements owner; before final contract-controlled release |
-| CLOSE-07 | Re-run full PostgreSQL/Testcontainers/Flyway and negative auth regression on the **final** accumulated User/Auth HEAD; record exact run/commit, failures/skips | Final verification |
 | CLOSE-08 | Review and land a clean User/Auth branch only on an approved target; reconcile against current target tree and check all mandatory reviews | Merge owner |
 | CLOSE-09 | Close/supersede original PR #3/#4 **only after** verified safe landing; do not merge outdated originals or Draft stack out of order | Repository maintainer |
 | T06 cross-module | Resolve conflicting Meeting/Room/Media Flyway versions and canonical user/organization FKs; verify meeting-content authorization, room transactions and real composed API tests | [T06 integration gate](PR3_T06_CROSS_PR_MIGRATION_AND_AUTHORIZATION_GATE.md) / future feature landing |
@@ -70,8 +99,10 @@ T06 runtime authorization test remains necessary.
   document; remains with the repository's authorized reviewers/maintainer.
 - **Production / cross-module acceptance:** NOT APPROVED. All open gates
   above remain explicit.
-- **Next action:** CLOSE-07 verifies the final HEAD; CLOSE-08 handles safe
-  integration; CLOSE-09 handles superseded original PR closure.
+- **CLOSE-07 isolated regression sign-off:** PASS on the recorded code
+  baseline; evidence-only stacked PR CI must also pass before landing.
+- **Next action:** CLOSE-08 handles safe User/Auth landing; CLOSE-09 handles
+  superseded original PR closure after verified merge.
 
 No migration, API implementation, credential policy corpus, or agent-context
 document is modified by this acceptance record.
