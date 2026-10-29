@@ -3,6 +3,7 @@ package com.sme.meetingassistant.api.meeting.service;
 import com.sme.meetingassistant.api.meeting.dto.MeetingScheduleCheckRequest;
 import com.sme.meetingassistant.api.meeting.dto.MeetingScheduleCheckView;
 import com.sme.meetingassistant.api.meeting.dto.MeetingScheduleCheckView.Warning;
+import com.sme.meetingassistant.api.meeting.entity.MeetingStatus;
 import com.sme.meetingassistant.api.meeting.repository.MeetingParticipantRepository;
 import com.sme.meetingassistant.api.room.availability.RoomAvailabilityService;
 import com.sme.meetingassistant.api.userorganization.service.OrganizationalAuthorizationService;
@@ -46,6 +47,13 @@ public class MeetingScheduleCheckService {
         UUID organizer=actor;
         if (exclude!=null) {
             var own=meetings.previewOwned(exclude);
+            // A preview cannot promise that a terminal/in-progress occurrence
+            // may be rescheduled. This matches the authoritative PATCH guard.
+            if (own.getStatus() != MeetingStatus.DRAFT
+                    && own.getStatus() != MeetingStatus.SCHEDULED) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Meeting lifecycle does not permit schedule changes");
+            }
             organizer=own.getOrganizerUserId();
         }
         Set<UUID> people=new LinkedHashSet<>();
