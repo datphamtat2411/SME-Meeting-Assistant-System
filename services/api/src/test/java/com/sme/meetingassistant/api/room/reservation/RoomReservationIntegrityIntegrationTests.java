@@ -112,7 +112,7 @@ class RoomReservationIntegrityIntegrationTests {
         assertThat(jdbc.queryForObject("""
             SELECT data_type FROM information_schema.columns
              WHERE table_name='room_reservations' AND column_name='reserved_period'
-            """,String.class)).isEqualTo("USER-DEFINED");
+            """,String.class)).isEqualTo("tstzrange");
     }
 
     @Test void draftAndInactiveRoomAreNotAdmitted() {
