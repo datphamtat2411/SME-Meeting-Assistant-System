@@ -30,10 +30,7 @@ class CoreRuntimeConfigurationTests {
 	void missingEnvironmentFailsStartupWithAnActionablePropertyReference() {
 		new ApplicationContextRunner()
 				.withUserConfiguration(MeetingAssistantApiApplication.class, PostgresTestConfiguration.class)
-				.withPropertyValues(
-						"app.runtime.environment=",
-						"app.auth.jwt.secret=dGVzdC1qd3Qtc2VjcmV0LWF0LWxlYXN0LTMyLWJ5dGVzLSE=",
-						"app.auth.http-enforcement-enabled=false")
+				.withPropertyValues("app.runtime.environment=")
 				.run(context -> {
 					assertThat(context).hasFailed();
 					assertThat(context.getStartupFailure())

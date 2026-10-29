@@ -1,0 +1,34 @@
+[project]
+name = "sme-meeting-ai"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.143.0",
+    "pydantic-settings>=2.15.0",
+    "uvicorn>=0.54.0",
+]
+
+[project.scripts]
+sme-ai-http = "sme_meeting_ai.api.__main__:main"
+sme-ai-worker = "sme_meeting_ai.workers.__main__:main"
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=9.1.1",
+    "ruff>=0.17.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.5,<0.14"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]

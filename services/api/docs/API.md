@@ -45,6 +45,7 @@ Clients rely on HTTP status and `code`, not human-readable `message` text.
 409 → business or state conflict
 412 → stale concurrency precondition
 422 → semantic validation failure
+428 → required concurrency precondition missing
 429 → rate limit exceeded
 ```
 
@@ -63,6 +64,7 @@ Generic HTTP failures use stable transport codes in the common error envelope:
 | 413 | `PAYLOAD_TOO_LARGE` |
 | 415 | `UNSUPPORTED_MEDIA_TYPE` |
 | 422 | `VALIDATION_FAILED` |
+| 428 | `CLIENT_ERROR` |
 | 429 | `RATE_LIMIT_EXCEEDED` |
 | 500 | `INTERNAL_ERROR` |
 | 502 | `INTERNAL_BAD_GATEWAY` |
@@ -110,6 +112,7 @@ Use centralized error handling and do not expose internal exception or provider 
 Long-running work returns `202 Accepted` with a durable job or resource reference; acceptance does not imply completion.
 Job progress and failures are exposed through Core API resources, including partial completion or warnings where relevant.
 Retry-sensitive creation or job-trigger endpoints may use `Idempotency-Key`; concurrency-sensitive updates may use `ETag` and `If-Match`.
+For operations requiring `If-Match`, a missing header returns 428; a stale value returns 412.
 
 ## Boundary
 
