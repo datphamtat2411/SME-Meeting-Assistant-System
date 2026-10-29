@@ -17,8 +17,9 @@ On this **unmerged PR #3/#4 remediation stack**, it provides:
 These are **branch implementation capabilities, not production approval**.
 Meeting, room, participant, schedule, action-item and AI business APIs are
 still separate modules requiring integration. Cross-PR Flyway reconciliation,
-meeting-content authorization, deployment secrets and F03/F04 approvals remain
-gated; see `docs/PR3_T06_CROSS_PR_MIGRATION_AND_AUTHORIZATION_GATE.md`,
+meeting-content authorization, deployment secrets and F03 password-corpus
+approval remain gated. The F04 additive API contract is design-approved but
+is not a production rollout authorization; see `docs/PR3_T06_CROSS_PR_MIGRATION_AND_AUTHORIZATION_GATE.md`,
 `docs/F03_PASSWORD_BLOCKLIST_POLICY.md`, and
 `docs/F04_ACCOUNT_SETUP_REISSUE.md`.
 
