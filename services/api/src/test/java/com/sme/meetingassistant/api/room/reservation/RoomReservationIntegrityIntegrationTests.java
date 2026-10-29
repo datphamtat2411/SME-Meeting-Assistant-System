@@ -130,7 +130,8 @@ class RoomReservationIntegrityIntegrationTests {
 
     @Test void roomlessMeetingNeverCreatesAReservation() {
         UUID roomless=meeting(null,NINE,TEN,"SCHEDULED");
-        assertThat(tx().execute(s->service.synchronizeCommitted(roomless))).isEmpty();
+        java.util.Optional<RoomReservation> result = tx().execute(s->service.synchronizeCommitted(roomless));
+        assertThat(result).isEmpty();
         assertThat(countActive(roomless)).isZero();
     }
 
