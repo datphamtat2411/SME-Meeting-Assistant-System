@@ -9,6 +9,7 @@ import com.sme.meetingassistant.api.notification.email.TransactionalEmailHandler
 import java.util.*;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 /** Durable intent in the same transaction as the meeting mutation, using existing SMTP worker. */
@@ -46,6 +47,25 @@ public class MeetingNotificationService {
                 ON CONFLICT (dedupe_key) DO NOTHING
                 """, UUID.randomUUID(), notificationType, id, user.email(), meeting.getId(), key);
         }
+    }
+
+    /**
+     * Invalidate obsolete, unclaimed schedule notices atomically with the authoritative
+     * meeting transition. A SENDING handoff might already be in flight over SMTP and
+     * cannot safely be revoked; it is still revalidated by its handler before sending.
+     * Never alter SENT or other email purposes (especially account/security mail).
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public int supersedePendingScheduleNotices(UUID meetingId) {
+        return jdbc.update("""
+            UPDATE email_deliveries
+               SET status='SKIPPED', skip_reason='SUPERSEDED_BY_MEETING_CHANGE',
+                   last_error_code=NULL,last_error_summary=NULL,next_attempt_at=NULL,
+                   updated_at=clock_timestamp()
+             WHERE related_entity_type='MEETING' AND related_entity_id=?
+               AND notification_type IN ('MEETING_SCHEDULED','MEETING_RESCHEDULED')
+               AND status IN ('PENDING','FAILED')
+            """, meetingId);
     }
 
     @Transactional(readOnly = true)

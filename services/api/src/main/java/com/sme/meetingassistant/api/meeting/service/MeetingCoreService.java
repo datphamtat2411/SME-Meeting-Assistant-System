@@ -153,6 +153,7 @@ public class MeetingCoreService {
         MeetingEntity committed = flush(meeting);
         if (materialChange && meeting.getStatus() == MeetingStatus.SCHEDULED) {
             reservations.synchronizeCommitted(meeting.getId());
+            notifications.supersedePendingScheduleNotices(meeting.getId());
             notifications.enqueue(committed, "MEETING_RESCHEDULED");
         }
         return committed;
@@ -181,7 +182,9 @@ public class MeetingCoreService {
         MeetingVersionTags.requireMatch(meeting, ifMatch);
         if (meeting.getStatus() != MeetingStatus.SCHEDULED) throw conflict();
         meeting.start(OffsetDateTime.now(ZoneOffset.UTC));
-        return flush(meeting);
+        MeetingEntity committed = flush(meeting);
+        notifications.supersedePendingScheduleNotices(meeting.getId());
+        return committed;
     }
 
     public MeetingEntity end(UUID id, String ifMatch) {
@@ -191,6 +194,7 @@ public class MeetingCoreService {
         meeting.end(OffsetDateTime.now(ZoneOffset.UTC));
         MeetingEntity committed = flush(meeting);
         reservations.releaseEnded(meeting.getId());
+        notifications.supersedePendingScheduleNotices(meeting.getId());
         return committed;
     }
 
@@ -206,6 +210,7 @@ public class MeetingCoreService {
         MeetingEntity committed = flush(meeting);
         if (wasScheduled) {
             reservations.releaseCancelled(meeting.getId());
+            notifications.supersedePendingScheduleNotices(meeting.getId());
             notifications.enqueue(committed, "MEETING_CANCELLED");
         }
         return committed;

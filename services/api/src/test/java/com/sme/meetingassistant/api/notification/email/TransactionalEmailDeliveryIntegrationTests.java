@@ -129,13 +129,17 @@ class TransactionalEmailDeliveryIntegrationTests {
     }
 
     @Test
-    void revokedRecoveryContextIsDeadWithoutSending() {
+    void revokedRecoveryContextIsSkippedWithoutSending() {
         UUID delivery = queue("PASSWORD_RECOVERY", REVOKED);
         assertThat(worker.deliverOne()).isTrue();
-        assertThat(status(delivery)).isEqualTo("DEAD");
+        assertThat(status(delivery)).isEqualTo("SKIPPED");
+        assertThat(jdbc.queryForObject("""
+            SELECT skip_reason FROM email_deliveries WHERE id=?
+            """, String.class, delivery)).isEqualTo("ACTION_NO_LONGER_ELIGIBLE");
         assertThat(jdbc.queryForObject("""
             SELECT last_error_code FROM email_deliveries WHERE id=?
-            """, String.class, delivery)).isEqualTo("DELIVERY_ACTION_UNAVAILABLE");
+            """, String.class, delivery)).isNull();
+        assertThat(worker.deliverOne()).isFalse(); // terminal, never retried
         verifyNoInteractions(smtp);
     }
 

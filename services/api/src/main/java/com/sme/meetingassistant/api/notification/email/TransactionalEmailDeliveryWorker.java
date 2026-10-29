@@ -88,7 +88,7 @@ public final class TransactionalEmailDeliveryWorker {
         try {
             var prepared = handlers.get(job.type()).compose(job.contextId(), job.recipientEmail());
             if (prepared.isEmpty()) {
-                markDead(job.id(), "DELIVERY_ACTION_UNAVAILABLE");
+                markSkipped(job.id(), "ACTION_NO_LONGER_ELIGIBLE");
                 return true;
             }
             send(job.recipientEmail(), prepared.get());
@@ -149,6 +149,16 @@ public final class TransactionalEmailDeliveryWorker {
         } catch (AddressException invalid) {
             return false;
         }
+    }
+
+    private void markSkipped(UUID id, String reason) {
+        jdbc.update("""
+            UPDATE email_deliveries
+               SET status='SKIPPED', skip_reason=?,last_error_code=NULL,
+                   last_error_summary=NULL,next_attempt_at=NULL,
+                   updated_at=clock_timestamp()
+             WHERE id=? AND status='SENDING'
+            """, reason, id);
     }
 
     private void markDead(UUID id, String code) {
