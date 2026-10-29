@@ -184,9 +184,13 @@ class PasswordRecoveryIntegrationTests {
         return System.nanoTime()-start;
     }
 
-    @Test void neutralResponseForUnknownInactiveAndActiveAccounts() throws Exception {
+    @Test void neutralResponseForUnknownPendingInactiveAndActiveAccounts() throws Exception {
         var eligible=request(active.getEmail());
         var absent=request("missing-"+UUID.randomUUID()+"@example.com");
+        UserEntity pending=new UserEntity("pending-"+UUID.randomUUID()+"@example.com",
+            "Pending",GlobalRole.EMPLOYEE,null);
+        users.saveAndFlush(pending);
+        var awaiting=request(pending.getEmail());
         UserEntity inactive=new UserEntity("inactive-"+UUID.randomUUID()+"@example.com",
             "Inactive",GlobalRole.EMPLOYEE,null);
         inactive.completeInitialSetup(hasher.hash(FIRST),OffsetDateTime.now(ZoneOffset.UTC));
@@ -198,11 +202,12 @@ class PasswordRecoveryIntegrationTests {
         // Compare only the neutral public contract rather than per-request metadata.
         var eligibleJson=json.readTree(eligible.getResponse().getContentAsString());
         var missingJson=json.readTree(absent.getResponse().getContentAsString());
+        var pendingJson=json.readTree(awaiting.getResponse().getContentAsString());
         var deniedJson=json.readTree(denied.getResponse().getContentAsString());
         assertThat(eligibleJson.path("data")).isEqualTo(missingJson.path("data"))
-            .isEqualTo(deniedJson.path("data"));
+            .isEqualTo(pendingJson.path("data")).isEqualTo(deniedJson.path("data"));
         assertThat(eligibleJson.path("code")).isEqualTo(missingJson.path("code"))
-            .isEqualTo(deniedJson.path("code"));
+            .isEqualTo(pendingJson.path("code")).isEqualTo(deniedJson.path("code"));
         assertThat(eligible.getResponse().getHeader(HttpHeaders.CACHE_CONTROL))
             .contains("no-store");
         assertThat(jdbc.queryForObject("""
@@ -211,6 +216,9 @@ class PasswordRecoveryIntegrationTests {
         assertThat(jdbc.queryForObject("""
             SELECT count(*) FROM password_reset_tokens WHERE user_id=?
             """,Integer.class,inactive.getId())).isZero();
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM password_reset_tokens WHERE user_id=?
+            """,Integer.class,pending.getId())).isZero();
     }
 
     @Test void recoveryEmailUsesSharedWorkerAndRandomTokenWithVerifierOnly() throws Exception {
