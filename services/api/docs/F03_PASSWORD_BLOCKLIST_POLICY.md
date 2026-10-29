@@ -4,6 +4,57 @@
 email, authentication transport, frontend, AI or external-password-service
 changes. This is the baseline for SEC-PWD-001..007.
 
+## Project security-policy decision — CLOSE-04 (2026-10-29)
+
+**Decision: APPROVED as the initial local blocklist baseline for PR #3/#4**
+under SEC-PWD-006 and SEC-PWD-007. This is a scoped project design/policy
+decision, not a claim that any third-party security assessor has certified
+the corpus or that authentication/recovery production rollout is approved.
+
+**Decision basis:**
+- The project requires 15–128 Unicode code points. The pinned NCSC/SecLists
+  100k candidate set produces 327 reviewed entries meeting that minimum;
+  14 existing long locally blocked values are retained. Filtering shorter
+  entries is intentional because they already fail the minimum-length check.
+- The list catches a targeted class of common/previously disclosed entire
+  passwords. It is not a comprehensive breached-password database; it cannot
+  establish that any accepted passphrase has never been compromised.
+- Product, project, roles, and Vietnamese department variants are separately
+  checked as whole-password/anchored variants, without rejecting arbitrary
+  sentences containing those words. There is no canonical organization-name
+  field in current PR #3 user identity; inventing one just for this policy
+  would be an incorrect dependency.
+- Input is compared using an NFKC/lowercase and punctuation-collapsed
+  **comparison copy**; original password bytes remain unchanged at the
+  existing Argon2id hashing boundary. No arbitrary composition rules or
+  forced periodic rotation are introduced.
+- A pinned source revision, MIT license, exact resource SHA-256 validation at
+  startup and deterministic unit/integration tests make this policy auditable.
+  A remote breach-lookup API, bundled giant corpus, runtime downloads or a
+  new persistence table provide no justified benefit to this scope.
+
+**Maintenance ownership:** The project product/security owner owns the
+approved corpus and its review decisions. Review this source selection and
+coverage at least **every six months** (first review by **2027-04-29**), and
+earlier when verified credential compromise, changed account threat model,
+new relevant widely guessed passwords, or canonical organizational names
+warrant a review. Review does **not** mean automatically changing the list:
+document source/provenance, license, actual coverage and false-positive
+impact; update the pinned commit, bundled resource, SHA-256 constant, and
+tests together only after approval. Keep the prior reproducible snapshot in
+version history. Never fetch a mutable live list at runtime.
+
+**Acceptance boundary:** The scoped offline blocklist design is approved
+and existing F03 tests on the PR #3/#4 stack are accepted subject to final
+CI verification. F04's additive API contract was independently
+design-approved. Final code review, deployment secrets, independent
+production acceptance and cross-PR T06 integration remain separate gates.
+
+**Reference context:** [NIST SP 800-63B-4, password verifiers](https://pages.nist.gov/800-63-4/sp800-63b.html)
+recommends comparing whole passwords to commonly used/expected/compromised
+candidates rather than matching substrings, while avoiding an excessively
+large list that adds user friction.
+
 ## Design decision
 
 Both existing flows already inject `AccountSetupPasswordPolicy`; F03 replaces
@@ -55,10 +106,11 @@ SHA-256 of the **exact final UTF-8 resource bytes**, update the pinned
 and complete CI tests. Do not silently update the resource, and do **not**
 download a floating `master` asset at startup or in CI.
 
-The 327-entry corpus is an intentionally **bounded baseline**. Passing the
-check does not establish that a password was never leaked. Source selection,
-coverage trade-offs and the release update cadence require explicit
-product/security-owner approval; this document does not claim such approval.
+The 327-entry corpus is an intentionally **bounded, project-approved
+initial baseline**. Passing the check does not establish that a password
+was never leaked. Scope, coverage trade-offs and review cadence were
+approved for this project in the CLOSE-04 decision above; future corpus
+changes remain controlled security-policy/data changes.
 
 ## Context-specific controls
 
