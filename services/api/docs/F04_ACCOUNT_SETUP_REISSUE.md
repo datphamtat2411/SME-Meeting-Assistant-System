@@ -27,7 +27,9 @@ still deliverable/usable invitation, 429 reissue cooldown or quota.
   A valid token whose delivery is PENDING, FAILED/retrying, SENDING or SENT
   is not replaced merely because the administrator retries the command.
 - Minimum 1 minute since the last issuance; maximum 5 **reissues** within
-  a rolling 24-hour window (6 total tokens including original issuance).
+  a rolling 24-hour window, excluding the original invitation from that quota.
+  Count committed `ACCOUNT_SETUP_REISSUED` audit events for the target user;
+  those events are written in the same transaction as replacement issuance.
   These are application-level per-account controls, not IP-based heuristics.
 - Revocation of every unconsumed predecessor token, invalidation of queued
   old delivery intents, creation of a new purpose-specific verifier and
