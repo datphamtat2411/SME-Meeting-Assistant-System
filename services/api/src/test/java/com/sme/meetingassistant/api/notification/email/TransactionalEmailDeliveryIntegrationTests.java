@@ -176,4 +176,70 @@ class TransactionalEmailDeliveryIntegrationTests {
             """, String.class, delivery)).isNull();
         verifyNoInteractions(smtp);
     }
+
+    @Test
+    void realSharedWorkerDeliversAddedAndPrivacySafeRemovedMembershipMessages() {
+        UUID ownerId = UUID.randomUUID();
+        UUID memberId = UUID.randomUUID();
+        UUID meetingId = UUID.randomUUID();
+        UUID membershipId = UUID.randomUUID();
+        String ownerEmail = "t08-owner-" + ownerId + "@example.invalid";
+        String memberEmail = "t08-member-" + memberId + "@example.invalid";
+        jdbc.update("""
+            INSERT INTO users(id,email,email_normalized,display_name,password_hash,
+                global_role,account_status)
+            VALUES (?,?,?,'T08 owner','fixture','EMPLOYEE','ACTIVE')
+            """, ownerId, ownerEmail, ownerEmail);
+        jdbc.update("""
+            INSERT INTO users(id,email,email_normalized,display_name,password_hash,
+                global_role,account_status)
+            VALUES (?,?,?,'T08 member','fixture','EMPLOYEE','ACTIVE')
+            """, memberId, memberEmail, memberEmail);
+        jdbc.update("""
+            INSERT INTO meetings(id,title,organizer_user_id,created_by_user_id,status,
+                scheduled_start_at,scheduled_end_at)
+            VALUES (?,'Private agenda for T08',?,?,'SCHEDULED',
+                '2030-12-22T09:00:00Z','2030-12-22T10:00:00Z')
+            """, meetingId, ownerId, ownerId);
+        jdbc.update("""
+            INSERT INTO meeting_participants(id,meeting_id,user_id,added_by_user_id)
+            VALUES (?,?,?,?)
+            """, membershipId, meetingId, memberId, ownerId);
+        UUID invitationId = UUID.randomUUID();
+        jdbc.update("""
+            INSERT INTO email_deliveries(id,notification_type,recipient_user_id,recipient_email,
+                related_entity_type,related_entity_id,status,dedupe_key,created_at,updated_at)
+            VALUES (?,'MEETING_PARTICIPANT_ADDED',?,?,'MEETING_PARTICIPANT',?,
+                'PENDING',?,clock_timestamp(),clock_timestamp())
+            """, invitationId, memberId, memberEmail, membershipId,
+            "t08-invitation:" + invitationId);
+        assertThat(worker.deliverOne()).isTrue();
+        assertThat(status(invitationId)).isEqualTo("SENT");
+
+        jdbc.update("""
+            UPDATE meeting_participants SET removed_at=clock_timestamp(),removed_by_user_id=?
+            WHERE id=?
+            """, ownerId, membershipId);
+        UUID removalId = UUID.randomUUID();
+        jdbc.update("""
+            INSERT INTO email_deliveries(id,notification_type,recipient_user_id,recipient_email,
+                related_entity_type,related_entity_id,status,dedupe_key,created_at,updated_at)
+            VALUES (?,'MEETING_PARTICIPANT_REMOVED',?,?,'MEETING_PARTICIPANT',?,
+                'PENDING',?,clock_timestamp(),clock_timestamp())
+            """, removalId, memberId, memberEmail, membershipId,
+            "t08-removal:" + removalId);
+        assertThat(worker.deliverOne()).isTrue();
+        assertThat(status(removalId)).isEqualTo("SENT");
+        ArgumentCaptor<SimpleMailMessage> mail =
+            ArgumentCaptor.forClass(SimpleMailMessage.class);
+        verify(smtp,times(2)).send(mail.capture());
+        assertThat(mail.getAllValues()).extracting(SimpleMailMessage::getTo)
+            .allSatisfy(to -> assertThat(to).containsExactly(memberEmail));
+        assertThat(mail.getAllValues()).extracting(SimpleMailMessage::getSubject)
+            .containsExactly("Meeting invitation","Meeting participation updated");
+        assertThat(mail.getAllValues()).extracting(SimpleMailMessage::getText)
+            .allSatisfy(text -> assertThat(text).doesNotContain(
+                "Private agenda for T08", meetingId.toString(), "2030-12-22"));
+    }
+
 }
