@@ -362,10 +362,13 @@ class AccountSetupIntegrationTests {
     }
 
     private void makeInvitationDeadAndPastCooldown(UUID tokenId) {
+        // Shift the actual issuance timestamps rather than using PostgreSQL
+        // now(): this @Transactional test has a transaction-scoped, frozen now().
+        // Preserving relative issuance order keeps the newest token identifiable.
         jdbc.update("""
             UPDATE account_setup_tokens
-               SET requested_at=now()-INTERVAL '2 minutes',
-                   expires_at=now()+INTERVAL '22 hours'
+               SET requested_at=requested_at-INTERVAL '2 minutes',
+                   expires_at=expires_at-INTERVAL '2 minutes'
              WHERE id=?
             """, tokenId);
         jdbc.update("UPDATE email_deliveries SET status='DEAD' WHERE related_entity_id=?",
