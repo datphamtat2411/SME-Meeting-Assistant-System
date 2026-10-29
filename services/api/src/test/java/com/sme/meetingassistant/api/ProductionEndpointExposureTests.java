@@ -64,7 +64,9 @@ class ProductionEndpointExposureTests {
 	}
 
 	private void assertUnavailable(String path) throws Exception {
-		this.mockMvc.perform(get(path)).andExpect(status().isNotFound());
+		this.mockMvc.perform(get(path)
+            .principal(() -> "00000000-0000-0000-0000-000000000001"))
+            .andExpect(status().isNotFound());
 	}
 
 }
