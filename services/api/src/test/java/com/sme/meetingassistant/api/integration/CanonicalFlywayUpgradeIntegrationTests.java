@@ -65,7 +65,7 @@ class CanonicalFlywayUpgradeIntegrationTests {
                 SELECT version FROM %s.flyway_schema_history
                 WHERE success AND version IS NOT NULL ORDER BY installed_rank
                 """.formatted(schema),String.class);
-            assertThat(versions).containsExactly("1","2","3","4","5","6");
+            assertThat(versions).containsExactly("1","2","3","4","5","6","7");
             assertThat(jdbc.queryForObject("""
                 SELECT checksum FROM %s.flyway_schema_history WHERE version='1'
                 """.formatted(schema),Integer.class)).isEqualTo(originalChecksum);
@@ -74,7 +74,7 @@ class CanonicalFlywayUpgradeIntegrationTests {
                 WHERE id=? AND account_status='PENDING_SETUP' AND password_hash IS NULL
                 """.formatted(schema),Integer.class,id)).isEqualTo(1);
             for(String table:List.of("email_deliveries","auth_sessions",
-                    "password_reset_tokens","audit_events","auth_abuse_attempts","rooms")) {
+                    "password_reset_tokens","audit_events","auth_abuse_attempts","rooms","meetings","meeting_participants","room_reservations")) {
                 Integer count=jdbc.queryForObject("""
                     SELECT count(*) FROM information_schema.tables
                     WHERE table_schema=? AND table_name=?

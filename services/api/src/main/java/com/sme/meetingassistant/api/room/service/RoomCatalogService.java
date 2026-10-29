@@ -9,6 +9,11 @@ import com.sme.meetingassistant.api.userorganization.entity.GlobalRole;
 import com.sme.meetingassistant.api.userorganization.service.OrganizationalAuthorizationService;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Collection;
+import java.util.Comparator;
+import java.util.Objects;
+import java.util.List;
+import org.springframework.jdbc.core.JdbcTemplate;
 import java.util.Set;
 import java.util.UUID;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -19,6 +24,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.web.server.ResponseStatusException;
 
 @Service
@@ -28,10 +34,37 @@ public class RoomCatalogService {
 
     private final RoomRepository rooms;
     private final OrganizationalAuthorizationService authorization;
+    private final JdbcTemplate jdbc;
 
-    public RoomCatalogService(RoomRepository rooms, OrganizationalAuthorizationService authorization) {
+    public RoomCatalogService(RoomRepository rooms, OrganizationalAuthorizationService authorization, JdbcTemplate jdbc) {
         this.rooms = rooms;
         this.authorization = authorization;
+        this.jdbc = jdbc;
+    }
+
+    /** Internal room admission gate; T04 must call only from an authorized meeting command. */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void requireReservable(UUID roomId) {
+        RoomEntity room = rooms.findForReservation(roomId)
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT));
+        if (room.getStatus() != RoomStatus.ACTIVE) throw conflict();
+    }
+
+    /**
+     * Deadlock-safe lock ordering for meeting reschedules that move between rooms.
+     * Only the destination must remain ACTIVE; prior room is locked to serialize
+     * two-way swaps and with deactivation. Must join the Meeting transaction.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void requireReservableWithPrior(UUID destinationId, UUID priorId) {
+        List<UUID> ids = java.util.stream.Stream.of(destinationId, priorId)
+            .filter(Objects::nonNull).distinct()
+            .sorted(Comparator.comparing(UUID::toString)).toList();
+        for (UUID id : ids) {
+            RoomEntity room = rooms.findForReservation(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT));
+            if (id.equals(destinationId) && room.getStatus() != RoomStatus.ACTIVE) throw conflict();
+        }
     }
 
     public RoomEntity create(CreateRoomRequest request) {
@@ -107,11 +140,20 @@ public class RoomCatalogService {
 
     public RoomEntity deactivate(UUID id, String ifMatch) {
         authorization.requireAdministrator();
-        RoomEntity room = find(id);
+        // Use the same row lock as reservation admission so no concurrent
+        // booking can pass between the future-booking check and status change.
+        RoomEntity room = rooms.findForReservation(id)
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
         RoomVersionTags.requireMatch(room, ifMatch);
         if (room.getStatus() != RoomStatus.ACTIVE) throw conflict();
-        // No reservation data exists in T01. Later waves must preserve history and
-        // define treatment of future reservations without introducing hard-delete.
+        Boolean hasFutureCommitment = jdbc.queryForObject("""
+            SELECT EXISTS (
+                SELECT 1 FROM room_reservations
+                WHERE room_id=? AND status='ACTIVE'
+                  AND upper(reserved_period)>clock_timestamp()
+            )
+            """, Boolean.class, id);
+        if (Boolean.TRUE.equals(hasFutureCommitment)) throw conflict();
         room.deactivate();
         return flush(room);
     }

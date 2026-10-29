@@ -6,6 +6,7 @@ import com.sme.meetingassistant.api.meeting.repository.*;
 import com.sme.meetingassistant.api.meeting.notification.MeetingNotificationService;
 import com.sme.meetingassistant.api.room.entity.RoomStatus;
 import com.sme.meetingassistant.api.room.service.RoomCatalogService;
+import com.sme.meetingassistant.api.room.reservation.RoomReservationService;
 import com.sme.meetingassistant.api.userorganization.entity.UserEntity;
 import com.sme.meetingassistant.api.userorganization.service.OrganizationalIdentityLookup;
 import com.sme.meetingassistant.api.userorganization.service.OrganizationalAuthorizationService;
@@ -34,13 +35,15 @@ public class MeetingCoreService {
     private final OrganizationalIdentityLookup users;
     private final OrganizationalAuthorizationService authorization;
     private final MeetingNotificationService notifications;
+    private final RoomReservationService reservations;
 
     public MeetingCoreService(MeetingRepository meetings, MeetingParticipantRepository participants,
             RoomCatalogService rooms, OrganizationalIdentityLookup users, OrganizationalAuthorizationService authorization,
-            MeetingNotificationService notifications) {
+            MeetingNotificationService notifications, RoomReservationService reservations) {
         this.meetings = meetings; this.participants = participants;
         this.rooms = rooms; this.users = users;
         this.authorization = authorization; this.notifications = notifications;
+        this.reservations = reservations;
     }
 
     public MeetingEntity create(CreateMeetingRequest request) {
@@ -73,6 +76,15 @@ public class MeetingCoreService {
         MeetingEntity meeting = lookup(id);
         requireAccess(meeting, actor);
         return meeting;
+    }
+
+    /**
+     * Organizer-only schedule preview boundary. A known meeting ID never grants
+     * permission to exclude someone else's reservation from availability.
+     */
+    @Transactional(readOnly = true)
+    public MeetingEntity previewOwned(UUID meetingId) {
+        return owned(meetingId);
     }
 
     @Transactional(readOnly = true)
@@ -122,15 +134,28 @@ public class MeetingCoreService {
                 default -> throw invalid();
             }
         }
-        // Scheduling changes on committed meetings require the T03/T04 atomic reservation boundary.
-        if (meeting.getStatus() == MeetingStatus.SCHEDULED && scheduleChanged) throw conflict();
         validateSchedule(start, end);
-        if (scheduleChanged) {
-            validateDraftRoom(room);
+        boolean materialChange = scheduleChanged
+            && (!Objects.equals(meeting.getRoomId(), room)
+                || !sameInstant(meeting.getScheduledStartAt(), start)
+                || !sameInstant(meeting.getScheduledEndAt(), end));
+        // Historical metadata is mutable only where the lifecycle permits;
+        // rescheduling an in-progress or ended meeting is never allowed.
+        if (materialChange) {
+            if (meeting.getStatus() == MeetingStatus.DRAFT) {
+                validateDraftRoom(room);
+            } else {
+                if (start == null) throw invalid();
+            }
             meeting.editDraftSchedule(start, end, room);
         }
         meeting.editMetadata(title, description);
-        return flush(meeting);
+        MeetingEntity committed = flush(meeting);
+        if (materialChange && meeting.getStatus() == MeetingStatus.SCHEDULED) {
+            reservations.synchronizeCommitted(meeting.getId());
+            notifications.enqueue(committed, "MEETING_RESCHEDULED");
+        }
+        return committed;
     }
 
     public MeetingEntity schedule(UUID id, String ifMatch, ScheduleMeetingRequest request) {
@@ -143,11 +168,10 @@ public class MeetingCoreService {
         }
         validateSchedule(start, end);
         if (start == null) throw invalid();
-        // Explicit fail-closed gate until T03/T04 offers a mandatory reservation integration.
-        if (meeting.getRoomId() != null) throw conflict();
-        meeting.editDraftSchedule(start, end, null);
+        meeting.editDraftSchedule(start, end, meeting.getRoomId());
         meeting.scheduleRoomless();
         MeetingEntity committed = flush(meeting);
+        reservations.synchronizeCommitted(meeting.getId());
         notifications.enqueue(committed, "MEETING_SCHEDULED");
         return committed;
     }
@@ -165,7 +189,9 @@ public class MeetingCoreService {
         MeetingVersionTags.requireMatch(meeting, ifMatch);
         if (meeting.getStatus() != MeetingStatus.IN_PROGRESS) throw conflict();
         meeting.end(OffsetDateTime.now(ZoneOffset.UTC));
-        return flush(meeting);
+        MeetingEntity committed = flush(meeting);
+        reservations.releaseEnded(meeting.getId());
+        return committed;
     }
 
     public MeetingEntity cancel(UUID id, String ifMatch, CancelMeetingRequest request) {
@@ -174,12 +200,14 @@ public class MeetingCoreService {
         if (meeting.getStatus() != MeetingStatus.DRAFT && meeting.getStatus() != MeetingStatus.SCHEDULED) {
             throw conflict();
         }
-        // All scheduled meetings owned by T02 are roomless, hence no reservation to release.
         boolean wasScheduled = meeting.getStatus() == MeetingStatus.SCHEDULED;
         meeting.cancel(OffsetDateTime.now(ZoneOffset.UTC),
             request == null ? null : optional(request.reason()));
         MeetingEntity committed = flush(meeting);
-        if (wasScheduled) notifications.enqueue(committed, "MEETING_CANCELLED");
+        if (wasScheduled) {
+            reservations.releaseCancelled(meeting.getId());
+            notifications.enqueue(committed, "MEETING_CANCELLED");
+        }
         return committed;
     }
 
@@ -246,6 +274,9 @@ public class MeetingCoreService {
     }
     private void validateDraftRoom(UUID id) {
         if (id != null && rooms.get(id).getStatus() != RoomStatus.ACTIVE) throw invalid();
+    }
+    private static boolean sameInstant(OffsetDateTime a, OffsetDateTime b) {
+        return a == null ? b == null : b != null && a.toInstant().equals(b.toInstant());
     }
     private static void validateSchedule(OffsetDateTime start, OffsetDateTime end) {
         if ((start == null) != (end == null) || (start != null && !start.isBefore(end))) throw invalid();

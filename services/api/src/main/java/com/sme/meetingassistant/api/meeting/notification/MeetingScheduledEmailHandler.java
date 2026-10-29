@@ -12,6 +12,6 @@ public class MeetingScheduledEmailHandler implements TransactionalEmailHandler {
     public MeetingScheduledEmailHandler(MeetingNotificationService notifications) { this.notifications = notifications; }
     @Override public String notificationType() { return "MEETING_SCHEDULED"; }
     @Override public Optional<Content> compose(UUID meetingId, String recipientEmail) {
-        return notifications.compose(meetingId,recipientEmail,MeetingStatus.SCHEDULED);
+        return notifications.compose(meetingId,recipientEmail,MeetingStatus.SCHEDULED,"MEETING_SCHEDULED");
     }
 }
