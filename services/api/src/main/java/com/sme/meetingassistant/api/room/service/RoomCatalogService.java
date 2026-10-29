@@ -36,7 +36,7 @@ public class RoomCatalogService {
 
     public RoomEntity create(CreateRoomRequest request) {
         authorization.requireAdministrator();
-        String code = required(request.code(), 64).toUpperCase(Locale.ROOT);
+        String code = required(required(request.code(), 64).toUpperCase(Locale.ROOT), 64);
         if (rooms.existsByCode(code)) throw conflict();
         RoomEntity room = new RoomEntity(code, required(request.name(), 160),
             optional(request.location(), 255), request.capacity(), optional(request.notes(), 0));
