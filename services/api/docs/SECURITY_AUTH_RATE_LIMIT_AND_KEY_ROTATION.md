@@ -14,7 +14,8 @@ This document records the original P4-T07 scope: T05 was not part of that PR.
 On the later PR #3/#4 remediation stack, T05 user lifecycle/session revocation
 is implemented and tested. F03 adds the shared pinned password blocklist
 (subject to product/security-owner corpus approval); F04 adds administrator-only
-setup reissue (subject to additive API contract approval). Neither changes
+setup reissue (its additive API contract is approved for this project as recorded
+in `F04_ACCOUNT_SETUP_REISSUE.md`, not yet production-enabled). Neither changes
 the rate-limit or RS256 rotation policies recorded here. Cross-module Flyway,
 meeting-content authorization and deployment acceptance remain open; see
 `PR3_T06_CROSS_PR_MIGRATION_AND_AUTHORIZATION_GATE.md`.
