@@ -41,12 +41,16 @@ MockMvc, eight HTTP requests per class, alternating eligible/unknown order):**
 | --- | ---: | ---: | ---: | --- |
 | Original request path | 5,850 μs | 3,877 μs | 1.51× | [40811914347](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/actions/runs/40811914347) |
 | Single locked query | 3,849 μs | 3,462 μs | 1.11× | [40812281490](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/actions/runs/40812281490) |
+| Single locked query (repeat CI) | 3,646 μs | 2,526 μs | 1.44× | [40812648384](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/actions/runs/40812648384) |
 
-The revised run passed **260 tests, 0 failures, 0 errors, 0 skipped**.
-Results are **diagnostic, not a timing-security proof**: these are small
-samples on potentially different CI runner loads, using in-process MockMvc,
-not controlled public-network latency tests. The test reports timings
-without brittle timing assertions. A production-like, controlled
+The two post-change runs each passed **260 tests, 0 failures, 0 errors,
+0 skipped**. The eligible path improved relative to the original diagnostic,
+but the eligible/unknown ratio varied between **1.11× and 1.44×** even
+with unchanged source code: **do not infer stable timing parity from these
+CI measurements**. Results are diagnostic, not a timing-security proof:
+small samples on potentially different runner loads, using in-process
+MockMvc, not controlled public-network latency tests. The test reports
+timings without brittle timing assertions. A production-like, controlled
 multiple-run comparison remains appropriate before internet exposure.
 
 **Explicitly rejected:** `Thread.sleep`, random jitter, synthetic
