@@ -483,7 +483,7 @@ class AccountSetupIntegrationTests {
         submit(token(id), "A strong password that was accepted 2026", 200);
         assertThat(worker.deliverOne()).isTrue();
         assertThat(jdbc.queryForObject("SELECT status FROM email_deliveries WHERE related_entity_id=?",
-            String.class, tokenId(id))).isEqualTo("DEAD");
+            String.class, tokenId(id))).isEqualTo("SKIPPED");
         org.mockito.Mockito.verifyNoInteractions(smtp);
     }
 }

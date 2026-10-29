@@ -374,7 +374,7 @@ class PasswordRecoveryIntegrationTests {
         verify(smtp,times(2)).send(any(SimpleMailMessage.class));
     }
 
-    @Test void consumedTokenCannotBeResentAndItsDeliveryIntentIsDead() throws Exception {
+    @Test void consumedTokenCannotBeResentAndItsDeliveryIntentIsSkipped() throws Exception {
         request(active.getEmail());
         UUID id=tokenId();
         byte[] nonce=jdbc.queryForObject("SELECT delivery_nonce FROM password_reset_tokens WHERE id=?",
@@ -383,7 +383,7 @@ class PasswordRecoveryIntegrationTests {
         assertThat(worker.deliverOne()).isTrue();
         assertThat(jdbc.queryForObject("""
             SELECT status FROM email_deliveries WHERE related_entity_id=?
-            """,String.class,id)).isEqualTo("DEAD");
+            """,String.class,id)).isEqualTo("SKIPPED");
         verifyNoInteractions(smtp);
     }
 }
