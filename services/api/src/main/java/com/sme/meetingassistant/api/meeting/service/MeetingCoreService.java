@@ -180,7 +180,9 @@ public class MeetingCoreService {
         MeetingVersionTags.requireMatch(meeting, ifMatch);
         if (meeting.getStatus() != MeetingStatus.IN_PROGRESS) throw conflict();
         meeting.end(OffsetDateTime.now(ZoneOffset.UTC));
-        return flush(meeting);
+        MeetingEntity committed = flush(meeting);
+        reservations.releaseEnded(meeting.getId());
+        return committed;
     }
 
     public MeetingEntity cancel(UUID id, String ifMatch, CancelMeetingRequest request) {

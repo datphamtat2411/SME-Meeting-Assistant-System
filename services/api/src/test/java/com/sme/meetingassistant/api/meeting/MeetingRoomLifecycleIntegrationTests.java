@@ -316,4 +316,29 @@ class MeetingRoomLifecycleIntegrationTests {
             pool.shutdownNow();
         }
     }
+
+    @Test void endingMeetingReleasesReservationWithoutChangingHistoricalSchedule() throws Exception {
+        MvcResult initial=draft(organizer,roomA,NINE,ELEVEN);
+        UUID id=id(initial);
+        MvcResult scheduled=schedule(organizer,id,etag(initial));
+        MvcResult started=mvc.perform(post("/api/v1/meetings/"+id+"/start")
+            .principal(principal(organizer))
+            .header(HttpHeaders.IF_MATCH,etag(scheduled)))
+            .andExpect(status().isOk()).andReturn();
+        MvcResult ended=mvc.perform(post("/api/v1/meetings/"+id+"/end")
+            .principal(principal(organizer))
+            .header(HttpHeaders.IF_MATCH,etag(started)))
+            .andExpect(status().isOk()).andReturn();
+        JsonNode meeting=body(ended).path("data");
+        assertThat(meeting.path("status").asText()).isEqualTo("ENDED");
+        assertThat(meeting.path("scheduledStartAt").asText()).isEqualTo(NINE);
+        assertThat(meeting.path("scheduledEndAt").asText()).isEqualTo(ELEVEN);
+        assertThat(reservations(id,"ACTIVE")).isZero();
+        assertThat(reservations(id,"RELEASED")).isEqualTo(1);
+        // Ended meetings do not occupy the room's remaining originally planned time.
+        MvcResult reuse=draft(other,roomA,TEN,ELEVEN);
+        schedule(other,id(reuse),etag(reuse));
+        assertThat(reservations(id(reuse),"ACTIVE")).isEqualTo(1);
+    }
+
 }

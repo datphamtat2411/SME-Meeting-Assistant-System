@@ -78,6 +78,18 @@ public class RoomReservationService {
         reservations.lockActive(meetingId).ifPresent(reservations::release);
     }
 
+    /**
+     * A completed occurrence no longer blocks future room reuse, even if its
+     * originally planned interval has not elapsed. History remains RELEASED.
+     * Must be called AFTER the Meeting has been flushed to ENDED.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void releaseEnded(UUID meetingId) {
+        var meeting = meetings.lockCurrent(meetingId);
+        if (meeting.status() != MeetingStatus.ENDED) throw conflict();
+        reservations.lockActive(meetingId).ifPresent(reservations::release);
+    }
+
     private static boolean isExpectedReservationConflict(Throwable error) {
         for(Throwable cause=error;cause!=null;cause=cause.getCause()) {
             if(cause instanceof SQLException sql && ("23P01".equals(sql.getSQLState())
