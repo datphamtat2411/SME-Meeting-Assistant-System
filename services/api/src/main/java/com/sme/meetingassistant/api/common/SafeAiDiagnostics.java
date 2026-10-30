@@ -78,7 +78,7 @@ public final class SafeAiDiagnostics {
     }
 
     private static void small(Map<?, ?> metadata, int maximum) {
-        if (metadata.size() > maximum || metadata.containsKey(null)) reject();
+        if (metadata.size() > maximum || metadata.keySet().stream().anyMatch(java.util.Objects::isNull)) reject();
     }
 
     private static void bool(Object value) {
