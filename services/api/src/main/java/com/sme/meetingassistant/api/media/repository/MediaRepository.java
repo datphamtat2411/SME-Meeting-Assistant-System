@@ -189,7 +189,7 @@ public class MediaRepository {
         int inserted = this.jdbc.update("""
             INSERT INTO processing_jobs (id, meeting_id, source_media_id, job_type, status,
               requested_by_user_id, queued_at, created_at, updated_at)
-            VALUES (?, ?, ?, 'OFFLINE_MEETING_PROCESSING', 'QUEUED', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            VALUES (?, ?, ?, 'OFFLINE_MEETING_PROCESSING', 'PENDING', ?, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             ON CONFLICT DO NOTHING
             """, job.id(), job.meetingId(), job.sourceMediaId(), job.requestedBy());
         if (inserted != 1) throw new JobAdmissionConflictException();
@@ -225,15 +225,29 @@ public class MediaRepository {
         if (limit < 1 || leaseSeconds < 1 || maxAttempts < 1) {
             throw new IllegalArgumentException("Invalid outbox claim limits");
         }
-        // A worker may die during its final attempt. Expiration must eventually
-        // make that row terminal, rather than leaving an unclaimable PENDING event.
-        this.jdbc.update("""
-            UPDATE outbox_events SET status = 'FAILED',
-              claim_token = NULL, claim_expires_at = NULL,
-              last_error = COALESCE(last_error, 'OUTBOX_CONFIRM_NOT_OBSERVED')
-            WHERE status = 'PENDING' AND attempt_count >= ?
-              AND (claim_expires_at IS NULL OR claim_expires_at <= CURRENT_TIMESTAMP)
-            """, maxAttempts);
+        // A worker may die during its final attempt. Reconcile the outbox and
+        // its still-PENDING job atomically; never overwrite consumer progress.
+        this.jdbc.queryForObject("""
+            WITH exhausted AS (
+              UPDATE outbox_events SET status = 'FAILED',
+                claim_token = NULL, claim_expires_at = NULL,
+                last_error = COALESCE(last_error, 'OUTBOX_CONFIRM_NOT_OBSERVED')
+              WHERE status = 'PENDING' AND attempt_count >= ?
+                AND (claim_expires_at IS NULL OR claim_expires_at <= CURRENT_TIMESTAMP)
+              RETURNING aggregate_id, aggregate_type, event_type
+            ), failed_jobs AS (
+              UPDATE processing_jobs p SET status = 'FAILED',
+                error_code = 'JOB_DISPATCH_FAILED',
+                error_summary = 'Processing job dispatch was not confirmed.',
+                completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP,
+                version = version + 1
+              FROM exhausted e
+              WHERE e.aggregate_type = 'PROCESSING_JOB'
+                AND e.event_type = 'PROCESSING_JOB_QUEUED'
+                AND p.id = e.aggregate_id AND p.status = 'PENDING'
+              RETURNING p.id
+            ) SELECT count(*) FROM exhausted
+            """, Long.class, maxAttempts);
         return this.jdbc.query("""
             WITH candidates AS (
               SELECT id FROM outbox_events
@@ -256,17 +270,38 @@ public class MediaRepository {
             maxAttempts, limit, leaseSeconds);
     }
 
-    /** A confirm from a superseded lease cannot mark another publisher's work. */
+    /**
+     * Publisher confirm is not a job dispatch until both outbox=PUBLISHED and
+     * PENDING->QUEUED commit in one PostgreSQL statement. The lease fences late
+     * confirmations; RUNNING/terminal consumer states cannot be downgraded.
+     */
     public boolean markPublished(UUID eventId, UUID claimToken) {
-        return this.jdbc.update("""
-            UPDATE outbox_events SET status = 'PUBLISHED', published_at = CURRENT_TIMESTAMP,
-              last_error = NULL, claim_token = NULL, claim_expires_at = NULL
-            WHERE id = ? AND claim_token = ? AND status = 'PENDING'
-              AND claim_expires_at > CURRENT_TIMESTAMP
-            """, eventId, claimToken) == 1;
+        long updated = this.jdbc.queryForObject("""
+            WITH published AS (
+              UPDATE outbox_events SET status = 'PUBLISHED',
+                published_at = CURRENT_TIMESTAMP, last_error = NULL,
+                claim_token = NULL, claim_expires_at = NULL
+              WHERE id = ? AND claim_token = ? AND status = 'PENDING'
+                AND claim_expires_at > CURRENT_TIMESTAMP
+              RETURNING aggregate_id, aggregate_type, event_type
+            ), queued_jobs AS (
+              UPDATE processing_jobs p SET status = 'QUEUED',
+                queued_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP,
+                version = version + 1
+              FROM published e
+              WHERE e.aggregate_type = 'PROCESSING_JOB'
+                AND e.event_type = 'PROCESSING_JOB_QUEUED'
+                AND p.id = e.aggregate_id AND p.status = 'PENDING'
+              RETURNING p.id
+            ) SELECT count(*) FROM published
+            """, Long.class, eventId, claimToken);
+        return updated == 1;
     }
 
-    /** The claim incremented attempt_count before sending, including crash attempts. */
+    /**
+     * On retry exhaustion, atomically fail the outbox and its still-PENDING
+     * job. Keep error details generic; do not expose broker internal messages.
+     */
     public boolean markPublishFailed(UUID eventId, UUID claimToken,
             int attemptCount, int maxAttempts, String error) {
         if (attemptCount < 1 || maxAttempts < 1) {
@@ -274,14 +309,31 @@ public class MediaRepository {
         }
         long delaySeconds = Math.min(300L, 1L << Math.min(attemptCount - 1, 8));
         String safeError = error == null ? "UNKNOWN" : error.substring(0, Math.min(error.length(), 1000));
-        return this.jdbc.update("""
-            UPDATE outbox_events SET status = CASE WHEN attempt_count >= ? THEN 'FAILED'
-                                                   ELSE 'PENDING' END,
-              last_error = ?, next_attempt_at = CURRENT_TIMESTAMP + (? * INTERVAL '1 second'),
-              claim_token = NULL, claim_expires_at = NULL
-            WHERE id = ? AND claim_token = ? AND status = 'PENDING'
-              AND attempt_count = ? AND claim_expires_at > CURRENT_TIMESTAMP
-            """, maxAttempts, safeError, delaySeconds, eventId, claimToken, attemptCount) == 1;
+        long updated = this.jdbc.queryForObject("""
+            WITH decided AS (
+              UPDATE outbox_events SET status = CASE WHEN attempt_count >= ? THEN 'FAILED'
+                                                     ELSE 'PENDING' END,
+                last_error = ?, next_attempt_at = CURRENT_TIMESTAMP + (? * INTERVAL '1 second'),
+                claim_token = NULL, claim_expires_at = NULL
+              WHERE id = ? AND claim_token = ? AND status = 'PENDING'
+                AND attempt_count = ? AND claim_expires_at > CURRENT_TIMESTAMP
+              RETURNING aggregate_id, aggregate_type, event_type, status
+            ), failed_jobs AS (
+              UPDATE processing_jobs p SET status = 'FAILED',
+                error_code = 'JOB_DISPATCH_FAILED',
+                error_summary = 'Processing job dispatch was not confirmed.',
+                completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP,
+                version = version + 1
+              FROM decided e
+              WHERE e.status = 'FAILED'
+                AND e.aggregate_type = 'PROCESSING_JOB'
+                AND e.event_type = 'PROCESSING_JOB_QUEUED'
+                AND p.id = e.aggregate_id AND p.status = 'PENDING'
+              RETURNING p.id
+            ) SELECT count(*) FROM decided
+            """, Long.class, maxAttempts, safeError, delaySeconds,
+            eventId, claimToken, attemptCount);
+        return updated == 1;
     }
 
     private static Media mediaRow(ResultSet rs, int row) throws SQLException {

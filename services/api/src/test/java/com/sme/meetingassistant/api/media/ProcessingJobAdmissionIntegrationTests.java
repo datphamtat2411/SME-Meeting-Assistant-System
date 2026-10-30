@@ -128,8 +128,14 @@ class ProcessingJobAdmissionIntegrationTests {
         Source s = source();
         MvcResult first = admit(s, "same-key");
         assertThat(first.getResponse().getStatus()).isEqualTo(202);
+        assertThat(json.readTree(first.getResponse().getContentAsString())
+            .path("data").path("status").asText()).isEqualTo("PENDING");
+        assertThat(json.readTree(first.getResponse().getContentAsString())
+            .path("data").path("queuedAt").isNull()).isTrue();
         MvcResult replay = admit(s, "same-key");
         assertThat(replay.getResponse().getStatus()).isEqualTo(202);
+        assertThat(json.readTree(replay.getResponse().getContentAsString())
+            .path("data").path("status").asText()).isEqualTo("PENDING");
         assertThat(json.readTree(first.getResponse().getContentAsString()).path("data").path("id").asText())
             .isEqualTo(json.readTree(replay.getResponse().getContentAsString()).path("data").path("id").asText());
         assertThat(jobs()).isEqualTo(1);

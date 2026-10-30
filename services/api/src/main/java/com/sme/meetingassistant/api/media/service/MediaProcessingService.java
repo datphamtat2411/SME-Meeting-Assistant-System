@@ -325,8 +325,8 @@ public class MediaProcessingService {
         }
         String operation = JOB_OPERATION + ":" + meetingId;
         String fingerprint = fingerprint(mediaId.toString());
-        Job job = new Job(UUID.randomUUID(), meetingId, mediaId, "OFFLINE_MEETING_PROCESSING", "QUEUED", actor,
-            null, 0, OffsetDateTime.now(), null, null, null, null, null,
+        Job job = new Job(UUID.randomUUID(), meetingId, mediaId, "OFFLINE_MEETING_PROCESSING", "PENDING", actor,
+            null, 0, null, null, null, null, null, null,
             OffsetDateTime.now(), OffsetDateTime.now());
         // Every admission takes the same row lock before inserting idempotency.
         this.repository.lockAdmissionUser(actor);

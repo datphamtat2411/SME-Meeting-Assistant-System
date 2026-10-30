@@ -127,4 +127,19 @@ class MediaProcessingCoreMigrationIntegrationTests {
             """, Integer.class));
     }
 
+    @Test
+    void migrationV15AllowsPendingWithoutQueueTimestampAndChecksDispatchStates() {
+        assertEquals("YES", jdbc.queryForObject("""
+            SELECT is_nullable FROM information_schema.columns
+            WHERE table_schema = current_schema() AND table_name = 'processing_jobs'
+              AND column_name = 'queued_at'
+            """, String.class));
+        assertEquals(2, jdbc.queryForObject("""
+            SELECT count(*) FROM pg_constraint
+            WHERE conrelid = 'processing_jobs'::regclass
+              AND conname IN ('ck_processing_job_pending_not_dispatched',
+                              'ck_processing_job_queued_has_dispatch_time')
+            """, Integer.class));
+    }
+
 }

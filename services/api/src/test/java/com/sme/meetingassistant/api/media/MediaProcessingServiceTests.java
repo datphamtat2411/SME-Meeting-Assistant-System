@@ -165,7 +165,7 @@ class MediaProcessingServiceTests {
     }
 
     @Test
-    void admittedJobIsPersistedWithOutboxAndStartsQueued() {
+    void admittedJobIsPendingUntilOutboxPublishConfirmed() {
         UUID mediaId = UUID.randomUUID();
         AtomicReference<Job> saved = new AtomicReference<>();
         when(this.repository.findMedia(mediaId)).thenReturn(Optional.of(media(mediaId, "AVAILABLE")));
@@ -181,7 +181,8 @@ class MediaProcessingServiceTests {
 
         var result = this.service.createJob(this.meetingId, mediaId, "job-once");
 
-        assertEquals("QUEUED", result.status());
+        assertEquals("PENDING", result.status());
+        assertEquals(null, result.queuedAt());
         assertEquals(mediaId, result.sourceMediaId());
         verify(this.repository).insertJobAndOutbox(any(Job.class), any(UUID.class));
     }
