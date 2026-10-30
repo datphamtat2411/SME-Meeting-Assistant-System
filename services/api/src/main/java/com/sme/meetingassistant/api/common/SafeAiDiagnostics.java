@@ -50,7 +50,9 @@ public final class SafeAiDiagnostics {
                 case "recovered" -> bool(value);
                 case "retryCount" -> nonnegativeInteger(value);
                 case "qualityScores" -> {
-                    if (!(value instanceof Map<?, ?> scores) || scores.size() > 4) reject();
+                    if (!(value instanceof Map<?, ?>)) reject();
+                    Map<?, ?> scores = (Map<?, ?>) value;
+                    if (scores.size() > 4) reject();
                     for (var entry : scores.entrySet()) {
                         if (!(entry.getKey() instanceof String name)
                                 || !Set.of("speech", "speaker", "language", "alignment").contains(name)) reject();
