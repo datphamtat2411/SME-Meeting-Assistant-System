@@ -167,7 +167,7 @@ class TranscriptReviewRevisionGuardIntegrationTests {
 
     @Test
     void correctionMakesOlderDerivedSourceStale() {
-        publish("ACCEPTED", "COVERED", TranscriptIngestion.Status.READ);
+        publish("ACCEPTED", "COVERED", TranscriptIngestion.Status.READY);
         TranscriptSource initial = guard.current(meeting);
         tx.executeWithoutResult(status -> transcripts.correct(meeting, segment(), actor,
             "Human-corrected statement.", "Corrected fact", 0));
@@ -178,7 +178,7 @@ class TranscriptReviewRevisionGuardIntegrationTests {
 
     @Test
     void speakerMapAndUnmapInvalidateDerivedEvidenceWithoutChangingSpeechText() {
-        publish("ACCEPTED", "COVERED", TranscriptIngestion.Status.READ);
+        publish("ACCEPTED", "COVERED", TranscriptIngestion.Status.READY);
         UUID speaker = cluster();
         UUID id = segment();
         String text = jdbc.queryForObject(
@@ -201,7 +201,7 @@ class TranscriptReviewRevisionGuardIntegrationTests {
 
     @Test
     void newCurrentTranscriptMakesOldDerivedInputStaleEvenAtSameContentRevision() {
-        publish("ACCEPTED", "COVERED", TranscriptIngestion.Status.READ);
+        publish("ACCEPTED", "COVERED", TranscriptIngestion.Status.READY);
         TranscriptSource old = guard.current(meeting);
         UUID newerJob = UUID.randomUUID(), newerStage = UUID.randomUUID();
         jdbc.update("""
@@ -214,7 +214,7 @@ class TranscriptReviewRevisionGuardIntegrationTests {
             VALUES (?,?,'FINALIZING_TRANSCRIPT',1,'SUCCEEDED')
             """, newerStage, newerJob);
         ingestion.publish(new TranscriptResult(meeting, media, newerJob, newerStage, "vi",
-            10000L, TranscriptIngestion.Status.READ,
+            10000L, TranscriptIngestion.Status.READY,
             List.of(new SegmentResult(0, 0, 1500, "New verified text.",
                 "ACCEPTED", "Speaker 1", newerStage, null)),
             List.of(new CoverageResult(0, 1500, "COVERED", false, 0, null)),
@@ -226,7 +226,7 @@ class TranscriptReviewRevisionGuardIntegrationTests {
 
     @Test
     void transactionGuardHoldsMeetingLockUntilDerivedWriteCompletes() throws Exception {
-        publish("ACCEPTED", "COVERED", TranscriptIngestion.Status.READ);
+        publish("ACCEPTED", "COVERED", TranscriptIngestion.Status.READY);
         TranscriptSource captured = guard.current(meeting);
         var locked = new CountDownLatch(1);
         var release = new CountDownLatch(1);
