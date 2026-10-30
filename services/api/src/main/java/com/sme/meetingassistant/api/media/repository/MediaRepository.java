@@ -368,8 +368,8 @@ public class MediaRepository {
               queued_at = NULL, completed_at = NULL, error_code = NULL, error_summary = NULL,
               retryable = FALSE, retry_count = retry_count + 1,
               updated_at = CURRENT_TIMESTAMP, version = version + 1
-            WHERE id = ? AND status = 'FAILED' AND retry_count < ? AND (retryable = TRUE OR ? IS NOT NULL)
-            """, stageCode, job.id(), maxRetries, stageCode);
+            WHERE id = ? AND status = 'FAILED' AND retry_count < ? AND (retryable = TRUE OR ?)
+            """, stageCode, job.id(), maxRetries, stageCode != null);
         if (updated != 1) return false;
         if (stageCode != null) {
             int inserted = this.jdbc.update("""
