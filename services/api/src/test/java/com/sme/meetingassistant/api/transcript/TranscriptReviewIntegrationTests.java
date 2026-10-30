@@ -130,4 +130,71 @@ class TranscriptReviewIntegrationTests {
             .andExpect(status().isNotFound());
         assertThat(cluster).isNotNull();
     }
+
+    @Test
+    void onlyOrganizerCanMapSpeakersAndMappedUserMustBeMeetingMember() throws Exception {
+        String endpoint = "/api/v1/meetings/" + meeting + "/speaker-clusters/" + cluster;
+        String participantBody = "{\\"userId\\":\\"" + participant + "\\"}";
+        String outsiderBody = "{\\"userId\\":\\"" + outsider + "\\"}";
+
+        mvc.perform(patch(endpoint).principal(as(participant))
+                .contentType(MediaType.APPLICATION_JSON).content(participantBody))
+            .andExpect(status().isNotFound());
+        mvc.perform(patch(endpoint).principal(as(outsider))
+                .contentType(MediaType.APPLICATION_JSON).content(participantBody))
+            .andExpect(status().isNotFound());
+        mvc.perform(patch(endpoint).principal(as(organizer))
+                .contentType(MediaType.APPLICATION_JSON).content(outsiderBody))
+            .andExpect(status().isNotFound());
+
+        mvc.perform(patch(endpoint).principal(as(organizer))
+                .contentType(MediaType.APPLICATION_JSON).content(participantBody))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.userId").value(participant.toString()));
+        assertThat(jdbc.queryForObject("""
+            SELECT content_revision FROM transcripts WHERE meeting_id=? AND is_current
+            """, Long.class, meeting)).isEqualTo(1L);
+        assertThat(jdbc.queryForObject("""
+            SELECT mapped_by_user_id FROM speaker_mappings
+            WHERE speaker_cluster_id=? AND superseded_at IS NULL
+            """, UUID.class, cluster)).isEqualTo(organizer);
+
+        mvc.perform(patch(endpoint).principal(as(organizer))
+                .contentType(MediaType.APPLICATION_JSON).content(participantBody))
+            .andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("""
+            SELECT content_revision FROM transcripts WHERE meeting_id=? AND is_current
+            """, Long.class, meeting)).isEqualTo(1L);
+
+        mvc.perform(patch(endpoint).principal(as(organizer))
+                .contentType(MediaType.APPLICATION_JSON).content("{}"))
+            .andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("""
+            SELECT content_revision FROM transcripts WHERE meeting_id=? AND is_current
+            """, Long.class, meeting)).isEqualTo(2L);
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM speaker_mappings
+            WHERE speaker_cluster_id=? AND superseded_at IS NOT NULL
+            """, Integer.class, cluster)).isEqualTo(1);
+        mvc.perform(get("/api/v1/meetings/" + meeting + "/speaker-clusters")
+                .principal(as(participant)))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data[0].userId").doesNotExist());
+    }
+
+    @Test
+    void currentTranscriptReturnsContentRevisionAfterAuthorizedReview() throws Exception {
+        mvc.perform(get(transcriptUrl()).principal(as(participant)))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.contentRevision").value(0));
+        String etag = "\\"s-" + segment + "-0\\"";
+        mvc.perform(patch(transcriptUrl() + "/segments/" + segment).principal(as(organizer))
+                .header("If-Match", etag).contentType(MediaType.APPLICATION_JSON)
+                .content("{\\"text\\":\\"Đã chỉnh sửa và xác minh.\\"}"))
+            .andExpect(status().isOk());
+        mvc.perform(get(transcriptUrl()).principal(as(participant)))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.contentRevision").value(1))
+            .andExpect(jsonPath("$.data.segments[0].text").value("Đã chỉnh sửa và xác minh."));
+    }
 }
