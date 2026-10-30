@@ -82,19 +82,40 @@ public class TranscriptRepository {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                 "Transcript source or finalization attempt is not eligible.");
         }
+        // Job results are persisted even when not eligible for automatic promotion.
+        List<CurrentTranscript> currentVersions = this.jdbc.query("""
+            SELECT id,content_revision FROM transcripts
+            WHERE meeting_id=? AND is_current
+            """, (rs, row) -> new CurrentTranscript(
+                rs.getObject("id", UUID.class), rs.getLong("content_revision")), result.meetingId());
+        boolean newerJobExists = Boolean.TRUE.equals(this.jdbc.queryForObject("""
+            SELECT EXISTS (
+              SELECT 1 FROM processing_jobs candidate
+              JOIN processing_jobs newer ON newer.meeting_id=candidate.meeting_id
+              WHERE candidate.id=? AND candidate.meeting_id=?
+                AND newer.id<>candidate.id
+                AND (newer.reprocess_of_job_id=candidate.id
+                  OR newer.created_at>candidate.created_at
+                  OR (newer.created_at=candidate.created_at AND newer.id>candidate.id))
+            )
+            """, Boolean.class, result.processingJobId(), result.meetingId()));
+        boolean promote = !newerJobExists
+            && currentVersions.stream().noneMatch(current -> current.contentRevision() > 0);
         int version = this.jdbc.queryForObject(
             "SELECT COALESCE(MAX(version_number),0)+1 FROM transcripts WHERE meeting_id=?",
             Integer.class, result.meetingId());
-        this.jdbc.update("UPDATE transcripts SET is_current=FALSE WHERE meeting_id=? AND is_current",
-            result.meetingId());
+        if (promote) {
+            this.jdbc.update("UPDATE transcripts SET is_current=FALSE WHERE meeting_id=? AND is_current",
+                result.meetingId());
+        }
         UUID transcriptId = UUID.randomUUID();
         this.jdbc.update("""
             INSERT INTO transcripts(id,meeting_id,source_media_id,processing_job_id,source_stage_run_id,
               version_number,language_code,status,is_current,duration_ms,finalized_at,publication_sha256)
-            VALUES (?,?,?,?,?,?,?,?,TRUE,?,CURRENT_TIMESTAMP,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,?)
             """, transcriptId, result.meetingId(), result.sourceMediaId(), result.processingJobId(),
             result.sourceStageRunId(), version, result.languageCode(), result.status().name(),
-            result.durationMs(), fingerprint);
+            promote, result.durationMs(), fingerprint);
 
         Map<String, UUID> clusters = new LinkedHashMap<>();
         for (SpeakerResult speaker : result.speakers()) {
@@ -205,11 +226,12 @@ public class TranscriptRepository {
     public Optional<TranscriptView> current(UUID meetingId) {
         List<Header> headers = this.jdbc.query("""
             SELECT id,meeting_id,source_media_id,processing_job_id,version_number,language_code,status,
-              duration_ms,finalized_at FROM transcripts WHERE meeting_id=? AND is_current
+              duration_ms,finalized_at,content_revision FROM transcripts WHERE meeting_id=? AND is_current
             """, (rs, row) -> new Header(rs.getObject("id", UUID.class), rs.getObject("meeting_id", UUID.class),
                 rs.getObject("source_media_id", UUID.class), rs.getObject("processing_job_id", UUID.class),
                 rs.getInt("version_number"), rs.getString("language_code"), rs.getString("status"),
-                nullableLong(rs, "duration_ms"), rs.getObject("finalized_at", OffsetDateTime.class)), meetingId);
+                nullableLong(rs, "duration_ms"), rs.getObject("finalized_at", OffsetDateTime.class),
+                rs.getLong("content_revision")), meetingId);
         if (headers.isEmpty()) return Optional.empty();
         Header h = headers.getFirst();
         List<SegmentView> segments = this.jdbc.query("""
@@ -222,7 +244,7 @@ public class TranscriptRepository {
                 rs.getString("quality_status"), rs.getObject("speaker_cluster_id", UUID.class),
                 rs.getString("label"), rs.getLong("version")), h.id());
         return Optional.of(new TranscriptView(h.id(), h.meetingId(), h.mediaId(), h.jobId(), h.version(),
-            h.language(), h.status(), h.duration(), h.finalizedAt(), segments));
+            h.language(), h.status(), h.duration(), h.finalizedAt(), h.contentRevision(), segments));
     }
 
     @Transactional(readOnly = true)
@@ -307,9 +329,11 @@ public class TranscriptRepository {
         return rs.wasNull() ? null : value;
     }
     private static ResponseStatusException notFound() { return new ResponseStatusException(HttpStatus.NOT_FOUND); }
+    private record CurrentTranscript(UUID id, long contentRevision) {}
     private record Publication(UUID id, String digest) {}
     private record Header(UUID id, UUID meetingId, UUID mediaId, UUID jobId, int version,
-            String language, String status, Long duration, OffsetDateTime finalizedAt) {}
+            String language, String status, Long duration, OffsetDateTime finalizedAt,
+            long contentRevision) {}
     private record SegmentState(UUID id, String text, String quality, long version) {}
     private record SpeakerKey(UUID id) {}
 }
