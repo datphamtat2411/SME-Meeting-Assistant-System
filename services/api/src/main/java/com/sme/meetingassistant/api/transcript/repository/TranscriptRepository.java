@@ -65,8 +65,8 @@ public class TranscriptRepository {
                 "The processing job already published a different transcript result.");
         }
 
-        Integer eligible = this.jdbc.queryForObject("""
-            SELECT count(*) FROM processing_jobs j JOIN meeting_media m
+        List<String> finalized = this.jdbc.query("""
+            SELECT sr.status FROM processing_jobs j JOIN meeting_media m
               ON m.meeting_id=j.meeting_id AND m.id=j.source_media_id
             JOIN processing_stage_runs sr ON sr.processing_job_id=j.id
               AND sr.id=? AND sr.stage_code='FINALIZING_TRANSCRIPT'
@@ -76,12 +76,13 @@ public class TranscriptRepository {
                 WHERE x.processing_job_id=j.id AND x.stage_code=sr.stage_code)
             WHERE j.id=? AND j.meeting_id=? AND j.source_media_id=?
               AND j.status IN ('COMPLETED','COMPLETED_WITH_WARNINGS') AND m.status='AVAILABLE'
-            """, Integer.class, result.sourceStageRunId(), result.processingJobId(),
-            result.meetingId(), result.sourceMediaId());
-        if (eligible == null || eligible != 1) {
+            """, (rs, row) -> rs.getString(1), result.sourceStageRunId(),
+            result.processingJobId(), result.meetingId(), result.sourceMediaId());
+        if (finalized.size() != 1) {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                 "Transcript source or finalization attempt is not eligible.");
         }
+        validateQuality(result, "SUCCEEDED_WITH_WARNING".equals(finalized.getFirst()));
         // Job results are persisted even when not eligible for automatic promotion.
         List<CurrentTranscript> currentVersions = this.jdbc.query("""
             SELECT id,content_revision FROM transcripts
@@ -220,6 +221,56 @@ public class TranscriptRepository {
                 throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY);
             }
         }
+        // There is speech text, so the independent region coverage report must be present.
+        // An empty region map is not evidence that the audio was fully covered.
+        if (r.coverage().isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
+                "Transcript requires independent speech coverage evidence.");
+        }
+    }
+
+    /**
+     * Validate coherence of the AI Core coverage report; actual VAD/source-audio
+     * comparison is performed by AI Core, not inferred from transcript text.
+     * Do not use arbitrary duration thresholds or treat a provider ACK as coverage.
+     */
+    private static void validateQuality(TranscriptResult result, boolean finalizationWarned) {
+        boolean flaggedSegments = result.segments().stream()
+            .anyMatch(segment -> !"ACCEPTED".equals(segment.qualityStatus()));
+        boolean flaggedRegions = result.coverage().stream()
+            .anyMatch(region -> !"COVERED".equals(region.coverageStatus()));
+        boolean hasWarnings = flaggedSegments || flaggedRegions || finalizationWarned;
+        if (result.status() == TranscriptIngestion.Status.READY && hasWarnings) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
+                "READY cannot contain unresolved speech, suspicious text, or stage warnings.");
+        }
+        if (result.status() == TranscriptIngestion.Status.READY_WITH_WARNINGS && !hasWarnings) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
+                "READY_WITH_WARNINGS requires quality evidence or a finalization warning.");
+        }
+        for (CoverageResult region : result.coverage()) {
+            if (!"COVERED".equals(region.coverageStatus())) continue;
+            boolean represented = result.segments().stream().anyMatch(segment ->
+                "ACCEPTED".equals(segment.qualityStatus())
+                    && intersects(segment.startMs(), segment.endMs(),
+                        region.startMs(), region.endMs()));
+            if (!represented) {
+                throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
+                    "A COVERED speech region needs corresponding accepted transcript text.");
+            }
+        }
+        for (SegmentResult segment : result.segments()) {
+            boolean mapped = result.coverage().stream().anyMatch(region ->
+                intersects(segment.startMs(), segment.endMs(), region.startMs(), region.endMs()));
+            if (!mapped) {
+                throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
+                    "Transcript segments must be represented on the speech coverage timeline.");
+            }
+        }
+    }
+
+    private static boolean intersects(long leftStart, long leftEnd, long rightStart, long rightEnd) {
+        return leftStart < rightEnd && rightStart < leftEnd;
     }
 
     @Transactional(readOnly = true)
