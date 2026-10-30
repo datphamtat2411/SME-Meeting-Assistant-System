@@ -28,6 +28,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.server.ResponseStatusException;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
@@ -56,6 +58,38 @@ public class TranscriptRepository {
     @Transactional
     public void publishDuringFinalization(TranscriptResult result) {
         publishValidated(result, true);
+        // The transaction must also commit stage and job success. Without this
+        // check, an internal caller could accidentally persist a RUNNING-job
+        // transcript without using the atomic finalization coordinator.
+        if (!TransactionSynchronizationManager.isSynchronizationActive()
+                || !TransactionSynchronizationManager.isActualTransactionActive()) {
+            throw new IllegalStateException("Atomic transcript publication requires a transaction.");
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void beforeCommit(boolean readOnly) {
+                assertAtomicFinalizationCompleted(result);
+            }
+        });
+    }
+
+    private void assertAtomicFinalizationCompleted(TranscriptResult result) {
+        boolean committedTogether = Boolean.TRUE.equals(this.jdbc.queryForObject("""
+            SELECT EXISTS (
+              SELECT 1 FROM transcripts t
+              JOIN processing_jobs j ON j.id=t.processing_job_id
+                AND j.meeting_id=t.meeting_id AND j.source_media_id=t.source_media_id
+              JOIN processing_stage_runs s ON s.id=t.source_stage_run_id
+                AND s.processing_job_id=j.id AND s.stage_code='FINALIZING_TRANSCRIPT'
+              WHERE t.processing_job_id=? AND t.source_stage_run_id=?
+                AND j.status IN ('COMPLETED','COMPLETED_WITH_WARNINGS')
+                AND s.status IN ('SUCCEEDED','SUCCEEDED_WITH_WARNING')
+            )
+            """, Boolean.class, result.processingJobId(), result.sourceStageRunId()));
+        if (!committedTogether) {
+            throw new IllegalStateException(
+                "Transcript, finalization stage and job must complete in one transaction.");
+        }
     }
 
     private void publishValidated(TranscriptResult result, boolean runningFinalization) {

@@ -8,6 +8,8 @@ import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle;
 import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle.StageClaim;
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
 import com.sme.meetingassistant.api.transcript.service.TranscriptFinalizationService;
+import com.sme.meetingassistant.api.transcript.repository.TranscriptRepository;
+import com.sme.meetingassistant.api.transcript.service.TranscriptReviewService;
 import com.sme.meetingassistant.api.transcript.service.TranscriptIngestion;
 import com.sme.meetingassistant.api.transcript.service.TranscriptIngestion.CoverageResult;
 import com.sme.meetingassistant.api.transcript.service.TranscriptIngestion.SegmentResult;
@@ -28,6 +30,7 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
 
 @ActiveProfiles("test")
@@ -39,6 +42,9 @@ import org.springframework.web.server.ResponseStatusException;
 class TranscriptFinalizationIntegrationTests {
     @Autowired ProcessingJobLifecycle lifecycle;
     @Autowired TranscriptFinalizationService finalization;
+    @Autowired TranscriptRepository transcripts;
+    @Autowired TranscriptReviewService review;
+    @Autowired TransactionTemplate transactions;
     @Autowired JdbcTemplate jdbc;
 
     private UUID meeting;
@@ -115,6 +121,34 @@ class TranscriptFinalizationIntegrationTests {
         assertThat(jobStatus()).isEqualTo("RUNNING");
         assertThat(finalStageStatus()).isEqualTo("RUNNING");
         assertThat(transcriptCount()).isZero();
+    }
+
+    @Test
+    void directRunningPublicationCannotCommitWithoutCompletingStageAndJob() {
+        assertThatThrownBy(() ->
+            transcripts.publishDuringFinalization(result("Orphaned publication rejected.")))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessageContaining("must complete in one transaction");
+        assertUnfinished();
+    }
+
+    @Test
+    void finalizationStageSuccessWithoutJobCompletionRollsBackBothWrites() {
+        assertThatThrownBy(() -> transactions.executeWithoutResult(status -> {
+            transcripts.publishDuringFinalization(result("Stage success without job success."));
+            lifecycle.completeStage(finalizer, "SUCCEEDED", null, null);
+        })).isInstanceOf(IllegalStateException.class)
+            .hasMessageContaining("must complete in one transaction");
+        assertUnfinished();
+    }
+
+    @Test
+    void legacyStandalonePublishRejectsRunningJobAndDoesNotCreateTranscript() {
+        assertThatThrownBy(() -> review.publish(result("Standalone publish not eligible.")))
+            .isInstanceOf(ResponseStatusException.class)
+            .satisfies(error -> assertThat(((ResponseStatusException) error).getStatusCode())
+                .isEqualTo(HttpStatus.CONFLICT));
+        assertUnfinished();
     }
 
     @Test
