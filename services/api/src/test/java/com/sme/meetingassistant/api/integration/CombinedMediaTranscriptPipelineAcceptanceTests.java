@@ -82,7 +82,7 @@ class CombinedMediaTranscriptPipelineAcceptanceTests {
     }
 
     private TranscriptResult result(UUID stageId) {
-        return new TranscriptResult(meetingId, mediaId, jobId, stageId, "vi", 10000L, Status.READ,
+        return new TranscriptResult(meetingId, mediaId, jobId, stageId, "vi", 10000L, Status.READY,
             List.of(new SegmentResult(0, 100, 1500, CORRECTED_TEXT, "ACCEPTED",
                 null, stageId, null)),
             List.of(new CoverageResult(100, 1500, "COVERED", false, 0, null)),
