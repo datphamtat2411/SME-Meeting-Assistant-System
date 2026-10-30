@@ -1,6 +1,8 @@
 package com.sme.meetingassistant.api.meeting.service;
 
 import com.sme.meetingassistant.api.meeting.dto.*;
+import com.sme.meetingassistant.api.meeting.audit.MeetingAuditService;
+import com.sme.meetingassistant.api.meeting.idempotency.MeetingCreationIdempotencyService;
 import com.sme.meetingassistant.api.meeting.entity.*;
 import com.sme.meetingassistant.api.meeting.repository.*;
 import com.sme.meetingassistant.api.meeting.notification.MeetingNotificationService;
@@ -36,18 +38,38 @@ public class MeetingCoreService {
     private final OrganizationalAuthorizationService authorization;
     private final MeetingNotificationService notifications;
     private final RoomReservationService reservations;
+    private final MeetingAuditService audit;
+    private final MeetingCreationIdempotencyService idempotency;
 
     public MeetingCoreService(MeetingRepository meetings, MeetingParticipantRepository participants,
             RoomCatalogService rooms, OrganizationalIdentityLookup users, OrganizationalAuthorizationService authorization,
-            MeetingNotificationService notifications, RoomReservationService reservations) {
+            MeetingNotificationService notifications, RoomReservationService reservations,
+            MeetingAuditService audit, MeetingCreationIdempotencyService idempotency) {
         this.meetings = meetings; this.participants = participants;
         this.rooms = rooms; this.users = users;
         this.authorization = authorization; this.notifications = notifications;
         this.reservations = reservations;
+        this.audit = audit;
+        this.idempotency = idempotency;
     }
 
     public MeetingEntity create(CreateMeetingRequest request) {
+        return create(request, null);
+    }
+
+    public MeetingEntity create(CreateMeetingRequest request, String idempotencyKey) {
         UserEntity actor = authorization.requireActiveActor();
+        if (idempotencyKey != null) {
+            UUID existing = idempotency.claimOrReplay(actor.getId(), idempotencyKey, request);
+            if (existing != null) {
+                MeetingEntity prior = lookup(existing);
+                // A successful past POST is never an authorization capability.
+                if (!prior.getOrganizerUserId().equals(actor.getId())) {
+                    throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+                }
+                return prior; // fresh current resource representation and ETag, no new writes
+            }
+        }
         String title = requiredTitle(request.title());
         validateSchedule(request.scheduledStartAt(), request.scheduledEndAt());
         validateDraftRoom(request.roomId());
@@ -63,10 +85,17 @@ public class MeetingCoreService {
             }
         }
         meetings.saveAndFlush(meeting);
+        List<MeetingParticipantEntity> memberships = new ArrayList<>();
         for (UUID participantId : initial) {
-            participants.save(new MeetingParticipantEntity(meeting.getId(), participantId, actor.getId()));
+            MeetingParticipantEntity membership = new MeetingParticipantEntity(
+                meeting.getId(), participantId, actor.getId());
+            memberships.add(participants.save(membership));
         }
         participants.flush();
+        audit.created(meeting, memberships);
+        if (idempotencyKey != null) {
+            idempotency.complete(actor.getId(), idempotencyKey, meeting.getId());
+        }
         return meeting;
     }
 
@@ -89,17 +118,30 @@ public class MeetingCoreService {
 
     @Transactional(readOnly = true)
     public Page<MeetingView> list(MeetingStatus status, String q, UUID organizerId, UUID roomId,
-            OffsetDateTime from, OffsetDateTime to, Pageable pageable) {
+            OffsetDateTime from, OffsetDateTime to, MeetingRelationshipFilter relationship,
+            Pageable pageable) {
         UUID actor = authorization.requireActiveActor().getId();
         if (from != null && to != null && !from.isBefore(to)) throw invalid();
+        // Apply the caller's CURRENT meeting relationship in SQL, before count,
+        // pagination or sorting. Organizer also has a participant row, so the
+        // explicit PARTICIPANT view excludes their own organized meetings.
+        // EXISTS (rather than a join) avoids duplicates and inflated page totals.
         Specification<MeetingEntity> spec = (root, query, cb) -> {
+            var isOrganizer = cb.equal(root.get("organizerUserId"), actor);
+            if (relationship == MeetingRelationshipFilter.ORGANIZER) {
+                return isOrganizer;
+            }
             var sub = query.subquery(Integer.class);
             var participant = sub.from(MeetingParticipantEntity.class);
             sub.select(cb.literal(1)).where(
                 cb.equal(participant.get("meetingId"), root.get("id")),
                 cb.equal(participant.get("userId"), actor),
                 cb.isNull(participant.get("removedAt")));
-            return cb.or(cb.equal(root.get("organizerUserId"), actor), cb.exists(sub));
+            var isActiveParticipant = cb.exists(sub);
+            if (relationship == MeetingRelationshipFilter.PARTICIPANT) {
+                return cb.and(cb.not(isOrganizer), isActiveParticipant);
+            }
+            return cb.or(isOrganizer, isActiveParticipant);
         };
         if (status != null) spec = spec.and((r,qry,cb)->cb.equal(r.get("status"), status));
         if (organizerId != null) spec = spec.and((r,qry,cb)->cb.equal(r.get("organizerUserId"), organizerId));
@@ -117,6 +159,7 @@ public class MeetingCoreService {
     public MeetingEntity update(UUID id, String ifMatch, Map<String, Object> patch) {
         MeetingEntity meeting = owned(id);
         MeetingVersionTags.requireMatch(meeting, ifMatch);
+        MeetingAuditService.Snapshot before = MeetingAuditService.Snapshot.of(meeting);
         if (meeting.getStatus() != MeetingStatus.DRAFT
                 && meeting.getStatus() != MeetingStatus.SCHEDULED) throw conflict();
         if (patch == null || patch.isEmpty() || !EDITABLE.containsAll(patch.keySet())) throw invalid();
@@ -156,6 +199,7 @@ public class MeetingCoreService {
             notifications.supersedePendingScheduleNotices(meeting.getId());
             notifications.enqueue(committed, "MEETING_RESCHEDULED");
         }
+        audit.updated(committed, before);
         return committed;
     }
 
@@ -174,6 +218,7 @@ public class MeetingCoreService {
         MeetingEntity committed = flush(meeting);
         reservations.synchronizeCommitted(meeting.getId());
         notifications.enqueue(committed, "MEETING_SCHEDULED");
+        audit.scheduled(committed);
         return committed;
     }
 
@@ -184,6 +229,7 @@ public class MeetingCoreService {
         meeting.start(OffsetDateTime.now(ZoneOffset.UTC));
         MeetingEntity committed = flush(meeting);
         notifications.supersedePendingScheduleNotices(meeting.getId());
+        audit.started(committed);
         return committed;
     }
 
@@ -195,6 +241,7 @@ public class MeetingCoreService {
         MeetingEntity committed = flush(meeting);
         reservations.releaseEnded(meeting.getId());
         notifications.supersedePendingScheduleNotices(meeting.getId());
+        audit.ended(committed);
         return committed;
     }
 
@@ -204,7 +251,8 @@ public class MeetingCoreService {
         if (meeting.getStatus() != MeetingStatus.DRAFT && meeting.getStatus() != MeetingStatus.SCHEDULED) {
             throw conflict();
         }
-        boolean wasScheduled = meeting.getStatus() == MeetingStatus.SCHEDULED;
+        MeetingStatus previousStatus = meeting.getStatus();
+        boolean wasScheduled = previousStatus == MeetingStatus.SCHEDULED;
         meeting.cancel(OffsetDateTime.now(ZoneOffset.UTC),
             request == null ? null : optional(request.reason()));
         MeetingEntity committed = flush(meeting);
@@ -213,6 +261,7 @@ public class MeetingCoreService {
             notifications.supersedePendingScheduleNotices(meeting.getId());
             notifications.enqueue(committed, "MEETING_CANCELLED");
         }
+        audit.cancelled(committed, previousStatus);
         return committed;
     }
 
@@ -233,6 +282,7 @@ public class MeetingCoreService {
         meeting.touch();
         MeetingEntity committed = flush(meeting);
         notifications.participantAdded(committed, record);
+        audit.participantAdded(committed, record);
         return ParticipantView.from(record);
     }
 
@@ -249,6 +299,7 @@ public class MeetingCoreService {
         meeting.touch();
         MeetingEntity committed = flush(meeting);
         notifications.participantRemoved(committed, participant);
+        audit.participantRemoved(committed, participant);
     }
 
     @Transactional(readOnly = true)
