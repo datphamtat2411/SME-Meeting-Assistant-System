@@ -292,7 +292,7 @@ public class MediaRepository {
             INSERT INTO processing_stage_runs (id, processing_job_id, stage_code, attempt_number,
               status, provider_name, model_name, started_at, claim_token, lease_expires_at)
             SELECT ?, ?, ?, COALESCE(MAX(attempt_number), 0) + 1,
-              'RUNNING', ?, ?, CURRENT_TIMESTAMP, ?, CURRENT_TIMESTAMP + (? * INTERVAL '1 second')
+              'RUNNING', ?, ?, CURRENT_TIMESTAMP, ?, clock_timestamp() + (? * INTERVAL '1 second')
             FROM processing_stage_runs WHERE processing_job_id = ? AND stage_code = ?
             """, runId, jobId, stageCode, providerName, modelName,
             token, leaseSeconds, jobId, stageCode);
