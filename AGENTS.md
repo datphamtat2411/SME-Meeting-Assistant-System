@@ -70,4 +70,3 @@ PLAN may inspect relevant history; REVIEW may inspect relevant diffs.
 BUILD does not inspect history or diffs unless required by the task or plan.
 
 Report only changes, focused test results, and blockers or deviations.
-
