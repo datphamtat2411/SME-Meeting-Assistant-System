@@ -20,6 +20,9 @@ public interface ProcessingJobLifecycle {
 
     void completeJob(UUID jobId);
 
+    /** Admit only a currently claimed finalization attempt for matching source media. */
+    boolean requireFinalizationClaim(UUID jobId, UUID meetingId, UUID mediaId, StageClaim claim);
+
     /** True while this job has preplanned downstream work not yet started. */
     boolean hasPendingPipelineStages(UUID jobId);
 

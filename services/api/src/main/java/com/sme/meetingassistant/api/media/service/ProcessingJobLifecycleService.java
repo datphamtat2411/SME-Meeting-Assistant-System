@@ -1,10 +1,12 @@
 package com.sme.meetingassistant.api.media.service;
 
 import com.sme.meetingassistant.api.media.repository.MediaRepository;
+import com.sme.meetingassistant.api.media.repository.MediaRepository.ProcessingLifecycleConflictException;
 import com.sme.meetingassistant.api.media.MediaProperties;
 import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle.StageClaim;
 import org.springframework.scheduling.annotation.Scheduled;
 import java.util.UUID;
+import java.util.List;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.core.JacksonException;
@@ -15,12 +17,14 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
     private final MediaRepository repository;
     private final ObjectMapper mapper;
     private final MediaProperties properties;
+    private final ProcessingTranscriptEvidence transcriptEvidence;
 
     public ProcessingJobLifecycleService(MediaRepository repository, ObjectMapper mapper,
-            MediaProperties properties) {
+            MediaProperties properties, ProcessingTranscriptEvidence transcriptEvidence) {
         this.repository = repository;
         this.mapper = mapper;
         this.properties = properties;
+        this.transcriptEvidence = transcriptEvidence;
     }
 
     private int leaseSeconds() {
@@ -41,6 +45,11 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
         requireCode(stageCode, 48, "stageCode");
         requireOptionalText(providerName, 80, "providerName");
         requireOptionalText(modelName, 160, "modelName");
+        if (List.of("GENERATING_SUMMARY", "EXTRACTING_DECISIONS",
+                "EXTRACTING_ACTION_ITEMS", "INDEXING").contains(stageCode)
+                && !this.transcriptEvidence.hasFinalizedTranscript(jobId)) {
+            throw new ProcessingLifecycleConflictException("Downstream processing requires a persisted finalized transcript.");
+        }
         return this.repository.startStage(jobId, stageCode, providerName, modelName, leaseSeconds());
     }
 
@@ -68,6 +77,11 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
                 throw new IllegalArgumentException("Stage metrics must be valid JSON.", invalidJson);
             }
         }
+        var identity = this.repository.stageIdentity(claim.stageRunId());
+        if ("FINALIZING_TRANSCRIPT".equals(identity.stageCode())
+                && this.transcriptEvidence.forFinalization(identity.jobId(), claim.stageRunId()).isEmpty()) {
+            throw new ProcessingLifecycleConflictException("Canonical transcript must exist before stage success.");
+        }
         this.repository.completeStage(claim, outcome, errorCode, metricsJson);
     }
 
@@ -89,7 +103,13 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
     @Override
     @Transactional
     public void completeJob(UUID jobId) {
-        this.repository.completeJob(jobId);
+        this.repository.completeJob(jobId, this.transcriptEvidence.latestSuccessfulFinalization(jobId).orElse(null));
+    }
+
+    @Override
+    @Transactional
+    public boolean requireFinalizationClaim(UUID jobId, UUID meetingId, UUID mediaId, StageClaim claim) {
+        return this.repository.requireFinalizationClaim(jobId, meetingId, mediaId, claim);
     }
 
     @Override

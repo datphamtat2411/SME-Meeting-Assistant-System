@@ -7,7 +7,7 @@ import com.sme.meetingassistant.api.media.repository.MediaRepository.ProcessingL
 import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle;
 import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle.StageClaim;
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
-import com.sme.meetingassistant.api.transcript.service.TranscriptFinalizationService;
+import com.sme.meetingassistant.api.integration.TranscriptFinalizationService;
 import com.sme.meetingassistant.api.transcript.repository.TranscriptRepository;
 import com.sme.meetingassistant.api.transcript.service.TranscriptReviewService;
 import com.sme.meetingassistant.api.transcript.service.TranscriptIngestion;

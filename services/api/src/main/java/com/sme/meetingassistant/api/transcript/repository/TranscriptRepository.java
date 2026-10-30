@@ -1,5 +1,6 @@
 package com.sme.meetingassistant.api.transcript.repository;
 
+import com.sme.meetingassistant.api.media.service.ProcessingTranscriptEvidence;
 import com.sme.meetingassistant.api.transcript.dto.TranscriptViews.CorrectionView;
 import com.sme.meetingassistant.api.transcript.dto.TranscriptViews.CoverageView;
 import com.sme.meetingassistant.api.transcript.dto.TranscriptViews.SegmentView;
@@ -36,7 +37,7 @@ import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
 
 @Repository
-public class TranscriptRepository {
+public class TranscriptRepository implements ProcessingTranscriptEvidence {
     private final JdbcTemplate jdbc;
     private final ObjectMapper json;
 
@@ -356,6 +357,48 @@ public class TranscriptRepository {
 
     private static boolean intersects(long leftStart, long leftEnd, long rightStart, long rightEnd) {
         return leftStart < rightEnd && rightStart < leftEnd;
+    }
+
+    /**
+     * Canonical transcript evidence for Media lifecycle decisions. This query is
+     * owned by Transcript; callers receive only immutable quality/provenance facts.
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<Evidence> forFinalization(UUID processingJobId, UUID finalizationStageRunId) {
+        List<Evidence> results = this.jdbc.query("""
+            SELECT t.status,
+              EXISTS (SELECT 1 FROM transcript_segments s WHERE s.transcript_id=t.id
+                AND s.quality_status <> 'ACCEPTED')
+              OR EXISTS (SELECT 1 FROM transcript_coverage_regions c
+                WHERE c.transcript_id=t.id AND c.coverage_status <> 'COVERED') AS suspicious
+            FROM transcripts t
+            JOIN processing_jobs j ON j.id=t.processing_job_id
+              AND j.meeting_id=t.meeting_id AND j.source_media_id=t.source_media_id
+            JOIN processing_stage_runs sr ON sr.id=t.source_stage_run_id
+              AND sr.processing_job_id=j.id AND sr.stage_code='FINALIZING_TRANSCRIPT'
+            WHERE j.id=? AND sr.id=?
+              AND t.status IN ('READY','READY_WITH_WARNINGS')
+              AND EXISTS (SELECT 1 FROM transcript_segments s WHERE s.transcript_id=t.id)
+            """, (rs, row) -> new Evidence(finalizationStageRunId,
+                rs.getString("status"), rs.getBoolean("suspicious")),
+            processingJobId, finalizationStageRunId);
+        return results.size() == 1 ? Optional.of(results.getFirst()) : Optional.empty();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<Evidence> latestSuccessfulFinalization(UUID processingJobId) {
+        List<UUID> latest = this.jdbc.query("""
+            SELECT sr.id FROM processing_stage_runs sr
+            WHERE sr.processing_job_id=? AND sr.stage_code='FINALIZING_TRANSCRIPT'
+              AND sr.status IN ('SUCCEEDED','SUCCEEDED_WITH_WARNING')
+              AND sr.attempt_number = (
+                SELECT MAX(attempt_number) FROM processing_stage_runs
+                WHERE processing_job_id=sr.processing_job_id AND stage_code=sr.stage_code)
+            """, (rs, row) -> rs.getObject(1, UUID.class), processingJobId);
+        if (latest.size() != 1) return Optional.empty();
+        return forFinalization(processingJobId, latest.getFirst());
     }
 
     @Transactional(readOnly = true)

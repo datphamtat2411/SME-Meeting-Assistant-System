@@ -1,9 +1,9 @@
-package com.sme.meetingassistant.api.transcript.service;
+package com.sme.meetingassistant.api.integration;
 
-import com.sme.meetingassistant.api.media.repository.MediaRepository;
 import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle;
 import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle.StageClaim;
 import com.sme.meetingassistant.api.transcript.repository.TranscriptRepository;
+import com.sme.meetingassistant.api.transcript.service.TranscriptIngestion;
 import com.sme.meetingassistant.api.transcript.service.TranscriptIngestion.TranscriptResult;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
@@ -19,13 +19,11 @@ import org.springframework.transaction.annotation.Transactional;
  */
 @Service
 public class TranscriptFinalizationService {
-    private final MediaRepository media;
     private final TranscriptRepository transcripts;
     private final ProcessingJobLifecycle lifecycle;
 
-    public TranscriptFinalizationService(MediaRepository media, TranscriptRepository transcripts,
+    public TranscriptFinalizationService(TranscriptRepository transcripts,
             ProcessingJobLifecycle lifecycle) {
-        this.media = media;
         this.transcripts = transcripts;
         this.lifecycle = lifecycle;
     }
@@ -41,7 +39,7 @@ public class TranscriptFinalizationService {
         }
         // One lock order for promotion, human review and job finalization.
         transcripts.lockMeetingForReview(result.meetingId());
-        boolean completed = media.requireFinalizationClaim(result.processingJobId(),
+        boolean completed = lifecycle.requireFinalizationClaim(result.processingJobId(),
             result.meetingId(), result.sourceMediaId(), claim);
         if (completed) {
             // A completed retry must be byte-for-byte (semantically) identical;

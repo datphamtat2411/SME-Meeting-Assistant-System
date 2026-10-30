@@ -3,6 +3,7 @@ package com.sme.meetingassistant.api.media.repository;
 import com.sme.meetingassistant.api.observability.RequestIdContext;
 import com.sme.meetingassistant.api.media.dto.ProcessingStageResponse;
 import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle.StageClaim;
+import com.sme.meetingassistant.api.media.service.ProcessingTranscriptEvidence.Evidence;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.OffsetDateTime;
@@ -285,9 +286,6 @@ public class MediaRepository {
                 && !hasSuccessfulContextualCorrection(jobId)) {
             throw new ProcessingLifecycleConflictException("Whole-meeting contextual correction must succeed first.");
         }
-        if (isTranscriptDownstream(stageCode) && !hasFinalizedTranscript(jobId)) {
-            throw new ProcessingLifecycleConflictException("Downstream processing requires a finalized transcript.");
-        }
         UUID token = UUID.randomUUID();
         this.jdbc.update("""
             UPDATE processing_jobs SET status = 'RUNNING', current_stage = ?,
@@ -429,10 +427,6 @@ public class MediaRepository {
                     "Contextual correction requires whole-meeting evidence, output digest and prompt version.");
             }
         }
-        if ("FINALIZING_TRANSCRIPT".equals(current.stageCode())
-                && !persistedTranscript(jobId, stageRunId)) {
-            throw new ProcessingLifecycleConflictException("Cannot finalize a transcript before canonical persistence.");
-        }
         int changed = this.jdbc.update("""
             UPDATE processing_stage_runs SET status = ?, error_code = ?,
               metrics = CAST(? AS jsonb), completed_at = CURRENT_TIMESTAMP
@@ -480,7 +474,7 @@ public class MediaRepository {
             """, Boolean.class, jobId));
     }
 
-    public void completeJob(UUID jobId) {
+    public void completeJob(UUID jobId, Evidence evidence) {
         String status = lockJobStatus(jobId);
         if (List.of("COMPLETED", "COMPLETED_WITH_WARNINGS").contains(status)) return;
         if (!"RUNNING".equals(status)) {
@@ -508,15 +502,14 @@ public class MediaRepository {
             .filter(s -> "FINALIZING_TRANSCRIPT".equals(s.stageCode())
                 && isSuccessful(s.status())).findFirst()
             .orElseThrow(() -> new ProcessingLifecycleConflictException("Transcript finalization has not succeeded."));
-        List<TranscriptEvidence> results = transcriptEvidence(jobId, finalized.id());
-        if (results.size() != 1 || !List.of("READY", "READY_WITH_WARNINGS").contains(results.getFirst().status())) {
-            throw new ProcessingLifecycleConflictException("A valid finalized transcript is required.");
+        if (evidence == null || !finalized.id().equals(evidence.finalizationStageId())
+                || !List.of("READY", "READY_WITH_WARNINGS").contains(evidence.status())) {
+            throw new ProcessingLifecycleConflictException("Canonical transcript evidence for latest finalization is required.");
         }
-        TranscriptEvidence transcript = results.getFirst();
-        if (transcript.suspicious() && "READY".equals(transcript.status())) {
+        if (evidence.suspicious() && "READY".equals(evidence.status())) {
             throw new ProcessingLifecycleConflictException("Unresolved transcript quality cannot be marked READY.");
         }
-        boolean withWarnings = "READY_WITH_WARNINGS".equals(transcript.status())
+        boolean withWarnings = "READY_WITH_WARNINGS".equals(evidence.status())
             || stages.stream().anyMatch(s -> "SUCCEEDED_WITH_WARNING".equals(s.status()));
         String outcome = withWarnings ? "COMPLETED_WITH_WARNINGS" : "COMPLETED";
         String summary = withWarnings ? "Processing completed with transcript or stage quality warnings." : null;
@@ -565,38 +558,13 @@ public class MediaRepository {
                     """, Boolean.class, attempt.id())));
     }
 
-    private boolean hasFinalizedTranscript(UUID jobId) {
-        return latestAttempt(jobId, "FINALIZING_TRANSCRIPT").stream()
-            .anyMatch(s -> isSuccessful(s.status()) && persistedTranscript(jobId, s.id()));
-    }
-
-    private static boolean isTranscriptDownstream(String stageCode) {
-        return List.of("GENERATING_SUMMARY", "EXTRACTING_DECISIONS",
-            "EXTRACTING_ACTION_ITEMS", "INDEXING").contains(stageCode);
-    }
-
-    private boolean persistedTranscript(UUID jobId, UUID stageRunId) {
-        return !transcriptEvidence(jobId, stageRunId).isEmpty();
-    }
-
-    private List<TranscriptEvidence> transcriptEvidence(UUID jobId, UUID stageRunId) {
+    /** Immutable owner identity; the transcript port verifies persisted evidence. */
+    public StageIdentity stageIdentity(UUID stageRunId) {
         return this.jdbc.query("""
-            SELECT t.status,
-              EXISTS (SELECT 1 FROM transcript_segments s WHERE s.transcript_id = t.id
-                AND s.quality_status <> 'ACCEPTED')
-              OR EXISTS (SELECT 1 FROM transcript_coverage_regions c
-                WHERE c.transcript_id = t.id AND c.coverage_status <> 'COVERED')
-                AS suspicious
-            FROM transcripts t
-            JOIN processing_jobs j ON j.id = t.processing_job_id
-              AND j.meeting_id = t.meeting_id AND j.source_media_id = t.source_media_id
-            JOIN processing_stage_runs sr ON sr.id = t.source_stage_run_id
-              AND sr.processing_job_id = j.id AND sr.stage_code = 'FINALIZING_TRANSCRIPT'
-            WHERE j.id = ? AND sr.id = ?
-              AND t.status IN ('READY', 'READY_WITH_WARNINGS')
-              AND EXISTS (SELECT 1 FROM transcript_segments s WHERE s.transcript_id = t.id)
-            """, (rs, row) -> new TranscriptEvidence(rs.getString("status"),
-                rs.getBoolean("suspicious")), jobId, stageRunId);
+            SELECT processing_job_id, stage_code FROM processing_stage_runs WHERE id=?
+            """, (rs, row) -> new StageIdentity(rs.getObject("processing_job_id", UUID.class),
+                rs.getString("stage_code")), stageRunId).stream().findFirst()
+            .orElseThrow(() -> new IllegalArgumentException("Stage attempt does not exist."));
     }
 
     private UUID stageJobId(UUID stageRunId) {
@@ -969,10 +937,10 @@ public class MediaRepository {
     public record IdempotencyClaim(UUID resourceId, boolean claimed) { }
     private record JobStart(String status, String mediaStatus) { }
     private record StageRun(String stageCode, String status) { }
+    public record StageIdentity(UUID jobId, String stageCode) { }
     private record StageCompletion(UUID id, String stageCode, String status) { }
     private record FinalizationState(String jobStatus, String stageStatus, String stageCode,
             String mediaStatus) { }
-    private record TranscriptEvidence(String status, boolean suspicious) { }
     private record StageAttempt(UUID id, int attemptNumber, String status) { }
     private record StageJob(UUID jobId, String stageCode, String status) { }
     public record PendingCleanup(UUID id, String pendingObjectKey) { }

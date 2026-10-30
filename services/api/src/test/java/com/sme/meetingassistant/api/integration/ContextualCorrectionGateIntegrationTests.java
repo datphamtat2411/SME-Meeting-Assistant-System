@@ -10,7 +10,7 @@ import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle;
 import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle.StageClaim;
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
 import com.sme.meetingassistant.api.transcript.service.TranscriptCorrectionDigest;
-import com.sme.meetingassistant.api.transcript.service.TranscriptFinalizationService;
+import com.sme.meetingassistant.api.integration.TranscriptFinalizationService;
 import com.sme.meetingassistant.api.transcript.service.TranscriptIngestion;
 import com.sme.meetingassistant.api.transcript.service.TranscriptIngestion.*;
 import java.time.OffsetDateTime;
