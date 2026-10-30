@@ -166,7 +166,7 @@ class MediaOperationAuthorizationIntegrationTests {
     void sourceAccessRequiresCurrentMembershipEvenWithKnownMediaId() throws Exception {
         when(storage.createDownloadCapability(anyString(), any())).thenReturn("https://storage.example.invalid/accepted");
         mvc.perform(post(accessUrl()).principal(as(participant))).andExpect(status().isOk());
-        verify(storage).createDownloadCapability("meetings/" + meeting + "/sources/" + media,
+        verify(storage).createDownloadCapability(org.mockito.ArgumentMatchers.eq("meetings/" + meeting + "/sources/" + media),
             org.mockito.ArgumentMatchers.any());
         clearInvocations(storage);
 
