@@ -93,10 +93,9 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
 
     @Override
     @Transactional
-    public void failStage(StageClaim claim, String errorCode, String safeSummary, boolean retryable) {
+    public void failStage(StageClaim claim, String errorCode, String untrustedWorkerSummary, boolean retryable) {
         requireClaim(claim);
         requireCode(errorCode, 96, "errorCode");
-        requireRequiredText(safeSummary, 1000, "safeSummary");
         // The worker/provider summary is untrusted and may contain raw ASR text,
         // provider payloads or credentials. Never persist it as business state.
         this.repository.failStage(claim, errorCode,
@@ -177,12 +176,6 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
     private static void requireCode(String value, int max, String field) {
         if (value == null || !value.matches("[A-Z][A-Z0-9_]{0," + (max - 1) + "}")) {
             throw new IllegalArgumentException(field + " has an invalid code format.");
-        }
-    }
-
-    private static void requireRequiredText(String value, int max, String field) {
-        if (value == null || value.isBlank() || value.length() > max || hasControls(value)) {
-            throw new IllegalArgumentException(field + " is invalid.");
         }
     }
 

@@ -16,7 +16,8 @@ public interface ProcessingJobLifecycle {
 
     void completeStage(StageClaim claim, String outcome, String errorCode, String metricsJson);
 
-    void failStage(StageClaim claim, String errorCode, String safeSummary, boolean retryable);
+    /** Worker failure details are untrusted and ignored; Core derives safe summaries from errorCode. */
+    void failStage(StageClaim claim, String errorCode, String untrustedWorkerSummary, boolean retryable);
 
     void completeJob(UUID jobId);
 
