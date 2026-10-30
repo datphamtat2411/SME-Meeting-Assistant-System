@@ -145,7 +145,7 @@ class TranscriptReviewIntegrationTests {
             .andExpect(status().isNotFound());
         mvc.perform(patch(endpoint).principal(as(organizer))
                 .contentType(MediaType.APPLICATION_JSON).content(outsiderBody))
-            .andExpect(status().isNotFound());
+            .andExpect(status().isUnprocessableEntity());
 
         mvc.perform(patch(endpoint).principal(as(organizer))
                 .contentType(MediaType.APPLICATION_JSON).content(participantBody))
