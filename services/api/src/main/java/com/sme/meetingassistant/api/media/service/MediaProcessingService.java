@@ -5,6 +5,7 @@ import com.sme.meetingassistant.api.media.dto.CreateMediaUploadRequest;
 import com.sme.meetingassistant.api.media.dto.FinalizeMediaResponse;
 import com.sme.meetingassistant.api.media.dto.MediaUploadIntentResponse;
 import com.sme.meetingassistant.api.media.dto.ProcessingJobResponse;
+import com.sme.meetingassistant.api.media.dto.RetryProcessingJobRequest;
 import com.sme.meetingassistant.api.media.repository.MediaRepository;
 import com.sme.meetingassistant.api.media.repository.MediaRepository.Job;
 import com.sme.meetingassistant.api.media.repository.MediaRepository.Media;
@@ -320,6 +321,12 @@ public class MediaProcessingService {
 
     @Transactional
     public ProcessingJobResponse createJob(UUID meetingId, UUID mediaId, String idempotencyKey) {
+        return createJob(meetingId, mediaId, null, idempotencyKey);
+    }
+
+    @Transactional
+    public ProcessingJobResponse createJob(UUID meetingId, UUID mediaId, UUID reprocessOfJobId,
+            String idempotencyKey) {
         UUID actor = this.authenticatedUser.requireUserId();
         this.meetingAccess.requireProcessingAllowed(meetingId, actor);
         validateIdempotencyKey(idempotencyKey);
@@ -328,10 +335,18 @@ public class MediaProcessingService {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Only accepted meeting media can be processed.");
         }
         String operation = JOB_OPERATION + ":" + meetingId;
-        String fingerprint = fingerprint(mediaId.toString());
+        Job parent = null;
+        if (reprocessOfJobId != null) {
+            parent = job(reprocessOfJobId);
+            if (!parent.meetingId().equals(meetingId) || !parent.sourceMediaId().equals(mediaId)
+                    || !List.of("COMPLETED", "COMPLETED_WITH_WARNINGS", "FAILED").contains(parent.status())) {
+                throw conflict("Reprocessing must reference a terminal job for the same meeting and source media.");
+            }
+        }
+        String fingerprint = fingerprint(mediaId + "\n" + reprocessOfJobId);
         Job job = new Job(UUID.randomUUID(), meetingId, mediaId, "OFFLINE_MEETING_PROCESSING", "PENDING", actor,
             null, 0, null, null, null, null, null, null,
-            OffsetDateTime.now(), OffsetDateTime.now());
+            OffsetDateTime.now(), OffsetDateTime.now(), reprocessOfJobId, false);
         // Every admission takes the same row lock before inserting idempotency.
         this.repository.lockAdmissionUser(actor);
         UUID claimedId = claimIdempotency(actor, operation, idempotencyKey, fingerprint, job.id());
@@ -342,7 +357,7 @@ public class MediaProcessingService {
         if (this.repository.activeJobsForMeeting(meetingId) > 0) {
             throw conflict("Another processing job is already active for this meeting.");
         }
-        if (this.repository.initialJobsForSource(mediaId) > 0) {
+        if (reprocessOfJobId == null && this.repository.initialJobsForSource(mediaId) > 0) {
             throw conflict("This source has already been submitted for processing.");
         }
         int activeLimit = positiveLimit(this.properties.getAdmission().getMaxActiveJobsPerUser(),
@@ -361,7 +376,7 @@ public class MediaProcessingService {
         }
 
         try {
-            this.repository.insertJobAndOutbox(job, UUID.randomUUID());
+            this.repository.insertJobAndOutbox(job, UUID.randomUUID(), plannedDownstreamStages());
         } catch (MediaRepository.JobAdmissionConflictException concurrentAdmission) {
             // Unique indexes remain authoritative if a second API instance races.
             throw conflict("Another processing job already occupies the meeting or source.");
@@ -369,11 +384,23 @@ public class MediaProcessingService {
         return toResponse(job(job.id()));
     }
 
+    private List<String> plannedDownstreamStages() {
+        List<String> stages = this.properties.getProcessing().getRequiredDownstreamStages();
+        if (stages == null) throw new IllegalStateException("Processing pipeline stage plan is required.");
+        List<String> allowed = List.of("GENERATING_SUMMARY", "EXTRACTING_DECISIONS",
+            "EXTRACTING_ACTION_ITEMS", "INDEXING");
+        if (stages.stream().anyMatch(stage -> !allowed.contains(stage))
+                || stages.stream().distinct().count() != stages.size()) {
+            throw new IllegalStateException("Unsupported or duplicate required processing stage.");
+        }
+        return List.copyOf(stages);
+    }
+
     @Transactional(readOnly = true)
     public List<ProcessingJobResponse> listJobs(UUID meetingId) {
         UUID actor = this.authenticatedUser.requireUserId();
         this.meetingAccess.requireReadable(meetingId, actor);
-        return this.repository.listJobs(meetingId).stream().map(MediaProcessingService::toResponse).toList();
+        return this.repository.listJobs(meetingId).stream().map(this::toResponse).toList();
     }
 
     @Transactional(readOnly = true)
@@ -382,6 +409,40 @@ public class MediaProcessingService {
         Job job = job(jobId);
         this.meetingAccess.requireReadable(job.meetingId(), actor);
         return toResponse(job);
+    }
+
+    @Transactional
+    public ProcessingJobResponse retryJob(UUID jobId, String idempotencyKey, RetryProcessingJobRequest request) {
+        UUID actor = this.authenticatedUser.requireUserId();
+        Job target = job(jobId);
+        this.meetingAccess.requireProcessingAllowed(target.meetingId(), actor);
+        validateIdempotencyKey(idempotencyKey);
+        String stageCode = request == null ? null : request.stageCode();
+        String operation = "PROCESSING_JOB_RETRY:" + jobId;
+        String fingerprint = fingerprint(stageCode == null ? "JOB" : "STAGE\n" + stageCode);
+        this.repository.lockAdmissionUser(actor);
+        var claim = this.repository.claimIdempotencyWithStatus(actor, operation, idempotencyKey,
+            fingerprint, jobId);
+        if (!claim.claimed()) return toResponse(job(jobId));
+        if (!"FAILED".equals(target.status())) throw conflict("Only failed processing jobs can be retried.");
+        int maxRetries = this.properties.getProcessing().getMaxRetries();
+        if (maxRetries < 0) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+                "Processing retry policy is invalid.");
+        }
+        if (target.retryCount() >= maxRetries) {
+            throw conflict("Processing retry limit has been reached or retries are disabled.");
+        }
+        if (stageCode == null && !target.retryable()) {
+            throw conflict("This processing job is not eligible for retry.");
+        }
+        if (stageCode != null && !this.repository.hasRetryableFailedStage(jobId, stageCode)) {
+            throw conflict("The requested stage has no retryable failed attempt.");
+        }
+        if (!this.repository.retryJobAndOutbox(target, UUID.randomUUID(), stageCode, maxRetries)) {
+            throw conflict("The processing job changed or reached its retry limit.");
+        }
+        return toResponse(job(jobId));
     }
 
     private void validateUploadMetadata(String extension, String contentType, long expectedBytes) {
@@ -453,10 +514,11 @@ public class MediaProcessingService {
             media.createdAt(), media.availableAt(), media.failureCode());
     }
 
-    private static ProcessingJobResponse toResponse(Job job) {
+    private ProcessingJobResponse toResponse(Job job) {
         return new ProcessingJobResponse(job.id(), job.meetingId(), job.sourceMediaId(), job.jobType(), job.status(),
             job.requestedBy(), job.currentStage(), job.queuedAt(), job.startedAt(), job.completedAt(),
-            job.errorCode(), job.errorSummary(), job.warningSummary(), job.createdAt(), job.updatedAt());
+            job.errorCode(), job.errorSummary(), job.warningSummary(), job.createdAt(), job.updatedAt(),
+            job.reprocessOfJobId(), job.retryable(), job.retryCount(), this.repository.listStageRuns(job.id()));
     }
 
     private static String sanitizeFilename(String filename) {

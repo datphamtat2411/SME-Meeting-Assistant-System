@@ -4,6 +4,7 @@ import com.sme.meetingassistant.api.common.ApiResponse;
 import com.sme.meetingassistant.api.common.ApiResponseFactory;
 import com.sme.meetingassistant.api.media.dto.CreateProcessingJobRequest;
 import com.sme.meetingassistant.api.media.dto.ProcessingJobResponse;
+import com.sme.meetingassistant.api.media.dto.RetryProcessingJobRequest;
 import com.sme.meetingassistant.api.media.service.MediaProcessingService;
 import jakarta.validation.Valid;
 import java.net.URI;
@@ -34,7 +35,8 @@ public class ProcessingJobController {
     public ResponseEntity<ApiResponse<ProcessingJobResponse>> create(@PathVariable UUID meetingId,
             @RequestHeader("Idempotency-Key") String idempotencyKey,
             @Valid @RequestBody CreateProcessingJobRequest request) {
-        ProcessingJobResponse job = this.service.createJob(meetingId, request.mediaId(), idempotencyKey);
+        ProcessingJobResponse job = this.service.createJob(meetingId, request.mediaId(),
+            request.reprocessOfJobId(), idempotencyKey);
         return ResponseEntity.status(HttpStatus.ACCEPTED)
             .location(URI.create("/api/v1/processing-jobs/" + job.id()))
             .body(this.responses.success("Processing job accepted.", job));
@@ -48,5 +50,15 @@ public class ProcessingJobController {
     @GetMapping("/processing-jobs/{jobId}")
     public ApiResponse<ProcessingJobResponse> get(@PathVariable UUID jobId) {
         return this.responses.success(this.service.getJob(jobId));
+    }
+
+    @PostMapping("/processing-jobs/{jobId}/retry")
+    public ResponseEntity<ApiResponse<ProcessingJobResponse>> retry(@PathVariable UUID jobId,
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @Valid @RequestBody(required = false) RetryProcessingJobRequest request) {
+        ProcessingJobResponse job = this.service.retryJob(jobId, idempotencyKey, request);
+        return ResponseEntity.status(HttpStatus.ACCEPTED)
+            .location(URI.create("/api/v1/processing-jobs/" + job.id()))
+            .body(this.responses.success("Processing retry accepted.", job));
     }
 }

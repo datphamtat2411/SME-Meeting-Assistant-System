@@ -101,6 +101,7 @@ class ProcessingDispatchStateIntegrationTests {
         assertThat(repository.markPublishFailed(eventId, second.claimToken(), 2, 2, "nack")).isTrue();
         assertThat(outboxStatus()).isEqualTo("FAILED");
         assertThat(jobStatus()).isEqualTo("FAILED");
+        assertThat(repository.findJob(jobId).orElseThrow().retryable()).isTrue();
         assertThat(jdbc.queryForObject("SELECT error_code FROM processing_jobs WHERE id = ?",
             String.class, jobId)).isEqualTo("JOB_DISPATCH_FAILED");
         assertThat(repository.findJob(jobId).orElseThrow().completedAt()).isNotNull();
@@ -123,8 +124,36 @@ class ProcessingDispatchStateIntegrationTests {
         assertThat(repository.claimPendingOutbox(1, 60, 2)).noneMatch(e -> e.id().equals(eventId));
         assertThat(outboxStatus()).isEqualTo("FAILED");
         assertThat(jobStatus()).isEqualTo("FAILED");
+        assertThat(repository.findJob(jobId).orElseThrow().retryable()).isTrue();
         assertThat(repository.markPublished(eventId, first.claimToken())).isFalse();
         assertThat(repository.markPublished(eventId, last.claimToken())).isFalse();
+    }
+
+    @Test
+    void terminalDispatchFailureCanRetryOriginalJobWithoutCreatingFakeStage() {
+        Outbox first = claim(1);
+        assertThat(repository.markPublishFailed(eventId, first.claimToken(), 1, 1, "broker-down")).isTrue();
+        var failed = repository.findJob(jobId).orElseThrow();
+        assertThat(failed.retryable()).isTrue();
+        UUID retryEvent = UUID.randomUUID();
+        assertThat(repository.retryJobAndOutbox(failed, retryEvent, null, 2)).isTrue();
+        assertThat(jobStatus()).isEqualTo("PENDING");
+        assertThat(repository.findJob(jobId).orElseThrow().retryCount()).isEqualTo(1);
+        assertThat(jdbc.queryForObject(
+            "SELECT count(*) FROM processing_stage_runs WHERE processing_job_id=?", Integer.class, jobId))
+            .isZero();
+        // The old failed event stays terminal; only the new generation is dispatched.
+        assertThat(repository.markPublished(eventId, first.claimToken())).isFalse();
+        eventId = retryEvent;
+        jdbc.update("""
+            UPDATE outbox_events SET occurred_at='1900-01-01', next_attempt_at='1900-01-01'
+            WHERE id=?
+            """, retryEvent);
+        Outbox retried = claim(1);
+        assertThat(retried.eventType()).isEqualTo("PROCESSING_JOB_RETRY_REQUESTED");
+        assertThat(repository.markPublished(retryEvent, retried.claimToken())).isTrue();
+        assertThat(jobStatus()).isEqualTo("QUEUED");
+        assertThat(repository.findJob(jobId).orElseThrow().retryable()).isFalse();
     }
 
     @Test
@@ -184,5 +213,114 @@ class ProcessingDispatchStateIntegrationTests {
         assertThat(outboxStatus()).isEqualTo("FAILED");
         assertThat(jobStatus()).isEqualTo("COMPLETED");
         assertThat(repository.findJob(jobId).orElseThrow().errorCode()).isNull();
+    }
+
+    private UUID scheduleRetry() {
+        // Only the retry dispatch should remain claimable for the fixture.
+        jdbc.update("UPDATE outbox_events SET status = 'PUBLISHED' WHERE id = ?", eventId);
+        jdbc.update("""
+            UPDATE processing_jobs SET status = 'FAILED', retryable = TRUE,
+                completed_at = CURRENT_TIMESTAMP WHERE id = ?
+            """, jobId);
+        UUID retryEventId = UUID.randomUUID();
+        assertThat(repository.retryJobAndOutbox(
+            repository.findJob(jobId).orElseThrow(), retryEventId, null, 3)).isTrue();
+        eventId = retryEventId;
+        assertThat(jobStatus()).isEqualTo("PENDING");
+        assertThat(repository.findJob(jobId).orElseThrow().retryCount()).isEqualTo(1);
+        return retryEventId;
+    }
+
+    @Test
+    void confirmedRetryDispatchQueuesThePendingJob() {
+        UUID retryEventId = scheduleRetry();
+        Outbox retry = claim(3);
+        assertThat(retry.eventType()).isEqualTo("PROCESSING_JOB_RETRY_REQUESTED");
+        assertThat(repository.markPublished(retryEventId, retry.claimToken())).isTrue();
+        assertThat(outboxStatus()).isEqualTo("PUBLISHED");
+        assertThat(jobStatus()).isEqualTo("QUEUED");
+        assertThat(repository.findJob(jobId).orElseThrow().queuedAt()).isNotNull();
+    }
+
+    @Test
+    void terminalRetryPublishFailureFailsJobRatherThanLeavingItPending() {
+        UUID retryEventId = scheduleRetry();
+        Outbox retry = claim(1);
+        assertThat(repository.markPublishFailed(retryEventId, retry.claimToken(),
+            1, 1, "broker-nack")).isTrue();
+        assertThat(outboxStatus()).isEqualTo("FAILED");
+        assertThat(jobStatus()).isEqualTo("FAILED");
+        assertThat(repository.findJob(jobId).orElseThrow().errorCode())
+            .isEqualTo("JOB_DISPATCH_FAILED");
+        assertThat(repository.findJob(jobId).orElseThrow().retryable()).isTrue();
+    }
+
+    @Test
+    void expiredFinalRetryPublisherLeaseFailsItsPendingJob() {
+        scheduleRetry();
+        Outbox retry = claim(1);
+        jdbc.update("""
+            UPDATE outbox_events SET claim_expires_at = CURRENT_TIMESTAMP - INTERVAL '1 second'
+            WHERE id = ?
+            """, retry.id());
+        assertThat(repository.claimPendingOutbox(1, 60, 1))
+            .noneMatch(e -> e.id().equals(retry.id()));
+        assertThat(outboxStatus()).isEqualTo("FAILED");
+        assertThat(jobStatus()).isEqualTo("FAILED");
+        assertThat(repository.findJob(jobId).orElseThrow().retryable()).isTrue();
+    }
+
+    @Test
+    void lateInitialDispatchConfirmationCannotQueueNewRetryGeneration() {
+        Outbox staleInitial = claim(3);
+        jdbc.update("""
+            UPDATE processing_jobs SET status = 'FAILED', retryable = TRUE,
+                completed_at = CURRENT_TIMESTAMP WHERE id = ?
+            """, jobId);
+        UUID retryEventId = UUID.randomUUID();
+        assertThat(repository.retryJobAndOutbox(
+            repository.findJob(jobId).orElseThrow(), retryEventId, null, 3)).isTrue();
+        // The initial event was consumed but its publisher acknowledgement arrived late.
+        assertThat(repository.markPublished(eventId, staleInitial.claimToken())).isTrue();
+        assertThat(jobStatus()).isEqualTo("PENDING");
+        eventId = retryEventId;
+        Outbox retry = claim(3);
+        assertThat(repository.markPublished(retryEventId, retry.claimToken())).isTrue();
+        assertThat(jobStatus()).isEqualTo("QUEUED");
+    }
+
+    @Test
+    void staleRetryFailureCannotFailANewerRetryGeneration() {
+        UUID oldRetryEvent = scheduleRetry();
+        Outbox oldClaim = claim(1);
+        jdbc.update("""
+            UPDATE processing_jobs SET status = 'FAILED', retryable = TRUE,
+                completed_at = CURRENT_TIMESTAMP WHERE id = ?
+            """, jobId);
+        UUID newRetryEvent = UUID.randomUUID();
+        assertThat(repository.retryJobAndOutbox(
+            repository.findJob(jobId).orElseThrow(), newRetryEvent, null, 3)).isTrue();
+        assertThat(repository.findJob(jobId).orElseThrow().retryCount()).isEqualTo(2);
+        assertThat(repository.markPublishFailed(oldRetryEvent, oldClaim.claimToken(),
+            1, 1, "late-nack")).isTrue();
+        assertThat(jobStatus()).isEqualTo("PENDING");
+        assertThat(jdbc.queryForObject("SELECT status FROM outbox_events WHERE id = ?",
+            String.class, oldRetryEvent)).isEqualTo("FAILED");
+        eventId = newRetryEvent;
+        Outbox current = claim(3);
+        assertThat(repository.markPublished(newRetryEvent, current.claimToken())).isTrue();
+        assertThat(jobStatus()).isEqualTo("QUEUED");
+    }
+
+    @Test
+    void retryBrokerConfirmCannotDowngradeAlreadyRunningConsumer() {
+        UUID retryEventId = scheduleRetry();
+        Outbox retry = claim(3);
+        jdbc.update("""
+            UPDATE processing_jobs SET status = 'RUNNING', started_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """, jobId);
+        assertThat(repository.markPublished(retryEventId, retry.claimToken())).isTrue();
+        assertThat(jobStatus()).isEqualTo("RUNNING");
     }
 }

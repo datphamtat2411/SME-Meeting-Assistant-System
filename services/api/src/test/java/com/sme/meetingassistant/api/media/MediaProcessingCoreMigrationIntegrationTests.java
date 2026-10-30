@@ -142,4 +142,25 @@ class MediaProcessingCoreMigrationIntegrationTests {
             """, Integer.class));
     }
 
+    @Test
+    void migrationV16AddsAppendOnlyStageHistoryPrivateArtifactReferencesAndRetryEligibility() {
+        assertEquals(2, jdbc.queryForObject("""
+            SELECT count(*) FROM information_schema.columns
+            WHERE table_schema = current_schema() AND table_name = 'processing_jobs'
+              AND column_name IN ('retryable', 'retry_count')
+            """, Integer.class));
+        assertEquals(1, jdbc.queryForObject("""
+            SELECT count(*) FROM information_schema.tables
+            WHERE table_schema = current_schema() AND table_name = 'processing_stage_runs'
+            """, Integer.class));
+        assertEquals(1, jdbc.queryForObject("""
+            SELECT count(*) FROM information_schema.tables
+            WHERE table_schema = current_schema() AND table_name = 'processing_artifacts'
+            """, Integer.class));
+        assertEquals(1, jdbc.queryForObject("""
+            SELECT count(*) FROM pg_indexes
+            WHERE schemaname = current_schema() AND indexname = 'ux_processing_stage_attempt'
+            """, Integer.class));
+    }
+
 }

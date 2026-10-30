@@ -110,7 +110,7 @@ class MediaProcessingServiceTests {
             this.service.createJob(this.meetingId, UUID.randomUUID(), "job-key"));
         assertEquals(404, denied.getStatusCode().value());
         verify(this.repository, never()).findMedia(any(UUID.class));
-        verify(this.repository, never()).insertJobAndOutbox(any(Job.class), any(UUID.class));
+        verify(this.repository, never()).insertJobAndOutbox(any(Job.class), any(UUID.class), org.mockito.ArgumentMatchers.<String>anyList());
     }
 
     @Test
@@ -161,7 +161,7 @@ class MediaProcessingServiceTests {
             this.service.createJob(this.meetingId, mediaId, "job-once"));
 
         assertEquals(409, error.getStatusCode().value());
-        verify(this.repository, never()).insertJobAndOutbox(any(Job.class), any(UUID.class));
+        verify(this.repository, never()).insertJobAndOutbox(any(Job.class), any(UUID.class), org.mockito.ArgumentMatchers.<String>anyList());
     }
 
     @Test
@@ -174,7 +174,7 @@ class MediaProcessingServiceTests {
         doAnswer(invocation -> {
             saved.set(invocation.getArgument(0));
             return null;
-        }).when(this.repository).insertJobAndOutbox(any(Job.class), any(UUID.class));
+        }).when(this.repository).insertJobAndOutbox(any(Job.class), any(UUID.class), org.mockito.ArgumentMatchers.<String>anyList());
         when(this.repository.findJob(any(UUID.class))).thenAnswer(invocation -> Optional.of(saved.get()));
         when(this.repository.recentJobAdmissions(this.actor, 60))
             .thenReturn(new MediaRepository.RecentJobAdmissions(0, 1));
@@ -184,7 +184,7 @@ class MediaProcessingServiceTests {
         assertEquals("PENDING", result.status());
         assertEquals(null, result.queuedAt());
         assertEquals(mediaId, result.sourceMediaId());
-        verify(this.repository).insertJobAndOutbox(any(Job.class), any(UUID.class));
+        verify(this.repository).insertJobAndOutbox(any(Job.class), any(UUID.class), org.mockito.ArgumentMatchers.<String>anyList());
     }
 
     @Test
@@ -201,7 +201,7 @@ class MediaProcessingServiceTests {
         assertEquals(saved.id(), this.service.createJob(this.meetingId, mediaId, "replay").id());
         verify(this.repository).lockAdmissionUser(this.actor);
         verify(this.repository, never()).recentJobAdmissions(this.actor, 60);
-        verify(this.repository, never()).insertJobAndOutbox(any(Job.class), any(UUID.class));
+        verify(this.repository, never()).insertJobAndOutbox(any(Job.class), any(UUID.class), org.mockito.ArgumentMatchers.<String>anyList());
     }
 
     @Test
@@ -216,7 +216,7 @@ class MediaProcessingServiceTests {
             this.service.createJob(this.meetingId, mediaId, "second-key"));
 
         assertEquals(409, rejected.getStatusCode().value());
-        verify(this.repository, never()).insertJobAndOutbox(any(Job.class), any(UUID.class));
+        verify(this.repository, never()).insertJobAndOutbox(any(Job.class), any(UUID.class), org.mockito.ArgumentMatchers.<String>anyList());
     }
 
     @Test
@@ -233,7 +233,7 @@ class MediaProcessingServiceTests {
 
         assertEquals(429, rejected.getStatusCode().value());
         assertEquals("45", rejected.getHeaders().getFirst("Retry-After"));
-        verify(this.repository, never()).insertJobAndOutbox(any(Job.class), any(UUID.class));
+        verify(this.repository, never()).insertJobAndOutbox(any(Job.class), any(UUID.class), org.mockito.ArgumentMatchers.<String>anyList());
     }
 
     @Test

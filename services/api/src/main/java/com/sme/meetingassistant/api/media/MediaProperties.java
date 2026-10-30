@@ -11,11 +11,13 @@ public class MediaProperties {
     private final Upload upload = new Upload();
     private final Outbox outbox = new Outbox();
     private final Admission admission = new Admission();
+    private final Processing processing = new Processing();
 
     public Storage getStorage() { return storage; }
     public Upload getUpload() { return upload; }
     public Outbox getOutbox() { return outbox; }
     public Admission getAdmission() { return admission; }
+    public Processing getProcessing() { return processing; }
 
     public static class Storage {
         private String endpoint;
@@ -107,5 +109,18 @@ public class MediaProperties {
         public void setLeaseSeconds(int value) { leaseSeconds = value; }
         public int getConfirmTimeoutSeconds() { return confirmTimeoutSeconds; }
         public void setConfirmTimeoutSeconds(int value) { confirmTimeoutSeconds = value; }
+    }
+
+    /** A value of zero disables manual retries until the deployment sets a finite policy. */
+    public static class Processing {
+        private int maxRetries;
+        private int stageLeaseSeconds = 1800;
+        private List<String> requiredDownstreamStages = new ArrayList<>();
+        public int getMaxRetries() { return maxRetries; }
+        public void setMaxRetries(int value) { maxRetries = value; }
+        public int getStageLeaseSeconds() { return stageLeaseSeconds; }
+        public void setStageLeaseSeconds(int value) { stageLeaseSeconds = value; }
+        public List<String> getRequiredDownstreamStages() { return requiredDownstreamStages; }
+        public void setRequiredDownstreamStages(List<String> value) { requiredDownstreamStages = value; }
     }
 }
