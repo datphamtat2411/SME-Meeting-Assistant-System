@@ -334,10 +334,13 @@ class ProcessingJobAdmissionIntegrationTests {
             .isEqualTo("SUCCEEDED_WITH_WARNING");
         assertThat(jdbc.queryForObject("SELECT count(*) FROM processing_artifacts WHERE stage_run_id = ?",
             Integer.class, runId.stageRunId())).isEqualTo(1);
-        assertThat(json.readTree(mvc.perform(get("/api/v1/processing-jobs/" + jobId)
-                .principal(as(organizer))).andExpect(status().isOk()).andReturn()
-                .getResponse().getContentAsString()).at("/data/stageRuns/0/providerName").asText())
-            .isEqualTo("offline-whisper");
+        var stages = json.readTree(mvc.perform(get("/api/v1/processing-jobs/" + jobId)
+            .principal(as(organizer))).andExpect(status().isOk()).andReturn()
+            .getResponse().getContentAsString()).at("/data/stageRuns");
+        assertThat(java.util.stream.StreamSupport.stream(stages.spliterator(), false)
+            .filter(stage -> "TRANSCRIPTION".equals(stage.path("stageCode").asText()))
+            .map(stage -> stage.path("providerName").asText()))
+            .containsExactly("offline-whisper");
     }
 
     @Test
