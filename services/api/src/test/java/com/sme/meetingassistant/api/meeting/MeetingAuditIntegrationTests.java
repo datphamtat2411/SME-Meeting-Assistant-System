@@ -76,11 +76,11 @@ class MeetingAuditIntegrationTests {
         return () -> userId.toString();
     }
 
-    private JsonNode data(MvcResult result) {
+    private JsonNode data(MvcResult result) throws Exception {
         return json.readTree(result.getResponse().getContentAsString()).path("data");
     }
 
-    private UUID id(MvcResult result) {
+    private UUID id(MvcResult result) throws Exception {
         return UUID.fromString(data(result).path("id").asText());
     }
 
