@@ -6,9 +6,11 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.sme.meetingassistant.api.media.storage.ObjectStorage;
+import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle;
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
 import java.security.Principal;
 import java.util.List;
@@ -42,6 +44,7 @@ import tools.jackson.databind.ObjectMapper;
     "app.media.admission.job-window-minutes=60",
     "app.media.admission.max-active-jobs-per-user=2",
     "app.media.admission.max-pending-uploads-per-user=2",
+    "app.media.processing.max-retries=2",
     "app.media.upload.allowed-extensions=wav",
     "app.media.upload.allowed-content-types=audio/wav",
     "app.media.upload.max-size-bytes=1048576",
@@ -53,6 +56,7 @@ class ProcessingJobAdmissionIntegrationTests {
     @Autowired MockMvc mvc;
     @Autowired JdbcTemplate jdbc;
     @Autowired ObjectMapper json;
+    @Autowired ProcessingJobLifecycle lifecycle;
     @MockitoBean ObjectStorage storage;
 
     private UUID organizer;
@@ -252,5 +256,115 @@ class ProcessingJobAdmissionIntegrationTests {
         assertThat(List.of(pair.first(), pair.second())).containsExactlyInAnyOrder(202, 409);
         assertThat(jobs()).isEqualTo(1);
         assertThat(events()).isEqualTo(1);
+    }
+
+    @Test
+    void retryableFailedStageCreatesANewAttemptAndOneIdempotentOutboxEvent() throws Exception {
+        Source src = source();
+        MvcResult created = admit(src, "initial-for-retry");
+        UUID jobId = UUID.fromString(json.readTree(created.getResponse().getContentAsString())
+            .at("/data/id").asText());
+        UUID failedRun = lifecycle.startStage(jobId, "TRANSCRIPTION", "offline-whisper", "base");
+        lifecycle.failStage(failedRun, "TEMPORARY_FAILURE", "Transcription stage failed temporarily.", true);
+
+        String path = "/api/v1/processing-jobs/" + jobId + "/retry";
+        mvc.perform(post(path).principal(as(organizer)).header("Idempotency-Key", "retry-stage-1")
+            .contentType(MediaType.APPLICATION_JSON).content("{\"stageCode\":\"TRANSCRIPTION\"}"))
+            .andExpect(status().isAccepted());
+        mvc.perform(post(path).principal(as(organizer)).header("Idempotency-Key", "retry-stage-1")
+            .contentType(MediaType.APPLICATION_JSON).content("{\"stageCode\":\"TRANSCRIPTION\"}"))
+            .andExpect(status().isAccepted());
+
+        assertThat(jdbc.queryForObject("SELECT status FROM processing_jobs WHERE id = ?", String.class, jobId))
+            .isEqualTo("PENDING");
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM processing_stage_runs WHERE processing_job_id = ?
+              AND stage_code = 'TRANSCRIPTION'
+            """, Integer.class, jobId)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM outbox_events WHERE aggregate_id = ?
+              AND event_type = 'PROCESSING_JOB_RETRY_REQUESTED'
+            """, Integer.class, jobId)).isEqualTo(1);
+    }
+
+    @Test
+    void explicitReprocessingCreatesNewJobWithParentLineageForSameSource() throws Exception {
+        Source src = source();
+        MvcResult first = admit(src, "initial-for-reprocess");
+        UUID parentId = UUID.fromString(json.readTree(first.getResponse().getContentAsString())
+            .at("/data/id").asText());
+        finish(src);
+
+        MvcResult second = mvc.perform(post("/api/v1/meetings/" + src.meetingId() + "/processing-jobs")
+            .principal(as(organizer)).header("Idempotency-Key", "reprocess-1")
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("{\"mediaId\":\"" + src.mediaId() + "\",\"reprocessOfJobId\":\"" + parentId + "\"}"))
+            .andReturn();
+
+        assertThat(second.getResponse().getStatus()).isEqualTo(202);
+        UUID reprocessId = UUID.fromString(json.readTree(second.getResponse().getContentAsString())
+            .at("/data/id").asText());
+        assertThat(reprocessId).isNotEqualTo(parentId);
+        assertThat(jdbc.queryForObject("SELECT reprocess_of_job_id FROM processing_jobs WHERE id = ?",
+            UUID.class, reprocessId)).isEqualTo(parentId);
+    }
+
+    @Test
+    void workerLifecyclePersistsStageProvenanceArtifactReferenceAndWarningOutcome() throws Exception {
+        Source src = source();
+        MvcResult created = admit(src, "initial-for-lifecycle");
+        UUID jobId = UUID.fromString(json.readTree(created.getResponse().getContentAsString())
+            .at("/data/id").asText());
+
+        UUID runId = lifecycle.startStage(jobId, "TRANSCRIPTION", "offline-whisper", "base");
+        lifecycle.recordArtifact(jobId, runId, "ASR_DEBUG", "processing/" + jobId + "/asr.json",
+            "a".repeat(64), 128L, "DEBUG");
+        lifecycle.completeStage(runId, "SUCCEEDED_WITH_WARNING", null, "{\"coverage\":0.92}");
+        lifecycle.completeJob(jobId, true, "Some speech regions need review.");
+
+        assertThat(jdbc.queryForObject("SELECT status FROM processing_jobs WHERE id = ?", String.class, jobId))
+            .isEqualTo("COMPLETED_WITH_WARNINGS");
+        assertThat(jdbc.queryForObject("SELECT status FROM processing_stage_runs WHERE id = ?", String.class, runId))
+            .isEqualTo("SUCCEEDED_WITH_WARNING");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM processing_artifacts WHERE stage_run_id = ?",
+            Integer.class, runId)).isEqualTo(1);
+        assertThat(json.readTree(mvc.perform(get("/api/v1/processing-jobs/" + jobId)
+                .principal(as(organizer))).andExpect(status().isOk()).andReturn()
+                .getResponse().getContentAsString()).at("/data/stageRuns/0/providerName").asText())
+            .isEqualTo("offline-whisper");
+    }
+
+    @Test
+    void retryCountStopsAtConfiguredFinitePolicy() throws Exception {
+        Source src = source();
+        MvcResult created = admit(src, "initial-for-retry-limit");
+        UUID jobId = UUID.fromString(json.readTree(created.getResponse().getContentAsString())
+            .at("/data/id").asText());
+        failTranscription(jobId);
+
+        assertRetry(jobId, "bounded-retry-1", 202);
+        failTranscription(jobId);
+        assertRetry(jobId, "bounded-retry-2", 202);
+        failTranscription(jobId);
+        assertRetry(jobId, "bounded-retry-3", 409);
+
+        assertThat(jdbc.queryForObject("SELECT retry_count FROM processing_jobs WHERE id = ?",
+            Integer.class, jobId)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM outbox_events WHERE aggregate_id = ?
+              AND event_type = 'PROCESSING_JOB_RETRY_REQUESTED'
+            """, Integer.class, jobId)).isEqualTo(2);
+    }
+
+    private void failTranscription(UUID jobId) {
+        UUID runId = lifecycle.startStage(jobId, "TRANSCRIPTION", "offline-whisper", "base");
+        lifecycle.failStage(runId, "TEMPORARY_FAILURE", "Transcription stage failed temporarily.", true);
+    }
+
+    private void assertRetry(UUID jobId, String key, int expectedStatus) throws Exception {
+        mvc.perform(post("/api/v1/processing-jobs/" + jobId + "/retry")
+            .principal(as(organizer)).header("Idempotency-Key", key)
+            .contentType(MediaType.APPLICATION_JSON).content("{\"stageCode\":\"TRANSCRIPTION\"}"))
+            .andExpect(status().is(expectedStatus));
     }
 }

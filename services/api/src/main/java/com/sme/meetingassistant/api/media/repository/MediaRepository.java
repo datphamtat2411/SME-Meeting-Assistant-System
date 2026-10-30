@@ -1,6 +1,7 @@
 package com.sme.meetingassistant.api.media.repository;
 
 import com.sme.meetingassistant.api.observability.RequestIdContext;
+import com.sme.meetingassistant.api.media.dto.ProcessingStageResponse;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.OffsetDateTime;
@@ -116,13 +117,18 @@ public class MediaRepository {
     }
 
     public UUID claimIdempotency(UUID caller, String operation, String key, String fingerprint, UUID proposedResourceId) {
-        this.jdbc.update("""
+        return claimIdempotencyWithStatus(caller, operation, key, fingerprint, proposedResourceId).resourceId();
+    }
+
+    public IdempotencyClaim claimIdempotencyWithStatus(UUID caller, String operation, String key,
+            String fingerprint, UUID proposedResourceId) {
+        int inserted = this.jdbc.update("""
             INSERT INTO processing_job_idempotency
               (id, requester_id, operation, idempotency_key, request_fingerprint, resource_id)
             VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT (requester_id, operation, idempotency_key) DO NOTHING
             """, UUID.randomUUID(), caller, operation, key, fingerprint, proposedResourceId);
-        return this.jdbc.query("""
+        UUID claimedId = this.jdbc.query("""
             SELECT resource_id, request_fingerprint FROM processing_job_idempotency
             WHERE requester_id = ? AND operation = ? AND idempotency_key = ?
             """, (rs, row) -> {
@@ -131,6 +137,7 @@ public class MediaRepository {
                 }
                 return rs.getObject("resource_id", UUID.class);
             }, caller, operation, key).stream().findFirst().orElseThrow(IdempotencyConflictException::new);
+        return new IdempotencyClaim(claimedId, inserted == 1);
     }
 
     /**
@@ -188,10 +195,10 @@ public class MediaRepository {
     public void insertJobAndOutbox(Job job, UUID eventId) {
         int inserted = this.jdbc.update("""
             INSERT INTO processing_jobs (id, meeting_id, source_media_id, job_type, status,
-              requested_by_user_id, queued_at, created_at, updated_at)
-            VALUES (?, ?, ?, 'OFFLINE_MEETING_PROCESSING', 'PENDING', ?, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+              requested_by_user_id, reprocess_of_job_id, queued_at, created_at, updated_at)
+            VALUES (?, ?, ?, 'OFFLINE_MEETING_PROCESSING', 'PENDING', ?, ?, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             ON CONFLICT DO NOTHING
-            """, job.id(), job.meetingId(), job.sourceMediaId(), job.requestedBy());
+            """, job.id(), job.meetingId(), job.sourceMediaId(), job.requestedBy(), job.reprocessOfJobId());
         if (inserted != 1) throw new JobAdmissionConflictException();
         String payload;
         try {
@@ -214,6 +221,178 @@ public class MediaRepository {
     public List<Job> listJobs(UUID meetingId) {
         return this.jdbc.query("SELECT * FROM processing_jobs WHERE meeting_id = ? ORDER BY created_at DESC, id",
             MediaRepository::jobRow, meetingId);
+    }
+
+    public UUID startStage(UUID jobId, String stageCode, String providerName, String modelName) {
+        String currentStatus = this.jdbc.query("SELECT status FROM processing_jobs WHERE id = ? FOR UPDATE",
+            (rs, row) -> rs.getString("status"), jobId).stream().findFirst()
+            .orElseThrow(() -> new IllegalArgumentException("Processing job does not exist."));
+        if (!List.of("PENDING", "QUEUED", "RUNNING").contains(currentStatus)) {
+            throw new IllegalStateException("A terminal processing job cannot start another stage.");
+        }
+        this.jdbc.update("""
+            UPDATE processing_jobs SET status = 'RUNNING', current_stage = ?,
+              started_at = COALESCE(started_at, CURRENT_TIMESTAMP),
+              attempt_count = attempt_count + CASE WHEN status IN ('PENDING', 'QUEUED') THEN 1 ELSE 0 END,
+              updated_at = CURRENT_TIMESTAMP, version = version + 1
+            WHERE id = ?
+            """, stageCode, jobId);
+
+        List<StageAttempt> latest = this.jdbc.query("""
+            SELECT id, attempt_number, status FROM processing_stage_runs
+            WHERE processing_job_id = ? AND stage_code = ?
+            ORDER BY attempt_number DESC LIMIT 1 FOR UPDATE
+            """, (rs, row) -> new StageAttempt(rs.getObject("id", UUID.class),
+                rs.getInt("attempt_number"), rs.getString("status")), jobId, stageCode);
+        if (!latest.isEmpty() && ("PENDING".equals(latest.get(0).status())
+                || "RUNNING".equals(latest.get(0).status()))) {
+            UUID runId = latest.get(0).id();
+            this.jdbc.update("""
+                UPDATE processing_stage_runs SET status = 'RUNNING', provider_name = ?, model_name = ?,
+                  started_at = COALESCE(started_at, CURRENT_TIMESTAMP)
+                WHERE id = ?
+                """, providerName, modelName, runId);
+            return runId;
+        }
+
+        UUID runId = UUID.randomUUID();
+        this.jdbc.update("""
+            INSERT INTO processing_stage_runs (id, processing_job_id, stage_code, attempt_number,
+              status, provider_name, model_name, started_at)
+            SELECT ?, ?, ?, COALESCE(MAX(attempt_number), 0) + 1, 'RUNNING', ?, ?, CURRENT_TIMESTAMP
+            FROM processing_stage_runs WHERE processing_job_id = ? AND stage_code = ?
+            """, runId, jobId, stageCode, providerName, modelName, jobId, stageCode);
+        return runId;
+    }
+
+    public void completeStage(UUID stageRunId, String outcome, String errorCode, String metricsJson) {
+        int updated = this.jdbc.update("""
+            UPDATE processing_stage_runs SET status = ?, error_code = ?,
+              metrics = CAST(? AS jsonb), completed_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND status = 'RUNNING'
+            """, outcome, errorCode, metricsJson, stageRunId);
+        if (updated == 1) return;
+        boolean replay = Boolean.TRUE.equals(this.jdbc.queryForObject("""
+            SELECT EXISTS (SELECT 1 FROM processing_stage_runs WHERE id = ? AND status = ?)
+            """, Boolean.class, stageRunId, outcome));
+        if (!replay) throw new IllegalStateException("Stage attempt is not running or does not exist.");
+    }
+
+    public void failStage(UUID stageRunId, String errorCode, String safeSummary, boolean retryable) {
+        List<StageJob> stage = this.jdbc.query("""
+            SELECT processing_job_id, stage_code, status FROM processing_stage_runs WHERE id = ? FOR UPDATE
+            """, (rs, row) -> new StageJob(rs.getObject("processing_job_id", UUID.class),
+                rs.getString("stage_code"), rs.getString("status")), stageRunId);
+        if (stage.isEmpty()) throw new IllegalArgumentException("Stage attempt does not exist.");
+        StageJob current = stage.get(0);
+        if ("FAILED".equals(current.status())) return;
+        if (!"RUNNING".equals(current.status())) {
+            throw new IllegalStateException("Only a running stage attempt can fail.");
+        }
+        this.jdbc.update("""
+            UPDATE processing_stage_runs SET status = 'FAILED', retryable = ?, error_code = ?,
+              completed_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'RUNNING'
+            """, retryable, errorCode, stageRunId);
+        int updated = this.jdbc.update("""
+            UPDATE processing_jobs SET status = 'FAILED', current_stage = ?, retryable = ?,
+              error_code = ?, error_summary = ?, completed_at = CURRENT_TIMESTAMP,
+              updated_at = CURRENT_TIMESTAMP, version = version + 1
+            WHERE id = ? AND status = 'RUNNING'
+            """, current.stageCode(), retryable, errorCode, safeSummary, current.jobId());
+        if (updated != 1) throw new IllegalStateException("Processing job is no longer running.");
+    }
+
+    public void completeJob(UUID jobId, boolean completedWithWarnings, String warningSummary) {
+        String outcome = completedWithWarnings ? "COMPLETED_WITH_WARNINGS" : "COMPLETED";
+        int updated = this.jdbc.update("""
+            UPDATE processing_jobs SET status = ?, warning_summary = ?, retryable = FALSE,
+              error_code = NULL, error_summary = NULL, completed_at = CURRENT_TIMESTAMP,
+              updated_at = CURRENT_TIMESTAMP, version = version + 1
+            WHERE id = ? AND status = 'RUNNING'
+            """, outcome, warningSummary, jobId);
+        if (updated == 1) return;
+        boolean replay = Boolean.TRUE.equals(this.jdbc.queryForObject("""
+            SELECT EXISTS (SELECT 1 FROM processing_jobs WHERE id = ? AND status = ?
+              AND warning_summary IS NOT DISTINCT FROM ?)
+            """, Boolean.class, jobId, outcome, warningSummary));
+        if (!replay) throw new IllegalStateException("Processing job is not running or does not exist.");
+    }
+
+    public void recordArtifact(UUID jobId, UUID stageRunId, String artifactType, String objectKey,
+            String sha256, Long sizeBytes, String retentionClass) {
+        int inserted = this.jdbc.update("""
+            INSERT INTO processing_artifacts (id, processing_job_id, stage_run_id, artifact_type,
+              object_key, sha256, size_bytes, retention_class)
+            SELECT ?, ?, ?, ?, ?, ?, ?, ?
+            WHERE EXISTS (SELECT 1 FROM processing_stage_runs
+              WHERE id = ? AND processing_job_id = ?)
+            ON CONFLICT (object_key) DO NOTHING
+            """, UUID.randomUUID(), jobId, stageRunId, artifactType, objectKey,
+            sha256, sizeBytes, retentionClass, stageRunId, jobId);
+        if (inserted == 1) return;
+        boolean replay = Boolean.TRUE.equals(this.jdbc.queryForObject("""
+            SELECT EXISTS (SELECT 1 FROM processing_artifacts WHERE object_key = ?
+              AND processing_job_id = ? AND stage_run_id = ? AND artifact_type = ?
+              AND sha256 IS NOT DISTINCT FROM ? AND size_bytes IS NOT DISTINCT FROM ?
+              AND retention_class IS NOT DISTINCT FROM ?)
+            """, Boolean.class, objectKey, jobId, stageRunId, artifactType,
+            sha256, sizeBytes, retentionClass));
+        if (!replay) throw new IllegalStateException("Artifact reference is invalid or conflicts with existing metadata.");
+    }
+
+    public List<ProcessingStageResponse> listStageRuns(UUID jobId) {
+        return this.jdbc.query("""
+            SELECT id, stage_code, attempt_number, status, provider_name, model_name,
+                   started_at, completed_at, error_code
+            FROM processing_stage_runs WHERE processing_job_id = ?
+            ORDER BY stage_code, attempt_number
+            """, (rs, row) -> new ProcessingStageResponse(rs.getObject("id", UUID.class),
+                rs.getString("stage_code"), rs.getInt("attempt_number"), rs.getString("status"),
+                rs.getString("provider_name"), rs.getString("model_name"),
+                rs.getObject("started_at", OffsetDateTime.class),
+                rs.getObject("completed_at", OffsetDateTime.class), rs.getString("error_code")), jobId);
+    }
+
+    public boolean hasRetryableFailedStage(UUID jobId, String stageCode) {
+        return Boolean.TRUE.equals(this.jdbc.queryForObject("""
+            SELECT EXISTS (SELECT 1 FROM processing_stage_runs
+              WHERE processing_job_id = ? AND stage_code = ? AND status = 'FAILED' AND retryable = TRUE
+                AND attempt_number = (SELECT MAX(attempt_number) FROM processing_stage_runs
+                  WHERE processing_job_id = ? AND stage_code = ?))
+            """, Boolean.class, jobId, stageCode, jobId, stageCode));
+    }
+
+    public boolean retryJobAndOutbox(Job job, UUID eventId, String stageCode, int maxRetries) {
+        int updated = this.jdbc.update("""
+            UPDATE processing_jobs SET status = 'PENDING', current_stage = COALESCE(?, current_stage),
+              queued_at = NULL, completed_at = NULL, error_code = NULL, error_summary = NULL,
+              retryable = FALSE, retry_count = retry_count + 1,
+              updated_at = CURRENT_TIMESTAMP, version = version + 1
+            WHERE id = ? AND status = 'FAILED' AND retry_count < ? AND (retryable = TRUE OR ? IS NOT NULL)
+            """, stageCode, job.id(), maxRetries, stageCode);
+        if (updated != 1) return false;
+        if (stageCode != null) {
+            int inserted = this.jdbc.update("""
+                INSERT INTO processing_stage_runs (id, processing_job_id, stage_code, attempt_number,
+                  status, retryable, created_at)
+                SELECT ?, ?, ?, COALESCE(MAX(attempt_number), 0) + 1, 'PENDING', FALSE, CURRENT_TIMESTAMP
+                FROM processing_stage_runs WHERE processing_job_id = ? AND stage_code = ?
+                """, UUID.randomUUID(), job.id(), stageCode, job.id(), stageCode);
+            if (inserted != 1) throw new IllegalStateException("Could not create the retry stage attempt.");
+        }
+        String payload;
+        try {
+            payload = this.mapper.writeValueAsString(new JobRetryEvent(eventId, job.id(), job.meetingId(),
+                job.sourceMediaId(), job.requestedBy(), stageCode, job.retryCount() + 1,
+                RequestIdContext.currentRequestId(), 2, OffsetDateTime.now()));
+        } catch (JacksonException exception) {
+            throw new IllegalStateException("Could not serialize processing retry event", exception);
+        }
+        this.jdbc.update("""
+            INSERT INTO outbox_events (id, aggregate_type, aggregate_id, event_type, payload, occurred_at)
+            VALUES (?, 'PROCESSING_JOB', ?, 'PROCESSING_JOB_RETRY_REQUESTED', CAST(? AS jsonb), CURRENT_TIMESTAMP)
+            """, eventId, job.id(), payload);
+        return true;
     }
 
     /**
@@ -352,7 +531,9 @@ public class MediaRepository {
             rs.getInt("attempt_count"), rs.getObject("queued_at", OffsetDateTime.class),
             rs.getObject("started_at", OffsetDateTime.class), rs.getObject("completed_at", OffsetDateTime.class),
             rs.getString("error_code"), rs.getString("error_summary"), rs.getString("warning_summary"),
-            rs.getObject("created_at", OffsetDateTime.class), rs.getObject("updated_at", OffsetDateTime.class));
+            rs.getObject("created_at", OffsetDateTime.class), rs.getObject("updated_at", OffsetDateTime.class),
+            rs.getObject("reprocess_of_job_id", UUID.class), rs.getBoolean("retryable"),
+            rs.getInt("retry_count"));
     }
 
     public record Media(UUID id, UUID meetingId, String sourceType, String status, String objectKey,
@@ -361,12 +542,37 @@ public class MediaRepository {
     public record Job(UUID id, UUID meetingId, UUID sourceMediaId, String jobType, String status,
             UUID requestedBy, String currentStage, int attemptCount, OffsetDateTime queuedAt,
             OffsetDateTime startedAt, OffsetDateTime completedAt, String errorCode, String errorSummary,
-            String warningSummary, OffsetDateTime createdAt, OffsetDateTime updatedAt) { }
+            String warningSummary, OffsetDateTime createdAt, OffsetDateTime updatedAt,
+            UUID reprocessOfJobId, boolean retryable, int retryCount) {
+        public Job(UUID id, UUID meetingId, UUID sourceMediaId, String jobType, String status,
+                UUID requestedBy, String currentStage, int attemptCount, OffsetDateTime queuedAt,
+                OffsetDateTime startedAt, OffsetDateTime completedAt, String errorCode, String errorSummary,
+                String warningSummary, OffsetDateTime createdAt, OffsetDateTime updatedAt,
+                UUID reprocessOfJobId, boolean retryable) {
+            this(id, meetingId, sourceMediaId, jobType, status, requestedBy, currentStage, attemptCount,
+                queuedAt, startedAt, completedAt, errorCode, errorSummary, warningSummary, createdAt,
+                updatedAt, reprocessOfJobId, retryable, 0);
+        }
+        public Job(UUID id, UUID meetingId, UUID sourceMediaId, String jobType, String status,
+                UUID requestedBy, String currentStage, int attemptCount, OffsetDateTime queuedAt,
+                OffsetDateTime startedAt, OffsetDateTime completedAt, String errorCode, String errorSummary,
+                String warningSummary, OffsetDateTime createdAt, OffsetDateTime updatedAt) {
+            this(id, meetingId, sourceMediaId, jobType, status, requestedBy, currentStage, attemptCount,
+                queuedAt, startedAt, completedAt, errorCode, errorSummary, warningSummary, createdAt,
+                updatedAt, null, false, 0);
+        }
+    }
     public record RecentJobAdmissions(int count, long retryAfterSeconds) { }
+    public record IdempotencyClaim(UUID resourceId, boolean claimed) { }
+    private record StageAttempt(UUID id, int attemptNumber, String status) { }
+    private record StageJob(UUID jobId, String stageCode, String status) { }
     public record PendingCleanup(UUID id, String pendingObjectKey) { }
     public record Outbox(UUID id, String eventType, String payload, int attemptCount, UUID claimToken) { }
     public record JobQueuedEvent(UUID eventId, UUID processingJobId, UUID meetingId, UUID sourceMediaId,
             UUID requestedByUserId, String requestId, int schemaVersion, OffsetDateTime occurredAt) { }
+    public record JobRetryEvent(UUID eventId, UUID processingJobId, UUID meetingId, UUID sourceMediaId,
+            UUID requestedByUserId, String retryFromStage, int attemptNumber, String requestId,
+            int schemaVersion, OffsetDateTime occurredAt) { }
 
     public static class IdempotencyConflictException extends RuntimeException { }
     public static class JobAdmissionConflictException extends RuntimeException { }
