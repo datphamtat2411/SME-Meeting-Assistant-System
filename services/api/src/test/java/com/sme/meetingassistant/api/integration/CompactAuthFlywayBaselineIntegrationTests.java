@@ -39,7 +39,8 @@ class CompactAuthFlywayBaselineIntegrationTests {
                 "V8__meeting_notification_supersession.sql",
                  "V9__meeting_audit_integrity.sql",
                  "V10__meeting_create_idempotency.sql",
-                "V11__create_media_processing_core.sql");
+                "V11__create_media_processing_core.sql",
+                "V12__immutable_media_finalization.sql");
     }
 
     @Test
