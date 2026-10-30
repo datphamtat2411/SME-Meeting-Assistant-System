@@ -161,6 +161,26 @@ class ProcessingLifecycleInvariantsIntegrationTests {
     }
 
     @Test
+    void durableStageMetricsRejectRawAsrTextAndArbitraryProviderPayload() {
+        StageClaim stage = lifecycle.startStage(jobId, "TRANSCRIPTION", "whisper", "large-v3");
+        assertThatThrownBy(() -> lifecycle.completeStage(stage, "SUCCEEDED", null,
+            "{\"rawTranscript\":\"Sensitive raw Whisper candidate text\"}"))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("approved, typed AI diagnostics");
+        assertThatThrownBy(() -> lifecycle.completeStage(stage, "SUCCEEDED", null,
+            "{\"providerResponse\":{\"text\":\"Sensitive raw data\"}}"))
+            .isInstanceOf(IllegalArgumentException.class);
+        assertThat(jdbc.queryForObject("SELECT metrics::text FROM processing_stage_runs WHERE id=?",
+            String.class, stage.stageRunId())).isNull();
+        assertThat(jdbc.queryForObject("SELECT status FROM processing_stage_runs WHERE id=?",
+            String.class, stage.stageRunId())).isEqualTo("RUNNING");
+        lifecycle.completeStage(stage, "SUCCEEDED", null,
+            "{\"validated\":true,\"coverageRatio\":0.92,\"segmentCount\":12}");
+        assertThat(jdbc.queryForObject("SELECT metrics->>'segmentCount' FROM processing_stage_runs WHERE id=?",
+            String.class, stage.stageRunId())).isEqualTo("12");
+    }
+
+    @Test
     void conflictingStageReplayCannotMutateCompletedAttempt() {
         StageClaim stage = startTranscription("SUCCEEDED");
         lifecycle.completeStage(stage, "SUCCEEDED", null, "{\"validated\":true}");

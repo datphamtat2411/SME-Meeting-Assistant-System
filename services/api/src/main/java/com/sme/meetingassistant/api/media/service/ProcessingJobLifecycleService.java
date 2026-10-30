@@ -1,12 +1,14 @@
 package com.sme.meetingassistant.api.media.service;
 
 import com.sme.meetingassistant.api.media.repository.MediaRepository;
+import com.sme.meetingassistant.api.common.SafeAiDiagnostics;
 import com.sme.meetingassistant.api.media.repository.MediaRepository.ProcessingLifecycleConflictException;
 import com.sme.meetingassistant.api.media.MediaProperties;
 import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle.StageClaim;
 import org.springframework.scheduling.annotation.Scheduled;
 import java.util.UUID;
 import java.util.List;
+import java.util.Map;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.core.JacksonException;
@@ -73,6 +75,9 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
                 if (!this.mapper.readTree(metricsJson).isObject()) {
                     throw new IllegalArgumentException("Stage metrics must be a JSON object.");
                 }
+                @SuppressWarnings("unchecked")
+                Map<String, Object> metadata = (Map<String, Object>) this.mapper.readValue(metricsJson, Map.class);
+                SafeAiDiagnostics.stageMetrics(metadata);
             } catch (JacksonException invalidJson) {
                 throw new IllegalArgumentException("Stage metrics must be valid JSON.", invalidJson);
             }

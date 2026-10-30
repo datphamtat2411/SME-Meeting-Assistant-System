@@ -132,6 +132,36 @@ class TranscriptPublicationIdempotencyIntegrationTests {
     }
 
     @Test
+    void rawAsrAndUnapprovedProviderPayloadCannotEnterPersistedTranscriptMetadata() {
+        TranscriptResult original = result("Validated whole-meeting corrected transcript");
+        TranscriptResult badSegment = new TranscriptResult(original.meetingId(), original.sourceMediaId(),
+            original.processingJobId(), original.sourceStageRunId(), original.languageCode(),
+            original.durationMs(), original.status(),
+            List.of(new SegmentResult(0, 100, 1200, "Validated whole-meeting corrected transcript",
+                "ACCEPTED", "Speaker 1", finalization,
+                Map.of("rawAsrText", "Private Whisper candidate"))),
+            original.coverage(), original.speakers());
+        assertThatThrownBy(() -> ingestion.publish(badSegment))
+            .isInstanceOf(ResponseStatusException.class)
+            .satisfies(error -> assertThat(((ResponseStatusException)error).getStatusCode())
+                .isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY));
+
+        TranscriptResult badCoverage = new TranscriptResult(original.meetingId(), original.sourceMediaId(),
+            original.processingJobId(), original.sourceStageRunId(), original.languageCode(),
+            original.durationMs(), original.status(), original.segments(),
+            List.of(new CoverageResult(100, 1200, "COVERED", false, 0,
+                Map.of("providerResponse", Map.of("text", "Private Whisper candidate")))),
+            original.speakers());
+        assertThatThrownBy(() -> ingestion.publish(badCoverage))
+            .isInstanceOf(ResponseStatusException.class)
+            .satisfies(error -> assertThat(((ResponseStatusException)error).getStatusCode())
+                .isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY));
+        assertThat(versions()).isZero();
+        ingestion.publish(original);
+        assertThat(versions()).isEqualTo(1);
+    }
+
+    @Test
     void sameJobDifferentTextIsRejectedWithoutMutatingCanonicalVersion() {
         ingestion.publish(result("Bản kết quả đầu."));
         UUID accepted = current();
@@ -159,13 +189,13 @@ class TranscriptPublicationIdempotencyIntegrationTests {
     @Test
     void fingerprintIsInsensitiveToNestedMetadataMapOrdering() {
         Map<String, Object> one = new LinkedHashMap<>();
-        one.put("z", Map.of("b", 2, "a", 1));
-        one.put("a", 0.97);
+        one.put("qualityScores", Map.of("speaker", 0.2, "speech", 0.9));
+        one.put("confidence", 0.97);
         Map<String, Object> two = new LinkedHashMap<>();
-        two.put("a", 0.97);
+        two.put("confidence", 0.97);
         Map<String, Object> nested = new LinkedHashMap<>();
-        nested.put("a", 1); nested.put("b", 2);
-        two.put("z", nested);
+        nested.put("speech", 0.9); nested.put("speaker", 0.2);
+        two.put("qualityScores", nested);
         TranscriptResult initial = result("Bản hiệu chỉnh.");
         TranscriptResult first = new TranscriptResult(initial.meetingId(), initial.sourceMediaId(),
             initial.processingJobId(), initial.sourceStageRunId(), initial.languageCode(), initial.durationMs(),

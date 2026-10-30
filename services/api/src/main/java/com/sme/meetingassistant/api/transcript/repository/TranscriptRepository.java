@@ -1,6 +1,7 @@
 package com.sme.meetingassistant.api.transcript.repository;
 
 import com.sme.meetingassistant.api.media.service.ProcessingTranscriptEvidence;
+import com.sme.meetingassistant.api.common.SafeAiDiagnostics;
 import com.sme.meetingassistant.api.transcript.dto.TranscriptViews.CorrectionView;
 import com.sme.meetingassistant.api.transcript.dto.TranscriptViews.CoverageView;
 import com.sme.meetingassistant.api.transcript.dto.TranscriptViews.SegmentView;
@@ -286,12 +287,24 @@ public class TranscriptRepository implements ProcessingTranscriptEvidence {
                     || !List.of("ACCEPTED", "SUSPICIOUS", "UNRESOLVED").contains(s.qualityStatus())) {
                 throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY);
             }
+            try {
+                SafeAiDiagnostics.segmentConfidence(s.confidenceMetadata());
+            } catch (IllegalArgumentException invalidMetadata) {
+                throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
+                    "Transcript confidence metadata contains an unapproved diagnostic.");
+            }
         }
         for (CoverageResult c : r.coverage()) {
             if (c == null || c.startMs() < 0 || c.endMs() <= c.startMs() || c.retryCount() < 0
                     || (r.durationMs() != null && c.endMs() > r.durationMs())
                     || !List.of("COVERED", "SUSPICIOUS", "UNRESOLVED_ERROR").contains(c.coverageStatus())) {
                 throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY);
+            }
+            try {
+                SafeAiDiagnostics.coverageMetadata(c.metadata());
+            } catch (IllegalArgumentException invalidMetadata) {
+                throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
+                    "Transcript coverage metadata contains an unapproved diagnostic.");
             }
         }
         List<String> labels = new ArrayList<>();
