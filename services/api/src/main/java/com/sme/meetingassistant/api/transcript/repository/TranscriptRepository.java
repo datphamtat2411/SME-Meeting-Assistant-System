@@ -44,6 +44,21 @@ public class TranscriptRepository {
 
     @Transactional
     public void publish(TranscriptResult result) {
+        publishValidated(result, false);
+    }
+
+    /**
+     * Only the application finalization coordinator should call this method,
+     * after locking the meeting and verifying the active fenced worker claim.
+     * This path admits RUNNING/RUNNING without allowing a standalone publication
+     * to mark the processing stage or job successful.
+     */
+    @Transactional
+    public void publishDuringFinalization(TranscriptResult result) {
+        publishValidated(result, true);
+    }
+
+    private void publishValidated(TranscriptResult result, boolean runningFinalization) {
         // Validate before locking so malformed AI results never become accepted replays.
         validate(result);
         String fingerprint = publicationDigest(result);
@@ -70,14 +85,19 @@ public class TranscriptRepository {
               ON m.meeting_id=j.meeting_id AND m.id=j.source_media_id
             JOIN processing_stage_runs sr ON sr.processing_job_id=j.id
               AND sr.id=? AND sr.stage_code='FINALIZING_TRANSCRIPT'
-              AND sr.status IN ('SUCCEEDED','SUCCEEDED_WITH_WARNING')
               AND sr.attempt_number = (
                 SELECT MAX(x.attempt_number) FROM processing_stage_runs x
                 WHERE x.processing_job_id=j.id AND x.stage_code=sr.stage_code)
             WHERE j.id=? AND j.meeting_id=? AND j.source_media_id=?
-              AND j.status IN ('COMPLETED','COMPLETED_WITH_WARNINGS') AND m.status='AVAILABLE'
+              AND m.status='AVAILABLE'
+              AND (
+                (? = TRUE AND sr.status='RUNNING' AND j.status='RUNNING')
+                OR (? = FALSE AND sr.status IN ('SUCCEEDED','SUCCEEDED_WITH_WARNING')
+                    AND j.status IN ('COMPLETED','COMPLETED_WITH_WARNINGS'))
+              )
             """, (rs, row) -> rs.getString(1), result.sourceStageRunId(),
-            result.processingJobId(), result.meetingId(), result.sourceMediaId());
+            result.processingJobId(), result.meetingId(), result.sourceMediaId(),
+            runningFinalization, runningFinalization);
         if (finalized.size() != 1) {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                 "Transcript source or finalization attempt is not eligible.");

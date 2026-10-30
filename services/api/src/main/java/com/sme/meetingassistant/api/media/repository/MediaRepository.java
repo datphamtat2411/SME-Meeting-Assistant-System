@@ -333,6 +333,53 @@ public class MediaRepository {
             """, Boolean.class, claim.stageRunId(), claim.claimToken()));
     }
 
+
+    /**
+     * Application-level finalization admission. Called after the meeting row
+     * is locked, before transcript publication. The processing job lock and
+     * claim-token/lease check fence stale or competing workers.
+     */
+    public boolean requireFinalizationClaim(UUID jobId, UUID meetingId, UUID mediaId,
+            StageClaim claim) {
+        if (jobId == null || meetingId == null || mediaId == null || claim == null
+                || claim.stageRunId() == null || claim.claimToken() == null) {
+            throw new IllegalArgumentException("Finalization identity and stage claim are required.");
+        }
+        List<FinalizationState> matches = this.jdbc.query("""
+            SELECT j.status AS job_status, s.status AS stage_status, s.stage_code,
+                   m.status AS media_status
+            FROM processing_jobs j
+            JOIN meeting_media m ON m.id = j.source_media_id
+               AND m.meeting_id = j.meeting_id
+            JOIN processing_stage_runs s ON s.processing_job_id = j.id
+            WHERE j.id=? AND j.meeting_id=? AND j.source_media_id=?
+              AND s.id=? AND s.claim_token=?
+            FOR UPDATE OF j
+            """, (rs, row) -> new FinalizationState(rs.getString("job_status"),
+                rs.getString("stage_status"), rs.getString("stage_code"),
+                rs.getString("media_status")), jobId, meetingId, mediaId,
+                claim.stageRunId(), claim.claimToken());
+        if (matches.size() != 1 || !"FINALIZING_TRANSCRIPT".equals(matches.getFirst().stageCode())
+                || !isLatestClaim(jobId, claim)
+                || !"AVAILABLE".equals(matches.getFirst().mediaStatus())) {
+            throw new ProcessingLifecycleConflictException(
+                "Finalization claim does not match the current accepted job and media.");
+        }
+        FinalizationState state = matches.getFirst();
+        if ("RUNNING".equals(state.jobStatus()) && "RUNNING".equals(state.stageStatus())) {
+            if (!liveClaim(claim)) {
+                throw new ProcessingLifecycleConflictException("Finalization worker lease has expired.");
+            }
+            return false;
+        }
+        if (List.of("COMPLETED", "COMPLETED_WITH_WARNINGS").contains(state.jobStatus())
+                && isSuccessful(state.stageStatus())) {
+            return true;
+        }
+        throw new ProcessingLifecycleConflictException(
+            "Finalization worker no longer owns a valid running or completed stage.");
+    }
+
     public void completeStage(StageClaim claim, String outcome, String errorCode, String metricsJson) {
         UUID stageRunId = claim.stageRunId();
         UUID jobId = stageJobId(stageRunId);
@@ -861,6 +908,8 @@ public class MediaRepository {
     private record JobStart(String status, String mediaStatus) { }
     private record StageRun(String stageCode, String status) { }
     private record StageCompletion(UUID id, String stageCode, String status) { }
+    private record FinalizationState(String jobStatus, String stageStatus, String stageCode,
+            String mediaStatus) { }
     private record TranscriptEvidence(String status, boolean suspicious) { }
     private record StageAttempt(UUID id, int attemptNumber, String status) { }
     private record StageJob(UUID jobId, String stageCode, String status) { }
