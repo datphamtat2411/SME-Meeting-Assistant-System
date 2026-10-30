@@ -113,4 +113,18 @@ class MediaProcessingCoreMigrationIntegrationTests {
             """, Integer.class));
     }
 
+    @Test
+    void migrationV14AddsFencedOutboxClaimColumnsAndIndex() {
+        assertEquals(2, jdbc.queryForObject("""
+            SELECT count(*) FROM information_schema.columns
+            WHERE table_schema = current_schema() AND table_name = 'outbox_events'
+              AND column_name IN ('claim_token', 'claim_expires_at')
+            """, Integer.class));
+        assertEquals(1, jdbc.queryForObject("""
+            SELECT count(*) FROM pg_indexes
+            WHERE schemaname = current_schema() AND tablename = 'outbox_events'
+              AND indexname = 'ix_outbox_events_claimable'
+            """, Integer.class));
+    }
+
 }

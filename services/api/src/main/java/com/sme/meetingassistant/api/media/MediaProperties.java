@@ -93,6 +93,8 @@ public class MediaProperties {
         private String routingKey;
         private long pollDelayMs = 2000;
         private int maxAttempts = 12;
+        private int leaseSeconds = 60;
+        private int confirmTimeoutSeconds = 10;
         public String getExchange() { return exchange; }
         public void setExchange(String value) { exchange = value; }
         public String getRoutingKey() { return routingKey; }
@@ -101,5 +103,9 @@ public class MediaProperties {
         public void setPollDelayMs(long value) { pollDelayMs = value; }
         public int getMaxAttempts() { return maxAttempts; }
         public void setMaxAttempts(int value) { maxAttempts = value; }
+        public int getLeaseSeconds() { return leaseSeconds; }
+        public void setLeaseSeconds(int value) { leaseSeconds = value; }
+        public int getConfirmTimeoutSeconds() { return confirmTimeoutSeconds; }
+        public void setConfirmTimeoutSeconds(int value) { confirmTimeoutSeconds = value; }
     }
 }

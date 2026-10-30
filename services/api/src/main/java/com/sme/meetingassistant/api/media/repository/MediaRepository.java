@@ -216,27 +216,72 @@ public class MediaRepository {
             MediaRepository::jobRow, meetingId);
     }
 
-    public List<Outbox> pendingOutbox(int limit) {
-        return this.jdbc.query("""
-            SELECT id, event_type, payload::text AS payload, attempt_count
-            FROM outbox_events WHERE status = 'PENDING' AND next_attempt_at <= CURRENT_TIMESTAMP
-            ORDER BY occurred_at, id LIMIT ?
-            """, (rs, row) -> new Outbox(rs.getObject("id", UUID.class), rs.getString("event_type"),
-                rs.getString("payload"), rs.getInt("attempt_count")), limit);
-    }
-
-    public void markPublished(UUID eventId) {
-        this.jdbc.update("UPDATE outbox_events SET status = 'PUBLISHED', published_at = CURRENT_TIMESTAMP, last_error = NULL WHERE id = ?",
-            eventId);
-    }
-
-    public void markPublishFailed(UUID eventId, int attempts, int maxAttempts, String error) {
+    /**
+     * Claim one batch with an atomic PostgreSQL update. SKIP LOCKED coordinates
+     * independent API instances, while the lease token fences late confirmations.
+     * No database transaction is held while awaiting a RabbitMQ confirm.
+     */
+    public List<Outbox> claimPendingOutbox(int limit, int leaseSeconds, int maxAttempts) {
+        if (limit < 1 || leaseSeconds < 1 || maxAttempts < 1) {
+            throw new IllegalArgumentException("Invalid outbox claim limits");
+        }
+        // A worker may die during its final attempt. Expiration must eventually
+        // make that row terminal, rather than leaving an unclaimable PENDING event.
         this.jdbc.update("""
-            UPDATE outbox_events SET attempt_count = ?, status = ?, last_error = ?,
-              next_attempt_at = CURRENT_TIMESTAMP + (? * INTERVAL '1 second')
-            WHERE id = ?
-            """, attempts + 1, attempts + 1 >= maxAttempts ? "FAILED" : "PENDING",
-            error.substring(0, Math.min(error.length(), 1000)), Math.min(300, 1L << Math.min(attempts, 8)), eventId);
+            UPDATE outbox_events SET status = 'FAILED',
+              claim_token = NULL, claim_expires_at = NULL,
+              last_error = COALESCE(last_error, 'OUTBOX_CONFIRM_NOT_OBSERVED')
+            WHERE status = 'PENDING' AND attempt_count >= ?
+              AND (claim_expires_at IS NULL OR claim_expires_at <= CURRENT_TIMESTAMP)
+            """, maxAttempts);
+        return this.jdbc.query("""
+            WITH candidates AS (
+              SELECT id FROM outbox_events
+              WHERE status = 'PENDING' AND attempt_count < ?
+                AND next_attempt_at <= CURRENT_TIMESTAMP
+                AND (claim_expires_at IS NULL OR claim_expires_at <= CURRENT_TIMESTAMP)
+              ORDER BY occurred_at, id
+              LIMIT ? FOR UPDATE SKIP LOCKED
+            )
+            UPDATE outbox_events o
+            SET claim_token = gen_random_uuid(),
+                claim_expires_at = CURRENT_TIMESTAMP + (? * INTERVAL '1 second'),
+                attempt_count = o.attempt_count + 1
+            FROM candidates c WHERE o.id = c.id
+            RETURNING o.id, o.event_type, o.payload::text AS payload,
+                      o.attempt_count, o.claim_token
+            """, (rs, row) -> new Outbox(rs.getObject("id", UUID.class),
+                    rs.getString("event_type"), rs.getString("payload"),
+                    rs.getInt("attempt_count"), rs.getObject("claim_token", UUID.class)),
+            maxAttempts, limit, leaseSeconds);
+    }
+
+    /** A confirm from a superseded lease cannot mark another publisher's work. */
+    public boolean markPublished(UUID eventId, UUID claimToken) {
+        return this.jdbc.update("""
+            UPDATE outbox_events SET status = 'PUBLISHED', published_at = CURRENT_TIMESTAMP,
+              last_error = NULL, claim_token = NULL, claim_expires_at = NULL
+            WHERE id = ? AND claim_token = ? AND status = 'PENDING'
+              AND claim_expires_at > CURRENT_TIMESTAMP
+            """, eventId, claimToken) == 1;
+    }
+
+    /** The claim incremented attempt_count before sending, including crash attempts. */
+    public boolean markPublishFailed(UUID eventId, UUID claimToken,
+            int attemptCount, int maxAttempts, String error) {
+        if (attemptCount < 1 || maxAttempts < 1) {
+            throw new IllegalArgumentException("Invalid outbox attempt");
+        }
+        long delaySeconds = Math.min(300L, 1L << Math.min(attemptCount - 1, 8));
+        String safeError = error == null ? "UNKNOWN" : error.substring(0, Math.min(error.length(), 1000));
+        return this.jdbc.update("""
+            UPDATE outbox_events SET status = CASE WHEN attempt_count >= ? THEN 'FAILED'
+                                                   ELSE 'PENDING' END,
+              last_error = ?, next_attempt_at = CURRENT_TIMESTAMP + (? * INTERVAL '1 second'),
+              claim_token = NULL, claim_expires_at = NULL
+            WHERE id = ? AND claim_token = ? AND status = 'PENDING'
+              AND attempt_count = ? AND claim_expires_at > CURRENT_TIMESTAMP
+            """, maxAttempts, safeError, delaySeconds, eventId, claimToken, attemptCount) == 1;
     }
 
     private static Media mediaRow(ResultSet rs, int row) throws SQLException {
@@ -267,7 +312,7 @@ public class MediaRepository {
             String warningSummary, OffsetDateTime createdAt, OffsetDateTime updatedAt) { }
     public record RecentJobAdmissions(int count, long retryAfterSeconds) { }
     public record PendingCleanup(UUID id, String pendingObjectKey) { }
-    public record Outbox(UUID id, String eventType, String payload, int attemptCount) { }
+    public record Outbox(UUID id, String eventType, String payload, int attemptCount, UUID claimToken) { }
     public record JobQueuedEvent(UUID eventId, UUID processingJobId, UUID meetingId, UUID sourceMediaId,
             UUID requestedByUserId, String requestId, int schemaVersion, OffsetDateTime occurredAt) { }
 
