@@ -6,6 +6,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.sme.meetingassistant.api.media.outbox.MediaMessagingConfiguration;
 import com.sme.meetingassistant.api.media.outbox.OutboxPublisher;
+import com.sme.meetingassistant.api.media.storage.ObjectStorage;
+import com.sme.meetingassistant.api.media.validation.MediaInspector;
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -13,6 +15,10 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import java.nio.charset.StandardCharsets;
 import java.security.Principal;
 import java.util.Arrays;
@@ -100,6 +106,8 @@ class MediaLiveInfrastructureIntegrationTests {
     @Autowired JdbcTemplate jdbc;
     @Autowired ObjectMapper json;
     @Autowired OutboxPublisher publisher;
+    @Autowired ObjectStorage storage;
+    @Autowired MediaInspector inspector;
     @Autowired RabbitTemplate rabbit;
     @Autowired MediaProperties properties;
     private UUID organizer;
@@ -193,6 +201,27 @@ class MediaLiveInfrastructureIntegrationTests {
             .PUT(HttpRequest.BodyPublishers.ofByteArray(original)).build();
         assertThat(http.send(put, HttpResponse.BodyHandlers.discarding()).statusCode())
             .isBetween(200, 299);
+
+        // Diagnose the complete real storage/ffprobe/conditional-PUT contract
+        // independently of API error sanitization before invoking finalization.
+        String pendingKey = "meetings/" + meeting + "/pending/" + media;
+        assertThat(storage.head(pendingKey).sizeBytes()).isEqualTo(original.length);
+        Path fetched = Files.createTempFile("t08-fetched-", ".wav");
+        try {
+            storage.downloadTo(pendingKey, fetched);
+            assertThat(Files.readAllBytes(fetched)).isEqualTo(original);
+            var inspection = inspector.inspect(fetched);
+            assertThat(inspection.hasAudio()).isTrue();
+            assertThat(inspection.detectedFormat()).contains("wav");
+            assertThat(inspection.durationMs()).isBetween(900L, 1100L);
+            String digest = HexFormat.of().formatHex(
+                MessageDigest.getInstance("SHA-256").digest(original));
+            String probeKey = "t08/conditional-probe/" + UUID.randomUUID();
+            assertThat(storage.putAcceptedIfAbsent(probeKey, fetched, digest)).isTrue();
+            assertThat(storage.putAcceptedIfAbsent(probeKey, fetched, digest)).isFalse();
+        } finally {
+            Files.deleteIfExists(fetched);
+        }
 
         var finalized = mvc.perform(post("/api/v1/meetings/" + meeting + "/media/" + media + "/finalize")
             .principal(actor()))
