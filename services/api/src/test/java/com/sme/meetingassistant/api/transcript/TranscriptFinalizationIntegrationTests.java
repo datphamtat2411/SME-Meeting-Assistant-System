@@ -305,15 +305,18 @@ class TranscriptFinalizationIntegrationTests {
 
     @Test
     void completionEvidenceFailureRollsBackTranscriptAndStageSuccess() {
+        // Keep the same corrected output across the failed attempt and retry:
+        // a different payload requires new correction evidence, not a bypass.
+        TranscriptResult canonical = result("Now evidence exists.");
         jdbc.update("UPDATE processing_stage_runs SET status='FAILED' WHERE id=?",
             transcription.stageRunId());
         assertThatThrownBy(() ->
-            finalization.finalizeTranscript(finalizer, result("Not enough evidence.")))
+            finalization.finalizeTranscript(finalizer, canonical))
             .isInstanceOf(ProcessingLifecycleConflictException.class);
         assertUnfinished();
         jdbc.update("UPDATE processing_stage_runs SET status='SUCCEEDED' WHERE id=?",
             transcription.stageRunId());
-        finalization.finalizeTranscript(finalizer, result("Now evidence exists."));
+        finalization.finalizeTranscript(finalizer, canonical);
         assertThat(jobStatus()).isEqualTo("COMPLETED");
     }
 
