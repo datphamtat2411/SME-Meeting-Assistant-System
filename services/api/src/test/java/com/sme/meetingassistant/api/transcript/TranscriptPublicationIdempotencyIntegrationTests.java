@@ -441,4 +441,162 @@ class TranscriptPublicationIdempotencyIntegrationTests {
         assertThat(jdbc.queryForObject("SELECT is_current FROM transcripts WHERE processing_job_id=?",
             Boolean.class, newer.job())).isFalse();
     }
+
+    private static CoverageResult region(long start, long end, String status) {
+        return new CoverageResult(start, end, status, false, 0, null);
+    }
+
+    private static SegmentResult segment(int ordinal, long start, long end, String quality) {
+        return new SegmentResult(ordinal, start, end, "Đoạn hội thoại đã hiệu chỉnh.",
+            quality, null, null, null);
+    }
+
+    private TranscriptResult qualityResult(TranscriptIngestion.Status status,
+            List<SegmentResult> segments, List<CoverageResult> coverage) {
+        return new TranscriptResult(meeting, media, job, finalization, "vi", 10000L,
+            status, segments, coverage, List.of());
+    }
+
+    private static void assertInvalidQuality(Runnable publish) {
+        assertThatThrownBy(publish::run).isInstanceOf(ResponseStatusException.class)
+            .satisfies(error -> assertThat(((ResponseStatusException) error).getStatusCode())
+                .isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY));
+    }
+
+    @Test
+    void readyRejectsUnresolvedSpeechEvenWhenAcceptedTextExistsElsewhere() {
+        TranscriptResult value = qualityResult(TranscriptIngestion.Status.READY,
+            List.of(segment(0, 100, 1200, "ACCEPTED")),
+            List.of(region(100, 1200, "COVERED"), region(2000, 3000, "UNRESOLVED_ERROR")));
+        assertInvalidQuality(() -> ingestion.publish(value));
+        assertThat(versions()).isZero();
+    }
+
+    @Test
+    void readyRejectsSuspiciousCoverageRatherThanHidingIt() {
+        TranscriptResult value = qualityResult(TranscriptIngestion.Status.READY,
+            List.of(segment(0, 100, 1200, "ACCEPTED")),
+            List.of(region(100, 1200, "COVERED"), region(2000, 2500, "SUSPICIOUS")));
+        assertInvalidQuality(() -> ingestion.publish(value));
+        assertThat(versions()).isZero();
+    }
+
+    @Test
+    void readyRejectsSuspiciousOrUnresolvedTranscriptSegments() {
+        for (String state : List.of("SUSPICIOUS", "UNRESOLVED")) {
+            TranscriptResult value = qualityResult(TranscriptIngestion.Status.READY,
+                List.of(segment(0, 100, 1200, state)),
+                List.of(region(100, 1200, "SUSPICIOUS")));
+            assertInvalidQuality(() -> ingestion.publish(value));
+        }
+        assertThat(versions()).isZero();
+    }
+
+    @Test
+    void warningsPreserveTimelineOfDetectedButUnresolvedSpeech() {
+        TranscriptResult value = qualityResult(TranscriptIngestion.Status.READY_WITH_WARNINGS,
+            List.of(segment(0, 100, 1200, "ACCEPTED")),
+            List.of(region(100, 1200, "COVERED"), region(2100, 2800, "UNRESOLVED_ERROR")));
+        ingestion.publish(value);
+        UUID accepted = current();
+        assertThat(jdbc.queryForObject("SELECT status FROM transcripts WHERE id=?",
+            String.class, accepted)).isEqualTo("READY_WITH_WARNINGS");
+        assertThat(jdbc.queryForObject("""
+            SELECT COUNT(*) FROM transcript_coverage_regions WHERE transcript_id=?
+              AND coverage_status='UNRESOLVED_ERROR' AND start_ms=2100 AND end_ms=2800
+            """, Integer.class, accepted)).isEqualTo(1);
+        ingestion.publish(value);
+        assertThat(versions()).isEqualTo(1);
+    }
+
+    @Test
+    void missingSpeechCoverageEvidenceIsNotAcceptedAsComplete() {
+        TranscriptResult value = qualityResult(TranscriptIngestion.Status.READY,
+            List.of(segment(0, 100, 1200, "ACCEPTED")), List.of());
+        assertInvalidQuality(() -> ingestion.publish(value));
+        assertThat(versions()).isZero();
+    }
+
+    @Test
+    void coveredRegionRequiresAcceptedTextRatherThanSuspiciousText() {
+        TranscriptResult value = qualityResult(TranscriptIngestion.Status.READY_WITH_WARNINGS,
+            List.of(segment(0, 100, 1200, "SUSPICIOUS")),
+            List.of(region(100, 1200, "COVERED")));
+        assertInvalidQuality(() -> ingestion.publish(value));
+        assertThat(versions()).isZero();
+    }
+
+    @Test
+    void coveredRegionCannotClaimSuccessWithTextAtUnrelatedTime() {
+        TranscriptResult value = qualityResult(TranscriptIngestion.Status.READY,
+            List.of(segment(0, 100, 1200, "ACCEPTED")),
+            List.of(region(2000, 2500, "COVERED")));
+        assertInvalidQuality(() -> ingestion.publish(value));
+        assertThat(versions()).isZero();
+    }
+
+    @Test
+    void transcriptSegmentOutsideEveryCoverageRegionIsRejected() {
+        TranscriptResult value = qualityResult(TranscriptIngestion.Status.READY,
+            List.of(segment(0, 100, 1200, "ACCEPTED"),
+                segment(1, 5000, 5500, "ACCEPTED")),
+            List.of(region(100, 1200, "COVERED")));
+        assertInvalidQuality(() -> ingestion.publish(value));
+        assertThat(versions()).isZero();
+    }
+
+    @Test
+    void touchingIntervalBoundariesDoNotPretendSpeechOverlap() {
+        TranscriptResult value = qualityResult(TranscriptIngestion.Status.READY,
+            List.of(segment(0, 100, 1200, "ACCEPTED")),
+            List.of(region(1200, 2000, "COVERED")));
+        assertInvalidQuality(() -> ingestion.publish(value));
+        assertThat(versions()).isZero();
+    }
+
+    @Test
+    void transcriptStatusReflectsFinalizationStageWarnings() {
+        jdbc.update("""
+            UPDATE processing_stage_runs SET status='SUCCEEDED_WITH_WARNING'
+            WHERE id=?
+            """, finalization);
+        TranscriptResult nominal = result("Only accepted text but a finalization warning");
+        assertInvalidQuality(() -> ingestion.publish(nominal));
+        TranscriptResult warned = new TranscriptResult(nominal.meetingId(),
+            nominal.sourceMediaId(), nominal.processingJobId(), nominal.sourceStageRunId(),
+            nominal.languageCode(), nominal.durationMs(),
+            TranscriptIngestion.Status.READY_WITH_WARNINGS, nominal.segments(),
+            nominal.coverage(), nominal.speakers());
+        ingestion.publish(warned);
+        assertThat(jdbc.queryForObject(
+            "SELECT status FROM transcripts WHERE processing_job_id=?",
+            String.class, job)).isEqualTo("READY_WITH_WARNINGS");
+    }
+
+    @Test
+    void cannotDeclareWarningsWithoutAnyPersistedQualityOrStageEvidence() {
+        TranscriptResult nominal = result("Fully accepted transcript");
+        TranscriptResult warned = new TranscriptResult(nominal.meetingId(),
+            nominal.sourceMediaId(), nominal.processingJobId(), nominal.sourceStageRunId(),
+            nominal.languageCode(), nominal.durationMs(),
+            TranscriptIngestion.Status.READY_WITH_WARNINGS, nominal.segments(),
+            nominal.coverage(), nominal.speakers());
+        assertInvalidQuality(() -> ingestion.publish(warned));
+        assertThat(versions()).isZero();
+    }
+
+    @Test
+    void suspiciousTranscriptSegmentIsPreservedWithWarningsForReview() {
+        TranscriptResult value = qualityResult(TranscriptIngestion.Status.READY_WITH_WARNINGS,
+            List.of(segment(0, 100, 1200, "SUSPICIOUS")),
+            List.of(region(100, 1200, "SUSPICIOUS")));
+        ingestion.publish(value);
+        assertThat(jdbc.queryForObject("""
+            SELECT quality_status FROM transcript_segments
+            WHERE transcript_id=(SELECT id FROM transcripts WHERE processing_job_id=?)
+            """, String.class, job)).isEqualTo("SUSPICIOUS");
+        assertThat(jdbc.queryForObject("""
+            SELECT status FROM transcripts WHERE processing_job_id=?
+            """, String.class, job)).isEqualTo("READY_WITH_WARNINGS");
+    }
 }
