@@ -272,6 +272,7 @@ public class TranscriptRepository {
 
     public CorrectionView correct(UUID meetingId, UUID segmentId, UUID actorId,
             String text, String reason, long expectedVersion) {
+        lockMeeting(meetingId);
         List<SegmentState> rows = this.jdbc.query("""
             SELECT s.id,s.current_text,s.quality_status,s.version FROM transcript_segments s
             JOIN transcripts t ON t.id=s.transcript_id
@@ -290,19 +291,28 @@ public class TranscriptRepository {
             INSERT INTO transcript_segment_revisions(id,segment_id,revision_number,previous_text,new_text,
               edited_by_user_id,edit_reason,created_at) VALUES (?,?,?,?,?,?,?,?)
             """, UUID.randomUUID(), segmentId, revision, old.text(), text, actorId, reason, now);
-        this.jdbc.update("""
+        int changed = this.jdbc.update("""
             UPDATE transcript_segments SET current_text=?,quality_status='ACCEPTED',corrected_by_user_id=?,
               corrected_at=?,updated_at=?,version=version+1 WHERE id=? AND version=?
             """, text, actorId, now, now, segmentId, expectedVersion);
+        if (changed != 1) throw new ResponseStatusException(HttpStatus.PRECONDITION_FAILED);
+        increaseContentRevision(meetingId);
         return new CorrectionView(segmentId, text, "ACCEPTED", expectedVersion + 1, actorId, now);
     }
 
     public SpeakerView mapSpeaker(UUID meetingId, UUID clusterId, UUID userId, UUID actorId) {
+        lockMeeting(meetingId);
         List<SpeakerKey> clusters = this.jdbc.query("""
             SELECT c.id FROM speaker_clusters c JOIN transcripts t ON t.id=c.transcript_id
             WHERE t.meeting_id=? AND t.is_current AND c.id=? FOR UPDATE OF c
             """, (rs, row) -> new SpeakerKey(rs.getObject(1, UUID.class)), meetingId, clusterId);
         if (clusters.isEmpty()) throw notFound();
+        List<UUID> mappings = this.jdbc.query("""
+            SELECT user_id FROM speaker_mappings
+            WHERE speaker_cluster_id=? AND superseded_at IS NULL
+            """, (rs, row) -> rs.getObject(1, UUID.class), clusterId);
+        UUID existingUser = mappings.isEmpty() ? null : mappings.getFirst();
+        if (java.util.Objects.equals(existingUser, userId)) return speakerByCluster(clusterId);
         this.jdbc.update("UPDATE speaker_mappings SET superseded_at=CURRENT_TIMESTAMP "
             + "WHERE speaker_cluster_id=? AND superseded_at IS NULL", clusterId);
         if (userId != null) {
@@ -311,12 +321,34 @@ public class TranscriptRepository {
                 VALUES (?,?,?,?)
                 """, UUID.randomUUID(), clusterId, userId, actorId);
         }
+        increaseContentRevision(meetingId);
+        return speakerByCluster(clusterId);
+    }
+
+    private SpeakerView speakerByCluster(UUID clusterId) {
         return this.jdbc.query("""
             SELECT c.id,c.label,m.user_id,u.display_name FROM speaker_clusters c
             LEFT JOIN speaker_mappings m ON m.speaker_cluster_id=c.id AND m.superseded_at IS NULL
             LEFT JOIN users u ON u.id=m.user_id WHERE c.id=?
             """, (rs, row) -> new SpeakerView(rs.getObject("id", UUID.class), rs.getString("label"),
                 rs.getObject("user_id", UUID.class), rs.getString("display_name")), clusterId).getFirst();
+    }
+
+    private void lockMeeting(UUID meetingId) {
+        this.jdbc.query("SELECT id FROM meetings WHERE id=? FOR UPDATE",
+            (rs, row) -> rs.getObject(1, UUID.class), meetingId).stream().findFirst()
+            .orElseThrow(TranscriptRepository::notFound);
+    }
+
+    private void increaseContentRevision(UUID meetingId) {
+        int changed = this.jdbc.update("""
+            UPDATE transcripts SET content_revision=content_revision+1
+            WHERE meeting_id=? AND is_current
+            """, meetingId);
+        if (changed != 1) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                "Current transcript changed during review.");
+        }
     }
 
     private String encode(Map<String, Object> value) {

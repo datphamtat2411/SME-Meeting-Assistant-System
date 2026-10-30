@@ -8,7 +8,7 @@ public final class TranscriptViews {
     private TranscriptViews() {}
     public record TranscriptView(UUID id, UUID meetingId, UUID sourceMediaId, UUID processingJobId,
             int versionNumber, String languageCode, String status, Long durationMs,
-            OffsetDateTime finalizedAt, List<SegmentView> segments) {}
+            OffsetDateTime finalizedAt, long contentRevision, List<SegmentView> segments) {}
     public record SegmentView(UUID id, int ordinal, long startMs, long endMs, String text,
             String qualityStatus, UUID speakerClusterId, String speakerLabel, long version) {}
     public record CoverageView(UUID id, long startMs, long endMs, String coverageStatus,
