@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.sme.meetingassistant.api.media.repository.MediaRepository.ProcessingLifecycleConflictException;
 import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle;
 import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle.StageClaim;
+import com.sme.meetingassistant.api.support.CorrectedTranscriptFixture;
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
 import com.sme.meetingassistant.api.integration.TranscriptFinalizationService;
 import com.sme.meetingassistant.api.transcript.repository.TranscriptRepository;
@@ -89,12 +90,14 @@ class TranscriptFinalizationIntegrationTests {
 
     private TranscriptResult makeResult(String text, TranscriptIngestion.Status status,
             String quality, String coverageStatus) {
-        return new TranscriptResult(meeting, media, job, finalizer.stageRunId(), "vi",
+        TranscriptResult verified = new TranscriptResult(meeting, media, job, finalizer.stageRunId(), "vi",
             10_000L, status,
             List.of(new SegmentResult(0, 100, 1250, text, quality, null,
                 finalizer.stageRunId(), null)),
             List.of(new CoverageResult(100, 1250, coverageStatus, false, 0, null)),
             List.of());
+        CorrectedTranscriptFixture.record(jdbc, verified);
+        return verified;
     }
 
     private String jobStatus() {
@@ -291,9 +294,11 @@ class TranscriptFinalizationIntegrationTests {
                 new SegmentResult(0, 400, 950, "Duplicate ordinal.", "ACCEPTED", null,
                     finalizer.stageRunId(), null)),
             List.of(new CoverageResult(100, 950, "COVERED", false, 0, null)), List.of());
+        CorrectedTranscriptFixture.replace(jdbc, malformed);
         assertThatThrownBy(() -> finalization.finalizeTranscript(finalizer, malformed))
             .isInstanceOf(DataIntegrityViolationException.class);
         assertUnfinished();
+        CorrectedTranscriptFixture.replace(jdbc, valid);
         finalization.finalizeTranscript(finalizer, valid);
         assertThat(jobStatus()).isEqualTo("COMPLETED");
     }

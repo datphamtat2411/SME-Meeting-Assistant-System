@@ -3,6 +3,7 @@ package com.sme.meetingassistant.api.transcript;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.sme.meetingassistant.api.support.CorrectedTranscriptFixture;
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
 import com.sme.meetingassistant.api.transcript.repository.TranscriptRepository;
 import com.sme.meetingassistant.api.transcript.service.TranscriptIngestion;
@@ -93,6 +94,11 @@ class TranscriptPublicationIdempotencyIntegrationTests {
 
     private TranscriptResult result(String text) { return result(job, finalization, text); }
 
+    private void publishCorrected(TranscriptResult result) {
+        CorrectedTranscriptFixture.record(jdbc, result);
+        ingestion.publish(result);
+    }
+
     private int versions() {
         return jdbc.queryForObject("SELECT count(*) FROM transcripts WHERE meeting_id=?",
             Integer.class, meeting);
@@ -110,11 +116,23 @@ class TranscriptPublicationIdempotencyIntegrationTests {
     }
 
     @Test
+    void preHardeningJobCannotPublishNewRawCandidateWithoutCorrectionEvidence() {
+        TranscriptResult candidate = result("Unverified legacy ASR text.");
+        assertConflict(() -> ingestion.publish(candidate));
+        assertThat(versions()).isZero();
+        // Once the same job has real correction evidence, it can publish safely.
+        publishCorrected(candidate);
+        assertThat(versions()).isEqualTo(1);
+        ingestion.publish(candidate); // An already persisted exact replay stays legal.
+        assertThat(versions()).isEqualTo(1);
+    }
+
+    @Test
     void identicalRedeliveryDoesNotCreateVersionsSegmentsOrSpeakerClusters() {
         TranscriptResult r = result("Nội dung đã được LLM hiệu chỉnh.");
-        ingestion.publish(r);
+        publishCorrected(r);
         UUID accepted = current();
-        ingestion.publish(r);
+        publishCorrected(r);
         assertThat(current()).isEqualTo(accepted);
         assertThat(versions()).isEqualTo(1);
         assertThat(jdbc.queryForObject(
@@ -141,7 +159,7 @@ class TranscriptPublicationIdempotencyIntegrationTests {
                 "ACCEPTED", "Speaker 1", finalization,
                 Map.of("rawAsrText", "Private Whisper candidate"))),
             original.coverage(), original.speakers());
-        assertThatThrownBy(() -> ingestion.publish(badSegment))
+        assertThatThrownBy(() -> publishCorrected(badSegment))
             .isInstanceOf(ResponseStatusException.class)
             .satisfies(error -> assertThat(((ResponseStatusException)error).getStatusCode())
                 .isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY));
@@ -152,20 +170,20 @@ class TranscriptPublicationIdempotencyIntegrationTests {
             List.of(new CoverageResult(100, 1200, "COVERED", false, 0,
                 Map.of("providerResponse", Map.of("text", "Private Whisper candidate")))),
             original.speakers());
-        assertThatThrownBy(() -> ingestion.publish(badCoverage))
+        assertThatThrownBy(() -> publishCorrected(badCoverage))
             .isInstanceOf(ResponseStatusException.class)
             .satisfies(error -> assertThat(((ResponseStatusException)error).getStatusCode())
                 .isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY));
         assertThat(versions()).isZero();
-        ingestion.publish(original);
+        publishCorrected(original);
         assertThat(versions()).isEqualTo(1);
     }
 
     @Test
     void sameJobDifferentTextIsRejectedWithoutMutatingCanonicalVersion() {
-        ingestion.publish(result("Bản kết quả đầu."));
+        publishCorrected(result("Bản kết quả đầu."));
         UUID accepted = current();
-        assertConflict(() -> ingestion.publish(result("Bản kết quả đã thay đổi.")));
+        assertConflict(() -> publishCorrected(result("Bản kết quả đã thay đổi.")));
         assertThat(versions()).isEqualTo(1);
         assertThat(current()).isEqualTo(accepted);
     }
@@ -173,13 +191,13 @@ class TranscriptPublicationIdempotencyIntegrationTests {
     @Test
     void replayAfterHumanCorrectionDoesNotOverwriteHumanText() {
         TranscriptResult original = result("Lời AI ban đầu.");
-        ingestion.publish(original);
+        publishCorrected(original);
         UUID accepted = current();
         jdbc.update("""
             UPDATE transcript_segments SET current_text='Nội dung người dùng đã sửa.',
                 version=version+1 WHERE transcript_id=?
             """, accepted);
-        ingestion.publish(original);
+        publishCorrected(original);
         assertThat(jdbc.queryForObject(
             "SELECT current_text FROM transcript_segments WHERE transcript_id=?",
             String.class, accepted)).isEqualTo("Nội dung người dùng đã sửa.");
@@ -207,8 +225,8 @@ class TranscriptPublicationIdempotencyIntegrationTests {
             initial.status(), List.of(new SegmentResult(0, 100, 1200, "Bản hiệu chỉnh.",
                 "ACCEPTED", "Speaker 1", finalization, two)),
             initial.coverage(), initial.speakers());
-        ingestion.publish(first);
-        ingestion.publish(second);
+        publishCorrected(first);
+        publishCorrected(second);
         assertThat(versions()).isEqualTo(1);
     }
 
@@ -219,10 +237,10 @@ class TranscriptPublicationIdempotencyIntegrationTests {
             INSERT INTO processing_stage_runs(id,processing_job_id,stage_code,attempt_number,status)
             VALUES (?,?,'TRANSCRIPTION',1,'SUCCEEDED')
             """, unrelatedStage, job);
-        assertConflict(() -> ingestion.publish(result(job, unrelatedStage, "Wrong stage.")));
+        assertConflict(() -> publishCorrected(result(job, unrelatedStage, "Wrong stage.")));
         var other = completedJob();
-        assertConflict(() -> ingestion.publish(result(job, other.stage(), "Wrong job.")));
-        assertThatThrownBy(() -> ingestion.publish(result(job, null, "Missing provenance.")))
+        assertConflict(() -> publishCorrected(result(job, other.stage(), "Wrong job.")));
+        assertThatThrownBy(() -> publishCorrected(result(job, null, "Missing provenance.")))
             .isInstanceOf(ResponseStatusException.class)
             .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode())
                 .isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY));
@@ -235,7 +253,7 @@ class TranscriptPublicationIdempotencyIntegrationTests {
             INSERT INTO processing_stage_runs(id,processing_job_id,stage_code,attempt_number,status)
             VALUES (?,?,'FINALIZING_TRANSCRIPT',2,'SUCCEEDED')
             """, UUID.randomUUID(), job);
-        assertConflict(() -> ingestion.publish(result("Old attempt.")));
+        assertConflict(() -> publishCorrected(result("Old attempt.")));
         assertThat(versions()).isZero();
     }
 
@@ -244,8 +262,8 @@ class TranscriptPublicationIdempotencyIntegrationTests {
         TranscriptResult result = result("Bản được công bố một lần.");
         try (var workers = Executors.newFixedThreadPool(2)) {
             var gate = new CountDownLatch(1);
-            var first = workers.submit(() -> { gate.await(); ingestion.publish(result); return true; });
-            var second = workers.submit(() -> { gate.await(); ingestion.publish(result); return true; });
+            var first = workers.submit(() -> { gate.await(); publishCorrected(result); return true; });
+            var second = workers.submit(() -> { gate.await(); publishCorrected(result); return true; });
             gate.countDown();
             assertThat(first.get(20, TimeUnit.SECONDS)).isTrue();
             assertThat(second.get(20, TimeUnit.SECONDS)).isTrue();
@@ -261,12 +279,12 @@ class TranscriptPublicationIdempotencyIntegrationTests {
             var gate = new CountDownLatch(1);
             var first = workers.submit(() -> {
                 gate.await();
-                ingestion.publish(result("Candidate A."));
+                publishCorrected(result("Candidate A."));
                 return true;
             });
             var second = workers.submit(() -> {
                 gate.await();
-                ingestion.publish(result("Candidate B."));
+                publishCorrected(result("Candidate B."));
                 return true;
             });
             gate.countDown();
@@ -290,7 +308,7 @@ class TranscriptPublicationIdempotencyIntegrationTests {
 
     @Test
     void failedInsertRollsBackPromotionAndKeepsPreviousCurrentVersion() {
-        ingestion.publish(result("First canonical result."));
+        publishCorrected(result("First canonical result."));
         UUID existing = current();
         Source next = completedJob();
         TranscriptResult malformed = new TranscriptResult(meeting, media, next.job(), next.stage(),
@@ -299,7 +317,7 @@ class TranscriptPublicationIdempotencyIntegrationTests {
                 new SegmentResult(0, 100, 500, "First.", "ACCEPTED", null, next.stage(), null),
                 new SegmentResult(0, 500, 900, "Duplicate ordinal.", "ACCEPTED", null, next.stage(), null)),
             List.of(new CoverageResult(0, 900, "COVERED", false, 0, null)), List.of());
-        assertThatThrownBy(() -> ingestion.publish(malformed))
+        assertThatThrownBy(() -> publishCorrected(malformed))
             .isInstanceOf(DataIntegrityViolationException.class);
         assertThat(current()).isEqualTo(existing);
         assertThat(versions()).isEqualTo(1);
@@ -329,10 +347,10 @@ class TranscriptPublicationIdempotencyIntegrationTests {
 
     @Test
     void uneditedCurrentIsAutomaticallySupersededByNewerReprocessingResult() {
-        ingestion.publish(result("Initial result"));
+        publishCorrected(result("Initial result"));
         UUID initial = current();
         Source newer = completedJob();
-        ingestion.publish(result(newer.job(), newer.stage(), "Newer reprocess"));
+        publishCorrected(result(newer.job(), newer.stage(), "Newer reprocess"));
         assertThat(versions()).isEqualTo(2);
         assertThat(current()).isEqualTo(transcriptFor(newer.job()));
         assertThat(jdbc.queryForObject("SELECT is_current FROM transcripts WHERE id=?",
@@ -342,14 +360,14 @@ class TranscriptPublicationIdempotencyIntegrationTests {
 
     @Test
     void humanEditedCurrentRemainsSelectedAndReprocessedResultBecomesCandidate() {
-        ingestion.publish(result("Initial result"));
+        publishCorrected(result("Initial result"));
         UUID edited = current();
         edit(edited, "Human correction must win");
         assertThat(revision(edited)).isEqualTo(1L);
         assertThat(repository.current(meeting).orElseThrow().contentRevision()).isEqualTo(1L);
         Source newer = completedJob();
         TranscriptResult newResult = result(newer.job(), newer.stage(), "Reprocessed AI");
-        ingestion.publish(newResult);
+        publishCorrected(newResult);
         UUID candidate = transcriptFor(newer.job());
         assertThat(candidate).isNotEqualTo(edited);
         assertThat(current()).isEqualTo(edited);
@@ -359,7 +377,7 @@ class TranscriptPublicationIdempotencyIntegrationTests {
             "SELECT current_text FROM transcript_segments WHERE transcript_id=?",
             String.class, edited)).isEqualTo("Human correction must win");
         assertThat(versions()).isEqualTo(2);
-        ingestion.publish(newResult);
+        publishCorrected(newResult);
         assertThat(current()).isEqualTo(edited);
         assertThat(versions()).isEqualTo(2);
     }
@@ -367,11 +385,11 @@ class TranscriptPublicationIdempotencyIntegrationTests {
     @Test
     void newerJobAcceptedBeforeOldResultPreventsStaleAutoPromotion() {
         Source newer = completedJob();
-        ingestion.publish(result("Late initial result"));
+        publishCorrected(result("Late initial result"));
         assertThat(versions()).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM transcripts WHERE meeting_id=? AND is_current",
             Integer.class, meeting)).isZero();
-        ingestion.publish(result(newer.job(), newer.stage(), "Newer result"));
+        publishCorrected(result(newer.job(), newer.stage(), "Newer result"));
         assertThat(current()).isEqualTo(transcriptFor(newer.job()));
         assertThat(versions()).isEqualTo(2);
     }
@@ -379,9 +397,9 @@ class TranscriptPublicationIdempotencyIntegrationTests {
     @Test
     void olderResultCannotReplaceAlreadyCurrentNewerJob() {
         Source newer = completedJob();
-        ingestion.publish(result(newer.job(), newer.stage(), "Newer result first"));
+        publishCorrected(result(newer.job(), newer.stage(), "Newer result first"));
         UUID winning = current();
-        ingestion.publish(result("Older result late"));
+        publishCorrected(result("Older result late"));
         assertThat(current()).isEqualTo(winning);
         assertThat(jdbc.queryForObject("SELECT is_current FROM transcripts WHERE processing_job_id=?",
             Boolean.class, job)).isFalse();
@@ -390,7 +408,7 @@ class TranscriptPublicationIdempotencyIntegrationTests {
 
     @Test
     void speakerMappingChangeCreatesHumanRevisionAndProtectsCurrent() {
-        ingestion.publish(result("Speaker result"));
+        publishCorrected(result("Speaker result"));
         UUID original = current();
         UUID cluster = jdbc.queryForObject("SELECT id FROM speaker_clusters WHERE transcript_id=?",
             UUID.class, original);
@@ -399,7 +417,7 @@ class TranscriptPublicationIdempotencyIntegrationTests {
         transactions.executeWithoutResult(tx -> repository.mapSpeaker(meeting, cluster, actor, actor, original, 1));
         assertThat(revision(original)).isEqualTo(1);
         Source newer = completedJob();
-        ingestion.publish(result(newer.job(), newer.stage(), "New AI"));
+        publishCorrected(result(newer.job(), newer.stage(), "New AI"));
         assertThat(current()).isEqualTo(original);
         assertThat(jdbc.queryForObject("SELECT is_current FROM transcripts WHERE processing_job_id=?",
             Boolean.class, newer.job())).isFalse();
@@ -411,7 +429,7 @@ class TranscriptPublicationIdempotencyIntegrationTests {
 
     @Test
     void unchangedHumanTextDoesNotIncrementContentRevision() {
-        ingestion.publish(result("Already approved"));
+        publishCorrected(result("Already approved"));
         UUID existing = current();
         edit(existing, "Already approved");
         assertThat(revision(existing)).isZero();
@@ -422,10 +440,10 @@ class TranscriptPublicationIdempotencyIntegrationTests {
 
     @Test
     void editingPreviousVersionAfterNewCurrentIsRejected() {
-        ingestion.publish(result("Initial version"));
+        publishCorrected(result("Initial version"));
         UUID old = current();
         Source newer = completedJob();
-        ingestion.publish(result(newer.job(), newer.stage(), "Promoted version"));
+        publishCorrected(result(newer.job(), newer.stage(), "Promoted version"));
         assertThatThrownBy(() -> edit(old, "Stale change"))
             .isInstanceOf(ResponseStatusException.class)
             .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode())
@@ -435,7 +453,7 @@ class TranscriptPublicationIdempotencyIntegrationTests {
 
     @Test
     void pendingHumanEditFinishesBeforePublicationCanReplaceCurrent() throws Exception {
-        ingestion.publish(result("Before human correction"));
+        publishCorrected(result("Before human correction"));
         UUID original = current();
         Source newer = completedJob();
         var edited = new CountDownLatch(1);
@@ -459,7 +477,7 @@ class TranscriptPublicationIdempotencyIntegrationTests {
             });
             assertThat(edited.await(15, TimeUnit.SECONDS)).isTrue();
             var publication = workers.submit(() -> {
-                ingestion.publish(result(newer.job(), newer.stage(), "New AI candidate"));
+                publishCorrected(result(newer.job(), newer.stage(), "New AI candidate"));
                 return true;
             });
             release.countDown();
@@ -498,7 +516,7 @@ class TranscriptPublicationIdempotencyIntegrationTests {
         TranscriptResult value = qualityResult(TranscriptIngestion.Status.READY,
             List.of(segment(0, 100, 1200, "ACCEPTED")),
             List.of(region(100, 1200, "COVERED"), region(2000, 3000, "UNRESOLVED_ERROR")));
-        assertInvalidQuality(() -> ingestion.publish(value));
+        assertInvalidQuality(() -> publishCorrected(value));
         assertThat(versions()).isZero();
     }
 
@@ -507,7 +525,7 @@ class TranscriptPublicationIdempotencyIntegrationTests {
         TranscriptResult value = qualityResult(TranscriptIngestion.Status.READY,
             List.of(segment(0, 100, 1200, "ACCEPTED")),
             List.of(region(100, 1200, "COVERED"), region(2000, 2500, "SUSPICIOUS")));
-        assertInvalidQuality(() -> ingestion.publish(value));
+        assertInvalidQuality(() -> publishCorrected(value));
         assertThat(versions()).isZero();
     }
 
@@ -517,7 +535,7 @@ class TranscriptPublicationIdempotencyIntegrationTests {
             TranscriptResult value = qualityResult(TranscriptIngestion.Status.READY,
                 List.of(segment(0, 100, 1200, state)),
                 List.of(region(100, 1200, "SUSPICIOUS")));
-            assertInvalidQuality(() -> ingestion.publish(value));
+            assertInvalidQuality(() -> publishCorrected(value));
         }
         assertThat(versions()).isZero();
     }
@@ -527,7 +545,7 @@ class TranscriptPublicationIdempotencyIntegrationTests {
         TranscriptResult value = qualityResult(TranscriptIngestion.Status.READY_WITH_WARNINGS,
             List.of(segment(0, 100, 1200, "ACCEPTED")),
             List.of(region(100, 1200, "COVERED"), region(2100, 2800, "UNRESOLVED_ERROR")));
-        ingestion.publish(value);
+        publishCorrected(value);
         UUID accepted = current();
         assertThat(jdbc.queryForObject("SELECT status FROM transcripts WHERE id=?",
             String.class, accepted)).isEqualTo("READY_WITH_WARNINGS");
@@ -535,7 +553,7 @@ class TranscriptPublicationIdempotencyIntegrationTests {
             SELECT COUNT(*) FROM transcript_coverage_regions WHERE transcript_id=?
               AND coverage_status='UNRESOLVED_ERROR' AND start_ms=2100 AND end_ms=2800
             """, Integer.class, accepted)).isEqualTo(1);
-        ingestion.publish(value);
+        publishCorrected(value);
         assertThat(versions()).isEqualTo(1);
     }
 
@@ -543,7 +561,7 @@ class TranscriptPublicationIdempotencyIntegrationTests {
     void missingSpeechCoverageEvidenceIsNotAcceptedAsComplete() {
         TranscriptResult value = qualityResult(TranscriptIngestion.Status.READY,
             List.of(segment(0, 100, 1200, "ACCEPTED")), List.of());
-        assertInvalidQuality(() -> ingestion.publish(value));
+        assertInvalidQuality(() -> publishCorrected(value));
         assertThat(versions()).isZero();
     }
 
@@ -552,7 +570,7 @@ class TranscriptPublicationIdempotencyIntegrationTests {
         TranscriptResult value = qualityResult(TranscriptIngestion.Status.READY_WITH_WARNINGS,
             List.of(segment(0, 100, 1200, "SUSPICIOUS")),
             List.of(region(100, 1200, "COVERED")));
-        assertInvalidQuality(() -> ingestion.publish(value));
+        assertInvalidQuality(() -> publishCorrected(value));
         assertThat(versions()).isZero();
     }
 
@@ -561,7 +579,7 @@ class TranscriptPublicationIdempotencyIntegrationTests {
         TranscriptResult value = qualityResult(TranscriptIngestion.Status.READY,
             List.of(segment(0, 100, 1200, "ACCEPTED")),
             List.of(region(2000, 2500, "COVERED")));
-        assertInvalidQuality(() -> ingestion.publish(value));
+        assertInvalidQuality(() -> publishCorrected(value));
         assertThat(versions()).isZero();
     }
 
@@ -571,7 +589,7 @@ class TranscriptPublicationIdempotencyIntegrationTests {
             List.of(segment(0, 100, 1200, "ACCEPTED"),
                 segment(1, 5000, 5500, "ACCEPTED")),
             List.of(region(100, 1200, "COVERED")));
-        assertInvalidQuality(() -> ingestion.publish(value));
+        assertInvalidQuality(() -> publishCorrected(value));
         assertThat(versions()).isZero();
     }
 
@@ -580,7 +598,7 @@ class TranscriptPublicationIdempotencyIntegrationTests {
         TranscriptResult value = qualityResult(TranscriptIngestion.Status.READY,
             List.of(segment(0, 100, 1200, "ACCEPTED")),
             List.of(region(1200, 2000, "COVERED")));
-        assertInvalidQuality(() -> ingestion.publish(value));
+        assertInvalidQuality(() -> publishCorrected(value));
         assertThat(versions()).isZero();
     }
 
@@ -591,13 +609,13 @@ class TranscriptPublicationIdempotencyIntegrationTests {
             WHERE id=?
             """, finalization);
         TranscriptResult nominal = result("Only accepted text but a finalization warning");
-        assertInvalidQuality(() -> ingestion.publish(nominal));
+        assertInvalidQuality(() -> publishCorrected(nominal));
         TranscriptResult warned = new TranscriptResult(nominal.meetingId(),
             nominal.sourceMediaId(), nominal.processingJobId(), nominal.sourceStageRunId(),
             nominal.languageCode(), nominal.durationMs(),
             TranscriptIngestion.Status.READY_WITH_WARNINGS, nominal.segments(),
             nominal.coverage(), nominal.speakers());
-        ingestion.publish(warned);
+        publishCorrected(warned);
         assertThat(jdbc.queryForObject(
             "SELECT status FROM transcripts WHERE processing_job_id=?",
             String.class, job)).isEqualTo("READY_WITH_WARNINGS");
@@ -611,7 +629,7 @@ class TranscriptPublicationIdempotencyIntegrationTests {
             nominal.languageCode(), nominal.durationMs(),
             TranscriptIngestion.Status.READY_WITH_WARNINGS, nominal.segments(),
             nominal.coverage(), nominal.speakers());
-        assertInvalidQuality(() -> ingestion.publish(warned));
+        assertInvalidQuality(() -> publishCorrected(warned));
         assertThat(versions()).isZero();
     }
 
@@ -620,7 +638,7 @@ class TranscriptPublicationIdempotencyIntegrationTests {
         TranscriptResult value = qualityResult(TranscriptIngestion.Status.READY_WITH_WARNINGS,
             List.of(segment(0, 100, 1200, "SUSPICIOUS")),
             List.of(region(100, 1200, "SUSPICIOUS")));
-        ingestion.publish(value);
+        publishCorrected(value);
         assertThat(jdbc.queryForObject("""
             SELECT quality_status FROM transcript_segments
             WHERE transcript_id=(SELECT id FROM transcripts WHERE processing_job_id=?)

@@ -7,6 +7,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.sme.meetingassistant.api.media.storage.ObjectStorage;
+import com.sme.meetingassistant.api.support.CorrectedTranscriptFixture;
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
 import com.sme.meetingassistant.api.transcript.service.TranscriptIngestion;
 import com.sme.meetingassistant.api.transcript.service.TranscriptIngestion.TranscriptResult;
@@ -67,11 +68,13 @@ class TranscriptReviewIntegrationTests {
             INSERT INTO processing_stage_runs(id,processing_job_id,stage_code,attempt_number,status)
             VALUES (?,?,'FINALIZING_TRANSCRIPT',1,'SUCCEEDED')
             """, finalization, job);
-        ingestion.publish(new TranscriptResult(meeting, media, job, finalization, "vi", 10_000L,
+        TranscriptResult verified = new TranscriptResult(meeting, media, job, finalization, "vi", 10_000L,
             TranscriptIngestion.Status.READY, List.of(new SegmentResult(0, 0, 1500,
                 "Chúng ta bắt đầu cuộc họp.", "ACCEPTED", "Speaker 1", null, null)),
             List.of(new CoverageResult(0, 1500, "COVERED", false, 0, null)),
-            List.of(new SpeakerResult("Speaker 1"))));
+            List.of(new SpeakerResult("Speaker 1")));
+        CorrectedTranscriptFixture.record(jdbc, verified);
+        ingestion.publish(verified);
         segment = jdbc.queryForObject("SELECT id FROM transcript_segments WHERE transcript_id = "
             + "(SELECT id FROM transcripts WHERE meeting_id=? AND is_current)", UUID.class, meeting);
         cluster = jdbc.queryForObject("SELECT id FROM speaker_clusters WHERE transcript_id = "

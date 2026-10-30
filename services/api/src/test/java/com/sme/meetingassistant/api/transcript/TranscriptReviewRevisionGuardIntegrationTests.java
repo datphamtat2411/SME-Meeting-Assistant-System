@@ -3,6 +3,7 @@ package com.sme.meetingassistant.api.transcript;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.sme.meetingassistant.api.support.CorrectedTranscriptFixture;
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
 import com.sme.meetingassistant.api.transcript.repository.TranscriptRepository;
 import com.sme.meetingassistant.api.transcript.repository.TranscriptRepository.TranscriptSource;
@@ -77,8 +78,13 @@ class TranscriptReviewRevisionGuardIntegrationTests {
             """, finalization, job);
     }
 
+    private void publishCorrected(TranscriptResult result) {
+        CorrectedTranscriptFixture.record(jdbc, result);
+        ingestion.publish(result);
+    }
+
     private void publish(String quality, String coverage, TranscriptIngestion.Status status) {
-        ingestion.publish(new TranscriptResult(meeting, media, job, finalization, "vi",
+        publishCorrected(new TranscriptResult(meeting, media, job, finalization, "vi",
             10000L, status, List.of(new SegmentResult(0, 0, 1500,
                 "Đoạn nói đã được LLM hiệu chỉnh.", quality, "Speaker 1", finalization, null)),
             List.of(new CoverageResult(0, 1500, coverage, false, 0, null)),
@@ -261,7 +267,7 @@ class TranscriptReviewRevisionGuardIntegrationTests {
             INSERT INTO processing_stage_runs(id,processing_job_id,stage_code,attempt_number,status)
             VALUES (?,?,'FINALIZING_TRANSCRIPT',1,'SUCCEEDED')
             """, newerStage, newerJob);
-        ingestion.publish(new TranscriptResult(meeting, media, newerJob, newerStage, "vi",
+        publishCorrected(new TranscriptResult(meeting, media, newerJob, newerStage, "vi",
             10000L, TranscriptIngestion.Status.READY,
             List.of(new SegmentResult(0, 0, 1500, "New verified text.",
                 "ACCEPTED", "Speaker 1", newerStage, null)),

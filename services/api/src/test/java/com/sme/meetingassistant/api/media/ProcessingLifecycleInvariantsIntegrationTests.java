@@ -206,6 +206,30 @@ class ProcessingLifecycleInvariantsIntegrationTests {
     }
 
     @Test
+    void workerRawAsrOrProviderErrorMessageCannotEnterDurableFailureSummary() {
+        StageClaim stage = lifecycle.startStage(jobId, "TRANSCRIPTION", "whisper", "large-v3");
+        String untrusted = "Raw Whisper candidate: private employee salary and API token";
+        lifecycle.failStage(stage, "ASR_FAILED", untrusted, true);
+        String stored = jdbc.queryForObject(
+            "SELECT error_summary FROM processing_jobs WHERE id=?", String.class, jobId);
+        assertThat(stored).isEqualTo("Audio transcription failed.");
+        assertThat(stored).doesNotContain("Whisper", "salary", "API token");
+        assertThat(jdbc.queryForObject(
+            "SELECT error_code FROM processing_jobs WHERE id=?", String.class, jobId))
+            .isEqualTo("ASR_FAILED");
+    }
+
+    @Test
+    void unknownWorkerFailureCodeUsesNonSensitiveGenericSummary() {
+        StageClaim stage = lifecycle.startStage(jobId, "TRANSCRIPTION", "whisper", "large-v3");
+        lifecycle.failStage(stage, "UNRECOGNIZED_PROVIDER_FAILURE",
+            "private credentials or raw model output", true);
+        assertThat(jdbc.queryForObject(
+            "SELECT error_summary FROM processing_jobs WHERE id=?", String.class, jobId))
+            .isEqualTo("Processing stage failed.");
+    }
+
+    @Test
     void failedJobCannotCompleteOrAcceptLateStageSuccess() {
         StageClaim stage = lifecycle.startStage(jobId, "TRANSCRIPTION", "whisper", "base");
         lifecycle.failStage(stage, "ASR_FAILED", "Transcription failed.", true);

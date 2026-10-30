@@ -2,6 +2,7 @@ package com.sme.meetingassistant.api.media.service;
 
 import com.sme.meetingassistant.api.media.repository.MediaRepository;
 import com.sme.meetingassistant.api.common.SafeAiDiagnostics;
+import com.sme.meetingassistant.api.common.SafeProcessingFailureSummary;
 import com.sme.meetingassistant.api.media.repository.MediaRepository.ProcessingLifecycleConflictException;
 import com.sme.meetingassistant.api.media.MediaProperties;
 import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle.StageClaim;
@@ -96,7 +97,10 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
         requireClaim(claim);
         requireCode(errorCode, 96, "errorCode");
         requireRequiredText(safeSummary, 1000, "safeSummary");
-        this.repository.failStage(claim, errorCode, safeSummary, retryable);
+        // The worker/provider summary is untrusted and may contain raw ASR text,
+        // provider payloads or credentials. Never persist it as business state.
+        this.repository.failStage(claim, errorCode,
+            SafeProcessingFailureSummary.forCode(errorCode), retryable);
     }
 
     @Override
