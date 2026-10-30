@@ -14,6 +14,7 @@ import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.CacheControl;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -48,6 +49,7 @@ public class MeetingMediaController {
             @Valid @RequestBody CreateMediaUploadRequest request) {
         MediaUploadIntentResponse result = this.service.createUploadIntent(meetingId, request, idempotencyKey);
         return ResponseEntity.created(URI.create("/api/v1/meetings/" + meetingId + "/media/" + result.mediaId()))
+            .cacheControl(CacheControl.noStore())
             .body(this.responses.success(result));
     }
 
@@ -63,13 +65,14 @@ public class MeetingMediaController {
     }
 
     @PostMapping("/{mediaId}/access-url")
-    public ApiResponse<MediaAccessUrlResponse> accessUrl(@PathVariable UUID meetingId,
+    public ResponseEntity<ApiResponse<MediaAccessUrlResponse>> accessUrl(@PathVariable UUID meetingId,
             @PathVariable UUID mediaId) {
         String url = this.service.mediaAccessUrl(meetingId, mediaId);
         var ttl = this.properties.getUpload().getDownloadUrlTtl();
         if (ttl == null || ttl.isNegative() || ttl.isZero() || ttl.compareTo(java.time.Duration.ofMinutes(5)) > 0) {
             ttl = java.time.Duration.ofMinutes(5);
         }
-        return this.responses.success(new MediaAccessUrlResponse(url, OffsetDateTime.now().plus(ttl)));
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+            .body(this.responses.success(new MediaAccessUrlResponse(url, OffsetDateTime.now().plus(ttl))));
     }
 }

@@ -390,6 +390,83 @@ class MediaProcessingServiceTests {
         verify(this.inspector, never()).inspect(any());
     }
 
+    @Test
+    void disabledUploadConfigurationReturns503BeforeAnIntentIsStored() {
+        this.properties.getUpload().setMaxSizeBytes(0);
+
+        ResponseStatusException unavailable = assertThrows(ResponseStatusException.class, () ->
+            this.service.createUploadIntent(this.meetingId,
+                new CreateMediaUploadRequest(CreateMediaUploadRequest.SourceType.UPLOAD,
+                    "meeting.wav", "audio/wav", 512L), "disabled-feature"));
+
+        assertEquals(503, unavailable.getStatusCode().value());
+        verify(this.repository, never()).lockAdmissionUser(any(UUID.class));
+        verify(this.repository, never()).insertMedia(any(Media.class));
+    }
+
+    @Test
+    void missingAllowedMimeTypesRejectsBeforeIdempotencyWrite() {
+        this.properties.getUpload().setAllowedContentTypes(List.of());
+
+        ResponseStatusException unavailable = assertThrows(ResponseStatusException.class, () ->
+            this.service.createUploadIntent(this.meetingId,
+                new CreateMediaUploadRequest(CreateMediaUploadRequest.SourceType.UPLOAD,
+                    "meeting.wav", "audio/wav", 512L), "missing-mime-config"));
+
+        assertEquals(503, unavailable.getStatusCode().value());
+        verify(this.repository, never()).claimIdempotency(any(), anyString(), anyString(),
+            anyString(), any(UUID.class));
+    }
+
+    @Test
+    void rejectsUnsafeIdempotencyKeysBeforeAnyDatabaseWrite() {
+        for (String key : List.of(" key", "key ", "key\twith-tab", "key\u007fdel")) {
+            ResponseStatusException upload = assertThrows(ResponseStatusException.class, () ->
+                this.service.createUploadIntent(this.meetingId,
+                    new CreateMediaUploadRequest(CreateMediaUploadRequest.SourceType.UPLOAD,
+                        "meeting.wav", "audio/wav", 512L), key));
+            assertEquals(400, upload.getStatusCode().value());
+            ResponseStatusException job = assertThrows(ResponseStatusException.class, () ->
+                this.service.createJob(this.meetingId, UUID.randomUUID(), key));
+            assertEquals(400, job.getStatusCode().value());
+        }
+        verify(this.repository, never()).claimIdempotency(any(), anyString(), anyString(),
+            anyString(), any(UUID.class));
+    }
+
+    @Test
+    void upstreamS3UploadSigningErrorIsServiceUnavailableNot500() {
+        when(this.repository.claimIdempotency(any(), anyString(), anyString(), anyString(), any(UUID.class)))
+            .thenAnswer(invocation -> invocation.getArgument(4));
+        when(this.storage.createUploadCapability(anyString(), anyString(),
+            org.mockito.ArgumentMatchers.anyLong(), any()))
+            .thenThrow(software.amazon.awssdk.services.s3.model.S3Exception.builder()
+                .statusCode(503).message("private-storage-error").build());
+
+        ResponseStatusException error = assertThrows(ResponseStatusException.class, () ->
+            this.service.createUploadIntent(this.meetingId,
+                new CreateMediaUploadRequest(CreateMediaUploadRequest.SourceType.UPLOAD,
+                    "meeting.wav", "audio/wav", 512L), "storage-error"));
+
+        assertEquals(503, error.getStatusCode().value());
+        assertTrue(!String.valueOf(error.getReason()).contains("private-storage-error"));
+    }
+
+    @Test
+    void upstreamS3DownloadSigningErrorIsServiceUnavailableNot500() {
+        UUID id = UUID.randomUUID();
+        when(this.repository.findMedia(id)).thenReturn(Optional.of(media(id, "AVAILABLE")));
+        when(this.storage.createDownloadCapability(anyString(), any()))
+            .thenThrow(software.amazon.awssdk.services.s3.model.S3Exception.builder()
+                .statusCode(503).message("private-storage-error").build());
+
+        ResponseStatusException error = assertThrows(ResponseStatusException.class, () ->
+            this.service.mediaAccessUrl(this.meetingId, id));
+
+        assertEquals(503, error.getStatusCode().value());
+        assertTrue(!String.valueOf(error.getReason()).contains("private-storage-error"));
+    }
+
     private String acceptedKey(UUID id) {
         return "meetings/" + this.meetingId + "/sources/" + id;
     }

@@ -31,6 +31,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 import software.amazon.awssdk.services.s3.model.S3Exception;
+import software.amazon.awssdk.core.exception.SdkException;
 
 @Service
 public class MediaProcessingService {
@@ -127,9 +128,8 @@ public class MediaProcessingService {
                 throw conflict("Media finalization lease expired; retry the request.");
             }
             return toResponse(media(mediaId));
-        } catch (S3Exception storageFailure) {
-            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
-                "Media storage is unavailable.");
+        } catch (SdkException storageFailure) {
+            throw storageUnavailable();
         } finally {
             this.repository.releaseFinalization(mediaId, leaseToken);
         }
@@ -310,8 +310,12 @@ public class MediaProcessingService {
         this.meetingAccess.requireSourceReadable(meetingId, actor);
         Media media = media(mediaId);
         if (!media.meetingId().equals(meetingId) || !"AVAILABLE".equals(media.status())) throw notFound();
-        return this.storage.createDownloadCapability(media.objectKey(), cappedTtl(
-            this.properties.getUpload().getDownloadUrlTtl(), Duration.ofMinutes(5)));
+        try {
+            return this.storage.createDownloadCapability(media.objectKey(), cappedTtl(
+                this.properties.getUpload().getDownloadUrlTtl(), Duration.ofMinutes(5)));
+        } catch (SdkException storageFailure) {
+            throw storageUnavailable();
+        }
     }
 
     @Transactional
@@ -382,7 +386,13 @@ public class MediaProcessingService {
 
     private void validateUploadMetadata(String extension, String contentType, long expectedBytes) {
         var upload = this.properties.getUpload();
-        if (expectedBytes <= 0 || upload.getMaxSizeBytes() <= 0 || expectedBytes > upload.getMaxSizeBytes()) {
+        if (upload.getMaxSizeBytes() <= 0 || upload.getMaxDurationMs() <= 0
+                || upload.getAllowedExtensions() == null || upload.getAllowedExtensions().isEmpty()
+                || upload.getAllowedContentTypes() == null || upload.getAllowedContentTypes().isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+                "Media uploads are not configured.");
+        }
+        if (expectedBytes <= 0 || expectedBytes > upload.getMaxSizeBytes()) {
             throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE, "Media size exceeds the configured limit.");
         }
         if (upload.getAllowedExtensions().stream().map(MediaProcessingService::normalizeExtension)
@@ -405,15 +415,28 @@ public class MediaProcessingService {
             return new MediaUploadIntentResponse(media.id(), media.status(), null, null, media.contentType());
         }
         Duration ttl = cappedTtl(this.properties.getUpload().getUploadUrlTtl(), Duration.ofMinutes(15));
-        String url = this.storage.createUploadCapability(media.objectKey(), media.contentType(),
-            media.expectedSizeBytes(), ttl);
+        String url;
+        try {
+            url = this.storage.createUploadCapability(media.objectKey(), media.contentType(),
+                media.expectedSizeBytes(), ttl);
+        } catch (SdkException storageFailure) {
+            throw storageUnavailable();
+        }
         return new MediaUploadIntentResponse(media.id(), media.status(), url, OffsetDateTime.now().plus(ttl),
             media.contentType());
     }
 
     private static Duration cappedTtl(Duration configured, Duration maximum) {
-        if (configured == null || configured.isNegative() || configured.isZero()) return maximum;
+        if (configured == null || configured.isNegative() || configured.isZero()) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+                "Media URL signing is not configured.");
+        }
         return configured.compareTo(maximum) > 0 ? maximum : configured;
+    }
+
+    private static ResponseStatusException storageUnavailable() {
+        return new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+            "Media storage is unavailable.");
     }
 
     private Media media(UUID id) {
@@ -457,7 +480,8 @@ public class MediaProcessingService {
     }
 
     private static void validateIdempotencyKey(String key) {
-        if (key == null || key.isBlank() || key.length() > 255) {
+        if (key == null || key.isBlank() || key.length() > 255
+                || !key.equals(key.strip()) || key.chars().anyMatch(Character::isISOControl)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "A valid Idempotency-Key is required.");
         }
     }
