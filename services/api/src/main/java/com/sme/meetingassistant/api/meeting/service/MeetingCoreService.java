@@ -27,7 +27,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 @Service
 @Transactional
-public class MeetingCoreService {
+public class MeetingCoreService implements MeetingMediaAccess {
     private static final Set<String> EDITABLE = Set.of(
         "title", "description", "scheduledStartAt", "scheduledEndAt", "roomId");
 
@@ -326,6 +326,13 @@ public class MeetingCoreService {
                 && !participants.existsByMeetingIdAndUserIdAndRemovedAtIsNull(meeting.getId(), actor)) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND);
         }
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public void requireReadable(UUID meetingId, UUID actorId) {
+        MeetingEntity meeting = lookup(meetingId);
+        requireAccess(meeting, actorId);
     }
     private void eligible(UUID id) {
         if (!users.isActive(id)) {
