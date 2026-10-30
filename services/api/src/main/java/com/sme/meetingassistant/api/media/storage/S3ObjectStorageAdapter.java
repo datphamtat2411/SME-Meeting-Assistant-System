@@ -1,8 +1,11 @@
 package com.sme.meetingassistant.api.media.storage;
 
 import com.sme.meetingassistant.api.media.MediaProperties;
+import java.io.IOException;
 import java.net.URI;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.time.Duration;
 import java.util.Map;
 import software.amazon.awssdk.core.sync.RequestBody;
@@ -70,9 +73,15 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
     }
 
     @Override
-    public void downloadTo(String objectKey, Path destination) {
-        this.client.getObject(GetObjectRequest.builder().bucket(this.properties.getBucket()).key(objectKey).build(),
-            ResponseTransformer.toFile(destination));
+    public void downloadTo(String objectKey, Path destination) throws IOException {
+        // Callers reserve a private temporary file before reading storage. The SDK's
+        // toFile() transformer refuses to write to an existing path, so stream into
+        // the reserved file instead of unlinking it and introducing a TOCTOU window.
+        try (var output = Files.newOutputStream(destination,
+                StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
+            this.client.getObject(GetObjectRequest.builder().bucket(this.properties.getBucket())
+                .key(objectKey).build(), ResponseTransformer.toOutputStream(output));
+        }
     }
 
     @Override
