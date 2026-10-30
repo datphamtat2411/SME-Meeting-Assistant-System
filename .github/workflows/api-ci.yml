@@ -46,5 +46,12 @@ jobs:
       - name: Verify Docker
         run: docker info
 
+      - name: Install and check media validation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ffmpeg
+          ffmpeg -version
+          ffprobe -version
+
       - name: Verify API
         run: ./mvnw -B -ntp verify
