@@ -98,4 +98,19 @@ class MediaProcessingCoreMigrationIntegrationTests {
             "SELECT pending_object_key FROM meeting_media WHERE id = ?", String.class, mediaId));
     }
 
+    @Test
+    void migrationV13AddsJobAdmissionInvariantsAndReprocessingProvenance() {
+        assertEquals(1, jdbc.queryForObject("""
+            SELECT count(*) FROM information_schema.columns
+            WHERE table_schema = current_schema() AND table_name = 'processing_jobs'
+              AND column_name = 'reprocess_of_job_id'
+            """, Integer.class));
+        assertEquals(2, jdbc.queryForObject("""
+            SELECT count(*) FROM pg_indexes
+            WHERE schemaname = current_schema() AND tablename = 'processing_jobs'
+              AND indexname IN ('ux_processing_jobs_active_meeting',
+                                'ux_processing_jobs_initial_media')
+            """, Integer.class));
+    }
+
 }

@@ -133,12 +133,66 @@ public class MediaRepository {
             }, caller, operation, key).stream().findFirst().orElseThrow(IdempotencyConflictException::new);
     }
 
+    /**
+     * Must run inside the caller's transaction. Row-level user locks serialize
+     * admissions across API instances without a new distributed lock service.
+     */
+    public void lockAdmissionUser(UUID userId) {
+        this.jdbc.queryForObject("SELECT id FROM users WHERE id = ? FOR UPDATE", UUID.class, userId);
+    }
+
+    public int activeJobsForMeeting(UUID meetingId) {
+        return this.jdbc.queryForObject("""
+            SELECT count(*) FROM processing_jobs WHERE meeting_id = ?
+              AND status IN ('PENDING', 'QUEUED', 'RUNNING')
+            """, Integer.class, meetingId);
+    }
+
+    public int initialJobsForSource(UUID sourceMediaId) {
+        return this.jdbc.queryForObject("""
+            SELECT count(*) FROM processing_jobs WHERE source_media_id = ?
+              AND reprocess_of_job_id IS NULL
+            """, Integer.class, sourceMediaId);
+    }
+
+    public int activeJobsForUser(UUID userId) {
+        return this.jdbc.queryForObject("""
+            SELECT count(*) FROM processing_jobs WHERE requested_by_user_id = ?
+              AND status IN ('PENDING', 'QUEUED', 'RUNNING')
+            """, Integer.class, userId);
+    }
+
+    public RecentJobAdmissions recentJobAdmissions(UUID userId, int windowMinutes) {
+        return this.jdbc.queryForObject("""
+            SELECT count(*) AS admitted,
+              COALESCE(GREATEST(1,
+                CEIL(EXTRACT(EPOCH FROM
+                  (MIN(created_at) + (? * INTERVAL '1 minute') - CURRENT_TIMESTAMP)))
+              )::bigint, 1) AS retry_after_seconds
+            FROM processing_jobs
+            WHERE requested_by_user_id = ?
+              AND created_at > CURRENT_TIMESTAMP - (? * INTERVAL '1 minute')
+            """, (rs, row) -> new RecentJobAdmissions(
+                rs.getInt("admitted"), rs.getLong("retry_after_seconds")),
+            windowMinutes, userId, windowMinutes);
+    }
+
+    public int pendingUploadIntentsForUser(UUID userId) {
+        return this.jdbc.queryForObject("""
+            SELECT count(*) FROM meeting_media WHERE uploaded_by_user_id = ?
+              AND status = 'PENDING_UPLOAD'
+              AND created_at > CURRENT_TIMESTAMP - INTERVAL '24 hours'
+            """, Integer.class, userId);
+    }
+
     public void insertJobAndOutbox(Job job, UUID eventId) {
-        this.jdbc.update("""
+        int inserted = this.jdbc.update("""
             INSERT INTO processing_jobs (id, meeting_id, source_media_id, job_type, status,
               requested_by_user_id, queued_at, created_at, updated_at)
             VALUES (?, ?, ?, 'OFFLINE_MEETING_PROCESSING', 'QUEUED', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT DO NOTHING
             """, job.id(), job.meetingId(), job.sourceMediaId(), job.requestedBy());
+        if (inserted != 1) throw new JobAdmissionConflictException();
         String payload;
         try {
             payload = this.mapper.writeValueAsString(new JobQueuedEvent(eventId, job.id(), job.meetingId(),
@@ -211,10 +265,12 @@ public class MediaRepository {
             UUID requestedBy, String currentStage, int attemptCount, OffsetDateTime queuedAt,
             OffsetDateTime startedAt, OffsetDateTime completedAt, String errorCode, String errorSummary,
             String warningSummary, OffsetDateTime createdAt, OffsetDateTime updatedAt) { }
+    public record RecentJobAdmissions(int count, long retryAfterSeconds) { }
     public record PendingCleanup(UUID id, String pendingObjectKey) { }
     public record Outbox(UUID id, String eventType, String payload, int attemptCount) { }
     public record JobQueuedEvent(UUID eventId, UUID processingJobId, UUID meetingId, UUID sourceMediaId,
             UUID requestedByUserId, String requestId, int schemaVersion, OffsetDateTime occurredAt) { }
 
     public static class IdempotencyConflictException extends RuntimeException { }
+    public static class JobAdmissionConflictException extends RuntimeException { }
 }

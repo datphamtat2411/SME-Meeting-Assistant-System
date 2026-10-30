@@ -176,12 +176,81 @@ class MediaProcessingServiceTests {
             return null;
         }).when(this.repository).insertJobAndOutbox(any(Job.class), any(UUID.class));
         when(this.repository.findJob(any(UUID.class))).thenAnswer(invocation -> Optional.of(saved.get()));
+        when(this.repository.recentJobAdmissions(this.actor, 60))
+            .thenReturn(new MediaRepository.RecentJobAdmissions(0, 1));
 
         var result = this.service.createJob(this.meetingId, mediaId, "job-once");
 
         assertEquals("QUEUED", result.status());
         assertEquals(mediaId, result.sourceMediaId());
         verify(this.repository).insertJobAndOutbox(any(Job.class), any(UUID.class));
+    }
+
+    @Test
+    void existingIdempotentJobReplaySkipsAllNewAdmissionLimits() {
+        UUID mediaId = UUID.randomUUID();
+        Job saved = new Job(UUID.randomUUID(), this.meetingId, mediaId, "OFFLINE_MEETING_PROCESSING",
+            "QUEUED", this.actor, null, 0, OffsetDateTime.now(), null, null, null, null, null,
+            OffsetDateTime.now(), OffsetDateTime.now());
+        when(this.repository.findMedia(mediaId)).thenReturn(Optional.of(media(mediaId, "AVAILABLE")));
+        when(this.repository.claimIdempotency(any(), anyString(), anyString(), anyString(), any(UUID.class)))
+            .thenReturn(saved.id());
+        when(this.repository.findJob(saved.id())).thenReturn(Optional.of(saved));
+
+        assertEquals(saved.id(), this.service.createJob(this.meetingId, mediaId, "replay").id());
+        verify(this.repository, never()).lockAdmissionUser(this.actor);
+        verify(this.repository, never()).recentJobAdmissions(this.actor, 60);
+        verify(this.repository, never()).insertJobAndOutbox(any(Job.class), any(UUID.class));
+    }
+
+    @Test
+    void activeMeetingRejectsDifferentProcessingRequestBeforeJobWrite() {
+        UUID mediaId = UUID.randomUUID();
+        when(this.repository.findMedia(mediaId)).thenReturn(Optional.of(media(mediaId, "AVAILABLE")));
+        when(this.repository.claimIdempotency(any(), anyString(), anyString(), anyString(), any(UUID.class)))
+            .thenAnswer(invocation -> invocation.getArgument(4));
+        when(this.repository.activeJobsForMeeting(this.meetingId)).thenReturn(1);
+
+        ResponseStatusException rejected = assertThrows(ResponseStatusException.class, () ->
+            this.service.createJob(this.meetingId, mediaId, "second-key"));
+
+        assertEquals(409, rejected.getStatusCode().value());
+        verify(this.repository, never()).insertJobAndOutbox(any(Job.class), any(UUID.class));
+    }
+
+    @Test
+    void rollingQuotaReturns429AndRetryAfterWithoutPublishingEvent() {
+        UUID mediaId = UUID.randomUUID();
+        when(this.repository.findMedia(mediaId)).thenReturn(Optional.of(media(mediaId, "AVAILABLE")));
+        when(this.repository.claimIdempotency(any(), anyString(), anyString(), anyString(), any(UUID.class)))
+            .thenAnswer(invocation -> invocation.getArgument(4));
+        when(this.repository.recentJobAdmissions(this.actor, 60))
+            .thenReturn(new MediaRepository.RecentJobAdmissions(12, 45));
+
+        ResponseStatusException rejected = assertThrows(ResponseStatusException.class, () ->
+            this.service.createJob(this.meetingId, mediaId, "over-quota"));
+
+        assertEquals(429, rejected.getStatusCode().value());
+        assertEquals("45", rejected.getHeaders().getFirst("Retry-After"));
+        verify(this.repository, never()).insertJobAndOutbox(any(Job.class), any(UUID.class));
+    }
+
+    @Test
+    void pendingUploadCapacityCheckRejectsNewIntentBeforeStorageCapability() {
+        this.properties.getAdmission().setMaxPendingUploadsPerUser(2);
+        when(this.repository.claimIdempotency(any(), anyString(), anyString(), anyString(), any(UUID.class)))
+            .thenAnswer(invocation -> invocation.getArgument(4));
+        when(this.repository.pendingUploadIntentsForUser(this.actor)).thenReturn(2);
+
+        ResponseStatusException rejected = assertThrows(ResponseStatusException.class, () ->
+            this.service.createUploadIntent(this.meetingId,
+                new CreateMediaUploadRequest(CreateMediaUploadRequest.SourceType.UPLOAD,
+                    "recording.wav", "audio/wav", 512L), "new-upload"));
+
+        assertEquals(429, rejected.getStatusCode().value());
+        verify(this.storage, never()).createUploadCapability(anyString(), anyString(),
+            org.mockito.ArgumentMatchers.anyLong(), any());
+        verify(this.repository, never()).insertMedia(any(Media.class));
     }
 
     @Test

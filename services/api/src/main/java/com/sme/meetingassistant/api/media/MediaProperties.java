@@ -10,10 +10,12 @@ public class MediaProperties {
     private final Storage storage = new Storage();
     private final Upload upload = new Upload();
     private final Outbox outbox = new Outbox();
+    private final Admission admission = new Admission();
 
     public Storage getStorage() { return storage; }
     public Upload getUpload() { return upload; }
     public Outbox getOutbox() { return outbox; }
+    public Admission getAdmission() { return admission; }
 
     public static class Storage {
         private String endpoint;
@@ -64,6 +66,26 @@ public class MediaProperties {
         public void setUploadUrlTtl(Duration value) { uploadUrlTtl = value; }
         public Duration getDownloadUrlTtl() { return downloadUrlTtl; }
         public void setDownloadUrlTtl(Duration value) { downloadUrlTtl = value; }
+    }
+
+    /**
+     * Operational limits for new expensive work. One active job per meeting is
+     * an invariant enforced by a database index, not a tunable rate limit.
+     */
+    public static class Admission {
+        private int maxJobsPerWindow = 12;
+        private int jobWindowMinutes = 60;
+        private int maxActiveJobsPerUser = 3;
+        private int maxPendingUploadsPerUser = 5;
+
+        public int getMaxJobsPerWindow() { return maxJobsPerWindow; }
+        public void setMaxJobsPerWindow(int value) { maxJobsPerWindow = value; }
+        public int getJobWindowMinutes() { return jobWindowMinutes; }
+        public void setJobWindowMinutes(int value) { jobWindowMinutes = value; }
+        public int getMaxActiveJobsPerUser() { return maxActiveJobsPerUser; }
+        public void setMaxActiveJobsPerUser(int value) { maxActiveJobsPerUser = value; }
+        public int getMaxPendingUploadsPerUser() { return maxPendingUploadsPerUser; }
+        public void setMaxPendingUploadsPerUser(int value) { maxPendingUploadsPerUser = value; }
     }
 
     public static class Outbox {

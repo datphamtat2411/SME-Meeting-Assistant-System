@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpHeaders;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -73,6 +74,12 @@ public class MediaProcessingService {
             Media prior = media(claimedId);
             if (!prior.meetingId().equals(meetingId)) throw notFound();
             return uploadResponse(prior);
+        }
+        this.repository.lockAdmissionUser(actor);
+        int uploadLimit = positiveLimit(this.properties.getAdmission().getMaxPendingUploadsPerUser(),
+            "max-pending-uploads-per-user");
+        if (this.repository.pendingUploadIntentsForUser(actor) >= uploadLimit) {
+            throw rateLimited("Too many outstanding upload intents.", 0);
         }
         String objectKey = "meetings/" + meetingId + "/pending/" + mediaId;
         Media pending = new Media(mediaId, meetingId, request.sourceType().name(), "PENDING_UPLOAD", objectKey,
@@ -251,6 +258,19 @@ public class MediaProcessingService {
         private String code() { return code; }
     }
 
+    private static int positiveLimit(int value, String property) {
+        if (value <= 0) throw new IllegalStateException("Invalid media admission configuration: " + property);
+        return value;
+    }
+
+    private static ResponseStatusException rateLimited(String reason, long retryAfterSeconds) {
+        ResponseStatusException rejection = new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, reason);
+        if (retryAfterSeconds > 0) {
+            rejection.getHeaders().set(HttpHeaders.RETRY_AFTER, Long.toString(retryAfterSeconds));
+        }
+        return rejection;
+    }
+
     private static ResponseStatusException conflict(String message) {
         return new ResponseStatusException(HttpStatus.CONFLICT, message);
     }
@@ -297,7 +317,37 @@ public class MediaProcessingService {
             OffsetDateTime.now(), OffsetDateTime.now());
         UUID claimedId = claimIdempotency(actor, operation, idempotencyKey, fingerprint, job.id());
         if (!claimedId.equals(job.id())) return toResponse(job(claimedId));
-        this.repository.insertJobAndOutbox(job, UUID.randomUUID());
+
+        // The user row is our cross-instance admission mutex. The lock and every
+        // count/insert below execute in the same @Transactional PostgreSQL transaction.
+        this.repository.lockAdmissionUser(actor);
+        if (this.repository.activeJobsForMeeting(meetingId) > 0) {
+            throw conflict("Another processing job is already active for this meeting.");
+        }
+        if (this.repository.initialJobsForSource(mediaId) > 0) {
+            throw conflict("This source has already been submitted for processing.");
+        }
+        int activeLimit = positiveLimit(this.properties.getAdmission().getMaxActiveJobsPerUser(),
+            "max-active-jobs-per-user");
+        if (this.repository.activeJobsForUser(actor) >= activeLimit) {
+            throw rateLimited("Too many active processing jobs.", 0);
+        }
+
+        int windowMinutes = positiveLimit(this.properties.getAdmission().getJobWindowMinutes(),
+            "job-window-minutes");
+        int hourlyLimit = positiveLimit(this.properties.getAdmission().getMaxJobsPerWindow(),
+            "max-jobs-per-window");
+        MediaRepository.RecentJobAdmissions usage = this.repository.recentJobAdmissions(actor, windowMinutes);
+        if (usage.count() >= hourlyLimit) {
+            throw rateLimited("Processing job admission quota exceeded.", usage.retryAfterSeconds());
+        }
+
+        try {
+            this.repository.insertJobAndOutbox(job, UUID.randomUUID());
+        } catch (MediaRepository.JobAdmissionConflictException concurrentAdmission) {
+            // Unique indexes remain authoritative if a second API instance races.
+            throw conflict("Another processing job already occupies the meeting or source.");
+        }
         return toResponse(job(job.id()));
     }
 
