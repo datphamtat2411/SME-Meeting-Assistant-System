@@ -22,7 +22,11 @@ from sme_meeting_ai.audio import (
     SpeechMapWarning,
     VadLabel,
 )
-from sme_meeting_ai.audio.models import _EVIDENCE_HEADER, _EVIDENCE_LABELS, _EVIDENCE_RECORD
+from sme_meeting_ai.audio.models import (
+    _EVIDENCE_HEADER,
+    _EVIDENCE_LABELS,
+    _EVIDENCE_RECORD,
+)
 from sme_meeting_ai.core.config import Settings
 
 SPEECH = VadLabel.LIKELY_SPEECH

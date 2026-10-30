@@ -1,6 +1,8 @@
 import errno
 import json
 import os
+import select
+import signal
 import struct
 import subprocess
 import sys
@@ -334,23 +336,52 @@ def test_runner_controlled_environment_and_child_resource_limits(monkeypatch):
     assert calls[0]["env"]["OPENBLAS_NUM_THREADS"] == "1"
 
 
-def test_runner_kills_and_reaps_process_group_on_timeout(tmp_path):
+@pytest.mark.parametrize("parent_exits_first", [False, True])
+def test_runner_kills_process_group_and_reaps_direct_child_on_timeout(
+    tmp_path, monkeypatch, parent_exits_first,
+):
     pidfile = tmp_path / "pids"
     code = (
-        "import os,time; from pathlib import Path; child=os.fork(); "
-        f"Path({str(pidfile)!r} + str(os.getpid())).write_text(str(os.getpid())); "
+        "import json,os,time; from pathlib import Path; child=os.fork(); "
+        f"Path({str(pidfile)!r}).write_text(json.dumps([os.getpid(),child])) if child else None; "
+        f"os._exit(0) if child and {parent_exits_first!r} else None; "
         "time.sleep(10)"
     )
-    with pytest.raises(AudioProcessingError) as caught:
-        run_child(code, timeout_seconds=0.3)
-    assert caught.value.category == "TIMEOUT"
-    pids = [int(path.read_text()) for path in tmp_path.iterdir()]
-    assert len(pids) == 2
-    for pid in pids:
-        status = Path(f"/proc/{pid}/stat")
-        assert not status.exists() or status.read_text().split()[2] == "Z"
-    with pytest.raises(ChildProcessError):
-        os.waitpid(pids[0], os.WNOHANG)
+    killpg = os.killpg
+    descendant_pidfd = None
+
+    def observe_and_kill(pgid, sig):
+        nonlocal descendant_pidfd
+        try:
+            parent_pid, descendant_pid = json.loads(pidfile.read_text())
+            assert pgid == parent_pid
+            # Capture identity before signalling; procfs may disappear during a read.
+            descendant_pidfd = os.pidfd_open(descendant_pid)
+        finally:
+            killpg(pgid, sig)
+
+    monkeypatch.setattr("sme_meeting_ai.audio.normalization.os.killpg", observe_and_kill)
+    try:
+        with pytest.raises(AudioProcessingError) as caught:
+            run_child(code, timeout_seconds=0.3)
+        assert caught.value.category == "TIMEOUT"
+        parent_pid, _ = json.loads(pidfile.read_text())
+        assert descendant_pidfd is not None
+        poller = select.poll()
+        poller.register(descendant_pidfd, select.POLLIN)
+        # SIGKILL delivery and descendant exit need not finish with the parent's wait.
+        events = poller.poll(1000)
+        assert events and events[0][1] & select.POLLIN, "descendant survived group cleanup"
+        with pytest.raises(ChildProcessError):
+            os.waitpid(parent_pid, os.WNOHANG)
+    finally:
+        if descendant_pidfd is not None:
+            try:
+                signal.pidfd_send_signal(descendant_pidfd, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            finally:
+                os.close(descendant_pidfd)
 
 
 @pytest.mark.parametrize("limit_kind", ["output", "duration"])

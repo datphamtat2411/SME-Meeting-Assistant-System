@@ -6,7 +6,6 @@ import wave
 from contextlib import contextmanager
 from dataclasses import FrozenInstanceError, replace
 from fractions import Fraction
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
