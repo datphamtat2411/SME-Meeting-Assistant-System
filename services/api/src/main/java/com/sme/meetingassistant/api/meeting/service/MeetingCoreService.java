@@ -2,6 +2,7 @@ package com.sme.meetingassistant.api.meeting.service;
 
 import com.sme.meetingassistant.api.meeting.dto.*;
 import com.sme.meetingassistant.api.meeting.audit.MeetingAuditService;
+import com.sme.meetingassistant.api.meeting.idempotency.MeetingCreationIdempotencyService;
 import com.sme.meetingassistant.api.meeting.entity.*;
 import com.sme.meetingassistant.api.meeting.repository.*;
 import com.sme.meetingassistant.api.meeting.notification.MeetingNotificationService;
@@ -38,20 +39,37 @@ public class MeetingCoreService {
     private final MeetingNotificationService notifications;
     private final RoomReservationService reservations;
     private final MeetingAuditService audit;
+    private final MeetingCreationIdempotencyService idempotency;
 
     public MeetingCoreService(MeetingRepository meetings, MeetingParticipantRepository participants,
             RoomCatalogService rooms, OrganizationalIdentityLookup users, OrganizationalAuthorizationService authorization,
             MeetingNotificationService notifications, RoomReservationService reservations,
-            MeetingAuditService audit) {
+            MeetingAuditService audit, MeetingCreationIdempotencyService idempotency) {
         this.meetings = meetings; this.participants = participants;
         this.rooms = rooms; this.users = users;
         this.authorization = authorization; this.notifications = notifications;
         this.reservations = reservations;
         this.audit = audit;
+        this.idempotency = idempotency;
     }
 
     public MeetingEntity create(CreateMeetingRequest request) {
+        return create(request, null);
+    }
+
+    public MeetingEntity create(CreateMeetingRequest request, String idempotencyKey) {
         UserEntity actor = authorization.requireActiveActor();
+        if (idempotencyKey != null) {
+            UUID existing = idempotency.claimOrReplay(actor.getId(), idempotencyKey, request);
+            if (existing != null) {
+                MeetingEntity prior = lookup(existing);
+                // A successful past POST is never an authorization capability.
+                if (!prior.getOrganizerUserId().equals(actor.getId())) {
+                    throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+                }
+                return prior; // fresh current resource representation and ETag, no new writes
+            }
+        }
         String title = requiredTitle(request.title());
         validateSchedule(request.scheduledStartAt(), request.scheduledEndAt());
         validateDraftRoom(request.roomId());
@@ -75,6 +93,9 @@ public class MeetingCoreService {
         }
         participants.flush();
         audit.created(meeting, memberships);
+        if (idempotencyKey != null) {
+            idempotency.complete(actor.getId(), idempotencyKey, meeting.getId());
+        }
         return meeting;
     }
 

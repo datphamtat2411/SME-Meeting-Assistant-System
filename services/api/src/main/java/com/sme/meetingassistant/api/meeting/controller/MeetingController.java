@@ -35,8 +35,10 @@ public class MeetingController {
         this.service = service; this.responses = responses;
     }
     @PostMapping
-    public ResponseEntity<ApiResponse<MeetingView>> create(@Valid @RequestBody CreateMeetingRequest request) {
-        MeetingEntity meeting = service.create(request);
+    public ResponseEntity<ApiResponse<MeetingView>> create(
+            @RequestHeader(value="Idempotency-Key", required=false) String idempotencyKey,
+            @Valid @RequestBody CreateMeetingRequest request) {
+        MeetingEntity meeting = service.create(request, idempotencyKey);
         return ResponseEntity.created(URI.create("/api/v1/meetings/"+meeting.getId()))
             .header(HttpHeaders.ETAG, MeetingVersionTags.of(meeting))
             .body(responses.success(MeetingView.from(meeting)));
