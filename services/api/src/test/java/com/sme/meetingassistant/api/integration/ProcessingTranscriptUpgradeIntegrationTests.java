@@ -116,6 +116,16 @@ class ProcessingTranscriptUpgradeIntegrationTests {
                 SELECT source_stage_code FROM %s.transcripts WHERE id=?
                 """.formatted(schema), String.class, transcript))
                 .isEqualTo("FINALIZING_TRANSCRIPT");
+            // Prove the trigger resolves the target Flyway schema, not public.
+            UUID segment = UUID.randomUUID();
+            jdbc.update("""
+                INSERT INTO %s.transcript_segments(id,transcript_id,ordinal,start_ms,end_ms,
+                    current_text,quality_status,source_stage_run_id)
+                VALUES (?,?,0,0,1000,'Preserved speech.','ACCEPTED',?)
+                """.formatted(schema), segment, transcript, stage);
+            assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM %s.transcript_segments WHERE id=?
+                """.formatted(schema), Integer.class, segment)).isEqualTo(1);
         } finally {
             cleanup(schema);
         }

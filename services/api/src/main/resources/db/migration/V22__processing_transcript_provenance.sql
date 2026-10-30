@@ -64,7 +64,9 @@ ALTER TABLE transcript_segments
     ON DELETE RESTRICT;
 
 CREATE FUNCTION ensure_segment_stage_same_job() RETURNS trigger
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql
+SET search_path FROM CURRENT
+AS $
 BEGIN
     IF NEW.source_stage_run_id IS NOT NULL AND NOT EXISTS (
         SELECT 1 FROM transcripts t
