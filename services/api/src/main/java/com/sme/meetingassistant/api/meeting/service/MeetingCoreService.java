@@ -118,17 +118,30 @@ public class MeetingCoreService {
 
     @Transactional(readOnly = true)
     public Page<MeetingView> list(MeetingStatus status, String q, UUID organizerId, UUID roomId,
-            OffsetDateTime from, OffsetDateTime to, Pageable pageable) {
+            OffsetDateTime from, OffsetDateTime to, MeetingRelationshipFilter relationship,
+            Pageable pageable) {
         UUID actor = authorization.requireActiveActor().getId();
         if (from != null && to != null && !from.isBefore(to)) throw invalid();
+        // Apply the caller's CURRENT meeting relationship in SQL, before count,
+        // pagination or sorting. Organizer also has a participant row, so the
+        // explicit PARTICIPANT view excludes their own organized meetings.
+        // EXISTS (rather than a join) avoids duplicates and inflated page totals.
         Specification<MeetingEntity> spec = (root, query, cb) -> {
+            var isOrganizer = cb.equal(root.get("organizerUserId"), actor);
+            if (relationship == MeetingRelationshipFilter.ORGANIZER) {
+                return isOrganizer;
+            }
             var sub = query.subquery(Integer.class);
             var participant = sub.from(MeetingParticipantEntity.class);
             sub.select(cb.literal(1)).where(
                 cb.equal(participant.get("meetingId"), root.get("id")),
                 cb.equal(participant.get("userId"), actor),
                 cb.isNull(participant.get("removedAt")));
-            return cb.or(cb.equal(root.get("organizerUserId"), actor), cb.exists(sub));
+            var isActiveParticipant = cb.exists(sub);
+            if (relationship == MeetingRelationshipFilter.PARTICIPANT) {
+                return cb.and(cb.not(isOrganizer), isActiveParticipant);
+            }
+            return cb.or(isOrganizer, isActiveParticipant);
         };
         if (status != null) spec = spec.and((r,qry,cb)->cb.equal(r.get("status"), status));
         if (organizerId != null) spec = spec.and((r,qry,cb)->cb.equal(r.get("organizerUserId"), organizerId));

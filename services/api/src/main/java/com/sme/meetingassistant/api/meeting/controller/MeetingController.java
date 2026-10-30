@@ -53,6 +53,7 @@ public class MeetingController {
         @RequestParam(required = false) @Size(max=200) String q,
         @RequestParam(required = false) UUID organizerId,
         @RequestParam(required = false) UUID roomId,
+        @RequestParam(required = false) MeetingRelationshipFilter relationship,
         @RequestParam(required = false) OffsetDateTime from,
         @RequestParam(required = false) OffsetDateTime to,
         @RequestParam(defaultValue="0") @Min(0) int page,
@@ -65,7 +66,7 @@ public class MeetingController {
         Sort.Direction direction;
         try { direction = Sort.Direction.fromString(parts[1]); }
         catch (IllegalArgumentException bad) { throw new ResponseStatusException(HttpStatus.BAD_REQUEST); }
-        return responses.successPage(service.list(status,q,organizerId,roomId,from,to,
+        return responses.successPage(service.list(status,q,organizerId,roomId,from,to,relationship,
             PageRequest.of(page,size,Sort.by(direction,parts[0]).and(Sort.by("id")))));
     }
     @PatchMapping("/{meetingId}")
