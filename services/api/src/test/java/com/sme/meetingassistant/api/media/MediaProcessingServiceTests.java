@@ -7,6 +7,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
+import org.springframework.http.HttpStatus;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.times;
@@ -79,9 +81,61 @@ class MediaProcessingServiceTests {
         assertEquals("audio/wav", result.requiredContentType());
         ArgumentCaptor<Media> uploaded = ArgumentCaptor.forClass(Media.class);
         assertNotNull(result.expiresAt());
-        verify(this.meetingAccess).requireReadable(this.meetingId, this.actor);
+        verify(this.meetingAccess).requireUploadAllowed(this.meetingId, this.actor);
         verify(this.repository).insertMedia(uploaded.capture());
         assertTrue(uploaded.getValue().objectKey().contains("/pending/"));
+    }
+
+    @Test
+    void uploadPermissionIsCheckedBeforeAnyIdempotencyOrMediaWrite() {
+        doThrow(new ResponseStatusException(HttpStatus.NOT_FOUND))
+            .when(this.meetingAccess).requireUploadAllowed(this.meetingId, this.actor);
+        ResponseStatusException denied = assertThrows(ResponseStatusException.class, () ->
+            this.service.createUploadIntent(this.meetingId,
+                new CreateMediaUploadRequest(CreateMediaUploadRequest.SourceType.UPLOAD,
+                    "recording.wav", "audio/wav", 512L), "upload-key"));
+        assertEquals(404, denied.getStatusCode().value());
+        verify(this.repository, never()).claimIdempotency(any(), anyString(), anyString(),
+            anyString(), any(UUID.class));
+        verify(this.repository, never()).insertMedia(any(Media.class));
+        verify(this.storage, never()).createUploadCapability(anyString(), anyString(),
+            org.mockito.ArgumentMatchers.anyLong(), any());
+    }
+
+    @Test
+    void processingPermissionIsCheckedBeforeJobOrIdempotencyLookup() {
+        doThrow(new ResponseStatusException(HttpStatus.NOT_FOUND))
+            .when(this.meetingAccess).requireProcessingAllowed(this.meetingId, this.actor);
+        ResponseStatusException denied = assertThrows(ResponseStatusException.class, () ->
+            this.service.createJob(this.meetingId, UUID.randomUUID(), "job-key"));
+        assertEquals(404, denied.getStatusCode().value());
+        verify(this.repository, never()).findMedia(any(UUID.class));
+        verify(this.repository, never()).insertJobAndOutbox(any(Job.class), any(UUID.class));
+    }
+
+    @Test
+    void sourcePermissionIsCheckedBeforeSignedDownloadCapability() {
+        UUID mediaId = UUID.randomUUID();
+        doThrow(new ResponseStatusException(HttpStatus.NOT_FOUND))
+            .when(this.meetingAccess).requireSourceReadable(this.meetingId, this.actor);
+        ResponseStatusException denied = assertThrows(ResponseStatusException.class, () ->
+            this.service.mediaAccessUrl(this.meetingId, mediaId));
+        assertEquals(404, denied.getStatusCode().value());
+        verify(this.repository, never()).findMedia(mediaId);
+        verify(this.storage, never()).createDownloadCapability(anyString(), any());
+    }
+
+    @Test
+    void finalizePermissionIsCheckedBeforeClaimOrStorageRead() {
+        UUID mediaId = UUID.randomUUID();
+        doThrow(new ResponseStatusException(HttpStatus.NOT_FOUND))
+            .when(this.meetingAccess).requireUploadAllowed(this.meetingId, this.actor);
+        ResponseStatusException denied = assertThrows(ResponseStatusException.class, () ->
+            this.service.finalizeUpload(this.meetingId, mediaId));
+        assertEquals(404, denied.getStatusCode().value());
+        verify(this.repository, never()).claimFinalization(any(UUID.class), any(UUID.class),
+            org.mockito.ArgumentMatchers.anyLong());
+        verify(this.storage, never()).head(anyString());
     }
 
     @Test

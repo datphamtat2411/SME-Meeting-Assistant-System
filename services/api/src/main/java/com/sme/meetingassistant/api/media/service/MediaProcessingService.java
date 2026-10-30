@@ -58,7 +58,7 @@ public class MediaProcessingService {
     public MediaUploadIntentResponse createUploadIntent(UUID meetingId, CreateMediaUploadRequest request,
             String idempotencyKey) {
         UUID actor = this.authenticatedUser.requireUserId();
-        this.meetingAccess.requireReadable(meetingId, actor);
+        this.meetingAccess.requireUploadAllowed(meetingId, actor);
         validateIdempotencyKey(idempotencyKey);
         String filename = sanitizeFilename(request.originalFilename());
         String extension = extension(filename);
@@ -88,7 +88,7 @@ public class MediaProcessingService {
      */
     public FinalizeMediaResponse finalizeUpload(UUID meetingId, UUID mediaId) {
         UUID actor = this.authenticatedUser.requireUserId();
-        this.meetingAccess.requireReadable(meetingId, actor);
+        this.meetingAccess.requireUploadAllowed(meetingId, actor);
         Media current = media(mediaId);
         if (!current.meetingId().equals(meetingId) || !current.uploadedBy().equals(actor)) throw notFound();
         if (!"PENDING_UPLOAD".equals(current.status())) return toResponse(current);
@@ -105,12 +105,15 @@ public class MediaProcessingService {
             ValidatedSource validated = acceptedObjectExists(acceptedKey)
                 ? inspectAcceptedObject(acceptedKey, current.expectedSizeBytes())
                 : validateAndPromote(current, acceptedKey);
+            // Reauthorize after slow storage/probing I/O: account and meeting state can change.
+            this.meetingAccess.requireUploadAllowed(meetingId, actor);
             if (!this.repository.acceptMedia(mediaId, leaseToken, acceptedKey,
                     validated.sizeBytes(), validated.durationMs(), validated.sha256())) {
                 throw conflict("Media finalization lease expired; retry the request.");
             }
             return toResponse(media(mediaId));
         } catch (InvalidMediaException rejected) {
+            this.meetingAccess.requireUploadAllowed(meetingId, actor);
             if (!this.repository.rejectMedia(mediaId, leaseToken, rejected.code())) {
                 throw conflict("Media finalization lease expired; retry the request.");
             }
@@ -271,7 +274,7 @@ public class MediaProcessingService {
     @Transactional(readOnly = true)
     public String mediaAccessUrl(UUID meetingId, UUID mediaId) {
         UUID actor = this.authenticatedUser.requireUserId();
-        this.meetingAccess.requireReadable(meetingId, actor);
+        this.meetingAccess.requireSourceReadable(meetingId, actor);
         Media media = media(mediaId);
         if (!media.meetingId().equals(meetingId) || !"AVAILABLE".equals(media.status())) throw notFound();
         return this.storage.createDownloadCapability(media.objectKey(), cappedTtl(
@@ -281,7 +284,7 @@ public class MediaProcessingService {
     @Transactional
     public ProcessingJobResponse createJob(UUID meetingId, UUID mediaId, String idempotencyKey) {
         UUID actor = this.authenticatedUser.requireUserId();
-        this.meetingAccess.requireReadable(meetingId, actor);
+        this.meetingAccess.requireProcessingAllowed(meetingId, actor);
         validateIdempotencyKey(idempotencyKey);
         Media media = media(mediaId);
         if (!media.meetingId().equals(meetingId) || !"AVAILABLE".equals(media.status())) {
