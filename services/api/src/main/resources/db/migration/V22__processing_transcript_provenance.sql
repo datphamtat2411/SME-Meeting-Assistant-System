@@ -4,7 +4,7 @@
 
 -- Trigger checks apply to new writes; preflight historical rows so an upgrade
 -- cannot silently retain an already cross-job segment-stage reference.
-DO $
+DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM transcript_segments seg
@@ -16,7 +16,7 @@ BEGIN
         RAISE EXCEPTION 'V22 requires correction of existing cross-job transcript segment provenance';
     END IF;
 END;
-$;
+$$;
 
 -- A reprocessing job is meaningful only for the same media in the same meeting.
 -- The extra UNIQUE keys support exact composite FKs; id stays the primary key.
