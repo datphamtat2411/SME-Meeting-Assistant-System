@@ -162,7 +162,7 @@ class ProcessingLifecycleInvariantsIntegrationTests {
 
     @Test
     void conflictingStageReplayCannotMutateCompletedAttempt() {
-        UUID stage = startTranscription("SUCCEEDED");
+        StageClaim stage = startTranscription("SUCCEEDED");
         lifecycle.completeStage(stage, "SUCCEEDED", null, "{\"validated\":true}");
         assertThatThrownBy(() -> lifecycle.completeStage(stage, "SUCCEEDED_WITH_WARNING", null, "{}"))
             .isInstanceOf(ProcessingLifecycleConflictException.class);
