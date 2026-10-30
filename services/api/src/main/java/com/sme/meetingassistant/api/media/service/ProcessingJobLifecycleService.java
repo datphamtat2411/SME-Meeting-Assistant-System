@@ -55,10 +55,8 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
 
     @Override
     @Transactional
-    public void completeJob(UUID jobId, boolean completedWithWarnings, String warningSummary) {
-        if (completedWithWarnings) requireRequiredText(warningSummary, 1000, "warningSummary");
-        else requireOptionalText(warningSummary, 1000, "warningSummary");
-        this.repository.completeJob(jobId, completedWithWarnings, warningSummary);
+    public void completeJob(UUID jobId) {
+        this.repository.completeJob(jobId);
     }
 
     @Override

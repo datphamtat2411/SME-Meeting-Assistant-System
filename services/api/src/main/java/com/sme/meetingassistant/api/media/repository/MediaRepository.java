@@ -223,13 +223,43 @@ public class MediaRepository {
             MediaRepository::jobRow, meetingId);
     }
 
+
+    /**
+     * A worker may see a message before the publisher confirm commits QUEUED,
+     * so PENDING is an allowed starting state. The source must still be accepted.
+     * The job row is the lifecycle serialization boundary.
+     */
     public UUID startStage(UUID jobId, String stageCode, String providerName, String modelName) {
-        String currentStatus = this.jdbc.query("SELECT status FROM processing_jobs WHERE id = ? FOR UPDATE",
-            (rs, row) -> rs.getString("status"), jobId).stream().findFirst()
-            .orElseThrow(() -> new IllegalArgumentException("Processing job does not exist."));
-        if (!List.of("PENDING", "QUEUED", "RUNNING").contains(currentStatus)) {
+        List<JobStart> jobs = this.jdbc.query("""
+            SELECT j.status, m.status AS media_status
+            FROM processing_jobs j JOIN meeting_media m ON m.id = j.source_media_id
+              AND m.meeting_id = j.meeting_id
+            WHERE j.id = ? FOR UPDATE OF j
+            """, (rs, row) -> new JobStart(rs.getString("status"), rs.getString("media_status")), jobId);
+        if (jobs.isEmpty()) throw new IllegalArgumentException("Processing job does not exist.");
+        if (!List.of("PENDING", "QUEUED", "RUNNING").contains(jobs.getFirst().status())) {
             throw new IllegalStateException("A terminal processing job cannot start another stage.");
         }
+        if (!"AVAILABLE".equals(jobs.getFirst().mediaStatus())) {
+            throw new IllegalStateException("Processing source media is not accepted.");
+        }
+
+        List<StageAttempt> latest = latestAttempt(jobId, stageCode);
+        if (!latest.isEmpty() && "RUNNING".equals(latest.getFirst().status())) {
+            // Broker redelivery must not create a new stage or bump job version.
+            return latest.getFirst().id();
+        }
+        if (!latest.isEmpty() && !"PENDING".equals(latest.getFirst().status())) {
+            throw new IllegalStateException("A completed/failed stage cannot be restarted without an explicit retry.");
+        }
+        if ("FINALIZING_TRANSCRIPT".equals(stageCode)
+                && !hasSuccessfulTranscription(jobId)) {
+            throw new IllegalStateException("Transcript finalization requires a successful transcription stage.");
+        }
+        if (isTranscriptDownstream(stageCode) && !hasFinalizedTranscript(jobId)) {
+            throw new IllegalStateException("Downstream processing requires a persisted finalized transcript.");
+        }
+
         this.jdbc.update("""
             UPDATE processing_jobs SET status = 'RUNNING', current_stage = ?,
               started_at = COALESCE(started_at, CURRENT_TIMESTAMP),
@@ -238,19 +268,12 @@ public class MediaRepository {
             WHERE id = ?
             """, stageCode, jobId);
 
-        List<StageAttempt> latest = this.jdbc.query("""
-            SELECT id, attempt_number, status FROM processing_stage_runs
-            WHERE processing_job_id = ? AND stage_code = ?
-            ORDER BY attempt_number DESC LIMIT 1 FOR UPDATE
-            """, (rs, row) -> new StageAttempt(rs.getObject("id", UUID.class),
-                rs.getInt("attempt_number"), rs.getString("status")), jobId, stageCode);
-        if (!latest.isEmpty() && ("PENDING".equals(latest.get(0).status())
-                || "RUNNING".equals(latest.get(0).status()))) {
-            UUID runId = latest.get(0).id();
+        if (!latest.isEmpty()) {
+            UUID runId = latest.getFirst().id();
             this.jdbc.update("""
                 UPDATE processing_stage_runs SET status = 'RUNNING', provider_name = ?, model_name = ?,
                   started_at = COALESCE(started_at, CURRENT_TIMESTAMP)
-                WHERE id = ?
+                WHERE id = ? AND status = 'PENDING'
                 """, providerName, modelName, runId);
             return runId;
         }
@@ -266,56 +289,193 @@ public class MediaRepository {
     }
 
     public void completeStage(UUID stageRunId, String outcome, String errorCode, String metricsJson) {
-        int updated = this.jdbc.update("""
+        UUID jobId = stageJobId(stageRunId);
+        String jobStatus = lockJobStatus(jobId);
+        StageRun current = lockStage(stageRunId);
+        if (outcome.equals(current.status()) && sameStageOutcome(stageRunId, outcome, errorCode, metricsJson)) {
+            return;
+        }
+        if (!"RUNNING".equals(jobStatus) || !"RUNNING".equals(current.status())
+                || !isLatestAttempt(jobId, current.stageCode(), stageRunId)) {
+            throw new IllegalStateException("Stage attempt is not current or job is not running.");
+        }
+        if ("FINALIZING_TRANSCRIPT".equals(current.stageCode())
+                && !persistedTranscript(jobId, stageRunId)) {
+            throw new IllegalStateException("Cannot finalize a transcript before canonical persistence.");
+        }
+        int changed = this.jdbc.update("""
             UPDATE processing_stage_runs SET status = ?, error_code = ?,
               metrics = CAST(? AS jsonb), completed_at = CURRENT_TIMESTAMP
             WHERE id = ? AND status = 'RUNNING'
             """, outcome, errorCode, metricsJson, stageRunId);
-        if (updated == 1) return;
-        boolean replay = Boolean.TRUE.equals(this.jdbc.queryForObject("""
-            SELECT EXISTS (SELECT 1 FROM processing_stage_runs WHERE id = ? AND status = ?)
-            """, Boolean.class, stageRunId, outcome));
-        if (!replay) throw new IllegalStateException("Stage attempt is not running or does not exist.");
+        if (changed != 1) throw new IllegalStateException("Stage attempt changed during completion.");
     }
 
     public void failStage(UUID stageRunId, String errorCode, String safeSummary, boolean retryable) {
-        List<StageJob> stage = this.jdbc.query("""
-            SELECT processing_job_id, stage_code, status FROM processing_stage_runs WHERE id = ? FOR UPDATE
-            """, (rs, row) -> new StageJob(rs.getObject("processing_job_id", UUID.class),
-                rs.getString("stage_code"), rs.getString("status")), stageRunId);
-        if (stage.isEmpty()) throw new IllegalArgumentException("Stage attempt does not exist.");
-        StageJob current = stage.get(0);
-        if ("FAILED".equals(current.status())) return;
-        if (!"RUNNING".equals(current.status())) {
-            throw new IllegalStateException("Only a running stage attempt can fail.");
+        UUID jobId = stageJobId(stageRunId);
+        String jobStatus = lockJobStatus(jobId);
+        StageRun current = lockStage(stageRunId);
+        if ("FAILED".equals(current.status()) && "FAILED".equals(jobStatus)
+                && sameStageFailure(stageRunId, errorCode, retryable)) {
+            return;
+        }
+        if (!"RUNNING".equals(jobStatus) || !"RUNNING".equals(current.status())
+                || !isLatestAttempt(jobId, current.stageCode(), stageRunId)) {
+            throw new IllegalStateException("Stage attempt is not current or job is not running.");
         }
         this.jdbc.update("""
             UPDATE processing_stage_runs SET status = 'FAILED', retryable = ?, error_code = ?,
               completed_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'RUNNING'
             """, retryable, errorCode, stageRunId);
-        int updated = this.jdbc.update("""
+        int changed = this.jdbc.update("""
             UPDATE processing_jobs SET status = 'FAILED', current_stage = ?, retryable = ?,
               error_code = ?, error_summary = ?, completed_at = CURRENT_TIMESTAMP,
               updated_at = CURRENT_TIMESTAMP, version = version + 1
             WHERE id = ? AND status = 'RUNNING'
-            """, current.stageCode(), retryable, errorCode, safeSummary, current.jobId());
-        if (updated != 1) throw new IllegalStateException("Processing job is no longer running.");
+            """, current.stageCode(), retryable, errorCode, safeSummary, jobId);
+        if (changed != 1) throw new IllegalStateException("Processing job is no longer running.");
     }
 
-    public void completeJob(UUID jobId, boolean completedWithWarnings, String warningSummary) {
-        String outcome = completedWithWarnings ? "COMPLETED_WITH_WARNINGS" : "COMPLETED";
-        int updated = this.jdbc.update("""
+    /**
+     * Completion is derived from durable stage and transcript evidence.
+     * Caller-supplied booleans cannot turn missing outputs into business success.
+     */
+    public void completeJob(UUID jobId) {
+        String status = lockJobStatus(jobId);
+        if (List.of("COMPLETED", "COMPLETED_WITH_WARNINGS").contains(status)) return;
+        if (!"RUNNING".equals(status)) {
+            throw new IllegalStateException("Only a running processing job can complete.");
+        }
+        List<StageCompletion> stages = this.jdbc.query("""
+            SELECT s.id, s.stage_code, s.status
+            FROM processing_stage_runs s
+            WHERE s.processing_job_id = ?
+              AND s.attempt_number = (SELECT MAX(x.attempt_number)
+                FROM processing_stage_runs x
+                WHERE x.processing_job_id = s.processing_job_id AND x.stage_code = s.stage_code)
+            """, (rs, row) -> new StageCompletion(rs.getObject("id", UUID.class),
+                rs.getString("stage_code"), rs.getString("status")), jobId);
+        if (stages.stream().anyMatch(s -> List.of("RUNNING", "PENDING", "FAILED").contains(s.status()))) {
+            throw new IllegalStateException("Processing stages are still active or have failed.");
+        }
+        if (!hasSuccessfulTranscription(jobId)) {
+            throw new IllegalStateException("Processing cannot complete without transcription.");
+        }
+        StageCompletion finalized = stages.stream()
+            .filter(s -> "FINALIZING_TRANSCRIPT".equals(s.stageCode())
+                && isSuccessful(s.status())).findFirst()
+            .orElseThrow(() -> new IllegalStateException("Transcript finalization has not succeeded."));
+        List<TranscriptEvidence> results = transcriptEvidence(jobId, finalized.id());
+        if (results.size() != 1 || !List.of("READY", "READY_WITH_WARNINGS").contains(results.getFirst().status())) {
+            throw new IllegalStateException("A valid finalized transcript is required.");
+        }
+        TranscriptEvidence transcript = results.getFirst();
+        if (transcript.suspicious() && "READY".equals(transcript.status())) {
+            throw new IllegalStateException("Unresolved transcript quality cannot be marked READY.");
+        }
+        boolean withWarnings = "READY_WITH_WARNINGS".equals(transcript.status())
+            || stages.stream().anyMatch(s -> "SUCCEEDED_WITH_WARNING".equals(s.status()));
+        String outcome = withWarnings ? "COMPLETED_WITH_WARNINGS" : "COMPLETED";
+        String summary = withWarnings ? "Processing completed with transcript or stage quality warnings." : null;
+        int changed = this.jdbc.update("""
             UPDATE processing_jobs SET status = ?, warning_summary = ?, retryable = FALSE,
               error_code = NULL, error_summary = NULL, completed_at = CURRENT_TIMESTAMP,
               updated_at = CURRENT_TIMESTAMP, version = version + 1
             WHERE id = ? AND status = 'RUNNING'
-            """, outcome, warningSummary, jobId);
-        if (updated == 1) return;
-        boolean replay = Boolean.TRUE.equals(this.jdbc.queryForObject("""
-            SELECT EXISTS (SELECT 1 FROM processing_jobs WHERE id = ? AND status = ?
-              AND warning_summary IS NOT DISTINCT FROM ?)
-            """, Boolean.class, jobId, outcome, warningSummary));
-        if (!replay) throw new IllegalStateException("Processing job is not running or does not exist.");
+            """, outcome, summary, jobId);
+        if (changed != 1) throw new IllegalStateException("Processing job is no longer running.");
+    }
+
+    private List<StageAttempt> latestAttempt(UUID jobId, String stageCode) {
+        return this.jdbc.query("""
+            SELECT id, attempt_number, status FROM processing_stage_runs
+            WHERE processing_job_id = ? AND stage_code = ?
+            ORDER BY attempt_number DESC LIMIT 1
+            """, (rs, row) -> new StageAttempt(rs.getObject("id", UUID.class),
+                rs.getInt("attempt_number"), rs.getString("status")), jobId, stageCode);
+    }
+
+    private boolean isLatestAttempt(UUID jobId, String stageCode, UUID stageRunId) {
+        return latestAttempt(jobId, stageCode).stream().anyMatch(a -> a.id().equals(stageRunId));
+    }
+
+    private static boolean isSuccessful(String status) {
+        return "SUCCEEDED".equals(status) || "SUCCEEDED_WITH_WARNING".equals(status);
+    }
+
+    private boolean hasSuccessfulTranscription(UUID jobId) {
+        return latestAttempt(jobId, "TRANSCRIPTION").stream().anyMatch(s -> isSuccessful(s.status()))
+            || latestAttempt(jobId, "TRANSCRIBING").stream().anyMatch(s -> isSuccessful(s.status()));
+    }
+
+    private boolean hasFinalizedTranscript(UUID jobId) {
+        return latestAttempt(jobId, "FINALIZING_TRANSCRIPT").stream()
+            .anyMatch(s -> isSuccessful(s.status()) && persistedTranscript(jobId, s.id()));
+    }
+
+    private static boolean isTranscriptDownstream(String stageCode) {
+        return List.of("GENERATING_SUMMARY", "EXTRACTING_DECISIONS",
+            "EXTRACTING_ACTION_ITEMS", "INDEXING").contains(stageCode);
+    }
+
+    private boolean persistedTranscript(UUID jobId, UUID stageRunId) {
+        return !transcriptEvidence(jobId, stageRunId).isEmpty();
+    }
+
+    private List<TranscriptEvidence> transcriptEvidence(UUID jobId, UUID stageRunId) {
+        return this.jdbc.query("""
+            SELECT t.status,
+              EXISTS (SELECT 1 FROM transcript_segments s WHERE s.transcript_id = t.id
+                AND s.quality_status <> 'ACCEPTED')
+              OR EXISTS (SELECT 1 FROM transcript_coverage_regions c
+                WHERE c.transcript_id = t.id AND c.coverage_status <> 'COVERED')
+                AS suspicious
+            FROM transcripts t
+            JOIN processing_jobs j ON j.id = t.processing_job_id
+              AND j.meeting_id = t.meeting_id AND j.source_media_id = t.source_media_id
+            JOIN processing_stage_runs sr ON sr.id = t.source_stage_run_id
+              AND sr.processing_job_id = j.id AND sr.stage_code = 'FINALIZING_TRANSCRIPT'
+            WHERE j.id = ? AND sr.id = ?
+              AND t.status IN ('READY', 'READY_WITH_WARNINGS')
+              AND EXISTS (SELECT 1 FROM transcript_segments s WHERE s.transcript_id = t.id)
+            """, (rs, row) -> new TranscriptEvidence(rs.getString("status"),
+                rs.getBoolean("suspicious")), jobId, stageRunId);
+    }
+
+    private UUID stageJobId(UUID stageRunId) {
+        return this.jdbc.query("""
+            SELECT processing_job_id FROM processing_stage_runs WHERE id = ?
+            """, (rs, row) -> rs.getObject("processing_job_id", UUID.class), stageRunId)
+            .stream().findFirst().orElseThrow(() -> new IllegalArgumentException("Stage attempt does not exist."));
+    }
+
+    private String lockJobStatus(UUID jobId) {
+        return this.jdbc.query("""
+            SELECT status FROM processing_jobs WHERE id = ? FOR UPDATE
+            """, (rs, row) -> rs.getString("status"), jobId).stream().findFirst()
+            .orElseThrow(() -> new IllegalArgumentException("Processing job does not exist."));
+    }
+
+    private StageRun lockStage(UUID stageRunId) {
+        return this.jdbc.query("""
+            SELECT stage_code, status FROM processing_stage_runs WHERE id = ? FOR UPDATE
+            """, (rs, row) -> new StageRun(rs.getString("stage_code"), rs.getString("status")), stageRunId)
+            .stream().findFirst().orElseThrow(() -> new IllegalArgumentException("Stage attempt does not exist."));
+    }
+
+    private boolean sameStageOutcome(UUID stageRunId, String outcome, String errorCode, String metricsJson) {
+        return Boolean.TRUE.equals(this.jdbc.queryForObject("""
+            SELECT EXISTS (SELECT 1 FROM processing_stage_runs
+              WHERE id = ? AND status = ? AND error_code IS NOT DISTINCT FROM ?
+                AND metrics IS NOT DISTINCT FROM CAST(? AS jsonb))
+            """, Boolean.class, stageRunId, outcome, errorCode, metricsJson));
+    }
+
+    private boolean sameStageFailure(UUID stageRunId, String errorCode, boolean retryable) {
+        return Boolean.TRUE.equals(this.jdbc.queryForObject("""
+            SELECT EXISTS (SELECT 1 FROM processing_stage_runs
+              WHERE id = ? AND status = 'FAILED' AND error_code = ? AND retryable = ?)
+            """, Boolean.class, stageRunId, errorCode, retryable));
     }
 
     public void recordArtifact(UUID jobId, UUID stageRunId, String artifactType, String objectKey,
@@ -580,6 +740,10 @@ public class MediaRepository {
     }
     public record RecentJobAdmissions(int count, long retryAfterSeconds) { }
     public record IdempotencyClaim(UUID resourceId, boolean claimed) { }
+    private record JobStart(String status, String mediaStatus) { }
+    private record StageRun(String stageCode, String status) { }
+    private record StageCompletion(UUID id, String stageCode, String status) { }
+    private record TranscriptEvidence(String status, boolean suspicious) { }
     private record StageAttempt(UUID id, int attemptNumber, String status) { }
     private record StageJob(UUID jobId, String stageCode, String status) { }
     public record PendingCleanup(UUID id, String pendingObjectKey) { }

@@ -13,7 +13,7 @@ public interface ProcessingJobLifecycle {
 
     void failStage(UUID stageRunId, String errorCode, String safeSummary, boolean retryable);
 
-    void completeJob(UUID jobId, boolean completedWithWarnings, String warningSummary);
+    void completeJob(UUID jobId);
 
     void recordArtifact(UUID jobId, UUID stageRunId, String artifactType, String objectKey,
             String sha256, Long sizeBytes, String retentionClass);

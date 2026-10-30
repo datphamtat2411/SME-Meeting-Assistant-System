@@ -1,6 +1,7 @@
 package com.sme.meetingassistant.api.media;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -320,10 +321,12 @@ class ProcessingJobAdmissionIntegrationTests {
         lifecycle.recordArtifact(jobId, runId, "ASR_DEBUG", "processing/" + jobId + "/asr.json",
             "a".repeat(64), 128L, "DEBUG");
         lifecycle.completeStage(runId, "SUCCEEDED_WITH_WARNING", null, "{\"coverage\":0.92}");
-        lifecycle.completeJob(jobId, true, "Some speech regions need review.");
+        // A successful transcription stage alone is not enough to complete the job.
+        assertThatThrownBy(() -> lifecycle.completeJob(jobId))
+            .isInstanceOf(IllegalStateException.class);
 
         assertThat(jdbc.queryForObject("SELECT status FROM processing_jobs WHERE id = ?", String.class, jobId))
-            .isEqualTo("COMPLETED_WITH_WARNINGS");
+            .isEqualTo("RUNNING");
         assertThat(jdbc.queryForObject("SELECT status FROM processing_stage_runs WHERE id = ?", String.class, runId))
             .isEqualTo("SUCCEEDED_WITH_WARNING");
         assertThat(jdbc.queryForObject("SELECT count(*) FROM processing_artifacts WHERE stage_run_id = ?",
