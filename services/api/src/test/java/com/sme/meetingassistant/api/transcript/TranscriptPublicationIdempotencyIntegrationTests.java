@@ -67,9 +67,10 @@ class TranscriptPublicationIdempotencyIntegrationTests {
     private Source completedJob() {
         UUID newJob = UUID.randomUUID(), newStage = UUID.randomUUID();
         jdbc.update("""
-            INSERT INTO processing_jobs(id,meeting_id,source_media_id,requested_by_user_id,status)
-            VALUES (?,?,?,?,'COMPLETED')
-            """, newJob, meeting, media, actor);
+            INSERT INTO processing_jobs(id,meeting_id,source_media_id,requested_by_user_id,
+                status,reprocess_of_job_id)
+            VALUES (?,?,?,?,'COMPLETED',?)
+            """, newJob, meeting, media, actor, job);
         jdbc.update("""
             INSERT INTO processing_stage_runs(id,processing_job_id,stage_code,attempt_number,status)
             VALUES (?,?,'FINALIZING_TRANSCRIPT',1,'SUCCEEDED')
