@@ -73,7 +73,7 @@ class OutboxPublisherTests {
         assertEquals(event.id().toString(), msg.getValue().getMessageProperties().getHeaders().get("eventId"));
         assertEquals(MessageDeliveryMode.PERSISTENT, msg.getValue().getMessageProperties().getDeliveryMode());
         verify(repository).markPublished(event.id(), event.claimToken());
-        verify(repository, never()).markPublishFailed(any(), any(), any(), any(), any());
+        verify(repository, never()).markPublishFailed(any(), any(), org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyInt(), any());
     }
 
     @Test
@@ -134,6 +134,6 @@ class OutboxPublisherTests {
         publisher.publishPending();
 
         verify(repository).markPublished(event.id(), event.claimToken());
-        verify(repository, never()).markPublishFailed(any(), any(), any(), any(), any());
+        verify(repository, never()).markPublishFailed(any(), any(), org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyInt(), any());
     }
 }
