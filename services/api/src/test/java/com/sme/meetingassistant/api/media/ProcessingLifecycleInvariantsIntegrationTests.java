@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle;
 import com.sme.meetingassistant.api.media.repository.MediaRepository.ProcessingLifecycleConflictException;
+import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle.StageClaim;
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
@@ -57,23 +58,23 @@ class ProcessingLifecycleInvariantsIntegrationTests {
         return jdbc.queryForObject("SELECT status FROM processing_jobs WHERE id=?", String.class, jobId);
     }
 
-    private UUID startTranscription(String outcome) {
-        UUID stage = lifecycle.startStage(jobId, "TRANSCRIPTION", "whisper", "base");
+    private StageClaim startTranscription(String outcome) {
+        StageClaim stage = lifecycle.startStage(jobId, "TRANSCRIPTION", "whisper", "base");
         lifecycle.completeStage(stage, outcome, null, "{\"validated\":true}");
         return stage;
     }
 
-    private UUID startFinalization() {
+    private StageClaim startFinalization() {
         return lifecycle.startStage(jobId, "FINALIZING_TRANSCRIPT", "llm", "contextual");
     }
 
-    private UUID persistTranscript(UUID finalization, String status, String quality) {
+    private UUID persistTranscript(StageClaim finalization, String status, String quality) {
         UUID transcript = UUID.randomUUID();
         jdbc.update("""
             INSERT INTO transcripts(id,meeting_id,source_media_id,processing_job_id,source_stage_run_id,
               version_number,language_code,status,is_current,duration_ms,finalized_at)
             VALUES (?,?,?,?,?,1,'vi',?,TRUE,10000,CURRENT_TIMESTAMP)
-            """, transcript, meetingId, mediaId, jobId, finalization, status);
+            """, transcript, meetingId, mediaId, jobId, finalization.stageRunId(), status);
         jdbc.update("""
             INSERT INTO transcript_segments(id,transcript_id,ordinal,start_ms,end_ms,current_text,quality_status)
             VALUES (?,?,0,0,1200,'A canonical LLM-corrected segment',?)
@@ -81,9 +82,9 @@ class ProcessingLifecycleInvariantsIntegrationTests {
         return transcript;
     }
 
-    private UUID completedTranscriptStages(String transcriptionOutcome, String transcriptStatus, String segmentQuality) {
+    private StageClaim completedTranscriptStages(String transcriptionOutcome, String transcriptStatus, String segmentQuality) {
         startTranscription(transcriptionOutcome);
-        UUID finalized = startFinalization();
+        StageClaim finalized = startFinalization();
         persistTranscript(finalized, transcriptStatus, segmentQuality);
         lifecycle.completeStage(finalized, "SUCCEEDED", null, "{\"persisted\":true}");
         return finalized;
@@ -103,11 +104,11 @@ class ProcessingLifecycleInvariantsIntegrationTests {
         assertThatThrownBy(() -> lifecycle.startStage(jobId, "GENERATING_SUMMARY", null, null))
             .isInstanceOf(ProcessingLifecycleConflictException.class);
         startTranscription("SUCCEEDED");
-        UUID finalization = startFinalization();
+        StageClaim finalization = startFinalization();
         assertThatThrownBy(() -> lifecycle.completeStage(finalization, "SUCCEEDED", null, null))
             .isInstanceOf(ProcessingLifecycleConflictException.class);
         assertThat(jdbc.queryForObject("SELECT status FROM processing_stage_runs WHERE id=?",
-            String.class, finalization)).isEqualTo("RUNNING");
+            String.class, finalization.stageRunId())).isEqualTo("RUNNING");
     }
 
     @Test
@@ -151,7 +152,7 @@ class ProcessingLifecycleInvariantsIntegrationTests {
     @Test
     void activeOptionalStagePreventsPrematureCompletion() {
         completedTranscriptStages("SUCCEEDED", "READY", "ACCEPTED");
-        UUID downstream = lifecycle.startStage(jobId, "GENERATING_SUMMARY", "llm", "summary");
+        StageClaim downstream = lifecycle.startStage(jobId, "GENERATING_SUMMARY", "llm", "summary");
         assertThatThrownBy(() -> lifecycle.completeJob(jobId))
             .isInstanceOf(ProcessingLifecycleConflictException.class);
         lifecycle.completeStage(downstream, "SUCCEEDED", null, "{}");
@@ -171,11 +172,12 @@ class ProcessingLifecycleInvariantsIntegrationTests {
     }
 
     @Test
-    void duplicateStageStartDoesNotBumpJobVersion() {
-        UUID stage = lifecycle.startStage(jobId, "TRANSCRIPTION", "whisper", "base");
+    void competingStageStartCannotStealClaimOrBumpJobVersion() {
+        StageClaim stage = lifecycle.startStage(jobId, "TRANSCRIPTION", "whisper", "base");
         Long version = jdbc.queryForObject("SELECT version FROM processing_jobs WHERE id=?",
             Long.class, jobId);
-        assertThat(lifecycle.startStage(jobId, "TRANSCRIPTION", "whisper", "base")).isEqualTo(stage);
+        assertThatThrownBy(() -> lifecycle.startStage(jobId, "TRANSCRIPTION", "whisper", "base"))
+            .isInstanceOf(ProcessingLifecycleConflictException.class);
         assertThat(jdbc.queryForObject("SELECT version FROM processing_jobs WHERE id=?",
             Long.class, jobId)).isEqualTo(version);
         lifecycle.completeStage(stage, "SUCCEEDED", null, null);
@@ -185,7 +187,7 @@ class ProcessingLifecycleInvariantsIntegrationTests {
 
     @Test
     void failedJobCannotCompleteOrAcceptLateStageSuccess() {
-        UUID stage = lifecycle.startStage(jobId, "TRANSCRIPTION", "whisper", "base");
+        StageClaim stage = lifecycle.startStage(jobId, "TRANSCRIPTION", "whisper", "base");
         lifecycle.failStage(stage, "ASR_FAILED", "Transcription failed.", true);
         assertThat(jobStatus()).isEqualTo("FAILED");
         assertThatThrownBy(() -> lifecycle.completeJob(jobId)).isInstanceOf(ProcessingLifecycleConflictException.class);
@@ -203,10 +205,10 @@ class ProcessingLifecycleInvariantsIntegrationTests {
 
     @Test
     void suspiciousCoverageCannotBeSilentlyCompletedAsReady() {
-        UUID finalized = completedTranscriptStages("SUCCEEDED", "READY", "ACCEPTED");
+        StageClaim finalized = completedTranscriptStages("SUCCEEDED", "READY", "ACCEPTED");
         UUID transcriptId = jdbc.queryForObject("""
             SELECT id FROM transcripts WHERE processing_job_id=? AND source_stage_run_id=?
-            """, UUID.class, jobId, finalized);
+            """, UUID.class, jobId, finalized.stageRunId());
         jdbc.update("""
             INSERT INTO transcript_coverage_regions(id,transcript_id,start_ms,end_ms,coverage_status)
             VALUES (?,?,500,1000,'UNRESOLVED_ERROR')

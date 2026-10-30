@@ -13,6 +13,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.sme.meetingassistant.api.media.storage.ObjectStorage;
 import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle;
 import com.sme.meetingassistant.api.media.repository.MediaRepository.ProcessingLifecycleConflictException;
+import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle.StageClaim;
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
 import java.security.Principal;
 import java.util.List;
@@ -266,7 +267,7 @@ class ProcessingJobAdmissionIntegrationTests {
         MvcResult created = admit(src, "initial-for-retry");
         UUID jobId = UUID.fromString(json.readTree(created.getResponse().getContentAsString())
             .at("/data/id").asText());
-        UUID failedRun = lifecycle.startStage(jobId, "TRANSCRIPTION", "offline-whisper", "base");
+        StageClaim failedRun = lifecycle.startStage(jobId, "TRANSCRIPTION", "offline-whisper", "base");
         lifecycle.failStage(failedRun, "TEMPORARY_FAILURE", "Transcription stage failed temporarily.", true);
 
         String path = "/api/v1/processing-jobs/" + jobId + "/retry";
@@ -318,7 +319,7 @@ class ProcessingJobAdmissionIntegrationTests {
         UUID jobId = UUID.fromString(json.readTree(created.getResponse().getContentAsString())
             .at("/data/id").asText());
 
-        UUID runId = lifecycle.startStage(jobId, "TRANSCRIPTION", "offline-whisper", "base");
+        StageClaim runId = lifecycle.startStage(jobId, "TRANSCRIPTION", "offline-whisper", "base");
         lifecycle.recordArtifact(jobId, runId, "ASR_DEBUG", "processing/" + jobId + "/asr.json",
             "a".repeat(64), 128L, "DEBUG");
         lifecycle.completeStage(runId, "SUCCEEDED_WITH_WARNING", null, "{\"coverage\":0.92}");
@@ -331,7 +332,7 @@ class ProcessingJobAdmissionIntegrationTests {
         assertThat(jdbc.queryForObject("SELECT status FROM processing_stage_runs WHERE id = ?", String.class, runId))
             .isEqualTo("SUCCEEDED_WITH_WARNING");
         assertThat(jdbc.queryForObject("SELECT count(*) FROM processing_artifacts WHERE stage_run_id = ?",
-            Integer.class, runId)).isEqualTo(1);
+            Integer.class, runId.stageRunId())).isEqualTo(1);
         assertThat(json.readTree(mvc.perform(get("/api/v1/processing-jobs/" + jobId)
                 .principal(as(organizer))).andExpect(status().isOk()).andReturn()
                 .getResponse().getContentAsString()).at("/data/stageRuns/0/providerName").asText())
@@ -361,7 +362,7 @@ class ProcessingJobAdmissionIntegrationTests {
     }
 
     private void failTranscription(UUID jobId) {
-        UUID runId = lifecycle.startStage(jobId, "TRANSCRIPTION", "offline-whisper", "base");
+        StageClaim runId = lifecycle.startStage(jobId, "TRANSCRIPTION", "offline-whisper", "base");
         lifecycle.failStage(runId, "TEMPORARY_FAILURE", "Transcription stage failed temporarily.", true);
     }
 
