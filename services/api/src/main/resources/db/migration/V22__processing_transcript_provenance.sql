@@ -2,6 +2,22 @@
 -- Do not rewrite V16/V17 history. Existing inconsistent references fail the upgrade
 -- rather than being silently repaired or disconnected from audit history.
 
+-- Trigger checks apply to new writes; preflight historical rows so an upgrade
+-- cannot silently retain an already cross-job segment-stage reference.
+DO $
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM transcript_segments seg
+        JOIN transcripts t ON t.id=seg.transcript_id
+        LEFT JOIN processing_stage_runs st ON st.id=seg.source_stage_run_id
+        WHERE seg.source_stage_run_id IS NOT NULL
+          AND (st.id IS NULL OR st.processing_job_id<>t.processing_job_id)
+    ) THEN
+        RAISE EXCEPTION 'V22 requires correction of existing cross-job transcript segment provenance';
+    END IF;
+END;
+$;
+
 -- A reprocessing job is meaningful only for the same media in the same meeting.
 -- The extra UNIQUE keys support exact composite FKs; id stays the primary key.
 ALTER TABLE processing_jobs
