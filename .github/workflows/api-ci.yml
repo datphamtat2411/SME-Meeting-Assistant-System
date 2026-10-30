@@ -5,6 +5,7 @@ on:
     branches:
       - develop
       - 'api/**'
+      - 'integration/**'
   pull_request:
     branches:
       - develop
