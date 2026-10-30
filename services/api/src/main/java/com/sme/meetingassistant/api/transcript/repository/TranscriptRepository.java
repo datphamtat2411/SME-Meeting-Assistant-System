@@ -6,6 +6,7 @@ import com.sme.meetingassistant.api.transcript.dto.TranscriptViews.SegmentView;
 import com.sme.meetingassistant.api.transcript.dto.TranscriptViews.SpeakerView;
 import com.sme.meetingassistant.api.transcript.dto.TranscriptViews.TranscriptView;
 import com.sme.meetingassistant.api.transcript.service.TranscriptIngestion;
+import com.sme.meetingassistant.api.transcript.service.TranscriptCorrectionDigest;
 import com.sme.meetingassistant.api.transcript.service.TranscriptIngestion.CoverageResult;
 import com.sme.meetingassistant.api.transcript.service.TranscriptIngestion.SegmentResult;
 import com.sme.meetingassistant.api.transcript.service.TranscriptIngestion.SpeakerResult;
@@ -120,6 +121,28 @@ public class TranscriptRepository {
             }
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                 "The processing job already published a different transcript result.");
+        }
+
+        // New jobs snapshot a mandatory contextual correction stage. Historical
+        // transcripts without that plan remain readable/upgradable, but a new
+        // publication with the plan must match the durable corrected-text digest.
+        boolean correctionPlanned = Boolean.TRUE.equals(this.jdbc.queryForObject("""
+            SELECT EXISTS (SELECT 1 FROM processing_stage_runs
+              WHERE processing_job_id=? AND stage_code='CONTEXTUAL_CORRECTION')
+            """, Boolean.class, result.processingJobId()));
+        if (correctionPlanned) {
+            boolean proven = Boolean.TRUE.equals(this.jdbc.queryForObject("""
+                SELECT EXISTS (SELECT 1 FROM processing_stage_runs s
+                  WHERE s.processing_job_id=? AND s.stage_code='CONTEXTUAL_CORRECTION'
+                    AND s.status IN ('SUCCEEDED','SUCCEEDED_WITH_WARNING')
+                    AND s.attempt_number = (SELECT MAX(latest.attempt_number)
+                      FROM processing_stage_runs latest WHERE latest.processing_job_id=s.processing_job_id
+                        AND latest.stage_code=s.stage_code)
+                    AND s.metrics->>'contextScope'='WHOLE_MEETING'
+                    AND s.metrics->>'outputSha256'=? )
+                """, Boolean.class, result.processingJobId(), TranscriptCorrectionDigest.sha256(result)));
+            if (!proven) throw new ResponseStatusException(HttpStatus.CONFLICT,
+                "Published transcript does not match successful whole-meeting contextual correction.");
         }
 
         List<String> finalized = this.jdbc.query("""
