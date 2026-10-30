@@ -333,7 +333,10 @@ public class TranscriptRepository {
         if (rows.isEmpty()) throw notFound();
         SegmentState old = rows.getFirst();
         if (old.version() != expectedVersion) throw new ResponseStatusException(HttpStatus.PRECONDITION_FAILED);
-        if (old.text().equals(text)) return new CorrectionView(segmentId, old.text(), old.quality(), old.version(), null, null);
+        // Explicit acceptance of suspicious text is a review decision even if text is unchanged.
+        if (old.text().equals(text) && "ACCEPTED".equals(old.quality())) {
+            return new CorrectionView(segmentId, old.text(), old.quality(), old.version(), null, null);
+        }
         int revision = this.jdbc.queryForObject(
             "SELECT COALESCE(MAX(revision_number),0)+1 FROM transcript_segment_revisions WHERE segment_id=?",
             Integer.class, segmentId);
@@ -385,6 +388,9 @@ public class TranscriptRepository {
                 rs.getObject("user_id", UUID.class), rs.getString("display_name")), clusterId).getFirst();
     }
 
+    /** Shared meeting lock, acquired before re-checking edit authorization. */
+    public void lockMeetingForReview(UUID meetingId) { lockMeeting(meetingId); }
+
     private void lockMeeting(UUID meetingId) {
         this.jdbc.query("SELECT id FROM meetings WHERE id=? FOR UPDATE",
             (rs, row) -> rs.getObject(1, UUID.class), meetingId).stream().findFirst()
@@ -401,6 +407,41 @@ public class TranscriptRepository {
                 "Current transcript changed during review.");
         }
     }
+
+
+    /**
+     * Captured by downstream workers and verified when persisting derived outputs.
+     * Status is part of the identity: warnings must not be silently trusted.
+     */
+    @Transactional(readOnly = true)
+    public Optional<TranscriptSource> currentSource(UUID meetingId) {
+        return this.jdbc.query("""
+            SELECT id,content_revision,status FROM transcripts
+            WHERE meeting_id=? AND is_current
+            """, (rs, row) -> new TranscriptSource(
+                rs.getObject("id", UUID.class), rs.getLong("content_revision"),
+                rs.getString("status")), meetingId).stream().findFirst();
+    }
+
+    /**
+     * Call inside the SAME transaction as downstream writes. This meeting lock
+     * fences concurrent corrections, mapping changes and AI version promotion.
+     */
+    public void requireCurrentSource(UUID meetingId, TranscriptSource expected) {
+        if (meetingId == null || expected == null || expected.transcriptId() == null
+                || expected.contentRevision() < 0 || expected.status() == null) {
+            throw new IllegalArgumentException("Transcript source revision is required.");
+        }
+        lockMeeting(meetingId);
+        TranscriptSource current = currentSource(meetingId).orElseThrow(() ->
+            new ResponseStatusException(HttpStatus.CONFLICT, "No current transcript is available."));
+        if (!current.equals(expected)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                "Transcript source changed; regenerate the derived result from current evidence.");
+        }
+    }
+
+    public record TranscriptSource(UUID transcriptId, long contentRevision, String status) {}
 
     private String encode(Map<String, Object> value) {
         if (value == null) return null;

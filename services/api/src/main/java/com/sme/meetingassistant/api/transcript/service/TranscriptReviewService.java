@@ -60,6 +60,7 @@ public class TranscriptReviewService implements TranscriptIngestion {
     public CorrectionView correct(UUID meetingId, UUID segmentId, String ifMatch,
             CorrectTranscriptSegmentRequest request) {
         UUID actor = this.authenticatedUser.requireUserId();
+        this.repository.lockMeetingForReview(meetingId);
         this.meetingAccess.requireTranscriptEditAllowed(meetingId, actor);
         long version = segmentVersion(segmentId, ifMatch);
         if (request == null || request.text() == null || request.text().isBlank()) {
@@ -71,6 +72,7 @@ public class TranscriptReviewService implements TranscriptIngestion {
     @Transactional
     public SpeakerView mapSpeaker(UUID meetingId, UUID clusterId, MapSpeakerRequest request) {
         UUID actor = this.authenticatedUser.requireUserId();
+        this.repository.lockMeetingForReview(meetingId);
         this.meetingAccess.requireTranscriptEditAllowed(meetingId, actor);
         if (request != null && request.userId() != null) {
             this.meetingAccess.requireTranscriptSpeakerMember(meetingId, request.userId());
