@@ -18,4 +18,10 @@ public interface MeetingMediaAccess {
 
     /** AI resource admission is distinct from reading meeting content. */
     void requireProcessingAllowed(UUID meetingId, UUID actorId);
+
+    /** Transcript edits are reserved for the current meeting organizer. */
+    void requireTranscriptEditAllowed(UUID meetingId, UUID actorId);
+
+    /** A mapped speaker must be a current participant or the meeting organizer. */
+    void requireTranscriptSpeakerMember(UUID meetingId, UUID userId);
 }
