@@ -101,6 +101,7 @@ class ProcessingDispatchStateIntegrationTests {
         assertThat(repository.markPublishFailed(eventId, second.claimToken(), 2, 2, "nack")).isTrue();
         assertThat(outboxStatus()).isEqualTo("FAILED");
         assertThat(jobStatus()).isEqualTo("FAILED");
+        assertThat(repository.findJob(jobId).orElseThrow().retryable()).isTrue();
         assertThat(jdbc.queryForObject("SELECT error_code FROM processing_jobs WHERE id = ?",
             String.class, jobId)).isEqualTo("JOB_DISPATCH_FAILED");
         assertThat(repository.findJob(jobId).orElseThrow().completedAt()).isNotNull();
@@ -123,8 +124,36 @@ class ProcessingDispatchStateIntegrationTests {
         assertThat(repository.claimPendingOutbox(1, 60, 2)).noneMatch(e -> e.id().equals(eventId));
         assertThat(outboxStatus()).isEqualTo("FAILED");
         assertThat(jobStatus()).isEqualTo("FAILED");
+        assertThat(repository.findJob(jobId).orElseThrow().retryable()).isTrue();
         assertThat(repository.markPublished(eventId, first.claimToken())).isFalse();
         assertThat(repository.markPublished(eventId, last.claimToken())).isFalse();
+    }
+
+    @Test
+    void terminalDispatchFailureCanRetryOriginalJobWithoutCreatingFakeStage() {
+        Outbox first = claim(1);
+        assertThat(repository.markPublishFailed(eventId, first.claimToken(), 1, 1, "broker-down")).isTrue();
+        var failed = repository.findJob(jobId).orElseThrow();
+        assertThat(failed.retryable()).isTrue();
+        UUID retryEvent = UUID.randomUUID();
+        assertThat(repository.retryJobAndOutbox(failed, retryEvent, null, 2)).isTrue();
+        assertThat(jobStatus()).isEqualTo("PENDING");
+        assertThat(repository.findJob(jobId).orElseThrow().retryCount()).isEqualTo(1);
+        assertThat(jdbc.queryForObject(
+            "SELECT count(*) FROM processing_stage_runs WHERE processing_job_id=?", Integer.class, jobId))
+            .isZero();
+        // The old failed event stays terminal; only the new generation is dispatched.
+        assertThat(repository.markPublished(eventId, first.claimToken())).isFalse();
+        eventId = retryEvent;
+        jdbc.update("""
+            UPDATE outbox_events SET occurred_at='1900-01-01', next_attempt_at='1900-01-01'
+            WHERE id=?
+            """, retryEvent);
+        Outbox retried = claim(1);
+        assertThat(retried.eventType()).isEqualTo("PROCESSING_JOB_RETRY_REQUESTED");
+        assertThat(repository.markPublished(retryEvent, retried.claimToken())).isTrue();
+        assertThat(jobStatus()).isEqualTo("QUEUED");
+        assertThat(repository.findJob(jobId).orElseThrow().retryable()).isFalse();
     }
 
     @Test
@@ -223,6 +252,7 @@ class ProcessingDispatchStateIntegrationTests {
         assertThat(jobStatus()).isEqualTo("FAILED");
         assertThat(repository.findJob(jobId).orElseThrow().errorCode())
             .isEqualTo("JOB_DISPATCH_FAILED");
+        assertThat(repository.findJob(jobId).orElseThrow().retryable()).isTrue();
     }
 
     @Test
@@ -237,6 +267,7 @@ class ProcessingDispatchStateIntegrationTests {
             .noneMatch(e -> e.id().equals(retry.id()));
         assertThat(outboxStatus()).isEqualTo("FAILED");
         assertThat(jobStatus()).isEqualTo("FAILED");
+        assertThat(repository.findJob(jobId).orElseThrow().retryable()).isTrue();
     }
 
     @Test

@@ -11,6 +11,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.sme.meetingassistant.api.media.storage.ObjectStorage;
+import com.sme.meetingassistant.api.media.repository.MediaRepository;
 import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle;
 import com.sme.meetingassistant.api.media.repository.MediaRepository.ProcessingLifecycleConflictException;
 import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle.StageClaim;
@@ -60,6 +61,7 @@ class ProcessingJobAdmissionIntegrationTests {
     @Autowired JdbcTemplate jdbc;
     @Autowired ObjectMapper json;
     @Autowired ProcessingJobLifecycle lifecycle;
+    @Autowired MediaRepository repository;
     @MockitoBean ObjectStorage storage;
 
     private UUID organizer;
@@ -259,6 +261,87 @@ class ProcessingJobAdmissionIntegrationTests {
         assertThat(List.of(pair.first(), pair.second())).containsExactlyInAnyOrder(202, 409);
         assertThat(jobs()).isEqualTo(1);
         assertThat(events()).isEqualTo(1);
+    }
+
+    /**
+     * Simulate a publisher's terminal negative confirmation through the actual
+     * repository transition. Unlike a synthetic failed stage, this job has not
+     * started a worker; the HTTP retry must still recover it.
+     */
+    private UUID failDispatch(UUID jobId, String eventType) {
+        UUID eventId = jdbc.queryForObject("""
+            SELECT id FROM outbox_events WHERE aggregate_id=? AND event_type=?
+            ORDER BY occurred_at DESC, id DESC LIMIT 1
+            """, UUID.class, jobId, eventType);
+        UUID token = UUID.randomUUID();
+        jdbc.update("""
+            UPDATE outbox_events SET claim_token=?,
+              claim_expires_at=CURRENT_TIMESTAMP + INTERVAL '60 seconds', attempt_count=1
+            WHERE id=? AND status='PENDING'
+            """, token, eventId);
+        assertThat(repository.markPublishFailed(eventId, token, 1, 1, "broker-nack")).isTrue();
+        assertThat(jdbc.queryForObject(
+            "SELECT status FROM processing_jobs WHERE id=?", String.class, jobId)).isEqualTo("FAILED");
+        assertThat(repository.findJob(jobId).orElseThrow().retryable()).isTrue();
+        return eventId;
+    }
+
+    private int retryDispatch(UUID jobId, String key) throws Exception {
+        return mvc.perform(post("/api/v1/processing-jobs/" + jobId + "/retry")
+            .principal(as(organizer)).header("Idempotency-Key", key)
+            .contentType(MediaType.APPLICATION_JSON).content("{}"))
+            .andReturn().getResponse().getStatus();
+    }
+
+    @Test
+    void failedInitialDispatchCanRetryThroughApiAndReachQueuedOnBrokerRecovery() throws Exception {
+        Source src = source();
+        UUID jobId = UUID.fromString(json.readTree(
+            admit(src, "initial-dispatch-failure").getResponse().getContentAsString())
+            .at("/data/id").asText());
+        UUID failedEvent = failDispatch(jobId, "PROCESSING_JOB_QUEUED");
+        assertThat(retryDispatch(jobId, "recover-initial")).isEqualTo(202);
+        assertThat(retryDispatch(jobId, "recover-initial")).isEqualTo(202);
+        assertThat(repository.findJob(jobId).orElseThrow().retryCount()).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM outbox_events WHERE aggregate_id=?
+              AND event_type='PROCESSING_JOB_RETRY_REQUESTED'
+            """, Integer.class, jobId)).isEqualTo(1);
+        UUID eventId = jdbc.queryForObject("""
+            SELECT id FROM outbox_events WHERE aggregate_id=?
+              AND event_type='PROCESSING_JOB_RETRY_REQUESTED'
+            """, UUID.class, jobId);
+        UUID token = UUID.randomUUID();
+        jdbc.update("""
+            UPDATE outbox_events SET claim_token=?,
+              claim_expires_at=CURRENT_TIMESTAMP + INTERVAL '60 seconds', attempt_count=1
+            WHERE id=? AND status='PENDING'
+            """, token, eventId);
+        assertThat(repository.markPublished(eventId, token)).isTrue();
+        assertThat(repository.markPublished(failedEvent, token)).isFalse();
+        assertThat(repository.findJob(jobId).orElseThrow().status()).isEqualTo("QUEUED");
+        assertThat(jdbc.queryForObject(
+            "SELECT count(*) FROM processing_stage_runs WHERE processing_job_id=? AND stage_code='TRANSCRIPTION'",
+            Integer.class, jobId)).isZero();
+    }
+
+    @Test
+    void failedRetryDispatchRemainsRetryableOnlyWithinConfiguredBudget() throws Exception {
+        Source src = source();
+        UUID jobId = UUID.fromString(json.readTree(
+            admit(src, "initial-for-retry-dispatch-failure").getResponse().getContentAsString())
+            .at("/data/id").asText());
+        failDispatch(jobId, "PROCESSING_JOB_QUEUED");
+        assertThat(retryDispatch(jobId, "recover-attempt-1")).isEqualTo(202);
+        failDispatch(jobId, "PROCESSING_JOB_RETRY_REQUESTED");
+        assertThat(retryDispatch(jobId, "recover-attempt-2")).isEqualTo(202);
+        failDispatch(jobId, "PROCESSING_JOB_RETRY_REQUESTED");
+        assertThat(retryDispatch(jobId, "recover-over-budget")).isEqualTo(409);
+        assertThat(repository.findJob(jobId).orElseThrow().retryCount()).isEqualTo(2);
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM outbox_events WHERE aggregate_id=?
+              AND event_type='PROCESSING_JOB_RETRY_REQUESTED'
+            """, Integer.class, jobId)).isEqualTo(2);
     }
 
     @Test

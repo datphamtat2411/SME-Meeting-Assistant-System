@@ -772,7 +772,7 @@ public class MediaRepository {
                 AND (claim_expires_at IS NULL OR claim_expires_at <= CURRENT_TIMESTAMP)
               RETURNING aggregate_id, aggregate_type, event_type, payload
             ), failed_jobs AS (
-              UPDATE processing_jobs p SET status = 'FAILED',
+              UPDATE processing_jobs p SET status = 'FAILED', retryable = TRUE,
                 error_code = 'JOB_DISPATCH_FAILED',
                 error_summary = 'Processing job dispatch was not confirmed.',
                 completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP,
@@ -865,7 +865,7 @@ public class MediaRepository {
                 AND attempt_count = ? AND claim_expires_at > CURRENT_TIMESTAMP
               RETURNING aggregate_id, aggregate_type, event_type, status, payload
             ), failed_jobs AS (
-              UPDATE processing_jobs p SET status = 'FAILED',
+              UPDATE processing_jobs p SET status = 'FAILED', retryable = TRUE,
                 error_code = 'JOB_DISPATCH_FAILED',
                 error_summary = 'Processing job dispatch was not confirmed.',
                 completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP,
