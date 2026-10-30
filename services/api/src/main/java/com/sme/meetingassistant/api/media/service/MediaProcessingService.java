@@ -69,13 +69,15 @@ public class MediaProcessingService {
             + request.expectedSizeBytes());
         String operation = UPLOAD_OPERATION + ":" + meetingId;
         UUID mediaId = UUID.randomUUID();
+        // Lock before inserting the FK-backed idempotency record; otherwise
+        // two concurrent requests can deadlock while upgrading user row locks.
+        this.repository.lockAdmissionUser(actor);
         UUID claimedId = claimIdempotency(actor, operation, idempotencyKey, fingerprint, mediaId);
         if (!claimedId.equals(mediaId)) {
             Media prior = media(claimedId);
             if (!prior.meetingId().equals(meetingId)) throw notFound();
             return uploadResponse(prior);
         }
-        this.repository.lockAdmissionUser(actor);
         int uploadLimit = positiveLimit(this.properties.getAdmission().getMaxPendingUploadsPerUser(),
             "max-pending-uploads-per-user");
         if (this.repository.pendingUploadIntentsForUser(actor) >= uploadLimit) {
@@ -264,11 +266,22 @@ public class MediaProcessingService {
     }
 
     private static ResponseStatusException rateLimited(String reason, long retryAfterSeconds) {
-        ResponseStatusException rejection = new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, reason);
-        if (retryAfterSeconds > 0) {
-            rejection.getHeaders().set(HttpHeaders.RETRY_AFTER, Long.toString(retryAfterSeconds));
+        // ResponseStatusException's default headers are read-only in Spring 7.
+        return new AdmissionRateLimitException(reason, retryAfterSeconds);
+    }
+
+    private static final class AdmissionRateLimitException extends ResponseStatusException {
+        private final HttpHeaders headers = new HttpHeaders();
+
+        private AdmissionRateLimitException(String reason, long retryAfterSeconds) {
+            super(HttpStatus.TOO_MANY_REQUESTS, reason);
+            if (retryAfterSeconds > 0) {
+                this.headers.set(HttpHeaders.RETRY_AFTER, Long.toString(retryAfterSeconds));
+            }
         }
-        return rejection;
+
+        @Override
+        public HttpHeaders getHeaders() { return this.headers; }
     }
 
     private static ResponseStatusException conflict(String message) {
@@ -315,12 +328,13 @@ public class MediaProcessingService {
         Job job = new Job(UUID.randomUUID(), meetingId, mediaId, "OFFLINE_MEETING_PROCESSING", "QUEUED", actor,
             null, 0, OffsetDateTime.now(), null, null, null, null, null,
             OffsetDateTime.now(), OffsetDateTime.now());
+        // Every admission takes the same row lock before inserting idempotency.
+        this.repository.lockAdmissionUser(actor);
         UUID claimedId = claimIdempotency(actor, operation, idempotencyKey, fingerprint, job.id());
         if (!claimedId.equals(job.id())) return toResponse(job(claimedId));
 
-        // The user row is our cross-instance admission mutex. The lock and every
-        // count/insert below execute in the same @Transactional PostgreSQL transaction.
-        this.repository.lockAdmissionUser(actor);
+        // The user lock remains held through all counts, job and outbox inserts
+        // in this @Transactional PostgreSQL transaction.
         if (this.repository.activeJobsForMeeting(meetingId) > 0) {
             throw conflict("Another processing job is already active for this meeting.");
         }

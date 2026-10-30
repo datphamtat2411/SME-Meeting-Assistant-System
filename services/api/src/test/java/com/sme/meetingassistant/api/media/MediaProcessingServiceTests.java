@@ -198,7 +198,7 @@ class MediaProcessingServiceTests {
         when(this.repository.findJob(saved.id())).thenReturn(Optional.of(saved));
 
         assertEquals(saved.id(), this.service.createJob(this.meetingId, mediaId, "replay").id());
-        verify(this.repository, never()).lockAdmissionUser(this.actor);
+        verify(this.repository).lockAdmissionUser(this.actor);
         verify(this.repository, never()).recentJobAdmissions(this.actor, 60);
         verify(this.repository, never()).insertJobAndOutbox(any(Job.class), any(UUID.class));
     }

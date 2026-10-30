@@ -138,7 +138,7 @@ public class MediaRepository {
      * admissions across API instances without a new distributed lock service.
      */
     public void lockAdmissionUser(UUID userId) {
-        this.jdbc.queryForObject("SELECT id FROM users WHERE id = ? FOR UPDATE", UUID.class, userId);
+        this.jdbc.queryForObject("SELECT id FROM users WHERE id = ? FOR NO KEY UPDATE", UUID.class, userId);
     }
 
     public int activeJobsForMeeting(UUID meetingId) {
