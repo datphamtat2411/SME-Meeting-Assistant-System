@@ -103,3 +103,24 @@ CREATE TRIGGER trg_transcript_publication_identity
     BEFORE UPDATE OF meeting_id, source_media_id, processing_job_id, source_stage_run_id
     ON transcripts
     FOR EACH ROW EXECUTE FUNCTION protect_transcript_publication_identity();
+
+-- Stage ownership and attempt identity are append-only. Without this guard an
+-- upstream stage could be reassigned after a segment passed its insert check.
+CREATE FUNCTION protect_processing_stage_identity() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF ROW(OLD.processing_job_id, OLD.stage_code, OLD.attempt_number)
+        IS DISTINCT FROM
+       ROW(NEW.processing_job_id, NEW.stage_code, NEW.attempt_number)
+    THEN
+        RAISE EXCEPTION 'Processing stage attempt identity is immutable'
+            USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_processing_stage_identity
+    BEFORE UPDATE OF processing_job_id, stage_code, attempt_number
+    ON processing_stage_runs
+    FOR EACH ROW EXECUTE FUNCTION protect_processing_stage_identity();

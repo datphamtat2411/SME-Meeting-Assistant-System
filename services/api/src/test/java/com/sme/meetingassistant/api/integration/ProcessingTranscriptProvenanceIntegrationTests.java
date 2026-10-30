@@ -156,6 +156,18 @@ class ProcessingTranscriptProvenanceIntegrationTests {
     }
 
     @Test
+    void upstreamStageOwnershipCannotBeReassignedAfterSegmentIsPublished() {
+        UUID transcript = insertTranscript(jobA, mediaA, stageA, 1);
+        insertSegment(transcript, upstreamA);
+        assertThatThrownBy(() -> jdbc.update("""
+            UPDATE processing_stage_runs SET processing_job_id=? WHERE id=?
+            """, jobB, upstreamA)).isInstanceOf(DataIntegrityViolationException.class);
+        assertThat(jdbc.queryForObject("""
+            SELECT processing_job_id FROM processing_stage_runs WHERE id=?
+            """, UUID.class, upstreamA)).isEqualTo(jobA);
+    }
+
+    @Test
     void reprocessingParentCannotBeFromOtherMediaInSameMeeting() {
         assertThatThrownBy(() ->
             insertJob(UUID.randomUUID(), meeting, mediaA, jobB))
