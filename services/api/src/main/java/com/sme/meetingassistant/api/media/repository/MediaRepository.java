@@ -411,9 +411,11 @@ public class MediaRepository {
               UPDATE outbox_events SET status = 'FAILED',
                 claim_token = NULL, claim_expires_at = NULL,
                 last_error = COALESCE(last_error, 'OUTBOX_CONFIRM_NOT_OBSERVED')
-              WHERE status = 'PENDING' AND attempt_count >= ?
+              WHERE status = 'PENDING' AND aggregate_type = 'PROCESSING_JOB'
+                AND event_type IN ('PROCESSING_JOB_QUEUED', 'PROCESSING_JOB_RETRY_REQUESTED')
+                AND attempt_count >= ?
                 AND (claim_expires_at IS NULL OR claim_expires_at <= CURRENT_TIMESTAMP)
-              RETURNING aggregate_id, aggregate_type, event_type
+              RETURNING aggregate_id, aggregate_type, event_type, payload
             ), failed_jobs AS (
               UPDATE processing_jobs p SET status = 'FAILED',
                 error_code = 'JOB_DISPATCH_FAILED',
@@ -422,7 +424,11 @@ public class MediaRepository {
                 version = version + 1
               FROM exhausted e
               WHERE e.aggregate_type = 'PROCESSING_JOB'
-                AND e.event_type = 'PROCESSING_JOB_QUEUED'
+                AND (
+                  (e.event_type = 'PROCESSING_JOB_QUEUED' AND p.retry_count = 0)
+                  OR (e.event_type = 'PROCESSING_JOB_RETRY_REQUESTED'
+                    AND e.payload->>'attemptNumber' = p.retry_count::text)
+                )
                 AND p.id = e.aggregate_id AND p.status = 'PENDING'
               RETURNING p.id
             ) SELECT count(*) FROM exhausted
@@ -430,7 +436,9 @@ public class MediaRepository {
         return this.jdbc.query("""
             WITH candidates AS (
               SELECT id FROM outbox_events
-              WHERE status = 'PENDING' AND attempt_count < ?
+              WHERE status = 'PENDING' AND aggregate_type = 'PROCESSING_JOB'
+                AND event_type IN ('PROCESSING_JOB_QUEUED', 'PROCESSING_JOB_RETRY_REQUESTED')
+                AND attempt_count < ?
                 AND next_attempt_at <= CURRENT_TIMESTAMP
                 AND (claim_expires_at IS NULL OR claim_expires_at <= CURRENT_TIMESTAMP)
               ORDER BY occurred_at, id
@@ -462,14 +470,18 @@ public class MediaRepository {
                 claim_token = NULL, claim_expires_at = NULL
               WHERE id = ? AND claim_token = ? AND status = 'PENDING'
                 AND claim_expires_at > CURRENT_TIMESTAMP
-              RETURNING aggregate_id, aggregate_type, event_type
+              RETURNING aggregate_id, aggregate_type, event_type, payload
             ), queued_jobs AS (
               UPDATE processing_jobs p SET status = 'QUEUED',
                 queued_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP,
                 version = version + 1
               FROM published e
               WHERE e.aggregate_type = 'PROCESSING_JOB'
-                AND e.event_type = 'PROCESSING_JOB_QUEUED'
+                AND (
+                  (e.event_type = 'PROCESSING_JOB_QUEUED' AND p.retry_count = 0)
+                  OR (e.event_type = 'PROCESSING_JOB_RETRY_REQUESTED'
+                    AND e.payload->>'attemptNumber' = p.retry_count::text)
+                )
                 AND p.id = e.aggregate_id AND p.status = 'PENDING'
               RETURNING p.id
             ) SELECT count(*) FROM published
@@ -496,7 +508,7 @@ public class MediaRepository {
                 claim_token = NULL, claim_expires_at = NULL
               WHERE id = ? AND claim_token = ? AND status = 'PENDING'
                 AND attempt_count = ? AND claim_expires_at > CURRENT_TIMESTAMP
-              RETURNING aggregate_id, aggregate_type, event_type, status
+              RETURNING aggregate_id, aggregate_type, event_type, status, payload
             ), failed_jobs AS (
               UPDATE processing_jobs p SET status = 'FAILED',
                 error_code = 'JOB_DISPATCH_FAILED',
@@ -506,7 +518,11 @@ public class MediaRepository {
               FROM decided e
               WHERE e.status = 'FAILED'
                 AND e.aggregate_type = 'PROCESSING_JOB'
-                AND e.event_type = 'PROCESSING_JOB_QUEUED'
+                AND (
+                  (e.event_type = 'PROCESSING_JOB_QUEUED' AND p.retry_count = 0)
+                  OR (e.event_type = 'PROCESSING_JOB_RETRY_REQUESTED'
+                    AND e.payload->>'attemptNumber' = p.retry_count::text)
+                )
                 AND p.id = e.aggregate_id AND p.status = 'PENDING'
               RETURNING p.id
             ) SELECT count(*) FROM decided
