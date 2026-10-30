@@ -280,7 +280,7 @@ public class MediaRepository {
             int changed = this.jdbc.update("""
                 UPDATE processing_stage_runs SET status = 'RUNNING', provider_name = ?, model_name = ?,
                   started_at = COALESCE(started_at, CURRENT_TIMESTAMP),
-                  claim_token = ?, lease_expires_at = CURRENT_TIMESTAMP + (? * INTERVAL '1 second')
+                  claim_token = ?, lease_expires_at = clock_timestamp() + (? * INTERVAL '1 second')
                 WHERE id = ? AND status = 'PENDING'
                 """, providerName, modelName, token, leaseSeconds, runId);
             if (changed != 1) throw new ProcessingLifecycleConflictException("Stage attempt was already claimed.");
@@ -307,9 +307,9 @@ public class MediaRepository {
         }
         int changed = this.jdbc.update("""
             UPDATE processing_stage_runs
-            SET lease_expires_at = CURRENT_TIMESTAMP + (? * INTERVAL '1 second')
+            SET lease_expires_at = clock_timestamp() + (? * INTERVAL '1 second')
             WHERE id = ? AND claim_token = ? AND status = 'RUNNING'
-              AND lease_expires_at > CURRENT_TIMESTAMP
+              AND lease_expires_at > clock_timestamp()
             """, leaseSeconds, claim.stageRunId(), claim.claimToken());
         if (changed != 1) throw new ProcessingLifecycleConflictException("Stage claim has expired or was superseded.");
     }
@@ -329,7 +329,7 @@ public class MediaRepository {
     private boolean liveClaim(StageClaim claim) {
         return Boolean.TRUE.equals(this.jdbc.queryForObject("""
             SELECT EXISTS (SELECT 1 FROM processing_stage_runs
-              WHERE id = ? AND claim_token = ? AND lease_expires_at > CURRENT_TIMESTAMP)
+              WHERE id = ? AND claim_token = ? AND lease_expires_at > clock_timestamp())
             """, Boolean.class, claim.stageRunId(), claim.claimToken()));
     }
 
@@ -578,7 +578,7 @@ public class MediaRepository {
             SELECT j.id FROM processing_jobs j WHERE j.status = 'RUNNING'
               AND EXISTS (SELECT 1 FROM processing_stage_runs s
                 WHERE s.processing_job_id = j.id AND s.status = 'RUNNING'
-                  AND (s.lease_expires_at IS NULL OR s.lease_expires_at <= CURRENT_TIMESTAMP))
+                  AND (s.lease_expires_at IS NULL OR s.lease_expires_at <= clock_timestamp()))
             ORDER BY j.updated_at, j.id LIMIT ? FOR UPDATE OF j SKIP LOCKED
             """, (rs, row) -> rs.getObject("id", UUID.class), limit);
         int failed = 0;
@@ -586,7 +586,7 @@ public class MediaRepository {
             List<UUID> expired = this.jdbc.query("""
                 SELECT id FROM processing_stage_runs
                 WHERE processing_job_id = ? AND status = 'RUNNING'
-                  AND (lease_expires_at IS NULL OR lease_expires_at <= CURRENT_TIMESTAMP)
+                  AND (lease_expires_at IS NULL OR lease_expires_at <= clock_timestamp())
                 FOR UPDATE
                 """, (rs, row) -> rs.getObject("id", UUID.class), jobId);
             if (expired.isEmpty()) continue;
@@ -594,7 +594,7 @@ public class MediaRepository {
                 UPDATE processing_stage_runs SET status = 'FAILED', retryable = TRUE,
                   error_code = 'STAGE_LEASE_EXPIRED', completed_at = CURRENT_TIMESTAMP
                 WHERE processing_job_id = ? AND status = 'RUNNING'
-                  AND (lease_expires_at IS NULL OR lease_expires_at <= CURRENT_TIMESTAMP)
+                  AND (lease_expires_at IS NULL OR lease_expires_at <= clock_timestamp())
                 """, jobId);
             this.jdbc.update("""
                 UPDATE processing_jobs SET status = 'FAILED', retryable = TRUE,
@@ -642,7 +642,7 @@ public class MediaRepository {
                 ))
               )
             """, resumeStage, job.id(), job.retryCount(), maxRetries,
-            stageCode == null, stageCode != null, stageCode);
+            stageCode != null, stageCode != null, stageCode);
         if (updated != 1) return false;
         if (resumeStage != null) {
             int inserted = this.jdbc.update("""

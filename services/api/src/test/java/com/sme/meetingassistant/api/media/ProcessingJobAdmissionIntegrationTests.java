@@ -329,7 +329,7 @@ class ProcessingJobAdmissionIntegrationTests {
 
         assertThat(jdbc.queryForObject("SELECT status FROM processing_jobs WHERE id = ?", String.class, jobId))
             .isEqualTo("RUNNING");
-        assertThat(jdbc.queryForObject("SELECT status FROM processing_stage_runs WHERE id = ?", String.class, runId))
+        assertThat(jdbc.queryForObject("SELECT status FROM processing_stage_runs WHERE id = ?", String.class, runId.stageRunId()))
             .isEqualTo("SUCCEEDED_WITH_WARNING");
         assertThat(jdbc.queryForObject("SELECT count(*) FROM processing_artifacts WHERE stage_run_id = ?",
             Integer.class, runId.stageRunId())).isEqualTo(1);
