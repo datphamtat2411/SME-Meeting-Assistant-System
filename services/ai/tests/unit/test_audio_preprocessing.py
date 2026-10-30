@@ -1,6 +1,7 @@
 import errno
 import json
 import os
+import resource
 import select
 import signal
 import struct
@@ -313,7 +314,8 @@ def test_real_runner_bounds_failures_without_sensitive_context(code, category):
     assert "CalledProcessError" not in text
 
 
-def test_runner_controlled_environment_and_child_resource_limits(monkeypatch):
+@pytest.mark.parametrize("inherited_stack_bytes", [8 * 1024 * 1024, 16 * 1024 * 1024])
+def test_runner_controlled_environment_and_child_resource_limits(monkeypatch, inherited_stack_bytes):
     monkeypatch.setenv("PRIVATE_MEDIA_SECRET", "private-payload")
     popen = subprocess.Popen
     calls = []
@@ -326,10 +328,16 @@ def test_runner_controlled_environment_and_child_resource_limits(monkeypatch):
     code = (
         "import os,resource,json; print(json.dumps({'secret':os.getenv('PRIVATE_MEDIA_SECRET'),"
         "'memory':resource.getrlimit(resource.RLIMIT_AS)[0],"
+        "'stack':resource.getrlimit(resource.RLIMIT_STACK),"
         "'core':resource.getrlimit(resource.RLIMIT_CORE)[0]}))"
     )
-    result = json.loads(run_child(code))
-    assert result == {"secret": None, "memory": 536870912, "core": 0}
+    original_stack = resource.getrlimit(resource.RLIMIT_STACK)
+    try:
+        resource.setrlimit(resource.RLIMIT_STACK, (inherited_stack_bytes, original_stack[1]))
+        result = json.loads(run_child(code))
+    finally:
+        resource.setrlimit(resource.RLIMIT_STACK, original_stack)
+    assert result == {"secret": None, "memory": 536870912, "stack": [8388608, 8388608], "core": 0}
     assert calls[0]["shell"] is False
     assert calls[0]["start_new_session"] is True
     assert "preexec_fn" not in calls[0]

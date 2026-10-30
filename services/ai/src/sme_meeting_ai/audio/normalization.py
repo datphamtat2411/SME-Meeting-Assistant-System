@@ -45,6 +45,8 @@ try:
         (resource.RLIMIT_AS, memory), (resource.RLIMIT_FSIZE, output),
         (resource.RLIMIT_CPU, cpu), (resource.RLIMIT_CORE, 0),
         (resource.RLIMIT_NOFILE, 64),
+        # Keep thread stack reservations within the address-space budget on every host.
+        (resource.RLIMIT_STACK, 8 * 1024 * 1024),
     ):
         resource.setrlimit(kind, (limit, limit))
     os.execv(sys.argv[4], sys.argv[4:])
