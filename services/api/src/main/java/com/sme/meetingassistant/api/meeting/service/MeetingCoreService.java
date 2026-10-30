@@ -373,6 +373,25 @@ public class MeetingCoreService implements MeetingMediaAccess {
     public void requireProcessingAllowed(UUID meetingId, UUID actorId) {
         requireMediaOrganizer(meetingId, actorId);
     }
+
+    @Override
+    @Transactional(readOnly = true)
+    public void requireTranscriptEditAllowed(UUID meetingId, UUID actorId) {
+        MeetingEntity meeting = mediaMeetingForCurrentActor(meetingId, actorId);
+        if (!meeting.getOrganizerUserId().equals(actorId)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+        }
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public void requireTranscriptSpeakerMember(UUID meetingId, UUID userId) {
+        MeetingEntity meeting = lookup(meetingId);
+        if (!meeting.getOrganizerUserId().equals(userId)
+                && !participants.existsByMeetingIdAndUserIdAndRemovedAtIsNull(meetingId, userId)) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY);
+        }
+    }
     private void eligible(UUID id) {
         if (!users.isActive(id)) {
             throw invalid();
