@@ -89,19 +89,48 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
     @Override
     @Transactional
     public void recordArtifact(UUID jobId, StageClaim claim, String artifactType, String objectKey,
-
             String sha256, Long sizeBytes, String retentionClass) {
+        recordBinaryArtifact(jobId, claim, false, artifactType, objectKey, sha256,
+            sizeBytes, retentionClass);
+    }
+
+    @Override
+    @Transactional
+    public void recordJobArtifact(UUID jobId, StageClaim producerClaim, String artifactType,
+            String objectKey, String sha256, Long sizeBytes, String retentionClass) {
+        recordBinaryArtifact(jobId, producerClaim, true, artifactType, objectKey, sha256,
+            sizeBytes, retentionClass);
+    }
+
+    private void recordBinaryArtifact(UUID jobId, StageClaim claim, boolean jobScoped,
+            String artifactType, String objectKey, String sha256, Long sizeBytes,
+            String retentionClass) {
         requireClaim(claim);
-        requireCode(artifactType, 64, "artifactType");
-        requireRequiredText(objectKey, 2048, "objectKey");
-        requireOptionalText(sha256, 64, "sha256");
-        requireOptionalText(retentionClass, 32, "retentionClass");
-        if (sha256 != null && !sha256.matches("[0-9a-fA-F]{64}")) {
-            throw new IllegalArgumentException("sha256 must contain 64 hexadecimal characters.");
+        if (jobId == null) throw new IllegalArgumentException("jobId is required.");
+        if (!"NORMALIZED_AUDIO".equals(artifactType) && !"AUDIO_CHUNK".equals(artifactType)) {
+            // Raw ASR/Whisper text and unvalidated debug JSON are never durable artifacts.
+            throw new IllegalArgumentException("Only approved non-text audio artifacts are allowed.");
         }
-        if (sizeBytes != null && sizeBytes < 0) throw new IllegalArgumentException("sizeBytes cannot be negative.");
-        this.repository.recordArtifact(jobId, claim, artifactType, objectKey,
-            sha256, sizeBytes, retentionClass);
+        if (sha256 == null || !sha256.matches("[0-9a-fA-F]{64}")) {
+            throw new IllegalArgumentException("Artifact sha256 is required.");
+        }
+        if (sizeBytes == null || sizeBytes <= 0) {
+            throw new IllegalArgumentException("Artifact sizeBytes must be positive.");
+        }
+        if (retentionClass != null && !"TEMPORARY".equals(retentionClass)
+                && !"STANDARD".equals(retentionClass)) {
+            throw new IllegalArgumentException("Invalid artifact retentionClass.");
+        }
+        String prefix = "processing/" + jobId + "/artifacts/";
+        if (objectKey == null || !objectKey.startsWith(prefix)) {
+            throw new IllegalArgumentException("Artifact must belong to its processing job namespace.");
+        }
+        String basename = objectKey.substring(prefix.length());
+        if (!basename.matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.(wav|flac|pcm)")) {
+            throw new IllegalArgumentException("Artifact object key must use a generated binary-audio identifier.");
+        }
+        this.repository.recordArtifact(jobId, claim, jobScoped, artifactType, objectKey,
+            sha256.toLowerCase(java.util.Locale.ROOT), sizeBytes, retentionClass);
     }
 
     private static void requireClaim(StageClaim claim) {

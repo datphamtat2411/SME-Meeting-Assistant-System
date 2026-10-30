@@ -20,6 +20,16 @@ public interface ProcessingJobLifecycle {
 
     void completeJob(UUID jobId);
 
+    /**
+     * Stage-scoped intermediate binary. Claim is required for producer ownership.
+     */
     void recordArtifact(UUID jobId, StageClaim claim, String artifactType, String objectKey,
             String sha256, Long sizeBytes, String retentionClass);
+
+    /**
+     * Job-scoped intermediate binary with no stage_run_id. Still fenced by
+     * its producing stage's active claim; nullable provenance is not unauthenticated.
+     */
+    void recordJobArtifact(UUID jobId, StageClaim producerClaim, String artifactType,
+            String objectKey, String sha256, Long sizeBytes, String retentionClass);
 }

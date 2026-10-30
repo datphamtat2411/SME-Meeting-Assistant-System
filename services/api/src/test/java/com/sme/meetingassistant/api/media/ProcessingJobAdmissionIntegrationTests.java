@@ -320,8 +320,9 @@ class ProcessingJobAdmissionIntegrationTests {
             .at("/data/id").asText());
 
         StageClaim runId = lifecycle.startStage(jobId, "TRANSCRIPTION", "offline-whisper", "base");
-        lifecycle.recordArtifact(jobId, runId, "ASR_DEBUG", "processing/" + jobId + "/asr.json",
-            "a".repeat(64), 128L, "DEBUG");
+        lifecycle.recordArtifact(jobId, runId, "NORMALIZED_AUDIO",
+            "processing/" + jobId + "/artifacts/" + UUID.randomUUID() + ".wav",
+            "a".repeat(64), 128L, "TEMPORARY");
         lifecycle.completeStage(runId, "SUCCEEDED_WITH_WARNING", null, "{\"coverage\":0.92}");
         // A successful transcription stage alone is not enough to complete the job.
         assertThatThrownBy(() -> lifecycle.completeJob(jobId))

@@ -121,7 +121,8 @@ class ProcessingStageFencingIntegrationTests {
         assertThatThrownBy(() -> lifecycle.failStage(stolen, "FAILED_STAGE", "stolen", true))
             .isInstanceOf(ProcessingLifecycleConflictException.class);
         assertThatThrownBy(() -> lifecycle.recordArtifact(jobId, stolen, "NORMALIZED_AUDIO",
-            "processing/" + jobId + "/stolen.wav", null, 1L, "TEMPORARY"))
+            "processing/" + jobId + "/artifacts/" + UUID.randomUUID() + ".wav",
+            "a".repeat(64), 1L, "TEMPORARY"))
             .isInstanceOf(ProcessingLifecycleConflictException.class);
         assertThat(status()).isEqualTo("RUNNING");
         lifecycle.completeStage(claim, "SUCCEEDED", null, "{}");
@@ -241,7 +242,8 @@ class ProcessingStageFencingIntegrationTests {
         StageClaim owner = start();
         expire(owner);
         assertThatThrownBy(() -> lifecycle.recordArtifact(jobId, owner, "NORMALIZED_AUDIO",
-            "processing/" + jobId + "/late.wav", null, 1L, "TEMPORARY"))
+            "processing/" + jobId + "/artifacts/" + UUID.randomUUID() + ".wav",
+            "a".repeat(64), 1L, "TEMPORARY"))
             .isInstanceOf(ProcessingLifecycleConflictException.class);
     }
 }

@@ -526,31 +526,36 @@ public class MediaRepository {
             """, Boolean.class, stageRunId, errorCode, retryable));
     }
 
-    public void recordArtifact(UUID jobId, StageClaim claim, String artifactType, String objectKey,
-            String sha256, Long sizeBytes, String retentionClass) {
+    /**
+     * A job-scoped reference keeps stage_run_id NULL, but the worker must still
+     * own an active stage claim. Matching references are idempotent, including NULL.
+     */
+    public void recordArtifact(UUID jobId, StageClaim producer, boolean jobScoped,
+            String artifactType, String objectKey, String sha256, Long sizeBytes,
+            String retentionClass) {
         String status = lockJobStatus(jobId);
-        if (!"RUNNING".equals(status) || !isLatestClaim(jobId, claim) || !liveClaim(claim)) {
+        if (!"RUNNING".equals(status) || !isLatestClaim(jobId, producer) || !liveClaim(producer)) {
             throw new ProcessingLifecycleConflictException("Stale worker cannot record stage artifacts.");
         }
-        UUID stageRunId = claim.stageRunId();
+        UUID stageRunId = jobScoped ? null : producer.stageRunId();
         int inserted = this.jdbc.update("""
             INSERT INTO processing_artifacts (id, processing_job_id, stage_run_id, artifact_type,
               object_key, sha256, size_bytes, retention_class)
-            SELECT ?, ?, ?, ?, ?, ?, ?, ?
-            WHERE EXISTS (SELECT 1 FROM processing_stage_runs
-              WHERE id = ? AND processing_job_id = ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (object_key) DO NOTHING
             """, UUID.randomUUID(), jobId, stageRunId, artifactType, objectKey,
-            sha256, sizeBytes, retentionClass, stageRunId, jobId);
+            sha256, sizeBytes, retentionClass);
         if (inserted == 1) return;
         boolean replay = Boolean.TRUE.equals(this.jdbc.queryForObject("""
             SELECT EXISTS (SELECT 1 FROM processing_artifacts WHERE object_key = ?
-              AND processing_job_id = ? AND stage_run_id = ? AND artifact_type = ?
-              AND sha256 IS NOT DISTINCT FROM ? AND size_bytes IS NOT DISTINCT FROM ?
+              AND processing_job_id = ? AND stage_run_id IS NOT DISTINCT FROM ?
+              AND artifact_type = ? AND sha256 = ? AND size_bytes = ?
               AND retention_class IS NOT DISTINCT FROM ?)
             """, Boolean.class, objectKey, jobId, stageRunId, artifactType,
             sha256, sizeBytes, retentionClass));
-        if (!replay) throw new IllegalStateException("Artifact reference is invalid or conflicts with existing metadata.");
+        if (!replay) {
+            throw new ProcessingLifecycleConflictException("Artifact reference conflicts with existing provenance.");
+        }
     }
 
     public List<ProcessingStageResponse> listStageRuns(UUID jobId) {
