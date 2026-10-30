@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
+import com.sme.meetingassistant.api.transcript.repository.TranscriptRepository;
 import com.sme.meetingassistant.api.transcript.service.TranscriptIngestion;
 import com.sme.meetingassistant.api.transcript.service.TranscriptIngestion.CoverageResult;
 import com.sme.meetingassistant.api.transcript.service.TranscriptIngestion.SegmentResult;
@@ -26,6 +27,7 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
 
 @ActiveProfiles("test")
@@ -33,6 +35,8 @@ import org.springframework.web.server.ResponseStatusException;
 @Import(PostgresTestConfiguration.class)
 class TranscriptPublicationIdempotencyIntegrationTests {
     @Autowired TranscriptIngestion ingestion;
+    @Autowired TranscriptRepository repository;
+    @Autowired TransactionTemplate transactions;
     @Autowired JdbcTemplate jdbc;
 
     private UUID actor, meeting, media, job, finalization;
@@ -271,5 +275,170 @@ class TranscriptPublicationIdempotencyIntegrationTests {
         assertThat(versions()).isEqualTo(1);
         assertThat(jdbc.queryForObject(
             "SELECT is_current FROM transcripts WHERE id=?", Boolean.class, existing)).isTrue();
+    }
+
+    private UUID transcriptFor(UUID jobId) {
+        return jdbc.queryForObject("SELECT id FROM transcripts WHERE processing_job_id=?",
+            UUID.class, jobId);
+    }
+
+    private UUID segmentFor(UUID transcriptId) {
+        return jdbc.queryForObject("SELECT id FROM transcript_segments WHERE transcript_id=?",
+            UUID.class, transcriptId);
+    }
+
+    private long revision(UUID transcriptId) {
+        return jdbc.queryForObject("SELECT content_revision FROM transcripts WHERE id=?",
+            Long.class, transcriptId);
+    }
+
+    private void edit(UUID transcriptId, String updatedText) {
+        transactions.executeWithoutResult(tx ->
+            repository.correct(meeting, segmentFor(transcriptId), actor, updatedText, "Review", 0));
+    }
+
+    @Test
+    void uneditedCurrentIsAutomaticallySupersededByNewerReprocessingResult() {
+        ingestion.publish(result("Initial result"));
+        UUID initial = current();
+        Source newer = completedJob();
+        ingestion.publish(result(newer.job(), newer.stage(), "Newer reprocess"));
+        assertThat(versions()).isEqualTo(2);
+        assertThat(current()).isEqualTo(transcriptFor(newer.job()));
+        assertThat(jdbc.queryForObject("SELECT is_current FROM transcripts WHERE id=?",
+            Boolean.class, initial)).isFalse();
+        assertThat(revision(initial)).isZero();
+    }
+
+    @Test
+    void humanEditedCurrentRemainsSelectedAndReprocessedResultBecomesCandidate() {
+        ingestion.publish(result("Initial result"));
+        UUID edited = current();
+        edit(edited, "Human correction must win");
+        assertThat(revision(edited)).isEqualTo(1L);
+        assertThat(repository.current(meeting).orElseThrow().contentRevision()).isEqualTo(1L);
+        Source newer = completedJob();
+        TranscriptResult newResult = result(newer.job(), newer.stage(), "Reprocessed AI");
+        ingestion.publish(newResult);
+        UUID candidate = transcriptFor(newer.job());
+        assertThat(candidate).isNotEqualTo(edited);
+        assertThat(current()).isEqualTo(edited);
+        assertThat(jdbc.queryForObject("SELECT is_current FROM transcripts WHERE id=?",
+            Boolean.class, candidate)).isFalse();
+        assertThat(jdbc.queryForObject(
+            "SELECT current_text FROM transcript_segments WHERE transcript_id=?",
+            String.class, edited)).isEqualTo("Human correction must win");
+        assertThat(versions()).isEqualTo(2);
+        ingestion.publish(newResult);
+        assertThat(current()).isEqualTo(edited);
+        assertThat(versions()).isEqualTo(2);
+    }
+
+    @Test
+    void newerJobAcceptedBeforeOldResultPreventsStaleAutoPromotion() {
+        Source newer = completedJob();
+        ingestion.publish(result("Late initial result"));
+        assertThat(versions()).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM transcripts WHERE meeting_id=? AND is_current",
+            Integer.class, meeting)).isZero();
+        ingestion.publish(result(newer.job(), newer.stage(), "Newer result"));
+        assertThat(current()).isEqualTo(transcriptFor(newer.job()));
+        assertThat(versions()).isEqualTo(2);
+    }
+
+    @Test
+    void olderResultCannotReplaceAlreadyCurrentNewerJob() {
+        Source newer = completedJob();
+        ingestion.publish(result(newer.job(), newer.stage(), "Newer result first"));
+        UUID winning = current();
+        ingestion.publish(result("Older result late"));
+        assertThat(current()).isEqualTo(winning);
+        assertThat(jdbc.queryForObject("SELECT is_current FROM transcripts WHERE processing_job_id=?",
+            Boolean.class, job)).isFalse();
+        assertThat(versions()).isEqualTo(2);
+    }
+
+    @Test
+    void speakerMappingChangeCreatesHumanRevisionAndProtectsCurrent() {
+        ingestion.publish(result("Speaker result"));
+        UUID original = current();
+        UUID cluster = jdbc.queryForObject("SELECT id FROM speaker_clusters WHERE transcript_id=?",
+            UUID.class, original);
+        transactions.executeWithoutResult(tx -> repository.mapSpeaker(meeting, cluster, actor, actor));
+        assertThat(revision(original)).isEqualTo(1);
+        transactions.executeWithoutResult(tx -> repository.mapSpeaker(meeting, cluster, actor, actor));
+        assertThat(revision(original)).isEqualTo(1);
+        Source newer = completedJob();
+        ingestion.publish(result(newer.job(), newer.stage(), "New AI"));
+        assertThat(current()).isEqualTo(original);
+        assertThat(jdbc.queryForObject("SELECT is_current FROM transcripts WHERE processing_job_id=?",
+            Boolean.class, newer.job())).isFalse();
+        transactions.executeWithoutResult(tx -> repository.mapSpeaker(meeting, cluster, null, actor));
+        assertThat(revision(original)).isEqualTo(2);
+        transactions.executeWithoutResult(tx -> repository.mapSpeaker(meeting, cluster, null, actor));
+        assertThat(revision(original)).isEqualTo(2);
+    }
+
+    @Test
+    void unchangedHumanTextDoesNotIncrementContentRevision() {
+        ingestion.publish(result("Already approved"));
+        UUID existing = current();
+        edit(existing, "Already approved");
+        assertThat(revision(existing)).isZero();
+        assertThat(jdbc.queryForObject(
+            "SELECT count(*) FROM transcript_segment_revisions r JOIN transcript_segments s ON r.segment_id=s.id WHERE s.transcript_id=?",
+            Integer.class, existing)).isZero();
+    }
+
+    @Test
+    void editingPreviousVersionAfterNewCurrentIsRejected() {
+        ingestion.publish(result("Initial version"));
+        UUID old = current();
+        Source newer = completedJob();
+        ingestion.publish(result(newer.job(), newer.stage(), "Promoted version"));
+        assertThatThrownBy(() -> edit(old, "Stale change"))
+            .isInstanceOf(ResponseStatusException.class)
+            .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode())
+                .isEqualTo(HttpStatus.NOT_FOUND));
+        assertThat(revision(old)).isZero();
+    }
+
+    @Test
+    void pendingHumanEditFinishesBeforePublicationCanReplaceCurrent() throws Exception {
+        ingestion.publish(result("Before human correction"));
+        UUID original = current();
+        Source newer = completedJob();
+        var edited = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        try (var workers = Executors.newFixedThreadPool(2)) {
+            var correction = workers.submit(() -> {
+                transactions.executeWithoutResult(tx -> {
+                    repository.correct(meeting, segmentFor(original), actor,
+                        "Human revision wins", "Review", 0);
+                    edited.countDown();
+                    try {
+                        if (!release.await(15, TimeUnit.SECONDS)) {
+                            throw new IllegalStateException("Edit transaction gate timed out.");
+                        }
+                    } catch (InterruptedException ex) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(ex);
+                    }
+                });
+                return true;
+            });
+            assertThat(edited.await(15, TimeUnit.SECONDS)).isTrue();
+            var publication = workers.submit(() -> {
+                ingestion.publish(result(newer.job(), newer.stage(), "New AI candidate"));
+                return true;
+            });
+            release.countDown();
+            assertThat(correction.get(20, TimeUnit.SECONDS)).isTrue();
+            assertThat(publication.get(20, TimeUnit.SECONDS)).isTrue();
+        }
+        assertThat(current()).isEqualTo(original);
+        assertThat(revision(original)).isEqualTo(1L);
+        assertThat(jdbc.queryForObject("SELECT is_current FROM transcripts WHERE processing_job_id=?",
+            Boolean.class, newer.job())).isFalse();
     }
 }
