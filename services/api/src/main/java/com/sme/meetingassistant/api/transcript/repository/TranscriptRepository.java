@@ -10,10 +10,15 @@ import com.sme.meetingassistant.api.transcript.service.TranscriptIngestion.Cover
 import com.sme.meetingassistant.api.transcript.service.TranscriptIngestion.SegmentResult;
 import com.sme.meetingassistant.api.transcript.service.TranscriptIngestion.SpeakerResult;
 import com.sme.meetingassistant.api.transcript.service.TranscriptIngestion.TranscriptResult;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
+import java.util.HexFormat;
+import java.util.TreeMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -39,19 +44,44 @@ public class TranscriptRepository {
 
     @Transactional
     public void publish(TranscriptResult result) {
+        // Validate before locking so malformed AI results never become accepted replays.
+        validate(result);
+        String fingerprint = publicationDigest(result);
+        // The meeting lock serializes version numbering and replay detection across API instances.
         this.jdbc.query("SELECT id FROM meetings WHERE id=? FOR UPDATE",
             (rs, row) -> rs.getObject(1, UUID.class), result.meetingId()).stream().findFirst()
             .orElseThrow(TranscriptRepository::notFound);
+
+        List<Publication> prior = this.jdbc.query("""
+            SELECT id, publication_sha256 FROM transcripts WHERE processing_job_id=?
+            """, (rs, row) -> new Publication(rs.getObject("id", UUID.class),
+                rs.getString("publication_sha256")), result.processingJobId());
+        if (!prior.isEmpty()) {
+            if (prior.size() == 1 && fingerprint.equals(prior.getFirst().digest())) {
+                // Preserve the current transcript version and any human corrections.
+                return;
+            }
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                "The processing job already published a different transcript result.");
+        }
+
         Integer eligible = this.jdbc.queryForObject("""
             SELECT count(*) FROM processing_jobs j JOIN meeting_media m
               ON m.meeting_id=j.meeting_id AND m.id=j.source_media_id
+            JOIN processing_stage_runs sr ON sr.processing_job_id=j.id
+              AND sr.id=? AND sr.stage_code='FINALIZING_TRANSCRIPT'
+              AND sr.status IN ('SUCCEEDED','SUCCEEDED_WITH_WARNING')
+              AND sr.attempt_number = (
+                SELECT MAX(x.attempt_number) FROM processing_stage_runs x
+                WHERE x.processing_job_id=j.id AND x.stage_code=sr.stage_code)
             WHERE j.id=? AND j.meeting_id=? AND j.source_media_id=?
               AND j.status IN ('COMPLETED','COMPLETED_WITH_WARNINGS') AND m.status='AVAILABLE'
-            """, Integer.class, result.processingJobId(), result.meetingId(), result.sourceMediaId());
+            """, Integer.class, result.sourceStageRunId(), result.processingJobId(),
+            result.meetingId(), result.sourceMediaId());
         if (eligible == null || eligible != 1) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "Transcript source is not finalized.");
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                "Transcript source or finalization attempt is not eligible.");
         }
-        validate(result);
         int version = this.jdbc.queryForObject(
             "SELECT COALESCE(MAX(version_number),0)+1 FROM transcripts WHERE meeting_id=?",
             Integer.class, result.meetingId());
@@ -60,10 +90,11 @@ public class TranscriptRepository {
         UUID transcriptId = UUID.randomUUID();
         this.jdbc.update("""
             INSERT INTO transcripts(id,meeting_id,source_media_id,processing_job_id,source_stage_run_id,
-              version_number,language_code,status,is_current,duration_ms,finalized_at)
-            VALUES (?,?,?,?,?,?,?,?,TRUE,?,CURRENT_TIMESTAMP)
+              version_number,language_code,status,is_current,duration_ms,finalized_at,publication_sha256)
+            VALUES (?,?,?,?,?,?,?,?,TRUE,?,CURRENT_TIMESTAMP,?)
             """, transcriptId, result.meetingId(), result.sourceMediaId(), result.processingJobId(),
-            result.sourceStageRunId(), version, result.languageCode(), result.status().name(), result.durationMs());
+            result.sourceStageRunId(), version, result.languageCode(), result.status().name(),
+            result.durationMs(), fingerprint);
 
         Map<String, UUID> clusters = new LinkedHashMap<>();
         for (SpeakerResult speaker : result.speakers()) {
@@ -92,10 +123,50 @@ public class TranscriptRepository {
         }
     }
 
+    /**
+     * Hash the complete immutable AI result, not mutable transcript_segments.current_text.
+     * Canonical map ordering makes metadata-key ordering immaterial to exact retries.
+     */
+    private String publicationDigest(TranscriptResult result) {
+        try {
+            TranscriptResult canonical = new TranscriptResult(result.meetingId(), result.sourceMediaId(),
+                result.processingJobId(), result.sourceStageRunId(), result.languageCode(),
+                result.durationMs(), result.status(),
+                result.segments().stream().map(s -> new SegmentResult(s.ordinal(), s.startMs(),
+                    s.endMs(), s.text(), s.qualityStatus(), s.speakerLabel(), s.sourceStageRunId(),
+                    sortedMetadata(s.confidenceMetadata()))).toList(),
+                result.coverage().stream().map(c -> new CoverageResult(c.startMs(), c.endMs(),
+                    c.coverageStatus(), c.recovered(), c.retryCount(), sortedMetadata(c.metadata()))).toList(),
+                result.speakers());
+            byte[] bytes = this.json.writeValueAsString(canonical).getBytes(StandardCharsets.UTF_8);
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+        } catch (JacksonException | NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("Could not fingerprint transcript publication.", exception);
+        }
+    }
+
+    private static Map<String, Object> sortedMetadata(Map<String, Object> metadata) {
+        if (metadata == null) return null;
+        Map<String, Object> sorted = new TreeMap<>();
+        metadata.forEach((key, value) -> sorted.put(key, canonicalMetadata(value)));
+        return sorted;
+    }
+
+    private static Object canonicalMetadata(Object value) {
+        if (value instanceof Map<?, ?> map) {
+            Map<String, Object> sorted = new TreeMap<>();
+            map.forEach((key, item) -> sorted.put(String.valueOf(key), canonicalMetadata(item)));
+            return sorted;
+        }
+        if (value instanceof List<?> list) return list.stream().map(TranscriptRepository::canonicalMetadata).toList();
+        return value;
+    }
+
     private static void validate(TranscriptResult r) {
         if (r == null || r.meetingId() == null || r.sourceMediaId() == null || r.processingJobId() == null
                 || r.languageCode() == null || r.languageCode().isBlank() || r.languageCode().length() > 16
-                || r.status() == null || r.segments() == null || r.segments().isEmpty()
+                || r.status() == null || r.sourceStageRunId() == null
+                || r.segments() == null || r.segments().isEmpty()
                 || r.coverage() == null || r.speakers() == null
                 || (r.durationMs() != null && r.durationMs() < 0)) {
             throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY);
@@ -236,6 +307,7 @@ public class TranscriptRepository {
         return rs.wasNull() ? null : value;
     }
     private static ResponseStatusException notFound() { return new ResponseStatusException(HttpStatus.NOT_FOUND); }
+    private record Publication(UUID id, String digest) {}
     private record Header(UUID id, UUID meetingId, UUID mediaId, UUID jobId, int version,
             String language, String status, Long duration, OffsetDateTime finalizedAt) {}
     private record SegmentState(UUID id, String text, String quality, long version) {}

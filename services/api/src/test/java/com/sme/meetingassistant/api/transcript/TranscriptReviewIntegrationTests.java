@@ -62,7 +62,12 @@ class TranscriptReviewIntegrationTests {
             INSERT INTO processing_jobs(id,meeting_id,source_media_id,requested_by_user_id,status)
             VALUES (?,?,?,?,'COMPLETED')
             """, job, meeting, media, organizer);
-        ingestion.publish(new TranscriptResult(meeting, media, job, null, "vi", 10_000L,
+        UUID finalization = UUID.randomUUID();
+        jdbc.update("""
+            INSERT INTO processing_stage_runs(id,processing_job_id,stage_code,attempt_number,status)
+            VALUES (?,?,'FINALIZING_TRANSCRIPT',1,'SUCCEEDED')
+            """, finalization, job);
+        ingestion.publish(new TranscriptResult(meeting, media, job, finalization, "vi", 10_000L,
             TranscriptIngestion.Status.READY, List.of(new SegmentResult(0, 0, 1500,
                 "Chúng ta bắt đầu cuộc họp.", "ACCEPTED", "Speaker 1", null, null)),
             List.of(new CoverageResult(0, 1500, "COVERED", false, 0, null)),
