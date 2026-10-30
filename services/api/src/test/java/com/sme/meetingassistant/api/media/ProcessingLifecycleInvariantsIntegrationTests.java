@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle;
+import com.sme.meetingassistant.api.media.repository.MediaRepository.ProcessingLifecycleConflictException;
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
@@ -92,19 +93,19 @@ class ProcessingLifecycleInvariantsIntegrationTests {
     void completedTranscriptionAloneCannotCompleteJob() {
         startTranscription("SUCCEEDED");
         assertThatThrownBy(() -> lifecycle.completeJob(jobId))
-            .isInstanceOf(IllegalStateException.class);
+            .isInstanceOf(ProcessingLifecycleConflictException.class);
         assertThat(jobStatus()).isEqualTo("RUNNING");
     }
 
     @Test
     void finalizationAndDownstreamStagesRequireUpstreamEvidence() {
-        assertThatThrownBy(this::startFinalization).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(this::startFinalization).isInstanceOf(ProcessingLifecycleConflictException.class);
         assertThatThrownBy(() -> lifecycle.startStage(jobId, "GENERATING_SUMMARY", null, null))
-            .isInstanceOf(IllegalStateException.class);
+            .isInstanceOf(ProcessingLifecycleConflictException.class);
         startTranscription("SUCCEEDED");
         UUID finalization = startFinalization();
         assertThatThrownBy(() -> lifecycle.completeStage(finalization, "SUCCEEDED", null, null))
-            .isInstanceOf(IllegalStateException.class);
+            .isInstanceOf(ProcessingLifecycleConflictException.class);
         assertThat(jdbc.queryForObject("SELECT status FROM processing_stage_runs WHERE id=?",
             String.class, finalization)).isEqualTo("RUNNING");
     }
@@ -120,7 +121,7 @@ class ProcessingLifecycleInvariantsIntegrationTests {
         assertThat(jdbc.queryForObject("SELECT version FROM processing_jobs WHERE id=?",
             Long.class, jobId)).isEqualTo(version);
         assertThatThrownBy(() -> lifecycle.startStage(jobId, "INDEXING", null, null))
-            .isInstanceOf(IllegalStateException.class);
+            .isInstanceOf(ProcessingLifecycleConflictException.class);
     }
 
     @Test
@@ -143,7 +144,7 @@ class ProcessingLifecycleInvariantsIntegrationTests {
     void unacknowledgedQualityWarningsCannotBeLabeledReadyOrCompleted() {
         completedTranscriptStages("SUCCEEDED", "READY", "SUSPICIOUS");
         assertThatThrownBy(() -> lifecycle.completeJob(jobId))
-            .isInstanceOf(IllegalStateException.class);
+            .isInstanceOf(ProcessingLifecycleConflictException.class);
         assertThat(jobStatus()).isEqualTo("RUNNING");
     }
 
@@ -152,7 +153,7 @@ class ProcessingLifecycleInvariantsIntegrationTests {
         completedTranscriptStages("SUCCEEDED", "READY", "ACCEPTED");
         UUID downstream = lifecycle.startStage(jobId, "GENERATING_SUMMARY", "llm", "summary");
         assertThatThrownBy(() -> lifecycle.completeJob(jobId))
-            .isInstanceOf(IllegalStateException.class);
+            .isInstanceOf(ProcessingLifecycleConflictException.class);
         lifecycle.completeStage(downstream, "SUCCEEDED", null, "{}");
         lifecycle.completeJob(jobId);
         assertThat(jobStatus()).isEqualTo("COMPLETED");
@@ -163,9 +164,9 @@ class ProcessingLifecycleInvariantsIntegrationTests {
         UUID stage = startTranscription("SUCCEEDED");
         lifecycle.completeStage(stage, "SUCCEEDED", null, "{\"validated\":true}");
         assertThatThrownBy(() -> lifecycle.completeStage(stage, "SUCCEEDED_WITH_WARNING", null, "{}"))
-            .isInstanceOf(IllegalStateException.class);
+            .isInstanceOf(ProcessingLifecycleConflictException.class);
         assertThatThrownBy(() -> lifecycle.completeStage(stage, "SUCCEEDED", null, "{\"validated\":false}"))
-            .isInstanceOf(IllegalStateException.class);
+            .isInstanceOf(ProcessingLifecycleConflictException.class);
         assertThat(jobStatus()).isEqualTo("RUNNING");
     }
 
@@ -179,7 +180,7 @@ class ProcessingLifecycleInvariantsIntegrationTests {
             Long.class, jobId)).isEqualTo(version);
         lifecycle.completeStage(stage, "SUCCEEDED", null, null);
         assertThatThrownBy(() -> lifecycle.startStage(jobId, "TRANSCRIPTION", "whisper", "base"))
-            .isInstanceOf(IllegalStateException.class);
+            .isInstanceOf(ProcessingLifecycleConflictException.class);
     }
 
     @Test
@@ -187,16 +188,16 @@ class ProcessingLifecycleInvariantsIntegrationTests {
         UUID stage = lifecycle.startStage(jobId, "TRANSCRIPTION", "whisper", "base");
         lifecycle.failStage(stage, "ASR_FAILED", "Transcription failed.", true);
         assertThat(jobStatus()).isEqualTo("FAILED");
-        assertThatThrownBy(() -> lifecycle.completeJob(jobId)).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> lifecycle.completeJob(jobId)).isInstanceOf(ProcessingLifecycleConflictException.class);
         assertThatThrownBy(() -> lifecycle.completeStage(stage, "SUCCEEDED", null, null))
-            .isInstanceOf(IllegalStateException.class);
+            .isInstanceOf(ProcessingLifecycleConflictException.class);
     }
 
     @Test
     void sourceMustRemainAcceptedBeforeStageCanStart() {
         jdbc.update("UPDATE meeting_media SET status='FAILED' WHERE id=?", mediaId);
         assertThatThrownBy(() -> lifecycle.startStage(jobId, "TRANSCRIPTION", null, null))
-            .isInstanceOf(IllegalStateException.class);
+            .isInstanceOf(ProcessingLifecycleConflictException.class);
         assertThat(jobStatus()).isEqualTo("QUEUED");
     }
 
@@ -211,6 +212,6 @@ class ProcessingLifecycleInvariantsIntegrationTests {
             VALUES (?,?,500,1000,'UNRESOLVED_ERROR')
             """, UUID.randomUUID(), transcriptId);
         assertThatThrownBy(() -> lifecycle.completeJob(jobId))
-            .isInstanceOf(IllegalStateException.class);
+            .isInstanceOf(ProcessingLifecycleConflictException.class);
     }
 }

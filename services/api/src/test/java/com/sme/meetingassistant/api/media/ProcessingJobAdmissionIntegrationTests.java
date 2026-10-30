@@ -12,6 +12,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.sme.meetingassistant.api.media.storage.ObjectStorage;
 import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle;
+import com.sme.meetingassistant.api.media.repository.MediaRepository.ProcessingLifecycleConflictException;
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
 import java.security.Principal;
 import java.util.List;
@@ -323,7 +324,7 @@ class ProcessingJobAdmissionIntegrationTests {
         lifecycle.completeStage(runId, "SUCCEEDED_WITH_WARNING", null, "{\"coverage\":0.92}");
         // A successful transcription stage alone is not enough to complete the job.
         assertThatThrownBy(() -> lifecycle.completeJob(jobId))
-            .isInstanceOf(IllegalStateException.class);
+            .isInstanceOf(ProcessingLifecycleConflictException.class);
 
         assertThat(jdbc.queryForObject("SELECT status FROM processing_jobs WHERE id = ?", String.class, jobId))
             .isEqualTo("RUNNING");

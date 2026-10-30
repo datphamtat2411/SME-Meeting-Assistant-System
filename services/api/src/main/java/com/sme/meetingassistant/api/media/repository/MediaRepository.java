@@ -238,10 +238,10 @@ public class MediaRepository {
             """, (rs, row) -> new JobStart(rs.getString("status"), rs.getString("media_status")), jobId);
         if (jobs.isEmpty()) throw new IllegalArgumentException("Processing job does not exist.");
         if (!List.of("PENDING", "QUEUED", "RUNNING").contains(jobs.getFirst().status())) {
-            throw new IllegalStateException("A terminal processing job cannot start another stage.");
+            throw new ProcessingLifecycleConflictException("A terminal processing job cannot start another stage.");
         }
         if (!"AVAILABLE".equals(jobs.getFirst().mediaStatus())) {
-            throw new IllegalStateException("Processing source media is not accepted.");
+            throw new ProcessingLifecycleConflictException("Processing source media is not accepted.");
         }
 
         List<StageAttempt> latest = latestAttempt(jobId, stageCode);
@@ -250,14 +250,14 @@ public class MediaRepository {
             return latest.getFirst().id();
         }
         if (!latest.isEmpty() && !"PENDING".equals(latest.getFirst().status())) {
-            throw new IllegalStateException("A completed/failed stage cannot be restarted without an explicit retry.");
+            throw new ProcessingLifecycleConflictException("A completed/failed stage cannot be restarted without an explicit retry.");
         }
         if ("FINALIZING_TRANSCRIPT".equals(stageCode)
                 && !hasSuccessfulTranscription(jobId)) {
-            throw new IllegalStateException("Transcript finalization requires a successful transcription stage.");
+            throw new ProcessingLifecycleConflictException("Transcript finalization requires a successful transcription stage.");
         }
         if (isTranscriptDownstream(stageCode) && !hasFinalizedTranscript(jobId)) {
-            throw new IllegalStateException("Downstream processing requires a persisted finalized transcript.");
+            throw new ProcessingLifecycleConflictException("Downstream processing requires a persisted finalized transcript.");
         }
 
         this.jdbc.update("""
@@ -297,18 +297,18 @@ public class MediaRepository {
         }
         if (!"RUNNING".equals(jobStatus) || !"RUNNING".equals(current.status())
                 || !isLatestAttempt(jobId, current.stageCode(), stageRunId)) {
-            throw new IllegalStateException("Stage attempt is not current or job is not running.");
+            throw new ProcessingLifecycleConflictException("Stage attempt is not current or job is not running.");
         }
         if ("FINALIZING_TRANSCRIPT".equals(current.stageCode())
                 && !persistedTranscript(jobId, stageRunId)) {
-            throw new IllegalStateException("Cannot finalize a transcript before canonical persistence.");
+            throw new ProcessingLifecycleConflictException("Cannot finalize a transcript before canonical persistence.");
         }
         int changed = this.jdbc.update("""
             UPDATE processing_stage_runs SET status = ?, error_code = ?,
               metrics = CAST(? AS jsonb), completed_at = CURRENT_TIMESTAMP
             WHERE id = ? AND status = 'RUNNING'
             """, outcome, errorCode, metricsJson, stageRunId);
-        if (changed != 1) throw new IllegalStateException("Stage attempt changed during completion.");
+        if (changed != 1) throw new ProcessingLifecycleConflictException("Stage attempt changed during completion.");
     }
 
     public void failStage(UUID stageRunId, String errorCode, String safeSummary, boolean retryable) {
@@ -321,7 +321,7 @@ public class MediaRepository {
         }
         if (!"RUNNING".equals(jobStatus) || !"RUNNING".equals(current.status())
                 || !isLatestAttempt(jobId, current.stageCode(), stageRunId)) {
-            throw new IllegalStateException("Stage attempt is not current or job is not running.");
+            throw new ProcessingLifecycleConflictException("Stage attempt is not current or job is not running.");
         }
         this.jdbc.update("""
             UPDATE processing_stage_runs SET status = 'FAILED', retryable = ?, error_code = ?,
@@ -333,7 +333,7 @@ public class MediaRepository {
               updated_at = CURRENT_TIMESTAMP, version = version + 1
             WHERE id = ? AND status = 'RUNNING'
             """, current.stageCode(), retryable, errorCode, safeSummary, jobId);
-        if (changed != 1) throw new IllegalStateException("Processing job is no longer running.");
+        if (changed != 1) throw new ProcessingLifecycleConflictException("Processing job is no longer running.");
     }
 
     /**
@@ -344,7 +344,7 @@ public class MediaRepository {
         String status = lockJobStatus(jobId);
         if (List.of("COMPLETED", "COMPLETED_WITH_WARNINGS").contains(status)) return;
         if (!"RUNNING".equals(status)) {
-            throw new IllegalStateException("Only a running processing job can complete.");
+            throw new ProcessingLifecycleConflictException("Only a running processing job can complete.");
         }
         List<StageCompletion> stages = this.jdbc.query("""
             SELECT s.id, s.stage_code, s.status
@@ -356,22 +356,22 @@ public class MediaRepository {
             """, (rs, row) -> new StageCompletion(rs.getObject("id", UUID.class),
                 rs.getString("stage_code"), rs.getString("status")), jobId);
         if (stages.stream().anyMatch(s -> List.of("RUNNING", "PENDING", "FAILED").contains(s.status()))) {
-            throw new IllegalStateException("Processing stages are still active or have failed.");
+            throw new ProcessingLifecycleConflictException("Processing stages are still active or have failed.");
         }
         if (!hasSuccessfulTranscription(jobId)) {
-            throw new IllegalStateException("Processing cannot complete without transcription.");
+            throw new ProcessingLifecycleConflictException("Processing cannot complete without transcription.");
         }
         StageCompletion finalized = stages.stream()
             .filter(s -> "FINALIZING_TRANSCRIPT".equals(s.stageCode())
                 && isSuccessful(s.status())).findFirst()
-            .orElseThrow(() -> new IllegalStateException("Transcript finalization has not succeeded."));
+            .orElseThrow(() -> new ProcessingLifecycleConflictException("Transcript finalization has not succeeded."));
         List<TranscriptEvidence> results = transcriptEvidence(jobId, finalized.id());
         if (results.size() != 1 || !List.of("READY", "READY_WITH_WARNINGS").contains(results.getFirst().status())) {
-            throw new IllegalStateException("A valid finalized transcript is required.");
+            throw new ProcessingLifecycleConflictException("A valid finalized transcript is required.");
         }
         TranscriptEvidence transcript = results.getFirst();
         if (transcript.suspicious() && "READY".equals(transcript.status())) {
-            throw new IllegalStateException("Unresolved transcript quality cannot be marked READY.");
+            throw new ProcessingLifecycleConflictException("Unresolved transcript quality cannot be marked READY.");
         }
         boolean withWarnings = "READY_WITH_WARNINGS".equals(transcript.status())
             || stages.stream().anyMatch(s -> "SUCCEEDED_WITH_WARNING".equals(s.status()));
@@ -383,7 +383,7 @@ public class MediaRepository {
               updated_at = CURRENT_TIMESTAMP, version = version + 1
             WHERE id = ? AND status = 'RUNNING'
             """, outcome, summary, jobId);
-        if (changed != 1) throw new IllegalStateException("Processing job is no longer running.");
+        if (changed != 1) throw new ProcessingLifecycleConflictException("Processing job is no longer running.");
     }
 
     private List<StageAttempt> latestAttempt(UUID jobId, String stageCode) {
@@ -753,6 +753,11 @@ public class MediaRepository {
     public record JobRetryEvent(UUID eventId, UUID processingJobId, UUID meetingId, UUID sourceMediaId,
             UUID requestedByUserId, String retryFromStage, int attemptNumber, String requestId,
             int schemaVersion, OffsetDateTime occurredAt) { }
+
+    /** Domain-level lifecycle conflict, distinct from an invalid JDBC operation. */
+    public static class ProcessingLifecycleConflictException extends RuntimeException {
+        public ProcessingLifecycleConflictException(String reason) { super(reason); }
+    }
 
     public static class IdempotencyConflictException extends RuntimeException { }
     public static class JobAdmissionConflictException extends RuntimeException { }
