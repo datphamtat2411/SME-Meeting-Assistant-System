@@ -341,6 +341,58 @@ ONNX model locally through the approved dataset/model owner. The suite has no
 download or network fallback. Raw audio and private annotations stay outside the
 repository. No approved dataset or model is bundled.
 
+#### Local private evaluation workspace
+
+`sme-private` is an optional, externally maintained workspace for local AI
+development and evaluation assets intentionally kept outside the Git repository.
+In the current development environment it is at `$HOME/sme-private`; it is not
+tracked by Git or required by the AI service runtime. Its contents are provisioned
+and maintained separately. Other developers, CI environments, and coding agents
+must not assume it exists. This overview describes conventions without exposing
+the actual media, annotations, or model files.
+
+| Directory | Purpose |
+| --- | --- |
+| `annotations/` | Human-reviewed audio annotations, including readable labels and sample-accurate TSV intervals. |
+| `datasets/` | Approved evaluation fixtures and their manifest, referencing fixtures and integrity metadata. |
+| `metadata/` | Fixture metadata, source checksums, and supporting provenance. |
+| `models/` | Externally provisioned local model assets, currently including Silero VAD v5 ONNX. |
+| `reference/` | Normalized reference audio for sample-accurate fixture preparation and review. |
+| `results/` | Generated evaluation reports, including baseline and experimental results. |
+| `review/` | Temporary/manual-review audio excerpts for investigating detection behavior. |
+| `tools/` | Local dataset preparation, validation, annotation, and evaluation-review helpers. |
+
+Human annotations are maintained separately from evaluation results. Reports and
+listening-review artifacts are derived outputs, not authoritative annotations.
+Local tools support preparation and analysis; they are not part of the deployed
+AI service.
+
+The existing suite can use
+`$HOME/sme-private/datasets/vietnamese-preprocessing-v1/manifest.json` (its parent
+directory is the fixture root) and `$HOME/sme-private/models/silero-vad-v5.onnx`,
+with reports under `$HOME/sme-private/results/vietnamese-preprocessing-v1/` and
+manual listening-review excerpts under `$HOME/sme-private/review/`. Follow the
+existing [evaluation commands and configuration](#running-and-interpreting-results)
+and [VAD settings](#speech-detection-and-energy-evidence). Model files must be
+provisioned externally; evaluation tests do not download them implicitly.
+
+Local usage conventions:
+
+1. Keep private data and model artifacts outside Git.
+2. Access these assets only when the active task genuinely requires them.
+3. Do not modify existing datasets, annotations, approvals, checksums, or baseline
+   reports without task authorization.
+4. Changes to approved evaluation references require review and versioning.
+5. Use separate output filenames for experimental reports to avoid overwriting
+   baselines.
+6. Report missing local assets clearly; never silently substitute fabricated or
+   synthetic data.
+
+The existing Silero VAD v5 baseline uses speech threshold `0.60`; experimental
+`0.50` improved some detection coverage but did not reliably preserve continuous
+distant speech. Weak/distant speech remains a known evaluation limitation;
+`UNESTABLISHED` quality gates are not `PASS`.
+
 #### Dataset contract and provisioning
 
 Start from `tests/evaluation/manifest.example.json`, placing the reviewed manifest

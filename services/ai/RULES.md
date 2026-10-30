@@ -26,6 +26,8 @@ Applies to `services/ai/`.
 - Evaluate compatibility and quality before changing model roles, providers, processing behavior, or retrieval strategies.
 - Prefer grounded evidence, recoverability, and explicit uncertainty over unsupported claims. Human-authoritative corrections override conflicting AI output.
 - Evaluate Vietnamese meeting capabilities using Vietnamese test data, not English-only benchmarks.
+- Keep approved local audio datasets, annotations, model artifacts, and evaluation evidence outside the Git repository. Never copy private assets into Git or modify approved artifacts without task authorization.
+- Only for tasks requiring these assets, agents may consult the [private workspace overview](README.md#local-private-evaluation-workspace) and inspect relevant local files. Do not assume the workspace exists or access it indiscriminately.
 
 ## Security & Data Boundaries
 
