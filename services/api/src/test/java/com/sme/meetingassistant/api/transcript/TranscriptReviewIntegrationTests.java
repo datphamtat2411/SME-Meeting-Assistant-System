@@ -134,8 +134,8 @@ class TranscriptReviewIntegrationTests {
     @Test
     void onlyOrganizerCanMapSpeakersAndMappedUserMustBeMeetingMember() throws Exception {
         String endpoint = "/api/v1/meetings/" + meeting + "/speaker-clusters/" + cluster;
-        String participantBody = "{\\"userId\\":\\"" + participant + "\\"}";
-        String outsiderBody = "{\\"userId\\":\\"" + outsider + "\\"}";
+        String participantBody = "{\"userId\":\"" + participant + "\"}";
+        String outsiderBody = "{\"userId\":\"" + outsider + "\"}";
 
         mvc.perform(patch(endpoint).principal(as(participant))
                 .contentType(MediaType.APPLICATION_JSON).content(participantBody))
@@ -187,10 +187,10 @@ class TranscriptReviewIntegrationTests {
         mvc.perform(get(transcriptUrl()).principal(as(participant)))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.data.contentRevision").value(0));
-        String etag = "\\"s-" + segment + "-0\\"";
+        String etag = "\"s-" + segment + "-0\"";
         mvc.perform(patch(transcriptUrl() + "/segments/" + segment).principal(as(organizer))
                 .header("If-Match", etag).contentType(MediaType.APPLICATION_JSON)
-                .content("{\\"text\\":\\"Đã chỉnh sửa và xác minh.\\"}"))
+                .content("{\"text\":\"Đã chỉnh sửa và xác minh.\"}"))
             .andExpect(status().isOk());
         mvc.perform(get(transcriptUrl()).principal(as(participant)))
             .andExpect(status().isOk())
