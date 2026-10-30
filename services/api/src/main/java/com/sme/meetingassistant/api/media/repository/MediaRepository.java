@@ -25,10 +25,10 @@ public class MediaRepository {
     public void insertMedia(Media media) {
         this.jdbc.update("""
             INSERT INTO meeting_media (id, meeting_id, source_type, status, object_key, original_filename,
-              content_type, expected_size_bytes, uploaded_by_user_id, created_at)
-            VALUES (?, ?, ?, 'PENDING_UPLOAD', ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+              content_type, expected_size_bytes, uploaded_by_user_id, pending_object_key, created_at)
+            VALUES (?, ?, ?, 'PENDING_UPLOAD', ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             """, media.id(), media.meetingId(), media.sourceType(), media.objectKey(), media.originalFilename(),
-            media.contentType(), media.expectedSizeBytes(), media.uploadedBy());
+            media.contentType(), media.expectedSizeBytes(), media.uploadedBy(), media.objectKey());
     }
 
     public Optional<Media> findMedia(UUID id) {
@@ -41,19 +41,78 @@ public class MediaRepository {
             MediaRepository::mediaRow, meetingId);
     }
 
-    public void acceptMedia(UUID id, long sizeBytes, long durationMs, String sha256) {
-        this.jdbc.update("""
-            UPDATE meeting_media SET status = 'AVAILABLE', size_bytes = ?, duration_ms = ?, sha256 = ?,
-              available_at = CURRENT_TIMESTAMP, failure_code = NULL
-            WHERE id = ? AND status = 'PENDING_UPLOAD'
-            """, sizeBytes, durationMs, sha256, id);
+    /**
+     * Fences finalization without keeping a transaction open while the service probes/uploads bytes.
+     * Expired claim holders can never publish AVAILABLE using a stale lease token.
+     */
+    public boolean claimFinalization(UUID mediaId, UUID token, long leaseSeconds) {
+        return this.jdbc.update("""
+            UPDATE meeting_media SET finalization_token = ?,
+              finalization_lease_until = CURRENT_TIMESTAMP + (? * INTERVAL '1 second')
+            WHERE id = ? AND status = 'PENDING_UPLOAD' AND
+              (finalization_token IS NULL OR finalization_lease_until < CURRENT_TIMESTAMP)
+            """, token, leaseSeconds, mediaId) == 1;
     }
 
-    public void rejectMedia(UUID id, String code) {
+    public void releaseFinalization(UUID mediaId, UUID token) {
         this.jdbc.update("""
-            UPDATE meeting_media SET status = 'REJECTED', failure_code = ?
-            WHERE id = ? AND status = 'PENDING_UPLOAD'
-            """, code, id);
+            UPDATE meeting_media SET finalization_token = NULL, finalization_lease_until = NULL
+            WHERE id = ? AND status = 'PENDING_UPLOAD' AND finalization_token = ?
+            """, mediaId, token);
+    }
+
+    public boolean acceptMedia(UUID id, UUID token, String acceptedKey,
+            long sizeBytes, long durationMs, String sha256) {
+        return this.jdbc.update("""
+            UPDATE meeting_media SET status = 'AVAILABLE', object_key = ?,
+              size_bytes = ?, duration_ms = ?, sha256 = ?,
+              available_at = CURRENT_TIMESTAMP, failure_code = NULL,
+              finalization_token = NULL, finalization_lease_until = NULL
+            WHERE id = ? AND status = 'PENDING_UPLOAD' AND finalization_token = ?
+              AND finalization_lease_until > CURRENT_TIMESTAMP
+            """, acceptedKey, sizeBytes, durationMs, sha256, id, token) == 1;
+    }
+
+    public boolean rejectMedia(UUID id, UUID token, String code) {
+        return this.jdbc.update("""
+            UPDATE meeting_media SET status = 'REJECTED', failure_code = ?,
+              finalization_token = NULL, finalization_lease_until = NULL
+            WHERE id = ? AND status = 'PENDING_UPLOAD' AND finalization_token = ?
+              AND finalization_lease_until > CURRENT_TIMESTAMP
+            """, code, id, token) == 1;
+    }
+
+    /** Expired uploads are terminal; they can never race a valid finalization claim. */
+    public void expireOldUploads(long expirySeconds, int limit) {
+        this.jdbc.update("""
+            UPDATE meeting_media SET status = 'FAILED', failure_code = 'UPLOAD_EXPIRED'
+            WHERE id IN (
+              SELECT id FROM meeting_media
+              WHERE status = 'PENDING_UPLOAD'
+                AND created_at < CURRENT_TIMESTAMP - (? * INTERVAL '1 second')
+                AND (finalization_token IS NULL OR finalization_lease_until < CURRENT_TIMESTAMP)
+              ORDER BY created_at, id LIMIT ? FOR UPDATE SKIP LOCKED
+            )
+            """, expirySeconds, limit);
+    }
+
+    public List<PendingCleanup> pendingCleanupCandidates(long retentionSeconds, int limit) {
+        return this.jdbc.query("""
+            SELECT id, pending_object_key FROM meeting_media
+            WHERE status IN ('AVAILABLE', 'FAILED', 'REJECTED')
+              AND pending_cleaned_at IS NULL
+              AND COALESCE(available_at, created_at) < CURRENT_TIMESTAMP - (? * INTERVAL '1 second')
+            ORDER BY created_at, id LIMIT ?
+            """, (rs, row) -> new PendingCleanup(rs.getObject("id", UUID.class),
+                rs.getString("pending_object_key")), retentionSeconds, limit);
+    }
+
+    public void markPendingCleaned(UUID id, String pendingKey) {
+        this.jdbc.update("""
+            UPDATE meeting_media SET pending_cleaned_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND pending_object_key = ? AND pending_cleaned_at IS NULL
+              AND status IN ('AVAILABLE', 'FAILED', 'REJECTED')
+            """, id, pendingKey);
     }
 
     public UUID claimIdempotency(UUID caller, String operation, String key, String fingerprint, UUID proposedResourceId) {
@@ -152,6 +211,7 @@ public class MediaRepository {
             UUID requestedBy, String currentStage, int attemptCount, OffsetDateTime queuedAt,
             OffsetDateTime startedAt, OffsetDateTime completedAt, String errorCode, String errorSummary,
             String warningSummary, OffsetDateTime createdAt, OffsetDateTime updatedAt) { }
+    public record PendingCleanup(UUID id, String pendingObjectKey) { }
     public record Outbox(UUID id, String eventType, String payload, int attemptCount) { }
     public record JobQueuedEvent(UUID eventId, UUID processingJobId, UUID meetingId, UUID sourceMediaId,
             UUID requestedByUserId, String requestId, int schemaVersion, OffsetDateTime occurredAt) { }

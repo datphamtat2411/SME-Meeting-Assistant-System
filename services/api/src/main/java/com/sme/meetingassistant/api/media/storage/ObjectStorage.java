@@ -8,6 +8,8 @@ public interface ObjectStorage {
     String createDownloadCapability(String objectKey, Duration ttl);
     StoredObject head(String objectKey);
     void downloadTo(String objectKey, Path destination);
+    /** Create an accepted source once. False means an object already exists at this key. */
+    boolean putAcceptedIfAbsent(String objectKey, Path validatedFile, String sha256);
     void delete(String objectKey);
 
     record StoredObject(long sizeBytes, String contentType, String eTag) { }

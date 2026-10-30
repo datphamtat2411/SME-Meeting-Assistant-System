@@ -2,12 +2,14 @@ package com.sme.meetingassistant.api.media;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -22,6 +24,9 @@ import com.sme.meetingassistant.api.media.validation.MediaInspector;
 import com.sme.meetingassistant.api.meeting.service.MeetingMediaAccess;
 import com.sme.meetingassistant.api.userorganization.service.AuthenticatedUserId;
 import java.time.OffsetDateTime;
+import java.nio.file.Files;
+import org.mockito.ArgumentCaptor;
+import software.amazon.awssdk.services.s3.model.S3Exception;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -72,9 +77,11 @@ class MediaProcessingServiceTests {
         assertEquals("PENDING_UPLOAD", result.status());
         assertEquals("https://storage.test/signed", result.uploadUrl());
         assertEquals("audio/wav", result.requiredContentType());
+        ArgumentCaptor<Media> uploaded = ArgumentCaptor.forClass(Media.class);
         assertNotNull(result.expiresAt());
         verify(this.meetingAccess).requireReadable(this.meetingId, this.actor);
-        verify(this.repository).insertMedia(any(Media.class));
+        verify(this.repository).insertMedia(uploaded.capture());
+        assertTrue(uploaded.getValue().objectKey().contains("/pending/"));
     }
 
     @Test
@@ -127,25 +134,148 @@ class MediaProcessingServiceTests {
     void finalizeRejectsContainerWithoutConfiguredAudioFormat() throws Exception {
         UUID mediaId = UUID.randomUUID();
         Media pending = media(mediaId, "PENDING_UPLOAD");
-        Media rejected = media(mediaId, "REJECTED");
-        when(this.repository.findMedia(mediaId)).thenReturn(Optional.of(pending), Optional.of(rejected));
-        when(this.storage.head(pending.objectKey())).thenReturn(new ObjectStorage.StoredObject(512, "audio/wav", "etag"));
+        when(this.repository.findMedia(mediaId))
+            .thenReturn(Optional.of(pending), Optional.of(media(mediaId, "REJECTED")));
+        when(this.repository.claimFinalization(any(UUID.class), any(UUID.class),
+            org.mockito.ArgumentMatchers.anyLong())).thenReturn(true);
+        when(this.storage.head(acceptedKey(mediaId))).thenThrow(missing());
+        when(this.storage.head(pending.objectKey()))
+            .thenReturn(new ObjectStorage.StoredObject(512, "audio/wav", "etag"));
         doAnswer(invocation -> {
-            java.nio.file.Files.writeString(invocation.getArgument(1), "test-object");
+            Files.write(invocation.getArgument(1), new byte[512]);
             return null;
         }).when(this.storage).downloadTo(anyString(), any());
         when(this.inspector.inspect(any())).thenReturn(new MediaInspection("matroska,webm", 1000, true));
+        when(this.repository.rejectMedia(any(UUID.class), any(UUID.class), anyString())).thenReturn(true);
 
         var response = this.service.finalizeUpload(this.meetingId, mediaId);
 
         assertEquals("REJECTED", response.status());
-        verify(this.repository).rejectMedia(mediaId, "MEDIA_FORMAT_UNSUPPORTED");
-        verify(this.repository, never()).acceptMedia(any(), org.mockito.ArgumentMatchers.anyLong(),
-            org.mockito.ArgumentMatchers.anyLong(), anyString());
+        verify(this.repository).rejectMedia(org.mockito.ArgumentMatchers.eq(mediaId),
+            any(UUID.class), org.mockito.ArgumentMatchers.eq("MEDIA_FORMAT_UNSUPPORTED"));
+        verify(this.storage, never()).putAcceptedIfAbsent(anyString(), any(), anyString());
+    }
+
+    @Test
+    void promotedSourceUsesSeparateAcceptedKeyAndCanonicalAccess() throws Exception {
+        UUID id = UUID.randomUUID();
+        Media pending = media(id, "PENDING_UPLOAD");
+        Media accepted = media(id, "AVAILABLE");
+        when(this.repository.findMedia(id)).thenReturn(Optional.of(pending), Optional.of(accepted),
+            Optional.of(accepted));
+        when(this.repository.claimFinalization(any(UUID.class), any(UUID.class),
+            org.mockito.ArgumentMatchers.anyLong())).thenReturn(true);
+        when(this.storage.head(acceptedKey(id)))
+            .thenThrow(missing())
+            .thenReturn(new ObjectStorage.StoredObject(512, "audio/wav", "accepted-etag"));
+        when(this.storage.head(pending.objectKey()))
+            .thenReturn(new ObjectStorage.StoredObject(512, "audio/wav", "pending-etag"));
+        doAnswer(invocation -> {
+            Files.write(invocation.getArgument(1), new byte[512]);
+            return null;
+        }).when(this.storage).downloadTo(anyString(), any());
+        when(this.inspector.inspect(any())).thenReturn(new MediaInspection("wav", 1000, true));
+        when(this.storage.putAcceptedIfAbsent(anyString(), any(), anyString())).thenReturn(true);
+        when(this.repository.acceptMedia(any(UUID.class), any(UUID.class), anyString(),
+            org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyLong(), anyString()))
+            .thenReturn(true);
+        when(this.storage.createDownloadCapability(org.mockito.ArgumentMatchers.eq(acceptedKey(id)), any()))
+            .thenReturn("https://storage.test/download");
+
+        assertEquals("AVAILABLE", this.service.finalizeUpload(this.meetingId, id).status());
+        assertEquals("https://storage.test/download", this.service.mediaAccessUrl(this.meetingId, id));
+        verify(this.storage).putAcceptedIfAbsent(org.mockito.ArgumentMatchers.eq(acceptedKey(id)), any(), anyString());
+        verify(this.repository).acceptMedia(org.mockito.ArgumentMatchers.eq(id), any(UUID.class),
+            org.mockito.ArgumentMatchers.eq(acceptedKey(id)),
+            org.mockito.ArgumentMatchers.eq(512L), org.mockito.ArgumentMatchers.eq(1000L), anyString());
+        // The upload capability can change pending bytes, not the accepted key.
+        assertTrue(!pending.objectKey().equals(accepted.objectKey()));
+    }
+
+    @Test
+    void recoversPreviouslyPromotedSourceWithoutReadingMutablePendingUpload() throws Exception {
+        UUID id = UUID.randomUUID();
+        Media pending = media(id, "PENDING_UPLOAD");
+        when(this.repository.findMedia(id)).thenReturn(Optional.of(pending), Optional.of(media(id, "AVAILABLE")));
+        when(this.repository.claimFinalization(any(UUID.class), any(UUID.class),
+            org.mockito.ArgumentMatchers.anyLong())).thenReturn(true);
+        when(this.storage.head(acceptedKey(id)))
+            .thenReturn(new ObjectStorage.StoredObject(512, "audio/wav", "accepted-etag"));
+        doAnswer(invocation -> {
+            Files.write(invocation.getArgument(1), new byte[512]);
+            return null;
+        }).when(this.storage).downloadTo(org.mockito.ArgumentMatchers.eq(acceptedKey(id)), any());
+        when(this.inspector.inspect(any())).thenReturn(new MediaInspection("wav", 1000, true));
+        when(this.repository.acceptMedia(any(UUID.class), any(UUID.class), anyString(),
+            org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyLong(), anyString()))
+            .thenReturn(true);
+
+        assertEquals("AVAILABLE", this.service.finalizeUpload(this.meetingId, id).status());
+        verify(this.storage, never()).putAcceptedIfAbsent(anyString(), any(), anyString());
+        verify(this.storage, never()).downloadTo(org.mockito.ArgumentMatchers.eq(pending.objectKey()), any());
+    }
+
+    @Test
+    void missingUploadIsRetryableAndDoesNotRejectMedia() {
+        UUID id = UUID.randomUUID();
+        when(this.repository.findMedia(id)).thenReturn(Optional.of(media(id, "PENDING_UPLOAD")));
+        when(this.repository.claimFinalization(any(UUID.class), any(UUID.class),
+            org.mockito.ArgumentMatchers.anyLong())).thenReturn(true);
+        when(this.storage.head(acceptedKey(id))).thenThrow(missing());
+        when(this.storage.head(media(id, "PENDING_UPLOAD").objectKey())).thenThrow(missing());
+
+        ResponseStatusException error = assertThrows(ResponseStatusException.class,
+            () -> this.service.finalizeUpload(this.meetingId, id));
+
+        assertEquals(409, error.getStatusCode().value());
+        verify(this.repository, never()).rejectMedia(any(UUID.class), any(UUID.class), anyString());
+        verify(this.repository).releaseFinalization(org.mockito.ArgumentMatchers.eq(id), any(UUID.class));
+    }
+
+    @Test
+    void concurrentFinalizeCannotProcessWithoutDatabaseLease() {
+        UUID id = UUID.randomUUID();
+        when(this.repository.findMedia(id)).thenReturn(Optional.of(media(id, "PENDING_UPLOAD")));
+
+        ResponseStatusException error = assertThrows(ResponseStatusException.class,
+            () -> this.service.finalizeUpload(this.meetingId, id));
+
+        assertEquals(409, error.getStatusCode().value());
+        verify(this.storage, never()).head(anyString());
+    }
+
+    @Test
+    void changedPendingBytesBetweenHeadAndDownloadAreRejected() throws Exception {
+        UUID id = UUID.randomUUID();
+        when(this.repository.findMedia(id)).thenReturn(Optional.of(media(id, "PENDING_UPLOAD")),
+            Optional.of(media(id, "REJECTED")));
+        when(this.repository.claimFinalization(any(UUID.class), any(UUID.class),
+            org.mockito.ArgumentMatchers.anyLong())).thenReturn(true);
+        when(this.storage.head(acceptedKey(id))).thenThrow(missing());
+        when(this.storage.head(media(id, "PENDING_UPLOAD").objectKey()))
+            .thenReturn(new ObjectStorage.StoredObject(512, "audio/wav", "etag"));
+        doAnswer(invocation -> {
+            Files.write(invocation.getArgument(1), new byte[511]);
+            return null;
+        }).when(this.storage).downloadTo(anyString(), any());
+        when(this.repository.rejectMedia(any(UUID.class), any(UUID.class), anyString())).thenReturn(true);
+
+        assertEquals("REJECTED", this.service.finalizeUpload(this.meetingId, id).status());
+        verify(this.repository).rejectMedia(org.mockito.ArgumentMatchers.eq(id), any(UUID.class),
+            org.mockito.ArgumentMatchers.eq("MEDIA_SIZE_INVALID"));
+        verify(this.inspector, never()).inspect(any());
+    }
+
+    private String acceptedKey(UUID id) {
+        return "meetings/" + this.meetingId + "/sources/" + id;
+    }
+
+    private static S3Exception missing() {
+        return (S3Exception) S3Exception.builder().statusCode(404).message("Not found").build();
     }
 
     private Media media(UUID id, String status) {
-        return new Media(id, this.meetingId, "UPLOAD", status, "meetings/" + this.meetingId + "/source/" + id,
+        return new Media(id, this.meetingId, "UPLOAD", status, ("AVAILABLE".equals(status) ? acceptedKey(id) : "meetings/" + this.meetingId + "/pending/" + id),
             "meeting.wav", "audio/wav", 512, "AVAILABLE".equals(status) ? 512L : null,
             "AVAILABLE".equals(status) ? 1000L : null, null, this.actor,
             OffsetDateTime.now(), "AVAILABLE".equals(status) ? OffsetDateTime.now() : null, null);

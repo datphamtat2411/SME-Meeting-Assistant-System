@@ -4,6 +4,8 @@ import com.sme.meetingassistant.api.media.MediaProperties;
 import java.net.URI;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Map;
+import software.amazon.awssdk.core.sync.RequestBody;
 import jakarta.annotation.PreDestroy;
 import org.springframework.stereotype.Component;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
@@ -71,6 +73,24 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
     public void downloadTo(String objectKey, Path destination) {
         this.client.getObject(GetObjectRequest.builder().bucket(this.properties.getBucket()).key(objectKey).build(),
             ResponseTransformer.toFile(destination));
+    }
+
+    @Override
+    public boolean putAcceptedIfAbsent(String objectKey, Path validatedFile, String sha256) {
+        var request = PutObjectRequest.builder()
+            .bucket(this.properties.getBucket()).key(objectKey)
+            .ifNoneMatch("*")
+            .metadata(Map.of("sha256", sha256))
+            .build();
+        try {
+            this.client.putObject(request, RequestBody.fromFile(validatedFile));
+            return true;
+        } catch (S3Exception exception) {
+            if (exception.statusCode() == 412) return false;
+            // A 409 is an indeterminate concurrent/conditional write conflict, not proof
+            // that the target was accepted. The caller retries after checking HEAD.
+            throw exception;
+        }
     }
 
     @Override

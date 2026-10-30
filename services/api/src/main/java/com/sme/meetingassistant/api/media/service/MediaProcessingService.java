@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
@@ -34,6 +35,8 @@ import software.amazon.awssdk.services.s3.model.S3Exception;
 public class MediaProcessingService {
     private static final String UPLOAD_OPERATION = "MEDIA_UPLOAD";
     private static final String JOB_OPERATION = "PROCESSING_JOB";
+    private static final long FINALIZATION_LEASE_SECONDS = 30 * 60;
+    private static final long PENDING_RETENTION_SECONDS = 24 * 60 * 60;
     private final MediaRepository repository;
     private final ObjectStorage storage;
     private final MediaInspector inspector;
@@ -71,7 +74,7 @@ public class MediaProcessingService {
             if (!prior.meetingId().equals(meetingId)) throw notFound();
             return uploadResponse(prior);
         }
-        String objectKey = "meetings/" + meetingId + "/source/" + mediaId;
+        String objectKey = "meetings/" + meetingId + "/pending/" + mediaId;
         Media pending = new Media(mediaId, meetingId, request.sourceType().name(), "PENDING_UPLOAD", objectKey,
             filename, contentType, request.expectedSizeBytes(), null, null, null, actor,
             OffsetDateTime.now(), null, null);
@@ -79,67 +82,174 @@ public class MediaProcessingService {
         return uploadResponse(pending);
     }
 
-    @Transactional
+    /**
+     * S3 I/O and ffprobe run outside a database transaction. A short DB lease
+     * fences competing finalizers; the accepted key is never client-writable.
+     */
     public FinalizeMediaResponse finalizeUpload(UUID meetingId, UUID mediaId) {
         UUID actor = this.authenticatedUser.requireUserId();
         this.meetingAccess.requireReadable(meetingId, actor);
-        Media media = media(mediaId);
-        if (!media.meetingId().equals(meetingId) || !media.uploadedBy().equals(actor)) throw notFound();
-        if (!"PENDING_UPLOAD".equals(media.status())) return toResponse(media);
-        ObjectStorage.StoredObject stored;
+        Media current = media(mediaId);
+        if (!current.meetingId().equals(meetingId) || !current.uploadedBy().equals(actor)) throw notFound();
+        if (!"PENDING_UPLOAD".equals(current.status())) return toResponse(current);
+
+        UUID leaseToken = UUID.randomUUID();
+        if (!this.repository.claimFinalization(mediaId, leaseToken, FINALIZATION_LEASE_SECONDS)) {
+            Media fresh = media(mediaId);
+            if ("AVAILABLE".equals(fresh.status())) return toResponse(fresh);
+            throw conflict("Media finalization is already in progress or no longer allowed.");
+        }
+
+        String acceptedKey = acceptedKey(meetingId, mediaId);
         try {
-            stored = this.storage.head(media.objectKey());
-        } catch (S3Exception exception) {
-            if (exception.statusCode() == 404) {
-                this.repository.rejectMedia(mediaId, "UPLOAD_OBJECT_MISSING");
-                return toResponse(media(mediaId));
+            ValidatedSource validated = acceptedObjectExists(acceptedKey)
+                ? inspectAcceptedObject(acceptedKey, current.expectedSizeBytes())
+                : validateAndPromote(current, acceptedKey);
+            if (!this.repository.acceptMedia(mediaId, leaseToken, acceptedKey,
+                    validated.sizeBytes(), validated.durationMs(), validated.sha256())) {
+                throw conflict("Media finalization lease expired; retry the request.");
             }
-            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Media storage is unavailable.");
-        }
-        if (stored.sizeBytes() <= 0 || stored.sizeBytes() != media.expectedSizeBytes()
-                || stored.sizeBytes() > this.properties.getUpload().getMaxSizeBytes()) {
-            this.repository.rejectMedia(mediaId, "MEDIA_SIZE_INVALID");
             return toResponse(media(mediaId));
-        }
-        if (stored.contentType() == null || !stored.contentType().equalsIgnoreCase(media.contentType())) {
-            this.repository.rejectMedia(mediaId, "MEDIA_CONTENT_TYPE_MISMATCH");
+        } catch (InvalidMediaException rejected) {
+            if (!this.repository.rejectMedia(mediaId, leaseToken, rejected.code())) {
+                throw conflict("Media finalization lease expired; retry the request.");
+            }
             return toResponse(media(mediaId));
-        }
-        Path temporaryFile = null;
-        try {
-            temporaryFile = Files.createTempFile("meeting-media-", ".upload");
-            this.storage.downloadTo(media.objectKey(), temporaryFile);
-            MediaInspection inspection = this.inspector.inspect(temporaryFile);
-            if (!inspection.hasAudio()) {
-                this.repository.rejectMedia(mediaId, "MEDIA_AUDIO_TRACK_REQUIRED");
-                return toResponse(media(mediaId));
-            }
-            if (inspection.durationMs() > this.properties.getUpload().getMaxDurationMs()) {
-                this.repository.rejectMedia(mediaId, "MEDIA_DURATION_EXCEEDED");
-                return toResponse(media(mediaId));
-            }
-            if (!detectedFormatAllowed(inspection.detectedFormat())) {
-                this.repository.rejectMedia(mediaId, "MEDIA_FORMAT_UNSUPPORTED");
-                return toResponse(media(mediaId));
-            }
-            this.repository.acceptMedia(mediaId, stored.sizeBytes(), inspection.durationMs(), sha256(temporaryFile));
-            return toResponse(media(mediaId));
-        } catch (IllegalArgumentException invalidMedia) {
-            String code = invalidMedia.getMessage();
-            if (code != null && (code.equals("MEDIA_UNREADABLE") || code.equals("MEDIA_PROBE_TIMEOUT"))) {
-                this.repository.rejectMedia(mediaId, code);
-                return toResponse(media(mediaId));
-            }
-            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Media validation is unavailable.");
         } catch (S3Exception storageFailure) {
-            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Media storage is unavailable.");
-        } catch (IOException exception) {
-            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Media validation is unavailable.");
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+                "Media storage is unavailable.");
         } finally {
-            if (temporaryFile != null) {
-                try { Files.deleteIfExists(temporaryFile); } catch (IOException ignored) { /* best-effort cleanup */ }
+            this.repository.releaseFinalization(mediaId, leaseToken);
+        }
+    }
+
+    private ValidatedSource validateAndPromote(Media media, String acceptedKey) {
+        ObjectStorage.StoredObject pending;
+        try {
+            pending = this.storage.head(media.objectKey());
+        } catch (S3Exception failure) {
+            if (failure.statusCode() == 404) {
+                throw conflict("Upload object is not yet available for finalization.");
+            }
+            throw failure;
+        }
+        if (pending.sizeBytes() <= 0 || pending.sizeBytes() != media.expectedSizeBytes()
+                || pending.sizeBytes() > this.properties.getUpload().getMaxSizeBytes()) {
+            throw new InvalidMediaException("MEDIA_SIZE_INVALID");
+        }
+        if (pending.contentType() == null || !pending.contentType().equalsIgnoreCase(media.contentType())) {
+            throw new InvalidMediaException("MEDIA_CONTENT_TYPE_MISMATCH");
+        }
+
+        Path snapshot = null;
+        try {
+            snapshot = Files.createTempFile("meeting-media-", ".upload");
+            this.storage.downloadTo(media.objectKey(), snapshot);
+            // Pending bytes may change after HEAD via a still-valid signed PUT.
+            ValidatedSource source = inspectSnapshot(snapshot, media.expectedSizeBytes());
+            if (!this.storage.putAcceptedIfAbsent(acceptedKey, snapshot, source.sha256())) {
+                // A previous finalized snapshot won the create-only PUT.
+                return inspectAcceptedObject(acceptedKey, media.expectedSizeBytes());
+            }
+            ObjectStorage.StoredObject accepted = this.storage.head(acceptedKey);
+            if (accepted.sizeBytes() != source.sizeBytes()) {
+                throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+                    "Accepted media verification failed.");
+            }
+            return source;
+        } catch (IOException failure) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+                "Media validation is unavailable.");
+        } finally {
+            removeTemporaryFile(snapshot);
+        }
+    }
+
+    private boolean acceptedObjectExists(String acceptedKey) {
+        try {
+            this.storage.head(acceptedKey);
+            return true;
+        } catch (S3Exception failure) {
+            if (failure.statusCode() == 404) return false;
+            throw failure;
+        }
+    }
+
+    private ValidatedSource inspectAcceptedObject(String acceptedKey, long expectedBytes) {
+        Path snapshot = null;
+        try {
+            snapshot = Files.createTempFile("meeting-media-accepted-", ".upload");
+            this.storage.downloadTo(acceptedKey, snapshot);
+            return inspectSnapshot(snapshot, expectedBytes);
+        } catch (IOException failure) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+                "Accepted media verification is unavailable.");
+        } finally {
+            removeTemporaryFile(snapshot);
+        }
+    }
+
+    private ValidatedSource inspectSnapshot(Path snapshot, long expectedBytes) throws IOException {
+        long actualBytes = Files.size(snapshot);
+        if (actualBytes <= 0 || actualBytes != expectedBytes
+                || actualBytes > this.properties.getUpload().getMaxSizeBytes()) {
+            throw new InvalidMediaException("MEDIA_SIZE_INVALID");
+        }
+        MediaInspection inspection;
+        try {
+            inspection = this.inspector.inspect(snapshot);
+        } catch (IllegalArgumentException failure) {
+            if ("MEDIA_UNREADABLE".equals(failure.getMessage())) {
+                throw new InvalidMediaException("MEDIA_UNREADABLE");
+            }
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+                "Media validation is unavailable.");
+        }
+        if (!inspection.hasAudio()) throw new InvalidMediaException("MEDIA_AUDIO_TRACK_REQUIRED");
+        if (inspection.durationMs() <= 0 || inspection.durationMs() > this.properties.getUpload().getMaxDurationMs()) {
+            throw new InvalidMediaException("MEDIA_DURATION_EXCEEDED");
+        }
+        if (!detectedFormatAllowed(inspection.detectedFormat())) {
+            throw new InvalidMediaException("MEDIA_FORMAT_UNSUPPORTED");
+        }
+        return new ValidatedSource(actualBytes, inspection.durationMs(), sha256(snapshot));
+    }
+
+    private static String acceptedKey(UUID meetingId, UUID mediaId) {
+        return "meetings/" + meetingId + "/sources/" + mediaId;
+    }
+
+    private static void removeTemporaryFile(Path path) {
+        if (path != null) {
+            try { Files.deleteIfExists(path); } catch (IOException ignored) { /* best effort */ }
+        }
+    }
+
+    /** Clean only pending keys, long after any presigned PUT capability has expired. */
+    @Scheduled(fixedDelayString = "${app.media.upload.cleanup-delay-ms:3600000}")
+    public void cleanupStalePendingUploads() {
+        this.repository.expireOldUploads(PENDING_RETENTION_SECONDS, 25);
+        for (MediaRepository.PendingCleanup candidate :
+                this.repository.pendingCleanupCandidates(PENDING_RETENTION_SECONDS, 25)) {
+            try {
+                this.storage.delete(candidate.pendingObjectKey());
+                this.repository.markPendingCleaned(candidate.id(), candidate.pendingObjectKey());
+            } catch (RuntimeException storageOrDatabaseFailure) {
+                // A later sweep retries; accepted source keys are never deleted here.
             }
         }
+    }
+
+    private record ValidatedSource(long sizeBytes, long durationMs, String sha256) { }
+
+    private static final class InvalidMediaException extends RuntimeException {
+        private final String code;
+        private InvalidMediaException(String code) { super(code); this.code = code; }
+        private String code() { return code; }
+    }
+
+    private static ResponseStatusException conflict(String message) {
+        return new ResponseStatusException(HttpStatus.CONFLICT, message);
     }
 
     @Transactional(readOnly = true)
