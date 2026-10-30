@@ -184,19 +184,67 @@ class TranscriptReviewRevisionGuardIntegrationTests {
         String text = jdbc.queryForObject(
             "SELECT current_text FROM transcript_segments WHERE id=?", String.class, id);
         TranscriptSource initial = guard.current(meeting);
-        tx.executeWithoutResult(status -> transcripts.mapSpeaker(meeting, speaker, actor, actor));
+        tx.executeWithoutResult(status -> transcripts.mapSpeaker(meeting, speaker, actor, actor, initial.transcriptId(), initial.contentRevision()));
         conflict(() -> tx.executeWithoutResult(status -> guard.requireCurrentForDerivedWrite(meeting, initial)));
         TranscriptSource mapped = guard.current(meeting);
         assertThat(mapped.contentRevision()).isEqualTo(1L);
-        tx.executeWithoutResult(status -> transcripts.mapSpeaker(meeting, speaker, actor, actor));
+        tx.executeWithoutResult(status -> transcripts.mapSpeaker(meeting, speaker, actor, actor, mapped.transcriptId(), mapped.contentRevision()));
         assertThat(guard.current(meeting)).isEqualTo(mapped);
-        tx.executeWithoutResult(status -> transcripts.mapSpeaker(meeting, speaker, null, actor));
+        tx.executeWithoutResult(status -> transcripts.mapSpeaker(meeting, speaker, null, actor, mapped.transcriptId(), mapped.contentRevision()));
         assertThat(guard.current(meeting).contentRevision()).isEqualTo(2L);
         assertThat(jdbc.queryForObject(
             "SELECT current_text FROM transcript_segments WHERE id=?", String.class, id)).isEqualTo(text);
         assertThat(jdbc.queryForObject(
             "SELECT count(*) FROM speaker_mappings WHERE speaker_cluster_id=? AND superseded_at IS NOT NULL",
             Integer.class, speaker)).isEqualTo(1);
+    }
+
+    private boolean attemptMapping(UUID cluster, UUID targetUser, TranscriptSource expected) {
+        try {
+            tx.executeWithoutResult(status -> transcripts.mapSpeaker(meeting, cluster, targetUser, actor,
+                expected.transcriptId(), expected.contentRevision()));
+            return true;
+        } catch (ResponseStatusException stale) {
+            assertThat(stale.getStatusCode()).isEqualTo(HttpStatus.PRECONDITION_FAILED);
+            return false;
+        }
+    }
+
+    @Test
+    void twoConcurrentSpeakerMappingsUsingSameTranscriptRevisionCannotBothWin() throws Exception {
+        publish("ACCEPTED", "COVERED", TranscriptIngestion.Status.READY);
+        UUID speaker = cluster();
+        TranscriptSource captured = guard.current(meeting);
+        UUID alternate = UUID.randomUUID();
+        String email = "tr04-concurrent-" + alternate + "@example.invalid";
+        jdbc.update("""
+            INSERT INTO users(id,email,email_normalized,display_name,password_hash,global_role,account_status)
+            VALUES (?,?,?,'Mapping contender','test-only','EMPLOYEE','ACTIVE')
+            """, alternate, email, email);
+
+        var gate = new CountDownLatch(1);
+        var pool = Executors.newFixedThreadPool(2);
+        try {
+            var first = pool.submit(() -> {
+                if (!gate.await(10, TimeUnit.SECONDS)) throw new IllegalStateException("Concurrency gate timed out.");
+                return attemptMapping(speaker, actor, captured);
+            });
+            var second = pool.submit(() -> {
+                if (!gate.await(10, TimeUnit.SECONDS)) throw new IllegalStateException("Concurrency gate timed out.");
+                return attemptMapping(speaker, alternate, captured);
+            });
+            gate.countDown();
+            boolean one = first.get(15, TimeUnit.SECONDS);
+            boolean two = second.get(15, TimeUnit.SECONDS);
+            assertThat(one).isNotEqualTo(two);
+            assertThat(guard.current(meeting).contentRevision()).isEqualTo(1L);
+            assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM speaker_mappings
+                WHERE speaker_cluster_id=? AND superseded_at IS NULL
+                """, Integer.class, speaker)).isEqualTo(1);
+        } finally {
+            pool.shutdownNow();
+        }
     }
 
     @Test

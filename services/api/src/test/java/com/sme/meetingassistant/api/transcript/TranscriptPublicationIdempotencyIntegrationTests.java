@@ -364,18 +364,18 @@ class TranscriptPublicationIdempotencyIntegrationTests {
         UUID original = current();
         UUID cluster = jdbc.queryForObject("SELECT id FROM speaker_clusters WHERE transcript_id=?",
             UUID.class, original);
-        transactions.executeWithoutResult(tx -> repository.mapSpeaker(meeting, cluster, actor, actor));
+        transactions.executeWithoutResult(tx -> repository.mapSpeaker(meeting, cluster, actor, actor, original, 0));
         assertThat(revision(original)).isEqualTo(1);
-        transactions.executeWithoutResult(tx -> repository.mapSpeaker(meeting, cluster, actor, actor));
+        transactions.executeWithoutResult(tx -> repository.mapSpeaker(meeting, cluster, actor, actor, original, 1));
         assertThat(revision(original)).isEqualTo(1);
         Source newer = completedJob();
         ingestion.publish(result(newer.job(), newer.stage(), "New AI"));
         assertThat(current()).isEqualTo(original);
         assertThat(jdbc.queryForObject("SELECT is_current FROM transcripts WHERE processing_job_id=?",
             Boolean.class, newer.job())).isFalse();
-        transactions.executeWithoutResult(tx -> repository.mapSpeaker(meeting, cluster, null, actor));
+        transactions.executeWithoutResult(tx -> repository.mapSpeaker(meeting, cluster, null, actor, original, 1));
         assertThat(revision(original)).isEqualTo(2);
-        transactions.executeWithoutResult(tx -> repository.mapSpeaker(meeting, cluster, null, actor));
+        transactions.executeWithoutResult(tx -> repository.mapSpeaker(meeting, cluster, null, actor, original, 2));
         assertThat(revision(original)).isEqualTo(2);
     }
 

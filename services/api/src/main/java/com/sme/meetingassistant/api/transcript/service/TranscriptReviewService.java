@@ -8,6 +8,7 @@ import com.sme.meetingassistant.api.transcript.dto.TranscriptViews.CoverageView;
 import com.sme.meetingassistant.api.transcript.dto.TranscriptViews.SpeakerView;
 import com.sme.meetingassistant.api.transcript.dto.TranscriptViews.TranscriptView;
 import com.sme.meetingassistant.api.transcript.repository.TranscriptRepository;
+import com.sme.meetingassistant.api.transcript.repository.TranscriptRepository.SpeakerMapResult;
 import com.sme.meetingassistant.api.userorganization.service.AuthenticatedUserId;
 import java.util.List;
 import java.util.UUID;
@@ -70,16 +71,43 @@ public class TranscriptReviewService implements TranscriptIngestion {
     }
 
     @Transactional
-    public SpeakerView mapSpeaker(UUID meetingId, UUID clusterId, MapSpeakerRequest request) {
+    public SpeakerMapResult mapSpeaker(UUID meetingId, UUID clusterId, String ifMatch,
+            MapSpeakerRequest request) {
         UUID actor = this.authenticatedUser.requireUserId();
         this.repository.lockMeetingForReview(meetingId);
         this.meetingAccess.requireTranscriptEditAllowed(meetingId, actor);
         if (request != null && request.userId() != null) {
             this.meetingAccess.requireTranscriptSpeakerMember(meetingId, request.userId());
         }
+        TranscriptTag tag = transcriptTag(ifMatch);
         return this.repository.mapSpeaker(meetingId, clusterId,
-            request == null ? null : request.userId(), actor);
+            request == null ? null : request.userId(), actor, tag.transcriptId(), tag.revision());
     }
+
+    /** ETag binds the current transcript identity to its content revision. */
+    private static TranscriptTag transcriptTag(String ifMatch) {
+        if (ifMatch == null || ifMatch.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.PRECONDITION_REQUIRED);
+        }
+        if (!ifMatch.startsWith("\"t-") || !ifMatch.endsWith("\"")) {
+            throw new ResponseStatusException(HttpStatus.PRECONDITION_FAILED);
+        }
+        String value = ifMatch.substring(3, ifMatch.length() - 1);
+        int boundary = value.lastIndexOf('-');
+        if (boundary <= 0 || boundary == value.length() - 1) {
+            throw new ResponseStatusException(HttpStatus.PRECONDITION_FAILED);
+        }
+        try {
+            UUID id = UUID.fromString(value.substring(0, boundary));
+            long revision = Long.parseLong(value.substring(boundary + 1));
+            if (revision < 0) throw new IllegalArgumentException();
+            return new TranscriptTag(id, revision);
+        } catch (IllegalArgumentException error) {
+            throw new ResponseStatusException(HttpStatus.PRECONDITION_FAILED);
+        }
+    }
+
+    private record TranscriptTag(UUID transcriptId, long revision) {}
 
     private static long segmentVersion(UUID segmentId, String ifMatch) {
         if (ifMatch == null || ifMatch.isBlank()) {

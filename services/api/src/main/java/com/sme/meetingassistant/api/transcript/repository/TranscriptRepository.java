@@ -482,19 +482,31 @@ public class TranscriptRepository implements ProcessingTranscriptEvidence {
         return new CorrectionView(segmentId, text, "ACCEPTED", expectedVersion + 1, actorId, now);
     }
 
-    public SpeakerView mapSpeaker(UUID meetingId, UUID clusterId, UUID userId, UUID actorId) {
+    public SpeakerMapResult mapSpeaker(UUID meetingId, UUID clusterId, UUID userId, UUID actorId,
+            UUID expectedTranscriptId, long expectedContentRevision) {
         lockMeeting(meetingId);
         List<SpeakerKey> clusters = this.jdbc.query("""
-            SELECT c.id FROM speaker_clusters c JOIN transcripts t ON t.id=c.transcript_id
+            SELECT c.id,t.id AS transcript_id,t.content_revision
+            FROM speaker_clusters c JOIN transcripts t ON t.id=c.transcript_id
             WHERE t.meeting_id=? AND t.is_current AND c.id=? FOR UPDATE OF c
-            """, (rs, row) -> new SpeakerKey(rs.getObject(1, UUID.class)), meetingId, clusterId);
+            """, (rs, row) -> new SpeakerKey(rs.getObject("id", UUID.class),
+                rs.getObject("transcript_id", UUID.class), rs.getLong("content_revision")), meetingId, clusterId);
         if (clusters.isEmpty()) throw notFound();
+        SpeakerKey current = clusters.getFirst();
+        if (!current.transcriptId().equals(expectedTranscriptId)
+                || current.contentRevision()!=expectedContentRevision) {
+            throw new ResponseStatusException(HttpStatus.PRECONDITION_FAILED,
+                "The transcript changed since the speaker mapping was loaded.");
+        }
         List<UUID> mappings = this.jdbc.query("""
             SELECT user_id FROM speaker_mappings
             WHERE speaker_cluster_id=? AND superseded_at IS NULL
             """, (rs, row) -> rs.getObject(1, UUID.class), clusterId);
         UUID existingUser = mappings.isEmpty() ? null : mappings.getFirst();
-        if (java.util.Objects.equals(existingUser, userId)) return speakerByCluster(clusterId);
+        if (java.util.Objects.equals(existingUser, userId)) {
+            return new SpeakerMapResult(speakerByCluster(clusterId),
+                current.transcriptId(), current.contentRevision());
+        }
         this.jdbc.update("UPDATE speaker_mappings SET superseded_at=CURRENT_TIMESTAMP "
             + "WHERE speaker_cluster_id=? AND superseded_at IS NULL", clusterId);
         if (userId != null) {
@@ -504,7 +516,8 @@ public class TranscriptRepository implements ProcessingTranscriptEvidence {
                 """, UUID.randomUUID(), clusterId, userId, actorId);
         }
         increaseContentRevision(meetingId);
-        return speakerByCluster(clusterId);
+        return new SpeakerMapResult(speakerByCluster(clusterId),
+            current.transcriptId(), current.contentRevision() + 1);
     }
 
     private SpeakerView speakerByCluster(UUID clusterId) {
@@ -587,5 +600,6 @@ public class TranscriptRepository implements ProcessingTranscriptEvidence {
             String language, String status, Long duration, OffsetDateTime finalizedAt,
             long contentRevision) {}
     private record SegmentState(UUID id, String text, String quality, long version) {}
-    private record SpeakerKey(UUID id) {}
+    public record SpeakerMapResult(SpeakerView speaker, UUID transcriptId, long contentRevision) {}
+    private record SpeakerKey(UUID id, UUID transcriptId, long contentRevision) {}
 }

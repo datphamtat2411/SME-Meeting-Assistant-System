@@ -90,6 +90,11 @@ class TranscriptReviewIntegrationTests {
 
     private static Principal as(UUID id) { return () -> id.toString(); }
     private String transcriptUrl() { return "/api/v1/meetings/" + meeting + "/transcript"; }
+    private String transcriptTag(long revision) {
+        UUID id = jdbc.queryForObject("SELECT id FROM transcripts WHERE meeting_id=? AND is_current",
+            UUID.class, meeting);
+        return "\"t-" + id + "-" + revision + "\"";
+    }
 
     @Test
     void authorizedReadAndAttributedCorrectionPreserveHistoryAndRejectStaleTag() throws Exception {
@@ -148,26 +153,35 @@ class TranscriptReviewIntegrationTests {
             .andExpect(status().isUnprocessableEntity());
 
         mvc.perform(patch(endpoint).principal(as(organizer))
-                .contentType(MediaType.APPLICATION_JSON).content(participantBody))
+                .header("If-Match", transcriptTag(0)).contentType(MediaType.APPLICATION_JSON).content(participantBody))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.data.userId").value(participant.toString()));
         assertThat(jdbc.queryForObject("""
             SELECT content_revision FROM transcripts WHERE meeting_id=? AND is_current
             """, Long.class, meeting)).isEqualTo(1L);
+        // Fencing is mandatory even when the replacement appears harmless.
+        mvc.perform(patch(endpoint).principal(as(organizer))
+                .contentType(MediaType.APPLICATION_JSON).content(participantBody))
+            .andExpect(status().is(428));
+        mvc.perform(patch(endpoint).principal(as(organizer))
+                .header("If-Match", transcriptTag(0))
+                .contentType(MediaType.APPLICATION_JSON).content("{}"))
+            .andExpect(status().isPreconditionFailed());
+
         assertThat(jdbc.queryForObject("""
             SELECT mapped_by_user_id FROM speaker_mappings
             WHERE speaker_cluster_id=? AND superseded_at IS NULL
             """, UUID.class, cluster)).isEqualTo(organizer);
 
         mvc.perform(patch(endpoint).principal(as(organizer))
-                .contentType(MediaType.APPLICATION_JSON).content(participantBody))
+                .header("If-Match", transcriptTag(1)).contentType(MediaType.APPLICATION_JSON).content(participantBody))
             .andExpect(status().isOk());
         assertThat(jdbc.queryForObject("""
             SELECT content_revision FROM transcripts WHERE meeting_id=? AND is_current
             """, Long.class, meeting)).isEqualTo(1L);
 
         mvc.perform(patch(endpoint).principal(as(organizer))
-                .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .header("If-Match", transcriptTag(1)).contentType(MediaType.APPLICATION_JSON).content("{}"))
             .andExpect(status().isOk());
         assertThat(jdbc.queryForObject("""
             SELECT content_revision FROM transcripts WHERE meeting_id=? AND is_current

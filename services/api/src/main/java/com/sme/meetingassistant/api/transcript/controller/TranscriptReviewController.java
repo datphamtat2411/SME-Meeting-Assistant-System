@@ -9,6 +9,7 @@ import com.sme.meetingassistant.api.transcript.dto.TranscriptViews.CoverageView;
 import com.sme.meetingassistant.api.transcript.dto.TranscriptViews.SpeakerView;
 import com.sme.meetingassistant.api.transcript.dto.TranscriptViews.TranscriptView;
 import com.sme.meetingassistant.api.transcript.service.TranscriptReviewService;
+import com.sme.meetingassistant.api.transcript.repository.TranscriptRepository.SpeakerMapResult;
 import jakarta.validation.Valid;
 import java.util.List;
 import java.util.UUID;
@@ -37,7 +38,9 @@ public class TranscriptReviewController {
 
     @GetMapping("/transcript")
     public ResponseEntity<ApiResponse<TranscriptView>> transcript(@PathVariable UUID meetingId) {
-        return privateResponse(this.responses.success(this.service.current(meetingId)));
+        TranscriptView view = this.service.current(meetingId);
+        return ResponseEntity.ok().eTag(transcriptTag(view.id(), view.contentRevision()))
+            .cacheControl(CacheControl.noStore()).body(this.responses.success(view));
     }
 
     @GetMapping("/transcript/coverage")
@@ -61,8 +64,16 @@ public class TranscriptReviewController {
 
     @PatchMapping("/speaker-clusters/{clusterId}")
     public ResponseEntity<ApiResponse<SpeakerView>> mapSpeaker(@PathVariable UUID meetingId,
-            @PathVariable UUID clusterId, @RequestBody(required = false) MapSpeakerRequest request) {
-        return privateResponse(this.responses.success(this.service.mapSpeaker(meetingId, clusterId, request)));
+            @PathVariable UUID clusterId,
+            @RequestHeader(value = HttpHeaders.IF_MATCH, required = false) String ifMatch,
+            @RequestBody(required = false) MapSpeakerRequest request) {
+        SpeakerMapResult mapped = this.service.mapSpeaker(meetingId, clusterId, ifMatch, request);
+        return ResponseEntity.ok().eTag(transcriptTag(mapped.transcriptId(), mapped.contentRevision()))
+            .cacheControl(CacheControl.noStore()).body(this.responses.success(mapped.speaker()));
+    }
+
+    private static String transcriptTag(UUID id, long revision) {
+        return "\"t-" + id + "-" + revision + "\"";
     }
 
     private static <T> ResponseEntity<ApiResponse<T>> privateResponse(ApiResponse<T> body) {
