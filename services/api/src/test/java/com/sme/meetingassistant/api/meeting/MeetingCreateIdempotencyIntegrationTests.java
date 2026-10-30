@@ -201,7 +201,8 @@ class MeetingCreateIdempotencyIntegrationTests {
         MvcResult first=create(organizer,"expiring",Map.of("title","Old"));
         assertThat(first.getResponse().getStatus()).isEqualTo(201);
         jdbc.update("""
-            UPDATE meeting_creation_idempotency SET expires_at=CURRENT_TIMESTAMP - INTERVAL '1 second'
+            UPDATE meeting_creation_idempotency SET created_at=CURRENT_TIMESTAMP - INTERVAL '48 hours',
+                expires_at=CURRENT_TIMESTAMP - INTERVAL '1 second'
             WHERE actor_user_id=?
             """,organizer);
         MvcResult after=create(organizer,"expiring",Map.of("title","New"));
