@@ -27,7 +27,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 @Service
 @Transactional
-public class MeetingCoreService {
+public class MeetingCoreService implements MeetingMediaAccess {
     private static final Set<String> EDITABLE = Set.of(
         "title", "description", "scheduledStartAt", "scheduledEndAt", "roomId");
 
@@ -326,6 +326,52 @@ public class MeetingCoreService {
                 && !participants.existsByMeetingIdAndUserIdAndRemovedAtIsNull(meeting.getId(), actor)) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND);
         }
+    }
+
+    /** Do not use a passed UUID as authority: the current account must be active. */
+    private MeetingEntity mediaMeetingForCurrentActor(UUID meetingId, UUID actorId) {
+        UUID currentActor = authorization.requireActiveActor().getId();
+        if (!currentActor.equals(actorId)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+        }
+        return lookup(meetingId);
+    }
+
+    private void requireMediaOrganizer(UUID meetingId, UUID actorId) {
+        MeetingEntity meeting = mediaMeetingForCurrentActor(meetingId, actorId);
+        if (!meeting.getOrganizerUserId().equals(actorId)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+        }
+        if (meeting.getStatus() == MeetingStatus.CANCELLED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                "Cancelled meetings do not accept new media or processing operations.");
+        }
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public void requireReadable(UUID meetingId, UUID actorId) {
+        MeetingEntity meeting = mediaMeetingForCurrentActor(meetingId, actorId);
+        requireAccess(meeting, actorId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public void requireSourceReadable(UUID meetingId, UUID actorId) {
+        MeetingEntity meeting = mediaMeetingForCurrentActor(meetingId, actorId);
+        requireAccess(meeting, actorId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public void requireUploadAllowed(UUID meetingId, UUID actorId) {
+        requireMediaOrganizer(meetingId, actorId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public void requireProcessingAllowed(UUID meetingId, UUID actorId) {
+        requireMediaOrganizer(meetingId, actorId);
     }
     private void eligible(UUID id) {
         if (!users.isActive(id)) {

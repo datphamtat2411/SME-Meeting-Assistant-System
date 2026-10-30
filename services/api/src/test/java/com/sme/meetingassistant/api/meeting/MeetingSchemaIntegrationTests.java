@@ -27,7 +27,7 @@ class MeetingSchemaIntegrationTests {
             SELECT version FROM flyway_schema_history
             WHERE success AND version IS NOT NULL ORDER BY installed_rank
             """,String.class);
-        assertThat(versions).containsExactly("1","2","3","4","5","6","7","8","9","10");
+        assertThat(versions).containsExactly("1","2","3","4","5","6","7","8","9","10","11","12","13","14","15");
         List<String> cols=jdbc.queryForList("""
             SELECT column_name FROM information_schema.columns WHERE table_name='meetings'
             """,String.class);
