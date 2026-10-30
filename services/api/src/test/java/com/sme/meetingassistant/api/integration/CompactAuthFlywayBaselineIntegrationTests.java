@@ -24,7 +24,7 @@ class CompactAuthFlywayBaselineIntegrationTests {
             SELECT version FROM flyway_schema_history
             WHERE success AND version IS NOT NULL ORDER BY installed_rank
             """,String.class);
-        assertThat(versions).containsExactly("1","2","3","4","5","6","7","8","9","10","11","12","13","14","15","16","17","18");
+        assertThat(versions).containsExactly("1","2","3","4","5","6","7","8","9","10","11","12","13","14","15","16","17","18","19");
         assertThat(jdbc.queryForList("""
             SELECT script FROM flyway_schema_history WHERE success
              AND version IS NOT NULL ORDER BY installed_rank
@@ -46,7 +46,8 @@ class CompactAuthFlywayBaselineIntegrationTests {
                 "V15__processing_job_dispatch_state.sql",
                 "V16__processing_attempts_and_artifact_references.sql",
                 "V17__create_transcript_review.sql",
-                "V18__processing_stage_claims.sql");
+                "V18__processing_stage_claims.sql",
+                "V19__processing_artifact_integrity.sql");
     }
 
     @Test

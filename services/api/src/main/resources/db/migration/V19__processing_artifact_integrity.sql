@@ -25,6 +25,6 @@ ALTER TABLE processing_artifacts
 ALTER TABLE processing_artifacts
     ADD CONSTRAINT ck_processing_artifact_namespace
     CHECK (
-        object_key ~ '^processing/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/artifacts/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.(wav|flac|pcm)$'
+        object_key ~ '^processing/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/artifacts/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}[.](wav|flac|pcm)$'
         AND split_part(object_key, '/', 2) = processing_job_id::text
     );
