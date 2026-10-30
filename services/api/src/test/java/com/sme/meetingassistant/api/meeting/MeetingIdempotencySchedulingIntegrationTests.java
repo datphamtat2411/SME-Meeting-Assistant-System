@@ -14,7 +14,6 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Import;
 import org.springframework.scheduling.annotation.ScheduledAnnotationBeanPostProcessor;
-import org.springframework.scheduling.support.ScheduledMethodRunnable;
 import org.springframework.test.context.ActiveProfiles;
 
 /**
@@ -37,15 +36,12 @@ class MeetingIdempotencySchedulingIntegrationTests {
             .hasSize(1);
         ScheduledAnnotationBeanPostProcessor processor =
             context.getBean(ScheduledAnnotationBeanPostProcessor.class);
+        // Spring Boot may wrap the runnable for observation/tracking. Inspect
+        // the registered method descriptor instead of a framework wrapper type.
         assertThat(processor.getScheduledTasks())
-            .anySatisfy(task -> {
-                assertThat(task.getTask().getRunnable())
-                    .isInstanceOfSatisfying(ScheduledMethodRunnable.class, runnable -> {
-                        assertThat(runnable.getTarget())
-                            .isInstanceOf(MeetingCreationIdempotencySchedulingConfiguration.class);
-                        assertThat(runnable.getMethod().getName()).isEqualTo("cleanup");
-                    });
-            });
+            .anySatisfy(task ->
+                assertThat(task.getTask().getRunnable().toString())
+                    .contains("MeetingCreationIdempotencySchedulingConfiguration.cleanup"));
     }
 
     @Test void disablingEmailWorkerPreventsPollingEvenIfAnotherModuleSchedulesJobs() {
