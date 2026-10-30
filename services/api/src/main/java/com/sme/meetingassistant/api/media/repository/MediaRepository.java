@@ -2,6 +2,7 @@ package com.sme.meetingassistant.api.media.repository;
 
 import com.sme.meetingassistant.api.observability.RequestIdContext;
 import com.sme.meetingassistant.api.media.dto.ProcessingStageResponse;
+import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle.StageClaim;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.OffsetDateTime;
@@ -229,7 +230,12 @@ public class MediaRepository {
      * so PENDING is an allowed starting state. The source must still be accepted.
      * The job row is the lifecycle serialization boundary.
      */
-    public UUID startStage(UUID jobId, String stageCode, String providerName, String modelName) {
+    /**
+     * Only one worker owns a stage at a time. A broker duplicate cannot obtain
+     * the token of an existing claim. Expired claims must be reconciled before retry.
+     */
+    public StageClaim startStage(UUID jobId, String stageCode, String providerName,
+            String modelName, int leaseSeconds) {
         List<JobStart> jobs = this.jdbc.query("""
             SELECT j.status, m.status AS media_status
             FROM processing_jobs j JOIN meeting_media m ON m.id = j.source_media_id
@@ -243,23 +249,24 @@ public class MediaRepository {
         if (!"AVAILABLE".equals(jobs.getFirst().mediaStatus())) {
             throw new ProcessingLifecycleConflictException("Processing source media is not accepted.");
         }
+        if (Boolean.TRUE.equals(this.jdbc.queryForObject("""
+            SELECT EXISTS (SELECT 1 FROM processing_stage_runs
+              WHERE processing_job_id = ? AND status = 'RUNNING')
+            """, Boolean.class, jobId))) {
+            throw new ProcessingLifecycleConflictException("Another worker already owns a running stage.");
+        }
 
         List<StageAttempt> latest = latestAttempt(jobId, stageCode);
-        if (!latest.isEmpty() && "RUNNING".equals(latest.getFirst().status())) {
-            // Broker redelivery must not create a new stage or bump job version.
-            return latest.getFirst().id();
-        }
         if (!latest.isEmpty() && !"PENDING".equals(latest.getFirst().status())) {
             throw new ProcessingLifecycleConflictException("A completed/failed stage cannot be restarted without an explicit retry.");
         }
-        if ("FINALIZING_TRANSCRIPT".equals(stageCode)
-                && !hasSuccessfulTranscription(jobId)) {
-            throw new ProcessingLifecycleConflictException("Transcript finalization requires a successful transcription stage.");
+        if ("FINALIZING_TRANSCRIPT".equals(stageCode) && !hasSuccessfulTranscription(jobId)) {
+            throw new ProcessingLifecycleConflictException("Transcript finalization requires successful transcription.");
         }
         if (isTranscriptDownstream(stageCode) && !hasFinalizedTranscript(jobId)) {
-            throw new ProcessingLifecycleConflictException("Downstream processing requires a persisted finalized transcript.");
+            throw new ProcessingLifecycleConflictException("Downstream processing requires a finalized transcript.");
         }
-
+        UUID token = UUID.randomUUID();
         this.jdbc.update("""
             UPDATE processing_jobs SET status = 'RUNNING', current_stage = ?,
               started_at = COALESCE(started_at, CURRENT_TIMESTAMP),
@@ -267,36 +274,75 @@ public class MediaRepository {
               updated_at = CURRENT_TIMESTAMP, version = version + 1
             WHERE id = ?
             """, stageCode, jobId);
-
         if (!latest.isEmpty()) {
             UUID runId = latest.getFirst().id();
-            this.jdbc.update("""
+            int changed = this.jdbc.update("""
                 UPDATE processing_stage_runs SET status = 'RUNNING', provider_name = ?, model_name = ?,
-                  started_at = COALESCE(started_at, CURRENT_TIMESTAMP)
+                  started_at = COALESCE(started_at, CURRENT_TIMESTAMP),
+                  claim_token = ?, lease_expires_at = CURRENT_TIMESTAMP + (? * INTERVAL '1 second')
                 WHERE id = ? AND status = 'PENDING'
-                """, providerName, modelName, runId);
-            return runId;
+                """, providerName, modelName, token, leaseSeconds, runId);
+            if (changed != 1) throw new ProcessingLifecycleConflictException("Stage attempt was already claimed.");
+            return new StageClaim(runId, token);
         }
 
         UUID runId = UUID.randomUUID();
         this.jdbc.update("""
             INSERT INTO processing_stage_runs (id, processing_job_id, stage_code, attempt_number,
-              status, provider_name, model_name, started_at)
-            SELECT ?, ?, ?, COALESCE(MAX(attempt_number), 0) + 1, 'RUNNING', ?, ?, CURRENT_TIMESTAMP
+              status, provider_name, model_name, started_at, claim_token, lease_expires_at)
+            SELECT ?, ?, ?, COALESCE(MAX(attempt_number), 0) + 1,
+              'RUNNING', ?, ?, CURRENT_TIMESTAMP, ?, CURRENT_TIMESTAMP + (? * INTERVAL '1 second')
             FROM processing_stage_runs WHERE processing_job_id = ? AND stage_code = ?
-            """, runId, jobId, stageCode, providerName, modelName, jobId, stageCode);
-        return runId;
+            """, runId, jobId, stageCode, providerName, modelName,
+            token, leaseSeconds, jobId, stageCode);
+        return new StageClaim(runId, token);
     }
 
-    public void completeStage(UUID stageRunId, String outcome, String errorCode, String metricsJson) {
+    public void renewStageLease(StageClaim claim, int leaseSeconds) {
+        UUID jobId = stageJobId(claim.stageRunId());
+        String status = lockJobStatus(jobId);
+        if (!"RUNNING".equals(status) || !this.isLatestClaim(jobId, claim)) {
+            throw new ProcessingLifecycleConflictException("Only the current worker may renew a stage lease.");
+        }
+        int changed = this.jdbc.update("""
+            UPDATE processing_stage_runs
+            SET lease_expires_at = CURRENT_TIMESTAMP + (? * INTERVAL '1 second')
+            WHERE id = ? AND claim_token = ? AND status = 'RUNNING'
+              AND lease_expires_at > CURRENT_TIMESTAMP
+            """, leaseSeconds, claim.stageRunId(), claim.claimToken());
+        if (changed != 1) throw new ProcessingLifecycleConflictException("Stage claim has expired or was superseded.");
+    }
+
+    private boolean isLatestClaim(UUID jobId, StageClaim claim) {
+        return Boolean.TRUE.equals(this.jdbc.queryForObject("""
+            SELECT EXISTS (
+              SELECT 1 FROM processing_stage_runs sr
+              WHERE sr.id = ? AND sr.processing_job_id = ? AND sr.claim_token = ?
+                AND sr.attempt_number = (
+                  SELECT MAX(x.attempt_number) FROM processing_stage_runs x
+                  WHERE x.processing_job_id = sr.processing_job_id AND x.stage_code = sr.stage_code)
+            )
+            """, Boolean.class, claim.stageRunId(), jobId, claim.claimToken()));
+    }
+
+    private boolean liveClaim(StageClaim claim) {
+        return Boolean.TRUE.equals(this.jdbc.queryForObject("""
+            SELECT EXISTS (SELECT 1 FROM processing_stage_runs
+              WHERE id = ? AND claim_token = ? AND lease_expires_at > CURRENT_TIMESTAMP)
+            """, Boolean.class, claim.stageRunId(), claim.claimToken()));
+    }
+
+    public void completeStage(StageClaim claim, String outcome, String errorCode, String metricsJson) {
+        UUID stageRunId = claim.stageRunId();
         UUID jobId = stageJobId(stageRunId);
         String jobStatus = lockJobStatus(jobId);
         StageRun current = lockStage(stageRunId);
-        if (outcome.equals(current.status()) && sameStageOutcome(stageRunId, outcome, errorCode, metricsJson)) {
+        if (isLatestClaim(jobId, claim) && outcome.equals(current.status())
+                && sameStageOutcome(stageRunId, outcome, errorCode, metricsJson)) {
             return;
         }
         if (!"RUNNING".equals(jobStatus) || !"RUNNING".equals(current.status())
-                || !isLatestAttempt(jobId, current.stageCode(), stageRunId)) {
+                || !isLatestClaim(jobId, claim) || !liveClaim(claim)) {
             throw new ProcessingLifecycleConflictException("Stage attempt is not current or job is not running.");
         }
         if ("FINALIZING_TRANSCRIPT".equals(current.stageCode())
@@ -311,16 +357,17 @@ public class MediaRepository {
         if (changed != 1) throw new ProcessingLifecycleConflictException("Stage attempt changed during completion.");
     }
 
-    public void failStage(UUID stageRunId, String errorCode, String safeSummary, boolean retryable) {
+    public void failStage(StageClaim claim, String errorCode, String safeSummary, boolean retryable) {
+        UUID stageRunId = claim.stageRunId();
         UUID jobId = stageJobId(stageRunId);
         String jobStatus = lockJobStatus(jobId);
         StageRun current = lockStage(stageRunId);
         if ("FAILED".equals(current.status()) && "FAILED".equals(jobStatus)
-                && sameStageFailure(stageRunId, errorCode, retryable)) {
+                && isLatestClaim(jobId, claim) && sameStageFailure(stageRunId, errorCode, retryable)) {
             return;
         }
         if (!"RUNNING".equals(jobStatus) || !"RUNNING".equals(current.status())
-                || !isLatestAttempt(jobId, current.stageCode(), stageRunId)) {
+                || !isLatestClaim(jobId, claim) || !liveClaim(claim)) {
             throw new ProcessingLifecycleConflictException("Stage attempt is not current or job is not running.");
         }
         this.jdbc.update("""
@@ -478,8 +525,13 @@ public class MediaRepository {
             """, Boolean.class, stageRunId, errorCode, retryable));
     }
 
-    public void recordArtifact(UUID jobId, UUID stageRunId, String artifactType, String objectKey,
+    public void recordArtifact(UUID jobId, StageClaim claim, String artifactType, String objectKey,
             String sha256, Long sizeBytes, String retentionClass) {
+        String status = lockJobStatus(jobId);
+        if (!"RUNNING".equals(status) || !isLatestClaim(jobId, claim) || !liveClaim(claim)) {
+            throw new ProcessingLifecycleConflictException("Stale worker cannot record stage artifacts.");
+        }
+        UUID stageRunId = claim.stageRunId();
         int inserted = this.jdbc.update("""
             INSERT INTO processing_artifacts (id, processing_job_id, stage_run_id, artifact_type,
               object_key, sha256, size_bytes, retention_class)
@@ -513,6 +565,48 @@ public class MediaRepository {
                 rs.getObject("completed_at", OffsetDateTime.class), rs.getString("error_code")), jobId);
     }
 
+    /**
+     * Recover orphaned worker claims with the same job-first lock ordering used
+     * by stage operations. A timed-out attempt becomes retryable FAILED; a new
+     * attempt is admitted only through the bounded retry API.
+     */
+    public int expireAbandonedStages(int limit) {
+        if (limit < 1) throw new IllegalArgumentException("Stage sweep limit must be positive.");
+        List<UUID> jobs = this.jdbc.query("""
+            SELECT j.id FROM processing_jobs j WHERE j.status = 'RUNNING'
+              AND EXISTS (SELECT 1 FROM processing_stage_runs s
+                WHERE s.processing_job_id = j.id AND s.status = 'RUNNING'
+                  AND (s.lease_expires_at IS NULL OR s.lease_expires_at <= CURRENT_TIMESTAMP))
+            ORDER BY j.updated_at, j.id LIMIT ? FOR UPDATE OF j SKIP LOCKED
+            """, (rs, row) -> rs.getObject("id", UUID.class), limit);
+        int failed = 0;
+        for (UUID jobId : jobs) {
+            List<UUID> expired = this.jdbc.query("""
+                SELECT id FROM processing_stage_runs
+                WHERE processing_job_id = ? AND status = 'RUNNING'
+                  AND (lease_expires_at IS NULL OR lease_expires_at <= CURRENT_TIMESTAMP)
+                FOR UPDATE
+                """, (rs, row) -> rs.getObject("id", UUID.class), jobId);
+            if (expired.isEmpty()) continue;
+            this.jdbc.update("""
+                UPDATE processing_stage_runs SET status = 'FAILED', retryable = TRUE,
+                  error_code = 'STAGE_LEASE_EXPIRED', completed_at = CURRENT_TIMESTAMP
+                WHERE processing_job_id = ? AND status = 'RUNNING'
+                  AND (lease_expires_at IS NULL OR lease_expires_at <= CURRENT_TIMESTAMP)
+                """, jobId);
+            this.jdbc.update("""
+                UPDATE processing_jobs SET status = 'FAILED', retryable = TRUE,
+                  error_code = 'STAGE_LEASE_EXPIRED',
+                  error_summary = 'Processing worker stopped reporting progress.',
+                  completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP,
+                  version = version + 1
+                WHERE id = ? AND status = 'RUNNING'
+                """, jobId);
+            failed++;
+        }
+        return failed;
+    }
+
     public boolean hasRetryableFailedStage(UUID jobId, String stageCode) {
         return Boolean.TRUE.equals(this.jdbc.queryForObject("""
             SELECT EXISTS (SELECT 1 FROM processing_stage_runs
@@ -528,8 +622,21 @@ public class MediaRepository {
               queued_at = NULL, completed_at = NULL, error_code = NULL, error_summary = NULL,
               retryable = FALSE, retry_count = retry_count + 1,
               updated_at = CURRENT_TIMESTAMP, version = version + 1
-            WHERE id = ? AND status = 'FAILED' AND retry_count < ? AND (retryable = TRUE OR ?)
-            """, stageCode, job.id(), maxRetries, stageCode != null);
+            WHERE id = ? AND status = 'FAILED'
+              AND retry_count = ? AND retry_count < ?
+              AND (
+                (? = FALSE AND retryable = TRUE)
+                OR (? = TRUE AND EXISTS (
+                  SELECT 1 FROM processing_stage_runs s
+                  WHERE s.processing_job_id = processing_jobs.id AND s.stage_code = ?
+                    AND s.status = 'FAILED' AND s.retryable = TRUE
+                    AND s.attempt_number = (
+                      SELECT MAX(x.attempt_number) FROM processing_stage_runs x
+                      WHERE x.processing_job_id = s.processing_job_id AND x.stage_code = s.stage_code)
+                ))
+              )
+            """, stageCode, job.id(), job.retryCount(), maxRetries,
+            stageCode == null, stageCode != null, stageCode);
         if (updated != 1) return false;
         if (stageCode != null) {
             int inserted = this.jdbc.update("""

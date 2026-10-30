@@ -114,7 +114,10 @@ public class MediaProperties {
     /** A value of zero disables manual retries until the deployment sets a finite policy. */
     public static class Processing {
         private int maxRetries;
+        private int stageLeaseSeconds = 1800;
         public int getMaxRetries() { return maxRetries; }
         public void setMaxRetries(int value) { maxRetries = value; }
+        public int getStageLeaseSeconds() { return stageLeaseSeconds; }
+        public void setStageLeaseSeconds(int value) { stageLeaseSeconds = value; }
     }
 }

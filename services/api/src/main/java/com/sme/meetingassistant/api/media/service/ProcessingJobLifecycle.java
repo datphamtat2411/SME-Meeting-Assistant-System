@@ -7,14 +7,19 @@ import java.util.UUID;
  * This contract is intentionally not exposed as a public HTTP API.
  */
 public interface ProcessingJobLifecycle {
-    UUID startStage(UUID jobId, String stageCode, String providerName, String modelName);
+    /** One durable stage attempt with an unguessable owner token; never expose to clients. */
+    record StageClaim(UUID stageRunId, UUID claimToken) { }
 
-    void completeStage(UUID stageRunId, String outcome, String errorCode, String metricsJson);
+    StageClaim startStage(UUID jobId, String stageCode, String providerName, String modelName);
 
-    void failStage(UUID stageRunId, String errorCode, String safeSummary, boolean retryable);
+    void renewStageLease(StageClaim claim);
+
+    void completeStage(StageClaim claim, String outcome, String errorCode, String metricsJson);
+
+    void failStage(StageClaim claim, String errorCode, String safeSummary, boolean retryable);
 
     void completeJob(UUID jobId);
 
-    void recordArtifact(UUID jobId, UUID stageRunId, String artifactType, String objectKey,
+    void recordArtifact(UUID jobId, StageClaim claim, String artifactType, String objectKey,
             String sha256, Long sizeBytes, String retentionClass);
 }
