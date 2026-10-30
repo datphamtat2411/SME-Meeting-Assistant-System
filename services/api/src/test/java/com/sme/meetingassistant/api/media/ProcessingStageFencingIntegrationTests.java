@@ -206,6 +206,24 @@ class ProcessingStageFencingIntegrationTests {
     }
 
     @Test
+    void jobLevelRetryResumesFailedStageWithoutDuplicatingSuccessfulWork() {
+        StageClaim first = start();
+        lifecycle.failStage(first, "TRANSCRIPTION_TEMPORARY", "Transient failure", true);
+        Job failed = repository.findJob(jobId).orElseThrow();
+        assertThat(Boolean.TRUE.equals(transactions.execute(status ->
+            repository.retryJobAndOutbox(failed, UUID.randomUUID(), null, 3)))).isTrue();
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM processing_stage_runs WHERE processing_job_id=?
+              AND stage_code='TRANSCRIPTION'
+            """, Integer.class, jobId)).isEqualTo(2);
+        StageClaim resumed = start();
+        assertThat(resumed.stageRunId()).isNotEqualTo(first.stageRunId());
+        assertThatThrownBy(() -> lifecycle.completeStage(first, "SUCCEEDED", null, null))
+            .isInstanceOf(ProcessingLifecycleConflictException.class);
+        lifecycle.completeStage(resumed, "SUCCEEDED", null, null);
+    }
+
+    @Test
     void staleFailedSnapshotCannotCreateAnotherRetryAfterGenerationChanges() {
         StageClaim failed = start();
         lifecycle.failStage(failed, "TEMPORARY_FAILURE", "retryable", true);

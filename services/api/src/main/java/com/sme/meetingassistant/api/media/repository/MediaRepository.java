@@ -11,6 +11,7 @@ import java.util.Optional;
 import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
 
@@ -570,6 +571,7 @@ public class MediaRepository {
      * by stage operations. A timed-out attempt becomes retryable FAILED; a new
      * attempt is admitted only through the bounded retry API.
      */
+    @Transactional
     public int expireAbandonedStages(int limit) {
         if (limit < 1) throw new IllegalArgumentException("Stage sweep limit must be positive.");
         List<UUID> jobs = this.jdbc.query("""
@@ -617,6 +619,10 @@ public class MediaRepository {
     }
 
     public boolean retryJobAndOutbox(Job job, UUID eventId, String stageCode, int maxRetries) {
+        // Job-level retry continues at the failed stage; successful stages stay intact.
+        String resumeStage = stageCode != null ? stageCode
+            : (job.currentStage() != null && hasRetryableFailedStage(job.id(), job.currentStage())
+                ? job.currentStage() : null);
         int updated = this.jdbc.update("""
             UPDATE processing_jobs SET status = 'PENDING', current_stage = COALESCE(?, current_stage),
               queued_at = NULL, completed_at = NULL, error_code = NULL, error_summary = NULL,
@@ -635,22 +641,22 @@ public class MediaRepository {
                       WHERE x.processing_job_id = s.processing_job_id AND x.stage_code = s.stage_code)
                 ))
               )
-            """, stageCode, job.id(), job.retryCount(), maxRetries,
+            """, resumeStage, job.id(), job.retryCount(), maxRetries,
             stageCode == null, stageCode != null, stageCode);
         if (updated != 1) return false;
-        if (stageCode != null) {
+        if (resumeStage != null) {
             int inserted = this.jdbc.update("""
                 INSERT INTO processing_stage_runs (id, processing_job_id, stage_code, attempt_number,
                   status, retryable, created_at)
                 SELECT ?, ?, ?, COALESCE(MAX(attempt_number), 0) + 1, 'PENDING', FALSE, CURRENT_TIMESTAMP
                 FROM processing_stage_runs WHERE processing_job_id = ? AND stage_code = ?
-                """, UUID.randomUUID(), job.id(), stageCode, job.id(), stageCode);
+                """, UUID.randomUUID(), job.id(), resumeStage, job.id(), resumeStage);
             if (inserted != 1) throw new IllegalStateException("Could not create the retry stage attempt.");
         }
         String payload;
         try {
             payload = this.mapper.writeValueAsString(new JobRetryEvent(eventId, job.id(), job.meetingId(),
-                job.sourceMediaId(), job.requestedBy(), stageCode, job.retryCount() + 1,
+                job.sourceMediaId(), job.requestedBy(), resumeStage, job.retryCount() + 1,
                 RequestIdContext.currentRequestId(), 2, OffsetDateTime.now()));
         } catch (JacksonException exception) {
             throw new IllegalStateException("Could not serialize processing retry event", exception);
