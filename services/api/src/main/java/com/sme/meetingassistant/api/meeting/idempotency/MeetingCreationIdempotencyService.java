@@ -14,7 +14,6 @@ import java.util.UUID;
 import java.util.regex.Pattern;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -102,7 +101,9 @@ public class MeetingCreationIdempotencyService {
      * Small bounded maintenance batch; expiry does not require background work
      * to make a reused key eligible. SKIP LOCKED avoids active creation claims.
      */
-    @Scheduled(fixedDelayString = "${app.meeting.idempotency.cleanup-delay-ms:3600000}")
+    // Called only by the conditional scheduling adapter; never scheduled
+    // directly, so cleanup-enabled=false stays effective even when other
+    // modules enable Spring scheduling globally.
     public void removeExpired() {
         jdbc.update("""
             DELETE FROM meeting_creation_idempotency target

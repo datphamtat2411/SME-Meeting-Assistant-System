@@ -32,15 +32,18 @@ public final class TransactionalEmailDeliveryWorker {
     private final Map<String, TransactionalEmailHandler> handlers;
     private final ObjectProvider<JavaMailSender> mailSender;
     private final String sender;
+    private final boolean workerEnabled;
 
     public TransactionalEmailDeliveryWorker(JdbcTemplate jdbc,
             List<TransactionalEmailHandler> registeredHandlers,
             ObjectProvider<JavaMailSender> mailSender,
-            @Value("${app.email.delivery.sender:}") String sender) {
+            @Value("${app.email.delivery.sender:}") String sender,
+            @Value("${app.email.delivery.worker-enabled:true}") boolean workerEnabled) {
         this.jdbc = jdbc;
         this.namedJdbc = new NamedParameterJdbcTemplate(jdbc);
         this.mailSender = mailSender;
         this.sender = sender;
+        this.workerEnabled = workerEnabled;
         Map<String, TransactionalEmailHandler> configured = new LinkedHashMap<>();
         for (TransactionalEmailHandler handler : registeredHandlers) {
             String type = handler.notificationType();
@@ -54,6 +57,9 @@ public final class TransactionalEmailDeliveryWorker {
 
     @Scheduled(fixedDelayString = "${app.email.delivery.poll-delay-ms:30000}")
     public void poll() {
+        // @EnableScheduling is application-wide: another module may enable
+        // it even when email worker-enabled=false. Never poll in that case.
+        if (!workerEnabled) return;
         for (int i = 0; i < 10; i++) {
             if (!deliverOne()) break;
         }
