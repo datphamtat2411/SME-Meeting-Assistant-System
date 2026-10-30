@@ -56,6 +56,10 @@ public class TranscriptFinalizationService {
         String stageOutcome = result.status() == TranscriptIngestion.Status.READY_WITH_WARNINGS
             ? "SUCCEEDED_WITH_WARNING" : "SUCCEEDED";
         lifecycle.completeStage(claim, stageOutcome, null, null);
-        lifecycle.completeJob(result.processingJobId());
+        // The transcript milestone is not the completion of a full meeting pipeline.
+        // Preplanned downstream stages continue under the same processing job.
+        if (!lifecycle.hasPendingPipelineStages(result.processingJobId())) {
+            lifecycle.completeJob(result.processingJobId());
+        }
     }
 }

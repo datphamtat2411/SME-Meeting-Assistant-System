@@ -82,8 +82,16 @@ public class TranscriptRepository {
               JOIN processing_stage_runs s ON s.id=t.source_stage_run_id
                 AND s.processing_job_id=j.id AND s.stage_code='FINALIZING_TRANSCRIPT'
               WHERE t.processing_job_id=? AND t.source_stage_run_id=?
-                AND j.status IN ('COMPLETED','COMPLETED_WITH_WARNINGS')
                 AND s.status IN ('SUCCEEDED','SUCCEEDED_WITH_WARNING')
+                AND (
+                  j.status IN ('COMPLETED','COMPLETED_WITH_WARNINGS')
+                  OR (j.status='RUNNING' AND EXISTS (
+                    SELECT 1 FROM processing_stage_runs pending
+                    WHERE pending.processing_job_id=j.id AND pending.status='PENDING'
+                      AND pending.stage_code IN ('GENERATING_SUMMARY', 'EXTRACTING_DECISIONS',
+                                                 'EXTRACTING_ACTION_ITEMS', 'INDEXING')
+                  ))
+                )
             )
             """, Boolean.class, result.processingJobId(), result.sourceStageRunId()));
         if (!committedTogether) {

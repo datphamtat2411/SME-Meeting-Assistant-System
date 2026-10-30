@@ -376,12 +376,24 @@ public class MediaProcessingService {
         }
 
         try {
-            this.repository.insertJobAndOutbox(job, UUID.randomUUID());
+            this.repository.insertJobAndOutbox(job, UUID.randomUUID(), plannedDownstreamStages());
         } catch (MediaRepository.JobAdmissionConflictException concurrentAdmission) {
             // Unique indexes remain authoritative if a second API instance races.
             throw conflict("Another processing job already occupies the meeting or source.");
         }
         return toResponse(job(job.id()));
+    }
+
+    private List<String> plannedDownstreamStages() {
+        List<String> stages = this.properties.getProcessing().getRequiredDownstreamStages();
+        if (stages == null) throw new IllegalStateException("Processing pipeline stage plan is required.");
+        List<String> allowed = List.of("GENERATING_SUMMARY", "EXTRACTING_DECISIONS",
+            "EXTRACTING_ACTION_ITEMS", "INDEXING");
+        if (stages.stream().anyMatch(stage -> !allowed.contains(stage))
+                || stages.stream().distinct().count() != stages.size()) {
+            throw new IllegalStateException("Unsupported or duplicate required processing stage.");
+        }
+        return List.copyOf(stages);
     }
 
     @Transactional(readOnly = true)

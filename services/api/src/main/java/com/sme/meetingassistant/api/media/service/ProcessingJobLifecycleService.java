@@ -81,6 +81,12 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
     }
 
     @Override
+    @Transactional(readOnly = true)
+    public boolean hasPendingPipelineStages(UUID jobId) {
+        return this.repository.hasPendingPipelineStages(jobId);
+    }
+
+    @Override
     @Transactional
     public void completeJob(UUID jobId) {
         this.repository.completeJob(jobId);

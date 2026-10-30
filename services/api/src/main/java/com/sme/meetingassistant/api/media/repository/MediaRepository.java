@@ -194,7 +194,7 @@ public class MediaRepository {
             """, Integer.class, userId);
     }
 
-    public void insertJobAndOutbox(Job job, UUID eventId) {
+    public void insertJobAndOutbox(Job job, UUID eventId, List<String> requiredDownstreamStages) {
         int inserted = this.jdbc.update("""
             INSERT INTO processing_jobs (id, meeting_id, source_media_id, job_type, status,
               requested_by_user_id, reprocess_of_job_id, queued_at, created_at, updated_at)
@@ -202,6 +202,14 @@ public class MediaRepository {
             ON CONFLICT DO NOTHING
             """, job.id(), job.meetingId(), job.sourceMediaId(), job.requestedBy(), job.reprocessOfJobId());
         if (inserted != 1) throw new JobAdmissionConflictException();
+        // Snapshot the pipeline plan at admission; later configuration changes
+        // must not silently alter the obligations of a running job.
+        for (String stage : requiredDownstreamStages) {
+            this.jdbc.update("""
+                INSERT INTO processing_stage_runs(id,processing_job_id,stage_code,attempt_number,status)
+                VALUES (?,?,?,1,'PENDING')
+                """, UUID.randomUUID(), job.id(), stage);
+        }
         String payload;
         try {
             payload = this.mapper.writeValueAsString(new JobQueuedEvent(eventId, job.id(), job.meetingId(),
@@ -366,6 +374,10 @@ public class MediaRepository {
                 "Finalization claim does not match the current accepted job and media.");
         }
         FinalizationState state = matches.getFirst();
+        if ("RUNNING".equals(state.jobStatus()) && isSuccessful(state.stageStatus())) {
+            // Duplicate transcript result while downstream stages are pending.
+            return true;
+        }
         if ("RUNNING".equals(state.jobStatus()) && "RUNNING".equals(state.stageStatus())) {
             if (!liveClaim(claim)) {
                 throw new ProcessingLifecycleConflictException("Finalization worker lease has expired.");
@@ -435,6 +447,15 @@ public class MediaRepository {
      * Completion is derived from durable stage and transcript evidence.
      * Caller-supplied booleans cannot turn missing outputs into business success.
      */
+    public boolean hasPendingPipelineStages(UUID jobId) {
+        return Boolean.TRUE.equals(this.jdbc.queryForObject("""
+            SELECT EXISTS (SELECT 1 FROM processing_stage_runs
+              WHERE processing_job_id=? AND status='PENDING'
+                AND stage_code IN ('GENERATING_SUMMARY', 'EXTRACTING_DECISIONS',
+                                   'EXTRACTING_ACTION_ITEMS', 'INDEXING'))
+            """, Boolean.class, jobId));
+    }
+
     public void completeJob(UUID jobId) {
         String status = lockJobStatus(jobId);
         if (List.of("COMPLETED", "COMPLETED_WITH_WARNINGS").contains(status)) return;

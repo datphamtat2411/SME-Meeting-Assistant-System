@@ -115,9 +115,12 @@ public class MediaProperties {
     public static class Processing {
         private int maxRetries;
         private int stageLeaseSeconds = 1800;
+        private List<String> requiredDownstreamStages = new ArrayList<>();
         public int getMaxRetries() { return maxRetries; }
         public void setMaxRetries(int value) { maxRetries = value; }
         public int getStageLeaseSeconds() { return stageLeaseSeconds; }
         public void setStageLeaseSeconds(int value) { stageLeaseSeconds = value; }
+        public List<String> getRequiredDownstreamStages() { return requiredDownstreamStages; }
+        public void setRequiredDownstreamStages(List<String> value) { requiredDownstreamStages = value; }
     }
 }

@@ -170,6 +170,41 @@ class TranscriptFinalizationIntegrationTests {
     }
 
     @Test
+    void plannedDownstreamStageKeepsJobRunningUntilPipelineCompletes() {
+        jdbc.update("""
+            INSERT INTO processing_stage_runs(id,processing_job_id,stage_code,attempt_number,status)
+            VALUES (?,?,'GENERATING_SUMMARY',1,'PENDING')
+            """, UUID.randomUUID(), job);
+        TranscriptResult accepted = result("Validated and corrected transcript.");
+        finalization.finalizeTranscript(finalizer, accepted);
+        assertThat(jobStatus()).isEqualTo("RUNNING");
+        assertThat(finalStageStatus()).isEqualTo("SUCCEEDED");
+        assertThat(transcriptCount()).isEqualTo(1);
+        finalization.finalizeTranscript(finalizer, accepted);
+        assertThat(transcriptCount()).isEqualTo(1);
+        assertThatThrownBy(() -> lifecycle.completeJob(job))
+            .isInstanceOf(ProcessingLifecycleConflictException.class);
+        StageClaim summary = lifecycle.startStage(job, "GENERATING_SUMMARY", "llm", "summary");
+        lifecycle.completeStage(summary, "SUCCEEDED", null, null);
+        lifecycle.completeJob(job);
+        assertThat(jobStatus()).isEqualTo("COMPLETED");
+    }
+
+    @Test
+    void plannedDownstreamFailurePreservesReadableTranscript() {
+        jdbc.update("""
+            INSERT INTO processing_stage_runs(id,processing_job_id,stage_code,attempt_number,status)
+            VALUES (?,?,'GENERATING_SUMMARY',1,'PENDING')
+            """, UUID.randomUUID(), job);
+        finalization.finalizeTranscript(finalizer, result("Canonical transcript persists."));
+        StageClaim summary = lifecycle.startStage(job, "GENERATING_SUMMARY", "llm", "summary");
+        lifecycle.failStage(summary, "SUMMARY_FAILED", "Summary provider failed.", true);
+        assertThat(jobStatus()).isEqualTo("FAILED");
+        assertThat(transcriptCount()).isEqualTo(1);
+        assertThat(transcripts.current(meeting)).isPresent();
+    }
+
+    @Test
     void warningsProduceDurableTranscriptAndWarningJobWithoutCallerCompletionFlag() {
         TranscriptResult warned = makeResult("Review required.",
             TranscriptIngestion.Status.READY_WITH_WARNINGS, "SUSPICIOUS", "SUSPICIOUS");
