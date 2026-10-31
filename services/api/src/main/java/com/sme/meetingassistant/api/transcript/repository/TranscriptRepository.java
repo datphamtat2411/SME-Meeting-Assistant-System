@@ -616,6 +616,57 @@ public class TranscriptRepository implements ProcessingTranscriptEvidence {
         return source;
     }
 
+    /**
+     * Evidence quality is owned by Transcript, not Decision persistence. Called
+     * inside an existing write transaction after the parent meeting is locked.
+     * No source text or provider diagnostics leave this boundary.
+     */
+    public void requireReviewableDecisionEvidence(UUID meetingId, UUID transcriptId,
+            long contentRevision, List<UUID> segmentIds) {
+        if (meetingId == null || transcriptId == null || contentRevision < 0
+                || segmentIds == null || segmentIds.isEmpty() || segmentIds.size() > 50
+                || segmentIds.stream().anyMatch(java.util.Objects::isNull)
+                || new java.util.HashSet<>(segmentIds).size() != segmentIds.size()) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                "Decision evidence must reference valid transcript segments.");
+        }
+        TranscriptSource current = currentSource(meetingId).orElseThrow(() ->
+            new ResponseStatusException(HttpStatus.CONFLICT,
+                "No current transcript is available for decision review."));
+        if (!transcriptId.equals(current.transcriptId())
+                || contentRevision != current.contentRevision()
+                || !("READY".equals(current.status()) || "READY_WITH_WARNINGS".equals(current.status()))) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                "Decision source is not the current reviewable transcript.");
+        }
+
+        // 'ACCEPTED' alone is not sufficient: a segment might intersect an
+        // unresolved/suspicious coverage region. Validate both in one query.
+        String placeholders = String.join(",", java.util.Collections.nCopies(segmentIds.size(), "?"));
+        List<Object> args = new ArrayList<>();
+        args.add(transcriptId);
+        args.addAll(segmentIds);
+        List<long[]> counts = jdbc.query("""
+            SELECT count(*) AS found,
+                   count(*) FILTER (WHERE s.quality_status <> 'ACCEPTED'
+                     OR EXISTS (
+                         SELECT 1 FROM transcript_coverage_regions r
+                         WHERE r.transcript_id=s.transcript_id
+                           AND r.start_ms < s.end_ms AND r.end_ms > s.start_ms
+                           AND r.coverage_status <> 'COVERED'
+                     )) AS unsafe
+            FROM transcript_segments s
+            WHERE s.transcript_id=? AND s.id IN (%s)
+            """.formatted(placeholders),
+            (rs, row) -> new long[] {rs.getLong("found"), rs.getLong("unsafe")},
+            args.toArray());
+        if (counts.size() != 1 || counts.getFirst()[0] != segmentIds.size()
+                || counts.getFirst()[1] != 0) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                "Decision evidence is missing, suspicious or unresolved.");
+        }
+    }
+
     public record TranscriptSource(UUID transcriptId, long contentRevision, String status) {}
 
     private String encode(Map<String, Object> value) {
