@@ -64,4 +64,11 @@ public interface ActionItemProposalSink {
     record Receipt(boolean replay, int newProposals) {}
 
     Receipt acceptProposed(Batch batch);
+
+    /**
+     * Read-only canonical, durable (or same-transaction) acceptance evidence.
+     * A zero-item batch still requires an accepted receipt. The Action Items
+     * owner implements this query against its own transactional persistence.
+     */
+    boolean hasAcceptedBatch(UUID processingJobId, UUID stageRunId);
 }

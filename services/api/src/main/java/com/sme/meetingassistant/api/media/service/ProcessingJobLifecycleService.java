@@ -114,11 +114,10 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
                 && this.transcriptEvidence.forFinalization(identity.jobId(), claim.stageRunId()).isEmpty()) {
             throw new ProcessingLifecycleConflictException("Canonical transcript must exist before stage success.");
         }
-        if (this.repository.isDerivedSummaryJob(identity.jobId())
-                && (derivedEvidence == null
-                    || !derivedEvidence.hasReceiptForStage(identity.jobId(),claim.stageRunId()))) {
+        if (isIntelligenceStage(identity.stageCode())
+                && !hasAcceptedResult(identity.jobId(),claim.stageRunId(),identity.stageCode())) {
             throw new ProcessingLifecycleConflictException(
-                "A derived Summary stage cannot succeed without an accepted result receipt.");
+                "AI-dependent stage cannot succeed without matching canonical acceptance evidence.");
         }
         this.repository.completeStage(claim, outcome, errorCode, metricsJson);
     }
@@ -140,9 +139,30 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
         return this.repository.hasPendingPipelineStages(jobId);
     }
 
+    private static boolean isIntelligenceStage(String stageCode) {
+        return List.of("GENERATING_SUMMARY","EXTRACTING_DECISIONS",
+            "EXTRACTING_ACTION_ITEMS").contains(stageCode);
+    }
+
+    private boolean hasAcceptedResult(UUID jobId,UUID stageRunId,String stageCode) {
+        return derivedEvidence!=null
+            && derivedEvidence.hasAcceptedResultForStage(jobId,stageRunId,stageCode);
+    }
+
+    private void verifyLatestIntelligenceResults(UUID jobId) {
+        for (var stage : repository.latestIntelligenceStages(jobId)) {
+            if (List.of("SUCCEEDED","SUCCEEDED_WITH_WARNING").contains(stage.status())
+                    && !hasAcceptedResult(jobId,stage.stageRunId(),stage.stageCode())) {
+                throw new ProcessingLifecycleConflictException(
+                    "Processing job contains a successful intelligence stage without canonical acceptance.");
+            }
+        }
+    }
+
     @Override
     @Transactional
     public void completeJob(UUID jobId) {
+        verifyLatestIntelligenceResults(jobId);
         if (this.repository.isDerivedSummaryJob(jobId)) {
             if (derivedEvidence == null || !derivedEvidence.hasAcceptedSummary(jobId)) {
                 throw new ProcessingLifecycleConflictException(

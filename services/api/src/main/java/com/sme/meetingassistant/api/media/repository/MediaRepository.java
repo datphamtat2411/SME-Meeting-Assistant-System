@@ -692,6 +692,28 @@ public class MediaRepository {
                 new ProcessingLifecycleConflictException("Unknown derived-stage attempt."));
     }
 
+    /**
+     * Latest intelligence stage attempts for final job completion verification.
+     * Media owns stage identities, while the feature owner owns receipt evidence.
+     */
+    public List<IntelligenceStageCompletion> latestIntelligenceStages(UUID jobId) {
+        return jdbc.query("""
+            SELECT s.id,s.stage_code,s.status
+            FROM processing_stage_runs s
+            WHERE s.processing_job_id=?
+              AND s.stage_code IN ('GENERATING_SUMMARY','EXTRACTING_DECISIONS',
+                                   'EXTRACTING_ACTION_ITEMS')
+              AND s.attempt_number=(
+                SELECT MAX(x.attempt_number)
+                FROM processing_stage_runs x
+                WHERE x.processing_job_id=s.processing_job_id AND x.stage_code=s.stage_code)
+            """,(rs,n)->new IntelligenceStageCompletion(
+                rs.getObject("id",UUID.class),rs.getString("stage_code"),
+                rs.getString("status")),jobId);
+    }
+
+    public record IntelligenceStageCompletion(UUID stageRunId,String stageCode,String status) {}
+
     public StageIdentity stageIdentity(UUID stageRunId) {
         return this.jdbc.query("""
             SELECT processing_job_id, stage_code FROM processing_stage_runs WHERE id=?

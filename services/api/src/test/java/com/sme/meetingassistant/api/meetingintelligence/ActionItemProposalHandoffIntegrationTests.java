@@ -36,6 +36,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 class ActionItemProposalHandoffIntegrationTests {
     @Autowired JdbcTemplate jdbc;
     @Autowired ActionItemProposalHandoff handoff;
+    @Autowired com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle lifecycle;
     @MockitoBean ActionItemProposalSink sink;
 
     private UUID meeting, media, job, actor, transcript, segment, snapshot;
@@ -112,7 +113,10 @@ class ActionItemProposalHandoffIntegrationTests {
 
     @Test
     void validatedProposalHandoffRetainsEvidenceAndCompletesOnlyOwnStage() {
+        assertThatThrownBy(() -> lifecycle.completeStage(claim,"SUCCEEDED",null,null))
+            .isInstanceOf(RuntimeException.class);
         when(sink.acceptProposed(any())).thenReturn(new Receipt(false,1));
+        when(sink.hasAcceptedBatch(job,claim.stageRunId())).thenReturn(true);
         var receipt=handoff.handoff(claim,source,candidates());
         assertThat(receipt).isEqualTo(new Receipt(false,1));
         var captor=ArgumentCaptor.forClass(ActionItemProposalSink.Batch.class);
@@ -135,6 +139,7 @@ class ActionItemProposalHandoffIntegrationTests {
     @Test
     void emptyExtractionIsValidAndDoesNotInventOfficialWork() {
         when(sink.acceptProposed(any())).thenReturn(new Receipt(false,0));
+        when(sink.hasAcceptedBatch(job,claim.stageRunId())).thenReturn(true);
         assertThat(handoff.handoff(claim,source,List.of()).newProposals()).isZero();
         verify(sink).acceptProposed(any());
         assertThat(status(claim)).isEqualTo("SUCCEEDED");
@@ -145,6 +150,7 @@ class ActionItemProposalHandoffIntegrationTests {
     void provenanceStalenessIsAdvisoryNeverAutomaticConfirmation() {
         jdbc.update("UPDATE transcripts SET content_revision=4 WHERE id=?",transcript);
         when(sink.acceptProposed(any())).thenReturn(new Receipt(false,1));
+        when(sink.hasAcceptedBatch(job,claim.stageRunId())).thenReturn(true);
         handoff.handoff(claim,source,candidates());
         var captor=ArgumentCaptor.forClass(ActionItemProposalSink.Batch.class);
         verify(sink).acceptProposed(captor.capture());
@@ -218,8 +224,17 @@ class ActionItemProposalHandoffIntegrationTests {
     }
 
     @Test
+    void sinkReplyWithoutDurableAcceptanceDoesNotCompleteMediaStage() {
+        when(sink.acceptProposed(any())).thenReturn(new Receipt(false,1));
+        assertThatThrownBy(() -> handoff.handoff(claim,source,candidates()))
+            .isInstanceOf(RuntimeException.class);
+        assertThat(status(claim)).isEqualTo("RUNNING");
+    }
+
+    @Test
     void acceptedReplayCanCompleteStillRunningStage() {
         when(sink.acceptProposed(any())).thenReturn(new Receipt(true,0));
+        when(sink.hasAcceptedBatch(job,claim.stageRunId())).thenReturn(true);
         assertThat(handoff.handoff(claim,source,candidates()).replay()).isTrue();
         assertThat(status(claim)).isEqualTo("SUCCEEDED");
         assertThat(decisionCount()).isZero();

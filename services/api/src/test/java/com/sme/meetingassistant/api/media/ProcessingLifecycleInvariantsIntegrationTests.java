@@ -155,9 +155,51 @@ class ProcessingLifecycleInvariantsIntegrationTests {
         StageClaim downstream = lifecycle.startStage(jobId, "GENERATING_SUMMARY", "llm", "summary");
         assertThatThrownBy(() -> lifecycle.completeJob(jobId))
             .isInstanceOf(ProcessingLifecycleConflictException.class);
-        lifecycle.completeStage(downstream, "SUCCEEDED", null, "{}");
-        lifecycle.completeJob(jobId);
-        assertThat(jobStatus()).isEqualTo("COMPLETED");
+        assertThatThrownBy(() -> lifecycle.completeStage(downstream, "SUCCEEDED", null, "{}"))
+            .isInstanceOf(ProcessingLifecycleConflictException.class)
+            .hasMessageContaining("canonical acceptance");
+        assertThat(jdbc.queryForObject(
+            "SELECT status FROM processing_stage_runs WHERE id=?",String.class,
+            downstream.stageRunId())).isEqualTo("RUNNING");
+        assertThatThrownBy(() -> lifecycle.completeJob(jobId))
+            .isInstanceOf(ProcessingLifecycleConflictException.class);
+        assertThat(jobStatus()).isEqualTo("RUNNING");
+    }
+
+    @Test
+    void finalJobGuardRejectsForgedOfflineSummarySuccessWithoutCanonicalRow() {
+        completedTranscriptStages("SUCCEEDED", "READY", "ACCEPTED");
+        StageClaim generated=lifecycle.startStage(jobId,"GENERATING_SUMMARY",null,null);
+        jdbc.update("""
+            UPDATE processing_stage_runs SET status='SUCCEEDED',completed_at=CURRENT_TIMESTAMP
+            WHERE id=?
+            """,generated.stageRunId());
+        assertThatThrownBy(() -> lifecycle.completeJob(jobId))
+            .isInstanceOf(ProcessingLifecycleConflictException.class)
+            .hasMessageContaining("canonical acceptance");
+        assertThat(jobStatus()).isEqualTo("RUNNING");
+    }
+
+    @Test
+    void normalOfflineDecisionSuccessRequiresReceiptEvenForZeroCandidates() {
+        completedTranscriptStages("SUCCEEDED", "READY", "ACCEPTED");
+        StageClaim decisions=lifecycle.startStage(jobId,"EXTRACTING_DECISIONS",null,null);
+        assertThatThrownBy(() -> lifecycle.completeStage(decisions,"SUCCEEDED",null,null))
+            .isInstanceOf(ProcessingLifecycleConflictException.class);
+        assertThat(jdbc.queryForObject(
+            "SELECT status FROM processing_stage_runs WHERE id=?",String.class,
+            decisions.stageRunId())).isEqualTo("RUNNING");
+    }
+
+    @Test
+    void normalOfflineActionItemStageFailsClosedWithoutOwnerReceipt() {
+        completedTranscriptStages("SUCCEEDED", "READY", "ACCEPTED");
+        StageClaim action=lifecycle.startStage(jobId,"EXTRACTING_ACTION_ITEMS",null,null);
+        assertThatThrownBy(() -> lifecycle.completeStage(action,"SUCCEEDED",null,null))
+            .isInstanceOf(ProcessingLifecycleConflictException.class);
+        assertThat(jdbc.queryForObject(
+            "SELECT status FROM processing_stage_runs WHERE id=?",String.class,
+            action.stageRunId())).isEqualTo("RUNNING");
     }
 
     @Test
