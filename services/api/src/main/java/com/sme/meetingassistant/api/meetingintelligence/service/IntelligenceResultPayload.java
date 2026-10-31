@@ -17,13 +17,15 @@ import tools.jackson.databind.ObjectMapper;
 public record IntelligenceResultPayload(
     String resultType, UUID jobId, UUID stageRunId, UUID transcriptId,
     long contentRevision, UUID inputSnapshotId, String sourceSha256,
-    String summary, List<Candidate> candidates, List<String> warnings
+    String summary, List<Candidate> candidates, List<String> warnings, Producer producer
 ) {
     private static final Set<String> WARNING_CODES = Set.of(
         "INCOMPLETE_COVERAGE", "UNRESOLVED_EVIDENCE", "SUSPICIOUS_EVIDENCE",
         "SOURCE_QUALITY_WARNING"
     );
-    public record Candidate(String key, String content, List<UUID> evidenceSegmentIds) { }
+    public record Candidate(String key, String content, List<UUID> evidenceSegmentIds,
+                            String uncertainty) { }
+    public record Producer(String provider, String model, String promptVersion) { }
 
     public static IntelligenceResultPayload parse(byte[] bytes, ObjectMapper mapper) {
         final Map<String,Object> root;
@@ -54,7 +56,11 @@ public record IntelligenceResultPayload(
         optional(producer, Set.of("provider"), Set.of("model","promptVersion"));
         string(producer.get("model"),1,160);
         string(producer.get("promptVersion"),1,80);
-        if (producer.containsKey("provider")) string(producer.get("provider"),1,80);
+        String provider=producer.containsKey("provider")
+            ? string(producer.get("provider"),1,80) : null;
+        Producer attribution=new Producer(provider,
+            string(producer.get("model"),1,160),
+            string(producer.get("promptVersion"),1,80));
 
         Map<String,Object> result=map(root.get("result"));
         if ("SUMMARY".equals(kind)) {
@@ -91,11 +97,12 @@ public record IntelligenceResultPayload(
                     ids.add(id);
                 }
                 if (ids.isEmpty()) invalid();
-                candidates.add(new Candidate(key,content,List.copyOf(ids)));
+                candidates.add(new Candidate(key,content,List.copyOf(ids),uncertainty));
             }
         }
         return new IntelligenceResultPayload(kind,job,stage,transcript,revision,
-            snapshot,sha,summary,List.copyOf(candidates),List.copyOf(warnings));
+            snapshot,sha,summary,List.copyOf(candidates),List.copyOf(warnings),
+            attribution);
     }
 
     private static Map<String,Object> map(Object value) {

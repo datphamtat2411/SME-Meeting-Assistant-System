@@ -112,11 +112,14 @@ public class IntelligenceResultAcceptance {
             INSERT INTO meeting_intelligence_result_receipts(
                 id,meeting_id,processing_job_id,stage_run_id,result_type,
                 source_snapshot_id,transcript_id,content_revision,artifact_sha256,
-                artifact_object_key,artifact_size_bytes)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                artifact_object_key,artifact_size_bytes,producer_model,
+                producer_prompt_version,producer_provider,result_warning_codes)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?::text[])
             """,receiptId,stage.meetingId(),stage.jobId(),payload.stageRunId(),
             payload.resultType(),source.id(),source.transcript(),source.revision(),
-            artifact.sha256(),artifact.objectKey(),artifact.sizeBytes());
+            artifact.sha256(),artifact.objectKey(),artifact.sizeBytes(),
+            payload.producer().model(),payload.producer().promptVersion(),
+            payload.producer().provider(),AiQualityMetadata.pgArray(payload.warnings()));
 
         int written;
         if ("SUMMARY".equals(payload.resultType())) {
@@ -134,11 +137,13 @@ public class IntelligenceResultAcceptance {
                 INSERT INTO meeting_summary_versions(
                     id,meeting_id,version_number,content,source_type,
                     processing_job_id,result_receipt_id,transcript_id,
-                    content_revision,quality_status,is_current)
-                VALUES (?,?,?,?,'AI_GENERATED',?,?,?, ?,?,?)
+                    content_revision,quality_status,is_current,ai_warning_codes)
+                VALUES (?,?,?,?,'AI_GENERATED',?,?,?, ?,?,?,?::text[])
                 """,UUID.randomUUID(),stage.meetingId(),version,payload.summary(),
                 stage.jobId(),receiptId,source.transcript(),source.revision(),
-                evidence.hasQualityWarnings()?"READY_WITH_WARNINGS":"READY",promote);
+                (evidence.hasQualityWarnings() || !payload.warnings().isEmpty())
+                    ?"READY_WITH_WARNINGS":"READY",
+                promote,AiQualityMetadata.pgArray(payload.warnings()));
             written=1;
         } else {
             for (var candidate:payload.candidates()) {
@@ -146,10 +151,12 @@ public class IntelligenceResultAcceptance {
                 jdbc.update("""
                     INSERT INTO meeting_decisions(
                         id,meeting_id,content,status,source_type,processing_job_id,
-                        result_receipt_id,candidate_key,transcript_id,content_revision)
-                    VALUES (?,?,?,'PROPOSED','AI_EXTRACTED',?,?,?,?,?)
+                        result_receipt_id,candidate_key,transcript_id,content_revision,
+                        ai_uncertainty)
+                    VALUES (?,?,?,'PROPOSED','AI_EXTRACTED',?,?,?,?,?,?)
                     """,id,stage.meetingId(),candidate.content(),stage.jobId(),
-                    receiptId,candidate.key(),source.transcript(),source.revision());
+                    receiptId,candidate.key(),source.transcript(),source.revision(),
+                    candidate.uncertainty());
                 for (UUID segment:candidate.evidenceSegmentIds()) {
                     jdbc.update("""
                         INSERT INTO decision_evidence(
