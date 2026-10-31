@@ -667,6 +667,51 @@ public class TranscriptRepository implements ProcessingTranscriptEvidence {
         }
     }
 
+    /**
+     * Source facts/evidence ownership stays in Transcript. A historic pinned
+     * snapshot can be accepted as non-current derived content without treating
+     * the mutable live transcript as its input bytes.
+     */
+    public DerivedSource derivedSource(UUID meetingId, UUID transcriptId, long pinnedRevision) {
+        return jdbc.query("""
+            SELECT t.status,t.is_current,t.content_revision,
+                EXISTS(SELECT 1 FROM transcript_segments s
+                    WHERE s.transcript_id=t.id AND s.quality_status<>'ACCEPTED')
+                 OR EXISTS(SELECT 1 FROM transcript_coverage_regions r
+                    WHERE r.transcript_id=t.id AND r.coverage_status<>'COVERED') AS unsafe
+              FROM transcripts t WHERE t.meeting_id=? AND t.id=?
+            """, (rs,n) -> new DerivedSource(
+                "READY".equals(rs.getString("status"))
+                    || "READY_WITH_WARNINGS".equals(rs.getString("status")),
+                rs.getBoolean("is_current") && rs.getLong("content_revision")==pinnedRevision,
+                "READY_WITH_WARNINGS".equals(rs.getString("status")) || rs.getBoolean("unsafe")
+            ), meetingId, transcriptId).stream().findFirst().orElseThrow(() ->
+                new IllegalArgumentException("Derived result source does not belong to this meeting."));
+    }
+
+    /** Check membership only; AI evidence is not automatically reviewable. */
+    public void requireDerivedSegments(UUID meetingId, UUID transcriptId, List<UUID> segments) {
+        if (segments == null || segments.isEmpty() || segments.size()>50
+                || segments.stream().anyMatch(java.util.Objects::isNull)
+                || new java.util.HashSet<>(segments).size()!=segments.size()) {
+            throw new IllegalArgumentException("Derived evidence segment IDs are invalid.");
+        }
+        String q=String.join(",",java.util.Collections.nCopies(segments.size(),"?"));
+        List<Object> args=new ArrayList<>();
+        args.add(meetingId);
+        args.add(transcriptId);
+        args.addAll(segments);
+        Long count=jdbc.queryForObject("""
+            SELECT count(*) FROM transcript_segments s
+            JOIN transcripts t ON t.id=s.transcript_id
+            WHERE t.meeting_id=? AND t.id=? AND s.id IN (%s)
+            """.formatted(q),Long.class,args.toArray());
+        if (count==null || count!=segments.size())
+            throw new IllegalArgumentException("AI decision references foreign or missing evidence.");
+    }
+
+    public record DerivedSource(boolean eligible, boolean current, boolean hasQualityWarnings) { }
+
     public record TranscriptSource(UUID transcriptId, long contentRevision, String status) {}
 
     private String encode(Map<String, Object> value) {
