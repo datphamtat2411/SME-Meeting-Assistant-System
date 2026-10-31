@@ -1,0 +1,252 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.sme-meeting-assistant.invalid/api/meeting-intelligence-result-v1.schema.json",
+  "title": "MI-01 proposed AI result exchange contract v1 (review required)",
+  "description": "Draft API-owned ingress schema. Core must also validate trusted job/stage/source and evidence against PostgreSQL. Strings/IDs here never grant authority. Digest verification is semantic, not enforced by JSON Schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "resultType",
+    "processingJobId",
+    "stageRunId",
+    "source",
+    "producer",
+    "resultSha256",
+    "result"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0"
+    },
+    "resultType": {
+      "type": "string",
+      "enum": [
+        "SUMMARY",
+        "DECISION_EXTRACTION"
+      ]
+    },
+    "processingJobId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "stageRunId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "source": {
+      "$ref": "#/$defs/source"
+    },
+    "producer": {
+      "$ref": "#/$defs/producer"
+    },
+    "resultSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "result": {
+      "type": "object"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "resultType": {
+            "const": "SUMMARY"
+          }
+        },
+        "required": [
+          "resultType"
+        ]
+      },
+      "then": {
+        "properties": {
+          "result": {
+            "$ref": "#/$defs/summaryResult"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "resultType": {
+            "const": "DECISION_EXTRACTION"
+          }
+        },
+        "required": [
+          "resultType"
+        ]
+      },
+      "then": {
+        "properties": {
+          "result": {
+            "$ref": "#/$defs/decisionExtractionResult"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transcriptId",
+        "contentRevision",
+        "inputSnapshotId",
+        "sha256"
+      ],
+      "properties": {
+        "transcriptId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "contentRevision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "inputSnapshotId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model",
+        "promptVersion"
+      ],
+      "properties": {
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "\\S"
+        },
+        "promptVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "pattern": "\\S"
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "pattern": "\\S"
+        }
+      }
+    },
+    "summaryResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "content",
+        "warnings"
+      ],
+      "properties": {
+        "content": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20000,
+          "pattern": "\\S"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "INCOMPLETE_COVERAGE",
+              "UNRESOLVED_EVIDENCE",
+              "SUSPICIOUS_EVIDENCE",
+              "SOURCE_QUALITY_WARNING"
+            ]
+          },
+          "uniqueItems": true,
+          "maxItems": 4
+        }
+      }
+    },
+    "decisionCandidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidateKey",
+        "content",
+        "evidenceSegmentIds",
+        "uncertainty"
+      ],
+      "properties": {
+        "candidateKey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._-]+$"
+        },
+        "content": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 5000,
+          "pattern": "\\S"
+        },
+        "evidenceSegmentIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "minItems": 1,
+          "maxItems": 50,
+          "uniqueItems": true
+        },
+        "uncertainty": {
+          "type": "string",
+          "enum": [
+            "NONE",
+            "LOW",
+            "MATERIAL"
+          ]
+        }
+      }
+    },
+    "decisionExtractionResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidates",
+        "warnings"
+      ],
+      "properties": {
+        "candidates": {
+          "type": "array",
+          "maxItems": 500,
+          "items": {
+            "$ref": "#/$defs/decisionCandidate"
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "INCOMPLETE_COVERAGE",
+              "UNRESOLVED_EVIDENCE",
+              "SUSPICIOUS_EVIDENCE",
+              "SOURCE_QUALITY_WARNING"
+            ]
+          },
+          "uniqueItems": true,
+          "maxItems": 4
+        }
+      }
+    }
+  }
+}
