@@ -1315,6 +1315,20 @@ Only users authorized to access protected meeting content SHALL be able to view 
 
 Applicable rules: `BR-SUM-006`.
 
+### FEAT-SUM-REVIEW-001 — Discover generated Summary candidates
+
+Authorized meeting-content readers SHALL be able to inspect paginated current and historical Summary versions, including non-current AI regeneration candidates, with source provenance, current/stale status and quality indicators. Candidate content MUST NOT be disclosed to users lacking current meeting-content access. History is read-only; viewing a candidate does not approve it.
+
+### FEAT-SUM-REVIEW-002 — Explicit authorized version activation
+
+The Meeting Organizer or another explicitly authorized Summary content editor SHALL be able to make an eligible, **fresh** existing Summary version current through a deliberate confirmation action. Activation SHALL use conditional concurrency against the current Summary, recheck authorization and source freshness, preserve historical content/source attribution and record a trusted audit event. A stale/foreign candidate SHALL NOT be silently activated. Selecting an AI candidate does not reclassify its origin as HUMAN_EDIT.
+
+### FEAT-SUM-REVIEW-003 — Preserve current Summary on regeneration
+
+A later generated candidate SHALL remain non-current until an authorized user explicitly activates it. Failed regeneration or an ineligible/stale candidate SHALL NOT erase the current Summary. The original successful AI publication when no current Summary exists follows the approved source freshness policy.
+
+Applicable rules: `BR-SUM-004`, `BR-SUM-005`, `BR-SUM-006`. The associated HTTP additions are `API-EP-SUM-004/005`; implementation is scheduled for MI-PM-04, not assumed available yet.
+
 ---
 
 # 19. Meeting Decision Features

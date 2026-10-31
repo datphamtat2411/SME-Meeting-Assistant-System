@@ -1,6 +1,6 @@
 # MI-PM-01 — Pre-Merge Contract Decisions and Owner Review Register
 
-> **Status:** ENGINEERING DESIGN COMPLETE — **OWNER SIGN-OFF PENDING**. This is an implementation proposal, **not** Product/AI/Security/Action Items authorization.
+> **Status:** ENGINEERING DESIGN COMPLETE — project-delegated **API/Product design approval** recorded below. **AI Core interoperability, external Security/Operations and Action Items implementation approvals remain PENDING**. Approval does not mean implementation or production readiness.
 >
 > **Base inspected:** `api/module-meeting-intelligence` at `099e4327358885634bb9cf1a519933070043b3ff` (prior to this document).
 >
@@ -35,7 +35,7 @@ This document locks a **recommended engineering design** and the decision/approv
 | DEC-06 / G6 | Organizer-only **write** baseline; existing meeting-content access for read; current user/session permission evaluation; no implicit ADMIN bypass/delegation. | Local permission system in Meeting Intelligence; inferred manager/editor role; client-supplied actor. | Meeting + Security owner. |
 | DEC-07 / G7 | Action Items-owned synchronous in-process proposal sink with canonical transaction; absent sink fails closed; no third public AI result type without agreed adapter/schema. | Write Action Item rows in Meeting Intelligence; fake sink; make extraction automatically OPEN. | Action Items + AI/API owners. |
 
-**Decision status:** All seven recommendations are **SELECTED FOR REVIEW**; G1–G7 remain **PENDING OWNER SIGN-OFF**. This is intentional separation of engineering judgment from organizational approval.
+**Decision status at initial design:** All seven options were SELECTED FOR REVIEW. The later **delegated decision review in section 13** supersedes this initial pending-only classification; cross-team AI and Action Items gates remain open.
 
 ## 3. DEC-01 / G1 — Summary candidate review: proposed public contract
 
@@ -59,7 +59,7 @@ Why two operations: the first makes valid, non-current outputs discoverable and 
 - Return the selected current Summary in the Common API Response, with new ETag and `no-store`. Idempotent no-op activation of an already-current version is allowed **only after** valid concurrency/authorization checks; it must not create duplicate audit records.
 - No blanket `force=true`, wildcard `If-Match: *`, automatic approval, or separate `REVIEWED` state for the initial version.
 
-**Required canonical change:** Product/API owners add extension IDs and meanings to RE02-API (current `API-EP-SUM-001..003` remain unchanged), and add candidate-review user behavior to RE06-FEATURES if approved. The RE04 no-silent-overwrite invariant already constrains the design. Only then implement MI-PM-04.
+**Canonical change approved on delegated review:** RE02-API now contains `API-EP-SUM-004/005`; RE06-FEATURES contains `FEAT-SUM-REVIEW-001..003`. This approves the **API/Product contract only**; it does not claim the endpoints already exist. Implement and verify them in MI-PM-04.
 
 ## 4. DEC-02 / G2 — AI-to-API exchange and delivery boundary
 
@@ -167,6 +167,29 @@ These are in scope for **downstream tasks**, not new changes in MI-PM-01:
 - RE05-DATABASE: additive schema for quality/provenance if approved; no rewrite of V23.
 - RE08-SECURITY: reference approved worker auth/storage policy (do not invent credentials or retain raw payloads).
 - RE01-AI: agree on versioned producer/consumer schema, warnings/uncertainty semantics and evaluation needs; AI model selection remains AI-owned.
+
+## 13. Independent counter-review and delegated design decisions (2026-10-31)
+
+The project owner explicitly delegated API/Product design approvals for the pre-merge branch, **excluding any authority over the separate AI Core team**. This record uses that delegation only for decisions inside the Spring Boot Core API's ownership. It does not fabricate approval by named human team leads, waive Security deployment evidence, or modify any `services/ai` code.
+
+| Gate | Self-critique / rejected trade-off | Delegated decision | Still required before feature enablement |
+| --- | --- | --- | --- |
+| G1 | Read-only current Summary is too narrow; auto-promoting AI output loses human intent. A full approval workflow is disproportionate. Existing immutable versions and ETag support explicit selection. | **APPROVED — Product/API**. Two additional routes and user behavior are now canonical in RE02/RE06; MI-PM-04 must implement. | Concurrent activation, auth, stale, history/audit regression evidence. |
+| G2 | Signing an API schema does not prove the independent AI team can emit it. Letting AI mutate DB or accept anonymous calls is unsafe. | **APPROVED — API receiver invariants only; CROSS-TEAM PENDING**. Keep v1 typed parser and receipt/ACK proposal as an API target, not a mandatory AI implementation. | AI owner negotiates producer compatibility; Security owner approves authenticated service transport and error/ACK semantics. |
+| G3 | Guarding only at completeJob is too late; requiring nonzero decisions would reject valid empty extractions. | **APPROVED — Core API/Media**. Require type-matched canonical acceptance at stage success and recheck latest successful stage at job completion. | CI verifies normal/derived receipts, zero-candidate, bypass, retries; AI worker integration remains separate. |
+| G4 | Synchronous object storage within a row-lock transaction risks high lock time; mutable current transcript cannot guarantee provenance. | **APPROVED — API-side snapshot architecture; EXTERNAL INTEGRATION PENDING**. One transcript-owned capture/verify port for normal + derived; no new store. | Security/Operations storage ACL, worker read capability and lifecycle/retention policy; AI worker consumption must be agreed separately. |
+| G5 | New store/transaction layer duplicates the existing DB; retroactively editing V23 breaks migration integrity. | **APPROVED — Core API/DB direction**, subject to migration-level review. Use existing receipts, append-only Flyway migrations and shared lock-order discipline. | Validate final migration, isolation and deadlock behavior in MI-PM-05/10. |
+| G6 | New generic delegated ACL for a capability that has no product delegation model creates unnecessary privilege surface. | **APPROVED — Meeting/Security baseline**. Organizer-only writes; existing meeting-content reader scope; no ADMIN/manager automatic bypass. | No further scope changes without explicit new feature requirement and security tests. |
+| G7 | A fake Action Items sink or unofficial MI-owned table violates single business owner; requiring actual sink before even merging a disabled adapter is too strict. | **APPROVED — API-side fail-closed port only; ACTION ITEMS/AI PENDING**. Exact persisted batch acceptance is required for stage success; absent sink must fail closed. | Action Items team implements canonical sink and tests; AI team approves a versioned third external result type when ready. |
+
+### Approval boundaries and task status
+
+- **Full delegated API/Product design approval:** G1, G3, G5, G6.
+- **API-side design accepted, cross-team contract not approved:** G2, G4, G7.
+- **Not approved and not touched:** AI Core model choice, prompt/inference implementation, AI worker production protocol, Action Items-owned business storage, external Security/Operations sign-off.
+- This approval does **not** waive CI, security tests or rollout gates. It allows Core API hardening and G1 implementation while keeping unintegrated features disabled/fail-closed.
+- The new `ActionItemProposalSink.hasAcceptedBatch(jobId,stageRunId)` method is a proposed Action Items-owner read evidence contract. It does not grant MI write ownership or invent persistence. Real sink must check durable acceptance, including empty batches.
+- MI-PM-02 implements the stage/job proof gate, not snapshot preparation or AI worker transport. Normal downstream AI stages requiring a missing snapshot therefore **cannot** be reported successful until MI-PM-03 supplies the source boundary.
 
 ## 12. Handoff and merge conditions
 

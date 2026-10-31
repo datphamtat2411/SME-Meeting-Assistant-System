@@ -25,7 +25,7 @@ MI-12 extends **existing integration fixtures** instead of introducing an artifi
 
 **Cross-team production acceptance:** explicitly requires review and sign-off of MI-01 gates below. A green local API CI is not proof of AI provider contract interoperability, secured worker transport, Action Items persistence, or reachable Summary candidates.
 
-MI-PM-01 follow-up: The preferred solutions, contract proposals, and owner sign-off requirements for G1–G7 are recorded in [MI_PM01_PREMERGE_CONTRACT_DECISIONS.md](./MI_PM01_PREMERGE_CONTRACT_DECISIONS.md). Their status stays **PENDING** until recorded human/owner approval and applicable canonical RE changes; the prior MI-12 green CI is not a waiver of these merge gates.
+MI-PM-01 delegated follow-up: [MI_PM01_PREMERGE_CONTRACT_DECISIONS.md](./MI_PM01_PREMERGE_CONTRACT_DECISIONS.md#13-independent-counter-review-and-delegated-design-decisions-2026-10-31) records G1/G3/G5/G6 as project-delegated API/Product design approvals. G2/G4/G7 have only API-side design acceptance; AI Core, Action Items and external operational approvals remain pending. RE02/RE06 now authorize G1 Summary candidate endpoints, but MI-PM-04 has not implemented them. Prior MI-12 green CI does not waive correctness, integration or production gates.
 
 ## 3. Open decisions / release blockers (not silently resolved)
 
@@ -39,7 +39,7 @@ MI-PM-01 follow-up: The preferred solutions, contract proposals, and owner sign-
 | G6 | Organizer-only baseline vs delegated content editor/reviewer and security authorization | **PENDING OWNER SIGN-OFF**: enforced organizer-only baseline, no invented delegated roles |
 | G7 | Action Items sink ownership, canonical proposal persistence and external extraction type | **PENDING OWNER REVIEW**: MI-10 in-process protected port, no installed canonical Action Items sink |
 
-The preceding pending labels are not waived, not evidence that endpoints are production-enabled, and not grounds to implement AI Core or Action Items-owned data in this module.
+The table above is an MI-12 historical status snapshot. Refer to the later delegated MI-PM-01 section for revised API-side decisions; pending cross-team approvals are not waived, and no new endpoint or worker is production-enabled merely by a design approval. It is not grounds to implement AI Core or Action Items-owned data in this module.
 
 ## 4. Non-goals and safe defaults
 
