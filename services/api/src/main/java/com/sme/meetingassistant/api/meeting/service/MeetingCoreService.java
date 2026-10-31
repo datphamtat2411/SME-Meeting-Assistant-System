@@ -27,7 +27,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 @Service
 @Transactional
-public class MeetingCoreService implements MeetingMediaAccess {
+public class MeetingCoreService implements MeetingMediaAccess, MeetingIntelligenceAccess {
     private static final Set<String> EDITABLE = Set.of(
         "title", "description", "scheduledStartAt", "scheduledEndAt", "roomId");
 
@@ -392,6 +392,38 @@ public class MeetingCoreService implements MeetingMediaAccess {
             throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY);
         }
     }
+    // Intelligence permissions share Meeting's authoritative active-account and membership policy.
+    // Do not grant write power from global ADMINISTRATOR or DEPARTMENT_MANAGER roles.
+    @Override
+    @Transactional(readOnly = true)
+    public void requireIntelligenceReadable(UUID meetingId, UUID actorId) {
+        requireReadable(meetingId, actorId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public void requireSummaryEditAllowed(UUID meetingId, UUID actorId) {
+        requireTranscriptEditAllowed(meetingId, actorId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public void requireSummaryRegenerationAllowed(UUID meetingId, UUID actorId) {
+        requireProcessingAllowed(meetingId, actorId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public void requireDecisionEditAllowed(UUID meetingId, UUID actorId) {
+        requireTranscriptEditAllowed(meetingId, actorId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public void requireDecisionReviewAllowed(UUID meetingId, UUID actorId) {
+        requireTranscriptEditAllowed(meetingId, actorId);
+    }
+
     private void eligible(UUID id) {
         if (!users.isActive(id)) {
             throw invalid();

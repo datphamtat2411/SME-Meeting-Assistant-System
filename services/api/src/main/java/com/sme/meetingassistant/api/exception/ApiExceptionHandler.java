@@ -47,6 +47,7 @@ public class ApiExceptionHandler {
 	private static final String NOT_ACCEPTABLE_MESSAGE = "The requested response representation is not available.";
 	private static final String CONFLICT_MESSAGE = "The request conflicts with the current state.";
 	private static final String PRECONDITION_MESSAGE = "The request precondition failed.";
+	private static final String PRECONDITION_REQUIRED_MESSAGE = "A request precondition is required.";
 	private static final String PAYLOAD_TOO_LARGE_MESSAGE = "The request payload exceeds the permitted limit.";
 	private static final String MEDIA_TYPE_MESSAGE = "The request media type is not supported.";
 	private static final String RATE_LIMIT_MESSAGE = "Too many requests.";
@@ -261,6 +262,7 @@ public class ApiExceptionHandler {
 			case 406 -> new ErrorDescriptor(ApiErrorCode.NOT_ACCEPTABLE, NOT_ACCEPTABLE_MESSAGE);
 			case 409 -> new ErrorDescriptor(ApiErrorCode.CONFLICT, CONFLICT_MESSAGE);
 			case 412 -> new ErrorDescriptor(ApiErrorCode.PRECONDITION_FAILED, PRECONDITION_MESSAGE);
+			case 428 -> new ErrorDescriptor(ApiErrorCode.PRECONDITION_REQUIRED, PRECONDITION_REQUIRED_MESSAGE);
 			case 413 -> new ErrorDescriptor(ApiErrorCode.PAYLOAD_TOO_LARGE, PAYLOAD_TOO_LARGE_MESSAGE);
 			case 415 -> new ErrorDescriptor(ApiErrorCode.UNSUPPORTED_MEDIA_TYPE, MEDIA_TYPE_MESSAGE);
 			case 422 -> new ErrorDescriptor(ApiErrorCode.VALIDATION_FAILED, VALIDATION_MESSAGE);
