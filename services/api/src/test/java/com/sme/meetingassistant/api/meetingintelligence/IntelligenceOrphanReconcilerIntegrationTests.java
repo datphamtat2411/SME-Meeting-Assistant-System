@@ -211,16 +211,23 @@ class IntelligenceOrphanReconcilerIntegrationTests {
 
     @Test
     void listingRaceWithNewCanonicalBindingSkipsDeletion() {
-        String lateKey=orphanSource;
+        String lateKey=orphanResult;
         when(objects.list(eq(prefix),isNull(),eq(100))).thenAnswer(call->{
-            UUID late=UUID.fromString(lateKey.substring(lateKey.lastIndexOf('/')+1,
+            UUID lateStage=UUID.fromString(lateKey.substring(lateKey.lastIndexOf('/')+1,
                 lateKey.length()-5));
             jdbc.update("""
-                INSERT INTO meeting_intelligence_source_snapshots(
-                    id,meeting_id,source_media_id,processing_job_id,transcript_id,
-                    content_revision,sha256,object_key,size_bytes)
-                VALUES (?,?,?,?,?,0,?,?,100)
-                """,late,meeting,media,job,transcript,"c".repeat(64),lateKey);
+                INSERT INTO processing_stage_runs(id,processing_job_id,stage_code,
+                    attempt_number,status)
+                VALUES (?,?,'EXTRACTING_DECISIONS',1,'SUCCEEDED')
+                """,lateStage,job);
+            jdbc.update("""
+                INSERT INTO meeting_intelligence_result_receipts(
+                    id,meeting_id,processing_job_id,stage_run_id,result_type,
+                    source_snapshot_id,transcript_id,content_revision,artifact_sha256,
+                    artifact_object_key,artifact_size_bytes)
+                VALUES (?,?,?,?,'DECISION_EXTRACTION',?,?,0,?,?,100)
+                """,UUID.randomUUID(),meeting,job,lateStage,snapshot,transcript,
+                "c".repeat(64),lateKey);
             return new ObjectStorage.ListedObjects(List.of(item(lateKey)),null);
         });
         assertThat(destructive().reconcileJob(job,meeting).eligible()).isZero();
