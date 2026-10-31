@@ -5,4 +5,5 @@ import java.util.UUID;
 public interface ProcessingDerivedSnapshotEvidence {
     boolean hasPinnedSummarySource(UUID jobId);
     boolean hasAcceptedSummary(UUID jobId);
+    boolean hasReceiptForStage(UUID jobId,UUID stageRunId);
 }
