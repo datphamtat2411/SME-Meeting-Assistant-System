@@ -2,6 +2,8 @@ package com.sme.meetingassistant.api.meetingintelligence.repository;
 
 import com.sme.meetingassistant.api.meetingintelligence.dto.SummaryView;
 import com.sme.meetingassistant.api.meetingintelligence.dto.SummaryVersionView;
+import com.sme.meetingassistant.api.meetingintelligence.dto.AiProducerView;
+import com.sme.meetingassistant.api.meetingintelligence.service.AiQualityMetadata;
 import java.time.OffsetDateTime;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -31,10 +33,14 @@ public class SummaryRepository {
                s.quality_status, s.processing_job_id, s.transcript_id,
                s.content_revision, s.created_at, s.created_by_user_id,
                s.is_current, s.selection_epoch,
+               array_to_string(s.ai_warning_codes,',') AS ai_warning_codes,
+               r.producer_model,r.producer_prompt_version,r.producer_provider,
                current_source.id AS current_transcript_id,
                current_source.status AS current_transcript_status,
                current_source.content_revision AS current_source_revision
         FROM meeting_summary_versions s
+        LEFT JOIN meeting_intelligence_result_receipts r
+          ON r.id=s.result_receipt_id AND r.meeting_id=s.meeting_id
         LEFT JOIN transcripts current_source
           ON current_source.meeting_id=s.meeting_id AND current_source.is_current
         """;
@@ -54,7 +60,10 @@ public class SummaryRepository {
             rs.getLong("content_revision"),stale,
             rs.getObject("created_at",OffsetDateTime.class),
             rs.getObject("created_by_user_id",UUID.class),
-            rs.getBoolean("is_current"),rs.getLong("selection_epoch"));
+            rs.getBoolean("is_current"),rs.getLong("selection_epoch"),
+            AiQualityMetadata.fromCsv(rs.getString("ai_warning_codes")),
+            AiProducerView.nullable(rs.getString("producer_provider"),
+                rs.getString("producer_model"),rs.getString("producer_prompt_version")));
     }
 
     public Optional<SummaryView> current(UUID meetingId) {
@@ -123,10 +132,10 @@ public class SummaryRepository {
             INSERT INTO meeting_summary_versions(
                 id,meeting_id,version_number,content,source_type,
                 based_on_summary_version_id,created_by_user_id,
-                transcript_id,content_revision,quality_status,is_current)
-            VALUES (?,?,?,?,'HUMAN_EDIT',?,?,?,?,?,TRUE)
+                transcript_id,content_revision,quality_status,is_current,ai_warning_codes)
+            VALUES (?,?,?,?,'HUMAN_EDIT',?,?,?,?,?,TRUE,?::text[])
             """, newId, meetingId, nextVersion(meetingId), content,
             previous.id(), actorId, previous.transcriptId(), previous.contentRevision(),
-            previous.qualityStatus());
+            previous.qualityStatus(),AiQualityMetadata.pgArray(previous.aiWarnings()));
     }
 }

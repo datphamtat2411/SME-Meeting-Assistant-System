@@ -1,6 +1,8 @@
 package com.sme.meetingassistant.api.meetingintelligence.repository;
 
 import com.sme.meetingassistant.api.meetingintelligence.dto.DecisionView;
+import com.sme.meetingassistant.api.meetingintelligence.dto.AiProducerView;
+import com.sme.meetingassistant.api.meetingintelligence.service.AiQualityMetadata;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.OffsetDateTime;
@@ -28,10 +30,14 @@ public class DecisionRepository {
         SELECT d.id, d.meeting_id, d.content, d.status, d.source_type,
                d.transcript_id, d.content_revision, d.version, d.created_at,
                d.created_by_user_id, d.confirmed_at, d.confirmed_by_user_id,
-               d.rejected_at, d.rejected_by_user_id,
+               d.rejected_at, d.rejected_by_user_id, d.ai_uncertainty,
+               array_to_string(r.result_warning_codes,',') AS ai_warning_codes,
+               r.producer_model,r.producer_prompt_version,r.producer_provider,
                current_source.id AS current_transcript_id,
                current_source.content_revision AS current_source_revision
         FROM meeting_decisions d
+        LEFT JOIN meeting_intelligence_result_receipts r
+          ON r.id=d.result_receipt_id AND r.meeting_id=d.meeting_id
         LEFT JOIN transcripts current_source
           ON current_source.meeting_id=d.meeting_id AND current_source.is_current
         """;
@@ -146,7 +152,11 @@ public class DecisionRepository {
             rs.getObject("confirmed_at", OffsetDateTime.class),
             rs.getObject("confirmed_by_user_id", UUID.class),
             rs.getObject("rejected_at", OffsetDateTime.class),
-            rs.getObject("rejected_by_user_id", UUID.class));
+            rs.getObject("rejected_by_user_id", UUID.class),
+            rs.getString("ai_uncertainty"),
+            AiQualityMetadata.fromCsv(rs.getString("ai_warning_codes")),
+            AiProducerView.nullable(rs.getString("producer_provider"),
+                rs.getString("producer_model"),rs.getString("producer_prompt_version")));
     }
 
     private static Long nullableRevision(ResultSet rs, String name) throws SQLException {
@@ -171,7 +181,8 @@ public class DecisionRepository {
             s.id(), s.meetingId(), s.content(), s.status(), s.sourceType(),
             evidence.getOrDefault(s.id(), List.of()), s.transcriptId(), s.contentRevision(),
             s.stale(), s.version(), s.createdAt(), s.createdBy(),
-            s.confirmedAt(), s.confirmedBy(), s.rejectedAt(), s.rejectedBy())).toList();
+            s.confirmedAt(), s.confirmedBy(), s.rejectedAt(), s.rejectedBy(),
+            s.aiUncertainty(),s.aiWarnings(),s.aiProducer())).toList();
     }
 
     private record State(
@@ -179,5 +190,6 @@ public class DecisionRepository {
         UUID transcriptId, Long contentRevision, boolean stale, long version,
         OffsetDateTime createdAt, UUID createdBy,
         OffsetDateTime confirmedAt, UUID confirmedBy,
-        OffsetDateTime rejectedAt, UUID rejectedBy) {}
+        OffsetDateTime rejectedAt, UUID rejectedBy,
+        String aiUncertainty,List<String> aiWarnings,AiProducerView aiProducer) {}
 }
