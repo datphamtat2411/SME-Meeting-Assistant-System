@@ -188,9 +188,13 @@ class TranscriptFinalizationIntegrationTests {
         assertThatThrownBy(() -> lifecycle.completeJob(job))
             .isInstanceOf(ProcessingLifecycleConflictException.class);
         StageClaim summary = lifecycle.startStage(job, "GENERATING_SUMMARY", "llm", "summary");
-        lifecycle.completeStage(summary, "SUCCEEDED", null, null);
-        lifecycle.completeJob(job);
-        assertThat(jobStatus()).isEqualTo("COMPLETED");
+        // The stage is still RUNNING until canonical Summary result acceptance.
+        assertThatThrownBy(() -> lifecycle.completeStage(summary, "SUCCEEDED", null, null))
+            .isInstanceOf(ProcessingLifecycleConflictException.class);
+        assertThatThrownBy(() -> lifecycle.completeJob(job))
+            .isInstanceOf(ProcessingLifecycleConflictException.class);
+        assertThat(jobStatus()).isEqualTo("RUNNING");
+        assertThat(transcripts.current(meeting)).isPresent();
     }
 
     @Test

@@ -139,11 +139,14 @@ class CombinedMediaTranscriptPipelineAcceptanceTests {
         assertThat(resumedSummary.stageRunId()).isNotEqualTo(firstSummary.stageRunId());
         assertThatThrownBy(() -> lifecycle.completeStage(firstSummary, "SUCCEEDED", null, null))
             .isInstanceOf(ProcessingLifecycleConflictException.class);
-        lifecycle.completeStage(resumedSummary, "SUCCEEDED", null,
-            "{\"validated\":true}");
-        lifecycle.completeJob(jobId);
-
-        assertThat(state()).isEqualTo("COMPLETED");
+        // A retried worker call without canonical Summary acceptance is not
+        // business success, even if the provider reports success.
+        assertThatThrownBy(() -> lifecycle.completeStage(resumedSummary, "SUCCEEDED", null,
+            "{\"validated\":true}"))
+            .isInstanceOf(ProcessingLifecycleConflictException.class);
+        assertThatThrownBy(() -> lifecycle.completeJob(jobId))
+            .isInstanceOf(ProcessingLifecycleConflictException.class);
+        assertThat(state()).isEqualTo("RUNNING");
         assertThat(transcripts.current(meetingId).orElseThrow().id()).isEqualTo(published);
         assertThat(jdbc.queryForObject("""
             SELECT count(*) FROM processing_stage_runs
