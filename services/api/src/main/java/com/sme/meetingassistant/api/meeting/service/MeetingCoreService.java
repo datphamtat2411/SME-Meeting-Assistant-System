@@ -27,7 +27,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 @Service
 @Transactional
-public class MeetingCoreService implements MeetingMediaAccess {
+public class MeetingCoreService implements MeetingMediaAccess, MeetingActionItemAccess {
     private static final Set<String> EDITABLE = Set.of(
         "title", "description", "scheduledStartAt", "scheduledEndAt", "roomId");
 
@@ -353,6 +353,88 @@ public class MeetingCoreService implements MeetingMediaAccess {
     public void requireReadable(UUID meetingId, UUID actorId) {
         MeetingEntity meeting = mediaMeetingForCurrentActor(meetingId, actorId);
         requireAccess(meeting, actorId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public void requireActionItemReadable(UUID meetingId, UUID actorId) {
+        MeetingEntity meeting = mediaMeetingForCurrentActor(meetingId, actorId);
+        if (!hasMeetingReadAccess(meeting, actorId) && !hasScopedActionItemManager(meeting, actorId)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+        }
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public void requireCurrentActiveActor(UUID actorId) {
+        UUID currentActor = authorization.requireActiveActor().getId();
+        if (!currentActor.equals(actorId)) throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public void requireOrganizer(UUID meetingId, UUID actorId) {
+        MeetingEntity meeting = mediaMeetingForCurrentActor(meetingId, actorId);
+        if (!meeting.getOrganizerUserId().equals(actorId)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+        }
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public void requireManageActionItems(UUID meetingId, UUID actorId) {
+        if (!canManageActionItems(meetingId, actorId)) throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public boolean isOrganizer(UUID meetingId, UUID actorId) {
+        MeetingEntity meeting = mediaMeetingForCurrentActor(meetingId, actorId);
+        return meeting.getOrganizerUserId().equals(actorId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public boolean canManageActionItems(UUID meetingId, UUID actorId) {
+        MeetingEntity meeting = mediaMeetingForCurrentActor(meetingId, actorId);
+        return meeting.getOrganizerUserId().equals(actorId) || hasScopedActionItemManager(meeting, actorId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public boolean isActiveAssignee(UUID userId) {
+        return users.isActive(userId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<UUID> actionItemManagerMeetingIds(UUID actorId) {
+        UserEntity actor = authorization.requireActiveActor();
+        if (!actor.getId().equals(actorId)) throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+        if (actor.getGlobalRole() != com.sme.meetingassistant.api.userorganization.entity.GlobalRole.DEPARTMENT_MANAGER) {
+            return List.of();
+        }
+        var scope = authorization.requireDirectoryManagementScope();
+        if (scope.allUnits()) return meetings.findAll().stream().map(MeetingEntity::getId).toList();
+        if (scope.unitIds().isEmpty()) return List.of();
+        return meetings.findIdsByOrganizerOrgUnitIn(scope.unitIds());
+    }
+
+    private boolean hasMeetingReadAccess(MeetingEntity meeting, UUID actorId) {
+        return meeting.getOrganizerUserId().equals(actorId)
+            || participants.existsByMeetingIdAndUserIdAndRemovedAtIsNull(meeting.getId(), actorId);
+    }
+
+    /** Managers may manage only action items belonging to meetings organized inside their granted unit scope. */
+    private boolean hasScopedActionItemManager(MeetingEntity meeting, UUID actorId) {
+        var actor = authorization.requireActiveActor();
+        if (!actor.getId().equals(actorId)
+                || actor.getGlobalRole() != com.sme.meetingassistant.api.userorganization.entity.GlobalRole.DEPARTMENT_MANAGER) {
+            return false;
+        }
+        UUID organizerUnit = users.activePrimaryOrgUnitId(meeting.getOrganizerUserId()).orElse(null);
+        if (organizerUnit == null) return false;
+        return authorization.requireDirectoryManagementScope().includes(organizerUnit);
     }
 
     @Override
