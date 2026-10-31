@@ -294,6 +294,55 @@ class DecisionManagementIntegrationTests {
             .isEqualTo("Unreviewed proposal");
     }
 
+
+    @Test
+    void aiProposalIsReadOnlyThroughMi05AndRetainsEvidenceAndProvenance() throws Exception {
+        UUID stage = UUID.randomUUID(), snapshot = UUID.randomUUID();
+        UUID receipt = UUID.randomUUID(), candidate = UUID.randomUUID();
+        jdbc.update("""
+            INSERT INTO processing_stage_runs(id,processing_job_id,stage_code,attempt_number,status)
+            VALUES (?,?,'EXTRACTING_DECISIONS',1,'SUCCEEDED')
+            """, stage, job);
+        jdbc.update("""
+            INSERT INTO meeting_intelligence_source_snapshots(
+                id,meeting_id,source_media_id,processing_job_id,transcript_id,
+                content_revision,sha256,object_key,size_bytes)
+            VALUES (?,?,?,?,?,2,?,?,100)
+            """, snapshot, meeting, media, job, transcript, "a".repeat(64),
+            "processing/" + job + "/intelligence/source/" + snapshot + ".json");
+        jdbc.update("""
+            INSERT INTO meeting_intelligence_result_receipts(
+                id,meeting_id,processing_job_id,stage_run_id,result_type,source_snapshot_id,
+                transcript_id,content_revision,artifact_sha256,artifact_object_key,artifact_size_bytes)
+            VALUES (?,?,?,?,'DECISION_EXTRACTION',?,?,2,?,?,200)
+            """, receipt, meeting, job, stage, snapshot, transcript, "b".repeat(64),
+            "processing/" + job + "/intelligence/results/" + stage + ".json");
+        jdbc.update("""
+            INSERT INTO meeting_decisions(
+                id,meeting_id,content,status,source_type,processing_job_id,result_receipt_id,
+                candidate_key,transcript_id,content_revision)
+            VALUES (?,?,'AI proposal','PROPOSED','AI_EXTRACTED',?,?,?,?,2)
+            """, candidate, meeting, job, receipt, "candidate-1", transcript);
+        jdbc.update("""
+            INSERT INTO decision_evidence(decision_id,transcript_id,transcript_segment_id)
+            VALUES (?,?,?)
+            """, candidate, transcript, segment);
+
+        mvc.perform(get(url()).principal(as(member)).param("status", "PROPOSED"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data[0].id").value(candidate.toString()))
+            .andExpect(jsonPath("$.data[0].sourceType").value("AI_EXTRACTED"))
+            .andExpect(jsonPath("$.data[0].status").value("PROPOSED"))
+            .andExpect(jsonPath("$.data[0].evidenceSegmentIds[0]").value(segment.toString()))
+            .andExpect(jsonPath("$.data[0].isStale").value(false));
+        mvc.perform(patch(url() + "/" + candidate).principal(as(organizer))
+                .header("If-Match", "\"dec-" + candidate + "-0\"")
+                .contentType(MediaType.APPLICATION_JSON).content(content("Unreviewed mutation")))
+            .andExpect(status().isConflict());
+        assertThat(jdbc.queryForObject("SELECT status FROM meeting_decisions WHERE id=?",
+            String.class, candidate)).isEqualTo("PROPOSED");
+    }
+
     @Test
     void twoConcurrentCorrectionsWithOneTagCannotBothCommit() throws Exception {
         var created = create(content("Original concurrent"));
