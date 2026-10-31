@@ -101,7 +101,7 @@ class DecisionManagementIntegrationTests {
             .andExpect(status().isCreated()).andReturn().getResponse();
     }
 
-    private UUID id(org.springframework.mock.web.MockHttpServletResponse response) {
+    private UUID id(org.springframework.mock.web.MockHttpServletResponse response) throws Exception {
         return UUID.fromString(JsonPath.read(response.getContentAsString(), "$.data.id"));
     }
 
