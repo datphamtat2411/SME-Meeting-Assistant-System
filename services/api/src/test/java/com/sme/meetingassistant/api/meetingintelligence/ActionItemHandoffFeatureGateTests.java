@@ -39,13 +39,14 @@ class ActionItemHandoffFeatureGateTests {
         assertThatThrownBy(()->ReflectionTestUtils.invokeMethod(service,"plannedDownstreamStages"))
             .satisfies(ActionItemHandoffFeatureGateTests::is503);
         props.getProcessing().setRequiredDownstreamStages(List.of("GENERATING_SUMMARY"));
-        assertThat((List<?>)ReflectionTestUtils.invokeMethod(
-            service,"plannedDownstreamStages")).containsExactly("GENERATING_SUMMARY");
+        assertThat(((List<?>)ReflectionTestUtils.invokeMethod(
+            service,"plannedDownstreamStages")).stream().map(Object::toString).toList())
+            .containsExactly("GENERATING_SUMMARY");
         props.getProcessing().setActionItemHandoffEnabled(true);
         props.getProcessing().setRequiredDownstreamStages(
             List.of("GENERATING_SUMMARY","EXTRACTING_ACTION_ITEMS"));
-        assertThat((List<?>)ReflectionTestUtils.invokeMethod(
-            service,"plannedDownstreamStages"))
+        assertThat(((List<?>)ReflectionTestUtils.invokeMethod(
+            service,"plannedDownstreamStages")).stream().map(Object::toString).toList())
             .containsExactly("GENERATING_SUMMARY","EXTRACTING_ACTION_ITEMS");
     }
 
