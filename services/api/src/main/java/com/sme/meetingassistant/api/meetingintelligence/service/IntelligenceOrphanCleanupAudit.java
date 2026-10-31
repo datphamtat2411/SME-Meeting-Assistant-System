@@ -48,6 +48,48 @@ public class IntelligenceOrphanCleanupAudit {
             OffsetDateTime.ofInstant(cutoff,java.time.ZoneOffset.UTC),max);
     }
 
+    /**
+     * Atomic cross-replica claim before any object-store I/O.
+     * A crashed runner may be reclaimed after a two-hour lease; a completed
+     * scan is not reprocessed for twelve hours.
+     */
+    @Transactional
+    public boolean claim(UUID jobId,UUID meetingId,UUID token,Instant cutoff) {
+        var meetings=jdbc.query("SELECT id FROM meetings WHERE id=? FOR UPDATE",
+            (rs,n)->rs.getObject(1,UUID.class),meetingId);
+        if(meetings.size()!=1) return false;
+        var jobs=jdbc.query("""
+            SELECT status,updated_at FROM processing_jobs
+            WHERE id=? AND meeting_id=? FOR UPDATE
+            """,(rs,n)->new JobState(rs.getString(1),
+                rs.getObject(2,OffsetDateTime.class)),jobId,meetingId);
+        if(jobs.size()!=1) return false;
+        var state=jobs.getFirst();
+        if(!java.util.List.of("COMPLETED","COMPLETED_WITH_WARNINGS","FAILED")
+                .contains(state.status()) || !state.updatedAt().toInstant().isBefore(cutoff))
+            return false;
+        Boolean active=jdbc.queryForObject("""
+            SELECT EXISTS(SELECT 1 FROM processing_stage_runs
+                WHERE processing_job_id=? AND status IN ('RUNNING','PENDING'))
+            """,Boolean.class,jobId);
+        if(Boolean.TRUE.equals(active)) return false;
+        var acquired=jdbc.query("""
+            INSERT INTO meeting_intelligence_orphan_scan_claims(
+                processing_job_id,claim_token,updated_at,lease_expires_at)
+            VALUES (?,?,clock_timestamp(),clock_timestamp()+INTERVAL '2 hours')
+            ON CONFLICT (processing_job_id) DO UPDATE SET
+                claim_token=EXCLUDED.claim_token,
+                updated_at=clock_timestamp(),
+                lease_expires_at=clock_timestamp()+INTERVAL '2 hours'
+            WHERE meeting_intelligence_orphan_scan_claims.lease_expires_at < clock_timestamp()
+              AND (meeting_intelligence_orphan_scan_claims.last_completed_at IS NULL
+                   OR meeting_intelligence_orphan_scan_claims.last_completed_at
+                        < clock_timestamp()-INTERVAL '12 hours')
+            RETURNING processing_job_id
+            """,(rs,n)->rs.getObject(1,UUID.class),jobId,token);
+        return acquired.size()==1;
+    }
+
     @Transactional
     public boolean authorize(UUID jobId,UUID meetingId,String key,String kind,
             Instant cutoff,boolean dryRun) {
@@ -96,8 +138,18 @@ public class IntelligenceOrphanCleanupAudit {
     }
 
     @Transactional
-    public void scanned(UUID jobId,UUID meetingId,int inspected,int eligible,
-            int deleted,boolean truncated) {
+    public void scanned(UUID jobId,UUID meetingId,UUID token,int inspected,
+            int eligible,int deleted,boolean truncated) {
+        int completed=jdbc.update("""
+            UPDATE meeting_intelligence_orphan_scan_claims
+               SET last_completed_at=clock_timestamp(),
+                   lease_expires_at=clock_timestamp(),
+                   updated_at=clock_timestamp()
+             WHERE processing_job_id=? AND claim_token=?
+               AND lease_expires_at>clock_timestamp()
+            """,jobId,token);
+        if(completed!=1)
+            throw new IllegalStateException("Orphan scan claim expired or was superseded.");
         writer.recordService("MI_STORAGE_ORPHAN_SCAN","PROCESSING_JOB",jobId,meetingId,
             Map.of("schemaVersion",1,"inspected",inspected,"eligible",eligible,
                 "deleted",deleted,"truncated",truncated));

@@ -40,7 +40,8 @@ public class IntelligenceOrphanReconciler {
                 "Orphan cleanup requires an explicitly configured minimum age >= 24 hours.");
     }
 
-    @Scheduled(fixedDelayString="${app.meeting-intelligence.orphan-cleanup.poll-ms:3600000}")
+    @Scheduled(initialDelayString="${app.meeting-intelligence.orphan-cleanup.poll-ms:3600000}",
+        fixedDelayString="${app.meeting-intelligence.orphan-cleanup.poll-ms:3600000}")
     public void sweep() {
         if(!enabled)return;
         Instant cutoff=Instant.now().minus(minAge);
@@ -60,6 +61,9 @@ public class IntelligenceOrphanReconciler {
     }
 
     private Result reconcile(UUID jobId,UUID meetingId,Instant cutoff) {
+        UUID claimToken=UUID.randomUUID();
+        if(!audit.claim(jobId,meetingId,claimToken,cutoff))
+            return new Result(0,0,0,false);
         String prefix="processing/"+jobId+"/intelligence/";
         int inspected=0,eligible=0,deleted=0;
         String token=null;
@@ -92,7 +96,7 @@ public class IntelligenceOrphanReconciler {
             if(token==null)break;
             if(pageIndex==MAX_PAGES-1)truncated=true;
         }
-        audit.scanned(jobId,meetingId,inspected,eligible,deleted,truncated);
+        audit.scanned(jobId,meetingId,claimToken,inspected,eligible,deleted,truncated);
         return new Result(inspected,eligible,deleted,truncated);
     }
 
