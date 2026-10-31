@@ -77,14 +77,16 @@ For full offline processing, source pinning happens after canonical transcript f
 - Model output cannot choose DB IDs, user IDs, confirmed state, official action-item status or canonical timestamps.
 - Provider errors, source text, prompt secrets and media bytes must not travel in regular broker events or ordinary logs.
 
+**Integrity:** Use SHA-256 of immutable result-object bytes at the trusted artifact boundary and the acceptance receipt. Do not require an additional producer-supplied JSON-field checksum or cross-language JSON canonicalization; exact redelivery must reference matching immutable bytes.
+
 **Delivery:** Prefer durable artifact reference plus authenticated/fenced internal worker adapter that calls an in-process ingestion application port. Events carry IDs/references and digests, never large JSON/transcripts. The text-result storage and ingestion adapter are new API-side capabilities requiring security review; existing ProcessingJobLifecycle.recordArtifact only permits audio. The AI team implements producer/worker semantics, not API business mutations.
 
 ## 7. Atomic ingestion, redelivery and stage fencing — ADR-04 (PROPOSED)
 
-**Decision:** In one local PostgreSQL transaction, validate the currently live stage claim and source provenance; record a canonical result and its digest; append Summary version or proposed Decisions (including zero-candidate batch receipt); and mark the stage successful. If any domain persistence step fails, stage success rolls back. A broker ACK follows commit, not preceding it.
+**Decision:** In one local PostgreSQL transaction, validate the currently live stage claim and source provenance; record a validated result and SHA-256 of the exact immutable result-artifact bytes; append Summary version or proposed Decisions (including zero-candidate batch receipt); and mark the stage successful. If any domain persistence step fails, stage success rolls back. A broker ACK follows commit, not preceding it.
 
 Identity/dedup:
-- Unique accepted receipt per stageRunId and resultType, retaining canonical digest and outcome. Repeated identical input is an idempotent replay and returns the prior result; same identity with different digest is a conflict.
+- Unique accepted receipt per stageRunId and resultType, retaining the trusted result-artifact digest and outcome. Repeated identical input is an idempotent replay and returns the prior result; same identity with a different artifact digest is a conflict.
 - For Decision candidates, stageRunId + candidateKey is unique. Duplicates within one payload fail validation rather than being silently dropped.
 - Concurrency must lock job/stage and target meeting/summary in one documented consistent order; no global locks. Use the existing Media stage claims/lease fencing, extended with a narrow verified stage-finalization port if needed.
 - Do not permit an expired/replaced stage attempt to publish a new result. Previously committed exact replay may be acknowledged as a replay only after matching the persisted acceptance record; it must not mutate business state.
