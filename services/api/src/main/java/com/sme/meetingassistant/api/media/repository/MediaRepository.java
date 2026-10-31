@@ -230,6 +230,42 @@ public class MediaRepository {
             """, eventId, job.id(), payload);
     }
 
+    /**
+     * MI-08 derived-only admission: exactly one summary stage, no transcription
+     * or correction plan. Uses the same outbox envelope/relay as ordinary jobs.
+     * The caller must persist the immutable source snapshot in this transaction
+     * before commit makes the event visible to the publisher.
+     */
+    public void insertDerivedSummaryJobAndOutbox(UUID jobId, UUID meetingId, UUID mediaId,
+            UUID actorId, UUID parentJobId, UUID eventId) {
+        int count = jdbc.update("""
+            INSERT INTO processing_jobs(
+                id,meeting_id,source_media_id,job_type,status,requested_by_user_id,
+                reprocess_of_job_id,queued_at,created_at,updated_at)
+            VALUES (?,?,?,'DERIVED_STAGE_PROCESSING','PENDING',?,?,NULL,
+                CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
+            ON CONFLICT DO NOTHING
+            """,jobId,meetingId,mediaId,actorId,parentJobId);
+        if(count!=1) throw new JobAdmissionConflictException();
+        jdbc.update("""
+            INSERT INTO processing_stage_runs(id,processing_job_id,stage_code,attempt_number,status)
+            VALUES (?,?,'GENERATING_SUMMARY',1,'PENDING')
+            """,UUID.randomUUID(),jobId);
+        String payload;
+        try {
+            payload=this.mapper.writeValueAsString(new JobQueuedEvent(
+                eventId,jobId,meetingId,mediaId,actorId,
+                RequestIdContext.currentRequestId(),1,OffsetDateTime.now()));
+        } catch(JacksonException failure) {
+            throw new IllegalStateException("Cannot encode derived processing notification.",failure);
+        }
+        jdbc.update("""
+            INSERT INTO outbox_events(
+                id,aggregate_type,aggregate_id,event_type,payload,occurred_at)
+            VALUES (?,'PROCESSING_JOB',?,'PROCESSING_JOB_QUEUED',CAST(? AS jsonb),CURRENT_TIMESTAMP)
+            """,eventId,jobId,payload);
+    }
+
     public Optional<Job> findJob(UUID id) {
         return this.jdbc.query("SELECT * FROM processing_jobs WHERE id = ?", MediaRepository::jobRow, id)
             .stream().findFirst();
