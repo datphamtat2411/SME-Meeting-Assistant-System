@@ -114,6 +114,77 @@ class IntelligenceOrphanReconcilerIntegrationTests {
             """,Integer.class,meeting,job,action);
     }
 
+
+    @Test
+    void concurrentReplicasHaveOnlyOneOwnerOfAJobSweep() throws Exception {
+        var started=new java.util.concurrent.CountDownLatch(1);
+        var release=new java.util.concurrent.CountDownLatch(1);
+        when(objects.list(eq(prefix),isNull(),eq(100))).thenAnswer(call->{
+            started.countDown();
+            if(!release.await(15,java.util.concurrent.TimeUnit.SECONDS))
+                throw new IllegalStateException("Test list gate expired.");
+            return new ObjectStorage.ListedObjects(
+                List.of(item(orphanSource)),null);
+        });
+        try(var pool=java.util.concurrent.Executors.newFixedThreadPool(2)){
+            var first=pool.submit(()->destructive().reconcileJob(job,meeting));
+            assertThat(started.await(15,java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            var second=pool.submit(()->destructive().reconcileJob(job,meeting));
+            var rejected=second.get(15,java.util.concurrent.TimeUnit.SECONDS);
+            assertThat(rejected.inspected()).isZero();
+            assertThat(rejected.deleted()).isZero();
+            release.countDown();
+            assertThat(first.get(15,java.util.concurrent.TimeUnit.SECONDS).deleted())
+                .isEqualTo(1);
+        } finally {
+            release.countDown();
+        }
+        verify(objects,times(1)).list(eq(prefix),isNull(),eq(100));
+        verify(objects,times(1)).delete(orphanSource);
+        assertThat(events("MI_STORAGE_ORPHAN_SCAN")).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM meeting_intelligence_orphan_scan_claims
+             WHERE processing_job_id=? AND last_completed_at IS NOT NULL
+            """,Integer.class,job)).isEqualTo(1);
+    }
+
+    @Test
+    void failedInventoryLeavesLeaseAndCannotImmediatelyRetry() {
+        when(objects.list(eq(prefix),isNull(),eq(100)))
+            .thenThrow(new IllegalStateException("storage-timeout"))
+            .thenReturn(new ObjectStorage.ListedObjects(List.of(item(orphanSource)),null));
+        assertThatThrownBy(()->destructive().reconcileJob(job,meeting))
+            .isInstanceOf(IllegalStateException.class);
+        assertThat(events("MI_STORAGE_ORPHAN_SCAN")).isZero();
+        assertThat(destructive().reconcileJob(job,meeting).deleted()).isZero();
+        verify(objects,times(1)).list(eq(prefix),isNull(),eq(100));
+        // Simulate an abandoned two-hour lease's expiry; no real-time sleeps.
+        jdbc.update("""
+            UPDATE meeting_intelligence_orphan_scan_claims
+                SET updated_at=clock_timestamp()-INTERVAL '3 hours',
+                    lease_expires_at=clock_timestamp()-INTERVAL '1 hour'
+            WHERE processing_job_id=?
+            """,job);
+        assertThat(destructive().reconcileJob(job,meeting).deleted()).isEqualTo(1);
+        verify(objects,times(2)).list(eq(prefix),isNull(),eq(100));
+        verify(objects).delete(orphanSource);
+        assertThat(events("MI_STORAGE_ORPHAN_SCAN")).isEqualTo(1);
+    }
+
+    @Test
+    void completedScanHasCooldownAndExpiredTokenCannotAuthorizeDeletion() {
+        var done=dryRun.reconcileJob(job,meeting);
+        assertThat(done.eligible()).isEqualTo(2);
+        assertThat(dryRun.reconcileJob(job,meeting).inspected()).isZero();
+        assertThat(events("MI_STORAGE_ORPHAN_SCAN")).isEqualTo(1);
+        verify(objects,times(1)).list(eq(prefix),isNull(),eq(100));
+        var rejected=audit.authorize(job,meeting,UUID.randomUUID(),orphanSource,
+            "SOURCE",Instant.now().minus(Duration.ofDays(2)),false);
+        assertThat(rejected).isFalse();
+        verify(objects,never()).delete(anyString());
+        assertThat(events("MI_STORAGE_ORPHAN_DELETE_INTENT")).isZero();
+    }
+
     @Test
     void dryRunFindsOnlyUnreferencedObjectsWithoutDeletingOrExposingKeys() {
         var result=dryRun.reconcileJob(job,meeting);

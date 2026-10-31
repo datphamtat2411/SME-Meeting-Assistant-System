@@ -380,6 +380,78 @@ class IntelligenceResultIngestionIntegrationTests {
         assertThat(stageStatus(stage)).isEqualTo("RUNNING");
     }
 
+
+    @Test
+    void simultaneousExactIngestionHasOneCommitOneReplayAndOneAudit() throws Exception {
+        var claim=claim("SUMMARY",1);
+        String digest=expose(claim,envelope("SUMMARY",claim,summary("Exactly once")));
+        var ready=new java.util.concurrent.CountDownLatch(2);
+        var go=new java.util.concurrent.CountDownLatch(1);
+        try(var executor=java.util.concurrent.Executors.newFixedThreadPool(2)){
+            java.util.concurrent.Callable<com.sme.meetingassistant.api.meetingintelligence.service
+                .IntelligenceResultAcceptance.Acceptance> call=()->{
+                ready.countDown();
+                if(!go.await(15,java.util.concurrent.TimeUnit.SECONDS))
+                    throw new IllegalStateException("Ingest gate expired.");
+                return ingest.ingest(claim,digest);
+            };
+            var first=executor.submit(call);
+            var second=executor.submit(call);
+            assertThat(ready.await(15,java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            go.countDown();
+            var a=first.get(20,java.util.concurrent.TimeUnit.SECONDS);
+            var b=second.get(20,java.util.concurrent.TimeUnit.SECONDS);
+            assertThat(java.util.List.of(a.replay(),b.replay()))
+                .containsExactlyInAnyOrder(true,false);
+            assertThat(a.writtenRows()+b.writtenRows()).isEqualTo(1);
+        } finally {
+            go.countDown();
+        }
+        assertThat(receiptCount()).isEqualTo(1);
+        assertThat(count("meeting_summary_versions")).isEqualTo(1);
+        assertThat(stageStatus(claim)).isEqualTo("SUCCEEDED");
+        assertThat(jdbc.queryForObject("""
+            SELECT COUNT(*) FROM audit_events
+             WHERE meeting_id=? AND action_code='MI_AI_RESULT_ACCEPTED'
+            """,Integer.class,meeting)).isEqualTo(1);
+    }
+
+    @Test
+    void twoIndependentIntelligenceStagesSerializeWithoutDuplicateBusinessWrites()
+            throws Exception {
+        var summaryStage=claim("SUMMARY",1);
+        var decisionStage=claim("DECISION_EXTRACTION",1);
+        String summaryDigest=expose(summaryStage,envelope("SUMMARY",summaryStage,
+            summary("Concurrent protected summary")));
+        String decisionDigest=expose(decisionStage,envelope("DECISION_EXTRACTION",decisionStage,
+            decisions(candidate("pm10-decision",segment))));
+        var start=new java.util.concurrent.CountDownLatch(1);
+        try(var executor=java.util.concurrent.Executors.newFixedThreadPool(2)){
+            var a=executor.submit(()->{
+                start.await(15,java.util.concurrent.TimeUnit.SECONDS);
+                return ingest.ingest(summaryStage,summaryDigest);
+            });
+            var b=executor.submit(()->{
+                start.await(15,java.util.concurrent.TimeUnit.SECONDS);
+                return ingest.ingest(decisionStage,decisionDigest);
+            });
+            start.countDown();
+            assertThat(a.get(20,java.util.concurrent.TimeUnit.SECONDS).writtenRows())
+                .isEqualTo(1);
+            assertThat(b.get(20,java.util.concurrent.TimeUnit.SECONDS).writtenRows())
+                .isEqualTo(1);
+        } finally {
+            start.countDown();
+        }
+        assertThat(receiptCount()).isEqualTo(2);
+        assertThat(count("meeting_summary_versions")).isEqualTo(1);
+        assertThat(count("meeting_decisions")).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+            SELECT COUNT(*) FROM audit_events
+             WHERE meeting_id=? AND action_code='MI_AI_RESULT_ACCEPTED'
+            """,Integer.class,meeting)).isEqualTo(2);
+    }
+
     @Test
     void summaryAcceptanceIsAtomicCurrentAndExactRedeliveryIsNoop() throws Exception {
         var stage=claim("SUMMARY",1);
