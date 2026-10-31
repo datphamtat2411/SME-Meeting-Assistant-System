@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
@@ -135,6 +137,120 @@ class SummaryRegenerationIntegrationTests {
         return jdbc.queryForObject("""
             SELECT count(*) FROM meeting_intelligence_source_snapshots WHERE meeting_id=?
             """,Integer.class,meeting);
+    }
+
+    /**
+     * MI-12 cross-module test: public admission -> Media fenced stage ->
+     * trusted AI result -> human Summary edit -> real Transcript Review
+     * correction -> late stale AI response. No worker inference is mocked.
+     */
+    @Test
+    void finalAcceptanceHumanEditSurvivesLateStaleAiResultAfterTranscriptCorrection() throws Exception {
+        String summaryUrl="/api/v1/meetings/"+meeting+"/summary";
+        UUID first=job(request(owner,"mi12-first"));
+        acceptDerivedSummary(first,"First AI summary");
+        var firstSummary=mvc.perform(get(summaryUrl).principal(as(owner)))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.content").value("First AI summary"))
+            .andReturn().getResponse();
+
+        var human=mvc.perform(patch(summaryUrl).principal(as(owner))
+                .header("If-Match",firstSummary.getHeader("ETag"))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"content\":\"Human verified summary\"}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.sourceType").value("HUMAN_EDIT"))
+            .andReturn().getResponse();
+        String humanTag=human.getHeader("ETag");
+        assertThat(humanTag).isNotEqualTo(firstSummary.getHeader("ETag"));
+
+        // Pinned when the current transcript was still revision 2.
+        UUID later=job(request(owner,"mi12-late"));
+        var laterStage=lifecycle.startStage(later,"GENERATING_SUMMARY","worker","model");
+
+        // Real cross-feature correction, not a raw UPDATE of transcript revision.
+        mvc.perform(patch("/api/v1/meetings/"+meeting+"/transcript/segments/"+segment)
+                .principal(as(owner))
+                .header("If-Match","\"s-"+segment+"-0\"")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"text\":\"Corrected and explicitly approved\"}"))
+            .andExpect(status().isOk());
+        assertThat(jdbc.queryForObject(
+            "SELECT content_revision FROM transcripts WHERE id=?",Long.class,transcript))
+            .isEqualTo(3L);
+
+        submitDerivedSummary(later,laterStage,"Late stale AI summary");
+        lifecycle.completeJob(later);
+        mvc.perform(get(summaryUrl).principal(as(member)))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.content").value("Human verified summary"))
+            .andExpect(jsonPath("$.data.isStale").value(true))
+            .andExpect(jsonPath("$.data.sourceType").value("HUMAN_EDIT"));
+        mvc.perform(get(summaryUrl).principal(as(outsider)))
+            .andExpect(status().isNotFound());
+        mvc.perform(patch(summaryUrl).principal(as(owner))
+                .header("If-Match",humanTag).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"content\":\"Obsolete ETag edit\"}"))
+            .andExpect(status().isPreconditionFailed());
+
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM meeting_summary_versions WHERE meeting_id=?
+            """,Integer.class,meeting)).isEqualTo(3);
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM meeting_summary_versions
+             WHERE meeting_id=? AND is_current AND source_type='HUMAN_EDIT'
+            """,Integer.class,meeting)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM meeting_summary_versions
+             WHERE meeting_id=? AND content='Late stale AI summary' AND NOT is_current
+            """,Integer.class,meeting)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM audit_events WHERE meeting_id=?
+             AND action_code='MI_SUMMARY_REGENERATION_REQUESTED'
+            """,Integer.class,meeting)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM audit_events WHERE meeting_id=?
+             AND action_code='MI_AI_RESULT_ACCEPTED'
+            """,Integer.class,meeting)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM audit_events WHERE meeting_id=?
+             AND action_code='MI_SUMMARY_EDITED'
+            """,Integer.class,meeting)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+            SELECT status FROM processing_jobs WHERE id=?
+            """,String.class,origin)).isEqualTo("COMPLETED");
+    }
+
+    private void acceptDerivedSummary(UUID id,String content) throws Exception {
+        var stage=lifecycle.startStage(id,"GENERATING_SUMMARY","worker","model");
+        submitDerivedSummary(id,stage,content);
+        lifecycle.completeJob(id);
+    }
+
+    private void submitDerivedSummary(UUID id,
+            ProcessingJobLifecycle.StageClaim stage,String content) throws Exception {
+        UUID snapshot=jdbc.queryForObject("""
+            SELECT id FROM meeting_intelligence_source_snapshots WHERE processing_job_id=?
+            """,UUID.class,id);
+        String pinned=jdbc.queryForObject("""
+            SELECT sha256 FROM meeting_intelligence_source_snapshots WHERE processing_job_id=?
+            """,String.class,id);
+        long revision=jdbc.queryForObject("""
+            SELECT content_revision FROM meeting_intelligence_source_snapshots WHERE processing_job_id=?
+            """,Long.class,id);
+        String payload="""
+            {"schemaVersion":"1.0","resultType":"SUMMARY",
+             "processingJobId":"%s","stageRunId":"%s",
+             "source":{"transcriptId":"%s","contentRevision":%d,
+               "inputSnapshotId":"%s","sha256":"%s"},
+             "producer":{"model":"mi12-fixture","promptVersion":"v1"},
+             "result":{"content":"%s","warnings":[]}}
+            """.formatted(id,stage.stageRunId(),transcript,revision,snapshot,pinned,content);
+        byte[] bytes=payload.getBytes(StandardCharsets.UTF_8);
+        blobs.put("processing/"+id+"/intelligence/results/"+stage.stageRunId()+".json",bytes);
+        var accepted=ingestion.ingest(stage,sha(bytes));
+        assertThat(accepted.replay()).isFalse();
+        assertThat(accepted.writtenRows()).isEqualTo(1);
     }
 
     @Test

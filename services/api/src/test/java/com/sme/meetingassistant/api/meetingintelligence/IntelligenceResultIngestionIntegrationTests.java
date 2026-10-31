@@ -4,12 +4,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle.StageClaim;
 import com.sme.meetingassistant.api.media.storage.ObjectStorage;
 import com.sme.meetingassistant.api.meetingintelligence.service.IntelligenceResultIngestion;
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
 import java.nio.charset.StandardCharsets;
+import java.security.Principal;
 import java.nio.file.Files;
 import java.security.MessageDigest;
 import java.util.HexFormat;
@@ -18,8 +23,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.http.HttpHeaders;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
@@ -28,9 +36,11 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 @SpringBootTest(properties = {"app.media.outbox.enabled=false",
     "app.media.processing.stage-lease-sweep-ms=3600000"})
 @Import(PostgresTestConfiguration.class)
+@AutoConfigureMockMvc
 class IntelligenceResultIngestionIntegrationTests {
     private static final String SOURCE_SHA = "a".repeat(64);
     @Autowired JdbcTemplate jdbc;
+    @Autowired MockMvc mvc;
     @Autowired IntelligenceResultIngestion ingest;
     @MockitoBean ObjectStorage storage;
 
@@ -135,6 +145,68 @@ class IntelligenceResultIngestionIntegrationTests {
     private String stageStatus(StageClaim claim) {
         return jdbc.queryForObject("SELECT status FROM processing_stage_runs WHERE id=?",
             String.class,claim.stageRunId());
+    }
+
+    /**
+     * MI-12: trusted AI result becomes a PROPOSED Decision, then an explicitly
+     * authorized reviewer confirms through public HTTP. A later source edit
+     * flags evidence stale without undoing the human decision.
+     */
+    @Test
+    void finalAcceptanceAiProposalRequiresHumanConfirmationAndRetainsProvenance() throws Exception {
+        StageClaim stage=claim("DECISION_EXTRACTION",1);
+        String digest=expose(stage,envelope("DECISION_EXTRACTION",stage,
+            decisions(candidate("mi12-review",segment))));
+        ingest.ingest(stage,digest);
+        UUID decision=jdbc.queryForObject("""
+            SELECT id FROM meeting_decisions WHERE meeting_id=?
+            """,UUID.class,meeting);
+        String url="/api/v1/meetings/"+meeting+"/decisions";
+        Principal organizer=()->actor.toString();
+        mvc.perform(get(url).principal(organizer))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data[0].status").value("PROPOSED"))
+            .andExpect(jsonPath("$.data[0].evidenceSegmentIds[0]")
+                .value(segment.toString()));
+
+        mvc.perform(post(url+"/"+decision+"/confirm"))
+            .andExpect(status().isUnauthorized());
+        mvc.perform(post(url+"/"+decision+"/confirm").principal(organizer))
+            .andExpect(status().is(428));
+        assertThat(jdbc.queryForObject(
+            "SELECT status FROM meeting_decisions WHERE id=?",String.class,decision))
+            .isEqualTo("PROPOSED");
+
+        mvc.perform(post(url+"/"+decision+"/confirm").principal(organizer)
+                .header(HttpHeaders.IF_MATCH,"\"dec-"+decision+"-0\""))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.status").value("CONFIRMED"))
+            .andExpect(jsonPath("$.data.confirmedByUserId").value(actor.toString()));
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM audit_events WHERE meeting_id=?
+             AND action_code='MI_DECISION_CONFIRMED'
+            """,Integer.class,meeting)).isEqualTo(1);
+
+        // Source edit by Transcript Review; authoritative confirmation persists.
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .patch("/api/v1/meetings/"+meeting+"/transcript/segments/"+segment)
+                .principal(organizer).header(HttpHeaders.IF_MATCH,"\"s-"+segment+"-0\"")
+                .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                .content("{\"text\":\"Corrected transcript evidence\"}"))
+            .andExpect(status().isOk());
+        mvc.perform(get(url).principal(organizer))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data[0].status").value("CONFIRMED"))
+            .andExpect(jsonPath("$.data[0].isStale").value(true))
+            .andExpect(jsonPath("$.data[0].contentRevision").value(2));
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM decision_evidence WHERE decision_id=?
+                AND transcript_segment_id=?
+            """,Integer.class,decision,segment)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM audit_events WHERE meeting_id=?
+                AND action_code='MI_AI_RESULT_ACCEPTED'
+            """,Integer.class,meeting)).isEqualTo(1);
     }
 
     @Test
