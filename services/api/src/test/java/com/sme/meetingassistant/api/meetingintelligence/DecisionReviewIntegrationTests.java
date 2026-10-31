@@ -94,6 +94,7 @@ class DecisionReviewIntegrationTests {
         return "/api/v1/meetings/" + meeting + "/decisions/" + id + "/" + action;
     }
     private String tag(UUID id, int version) { return "\"dec-" + id + "-" + version + "\""; }
+    private String staleTag(UUID id, int version) { return "\"dec-" + id + "-" + version + "-stale\""; }
 
     private UUID aiProposal(boolean evidence) {
         UUID stage = UUID.randomUUID(), snapshot = UUID.randomUUID();
@@ -175,6 +176,9 @@ class DecisionReviewIntegrationTests {
         jdbc.update("UPDATE transcripts SET content_revision=3 WHERE id=?", transcript);
         mvc.perform(post(url(id, "reject")).principal(as(organizer))
                 .header("If-Match", tag(id, 0)))
+            .andExpect(status().isPreconditionFailed());
+        mvc.perform(post(url(id, "reject")).principal(as(organizer))
+                .header("If-Match", staleTag(id, 0)))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.data.status").value("REJECTED"))
             .andExpect(jsonPath("$.data.version").value(1))
@@ -188,7 +192,7 @@ class DecisionReviewIntegrationTests {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM decision_evidence WHERE decision_id=?",
             Integer.class, id)).isEqualTo(1);
         mvc.perform(post(url(id, "confirm")).principal(as(organizer))
-                .header("If-Match", tag(id, 1))).andExpect(status().isConflict());
+                .header("If-Match", staleTag(id, 1))).andExpect(status().isConflict());
     }
 
     @Test
@@ -218,9 +222,11 @@ class DecisionReviewIntegrationTests {
         UUID id = aiProposal(true);
         jdbc.update("UPDATE transcripts SET content_revision=3 WHERE id=?", transcript);
         mvc.perform(post(url(id, "confirm")).principal(as(organizer))
-                .header("If-Match", tag(id, 0))).andExpect(status().isConflict());
+                .header("If-Match", tag(id, 0))).andExpect(status().isPreconditionFailed());
+        mvc.perform(post(url(id, "confirm")).principal(as(organizer))
+                .header("If-Match", staleTag(id, 0))).andExpect(status().isConflict());
         mvc.perform(post(url(id, "reject")).principal(as(organizer))
-                .header("If-Match", tag(id, 0))).andExpect(status().isOk());
+                .header("If-Match", staleTag(id, 0))).andExpect(status().isOk());
 
         // Another AI result without any linked segment is not confirmable.
         // The first result is already accepted, so use a manual proposed row
