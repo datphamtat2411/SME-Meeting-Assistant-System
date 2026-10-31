@@ -31,7 +31,8 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
  */
 @ActiveProfiles("test")
 @SpringBootTest(properties = {"app.media.outbox.enabled=false",
-    "app.media.processing.stage-lease-sweep-ms=3600000"})
+    "app.media.processing.stage-lease-sweep-ms=3600000",
+    "app.media.processing.action-item-handoff-enabled=true"})
 @Import(PostgresTestConfiguration.class)
 class ActionItemProposalHandoffIntegrationTests {
     @Autowired JdbcTemplate jdbc;
@@ -212,6 +213,19 @@ class ActionItemProposalHandoffIntegrationTests {
         when(sink.acceptProposed(any())).thenReturn(new Receipt(false,0));
         assertThatThrownBy(()->handoff.handoff(claim,source,candidates()))
             .isInstanceOf(IllegalStateException.class);
+        assertThat(status(claim)).isEqualTo("RUNNING");
+    }
+
+    @Test
+    void unsafeCandidateControlTextIsNeverPassedToCanonicalSink() {
+        var badTitle=List.of(new Candidate("unsafe","Deliver\nforecast",null,null,List.of(segment)));
+        var badDetails=List.of(new Candidate("unsafe2","Valid title",
+            "Confidential \u001b[2J details",null,List.of(segment)));
+        assertThatThrownBy(()->handoff.handoff(claim,source,badTitle))
+            .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(()->handoff.handoff(claim,source,badDetails))
+            .isInstanceOf(IllegalArgumentException.class);
+        verifyNoInteractions(sink);
         assertThat(status(claim)).isEqualTo("RUNNING");
     }
 

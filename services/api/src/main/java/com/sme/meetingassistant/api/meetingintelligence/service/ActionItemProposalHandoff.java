@@ -1,6 +1,8 @@
 package com.sme.meetingassistant.api.meetingintelligence.service;
 
 import com.sme.meetingassistant.api.actionitem.service.ActionItemProposalSink;
+import com.sme.meetingassistant.api.media.MediaProperties;
+import org.springframework.beans.factory.annotation.Autowired;
 import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle;
 import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle.StageClaim;
 import com.sme.meetingassistant.api.transcript.service.TranscriptSourceGuard;
@@ -31,15 +33,25 @@ public class ActionItemProposalHandoff {
     private final TranscriptSourceGuard transcripts;
     private final ObjectProvider<ActionItemProposalSink> sinks;
     private final ObjectMapper mapper;
+    private final MediaProperties properties;
 
+    /** Kept for isolated legacy port tests with the feature intentionally disabled. */
     public ActionItemProposalHandoff(JdbcTemplate jdbc, ProcessingJobLifecycle media,
             TranscriptSourceGuard transcripts, ObjectProvider<ActionItemProposalSink> sinks,
             ObjectMapper mapper) {
+        this(jdbc,media,transcripts,sinks,mapper,new MediaProperties());
+    }
+
+    @Autowired
+    public ActionItemProposalHandoff(JdbcTemplate jdbc, ProcessingJobLifecycle media,
+            TranscriptSourceGuard transcripts, ObjectProvider<ActionItemProposalSink> sinks,
+            ObjectMapper mapper, MediaProperties properties) {
         this.jdbc = jdbc;
         this.media = media;
         this.transcripts = transcripts;
         this.sinks = sinks;
         this.mapper = mapper;
+        this.properties = properties;
     }
 
     /**
@@ -58,6 +70,10 @@ public class ActionItemProposalHandoff {
             throw new IllegalArgumentException("Trusted source and Media stage claim are required.");
         }
         validateCandidates(candidates);
+        if (!properties.getProcessing().isActionItemHandoffEnabled()) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+                "Action Item proposal handoff is disabled.");
+        }
         ActionItemProposalSink sink = sinks.getIfAvailable();
         if (sink == null) {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
@@ -116,6 +132,12 @@ public class ActionItemProposalHandoff {
                 || receipt.newProposals() != (receipt.replay() ? 0 : candidates.size())) {
             throw new IllegalStateException("Action Items sink returned an invalid acceptance receipt.");
         }
+        // The sink's callback is not acceptance proof. The canonical owner
+        // must report the receipt as persisted inside this same transaction;
+        // otherwise the transaction (including any inserted proposals) aborts.
+        if (!sink.hasAcceptedBatch(stage.jobId(),claim.stageRunId())) {
+            throw new IllegalStateException("Action Items sink did not persist batch acceptance.");
+        }
         // A replay can happen when the owning Action Items sink already
         // accepted the batch but this stage still awaits final completion.
         // Completing with the same live claim is safe; a fully completed
@@ -138,8 +160,11 @@ public class ActionItemProposalHandoff {
             if (c == null || c.candidateKey() == null
                     || !c.candidateKey().matches("[A-Za-z0-9._-]{1,128}")
                     || !keys.add(c.candidateKey()) || c.title() == null
-                    || c.title().isBlank() || c.title().length() > 500
-                    || c.details() != null && c.details().length() > 10_000
+                    || c.title().isBlank() || c.title().codePointCount(0,c.title().length()) > 500
+                    || c.title().codePoints().anyMatch(Character::isISOControl)
+                    || c.details() != null && (
+                        c.details().codePointCount(0,c.details().length()) > 10_000
+                        || hasUnsafeProseControls(c.details()))
                     || c.evidenceSegmentIds().isEmpty()
                     || c.evidenceSegmentIds().size() > 50
                     || c.evidenceSegmentIds().stream().anyMatch(x -> x == null)
@@ -147,6 +172,19 @@ public class ActionItemProposalHandoff {
                 throw new IllegalArgumentException("Invalid or duplicate Action Item extraction candidate.");
             }
         }
+    }
+
+    /** Multiline details are permitted; hostile control codes are never handed off. */
+    private static boolean hasUnsafeProseControls(String value) {
+        for (int i=0; i<value.length(); i++) {
+            char code=value.charAt(i);
+            if (code=='\r') {
+                if (i+1==value.length() || value.charAt(++i)!='\n') return true;
+            } else if (code!='\n' && code!='\t' && Character.isISOControl(code)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private String fingerprint(List<ActionItemProposalSink.Candidate> items) {

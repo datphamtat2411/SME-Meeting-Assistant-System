@@ -78,6 +78,12 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
         requireCode(stageCode, 48, "stageCode");
         requireOptionalText(providerName, 80, "providerName");
         requireOptionalText(modelName, 160, "modelName");
+        if ("EXTRACTING_ACTION_ITEMS".equals(stageCode)
+                && !properties.getProcessing().isActionItemHandoffEnabled()) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,
+                "Action Item proposal handoff is disabled.");
+        }
         boolean derived = this.repository.isDerivedSummaryJob(jobId);
         if (derived) {
             if (!"GENERATING_SUMMARY".equals(stageCode)
@@ -135,6 +141,12 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
             }
         }
         var identity = this.repository.stageIdentity(claim.stageRunId());
+        if ("EXTRACTING_ACTION_ITEMS".equals(identity.stageCode())
+                && !properties.getProcessing().isActionItemHandoffEnabled()) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,
+                "Action Item proposal handoff is disabled.");
+        }
         if ("FINALIZING_TRANSCRIPT".equals(identity.stageCode())
                 && this.transcriptEvidence.forFinalization(identity.jobId(), claim.stageRunId()).isEmpty()) {
             throw new ProcessingLifecycleConflictException("Canonical transcript must exist before stage success.");

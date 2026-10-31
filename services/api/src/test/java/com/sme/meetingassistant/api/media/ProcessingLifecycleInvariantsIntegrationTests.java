@@ -198,14 +198,17 @@ class ProcessingLifecycleInvariantsIntegrationTests {
     }
 
     @Test
-    void normalOfflineActionItemStageFailsClosedWithoutOwnerReceipt() {
+    void normalOfflineActionItemStageFailsClosedWhenHandoffIsDisabled() {
         completedTranscriptStages("SUCCEEDED", "READY", "ACCEPTED");
-        StageClaim action=lifecycle.startStage(jobId,"EXTRACTING_ACTION_ITEMS",null,null);
-        assertThatThrownBy(() -> lifecycle.completeStage(action,"SUCCEEDED",null,null))
-            .isInstanceOf(ProcessingLifecycleConflictException.class);
-        assertThat(jdbc.queryForObject(
-            "SELECT status FROM processing_stage_runs WHERE id=?",String.class,
-            action.stageRunId())).isEqualTo("RUNNING");
+        assertThatThrownBy(() -> lifecycle.startStage(jobId,"EXTRACTING_ACTION_ITEMS",null,null))
+            .isInstanceOf(org.springframework.web.server.ResponseStatusException.class)
+            .satisfies(err->assertThat(((org.springframework.web.server.ResponseStatusException)err)
+                .getStatusCode().value()).isEqualTo(503));
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM processing_stage_runs
+            WHERE processing_job_id=? AND stage_code='EXTRACTING_ACTION_ITEMS'
+            """,Integer.class,jobId)).isZero();
+        assertThat(jobStatus()).isEqualTo("RUNNING");
     }
 
     /** Test completion policy with actual PostgreSQL lineage/receipt records. */
