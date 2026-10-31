@@ -24,6 +24,9 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import com.sme.meetingassistant.api.media.storage.ObjectStorage;
+import com.sme.meetingassistant.api.support.ImmutableSnapshotObjectFixture;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -41,6 +44,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 class CombinedMediaTranscriptPipelineAcceptanceTests {
     @Autowired MediaRepository media;
     @Autowired ProcessingJobLifecycle lifecycle;
+    @MockitoBean ObjectStorage snapshotStorage;
     @Autowired TranscriptFinalizationService finalization;
     @Autowired TranscriptRepository transcripts;
     @Autowired JdbcTemplate jdbc;
@@ -53,6 +57,8 @@ class CombinedMediaTranscriptPipelineAcceptanceTests {
 
     @BeforeEach
     void admission() {
+        try { ImmutableSnapshotObjectFixture.install(snapshotStorage); }
+        catch (Exception error) { throw new IllegalStateException(error); }
         UUID organizer = UUID.randomUUID();
         meetingId = UUID.randomUUID();
         mediaId = UUID.randomUUID();

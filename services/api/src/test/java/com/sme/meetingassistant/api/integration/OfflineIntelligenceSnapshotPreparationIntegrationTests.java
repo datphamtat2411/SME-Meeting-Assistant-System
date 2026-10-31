@@ -182,9 +182,8 @@ class OfflineIntelligenceSnapshotPreparationIntegrationTests {
     }
 
     @Test
-    void sourceFromAnotherOfflineJobIsNeverPinnedToThisJob() {
-        UUID other=UUID.randomUUID();
-        jdbc.update("UPDATE transcripts SET processing_job_id=? WHERE id=?",other,transcript);
+    void nonCurrentSourceCannotBePinnedToThisJob() {
+        jdbc.update("UPDATE transcripts SET is_current=FALSE WHERE id=?",transcript);
         assertThatThrownBy(() -> media.startStage(job,"GENERATING_SUMMARY",null,null))
             .isInstanceOf(RuntimeException.class);
         assertThat(sourceCount()).isZero();

@@ -14,6 +14,9 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import com.sme.meetingassistant.api.media.storage.ObjectStorage;
+import com.sme.meetingassistant.api.support.ImmutableSnapshotObjectFixture;
 import org.springframework.test.context.ActiveProfiles;
 
 /** Verifies job completion against committed stage and canonical transcript evidence. */
@@ -22,6 +25,7 @@ import org.springframework.test.context.ActiveProfiles;
 @Import(PostgresTestConfiguration.class)
 class ProcessingLifecycleInvariantsIntegrationTests {
     @Autowired ProcessingJobLifecycle lifecycle;
+    @MockitoBean ObjectStorage snapshotStorage;
     @Autowired JdbcTemplate jdbc;
     private UUID meetingId;
     private UUID mediaId;
@@ -29,6 +33,8 @@ class ProcessingLifecycleInvariantsIntegrationTests {
 
     @BeforeEach
     void fixture() {
+        try { ImmutableSnapshotObjectFixture.install(snapshotStorage); }
+        catch (Exception error) { throw new IllegalStateException(error); }
         UUID actor = UUID.randomUUID();
         meetingId = UUID.randomUUID();
         mediaId = UUID.randomUUID();
