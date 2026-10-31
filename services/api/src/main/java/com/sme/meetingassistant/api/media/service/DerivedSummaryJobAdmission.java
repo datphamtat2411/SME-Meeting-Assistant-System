@@ -33,6 +33,11 @@ public class DerivedSummaryJobAdmission {
         return repository.findDerivedSummaryIdempotency(actor,operation(meetingId),key);
     }
 
+    public String status(UUID jobId) {
+        return repository.findJob(jobId)
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND)).status();
+    }
+
     @Transactional(propagation=Propagation.MANDATORY)
     public void lockRequester(UUID actor) { repository.lockAdmissionUser(actor); }
 
