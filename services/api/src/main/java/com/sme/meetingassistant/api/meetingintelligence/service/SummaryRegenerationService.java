@@ -40,11 +40,14 @@ public class SummaryRegenerationService {
     }
 
     public RegenerateSummaryResponse regenerate(UUID meetingId,String idempotencyKey) {
+        long started = System.nanoTime();
         try {
             return regenerateInternal(meetingId, idempotencyKey);
         } catch (RuntimeException failure) {
             metrics.failure("summary_regeneration", failure);
             throw failure;
+        } finally {
+            metrics.duration("summary_regeneration", System.nanoTime() - started);
         }
     }
 

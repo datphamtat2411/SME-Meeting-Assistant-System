@@ -32,6 +32,7 @@ public class IntelligenceResultIngestion {
     }
 
     public IntelligenceResultAcceptance.Acceptance ingest(StageClaim claim, String expectedSha256) {
+        long started = System.nanoTime();
         try {
             return ingestInternal(claim, expectedSha256);
         } catch (RuntimeException failure) {
@@ -41,6 +42,8 @@ public class IntelligenceResultIngestion {
                 .addKeyValue("failureType", failure.getClass().getSimpleName())
                 .log("Meeting Intelligence result rejected");
             throw failure;
+        } finally {
+            metrics.duration("ai_result_ingestion", System.nanoTime() - started);
         }
     }
 
