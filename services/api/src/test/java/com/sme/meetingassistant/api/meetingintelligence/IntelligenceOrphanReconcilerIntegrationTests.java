@@ -153,17 +153,23 @@ class IntelligenceOrphanReconcilerIntegrationTests {
     }
 
     @Test
-    void existingMediaArtifactReferenceAlsoPreventsDeletion() {
+    void mediaBinaryArtifactOutsideIntelligenceNamespaceIsNeverTouched() {
+        String binaryKey="processing/"+job+"/artifacts/"+UUID.randomUUID()+".wav";
         jdbc.update("""
             INSERT INTO processing_artifacts(
                 id,processing_job_id,artifact_type,object_key,sha256,
                 size_bytes,retention_class)
-            VALUES (?,?,'INTELLIGENCE_SOURCE',?,?,100,'RETAINED')
-            """,UUID.randomUUID(),job,orphanSource,"c".repeat(64));
+            VALUES (?,?,'NORMALIZED_AUDIO',?,?,100,'STANDARD')
+            """,UUID.randomUUID(),job,binaryKey,"c".repeat(64));
+        // Even an overbroad/misconfigured storage listing cannot escape
+        // the strict intelligence namespace.
+        when(objects.list(eq(prefix),isNull(),eq(100))).thenReturn(
+            new ObjectStorage.ListedObjects(
+                List.of(item(binaryKey),item(orphanSource)),null));
         var result=destructive().reconcileJob(job,meeting);
         assertThat(result.eligible()).isEqualTo(1);
-        verify(objects,never()).delete(orphanSource);
-        verify(objects).delete(orphanResult);
+        verify(objects,never()).delete(binaryKey);
+        verify(objects).delete(orphanSource);
         assertThat(events("MI_STORAGE_ORPHAN_DELETED")).isEqualTo(1);
     }
 
