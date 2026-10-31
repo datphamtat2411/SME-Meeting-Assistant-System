@@ -524,3 +524,74 @@ def test_asr_chunk_cross_field_contracts(overrides):
         Settings(
             service_name="test-ai", service_identity="ai-core", _env_file=None, **overrides,
         )
+
+
+def test_asr_provider_defaults():
+    settings = Settings(service_name="test-ai", service_identity="ai-core", _env_file=None)
+    assert settings.openrouter_api_key is None
+    assert settings.audio_asr_model == "openai/whisper-large-v3"
+    assert settings.audio_asr_language == "vi"
+    assert settings.audio_asr_temperature == 0
+    assert settings.audio_asr_max_payload_bytes == 26214400
+    assert settings.audio_asr_timeout_seconds == 120
+
+
+@pytest.mark.parametrize("source", ["environment", "dotenv"])
+def test_asr_settings_alias_overrides_and_secret_redaction(monkeypatch, tmp_path, source):
+    values = {
+        "AI_SERVICE_NAME": "test-ai", "AI_SERVICE_IDENTITY": "ai-core",
+        "OPENROUTER_API_KEY": "test-only-private-key",
+        "AI_AUDIO_ASR_MODEL": "vendor/compatible-model",
+        "AI_AUDIO_ASR_LANGUAGE": "en", "AI_AUDIO_ASR_TEMPERATURE": "0.2",
+        "AI_AUDIO_ASR_MAX_PAYLOAD_BYTES": "4096", "AI_AUDIO_ASR_TIMEOUT_SECONDS": "2.5",
+    }
+    env_file = None
+    if source == "environment":
+        for key, value in values.items():
+            monkeypatch.setenv(key, value)
+    else:
+        env_file = tmp_path / ".env"
+        env_file.write_text("\n".join(f"{key}={value}" for key, value in values.items()))
+    settings = load_settings(env_file)
+    assert settings.openrouter_api_key.get_secret_value() == "test-only-private-key"
+    assert "test-only-private-key" not in repr(settings)
+    assert "test-only-private-key" not in settings.model_dump_json()
+    assert settings.audio_asr_model == "vendor/compatible-model"
+    assert settings.audio_asr_language == "en"
+    assert settings.audio_asr_temperature == 0.2
+    assert settings.audio_asr_max_payload_bytes == 4096
+    assert settings.audio_asr_timeout_seconds == 2.5
+
+
+@pytest.mark.parametrize("field,values", [
+    ("audio_asr_model", ["", "private invalid", "x" * 257]),
+    ("audio_asr_language", ["", "private invalid", "x" * 17]),
+    ("audio_asr_temperature", ["nan", "inf", "-0.1", "1.1"]),
+    ("audio_asr_timeout_seconds", ["0", "-1", "nan", "inf", "601"]),
+    ("audio_asr_max_payload_bytes", ["0", "-1", "nan", "inf", "26214401", "1.5"]),
+])
+def test_asr_provider_invalid_settings_are_sanitized(monkeypatch, field, values):
+    monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-only-private-key")
+    for value in [*values, "private invalid value"]:
+        monkeypatch.setenv(f"AI_{field.upper()}", value)
+        with pytest.raises(ConfigurationError) as caught:
+            load_settings(None)
+        assert field in str(caught.value)
+        rendered = "".join(traceback.format_exception(caught.value))
+        assert "private invalid value" not in rendered
+        assert "test-only-private-key" not in rendered
+        assert caught.value.__context__ is None
+
+
+@pytest.mark.parametrize("temperature,timeout,payload", [(0, 0.01, 1), (1, 600, 26214400)])
+def test_asr_provider_setting_boundaries(temperature, timeout, payload):
+    settings = Settings(
+        service_name="test-ai", service_identity="ai-core", _env_file=None,
+        audio_asr_temperature=temperature, audio_asr_timeout_seconds=timeout,
+        audio_asr_max_payload_bytes=payload,
+    )
+    assert settings.audio_asr_temperature == temperature
+    assert settings.audio_asr_timeout_seconds == timeout
+    assert settings.audio_asr_max_payload_bytes == payload

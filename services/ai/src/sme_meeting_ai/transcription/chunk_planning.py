@@ -9,7 +9,11 @@ from types import MappingProxyType
 from typing import Mapping
 
 from sme_meeting_ai.audio.errors import AudioProcessingError
-from sme_meeting_ai.audio.models import AudioSource, NormalizedAudioArtifact, SampleInterval
+from sme_meeting_ai.audio.models import (
+    AudioSource,
+    NormalizedAudioArtifact,
+    SampleInterval,
+)
 from sme_meeting_ai.core.config import Settings
 from sme_meeting_ai.pipeline.models import (
     PreprocessingAudioMetadata,

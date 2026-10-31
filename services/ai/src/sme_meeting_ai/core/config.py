@@ -6,7 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal, Self
 
-from pydantic import Field, ValidationError, field_validator, model_validator
+from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict, SettingsError
 
 SERVICE_IDENTITY_PATTERN = r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
@@ -107,6 +107,21 @@ class Settings(BaseSettings):
         default=80000, ge=0, le=230400000, strict=True,
     )
     audio_asr_chunk_max_chunks: int = Field(default=4096, gt=0, le=65536, strict=True)
+    openrouter_api_key: SecretStr | None = Field(
+        default=None, validation_alias="OPENROUTER_API_KEY", repr=False,
+    )
+    audio_asr_model: str = Field(
+        default="openai/whisper-large-v3", min_length=1, max_length=256,
+        pattern=r"^[a-zA-Z0-9_./:-]+$",
+    )
+    audio_asr_language: str = Field(
+        default="vi", min_length=1, max_length=16, pattern=r"^[a-zA-Z-]+$",
+    )
+    audio_asr_temperature: float = Field(default=0, ge=0, le=1, allow_inf_nan=False)
+    audio_asr_max_payload_bytes: int = Field(default=26214400, gt=0, le=26214400)
+    audio_asr_timeout_seconds: float = Field(
+        default=120, gt=0, le=600, allow_inf_nan=False,
+    )
 
     @field_validator(
         "audio_asr_chunk_target_samples", "audio_asr_chunk_max_request_samples",
