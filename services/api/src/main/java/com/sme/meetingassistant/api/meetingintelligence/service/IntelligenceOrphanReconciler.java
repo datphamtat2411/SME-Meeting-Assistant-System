@@ -79,7 +79,7 @@ public class IntelligenceOrphanReconciler {
                         || !KEY.matcher(object.key()).matches()
                         || !object.lastModified().isBefore(cutoff)) continue;
                 String kind=object.key().contains("/source/")?"SOURCE":"RESULT";
-                if(!audit.authorize(jobId,meetingId,object.key(),kind,cutoff,dryRun))
+                if(!audit.authorize(jobId,meetingId,claimToken,object.key(),kind,cutoff,dryRun))
                     continue;
                 eligible++;
                 if(!dryRun) {

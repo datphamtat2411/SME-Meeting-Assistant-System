@@ -91,8 +91,8 @@ public class IntelligenceOrphanCleanupAudit {
     }
 
     @Transactional
-    public boolean authorize(UUID jobId,UUID meetingId,String key,String kind,
-            Instant cutoff,boolean dryRun) {
+    public boolean authorize(UUID jobId,UUID meetingId,UUID token,String key,
+            String kind,Instant cutoff,boolean dryRun) {
         var meeting=jdbc.query("SELECT id FROM meetings WHERE id=? FOR UPDATE",
             (rs,n)->rs.getObject(1,UUID.class),meetingId);
         if(meeting.size()!=1) return false;
@@ -111,6 +111,12 @@ public class IntelligenceOrphanCleanupAudit {
               WHERE processing_job_id=? AND status IN ('RUNNING','PENDING'))
             """,Boolean.class,jobId);
         if(Boolean.TRUE.equals(live)) return false;
+        Boolean owned=jdbc.queryForObject("""
+            SELECT EXISTS(SELECT 1 FROM meeting_intelligence_orphan_scan_claims
+              WHERE processing_job_id=? AND claim_token=?
+                AND lease_expires_at>clock_timestamp())
+            """,Boolean.class,jobId,token);
+        if(!Boolean.TRUE.equals(owned)) return false;
         Boolean used=jdbc.queryForObject("""
             SELECT EXISTS(
               SELECT 1 FROM meeting_intelligence_source_snapshots
@@ -143,8 +149,8 @@ public class IntelligenceOrphanCleanupAudit {
         int completed=jdbc.update("""
             UPDATE meeting_intelligence_orphan_scan_claims
                SET last_completed_at=clock_timestamp(),
-                   lease_expires_at=clock_timestamp(),
-                   updated_at=clock_timestamp()
+                   lease_expires_at=statement_timestamp(),
+                   updated_at=statement_timestamp()
              WHERE processing_job_id=? AND claim_token=?
                AND lease_expires_at>clock_timestamp()
             """,jobId,token);
