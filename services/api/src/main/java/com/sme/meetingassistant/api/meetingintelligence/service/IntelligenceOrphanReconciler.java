@@ -85,11 +85,17 @@ public class IntelligenceOrphanReconciler {
                 if(!dryRun) {
                     try {
                         objects.delete(object.key());
-                        audit.outcome(jobId,meetingId,object.key(),kind,true);
-                        deleted++;
-                    } catch(RuntimeException error) {
+                    } catch(RuntimeException storageFailure) {
+                        // A failed S3 request is distinct from a failed audit write.
+                        // The durable delete intent remains the reconciliation anchor.
                         audit.outcome(jobId,meetingId,object.key(),kind,false);
+                        continue;
                     }
+                    // If this audit write fails after S3 deletion, propagate the
+                    // indeterminate outcome. Never mislabel a successful delete as
+                    // DELETE_FAILED or claim the scan has completed.
+                    audit.outcome(jobId,meetingId,object.key(),kind,true);
+                    deleted++;
                 }
             }
             token=page.nextToken();
