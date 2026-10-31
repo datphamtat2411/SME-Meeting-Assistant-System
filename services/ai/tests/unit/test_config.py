@@ -737,3 +737,47 @@ def test_invalid_reconciliation_configuration_is_sanitized(monkeypatch, value):
     assert "audio_asr_reconciliation_min_shared_tokens" in str(caught.value)
     assert "private-invalid" not in "".join(traceback.format_exception(caught.value))
     assert caught.value.__context__ is None
+
+
+def test_recovery_defaults_match_documented_configuration():
+    expected = {
+        "audio_asr_recovery_context_samples": 16000,
+        "audio_asr_recovery_max_attempts_per_region": 3,
+        "audio_asr_recovery_max_request_samples_per_region": 1440000,
+        "audio_asr_recovery_max_total_attempts": 16,
+        "audio_asr_recovery_max_total_request_samples": 2400000,
+        "audio_asr_recovery_max_wall_time_seconds": 300,
+    }
+    for configuration in (Settings(service_name="test-ai", service_identity="ai-core", _env_file=None),
+                          load_settings(Path(__file__).resolve().parents[2] / ".env.example")):
+        for field, value in expected.items():
+            assert getattr(configuration, field) == value
+
+
+@pytest.mark.parametrize("field", [
+    "audio_asr_recovery_context_samples", "audio_asr_recovery_max_attempts_per_region",
+    "audio_asr_recovery_max_request_samples_per_region", "audio_asr_recovery_max_total_attempts",
+    "audio_asr_recovery_max_total_request_samples",
+])
+@pytest.mark.parametrize("value", [0, -1, True, 1.0, 1.5, 230400001])
+def test_recovery_counts_are_strict_positive_and_bounded(field, value):
+    with pytest.raises(ValueError):
+        Settings(service_name="test-ai", service_identity="ai-core", _env_file=None, **{field: value})
+
+
+@pytest.mark.parametrize("value", [0, -1, True, float("nan"), float("inf"), 3601])
+def test_recovery_wall_time_is_positive_finite_bounded(value):
+    with pytest.raises(ValueError):
+        Settings(service_name="test-ai", service_identity="ai-core", _env_file=None,
+                 audio_asr_recovery_max_wall_time_seconds=value)
+
+
+def test_recovery_environment_accepts_integer_text_and_sanitizes_invalid_input(monkeypatch):
+    monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
+    monkeypatch.setenv("AI_AUDIO_ASR_RECOVERY_MAX_TOTAL_ATTEMPTS", "4")
+    assert load_settings(None).audio_asr_recovery_max_total_attempts == 4
+    monkeypatch.setenv("AI_AUDIO_ASR_RECOVERY_MAX_TOTAL_ATTEMPTS", "private-invalid")
+    with pytest.raises(ConfigurationError) as caught:
+        load_settings(None)
+    assert "private-invalid" not in "".join(traceback.format_exception(caught.value))

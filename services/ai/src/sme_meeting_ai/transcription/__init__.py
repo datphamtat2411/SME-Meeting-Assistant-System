@@ -24,6 +24,7 @@ from .chunk_execution import (
     AsrChunkResult,
     AsrTimelineSegment,
     execute_asr_chunks,
+    execute_asr_windows,
 )
 from .coverage import (
     CoverageProvenance,
@@ -34,6 +35,17 @@ from .coverage import (
     SpeechCoverageAssessment,
     TranscriptCoverageInterval,
     assess_speech_coverage,
+    revalidate_speech_coverage,
+)
+from .recovery import (
+    RecoveryAttempt,
+    RecoveryPlan,
+    RecoveryProvenance,
+    RecoveryStopReason,
+    RecoveryWindow,
+    SpeechRecoveryResult,
+    plan_recovery_windows,
+    recover_speech,
 )
 from .reconciliation import (
     ReconciledSegment,
@@ -72,12 +84,22 @@ __all__ = [
     "ReconciliationChunkState",
     "ReconciliationFlag",
     "ReconciliationProvenance",
+    "RecoveryAttempt",
+    "RecoveryPlan",
+    "RecoveryProvenance",
+    "RecoveryStopReason",
+    "RecoveryWindow",
     "SpeechCoverageAssessment",
     "SpeechAwareAsrChunkPlanner",
+    "SpeechRecoveryResult",
     "TranscriptCoverageInterval",
     "TranscriptReconciliation",
     "assess_speech_coverage",
     "execute_asr_chunks",
+    "execute_asr_windows",
+    "plan_recovery_windows",
+    "recover_speech",
+    "revalidate_speech_coverage",
     "reconcile_transcript",
     "validate_asr_chunk_plan",
 ]

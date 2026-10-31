@@ -560,3 +560,40 @@ def test_cancellation_cancels_the_bounded_pending_window(handoff, monkeypatch):
     assert len(pending) == 2
     assert pending[1].cancelled()
     assert shutdown_calls == [(True, True)]
+
+
+def test_recovery_window_execution_is_sequential_and_uses_absolute_request_bounds(handoff):
+    from sme_meeting_ai.transcription import CoverageRegion, CoverageState, RecoveryWindow, execute_asr_windows
+
+    plan, audio, _ = handoff
+    region = CoverageRegion(SampleInterval(20, 200), CoverageState.UNRESOLVED_ERROR,
+                            (), (), (), 0, 0, 0, 180, 0, 0)
+    windows = tuple(RecoveryWindow(
+        replace(plan.chunks[0], chunk_id=f"recovery-{i:06d}", ordinal=len(plan.chunks) + i,
+                core_interval=SampleInterval(20, 100), request_interval=SampleInterval(10 + i, 110 + i)),
+        region, i + 1, "balanced-context", (plan.chunks[0].chunk_id,), plan.provenance,
+    ) for i in range(2))
+    transcriber = Transcriber()
+    results = execute_asr_windows(tuple(reversed(windows)), audio, transcriber, settings())
+    assert [r.chunk.ordinal for r in results] == [3, 4]
+    assert [r.timeline_segments[0].interval for r in results] == [w.chunk.request_interval for w in windows]
+    assert transcriber.calls == [w.chunk.chunk_id for w in windows]
+    assert audio.path.exists()
+
+
+def test_recovery_window_execution_validates_all_windows_before_inference(handoff):
+    from sme_meeting_ai.transcription import CoverageRegion, CoverageState, RecoveryWindow, execute_asr_windows
+
+    plan, audio, _ = handoff
+    region = CoverageRegion(SampleInterval(20, 200), CoverageState.UNRESOLVED_ERROR,
+                            (), (), (), 0, 0, 0, 180, 0, 0)
+    window = RecoveryWindow(
+        replace(plan.chunks[0], chunk_id="recovery-000000", ordinal=3,
+                core_interval=SampleInterval(20, 100), request_interval=SampleInterval(10, 351)),
+        region, 1, "balanced-context", (plan.chunks[0].chunk_id,), plan.provenance,
+    )
+    transcriber = Transcriber()
+    with pytest.raises(AsrError) as caught:
+        execute_asr_windows((window,), audio, transcriber, settings())
+    assert caught.value.category is AsrErrorCategory.VALIDATION
+    assert transcriber.calls == []

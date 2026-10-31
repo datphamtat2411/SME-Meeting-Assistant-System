@@ -118,10 +118,12 @@ def _valid_interval(interval: SampleInterval, sample_count: int) -> bool:
     )
 
 
-def _handoff(plan: AsrChunkPlan, results: tuple[AsrChunkResult, ...]) -> tuple[AsrChunk, ...]:
+def _handoff(plan: AsrChunkPlan, results: tuple[AsrChunkResult, ...], settings: Settings) -> tuple[AsrChunk, ...]:
     validate_asr_chunk_plan(plan)
     _require(isinstance(results, tuple))
-    _require(len(results) <= plan.provenance.effective_configuration["max_chunks"])
+    maximum = settings.audio_asr_recovery_max_total_attempts
+    _require(type(maximum) is int and 1 <= maximum <= 256)
+    _require(len(results) <= len(plan.chunks) + maximum)
     planned = {chunk.chunk_id: chunk for chunk in plan.chunks}
     seen, ordinals = set(), {chunk.ordinal for chunk in plan.chunks}
     recovery = []
@@ -145,6 +147,7 @@ def _handoff(plan: AsrChunkPlan, results: tuple[AsrChunkResult, ...]) -> tuple[A
             ordinals.add(chunk.ordinal)
             recovery.append(chunk)
         seen.add(chunk.chunk_id)
+    _require(len(recovery) <= maximum)
     return (*plan.chunks, *sorted(recovery, key=lambda c: (c.ordinal, c.chunk_id)))
 
 
@@ -415,7 +418,7 @@ def reconcile_transcript(
     category = "VALIDATION"
     try:
         configuration = _configuration(settings)
-        chunks = _handoff(plan, results)
+        chunks = _handoff(plan, results, settings)
         outcomes, evidence, asr = _collect(chunks, results)
         segments = _resolve(evidence, configuration["min_shared_tokens"])
         return TranscriptReconciliation(

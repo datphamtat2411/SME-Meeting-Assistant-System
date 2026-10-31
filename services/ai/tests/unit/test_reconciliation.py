@@ -341,3 +341,18 @@ def test_safe_provenance_drops_unapproved_inference_fields():
     ), settings())
     assert output.provenance.asr[0][1].inference_config == (("language", "vi"), ("temperature", 0.0))
     assert "private-prompt" not in repr(output)
+
+
+def test_result_limit_includes_only_configured_recovery_attempts():
+    approved = plan(1)
+    approved = replace(approved, provenance=replace(approved.provenance, effective_configuration={
+        **approved.provenance.effective_configuration, "max_chunks": 1,
+    }))
+    recovery = replace(approved.chunks[0], chunk_id="recovery-1", ordinal=1,
+                       core_interval=SampleInterval(10, 20), request_interval=SampleInterval(5, 25))
+    inputs = (result(approved.chunks[0], (0, 10, "lời gốc")), result(recovery, (10, 20, "phục hồi")))
+    configuration = settings(audio_asr_recovery_max_total_attempts=1)
+    assert len(reconcile_transcript(approved, inputs, configuration).chunk_outcomes) == 2
+    extra = replace(recovery, chunk_id="recovery-2", ordinal=2)
+    with pytest.raises(AudioProcessingError):
+        reconcile_transcript(approved, (*inputs, result(extra)), configuration)

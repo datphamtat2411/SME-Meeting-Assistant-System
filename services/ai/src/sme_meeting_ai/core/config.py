@@ -135,6 +135,24 @@ class Settings(BaseSettings):
     audio_asr_reconciliation_min_shared_tokens: int = Field(
         default=2, ge=2, le=64, strict=True,
     )
+    audio_asr_recovery_context_samples: int = Field(
+        default=16000, gt=0, le=230400000, strict=True,
+    )
+    audio_asr_recovery_max_attempts_per_region: int = Field(
+        default=3, gt=0, le=64, strict=True,
+    )
+    audio_asr_recovery_max_request_samples_per_region: int = Field(
+        default=1440000, gt=0, le=230400000, strict=True,
+    )
+    audio_asr_recovery_max_total_attempts: int = Field(
+        default=16, gt=0, le=256, strict=True,
+    )
+    audio_asr_recovery_max_total_request_samples: int = Field(
+        default=2400000, gt=0, le=230400000, strict=True,
+    )
+    audio_asr_recovery_max_wall_time_seconds: float = Field(
+        default=300, gt=0, le=3600, allow_inf_nan=False,
+    )
 
     @field_validator(
         "audio_asr_chunk_target_samples", "audio_asr_chunk_max_request_samples",
@@ -142,6 +160,9 @@ class Settings(BaseSettings):
         "audio_asr_chunk_max_chunks", "audio_asr_max_concurrent_chunks",
         "audio_asr_coverage_max_tolerated_speech_map_gap_samples",
         "audio_asr_coverage_repetition_min_chars",
+        "audio_asr_recovery_context_samples", "audio_asr_recovery_max_attempts_per_region",
+        "audio_asr_recovery_max_request_samples_per_region",
+        "audio_asr_recovery_max_total_attempts", "audio_asr_recovery_max_total_request_samples",
         "audio_asr_reconciliation_min_shared_tokens", mode="before",
     )
     @classmethod
@@ -149,6 +170,13 @@ class Settings(BaseSettings):
         # Accept integer environment/dotenv text without rounding floats or bools.
         if isinstance(value, str) and re.fullmatch(r"[+-]?[0-9]+", value):
             return int(value)
+        return value
+
+    @field_validator("audio_asr_recovery_max_wall_time_seconds", mode="before")
+    @classmethod
+    def reject_boolean_recovery_time(cls, value: object) -> object:
+        if isinstance(value, bool):
+            raise ValueError("Recovery wall time must be numeric")
         return value
 
     @model_validator(mode="after")

@@ -269,7 +269,14 @@ def _collect_results(plan, results, configuration):
             failures.append((chunk.request_interval, CoverageReason.MALFORMED_CHUNK, chunk.chunk_id))
             continue
         candidate = item.candidate
-        provenance.append((chunk.chunk_id, replace(candidate.provenance)))
+        # Copy only the normalized inference settings, never arbitrary provider
+        # metadata (which can include prompts or sensitive diagnostics).
+        safe_config = tuple((key, value) for key, value in candidate.provenance.inference_config
+                            if (key == "language" and isinstance(value, str)
+                                and 0 < len(value) <= 16 and all(c.isalpha() or c == "-" for c in value))
+                            or (key == "temperature" and type(value) in (int, float)
+                                and math.isfinite(value) and 0 <= value <= 1))
+        provenance.append((chunk.chunk_id, replace(candidate.provenance, inference_config=safe_config)))
         for timeline in item.timeline_segments:
             segment = timeline.segment
             text = " ".join(segment.text.casefold().split())
@@ -382,7 +389,7 @@ def _append_region(regions, region):
     regions.append(region)
 
 
-def _assess(preprocessing, plan, results, settings):
+def _assess(preprocessing, plan, results, settings, recovery_results=None):
     configuration = _configuration(settings)
     _validate_handoff(preprocessing)
     validate_asr_chunk_plan(plan)
@@ -402,6 +409,35 @@ def _assess(preprocessing, plan, results, settings):
                  and item.chunk.chunk_id not in seen)
         seen.add(item.chunk.chunk_id)
     supports, failures, asr_provenance = _collect_results(plan, results, configuration)
+    recovery_ids = set()
+    if recovery_results is not None:
+        # Recovery is supplemental evidence, never a replacement partition.
+        # Validate the complete handoff; only failure-free, structurally valid
+        # candidates contribute support. Failed attempts stay in recovery output.
+        from .recovery import _configuration as recovery_configuration, _validate_recovery_chunk
+
+        limits = recovery_configuration(settings)
+        _require(isinstance(recovery_results, tuple)
+                 and len(recovery_results) <= limits["max_total_attempts"])
+        requests = {c.request_interval for c in plan.chunks}
+        ordinals = {c.ordinal for c in plan.chunks}
+        accepted = []
+        for item in sorted(recovery_results, key=lambda item: (item.chunk.ordinal, item.chunk.chunk_id)):
+            _require(isinstance(item, AsrChunkResult))
+            _validate_recovery_chunk(item.chunk, plan.sample_count, limits)
+            chunk = item.chunk
+            _require(chunk.chunk_id not in planned and chunk.chunk_id not in recovery_ids
+                     and chunk.ordinal >= len(plan.chunks) and chunk.ordinal not in ordinals
+                     and chunk.request_interval not in requests)
+            recovery_ids.add(chunk.chunk_id)
+            ordinals.add(chunk.ordinal)
+            requests.add(chunk.request_interval)
+            if item.failure is None and _valid_result(item):
+                accepted.append(item)
+        supports, failures, asr_provenance = _collect_results(
+            replace(plan, chunks=(*plan.chunks, *(item.chunk for item in accepted))),
+            (*results, *accepted), configuration,
+        )
     indicators = _replay_indicators(preprocessing)
     speech_map = preprocessing.speech_map
     tolerated = _tolerated_gaps(speech_map, indicators, configuration["max_tolerated_speech_map_gap_samples"])
@@ -485,7 +521,10 @@ def _assess(preprocessing, plan, results, settings):
             reasons.add(CoverageReason.LOW_CONFIDENCE)
         if any(supports[i].repeated for i in active):
             reasons.add(CoverageReason.REPEATED_NON_OVERLAP_TEXT)
-        if failure or ((likely or uncertain) and not text_count):
+        # A baseline error remains visible in reasons/provenance but cannot
+        # override newly validated recovery support at these exact samples.
+        recovery_support = any(supports[i].chunk_id in recovery_ids and supports[i].has_text for i in active)
+        if (failure and not (likely and recovery_support)) or ((likely or uncertain) and not text_count):
             state = CoverageState.UNRESOLVED_ERROR
         elif (not likely or uncertain or counts[CoverageReason.WEAK_SPEECH]
               or counts[CoverageReason.NON_SPEECH_VAD] or not text_count):
@@ -591,4 +630,27 @@ def assess_speech_coverage(
     except (AttributeError, TypeError, ValueError, KeyError, OverflowError):
         category = "VALIDATION"
     # Raise outside handlers so sensitive input-bearing exception context is gone.
+    raise AudioProcessingError(category)
+
+
+def revalidate_speech_coverage(
+    preprocessing: PreprocessingResult, plan: AsrChunkPlan,
+    baseline_results: tuple[AsrChunkResult, ...], recovery_results: tuple[AsrChunkResult, ...],
+    settings: Settings,
+) -> SpeechCoverageAssessment:
+    """Assess cumulative evidence on the unchanged baseline/source timeline.
+
+    Supplemental failures or malformed candidates never erase baseline success.
+    Recovered timestamps without text or acoustic support never verify speech.
+    All evidence is borrowed; only text-free assessment metadata is returned.
+    """
+    category = "VALIDATION"
+    try:
+        return _assess(preprocessing, plan, baseline_results, settings, recovery_results)
+    except AudioProcessingError as error:
+        category = error.category
+    except (MemoryError, OSError):
+        category = "RESOURCE"
+    except (AttributeError, TypeError, ValueError, KeyError, OverflowError):
+        pass
     raise AudioProcessingError(category)

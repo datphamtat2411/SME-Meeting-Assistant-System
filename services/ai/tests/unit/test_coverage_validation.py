@@ -473,3 +473,67 @@ def test_map_merged_silence_is_not_verified_by_timestamps(handoff):
     assert assessment.quality.suspicious_speech_samples == 512
     assert assessment.unresolved_intervals == (SampleInterval(512, 1024),)
     assert all(r.state is CoverageState.SUSPICIOUS for r in states_at(assessment, 512, 1024))
+
+
+def test_revalidation_uses_union_and_failed_recovery_never_erases_baseline(handoff):
+    from sme_meeting_ai.transcription import plan_recovery_windows, revalidate_speech_coverage
+
+    preprocessing, plan, configuration = handoff()
+    baseline = (result(plan.chunks[0], ((0, 512),)), result(plan.chunks[1], ()))
+    initial = assess_speech_coverage(preprocessing, plan, baseline, configuration)
+    windows = plan_recovery_windows(initial, plan, configuration).windows
+    good = result(windows[0].chunk)
+    failed = AsrChunkResult(windows[1].chunk, failure=AsrErrorCategory.PROVIDER)
+    assessed = revalidate_speech_coverage(preprocessing, plan, baseline, (good, failed), configuration)
+    assert states_at(assessed, 0, 512)[0].state is CoverageState.COVERED
+    assert assessed.quality.covered_speech_samples <= 2048
+    assert assessed.quality.covered_speech_samples > initial.quality.covered_speech_samples
+    assert assessed == revalidate_speech_coverage(preprocessing, plan, tuple(reversed(baseline)),
+                                                 (failed, good), configuration)
+
+
+def test_revalidation_recovers_failed_baseline_only_where_supported(handoff):
+    from sme_meeting_ai.transcription import plan_recovery_windows, revalidate_speech_coverage
+
+    preprocessing, plan, configuration = handoff()
+    baseline = tuple(AsrChunkResult(c, failure=AsrErrorCategory.TIMEOUT) for c in plan.chunks)
+    initial = assess_speech_coverage(preprocessing, plan, baseline, configuration)
+    window = plan_recovery_windows(initial, plan, configuration).windows[0]
+    recovered = result(window.chunk, ((100, 200),))
+    assessed = revalidate_speech_coverage(preprocessing, plan, baseline, (recovered,), configuration)
+    assert assessed.quality.covered_speech_samples == 100
+    assert assessed.unresolved_intervals == (SampleInterval(0, 100), SampleInterval(200, 2048))
+    assert assessed.quality.failed_chunk_count == len(plan.chunks)
+
+
+def test_revalidation_deduplicates_recovery_overlap_and_rejects_identical_requests(handoff):
+    from sme_meeting_ai.transcription import plan_recovery_windows, revalidate_speech_coverage
+
+    preprocessing, plan, configuration = handoff()
+    baseline = tuple(result(c, ()) for c in plan.chunks)
+    initial = assess_speech_coverage(preprocessing, plan, baseline, configuration)
+    windows = plan_recovery_windows(initial, plan, configuration).windows
+    recovered = tuple(result(w.chunk) for w in windows[:2])
+    assessed = revalidate_speech_coverage(preprocessing, plan, baseline, recovered, configuration)
+    assert assessed.quality.covered_speech_samples <= 2048
+    assert assessed.quality.duplicate_coverage_samples > 0
+    identical = replace(recovered[0], chunk=replace(recovered[0].chunk,
+                                                 request_interval=plan.chunks[0].request_interval))
+    with pytest.raises(AudioProcessingError):
+        revalidate_speech_coverage(preprocessing, plan, baseline, (identical,), configuration)
+
+
+def test_revalidation_does_not_publish_sensitive_provider_metadata(handoff):
+    from sme_meeting_ai.transcription import plan_recovery_windows, revalidate_speech_coverage
+
+    preprocessing, plan, configuration = handoff()
+    baseline = tuple(result(c, ()) for c in plan.chunks)
+    initial = assess_speech_coverage(preprocessing, plan, baseline, configuration)
+    window = plan_recovery_windows(initial, plan, configuration).windows[0]
+    recovered = result(window.chunk, text="private-recovered-text")
+    recovered = replace(recovered, candidate=replace(recovered.candidate, provenance=replace(
+        recovered.candidate.provenance, inference_config=(("prompt", "private-provider-prompt"),),
+    )))
+    assessed = revalidate_speech_coverage(preprocessing, plan, baseline, (recovered,), configuration)
+    assert "private-recovered-text" not in repr(assessed)
+    assert "private-provider-prompt" not in repr(assessed)

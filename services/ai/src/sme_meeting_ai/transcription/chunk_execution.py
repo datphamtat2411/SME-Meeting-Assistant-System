@@ -2,11 +2,13 @@
 
 import io
 import math
+import time
 import traceback
 import wave
 from concurrent.futures import CancelledError, FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from fractions import Fraction
+from typing import TYPE_CHECKING
 
 from sme_meeting_ai.audio.errors import AudioProcessingError
 from sme_meeting_ai.audio.models import AudioSource, NormalizedAudioArtifact, SampleInterval
@@ -22,6 +24,9 @@ from .asr import (
     AsrTranscriber,
 )
 from .chunk_planning import AsrChunk, AsrChunkPlan, validate_asr_chunk_plan
+
+if TYPE_CHECKING:
+    from .recovery import RecoveryWindow
 
 _RATE = 16000
 _WAV_HEADER_BYTES = 44
@@ -222,3 +227,39 @@ def execute_asr_chunks(
             future.cancel()
         executor.shutdown(wait=True, cancel_futures=True)
     return tuple(results[chunk.ordinal] for chunk in plan.chunks)
+
+
+def execute_asr_windows(
+    windows: tuple["RecoveryWindow", ...], normalized_audio: NormalizedAudioArtifact,
+    transcriber: AsrTranscriber, settings: Settings,
+) -> tuple[AsrChunkResult, ...]:
+    """Execute only supplied recovery windows, sequentially in stable ordinal order.
+
+    Borrowed artifact/client ownership and the finite provider timeout contract
+    are identical to baseline execution. No baseline partition is re-executed.
+    All window handoffs are validated before the first request is extracted.
+    """
+    from .recovery import _validate_execution_windows
+
+    started = time.monotonic()
+    try:
+        _validate_execution_windows(windows, normalized_audio, transcriber, settings)
+        ordered = sorted(windows, key=lambda w: (w.chunk.ordinal, w.chunk.chunk_id))
+    except (AsrError, AudioProcessingError, OSError, EOFError, wave.Error,
+            AttributeError, TypeError, ValueError, KeyError, OverflowError):
+        pass
+    else:
+        from .coverage import _valid_result
+
+        results = []
+        for window in ordered:
+            if time.monotonic() - started + settings.audio_asr_timeout_seconds > settings.audio_asr_recovery_max_wall_time_seconds:
+                results.append(AsrChunkResult(window.chunk, failure=AsrErrorCategory.TIMEOUT))
+            else:
+                result = _execute_chunk(window.chunk, normalized_audio, transcriber,
+                                        settings.audio_asr_max_payload_bytes)
+                if result.failure is None and not _valid_result(result):
+                    result = AsrChunkResult(window.chunk, failure=AsrErrorCategory.MALFORMED_OUTPUT)
+                results.append(result)
+        return tuple(results)
+    raise AsrError(AsrErrorCategory.VALIDATION)
