@@ -125,6 +125,18 @@ class DecisionManagementIntegrationTests {
             WHERE id=? AND source_type='MANUAL' AND confirmed_at IS NOT NULL
               AND processing_job_id IS NULL AND transcript_id IS NULL
             """, Integer.class, id)).isEqualTo(1);
+        jdbc.update("UPDATE transcripts SET content_revision=content_revision+1 WHERE id=?", transcript);
+        // Unsourced manual Decisions do not pretend to rely on an AI transcript.
+        mvc.perform(get(url()).principal(as(member)))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data[0].isStale").value(false))
+            .andExpect(jsonPath("$.data[0].status").value("CONFIRMED"));
+        var corrected = mvc.perform(patch(url() + "/" + id).principal(as(organizer))
+                .header("If-Match", response.getHeader("ETag"))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(content("Corrected manual decision")))
+            .andExpect(status().isOk()).andReturn().getResponse();
+        assertThat(corrected.getHeader("ETag")).isEqualTo("\"dec-" + id + "-1\"");
     }
 
     @Test
