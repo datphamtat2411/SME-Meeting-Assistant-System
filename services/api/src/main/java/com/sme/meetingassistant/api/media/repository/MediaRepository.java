@@ -403,6 +403,42 @@ public class MediaRepository {
      * is locked, before transcript publication. The processing job lock and
      * claim-token/lease check fence stale or competing workers.
      */
+    /**
+     * Lock the owning job after the Meeting lock and fence the exact live
+     * ACTION_ITEM_EXTRACTION attempt. A retained/superseded token is not
+     * authority to create proposals, regardless of claimed source metadata.
+     */
+    public void requireActionItemExtractionClaim(UUID jobId, UUID meetingId, UUID mediaId,
+            StageClaim claim) {
+        if (jobId == null || meetingId == null || mediaId == null || claim == null
+                || claim.stageRunId() == null || claim.claimToken() == null) {
+            throw new ProcessingLifecycleConflictException("Missing action extraction claim.");
+        }
+        List<Boolean> eligible = jdbc.query("""
+            SELECT (j.status='RUNNING'
+                AND m.status='AVAILABLE'
+                AND s.status='RUNNING'
+                AND s.stage_code='EXTRACTING_ACTION_ITEMS'
+                AND s.lease_expires_at > clock_timestamp()
+                AND s.attempt_number=(
+                    SELECT MAX(x.attempt_number) FROM processing_stage_runs x
+                    WHERE x.processing_job_id=s.processing_job_id
+                      AND x.stage_code=s.stage_code)
+                ) AS eligible
+            FROM processing_jobs j
+            JOIN meeting_media m ON m.id=j.source_media_id AND m.meeting_id=j.meeting_id
+            JOIN processing_stage_runs s ON s.processing_job_id=j.id
+            WHERE j.id=? AND j.meeting_id=? AND j.source_media_id=?
+              AND s.id=? AND s.claim_token=?
+            FOR UPDATE OF j
+            """, (rs,row)->rs.getBoolean("eligible"),
+            jobId, meetingId, mediaId, claim.stageRunId(), claim.claimToken());
+        if (eligible.size()!=1 || !eligible.getFirst()) {
+            throw new ProcessingLifecycleConflictException(
+                "No live latest Action Item extraction claim matches the canonical job.");
+        }
+    }
+
     public boolean requireFinalizationClaim(UUID jobId, UUID meetingId, UUID mediaId,
             StageClaim claim) {
         if (jobId == null || meetingId == null || mediaId == null || claim == null
