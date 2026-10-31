@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://schemas.sme-meeting-assistant.invalid/api/meeting-intelligence-result-v1.schema.json",
   "title": "MI-01 proposed AI result exchange contract v1 (review required)",
-  "description": "Draft API-owned ingress schema. Core must also validate trusted job/stage/source and evidence against PostgreSQL. Strings/IDs here never grant authority. Digest verification is semantic, not enforced by JSON Schema.",
+  "description": "Draft API-owned ingress schema. Trusted job/stage/source and evidence are verified against PostgreSQL. The single result-artifact SHA-256 is verified from trusted storage metadata outside this JSON payload.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -12,7 +12,6 @@
     "stageRunId",
     "source",
     "producer",
-    "resultSha256",
     "result"
   ],
   "properties": {
@@ -39,10 +38,6 @@
     },
     "producer": {
       "$ref": "#/$defs/producer"
-    },
-    "resultSha256": {
-      "type": "string",
-      "pattern": "^[0-9a-f]{64}$"
     },
     "result": {
       "type": "object"
