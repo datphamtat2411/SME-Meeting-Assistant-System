@@ -84,7 +84,7 @@ public class DecisionService {
         decisions.lockMeeting(meetingId);
         DecisionView current = decisions.find(meetingId, decisionId)
             .orElseThrow(DecisionService::missing);
-        IntelligenceVersionTags.requireDecisionMatch(current.id(), current.version(), ifMatch);
+        IntelligenceVersionTags.requireDecisionMatch(current.id(), current.version(), current.isStale(), ifMatch);
         // This task implements the canonical human correction of confirmed
         // Decisions. MI-06 owns review transitions of AI proposals.
         if (!"CONFIRMED".equals(current.status())) {
@@ -120,7 +120,7 @@ public class DecisionService {
         decisions.lockMeeting(meetingId);
         DecisionView existing = decisions.find(meetingId, decisionId)
             .orElseThrow(DecisionService::missing);
-        IntelligenceVersionTags.requireDecisionMatch(existing.id(), existing.version(), ifMatch);
+        IntelligenceVersionTags.requireDecisionMatch(existing.id(), existing.version(), existing.isStale(), ifMatch);
         if (!"PROPOSED".equals(existing.status())) {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                 "Only proposed decisions can be confirmed or rejected.");
