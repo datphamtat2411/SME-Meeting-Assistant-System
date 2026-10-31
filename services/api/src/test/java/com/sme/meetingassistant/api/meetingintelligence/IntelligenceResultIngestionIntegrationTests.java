@@ -320,6 +320,67 @@ class IntelligenceResultIngestionIntegrationTests {
     }
 
     @Test
+    void vietnameseMultilineSummaryIsPersistedAndReadableWithCrLfNormalized() throws Exception {
+        var stage=claim("SUMMARY",1);
+        String content="Kết luận buổi họp:\r\n\t• Duyệt kế hoạch.\r\n"
+            +"• Nhóm phụ trách thực hiện.\nCảm ơn.";
+        String jsonResult="{\"content\":"+new tools.jackson.databind.ObjectMapper()
+            .writeValueAsString(content)+",\"warnings\":[]}";
+        String digest=expose(stage,envelope("SUMMARY",stage,jsonResult));
+        ingest.ingest(stage,digest);
+        String expected=content.replace("\r\n","\n");
+        assertThat(jdbc.queryForObject("""
+            SELECT content FROM meeting_summary_versions WHERE meeting_id=?
+            """,String.class,meeting)).isEqualTo(expected);
+        mvc.perform(get("/api/v1/meetings/"+meeting+"/summary")
+                .principal(()->actor.toString()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.content").value(expected));
+        assertThat(receiptCount()).isEqualTo(1);
+        assertThat(stageStatus(stage)).isEqualTo("SUCCEEDED");
+    }
+
+    @Test
+    void vietnameseDecisionCandidateWithCrLfAndTabsPreservesEvidenceAndProposedStatus()
+            throws Exception {
+        var stage=claim("DECISION_EXTRACTION",1);
+        String content="Quyết định:\r\n\t• Thống nhất tiến độ.\n• Giao nhiệm vụ cho tổ nghiên cứu.";
+        String candidateJson="{\"candidateKey\":\"vi-01\",\"content\":"
+            +new tools.jackson.databind.ObjectMapper().writeValueAsString(content)
+            +",\"evidenceSegmentIds\":[\""+segment+"\"],\"uncertainty\":\"LOW\"}";
+        String digest=expose(stage,envelope("DECISION_EXTRACTION",stage,
+            decisions(candidateJson)));
+        ingest.ingest(stage,digest);
+        String expected=content.replace("\r\n","\n");
+        assertThat(jdbc.queryForObject("""
+            SELECT content FROM meeting_decisions WHERE meeting_id=?
+            """,String.class,meeting)).isEqualTo(expected);
+        mvc.perform(get("/api/v1/meetings/"+meeting+"/decisions")
+                .principal(()->actor.toString()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data[0].content").value(expected))
+            .andExpect(jsonPath("$.data[0].status").value("PROPOSED"))
+            .andExpect(jsonPath("$.data[0].aiUncertainty").value("LOW"));
+        assertThat(receiptCount()).isEqualTo(1);
+        assertThat(stageStatus(stage)).isEqualTo("SUCCEEDED");
+    }
+
+    @Test
+    void unsafeControlPayloadCannotCreateCanonicalRowsOrConsumeStageClaim()
+            throws Exception {
+        var stage=claim("SUMMARY",1);
+        String bad="Tổng kết" + "\u001B" + "đã duyệt";
+        String raw="{\"content\":"+new tools.jackson.databind.ObjectMapper()
+            .writeValueAsString(bad)+",\"warnings\":[]}";
+        String digest=expose(stage,envelope("SUMMARY",stage,raw));
+        assertThatThrownBy(()->ingest.ingest(stage,digest))
+            .isInstanceOf(IllegalArgumentException.class);
+        assertThat(receiptCount()).isZero();
+        assertThat(count("meeting_summary_versions")).isZero();
+        assertThat(stageStatus(stage)).isEqualTo("RUNNING");
+    }
+
+    @Test
     void summaryAcceptanceIsAtomicCurrentAndExactRedeliveryIsNoop() throws Exception {
         var stage=claim("SUMMARY",1);
         String digest=expose(stage,envelope("SUMMARY",stage,summary("Finalized meeting summary")));
