@@ -1,6 +1,7 @@
 package com.sme.meetingassistant.api.media.service;
 
 import com.sme.meetingassistant.api.media.repository.MediaRepository;
+import com.sme.meetingassistant.api.integration.OfflineIntelligenceSnapshotPreparation;
 import com.sme.meetingassistant.api.common.SafeAiDiagnostics;
 import com.sme.meetingassistant.api.common.SafeProcessingFailureSummary;
 import com.sme.meetingassistant.api.media.repository.MediaRepository.ProcessingLifecycleConflictException;
@@ -23,22 +24,25 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
     private final MediaProperties properties;
     private final ProcessingTranscriptEvidence transcriptEvidence;
     private final ProcessingDerivedSnapshotEvidence derivedEvidence;
+    private final OfflineIntelligenceSnapshotPreparation offlinePreparation;
 
     /** Preserves isolated legacy lifecycle unit tests without derived feature setup. */
     public ProcessingJobLifecycleService(MediaRepository repository, ObjectMapper mapper,
             MediaProperties properties, ProcessingTranscriptEvidence transcriptEvidence) {
-        this(repository, mapper, properties, transcriptEvidence, null);
+        this(repository, mapper, properties, transcriptEvidence, null, null);
     }
 
     @Autowired
     public ProcessingJobLifecycleService(MediaRepository repository, ObjectMapper mapper,
             MediaProperties properties, ProcessingTranscriptEvidence transcriptEvidence,
-            ProcessingDerivedSnapshotEvidence derivedEvidence) {
+            ProcessingDerivedSnapshotEvidence derivedEvidence,
+            OfflineIntelligenceSnapshotPreparation offlinePreparation) {
         this.repository = repository;
         this.mapper = mapper;
         this.properties = properties;
         this.transcriptEvidence = transcriptEvidence;
         this.derivedEvidence = derivedEvidence;
+        this.offlinePreparation = offlinePreparation;
     }
 
     @Override
@@ -73,11 +77,24 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
                 throw new ProcessingLifecycleConflictException(
                     "Derived processing requires its verified pinned Summary source.");
             }
-        } else if (List.of("GENERATING_SUMMARY", "EXTRACTING_DECISIONS",
-                "EXTRACTING_ACTION_ITEMS", "INDEXING").contains(stageCode)
-                && !this.transcriptEvidence.hasFinalizedTranscript(jobId)) {
-            throw new ProcessingLifecycleConflictException(
-                "Downstream processing requires a persisted finalized transcript.");
+        } else {
+            if (List.of("GENERATING_SUMMARY", "EXTRACTING_DECISIONS",
+                    "EXTRACTING_ACTION_ITEMS", "INDEXING").contains(stageCode)
+                    && !this.transcriptEvidence.hasFinalizedTranscript(jobId)) {
+                throw new ProcessingLifecycleConflictException(
+                    "Downstream processing requires a persisted finalized transcript.");
+            }
+            if (List.of("GENERATING_SUMMARY", "EXTRACTING_DECISIONS",
+                    "EXTRACTING_ACTION_ITEMS").contains(stageCode)) {
+                if (offlinePreparation == null) {
+                    throw new ProcessingLifecycleConflictException(
+                        "Offline source snapshot preparation is not installed.");
+                }
+                // The API-side preparation bean suspends this transaction
+                // across S3 I/O. Its source/DB admission is independently
+                // committed before the worker receives a stage claim.
+                offlinePreparation.prepare(jobId);
+            }
         }
         return this.repository.startStage(jobId, stageCode, providerName, modelName, leaseSeconds());
     }
