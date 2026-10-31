@@ -589,6 +589,33 @@ public class TranscriptRepository implements ProcessingTranscriptEvidence {
         }
     }
 
+
+    /**
+     * Transcript-owned validation boundary for user-cited Decision evidence.
+     * Caller holds the meeting row lock in the same transaction; this method
+     * does not expose transcript persistence to Meeting Intelligence.
+     */
+    public TranscriptSource requireCurrentEvidence(UUID meetingId, List<UUID> segmentIds) {
+        if (segmentIds == null || segmentIds.isEmpty()) {
+            throw new IllegalArgumentException("Evidence segment ids are required.");
+        }
+        TranscriptSource source = currentSource(meetingId).orElseThrow(() ->
+            new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
+                "Current transcript is required for linked evidence."));
+        String placeholders = String.join(",", java.util.Collections.nCopies(segmentIds.size(), "?"));
+        List<Object> bindings = new ArrayList<>();
+        bindings.add(source.transcriptId());
+        bindings.addAll(segmentIds);
+        Integer count = jdbc.queryForObject(
+            "SELECT count(*) FROM transcript_segments WHERE transcript_id=? AND id IN (" + placeholders + ")",
+            Integer.class, bindings.toArray());
+        if (count == null || count != segmentIds.size()) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
+                "Evidence segment is not part of the meeting's current transcript.");
+        }
+        return source;
+    }
+
     public record TranscriptSource(UUID transcriptId, long contentRevision, String status) {}
 
     private String encode(Map<String, Object> value) {
