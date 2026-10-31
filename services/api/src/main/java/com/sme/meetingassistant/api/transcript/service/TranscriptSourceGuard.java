@@ -2,6 +2,7 @@ package com.sme.meetingassistant.api.transcript.service;
 
 import com.sme.meetingassistant.api.transcript.repository.TranscriptRepository;
 import com.sme.meetingassistant.api.transcript.repository.TranscriptRepository.TranscriptSource;
+import java.util.List;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -27,6 +28,15 @@ public class TranscriptSourceGuard {
         if (meetingId == null) throw new IllegalArgumentException("Meeting id is required.");
         return this.transcripts.currentSource(meetingId)
             .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+    }
+
+    /**
+     * Validate manually selected evidence against the live current transcript.
+     * Called after the Meeting row is locked by the Decision writer.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public TranscriptSource requireCurrentEvidence(UUID meetingId, List<UUID> segmentIds) {
+        return transcripts.requireCurrentEvidence(meetingId, segmentIds);
     }
 
     @Transactional(propagation = Propagation.MANDATORY)
