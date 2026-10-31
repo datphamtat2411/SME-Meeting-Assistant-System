@@ -75,7 +75,7 @@ public class DecisionController {
 
     private ResponseEntity<ApiResponse<DecisionView>> decision(DecisionView view, HttpStatus status) {
         return ResponseEntity.status(status)
-            .eTag(IntelligenceVersionTags.decision(view.id(), view.version()))
+            .eTag(IntelligenceVersionTags.decision(view.id(), view.version(), view.isStale()))
             .cacheControl(CacheControl.noStore())
             .body(responses.success(view));
     }
