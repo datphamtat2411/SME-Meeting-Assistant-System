@@ -202,6 +202,61 @@ class ProcessingLifecycleInvariantsIntegrationTests {
             action.stageRunId())).isEqualTo("RUNNING");
     }
 
+    /** Test completion policy with actual PostgreSQL lineage/receipt records. */
+    @Test
+    void fullOfflineJobWithAcceptedSummaryAndEmptyDecisionBatchCompletes() {
+        completedTranscriptStages("SUCCEEDED","READY","ACCEPTED");
+        UUID transcript=jdbc.queryForObject(
+            "SELECT id FROM transcripts WHERE processing_job_id=?",UUID.class,jobId);
+        UUID snapshot=UUID.randomUUID();
+        jdbc.update("""
+            INSERT INTO meeting_intelligence_source_snapshots(
+              id,meeting_id,source_media_id,processing_job_id,transcript_id,
+              content_revision,sha256,object_key,size_bytes)
+            VALUES (?,?,?,?,?,0,?,?,100)
+            """,snapshot,meetingId,mediaId,jobId,transcript,"a".repeat(64),
+            "processing/"+jobId+"/intelligence/source/"+snapshot+".json");
+
+        StageClaim summary=lifecycle.startStage(jobId,"GENERATING_SUMMARY",null,null);
+        UUID summaryReceipt=insertIntelligenceReceipt(
+            summary.stageRunId(),snapshot,transcript,"SUMMARY");
+        jdbc.update("""
+            INSERT INTO meeting_summary_versions(
+              id,meeting_id,version_number,content,source_type,processing_job_id,
+              result_receipt_id,transcript_id,content_revision,quality_status,is_current)
+            VALUES (?,?,1,'Persisted summary','AI_GENERATED',?,?,?,0,'READY',TRUE)
+            """,UUID.randomUUID(),meetingId,jobId,summaryReceipt,transcript);
+        lifecycle.completeStage(summary,"SUCCEEDED",null,null);
+
+        StageClaim decisions=lifecycle.startStage(jobId,"EXTRACTING_DECISIONS",null,null);
+        insertIntelligenceReceipt(decisions.stageRunId(),snapshot,transcript,
+            "DECISION_EXTRACTION");
+        lifecycle.completeStage(decisions,"SUCCEEDED",null,null);
+        assertThat(jdbc.queryForObject(
+            "SELECT count(*) FROM meeting_decisions WHERE meeting_id=?",
+            Integer.class,meetingId)).isZero();
+
+        lifecycle.completeJob(jobId);
+        assertThat(jobStatus()).isEqualTo("COMPLETED");
+        assertThat(jdbc.queryForObject(
+            "SELECT count(*) FROM meeting_intelligence_result_receipts WHERE processing_job_id=?",
+            Integer.class,jobId)).isEqualTo(2);
+    }
+
+    private UUID insertIntelligenceReceipt(UUID stageId,UUID snapshot,UUID transcript,
+            String type) {
+        UUID receipt=UUID.randomUUID();
+        jdbc.update("""
+            INSERT INTO meeting_intelligence_result_receipts(
+              id,meeting_id,processing_job_id,stage_run_id,result_type,
+              source_snapshot_id,transcript_id,content_revision,artifact_sha256,
+              artifact_object_key,artifact_size_bytes)
+            VALUES (?,?,?,?,?,?,?,0,?,?,100)
+            """,receipt,meetingId,jobId,stageId,type,snapshot,transcript,
+            "b".repeat(64),"processing/"+jobId+"/intelligence/results/"+stageId+".json");
+        return receipt;
+    }
+
     @Test
     void durableStageMetricsRejectRawAsrTextAndArbitraryProviderPayload() {
         StageClaim stage = lifecycle.startStage(jobId, "TRANSCRIPTION", "whisper", "large-v3");

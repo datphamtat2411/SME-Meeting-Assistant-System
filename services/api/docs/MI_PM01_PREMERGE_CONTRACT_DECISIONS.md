@@ -168,7 +168,7 @@ These are in scope for **downstream tasks**, not new changes in MI-PM-01:
 - RE08-SECURITY: reference approved worker auth/storage policy (do not invent credentials or retain raw payloads).
 - RE01-AI: agree on versioned producer/consumer schema, warnings/uncertainty semantics and evaluation needs; AI model selection remains AI-owned.
 
-## 13. Independent counter-review and delegated design decisions (2026-10-31)
+## 12. Independent counter-review and delegated design decisions (2026-10-31)
 
 The project owner explicitly delegated API/Product design approvals for the pre-merge branch, **excluding any authority over the separate AI Core team**. This record uses that delegation only for decisions inside the Spring Boot Core API's ownership. It does not fabricate approval by named human team leads, waive Security deployment evidence, or modify any `services/ai` code.
 
@@ -191,7 +191,7 @@ The project owner explicitly delegated API/Product design approvals for the pre-
 - The new `ActionItemProposalSink.hasAcceptedBatch(jobId,stageRunId)` method is a proposed Action Items-owner read evidence contract. It does not grant MI write ownership or invent persistence. Real sink must check durable acceptance, including empty batches.
 - MI-PM-02 implements the stage/job proof gate, not snapshot preparation or AI worker transport. Normal downstream AI stages requiring a missing snapshot therefore **cannot** be reported successful until MI-PM-03 supplies the source boundary.
 
-## 12. Handoff and merge conditions
+## 13. Handoff and merge conditions
 
 | Next task | Inputs frozen for implementation planning | Acceptance focus |
 | --- | --- | --- |
