@@ -8,7 +8,7 @@ The **first normal offline intelligence stage claim** triggers API-side source p
 
 `OfflineIntelligenceSnapshotPreparation.prepare(jobId)` suspends any caller transaction (`Propagation.NOT_SUPPORTED`) around immutable object-storage work. Transcript capture uses its own short Meeting-serialized transaction; upload is create-only, bounded and read-back SHA-256 verified by `IntelligenceSnapshotStore`. `OfflineIntelligenceSnapshotPersistence.persist(...)` then opens its own short transaction, locks the Meeting through Transcript's source guard, rechecks transcript identity/revision, job ownership/type/status, and persists the canonical snapshot binding.
 
-A concurrent second preflight either sees an already bound snapshot or discards its own uncommitted object after the Meeting lock resolves the winner. A failed object write/read-back, source correction race, missing finalization or nonmatching media/job stops the stage **before** a worker claim can be issued. Failed/losing objects are deleted best-effort; retention reconciliation remains MI-PM-09's responsibility.
+A concurrent second preflight either sees an already bound snapshot or discards its own uncommitted object after the Meeting lock resolves the winner. The persistence transaction also locks the Media job row after the Meeting row to serialize against concurrent job status changes. A failed object write/read-back, source correction race, missing finalization or nonmatching media/job stops the stage **before** a worker claim can be issued. Failed/losing objects are deleted best-effort; retention reconciliation remains MI-PM-09's responsibility.
 
 ## Why stage preflight rather than finalization S3 I/O?
 
@@ -26,6 +26,6 @@ The worker receives no successful stage claim until the immutable snapshot has b
 
 ## Acceptance tests
 
-`OfflineIntelligenceSnapshotPreparationIntegrationTests` exercises the real PostgreSQL Media/Transcript/service transactions with only the object-storage implementation mocked: captured digest and revision, second stage reuse, race with transcript correction, failed storage preventing stage claim, and foreign job source rejection. Existing MI-08 regeneration and MI-07 ingestion tests remain in the full API regression.
+`OfflineIntelligenceSnapshotPreparationIntegrationTests` exercises the real PostgreSQL Media/Transcript/service transactions with only the object-storage implementation mocked: captured digest and revision, second stage reuse, race with transcript correction, competing source preparations converging on one DB binding/object, failed storage preventing stage claim, and foreign job source rejection. Existing MI-08 regeneration and MI-07 ingestion tests remain in the full API regression.
 
 **Gate:** `./mvnw -B -ntp verify` on final branch HEAD and GitHub Actions API CI **SUCCESS**. Pending AI Core interoperability does not become approved by passing API CI.

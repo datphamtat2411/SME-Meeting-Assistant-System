@@ -15,6 +15,9 @@ import java.util.HexFormat;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -164,6 +167,33 @@ class OfflineIntelligenceSnapshotPreparationIntegrationTests {
             SELECT count(*) FROM processing_stage_runs
               WHERE processing_job_id=? AND stage_code='GENERATING_SUMMARY' AND status='RUNNING'
             """,Integer.class,job)).isZero();
+    }
+
+    @Test
+    void concurrentPreflightKeepsExactlyOnePinnedSourceAndCleansLosingObject() throws Exception {
+        CountDownLatch go=new CountDownLatch(1);
+        try(var pool=Executors.newFixedThreadPool(2)) {
+            var first=pool.submit(() -> {
+                go.await();
+                preparation.prepare(job);
+                return null;
+            });
+            var second=pool.submit(() -> {
+                go.await();
+                preparation.prepare(job);
+                return null;
+            });
+            go.countDown();
+            first.get(20,TimeUnit.SECONDS);
+            second.get(20,TimeUnit.SECONDS);
+        }
+        assertThat(sourceCount()).isEqualTo(1);
+        assertThat(blobs).hasSize(1);
+        String key=jdbc.queryForObject("""
+            SELECT object_key FROM meeting_intelligence_source_snapshots
+            WHERE processing_job_id=?
+            """,String.class,job);
+        assertThat(blobs).containsKey(key);
     }
 
     @Test

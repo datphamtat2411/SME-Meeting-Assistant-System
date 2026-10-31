@@ -280,6 +280,12 @@ public class MediaRepository {
             .stream().findFirst();
     }
 
+    /** Call only after the Meeting lock when binding immutable offline source. */
+    public Optional<Job> lockJobForOfflineSource(UUID id) {
+        return this.jdbc.query("SELECT * FROM processing_jobs WHERE id = ? FOR UPDATE",
+            MediaRepository::jobRow,id).stream().findFirst();
+    }
+
     public List<Job> listJobs(UUID meetingId) {
         return this.jdbc.query("SELECT * FROM processing_jobs WHERE meeting_id = ? ORDER BY created_at DESC, id",
             MediaRepository::jobRow, meetingId);

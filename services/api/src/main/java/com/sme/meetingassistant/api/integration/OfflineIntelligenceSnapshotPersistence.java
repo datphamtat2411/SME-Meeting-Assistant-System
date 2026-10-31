@@ -30,7 +30,7 @@ public class OfflineIntelligenceSnapshotPersistence {
         // Same Meeting-first lock order as review, result ingestion and Summary edits.
         transcripts.requireCurrentForDerivedWrite(meetingId,
             new TranscriptSource(source.transcriptId(),source.contentRevision(),source.status()));
-        var job=media.findJob(jobId).orElseThrow(() ->
+        var job=media.lockJobForOfflineSource(jobId).orElseThrow(() ->
             new ProcessingLifecycleConflictException("Offline source job disappeared."));
         if (!meetingId.equals(job.meetingId()) || !mediaId.equals(job.sourceMediaId())
                 || !jobId.equals(source.originJobId()) || !mediaId.equals(source.mediaId())
