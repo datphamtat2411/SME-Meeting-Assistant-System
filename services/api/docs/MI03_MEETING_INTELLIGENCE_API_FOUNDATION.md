@@ -2,7 +2,7 @@
 
 > Branch: `feat/mi03-meeting-intelligence-api-foundation` (created from `api/module-meeting-intelligence`).  
 > Scope: Core API foundation, no migrations, no AI inference, no real Summary/Decision CRUD yet.  
-> Status: Implementation for independent review; MI-01 architecture review gates remain open.
+> Status: Implementation and API CI tests passed on PR #59 (run 41160931985); MI-01 architecture review gates remain open.
 
 ## Why this is intentionally separate from MI-02
 
@@ -38,6 +38,7 @@ MI-02 owns PostgreSQL schema, indexes, migrations, provenance and ingestion rece
 - Decision ETag: strong opaque `"dec-{decisionId}-{rowVersion}"`.
 - For the eventual PATCH/confirm/reject operations, missing/blank `If-Match` is HTTP 428 with code `PRECONDITION_REQUIRED`; wrong/stale/wildcard tag is HTTP 412 with code `PRECONDITION_FAILED`.
 - The helper provides transport-time comparison only. The implementing business transaction **must also lock or compare-and-swap canonical DB version** to prevent two concurrent valid-tag requests both committing. MI-03 cannot implement that without MI-02 data models.
+- **ABA prevention:** If a prior Summary version can ever be activated again, its original ETag would reappear with this helper. MI-04/MI-08 MUST NOT simply toggle an old version back to current under the same token; either create a new monotonic publication version or first approve and implement a distinct persistent publication-generation counter. This is a requirement for the future activation API, not an existing exposed behavior.
 - Never reuse Meeting metadata ETag or Transcript segment ETag for Summary or Decisions.
 
 ## Endpoint integration handoff
@@ -53,7 +54,7 @@ The request-record limits above are **implementation proposals**; these and exte
 - `IntelligenceVersionTagsTests`: strong opaque tags, different namespaces and 428/412 cases.
 - `IntelligencePreconditionErrorTests`: central exception-envelope regression for 428.
 - No database migrations or table-dependent tests in MI-03. MI-12 will add end-to-end HTTP authorization, stale-result, concurrent conditional update, repository and job tests after MI-02/MI-04..MI-09.
-- Java 21 / Spring Boot 4.1.1; run `cd services/api && ./mvnw test` with Docker/Testcontainers available for PostgreSQL integration tests. A connector-only commit does not itself prove these tests have run.
+- Java 21 / Spring Boot 4.1.1; [API CI run 41160931985](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/actions/runs/41160931985) completed `./mvnw -B -ntp verify`: 597 tests, 0 failures, 0 errors. Repeat the suite after MI-02 and MI-03 are combined.
 
 ## Merge/review coordination
 
