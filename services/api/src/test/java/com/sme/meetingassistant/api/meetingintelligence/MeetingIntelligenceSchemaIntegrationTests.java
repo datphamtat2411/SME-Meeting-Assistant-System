@@ -133,9 +133,9 @@ class MeetingIntelligenceSchemaIntegrationTests {
             INSERT INTO meeting_intelligence_source_snapshots(
                 id,meeting_id,source_media_id,processing_job_id,transcript_id,content_revision,
                 sha256,object_key,size_bytes)
-            VALUES (?,?,?,?,2,?,?,'fake',256)
+            VALUES (?,?,?,?,?,?,?, ?,256)
             """, UUID.randomUUID(), source.meeting, source.media, source.job,
-            SHA, "processing/" + source.job + "/intelligence/source/" + UUID.randomUUID() + ".json"));
+            foreign.transcript, 2, SHA, "processing/" + source.job + "/intelligence/source/" + UUID.randomUUID() + ".json"));
         rejected(() -> jdbc.update("""
             UPDATE meeting_intelligence_source_snapshots SET content_revision=3 WHERE id=?
             """, id));
