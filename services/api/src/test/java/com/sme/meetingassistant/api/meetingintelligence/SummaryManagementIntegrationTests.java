@@ -189,9 +189,18 @@ class SummaryManagementIntegrationTests {
     @Test
     void staleTranscriptIsReportedAndHumanEditsRetainSourceLineage() throws Exception {
         jdbc.update("UPDATE transcripts SET content_revision=content_revision+1 WHERE id=?", transcript);
-        mvc.perform(get(url()).principal(as(organizer)))
-            .andExpect(status().isOk()).andExpect(jsonPath("$.data.isStale").value(true));
+        var stale = mvc.perform(get(url()).principal(as(organizer)))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.data.isStale").value(true))
+            .andReturn().getResponse();
+        String freshSourceTag = stale.getHeader("ETag");
+        assertThat(freshSourceTag).isEqualTo("\"sum-" + firstVersion + "-1-stale\"");
+        assertThat(freshSourceTag).isNotEqualTo(tag());
+
+        // An old, pre-correction representation cannot authorize a new edit.
         mvc.perform(patch(url()).principal(as(organizer)).header("If-Match", tag())
+                .contentType(MediaType.APPLICATION_JSON).content(body("Unreviewed stale edit")))
+            .andExpect(status().isPreconditionFailed());
+        mvc.perform(patch(url()).principal(as(organizer)).header("If-Match", freshSourceTag)
                 .contentType(MediaType.APPLICATION_JSON).content(body("Human edited older snapshot")))
             .andExpect(status().isOk()).andExpect(jsonPath("$.data.isStale").value(true))
             .andExpect(jsonPath("$.data.contentRevision").value(0));
