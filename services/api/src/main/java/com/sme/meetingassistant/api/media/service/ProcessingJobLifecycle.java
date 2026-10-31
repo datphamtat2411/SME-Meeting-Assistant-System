@@ -28,6 +28,15 @@ public interface ProcessingJobLifecycle {
 
     /** Admit only a currently claimed finalization attempt for matching source media. */
     boolean requireFinalizationClaim(UUID jobId, UUID meetingId, UUID mediaId, StageClaim claim);
+    /**
+     * MI-10: validate a live, newest EXTRACTING_ACTION_ITEMS attempt against
+     * its owning job/meeting/media without allowing a worker to self-assert
+     * that authority. Call with the Meeting lock held.
+     */
+    void requireActionItemExtractionClaim(UUID jobId, UUID meetingId, UUID mediaId,
+            StageClaim claim);
+
+
 
     /** True while this job has preplanned downstream work not yet started. */
     boolean hasPendingPipelineStages(UUID jobId);
