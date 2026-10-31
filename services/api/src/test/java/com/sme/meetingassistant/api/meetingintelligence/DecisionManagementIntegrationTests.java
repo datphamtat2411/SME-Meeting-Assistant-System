@@ -178,6 +178,41 @@ class DecisionManagementIntegrationTests {
     }
 
     @Test
+    void replacingTranscriptWithSameRevisionStalesEvidenceWithoutRevertingConfirmation() throws Exception {
+        var created = create(evidence("Evidence-based confirmation", segment));
+        UUID decision = id(created);
+        jdbc.update("UPDATE transcripts SET is_current=FALSE WHERE id=?", transcript);
+        UUID nextJob = UUID.randomUUID();
+        jdbc.update("""
+            INSERT INTO processing_jobs(
+                id,meeting_id,source_media_id,requested_by_user_id,status,reprocess_of_job_id)
+            VALUES (?,?,?,?,'COMPLETED',?)
+            """, nextJob, meeting, media, organizer, job);
+        jdbc.update("""
+            INSERT INTO transcripts(
+                id,meeting_id,source_media_id,processing_job_id,version_number,
+                language_code,status,is_current,content_revision)
+            VALUES (?,?,?,?,2,'vi','READY',TRUE,2)
+            """, UUID.randomUUID(), meeting, media, nextJob);
+
+        mvc.perform(get(url()).principal(as(member)))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data[0].status").value("CONFIRMED"))
+            .andExpect(jsonPath("$.data[0].sourceType").value("MANUAL"))
+            .andExpect(jsonPath("$.data[0].transcriptId").value(transcript.toString()))
+            .andExpect(jsonPath("$.data[0].contentRevision").value(2))
+            .andExpect(jsonPath("$.data[0].isStale").value(true));
+        mvc.perform(patch(url() + "/" + decision).principal(as(organizer))
+                .header("If-Match", created.getHeader("ETag"))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(content("Unexpected stale replacement")))
+            .andExpect(status().isPreconditionFailed());
+        assertThat(jdbc.queryForObject(
+            "SELECT count(*) FROM decision_revisions WHERE decision_id=?",
+            Integer.class, decision)).isZero();
+    }
+
+    @Test
     void evidenceCannotBeMissingRepeatedOrBorrowedFromAnotherTranscript() throws Exception {
         mvc.perform(post(url()).principal(as(organizer)).contentType(MediaType.APPLICATION_JSON)
                 .content(evidence("Foreign evidence", UUID.randomUUID())))
