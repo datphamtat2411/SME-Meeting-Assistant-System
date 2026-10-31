@@ -78,7 +78,7 @@ public record IntelligenceResultPayload(
         String summary = null;
         List<Candidate> candidates = new ArrayList<>();
         if ("SUMMARY".equals(kind)) {
-            summary=string(result.get("content"),1,20_000);
+            summary=contentText(result.get("content"),20_000);
         } else {
             Set<String> keys=new HashSet<>();
             for (Object raw : list(result.get("candidates"),500)) {
@@ -86,7 +86,7 @@ public record IntelligenceResultPayload(
                 exact(candidate,"candidateKey","content","evidenceSegmentIds","uncertainty");
                 String key=string(candidate.get("candidateKey"),1,128);
                 if (!key.matches("[A-Za-z0-9._-]+") || !keys.add(key)) invalid();
-                String content=string(candidate.get("content"),1,5_000);
+                String content=contentText(candidate.get("content"),5_000);
                 String uncertainty=string(candidate.get("uncertainty"),1,8);
                 if (!Set.of("NONE","LOW","MATERIAL").contains(uncertainty)) invalid();
                 List<UUID> ids=new ArrayList<>();
@@ -126,6 +126,33 @@ public record IntelligenceResultPayload(
         }
         return str;
     }
+    /**
+     * Result *content* is Vietnamese prose, not an identifier. Preserve LF/TAB,
+     * normalize Windows CRLF to LF, and reject standalone CR, all other ISO
+     * control characters, empty/blank and overlong content. Never trim or
+     * rewrite the original Unicode characters (including combining accents).
+     *
+     * Size is checked before normalization against JSON Schema's character
+     * limit, so CRLF cannot bypass maxLength by collapsing to LF.
+     */
+    private static String contentText(Object value, int max) {
+        if (!(value instanceof String text) || text.isBlank()
+                || text.codePointCount(0, text.length()) > max) {
+            throw new IllegalArgumentException("Intelligence result contains invalid text.");
+        }
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c == '\r') {
+                if (i + 1 == text.length() || text.charAt(++i) != '\n') {
+                    throw new IllegalArgumentException("Intelligence result contains invalid text.");
+                }
+            } else if (c != '\n' && c != '\t' && Character.isISOControl(c)) {
+                throw new IllegalArgumentException("Intelligence result contains invalid text.");
+            }
+        }
+        return text.replace("\r\n", "\n");
+    }
+
     private static long integer(Object value) {
         if (!(value instanceof Integer || value instanceof Long)) { invalid(); }
         long n=((Number)value).longValue();
