@@ -279,12 +279,19 @@ class SummaryManagementIntegrationTests {
     @Test
     void replacementOfCurrentTranscriptMarksSummaryStale() throws Exception {
         jdbc.update("UPDATE transcripts SET is_current=FALSE WHERE id=?", transcript);
+        // Reprocessing creates a new job for the same media; V20 permits only
+        // one canonical transcript publication per processing job.
+        UUID reprocessJob = UUID.randomUUID();
+        jdbc.update("""
+            INSERT INTO processing_jobs(id,meeting_id,source_media_id,requested_by_user_id,status)
+            VALUES (?,?,?,?,'COMPLETED')
+            """, reprocessJob, meeting, media, organizer);
         UUID replacement = UUID.randomUUID();
         jdbc.update("""
             INSERT INTO transcripts(id,meeting_id,source_media_id,processing_job_id,version_number,
                 language_code,status,is_current,content_revision)
             VALUES (?,?,?,?,2,'vi','READY',TRUE,0)
-            """, replacement, meeting, media, job);
+            """, replacement, meeting, media, reprocessJob);
         mvc.perform(get(url()).principal(as(participant)))
             .andExpect(status().isOk()).andExpect(jsonPath("$.data.isStale").value(true));
     }
