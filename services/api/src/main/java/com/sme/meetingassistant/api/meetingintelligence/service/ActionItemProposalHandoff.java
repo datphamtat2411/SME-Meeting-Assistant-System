@@ -4,7 +4,6 @@ import com.sme.meetingassistant.api.actionitem.service.ActionItemProposalSink;
 import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle;
 import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle.StageClaim;
 import com.sme.meetingassistant.api.transcript.service.TranscriptSourceGuard;
-import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HashSet;
@@ -114,14 +113,16 @@ public class ActionItemProposalHandoff {
         var receipt = sink.acceptProposed(batch);
         if (receipt == null || receipt.newProposals() < 0
                 || receipt.newProposals() > candidates.size()
-                || (receipt.replay() && receipt.newProposals() != 0)) {
+                || receipt.newProposals() != (receipt.replay() ? 0 : candidates.size())) {
             throw new IllegalStateException("Action Items sink returned an invalid acceptance receipt.");
         }
-        if (!receipt.replay()) {
-            // Synchronous same-database transaction: failed stage completion
-            // rolls back Action Items proposals and any acceptance receipt.
-            media.completeStage(claim, "SUCCEEDED", null, null);
-        }
+        // A replay can happen when the owning Action Items sink already
+        // accepted the batch but this stage still awaits final completion.
+        // Completing with the same live claim is safe; a fully completed
+        // stage fails the live-claim check before reaching this method.
+        // The DB transaction also rolls back newly written proposals if
+        // Media's final stage fencing rejects completion.
+        media.completeStage(claim, "SUCCEEDED", null, null);
         return receipt;
     }
 
