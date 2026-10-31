@@ -107,6 +107,11 @@ def test_example_dotenv_loads_documented_defaults():
     assert type(settings.audio_vad_frame_samples) is int
     assert settings.audio_vad_model_path is None
     assert settings.audio_vad_model_sha256 is None
+    assert settings.audio_asr_chunk_target_samples == 320000
+    assert settings.audio_asr_chunk_max_request_samples == 480000
+    assert settings.audio_asr_chunk_overlap_samples == 80000
+    assert settings.audio_asr_chunk_boundary_search_samples == 80000
+    assert settings.audio_asr_chunk_max_chunks == 4096
 
 
 @pytest.mark.parametrize(
@@ -431,3 +436,91 @@ def test_speech_map_invalid_settings_are_sanitized(monkeypatch, field, values):
         assert field in str(caught.value)
         assert "private-invalid" not in "".join(traceback.format_exception(caught.value))
         assert caught.value.__context__ is None
+
+
+def test_asr_chunk_defaults_and_environment_overrides(monkeypatch):
+    monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
+    defaults = load_settings(env_file=None)
+    expected = {
+        "audio_asr_chunk_target_samples": 320000,
+        "audio_asr_chunk_max_request_samples": 480000,
+        "audio_asr_chunk_overlap_samples": 80000,
+        "audio_asr_chunk_boundary_search_samples": 80000,
+        "audio_asr_chunk_max_chunks": 4096,
+    }
+    for field, value in expected.items():
+        assert getattr(defaults, field) == value
+    overrides = dict(zip(expected, (100, 150, 31, 20, 10), strict=True))
+    for field, value in overrides.items():
+        monkeypatch.setenv(f"AI_{field.upper()}", str(value))
+    settings = load_settings(env_file=None)
+    for field, value in overrides.items():
+        assert getattr(settings, field) == value
+        assert type(getattr(settings, field)) is int
+
+
+@pytest.mark.parametrize("overrides", [
+    {"audio_asr_chunk_target_samples": 1, "audio_asr_chunk_boundary_search_samples": 0,
+     "audio_asr_chunk_overlap_samples": 0, "audio_asr_chunk_max_request_samples": 1,
+     "audio_asr_chunk_max_chunks": 1},
+    {"audio_asr_chunk_target_samples": 230400000,
+     "audio_asr_chunk_max_request_samples": 230400000,
+     "audio_asr_chunk_overlap_samples": 0,
+     "audio_asr_chunk_boundary_search_samples": 230399999,
+     "audio_asr_chunk_max_chunks": 65536},
+    {"audio_asr_chunk_target_samples": 320000,
+     "audio_asr_chunk_max_request_samples": 400000},
+])
+def test_asr_chunk_setting_boundaries(overrides):
+    settings = Settings(
+        service_name="test-ai", service_identity="ai-core", _env_file=None, **overrides,
+    )
+    for field, value in overrides.items():
+        assert getattr(settings, field) == value
+
+
+@pytest.mark.parametrize("field,values", [
+    ("audio_asr_chunk_target_samples", [0, -1, 230400001, True, 100.0, 1.5]),
+    ("audio_asr_chunk_max_request_samples", [0, -1, 230400001, True, 480000.0, 1.5]),
+    ("audio_asr_chunk_overlap_samples", [-1, 230400001, True, 80000.0, 1.5]),
+    ("audio_asr_chunk_boundary_search_samples", [-1, 230400001, True, 80000.0, 1.5]),
+    ("audio_asr_chunk_max_chunks", [0, -1, 65537, True, 4096.0, 1.5]),
+])
+def test_asr_chunk_direct_values_require_bounded_integers(field, values):
+    for value in values:
+        with pytest.raises(ValueError):
+            Settings(
+                service_name="test-ai", service_identity="ai-core", _env_file=None,
+                **{field: value},
+            )
+
+
+@pytest.mark.parametrize("field", [
+    "audio_asr_chunk_target_samples", "audio_asr_chunk_max_request_samples",
+    "audio_asr_chunk_overlap_samples", "audio_asr_chunk_boundary_search_samples",
+    "audio_asr_chunk_max_chunks",
+])
+@pytest.mark.parametrize("value", ["-1", "230400001", "1.5", "100.0", "nan", "inf", "true", "private-invalid"])
+def test_asr_chunk_invalid_environment_values_are_sanitized(monkeypatch, field, value):
+    monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
+    monkeypatch.setenv(f"AI_{field.upper()}", value)
+    with pytest.raises(ConfigurationError) as caught:
+        load_settings(env_file=None)
+    assert field in str(caught.value)
+    assert "private-invalid" not in "".join(traceback.format_exception(caught.value))
+    assert caught.value.__context__ is None
+
+
+@pytest.mark.parametrize("overrides", [
+    {"audio_asr_chunk_max_request_samples": 399999},
+    {"audio_asr_chunk_overlap_samples": 480000},
+    {"audio_asr_chunk_boundary_search_samples": 320000},
+    {"audio_asr_chunk_boundary_search_samples": 320001},
+])
+def test_asr_chunk_cross_field_contracts(overrides):
+    with pytest.raises(ValueError):
+        Settings(
+            service_name="test-ai", service_identity="ai-core", _env_file=None, **overrides,
+        )

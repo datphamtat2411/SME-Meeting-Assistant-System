@@ -1,5 +1,6 @@
 """Typed configuration without runtime or infrastructure initialization."""
 
+import re
 from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
@@ -92,6 +93,45 @@ class Settings(BaseSettings):
     audio_speech_map_energy_floor_dbfs: float = Field(
         default=-50, ge=-120, le=0, allow_inf_nan=False,
     )
+    # Absolute integer counts on the normalized 16 kHz timeline.
+    audio_asr_chunk_target_samples: int = Field(
+        default=320000, gt=0, le=230400000, strict=True,
+    )
+    audio_asr_chunk_max_request_samples: int = Field(
+        default=480000, gt=0, le=230400000, strict=True,
+    )
+    audio_asr_chunk_overlap_samples: int = Field(
+        default=80000, ge=0, le=230400000, strict=True,
+    )
+    audio_asr_chunk_boundary_search_samples: int = Field(
+        default=80000, ge=0, le=230400000, strict=True,
+    )
+    audio_asr_chunk_max_chunks: int = Field(default=4096, gt=0, le=65536, strict=True)
+
+    @field_validator(
+        "audio_asr_chunk_target_samples", "audio_asr_chunk_max_request_samples",
+        "audio_asr_chunk_overlap_samples", "audio_asr_chunk_boundary_search_samples",
+        "audio_asr_chunk_max_chunks", mode="before",
+    )
+    @classmethod
+    def parse_asr_chunk_integers(cls, value: object) -> object:
+        # Accept integer environment/dotenv text without rounding floats or bools.
+        if isinstance(value, str) and re.fullmatch(r"[+-]?[0-9]+", value):
+            return int(value)
+        return value
+
+    @model_validator(mode="after")
+    def valid_asr_chunk_geometry(self) -> Self:
+        if self.audio_asr_chunk_overlap_samples >= self.audio_asr_chunk_max_request_samples:
+            raise ValueError("ASR overlap must be below maximum request size")
+        if (
+            self.audio_asr_chunk_target_samples + self.audio_asr_chunk_overlap_samples
+            > self.audio_asr_chunk_max_request_samples
+        ):
+            raise ValueError("ASR target and overlap must fit the maximum request size")
+        if self.audio_asr_chunk_boundary_search_samples >= self.audio_asr_chunk_target_samples:
+            raise ValueError("ASR boundary search must be below the target core size")
+        return self
 
     @field_validator("audio_vad_frame_samples", mode="before")
     @classmethod
