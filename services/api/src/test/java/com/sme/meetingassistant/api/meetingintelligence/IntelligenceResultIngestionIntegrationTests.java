@@ -209,6 +209,116 @@ class IntelligenceResultIngestionIntegrationTests {
             """,Integer.class,meeting)).isEqualTo(1);
     }
 
+
+    /**
+     * MI-PM-05: AI hints are preserved with their provenance, and the
+     * authoritative Transcript quality flag is a separate signal.
+     */
+    @Test
+    void summaryWarningsAndProducerSurviveReceiptReplayAndHumanVersionEdit() throws Exception {
+        var stage=claim("SUMMARY",1);
+        String result=summary("AI text with incomplete coverage").replace(
+            "\"warnings\":[]", "\"warnings\":[\"INCOMPLETE_COVERAGE\",\"UNRESOLVED_EVIDENCE\"]");
+        String raw=envelope("SUMMARY",stage,result).replace(
+            "\"model\":\"test-model\",\"promptVersion\":\"v1\"",
+            "\"model\":\"vi-summarizer\",\"promptVersion\":\"prompt-3\",\"provider\":\"provider-a\"");
+        String digest=expose(stage,raw);
+        ingest.ingest(stage,digest);
+        var current=mvc.perform(get("/api/v1/meetings/"+meeting+"/summary")
+                .principal(()->actor.toString()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.qualityStatus").value("READY_WITH_WARNINGS"))
+            .andExpect(jsonPath("$.data.aiWarnings[0]").value("INCOMPLETE_COVERAGE"))
+            .andExpect(jsonPath("$.data.aiWarnings[1]").value("UNRESOLVED_EVIDENCE"))
+            .andExpect(jsonPath("$.data.aiProducer.model").value("vi-summarizer"))
+            .andExpect(jsonPath("$.data.aiProducer.provider").value("provider-a"))
+            .andExpect(jsonPath("$.data.aiProducer.promptVersion").value("prompt-3"))
+            .andReturn().getResponse();
+        UUID summaryVersion=jdbc.queryForObject("""
+            SELECT id FROM meeting_summary_versions WHERE meeting_id=? AND is_current
+            """,UUID.class,meeting);
+        assertThat(jdbc.queryForObject("""
+            SELECT array_to_string(result_warning_codes,',')
+            FROM meeting_intelligence_result_receipts WHERE processing_job_id=?
+            """,String.class,job)).isEqualTo("INCOMPLETE_COVERAGE,UNRESOLVED_EVIDENCE");
+        assertThat(jdbc.queryForObject("""
+            SELECT producer_prompt_version FROM meeting_intelligence_result_receipts
+            WHERE processing_job_id=?
+            """,String.class,job)).isEqualTo("prompt-3");
+        assertThat(ingest.ingest(stage,digest).replay()).isTrue();
+
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .patch("/api/v1/meetings/"+meeting+"/summary")
+                .principal(()->actor.toString())
+                .header(HttpHeaders.IF_MATCH,current.getHeader("ETag"))
+                .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                .content("{\"content\":\"Human reviewed meeting summary\"}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.sourceType").value("HUMAN_EDIT"))
+            .andExpect(jsonPath("$.data.qualityStatus").value("READY_WITH_WARNINGS"))
+            .andExpect(jsonPath("$.data.aiWarnings[0]").value("INCOMPLETE_COVERAGE"))
+            .andExpect(jsonPath("$.data.aiProducer").doesNotExist());
+        mvc.perform(get("/api/v1/meetings/"+meeting+"/summary/versions")
+                .principal(()->actor.toString()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data[0].aiWarnings[1]").value("UNRESOLVED_EVIDENCE"))
+            .andExpect(jsonPath("$.data[1].id").value(summaryVersion.toString()))
+            .andExpect(jsonPath("$.data[1].aiProducer.model").value("vi-summarizer"));
+
+        assertThatThrownBy(()->jdbc.update("""
+            UPDATE meeting_summary_versions SET ai_warning_codes=ARRAY[]::text[]
+            WHERE id=?
+            """,summaryVersion)).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void aiDecisionMaterialUncertaintyAndBatchWarningsSurviveHumanReview() throws Exception {
+        var stage=claim("DECISION_EXTRACTION",1);
+        String result=decisions(candidate("material",segment)).replace(
+            "\"uncertainty\":\"NONE\"","\"uncertainty\":\"MATERIAL\"").replace(
+            "\"warnings\":[]", "\"warnings\":[\"SUSPICIOUS_EVIDENCE\"]");
+        String raw=envelope("DECISION_EXTRACTION",stage,result);
+        ingest.ingest(stage,expose(stage,raw));
+        UUID id=jdbc.queryForObject("""
+            SELECT id FROM meeting_decisions WHERE meeting_id=?
+            """,UUID.class,meeting);
+        String url="/api/v1/meetings/"+meeting+"/decisions";
+        mvc.perform(get(url).principal(()->actor.toString()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data[0].status").value("PROPOSED"))
+            .andExpect(jsonPath("$.data[0].aiUncertainty").value("MATERIAL"))
+            .andExpect(jsonPath("$.data[0].aiWarnings[0]").value("SUSPICIOUS_EVIDENCE"))
+            .andExpect(jsonPath("$.data[0].aiProducer.model").value("test-model"))
+            .andExpect(jsonPath("$.data[0].aiProducer.promptVersion").value("v1"));
+        mvc.perform(post(url+"/"+id+"/confirm").principal(()->actor.toString())
+                .header(HttpHeaders.IF_MATCH,"\"dec-"+id+"-0\""))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.status").value("CONFIRMED"))
+            .andExpect(jsonPath("$.data.aiUncertainty").value("MATERIAL"));
+        assertThat(jdbc.queryForObject("""
+            SELECT ai_uncertainty FROM meeting_decisions WHERE id=?
+            """,String.class,id)).isEqualTo("MATERIAL");
+        assertThatThrownBy(()->jdbc.update("""
+            UPDATE meeting_decisions SET ai_uncertainty='NONE',version=version+1
+            WHERE id=?
+            """,id)).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void zeroDecisionBatchRetainsQualityWarningsWithNoArtificialDecisionRow()
+            throws Exception {
+        var stage=claim("DECISION_EXTRACTION",1);
+        String result=decisions("").replace(
+            "\"warnings\":[]", "\"warnings\":[\"SOURCE_QUALITY_WARNING\"]");
+        ingest.ingest(stage,expose(stage,envelope("DECISION_EXTRACTION",stage,result)));
+        assertThat(count("meeting_decisions")).isZero();
+        assertThat(receiptCount()).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+            SELECT array_to_string(result_warning_codes,',')
+            FROM meeting_intelligence_result_receipts WHERE processing_job_id=?
+            """,String.class,job)).isEqualTo("SOURCE_QUALITY_WARNING");
+    }
+
     @Test
     void summaryAcceptanceIsAtomicCurrentAndExactRedeliveryIsNoop() throws Exception {
         var stage=claim("SUMMARY",1);
