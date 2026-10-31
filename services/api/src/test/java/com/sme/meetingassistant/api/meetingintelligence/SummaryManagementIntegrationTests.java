@@ -136,6 +136,14 @@ class SummaryManagementIntegrationTests {
             .andExpect(jsonPath("$.data.qualityStatus").value("READY_WITH_WARNINGS"))
             .andReturn().getResponse();
         assertThat(updated.getHeader("ETag")).isNotEqualTo(tag());
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM audit_events
+            WHERE meeting_id=? AND actor_user_id=? AND action_code='MI_SUMMARY_EDITED'
+            """, Integer.class, meeting, organizer)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+            SELECT metadata::text FROM audit_events
+            WHERE meeting_id=? AND action_code='MI_SUMMARY_EDITED'
+            """, String.class, meeting)).doesNotContain("Human verified summary");
         assertThat(updated.getHeader("Cache-Control")).contains("no-store");
         assertThat(jdbc.queryForObject("""
             SELECT content FROM meeting_summary_versions WHERE id=?
@@ -184,6 +192,8 @@ class SummaryManagementIntegrationTests {
                 .andExpect(jsonPath("$.data.versionNumber").value(1));
         assertThat(jdbc.queryForObject("SELECT count(*) FROM meeting_summary_versions WHERE meeting_id=?",
             Integer.class, meeting)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM audit_events WHERE meeting_id=?",
+            Integer.class, meeting)).isZero();
     }
 
     @Test

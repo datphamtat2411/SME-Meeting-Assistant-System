@@ -153,6 +153,10 @@ class IntelligenceResultIngestionIntegrationTests {
         var replay=ingest.ingest(stage,digest);
         assertThat(replay.replay()).isTrue();
         assertThat(replay.writtenRows()).isZero();
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM audit_events WHERE meeting_id=? AND actor_type='SERVICE'
+                AND actor_user_id IS NULL AND action_code='MI_AI_RESULT_ACCEPTED'
+            """, Integer.class, meeting)).isEqualTo(1);
         assertThat(receiptCount()).isEqualTo(1);
         assertThat(count("meeting_summary_versions")).isEqualTo(1);
     }

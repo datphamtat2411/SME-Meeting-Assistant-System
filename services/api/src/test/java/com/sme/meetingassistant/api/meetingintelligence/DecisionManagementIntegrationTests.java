@@ -110,6 +110,10 @@ class DecisionManagementIntegrationTests {
         var response = create(content("Approved project scope"));
         UUID id = id(response);
         assertThat(response.getHeader("ETag")).isEqualTo("\"dec-" + id + "-0\"");
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM audit_events WHERE meeting_id=? AND actor_user_id=?
+                AND action_code='MI_DECISION_CREATED'
+            """, Integer.class, meeting, organizer)).isEqualTo(1);
         assertThat(response.getHeader("Cache-Control")).contains("no-store");
         mvc.perform(get(url()).principal(as(member)))
             .andExpect(status().isOk())
@@ -263,6 +267,10 @@ class DecisionManagementIntegrationTests {
             .andExpect(jsonPath("$.data.confirmedByUserId").value(organizer.toString()))
             .andReturn().getResponse();
         assertThat(edited.getHeader("ETag")).isEqualTo("\"dec-" + decision + "-1\"");
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM audit_events WHERE meeting_id=? AND actor_user_id=?
+                AND action_code='MI_DECISION_EDITED'
+            """, Integer.class, meeting, organizer)).isEqualTo(1);
         assertThat(jdbc.queryForObject("""
             SELECT count(*) FROM decision_revisions
             WHERE decision_id=? AND revision_number=1 AND previous_content='Initial confirmed decision'

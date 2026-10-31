@@ -157,6 +157,10 @@ class DecisionReviewIntegrationTests {
         assertThat(result.getHeader("ETag")).isEqualTo(tag(id, 1));
         assertThat(result.getHeader("Cache-Control")).contains("no-store");
         assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM audit_events WHERE meeting_id=? AND actor_user_id=?
+                AND action_code='MI_DECISION_CONFIRMED'
+            """, Integer.class, meeting, organizer)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
             SELECT confirmed_at IS NOT NULL AND rejected_at IS NULL
               FROM meeting_decisions WHERE id=?
             """, Boolean.class, id)).isTrue();
@@ -189,6 +193,10 @@ class DecisionReviewIntegrationTests {
             SELECT rejected_at IS NOT NULL AND confirmed_at IS NULL
               FROM meeting_decisions WHERE id=?
             """, Boolean.class, id)).isTrue();
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM audit_events WHERE meeting_id=? AND actor_user_id=?
+                AND action_code='MI_DECISION_REJECTED'
+            """, Integer.class, meeting, organizer)).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM decision_evidence WHERE decision_id=?",
             Integer.class, id)).isEqualTo(1);
         mvc.perform(post(url(id, "confirm")).principal(as(organizer))
