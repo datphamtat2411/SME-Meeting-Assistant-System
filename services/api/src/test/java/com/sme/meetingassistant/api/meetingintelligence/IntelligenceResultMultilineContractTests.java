@@ -78,6 +78,8 @@ class IntelligenceResultMultilineContractTests {
         String patternDecision=schemaPattern("decisionCandidate","content");
         assertThat(patternSummary).isEqualTo(patternDecision);
         Pattern p=Pattern.compile(patternSummary);
+        // 20k Unicode prose must not trigger recursive regex backtracking.
+        assertThat(p.matcher("á".repeat(20_000)).matches()).isTrue();
         List<String> valid=List.of("Nội dung tiếng Việt","Mục 1\nMục 2",
             "A\r\nB","Cột\tGiá trị","A\r\n\tB","🌿 Tương lai — nghiên cứu",
             "Á".repeat(5_000));

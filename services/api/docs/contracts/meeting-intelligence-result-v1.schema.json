@@ -152,7 +152,7 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 20000,
-          "pattern": "^(?=[\\s\\S]*\\S)(?:[^\\u0000-\\u0008\\u000B\\u000C\\u000D\\u000E-\\u001F\\u007F-\\u009F]|\\r\\n)+(?![\\s\\S])"
+          "pattern": "^(?=[\\s\\S]*\\S)(?![\\s\\S]*[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F-\\u009F])(?![\\s\\S]*\\r(?!\\n))[\\s\\S]+(?![\\s\\S])"
         },
         "warnings": {
           "type": "array",
@@ -190,7 +190,7 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 5000,
-          "pattern": "^(?=[\\s\\S]*\\S)(?:[^\\u0000-\\u0008\\u000B\\u000C\\u000D\\u000E-\\u001F\\u007F-\\u009F]|\\r\\n)+(?![\\s\\S])"
+          "pattern": "^(?=[\\s\\S]*\\S)(?![\\s\\S]*[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F-\\u009F])(?![\\s\\S]*\\r(?!\\n))[\\s\\S]+(?![\\s\\S])"
         },
         "evidenceSegmentIds": {
           "type": "array",
