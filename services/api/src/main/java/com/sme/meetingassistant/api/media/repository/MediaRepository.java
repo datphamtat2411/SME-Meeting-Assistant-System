@@ -119,6 +119,15 @@ public class MediaRepository {
             """, id, pendingKey);
     }
 
+    /** Read-only replay fast-path; transactional claim remains authoritative. */
+    public Optional<UUID> findDerivedSummaryIdempotency(UUID actor,String operation,String key) {
+        return jdbc.query("""
+            SELECT resource_id FROM processing_job_idempotency
+            WHERE requester_id=? AND operation=? AND idempotency_key=?
+            """,(rs,n)->rs.getObject("resource_id",UUID.class),actor,operation,key)
+            .stream().findFirst();
+    }
+
     public UUID claimIdempotency(UUID caller, String operation, String key, String fingerprint, UUID proposedResourceId) {
         return claimIdempotencyWithStatus(caller, operation, key, fingerprint, proposedResourceId).resourceId();
     }
