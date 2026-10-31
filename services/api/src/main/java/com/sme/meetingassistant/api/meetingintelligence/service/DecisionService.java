@@ -20,7 +20,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 /**
  * MI-05: authorized manual Decision creation, listing and controlled edits.
- * Human review state transitions for AI-extracted proposals belong to MI-06.
+ * MI-06 extends this service with explicit human confirm/reject transitions.
  */
 @Service
 public class DecisionService {
@@ -94,6 +94,52 @@ public class DecisionService {
         if (current.content().equals(request.content())) return current;
 
         if (!decisions.updateConfirmedContent(meetingId, current, request.content(), actor)) {
+            throw new ResponseStatusException(HttpStatus.PRECONDITION_FAILED);
+        }
+        return decisions.find(meetingId, decisionId).orElseThrow(DecisionService::missing);
+    }
+
+    /**
+     * MI-06: one authoritative human review transition. Lock the parent
+     * meeting first, re-read the Decision, then fence with its current ETag.
+     * No LLM result or client-supplied actor/status can perform this action.
+     */
+    @Transactional
+    public DecisionView confirm(UUID meetingId, UUID decisionId, String ifMatch) {
+        return review(meetingId, decisionId, ifMatch, true);
+    }
+
+    @Transactional
+    public DecisionView reject(UUID meetingId, UUID decisionId, String ifMatch) {
+        return review(meetingId, decisionId, ifMatch, false);
+    }
+
+    private DecisionView review(UUID meetingId, UUID decisionId, String ifMatch, boolean confirm) {
+        UUID actor = identity.requireUserId();
+        access.requireDecisionReviewAllowed(meetingId, actor);
+        decisions.lockMeeting(meetingId);
+        DecisionView existing = decisions.find(meetingId, decisionId)
+            .orElseThrow(DecisionService::missing);
+        IntelligenceVersionTags.requireDecisionMatch(existing.id(), existing.version(), ifMatch);
+        if (!"PROPOSED".equals(existing.status())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                "Only proposed decisions can be confirmed or rejected.");
+        }
+
+        if (confirm) {
+            // Review is a human action, but unsafe AI evidence must not become
+            // official implicitly. A reviewer may reject the AI proposal and
+            // create a separate verified manual Decision when warranted.
+            if (existing.transcriptId() != null) {
+                transcripts.requireReviewableDecisionEvidence(meetingId,
+                    existing.transcriptId(), existing.contentRevision(),
+                    existing.evidenceSegmentIds());
+            } else if ("AI_EXTRACTED".equals(existing.sourceType())) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "AI-extracted decisions require reviewable transcript evidence.");
+            }
+        }
+        if (!decisions.reviewProposal(meetingId, decisionId, existing.version(), actor, confirm)) {
             throw new ResponseStatusException(HttpStatus.PRECONDITION_FAILED);
         }
         return decisions.find(meetingId, decisionId).orElseThrow(DecisionService::missing);
