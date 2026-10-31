@@ -146,6 +146,23 @@ class DecisionManagementIntegrationTests {
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.data[0].contentRevision").value(2))
             .andExpect(jsonPath("$.data[0].isStale").value(true));
+        String oldTag = response.getHeader("ETag");
+        String reviewedTag = "\"dec-" + id + "-0-stale\"";
+        mvc.perform(patch(url() + "/" + id).principal(as(organizer))
+                .header("If-Match", oldTag).contentType(MediaType.APPLICATION_JSON)
+                .content(content("Unreviewed correction")))
+            .andExpect(status().isPreconditionFailed());
+        var corrected = mvc.perform(patch(url() + "/" + id).principal(as(organizer))
+                .header("If-Match", reviewedTag).contentType(MediaType.APPLICATION_JSON)
+                .content(content("Reviewed historical decision")))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.isStale").value(true))
+            .andExpect(jsonPath("$.data.contentRevision").value(2))
+            .andReturn().getResponse();
+        assertThat(corrected.getHeader("ETag"))
+            .isEqualTo("\"dec-" + id + "-1-stale\"");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM decision_revisions WHERE decision_id=?",
+            Integer.class, id)).isEqualTo(1);
     }
 
     @Test
