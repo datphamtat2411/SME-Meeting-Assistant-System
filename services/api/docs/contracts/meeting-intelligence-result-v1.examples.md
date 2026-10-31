@@ -5,9 +5,9 @@
 
 ## Digest and identity semantics (proposed)
 
-- The resultSha256 field is lowercase SHA-256 of the UTF-8 RFC 8785 (JCS) canonicalization of the **result** object. The example digests below are computed for the displayed results.
+- Result integrity is SHA-256 of the **exact immutable artifact bytes**, checked against authenticated storage/reference metadata and persisted in the accepted-result receipt. No redundant JSON-payload checksum or cross-language JCS hashing is required.
 - source.sha256 is SHA-256 of the exact immutable, authorized source snapshot bytes referenced by inputSnapshotId. In the examples it is an artificial placeholder, not a valid recorded source; stage claims and authoritative source records must be resolved from database state.
-- The entire externally stored result artifact must also have an independently verified object digest at the trusted storage boundary before parsing. This object digest is distinct from resultSha256.
+- The result artifact digest must be verified before parsing; redelivery of the same stage attempt must match the previously accepted artifact digest. The examples show JSON payload contents only; an actual adapter supplies a verified artifact reference and digest.
 - processingJobId, stageRunId, transcriptId, contentRevision, inputSnapshotId and candidateKey in JSON are untrusted claims to cross-check against the job, stage lease and pinned source. The authenticated worker adapter retains the claimToken out-of-band; it is never model-generated.
 - producer.model/promptVersion are provenance metadata, never authority. Source snapshot must be selected by Core API; AI outputs cannot switch sources.
 - JSON Schema format: uuid requires a validator configured to **assert** formats; treat it as a real validation requirement, not a decorative annotation.
@@ -31,7 +31,6 @@
         "promptVersion": "meeting-intelligence-v1"
       },
       "resultType": "SUMMARY",
-      "resultSha256": "b5bcb17d605b65ec76032547ef92a30e1dfad65e039d5c2558c9468b40fe4ad9",
       "result": {
         "content": "The team agreed to start a pilot in December.",
         "warnings": []
@@ -55,7 +54,6 @@
         "promptVersion": "meeting-intelligence-v1"
       },
       "resultType": "DECISION_EXTRACTION",
-      "resultSha256": "7665cc479591a86abc757ad3fcdc84072cbc04ef5f6094ad7f22501baa48dfa1",
       "result": {
         "candidates": [
           {
@@ -82,7 +80,7 @@
 | candidateKey repeated in the same batch | Reject in semantic validation |
 | evidenceSegmentIds contains foreign transcript segment | Reject against DB |
 | source.contentRevision does not match pinned job snapshot | Reject authoritative mismatch |
-| resultSha256 differs from computed normalized result digest | Reject payload integrity mismatch |
+| Trusted artifact reference digest differs from fetched bytes | Reject result integrity mismatch |
 | stage claim expired, superseded or wrong stage | Reject new acceptance |
 | same stageRunId and resultType arrives with different digest | Conflict, no overwrite |
 | valid empty decision candidates | Accept receipt with zero decision rows |
