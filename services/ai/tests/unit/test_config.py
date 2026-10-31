@@ -618,3 +618,76 @@ def test_asr_concurrency_requires_a_strict_bounded_integer(value):
             service_name="test-ai", service_identity="ai-core", _env_file=None,
             audio_asr_max_concurrent_chunks=value,
         )
+
+
+def test_coverage_defaults_match_documented_configuration():
+    defaults = Settings(service_name="test-ai", service_identity="ai-core", _env_file=None)
+    documented = load_settings(Path(__file__).resolve().parents[2] / ".env.example")
+    for value in (defaults, documented):
+        assert value.audio_asr_coverage_max_tolerated_speech_map_gap_samples == 0
+        assert value.audio_asr_coverage_repetition_min_chars == 16
+        assert value.audio_asr_coverage_low_confidence_threshold == 0.35
+
+
+@pytest.mark.parametrize("source", ["environment", "dotenv"])
+def test_coverage_configuration_overrides(monkeypatch, tmp_path, source):
+    values = {
+        "AI_SERVICE_NAME": "test-ai", "AI_SERVICE_IDENTITY": "ai-core",
+        "AI_AUDIO_ASR_COVERAGE_MAX_TOLERATED_SPEECH_MAP_GAP_SAMPLES": "512",
+        "AI_AUDIO_ASR_COVERAGE_REPETITION_MIN_CHARS": "24",
+        "AI_AUDIO_ASR_COVERAGE_LOW_CONFIDENCE_THRESHOLD": "0.25",
+    }
+    env_file = None
+    if source == "environment":
+        for key, value in values.items():
+            monkeypatch.setenv(key, value)
+    else:
+        env_file = tmp_path / ".env"
+        env_file.write_text("\n".join(f"{k}={v}" for k, v in values.items()))
+    loaded = load_settings(env_file)
+    assert loaded.audio_asr_coverage_max_tolerated_speech_map_gap_samples == 512
+    assert type(loaded.audio_asr_coverage_max_tolerated_speech_map_gap_samples) is int
+    assert loaded.audio_asr_coverage_repetition_min_chars == 24
+    assert loaded.audio_asr_coverage_low_confidence_threshold == 0.25
+
+
+@pytest.mark.parametrize("field,values", [
+    ("audio_asr_coverage_max_tolerated_speech_map_gap_samples", [-1, 230400001, True, 1.0, 1.5]),
+    ("audio_asr_coverage_repetition_min_chars", [0, -1, 65537, True, 16.0, 1.5]),
+    ("audio_asr_coverage_low_confidence_threshold", [-0.01, 1.01, float("nan"), float("inf")]),
+])
+def test_coverage_settings_are_bounded_and_strict(field, values):
+    for value in values:
+        with pytest.raises(ValueError):
+            Settings(service_name="test-ai", service_identity="ai-core", _env_file=None,
+                     **{field: value})
+
+
+@pytest.mark.parametrize("gap,repetition,confidence", [(0, 1, 0), (230400000, 65536, 1)])
+def test_coverage_configuration_boundaries(gap, repetition, confidence):
+    loaded = Settings(
+        service_name="test-ai", service_identity="ai-core", _env_file=None,
+        audio_asr_coverage_max_tolerated_speech_map_gap_samples=gap,
+        audio_asr_coverage_repetition_min_chars=repetition,
+        audio_asr_coverage_low_confidence_threshold=confidence,
+    )
+    assert loaded.audio_asr_coverage_max_tolerated_speech_map_gap_samples == gap
+    assert loaded.audio_asr_coverage_repetition_min_chars == repetition
+    assert loaded.audio_asr_coverage_low_confidence_threshold == confidence
+
+
+@pytest.mark.parametrize("field,values", [
+    ("audio_asr_coverage_max_tolerated_speech_map_gap_samples", ["-1", "230400001", "1.0", "true"]),
+    ("audio_asr_coverage_repetition_min_chars", ["0", "65537", "16.0", "true"]),
+    ("audio_asr_coverage_low_confidence_threshold", ["-0.01", "1.01", "nan", "inf"]),
+])
+def test_invalid_coverage_environment_is_sanitized(monkeypatch, field, values):
+    monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
+    for value in [*values, "private-invalid"]:
+        monkeypatch.setenv(f"AI_{field.upper()}", value)
+        with pytest.raises(ConfigurationError) as caught:
+            load_settings(None)
+        assert field in str(caught.value)
+        assert "private-invalid" not in "".join(traceback.format_exception(caught.value))
+        assert caught.value.__context__ is None

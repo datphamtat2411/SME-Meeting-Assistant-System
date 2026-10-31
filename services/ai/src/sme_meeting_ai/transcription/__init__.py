@@ -25,6 +25,16 @@ from .chunk_execution import (
     AsrTimelineSegment,
     execute_asr_chunks,
 )
+from .coverage import (
+    CoverageProvenance,
+    CoverageQuality,
+    CoverageReason,
+    CoverageRegion,
+    CoverageState,
+    SpeechCoverageAssessment,
+    TranscriptCoverageInterval,
+    assess_speech_coverage,
+)
 
 __all__ = [
     "AsrAudioChunk",
@@ -43,7 +53,15 @@ __all__ = [
     "AsrUsage",
     "ChunkBoundaryReason",
     "ChunkPlanningProvenance",
+    "CoverageProvenance",
+    "CoverageQuality",
+    "CoverageReason",
+    "CoverageRegion",
+    "CoverageState",
+    "SpeechCoverageAssessment",
     "SpeechAwareAsrChunkPlanner",
+    "TranscriptCoverageInterval",
+    "assess_speech_coverage",
     "execute_asr_chunks",
     "validate_asr_chunk_plan",
 ]

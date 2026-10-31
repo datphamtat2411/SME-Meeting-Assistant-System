@@ -123,11 +123,22 @@ class Settings(BaseSettings):
     audio_asr_timeout_seconds: float = Field(
         default=120, gt=0, le=600, allow_inf_nan=False,
     )
+    audio_asr_coverage_max_tolerated_speech_map_gap_samples: int = Field(
+        default=0, ge=0, le=230400000, strict=True,
+    )
+    audio_asr_coverage_repetition_min_chars: int = Field(
+        default=16, ge=1, le=65536, strict=True,
+    )
+    audio_asr_coverage_low_confidence_threshold: float = Field(
+        default=0.35, ge=0, le=1, allow_inf_nan=False,
+    )
 
     @field_validator(
         "audio_asr_chunk_target_samples", "audio_asr_chunk_max_request_samples",
         "audio_asr_chunk_overlap_samples", "audio_asr_chunk_boundary_search_samples",
-        "audio_asr_chunk_max_chunks", "audio_asr_max_concurrent_chunks", mode="before",
+        "audio_asr_chunk_max_chunks", "audio_asr_max_concurrent_chunks",
+        "audio_asr_coverage_max_tolerated_speech_map_gap_samples",
+        "audio_asr_coverage_repetition_min_chars", mode="before",
     )
     @classmethod
     def parse_asr_chunk_integers(cls, value: object) -> object:
