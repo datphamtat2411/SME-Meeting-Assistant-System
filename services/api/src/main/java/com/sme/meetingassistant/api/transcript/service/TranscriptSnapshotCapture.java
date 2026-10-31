@@ -43,7 +43,7 @@ public class TranscriptSnapshotCapture {
             throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
                 "Transcript snapshot exceeds the approved size bound.");
         }
-        return new Captured(current.id(), current.mediaId(), current.jobId(),
+        return new Captured(current.id(), current.sourceMediaId(), current.processingJobId(),
             current.contentRevision(), current.status(), bytes);
     }
 
