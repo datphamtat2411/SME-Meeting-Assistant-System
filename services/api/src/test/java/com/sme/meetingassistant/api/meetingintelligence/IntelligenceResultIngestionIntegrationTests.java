@@ -230,7 +230,10 @@ class IntelligenceResultIngestionIntegrationTests {
         String wrongDigest=expose(other,envelope("DECISION_EXTRACTION",other,
             decisions(candidate("wrong",UUID.randomUUID()))));
         assertThatThrownBy(()->ingest.ingest(other,wrongDigest))
-            .isInstanceOf(IllegalArgumentException.class);
+            // Spring @Repository translates IllegalArgumentException from the
+            // Transcript-owned validation boundary into a data-access exception.
+            .isInstanceOf(org.springframework.dao.InvalidDataAccessApiUsageException.class)
+            .hasMessageContaining("foreign or missing evidence");
         assertThat(receiptCount()).isZero();
         assertThat(count("meeting_decisions")).isZero();
     }
