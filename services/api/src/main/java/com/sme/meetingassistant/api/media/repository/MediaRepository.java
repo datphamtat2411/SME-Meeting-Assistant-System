@@ -519,6 +519,45 @@ public class MediaRepository {
             """, Boolean.class, jobId));
     }
 
+    public boolean isDerivedSummaryJob(UUID jobId) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+            SELECT EXISTS(SELECT 1 FROM processing_jobs
+                WHERE id=? AND job_type='DERIVED_STAGE_PROCESSING')
+            """, Boolean.class, jobId));
+    }
+
+    /** Derived-only completion has its own policy: never demand same-job ASR. */
+    public void completeDerivedSummaryJob(UUID jobId) {
+        String current=lockJobStatus(jobId);
+        if ("COMPLETED".equals(current) || "COMPLETED_WITH_WARNINGS".equals(current)) return;
+        if (!"RUNNING".equals(current) || !isDerivedSummaryJob(jobId))
+            throw new ProcessingLifecycleConflictException("Derived Summary job is not running.");
+        List<StageCompletion> stages=jdbc.query("""
+            SELECT stage_code,status FROM processing_stage_runs s
+            WHERE processing_job_id=?
+              AND attempt_number=(
+                SELECT MAX(x.attempt_number) FROM processing_stage_runs x
+                WHERE x.processing_job_id=s.processing_job_id AND x.stage_code=s.stage_code)
+            """,(rs,n)->new StageCompletion(null,rs.getString("stage_code"),
+                rs.getString("status")),jobId);
+        if (stages.size()!=1 || !"GENERATING_SUMMARY".equals(stages.getFirst().stageCode())
+                || !isSuccessful(stages.getFirst().status())) {
+            throw new ProcessingLifecycleConflictException(
+                "Derived job must complete its sole Summary stage.");
+        }
+        boolean warnings="SUCCEEDED_WITH_WARNING".equals(stages.getFirst().status());
+        int changed=jdbc.update("""
+            UPDATE processing_jobs SET
+              status=?,warning_summary=?,retryable=FALSE,error_code=NULL,
+              error_summary=NULL,completed_at=CURRENT_TIMESTAMP,
+              updated_at=CURRENT_TIMESTAMP,version=version+1
+            WHERE id=? AND status='RUNNING' AND job_type='DERIVED_STAGE_PROCESSING'
+            """,warnings?"COMPLETED_WITH_WARNINGS":"COMPLETED",
+            warnings?"Summary generated with source quality warnings.":null,jobId);
+        if(changed!=1) throw new ProcessingLifecycleConflictException(
+            "Derived job changed during completion.");
+    }
+
     public void completeJob(UUID jobId, Evidence evidence) {
         String status = lockJobStatus(jobId);
         if (List.of("COMPLETED", "COMPLETED_WITH_WARNINGS").contains(status)) return;
