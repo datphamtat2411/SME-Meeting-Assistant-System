@@ -559,6 +559,19 @@ public class MediaRepository {
     }
 
     /** Immutable owner identity; the transcript port verifies persisted evidence. */
+    /** Resolve stage and job owner without trusting the worker-supplied meeting. */
+    public com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle.DerivedStage derivedStage(UUID stageRunId) {
+        return jdbc.query("""
+            SELECT j.id AS job_id,j.meeting_id,j.source_media_id,s.stage_code
+            FROM processing_stage_runs s JOIN processing_jobs j ON j.id=s.processing_job_id
+            WHERE s.id=?
+            """, (rs,n) -> new com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle.DerivedStage(
+                rs.getObject("job_id", UUID.class),rs.getObject("meeting_id", UUID.class),
+                rs.getObject("source_media_id", UUID.class),rs.getString("stage_code")),stageRunId)
+            .stream().findFirst().orElseThrow(() ->
+                new ProcessingLifecycleConflictException("Unknown derived-stage attempt."));
+    }
+
     public StageIdentity stageIdentity(UUID stageRunId) {
         return this.jdbc.query("""
             SELECT processing_job_id, stage_code FROM processing_stage_runs WHERE id=?
