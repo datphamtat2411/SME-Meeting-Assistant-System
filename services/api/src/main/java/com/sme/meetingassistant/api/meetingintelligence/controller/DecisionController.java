@@ -24,7 +24,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-/** MI-05 client contract; confirm/reject endpoints belong to MI-06. */
+/** MI-05 CRUD and MI-06 explicit human review of proposed Decisions. */
 @RestController
 @RequestMapping("/api/v1/meetings/{meetingId}/decisions")
 public class DecisionController {
@@ -57,6 +57,20 @@ public class DecisionController {
             @RequestHeader(value = HttpHeaders.IF_MATCH, required = false) String ifMatch,
             @Valid @RequestBody EditDecisionRequest request) {
         return decision(service.edit(meetingId, decisionId, ifMatch, request), HttpStatus.OK);
+    }
+
+    @PostMapping("/{decisionId}/confirm")
+    public ResponseEntity<ApiResponse<DecisionView>> confirm(@PathVariable UUID meetingId,
+            @PathVariable UUID decisionId,
+            @RequestHeader(value = HttpHeaders.IF_MATCH, required = false) String ifMatch) {
+        return decision(service.confirm(meetingId, decisionId, ifMatch), HttpStatus.OK);
+    }
+
+    @PostMapping("/{decisionId}/reject")
+    public ResponseEntity<ApiResponse<DecisionView>> reject(@PathVariable UUID meetingId,
+            @PathVariable UUID decisionId,
+            @RequestHeader(value = HttpHeaders.IF_MATCH, required = false) String ifMatch) {
+        return decision(service.reject(meetingId, decisionId, ifMatch), HttpStatus.OK);
     }
 
     private ResponseEntity<ApiResponse<DecisionView>> decision(DecisionView view, HttpStatus status) {
