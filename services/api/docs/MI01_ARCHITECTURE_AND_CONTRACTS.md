@@ -233,6 +233,10 @@ Testing: JUnit/MockMvc for HTTP/service logic; PostgreSQL/Testcontainers for loc
 
 Where a gate remains pending, the stated ADR is a **recommended design**, not authorization to claim final consensus. An implementation task must not quietly choose a different behavior: record the trade-off and update this file/RE source through review.
 
+## Pre-merge follow-up — MI-PM-01 (099e4327 baseline)
+
+The original MI-01 ADRs and G1–G7 statuses remain historical design records. For current pre-merge trade-offs, precise proposed contracts and the live owner-review matrix, read [MI_PM01_PREMERGE_CONTRACT_DECISIONS.md](./MI_PM01_PREMERGE_CONTRACT_DECISIONS.md). This does **not** constitute G1–G7 approval or supersede RE01–RE08; owner sign-off and applicable canonical requirement updates are still needed.
+
 ## 17. MI-01 completion criteria and implementation handoff
 
 Design output:

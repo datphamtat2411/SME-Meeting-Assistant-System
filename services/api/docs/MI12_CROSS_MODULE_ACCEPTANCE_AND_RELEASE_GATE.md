@@ -25,6 +25,8 @@ MI-12 extends **existing integration fixtures** instead of introducing an artifi
 
 **Cross-team production acceptance:** explicitly requires review and sign-off of MI-01 gates below. A green local API CI is not proof of AI provider contract interoperability, secured worker transport, Action Items persistence, or reachable Summary candidates.
 
+MI-PM-01 follow-up: The preferred solutions, contract proposals, and owner sign-off requirements for G1–G7 are recorded in [MI_PM01_PREMERGE_CONTRACT_DECISIONS.md](./MI_PM01_PREMERGE_CONTRACT_DECISIONS.md). Their status stays **PENDING** until recorded human/owner approval and applicable canonical RE changes; the prior MI-12 green CI is not a waiver of these merge gates.
+
 ## 3. Open decisions / release blockers (not silently resolved)
 
 | Gate | Required owner decision | Status at MI-12 review |
