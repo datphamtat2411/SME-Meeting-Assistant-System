@@ -45,7 +45,7 @@ public class SummaryService {
         // follow the same meeting-first lock policy.
         repository.lockMeeting(meetingId);
         SummaryView previous = repository.current(meetingId).orElseThrow(SummaryService::missing);
-        IntelligenceVersionTags.requireSummaryMatch(previous.id(), previous.versionNumber(), ifMatch);
+        IntelligenceVersionTags.requireSummaryMatch(previous.id(), previous.versionNumber(), previous.isStale(), ifMatch);
 
         // A no-op does not fabricate a new human revision or rotate its ETag.
         if (previous.content().equals(request.content())) {
