@@ -806,6 +806,10 @@ Raw Whisper transcript text is not a canonical persisted/public API resource in 
 | API-EP-SUM-001 | GET | /api/v1/meetings/{meetingId}/summary | Retrieve the authorized current meeting summary and its current provenance/state. |
 | API-EP-SUM-002 | PATCH | /api/v1/meetings/{meetingId}/summary | Edit the current summary through the approved human-review workflow. |
 | API-EP-SUM-003 | POST | /api/v1/meetings/{meetingId}/summary/regenerate | Request regeneration of summary content without silently destroying reviewed prior provenance. |
+| API-EP-SUM-004 | GET | /api/v1/meetings/{meetingId}/summary/versions | Retrieve paginated authorized Summary versions, including non-current AI candidates, with current/provenance/quality/staleness metadata. |
+| API-EP-SUM-005 | POST | /api/v1/meetings/{meetingId}/summary/versions/{versionId}/activate | Explicitly activate an eligible, fresh Summary version with authorized human intent and current-Summary If-Match precondition. |
+
+The extensions API-EP-SUM-004/005 were approved for API design in MI-PM-01 under project-owner delegation and **implemented in MI-PM-04**, with PostgreSQL/HTTP authorization, freshness, optimistic concurrency and audit integration tests. Their production availability remains subject to deployment authorization. Existing Summary endpoints remain unchanged. Version listing MUST authorize meeting-content access before pagination, be bounded and non-cacheable, and preserve source lineage. Activation MUST require current-Summary strong ETag (428 missing; 412 stale), reauthorize within the meeting, reject stale/foreign candidate versions, use a serialized one-current-version transition, preserve immutable content/sourceType/history, and audit the actor's explicit selection. The current Summary is not overwritten by AI automatically. No wildcard preconditions or client-controlled publication status.
 
 ## 22.10 Decisions
 | ID | Method | Path | Purpose |

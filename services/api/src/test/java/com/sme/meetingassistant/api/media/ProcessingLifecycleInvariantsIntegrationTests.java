@@ -14,6 +14,9 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import com.sme.meetingassistant.api.media.storage.ObjectStorage;
+import com.sme.meetingassistant.api.support.ImmutableSnapshotObjectFixture;
 import org.springframework.test.context.ActiveProfiles;
 
 /** Verifies job completion against committed stage and canonical transcript evidence. */
@@ -22,6 +25,7 @@ import org.springframework.test.context.ActiveProfiles;
 @Import(PostgresTestConfiguration.class)
 class ProcessingLifecycleInvariantsIntegrationTests {
     @Autowired ProcessingJobLifecycle lifecycle;
+    @MockitoBean ObjectStorage snapshotStorage;
     @Autowired JdbcTemplate jdbc;
     private UUID meetingId;
     private UUID mediaId;
@@ -29,6 +33,8 @@ class ProcessingLifecycleInvariantsIntegrationTests {
 
     @BeforeEach
     void fixture() {
+        try { ImmutableSnapshotObjectFixture.install(snapshotStorage); }
+        catch (Exception error) { throw new IllegalStateException(error); }
         UUID actor = UUID.randomUUID();
         meetingId = UUID.randomUUID();
         mediaId = UUID.randomUUID();
@@ -155,9 +161,109 @@ class ProcessingLifecycleInvariantsIntegrationTests {
         StageClaim downstream = lifecycle.startStage(jobId, "GENERATING_SUMMARY", "llm", "summary");
         assertThatThrownBy(() -> lifecycle.completeJob(jobId))
             .isInstanceOf(ProcessingLifecycleConflictException.class);
-        lifecycle.completeStage(downstream, "SUCCEEDED", null, "{}");
+        assertThatThrownBy(() -> lifecycle.completeStage(downstream, "SUCCEEDED", null, "{}"))
+            .isInstanceOf(ProcessingLifecycleConflictException.class)
+            .hasMessageContaining("canonical acceptance");
+        assertThat(jdbc.queryForObject(
+            "SELECT status FROM processing_stage_runs WHERE id=?",String.class,
+            downstream.stageRunId())).isEqualTo("RUNNING");
+        assertThatThrownBy(() -> lifecycle.completeJob(jobId))
+            .isInstanceOf(ProcessingLifecycleConflictException.class);
+        assertThat(jobStatus()).isEqualTo("RUNNING");
+    }
+
+    @Test
+    void finalJobGuardRejectsForgedOfflineSummarySuccessWithoutCanonicalRow() {
+        completedTranscriptStages("SUCCEEDED", "READY", "ACCEPTED");
+        StageClaim generated=lifecycle.startStage(jobId,"GENERATING_SUMMARY",null,null);
+        jdbc.update("""
+            UPDATE processing_stage_runs SET status='SUCCEEDED',completed_at=CURRENT_TIMESTAMP
+            WHERE id=?
+            """,generated.stageRunId());
+        assertThatThrownBy(() -> lifecycle.completeJob(jobId))
+            .isInstanceOf(ProcessingLifecycleConflictException.class)
+            .hasMessageContaining("canonical acceptance");
+        assertThat(jobStatus()).isEqualTo("RUNNING");
+    }
+
+    @Test
+    void normalOfflineDecisionSuccessRequiresReceiptEvenForZeroCandidates() {
+        completedTranscriptStages("SUCCEEDED", "READY", "ACCEPTED");
+        StageClaim decisions=lifecycle.startStage(jobId,"EXTRACTING_DECISIONS",null,null);
+        assertThatThrownBy(() -> lifecycle.completeStage(decisions,"SUCCEEDED",null,null))
+            .isInstanceOf(ProcessingLifecycleConflictException.class);
+        assertThat(jdbc.queryForObject(
+            "SELECT status FROM processing_stage_runs WHERE id=?",String.class,
+            decisions.stageRunId())).isEqualTo("RUNNING");
+    }
+
+    @Test
+    void normalOfflineActionItemStageFailsClosedWhenHandoffIsDisabled() {
+        completedTranscriptStages("SUCCEEDED", "READY", "ACCEPTED");
+        assertThatThrownBy(() -> lifecycle.startStage(jobId,"EXTRACTING_ACTION_ITEMS",null,null))
+            .isInstanceOf(org.springframework.web.server.ResponseStatusException.class)
+            .satisfies(err->assertThat(((org.springframework.web.server.ResponseStatusException)err)
+                .getStatusCode().value()).isEqualTo(503));
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM processing_stage_runs
+            WHERE processing_job_id=? AND stage_code='EXTRACTING_ACTION_ITEMS'
+            """,Integer.class,jobId)).isZero();
+        assertThat(jobStatus()).isEqualTo("RUNNING");
+    }
+
+    /** Test completion policy with actual PostgreSQL lineage/receipt records. */
+    @Test
+    void fullOfflineJobWithAcceptedSummaryAndEmptyDecisionBatchCompletes() {
+        completedTranscriptStages("SUCCEEDED","READY","ACCEPTED");
+        UUID transcript=jdbc.queryForObject(
+            "SELECT id FROM transcripts WHERE processing_job_id=?",UUID.class,jobId);
+        UUID snapshot=UUID.randomUUID();
+        jdbc.update("""
+            INSERT INTO meeting_intelligence_source_snapshots(
+              id,meeting_id,source_media_id,processing_job_id,transcript_id,
+              content_revision,sha256,object_key,size_bytes)
+            VALUES (?,?,?,?,?,0,?,?,100)
+            """,snapshot,meetingId,mediaId,jobId,transcript,"a".repeat(64),
+            "processing/"+jobId+"/intelligence/source/"+snapshot+".json");
+
+        StageClaim summary=lifecycle.startStage(jobId,"GENERATING_SUMMARY",null,null);
+        UUID summaryReceipt=insertIntelligenceReceipt(
+            summary.stageRunId(),snapshot,transcript,"SUMMARY");
+        jdbc.update("""
+            INSERT INTO meeting_summary_versions(
+              id,meeting_id,version_number,content,source_type,processing_job_id,
+              result_receipt_id,transcript_id,content_revision,quality_status,is_current)
+            VALUES (?,?,1,'Persisted summary','AI_GENERATED',?,?,?,0,'READY',TRUE)
+            """,UUID.randomUUID(),meetingId,jobId,summaryReceipt,transcript);
+        lifecycle.completeStage(summary,"SUCCEEDED",null,null);
+
+        StageClaim decisions=lifecycle.startStage(jobId,"EXTRACTING_DECISIONS",null,null);
+        insertIntelligenceReceipt(decisions.stageRunId(),snapshot,transcript,
+            "DECISION_EXTRACTION");
+        lifecycle.completeStage(decisions,"SUCCEEDED",null,null);
+        assertThat(jdbc.queryForObject(
+            "SELECT count(*) FROM meeting_decisions WHERE meeting_id=?",
+            Integer.class,meetingId)).isZero();
+
         lifecycle.completeJob(jobId);
         assertThat(jobStatus()).isEqualTo("COMPLETED");
+        assertThat(jdbc.queryForObject(
+            "SELECT count(*) FROM meeting_intelligence_result_receipts WHERE processing_job_id=?",
+            Integer.class,jobId)).isEqualTo(2);
+    }
+
+    private UUID insertIntelligenceReceipt(UUID stageId,UUID snapshot,UUID transcript,
+            String type) {
+        UUID receipt=UUID.randomUUID();
+        jdbc.update("""
+            INSERT INTO meeting_intelligence_result_receipts(
+              id,meeting_id,processing_job_id,stage_run_id,result_type,
+              source_snapshot_id,transcript_id,content_revision,artifact_sha256,
+              artifact_object_key,artifact_size_bytes)
+            VALUES (?,?,?,?,?,?,?,0,?,?,100)
+            """,receipt,meetingId,jobId,stageId,type,snapshot,transcript,
+            "b".repeat(64),"processing/"+jobId+"/intelligence/results/"+stageId+".json");
+        return receipt;
     }
 
     @Test

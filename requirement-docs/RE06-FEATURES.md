@@ -1285,6 +1285,10 @@ If the transcript contains material unresolved or suspicious regions, the summar
 
 Applicable rules: `BR-SUM-003`.
 
+### FEAT-SUM-GEN-002A — Visible advisory AI quality warnings
+
+When accepted AI Summary output provides validated warning codes, authorized Summary and version-history views SHALL preserve and expose these warnings separately from authoritative Transcript evidence. A warning-bearing Summary SHALL NOT be presented as unconditionally READY without warnings. A human edit SHALL NOT silently erase its source warning lineage, nor acquire false AI-authored attribution.
+
 ### FEAT-SUM-GEN-003 — Summary generation failure
 
 If summary generation fails after a valid transcript exists, the transcript SHALL remain available and the summary area SHALL expose a retryable/failed state.
@@ -1315,6 +1319,20 @@ Only users authorized to access protected meeting content SHALL be able to view 
 
 Applicable rules: `BR-SUM-006`.
 
+### FEAT-SUM-REVIEW-001 — Discover generated Summary candidates
+
+Authorized meeting-content readers SHALL be able to inspect paginated current and historical Summary versions, including non-current AI regeneration candidates, with source provenance, current/stale status and quality indicators. Candidate content MUST NOT be disclosed to users lacking current meeting-content access. History is read-only; viewing a candidate does not approve it.
+
+### FEAT-SUM-REVIEW-002 — Explicit authorized version activation
+
+The Meeting Organizer or another explicitly authorized Summary content editor SHALL be able to make an eligible, **fresh** existing Summary version current through a deliberate confirmation action. Activation SHALL use conditional concurrency against the current Summary, recheck authorization and source freshness, preserve historical content/source attribution and record a trusted audit event. A stale/foreign candidate SHALL NOT be silently activated. Selecting an AI candidate does not reclassify its origin as HUMAN_EDIT.
+
+### FEAT-SUM-REVIEW-003 — Preserve current Summary on regeneration
+
+A later generated candidate SHALL remain non-current until an authorized user explicitly activates it. Failed regeneration or an ineligible/stale candidate SHALL NOT erase the current Summary. The original successful AI publication when no current Summary exists follows the approved source freshness policy.
+
+Applicable rules: `BR-SUM-004`, `BR-SUM-005`, `BR-SUM-006`. The associated HTTP additions are `API-EP-SUM-004/005`, implemented and regression-tested in MI-PM-04; deploy/readiness is separately gated.
+
 ---
 
 # 19. Meeting Decision Features
@@ -1344,6 +1362,10 @@ A decision extracted from suspicious or unresolved transcript evidence SHALL NOT
 The product SHOULD surface the underlying uncertainty or prevent confirmation until an authorized reviewer has sufficient evidence.
 
 Applicable rules: `BR-DEC-006`.
+
+### FEAT-DEC-EXTRACT-004 — Preserve advisory AI uncertainty and batch warnings
+
+Authorized Decision readers SHALL be able to see validated NONE/LOW/MATERIAL uncertainty on AI-extracted proposals, alongside applicable batch warning codes and producer provenance. These are model-supplied advisory metadata, NOT independently verified transcript evidence or human confirmation. They SHALL remain attributable through later human review/correction without changing Decision authority. Manual Decisions SHALL NOT be incorrectly labeled with AI uncertainty.
 
 ## 19.2 Decision Confirmation
 

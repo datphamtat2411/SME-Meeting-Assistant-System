@@ -589,6 +589,129 @@ public class TranscriptRepository implements ProcessingTranscriptEvidence {
         }
     }
 
+
+    /**
+     * Transcript-owned validation boundary for user-cited Decision evidence.
+     * Caller holds the meeting row lock in the same transaction; this method
+     * does not expose transcript persistence to Meeting Intelligence.
+     */
+    public TranscriptSource requireCurrentEvidence(UUID meetingId, List<UUID> segmentIds) {
+        if (segmentIds == null || segmentIds.isEmpty()) {
+            throw new IllegalArgumentException("Evidence segment ids are required.");
+        }
+        TranscriptSource source = currentSource(meetingId).orElseThrow(() ->
+            new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
+                "Current transcript is required for linked evidence."));
+        String placeholders = String.join(",", java.util.Collections.nCopies(segmentIds.size(), "?"));
+        List<Object> bindings = new ArrayList<>();
+        bindings.add(source.transcriptId());
+        bindings.addAll(segmentIds);
+        Integer count = jdbc.queryForObject(
+            "SELECT count(*) FROM transcript_segments WHERE transcript_id=? AND id IN (" + placeholders + ")",
+            Integer.class, bindings.toArray());
+        if (count == null || count != segmentIds.size()) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
+                "Evidence segment is not part of the meeting's current transcript.");
+        }
+        return source;
+    }
+
+    /**
+     * Evidence quality is owned by Transcript, not Decision persistence. Called
+     * inside an existing write transaction after the parent meeting is locked.
+     * No source text or provider diagnostics leave this boundary.
+     */
+    public void requireReviewableDecisionEvidence(UUID meetingId, UUID transcriptId,
+            long contentRevision, List<UUID> segmentIds) {
+        if (meetingId == null || transcriptId == null || contentRevision < 0
+                || segmentIds == null || segmentIds.isEmpty() || segmentIds.size() > 50
+                || segmentIds.stream().anyMatch(java.util.Objects::isNull)
+                || new java.util.HashSet<>(segmentIds).size() != segmentIds.size()) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                "Decision evidence must reference valid transcript segments.");
+        }
+        TranscriptSource current = currentSource(meetingId).orElseThrow(() ->
+            new ResponseStatusException(HttpStatus.CONFLICT,
+                "No current transcript is available for decision review."));
+        if (!transcriptId.equals(current.transcriptId())
+                || contentRevision != current.contentRevision()
+                || !("READY".equals(current.status()) || "READY_WITH_WARNINGS".equals(current.status()))) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                "Decision source is not the current reviewable transcript.");
+        }
+
+        // 'ACCEPTED' alone is not sufficient: a segment might intersect an
+        // unresolved/suspicious coverage region. Validate both in one query.
+        String placeholders = String.join(",", java.util.Collections.nCopies(segmentIds.size(), "?"));
+        List<Object> args = new ArrayList<>();
+        args.add(transcriptId);
+        args.addAll(segmentIds);
+        List<long[]> counts = jdbc.query("""
+            SELECT count(*) AS found,
+                   count(*) FILTER (WHERE s.quality_status <> 'ACCEPTED'
+                     OR EXISTS (
+                         SELECT 1 FROM transcript_coverage_regions r
+                         WHERE r.transcript_id=s.transcript_id
+                           AND r.start_ms < s.end_ms AND r.end_ms > s.start_ms
+                           AND r.coverage_status <> 'COVERED'
+                     )) AS unsafe
+            FROM transcript_segments s
+            WHERE s.transcript_id=? AND s.id IN (%s)
+            """.formatted(placeholders),
+            (rs, row) -> new long[] {rs.getLong("found"), rs.getLong("unsafe")},
+            args.toArray());
+        if (counts.size() != 1 || counts.getFirst()[0] != segmentIds.size()
+                || counts.getFirst()[1] != 0) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                "Decision evidence is missing, suspicious or unresolved.");
+        }
+    }
+
+    /**
+     * Source facts/evidence ownership stays in Transcript. A historic pinned
+     * snapshot can be accepted as non-current derived content without treating
+     * the mutable live transcript as its input bytes.
+     */
+    public DerivedSource derivedSource(UUID meetingId, UUID transcriptId, long pinnedRevision) {
+        return jdbc.query("""
+            SELECT t.status,t.is_current,t.content_revision,
+                EXISTS(SELECT 1 FROM transcript_segments s
+                    WHERE s.transcript_id=t.id AND s.quality_status<>'ACCEPTED')
+                 OR EXISTS(SELECT 1 FROM transcript_coverage_regions r
+                    WHERE r.transcript_id=t.id AND r.coverage_status<>'COVERED') AS unsafe
+              FROM transcripts t WHERE t.meeting_id=? AND t.id=?
+            """, (rs,n) -> new DerivedSource(
+                "READY".equals(rs.getString("status"))
+                    || "READY_WITH_WARNINGS".equals(rs.getString("status")),
+                rs.getBoolean("is_current") && rs.getLong("content_revision")==pinnedRevision,
+                "READY_WITH_WARNINGS".equals(rs.getString("status")) || rs.getBoolean("unsafe")
+            ), meetingId, transcriptId).stream().findFirst().orElseThrow(() ->
+                new IllegalArgumentException("Derived result source does not belong to this meeting."));
+    }
+
+    /** Check membership only; AI evidence is not automatically reviewable. */
+    public void requireDerivedSegments(UUID meetingId, UUID transcriptId, List<UUID> segments) {
+        if (segments == null || segments.isEmpty() || segments.size()>50
+                || segments.stream().anyMatch(java.util.Objects::isNull)
+                || new java.util.HashSet<>(segments).size()!=segments.size()) {
+            throw new IllegalArgumentException("Derived evidence segment IDs are invalid.");
+        }
+        String q=String.join(",",java.util.Collections.nCopies(segments.size(),"?"));
+        List<Object> args=new ArrayList<>();
+        args.add(meetingId);
+        args.add(transcriptId);
+        args.addAll(segments);
+        Long count=jdbc.queryForObject("""
+            SELECT count(*) FROM transcript_segments s
+            JOIN transcripts t ON t.id=s.transcript_id
+            WHERE t.meeting_id=? AND t.id=? AND s.id IN (%s)
+            """.formatted(q),Long.class,args.toArray());
+        if (count==null || count!=segments.size())
+            throw new IllegalArgumentException("AI decision references foreign or missing evidence.");
+    }
+
+    public record DerivedSource(boolean eligible, boolean current, boolean hasQualityWarnings) { }
+
     public record TranscriptSource(UUID transcriptId, long contentRevision, String status) {}
 
     private String encode(Map<String, Object> value) {

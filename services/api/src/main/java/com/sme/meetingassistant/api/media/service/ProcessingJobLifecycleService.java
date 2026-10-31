@@ -1,12 +1,14 @@
 package com.sme.meetingassistant.api.media.service;
 
 import com.sme.meetingassistant.api.media.repository.MediaRepository;
+import com.sme.meetingassistant.api.integration.OfflineIntelligenceSnapshotPreparation;
 import com.sme.meetingassistant.api.common.SafeAiDiagnostics;
 import com.sme.meetingassistant.api.common.SafeProcessingFailureSummary;
 import com.sme.meetingassistant.api.media.repository.MediaRepository.ProcessingLifecycleConflictException;
 import com.sme.meetingassistant.api.media.MediaProperties;
 import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle.StageClaim;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.beans.factory.annotation.Autowired;
 import java.util.UUID;
 import java.util.List;
 import java.util.Map;
@@ -21,13 +23,41 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
     private final ObjectMapper mapper;
     private final MediaProperties properties;
     private final ProcessingTranscriptEvidence transcriptEvidence;
+    private final ProcessingDerivedSnapshotEvidence derivedEvidence;
+    private final OfflineIntelligenceSnapshotPreparation offlinePreparation;
 
+    /** Preserves isolated legacy lifecycle unit tests without derived feature setup. */
     public ProcessingJobLifecycleService(MediaRepository repository, ObjectMapper mapper,
             MediaProperties properties, ProcessingTranscriptEvidence transcriptEvidence) {
+        this(repository, mapper, properties, transcriptEvidence, null, null);
+    }
+
+    @Autowired
+    public ProcessingJobLifecycleService(MediaRepository repository, ObjectMapper mapper,
+            MediaProperties properties, ProcessingTranscriptEvidence transcriptEvidence,
+            ProcessingDerivedSnapshotEvidence derivedEvidence,
+            OfflineIntelligenceSnapshotPreparation offlinePreparation) {
         this.repository = repository;
         this.mapper = mapper;
         this.properties = properties;
         this.transcriptEvidence = transcriptEvidence;
+        this.derivedEvidence = derivedEvidence;
+        this.offlinePreparation = offlinePreparation;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public DerivedStage derivedStage(UUID stageRunId) {
+        if (stageRunId == null) throw new IllegalArgumentException("Stage attempt is required.");
+        return repository.derivedStage(stageRunId);
+    }
+
+    @Override
+    @Transactional(readOnly=true)
+    public boolean hasAcceptedStageClaim(StageClaim claim) {
+        if(claim==null || claim.stageRunId()==null || claim.claimToken()==null)
+            return false;
+        return repository.hasAcceptedStageClaim(claim);
     }
 
     private int leaseSeconds() {
@@ -48,10 +78,37 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
         requireCode(stageCode, 48, "stageCode");
         requireOptionalText(providerName, 80, "providerName");
         requireOptionalText(modelName, 160, "modelName");
-        if (List.of("GENERATING_SUMMARY", "EXTRACTING_DECISIONS",
-                "EXTRACTING_ACTION_ITEMS", "INDEXING").contains(stageCode)
-                && !this.transcriptEvidence.hasFinalizedTranscript(jobId)) {
-            throw new ProcessingLifecycleConflictException("Downstream processing requires a persisted finalized transcript.");
+        if ("EXTRACTING_ACTION_ITEMS".equals(stageCode)
+                && !properties.getProcessing().isActionItemHandoffEnabled()) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,
+                "Action Item proposal handoff is disabled.");
+        }
+        boolean derived = this.repository.isDerivedSummaryJob(jobId);
+        if (derived) {
+            if (!"GENERATING_SUMMARY".equals(stageCode)
+                    || derivedEvidence == null || !derivedEvidence.hasPinnedSummarySource(jobId)) {
+                throw new ProcessingLifecycleConflictException(
+                    "Derived processing requires its verified pinned Summary source.");
+            }
+        } else {
+            if (List.of("GENERATING_SUMMARY", "EXTRACTING_DECISIONS",
+                    "EXTRACTING_ACTION_ITEMS", "INDEXING").contains(stageCode)
+                    && !this.transcriptEvidence.hasFinalizedTranscript(jobId)) {
+                throw new ProcessingLifecycleConflictException(
+                    "Downstream processing requires a persisted finalized transcript.");
+            }
+            if (List.of("GENERATING_SUMMARY", "EXTRACTING_DECISIONS",
+                    "EXTRACTING_ACTION_ITEMS").contains(stageCode)) {
+                if (offlinePreparation == null) {
+                    throw new ProcessingLifecycleConflictException(
+                        "Offline source snapshot preparation is not installed.");
+                }
+                // The API-side preparation bean suspends this transaction
+                // across S3 I/O. Its source/DB admission is independently
+                // committed before the worker receives a stage claim.
+                offlinePreparation.prepare(jobId);
+            }
         }
         return this.repository.startStage(jobId, stageCode, providerName, modelName, leaseSeconds());
     }
@@ -84,9 +141,20 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
             }
         }
         var identity = this.repository.stageIdentity(claim.stageRunId());
+        if ("EXTRACTING_ACTION_ITEMS".equals(identity.stageCode())
+                && !properties.getProcessing().isActionItemHandoffEnabled()) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,
+                "Action Item proposal handoff is disabled.");
+        }
         if ("FINALIZING_TRANSCRIPT".equals(identity.stageCode())
                 && this.transcriptEvidence.forFinalization(identity.jobId(), claim.stageRunId()).isEmpty()) {
             throw new ProcessingLifecycleConflictException("Canonical transcript must exist before stage success.");
+        }
+        if (isIntelligenceStage(identity.stageCode())
+                && !hasAcceptedResult(identity.jobId(),claim.stageRunId(),identity.stageCode())) {
+            throw new ProcessingLifecycleConflictException(
+                "AI-dependent stage cannot succeed without matching canonical acceptance evidence.");
         }
         this.repository.completeStage(claim, outcome, errorCode, metricsJson);
     }
@@ -108,10 +176,48 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
         return this.repository.hasPendingPipelineStages(jobId);
     }
 
+    private static boolean isIntelligenceStage(String stageCode) {
+        return List.of("GENERATING_SUMMARY","EXTRACTING_DECISIONS",
+            "EXTRACTING_ACTION_ITEMS").contains(stageCode);
+    }
+
+    private boolean hasAcceptedResult(UUID jobId,UUID stageRunId,String stageCode) {
+        return derivedEvidence!=null
+            && derivedEvidence.hasAcceptedResultForStage(jobId,stageRunId,stageCode);
+    }
+
+    private void verifyLatestIntelligenceResults(UUID jobId) {
+        for (var stage : repository.latestIntelligenceStages(jobId)) {
+            if (List.of("SUCCEEDED","SUCCEEDED_WITH_WARNING").contains(stage.status())
+                    && !hasAcceptedResult(jobId,stage.stageRunId(),stage.stageCode())) {
+                throw new ProcessingLifecycleConflictException(
+                    "Processing job contains a successful intelligence stage without canonical acceptance.");
+            }
+        }
+    }
+
     @Override
     @Transactional
     public void completeJob(UUID jobId) {
-        this.repository.completeJob(jobId, this.transcriptEvidence.latestSuccessfulFinalization(jobId).orElse(null));
+        verifyLatestIntelligenceResults(jobId);
+        if (this.repository.isDerivedSummaryJob(jobId)) {
+            if (derivedEvidence == null || !derivedEvidence.hasAcceptedSummary(jobId)) {
+                throw new ProcessingLifecycleConflictException(
+                    "Derived Summary job has no accepted successful result.");
+            }
+            this.repository.completeDerivedSummaryJob(jobId);
+        } else {
+            this.repository.completeJob(jobId,
+                this.transcriptEvidence.latestSuccessfulFinalization(jobId).orElse(null));
+        }
+    }
+
+    @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public void requireActionItemExtractionClaim(UUID jobId, UUID meetingId, UUID mediaId,
+            StageClaim claim) {
+        requireClaim(claim);
+        repository.requireActionItemExtractionClaim(jobId, meetingId, mediaId, claim);
     }
 
     @Override
