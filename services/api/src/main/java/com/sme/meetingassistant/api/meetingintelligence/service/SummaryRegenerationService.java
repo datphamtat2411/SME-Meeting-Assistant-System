@@ -27,17 +27,28 @@ public class SummaryRegenerationService {
     private final DerivedSummaryJobAdmission media;
     private final JdbcTemplate jdbc;
     private final boolean enabled;
+    private final MeetingIntelligenceMetrics metrics;
 
     public SummaryRegenerationService(MeetingIntelligenceAccess access,AuthenticatedUserId identity,
             TranscriptSnapshotCapture capture,IntelligenceSnapshotStore storage,
             SummaryRegenerationAdmission admission,DerivedSummaryJobAdmission media,
-            JdbcTemplate jdbc,
+            JdbcTemplate jdbc, MeetingIntelligenceMetrics metrics,
             @Value("${app.meeting-intelligence.regeneration.enabled:false}") boolean enabled) {
         this.access=access;this.identity=identity;this.capture=capture;this.storage=storage;
         this.admission=admission;this.media=media;this.jdbc=jdbc;this.enabled=enabled;
+        this.metrics=metrics;
     }
 
     public RegenerateSummaryResponse regenerate(UUID meetingId,String idempotencyKey) {
+        try {
+            return regenerateInternal(meetingId, idempotencyKey);
+        } catch (RuntimeException failure) {
+            metrics.failure("summary_regeneration", failure);
+            throw failure;
+        }
+    }
+
+    private RegenerateSummaryResponse regenerateInternal(UUID meetingId,String idempotencyKey) {
         UUID actor=identity.requireUserId();
         access.requireSummaryRegenerationAllowed(meetingId,actor);
         if (idempotencyKey==null || idempotencyKey.isBlank() || idempotencyKey.length()>255

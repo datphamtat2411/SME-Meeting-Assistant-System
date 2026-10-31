@@ -23,12 +23,17 @@ public class IntelligenceResultAcceptance {
     private final JdbcTemplate jdbc;
     private final ProcessingJobLifecycle media;
     private final TranscriptSourceGuard transcript;
+    private final MeetingIntelligenceAudit audit;
+    private final MeetingIntelligenceMetrics metrics;
 
     public IntelligenceResultAcceptance(JdbcTemplate jdbc, ProcessingJobLifecycle media,
-            TranscriptSourceGuard transcript) {
+            TranscriptSourceGuard transcript, MeetingIntelligenceAudit audit,
+            MeetingIntelligenceMetrics metrics) {
         this.jdbc = jdbc;
         this.media = media;
         this.transcript = transcript;
+        this.audit = audit;
+        this.metrics = metrics;
     }
 
     public record Acceptance(boolean replay, int writtenRows) { }
@@ -67,6 +72,7 @@ public class IntelligenceResultAcceptance {
                     && prior.key().equals(artifact.objectKey())) {
                 // Committed receipt is the acknowledgement; do not re-run the
                 // completed stage or change human-confirmed downstream rows.
+                metrics.committed("ai_result_ingestion", "REPLAY");
                 return new Acceptance(true,0);
             }
             throw new IllegalArgumentException("Conflicting accepted AI result for stage attempt.");
@@ -158,6 +164,9 @@ public class IntelligenceResultAcceptance {
         // Critical: if the Media lease expired, was superseded, or the job
         // stopped running, this throws and rolls back receipt + every row.
         media.completeStage(claim,"SUCCEEDED",null,null);
+        audit.resultAccepted(stage.meetingId(),receiptId,stage.jobId(),claim.stageRunId(),
+            source.transcript(),source.revision(),payload.resultType(),written);
+        metrics.committed("ai_result_ingestion", "ACCEPTED");
         return new Acceptance(false,written);
     }
 }

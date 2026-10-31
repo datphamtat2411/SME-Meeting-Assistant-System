@@ -16,12 +16,14 @@ public class SummaryService {
     private final SummaryRepository repository;
     private final MeetingIntelligenceAccess access;
     private final AuthenticatedUserId identity;
+    private final MeetingIntelligenceAudit audit;
 
     public SummaryService(SummaryRepository repository, MeetingIntelligenceAccess access,
-            AuthenticatedUserId identity) {
+            AuthenticatedUserId identity, MeetingIntelligenceAudit audit) {
         this.repository = repository;
         this.access = access;
         this.identity = identity;
+        this.audit = audit;
     }
 
     @Transactional(readOnly = true)
@@ -53,7 +55,10 @@ public class SummaryService {
         }
         repository.replaceCurrentWithHumanEdit(meetingId, previous, UUID.randomUUID(),
             actor, request.content());
-        return repository.current(meetingId).orElseThrow(SummaryService::missing);
+        var updated = repository.current(meetingId).orElseThrow(SummaryService::missing);
+        audit.summaryEdited(actor, meetingId, previous.id(), updated.id(),
+            previous.versionNumber(), updated.versionNumber(), updated.isStale());
+        return updated;
     }
 
     private static ResponseStatusException missing() {

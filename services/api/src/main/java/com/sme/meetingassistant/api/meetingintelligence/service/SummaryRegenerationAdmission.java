@@ -18,12 +18,17 @@ public class SummaryRegenerationAdmission {
     private final DerivedSummaryJobAdmission media;
     private final TranscriptSourceGuard transcripts;
     private final JdbcTemplate jdbc;
+    private final MeetingIntelligenceAudit audit;
+    private final MeetingIntelligenceMetrics metrics;
 
     public SummaryRegenerationAdmission(DerivedSummaryJobAdmission media,
-            TranscriptSourceGuard transcripts, JdbcTemplate jdbc) {
+            TranscriptSourceGuard transcripts, JdbcTemplate jdbc,
+            MeetingIntelligenceAudit audit, MeetingIntelligenceMetrics metrics) {
         this.media=media;
         this.transcripts=transcripts;
         this.jdbc=jdbc;
+        this.audit=audit;
+        this.metrics=metrics;
     }
 
     @Transactional
@@ -48,6 +53,9 @@ public class SummaryRegenerationAdmission {
             VALUES (?,?,?,?,?,?,?,?,?)
             """,snapshotId,meetingId,source.mediaId(),jobId,source.transcriptId(),
             source.contentRevision(),stored.sha256(),stored.key(),stored.sizeBytes());
+        audit.regenerationRequested(actor,meetingId,jobId,
+            source.transcriptId(),source.contentRevision());
+        metrics.committed("summary_regeneration", "ACCEPTED");
         return new Result(jobId,true);
     }
     public record Result(UUID jobId,boolean created) { }

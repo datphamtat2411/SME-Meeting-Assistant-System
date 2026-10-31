@@ -29,13 +29,16 @@ public class DecisionService {
     private final MeetingIntelligenceAccess access;
     private final AuthenticatedUserId identity;
     private final TranscriptSourceGuard transcripts;
+    private final MeetingIntelligenceAudit audit;
 
     public DecisionService(DecisionRepository decisions, MeetingIntelligenceAccess access,
-            AuthenticatedUserId identity, TranscriptSourceGuard transcripts) {
+            AuthenticatedUserId identity, TranscriptSourceGuard transcripts,
+            MeetingIntelligenceAudit audit) {
         this.decisions = decisions;
         this.access = access;
         this.identity = identity;
         this.transcripts = transcripts;
+        this.audit = audit;
     }
 
     @Transactional(readOnly = true)
@@ -71,6 +74,7 @@ public class DecisionService {
         decisions.createConfirmed(decisionId, meetingId, actor, request.content(),
             source == null ? null : source.transcriptId(),
             source == null ? null : source.contentRevision(), evidence);
+        audit.decisionCreated(actor, meetingId, decisionId, evidence.size());
         return decisions.find(meetingId, decisionId).orElseThrow(DecisionService::missing);
     }
 
@@ -96,7 +100,9 @@ public class DecisionService {
         if (!decisions.updateConfirmedContent(meetingId, current, request.content(), actor)) {
             throw new ResponseStatusException(HttpStatus.PRECONDITION_FAILED);
         }
-        return decisions.find(meetingId, decisionId).orElseThrow(DecisionService::missing);
+        var updated = decisions.find(meetingId, decisionId).orElseThrow(DecisionService::missing);
+        audit.decisionEdited(actor, meetingId, decisionId, current.version(), updated.version());
+        return updated;
     }
 
     /**
@@ -142,7 +148,10 @@ public class DecisionService {
         if (!decisions.reviewProposal(meetingId, decisionId, existing.version(), actor, confirm)) {
             throw new ResponseStatusException(HttpStatus.PRECONDITION_FAILED);
         }
-        return decisions.find(meetingId, decisionId).orElseThrow(DecisionService::missing);
+        var reviewed = decisions.find(meetingId, decisionId).orElseThrow(DecisionService::missing);
+        audit.decisionReviewed(actor, meetingId, decisionId, confirm,
+            existing.version(), reviewed.version());
+        return reviewed;
     }
 
     private static void validateContent(String content, int maxLength) {
