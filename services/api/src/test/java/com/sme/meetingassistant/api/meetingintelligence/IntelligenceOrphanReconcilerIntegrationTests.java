@@ -153,6 +153,21 @@ class IntelligenceOrphanReconcilerIntegrationTests {
     }
 
     @Test
+    void existingMediaArtifactReferenceAlsoPreventsDeletion() {
+        jdbc.update("""
+            INSERT INTO processing_artifacts(
+                id,processing_job_id,artifact_type,object_key,sha256,
+                size_bytes,retention_class)
+            VALUES (?,?,'INTELLIGENCE_SOURCE',?,?,100,'RETAINED')
+            """,UUID.randomUUID(),job,orphanSource,"c".repeat(64));
+        var result=destructive().reconcileJob(job,meeting);
+        assertThat(result.eligible()).isEqualTo(1);
+        verify(objects,never()).delete(orphanSource);
+        verify(objects).delete(orphanResult);
+        assertThat(events("MI_STORAGE_ORPHAN_DELETED")).isEqualTo(1);
+    }
+
+    @Test
     void activeJobIsNeverEligibleEvenWhenObjectIsOld() {
         jdbc.update("""
             UPDATE processing_jobs SET status='RUNNING',updated_at=CURRENT_TIMESTAMP-INTERVAL '7 days'

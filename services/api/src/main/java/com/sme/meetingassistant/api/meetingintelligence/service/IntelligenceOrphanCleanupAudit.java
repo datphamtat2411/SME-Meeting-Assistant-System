@@ -76,8 +76,11 @@ public class IntelligenceOrphanCleanupAudit {
               UNION ALL
               SELECT 1 FROM meeting_intelligence_result_receipts
                 WHERE processing_job_id=? AND artifact_object_key=?
+              UNION ALL
+              SELECT 1 FROM processing_artifacts
+                WHERE object_key=?
             )
-            """,Boolean.class,jobId,key,jobId,key);
+            """,Boolean.class,jobId,key,jobId,key,key);
         if(Boolean.TRUE.equals(used)) return false;
         writer.recordService(dryRun?"MI_STORAGE_ORPHAN_DRY_RUN":"MI_STORAGE_ORPHAN_DELETE_INTENT",
             "PROCESSING_JOB",jobId,meetingId,
