@@ -18,6 +18,14 @@ public class MeetingIntelligenceAudit {
                 "previousVersion", fromVersion, "newVersion", toVersion, "sourceStale", stale));
     }
 
+    public void summaryActivated(UUID actor, UUID meetingId, UUID previousId,
+            UUID selectedId, int selectedVersion, long contentRevision) {
+        writer.record(actor,"MI_SUMMARY_VERSION_ACTIVATED","MEETING_SUMMARY",
+            selectedId,meetingId,Map.of("schemaVersion",1,
+                "previousVersionId",previousId,"selectedVersion",selectedVersion,
+                "contentRevision",contentRevision));
+    }
+
     public void decisionCreated(UUID actor, UUID meetingId, UUID decisionId, int evidenceCount) {
         writer.record(actor, "MI_DECISION_CREATED", "MEETING_DECISION", decisionId, meetingId,
             Map.of("schemaVersion", 1, "status", "CONFIRMED",

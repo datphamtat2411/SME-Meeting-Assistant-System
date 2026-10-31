@@ -23,7 +23,13 @@ public final class IntelligenceVersionTags {
      * Source revisions beyond that point do not change the visible projection.
      */
     public static String summary(UUID summaryVersionId, int versionNumber, boolean stale) {
-        return "\"sum-" + summaryVersionId + "-" + versionNumber
+        return summary(summaryVersionId,versionNumber,stale,0L);
+    }
+
+    /** Monotonic selection epoch prevents an old strong ETag reappearing on A->B->A. */
+    public static String summary(UUID id, int versionNumber, boolean stale, long selectionEpoch) {
+        return "\"sum-" + id + "-" + versionNumber
+            + (selectionEpoch == 0 ? "" : "-selection-" + selectionEpoch)
             + (stale ? "-stale" : "") + "\"";
     }
 
@@ -43,6 +49,11 @@ public final class IntelligenceVersionTags {
     public static void requireSummaryMatch(UUID summaryVersionId, int versionNumber,
             boolean stale, String ifMatch) {
         requireMatch(summary(summaryVersionId, versionNumber, stale), ifMatch);
+    }
+
+    public static void requireSummaryMatch(UUID id, int versionNumber, boolean stale,
+            long selectionEpoch, String ifMatch) {
+        requireMatch(summary(id,versionNumber,stale,selectionEpoch),ifMatch);
     }
 
     public static void requireDecisionMatch(UUID decisionId, long rowVersion, String ifMatch) {
