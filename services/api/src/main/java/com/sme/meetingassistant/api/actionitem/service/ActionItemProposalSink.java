@@ -20,7 +20,7 @@ public interface ActionItemProposalSink {
 
     /**
      * Deterministic producer identity: processingJobId + stageRunId +
-     * candidateKey. Sink MUST deduplicate replay before inserting.
+     * candidateKey. Sink MUST deduplicate replay before inserting, and\n     * reject divergent batchSha256 for the same processingJobId/stageRunId.
      */
     record Candidate(
         String candidateKey,
@@ -43,6 +43,7 @@ public interface ActionItemProposalSink {
         UUID transcriptId,
         long contentRevision,
         boolean isStale,
+        String batchSha256,
         List<Candidate> candidates
     ) {
         public Batch {
