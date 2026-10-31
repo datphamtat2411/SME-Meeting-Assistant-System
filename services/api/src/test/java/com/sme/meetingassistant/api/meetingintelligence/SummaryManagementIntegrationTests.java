@@ -3,6 +3,7 @@ package com.sme.meetingassistant.api.meetingintelligence;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -315,5 +316,215 @@ class SummaryManagementIntegrationTests {
         mvc.perform(get(url()).principal(as(participant)))
             .andExpect(status().isOk()).andExpect(jsonPath("$.data.isStale").value(true));
     }
+
+
+    private String versionsUrl() { return url()+"/versions"; }
+    private String activateUrl(UUID version) {
+        return versionsUrl()+"/"+version+"/activate";
+    }
+
+    /** A real FK-complete immutable AI receipt, not a fake business-state flag. */
+    private UUID candidate(int versionNumber,String content) {
+        UUID stage=UUID.randomUUID(),receipt=UUID.randomUUID(),id=UUID.randomUUID();
+        jdbc.update("""
+            INSERT INTO processing_stage_runs(id,processing_job_id,stage_code,attempt_number,status)
+            VALUES (?,?,'GENERATING_SUMMARY',?,'SUCCEEDED')
+            """,stage,job,versionNumber);
+        UUID snapshot=jdbc.queryForObject("""
+            SELECT id FROM meeting_intelligence_source_snapshots WHERE processing_job_id=?
+            """,UUID.class,job);
+        jdbc.update("""
+            INSERT INTO meeting_intelligence_result_receipts(
+                id,meeting_id,processing_job_id,stage_run_id,result_type,source_snapshot_id,
+                transcript_id,content_revision,artifact_sha256,artifact_object_key,artifact_size_bytes)
+            VALUES (?,?,?,?,'SUMMARY',?,?,0,?,?,200)
+            """,receipt,meeting,job,stage,snapshot,transcript,
+            "c".repeat(64),"processing/"+job+"/intelligence/results/"+stage+".json");
+        jdbc.update("""
+            INSERT INTO meeting_summary_versions(
+                id,meeting_id,version_number,content,source_type,processing_job_id,
+                result_receipt_id,transcript_id,content_revision,quality_status,is_current)
+            VALUES (?,?,?,?,'AI_GENERATED',?,?,?,0,'READY',FALSE)
+            """,id,meeting,versionNumber,content,job,receipt,transcript);
+        return id;
+    }
+
+    @Test
+    void versionsAreAuthorizedBoundedDescendingAndIncludeCandidateProvenance() throws Exception {
+        UUID candidate2=candidate(2,"Second AI candidate");
+        UUID candidate3=candidate(3,"Third AI candidate");
+        var page=mvc.perform(get(versionsUrl()).principal(as(participant))
+                .param("page","0").param("size","2"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data[0].id").value(candidate3.toString()))
+            .andExpect(jsonPath("$.data[0].isCurrent").value(false))
+            .andExpect(jsonPath("$.data[0].sourceType").value("AI_GENERATED"))
+            .andExpect(jsonPath("$.data[0].isStale").value(false))
+            .andExpect(jsonPath("$.data[1].id").value(candidate2.toString()))
+            .andExpect(jsonPath("$.meta.pagination.totalElements").value(3))
+            .andExpect(jsonPath("$.meta.pagination.hasNext").value(true))
+            .andReturn().getResponse();
+        assertThat(page.getHeader("Cache-Control")).contains("no-store");
+        mvc.perform(get(versionsUrl()).principal(as(participant))
+                .param("page","1").param("size","2"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data[0].id").value(firstVersion.toString()))
+            .andExpect(jsonPath("$.data[0].isCurrent").value(true))
+            .andExpect(jsonPath("$.meta.pagination.hasPrevious").value(true));
+        mvc.perform(get(versionsUrl()).principal(as(outsider)))
+            .andExpect(status().isNotFound());
+        mvc.perform(get(versionsUrl()).principal(as(admin)))
+            .andExpect(status().isNotFound());
+        mvc.perform(get(versionsUrl())).andExpect(status().isUnauthorized());
+        mvc.perform(get(versionsUrl()).principal(as(organizer)).param("size","21"))
+            .andExpect(status().isBadRequest());
+        mvc.perform(get(versionsUrl()).principal(as(organizer)).param("size","0"))
+            .andExpect(status().isBadRequest());
+        mvc.perform(get(versionsUrl()).principal(as(organizer)).param("page","-1"))
+            .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void activateRequiresOrganizerAndStrongCurrentETagPreservingImmutableAiOrigin() throws Exception {
+        UUID candidate=candidate(2,"New generated Summary candidate");
+        mvc.perform(post(activateUrl(candidate)).principal(as(organizer)))
+            .andExpect(status().is(428));
+        mvc.perform(post(activateUrl(candidate)).principal(as(organizer))
+                .header("If-Match", "\"sum-invalid\""))
+            .andExpect(status().isPreconditionFailed());
+        mvc.perform(post(activateUrl(candidate)).principal(as(participant))
+                .header("If-Match",tag()))
+            .andExpect(status().isNotFound());
+        mvc.perform(post(activateUrl(candidate)).principal(as(admin))
+                .header("If-Match",tag()))
+            .andExpect(status().isNotFound());
+        mvc.perform(post(activateUrl(UUID.randomUUID())).principal(as(organizer))
+                .header("If-Match",tag()))
+            .andExpect(status().isNotFound());
+
+        var response=mvc.perform(post(activateUrl(candidate)).principal(as(organizer))
+                .header("If-Match",tag()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.id").value(candidate.toString()))
+            .andExpect(jsonPath("$.data.content").value("New generated Summary candidate"))
+            .andExpect(jsonPath("$.data.sourceType").value("AI_GENERATED"))
+            .andExpect(jsonPath("$.data.createdByUserId").doesNotExist())
+            .andReturn().getResponse();
+        assertThat(response.getHeader("Cache-Control")).contains("no-store");
+        String selectedTag=response.getHeader("ETag");
+        assertThat(selectedTag).isNotEqualTo(tag());
+        assertThat(selectedTag).contains("-selection-1");
+        mvc.perform(get(url()).principal(as(participant)))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.id").value(candidate.toString()));
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM meeting_summary_versions WHERE meeting_id=? AND is_current
+            """,Integer.class,meeting)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+            SELECT content FROM meeting_summary_versions WHERE id=?
+            """,String.class,firstVersion)).isEqualTo("Original summary");
+        assertThat(jdbc.queryForObject("""
+            SELECT processing_job_id FROM meeting_summary_versions WHERE id=?
+            """,UUID.class,candidate)).isEqualTo(job);
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM audit_events WHERE meeting_id=? AND actor_user_id=?
+                AND action_code='MI_SUMMARY_VERSION_ACTIVATED'
+            """,Integer.class,meeting,organizer)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+            SELECT metadata::text FROM audit_events
+            WHERE meeting_id=? AND action_code='MI_SUMMARY_VERSION_ACTIVATED'
+            """,String.class,meeting)).doesNotContain("New generated Summary candidate");
+
+        mvc.perform(post(activateUrl(candidate)).principal(as(organizer))
+                .header("If-Match",selectedTag))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.id").value(candidate.toString()));
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM audit_events WHERE meeting_id=?
+                AND action_code='MI_SUMMARY_VERSION_ACTIVATED'
+            """,Integer.class,meeting)).isEqualTo(1);
+        mvc.perform(patch(url()).principal(as(organizer)).header("If-Match",tag())
+                .contentType(MediaType.APPLICATION_JSON).content(body("Outdated edit")))
+            .andExpect(status().isPreconditionFailed());
+    }
+
+    @Test
+    void staleOrForeignVersionCannotBecomeCurrent() throws Exception {
+        UUID candidate=candidate(2,"Candidate pinned to old evidence");
+        jdbc.update("UPDATE transcripts SET content_revision=3 WHERE id=?",transcript);
+        var before=mvc.perform(get(url()).principal(as(organizer)))
+            .andExpect(status().isOk()).andReturn().getResponse().getHeader("ETag");
+        mvc.perform(get(versionsUrl()).principal(as(organizer)))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data[0].isStale").value(true));
+        mvc.perform(post(activateUrl(candidate)).principal(as(organizer))
+                .header("If-Match",before))
+            .andExpect(status().isConflict());
+        assertThat(jdbc.queryForObject("""
+            SELECT id FROM meeting_summary_versions WHERE meeting_id=? AND is_current
+            """,UUID.class,meeting)).isEqualTo(firstVersion);
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM audit_events WHERE meeting_id=?
+                AND action_code='MI_SUMMARY_VERSION_ACTIVATED'
+            """,Integer.class,meeting)).isZero();
+    }
+
+    @Test
+    void selectionEpochPreventsAbaReuseAndDoesNotBreakHumanEdits() throws Exception {
+        UUID candidate=candidate(2,"Candidate B");
+        var responseB=mvc.perform(post(activateUrl(candidate)).principal(as(organizer))
+                .header("If-Match",tag())).andExpect(status().isOk()).andReturn().getResponse();
+        String bTag=responseB.getHeader("ETag");
+        var responseA=mvc.perform(post(activateUrl(firstVersion)).principal(as(organizer))
+                .header("If-Match",bTag))
+            .andExpect(status().isOk()).andReturn().getResponse();
+        String aTag=responseA.getHeader("ETag");
+        assertThat(aTag).isNotEqualTo(tag()).contains("-selection-2");
+        mvc.perform(post(activateUrl(candidate)).principal(as(organizer))
+                .header("If-Match",tag()))
+            .andExpect(status().isPreconditionFailed());
+        mvc.perform(patch(url()).principal(as(organizer)).header("If-Match",tag())
+                .contentType(MediaType.APPLICATION_JSON).content(body("ABA stale edit")))
+            .andExpect(status().isPreconditionFailed());
+        mvc.perform(patch(url()).principal(as(organizer)).header("If-Match",aTag)
+                .contentType(MediaType.APPLICATION_JSON).content(body("Current epoch edit")))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.versionNumber").value(3));
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM audit_events WHERE meeting_id=?
+             AND action_code='MI_SUMMARY_VERSION_ACTIVATED'
+            """,Integer.class,meeting)).isEqualTo(2);
+    }
+
+    @Test
+    void concurrentActivationOfTwoCandidatesHasOneWinnerAndOnePreconditionFailure()
+            throws Exception {
+        UUID a=candidate(2,"Candidate A"),b=candidate(3,"Candidate B");
+        try(var pool=Executors.newFixedThreadPool(2)){
+            CountDownLatch start=new CountDownLatch(1);
+            Callable<Integer> first=()->{
+                start.await(10,TimeUnit.SECONDS);
+                return mvc.perform(post(activateUrl(a)).principal(as(organizer))
+                    .header("If-Match",tag())).andReturn().getResponse().getStatus();
+            };
+            Callable<Integer> second=()->{
+                start.await(10,TimeUnit.SECONDS);
+                return mvc.perform(post(activateUrl(b)).principal(as(organizer))
+                    .header("If-Match",tag())).andReturn().getResponse().getStatus();
+            };
+            var one=pool.submit(first);var two=pool.submit(second);start.countDown();
+            assertThat(java.util.List.of(one.get(20,TimeUnit.SECONDS),two.get(20,TimeUnit.SECONDS)))
+                .containsExactlyInAnyOrder(200,412);
+        }
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM meeting_summary_versions
+            WHERE meeting_id=? AND is_current
+            """,Integer.class,meeting)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM audit_events WHERE meeting_id=?
+                AND action_code='MI_SUMMARY_VERSION_ACTIVATED'
+            """,Integer.class,meeting)).isEqualTo(1);
+    }
+
 
 }
