@@ -283,9 +283,10 @@ class SummaryManagementIntegrationTests {
         // one canonical transcript publication per processing job.
         UUID reprocessJob = UUID.randomUUID();
         jdbc.update("""
-            INSERT INTO processing_jobs(id,meeting_id,source_media_id,requested_by_user_id,status)
-            VALUES (?,?,?,?,'COMPLETED')
-            """, reprocessJob, meeting, media, organizer);
+            INSERT INTO processing_jobs(
+                id,meeting_id,source_media_id,requested_by_user_id,status,reprocess_of_job_id)
+            VALUES (?,?,?,?,'COMPLETED',?)
+            """, reprocessJob, meeting, media, organizer, job);
         UUID replacement = UUID.randomUUID();
         jdbc.update("""
             INSERT INTO transcripts(id,meeting_id,source_media_id,processing_job_id,version_number,
