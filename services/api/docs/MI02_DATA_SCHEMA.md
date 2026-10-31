@@ -1,6 +1,6 @@
 # MI-02 — Meeting Intelligence Data & Provenance
 
-> Status: Implementation committed; **PostgreSQL integration tests and MI-01 G2/G4/G5 reviews still required**.
+> Status: Implementation committed; **API CI PostgreSQL/Testcontainers tests passed (run 41160816990); MI-01 G2/G4/G5 reviews still required**.
 > Branch: feat/mi02-meeting-intelligence-data (base: api/module-meeting-intelligence)
 > Scope: canonical database, provenance and database tests only. No AI models, HTTP API, authorization or processing orchestration.
 
@@ -25,7 +25,7 @@ V23 adds two supporting UNIQUE keys on existing transcripts and transcript_segme
 - The receipt source snapshot must belong to **that same job**. A generated stage-code FK permits SUMMARY only at GENERATING_SUMMARY and DECISION_EXTRACTION only at EXTRACTING_DECISIONS.
 - AI Summary/Decision rows use typed composite FKs to an accepted receipt, matching result type, meeting, job, transcript and content revision. AI Decision candidateKey is unique within the accepted receipt.
 - A valid zero-decision result still has a durable receipt without requiring a Decision row.
-- Summary content/provenance cannot be updated; only is_current can be toggled by a separately authorized business transaction.
+- Summary content/provenance cannot be updated; only is_current can be toggled by a separately authorized business transaction. **Handoff invariant:** If the product later permits reactivating a previously current version, its HTTP ETag must not repeat an earlier token (ABA risk). MI-04/MI-08 must either publish by appending a fresh version or establish a persisted monotonic publication generation before enabling that operation; DB uniqueness alone is not a concurrency protocol.
 - Decision source cannot be reassigned. AI_EXTRACTED must initially be PROPOSED; human confirmation/rejection requires actor/time. Allowed transitions are PROPOSED -> CONFIRMED/REJECTED. Updates advance version by one; human manual creation may start CONFIRMED.
 - Evidence, receipts and revision history are protected from update/delete. No semantic deduplication or generalized workflow engine is introduced.
 - Transcript content_revision is deliberately **not** a live FK: review corrections legitimately advance it while historical AI outputs must remain attributable to the earlier revision. The service must pin and validate source freshness with TranscriptSourceGuard inside the correct transaction.
@@ -59,7 +59,7 @@ Run with Java 21, Docker and the Maven wrapper:
 
 Scenarios include meeting/source mismatches, stage result typing, duplicate attempts, candidate uniqueness, one current Summary, same-meeting summary parent, human attribution, AI initial proposal, evidence source, terminal transitions, and immutable history.
 
-**Execution status:** SQL and tests committed. Test execution is not claimed as successful until a real PostgreSQL/Testcontainers run passes (the current editing environment has no PostgreSQL or Docker).
+**Execution status:** GitHub API CI run [41160816990](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/actions/runs/41160816990) completed successfully with 592 tests, 0 failures and 0 errors on this PR's reviewed head. Release still requires cross-team contract approval and combined-branch integration verification.
 
 ## Review dependencies
 
