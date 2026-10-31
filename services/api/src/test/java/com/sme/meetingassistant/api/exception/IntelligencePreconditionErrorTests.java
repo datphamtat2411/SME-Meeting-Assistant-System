@@ -1,12 +1,10 @@
-package com.sme.meetingassistant.api.meetingintelligence;
+package com.sme.meetingassistant.api.exception;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 
 import com.sme.meetingassistant.api.common.ApiErrorCode;
 import com.sme.meetingassistant.api.common.ApiResponseFactory;
-import com.sme.meetingassistant.api.exception.ApiExceptionHandler;
-import com.sme.meetingassistant.api.exception.Http500DiagnosticLogger;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
