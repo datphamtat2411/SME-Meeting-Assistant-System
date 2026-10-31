@@ -119,7 +119,7 @@ class IntelligenceResultMultilineContractTests {
     @Test
     void producerMetadataRemainsSingleLineAndSchemaMatches() throws Exception {
         Pattern metadata=Pattern.compile(schemaPattern("producer","model"));
-        assertThat(metadata.matcher("valid-vi-model")).find();
+        assertThat(metadata.matcher("valid-vi-model").find()).isTrue();
         for(String text:List.of(""," ","m\nx","m\r\nx","m\tx","x\u0000y",
                 "x\u001By","x\u007Fy","x\u0085y")){
             assertThat(metadata.matcher(text).find()).isFalse();
