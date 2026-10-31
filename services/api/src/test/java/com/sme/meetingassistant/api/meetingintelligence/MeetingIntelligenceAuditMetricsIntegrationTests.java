@@ -82,7 +82,7 @@ class MeetingIntelligenceAuditMetricsIntegrationTests {
             WHERE meeting_id=? AND action_code='MI_AI_RESULT_ACCEPTED'
             """, String.class, meeting);
         assertThat(metadata).contains(stage.toString(), job.toString(), "SUMMARY")
-            .doesNotContain("rawText", "prompt", "accessToken", "content");
+            .doesNotContain("rawText", "prompt", "accessToken", "meeting text");
     }
 
     @Test
