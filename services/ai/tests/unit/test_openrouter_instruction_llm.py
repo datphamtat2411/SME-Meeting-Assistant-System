@@ -2,14 +2,20 @@ import json
 import os
 import traceback
 from dataclasses import replace
+from fractions import Fraction
 
 import httpx
 import pytest
 
 from sme_meeting_ai.core.config import Settings
-from sme_meeting_ai.providers.openrouter_instruction_llm import OpenRouterInstructionLlmAdapter
+from sme_meeting_ai.providers.openrouter_instruction_llm import (
+    OpenRouterInstructionLlmAdapter,
+)
 from sme_meeting_ai.transcription import (
-    CorrectionError, CorrectionErrorCategory, CorrectionRequest, CorrectionUsage,
+    CorrectionError,
+    CorrectionErrorCategory,
+    CorrectionRequest,
+    CorrectionUsage,
 )
 
 SECRET = "test-only-private-key"
@@ -207,3 +213,27 @@ def test_invalid_normalized_request_is_rejected_before_network(mutation):
         with pytest.raises(CorrectionError) as caught:
             OpenRouterInstructionLlmAdapter(settings(), client).complete(replace(request(), **mutation))
     sanitized(caught.value, CorrectionErrorCategory.VALIDATION)
+
+
+@pytest.mark.parametrize("cost,expected", [(None, None), (0, Fraction(0)), (0.00012345, Fraction(12345, 100000000)), (2, Fraction(2))])
+def test_optional_reported_cost_is_exact_not_estimated_from_tokens(cost, expected):
+    body = output()
+    if cost is not None:
+        body["usage"]["cost"] = cost
+    response = invoke_response(httpx.Response(200, json=body))
+    assert response.usage.cost == expected
+
+
+@pytest.mark.parametrize("cost", [True, -1, "0.01", "private-cost-diagnostic", {}, []])
+def test_invalid_reported_cost_fails_with_sanitized_category(cost):
+    with pytest.raises(CorrectionError) as caught:
+        invoke_response(httpx.Response(200, json=output(usage={"cost": cost})))
+    sanitized(caught.value, CorrectionErrorCategory.MALFORMED_OUTPUT)
+
+
+@pytest.mark.parametrize("cost", ["NaN", "Infinity", "-Infinity"])
+def test_nonfinite_cost_is_rejected_without_provider_body(cost):
+    raw = json.dumps(output()).replace('"prompt_tokens": 10', '"cost": ' + cost + ', "prompt_tokens": 10')
+    with pytest.raises(CorrectionError) as caught:
+        invoke_response(httpx.Response(200, content=raw))
+    sanitized(caught.value, CorrectionErrorCategory.MALFORMED_OUTPUT)

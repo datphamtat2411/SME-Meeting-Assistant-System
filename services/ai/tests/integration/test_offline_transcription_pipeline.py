@@ -14,24 +14,49 @@ from types import SimpleNamespace
 import pytest
 
 from sme_meeting_ai.audio import (
-    AudioEvidenceDetector, AudioNormalizer, AudioProcessingError, AudioSource,
-    NormalizedAudioArtifact, SampleInterval, SpeechEnergyEvidence, SpeechMapBuilder,
+    AudioEvidenceDetector,
+    AudioNormalizer,
+    AudioProcessingError,
+    AudioSource,
+    NormalizedAudioArtifact,
+    SampleInterval,
+    SpeechEnergyEvidence,
+    SpeechMapBuilder,
 )
 from sme_meeting_ai.core.config import Settings
 from sme_meeting_ai.pipeline import (
-    AudioPreprocessingPipeline, OfflineTranscriptionPipeline,
-    OfflineTranscriptionStage as Stage, OfflineTranscriptionStatus as Status,
+    AudioPreprocessingPipeline,
+    OfflineTranscriptionPipeline,
     PreprocessingStage,
 )
-from sme_meeting_ai.transcription import chunk_execution, correction, coverage, reconciliation, recovery
+from sme_meeting_ai.pipeline import (
+    OfflineTranscriptionStage as Stage,
+)
+from sme_meeting_ai.pipeline import (
+    OfflineTranscriptionStatus as Status,
+)
+from sme_meeting_ai.transcription import (
+    chunk_execution,
+    correction,
+    coverage,
+    reconciliation,
+    recovery,
+)
 from sme_meeting_ai.transcription.asr import (
-    AsrCandidate, AsrError, AsrErrorCategory, AsrProvenance, AsrQualityMetadata,
-    AsrSegment, AsrUsage,
+    AsrCandidate,
+    AsrError,
+    AsrErrorCategory,
+    AsrProvenance,
+    AsrQualityMetadata,
+    AsrSegment,
+    AsrUsage,
 )
 from sme_meeting_ai.transcription.chunk_execution import AsrChunkResult
 from sme_meeting_ai.transcription.chunk_planning import SpeechAwareAsrChunkPlanner
 from sme_meeting_ai.transcription.correction import (
-    CorrectionError, CorrectionErrorCategory, CorrectionProviderResponse,
+    CorrectionError,
+    CorrectionErrorCategory,
+    CorrectionProviderResponse,
 )
 from sme_meeting_ai.transcription.reconciliation import ReconciledSegment
 from sme_meeting_ai.transcription.recovery import RecoveryStopReason

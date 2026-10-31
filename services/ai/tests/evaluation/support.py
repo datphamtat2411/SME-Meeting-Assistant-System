@@ -18,10 +18,11 @@ from sme_meeting_ai.audio import SampleInterval, VadLabel
 from sme_meeting_ai.core.config import Settings
 from sme_meeting_ai.pipeline.models import PreprocessingResult
 
-CONDITIONS = frozenset({
+LEGACY_CONDITIONS = frozenset({
     "silence", "weak-distant-speech", "background-noise", "music", "continuous-speech",
     "recording-boundaries", "long-audio", "historical-regression",
 })
+CONDITIONS = LEGACY_CONDITIONS | {"soft-speech", "technical-vocabulary", "code-switching"}
 _SPEECH_CONDITIONS = CONDITIONS - {"silence", "background-noise", "music", "long-audio"}
 _LABELS = ("speech", "silence", "noise", "music", "ambiguous")
 Identifier = Annotated[str, Field(min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_.-]+$")]
@@ -70,6 +71,22 @@ class Anchor(Bounds):
     pcm_sha256: Digest
 
 
+class ReferenceDescriptor(Contract):
+    schema_version: Literal[1]
+    path: str = Field(repr=False)
+    sha256: Digest
+    reference_version: Identifier
+    origin: Literal["independent-human"]
+
+    @model_validator(mode="after")
+    def relative_path(self):
+        path = PurePosixPath(self.path)
+        if (not self.path or path.is_absolute() or ".." in path.parts
+                or str(path) != self.path or "\\" in self.path or ":" in self.path or "\0" in self.path):
+            raise ValueError("reference-relative path required")
+        return self
+
+
 class Fixture(Contract):
     fixture_id: Identifier
     path: str
@@ -82,6 +99,7 @@ class Fixture(Contract):
     sample_count: Positive
     labels: list[Label] = Field(min_length=1)
     anchors: list[Anchor] = Field(min_length=2, max_length=2)
+    reference: ReferenceDescriptor | None = Field(default=None, repr=False)
 
     @model_validator(mode="after")
     def complete_independent_timeline(self):
@@ -104,7 +122,7 @@ class Fixture(Contract):
         kinds = {label.label for label in self.labels}
         if self.kind == "synthetic":
             if (self.language != "none" or self.annotation_origin != "synthetic-control"
-                    or "speech" in kinds or set(self.conditions) & _SPEECH_CONDITIONS):
+                    or "speech" in kinds or set(self.conditions) & _SPEECH_CONDITIONS or self.reference is not None):
                 raise ValueError("synthetic controls cannot satisfy speech coverage")
         elif self.language != "vi" or self.annotation_origin != "independent-human":
             raise ValueError("independent Vietnamese labels required")
@@ -143,8 +161,33 @@ class Gate(Contract):
         return self
 
 
+TranscriptionStage = Literal["preprocessing", "baseline_asr", "recovery", "reconciliation", "correction", "end_to_end"]
+TranscriptionMetric = Literal[
+    "wer", "cer", "coverage_rate", "missed_samples", "largest_missed_samples",
+    "missed_material_samples", "missed_critical_samples", "hallucination_rate",
+    "hallucinated_samples", "unresolved_rate", "pipeline_unresolved_rate", "recovery_success_rate",
+]
+
+
+class TranscriptionGate(Contract):
+    stage: TranscriptionStage
+    metric: TranscriptionMetric
+    minimum: Rational | None = None
+    maximum: Rational | None = None
+    basis_version: Identifier
+
+    @model_validator(mode="after")
+    def one_bound(self):
+        if (self.minimum is None) == (self.maximum is None):
+            raise ValueError("one explicit bound required")
+        bound = self.minimum or self.maximum
+        if self.metric.endswith("rate") and bound.numerator > bound.denominator:
+            raise ValueError("rate bound exceeds one")
+        return self
+
+
 class Manifest(Contract):
-    schema_version: Literal[1]
+    schema_version: Literal[1, 2]
     dataset_id: Identifier
     dataset_version: Identifier
     privacy_approved: bool
@@ -154,6 +197,7 @@ class Manifest(Contract):
     long_audio_min_samples: Positive
     fixtures: list[Fixture] = Field(min_length=1)
     quality_gates: list[Gate] = Field(default_factory=list)
+    transcription_quality_gates: list[TranscriptionGate] = Field(default_factory=list)
     # Computed from original manifest bytes, never accepted from the document.
     manifest_sha256: Digest = "0" * 64
 
@@ -163,12 +207,16 @@ class Manifest(Contract):
             raise ValueError("dataset approval required")
         if len({fixture.fixture_id for fixture in self.fixtures}) != len(self.fixtures):
             raise ValueError("duplicate fixture ID")
-        if set().union(*(set(fixture.conditions) for fixture in self.fixtures)) != CONDITIONS:
+        conditions = set().union(*(set(fixture.conditions) for fixture in self.fixtures))
+        required = CONDITIONS if self.schema_version == 2 else LEGACY_CONDITIONS
+        if not required <= conditions:
             raise ValueError("incomplete required conditions")
         if any("long-audio" in fixture.conditions and fixture.sample_count < self.long_audio_min_samples for fixture in self.fixtures):
             raise ValueError("long control below dataset-defined duration")
         if len({gate.metric for gate in self.quality_gates}) != len(self.quality_gates):
             raise ValueError("duplicate quality gate")
+        if len({(gate.stage, gate.metric) for gate in self.transcription_quality_gates}) != len(self.transcription_quality_gates):
+            raise ValueError("duplicate transcription gate")
         return self
 
 

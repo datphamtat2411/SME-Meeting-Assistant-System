@@ -9,18 +9,36 @@ import pytest
 
 from sme_meeting_ai.audio.errors import AudioProcessingError
 from sme_meeting_ai.audio.models import (
-    AudioProbe, AudioProvenance, DetectionProvenance, EvidenceFrame,
-    NormalizedAudioArtifact, SampleInterval, SpeechEnergyEvidence, VadLabel,
+    AudioProbe,
+    AudioProvenance,
+    DetectionProvenance,
+    EvidenceFrame,
+    NormalizedAudioArtifact,
+    SampleInterval,
+    SpeechEnergyEvidence,
+    VadLabel,
 )
 from sme_meeting_ai.audio.speech_map import SpeechMapBuilder
 from sme_meeting_ai.core.config import Settings
 from sme_meeting_ai.pipeline.models import (
-    PreprocessingAudioMetadata, PreprocessingProvenance, PreprocessingResult,
+    PreprocessingAudioMetadata,
+    PreprocessingProvenance,
+    PreprocessingResult,
 )
 from sme_meeting_ai.transcription import (
-    AsrCandidate, AsrChunkResult, AsrErrorCategory, AsrProvenance,
-    AsrQualityMetadata, AsrSegment, AsrSegmentQuality, AsrTimelineSegment, AsrUsage,
-    CoverageReason, CoverageState, SpeechAwareAsrChunkPlanner, assess_speech_coverage,
+    AsrCandidate,
+    AsrChunkResult,
+    AsrErrorCategory,
+    AsrProvenance,
+    AsrQualityMetadata,
+    AsrSegment,
+    AsrSegmentQuality,
+    AsrTimelineSegment,
+    AsrUsage,
+    CoverageReason,
+    CoverageState,
+    SpeechAwareAsrChunkPlanner,
+    assess_speech_coverage,
 )
 
 
@@ -476,7 +494,10 @@ def test_map_merged_silence_is_not_verified_by_timestamps(handoff):
 
 
 def test_revalidation_uses_union_and_failed_recovery_never_erases_baseline(handoff):
-    from sme_meeting_ai.transcription import plan_recovery_windows, revalidate_speech_coverage
+    from sme_meeting_ai.transcription import (
+        plan_recovery_windows,
+        revalidate_speech_coverage,
+    )
 
     preprocessing, plan, configuration = handoff()
     baseline = (result(plan.chunks[0], ((0, 512),)), result(plan.chunks[1], ()))
@@ -493,7 +514,10 @@ def test_revalidation_uses_union_and_failed_recovery_never_erases_baseline(hando
 
 
 def test_revalidation_recovers_failed_baseline_only_where_supported(handoff):
-    from sme_meeting_ai.transcription import plan_recovery_windows, revalidate_speech_coverage
+    from sme_meeting_ai.transcription import (
+        plan_recovery_windows,
+        revalidate_speech_coverage,
+    )
 
     preprocessing, plan, configuration = handoff()
     baseline = tuple(AsrChunkResult(c, failure=AsrErrorCategory.TIMEOUT) for c in plan.chunks)
@@ -507,7 +531,10 @@ def test_revalidation_recovers_failed_baseline_only_where_supported(handoff):
 
 
 def test_revalidation_deduplicates_recovery_overlap_and_rejects_identical_requests(handoff):
-    from sme_meeting_ai.transcription import plan_recovery_windows, revalidate_speech_coverage
+    from sme_meeting_ai.transcription import (
+        plan_recovery_windows,
+        revalidate_speech_coverage,
+    )
 
     preprocessing, plan, configuration = handoff()
     baseline = tuple(result(c, ()) for c in plan.chunks)
@@ -524,7 +551,10 @@ def test_revalidation_deduplicates_recovery_overlap_and_rejects_identical_reques
 
 
 def test_revalidation_does_not_publish_sensitive_provider_metadata(handoff):
-    from sme_meeting_ai.transcription import plan_recovery_windows, revalidate_speech_coverage
+    from sme_meeting_ai.transcription import (
+        plan_recovery_windows,
+        revalidate_speech_coverage,
+    )
 
     preprocessing, plan, configuration = handoff()
     baseline = tuple(result(c, ()) for c in plan.chunks)

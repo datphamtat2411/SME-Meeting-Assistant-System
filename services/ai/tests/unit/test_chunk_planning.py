@@ -7,6 +7,7 @@ from tempfile import TemporaryDirectory
 
 import pytest
 
+from sme_meeting_ai.audio.errors import AudioProcessingError
 from sme_meeting_ai.audio.models import (
     AudioProbe,
     AudioProvenance,
@@ -18,7 +19,6 @@ from sme_meeting_ai.audio.models import (
     SpeechMapProvenance,
     SpeechMapQuality,
 )
-from sme_meeting_ai.audio.errors import AudioProcessingError
 from sme_meeting_ai.core.config import Settings
 from sme_meeting_ai.pipeline import (
     PreprocessingAudioMetadata,

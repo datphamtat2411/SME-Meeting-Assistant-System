@@ -19,7 +19,10 @@ from sme_meeting_ai.core.config import Settings
 from .asr import AsrError, AsrErrorCategory, AsrProvenance
 from .chunk_execution import AsrChunkResult, AsrTimelineSegment, _translate_candidate
 from .chunk_planning import (
-    AsrChunk, AsrChunkPlan, ChunkBoundaryReason, ChunkPlanningProvenance,
+    AsrChunk,
+    AsrChunkPlan,
+    ChunkBoundaryReason,
+    ChunkPlanningProvenance,
     validate_asr_chunk_plan,
 )
 

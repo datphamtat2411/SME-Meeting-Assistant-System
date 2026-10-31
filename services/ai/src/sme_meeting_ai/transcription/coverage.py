@@ -16,16 +16,28 @@ from typing import Mapping
 
 from sme_meeting_ai.audio.errors import AudioProcessingError
 from sme_meeting_ai.audio.models import SampleInterval, VadLabel
-from sme_meeting_ai.audio.speech_map import _append_interval, _validate_contracts, _validate_frame
+from sme_meeting_ai.audio.speech_map import (
+    _append_interval,
+    _validate_contracts,
+    _validate_frame,
+)
 from sme_meeting_ai.core.config import Settings
 from sme_meeting_ai.pipeline.models import PreprocessingResult
 
 from .asr import (
-    AsrError, AsrErrorCategory, AsrProvenance, AsrQualityMetadata, AsrSegmentQuality,
+    AsrError,
+    AsrErrorCategory,
+    AsrProvenance,
+    AsrQualityMetadata,
+    AsrSegmentQuality,
 )
 from .chunk_execution import AsrChunkResult, AsrTimelineSegment, _translate_candidate
 from .chunk_planning import (
-    AsrChunk, AsrChunkPlan, ChunkPlanningProvenance, _validate_handoff, validate_asr_chunk_plan,
+    AsrChunk,
+    AsrChunkPlan,
+    ChunkPlanningProvenance,
+    _validate_handoff,
+    validate_asr_chunk_plan,
 )
 
 
@@ -414,7 +426,8 @@ def _assess(preprocessing, plan, results, settings, recovery_results=None):
         # Recovery is supplemental evidence, never a replacement partition.
         # Validate the complete handoff; only failure-free, structurally valid
         # candidates contribute support. Failed attempts stay in recovery output.
-        from .recovery import _configuration as recovery_configuration, _validate_recovery_chunk
+        from .recovery import _configuration as recovery_configuration
+        from .recovery import _validate_recovery_chunk
 
         limits = recovery_configuration(settings)
         _require(isinstance(recovery_results, tuple)

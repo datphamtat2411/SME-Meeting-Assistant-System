@@ -37,9 +37,9 @@ from sme_meeting_ai.transcription import (
     AsrUsage,
     ChunkBoundaryReason,
     ChunkPlanningProvenance,
+    chunk_execution,
     execute_asr_chunks,
 )
-from sme_meeting_ai.transcription import chunk_execution
 
 
 def settings(**overrides):
@@ -563,7 +563,12 @@ def test_cancellation_cancels_the_bounded_pending_window(handoff, monkeypatch):
 
 
 def test_recovery_window_execution_is_sequential_and_uses_absolute_request_bounds(handoff):
-    from sme_meeting_ai.transcription import CoverageRegion, CoverageState, RecoveryWindow, execute_asr_windows
+    from sme_meeting_ai.transcription import (
+        CoverageRegion,
+        CoverageState,
+        RecoveryWindow,
+        execute_asr_windows,
+    )
 
     plan, audio, _ = handoff
     region = CoverageRegion(SampleInterval(20, 200), CoverageState.UNRESOLVED_ERROR,
@@ -582,7 +587,12 @@ def test_recovery_window_execution_is_sequential_and_uses_absolute_request_bound
 
 
 def test_recovery_window_execution_validates_all_windows_before_inference(handoff):
-    from sme_meeting_ai.transcription import CoverageRegion, CoverageState, RecoveryWindow, execute_asr_windows
+    from sme_meeting_ai.transcription import (
+        CoverageRegion,
+        CoverageState,
+        RecoveryWindow,
+        execute_asr_windows,
+    )
 
     plan, audio, _ = handoff
     region = CoverageRegion(SampleInterval(20, 200), CoverageState.UNRESOLVED_ERROR,

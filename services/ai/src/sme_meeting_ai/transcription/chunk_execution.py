@@ -5,13 +5,17 @@ import math
 import time
 import traceback
 import wave
-from concurrent.futures import CancelledError, FIRST_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, CancelledError, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import TYPE_CHECKING
 
 from sme_meeting_ai.audio.errors import AudioProcessingError
-from sme_meeting_ai.audio.models import AudioSource, NormalizedAudioArtifact, SampleInterval
+from sme_meeting_ai.audio.models import (
+    AudioSource,
+    NormalizedAudioArtifact,
+    SampleInterval,
+)
 from sme_meeting_ai.core.config import Settings
 from sme_meeting_ai.pipeline.preprocessing import _validate_normalization
 

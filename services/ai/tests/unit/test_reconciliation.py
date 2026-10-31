@@ -1,22 +1,36 @@
 import traceback
 import unicodedata
+from collections.abc import Mapping
 from dataclasses import FrozenInstanceError, fields, is_dataclass, replace
 from fractions import Fraction
-from collections.abc import Mapping
 
 import pytest
 
 from sme_meeting_ai.audio.errors import AudioProcessingError
 from sme_meeting_ai.audio.models import (
-    AudioProvenance, DetectionProvenance, SampleInterval, SpeechMapProvenance,
+    AudioProvenance,
+    DetectionProvenance,
+    SampleInterval,
+    SpeechMapProvenance,
 )
 from sme_meeting_ai.core.config import Settings
 from sme_meeting_ai.pipeline.models import PreprocessingProvenance
 from sme_meeting_ai.transcription import (
-    AsrCandidate, AsrChunk, AsrChunkPlan, AsrChunkResult, AsrErrorCategory,
-    AsrProvenance, AsrQualityMetadata, AsrSegment, AsrTimelineSegment, AsrUsage,
-    ChunkBoundaryReason, ChunkPlanningProvenance, ReconciliationChunkState,
-    ReconciliationFlag, reconcile_transcript,
+    AsrCandidate,
+    AsrChunk,
+    AsrChunkPlan,
+    AsrChunkResult,
+    AsrErrorCategory,
+    AsrProvenance,
+    AsrQualityMetadata,
+    AsrSegment,
+    AsrTimelineSegment,
+    AsrUsage,
+    ChunkBoundaryReason,
+    ChunkPlanningProvenance,
+    ReconciliationChunkState,
+    ReconciliationFlag,
+    reconcile_transcript,
 )
 
 

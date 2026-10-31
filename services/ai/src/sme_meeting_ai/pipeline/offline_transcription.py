@@ -17,27 +17,45 @@ from sme_meeting_ai.audio.models import AudioSource, SampleInterval, SpeechMap
 from sme_meeting_ai.core.config import Settings
 
 from .models import (
-    PreprocessingAudioMetadata, PreprocessingFailure, PreprocessingOutcome,
-    PreprocessingProvenance, PreprocessingStage, PreprocessingStatus,
+    PreprocessingAudioMetadata,
+    PreprocessingFailure,
+    PreprocessingOutcome,
+    PreprocessingProvenance,
+    PreprocessingStage,
+    PreprocessingStatus,
 )
 from .preprocessing import AudioPreprocessingPipeline
 
 # Transcription modules themselves depend on pipeline.models/preprocessing. Keep
 # all runtime imports local so either package can be imported first.
 if TYPE_CHECKING:
-    from sme_meeting_ai.transcription.asr import AsrErrorCategory, AsrProvenance, AsrTranscriber
+    from sme_meeting_ai.transcription.asr import (
+        AsrProvenance,
+        AsrTranscriber,
+    )
     from sme_meeting_ai.transcription.chunk_planning import (
-        AsrChunkPlan, ChunkPlanningProvenance, SpeechAwareAsrChunkPlanner,
+        AsrChunkPlan,
+        ChunkPlanningProvenance,
+        SpeechAwareAsrChunkPlanner,
     )
     from sme_meeting_ai.transcription.correction import (
-        CorrectionProvenance, TranscriptCorrectionProvider, TranscriptCorrectionResult,
+        CorrectionProvenance,
+        TranscriptCorrectionProvider,
+        TranscriptCorrectionResult,
     )
-    from sme_meeting_ai.transcription.coverage import CoverageProvenance, SpeechCoverageAssessment
+    from sme_meeting_ai.transcription.coverage import (
+        CoverageProvenance,
+        SpeechCoverageAssessment,
+    )
     from sme_meeting_ai.transcription.reconciliation import (
-        ReconciliationChunkOutcome, ReconciliationFlag, ReconciliationProvenance,
+        ReconciliationChunkOutcome,
+        ReconciliationFlag,
+        ReconciliationProvenance,
     )
     from sme_meeting_ai.transcription.recovery import (
-        RecoveryAttempt, RecoveryProvenance, RecoveryStopReason,
+        RecoveryAttempt,
+        RecoveryProvenance,
+        RecoveryStopReason,
     )
 
 
@@ -203,7 +221,10 @@ def _require(condition: bool) -> None:
 
 def _failure(error: Exception, stage: OfflineTranscriptionStage) -> OfflineTranscriptionFailure:
     from sme_meeting_ai.transcription.asr import AsrError, AsrErrorCategory
-    from sme_meeting_ai.transcription.correction import CorrectionError, CorrectionErrorCategory
+    from sme_meeting_ai.transcription.correction import (
+        CorrectionError,
+        CorrectionErrorCategory,
+    )
 
     category = {
         OfflineTranscriptionStage.PREPROCESSING: "INFERENCE",
@@ -232,7 +253,9 @@ def _asr_evidence(plan, results, settings: Settings) -> OfflineAsrEvidence:
     from sme_meeting_ai.transcription.chunk_execution import AsrChunkResult
     from sme_meeting_ai.transcription.coverage import _valid_result
     from sme_meeting_ai.transcription.reconciliation import (
-        ReconciliationChunkOutcome, ReconciliationChunkState, _safe_provenance,
+        ReconciliationChunkOutcome,
+        ReconciliationChunkState,
+        _safe_provenance,
     )
 
     _require(isinstance(results, tuple) and len(results) == len(plan.chunks))
@@ -313,10 +336,15 @@ class OfflineTranscriptionPipeline:
         from sme_meeting_ai.transcription.chunk_execution import execute_asr_chunks
         from sme_meeting_ai.transcription.chunk_planning import validate_asr_chunk_plan
         from sme_meeting_ai.transcription.correction import (
-            TranscriptCorrectionOutcome, TranscriptCorrectionStatus, correct_transcript,
+            TranscriptCorrectionOutcome,
+            TranscriptCorrectionStatus,
+            correct_transcript,
         )
         from sme_meeting_ai.transcription.reconciliation import reconcile_transcript
-        from sme_meeting_ai.transcription.recovery import RecoveryStopReason, recover_speech
+        from sme_meeting_ai.transcription.recovery import (
+            RecoveryStopReason,
+            recover_speech,
+        )
 
         stage = OfflineTranscriptionStage.PREPROCESSING
         source_id = source.source_id if isinstance(source, AudioSource) else ""

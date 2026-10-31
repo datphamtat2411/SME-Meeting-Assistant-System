@@ -10,7 +10,11 @@ from types import MappingProxyType
 from typing import Mapping
 
 from sme_meeting_ai.audio.errors import AudioProcessingError
-from sme_meeting_ai.audio.models import AudioSource, NormalizedAudioArtifact, SampleInterval
+from sme_meeting_ai.audio.models import (
+    AudioSource,
+    NormalizedAudioArtifact,
+    SampleInterval,
+)
 from sme_meeting_ai.core.config import Settings
 from sme_meeting_ai.pipeline.models import PreprocessingResult
 from sme_meeting_ai.pipeline.preprocessing import _validate_normalization
@@ -18,12 +22,22 @@ from sme_meeting_ai.pipeline.preprocessing import _validate_normalization
 from .asr import AsrError, AsrErrorCategory, AsrTranscriber
 from .chunk_execution import AsrChunkResult, _validate_wav, execute_asr_windows
 from .chunk_planning import (
-    AsrChunk, AsrChunkPlan, ChunkBoundaryReason, ChunkPlanningProvenance,
-    _configuration as _planning_configuration, validate_asr_chunk_plan,
+    AsrChunk,
+    AsrChunkPlan,
+    ChunkBoundaryReason,
+    ChunkPlanningProvenance,
+    validate_asr_chunk_plan,
+)
+from .chunk_planning import (
+    _configuration as _planning_configuration,
 )
 from .coverage import (
-    CoverageReason, CoverageRegion, CoverageState, SpeechCoverageAssessment,
-    assess_speech_coverage, revalidate_speech_coverage,
+    CoverageReason,
+    CoverageRegion,
+    CoverageState,
+    SpeechCoverageAssessment,
+    assess_speech_coverage,
+    revalidate_speech_coverage,
 )
 
 

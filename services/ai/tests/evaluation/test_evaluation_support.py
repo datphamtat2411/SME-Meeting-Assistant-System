@@ -388,3 +388,15 @@ def test_model_evaluation_requires_explicit_existing_pinned_model(tmp_path):
         require_pinned_model(settings)
     settings.audio_vad_model_sha256 = hashlib.sha256(model.read_bytes()).hexdigest()
     require_pinned_model(settings)
+
+
+def test_transcription_gate_contract_requires_basis_and_independent_metric_bounds(tmp_path):
+    document = manifest_dict()
+    document["transcription_quality_gates"] = [{
+        "stage": "end_to_end", "metric": "wer", "maximum": {"numerator": 3, "denominator": 2},
+        "basis_version": "reviewed-1",
+    }]
+    assert save_manifest(tmp_path, document).transcription_quality_gates[0].metric == "wer"
+    document["transcription_quality_gates"][0].pop("basis_version")
+    with pytest.raises(EvaluationError):
+        save_manifest(tmp_path, document)

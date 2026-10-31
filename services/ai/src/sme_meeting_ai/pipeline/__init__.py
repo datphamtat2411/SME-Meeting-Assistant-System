@@ -9,7 +9,6 @@ from .models import (
     PreprocessingStage,
     PreprocessingStatus,
 )
-from .preprocessing import AudioPreprocessingPipeline
 from .offline_transcription import (
     OfflineAsrEvidence,
     OfflineAsrProvenance,
@@ -25,6 +24,7 @@ from .offline_transcription import (
     OfflineTranscriptionStatus,
     OfflineTranscriptionWarning,
 )
+from .preprocessing import AudioPreprocessingPipeline
 
 __all__ = [
     "AudioPreprocessingPipeline",

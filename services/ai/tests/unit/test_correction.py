@@ -1,19 +1,32 @@
 import json
 import os
-from dataclasses import FrozenInstanceError, fields, is_dataclass, replace
 from collections.abc import Mapping
+from dataclasses import FrozenInstanceError, fields, is_dataclass, replace
+from fractions import Fraction
 
 import pytest
 
-from .test_reconciliation import plan, result, settings
 from sme_meeting_ai.audio.models import SampleInterval
 from sme_meeting_ai.transcription import (
-    CorrectionError, CorrectionErrorCategory, CorrectionProviderResponse,
-    CorrectionUsage, CoverageProvenance, CoverageQuality, CoverageRegion,
-    CoverageReason, CoverageState, ReconciledSegment, ReconciliationFlag,
-    SpeechCoverageAssessment, TranscriptCorrectionStatus, TranscriptReconciliation,
-    correct_transcript, reconcile_transcript,
+    CorrectionError,
+    CorrectionErrorCategory,
+    CorrectionProviderResponse,
+    CorrectionUsage,
+    CoverageProvenance,
+    CoverageQuality,
+    CoverageReason,
+    CoverageRegion,
+    CoverageState,
+    ReconciledSegment,
+    ReconciliationFlag,
+    SpeechCoverageAssessment,
+    TranscriptCorrectionStatus,
+    TranscriptReconciliation,
+    correct_transcript,
+    reconcile_transcript,
 )
+
+from .test_reconciliation import plan, result, settings
 
 
 @pytest.fixture(autouse=True)
@@ -441,3 +454,29 @@ def test_valid_non_bmp_unicode_is_preserved_in_literal_and_surrogate_pair_json(e
     assert outcome.status is TranscriptCorrectionStatus.COMPLETED
     assert outcome.result.segments[0].text == corrected
     assert outcome.result.segments[0].text.encode("utf-8").decode("utf-8") == corrected
+
+
+def test_provider_reported_correction_cost_is_preserved_exactly():
+    reconciliation, coverage = meeting()
+
+    class CostProvider:
+        def complete(self, request):
+            return CorrectionProviderResponse(json.dumps(payload(reconciliation)), "fake", request.model,
+                                              usage=CorrectionUsage(100, 50, 150, Fraction(7, 10000)))
+    outcome = invoke(reconciliation, coverage, CostProvider())
+    assert outcome.result.provenance.usage.cost == Fraction(7, 10000)
+    assert CorrectionUsage().cost is None
+
+
+@pytest.mark.parametrize("cost", [-1, True, 0.1, Fraction(-1, 10), "private-cost-diagnostic"])
+def test_invalid_injected_cost_is_sanitized(cost):
+    reconciliation, coverage = meeting()
+
+    class CostProvider:
+        def complete(self, request):
+            return CorrectionProviderResponse(json.dumps(payload(reconciliation)), "fake", request.model,
+                                              usage=CorrectionUsage(cost=cost))
+    outcome = invoke(reconciliation, coverage, CostProvider())
+    assert outcome.result is None
+    assert outcome.failure.category is CorrectionErrorCategory.MALFORMED_OUTPUT
+    assert "private-cost-diagnostic" not in repr(outcome)

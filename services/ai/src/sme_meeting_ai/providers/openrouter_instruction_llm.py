@@ -1,6 +1,8 @@
 """Bounded synchronous OpenRouter instruction completion; exactly one HTTP call."""
 
 import time
+from decimal import Decimal
+from fractions import Fraction
 from typing import Self
 
 import httpx
@@ -30,6 +32,19 @@ _STATUS_CATEGORIES = {
     524: CorrectionErrorCategory.TIMEOUT,
     413: CorrectionErrorCategory.CONTEXT_OVERFLOW,
 }
+
+
+def _reported_cost(value):
+    if value is None:
+        return None
+    # Parse numeric metadata as Decimal below; never round binary floats or
+    # infer a price from tokens. Bad metadata follows the sanitized output path.
+    if type(value) not in (int, Decimal) or (isinstance(value, Decimal) and not value.is_finite()):
+        raise ValueError
+    cost = Fraction(value)
+    if cost < 0:
+        raise ValueError
+    return cost
 
 
 class OpenRouterInstructionLlmAdapter:
@@ -92,7 +107,7 @@ class OpenRouterInstructionLlmAdapter:
                 _require(time.monotonic() <= deadline, CorrectionErrorCategory.TIMEOUT)
                 _require(len(body) + len(part) <= config["max_response_bytes"], CorrectionErrorCategory.RESOURCE)
                 body.extend(part)
-        data = _strict_json(body)
+        data = _strict_json(body, parse_float=Decimal)
         malformed = CorrectionErrorCategory.MALFORMED_OUTPUT
         _require(isinstance(data, dict) and "error" not in data, malformed)
         choices = data.get("choices")
@@ -111,7 +126,8 @@ class OpenRouterInstructionLlmAdapter:
         _require(isinstance(usage, dict), malformed)
         normalized = CorrectionProviderResponse(
             text, "openrouter", request.model, data.get("model"),
-            CorrectionUsage(usage.get("prompt_tokens"), usage.get("completion_tokens"), usage.get("total_tokens")),
+            CorrectionUsage(usage.get("prompt_tokens"), usage.get("completion_tokens"), usage.get("total_tokens"),
+                            _reported_cost(usage.get("cost"))),
         )
         _safe_response(normalized, request, config)
         return normalized

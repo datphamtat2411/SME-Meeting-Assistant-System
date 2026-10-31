@@ -421,7 +421,8 @@ Unknown fields and duplicate JSON keys are rejected.
   decoder changes alter them. No resampling or timestamp tolerance is assumed.
 - Required condition tags across the dataset: `silence`, `weak-distant-speech`,
   `background-noise`, `music`, `continuous-speech`, `recording-boundaries`,
-  `long-audio`, `historical-regression`. Speech conditions require Vietnamese
+  `long-audio`, `historical-regression`. Schema 2 additionally requires
+  `soft-speech`, `technical-vocabulary`, and `code-switching`. Speech conditions require Vietnamese
   recordings and independent human labels. Boundary fixtures must label speech
   at both recording edges; the historical silent-speech-loss fixture must contain
   critical/material speech. Tags attest reviewed conditions, not inferred acoustic
@@ -536,6 +537,152 @@ gates are reported as `PASS`/`FAIL`/`UNESTABLISHED`; an explicit failure fails p
 **after** writing the full report. Use `-rP` to display the printed gate status for
 passing runs, or inspect `quality_gate_status` in the JSON output. This evaluation
 does not execute ASR, train a model, tune thresholds or change preprocessing.
+
+### Transcription regression and quality evaluation
+
+`tests/evaluation/transcription_runner.py` evaluates the existing processing
+stages directly and then executes `OfflineTranscriptionPipeline` independently.
+It does not import worker integration. Normalization, VAD, speech mapping, chunk
+planning, baseline ASR, changed-context recovery, reconciliation, correction, and
+the final pipeline outcome retain independent results. **The two executions make
+separate provider requests**, including correction repairs; telemetry counts both.
+No algorithm, model role, or provider selection is changed by this evaluator.
+
+#### Reviewed Vietnamese references and configuration
+
+The example manifest is a **non-runnable schema-2 template** with false approvals
+and placeholder hashes/labels. Its 448,000-sample (28-second) historical case is
+a shape example, not a recording, human annotation, or established regression
+result. Provision the actual approved historical fixture and independently label
+all material/critical speech; any loss in that case must fail the regression gate.
+Schema-1 preprocessing-only manifests remain supported by preprocessing evaluation;
+transcription evaluation requires schema 2 and all three additional Vietnamese
+condition tags above. Silence/noise/music controls cannot satisfy speech conditions.
+
+Every speech fixture must have a `reference` descriptor containing `schema_version:
+1`, relative `path`, SHA-256 of the **original external JSON bytes** in `sha256`,
+`reference_version`, and `origin: independent-human`. Keep human reference JSON
+outside Git, under the approved fixture root, with the audio and independent labels.
+Reference text, raw candidates, prompts, provider bodies, and private audio never
+enter reports or logs. Do not derive authoritative references from ASR or VAD.
+
+The external reference JSON has exactly these envelope fields:
+`schema_version: 1`, `fixture_id`, `reference_version`, `annotation_version`,
+`origin: independent-human`, `language: vi`, `sample_count`, and `segments`.
+Each segment has `start_sample`, `end_sample`, `label`, and `text`. Segments must
+partition the entire normalized 16 kHz timeline, agree with independently labeled
+speech/silence/noise/music/ambiguous regions, and match fixture/version identities.
+Speech segments require human transcription; every non-speech or ambiguous segment
+has empty text. Subdivision of an independent label is allowed. Missing references,
+unapproved origins, digest changes, duplicate keys, gaps, invalid Unicode, traversal
+and symlinks (including parent-directory aliases) fail closed. Audio and references
+are revalidated after inference. Reference updates require review and new versions.
+
+Provision an external reviewed matrix using
+`tests/evaluation/transcription_config.example.json`. `configuration_version`,
+each variant's `variant_id`/`version`, and `baseline_variant` are required.
+`target_samples`, `max_request_samples`, `overlap_samples`, and
+`boundary_search_samples` use exact integer samples; they map to existing settings.
+All remaining audio/correction settings come from the explicit settings snapshot.
+The named baseline identifies the reference configuration in the matrix; optional
+historical-report comparisons match the **same** configuration, never a different
+chunking variant. The examples specify no approved quality thresholds.
+
+#### Independent metrics and fail-closed gates
+
+- WER and CER use versioned `vi-nfc-casefold-technical-1` normalization: NFC,
+  Unicode casefold, and NFC again. Vietnamese accents and `đ` remain significant.
+  Letter/number/mark runs form tokens; sentence punctuation is discarded, while
+  attached `+`/`#` and internal `.`, `/`, `_`, `-` preserve terms such as C++, C#,
+  and v2.1. CER counts normalized code points with whitespace removed. Edit-distance
+  ties prefer match/substitution, deletion, insertion. Reports contain counts and
+  exact rational rates, not tokens, text, or alignments. Empty denominators are
+  `null`; insertions can produce WER/CER above one. Raw ASR/recovery hypotheses
+  retain overlap wording so reconciliation's effect is measured separately.
+- Speech coverage and material/critical loss use the union of **non-empty,
+  timestamp-supported output** intersected with independent human speech labels.
+  VAD predictions and good WER/CER cannot establish speech completeness. Final
+  metrics use only the validated corrected result, never raw-ASR fallback.
+- Unresolved ground-truth speech includes missing text support and independently
+  labeled speech intersecting pipeline uncertainty. Its denominator is human speech.
+  Pipeline unresolved/suspicious counts have a separate likely-speech denominator.
+  Recovery success is the signed reduction in unresolved human speech after
+  changed-context requests; no initial target yields `null`, not perfect success.
+- Hallucination measures text-supported samples in confirmed silence/noise/music,
+  both pooled and by label. Ambiguous regions are excluded from confirmed
+  denominators. Hallucination and speech loss remain independent of text error rates.
+- Chunk core/request bounds, overlap, boundary reasons, reconciliation flags,
+  boundary-specific failures, recovery attempts/stop reasons, stage failures,
+  completed stages, and final pipeline status remain visible without wording.
+
+Approved manifest `transcription_quality_gates` entries have `stage`, `metric`,
+exactly one rational `minimum` or `maximum`, and `basis_version`. Stages are
+`preprocessing`, `baseline_asr`, `recovery`, `reconciliation`, `correction`,
+`end_to_end`. Metrics are `wer`, `cer`, `coverage_rate`, `missed_samples`,
+`largest_missed_samples`, `missed_material_samples`, `missed_critical_samples`,
+`hallucination_rate`, `hallucinated_samples`, `unresolved_rate`,
+`pipeline_unresolved_rate`, `recovery_success_rate`. Existing preprocessing gates
+are also enforced. Bounds must come from reviewed evidence; the evaluator supplies
+no probabilistic defaults or implicit tolerance.
+
+Every `historical-regression` fixture additionally receives the mandatory
+`mandatory-zero-material-loss-1` gate: zero material loss, zero critical loss, and
+no successful completion (including `COMPLETED_WITH_WARNINGS`) with unresolved or
+missing human speech. Missing approved fixtures/references/final evidence are
+`UNAVAILABLE`, never a pass. A passing mandatory gate alone leaves probabilistic
+quality `UNESTABLISHED` when no reviewed transcription gates exist. The live pytest
+entry point requires overall `PASS` after writing the sanitized report.
+
+Optional external baseline reports compare matching dataset/manifest, source,
+annotation/reference, full configuration/version, model, prompt, runtime and
+pipeline identities. Incompatible evidence gets no delta or passing comparison.
+Numeric deltas are informational unless the reviewed matrix supplies
+`baseline_policies`: `stage`, `metric`, `direction` (`lower`/`higher`), rational
+`maximum_regression`, and `basis_version`. Missing comparison evidence cannot
+satisfy a policy. Regressions are listed explicitly; there is no implicit tolerance.
+
+Reports are canonical JSON with per-case/configuration IDs, safe effective settings
+and digests, model/provider/resolved-model/prompt/component/runtime provenance,
+per-stage metrics, weighted count-based aggregates (including Vietnamese-only,
+condition, and variant groups), gates, comparisons, and regressions. Latency is
+integer monotonic duration in nanoseconds, never a timestamp. Serialization is
+deterministic for the captured inputs/timings; real provider outputs and timing
+can vary. Provider-reported ASR/correction costs are summed exactly as rational
+values. Unreported costs remain `null`, with a separately labeled known subtotal
+and reported-call count; tokens never imply pricing.
+
+#### Focused offline and opt-in live execution
+
+Deterministic tests use public invented contract strings and injected evidence,
+no network, credentials, model or FFmpeg. Their `offline-contract` mode cannot
+establish a passing Vietnamese quality result, including the 28-second control:
+
+```sh
+uv run pytest tests/evaluation/test_transcription_support.py tests/evaluation/test_transcription_runner.py tests/evaluation/test_evaluation_support.py
+uv run pytest tests/unit/test_correction.py tests/unit/test_openrouter_instruction_llm.py
+```
+
+Only after the dataset/model owner supplies approved external assets, versioned
+matrix/gates and permitted provider credentials, run explicitly:
+
+```sh
+RUN_OPENROUTER_LIVE_EVALUATION=1 \
+uv run --env-file /secure/config/ai-evaluation.env pytest -m evaluation \
+  tests/evaluation/test_transcription_quality.py \
+  --evaluation-fixture-root /secure/datasets/vietnamese-transcription-v1 \
+  --transcription-evaluation-config /secure/config/transcription-matrix.json \
+  --transcription-evaluation-output /secure/results/transcription-quality.json
+```
+
+The explicitly loaded environment needs service identity, a digest-pinned local
+VAD model, `OPENROUTER_API_KEY`, and the approved existing correction model.
+Settings never load an implicit `.env`. No live-provider access occurs without
+`RUN_OPENROUTER_LIVE_EVALUATION=1` and credentials. Add
+`--transcription-evaluation-baseline /secure/results/transcription-baseline.json`
+only for a separately preserved sanitized baseline. The output parent must exist
+outside Git and the fixture root, and cannot be beside source/reference/model
+files or alias any input/configuration/baseline. No assets are downloaded, created,
+replaced or silently substituted. Keep generated reports/baselines outside Git.
 
 ### Runtime verification
 

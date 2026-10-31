@@ -1,6 +1,6 @@
 {
-  "schema_version": 1,
-  "dataset_id": "vietnamese-preprocessing",
+  "schema_version": 2,
+  "dataset_id": "vietnamese-transcription",
   "dataset_version": "1",
   "privacy_approved": false,
   "legal_approved": false,
@@ -8,6 +8,7 @@
   "labeling_guideline_version": "independent-human-labels-1",
   "long_audio_min_samples": 4800000,
   "quality_gates": [],
+  "transcription_quality_gates": [],
   "fixtures": [
     {
       "fixture_id": "vi-weak-continuous-boundary-regression-1",
@@ -15,18 +16,23 @@
       "source_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "kind": "recording",
       "language": "vi",
-      "conditions": ["weak-distant-speech", "continuous-speech", "recording-boundaries", "historical-regression"],
+      "conditions": ["weak-distant-speech", "soft-speech", "technical-vocabulary", "code-switching", "continuous-speech", "recording-boundaries", "historical-regression"],
       "annotation_version": "human-reviewed-1",
       "annotation_origin": "independent-human",
-      "sample_count": 32000,
+      "reference": {
+        "schema_version": 1,
+        "path": "references/vi-opaque-1.json",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "reference_version": "human-reviewed-reference-1",
+        "origin": "independent-human"
+      },
+      "sample_count": 448000,
       "labels": [
-        {"start_sample": 0, "end_sample": 16000, "label": "speech", "critical": true},
-        {"start_sample": 16000, "end_sample": 20000, "label": "ambiguous"},
-        {"start_sample": 20000, "end_sample": 32000, "label": "speech", "material": true}
+        {"start_sample": 0, "end_sample": 448000, "label": "speech", "critical": true, "material": true}
       ],
       "anchors": [
         {"start_sample": 0, "end_sample": 512, "pcm_sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
-        {"start_sample": 31488, "end_sample": 32000, "pcm_sha256": "0000000000000000000000000000000000000000000000000000000000000000"}
+        {"start_sample": 447488, "end_sample": 448000, "pcm_sha256": "0000000000000000000000000000000000000000000000000000000000000000"}
       ]
     },
     {

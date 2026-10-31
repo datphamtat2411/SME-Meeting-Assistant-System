@@ -12,6 +12,7 @@ import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field
 from enum import StrEnum
+from fractions import Fraction
 from types import MappingProxyType
 from typing import Mapping, Protocol
 
@@ -19,7 +20,11 @@ from sme_meeting_ai.audio.models import SampleInterval
 from sme_meeting_ai.core.config import Settings
 
 from .coverage import CoverageState, SpeechCoverageAssessment
-from .reconciliation import ReconciledSegment, ReconciliationFlag, TranscriptReconciliation
+from .reconciliation import (
+    ReconciledSegment,
+    ReconciliationFlag,
+    TranscriptReconciliation,
+)
 
 _VERSION = "1"
 _PROMPT_VERSION = "vi-whole-meeting-1"
@@ -80,6 +85,7 @@ class CorrectionUsage:
     input_tokens: int | None = None
     output_tokens: int | None = None
     total_tokens: int | None = None
+    cost: Fraction | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -243,7 +249,7 @@ def _validate_request(request: CorrectionRequest, config: Mapping) -> int:
     return budget
 
 
-def _strict_json(text: str | bytes | bytearray) -> object:
+def _strict_json(text: str | bytes | bytearray, *, parse_float=float) -> object:
     def pairs(items):
         data = {}
         for key, value in items:
@@ -255,7 +261,7 @@ def _strict_json(text: str | bytes | bytearray) -> object:
     def invalid_constant(_value):
         raise ValueError
 
-    return json.loads(text, object_pairs_hook=pairs, parse_constant=invalid_constant)
+    return json.loads(text, object_pairs_hook=pairs, parse_constant=invalid_constant, parse_float=parse_float)
 
 
 def _valid_interval(interval, sample_count) -> bool:
@@ -304,6 +310,8 @@ def _safe_response(response: CorrectionProviderResponse, request: CorrectionRequ
     _require(isinstance(response.usage, CorrectionUsage), malformed)
     for value in (response.usage.input_tokens, response.usage.output_tokens, response.usage.total_tokens):
         _require(value is None or (type(value) is int and 0 <= value <= 1000000000), malformed)
+    cost = response.usage.cost
+    _require(cost is None or (isinstance(cost, Fraction) and cost >= 0), malformed)
 
 
 def _words(text: str) -> tuple[str, ...]:

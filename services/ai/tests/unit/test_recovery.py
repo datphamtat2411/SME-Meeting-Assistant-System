@@ -7,12 +7,28 @@ import pytest
 
 from sme_meeting_ai.audio.models import NormalizedAudioArtifact, SampleInterval
 from sme_meeting_ai.transcription import (
-    AsrCandidate, AsrError, AsrErrorCategory, AsrProvenance,
-    AsrQualityMetadata, AsrSegment, AsrUsage, CoverageState, RecoveryStopReason,
-    assess_speech_coverage, plan_recovery_windows, recover_speech,
+    AsrCandidate,
+    AsrError,
+    AsrErrorCategory,
+    AsrProvenance,
+    AsrQualityMetadata,
+    AsrSegment,
+    AsrUsage,
+    CoverageState,
+    RecoveryStopReason,
+    assess_speech_coverage,
+    plan_recovery_windows,
+    recover_speech,
+    recovery,
 )
-from sme_meeting_ai.transcription import recovery
-from .test_coverage_validation import handoff, result, settings  # noqa: F401
+
+from .test_coverage_validation import handoff as handoff_fixture  # noqa: F401
+from .test_coverage_validation import result, settings
+
+
+@pytest.fixture(name="handoff")
+def _handoff(request):
+    return request.getfixturevalue("handoff_fixture")
 
 
 def materialize(preprocessing):
