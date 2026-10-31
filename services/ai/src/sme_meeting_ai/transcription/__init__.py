@@ -35,6 +35,15 @@ from .coverage import (
     TranscriptCoverageInterval,
     assess_speech_coverage,
 )
+from .reconciliation import (
+    ReconciledSegment,
+    ReconciliationChunkOutcome,
+    ReconciliationChunkState,
+    ReconciliationFlag,
+    ReconciliationProvenance,
+    TranscriptReconciliation,
+    reconcile_transcript,
+)
 
 __all__ = [
     "AsrAudioChunk",
@@ -58,10 +67,17 @@ __all__ = [
     "CoverageReason",
     "CoverageRegion",
     "CoverageState",
+    "ReconciledSegment",
+    "ReconciliationChunkOutcome",
+    "ReconciliationChunkState",
+    "ReconciliationFlag",
+    "ReconciliationProvenance",
     "SpeechCoverageAssessment",
     "SpeechAwareAsrChunkPlanner",
     "TranscriptCoverageInterval",
+    "TranscriptReconciliation",
     "assess_speech_coverage",
     "execute_asr_chunks",
+    "reconcile_transcript",
     "validate_asr_chunk_plan",
 ]

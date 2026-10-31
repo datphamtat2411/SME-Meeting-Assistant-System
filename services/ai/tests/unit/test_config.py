@@ -691,3 +691,49 @@ def test_invalid_coverage_environment_is_sanitized(monkeypatch, field, values):
         assert field in str(caught.value)
         assert "private-invalid" not in "".join(traceback.format_exception(caught.value))
         assert caught.value.__context__ is None
+
+
+def test_reconciliation_defaults_match_documented_configuration():
+    defaults = Settings(service_name="test-ai", service_identity="ai-core", _env_file=None)
+    documented = load_settings(Path(__file__).resolve().parents[2] / ".env.example")
+    assert defaults.audio_asr_reconciliation_min_shared_tokens == 2
+    assert documented.audio_asr_reconciliation_min_shared_tokens == 2
+
+
+@pytest.mark.parametrize("source", ["environment", "dotenv"])
+def test_reconciliation_configuration_overrides(monkeypatch, tmp_path, source):
+    monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
+    env_file = None
+    if source == "environment":
+        monkeypatch.setenv("AI_AUDIO_ASR_RECONCILIATION_MIN_SHARED_TOKENS", "5")
+    else:
+        env_file = tmp_path / ".env"
+        env_file.write_text("AI_AUDIO_ASR_RECONCILIATION_MIN_SHARED_TOKENS=5\n")
+    assert load_settings(env_file).audio_asr_reconciliation_min_shared_tokens == 5
+
+
+@pytest.mark.parametrize("value", [2, 64])
+def test_reconciliation_configuration_boundaries(value):
+    loaded = Settings(service_name="test-ai", service_identity="ai-core", _env_file=None,
+                      audio_asr_reconciliation_min_shared_tokens=value)
+    assert loaded.audio_asr_reconciliation_min_shared_tokens == value
+
+
+@pytest.mark.parametrize("value", [True, False, 2.0, 2.5, 1, 65])
+def test_reconciliation_configuration_requires_strict_bounded_integer(value):
+    with pytest.raises(ValueError):
+        Settings(service_name="test-ai", service_identity="ai-core", _env_file=None,
+                 audio_asr_reconciliation_min_shared_tokens=value)
+
+
+@pytest.mark.parametrize("value", ["1", "65", "2.0", "true", "nan", "private-invalid"])
+def test_invalid_reconciliation_configuration_is_sanitized(monkeypatch, value):
+    monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
+    monkeypatch.setenv("AI_AUDIO_ASR_RECONCILIATION_MIN_SHARED_TOKENS", value)
+    with pytest.raises(ConfigurationError) as caught:
+        load_settings(None)
+    assert "audio_asr_reconciliation_min_shared_tokens" in str(caught.value)
+    assert "private-invalid" not in "".join(traceback.format_exception(caught.value))
+    assert caught.value.__context__ is None

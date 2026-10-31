@@ -132,13 +132,17 @@ class Settings(BaseSettings):
     audio_asr_coverage_low_confidence_threshold: float = Field(
         default=0.35, ge=0, le=1, allow_inf_nan=False,
     )
+    audio_asr_reconciliation_min_shared_tokens: int = Field(
+        default=2, ge=2, le=64, strict=True,
+    )
 
     @field_validator(
         "audio_asr_chunk_target_samples", "audio_asr_chunk_max_request_samples",
         "audio_asr_chunk_overlap_samples", "audio_asr_chunk_boundary_search_samples",
         "audio_asr_chunk_max_chunks", "audio_asr_max_concurrent_chunks",
         "audio_asr_coverage_max_tolerated_speech_map_gap_samples",
-        "audio_asr_coverage_repetition_min_chars", mode="before",
+        "audio_asr_coverage_repetition_min_chars",
+        "audio_asr_reconciliation_min_shared_tokens", mode="before",
     )
     @classmethod
     def parse_asr_chunk_integers(cls, value: object) -> object:
