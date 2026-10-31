@@ -265,14 +265,33 @@ class DecisionManagementIntegrationTests {
 
     @Test
     void rejectedAndProposedDecisionsCannotBeEditedThroughConfirmedCorrection() throws Exception {
-        var confirmed = create(content("Temporarily confirmed"));
-        UUID id = id(confirmed);
-        // This direct DB fixture represents an earlier human proposal; MI-06
-        // owns reviewer transitions, not MI-05's PATCH content correction.
+        UUID id = UUID.randomUUID();
+        // A manual proposal is a valid existing business state, but MI-05
+        // intentionally exposes editing only for confirmed Decisions.
         jdbc.update("""
-            UPDATE meeting_decisions SET status='PROPOSED',confirmed_by_user_id=NULL,
-                confirmed_at=NULL,version=1 WHERE id=?
-            """, id);
+            INSERT INTO meeting_decisions(
+                id,meeting_id,content,status,source_type,created_by_user_id)
+            VALUES (?,?,'Unreviewed proposal','PROPOSED','MANUAL',?)
+            """, id, meeting, organizer);
+        mvc.perform(patch(url() + "/" + id).principal(as(organizer))
+                .header("If-Match", "\"dec-" + id + "-0\"")
+                .contentType(MediaType.APPLICATION_JSON).content(content("Not confirmed")))
+            .andExpect(status().isConflict());
+
+        // MI-06 will supply the public review command; the database transition
+        // fixture validates the MI-05 endpoint does not reopen rejected records.
+        jdbc.update("""
+            UPDATE meeting_decisions
+               SET status='REJECTED',rejected_by_user_id=?,rejected_at=CURRENT_TIMESTAMP,version=1
+             WHERE id=?
+            """, organizer, id);
+        mvc.perform(patch(url() + "/" + id).principal(as(organizer))
+                .header("If-Match", "\"dec-" + id + "-1\"")
+                .contentType(MediaType.APPLICATION_JSON).content(content("Rejected rewrite")))
+            .andExpect(status().isConflict());
+        assertThat(jdbc.queryForObject(
+            "SELECT content FROM meeting_decisions WHERE id=?", String.class, id))
+            .isEqualTo("Unreviewed proposal");
     }
 
     @Test
