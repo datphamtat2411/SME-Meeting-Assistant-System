@@ -45,7 +45,7 @@ public class SummaryController {
 
     private ResponseEntity<ApiResponse<SummaryView>> privateSummary(SummaryView view) {
         return ResponseEntity.ok()
-            .eTag(IntelligenceVersionTags.summary(view.id(), view.versionNumber()))
+            .eTag(IntelligenceVersionTags.summary(view.id(), view.versionNumber(), view.isStale()))
             .cacheControl(CacheControl.noStore())
             .body(responses.success(view));
     }
