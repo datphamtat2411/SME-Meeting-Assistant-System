@@ -70,8 +70,13 @@ public class IntelligenceResultAcceptance {
             if (prior.type().equals(payload.resultType())
                     && prior.digest().equals(artifact.sha256())
                     && prior.key().equals(artifact.objectKey())) {
-                // Committed receipt is the acknowledgement; do not re-run the
-                // completed stage or change human-confirmed downstream rows.
+                // A digest match alone never proves that this caller owns the
+                // original Media claim. Replay can be ACKed after lease expiry,
+                // but only for the same accepted stage/token.
+                if(!media.hasAcceptedStageClaim(claim))
+                    throw new com.sme.meetingassistant.api.media.repository.MediaRepository
+                        .ProcessingLifecycleConflictException(
+                            "Accepted result replay requires its original stage claim.");
                 metrics.committed("ai_result_ingestion", "REPLAY");
                 return new Acceptance(true,0);
             }

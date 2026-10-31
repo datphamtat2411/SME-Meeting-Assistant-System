@@ -52,6 +52,14 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
         return repository.derivedStage(stageRunId);
     }
 
+    @Override
+    @Transactional(readOnly=true)
+    public boolean hasAcceptedStageClaim(StageClaim claim) {
+        if(claim==null || claim.stageRunId()==null || claim.claimToken()==null)
+            return false;
+        return repository.hasAcceptedStageClaim(claim);
+    }
+
     private int leaseSeconds() {
         int value = this.properties.getProcessing().getStageLeaseSeconds();
         if (value < 30) throw new IllegalStateException("Stage lease must be at least 30 seconds.");

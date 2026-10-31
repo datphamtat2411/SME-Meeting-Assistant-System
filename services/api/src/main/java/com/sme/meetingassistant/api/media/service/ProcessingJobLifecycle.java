@@ -15,6 +15,12 @@ public interface ProcessingJobLifecycle {
 
     DerivedStage derivedStage(UUID stageRunId);
 
+    /** Committed stage success with this exact original claim token (replay only).
+     * Expired leases are allowed here because replay never changes business state.
+     * A different token may never borrow an accepted receipt.
+     */
+    boolean hasAcceptedStageClaim(StageClaim claim);
+
     StageClaim startStage(UUID jobId, String stageCode, String providerName, String modelName);
 
     void renewStageLease(StageClaim claim);

@@ -405,6 +405,22 @@ class IntelligenceResultIngestionIntegrationTests {
     }
 
     @Test
+    void exactDigestReplayCannotBorrowAnotherStageClaimToken() throws Exception {
+        var original=claim("SUMMARY",1);
+        String digest=expose(original,envelope("SUMMARY",original,summary("Durable receipt")));
+        ingest.ingest(original,digest);
+        assertThat(receiptCount()).isEqualTo(1);
+        var impostor=new StageClaim(original.stageRunId(),UUID.randomUUID());
+        assertThatThrownBy(()->ingest.ingest(impostor,digest))
+            .isInstanceOf(
+                com.sme.meetingassistant.api.media.repository.MediaRepository
+                    .ProcessingLifecycleConflictException.class);
+        assertThat(ingest.ingest(original,digest).replay()).isTrue();
+        assertThat(receiptCount()).isEqualTo(1);
+        assertThat(count("meeting_summary_versions")).isEqualTo(1);
+    }
+
+    @Test
     void newAiVersionNeverOverwritesAnExistingSummary() throws Exception {
         var first=claim("SUMMARY",1);
         String a=expose(first,envelope("SUMMARY",first,summary("Initial")));

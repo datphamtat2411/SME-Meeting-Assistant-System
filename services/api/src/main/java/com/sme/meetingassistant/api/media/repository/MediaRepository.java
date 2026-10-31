@@ -396,6 +396,15 @@ public class MediaRepository {
             """, Boolean.class, claim.stageRunId(), jobId, claim.claimToken()));
     }
 
+    /** Only for an already committed result replay; never authorizes fresh writes. */
+    public boolean hasAcceptedStageClaim(StageClaim claim) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+            SELECT EXISTS(SELECT 1 FROM processing_stage_runs
+              WHERE id=? AND claim_token=?
+                AND status IN ('SUCCEEDED','SUCCEEDED_WITH_WARNING'))
+            """,Boolean.class,claim.stageRunId(),claim.claimToken()));
+    }
+
     private boolean liveClaim(StageClaim claim) {
         return Boolean.TRUE.equals(this.jdbc.queryForObject("""
             SELECT EXISTS (SELECT 1 FROM processing_stage_runs
