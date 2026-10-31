@@ -43,6 +43,8 @@ class IntelligenceResultIngestionIntegrationTests {
     @Autowired MockMvc mvc;
     @Autowired IntelligenceResultIngestion ingest;
     @MockitoBean ObjectStorage storage;
+    @org.springframework.test.context.bean.override.mockito.MockitoSpyBean
+    com.sme.meetingassistant.api.meetingintelligence.service.MeetingIntelligenceAudit audit;
 
     private UUID actor, meeting, media, job, transcript, segment, snapshot;
 
@@ -380,6 +382,38 @@ class IntelligenceResultIngestionIntegrationTests {
         assertThat(stageStatus(stage)).isEqualTo("RUNNING");
     }
 
+
+    @Test
+    void lateAuditFailureRollsBackReceiptStageSummaryAndAllowsCleanRetry() throws Exception {
+        var stage=claim("SUMMARY",1);
+        String digest=expose(stage,envelope("SUMMARY",stage,
+            summary("Rollback must be atomic")));
+        org.mockito.Mockito.doThrow(new IllegalStateException("injected-late-audit-failure"))
+            .when(audit).resultAccepted(
+                org.mockito.ArgumentMatchers.any(UUID.class),
+                org.mockito.ArgumentMatchers.any(UUID.class),
+                org.mockito.ArgumentMatchers.any(UUID.class),
+                org.mockito.ArgumentMatchers.any(UUID.class),
+                org.mockito.ArgumentMatchers.any(UUID.class),
+                org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyInt());
+        assertThatThrownBy(()->ingest.ingest(stage,digest))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessageContaining("injected-late-audit-failure");
+        assertThat(stageStatus(stage)).isEqualTo("RUNNING");
+        assertThat(receiptCount()).isZero();
+        assertThat(count("meeting_summary_versions")).isZero();
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM audit_events WHERE meeting_id=?
+                AND action_code='MI_AI_RESULT_ACCEPTED'
+            """,Integer.class,meeting)).isZero();
+        org.mockito.Mockito.reset(audit);
+        var accepted=ingest.ingest(stage,digest);
+        assertThat(accepted.replay()).isFalse();
+        assertThat(receiptCount()).isEqualTo(1);
+        assertThat(stageStatus(stage)).isEqualTo("SUCCEEDED");
+    }
 
     @Test
     void simultaneousExactIngestionHasOneCommitOneReplayAndOneAudit() throws Exception {

@@ -497,6 +497,44 @@ class SummaryManagementIntegrationTests {
     }
 
     @Test
+    void concurrentHumanEditAndCandidateActivationCannotBothWinSameETag()
+            throws Exception {
+        UUID candidate=candidate(2,"AI candidate selected during review");
+        try(var pool=Executors.newFixedThreadPool(2)) {
+            CountDownLatch start=new CountDownLatch(1);
+            Callable<Integer> selection=()->{
+                start.await(10,TimeUnit.SECONDS);
+                return mvc.perform(post(activateUrl(candidate)).principal(as(organizer))
+                    .header("If-Match",tag())).andReturn().getResponse().getStatus();
+            };
+            Callable<Integer> edit=()->{
+                start.await(10,TimeUnit.SECONDS);
+                return mvc.perform(patch(url()).principal(as(organizer))
+                    .header("If-Match",tag())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body("Human revision wins only if first")))
+                    .andReturn().getResponse().getStatus();
+            };
+            var a=pool.submit(selection);var b=pool.submit(edit);
+            start.countDown();
+            assertThat(java.util.List.of(a.get(20,TimeUnit.SECONDS),
+                b.get(20,TimeUnit.SECONDS)))
+                .containsExactlyInAnyOrder(200,412);
+        }
+        assertThat(jdbc.queryForObject("""
+            SELECT COUNT(*) FROM meeting_summary_versions
+             WHERE meeting_id=? AND is_current
+            """,Integer.class,meeting)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+            SELECT COUNT(*) FROM audit_events WHERE meeting_id=?
+              AND action_code IN ('MI_SUMMARY_EDITED','MI_SUMMARY_VERSION_ACTIVATED')
+            """,Integer.class,meeting)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+            SELECT content FROM meeting_summary_versions WHERE id=?
+            """,String.class,firstVersion)).isEqualTo("Original summary");
+    }
+
+    @Test
     void concurrentActivationOfTwoCandidatesHasOneWinnerAndOnePreconditionFailure()
             throws Exception {
         UUID a=candidate(2,"Candidate A"),b=candidate(3,"Candidate B");

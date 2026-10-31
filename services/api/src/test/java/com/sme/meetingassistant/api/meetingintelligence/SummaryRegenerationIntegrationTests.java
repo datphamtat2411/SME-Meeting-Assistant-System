@@ -304,6 +304,40 @@ class SummaryRegenerationIntegrationTests {
     }
 
     @Test
+    void concurrentSameIdempotencyKeyKeepsOneDerivedJobAndCleansLosingSnapshot()
+            throws Exception {
+        var gate=new java.util.concurrent.CountDownLatch(1);
+        var ready=new java.util.concurrent.CountDownLatch(2);
+        try(var pool=java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            java.util.concurrent.Callable<UUID> submit=()->{
+                ready.countDown();
+                if(!gate.await(15,java.util.concurrent.TimeUnit.SECONDS))
+                    throw new IllegalStateException("Admission gate expired.");
+                return job(request(owner,"parallel-same-key"));
+            };
+            var first=pool.submit(submit);var second=pool.submit(submit);
+            assertThat(ready.await(15,java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            gate.countDown();
+            UUID one=first.get(20,java.util.concurrent.TimeUnit.SECONDS);
+            UUID two=second.get(20,java.util.concurrent.TimeUnit.SECONDS);
+            assertThat(one).isEqualTo(two);
+        } finally {
+            gate.countDown();
+        }
+        assertThat(jobs()).isEqualTo(2);
+        assertThat(snapshots()).isEqualTo(1);
+        assertThat(blobs).hasSize(1);
+        assertThat(jdbc.queryForObject("""
+            SELECT COUNT(*) FROM outbox_events WHERE aggregate_id=?
+                AND event_type='PROCESSING_JOB_QUEUED'
+            """,Integer.class,job(request(owner,"parallel-same-key")))).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+            SELECT COUNT(*) FROM audit_events WHERE meeting_id=?
+               AND action_code='MI_SUMMARY_REGENERATION_REQUESTED'
+            """,Integer.class,meeting)).isEqualTo(1);
+    }
+
+    @Test
     void simultaneousActiveJobAndMissingKeyAreRejected() throws Exception {
         job(request(owner,"first-key"));
         assertThat(request(owner,"different-key").getStatus()).isEqualTo(409);
