@@ -5,9 +5,8 @@ import com.sme.meetingassistant.api.common.ApiResponseFactory;
 import com.sme.meetingassistant.api.media.repository.MediaRepository.ProcessingLifecycleConflictException;
 import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle.StageClaim;
 import com.sme.meetingassistant.api.meetingintelligence.service.IntelligenceResultIngestion;
-import jakarta.validation.Valid;
-import jakarta.validation.constraints.NotNull;
-import jakarta.validation.constraints.Pattern;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.dao.DataAccessException;
@@ -38,17 +37,26 @@ public class InternalResultController {
         this.responses=responses;
     }
 
-    public record AcceptRequest(@NotNull UUID stageRunId,
-            @NotNull UUID claimToken,
-            @NotNull @Pattern(regexp="[0-9a-f]{64}") String artifactSha256) { }
+    private static final Set<String> REQUEST_FIELDS=Set.of(
+        "stageRunId","claimToken","artifactSha256");
     public record AcceptedResult(boolean replay,int writtenRows) { }
 
     @PostMapping("/accept")
     public ResponseEntity<ApiResponse<AcceptedResult>> accept(
-            @Valid @RequestBody AcceptRequest input) {
+            @RequestBody Map<String,Object> input) {
+        if(input==null || !input.keySet().equals(REQUEST_FIELDS)) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
+                "Invalid internal result request fields.");
+        }
+        UUID stageRunId=requiredUuid(input.get("stageRunId"));
+        UUID claimToken=requiredUuid(input.get("claimToken"));
+        Object providedDigest=input.get("artifactSha256");
+        if(!(providedDigest instanceof String digest) || !digest.matches("[0-9a-f]{64}")) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
+                "Invalid artifact digest.");
+        }
         try {
-            var receipt=ingestion.ingest(
-                new StageClaim(input.stageRunId(),input.claimToken()),input.artifactSha256());
+            var receipt=ingestion.ingest(new StageClaim(stageRunId,claimToken),digest);
             return ResponseEntity.ok().cacheControl(CacheControl.noStore())
                 .body(responses.success("Result acceptance completed.",
                     new AcceptedResult(receipt.replay(),receipt.writtenRows())));
@@ -62,5 +70,14 @@ public class InternalResultController {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
                 "Result acceptance is temporarily unavailable.",unavailable);
         }
+    }
+
+    private static UUID requiredUuid(Object value) {
+        if(!(value instanceof String text)
+                || !text.matches("[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
+                "Invalid stage identity.");
+        }
+        return UUID.fromString(text);
     }
 }
