@@ -39,6 +39,17 @@ public class TranscriptSourceGuard {
         return transcripts.requireCurrentEvidence(meetingId, segmentIds);
     }
 
+    /**
+     * MI-06: fail closed if an AI proposal's pinned transcript has changed,
+     * or referenced segments intersect suspicious/unresolved evidence.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void requireReviewableDecisionEvidence(UUID meetingId, UUID transcriptId,
+            long contentRevision, List<UUID> segmentIds) {
+        transcripts.requireReviewableDecisionEvidence(meetingId, transcriptId,
+            contentRevision, segmentIds);
+    }
+
     @Transactional(propagation = Propagation.MANDATORY)
     public void requireCurrentForDerivedWrite(UUID meetingId, TranscriptSource expected) {
         this.transcripts.requireCurrentSource(meetingId, expected);
