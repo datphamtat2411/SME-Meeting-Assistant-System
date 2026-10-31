@@ -873,3 +873,36 @@ def test_correction_invalid_environment_is_sanitized(monkeypatch, field):
         load_settings(None)
     assert "private invalid" not in "".join(traceback.format_exception(caught.value))
     assert caught.value.__context__ is None
+
+
+@pytest.mark.parametrize("field,value", [
+    ("core_api_base_url", "http://core.internal"),
+    ("core_api_base_url", "https://user:private-secret@core.internal"),
+    ("s3_endpoint_url", "http://storage.internal"),
+    ("rabbitmq_url", "amqp://private-secret@broker.internal"),
+    ("core_api_max_attempts", 4), ("core_api_timeout_seconds", 16),
+    ("core_api_connect_timeout_seconds", 4), ("s3_download_timeout_seconds", float("inf")),
+    ("rabbitmq_delivery_limit", 6), ("worker_concurrency", 65),
+])
+def test_worker_integration_settings_fail_closed(field, value):
+    with pytest.raises(ValueError):
+        Settings(service_name="test", service_identity="ai-core", _env_file=None, **{field: value})
+
+
+def test_worker_credentials_are_secret_and_outbound_tls_is_distinct():
+    settings = Settings(service_name="test", service_identity="ai-core", _env_file=None,
+                        rabbitmq_password="private-broker", s3_access_key_id="private-access",
+                        s3_secret_access_key="private-storage")
+    for value in ("private-broker", "private-access", "private-storage"):
+        assert value not in repr(settings) and value not in settings.model_dump_json()
+    assert settings.core_api_client_key_file is None
+    assert settings.tls_key_file is None
+    assert settings.core_api_max_attempts == 3
+    assert settings.rabbitmq_delivery_limit == 5
+
+
+def test_partial_outbound_mtls_rejected_without_loading_files(tmp_path):
+    with pytest.raises(ValueError):
+        Settings(service_name="test", service_identity="ai-core", _env_file=None,
+                 core_api_base_url="https://core.internal",
+                 core_api_client_key_file=tmp_path / "private-key")

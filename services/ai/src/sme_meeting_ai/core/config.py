@@ -5,6 +5,7 @@ from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal, Self
+from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict, SettingsError
@@ -50,10 +51,38 @@ class Settings(BaseSettings):
     tls_cert_file: Path | None = None
     tls_key_file: Path | None = None
     tls_client_ca_file: Path | None = None
-    worker_concurrency: int = Field(default=1, gt=0)
+    worker_concurrency: int = Field(default=1, gt=0, le=64)
     worker_shutdown_timeout_seconds: float = Field(
         default=30, gt=0, le=300, allow_inf_nan=False,
     )
+    worker_execution_timeout_seconds: float = Field(default=14400, gt=0, le=86400, allow_inf_nan=False)
+    rabbitmq_url: str | None = Field(default=None, repr=False)
+    rabbitmq_username: SecretStr | None = Field(default=None, repr=False)
+    rabbitmq_password: SecretStr | None = Field(default=None, repr=False)
+    rabbitmq_ca_file: Path | None = None
+    rabbitmq_exchange: Literal["meeting.processing"] = "meeting.processing"
+    rabbitmq_routing_key: Literal["processing.job.queued"] = "processing.job.queued"
+    rabbitmq_queue: Literal["meeting.processing.jobs"] = "meeting.processing.jobs"
+    rabbitmq_delivery_limit: Literal[5] = 5
+    rabbitmq_connect_timeout_seconds: float = Field(default=10, gt=0, le=30, allow_inf_nan=False)
+    s3_endpoint_url: str | None = Field(default=None, repr=False)
+    s3_storage_id: str = Field(default="private", pattern=r"^[A-Za-z0-9_-]{1,64}$")
+    s3_region: str = Field(default="us-east-1", pattern=r"^[A-Za-z0-9_-]{1,80}$")
+    s3_bucket: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")
+    s3_access_key_id: SecretStr | None = Field(default=None, repr=False)
+    s3_secret_access_key: SecretStr | None = Field(default=None, repr=False)
+    s3_ca_file: Path | None = None
+    s3_path_style: bool = True
+    s3_connect_timeout_seconds: float = Field(default=3, gt=0, le=3, allow_inf_nan=False)
+    s3_read_timeout_seconds: float = Field(default=15, gt=0, le=30, allow_inf_nan=False)
+    s3_download_timeout_seconds: float = Field(default=300, gt=0, le=900, allow_inf_nan=False)
+    core_api_base_url: str | None = Field(default=None, repr=False)
+    core_api_server_ca_file: Path | None = None
+    core_api_client_cert_file: Path | None = None
+    core_api_client_key_file: Path | None = Field(default=None, repr=False)
+    core_api_connect_timeout_seconds: float = Field(default=3, gt=0, le=3, allow_inf_nan=False)
+    core_api_timeout_seconds: float = Field(default=15, gt=0, le=15, allow_inf_nan=False)
+    core_api_max_attempts: int = Field(default=3, ge=1, le=3, strict=True)
     audio_max_input_bytes: int = Field(default=536870912, gt=0, le=2147483648)
     audio_max_duration_seconds: float = Field(
         default=3600, gt=0, le=14400, allow_inf_nan=False,
@@ -175,6 +204,36 @@ class Settings(BaseSettings):
     transcript_correction_temperature: float = Field(default=0, ge=0, le=1, allow_inf_nan=False)
     transcript_correction_min_text_ratio: float = Field(default=0.65, gt=0, le=1, allow_inf_nan=False)
     transcript_correction_max_text_ratio: float = Field(default=1.5, ge=1, le=3, allow_inf_nan=False)
+
+    @field_validator("rabbitmq_url", "s3_endpoint_url", "core_api_base_url")
+    @classmethod
+    def private_endpoint(cls, value: str | None, info) -> str | None:
+        if value is None:
+            return None
+        parts = urlsplit(value)
+        scheme = "amqps" if info.field_name == "rabbitmq_url" else "https"
+        if (parts.scheme != scheme or not parts.hostname or parts.username or parts.password
+                or parts.query or parts.fragment or any(ord(c) <= 32 for c in value)
+                or (scheme == "https" and parts.path not in ("", "/"))):
+            raise ValueError("Invalid private endpoint")
+        # Validate port eagerly; endpoints are the deployment allowlist, never wire data.
+        _ = parts.port
+        return value.rstrip("/") if scheme == "https" else value
+
+    @field_validator("rabbitmq_delivery_limit", "core_api_max_attempts", mode="before")
+    @classmethod
+    def parse_worker_integers(cls, value: object) -> object:
+        return cls.parse_asr_chunk_integers(value)
+
+    @model_validator(mode="after")
+    def complete_outbound_tls(self) -> Self:
+        material = (self.core_api_server_ca_file, self.core_api_client_cert_file,
+                    self.core_api_client_key_file)
+        if any(p is not None for p in material) and not all(p is not None for p in material):
+            raise ValueError("Outbound mTLS requires all three files")
+        if self.core_api_client_key_file is not None and self.core_api_client_key_file == self.tls_key_file:
+            raise ValueError("Worker client credentials must be distinct")
+        return self
 
     @field_validator(
         "audio_asr_chunk_target_samples", "audio_asr_chunk_max_request_samples",

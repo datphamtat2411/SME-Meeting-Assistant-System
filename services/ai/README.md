@@ -45,9 +45,9 @@ uv run sme-ai-worker
 Module equivalents are `uv run python -m sme_meeting_ai.api` and
 `uv run python -m sme_meeting_ai.workers`. HTTP runs one Uvicorn process without
 reload, access logging, or proxy-header interpretation. Local binding defaults
-to `127.0.0.1:8000`. The worker currently exits **1** with
-`worker.execution.missing`: no consumer execution hook is registered. This is
-intentional and must not be treated as worker readiness.
+to `127.0.0.1:8000`. The worker registers the offline transcription execution
+hook and requires the private integration configuration described below. Missing
+configuration fails startup with a sanitized nonzero result.
 
 `AI_SERVICE_NAME` and `AI_SERVICE_IDENTITY` are required. Retain
 `AI_INTERNAL_ALLOWED_CALLERS=["core-api"]`; it is an allowlist, not evidence of
@@ -320,10 +320,9 @@ recording concurrency, and fresh recurrent/context state per recording. One
 recording-level watchdog terminates in-flight ONNX execution at the deadline.
 
 `audio.vad.silero_vad_resource(settings)` is an async context manager for worker
-ownership: an injected `lambda: silero_vad_resource(settings)` resource factory
-loads one backend and closes it on worker shutdown. The worker entrypoint still
-has no execution hook. Detection adds no speech-map construction, ASR, HTTP,
-RabbitMQ, S3, or job orchestration.
+ownership. The transcription worker composes the same backend with the existing
+pipeline and retains it until its active synchronous readers stop. Detection
+itself remains independent of job transport and orchestration.
 
 Focused deterministic verification (fake VAD streams and ONNX sessions; no model
 or FFmpeg needed):
@@ -550,7 +549,7 @@ uv run python tests/container_smoke.py
 
 AI CI runs the same container smoke script: non-root HTTP, liveness/readiness,
 graceful SIGTERM exit, production rejection before readiness, independent worker
-failure without an execution hook, and production mTLS using ephemeral test PKI.
+failure without required worker configuration, and production mTLS using ephemeral test PKI.
 Real TLS integration tests also cover absent, expired, untrusted, ambiguous and
 unauthorized client identities, forged headers, and plaintext bypass attempts.
 Tests require `openssl`; container smoke additionally needs a working Docker
@@ -564,3 +563,81 @@ automatically on boot, an administrator can run `sudo systemctl enable docker`.
 If the socket reports permission denied, ask the administrator to grant the
 appropriate Docker access; do not make the socket world-writable. With Docker
 Desktop, start Desktop and enable integration for the current WSL distribution.
+
+### Transcription worker — private Contract V1
+
+The implementation targets
+[`CORE_API_AI_TRANSCRIPTION_WORKER_V1.md`](../../contracts/CORE_API_AI_TRANSCRIPTION_WORKER_V1.md).
+Core owns admission/authorization, retry generations, leases, durable receipts,
+stage projection and canonical transcript persistence. The worker consumes queued
+V1 and retry V2 events, runs the existing atomic pipeline, and publishes only
+validated whole-meeting LLM-corrected results. Raw ASR candidates, provider
+diagnostics and normalized audio are never uploaded.
+
+Configure the commented `AI_CORE_API_*`, `AI_RABBITMQ_*`, and `AI_S3_*` placeholders
+in `.env.example` through externally mounted configuration/secret storage, plus
+the existing VAD model, `OPENROUTER_API_KEY` and approved correction model. Core
+uses HTTPS with an explicit server CA, hostname verification, TLS >=1.2 and a
+separate worker client certificate/key (`urn:sme:service:ai-worker`, clientAuth).
+There is no public API, plaintext or Bearer fallback. Keep inbound `AI_TLS_*`
+credentials separate. Endpoint configuration is the deployment allowlist; neither
+messages nor Core storage references can select endpoints. Pools snapshot these
+credentials; rotation requires controlled pool recreation/process restart.
+
+RabbitMQ intake is passive (no topology administration), manual-ACK, with prefetch
+and whole-handler concurrency both equal to `AI_WORKER_CONCURRENCY` (1..64).
+Operations must provision the V1 durable quorum work/dead-letter queues,
+`delivery-limit=5`, `overflow=reject-publish`, and at-least-once dead-lettering;
+Core must provide durable dead-letter reconciliation. The worker never republishes
+messages to reset the budget. Unknown/malformed messages are rejected to that
+durable reconciliation/quarantine path. Normal ACK requires an authenticated,
+validated Core success/failure/supersession delivery state, never just HTTP 200.
+
+S3 storage uses a configured logical alias and private HTTPS endpoint with
+explicit least-privilege credentials. Grant source reads and corrected-result
+create/read access only. Enforce create-only writes at the storage-policy boundary
+for `processing/{jobId}/transcription/results/{producerStageRunId}.json`; no source
+overwrite, listing, deletion or bucket-administration permissions are needed.
+Results use `If-None-Match: *`; existing/uncertain writes are read and revalidated,
+never replaced or deleted. Core authorizes reuse for the exact job/media/revision.
+Finalization-only retries without an eligible object report the typed missing
+result; they do not run inference. Corrected artifacts survive publication and ACK
+failures for Core reconciliation.
+
+HTTP transport is bounded to at most 3 attempts, 3s connect/15s total per request,
+1s/2s jittered backoff and `Retry-After` capped at 30s. Completion and its receipt
+lookups share one three-attempt budget and stable command identity. Only Core
+admits processing retries. Lease renewal runs separately from inference and uses
+Core-returned timings with a conservative monotonic stop deadline (RTT plus 5s
+safety margin). The finite `AI_WORKER_EXECUTION_TIMEOUT_SECONDS` (default 14400,
+maximum 86400) also fences stalled work.
+
+SIGTERM stops intake before draining within the existing worker shutdown budget.
+At cancellation/deadline, late thread results are fenced and unfinished deliveries
+remain unacknowledged. A synchronous inference thread cannot be killed by asyncio:
+source files, providers and VAD remain owned until that reader stops. Configure
+the supervisor's hard-stop grace/resource limits for forced termination. Private
+source directories are 0700, files are 0600, and startup reclaims at most 32 orphan
+directories under the dedicated owned temporary root using POSIX liveness locks.
+Accepted media and corrected storage objects are never local-cleanup candidates.
+
+The provenance configuration hash covers `worker-config-v1` and the effective
+`audio_*`/`transcript_correction_*` snapshot excluding host paths. Preserve that
+secret-free configuration in AI release/configuration records alongside the
+pipeline version; the result retains component/model/prompt/VAD provenance and
+all registered pipeline warnings. It carries no prompts, arbitrary diagnostics,
+claim tokens or credentials. Retain original secret-free settings in deployment
+release records to reproduce the hash.
+
+Focused deterministic checks (stateful fake Core, private storage and broker
+deliveries; existing real pipeline with injected providers, no external assets):
+
+```sh
+uv run ruff check src/sme_meeting_ai/core/config.py src/sme_meeting_ai/workers/__main__.py src/sme_meeting_ai/workers/transcription.py src/sme_meeting_ai/integrations tests/unit/test_config.py tests/unit/test_transcription_worker.py tests/unit/test_worker_integrations.py tests/integration/test_transcription_worker_integration.py
+uv run pytest tests/unit/test_config.py tests/unit/test_transcription_worker.py tests/unit/test_worker_integrations.py tests/integration/test_transcription_worker_integration.py
+```
+
+These checks establish AI-side contract behavior. Live acceptance additionally
+requires the Core V1 receiver/receipts, real worker-to-Core mTLS, broker policy and
+dead-letter reconciliation, and storage IAM/immutability enforcement specified by
+the contract. They are separate deployment/integration deliverables.
