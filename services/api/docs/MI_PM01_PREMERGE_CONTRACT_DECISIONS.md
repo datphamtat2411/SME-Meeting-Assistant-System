@@ -139,11 +139,11 @@ These are in scope for **downstream tasks**, not new changes in MI-PM-01:
 
 | Finding | Chosen handling | Owner/task |
 | --- | --- | --- |
-| AI `uncertainty` parsed but discarded before Decision persistence | Preserve the bounded per-candidate uncertainty signal, keep model assertion distinct from human decision authority. | MI-PM-05; RE05 schema change review |
-| AI `warnings` validated but not reflected in trusted quality projection | Preserve validated warnings with provenance, derive product-visible warnings without treating AI hints as transcript ground truth. | MI-PM-05; RE06/RE05 review |
+| AI `uncertainty` parsed but discarded before Decision persistence | **Implemented MI-PM-05 (Flyway V25):** preserve the bounded per-candidate uncertainty signal, keep model assertion distinct from human decision authority. | RE05 DB-SUM-006 |
+| AI `warnings` validated but not reflected in trusted quality projection | **Implemented MI-PM-05:** preserve validated warning codes, expose them independently while deriving READY_WITH_WARNINGS from Transcript warning or AI advisory hint. | RE05 DB-SUM-006 / RE06 FEAT-SUM-GEN-002A |
 | Valid multiline Vietnamese text rejected by general-purpose control-char validator | Allow LF/CRLF/TAB only in bounded user-content fields, normalize safely; retain strict controls for IDs/metadata. | MI-PM-06; AI/API schema fixtures |
 | Same Idempotency-Key replay after transcript revision changes | Return the **original admitted job** with its pinned source for a retry; a caller must use a **new key** for new intent. Do not auto-retarget an old request. Revalidate tenant/meeting/actor/operation and original fingerprint. | MI-PM-10 / Media review |
-| AI model/prompt run attribution | Preserve versioned minimal producer metadata as untrusted-but-validated provenance, not as a business permission. | MI-PM-05 / AI review |
+| AI model/prompt run attribution | **Implemented MI-PM-05:** immutable receipt attribution, validated as untrusted producer provenance, not as business permission. | Existing v1 producer contract |
 | Retention and orphan source objects | Decide policy with Security/Operations, use auditable bounded cleanup; do not invent global deletion or retention years. | MI-PM-09 |
 
 ## 11. Owner approvals and exact required canonical changes

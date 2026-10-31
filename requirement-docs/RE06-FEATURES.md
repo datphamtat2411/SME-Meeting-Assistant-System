@@ -1285,6 +1285,10 @@ If the transcript contains material unresolved or suspicious regions, the summar
 
 Applicable rules: `BR-SUM-003`.
 
+### FEAT-SUM-GEN-002A — Visible advisory AI quality warnings
+
+When accepted AI Summary output provides validated warning codes, authorized Summary and version-history views SHALL preserve and expose these warnings separately from authoritative Transcript evidence. A warning-bearing Summary SHALL NOT be presented as unconditionally READY without warnings. A human edit SHALL NOT silently erase its source warning lineage, nor acquire false AI-authored attribution.
+
 ### FEAT-SUM-GEN-003 — Summary generation failure
 
 If summary generation fails after a valid transcript exists, the transcript SHALL remain available and the summary area SHALL expose a retryable/failed state.
@@ -1358,6 +1362,10 @@ A decision extracted from suspicious or unresolved transcript evidence SHALL NOT
 The product SHOULD surface the underlying uncertainty or prevent confirmation until an authorized reviewer has sufficient evidence.
 
 Applicable rules: `BR-DEC-006`.
+
+### FEAT-DEC-EXTRACT-004 — Preserve advisory AI uncertainty and batch warnings
+
+Authorized Decision readers SHALL be able to see validated NONE/LOW/MATERIAL uncertainty on AI-extracted proposals, alongside applicable batch warning codes and producer provenance. These are model-supplied advisory metadata, NOT independently verified transcript evidence or human confirmation. They SHALL remain attributable through later human review/correction without changing Decision authority. Manual Decisions SHALL NOT be incorrectly labeled with AI uncertainty.
 
 ## 19.2 Decision Confirmation
 
