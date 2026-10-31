@@ -1,7 +1,13 @@
 package com.sme.meetingassistant.api.meetingintelligence.repository;
 
 import com.sme.meetingassistant.api.meetingintelligence.dto.SummaryView;
+import com.sme.meetingassistant.api.meetingintelligence.dto.SummaryVersionView;
 import java.time.OffsetDateTime;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
