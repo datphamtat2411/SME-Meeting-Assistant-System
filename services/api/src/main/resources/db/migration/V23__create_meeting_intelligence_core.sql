@@ -7,6 +7,8 @@
 -- Composite keys allow evidence and AI outputs to prove their meeting/source lineage
 -- using declarative FKs, not merely application-supplied UUIDs.
 ALTER TABLE transcripts
+    ADD CONSTRAINT ux_transcripts_meeting_id UNIQUE (meeting_id, id);
+ALTER TABLE transcripts
     ADD CONSTRAINT ux_transcripts_meeting_media_id UNIQUE (meeting_id, source_media_id, id);
 ALTER TABLE transcript_segments
     ADD CONSTRAINT ux_transcript_segments_transcript_id UNIQUE (transcript_id, id);
