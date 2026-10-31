@@ -236,4 +236,57 @@ class SummaryManagementIntegrationTests {
             SELECT count(*) FROM meeting_summary_versions WHERE meeting_id=?
             """, Integer.class, meeting)).isEqualTo(2);
     }
+    @Test
+    void versionAllocationIncludesNonCurrentCandidatesAndDoesNotRewriteCandidate() throws Exception {
+        UUID stage = UUID.randomUUID();
+        UUID receipt = UUID.randomUUID();
+        UUID candidate = UUID.randomUUID();
+        jdbc.update("""
+            INSERT INTO processing_stage_runs(id,processing_job_id,stage_code,attempt_number,status)
+            VALUES (?,?,'GENERATING_SUMMARY',2,'SUCCEEDED')
+            """, stage, job);
+        UUID sourceSnapshot = jdbc.queryForObject("""
+            SELECT id FROM meeting_intelligence_source_snapshots WHERE processing_job_id=?
+            """, UUID.class, job);
+        jdbc.update("""
+            INSERT INTO meeting_intelligence_result_receipts(
+                id,meeting_id,processing_job_id,stage_run_id,result_type,source_snapshot_id,
+                transcript_id,content_revision,artifact_sha256,artifact_object_key,artifact_size_bytes)
+            VALUES (?,?,?,?,'SUMMARY',?,?,0,?,?,200)
+            """, receipt, meeting, job, stage, sourceSnapshot, transcript, "c".repeat(64),
+            "processing/" + job + "/intelligence/results/" + stage + ".json");
+        jdbc.update("""
+            INSERT INTO meeting_summary_versions(
+                id,meeting_id,version_number,content,source_type,processing_job_id,
+                result_receipt_id,transcript_id,content_revision,quality_status,is_current)
+            VALUES (?,?,3,'Candidate content','AI_GENERATED',?,?,?,0,'READY',FALSE)
+            """, candidate, meeting, job, receipt, transcript);
+
+        mvc.perform(patch(url()).principal(as(organizer))
+                .header("If-Match", tag()).contentType(MediaType.APPLICATION_JSON)
+                .content(body("Human edit after candidate")))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.versionNumber").value(4))
+            .andExpect(jsonPath("$.data.sourceType").value("HUMAN_EDIT"));
+        assertThat(jdbc.queryForObject("""
+            SELECT content FROM meeting_summary_versions WHERE id=?
+            """, String.class, candidate)).isEqualTo("Candidate content");
+        assertThat(jdbc.queryForObject("""
+            SELECT is_current FROM meeting_summary_versions WHERE id=?
+            """, Boolean.class, candidate)).isFalse();
+    }
+
+    @Test
+    void replacementOfCurrentTranscriptMarksSummaryStale() throws Exception {
+        jdbc.update("UPDATE transcripts SET is_current=FALSE WHERE id=?", transcript);
+        UUID replacement = UUID.randomUUID();
+        jdbc.update("""
+            INSERT INTO transcripts(id,meeting_id,source_media_id,processing_job_id,version_number,
+                language_code,status,is_current,content_revision)
+            VALUES (?,?,?,?,2,'vi','READY',TRUE,0)
+            """, replacement, meeting, media, job);
+        mvc.perform(get(url()).principal(as(participant)))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.data.isStale").value(true));
+    }
+
 }
