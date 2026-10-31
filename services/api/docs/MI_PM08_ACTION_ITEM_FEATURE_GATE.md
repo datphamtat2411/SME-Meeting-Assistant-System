@@ -16,6 +16,6 @@
 
 `ActionItemProposalHandoffIntegrationTests` run the real PostgreSQL Media/Transcript transactions with the sink mocked to verify the **port contract**, not to claim that owner-side persistence is already installed. They cover current/stale sources, empty batches, replay, missing durable proof, illegal candidates, ownership and lease fencing, and failure rollback. `ActionItemHandoffFeatureGateTests` cover disabled planning, disabled handoff despite a configured mock sink, and disabled direct Media stage claims. `ProcessingLifecycleInvariantsIntegrationTests` verifies the default-disabled path with real DB state.
 
-**Enablement rule:** Set the flag to true only when the canonical Action Items module's synchronous sink and durable acceptance query are installed in the same transactional application. A feature flag never replaces deployment readiness, authorization, DB acceptance or runtime monitoring.
+**Enablement rule:** Set `APP_MEDIA_PROCESSING_ACTION_ITEM_HANDOFF_ENABLED=true` (maps to `app.media.processing.action-item-handoff-enabled`) only when the canonical Action Items module's synchronous sink and durable acceptance query are installed in the same transactional application. A feature flag never replaces deployment readiness, authorization, DB acceptance or runtime monitoring.
 
 **Acceptance:** full `./mvnw -B -ntp verify` and GitHub Actions success on final branch HEAD. No PR or merge is implied.

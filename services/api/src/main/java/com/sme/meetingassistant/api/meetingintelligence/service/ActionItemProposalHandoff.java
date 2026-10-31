@@ -69,11 +69,11 @@ public class ActionItemProposalHandoff {
                 || source.sha256() == null || !source.sha256().matches("[0-9a-f]{64}")) {
             throw new IllegalArgumentException("Trusted source and Media stage claim are required.");
         }
-        validateCandidates(candidates);
         if (!properties.getProcessing().isActionItemHandoffEnabled()) {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
                 "Action Item proposal handoff is disabled.");
         }
+        validateCandidates(candidates);
         ActionItemProposalSink sink = sinks.getIfAvailable();
         if (sink == null) {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
