@@ -7,6 +7,7 @@ import com.sme.meetingassistant.api.media.repository.MediaRepository.ProcessingL
 import com.sme.meetingassistant.api.media.MediaProperties;
 import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle.StageClaim;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.beans.factory.annotation.Autowired;
 import java.util.UUID;
 import java.util.List;
 import java.util.Map;
@@ -21,13 +22,23 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
     private final ObjectMapper mapper;
     private final MediaProperties properties;
     private final ProcessingTranscriptEvidence transcriptEvidence;
+    private final ProcessingDerivedSnapshotEvidence derivedEvidence;
 
+    /** Preserves isolated legacy lifecycle unit tests without derived feature setup. */
     public ProcessingJobLifecycleService(MediaRepository repository, ObjectMapper mapper,
             MediaProperties properties, ProcessingTranscriptEvidence transcriptEvidence) {
+        this(repository, mapper, properties, transcriptEvidence, null);
+    }
+
+    @Autowired
+    public ProcessingJobLifecycleService(MediaRepository repository, ObjectMapper mapper,
+            MediaProperties properties, ProcessingTranscriptEvidence transcriptEvidence,
+            ProcessingDerivedSnapshotEvidence derivedEvidence) {
         this.repository = repository;
         this.mapper = mapper;
         this.properties = properties;
         this.transcriptEvidence = transcriptEvidence;
+        this.derivedEvidence = derivedEvidence;
     }
 
     @Override
@@ -55,10 +66,18 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
         requireCode(stageCode, 48, "stageCode");
         requireOptionalText(providerName, 80, "providerName");
         requireOptionalText(modelName, 160, "modelName");
-        if (List.of("GENERATING_SUMMARY", "EXTRACTING_DECISIONS",
+        boolean derived = this.repository.isDerivedSummaryJob(jobId);
+        if (derived) {
+            if (!"GENERATING_SUMMARY".equals(stageCode)
+                    || derivedEvidence == null || !derivedEvidence.hasPinnedSummarySource(jobId)) {
+                throw new ProcessingLifecycleConflictException(
+                    "Derived processing requires its verified pinned Summary source.");
+            }
+        } else if (List.of("GENERATING_SUMMARY", "EXTRACTING_DECISIONS",
                 "EXTRACTING_ACTION_ITEMS", "INDEXING").contains(stageCode)
                 && !this.transcriptEvidence.hasFinalizedTranscript(jobId)) {
-            throw new ProcessingLifecycleConflictException("Downstream processing requires a persisted finalized transcript.");
+            throw new ProcessingLifecycleConflictException(
+                "Downstream processing requires a persisted finalized transcript.");
         }
         return this.repository.startStage(jobId, stageCode, providerName, modelName, leaseSeconds());
     }
@@ -95,6 +114,12 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
                 && this.transcriptEvidence.forFinalization(identity.jobId(), claim.stageRunId()).isEmpty()) {
             throw new ProcessingLifecycleConflictException("Canonical transcript must exist before stage success.");
         }
+        if (this.repository.isDerivedSummaryJob(identity.jobId())
+                && (derivedEvidence == null
+                    || !derivedEvidence.hasReceiptForStage(identity.jobId(),claim.stageRunId()))) {
+            throw new ProcessingLifecycleConflictException(
+                "A derived Summary stage cannot succeed without an accepted result receipt.");
+        }
         this.repository.completeStage(claim, outcome, errorCode, metricsJson);
     }
 
@@ -118,7 +143,16 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
     @Override
     @Transactional
     public void completeJob(UUID jobId) {
-        this.repository.completeJob(jobId, this.transcriptEvidence.latestSuccessfulFinalization(jobId).orElse(null));
+        if (this.repository.isDerivedSummaryJob(jobId)) {
+            if (derivedEvidence == null || !derivedEvidence.hasAcceptedSummary(jobId)) {
+                throw new ProcessingLifecycleConflictException(
+                    "Derived Summary job has no accepted successful result.");
+            }
+            this.repository.completeDerivedSummaryJob(jobId);
+        } else {
+            this.repository.completeJob(jobId,
+                this.transcriptEvidence.latestSuccessfulFinalization(jobId).orElse(null));
+        }
     }
 
     @Override
