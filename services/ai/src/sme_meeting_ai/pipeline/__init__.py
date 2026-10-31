@@ -1,4 +1,4 @@
-"""Offline preprocessing composition and owned, transport-independent outcomes."""
+"""Transport-independent offline processing and safe aggregate outcomes."""
 
 from .models import (
     PreprocessingAudioMetadata,
@@ -10,9 +10,37 @@ from .models import (
     PreprocessingStatus,
 )
 from .preprocessing import AudioPreprocessingPipeline
+from .offline_transcription import (
+    OfflineAsrEvidence,
+    OfflineAsrProvenance,
+    OfflineReconciliationEvidence,
+    OfflineReconciliationSegment,
+    OfflineRecoveryEvidence,
+    OfflineTranscriptionEvidence,
+    OfflineTranscriptionFailure,
+    OfflineTranscriptionOutcome,
+    OfflineTranscriptionPipeline,
+    OfflineTranscriptionProvenance,
+    OfflineTranscriptionStage,
+    OfflineTranscriptionStatus,
+    OfflineTranscriptionWarning,
+)
 
 __all__ = [
     "AudioPreprocessingPipeline",
+    "OfflineAsrEvidence",
+    "OfflineAsrProvenance",
+    "OfflineReconciliationEvidence",
+    "OfflineReconciliationSegment",
+    "OfflineRecoveryEvidence",
+    "OfflineTranscriptionEvidence",
+    "OfflineTranscriptionFailure",
+    "OfflineTranscriptionOutcome",
+    "OfflineTranscriptionPipeline",
+    "OfflineTranscriptionProvenance",
+    "OfflineTranscriptionStage",
+    "OfflineTranscriptionStatus",
+    "OfflineTranscriptionWarning",
     "PreprocessingAudioMetadata",
     "PreprocessingFailure",
     "PreprocessingOutcome",
