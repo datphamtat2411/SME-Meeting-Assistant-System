@@ -239,4 +239,62 @@ class MeetingIntelligenceSchemaIntegrationTests {
             SELECT new_content FROM decision_revisions WHERE id=?
             """, String.class, revision)).isEqualTo("Rewritten");
     }
+    @Test
+    void aiSummaryCannotReferenceDecisionReceiptOrAnotherMeetingsParent() {
+        UUID snap = snapshot(source);
+        UUID decisions = receipt(source, snap, source.decisionStage, "DECISION_EXTRACTION");
+        rejected(() -> summary(source, decisions, 1, false));
+
+        // Parent IDs are meeting-scoped even when a UUID is known by a caller.
+        UUID foreignSnap = snapshot(foreign);
+        UUID foreignReceipt = receipt(foreign, foreignSnap, foreign.summaryStage, "SUMMARY");
+        UUID foreignParent = summary(foreign, foreignReceipt, 1, true);
+        rejected(() -> jdbc.update("""
+            INSERT INTO meeting_summary_versions(
+                id,meeting_id,version_number,content,source_type,based_on_summary_version_id,
+                created_by_user_id,transcript_id,content_revision,quality_status)
+            VALUES (?,?,1,'Forged parent','HUMAN_EDIT',?,?,?,2,'READY')
+            """, UUID.randomUUID(), source.meeting, foreignParent, actor, source.transcript));
+    }
+
+    @Test
+    void sourceBindingCannotBorrowAnotherJobSnapshotOrReceipt() {
+        UUID foreignSnapshot = snapshot(foreign);
+        rejected(() -> receipt(source, foreignSnapshot, source.summaryStage, "SUMMARY"));
+        UUID snap = snapshot(source);
+        UUID accepted = receipt(source, snap, source.decisionStage, "DECISION_EXTRACTION");
+        rejected(() -> jdbc.update("""
+            INSERT INTO meeting_decisions(
+                id,meeting_id,content,status,source_type,processing_job_id,result_receipt_id,
+                candidate_key,transcript_id,content_revision)
+            VALUES (?,?,'Wrong source','PROPOSED','AI_EXTRACTED',?,?,?,?,2)
+            """, UUID.randomUUID(), source.meeting, source.job, accepted,
+            "candidate-wrong", foreign.transcript));
+    }
+
+    @Test
+    void aiDecisionCannotStartConfirmedEvenWithAttributionAndCannotRepeatCandidate() {
+        UUID snap = snapshot(source);
+        UUID accepted = receipt(source, snap, source.decisionStage, "DECISION_EXTRACTION");
+        UUID proposal = aiDecision(source, accepted);
+        rejected(() -> jdbc.update("""
+            INSERT INTO meeting_decisions(
+                id,meeting_id,content,status,source_type,processing_job_id,result_receipt_id,
+                candidate_key,transcript_id,content_revision,confirmed_by_user_id,confirmed_at)
+            VALUES (?,?,'Untrusted confirmation','CONFIRMED','AI_EXTRACTED',?,?,?,?,?, ?,CURRENT_TIMESTAMP)
+            """, UUID.randomUUID(), source.meeting, source.job, accepted,
+            "candidate-2", source.transcript, 2, actor));
+        rejected(() -> jdbc.update("""
+            INSERT INTO meeting_decisions(
+                id,meeting_id,content,status,source_type,processing_job_id,result_receipt_id,
+                candidate_key,transcript_id,content_revision)
+            VALUES (?,?,'Same candidate','PROPOSED','AI_EXTRACTED',?,?,?,?,?)
+            """, UUID.randomUUID(), source.meeting, source.job, accepted,
+            "candidate-1", source.transcript, 2));
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM meeting_decisions WHERE result_receipt_id=?
+            """, Integer.class, accepted)).isEqualTo(1);
+        assertThat(proposal).isNotNull();
+    }
+
 }
