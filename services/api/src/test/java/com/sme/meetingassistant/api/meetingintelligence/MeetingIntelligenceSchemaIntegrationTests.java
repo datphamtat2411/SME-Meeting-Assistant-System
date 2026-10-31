@@ -141,7 +141,7 @@ class MeetingIntelligenceSchemaIntegrationTests {
             """, id));
         assertThat(jdbc.queryForObject("""
             SELECT content_revision FROM meeting_intelligence_source_snapshots WHERE id=?
-            """, Long.class, id)).isEqualTo(2);
+            """, Long.class, id)).isEqualTo(2L);
     }
 
     @Test
