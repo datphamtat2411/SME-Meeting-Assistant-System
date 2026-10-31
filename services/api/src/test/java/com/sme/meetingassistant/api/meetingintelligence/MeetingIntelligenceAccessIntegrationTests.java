@@ -95,7 +95,12 @@ class MeetingIntelligenceAccessIntegrationTests {
     void processingAdmissionUsesExistingCancellationRule() throws Exception {
         mvc.perform(post(url("regenerate")).principal(as(organizer))).andExpect(status().isOk());
         mvc.perform(post(url("regenerate")).principal(as(participant))).andExpect(status().isNotFound());
-        jdbc.update("UPDATE meetings SET status='CANCELLED', cancelled_at=CURRENT_TIMESTAMP WHERE id=?", meeting);
+        String meetingUrl = "/api/v1/meetings/" + meeting;
+        String etag = mvc.perform(get(meetingUrl).principal(as(organizer)))
+            .andExpect(status().isOk()).andReturn().getResponse().getHeader("ETag");
+        mvc.perform(post(meetingUrl + "/cancel").principal(as(organizer))
+                .header("If-Match", etag))
+            .andExpect(status().isOk());
         mvc.perform(post(url("regenerate")).principal(as(organizer))).andExpect(status().isConflict());
     }
 
