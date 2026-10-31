@@ -10,6 +10,11 @@ public interface ProcessingJobLifecycle {
     /** One durable stage attempt with an unguessable owner token; never expose to clients. */
     record StageClaim(UUID stageRunId, UUID claimToken) { }
 
+    /** Trusted, server-resolved identity for a derived-stage attempt. */
+    record DerivedStage(UUID jobId, UUID meetingId, UUID sourceMediaId, String stageCode) { }
+
+    DerivedStage derivedStage(UUID stageRunId);
+
     StageClaim startStage(UUID jobId, String stageCode, String providerName, String modelName);
 
     void renewStageLease(StageClaim claim);
