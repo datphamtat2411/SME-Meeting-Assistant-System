@@ -1331,7 +1331,7 @@ The Meeting Organizer or another explicitly authorized Summary content editor SH
 
 A later generated candidate SHALL remain non-current until an authorized user explicitly activates it. Failed regeneration or an ineligible/stale candidate SHALL NOT erase the current Summary. The original successful AI publication when no current Summary exists follows the approved source freshness policy.
 
-Applicable rules: `BR-SUM-004`, `BR-SUM-005`, `BR-SUM-006`. The associated HTTP additions are `API-EP-SUM-004/005`; implementation is scheduled for MI-PM-04, not assumed available yet.
+Applicable rules: `BR-SUM-004`, `BR-SUM-005`, `BR-SUM-006`. The associated HTTP additions are `API-EP-SUM-004/005`, implemented and regression-tested in MI-PM-04; deploy/readiness is separately gated.
 
 ---
 
