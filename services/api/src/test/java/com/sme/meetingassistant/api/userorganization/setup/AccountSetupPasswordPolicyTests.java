@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
@@ -44,6 +45,12 @@ class AccountSetupPasswordPolicyTests {
             original = stream.readAllBytes();
         }
         AccountSetupPasswordPolicy.verifyBlocklistIntegrity(original);
+
+        String windowsLineEndings = new String(original, StandardCharsets.UTF_8)
+            .replace("\r\n", "\n")
+            .replace("\n", "\r\n");
+        AccountSetupPasswordPolicy.verifyBlocklistIntegrity(
+            windowsLineEndings.getBytes(StandardCharsets.UTF_8));
 
         byte[] changed = original.clone();
         changed[changed.length - 2] ^= 1; // Same length/count, different content.

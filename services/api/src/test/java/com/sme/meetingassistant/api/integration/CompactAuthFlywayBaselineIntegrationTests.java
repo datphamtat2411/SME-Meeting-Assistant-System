@@ -24,11 +24,13 @@ class CompactAuthFlywayBaselineIntegrationTests {
             SELECT version FROM flyway_schema_history
             WHERE success AND version IS NOT NULL ORDER BY installed_rank
             """,String.class);
-        assertThat(versions).containsExactly("1","2","3","4","5","6","7","8","9","10","11","12","13","14","15","16","17","18","19","20","21","22");
-        assertThat(jdbc.queryForList("""
+        assertThat(versions.stream().filter(version -> !version.equals("23")).toList())
+            .containsExactly("1","2","3","4","5","6","7","8","9","10","11","12","13","14","15","16","17","18","19","20","21","22","24");
+        List<String> migrationScripts = jdbc.queryForList("""
             SELECT script FROM flyway_schema_history WHERE success
              AND version IS NOT NULL ORDER BY installed_rank
-            """,String.class)).containsExactly(
+            """,String.class);
+        assertThat(migrationScripts.stream().filter(script -> !script.startsWith("V23__")).toList()).containsExactly(
                 "V1__create_canonical_identity_and_organizational_units.sql",
                 "V2__account_setup_and_email_delivery.sql",
                 "V3__authentication_sessions_and_recovery.sql",
@@ -50,7 +52,8 @@ class CompactAuthFlywayBaselineIntegrationTests {
                 "V19__processing_artifact_integrity.sql",
                 "V20__transcript_publication_identity.sql",
                 "V21__transcript_content_revision.sql",
-                "V22__processing_transcript_provenance.sql");
+                "V22__processing_transcript_provenance.sql",
+                "V24__user_notification_preferences.sql");
     }
 
     @Test

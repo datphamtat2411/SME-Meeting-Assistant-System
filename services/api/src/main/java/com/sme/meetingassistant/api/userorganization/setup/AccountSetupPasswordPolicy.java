@@ -100,8 +100,18 @@ public class AccountSetupPasswordPolicy {
     static void verifyBlocklistIntegrity(byte[] bytes) {
         if (bytes == null) throw new IllegalStateException("Missing password blocklist");
         try {
-            String actual = HexFormat.of().formatHex(
-                MessageDigest.getInstance("SHA-256").digest(bytes));
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            for (int index = 0; index < bytes.length; index++) {
+                // Git may check out this text resource with CRLF on Windows.
+                // Hash its canonical LF representation so line-ending conversion
+                // does not look like a content-integrity violation.
+                if (bytes[index] == '\r' && index + 1 < bytes.length
+                        && bytes[index + 1] == '\n') {
+                    continue;
+                }
+                digest.update(bytes[index]);
+            }
+            String actual = HexFormat.of().formatHex(digest.digest());
             if (!RESOURCE_SHA256.equals(actual)) {
                 throw new IllegalStateException("Password blocklist integrity check failed");
             }
