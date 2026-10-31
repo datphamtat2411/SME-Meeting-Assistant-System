@@ -30,6 +30,13 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
         this.transcriptEvidence = transcriptEvidence;
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public DerivedStage derivedStage(UUID stageRunId) {
+        if (stageRunId == null) throw new IllegalArgumentException("Stage attempt is required.");
+        return repository.derivedStage(stageRunId);
+    }
+
     private int leaseSeconds() {
         int value = this.properties.getProcessing().getStageLeaseSeconds();
         if (value < 30) throw new IllegalStateException("Stage lease must be at least 30 seconds.");
