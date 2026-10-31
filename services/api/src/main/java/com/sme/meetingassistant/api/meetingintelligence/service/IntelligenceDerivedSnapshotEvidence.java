@@ -16,6 +16,13 @@ public class IntelligenceDerivedSnapshotEvidence implements ProcessingDerivedSna
                 WHERE processing_job_id=?)
             """,Boolean.class,jobId));
     }
+    @Override public boolean hasReceiptForStage(UUID jobId,UUID stageRunId) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+            SELECT EXISTS(SELECT 1 FROM meeting_intelligence_result_receipts
+              WHERE processing_job_id=? AND stage_run_id=? AND result_type='SUMMARY')
+            """,Boolean.class,jobId,stageRunId));
+    }
+
     @Override public boolean hasAcceptedSummary(UUID jobId) {
         return Boolean.TRUE.equals(jdbc.queryForObject("""
             SELECT EXISTS(
