@@ -63,7 +63,7 @@ Build and run the locked, non-editable, runtime-only image:
 ```sh
 docker build --tag sme-ai:local .
 docker run --rm --name sme-ai-http \
-  --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+  --read-only --tmpfs /tmp:rw,noexec,nosuid,size=160m \
   --cap-drop=ALL --security-opt=no-new-privileges:true \
   --cpus=1 --memory=256m --pids-limit=64 --stop-timeout=40 \
   -p 127.0.0.1:8000:8000 \
@@ -170,6 +170,375 @@ image, repository or `.env.example`. Do not expose AI Core directly to Web or
 Mobile. The plaintext development example above is local-only.
 
 ### Focused verification
+
+For audio decoding and normalization only (requires local `ffmpeg` and `ffprobe`):
+
+```sh
+uv run ruff check src tests
+uv run pytest tests/unit/test_config.py tests/unit/test_audio_preprocessing.py tests/integration/test_audio_preprocessing.py
+```
+
+### Audio decoding and normalization
+
+`sme_meeting_ai.audio` provides synchronous, file-backed normalization of local
+WAV/PCM, MP3, M4A/MP4/AAC, and WebM/Matroska/Opus. Actual streams determine
+acceptance; ambiguous audio, unsupported codecs, and video are rejected.
+Install the Debian `ffmpeg` package for both decoder tools; it is included and
+checked in the runtime image and CI. The implementation targets Linux/POSIX.
+
+```python
+from pathlib import Path
+from sme_meeting_ai.audio import AudioNormalizer, AudioSource
+from sme_meeting_ai.core.config import load_settings
+
+normalizer = AudioNormalizer(load_settings())
+source = AudioSource(source_id="opaque-media-id", path=Path("/media/original"))
+with normalizer.normalize(source) as audio:
+    # Consume audio.path within this scope, or explicitly close() after use.
+    sample_count = audio.sample_count
+    exact_duration = audio.duration  # Fraction(sample_count, 16000)
+```
+
+Output is WAV/PCM16, mono, 16 kHz. All decoded audio, including leading/trailing
+silence and codec padding emitted by the decoder, is retained. Channels are
+downmixed; timestamp compensation is disabled and sample bounds are zero-based,
+half-open `[0, sample_count)`. Container duration is preflight evidence only.
+Source metadata and decoder/configuration provenance accompany the artifact.
+Original files are opened read-only and remain owned by the caller. Only validated
+complete output is published; failed processing removes partial artifacts.
+`AudioProcessingError.category` is `VALIDATION`, `DECODING`, `TIMEOUT`, or `RESOURCE`,
+without raw paths, decoder diagnostics, or media content.
+
+| Setting | Default | Allowed range |
+| --- | --- | --- |
+| `AI_AUDIO_MAX_INPUT_BYTES` | 536870912 | 1–2147483648 |
+| `AI_AUDIO_MAX_DURATION_SECONDS` | 3600 | finite, >0, ≤14400 |
+| `AI_AUDIO_MAX_OUTPUT_BYTES` | 134217728 | 1–1073741824 |
+| `AI_AUDIO_PROBE_TIMEOUT_SECONDS` | 10 | finite, >0, ≤120 |
+| `AI_AUDIO_DECODE_TIMEOUT_SECONDS` | 900 | finite, >0, ≤3600 |
+| `AI_AUDIO_TEMP_DIR` | `/tmp` | existing writable directory at processing time |
+
+Each child has a 512 MiB address-space ceiling, one decoder thread, a CPU limit
+derived from its timeout, bounded stdout/stderr, and a hard output-file limit.
+Wall-clock deadlines and growing output/sample limits are monitored; exceeding
+limits kills and reaps the process group instead of returning shortened audio.
+Executables resolve only from `/usr/bin:/bin`, with a minimal environment and
+file-only media protocols. No media dependency is added to Python.
+
+Plan temporary capacity for **all concurrently owned artifacts**, at least
+`AI_AUDIO_MAX_OUTPUT_BYTES` per artifact plus filesystem overhead. At 32,000 PCM
+bytes/second, one hour needs about 110 MiB. The `160m` example tmpfs accommodates
+one default artifact; tmpfs also counts toward container memory, so audio workloads
+need memory for that storage, the decoder, and Python (for example `--memory=1g`
+for a single normalization). A bounded disk-backed mount can instead supply
+`AI_AUDIO_TEMP_DIR`. The HTTP smoke workload does not perform normalization.
+
+### Speech detection and energy evidence
+
+`AudioEvidenceDetector` independently validates local WAV/PCM16, mono, 16 kHz
+input and emits VAD probability-band evidence alongside RMS and dBFS. It does
+not decode or modify the audio. All frames use absolute, zero-based, half-open
+sample bounds and exact `Fraction(sample, 16000)` times. A final short frame is
+zero-padded **only for the model**; energy and end time cover real samples only,
+and `padding_samples` records the difference. Leading/trailing silence and even
+a zero-sample PCM WAV are valid results.
+
+VAD probabilities at or above the speech threshold are `likely-speech`; those
+at or below the non-speech threshold are `likely-non-speech`. The band between
+them is `uncertain`. These are evidence labels, not ground truth. RMS is relative
+to PCM full scale (`sample / 32768`), and dBFS is `20 * log10(RMS)`; digital
+silence has RMS 0 and dBFS negative infinity. Energy never establishes speech:
+weak speech, loud noise, and music can disagree with the VAD evidence.
+
+```python
+from pathlib import Path
+from sme_meeting_ai.audio import AudioEvidenceDetector, AudioSource, SileroVadBackend
+from sme_meeting_ai.core.config import load_settings
+
+settings = load_settings()
+backend = SileroVadBackend.from_settings(settings)  # One session per worker.
+try:
+    detector = AudioEvidenceDetector(settings, backend)
+    source = AudioSource("opaque-recording-id", Path("/media/normalized.wav"))
+    with detector.detect(source, expected_sample_count=None) as evidence:
+        for frame in evidence.iter_frames():
+            consume(frame)  # Consume lazily; iter_frames() can be replayed.
+finally:
+    backend.close()
+```
+
+Evidence is stored as versioned 45-byte records in a private temporary artifact,
+not a recording-sized Python list. Context exit or explicit `close()` removes
+the artifact. PCM reads and inference use one 512-sample frame at a time.
+The artifact retains source identity, exact sample/frame counts, per-label frame
+counters, model ID/version/actual SHA-256, backend, detector version, and effective
+thresholds/resource limits. Paths and provider diagnostics are excluded from
+provenance and public errors. Failed processing removes partial evidence and
+returns no truncated result. In addition to `VALIDATION`, `TIMEOUT`, and `RESOURCE`,
+detection can fail with sanitized `MODEL_UNAVAILABLE` or `INFERENCE` categories.
+
+Provision a pinned, single-file **Silero v5-compatible ONNX** model externally.
+The adapter accepts float32 `input` `[1, 576]` (64 context + 512 real/padded
+samples), float32 recurrent `state` `[2, 1, 128]`, and scalar int64 `sr=16000`;
+outputs are float32 `output` `[1, 1]` and `stateN` `[2, 1, 128]`. Compatible
+dynamic axes are allowed. Other contracts and external-tensor assets are
+unsupported. NumPy and CPU ONNX Runtime are locked Python dependencies;
+there is no Torch, model download, model copied into the image, or network model
+fallback. Set the expected SHA-256 to verify the provisioned bytes before loading;
+the actual digest is always retained, even if the optional expected value is unset.
+For example, supply these options to a worker container with externally selected
+model version and digest:
+
+```sh
+--mount type=bind,src=/external/models/silero-vad.onnx,dst=/run/models/silero-vad.onnx,readonly \
+-e AI_AUDIO_VAD_MODEL_PATH=/run/models/silero-vad.onnx \
+-e AI_AUDIO_VAD_MODEL_ID=silero-vad -e AI_AUDIO_VAD_MODEL_VERSION=5 \
+-e AI_AUDIO_VAD_MODEL_SHA256=<expected-sha256>
+```
+
+| Setting | Default | Allowed range |
+| --- | --- | --- |
+| `AI_AUDIO_VAD_MODEL_PATH` | unset | required at explicit backend loading; local read-only regular file |
+| `AI_AUDIO_VAD_MODEL_ID` | `silero-vad` | 1–128 alphanumeric, `.`, `_`, `-` characters |
+| `AI_AUDIO_VAD_MODEL_VERSION` | `5` | same as model ID |
+| `AI_AUDIO_VAD_MODEL_SHA256` | unset | optional 64-character lowercase hex digest |
+| `AI_AUDIO_VAD_FRAME_SAMPLES` | 512 | exactly 512 for the supported model contract |
+| `AI_AUDIO_VAD_SPEECH_THRESHOLD` | 0.60 | finite, 0–1 |
+| `AI_AUDIO_VAD_NON_SPEECH_THRESHOLD` | 0.35 | finite, 0–1, strictly below speech threshold |
+| `AI_AUDIO_VAD_TIMEOUT_SECONDS` | 900 | finite, >0, ≤3600 |
+| `AI_AUDIO_VAD_MODEL_MAX_BYTES` | 16777216 | 1–268435456 |
+| `AI_AUDIO_VAD_MAX_CONCURRENT_RECORDINGS` | 1 | 1–16 per backend |
+| `AI_AUDIO_EVIDENCE_MAX_BYTES` | 16777216 | 1–1073741824 per artifact |
+
+Detection also enforces `AI_AUDIO_MAX_INPUT_BYTES`,
+`AI_AUDIO_MAX_DURATION_SECONDS`, and `AI_AUDIO_TEMP_DIR`. One hour of evidence
+uses about 4.83 MiB, in addition to the unchanged PCM artifact and model/session
+memory. Plan temporary capacity for all concurrently owned artifacts; the evidence
+cap applies to each result, including retained results after inference completes.
+Inference uses one intra-op and one inter-op thread, sequential execution, bounded
+recording concurrency, and fresh recurrent/context state per recording. One
+recording-level watchdog terminates in-flight ONNX execution at the deadline.
+
+`audio.vad.silero_vad_resource(settings)` is an async context manager for worker
+ownership: an injected `lambda: silero_vad_resource(settings)` resource factory
+loads one backend and closes it on worker shutdown. The worker entrypoint still
+has no execution hook. Detection adds no speech-map construction, ASR, HTTP,
+RabbitMQ, S3, or job orchestration.
+
+Focused deterministic verification (fake VAD streams and ONNX sessions; no model
+or FFmpeg needed):
+
+```sh
+uv run pytest tests/unit/test_config.py tests/unit/test_audio_detection.py tests/unit/test_vad_backend.py
+```
+
+### Preprocessing quality evaluation and regression
+
+`tests/evaluation` evaluates the existing normalization → real Silero VAD →
+speech-map pipeline against **independently labeled, privacy/legal-approved
+Vietnamese fixtures**. Provision both dataset and Silero v5-compatible single-file
+ONNX model locally through the approved dataset/model owner. The suite has no
+download or network fallback. Raw audio and private annotations stay outside the
+repository. No approved dataset or model is bundled.
+
+#### Local private evaluation workspace
+
+`sme-private` is an optional, externally maintained workspace for local AI
+development and evaluation assets intentionally kept outside the Git repository.
+In the current development environment it is at `$HOME/sme-private`; it is not
+tracked by Git or required by the AI service runtime. Its contents are provisioned
+and maintained separately. Other developers, CI environments, and coding agents
+must not assume it exists. This overview describes conventions without exposing
+the actual media, annotations, or model files.
+
+| Directory | Purpose |
+| --- | --- |
+| `annotations/` | Human-reviewed audio annotations, including readable labels and sample-accurate TSV intervals. |
+| `datasets/` | Approved evaluation fixtures and their manifest, referencing fixtures and integrity metadata. |
+| `metadata/` | Fixture metadata, source checksums, and supporting provenance. |
+| `models/` | Externally provisioned local model assets, currently including Silero VAD v5 ONNX. |
+| `reference/` | Normalized reference audio for sample-accurate fixture preparation and review. |
+| `results/` | Generated evaluation reports, including baseline and experimental results. |
+| `review/` | Temporary/manual-review audio excerpts for investigating detection behavior. |
+| `tools/` | Local dataset preparation, validation, annotation, and evaluation-review helpers. |
+
+Human annotations are maintained separately from evaluation results. Reports and
+listening-review artifacts are derived outputs, not authoritative annotations.
+Local tools support preparation and analysis; they are not part of the deployed
+AI service.
+
+The existing suite can use
+`$HOME/sme-private/datasets/vietnamese-preprocessing-v1/manifest.json` (its parent
+directory is the fixture root) and `$HOME/sme-private/models/silero-vad-v5.onnx`,
+with reports under `$HOME/sme-private/results/vietnamese-preprocessing-v1/` and
+manual listening-review excerpts under `$HOME/sme-private/review/`. Follow the
+existing [evaluation commands and configuration](#running-and-interpreting-results)
+and [VAD settings](#speech-detection-and-energy-evidence). Model files must be
+provisioned externally; evaluation tests do not download them implicitly.
+
+Local usage conventions:
+
+1. Keep private data and model artifacts outside Git.
+2. Access these assets only when the active task genuinely requires them.
+3. Do not modify existing datasets, annotations, approvals, checksums, or baseline
+   reports without task authorization.
+4. Changes to approved evaluation references require review and versioning.
+5. Use separate output filenames for experimental reports to avoid overwriting
+   baselines.
+6. Report missing local assets clearly; never silently substitute fabricated or
+   synthetic data.
+
+The existing Silero VAD v5 baseline uses speech threshold `0.60`; experimental
+`0.50` improved some detection coverage but did not reliably preserve continuous
+distant speech. Weak/distant speech remains a known evaluation limitation;
+`UNESTABLISHED` quality gates are not `PASS`.
+
+#### Dataset contract and provisioning
+
+Start from `tests/evaluation/manifest.example.json`, placing the reviewed manifest
+at `<fixture-root>/manifest.json`. This is a deliberately **non-runnable template**:
+its approvals are false, and its sample labels/counts/digests are placeholders.
+Replace them with reviewed fixture metadata, independent labels and real hashes;
+only the dataset owner may attest privacy/legal approval and its `approval_version`.
+Use opaque IDs/versions, with no names, transcripts, free-text notes or diagnostics.
+Unknown fields and duplicate JSON keys are rejected.
+
+- Pin `dataset_id`, `dataset_version`, `labeling_guideline_version`, per-fixture
+  `annotation_version`, and lowercase SHA-256 of the original source file bytes.
+  `path` is relative to the explicit fixture root; escapes and symlink media are
+  rejected. All source digests are verified before and after processing.
+- `labels` partition the **entire** normalized 16 kHz timeline with absolute integer
+  half-open `start_sample`/`end_sample` bounds. Allowed labels are `speech`, `silence`,
+  `noise`, `music`, `ambiguous`. Human reviewers must independently establish labels
+  (`annotation_origin: independent-human`) from Vietnamese recordings, never from
+  VAD output. Mark disputed or uncertain annotation regions `ambiguous`; do not
+  force a speech/silence decision. `critical`/`material` are speech-only flags for
+  missed-speech reporting, without private explanations.
+- Set the independently established exact `sample_count` after full normalization.
+  Two `anchors` identify leading and trailing content: first starts at 0, last ends
+  at `sample_count`; each pins SHA-256 of the corresponding **little-endian PCM16
+  sample bytes**, without WAV headers. Prepare these using the reviewed reference
+  decode, not the output of the evaluation run. Re-approve/version references when
+  decoder changes alter them. No resampling or timestamp tolerance is assumed.
+- Required condition tags across the dataset: `silence`, `weak-distant-speech`,
+  `background-noise`, `music`, `continuous-speech`, `recording-boundaries`,
+  `long-audio`, `historical-regression`. Speech conditions require Vietnamese
+  recordings and independent human labels. Boundary fixtures must label speech
+  at both recording edges; the historical silent-speech-loss fixture must contain
+  critical/material speech. Tags attest reviewed conditions, not inferred acoustic
+  classifications. `long_audio_min_samples` is the dataset owner's declared long
+  workload duration; long-tagged fixtures must reach it within configured limits.
+
+Optional deterministic, non-sensitive controls may cover silence, noise, tonal
+music, and long duration. During explicit dataset preparation, call the test-local
+`tests/evaluation/fixture_builder.py` helper from Python, started from this
+directory with `PYTHONPATH=tests uv run python`:
+
+```python
+from pathlib import Path
+from evaluation.fixture_builder import build_control
+
+entry = build_control(Path("/secure/datasets/staging/noise.wav"), "noise", sample_count=16037)
+```
+
+The parent directory must already exist. The helper refuses overwrites, writes a
+deterministic WAV, and returns its manifest entry including hashes and anchors.
+Kinds are `silence`, `noise`, `music`, `long-audio`; the last is a silent long
+control. Music is a tonal/chord control, not evidence of representative real-music
+coverage. Controls use `kind: synthetic`, `language: none`, and
+`annotation_origin: synthetic-control`; they cannot satisfy speech conditions.
+Review and include entries in the approved manifest explicitly. Evaluation never
+creates or substitutes fixtures. Add representative approved recordings as needed
+within these conditions; deterministic controls do not establish speech quality.
+
+#### Running and interpreting results
+
+Ordinary pytest runs exclude the `evaluation` marker and need no dataset/model.
+The deterministic support tests use contract-only evidence to check arithmetic,
+validation, integrity failures and serialization; actual-model evaluation has no
+fake VAD adapter. Focused checks, from `services/ai`:
+
+```sh
+uv run ruff check src tests/evaluation
+uv run pytest tests/evaluation/test_evaluation_support.py
+uv run pytest tests/unit/test_audio_preprocessing.py tests/unit/test_audio_detection.py tests/unit/test_speech_map.py tests/unit/test_preprocessing_pipeline.py tests/integration/test_audio_preprocessing.py
+```
+
+With local `ffmpeg`/`ffprobe`, an approved fixture root and pinned model:
+
+```sh
+AI_SERVICE_NAME=sme-meeting-ai \
+AI_SERVICE_IDENTITY=ai-core \
+AI_AUDIO_VAD_MODEL_PATH=/secure/models/silero-vad.onnx \
+AI_AUDIO_VAD_MODEL_SHA256=<sha256> \
+uv run pytest -m evaluation tests/evaluation/test_preprocessing_quality.py \
+  --evaluation-fixture-root /secure/datasets/vietnamese-preprocessing-v1 \
+  --evaluation-output /secure/results/preprocessing-quality.json
+```
+
+For repeatable local configuration, copy `.env.example` to `.env` if it does not
+already exist and set the real model path and SHA-256 there. Load it explicitly
+on each run; no repeated shell exports are needed:
+
+```sh
+uv run --env-file .env pytest -m evaluation tests/evaluation/test_preprocessing_quality.py \
+  --evaluation-fixture-root /secure/datasets/vietnamese-preprocessing-v1 \
+  --evaluation-output /secure/results/preprocessing-quality.json
+```
+
+`uv` passes the file's values as process environment variables. Keep JSON values
+quoted as in the template, and retain `AI_AUDIO_VAD_FRAME_SAMPLES=512`, the only
+supported frame size. The local `.env` is Git-ignored; model path and SHA-256
+remain unset until the model is actually provisioned.
+
+Supply the selected model ID/version with `AI_AUDIO_VAD_MODEL_ID` and
+`AI_AUDIO_VAD_MODEL_VERSION` when different from the existing defaults. This suite
+requires the model path **and** expected SHA-256, ignores implicit `.env` files,
+and fails closed for missing assets/options, approvals, condition coverage,
+digest mismatches, incomplete evidence or integrity violations. The output parent
+must exist outside the fixture root; do not use the model file as output. Existing
+audio/VAD/storage settings apply, including the three speech-map settings in
+`.env.example`; size/duration/time limits must accommodate the approved long case.
+Artifacts are closed after every fixture and the backend closes after the run.
+
+The deterministic JSON report contains dataset/manifest/annotation/source digests,
+an evaluation ID derived from those plus pipeline/model/configuration provenance,
+decoder/stage versions, model ID/version/actual digest/backend, runtime versions,
+and all effective stage settings (temporary-storage location is an opaque hash).
+It contains no source paths, media, transcripts, free-text annotations, per-frame
+provider output or diagnostics. Fixture results are sorted; timestamps and elapsed
+times are omitted so identical inputs/configuration/runtime produce identical JSON.
+
+Speech coverage uses independent speech labels intersected with candidate
+`speech_intervals`. Missed samples/regions, largest miss, critical/material losses,
+unprotected misses and uncertain/likely-non-speech evidence expose the historical
+silent-loss failure without ASR. False positives use confirmed silence/noise/music
+denominators, with separate noise/music counts and rates. Ambiguity is excluded
+from both confirmed denominators and reported explicitly. Zero denominators yield
+`null`, never an invented perfect score. Uncertainty is reported separately for
+every label, including overlap with candidate speech. High-energy non-speech and
+uncertain VAD frames must remain visible in uncertainty intervals and warnings.
+
+Timing matches each independent speech interval only to overlapping candidates:
+onset is the first candidate start minus labeled start; offset is the last candidate
+end minus labeled end. Signed errors use integer samples and reduced rational
+seconds (`numerator`/`denominator`), with match counts for merged/split intervals.
+Completely missed intervals have null timing errors. Boundary padding is checked
+exactly for containment, coalescing and clipping to `[0, sample_count)`; this is
+an integrity check, not a guarantee that all labeled boundary speech was detected.
+
+`quality_gates: []` reports **`UNESTABLISHED`**, not a quality pass. No probabilistic
+threshold is supplied by the suite. To apply reviewed gates, the dataset owner may
+provide entries with `metric`, one rational `minimum` or `maximum`, and a required
+opaque `basis_version` identifying the supporting evidence. Supported metrics are
+`coverage_rate`, `missed_samples`, `largest_missed_samples`, `false_positive_rate`.
+Gates apply to each fixture; undefined metrics remain `UNESTABLISHED`. Supplied
+gates are reported as `PASS`/`FAIL`/`UNESTABLISHED`; an explicit failure fails pytest
+**after** writing the full report. Use `-rP` to display the printed gate status for
+passing runs, or inspect `quality_gate_status` in the JSON output. This evaluation
+does not execute ASR, train a model, tune thresholds or change preprocessing.
+
+### Runtime verification
 
 ```sh
 uv run ruff check src tests

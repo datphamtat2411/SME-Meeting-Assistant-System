@@ -5,7 +5,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal, Self
 
-from pydantic import Field, ValidationError, model_validator
+from pydantic import Field, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict, SettingsError
 
 SERVICE_IDENTITY_PATTERN = r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
@@ -53,6 +53,57 @@ class Settings(BaseSettings):
     worker_shutdown_timeout_seconds: float = Field(
         default=30, gt=0, le=300, allow_inf_nan=False,
     )
+    audio_max_input_bytes: int = Field(default=536870912, gt=0, le=2147483648)
+    audio_max_duration_seconds: float = Field(
+        default=3600, gt=0, le=14400, allow_inf_nan=False,
+    )
+    audio_max_output_bytes: int = Field(default=134217728, gt=0, le=1073741824)
+    audio_probe_timeout_seconds: float = Field(
+        default=10, gt=0, le=120, allow_inf_nan=False,
+    )
+    audio_decode_timeout_seconds: float = Field(
+        default=900, gt=0, le=3600, allow_inf_nan=False,
+    )
+    audio_temp_dir: Path = Path("/tmp")
+    audio_vad_model_path: Path | None = None
+    audio_vad_model_id: str = Field(
+        default="silero-vad", min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_.-]+$",
+    )
+    audio_vad_model_version: str = Field(
+        default="5", min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_.-]+$",
+    )
+    audio_vad_model_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    audio_vad_frame_samples: Literal[512] = 512
+    audio_vad_speech_threshold: float = Field(
+        default=0.60, ge=0, le=1, allow_inf_nan=False,
+    )
+    audio_vad_non_speech_threshold: float = Field(
+        default=0.35, ge=0, le=1, allow_inf_nan=False,
+    )
+    audio_vad_timeout_seconds: float = Field(
+        default=900, gt=0, le=3600, allow_inf_nan=False,
+    )
+    audio_vad_model_max_bytes: int = Field(default=16777216, gt=0, le=268435456)
+    audio_vad_max_concurrent_recordings: int = Field(default=1, gt=0, le=16)
+    audio_evidence_max_bytes: int = Field(default=16777216, gt=0, le=1073741824)
+    # Sample limits match the maximum supported four-hour normalized timeline.
+    audio_speech_map_boundary_padding_samples: int = Field(default=1600, ge=0, le=230400000)
+    audio_speech_map_merge_gap_samples: int = Field(default=512, ge=0, le=230400000)
+    audio_speech_map_energy_floor_dbfs: float = Field(
+        default=-50, ge=-120, le=0, allow_inf_nan=False,
+    )
+
+    @field_validator("audio_vad_frame_samples", mode="before")
+    @classmethod
+    def parse_vad_frame_samples(cls, value: object) -> object:
+        # Environment/dotenv values are text; retain the fixed Silero contract.
+        return 512 if isinstance(value, str) and value == "512" else value
+
+    @model_validator(mode="after")
+    def ordered_vad_probability_bands(self) -> Self:
+        if self.audio_vad_non_speech_threshold >= self.audio_vad_speech_threshold:
+            raise ValueError("VAD non-speech threshold must be below speech threshold")
+        return self
 
     @model_validator(mode="after")
     def complete_tls_configuration(self) -> Self:

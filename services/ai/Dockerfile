@@ -13,7 +13,11 @@ FROM python AS runtime
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
-RUN groupadd --gid 10001 ai && useradd --uid 10001 --gid ai --no-create-home ai
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/* \
+    && ffmpeg -version && ffprobe -version \
+    && groupadd --gid 10001 ai && useradd --uid 10001 --gid ai --no-create-home ai
 WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv
 USER 10001:10001

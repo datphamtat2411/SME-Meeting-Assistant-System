@@ -1,5 +1,6 @@
 import os
 import traceback
+from pathlib import Path
 
 import pytest
 
@@ -38,6 +39,12 @@ def test_explicit_settings_defaults_without_external_configuration():
     assert settings.service_identity == "ai-core"
     assert settings.internal_allowed_callers == ("core-api",)
     assert "internal_service_token" not in Settings.model_fields
+    assert settings.audio_max_input_bytes == 536870912
+    assert settings.audio_max_duration_seconds == 3600
+    assert settings.audio_max_output_bytes == 134217728
+    assert settings.audio_probe_timeout_seconds == 10
+    assert settings.audio_decode_timeout_seconds == 900
+    assert str(settings.audio_temp_dir) == "/tmp"
 
 
 def test_environment_overrides_are_typed_and_case_insensitive(monkeypatch):
@@ -86,6 +93,20 @@ def test_dotenv_loading_ignores_unrelated_keys_and_environment_wins(
 
     assert settings.service_name == "dotenv-ai"
     assert settings.http_port == 9001
+
+
+def test_example_dotenv_loads_documented_defaults():
+    env_file = Path(__file__).resolve().parents[2] / ".env.example"
+
+    settings = load_settings(env_file=env_file)
+
+    assert settings.service_name == "sme-meeting-ai"
+    assert settings.service_identity == "ai-core"
+    assert settings.internal_allowed_callers == ("core-api",)
+    assert settings.audio_vad_frame_samples == 512
+    assert type(settings.audio_vad_frame_samples) is int
+    assert settings.audio_vad_model_path is None
+    assert settings.audio_vad_model_sha256 is None
 
 
 @pytest.mark.parametrize(
@@ -220,3 +241,193 @@ def test_cached_access_is_lazy_and_explicit_loading_is_uncached(tmp_path, monkey
     assert load_settings().service_name == "second-ai"
     get_settings.cache_clear()
     assert get_settings().service_name == "second-ai"
+
+
+@pytest.mark.parametrize("field,maximum", [
+    ("audio_max_input_bytes", 2147483648),
+    ("audio_max_output_bytes", 1073741824),
+    ("audio_max_duration_seconds", 14400),
+    ("audio_probe_timeout_seconds", 120),
+    ("audio_decode_timeout_seconds", 3600),
+])
+@pytest.mark.parametrize("value", ["0", "-1", "nan", "inf", "private-invalid", "over"])
+def test_audio_limits_are_positive_finite_bounded(monkeypatch, field, maximum, value):
+    monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
+    monkeypatch.setenv(f"AI_{field.upper()}", str(maximum + 1) if value == "over" else value)
+    with pytest.raises(ConfigurationError) as caught:
+        load_settings(env_file=None)
+    assert field in str(caught.value)
+    assert "private-invalid" not in "".join(traceback.format_exception(caught.value))
+    assert caught.value.__context__ is None
+
+
+def test_audio_environment_and_temp_directory_loading_is_lazy(monkeypatch, tmp_path):
+    missing = tmp_path / "not-created"
+    monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
+    monkeypatch.setenv("AI_AUDIO_MAX_INPUT_BYTES", "1000")
+    monkeypatch.setenv("AI_AUDIO_MAX_DURATION_SECONDS", "0.5")
+    monkeypatch.setenv("AI_AUDIO_MAX_OUTPUT_BYTES", "2000")
+    monkeypatch.setenv("AI_AUDIO_PROBE_TIMEOUT_SECONDS", "0.25")
+    monkeypatch.setenv("AI_AUDIO_DECODE_TIMEOUT_SECONDS", "1.5")
+    monkeypatch.setenv("AI_AUDIO_TEMP_DIR", str(missing))
+    settings = load_settings(env_file=None)
+    assert settings.audio_max_input_bytes == 1000
+    assert settings.audio_max_duration_seconds == 0.5
+    assert settings.audio_max_output_bytes == 2000
+    assert settings.audio_probe_timeout_seconds == 0.25
+    assert settings.audio_decode_timeout_seconds == 1.5
+    assert settings.audio_temp_dir == missing
+    assert not missing.exists()
+
+
+def test_vad_defaults_and_lazy_model_configuration(monkeypatch, tmp_path):
+    monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
+    defaults = load_settings(env_file=None)
+    assert defaults.audio_vad_model_path is None
+    assert defaults.audio_vad_model_id == "silero-vad"
+    assert defaults.audio_vad_model_version == "5"
+    assert defaults.audio_vad_model_sha256 is None
+    assert defaults.audio_vad_frame_samples == 512
+    assert defaults.audio_vad_speech_threshold == 0.60
+    assert defaults.audio_vad_non_speech_threshold == 0.35
+    assert defaults.audio_vad_max_concurrent_recordings == 1
+    missing = tmp_path / "not-provisioned.onnx"
+    monkeypatch.setenv("AI_AUDIO_VAD_MODEL_PATH", str(missing))
+    monkeypatch.setenv("AI_AUDIO_VAD_MODEL_SHA256", "a" * 64)
+    monkeypatch.setenv("AI_AUDIO_VAD_TIMEOUT_SECONDS", "12.5")
+    settings = load_settings(env_file=None)
+    assert settings.audio_vad_model_path == missing
+    assert settings.audio_vad_model_sha256 == "a" * 64
+    assert settings.audio_vad_timeout_seconds == 12.5
+    assert not missing.exists()
+
+
+@pytest.mark.parametrize("source", ["environment", "dotenv"])
+def test_fixed_vad_frame_size_loads_from_text_configuration(monkeypatch, tmp_path, source):
+    monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
+    env_file = None
+    if source == "environment":
+        monkeypatch.setenv("AI_AUDIO_VAD_FRAME_SAMPLES", "512")
+    else:
+        env_file = tmp_path / ".env"
+        env_file.write_text("AI_AUDIO_VAD_FRAME_SAMPLES=512\n")
+
+    settings = load_settings(env_file=env_file)
+
+    assert settings.audio_vad_frame_samples == 512
+    assert type(settings.audio_vad_frame_samples) is int
+
+
+@pytest.mark.parametrize("source", ["environment", "dotenv"])
+@pytest.mark.parametrize("value", ["256", "1024", "512.0", "512.5", "true", "private-invalid"])
+def test_unsupported_vad_frame_text_is_rejected_and_sanitized(monkeypatch, tmp_path, source, value):
+    monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
+    env_file = None
+    if source == "environment":
+        monkeypatch.setenv("AI_AUDIO_VAD_FRAME_SAMPLES", value)
+    else:
+        env_file = tmp_path / ".env"
+        env_file.write_text(f"AI_AUDIO_VAD_FRAME_SAMPLES={value}\n")
+
+    with pytest.raises(ConfigurationError) as caught:
+        load_settings(env_file=env_file)
+
+    assert str(caught.value) == "Invalid configuration: audio_vad_frame_samples: literal_error"
+    assert value not in "".join(traceback.format_exception(caught.value))
+    assert caught.value.__context__ is None
+
+
+@pytest.mark.parametrize("field,maximum", [
+    ("audio_vad_timeout_seconds", 3600),
+    ("audio_vad_model_max_bytes", 268435456),
+    ("audio_vad_max_concurrent_recordings", 16),
+    ("audio_evidence_max_bytes", 1073741824),
+])
+@pytest.mark.parametrize("value", ["0", "-1", "nan", "inf", "private-invalid", "over"])
+def test_vad_resource_limits_are_finite_and_bounded(monkeypatch, field, maximum, value):
+    monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
+    monkeypatch.setenv(f"AI_{field.upper()}", str(maximum + 1) if value == "over" else value)
+    with pytest.raises(ConfigurationError) as caught:
+        load_settings(env_file=None)
+    assert field in str(caught.value)
+    assert "private-invalid" not in "".join(traceback.format_exception(caught.value))
+    assert caught.value.__context__ is None
+
+
+@pytest.mark.parametrize("overrides", [
+    {"audio_vad_frame_samples": 256},
+    {"audio_vad_frame_samples": 1024},
+    {"audio_vad_speech_threshold": float("nan")},
+    {"audio_vad_non_speech_threshold": float("inf")},
+    {"audio_vad_speech_threshold": 1.01},
+    {"audio_vad_non_speech_threshold": -0.01},
+    {"audio_vad_non_speech_threshold": 0.6},
+    {"audio_vad_non_speech_threshold": 0.8},
+    {"audio_vad_model_id": "private/path"},
+    {"audio_vad_model_version": ""},
+    {"audio_vad_model_sha256": "not-a-digest"},
+])
+def test_vad_contract_thresholds_and_identity_are_validated(overrides):
+    with pytest.raises(ValueError):
+        Settings(service_name="test-ai", service_identity="ai-core", _env_file=None, **overrides)
+
+
+def test_speech_map_defaults_and_environment_overrides(monkeypatch):
+    monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
+    defaults = load_settings(env_file=None)
+    assert defaults.audio_speech_map_boundary_padding_samples == 1600
+    assert defaults.audio_speech_map_merge_gap_samples == 512
+    assert defaults.audio_speech_map_energy_floor_dbfs == -50
+
+    monkeypatch.setenv("AI_AUDIO_SPEECH_MAP_BOUNDARY_PADDING_SAMPLES", "123")
+    monkeypatch.setenv("AI_AUDIO_SPEECH_MAP_MERGE_GAP_SAMPLES", "456")
+    monkeypatch.setenv("AI_AUDIO_SPEECH_MAP_ENERGY_FLOOR_DBFS", "-62.5")
+    settings = load_settings(env_file=None)
+    assert settings.audio_speech_map_boundary_padding_samples == 123
+    assert settings.audio_speech_map_merge_gap_samples == 456
+    assert settings.audio_speech_map_energy_floor_dbfs == -62.5
+
+
+@pytest.mark.parametrize("field", [
+    "audio_speech_map_boundary_padding_samples", "audio_speech_map_merge_gap_samples",
+])
+@pytest.mark.parametrize("value", [0, 230400000])
+def test_speech_map_sample_setting_boundaries(field, value):
+    settings = Settings(
+        service_name="test-ai", service_identity="ai-core", _env_file=None,
+        **{field: value},
+    )
+    assert getattr(settings, field) == value
+
+
+@pytest.mark.parametrize("value", [-120, 0])
+def test_speech_map_energy_floor_boundaries(value):
+    settings = Settings(
+        service_name="test-ai", service_identity="ai-core", _env_file=None,
+        audio_speech_map_energy_floor_dbfs=value,
+    )
+    assert settings.audio_speech_map_energy_floor_dbfs == value
+
+
+@pytest.mark.parametrize("field,values", [
+    ("audio_speech_map_boundary_padding_samples", ["-1", "230400001", "0.5", "nan", "inf"]),
+    ("audio_speech_map_merge_gap_samples", ["-1", "230400001", "0.5", "nan", "inf"]),
+    ("audio_speech_map_energy_floor_dbfs", ["-120.01", "0.01", "nan", "inf", "-inf"]),
+])
+def test_speech_map_invalid_settings_are_sanitized(monkeypatch, field, values):
+    monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
+    for value in [*values, "private-invalid"]:
+        monkeypatch.setenv(f"AI_{field.upper()}", value)
+        with pytest.raises(ConfigurationError) as caught:
+            load_settings(env_file=None)
+        assert field in str(caught.value)
+        assert "private-invalid" not in "".join(traceback.format_exception(caught.value))
+        assert caught.value.__context__ is None
