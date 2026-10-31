@@ -227,9 +227,8 @@ class IntelligenceResultIngestionIntegrationTests {
         assertThat(receiptCount()).isZero();
         assertThat(stageStatus(stage)).isEqualTo("RUNNING");
         var other=claim("DECISION_EXTRACTION",2);
-        digest=expose(other,envelope("DECISION_EXTRACTION",other,
+        String wrongDigest=expose(other,envelope("DECISION_EXTRACTION",other,
             decisions(candidate("wrong",UUID.randomUUID()))));
-        String wrongDigest=digest;
         assertThatThrownBy(()->ingest.ingest(other,wrongDigest))
             .isInstanceOf(IllegalArgumentException.class);
         assertThat(receiptCount()).isZero();
