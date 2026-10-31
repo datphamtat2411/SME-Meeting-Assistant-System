@@ -781,3 +781,95 @@ def test_recovery_environment_accepts_integer_text_and_sanitizes_invalid_input(m
     with pytest.raises(ConfigurationError) as caught:
         load_settings(None)
     assert "private-invalid" not in "".join(traceback.format_exception(caught.value))
+
+
+def test_correction_defaults_match_canonical_service_example():
+    env_file = Path(__file__).resolve().parents[2] / ".env.example"
+    expected = {
+        "transcript_correction_model": None,
+        "transcript_correction_timeout_seconds": 120,
+        "transcript_correction_context_window_tokens": 131072,
+        "transcript_correction_max_input_tokens": 98304,
+        "transcript_correction_max_output_tokens": 32768,
+        "transcript_correction_max_response_bytes": 4194304,
+        "transcript_correction_max_attempts": 2,
+        "transcript_correction_temperature": 0,
+        "transcript_correction_min_text_ratio": 0.65,
+        "transcript_correction_max_text_ratio": 1.5,
+    }
+    for config in (Settings(service_name="test-ai", service_identity="ai-core", _env_file=None),
+                   load_settings(env_file)):
+        for field, value in expected.items():
+            assert getattr(config, field) == value
+
+    # Loading settings alone would hide omitted example variables behind defaults.
+    lines = set(env_file.read_text(encoding="utf-8").splitlines())
+    for field, value in expected.items():
+        if value is not None:
+            assert f"AI_{field.upper()}={value}" in lines
+    assert "# AI_TRANSCRIPT_CORRECTION_MODEL=vendor/approved-instruction-model" in lines
+
+
+@pytest.mark.parametrize("source", ["environment", "dotenv"])
+def test_correction_configuration_overrides(monkeypatch, tmp_path, source):
+    values = {"AI_SERVICE_NAME": "test-ai", "AI_SERVICE_IDENTITY": "ai-core",
+              "AI_TRANSCRIPT_CORRECTION_MODEL": "vendor/approved",
+              "AI_TRANSCRIPT_CORRECTION_MAX_ATTEMPTS": "3",
+              "AI_TRANSCRIPT_CORRECTION_MAX_INPUT_TOKENS": "40000",
+              "AI_TRANSCRIPT_CORRECTION_TIMEOUT_SECONDS": "2.5",
+              "AI_TRANSCRIPT_CORRECTION_MIN_TEXT_RATIO": "0.7",
+              "AI_TRANSCRIPT_CORRECTION_MAX_TEXT_RATIO": "1.4"}
+    env_file = None
+    if source == "environment":
+        for key, value in values.items():
+            monkeypatch.setenv(key, value)
+    else:
+        env_file = tmp_path / ".env"
+        env_file.write_text("\n".join(f"{key}={value}" for key, value in values.items()))
+    config = load_settings(env_file)
+    assert config.transcript_correction_model == "vendor/approved"
+    assert config.transcript_correction_max_attempts == 3
+    assert config.transcript_correction_max_input_tokens == 40000
+    assert config.transcript_correction_timeout_seconds == 2.5
+    assert config.transcript_correction_min_text_ratio == 0.7
+    assert config.transcript_correction_max_text_ratio == 1.4
+
+
+@pytest.mark.parametrize("field,invalid", [
+    ("transcript_correction_context_window_tokens", [0, 2000001, True, 131072.0]),
+    ("transcript_correction_max_input_tokens", [0, 2000001, True, 100.0]),
+    ("transcript_correction_max_output_tokens", [0, 131073, True, 100.0]),
+    ("transcript_correction_max_response_bytes", [0, 16777217, True, 100.0]),
+    ("transcript_correction_max_attempts", [0, 4, True, 2.0]),
+    ("transcript_correction_timeout_seconds", [0, 601, True, float("inf"), float("nan")]),
+    ("transcript_correction_temperature", [-0.1, 1.1, True, float("nan")]),
+    ("transcript_correction_min_text_ratio", [0, 1.01, True, float("nan")]),
+    ("transcript_correction_max_text_ratio", [0.99, 3.01, True, float("inf")]),
+    ("transcript_correction_model", ["", "private invalid", "x" * 257]),
+])
+def test_correction_settings_are_strict_finite_and_bounded(field, invalid):
+    for value in invalid:
+        with pytest.raises(ValueError):
+            Settings(service_name="test-ai", service_identity="ai-core", _env_file=None,
+                     **{field: value})
+
+
+def test_correction_context_cross_field_validation():
+    with pytest.raises(ValueError):
+        Settings(service_name="test-ai", service_identity="ai-core", _env_file=None,
+                 transcript_correction_context_window_tokens=131071)
+
+
+@pytest.mark.parametrize("field", [
+    "model", "timeout_seconds", "context_window_tokens", "max_input_tokens",
+    "max_output_tokens", "max_response_bytes", "max_attempts", "temperature",
+    "min_text_ratio", "max_text_ratio",
+])
+def test_correction_invalid_environment_is_sanitized(monkeypatch, field):
+    monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
+    monkeypatch.setenv(f"AI_TRANSCRIPT_CORRECTION_{field.upper()}", "private invalid")
+    with pytest.raises(ConfigurationError) as caught:
+        load_settings(None)
+    assert "private invalid" not in "".join(traceback.format_exception(caught.value))
+    assert caught.value.__context__ is None

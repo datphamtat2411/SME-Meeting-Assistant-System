@@ -153,6 +153,28 @@ class Settings(BaseSettings):
     audio_asr_recovery_max_wall_time_seconds: float = Field(
         default=300, gt=0, le=3600, allow_inf_nan=False,
     )
+    transcript_correction_model: str | None = Field(
+        default=None, min_length=1, max_length=256, pattern=r"^[a-zA-Z0-9_./:-]+$",
+    )
+    transcript_correction_timeout_seconds: float = Field(
+        default=120, gt=0, le=600, allow_inf_nan=False,
+    )
+    transcript_correction_context_window_tokens: int = Field(
+        default=131072, gt=0, le=2000000, strict=True,
+    )
+    transcript_correction_max_input_tokens: int = Field(
+        default=98304, gt=0, le=2000000, strict=True,
+    )
+    transcript_correction_max_output_tokens: int = Field(
+        default=32768, gt=0, le=131072, strict=True,
+    )
+    transcript_correction_max_response_bytes: int = Field(
+        default=4194304, gt=0, le=16777216, strict=True,
+    )
+    transcript_correction_max_attempts: int = Field(default=2, gt=0, le=3, strict=True)
+    transcript_correction_temperature: float = Field(default=0, ge=0, le=1, allow_inf_nan=False)
+    transcript_correction_min_text_ratio: float = Field(default=0.65, gt=0, le=1, allow_inf_nan=False)
+    transcript_correction_max_text_ratio: float = Field(default=1.5, ge=1, le=3, allow_inf_nan=False)
 
     @field_validator(
         "audio_asr_chunk_target_samples", "audio_asr_chunk_max_request_samples",
@@ -171,6 +193,33 @@ class Settings(BaseSettings):
         if isinstance(value, str) and re.fullmatch(r"[+-]?[0-9]+", value):
             return int(value)
         return value
+
+    @field_validator(
+        "transcript_correction_context_window_tokens", "transcript_correction_max_input_tokens",
+        "transcript_correction_max_output_tokens", "transcript_correction_max_response_bytes",
+        "transcript_correction_max_attempts", mode="before",
+    )
+    @classmethod
+    def parse_correction_integers(cls, value: object) -> object:
+        return cls.parse_asr_chunk_integers(value)
+
+    @field_validator(
+        "transcript_correction_timeout_seconds", "transcript_correction_temperature",
+        "transcript_correction_min_text_ratio", "transcript_correction_max_text_ratio",
+        mode="before",
+    )
+    @classmethod
+    def reject_boolean_correction_numbers(cls, value: object) -> object:
+        if isinstance(value, bool):
+            raise ValueError("Correction settings must be numeric")
+        return value
+
+    @model_validator(mode="after")
+    def valid_correction_context(self) -> Self:
+        if (self.transcript_correction_max_input_tokens + self.transcript_correction_max_output_tokens
+                > self.transcript_correction_context_window_tokens):
+            raise ValueError("Correction input and output allowances must fit the context window")
+        return self
 
     @field_validator("audio_asr_recovery_max_wall_time_seconds", mode="before")
     @classmethod

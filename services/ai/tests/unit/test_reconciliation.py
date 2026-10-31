@@ -356,3 +356,14 @@ def test_result_limit_includes_only_configured_recovery_attempts():
     extra = replace(recovery, chunk_id="recovery-2", ordinal=2)
     with pytest.raises(AudioProcessingError):
         reconcile_transcript(approved, (*inputs, result(extra)), configuration)
+
+
+def test_segment_identities_are_deterministic_server_owned_and_chronological():
+    approved = plan()
+    inputs = (result(approved.chunks[0], (80, 90, "lời đầu")),
+              result(approved.chunks[1], (120, 130, "lời sau")))
+    output = reconcile_transcript(approved, tuple(reversed(inputs)), settings())
+    assert [(s.segment_id, s.ordinal) for s in output.segments] == [
+        ("segment-000000", 0), ("segment-000001", 1),
+    ]
+    assert output == reconcile_transcript(approved, inputs, settings())

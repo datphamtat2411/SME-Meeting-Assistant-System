@@ -50,6 +50,10 @@ class ReconciledSegment:
     source_chunk_ids: tuple[str, ...]
     flags: tuple[ReconciliationFlag, ...] = ()
     alternatives: tuple[str, ...] = field(default=(), repr=False)
+    # Assigned only after final chronological ordering; provisional merge units
+    # deliberately carry no externally usable identity.
+    segment_id: str = ""
+    ordinal: int = -1
 
     def __post_init__(self) -> None:
         for name in ("source_chunk_ids", "flags", "alternatives"):
@@ -421,6 +425,8 @@ def reconcile_transcript(
         chunks = _handoff(plan, results, settings)
         outcomes, evidence, asr = _collect(chunks, results)
         segments = _resolve(evidence, configuration["min_shared_tokens"])
+        segments = tuple(replace(segment, segment_id=f"segment-{ordinal:06d}", ordinal=ordinal)
+                         for ordinal, segment in enumerate(segments))
         return TranscriptReconciliation(
             plan.source_id, plan.sample_count, segments, outcomes,
             _unresolved(plan.sample_count, segments),
