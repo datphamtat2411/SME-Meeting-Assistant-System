@@ -13,19 +13,45 @@ public final class IntelligenceVersionTags {
     private IntelligenceVersionTags() { }
 
     public static String summary(UUID summaryVersionId, int versionNumber) {
-        return "\"sum-" + summaryVersionId + "-" + versionNumber + "\"";
+        return summary(summaryVersionId, versionNumber, false);
+    }
+
+    /**
+     * The freshness flag is part of the serialized response. A strong HTTP
+     * ETag must rotate when a transcript correction first makes it stale,
+     * even if the underlying Summary/Decision row version did not change.
+     * Source revisions beyond that point do not change the visible projection.
+     */
+    public static String summary(UUID summaryVersionId, int versionNumber, boolean stale) {
+        return "\"sum-" + summaryVersionId + "-" + versionNumber
+            + (stale ? "-stale" : "") + "\"";
     }
 
     public static String decision(UUID decisionId, long rowVersion) {
-        return "\"dec-" + decisionId + "-" + rowVersion + "\"";
+        return decision(decisionId, rowVersion, false);
+    }
+
+    public static String decision(UUID decisionId, long rowVersion, boolean stale) {
+        return "\"dec-" + decisionId + "-" + rowVersion
+            + (stale ? "-stale" : "") + "\"";
     }
 
     public static void requireSummaryMatch(UUID summaryVersionId, int versionNumber, String ifMatch) {
-        requireMatch(summary(summaryVersionId, versionNumber), ifMatch);
+        requireSummaryMatch(summaryVersionId, versionNumber, false, ifMatch);
+    }
+
+    public static void requireSummaryMatch(UUID summaryVersionId, int versionNumber,
+            boolean stale, String ifMatch) {
+        requireMatch(summary(summaryVersionId, versionNumber, stale), ifMatch);
     }
 
     public static void requireDecisionMatch(UUID decisionId, long rowVersion, String ifMatch) {
-        requireMatch(decision(decisionId, rowVersion), ifMatch);
+        requireDecisionMatch(decisionId, rowVersion, false, ifMatch);
+    }
+
+    public static void requireDecisionMatch(UUID decisionId, long rowVersion,
+            boolean stale, String ifMatch) {
+        requireMatch(decision(decisionId, rowVersion, stale), ifMatch);
     }
 
     private static void requireMatch(String current, String ifMatch) {
