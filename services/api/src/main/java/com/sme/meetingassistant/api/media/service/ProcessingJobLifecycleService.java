@@ -156,6 +156,14 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
     }
 
     @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public void requireActionItemExtractionClaim(UUID jobId, UUID meetingId, UUID mediaId,
+            StageClaim claim) {
+        requireClaim(claim);
+        repository.requireActionItemExtractionClaim(jobId, meetingId, mediaId, claim);
+    }
+
+    @Override
     @Transactional
     public boolean requireFinalizationClaim(UUID jobId, UUID meetingId, UUID mediaId, StageClaim claim) {
         return this.repository.requireFinalizationClaim(jobId, meetingId, mediaId, claim);
