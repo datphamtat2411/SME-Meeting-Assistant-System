@@ -51,6 +51,17 @@ public class TranscriptSourceGuard {
     }
 
     @Transactional(propagation = Propagation.MANDATORY)
+    public TranscriptRepository.DerivedSource derivedSource(UUID meetingId, UUID transcriptId,
+            long contentRevision) {
+        return transcripts.derivedSource(meetingId, transcriptId, contentRevision);
+    }
+
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void requireDerivedSegments(UUID meetingId, UUID transcriptId, List<UUID> segments) {
+        transcripts.requireDerivedSegments(meetingId, transcriptId, segments);
+    }
+
+    @Transactional(propagation = Propagation.MANDATORY)
     public void requireCurrentForDerivedWrite(UUID meetingId, TranscriptSource expected) {
         this.transcripts.requireCurrentSource(meetingId, expected);
     }
