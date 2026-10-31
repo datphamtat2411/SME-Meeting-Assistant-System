@@ -10,9 +10,12 @@ from typing import Mapping
 
 from sme_meeting_ai.audio.errors import AudioProcessingError
 from sme_meeting_ai.audio.models import (
+    AudioProvenance,
     AudioSource,
+    DetectionProvenance,
     NormalizedAudioArtifact,
     SampleInterval,
+    SpeechMapProvenance,
 )
 from sme_meeting_ai.core.config import Settings
 from sme_meeting_ai.pipeline.models import (
@@ -166,9 +169,16 @@ def _validate_plan(plan: AsrChunkPlan, configuration: Mapping[str, int]) -> None
     position = 0
     start_reason = ChunkBoundaryReason.TIMELINE_START
     for ordinal, chunk in enumerate(plan.chunks):
+        _require(isinstance(chunk, AsrChunk))
         core, request = chunk.core_interval, chunk.request_interval
+        _require(all(
+            isinstance(interval, SampleInterval)
+            and type(interval.start_sample) is int and type(interval.end_sample) is int
+            for interval in (core, request)
+        ))
         _require(
-            chunk.ordinal == ordinal and chunk.chunk_id == f"chunk-{ordinal:06d}"
+            type(chunk.ordinal) is int and chunk.ordinal == ordinal
+            and chunk.chunk_id == f"chunk-{ordinal:06d}"
             and chunk.start_boundary_reason is start_reason
             and core.start_sample == position
             and 0 < core.end_sample - core.start_sample <= configuration["max_core_samples"]
@@ -188,6 +198,80 @@ def _validate_plan(plan: AsrChunkPlan, configuration: Mapping[str, int]) -> None
         position = core.end_sample
         start_reason = chunk.end_boundary_reason
     _require(position == plan.sample_count)
+
+
+def validate_asr_chunk_plan(plan: AsrChunkPlan) -> None:
+    """Validate published structure against captured rules, never new settings.
+
+    This does not recalculate boundaries or replay preprocessing evidence.
+    Execution separately validates the borrowed normalized audio and its WAV.
+    """
+    try:
+        _require(
+            isinstance(plan, AsrChunkPlan)
+            and isinstance(plan.source_id, str) and bool(plan.source_id.strip())
+            and type(plan.sample_count) is int and plan.sample_count > 0
+            and isinstance(plan.chunks, tuple)
+            and isinstance(plan.provenance, ChunkPlanningProvenance)
+        )
+        provenance = plan.provenance
+        _require(
+            provenance.planner_version == _PLANNER_VERSION
+            and type(provenance.sample_rate_hz) is int and provenance.sample_rate_hz == _RATE
+            and isinstance(provenance.preprocessing, PreprocessingProvenance)
+        )
+        preprocessing = provenance.preprocessing
+        _require(
+            isinstance(preprocessing.pipeline_version, str) and bool(preprocessing.pipeline_version.strip())
+            and preprocessing.source_id == plan.source_id
+            and type(preprocessing.sample_count) is int and preprocessing.sample_count == plan.sample_count
+            and type(preprocessing.sample_rate_hz) is int and preprocessing.sample_rate_hz == _RATE
+            and isinstance(preprocessing.normalization, AudioProvenance)
+            and preprocessing.normalization.source_id == plan.source_id
+            and isinstance(preprocessing.detection, DetectionProvenance)
+            and isinstance(preprocessing.speech_map, SpeechMapProvenance)
+        )
+        speech_map = preprocessing.speech_map
+        _require(
+            speech_map.source_id == plan.source_id
+            and isinstance(speech_map.mapper_version, str) and bool(speech_map.mapper_version.strip())
+            and type(speech_map.sample_count) is int and speech_map.sample_count == plan.sample_count
+            and type(speech_map.sample_rate_hz) is int and speech_map.sample_rate_hz == _RATE
+            and speech_map.detector_provenance == preprocessing.detection
+        )
+        detection = preprocessing.detection
+        _require(all(isinstance(value, str) and bool(value.strip()) for value in (
+            detection.model_id, detection.model_version, detection.backend, detection.detector_version,
+        )))
+        _require(
+            isinstance(detection.model_sha256, str) and len(detection.model_sha256) == 64
+            and all(character in "0123456789abcdef" for character in detection.model_sha256)
+        )
+        configuration = provenance.effective_configuration
+        for key in (
+            "target_core_samples", "max_request_samples", "overlap_samples",
+            "boundary_search_samples", "max_chunks", "max_timeline_samples",
+        ):
+            value = configuration[key]
+            minimum = 0 if key in ("overlap_samples", "boundary_search_samples") else 1
+            maximum = 65536 if key == "max_chunks" else 230400000
+            _require(type(value) is int and minimum <= value <= maximum)
+        target, maximum = configuration["target_core_samples"], configuration["max_request_samples"]
+        overlap, search = configuration["overlap_samples"], configuration["boundary_search_samples"]
+        _require(overlap < maximum and target + overlap <= maximum and search < target)
+        for key, expected in {
+            "max_core_samples": maximum - overlap,
+            "left_context_samples": overlap // 2,
+            "right_context_samples": overlap - overlap // 2,
+            "minimum_progress_samples": target - search,
+        }.items():
+            _require(type(configuration[key]) is int and configuration[key] == expected)
+        _require(plan.sample_count <= configuration["max_timeline_samples"])
+        _validate_plan(plan, configuration)
+        return
+    except (AudioProcessingError, AttributeError, TypeError, ValueError, KeyError, OverflowError):
+        pass
+    raise AudioProcessingError("VALIDATION")
 
 
 class SpeechAwareAsrChunkPlanner:
@@ -278,5 +362,5 @@ class SpeechAwareAsrChunkPlanner:
             chunks=tuple(chunks),
             provenance=ChunkPlanningProvenance(_PLANNER_VERSION, result.provenance, configuration),
         )
-        _validate_plan(plan, configuration)
+        validate_asr_chunk_plan(plan)
         return plan

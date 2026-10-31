@@ -18,6 +18,12 @@ from .chunk_planning import (
     ChunkBoundaryReason,
     ChunkPlanningProvenance,
     SpeechAwareAsrChunkPlanner,
+    validate_asr_chunk_plan,
+)
+from .chunk_execution import (
+    AsrChunkResult,
+    AsrTimelineSegment,
+    execute_asr_chunks,
 )
 
 __all__ = [
@@ -25,6 +31,7 @@ __all__ = [
     "AsrCandidate",
     "AsrChunk",
     "AsrChunkPlan",
+    "AsrChunkResult",
     "AsrError",
     "AsrErrorCategory",
     "AsrProvenance",
@@ -32,8 +39,11 @@ __all__ = [
     "AsrSegment",
     "AsrSegmentQuality",
     "AsrTranscriber",
+    "AsrTimelineSegment",
     "AsrUsage",
     "ChunkBoundaryReason",
     "ChunkPlanningProvenance",
     "SpeechAwareAsrChunkPlanner",
+    "execute_asr_chunks",
+    "validate_asr_chunk_plan",
 ]

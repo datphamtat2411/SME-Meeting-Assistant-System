@@ -112,6 +112,7 @@ def test_example_dotenv_loads_documented_defaults():
     assert settings.audio_asr_chunk_overlap_samples == 80000
     assert settings.audio_asr_chunk_boundary_search_samples == 80000
     assert settings.audio_asr_chunk_max_chunks == 4096
+    assert settings.audio_asr_max_concurrent_chunks == 1
 
 
 @pytest.mark.parametrize(
@@ -534,6 +535,7 @@ def test_asr_provider_defaults():
     assert settings.audio_asr_temperature == 0
     assert settings.audio_asr_max_payload_bytes == 26214400
     assert settings.audio_asr_timeout_seconds == 120
+    assert settings.audio_asr_max_concurrent_chunks == 1
 
 
 @pytest.mark.parametrize("source", ["environment", "dotenv"])
@@ -544,6 +546,7 @@ def test_asr_settings_alias_overrides_and_secret_redaction(monkeypatch, tmp_path
         "AI_AUDIO_ASR_MODEL": "vendor/compatible-model",
         "AI_AUDIO_ASR_LANGUAGE": "en", "AI_AUDIO_ASR_TEMPERATURE": "0.2",
         "AI_AUDIO_ASR_MAX_PAYLOAD_BYTES": "4096", "AI_AUDIO_ASR_TIMEOUT_SECONDS": "2.5",
+        "AI_AUDIO_ASR_MAX_CONCURRENT_CHUNKS": "4",
     }
     env_file = None
     if source == "environment":
@@ -561,6 +564,7 @@ def test_asr_settings_alias_overrides_and_secret_redaction(monkeypatch, tmp_path
     assert settings.audio_asr_temperature == 0.2
     assert settings.audio_asr_max_payload_bytes == 4096
     assert settings.audio_asr_timeout_seconds == 2.5
+    assert settings.audio_asr_max_concurrent_chunks == 4
 
 
 @pytest.mark.parametrize("field,values", [
@@ -569,6 +573,7 @@ def test_asr_settings_alias_overrides_and_secret_redaction(monkeypatch, tmp_path
     ("audio_asr_temperature", ["nan", "inf", "-0.1", "1.1"]),
     ("audio_asr_timeout_seconds", ["0", "-1", "nan", "inf", "601"]),
     ("audio_asr_max_payload_bytes", ["0", "-1", "nan", "inf", "26214401", "1.5"]),
+    ("audio_asr_max_concurrent_chunks", ["0", "-1", "5", "nan", "inf", "1.5", "1.0", "true"]),
 ])
 def test_asr_provider_invalid_settings_are_sanitized(monkeypatch, field, values):
     monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
@@ -595,3 +600,21 @@ def test_asr_provider_setting_boundaries(temperature, timeout, payload):
     assert settings.audio_asr_temperature == temperature
     assert settings.audio_asr_timeout_seconds == timeout
     assert settings.audio_asr_max_payload_bytes == payload
+
+
+@pytest.mark.parametrize("value", [1, 4])
+def test_asr_concurrency_boundaries(value):
+    settings = Settings(
+        service_name="test-ai", service_identity="ai-core", _env_file=None,
+        audio_asr_max_concurrent_chunks=value,
+    )
+    assert settings.audio_asr_max_concurrent_chunks == value
+
+
+@pytest.mark.parametrize("value", [True, False, 1.0, 1.5, 0, -1, 5])
+def test_asr_concurrency_requires_a_strict_bounded_integer(value):
+    with pytest.raises(ValueError):
+        Settings(
+            service_name="test-ai", service_identity="ai-core", _env_file=None,
+            audio_asr_max_concurrent_chunks=value,
+        )
