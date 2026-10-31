@@ -114,6 +114,23 @@ public class DecisionRepository {
         return true;
     }
 
+    /**
+     * Perform the one authoritative state transition under the caller's
+     * meeting-row lock. The version predicate is a second concurrency fence.
+     * Confirmation and rejection actors/times are always server assigned.
+     */
+    public boolean reviewProposal(UUID meetingId, UUID decisionId, long expectedVersion,
+            UUID reviewerId, boolean confirm) {
+        String assignment = confirm
+            ? "status='CONFIRMED',confirmed_by_user_id=?,confirmed_at=CURRENT_TIMESTAMP"
+            : "status='REJECTED',rejected_by_user_id=?,rejected_at=CURRENT_TIMESTAMP";
+        int updated = jdbc.update("""
+            UPDATE meeting_decisions SET %s,version=version+1,updated_at=CURRENT_TIMESTAMP
+             WHERE meeting_id=? AND id=? AND status='PROPOSED' AND version=?
+            """.formatted(assignment), reviewerId, meetingId, decisionId, expectedVersion);
+        return updated == 1;
+    }
+
     private static State state(ResultSet rs) throws SQLException {
         UUID source = rs.getObject("transcript_id", UUID.class);
         UUID current = rs.getObject("current_transcript_id", UUID.class);
