@@ -68,9 +68,11 @@ class FakeCore:
         self.lost_claim = False
         self.unavailable = False
         self.expired = False
+        self.expired_claim = False
         self.execution_stage = "TRANSCRIPTION"
         self.reusable = None
         self.rollback = False
+        self.covering_generation = None
 
     def status(self, replay=None):
         data = dict(contractVersion="1.0", processingJobId=self.body["processingJobId"],
@@ -92,6 +94,10 @@ class FakeCore:
             return self.response(status=503, code="UNAVAILABLE")
         if request.method == "GET":
             return self.response(self.status())
+        if self.covering_generation is not None:
+            if operation == "claim":
+                return self.response(self.status())
+            return self.response(status=409, code="WORKER_LEASE_LOST")
         if operation == "claim":
             if self.state in ("RESULT_ACCEPTED", "FAILURE_RECORDED", "SUPERSEDED"):
                 return self.response(self.status())
@@ -114,6 +120,9 @@ class FakeCore:
             self.claim["resultSlot"] = dict(storageId="private", maxBytes=8388608,
                 objectKey=f"processing/{self.body['processingJobId']}/transcription/results/{self.claim['executionStageRunId']}.json")
             self.state = "RUNNING"
+            if self.expired_claim:
+                self.claim["leaseExpiresAt"] = (now - timedelta(seconds=1)).isoformat()
+                self.state = "AWAITING_RECONCILIATION"
             if self.lost_claim:
                 self.lost_claim = False
                 raise httpx.ReadTimeout("private claim response lost", request=request)
@@ -156,7 +165,10 @@ class FakeCore:
             return self.response(self.status(True))
         self.failures.append(command)
         self.state = "FAILURE_RECORDED"
-        self.receipt = dict(receiptId=str(uuid4()), errorCode="LLM_CORRECTION_FAILED", retryable=False,
+        code = ("WORKER_CONFIGURATION_INVALID" if command["category"] in ("AUTHENTICATION", "CONFIGURATION")
+                else "SOURCE_MEDIA_INTEGRITY" if command["phase"] == "SOURCE_DOWNLOAD" and command["category"] == "INTEGRITY"
+                else "LLM_CORRECTION_FAILED")
+        self.receipt = dict(receiptId=str(uuid4()), errorCode=code, retryable=False,
                             retryExhausted=True, recordedAt=datetime.now(UTC).isoformat())
         return self.response(self.status(False))
 
@@ -313,11 +325,12 @@ def test_lease_loss_fences_late_executor_and_preserves_source_until_reader_stops
             while not entered.is_set():
                 await asyncio.sleep(0.01)
             r.core.expired = True
-            await asyncio.sleep(1.1)
+            await asyncio.wait_for(asyncio.shield(task), 3)
             assert paths[0].exists()
             release.set()
             await task
             assert delivery.actions != ["ack"] and not r.s3.objects
+            assert not r.core.transcripts and r.core.receipt is None
             await r.worker.aclose()
             assert not paths[0].exists()
         finally:
@@ -373,7 +386,9 @@ def test_renewal_runs_independently_while_inference_is_busy(workflow):
         try:
             while not entered.is_set():
                 await asyncio.sleep(0.01)
-            await asyncio.sleep(1.1)
+            async with asyncio.timeout(3):
+                while not r.core.renewals:
+                    await asyncio.sleep(0.001)
             assert r.core.renewals >= 1
             release.set()
             await task
@@ -405,6 +420,7 @@ def test_shutdown_stops_intake_and_drains_before_returning(workflow):
         def __init__(self):
             self.failure = asyncio.Event()
             self.stopped = False
+            self.stopped_event = asyncio.Event()
             self.task = None
             self.closed = asyncio.get_running_loop().create_future()
             self.connection = SimpleNamespace(closed=lambda: self.closed)
@@ -414,6 +430,7 @@ def test_shutdown_stops_intake_and_drains_before_returning(workflow):
 
         async def stop(self):
             self.stopped = True
+            self.stopped_event.set()
 
         async def drain(self):
             await self.task
@@ -436,7 +453,7 @@ def test_shutdown_stops_intake_and_drains_before_returning(workflow):
             while not entered.is_set():
                 await asyncio.sleep(0.01)
             stop.set()
-            await asyncio.sleep(0.01)
+            await asyncio.wait_for(broker.stopped_event.wait(), 1)
             assert broker.stopped and not task.done() and not broker.delivery.actions
             release.set()
             await task
@@ -531,6 +548,181 @@ def test_http_200_without_a_durable_receipt_never_acknowledges(workflow, lookup_
             # contradictory failure. Only a valid covering lookup receipt can.
             assert len(r.core.transcripts) == 1 and not r.core.failures
             assert delivery.actions == (["ack"] if lookup_valid else ["nack"])
+        finally:
+            await cleanup(r)
+    asyncio.run(run())
+
+
+def test_after_claim_connection_loss_preserves_result_for_reconciliation(workflow):
+    async def run():
+        h = workflow()
+        base = pipeline(h)
+        r = await setup(h)
+
+        def execute(source):
+            r.core.unavailable = True
+            return base.run(source)
+        r.worker.pipeline = SimpleNamespace(run=execute)
+        try:
+            first = Delivery(r.body)
+            await r.worker.handle(first)
+            assert first.actions == ["nack"]
+            assert r.core.state == "RUNNING" and r.core.receipt is None
+            assert not r.core.transcripts and not r.core.failures and len(r.s3.objects) == 1
+        finally:
+            await cleanup(r)
+    asyncio.run(run())
+
+
+def test_superseded_generation_fences_old_inference_and_only_acks_durable_status(workflow):
+    async def run():
+        entered, release = threading.Event(), threading.Event()
+        h = workflow()
+        base = pipeline(h)
+
+        def blocked(source):
+            entered.set()
+            assert release.wait(5)
+            return base.run(source)
+        r = await setup(h, run=blocked)
+        delivery = Delivery(r.body)
+        task = asyncio.create_task(r.worker.handle(delivery))
+        try:
+            async with asyncio.timeout(3):
+                while not entered.is_set():
+                    await asyncio.sleep(0.001)
+                r.core.covering_generation = 1
+                r.core.state = "SUPERSEDED"
+                r.core.receipt = {"generation": 1}
+                await task  # renewal observes new ownership while reader is busy
+            assert delivery.actions == ["ack"]
+            release.set()
+            await r.worker.aclose()
+            assert not r.s3.objects and not r.core.transcripts and not r.core.failures
+            assert r.core.state == "SUPERSEDED" and r.core.receipt == {"generation": 1}
+        finally:
+            release.set()
+            await asyncio.gather(task, return_exceptions=True)
+            await cleanup(r)
+    asyncio.run(run())
+
+
+def test_source_integrity_failure_is_durable_without_inference(workflow):
+    async def run():
+        r = await setup(workflow())
+        original = r.s3.get_object
+
+        def corrupt(**options):
+            response = original(**options)
+            response["ContentLength"] += 1
+            return response
+        r.s3.get_object = corrupt
+        try:
+            delivery = Delivery(r.body)
+            await r.worker.handle(delivery)
+            assert delivery.actions == ["ack"] and not r.calls
+            assert r.core.state == "FAILURE_RECORDED"
+            assert r.core.receipt["errorCode"] == "SOURCE_MEDIA_INTEGRITY"
+            assert not r.core.transcripts and not r.s3.objects
+        finally:
+            await cleanup(r)
+    asyncio.run(run())
+
+
+def test_poison_message_handed_off_without_guessing_business_state(workflow):
+    async def run():
+        r = await setup(workflow())
+        try:
+            delivery = Delivery({**r.body, "schemaVersion": 99}, 5)
+            await r.worker.handle(delivery)
+            assert delivery.actions == ["dead"]
+            assert not r.core.requests and not r.calls
+            assert r.core.state == "AVAILABLE" and r.core.receipt is None
+            assert not r.core.transcripts and not r.core.failures
+        finally:
+            await cleanup(r)
+    asyncio.run(run())
+
+
+def test_restart_finds_uncertain_accepted_outcome_without_overwriting_human_edit(workflow):
+    async def run():
+        r = await setup(workflow())
+        original = r.core.__call__
+
+        async def lost(request):
+            if request.method == "GET":
+                raise httpx.ReadTimeout("test-only lost lookup", request=request)
+            response = await original(request)
+            if request.url.path.endswith("/complete"):
+                raise httpx.ReadTimeout("test-only lost completion", request=request)
+            return response
+        await r.http.aclose()
+        r.http = httpx.AsyncClient(transport=httpx.MockTransport(lost))
+        r.worker.core.http = r.http
+        try:
+            first = Delivery(r.body)
+            await r.worker.handle(first)
+            assert first.actions == ["nack"] and r.core.state == "RESULT_ACCEPTED"
+            assert not r.core.failures and len(r.core.transcripts) == 1
+            receipt = r.core.receipt.copy()
+            r.core.transcripts[0]["segments"][0]["text"] = "Bản sửa của người dùng."
+            await r.http.aclose()
+            r.http = httpx.AsyncClient(transport=httpx.MockTransport(original))
+            r.worker.core.http = r.http
+            restarted = TranscriptionWorker(r.worker.settings, r.worker.core, r.storage, r.worker.pipeline)
+            try:
+                duplicate = Delivery(r.body, 1)
+                await restarted.handle(duplicate)
+                assert duplicate.actions == ["ack"] and r.core.receipt == receipt
+                assert len(r.calls) == len(r.core.transcripts) == 1
+                assert r.core.transcripts[0]["segments"][0]["text"] == "Bản sửa của người dùng."
+            finally:
+                await restarted.aclose()
+        finally:
+            await cleanup(r)
+    asyncio.run(run())
+
+
+def test_asr_authentication_failure_stops_intake_and_never_becomes_empty_success(workflow):
+    from sme_meeting_ai.transcription.asr import AsrError, AsrErrorCategory
+
+    async def run():
+        h = workflow()
+
+        def invalid_credentials(_):
+            raise AsrError(AsrErrorCategory.AUTHENTICATION)
+        h.asr_callback = invalid_credentials
+        r = await setup(h)
+        try:
+            delivery = Delivery(r.body)
+            await r.worker.handle(delivery)
+            assert r.worker.stop_intake.is_set()
+            assert delivery.actions == ["ack"] and r.core.state == "FAILURE_RECORDED"
+            assert r.core.receipt["errorCode"] == "WORKER_CONFIGURATION_INVALID"
+            assert not r.s3.objects and not r.core.transcripts
+        finally:
+            await cleanup(r)
+    asyncio.run(run())
+
+
+def test_expired_claim_starts_no_storage_or_inference_work(workflow):
+    async def run():
+        r = await setup(workflow())
+        submissions = []
+        original = r.worker._executor.submit
+
+        def submit(*args, **kwargs):
+            submissions.append(True)
+            return original(*args, **kwargs)
+        r.worker._executor.submit = submit
+        try:
+            r.core.expired_claim = True
+            delivery = Delivery(r.body)
+            await r.worker.handle(delivery)
+            assert not submissions and not r.calls and not r.s3.streams and not r.s3.objects
+            assert delivery.actions == ["dead"]
+            assert r.core.state == "AWAITING_RECONCILIATION" and r.core.receipt is None
+            assert not r.core.failures and not r.core.transcripts
         finally:
             await cleanup(r)
     asyncio.run(run())

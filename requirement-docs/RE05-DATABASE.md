@@ -1365,6 +1365,16 @@ A human-edited summary version MUST identify the user who created that version.
 
 A summary produced from materially incomplete/suspicious transcript evidence MUST be capable of storing a warning quality state.
 
+### DB-SUM-006 — Bounded AI quality signals and immutable attribution (MI-PM-05)
+
+Accepted AI results SHALL retain validated producer model/promptVersion and optional provider identifiers with their immutable result receipt; accepted result warning codes SHALL be bounded, allowlisted and immutable. `meeting_intelligence_result_receipts` stores this metadata using typed fields and a bounded warning-code array, not unbounded arbitrary provider JSON. Existing historic receipts MAY have null producer metadata.
+
+Each immutable `meeting_summary_versions` row SHALL retain its own bounded AI warning-code projection. `quality_status=READY_WITH_WARNINGS` SHALL be used when trusted Transcript warnings **or** validated advisory AI result warnings are present, without allowing AI to redefine Transcript quality. Human edits SHALL preserve source-version warning lineage while retaining explicit HUMAN_EDIT attribution.
+
+AI-extracted `meeting_decisions` MAY retain the producer-declared `ai_uncertainty` enum NONE/LOW/MATERIAL, immutable and advisory; manual Decisions SHALL NOT invent this model assertion. A zero-candidate Decision extraction SHALL still retain the result's warnings/provenance in its acceptance receipt.
+
+Implementation uses additive Flyway V25; existing migrations are not rewritten. These quality/provenance fields do not grant AI confirmation, publication or meeting-content access authority.
+
 ---
 
 # 20. Decision Persistence

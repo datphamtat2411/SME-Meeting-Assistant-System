@@ -61,6 +61,14 @@ def payload(reconciliation, texts=None):
     ]}
 
 
+def context_payload(reconciliation):
+    return {"sample_rate_hz": 16000, "segments": [
+        {"segment_id": s.segment_id, "ordinal": s.ordinal, "text": s.text,
+         "start_sample": s.interval.start_sample, "end_sample": s.interval.end_sample}
+        for s in reconciliation.segments
+    ]}
+
+
 class Provider:
     def __init__(self, *responses):
         self.responses = responses
@@ -91,8 +99,9 @@ def test_complete_meeting_context_vietnamese_corrections_and_trusted_mapping(cap
     assert len(provider.requests) == 1
     request = provider.requests[0]
     data = json.loads(request.transcript_json)
-    assert data == payload(reconciliation)
-    assert all(set(item) == {"segment_id", "ordinal", "text"} for item in data["segments"])
+    assert data == context_payload(reconciliation)
+    assert all(set(item) == {"segment_id", "ordinal", "text", "start_sample", "end_sample"}
+               for item in data["segments"])
     assert request.model == "vendor/approved" and request.temperature == 0
     assert "untrusted" in request.system_prompt.lower()
     assert "translation" in request.system_prompt.lower()
@@ -383,7 +392,7 @@ def test_short_segment_integrity_cannot_be_bypassed_or_hidden_by_meeting_context
     assert outcome.failure.category is CorrectionErrorCategory.SUSPICIOUS_OUTPUT
     assert outcome.failure.attempts == len(provider.requests) == 2
     assert provider.requests[0] == provider.requests[1]
-    assert json.loads(provider.requests[0].transcript_json) == payload(reconciliation)
+    assert json.loads(provider.requests[0].transcript_json) == context_payload(reconciliation)
 
 
 @pytest.mark.parametrize("source,replacement", [

@@ -29,7 +29,19 @@ public class TransactionalAuditWriter {
     @Transactional(propagation = Propagation.MANDATORY)
     public void record(UUID actorId, String action, String entityType, UUID entityId,
             UUID meetingId, Map<String, Object> metadata) {
-        if (actorId == null || entityId == null || meetingId == null
+        if (actorId == null) throw new IllegalArgumentException("User audit requires actor.");
+        persist(actorId, "USER", action, entityType, entityId, meetingId, metadata);
+    }
+
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void recordService(String action, String entityType, UUID entityId,
+            UUID meetingId, Map<String, Object> metadata) {
+        persist(null, "SERVICE", action, entityType, entityId, meetingId, metadata);
+    }
+
+    private void persist(UUID actorId, String actorType, String action, String entityType,
+            UUID entityId, UUID meetingId, Map<String, Object> metadata) {
+        if (entityId == null || meetingId == null || metadata == null
                 || action == null || action.isBlank() || action.length() > 96
                 || entityType == null || entityType.isBlank() || entityType.length() > 64) {
             throw new IllegalArgumentException("Invalid business audit context");
@@ -46,8 +58,8 @@ public class TransactionalAuditWriter {
             INSERT INTO audit_events
               (id, occurred_at, actor_user_id, actor_type, action_code,
                entity_type, entity_id, meeting_id, correlation_id, metadata)
-            VALUES (?, clock_timestamp(), ?, 'USER', ?, ?, ?, ?, ?, CAST(? AS jsonb))
-            """, UUID.randomUUID(), actorId, action, entityType, entityId,
+            VALUES (?, clock_timestamp(), ?, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb))
+            """, UUID.randomUUID(), actorId, actorType, action, entityType, entityId,
             meetingId, requestId, encoded);
     }
 }

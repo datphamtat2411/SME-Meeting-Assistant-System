@@ -193,6 +193,7 @@ def workflow(tmp_path, monkeypatch):
                     return h.correction_callback(request)
                 for entry in entries:
                     entry["text"] += "."
+                entries = [{k: entry[k] for k in ("segment_id", "ordinal", "text")} for entry in entries]
                 return CorrectionProviderResponse(
                     json.dumps({"segments": entries}, ensure_ascii=False),
                     "fake", request.model, "test/resolved-corrector",

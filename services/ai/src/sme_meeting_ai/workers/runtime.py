@@ -131,12 +131,18 @@ class WorkerRuntime:
     async def _shutdown(self) -> None:
         self.request_shutdown()
         self.state = WorkerLifecycleState.STOPPING
+        loop = asyncio.get_running_loop()
+        budget = self.settings.worker_shutdown_timeout_seconds
+        self._cleanup_deadline = loop.time() + budget
+        # Reserve a bounded part of the same budget for cancellation/cleanup.
+        # The configured timeout is a total deadline, not a per-phase allowance.
+        reserve = min(1.0, budget / 5)
         try:
             if self._work is not None:
                 try:
                     await asyncio.wait_for(
                         asyncio.shield(self._work),
-                        self.settings.worker_shutdown_timeout_seconds,
+                        max(0, self._cleanup_deadline - reserve - loop.time()),
                     )
                 except TimeoutError:
                     self._failure("worker.execution.timeout")
@@ -145,7 +151,7 @@ class WorkerRuntime:
                     # misbehaving hook must not prevent resource shutdown.
                     done, pending = await asyncio.wait(
                         (self._work,),
-                        timeout=self.settings.worker_shutdown_timeout_seconds,
+                        timeout=max(0, self._cleanup_deadline - reserve / 2 - loop.time()),
                     )
                     if pending:
                         self._failure("worker.execution.cancellation.timeout")
@@ -154,10 +160,6 @@ class WorkerRuntime:
                 except asyncio.CancelledError:
                     pass
         finally:
-            self._cleanup_deadline = (
-                asyncio.get_running_loop().time()
-                + self.settings.worker_shutdown_timeout_seconds
-            )
             await self._resources.aclose()
             self.state = (
                 WorkerLifecycleState.FAILED if self._failed else WorkerLifecycleState.STOPPED

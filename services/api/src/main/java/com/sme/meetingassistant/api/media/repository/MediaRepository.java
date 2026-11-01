@@ -119,6 +119,15 @@ public class MediaRepository {
             """, id, pendingKey);
     }
 
+    /** Read-only replay fast-path; transactional claim remains authoritative. */
+    public Optional<UUID> findDerivedSummaryIdempotency(UUID actor,String operation,String key) {
+        return jdbc.query("""
+            SELECT resource_id FROM processing_job_idempotency
+            WHERE requester_id=? AND operation=? AND idempotency_key=?
+            """,(rs,n)->rs.getObject("resource_id",UUID.class),actor,operation,key)
+            .stream().findFirst();
+    }
+
     public UUID claimIdempotency(UUID caller, String operation, String key, String fingerprint, UUID proposedResourceId) {
         return claimIdempotencyWithStatus(caller, operation, key, fingerprint, proposedResourceId).resourceId();
     }
@@ -230,9 +239,51 @@ public class MediaRepository {
             """, eventId, job.id(), payload);
     }
 
+    /**
+     * MI-08 derived-only admission: exactly one summary stage, no transcription
+     * or correction plan. Uses the same outbox envelope/relay as ordinary jobs.
+     * The caller must persist the immutable source snapshot in this transaction
+     * before commit makes the event visible to the publisher.
+     */
+    public void insertDerivedSummaryJobAndOutbox(UUID jobId, UUID meetingId, UUID mediaId,
+            UUID actorId, UUID parentJobId, UUID eventId) {
+        int count = jdbc.update("""
+            INSERT INTO processing_jobs(
+                id,meeting_id,source_media_id,job_type,status,requested_by_user_id,
+                reprocess_of_job_id,queued_at,created_at,updated_at)
+            VALUES (?,?,?,'DERIVED_STAGE_PROCESSING','PENDING',?,?,NULL,
+                CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
+            ON CONFLICT DO NOTHING
+            """,jobId,meetingId,mediaId,actorId,parentJobId);
+        if(count!=1) throw new JobAdmissionConflictException();
+        jdbc.update("""
+            INSERT INTO processing_stage_runs(id,processing_job_id,stage_code,attempt_number,status)
+            VALUES (?,?,'GENERATING_SUMMARY',1,'PENDING')
+            """,UUID.randomUUID(),jobId);
+        String payload;
+        try {
+            payload=this.mapper.writeValueAsString(new JobQueuedEvent(
+                eventId,jobId,meetingId,mediaId,actorId,
+                RequestIdContext.currentRequestId(),1,OffsetDateTime.now()));
+        } catch(JacksonException failure) {
+            throw new IllegalStateException("Cannot encode derived processing notification.",failure);
+        }
+        jdbc.update("""
+            INSERT INTO outbox_events(
+                id,aggregate_type,aggregate_id,event_type,payload,occurred_at)
+            VALUES (?,'PROCESSING_JOB',?,'PROCESSING_JOB_QUEUED',CAST(? AS jsonb),CURRENT_TIMESTAMP)
+            """,eventId,jobId,payload);
+    }
+
     public Optional<Job> findJob(UUID id) {
         return this.jdbc.query("SELECT * FROM processing_jobs WHERE id = ?", MediaRepository::jobRow, id)
             .stream().findFirst();
+    }
+
+    /** Call only after the Meeting lock when binding immutable offline source. */
+    public Optional<Job> lockJobForOfflineSource(UUID id) {
+        return this.jdbc.query("SELECT * FROM processing_jobs WHERE id = ? FOR UPDATE",
+            MediaRepository::jobRow,id).stream().findFirst();
     }
 
     public List<Job> listJobs(UUID meetingId) {
@@ -345,6 +396,15 @@ public class MediaRepository {
             """, Boolean.class, claim.stageRunId(), jobId, claim.claimToken()));
     }
 
+    /** Only for an already committed result replay; never authorizes fresh writes. */
+    public boolean hasAcceptedStageClaim(StageClaim claim) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+            SELECT EXISTS(SELECT 1 FROM processing_stage_runs
+              WHERE id=? AND claim_token=?
+                AND status IN ('SUCCEEDED','SUCCEEDED_WITH_WARNING'))
+            """,Boolean.class,claim.stageRunId(),claim.claimToken()));
+    }
+
     private boolean liveClaim(StageClaim claim) {
         return Boolean.TRUE.equals(this.jdbc.queryForObject("""
             SELECT EXISTS (SELECT 1 FROM processing_stage_runs
@@ -358,6 +418,42 @@ public class MediaRepository {
      * is locked, before transcript publication. The processing job lock and
      * claim-token/lease check fence stale or competing workers.
      */
+    /**
+     * Lock the owning job after the Meeting lock and fence the exact live
+     * ACTION_ITEM_EXTRACTION attempt. A retained/superseded token is not
+     * authority to create proposals, regardless of claimed source metadata.
+     */
+    public void requireActionItemExtractionClaim(UUID jobId, UUID meetingId, UUID mediaId,
+            StageClaim claim) {
+        if (jobId == null || meetingId == null || mediaId == null || claim == null
+                || claim.stageRunId() == null || claim.claimToken() == null) {
+            throw new ProcessingLifecycleConflictException("Missing action extraction claim.");
+        }
+        List<Boolean> eligible = jdbc.query("""
+            SELECT (j.status='RUNNING'
+                AND m.status='AVAILABLE'
+                AND s.status='RUNNING'
+                AND s.stage_code='EXTRACTING_ACTION_ITEMS'
+                AND s.lease_expires_at > clock_timestamp()
+                AND s.attempt_number=(
+                    SELECT MAX(x.attempt_number) FROM processing_stage_runs x
+                    WHERE x.processing_job_id=s.processing_job_id
+                      AND x.stage_code=s.stage_code)
+                ) AS eligible
+            FROM processing_jobs j
+            JOIN meeting_media m ON m.id=j.source_media_id AND m.meeting_id=j.meeting_id
+            JOIN processing_stage_runs s ON s.processing_job_id=j.id
+            WHERE j.id=? AND j.meeting_id=? AND j.source_media_id=?
+              AND s.id=? AND s.claim_token=?
+            FOR UPDATE OF j
+            """, (rs,row)->rs.getBoolean("eligible"),
+            jobId, meetingId, mediaId, claim.stageRunId(), claim.claimToken());
+        if (eligible.size()!=1 || !eligible.getFirst()) {
+            throw new ProcessingLifecycleConflictException(
+                "No live latest Action Item extraction claim matches the canonical job.");
+        }
+    }
+
     public boolean requireFinalizationClaim(UUID jobId, UUID meetingId, UUID mediaId,
             StageClaim claim) {
         if (jobId == null || meetingId == null || mediaId == null || claim == null
@@ -474,6 +570,45 @@ public class MediaRepository {
             """, Boolean.class, jobId));
     }
 
+    public boolean isDerivedSummaryJob(UUID jobId) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+            SELECT EXISTS(SELECT 1 FROM processing_jobs
+                WHERE id=? AND job_type='DERIVED_STAGE_PROCESSING')
+            """, Boolean.class, jobId));
+    }
+
+    /** Derived-only completion has its own policy: never demand same-job ASR. */
+    public void completeDerivedSummaryJob(UUID jobId) {
+        String current=lockJobStatus(jobId);
+        if ("COMPLETED".equals(current) || "COMPLETED_WITH_WARNINGS".equals(current)) return;
+        if (!"RUNNING".equals(current) || !isDerivedSummaryJob(jobId))
+            throw new ProcessingLifecycleConflictException("Derived Summary job is not running.");
+        List<StageCompletion> stages=jdbc.query("""
+            SELECT stage_code,status FROM processing_stage_runs s
+            WHERE processing_job_id=?
+              AND attempt_number=(
+                SELECT MAX(x.attempt_number) FROM processing_stage_runs x
+                WHERE x.processing_job_id=s.processing_job_id AND x.stage_code=s.stage_code)
+            """,(rs,n)->new StageCompletion(null,rs.getString("stage_code"),
+                rs.getString("status")),jobId);
+        if (stages.size()!=1 || !"GENERATING_SUMMARY".equals(stages.getFirst().stageCode())
+                || !isSuccessful(stages.getFirst().status())) {
+            throw new ProcessingLifecycleConflictException(
+                "Derived job must complete its sole Summary stage.");
+        }
+        boolean warnings="SUCCEEDED_WITH_WARNING".equals(stages.getFirst().status());
+        int changed=jdbc.update("""
+            UPDATE processing_jobs SET
+              status=?,warning_summary=?,retryable=FALSE,error_code=NULL,
+              error_summary=NULL,completed_at=CURRENT_TIMESTAMP,
+              updated_at=CURRENT_TIMESTAMP,version=version+1
+            WHERE id=? AND status='RUNNING' AND job_type='DERIVED_STAGE_PROCESSING'
+            """,warnings?"COMPLETED_WITH_WARNINGS":"COMPLETED",
+            warnings?"Summary generated with source quality warnings.":null,jobId);
+        if(changed!=1) throw new ProcessingLifecycleConflictException(
+            "Derived job changed during completion.");
+    }
+
     public void completeJob(UUID jobId, Evidence evidence) {
         String status = lockJobStatus(jobId);
         if (List.of("COMPLETED", "COMPLETED_WITH_WARNINGS").contains(status)) return;
@@ -559,6 +694,41 @@ public class MediaRepository {
     }
 
     /** Immutable owner identity; the transcript port verifies persisted evidence. */
+    /** Resolve stage and job owner without trusting the worker-supplied meeting. */
+    public com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle.DerivedStage derivedStage(UUID stageRunId) {
+        return jdbc.query("""
+            SELECT j.id AS job_id,j.meeting_id,j.source_media_id,s.stage_code
+            FROM processing_stage_runs s JOIN processing_jobs j ON j.id=s.processing_job_id
+            WHERE s.id=?
+            """, (rs,n) -> new com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle.DerivedStage(
+                rs.getObject("job_id", UUID.class),rs.getObject("meeting_id", UUID.class),
+                rs.getObject("source_media_id", UUID.class),rs.getString("stage_code")),stageRunId)
+            .stream().findFirst().orElseThrow(() ->
+                new ProcessingLifecycleConflictException("Unknown derived-stage attempt."));
+    }
+
+    /**
+     * Latest intelligence stage attempts for final job completion verification.
+     * Media owns stage identities, while the feature owner owns receipt evidence.
+     */
+    public List<IntelligenceStageCompletion> latestIntelligenceStages(UUID jobId) {
+        return jdbc.query("""
+            SELECT s.id,s.stage_code,s.status
+            FROM processing_stage_runs s
+            WHERE s.processing_job_id=?
+              AND s.stage_code IN ('GENERATING_SUMMARY','EXTRACTING_DECISIONS',
+                                   'EXTRACTING_ACTION_ITEMS')
+              AND s.attempt_number=(
+                SELECT MAX(x.attempt_number)
+                FROM processing_stage_runs x
+                WHERE x.processing_job_id=s.processing_job_id AND x.stage_code=s.stage_code)
+            """,(rs,n)->new IntelligenceStageCompletion(
+                rs.getObject("id",UUID.class),rs.getString("stage_code"),
+                rs.getString("status")),jobId);
+    }
+
+    public record IntelligenceStageCompletion(UUID stageRunId,String stageCode,String status) {}
+
     public StageIdentity stageIdentity(UUID stageRunId) {
         return this.jdbc.query("""
             SELECT processing_job_id, stage_code FROM processing_stage_runs WHERE id=?

@@ -10,6 +10,17 @@ public interface ProcessingJobLifecycle {
     /** One durable stage attempt with an unguessable owner token; never expose to clients. */
     record StageClaim(UUID stageRunId, UUID claimToken) { }
 
+    /** Trusted, server-resolved identity for a derived-stage attempt. */
+    record DerivedStage(UUID jobId, UUID meetingId, UUID sourceMediaId, String stageCode) { }
+
+    DerivedStage derivedStage(UUID stageRunId);
+
+    /** Committed stage success with this exact original claim token (replay only).
+     * Expired leases are allowed here because replay never changes business state.
+     * A different token may never borrow an accepted receipt.
+     */
+    boolean hasAcceptedStageClaim(StageClaim claim);
+
     StageClaim startStage(UUID jobId, String stageCode, String providerName, String modelName);
 
     void renewStageLease(StageClaim claim);
@@ -23,6 +34,15 @@ public interface ProcessingJobLifecycle {
 
     /** Admit only a currently claimed finalization attempt for matching source media. */
     boolean requireFinalizationClaim(UUID jobId, UUID meetingId, UUID mediaId, StageClaim claim);
+    /**
+     * MI-10: validate a live, newest EXTRACTING_ACTION_ITEMS attempt against
+     * its owning job/meeting/media without allowing a worker to self-assert
+     * that authority. Call with the Meeting lock held.
+     */
+    void requireActionItemExtractionClaim(UUID jobId, UUID meetingId, UUID mediaId,
+            StageClaim claim);
+
+
 
     /** True while this job has preplanned downstream work not yet started. */
     boolean hasPendingPipelineStages(UUID jobId);

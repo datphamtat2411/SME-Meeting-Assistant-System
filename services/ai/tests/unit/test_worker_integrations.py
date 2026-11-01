@@ -245,3 +245,85 @@ def test_security_and_version_errors_stop_intake(status, code):
                 await client.lookup(decode(event_body()))
             assert caught.value.stop_intake
     asyncio.run(run())
+
+
+def test_storage_cleanup_attempts_client_and_lock_release_after_filesystem_failure(tmp_path, monkeypatch):
+    import os
+
+    from sme_meeting_ai.integrations import object_storage
+
+    closed = []
+    s3 = S3()
+    s3.close = lambda: closed.append(True)
+    storage = ObjectStorage(storage_settings(tmp_path), client=s3)
+    storage._owned = True
+    storage.__enter__()
+    lock = storage._lock
+    original = object_storage.shutil.rmtree
+    root = storage._root
+
+    def broken(*args, **kwargs):
+        raise OSError("test-only-private-path")
+    monkeypatch.setattr(object_storage.shutil, "rmtree", broken)
+    try:
+        with pytest.raises(StorageError) as caught:
+            storage.__exit__(None, None, None)
+        assert caught.value.category == "RESOURCE"
+        assert "test-only-private-path" not in "".join(traceback.format_exception(caught.value))
+        assert closed == [True]
+        with pytest.raises(OSError):
+            os.fstat(lock)
+    finally:
+        monkeypatch.setattr(object_storage.shutil, "rmtree", original)
+        original(root)
+
+
+def test_broker_cancel_handshake_does_not_admit_late_deliveries():
+    from types import SimpleNamespace
+
+    from sme_meeting_ai.integrations.messaging import RabbitConsumer
+
+    async def run():
+        calls = []
+        consumer = RabbitConsumer(Settings(service_name="test", service_identity="ai-core", _env_file=None))
+
+        class Queue:
+            async def consume(self, callback, *, no_ack):
+                self.receive = callback
+                return "tag"
+
+            async def cancel(self, tag):
+                # A delivery can race broker Basic.CancelOk. Leave it unacked
+                # for connection close/redelivery, without authorizing new work.
+                await self.receive("late")
+        consumer.queue = Queue()
+        consumer.channel = SimpleNamespace(is_closed=False)
+
+        async def handle(message):
+            calls.append(message)
+        await consumer.start(handle)
+        await consumer.queue.receive("before")
+        await consumer.drain()
+        await consumer.stop()
+        await consumer.drain()
+        assert calls == ["before"]
+    asyncio.run(run())
+
+
+def test_source_stream_close_failure_is_not_false_success(tmp_path):
+    class BrokenClose(io.BytesIO):
+        def close(self):
+            super().close()
+            raise OSError("test-only-private-storage-error")
+
+    class BrokenStorage(S3):
+        def get_object(self, **kwargs):
+            return {"ContentLength": len(self.data), "Body": BrokenClose(self.data)}
+
+    with ObjectStorage(storage_settings(tmp_path), client=BrokenStorage()) as storage:
+        with pytest.raises(StorageError) as caught:
+            with storage.source_file(descriptor()):
+                pytest.fail("storage stream cleanup failure reached inference")
+        assert caught.value.category == "RESOURCE"
+        assert "private-storage" not in "".join(traceback.format_exception(caught.value))
+        assert not list(storage._root.glob("source-*"))

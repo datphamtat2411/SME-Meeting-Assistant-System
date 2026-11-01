@@ -33,6 +33,7 @@ addopts = "-m 'not evaluation'"
 markers = [
     "evaluation: real preprocessing inference against approved external Vietnamese fixtures and a pinned local model",
     "live_provider: explicitly opted-in external provider compatibility check using generated audio",
+    "live_infrastructure: explicitly opted-in isolated Core/RabbitMQ/S3/provider acceptance using a pre-admitted synthetic fixture",
 ]
 
 [tool.ruff]

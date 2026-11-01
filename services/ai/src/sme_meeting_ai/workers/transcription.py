@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import logging
 import re
 import struct
 import threading
@@ -36,6 +37,7 @@ from sme_meeting_ai.observability.context import (
     correlation_scope,
     new_correlation_context,
 )
+from sme_meeting_ai.observability.logging import log_event
 from sme_meeting_ai.pipeline.offline_transcription import (
     OfflineTranscriptionOutcome,
     OfflineTranscriptionStage,
@@ -52,6 +54,8 @@ from sme_meeting_ai.transcription.reconciliation import (
     ReconciliationFlag,
 )
 from sme_meeting_ai.transcription.recovery import RecoveryStopReason
+
+logger = logging.getLogger(__name__)
 
 
 class ResultValidationError(Exception):
@@ -526,6 +530,15 @@ class TranscriptionWorker:
                 outcome = self.pipeline.run(AudioSource(claim.sourceMediaId, path))
             if not isinstance(outcome, OfflineTranscriptionOutcome):
                 raise WorkFailure("RESULT_VALIDATION", "VALIDATION")
+            # Chunk failures are provisional evidence, but an infrastructure auth
+            # rejection is an operational fault even if recovery/correction later
+            # returns an empty or warning-bearing outcome. Do not misclassify it
+            # as silence/EMPTY_OUTPUT and continue consuming more meetings.
+            asr = outcome.evidence.asr
+            recovery = outcome.evidence.recovery
+            if (asr and any(c.failure is AsrErrorCategory.AUTHENTICATION for c in asr.chunk_outcomes)
+                    or recovery and any(a.failure is AsrErrorCategory.AUTHENTICATION for a in recovery.attempts)):
+                raise WorkFailure("ASR", "AUTHENTICATION")
             if outcome.status is OfflineTranscriptionStatus.FAILED:
                 raise pipeline_failure(outcome)
             phase = "RESULT_VALIDATION"
@@ -627,6 +640,8 @@ class TranscriptionWorker:
                     return
                 guard = LeaseGuard(self.core, event, claim, asyncio.get_running_loop().time() - started,
                                    self.settings.worker_execution_timeout_seconds)
+                if not guard.live():
+                    raise CoreError(409, "WORKER_LEASE_LOST")
                 pending = self._executor.submit(copy_context().run, self._prepare, claim, guard.fence)
                 self._pending.add(pending)
                 wrapped = asyncio.wrap_future(pending)
@@ -699,6 +714,7 @@ class TranscriptionWorker:
 
     async def run(self, broker, shutdown_requested):
         await broker.start(self.handle)
+        log_event(logger, logging.INFO, "worker.transcription.consuming")
         waits = [asyncio.create_task(e.wait()) for e in (shutdown_requested, self.stop_intake, broker.failure)]
         closed = asyncio.ensure_future(asyncio.shield(broker.connection.closed()))
         try:
@@ -730,6 +746,7 @@ class TranscriptionExecution:
         self._sync = ExitStack()
         self.worker = None
         self.broker = None
+        self._exited = False
 
     async def __aenter__(self):
         from sme_meeting_ai.audio import (
@@ -754,27 +771,42 @@ class TranscriptionExecution:
         )
 
         failed = False
+        phase = "provider"
         try:
-            if not self.settings.openrouter_api_key or not self.settings.transcript_correction_model:
+            secret = self.settings.openrouter_api_key
+            key = secret.get_secret_value() if secret is not None else ""
+            if (not key or any(ord(c) < 33 or ord(c) > 126 for c in key)
+                    or not self.settings.transcript_correction_model):
                 raise ValueError
+            phase = "core"
             core = CoreApiClient(self.settings)
             self._async.push_async_callback(core.aclose)
+            phase = "storage"
             storage = self._sync.enter_context(ObjectStorage(self.settings))
+            phase = "vad"
             backend = SileroVadBackend.from_settings(self.settings)
             self._sync.callback(backend.close)
+            phase = "provider"
             transcriber = self._sync.enter_context(OpenRouterWhisperAdapter(self.settings))
             corrector = self._sync.enter_context(OpenRouterInstructionLlmAdapter(self.settings))
+            phase = "pipeline"
             pipeline = OfflineTranscriptionPipeline(
                 AudioPreprocessingPipeline(AudioNormalizer(self.settings),
                     AudioEvidenceDetector(self.settings, backend), SpeechMapBuilder(self.settings)),
                 SpeechAwareAsrChunkPlanner(self.settings), transcriber, corrector, self.settings,
             )
             self.worker = TranscriptionWorker(self.settings, core, storage, pipeline)
+            phase = "broker"
             self.broker = await self._async.enter_async_context(RabbitConsumer(self.settings))
             return self
+        except asyncio.CancelledError:
+            await self.__aexit__(None, None, None)
+            raise
         except Exception:
             failed = True
         if failed:
+            # phase is an internal literal, never an exception or configured value.
+            log_event(logger, logging.ERROR, f"worker.transcription.startup.{phase}.failed")
             await self.__aexit__(None, None, None)
             raise RuntimeError("worker.transcription.startup.failed")
 
@@ -782,6 +814,9 @@ class TranscriptionExecution:
         await self.worker.run(self.broker, shutdown_requested)
 
     async def __aexit__(self, *_):
+        if self._exited:
+            return
+        self._exited = True
         try:
             await self._async.aclose()
         finally:
@@ -805,13 +840,7 @@ class TranscriptionExecution:
                             try:
                                 self._sync.close()
                             except Exception:
-                                import logging
-
-                                from sme_meeting_ai.observability.logging import (
-                                    log_event,
-                                )
-
-                                log_event(logging.getLogger(__name__), logging.ERROR,
+                                log_event(logger, logging.ERROR,
                                           "worker.transcription.cleanup.failed")
 
                 for future in pending:

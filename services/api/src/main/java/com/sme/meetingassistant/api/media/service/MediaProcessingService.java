@@ -393,6 +393,11 @@ public class MediaProcessingService {
                 || stages.stream().distinct().count() != stages.size()) {
             throw new IllegalStateException("Unsupported or duplicate required processing stage.");
         }
+        if (stages.contains("EXTRACTING_ACTION_ITEMS")
+                && !properties.getProcessing().isActionItemHandoffEnabled()) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+                "Action Item proposal handoff is disabled; required stage cannot be planned.");
+        }
         return List.copyOf(stages);
     }
 

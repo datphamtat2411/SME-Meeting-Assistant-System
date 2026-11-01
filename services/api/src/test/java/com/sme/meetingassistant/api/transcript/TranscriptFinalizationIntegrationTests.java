@@ -30,6 +30,9 @@ import org.springframework.context.annotation.Import;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import com.sme.meetingassistant.api.media.storage.ObjectStorage;
+import com.sme.meetingassistant.api.support.ImmutableSnapshotObjectFixture;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
@@ -42,6 +45,7 @@ import org.springframework.web.server.ResponseStatusException;
 @Import(PostgresTestConfiguration.class)
 class TranscriptFinalizationIntegrationTests {
     @Autowired ProcessingJobLifecycle lifecycle;
+    @MockitoBean ObjectStorage snapshotStorage;
     @Autowired TranscriptFinalizationService finalization;
     @Autowired TranscriptRepository transcripts;
     @Autowired TranscriptReviewService review;
@@ -56,6 +60,8 @@ class TranscriptFinalizationIntegrationTests {
 
     @BeforeEach
     void setUp() {
+        try { ImmutableSnapshotObjectFixture.install(snapshotStorage); }
+        catch (Exception error) { throw new IllegalStateException(error); }
         UUID actor = UUID.randomUUID();
         meeting = UUID.randomUUID();
         media = UUID.randomUUID();
@@ -188,9 +194,13 @@ class TranscriptFinalizationIntegrationTests {
         assertThatThrownBy(() -> lifecycle.completeJob(job))
             .isInstanceOf(ProcessingLifecycleConflictException.class);
         StageClaim summary = lifecycle.startStage(job, "GENERATING_SUMMARY", "llm", "summary");
-        lifecycle.completeStage(summary, "SUCCEEDED", null, null);
-        lifecycle.completeJob(job);
-        assertThat(jobStatus()).isEqualTo("COMPLETED");
+        // The stage is still RUNNING until canonical Summary result acceptance.
+        assertThatThrownBy(() -> lifecycle.completeStage(summary, "SUCCEEDED", null, null))
+            .isInstanceOf(ProcessingLifecycleConflictException.class);
+        assertThatThrownBy(() -> lifecycle.completeJob(job))
+            .isInstanceOf(ProcessingLifecycleConflictException.class);
+        assertThat(jobStatus()).isEqualTo("RUNNING");
+        assertThat(transcripts.current(meeting)).isPresent();
     }
 
     @Test

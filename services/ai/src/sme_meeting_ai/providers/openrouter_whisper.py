@@ -41,7 +41,13 @@ def _number(value: object) -> Fraction:
     # JSON floats are parsed as Decimal so decimal timestamps remain exact.
     if isinstance(value, bool) or not isinstance(value, (int, Decimal)):
         raise ValueError
-    if isinstance(value, Decimal) and not value.is_finite():
+    if isinstance(value, Decimal):
+        # A short JSON value such as 1e999999999 must not expand into an enormous
+        # Fraction numerator/denominator. Bound representation, without rounding.
+        if (not value.is_finite() or abs(value.adjusted()) > 128
+                or abs(value.as_tuple().exponent) > 128):
+            raise ValueError
+    elif abs(value) >= 10 ** 128:
         raise ValueError
     return Fraction(value)
 
@@ -76,8 +82,11 @@ def _optional_identifier(data: dict, key: str) -> str | None:
 
 
 def _text(value: object) -> str:
-    if not isinstance(value, str):
+    if (not isinstance(value, str) or any(
+        unicodedata.category(c) in ("Cc", "Cf", "Cs") and c not in "\t\r\n" for c in value
+    )):
         raise ValueError
+    value.encode("utf-8", errors="strict")
     return unicodedata.normalize("NFC", value).strip()
 
 
@@ -86,6 +95,19 @@ def _tokens(data: dict, key: str) -> int | None:
     if value is not None and (type(value) is not int or value < 0):
         raise ValueError
     return value
+
+
+def _unique_properties(items):
+    data = {}
+    for key, value in items:
+        if key in data:
+            raise ValueError
+        data[key] = value
+    return data
+
+
+def _reject_constant(_):
+    raise ValueError
 
 
 class OpenRouterWhisperAdapter:
@@ -170,11 +192,14 @@ class OpenRouterWhisperAdapter:
                 if len(body) + len(part) > _MAX_RESPONSE_BYTES:
                     raise AsrError(AsrErrorCategory.RESOURCE)
                 body.extend(part)
-        data = json.loads(body, parse_float=Decimal, parse_constant=Decimal)
+        data = json.loads(body, parse_float=Decimal, parse_constant=_reject_constant,
+                          object_pairs_hook=_unique_properties)
         return self._normalize(data, chunk)
 
     def _normalize(self, data: object, chunk: AsrAudioChunk) -> AsrCandidate:
         if not isinstance(data, dict) or not isinstance(data.get("segments"), list):
+            raise ValueError
+        if "error" in data or ("task" in data and data["task"] != "transcribe"):
             raise ValueError
         text = _text(data["text"])
         segments = []
@@ -196,29 +221,36 @@ class OpenRouterWhisperAdapter:
                 ),
             ))
             previous_end = end
-        if text and not segments:
+        if bool(text) != any(segment.text for segment in segments):
             raise ValueError
         usage = data.get("usage")
         if usage is None:
             usage = {}
         if not isinstance(usage, dict):
             raise ValueError
-        audio_seconds = _optional_number(usage, "audio_seconds", lower=0)
-        if audio_seconds is None:
-            audio_seconds = _optional_number(data, "duration", lower=0)
+        # STT usage is not the chat-completions schema. Never infer billing from
+        # duration, chunk samples, tokens or price tables; zero is a real value.
+        input_tokens = _tokens(usage, "input_tokens")
+        output_tokens = _tokens(usage, "output_tokens")
+        total_tokens = _tokens(usage, "total_tokens")
+        if (input_tokens is not None and output_tokens is not None and total_tokens is not None
+                and input_tokens + output_tokens != total_tokens):
+            raise ValueError
         return AsrCandidate(
             text=text, segments=tuple(segments), chunk_id=chunk.chunk_id,
             quality=AsrQualityMetadata(
                 confidence=_quality_number(data, "confidence", lower=0, upper=1),
                 language=_optional_identifier(data, "language"),
                 language_confidence=_quality_number(data, "language_probability", lower=0, upper=1),
+                duration_seconds=_optional_number(data, "duration", lower=0),
             ),
             usage=AsrUsage(
-                input_tokens=_tokens(usage, "prompt_tokens"),
-                output_tokens=_tokens(usage, "completion_tokens"),
-                total_tokens=_tokens(usage, "total_tokens"),
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=total_tokens,
                 cost=_optional_number(usage, "cost", lower=0),
-                audio_seconds=audio_seconds,
+                audio_seconds=_optional_number(usage, "seconds", lower=0),
+                reported=data.get("usage") is not None,
             ),
             provenance=AsrProvenance(
                 provider="openrouter", requested_model=self._settings.audio_asr_model,

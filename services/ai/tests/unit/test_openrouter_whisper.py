@@ -132,8 +132,8 @@ def test_normalization_quality_usage_provenance_and_transient_repr():
         "text": "  Tôi  họp\nngày mai  ", "confidence": 0.8,
         "language": "vi", "language_probability": 0.9,
         "model": "upstream/resolved", "provider": "upstream-provider",
-        "usage": {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14,
-                  "cost": 0.001, "audio_seconds": 2},
+        "usage": {"input_tokens": 10, "output_tokens": 4, "total_tokens": 14,
+                  "cost": 0.001, "seconds": 2},
     })
     data["segments"][0].update({
         "avg_logprob": -0.2, "compression_ratio": 1.1,
@@ -224,8 +224,8 @@ def test_malformed_json_and_nonfinite_timing(body):
     ("language_probability", "0.9"), ("language_probability", 1.1),
     ("language", []), ("model", {}), ("provider", []),
     ("usage", []), ("usage", {"total_tokens": 1.5}),
-    ("usage", {"prompt_tokens": -1}), ("usage", {"completion_tokens": True}),
-    ("usage", {"cost": -1}), ("usage", {"audio_seconds": "2"}),
+    ("usage", {"input_tokens": -1}), ("usage", {"output_tokens": True}),
+    ("usage", {"cost": -1}), ("usage", {"seconds": "2"}),
 ])
 def test_invalid_optional_metadata(field, value):
     data = output()
@@ -350,3 +350,75 @@ def test_missing_or_invalid_credentials_fail_only_on_invocation(key):
             adapter.transcribe(chunk())
     assert not calls
     assert_sanitized(caught.value, AsrErrorCategory.AUTHENTICATION)
+
+
+@pytest.mark.parametrize("usage", [None, {}, {"seconds": 0, "cost": 0},
+    {"seconds": 9.2, "total_tokens": 113, "input_tokens": 83, "output_tokens": 30, "cost": 0.000508},
+    {"seconds": 6.4, "cost": 0.000178}, {"input_tokens": 83, "output_tokens": 30},
+])
+def test_documented_optional_usage_never_infers_billing(usage):
+    # STT guide examples: usage need not agree with this short invented fixture.
+    data = output()
+    data["duration"] = 2
+    if usage is not None:
+        data["usage"] = usage
+    candidate = invoke(data)
+    assert candidate.quality.duration_seconds == 2
+    assert candidate.usage.reported is (usage is not None)
+    for source, target in (("seconds", "audio_seconds"), ("cost", "cost"),
+                           ("input_tokens", "input_tokens"), ("output_tokens", "output_tokens"),
+                           ("total_tokens", "total_tokens")):
+        expected = (usage or {}).get(source)
+        assert getattr(candidate.usage, target) == (None if expected is None else Fraction(str(expected)))
+
+
+@pytest.mark.parametrize("usage", [
+    {"seconds": True}, {"seconds": -1}, {"input_tokens": "83"}, {"output_tokens": 1.0},
+    {"cost": "0.1"}, {"cost": float("inf")}, {"seconds": float("nan")},
+    {"input_tokens": 83, "output_tokens": 30, "total_tokens": 112},
+])
+def test_malformed_or_contradictory_documented_usage(usage):
+    with pytest.raises(AsrError) as caught:
+        invoke({**output(), "usage": usage})
+    assert_sanitized(caught.value, AsrErrorCategory.MALFORMED_OUTPUT)
+
+
+@pytest.mark.parametrize("extra", [
+    {"task": "translate"}, {"error": {"message": TEXT}}, {"duration": True},
+    {"duration": -1}, {"text": ""}, {"text": "bad\x00text"}, {"text": "bad\ud800"},
+    {"segments": [{"start": 0, "end": 1, "text": ""}]},
+])
+def test_unusable_provider_results_fail_closed(extra):
+    with pytest.raises(AsrError) as caught:
+        invoke({**output(), **extra})
+    assert_sanitized(caught.value, AsrErrorCategory.MALFORMED_OUTPUT)
+
+
+def test_duplicate_response_properties_are_rejected():
+    raw = b'{"text":"x","segments":[],"segments":[{"start":0,"end":1,"text":"x"}]}'
+    with httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200, content=raw))) as client:
+        with pytest.raises(AsrError) as caught:
+            OpenRouterWhisperAdapter(settings(), client).transcribe(chunk())
+    assert_sanitized(caught.value, AsrErrorCategory.MALFORMED_OUTPUT)
+
+
+def test_documented_verbose_response_preserves_real_segments():
+    # STT guide verbose example, with speaker fields intentionally outside this module.
+    data = {"task": "transcribe", "language": "en", "duration": 6.4,
+            "text": "Hello there. Hi, how are you?", "segments": [
+                {"id": 0, "start": 0.0, "end": 1.2, "text": "Hello there.", "speaker": 0},
+                {"id": 1, "start": 1.5, "end": 3.1, "text": "Hi, how are you?", "speaker": 1},
+            ], "usage": {"seconds": 6.4, "cost": 0.000178}}
+    with httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200, json=data))) as client:
+        result = OpenRouterWhisperAdapter(settings(), client).transcribe(chunk(duration=Fraction(32, 5)))
+    assert [(s.start, s.end) for s in result.segments] == [(0, Fraction(6, 5)), (Fraction(3, 2), Fraction(31, 10))]
+    assert result.usage.audio_seconds == result.quality.duration_seconds == Fraction(32, 5)
+    assert result.provenance.resolved_model is None  # No invented upstream identity.
+
+
+def test_extreme_numeric_exponents_reject_before_rational_expansion():
+    raw = b'{"text":"","segments":[],"usage":{"cost":1e1000}}'
+    with httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200, content=raw))) as client:
+        with pytest.raises(AsrError) as caught:
+            OpenRouterWhisperAdapter(settings(), client).transcribe(chunk())
+    assert_sanitized(caught.value, AsrErrorCategory.MALFORMED_OUTPUT)

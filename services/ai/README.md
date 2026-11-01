@@ -760,6 +760,9 @@ safety margin). The finite `AI_WORKER_EXECUTION_TIMEOUT_SECONDS` (default 14400,
 maximum 86400) also fences stalled work.
 
 SIGTERM stops intake before draining within the existing worker shutdown budget.
+The budget is shared by drain, cancellation and cleanup; up to one second (at most
+20%) is reserved for cancellation/cleanup. Broker initialization, channel/queue
+setup and consumer registration use the bounded RabbitMQ startup timeout.
 At cancellation/deadline, late thread results are fenced and unfinished deliveries
 remain unacknowledged. A synchronous inference thread cannot be killed by asyncio:
 source files, providers and VAD remain owned until that reader stops. Configure
@@ -788,3 +791,82 @@ These checks establish AI-side contract behavior. Live acceptance additionally
 requires the Core V1 receiver/receipts, real worker-to-Core mTLS, broker policy and
 dead-letter reconciliation, and storage IAM/immutability enforcement specified by
 the contract. They are separate deployment/integration deliverables.
+
+### Transcription merge-readiness verification layers
+
+`worker.started` means execution dependencies were initialized. The separate
+`worker.transcription.consuming` event means broker consumer registration succeeded.
+Neither means a transcript succeeded: that requires Core's durable acceptance
+receipt. Startup failures emit `worker.startup.failed` plus a fixed
+`worker.transcription.startup.{provider|core|storage|vad|pipeline|broker}.failed`
+phase marker, ending in exit 1. `worker.execution.missing` is reserved for a runtime
+without a registered handler. Missing provider credentials/correction configuration
+and invalid local TLS/storage/model configuration reject before intake.
+SDK client construction does not prove Core/S3 reachability or remote credential
+validity; unavailable Core prevents claim/inference and follows bounded delivery
+reconciliation. No undocumented startup-health endpoint or bucket-list permission
+is required. Remote ASR authentication rejection stops intake and records a typed
+configuration failure rather than being misreported as an empty recording.
+
+| Layer | Command / boundary proved |
+| --- | --- |
+| Normal CI, deterministic | `uv run pytest tests`: includes actual worker main → runtime → execution composition with fake SDK transports, real signal handling, partial startup cancellation, bounded drain, late-thread resource lifetime, and stateful Core/storage delivery regressions. No external provider/model/service is needed. |
+| Normal CI, image | `docker build --tag sme-ai:smoke .` then `uv run python tests/container_smoke.py`: installed independent roles, UID 10001, read-only root, dropped capabilities, limits, decoder binaries, HTTP health/SIGTERM, production TLS rejection and mTLS, worker credential/correction/Core-TLS rejection. This layer does not establish positive live-worker interoperability. Diagnostics project only known lifecycle events; arbitrary container output is suppressed. |
+| Opt-in, real infrastructure | `RUN_WORKER_LIVE_ACCEPTANCE=1 AI_WORKER_ACCEPTANCE_EVENT_FILE=/secure/test/queued-event.json uv run --env-file /secure/test/worker.env pytest -m live_infrastructure tests/integration/test_worker_live_acceptance.py`: real composition, broker intake, accepted-source download, models, corrected artifact, Core durable receipt and SIGTERM drain. |
+| Opt-in, provider | `RUN_OPENROUTER_LIVE_ASR=1 uv run --env-file /secure/test/worker.env pytest -m live_provider tests/integration/test_openrouter_whisper_live.py`: generated-silence schema compatibility only; it does not prove Vietnamese speech quality or meaningful segment support on speech. |
+| Vietnamese quality | The approved corpus/matrix/gates command above: completeness, hallucination, WER/CER, recovery and correction. A skipped or unexecuted evaluation establishes no quality pass. |
+
+For real infrastructure acceptance, owners must provision an **isolated test
+environment**, the V1 receiver/private mTLS grants and durable reconciliation,
+quorum/DLQ policies, least-privilege storage with enforced create-only results,
+digest-pinned VAD and approved providers. Core must admit a new short, synthetic
+audio job and publish its persistent event into that isolated vhost before running
+the test; the external event fixture must match it. The test neither creates
+business admission nor implements the missing receiver. It must reach corrected
+acceptance within its explicit 180-second small-fixture deadline. Accepted results
+are retained for Core-owned reconciliation; the worker never deletes them.
+This opt-in single-job test is not proof of real broker crash/dead-letter bounds,
+storage IAM enforcement or every cross-service failure injection; those remain
+deployment acceptance responsibilities.
+
+### OpenRouter STT compatibility and normalization
+
+Verified against the [STT guide](https://openrouter.ai/docs/guides/overview/multimodal/stt)
+and public `openai/whisper-large-v3/endpoints` metadata on 2026-11-01. The adapter
+continues using `POST /api/v1/audio/transcriptions`, OpenAI-compatible multipart
+WAV, `model=openai/whisper-large-v3`, `language=vi`, conservative temperature,
+`response_format=verbose_json`, and `timestamp_granularities[]=segment`.
+The configured file ceiling is 25 MiB, with a 4 MiB streamed response ceiling.
+OpenRouter rejects text/SRT/VTT response formats; this adapter requests none of them.
+
+The guide explicitly makes structured timestamp availability provider/model
+dependent. Public metadata currently lists DeepInfra, Together and Groq, but does
+not establish each endpoint's verbose capability; routing `only`/`order` is not
+applied to transcription. No provider pinning or live compatibility is claimed.
+A 400 remains a typed provider failure; text-only/missing-segment JSON is a typed
+malformed result, never fabricated timing or verified speech coverage. Empty
+timestamped candidate output stays provisional; V1 canonical empty output is
+ineligible. Resolved-model/provider identifiers are retained only when reported.
+
+Usage maps `input_tokens`, `output_tokens`, `total_tokens`, `seconds`, and `cost`.
+`AsrUsage.reported` distinguishes an absent/null usage object from a reported one;
+each missing field remains `None`, and real zero values remain zero. No chat-style
+`prompt_tokens`/`completion_tokens` or undocumented `audio_seconds` aliases are
+normalized. Malformed numeric fields and contradictory complete token totals
+reject the candidate. Optional verbose `duration` is separate quality metadata,
+not a billing fallback. Provider duration/billing precision is not treated as
+sample truth; exact chunk duration comes from the supplied audio samples. Costs
+and missing token totals are never inferred. Duplicate keys, nonfinite numbers,
+invalid Unicode/control text, translation tasks, error-shaped results and invalid
+segment ordering/bounds fail safely without body logging.
+Numeric normalization also bounds decimal exponent/scale and integer magnitude
+to 128 decimal places/digits before exact rational expansion, preventing tiny
+malicious JSON numbers from allocating enormous integers. Values are rejected,
+never rounded to fit.
+
+Correction `vi-whole-meeting-2` / component version `2` includes the complete
+chronological transcript with `sample_rate_hz`, immutable `start_sample` and
+`end_sample` context. The model still returns only segment identity/ordinal/text;
+timing, uncertainty, coverage and publication authority remain trusted code/Core
+responsibilities. This versioned context change requires the approved Vietnamese
+quality evaluation before production promotion.

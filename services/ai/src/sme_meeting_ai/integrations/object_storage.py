@@ -4,11 +4,12 @@ import fcntl
 import hashlib
 import os
 import shutil
+import ssl
 import stat
 import tempfile
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 import boto3
@@ -60,9 +61,17 @@ class ObjectStorage:
         category = None
         try:
             if self.client is None:
-                if not all((self.settings.s3_endpoint_url, self.settings.s3_bucket,
-                            self.settings.s3_access_key_id, self.settings.s3_secret_access_key)):
+                if not all((self.settings.s3_endpoint_url, self.settings.s3_bucket)) or not all(
+                    value is not None and value.get_secret_value().strip()
+                    for value in (self.settings.s3_access_key_id, self.settings.s3_secret_access_key)
+                ):
                     raise StorageError("CONFIGURATION")
+                if self.settings.s3_ca_file is not None:
+                    # boto3 otherwise defers reading this CA until the first job.
+                    try:
+                        ssl.create_default_context(cafile=str(self.settings.s3_ca_file))
+                    except (OSError, ValueError):
+                        raise StorageError("CONFIGURATION") from None
                 self.client = boto3.client("s3", endpoint_url=self.settings.s3_endpoint_url,
                     region_name=self.settings.s3_region,
                     aws_access_key_id=self.settings.s3_access_key_id.get_secret_value(),
@@ -108,14 +117,24 @@ class ObjectStorage:
         return self
 
     def _cleanup(self):
-        if self._root is not None:
-            shutil.rmtree(self._root)
-            self._root = None
-        if self._lock is not None:
-            os.close(self._lock)
-            self._lock = None
-        if self._owned and self.client is not None:
-            self.client.close()
+        failed = False
+        try:
+            # Attempt every release even when filesystem cleanup fails. Releasing
+            # the liveness lock permits bounded orphan recovery on the next start.
+            with ExitStack() as cleanup:
+                if self._owned and self.client is not None:
+                    client, self.client = self.client, None
+                    cleanup.callback(client.close)
+                if self._lock is not None:
+                    lock, self._lock = self._lock, None
+                    cleanup.callback(os.close, lock)
+                if self._root is not None:
+                    root, self._root = self._root, None
+                    cleanup.callback(shutil.rmtree, root)
+        except Exception:
+            failed = True
+        if failed:
+            raise StorageError("RESOURCE")
 
     def __exit__(self, *_):
         with self._state:
@@ -173,7 +192,7 @@ class ObjectStorage:
                     output.write(chunk)
             if count != size:
                 raise StorageError("INTEGRITY")
-            return bytes(data), digest.hexdigest()
+            result = bytes(data), digest.hexdigest()
         except Exception as error:
             category = _category(error)
         finally:
@@ -182,7 +201,9 @@ class ObjectStorage:
                     stream.close()
                 except Exception:
                     category = category or "RESOURCE"
-        raise StorageError(category)
+        if category is not None:
+            raise StorageError(category)
+        return result
 
     @contextmanager
     def source_file(self, source, fence=None):

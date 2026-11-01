@@ -23,6 +23,7 @@ import software.amazon.awssdk.services.s3.model.CreateBucketRequest;
 import software.amazon.awssdk.services.s3.model.HeadBucketRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
@@ -100,6 +101,21 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
             // that the target was accepted. The caller retries after checking HEAD.
             throw exception;
         }
+    }
+
+    @Override
+    public ListedObjects list(String prefix,String continuationToken,int limit) {
+        if(prefix==null || !prefix.matches("processing/[0-9a-f-]{36}/intelligence/")
+                || limit<1 || limit>100) {
+            throw new IllegalArgumentException("Invalid private intelligence object listing scope.");
+        }
+        var request=ListObjectsV2Request.builder().bucket(properties.getBucket())
+            .prefix(prefix).maxKeys(limit);
+        if(continuationToken!=null) request.continuationToken(continuationToken);
+        var page=client.listObjectsV2(request.build());
+        return new ListedObjects(page.contents().stream()
+            .map(x->new ListedObject(x.key(),x.lastModified())).toList(),
+            Boolean.TRUE.equals(page.isTruncated())?page.nextContinuationToken():null);
     }
 
     @Override

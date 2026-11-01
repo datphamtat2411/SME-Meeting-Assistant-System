@@ -155,7 +155,9 @@ def case(tmp_path):
             def complete(self, request):
                 if correction_failure:
                     return CorrectionProviderResponse("private-response-marker", "injected", request.model)
-                return CorrectionProviderResponse(request.transcript_json, "injected", request.model,
+                entries = json.loads(request.transcript_json)["segments"]
+                output = {"segments": [{k: entry[k] for k in ("segment_id", "ordinal", "text")} for entry in entries]}
+                return CorrectionProviderResponse(json.dumps(output), "injected", request.model,
                                                   "test/resolved-correction", CorrectionUsage(cost=Fraction(1, 5)))
 
         h.preprocessing, h.asr, h.corrector = Preprocessor(), Asr(), Corrector()

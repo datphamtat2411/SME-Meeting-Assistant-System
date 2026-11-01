@@ -52,6 +52,8 @@ class AsrQualityMetadata:
     confidence: float | None = None
     language: str | None = None
     language_confidence: float | None = None
+    # Provider's optional verbose duration, not sample-derived or billing usage.
+    duration_seconds: Fraction | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +73,7 @@ class AsrUsage:
     total_tokens: int | None = None
     cost: Fraction | None = None
     audio_seconds: Fraction | None = None
+    reported: bool = False
 
 
 @dataclass(frozen=True, slots=True)
