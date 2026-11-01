@@ -844,7 +844,7 @@ def _publication(outcome, settings, source_id, source_sha256, speech_samples):
 
 def run_production_case(manifest, fixture, root, preprocessing, transcriber, corrector, settings, *,
                         evidence_mode="offline-contract", conditions=(), trial=0, clock=time.monotonic_ns,
-                        ledger=None, authorized_live=False):
+                        ledger=None, authorized_live=False, authorization_scope="cutover"):
     """One call to the actual production entry, with measured borrowed adapters.
 
     Missing input evidence returns UNAVAILABLE without inference. Execution errors
@@ -852,10 +852,12 @@ def run_production_case(manifest, fixture, root, preprocessing, transcriber, cor
     """
     __tracebackhide__ = True
     require(evidence_mode in ("offline-contract", "approved-replay", "approved-live"), "evidence mode")
+    require(authorization_scope in ("cutover", "pilot"), "explicit evaluation authorization scope")
     if evidence_mode == "approved-live":
         require(authorized_live, "dataset-wide live preflight")
         require_live_evaluation(settings)
-        require(os.environ.get("RUN_ASR_CUTOVER_LIVE") == "1", "cutover live opt-in")
+        opt_in = "RUN_ASR_CUTOVER_LIVE" if authorization_scope == "cutover" else "RUN_ASR_PILOT_LIVE"
+        require(os.environ.get(opt_in) == "1", "scoped live opt-in")
     else:
         from sme_meeting_ai.providers.openrouter_instruction_llm import (
             OpenRouterInstructionLlmAdapter,

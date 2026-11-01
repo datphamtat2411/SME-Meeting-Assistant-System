@@ -2127,6 +2127,276 @@ decision candidate, never actual deployment. The collection report's initial
 `release_decision` remains NO-GO; retain the separately approved readiness decision
 alongside its exact report hash.
 
+### Progressive Vietnamese ASR Pilot Evaluation
+
+The pilot measures a **declared, partial dataset**, starting with at least **two
+distinct independently human-reviewed Vietnamese speech recordings**. Add more
+references whenever they are ready; there is no six- or nine-recording ceiling.
+The schema-2 fixture fields and versioned Vietnamese WER/CER metrics are shared
+with T08. `validate_pilot_manifest()` validates the selected assets without
+requiring the full condition matrix. `Manifest`, `require_transcription_manifest`,
+`CutoverPolicy`, G01–G12, historical evidence, and deployment approval remain
+strict. The same two-recording manifest fails full transcription validation when
+its production conditions are incomplete.
+
+Pilot reports always contain:
+
+```json
+{"evaluation_scope":"pilot","production_readiness":"NOT_ASSESSED","deployment_authorized":false}
+```
+
+They contain no production GO or G01–G12 result. Pilot case evidence is marked
+`pilot-live` or `pilot-offline`; the production `CaseRecord` contract rejects both.
+`evaluate_readiness()` rejects a pilot report. A passing pilot collection is not
+a production release decision.
+
+#### 1. Prepare independent human references
+
+Keep everything under the external `sme-private` workspace. The synchronizer
+requires an explicit **reviewed preprocessing manifest**, not a TSV reconstruction.
+It preserves fixture paths, WAV source digests, counts, labels, anchors, annotation
+versions, and condition tags. Place the corresponding original WAV at the **same
+relative path** under `datasets/vietnamese-transcription-v1/` (usually `audio/`).
+No audio is copied or transcoded by synchronization. WAVs must retain the reviewed
+16 kHz mono PCM16 format, exact frame count, and boundary anchors.
+
+Create `references/<original-fixture-id>.json` by independent listening/review.
+Use reference schema 1, `origin: "independent-human"`, `language: "vi"`, the exact
+fixture ID/sample count/annotation version, and a versioned reference. Template
+for `vi-continuous-speech-01` (**deliberately invalid until a human fills text**):
+
+```json
+{
+  "schema_version": 1,
+  "fixture_id": "vi-continuous-speech-01",
+  "reference_version": "human-reviewed-reference-1",
+  "annotation_version": "human-reviewed-1",
+  "origin": "independent-human",
+  "language": "vi",
+  "sample_count": 1490735,
+  "segments": [
+    {"start_sample": 0, "end_sample": 1490735, "label": "speech", "text": ""}
+  ]
+}
+```
+
+Segments partition `[0, sample_count)` contiguously with integer sample bounds.
+Subdivide for human transcription as needed, retaining label agreement. Speech
+must contain human text; silence/noise/music/ambiguous text must be exactly empty.
+Do not generate references with ASR or put `critical`/`material` in references.
+Those flags belong exclusively to the fixture annotation and are never inference
+hints or prompts. The pilot invokes the production pipeline with audio/settings,
+not references or human labels.
+
+For `vi-speech-pause-resume-01`, retain `sample_count=1125471`, annotation version
+`human-reviewed-1`, condition `historical-regression`, and these reviewed labels:
+
+| Start | End | Label | Critical |
+| --- | --- | --- | --- |
+| 0 | 430400 | speech | false |
+| 430400 | 518704 | music | false |
+| 518704 | 576497 | silence | false |
+| 576497 | 962400 | speech | true |
+| 962400 | 1125471 | speech | false |
+
+The split at **962400** must survive. Never replace this five-region annotation
+with the older four-region TSV. A newer reviewed annotation must come from the
+dataset owner. These fixture IDs are initial examples, not an evaluator allowlist.
+
+#### 2. Synchronize and validate the same manifest
+
+Run commands from `services/ai`. For example:
+
+```bash
+PRE=/secure/sme-private/datasets/vietnamese-preprocessing-v1/manifest.json
+ROOT=/secure/sme-private/datasets/vietnamese-transcription-v1
+
+PYTHONPATH=tests uv run python -m evaluation.asr_pilot_manifest sync \
+  --preprocessing-manifest "$PRE" --transcription-root "$ROOT" \
+  --output "$ROOT/manifest.json" --dry-run
+
+# Explicitly replace only after reviewing the sanitized candidate summary.
+PYTHONPATH=tests uv run python -m evaluation.asr_pilot_manifest sync \
+  --preprocessing-manifest "$PRE" --transcription-root "$ROOT" \
+  --output "$ROOT/manifest.json" --write
+
+PYTHONPATH=tests uv run python -m evaluation.asr_pilot_manifest validate \
+  --transcription-root "$ROOT" --preprocessing-manifest "$PRE"
+```
+
+Only `references/*.json` select fixtures. Unreferenced WAVs remain preparation
+work; they do not enter a paid run. Present malformed references, unknown IDs,
+filename/ID disagreement, duplicate identities, missing WAVs, changed SHA-256,
+label mismatches, timeline gaps/overlaps, and invalid anchors fail visibly. Invalid
+input never replaces the current manifest. At least two independent speech
+sources are needed even if other reviewed non-speech recordings are included.
+Synthetic controls cannot substitute for this minimum.
+
+Dry-run is the default. Serialization/order is deterministic. Output is restricted
+to `$ROOT/manifest.json`; repository paths, symlinks/escapes, and hardlink aliases
+are refused. Replacement uses a flushed temporary file and atomic rename. Before
+a changed replacement, exact old bytes are saved privately as
+`$ROOT/manifest.<old-sha256>.json`. Audio/reference bytes are never overwritten.
+
+Validation emits only fixture identities, counts, source/reference integrity,
+demonstrated conditions, approval status and the exact manifest digest. Supply
+`--preprocessing-manifest` to inventory missing references; without it the missing
+inventory is explicitly `NOT_REQUESTED`. `pilot_scope_valid` describes structural
+completeness; `pilot_ready` additionally requires privacy/legal approval.
+`full_transcription_manifest_valid` checks the existing full manifest contract;
+`full_cutover_ready` remains false because this command does not assess release
+policy, G01–G12, historical evidence or deployment authorization.
+
+#### 3. Review the expanded scope and explicitly authorize spending
+
+Synchronization **never grants privacy/legal approval**. New/changed fixtures or
+reference bytes reset `privacy_approved`, `legal_approved` to false and
+`approval_version` to `pending-review`. A completely unchanged synchronization
+preserves the reviewed manifest fields. The owner must review all selected assets,
+external routing permission, and labels; then explicitly edit those two fields
+and record the actual `approval_version` in the private manifest. Validate again.
+Do this before generating the exact scope approval below, since approval-field or
+formatting edits also change the manifest byte identity.
+
+Copy `tests/evaluation/asr_pilot_config.example.json` to an external
+`/secure/config/pilot-matrix.json` and review its single geometry. Both chunked and
+adaptive use it. The example and `asr_pilot_approval.example.json` are non-approved
+templates, not private dataset evidence. Provision your reviewed external env file
+with `OPENROUTER_API_KEY`, `AI_TRANSCRIPT_CORRECTION_MODEL` and its settings,
+`AI_AUDIO_VAD_MODEL_PATH`, `AI_AUDIO_VAD_MODEL_SHA256`, and suitable stage time,
+media, payload, concurrency, chunk and Recovery limits. No `.env` is loaded
+implicitly. The locked ASR model/language remain OpenRouter Whisper-large-v3/vi.
+
+Generate an approval **draft**, without inference:
+
+```bash
+PYTHONPATH=tests uv run --env-file /secure/config/approved-evaluation.env \
+  python -m evaluation.asr_pilot scope \
+  --transcription-root "$ROOT" --configuration /secure/config/pilot-matrix.json \
+  --max-calls 84 --trials 1 --output /secure/config/pilot-day1-approval.json
+```
+
+The new output must be outside Git, the dataset and protected input directories.
+The draft pins the exact manifest, stable root, selected fixture/reference/label
+identities, pipeline source identity, configuration, trial count, and readable
+operational limits. It always sets `approved=false`. The authorized owner reviews
+these fields and the maximum spending scope, sets `approved=true`, supplies an
+actual `approval_version` and **nonzero SHA-256 of private human approval evidence**
+in `approval_evidence_sha256`. Protect that artifact with your normal private
+access controls. A computed manifest hash alone is never human approval.
+
+The conservative request requirement is:
+
+```text
+recordings × 2 modes × trials × (max chunks + max Recovery attempts + 1 native)
+```
+
+For illustration, explicitly reviewed limits of **16 chunks and 4 Recovery
+attempts** need 84 calls for two recordings, 126 for three, 168 for four, and 252
+for six, with one trial. These are bounds, not predictions or default grants.
+The normal 4096-chunk default implies a much larger bound; choose appropriate
+limits before approval. Correction attempts/time/token limits are also pinned
+and costs are accounted for separately. Budget rejection occurs before provider
+construction. Actual ASR calls, including failed and rejected Recovery calls,
+share a locked ledger across all fixtures/modes/trials. Growth never increases
+the approved budget automatically. Additional trials require explicit approval;
+there is no best-of-N retry or favorable-output selection.
+
+#### 4. Run the separately authorized live pilot
+
+```bash
+RUN_ASR_PILOT_LIVE=1 RUN_OPENROUTER_LIVE_EVALUATION=1 \
+uv run --env-file /secure/config/approved-evaluation.env pytest -m evaluation \
+  tests/evaluation/test_asr_pilot_quality.py \
+  --evaluation-fixture-root "$ROOT" \
+  --transcription-evaluation-config /secure/config/pilot-matrix.json \
+  --asr-pilot-approval /secure/config/pilot-day1-approval.json \
+  --asr-pilot-output /secure/sme-private/results/pilot-day1.json \
+  --asr-pilot-max-calls 84
+```
+
+All local WAV/reference/model assets, approvals, identities, budgets and output
+are checked before provider construction and rechecked after execution. Reports
+require a new external destination. The runner calls `OfflineTranscriptionPipeline`
+once per fixture/mode/trial, reusing T08 instrumentation and metrics; it never
+substitutes mock transcription for an authorized live run.
+
+#### Daily growth: 2 → 3 → 4 → 6
+
+| Day/scope | Preparation | Required actions |
+| --- | --- | --- |
+| Day 1, 2 | Add reviewed continuous-speech and pause/resume reference JSONs | Dry-run → sync same manifest → validate → owner privacy/legal review → scope draft → human scope approval → run to new report |
+| Day 2, 3 | Add `vi-distant-speech-01.json` | Repeat sync/validate on the same root; review expanded scope and budget; create `pilot-day2-approval.json`; run to `pilot-day2.json` |
+| Day 3, 4 | Add `vi-recording-boundaries-01.json` | Same commands, renewed approval and new report |
+| Later, 6 | Add reviewed `vi-speech-music-resume-01.json` and another independently reviewed recording | Same commands, renewed approval and new report |
+
+Every added recording must already have reviewed metadata in `$PRE`. Arbitrary
+valid fixture IDs work, including a long-recording ID such as
+`control-long-audio-01` when its actual metadata describes an independently
+reviewed recording. Adding WAVs or references alone cannot expand the approved
+manifest. Syncing a larger scope invalidates its former approval. No evaluation
+source changes or production `CutoverPolicy` updates are needed for these steps.
+
+**Correcting a reference:** privately archive its old exact bytes, audio, model,
+configuration, approval, report and manifest snapshot first. Correct by independent
+review, increment `reference_version`, synchronize again, validate and reapprove.
+Reference SHA-256 uses actual file bytes, so even whitespace edits change identity.
+Do not substitute a corrected reference into an old report. Manifest snapshots
+retain identities but do not archive every dependency: keep a private immutable
+versioned dataset bundle to reproduce old evaluations. Restore its exact manifest
+as `manifest.json` at the approved stable root when reproducing, and preserve the
+original configuration/pipeline revision and separately authorized spending.
+
+#### Interpreting and comparing sanitized reports
+
+Reports include run timestamp/hash, dataset/reference/configuration/pipeline
+identities, counts/duration, demonstrated conditions, both mode cases, publication
+and execution status, pooled edit counts, canonical and corrected WER/CER,
+speech coverage/missing intervals and critical/material loss, unresolved speech,
+non-speech text/hallucination risk, Recovery attempts/accepted/rejected/failed and
+canonical support gain, actual ASR/correction calls, known cost subtotal, unknown
+cost count, duration, payload and concurrency. Unavailable metrics remain null.
+Unknown cost is not zero cost; dynamic upstream routing can confound a comparison.
+
+WER/CER retain `vi-nfc-casefold-technical-1`, including Vietnamese accents and
+technical token distinctions. Mode aggregates pool edit counts/denominators rather
+than averaging percentages. The aggregate comparison is enabled only when all
+paired cases have compatible complete evidence; partial evidence remains visible
+but cannot establish an improvement. Inspect failure/unavailable status even when
+the collection itself completed.
+
+**Timestamp coverage is not transcription correctness.** In particular, a
+hallucinated sentence overlapping `[576497, 962400)` can have zero interval-based
+critical loss and still have poor WER/CER. Keep content metrics independent from
+coverage; do not call that interval correctly transcribed based on overlap alone.
+Non-speech-overlap metrics also do not detect every content hallucination.
+
+Check corpus scope across days before interpreting aggregate changes:
+
+```bash
+PYTHONPATH=tests uv run python -m evaluation.asr_pilot compare-scope \
+  /secure/sme-private/results/pilot-day1.json \
+  /secure/sme-private/results/pilot-day2.json
+```
+
+The command validates reports and lists matched/added/removed/changed fixture
+identities. An expanded or corrected corpus is not aggregate-comparable. Matched
+fixtures can be analyzed separately after also checking configuration, pipeline,
+runtime, trials and provider identities. Scope equality alone does not establish
+that those other factors match.
+
+Deterministic development/CI checks (generated synthetic fixtures, injected
+providers, no external inference) are:
+
+```bash
+uv run pytest tests/evaluation/test_asr_pilot_manifest.py \
+  tests/evaluation/test_asr_pilot.py tests/evaluation/test_asr_cutover.py
+```
+
+Ordinary pytest excludes `evaluation`; the live pilot test also requires its
+separate opt-in. Keep private audio, references, raw ASR responses, prompts,
+credentials and approval evidence out of Git and sanitized reports.
+
 #### Canary deployment and rollback procedure
 
 1. **Phase 0:** leave approved production workers on

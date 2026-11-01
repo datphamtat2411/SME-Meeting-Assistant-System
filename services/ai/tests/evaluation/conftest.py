@@ -57,6 +57,12 @@ def pytest_addoption(parser):
                     help="New external sanitized T08 JSON destination")
     group.addoption("--asr-cutover-max-calls", type=int, default=None,
                     help="Explicit total T08 ASR request budget for both modes and all trials")
+    group.addoption("--asr-pilot-approval", type=Path, default=None,
+                    help="External human-reviewed pilot scope and operational limits")
+    group.addoption("--asr-pilot-output", type=Path, default=None,
+                    help="New external sanitized pilot report destination")
+    group.addoption("--asr-pilot-max-calls", type=int, default=None,
+                    help="Explicit pilot ASR call budget across both modes and every trial")
 
 
 @pytest.fixture(scope="session")
