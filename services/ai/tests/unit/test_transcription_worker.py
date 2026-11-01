@@ -1,6 +1,7 @@
 import hashlib
 import json
 from dataclasses import replace
+from fractions import Fraction
 from uuid import uuid4
 
 import pytest
@@ -9,7 +10,15 @@ from integration.test_offline_transcription_pipeline import workflow as workflow
 
 from sme_meeting_ai.pipeline import OfflineTranscriptionStatus as Status
 from sme_meeting_ai.pipeline.offline_transcription import OfflineTranscriptionFailure
-from sme_meeting_ai.transcription.asr import AsrCandidate
+from sme_meeting_ai.transcription.asr import (
+    AsrCandidate,
+    AsrError,
+    AsrErrorCategory,
+    AsrProvenance,
+    AsrQualityMetadata,
+    AsrSegment,
+    AsrUsage,
+)
 from sme_meeting_ai.workers.transcription import (
     ResultValidationError,
     correction_digest,
@@ -60,6 +69,10 @@ def test_initial_recovery_warnings_are_retained(workflow):
     result = validate_result_bytes(map_result(outcome, h.settings, **binding(h)))
     assert result.pipelineStatus == "COMPLETED_WITH_WARNINGS"
     assert result.warnings
+    assert any(region.state.value == "SUSPICIOUS" for region in outcome.evidence.coverage.regions)
+    assert all(published.coverageStatus == original.state.value
+               for original, published in zip(outcome.evidence.coverage.regions, result.coverage, strict=True)
+               if original.state.value != "COVERED")
 
 
 def test_raw_and_failed_outcomes_never_serialize(workflow):
@@ -96,5 +109,80 @@ def test_result_validation_fails_closed(workflow, mutation):
                              "endSample": None, "sourceChunkIds": [], "phase": None}]
     elif mutation == "provenance":
         data["provenance"]["models"][0]["requestedModel"] = "https://secret.example/key"
+    with pytest.raises(ResultValidationError):
+        validate_result_bytes(json.dumps(data).encode(), **bound)
+
+
+def test_only_unresolved_canonical_support_conservatively_projects_covered_regions(workflow):
+    h = workflow(source_id=str(uuid4()))
+
+    def observed(audio):
+        if audio.chunk_id != "chunk-000000":
+            raise AsrError(AsrErrorCategory.AUTHENTICATION)
+        text = "Kiểm tra API-v2 với Kubernetes"
+        # The intact source segment crosses into the neighboring failed request.
+        return AsrCandidate(text, (AsrSegment(Fraction(0), audio.duration, text),),
+                            AsrQualityMetadata(), AsrUsage(),
+                            AsrProvenance("openrouter", "openai/whisper-large-v3"), audio.chunk_id)
+
+    h.asr_callback = observed
+    outcome = pipeline(h).run(h.source)
+    assert outcome.failure is None and len(outcome.result.segments) == 1
+    assessment = outcome.evidence.coverage
+    covered = [i for i, region in enumerate(assessment.regions) if region.state.value == "COVERED"]
+    assert covered and any(region.state.value == "UNRESOLVED_ERROR" for region in assessment.regions)
+    result = validate_result_bytes(map_result(outcome, h.settings, **binding(h)))
+    assert result.pipelineStatus == "COMPLETED_WITH_WARNINGS"
+    assert result.segments[0].qualityStatus == "UNRESOLVED"
+    assert all(result.coverage[i].coverageStatus == "UNRESOLVED_ERROR" for i in covered)
+    assert all(region.coverageStatus == "UNRESOLVED_ERROR" for region in result.coverage)
+    assert outcome.evidence.coverage is outcome.result.coverage is assessment
+    assert all(assessment.regions[i].state.value == "COVERED" for i in covered)
+    assert outcome.provenance.coverage == assessment.provenance
+    assert result.correctionProof.outputSha256 == correction_digest([s.model_dump() for s in result.segments])
+
+
+def test_covered_region_with_accepted_and_suspicious_canonical_text_remains_valid(workflow):
+    h = workflow(source_id=str(uuid4()))
+    bound = binding(h)
+    data = json.loads(map_result(pipeline(h).run(h.source), h.settings, **bound))
+    data["segments"][0]["qualityStatus"] = "SUSPICIOUS"
+    data["coverage"] = [dict(startMs=0, endMs=data["durationMs"], coverageStatus="COVERED",
+                            recovered=False, retryCount=0)]
+    data["pipelineStatus"] = "COMPLETED_WITH_WARNINGS"
+    result = validate_result_bytes(json.dumps(data).encode(), **bound)
+    assert [s.qualityStatus for s in result.segments] == ["SUSPICIOUS", "ACCEPTED"]
+    assert result.coverage[0].coverageStatus == "COVERED"
+
+
+@pytest.mark.parametrize("mutation", [
+    "unsupported-covered", "unaccepted-covered", "upgraded-suspicious", "upgraded-unresolved",
+    "erased-warning-status", "proof", "source-binding",
+])
+def test_publication_quality_projection_keeps_wire_validation_strict(workflow, mutation):
+    h = workflow(source_id=str(uuid4()))
+    bound = binding(h)
+    data = json.loads(map_result(pipeline(h).run(h.source), h.settings, **bound))
+    if mutation == "unsupported-covered":
+        data["segments"] = [dict(data["segments"][1], ordinal=0)]
+        data["coverage"] = [dict(startMs=start, endMs=end, coverageStatus="COVERED",
+                                 recovered=False, retryCount=0) for start, end in ((0, 128), (128, 256))]
+    else:
+        data["pipelineStatus"] = "COMPLETED_WITH_WARNINGS"
+        for segment in data["segments"]:
+            segment["qualityStatus"] = "SUSPICIOUS"
+        if mutation != "unaccepted-covered":
+            for region in data["coverage"]:
+                region["coverageStatus"] = "UNRESOLVED_ERROR" if mutation == "upgraded-unresolved" else "SUSPICIOUS"
+        if mutation == "upgraded-suspicious":
+            for segment in data["segments"]:
+                segment["qualityStatus"] = "ACCEPTED"
+        elif mutation == "erased-warning-status":
+            data["pipelineStatus"] = "COMPLETED"
+        elif mutation == "source-binding":
+            bound = {**bound, "media_id": str(uuid4())}
+    data["correctionProof"]["outputSha256"] = correction_digest(data["segments"])
+    if mutation == "proof":
+        data["correctionProof"]["outputSha256"] = "0" * 64
     with pytest.raises(ResultValidationError):
         validate_result_bytes(json.dumps(data).encode(), **bound)

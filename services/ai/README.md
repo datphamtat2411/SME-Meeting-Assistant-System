@@ -1483,3 +1483,187 @@ Also assess corrected end-to-end output separately. Preserve genuine Vietnamese
 repetitions and inspect unresolved long-segment/overlap cases for T05. No paid
 inference or private evaluation audio was used for T04 implementation. Mock
 regressions establish contracts, **not improved Vietnamese ASR quality**.
+
+### T05 — Canonical Evidence Reconciliation V2
+
+`reconcile_transcript(plan, results, settings, *, boundary_alignment=None)` now
+records `reconciler_version="2"`. Whole-file, chunked and supplemental Recovery
+use this single engine. The offline pipeline passes its existing T04 report and
+reconciles the baseline plus actual supplemental results exactly once.
+
+#### Evidence graph and occurrence identity
+
+1. Validate the plan, immutable source geometry, identities, approved Recovery
+   bounds, exact provider-to-absolute sample translation and safe provenance.
+   Malformed/failed individual candidates are isolated; contradictory global
+   source/provenance or resource violations fail closed. ASR gateway/model must
+   remain OpenRouter / `openai/whisper-large-v3`; dynamic upstreams are not ranked.
+2. Create immutable private nodes for nonempty observed segments, identified by
+   `(chunk_id, segment_index, absolute interval)`, never recognized text. Preserve
+   each provider's separate observations, including same-request repetitions.
+3. Sweep half-open sample intervals to index cross-request temporal candidates.
+   Connected source-pair regions are **work regions**, not occurrence groups.
+4. Align each region's ordered source paths monotonically. Comparison uses NFC
+   and case folding without stripping Vietnamese accents. Technical identifiers
+   (`API-v2`, `C++`, `C#`, dotted versions, slash identifiers) retain meaningful
+   punctuation. Standalone sentence punctuation is presentation-only for lexical
+   comparison; selected casing, spelling and punctuation remain byte-for-byte
+   source wording.
+5. Full equal lexical paths require at least `min_shared_tokens` distinct anchors
+   occurring exactly once in each local stream, excluding the fixed common-word /
+   acknowledgement list in the module. The default two anchors do not mean any
+   two shared Vietnamese words prove a duplicate. Corresponding observed segment
+   intervals must overlap, and complete path envelopes must contain each other's
+   centers. This integer geometric guard rejects weak, displaced intersections;
+   it is not a calibrated ASR quality threshold or invented word timing.
+6. Complete validated provider word sequences with identical actual sample bounds
+   can disambiguate otherwise weak anchors. Contradictory disjoint word timings
+   block suppression. Missing/incompletely corresponding word observations confer
+   no word-level authority. Words never split, rewrite or retime output segments.
+7. Isolated single-token substitutions between matching flanks require unique
+   monotonic anchors **and identical observed envelopes** to establish conflicting
+   hypotheses. Other partial correspondences never independently suppress text.
+   Relationships explicitly distinguish `same-occurrence`, `partial-support`,
+   `conflicting-hypothesis`, `distinct-occurrence` and `ambiguous`.
+8. Tentative established edges form graph components, then every complete
+   per-source path in each component must have direct consistent alignment with
+   every other path. An overlap chain, incomplete cross-source assignment or
+   incompatible transitive component remains ambiguous, with all nodes retained.
+
+One long segment and two/three shorter segments can therefore represent the same
+complete observed sequence. Selection emits either the original long segment or
+the original shorter sequence with its original intervals. No concatenated text
+is ever emitted as a new segment, and a partial shorter observation cannot delete
+additional material in a complete long hypothesis.
+
+#### Canonical selection, alternatives and boundary context
+
+After group consistency passes, rank intact source paths deterministically by:
+preserved lexical material, independent request support for the complete lexical
+stream, actual pairwise interval support, core-owned samples, safer T04 risk,
+mutually available provider quality fields (confidence, average log probability,
+no-speech probability), fewer intact segments, then ordinal/chunk/segment identity.
+Missing quality is unknown: a field participates only when all competing source
+segments report a valid value. No provider-name, recency, WER/CER or LLM score is
+used. Recovery has no automatic priority; failed Recovery cannot remove baseline.
+
+Selected segments retain a selected evidence identity, supporting identities and
+alternative identities. Alternative wording remains private transient evidence
+(`repr=False`), not extra canonical speech or correction-model input. Source
+payloads/audio, raw candidates and internal text-bearing graph objects are never
+attached to results or operational telemetry.
+
+T04 report version, source count, source geometry, segment ordinals/intervals and
+core intersections are checked. Boundary reasons/risk are associated with the
+actual crossed neighboring boundaries. Forced/incomplete boundaries preserve
+`unresolved-boundary` uncertainty and affect path ranking. Natural metadata
+cannot establish a duplicate or certify wording. Whole-file needs no report;
+separate observations from that request remain intact and ordered.
+
+`duplicate-overlap` denotes established redundant speech hypotheses;
+`conflicting-overlap` denotes established competing wording. Uncertain identity,
+partial support and concurrent unrelated hypotheses remain visible as separate
+flagged candidates. Short acknowledgements/repeated anchors do not justify
+suppression on equality. Some provisional output deliberately remains ambiguous.
+
+#### Timeline, metrics, privacy and bounds
+
+Canonical text and positive half-open intervals always come from one selected
+observed segment, within the original 16,000 Hz source. No interval union is used
+to expand canonical timing. Chronological IDs remain `segment-000000`, etc., with
+consecutive ordinals. `unresolved_intervals` is the exact complement of the union
+of nonempty canonical intervals, **not verified missing speech**.
+
+`TranscriptReconciliation.observations` provides raw accepted source segment count
+(including empty observations), canonical count, established redundant source-node
+count, nonselected conflicting source-node count, unresolved occurrence-node
+count, accepted many-to-one / one-to-many source-path relationship counts,
+protected chronological repetition count, unresolved union samples, temporal
+candidate count and lexical comparison count. Direction follows source ordinal;
+these are structural observations, not confidence or verified utterance counts.
+Text-free `relationships` expose source identities and relationship categories.
+They and private alternatives are transient and are not added to worker schemas.
+
+Fixed V2 safety budgets (captured in effective configuration):
+
+| Bound | Maximum / meaning |
+| --- | --- |
+| Source segments | 262,144, including empty/malformed attempted observations |
+| Text characters | 8,388,608 across inspected segment and optional word text |
+| Tokens | 1,048,576 across segment and inspected optional word comparisons |
+| Active intervals | 256 simultaneous source segments |
+| Local graph component | 256 source nodes |
+| Alignment path | 8,192 lexical tokens per source path |
+| Temporal candidates | 262,144 cross-source interval pairs |
+| Alignment/selection work | 16,777,216 token/node work units |
+| Output evidence references | 1,048,576 identity references |
+
+These are representability limits, not empirically proven Vietnamese quality
+limits. Exhaustion returns sanitized `RESOURCE`, without truncation or inference
+retry. Sorting/sweeping is `O(N log N + K)` with bounded active/local state; lexical
+work is local and budgeted, with no meeting-wide all-pairs token comparison or
+subset search. Candidate-free whole-file evidence needs no lexical alignment.
+Repetition accounting and unresolved interval union are linear after ordering.
+Errors lose input-bearing exception contexts/frames; cancellation propagates with
+identity preserved and private arguments/derived evidence released. No logging,
+network request, audio materialization or additional model call is performed.
+
+#### Regression migration and T06 handoff
+
+Legacy `_shared`, `_stitch_size`, `_Unit`, `_merge`, `_resolve` and incremental
+owner-based grouping were removed. Prior stitching tests now require intact
+source-only wording and timestamps; overlap-only conflict tests now require
+explicit uncertainty unless anchored identity is established. Chain/repetition
+tests retain the uncertain third observation rather than silently consuming it.
+Privacy, isolated failure, source validation, provenance and timeline assertions
+remain covered; the expected reconciliation version is now `2`.
+
+Synthetic tests cover whole-file and segment-only input, long/short paths,
+substitutions, concurrent speech, repeated/technical/Unicode wording, T04 context,
+real optional word observations, Recovery conflict/failure, deterministic IDs,
+interval unions, local comparison counts and resource/cancellation cleanup.
+Integration tests exercise the production boundary handoff, one reconciliation
+call, unchanged correction and unchanged worker publication validation.
+
+Conservative limitations: partial/inserted/deleted lexical correspondences,
+multi-token conflicts or globally incompatible groups can retain duplicate-looking
+provisional text. Exact equality plus structural evidence remains evidence, not
+acoustic truth. T06 must assess **acoustic speech support, textual support,
+unresolved speech uncertainty, missing-speech risk, unsupported candidate regions
+and potential hallucination**. T07 still owns Recovery admission/progress policy.
+Neither is implemented here. Independent human references remain necessary for
+Vietnamese WER/CER, material omissions, insertions, repetition preservation,
+boundary errors, Recovery regressions and end-to-end corrected quality. No live
+accuracy improvement is established by deterministic structural tests.
+
+#### Publication coverage projection
+
+Initial T05 verification exposed a publication mismatch: flagged canonical segments
+are SUSPICIOUS (or UNRESOLVED), while both worker and Core API require ACCEPTED
+canonical support for every published COVERED region. The user authorized a
+worker-mapper fix after the original locked-scope task reported this blocker.
+
+`map_result` now conservatively projects the original pre-reconciliation coverage
+assessment against the final corrected canonical segments. For an original COVERED
+region, the best available intersecting canonical quality determines publication:
+
+| Final canonical support | Published coverage |
+| --- | --- |
+| At least one ACCEPTED segment | COVERED |
+| No ACCEPTED, at least one SUSPICIOUS segment | SUSPICIOUS |
+| Only UNRESOLVED segments | UNRESOLVED_ERROR |
+| No canonical segment | Invalid handoff; publication fails closed |
+
+Original SUSPICIOUS/UNRESOLVED_ERROR coverage is never upgraded. Matching uses the
+same exact half-open, sample-to-millisecond wire projection as both validators.
+Mixed-quality regions retain COVERED only when an ACCEPTED segment also supports
+them, preserving the existing contract's region-level granularity.
+
+This is a publication projection, not a new acoustic coverage assessment or a
+missing-speech inference. Original sample-based assessment, quality counts,
+provenance, canonical text, timestamps, reconciliation flags and warnings remain
+intact. Public region bounds, Recovery attribution and retry counts also remain
+intact. Canonical uncertainty is never promoted to ACCEPTED to satisfy publication.
+Worker/Core validators, correction proof, warning-status checks and wire schemas
+retain their existing strict contracts. No additional model call is introduced.
+Coverage Assessment V2 (T06) remains a separate task.

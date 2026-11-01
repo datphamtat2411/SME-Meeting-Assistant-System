@@ -460,7 +460,10 @@ class OfflineTranscriptionPipeline:
             completed.append(stage)
 
             stage = OfflineTranscriptionStage.RECONCILIATION
-            reconciled = reconcile_transcript(plan, (*baseline, *recovered.recovered_results), self._settings)
+            reconciled = reconcile_transcript(
+                plan, (*baseline, *recovered.recovered_results), self._settings,
+                boundary_alignment=asr.boundary_alignment,
+            )
             if execution.selected_strategy is AsrStrategy.WHOLE_FILE:
                 # The compatibility boundary must represent each original segment
                 # once with its exact interval/text; no virtual ownership or stitch.

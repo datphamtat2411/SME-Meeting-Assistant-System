@@ -360,7 +360,19 @@ def map_result(outcome, settings, *, job_id, media_id, source_revision, producer
                         if _sample_overlap(a.window.chunk.request_interval, region.interval)]
             supported = any(a.failure is None and a.window.chunk.chunk_id in region.supporting_chunk_ids
                             for a in attempts)
-            coverage.append(dict(**_interval_ms(region.interval, count), coverageStatus=region.state.value,
+            bounds = _interval_ms(region.interval, count)
+            state = region.state.value
+            if state == "COVERED":
+                # ASR coverage precedes canonical selection. Publish the weaker
+                # final support without rewriting that assessment or upgrading
+                # uncertain text. Use the same half-open wire intervals as the
+                # worker/Core validators, including their millisecond projection.
+                qualities = {s["qualityStatus"] for s in segments
+                             if s["startMs"] < bounds["endMs"] and bounds["startMs"] < s["endMs"]}
+                _require(bool(qualities))  # No canonical support is an invalid handoff.
+                if "ACCEPTED" not in qualities:
+                    state = "SUSPICIOUS" if "SUSPICIOUS" in qualities else "UNRESOLVED_ERROR"
+            coverage.append(dict(**bounds, coverageStatus=state,
                                  recovered=supported, retryCount=len(attempts)))
         warnings = [dict(stage=w.stage.name, code=w.code,
                          startSample=w.interval.start_sample if w.interval else None,

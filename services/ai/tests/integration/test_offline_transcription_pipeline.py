@@ -62,7 +62,10 @@ from sme_meeting_ai.transcription.correction import (
     CorrectionErrorCategory,
     CorrectionProviderResponse,
 )
-from sme_meeting_ai.transcription.reconciliation import ReconciledSegment
+from sme_meeting_ai.transcription.reconciliation import (
+    ReconciledSegment,
+    ReconciliationFlag,
+)
 from sme_meeting_ai.transcription.recovery import RecoveryStopReason
 
 RAW = ("Dự án Alpha cần kiểm tra", "Nhóm Beta chuẩn bị báo cáo")
@@ -182,7 +185,7 @@ def workflow(tmp_path, monkeypatch):
                 return AsrCandidate(
                     text, (AsrSegment(Fraction(left, 16000), audio.duration - Fraction(right, 16000), text),),
                     AsrQualityMetadata(confidence=0.95, language="vi"), AsrUsage(),
-                    AsrProvenance("fake", "test/asr", inference_config=(
+                    AsrProvenance("openrouter", "openai/whisper-large-v3", inference_config=(
                         ("language", "vi"), ("temperature", 0.0), ("prompt", PRIVATE),
                     )), audio.chunk_id,
                 )
@@ -522,7 +525,8 @@ def test_empty_candidates_remain_unresolved_and_execution_is_deterministic(workf
     h = workflow(audio_asr_recovery_max_total_attempts=1)
 
     def empty(audio):
-        return AsrCandidate("", (), AsrQualityMetadata(), AsrUsage(), AsrProvenance("fake", "test/asr"), audio.chunk_id)
+        return AsrCandidate("", (), AsrQualityMetadata(), AsrUsage(),
+                            AsrProvenance("openrouter", "openai/whisper-large-v3"), audio.chunk_id)
 
     h.asr_callback = empty
     orchestrator = pipeline(h)
@@ -785,4 +789,96 @@ def test_unchanged_worker_accepts_strategy_outcome_and_rejects_corruption(workfl
     for corrupt in corruptions:
         with pytest.raises(ResultValidationError):
             map_result(corrupt, h.settings, **ids)
+    assert_released(h)
+
+
+@pytest.mark.parametrize("recovery_needed", [False, True])
+def test_v2_pipeline_consumes_existing_boundary_report_once(workflow, monkeypatch, recovery_needed):
+    h = workflow(audio_asr_recovery_max_total_attempts=1)
+    if recovery_needed:
+        def fail(audio):
+            if audio.chunk_id == "chunk-000001":
+                raise AsrError(AsrErrorCategory.TIMEOUT)
+        h.asr_callback = fail
+    invocations = []
+    original = reconciliation.reconcile_transcript
+
+    def reconcile(plan, results, settings, *, boundary_alignment=None):
+        assert boundary_alignment is not None
+        invocations.append((tuple(r.chunk.chunk_id for r in results), boundary_alignment))
+        return original(plan, results, settings, boundary_alignment=boundary_alignment)
+
+    monkeypatch.setattr(reconciliation, "reconcile_transcript", reconcile)
+    output = pipeline(h).run(h.source)
+    assert output.failure is None and len(invocations) == 1
+    assert output.provenance.reconciliation.reconciler_version == "2"
+    ids, report = invocations[0]
+    assert report is output.evidence.asr.boundary_alignment
+    assert len(ids) == len(set(ids)) == len(h.asr_calls) == (3 if recovery_needed else 2)
+    assert_released(h)
+
+
+@pytest.mark.parametrize("flag", list(ReconciliationFlag))
+def test_canonical_uncertainty_v2_publishes_with_conservative_coverage(workflow, flag):
+    from sme_meeting_ai.workers.transcription import (
+        map_result,
+        validate_result_bytes,
+    )
+
+    media = "22222222-2222-4222-8222-222222222222"
+    h = workflow(source_id=media, audio_asr_recovery_max_total_attempts=1)
+
+    def observed(audio):
+        # Baseline observations share an actual source interval around the core
+        # boundary. Recovery remains a separate source, using real request bounds.
+        ordinal = int(audio.chunk_id[-6:])
+        offset = 0 if ordinal == 0 else 1920
+        start, end = (1920, 2176) if audio.chunk_id.startswith("chunk-") else (offset, offset + 128)
+        relative_start, relative_end = Fraction(start - offset, 16000), Fraction(end - offset, 16000)
+        if relative_end > audio.duration:
+            relative_end = audio.duration
+        text = "Triển khai API-v2 với Kubernetes"
+        if audio.chunk_id == "chunk-000001":
+            if flag is ReconciliationFlag.CONFLICTING_OVERLAP:
+                text = "Triển khai API-v3 với Kubernetes"
+            elif flag is ReconciliationFlag.UNRESOLVED_BOUNDARY:
+                text = "Báo cáo doanh thu hôm nay"
+        return AsrCandidate(text, (AsrSegment(relative_start, relative_end, text),),
+                            AsrQualityMetadata(), AsrUsage(),
+                            AsrProvenance("openrouter", "openai/whisper-large-v3"), audio.chunk_id)
+
+    h.asr_callback = observed
+    output = pipeline(h).run(h.source)
+    assert output.failure is None
+    assert output.provenance.reconciliation.reconciler_version == "2"
+    occurrence = [s for s in output.result.segments if s.interval == SampleInterval(1920, 2176)]
+    if flag is ReconciliationFlag.UNRESOLVED_BOUNDARY:
+        assert len(occurrence) == 2  # uncertainty retains both independent candidates
+    else:
+        assert len(occurrence) == 1 and len(occurrence[0].source_chunk_ids) == 2
+    assert all(flag in s.flags for s in occurrence)
+    assessment = output.evidence.coverage
+    original_states = tuple(r.state for r in assessment.regions)
+    affected_regions = [i for i, r in enumerate(assessment.regions)
+                        if r.state.value == "COVERED" and r.interval.start_sample < 2176
+                        and 1920 < r.interval.end_sample]
+    assert affected_regions
+    raw = map_result(output, h.settings,
+        job_id="11111111-1111-4111-8111-111111111111", media_id=media,
+        source_revision="a" * 64, producer_id="33333333-3333-4333-8333-333333333333")
+    envelope = validate_result_bytes(raw)
+    assert len(envelope.segments) == len(output.result.segments)
+    assert envelope.pipelineStatus == "COMPLETED_WITH_WARNINGS"
+    assert all(envelope.segments[s.ordinal].qualityStatus == "SUSPICIOUS" for s in occurrence)
+    assert all(envelope.coverage[i].coverageStatus == "SUSPICIOUS" for i in affected_regions)
+    assert any(w.stage == "RECONCILIATION" and w.code == flag.value for w in envelope.warnings)
+    assert [(s.ordinal, s.text) for s in envelope.segments] == [(s.ordinal, s.text) for s in output.result.segments]
+    assert [(r.startMs, r.endMs) for r in envelope.coverage] == [
+        (r.interval.start_sample * 1000 // 16000, (r.interval.end_sample * 1000 + 15999) // 16000)
+        for r in assessment.regions
+    ]
+    assert output.evidence.coverage is output.result.coverage is assessment
+    assert tuple(r.state for r in assessment.regions) == original_states
+    assert output.provenance.coverage == assessment.provenance
+    assert len(h.asr_calls) == 3 and h.correction_calls == 1
     assert_released(h)
