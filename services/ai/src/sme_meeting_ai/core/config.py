@@ -153,6 +153,11 @@ class Settings(BaseSettings):
     audio_asr_timeout_seconds: float = Field(
         default=120, gt=0, le=600, allow_inf_nan=False,
     )
+    audio_asr_strategy_mode: Literal["chunked", "adaptive"] = "chunked"
+    # Internal trial ceiling, not a verified provider recording-duration limit.
+    audio_asr_native_max_samples: int = Field(default=1920000, gt=0, le=230400000, strict=True)
+    # At most the validated chunk limit + Recovery limit + one native request.
+    audio_asr_adaptive_max_total_calls: int = Field(default=32, gt=0, le=65793, strict=True)
     audio_asr_coverage_max_tolerated_speech_map_gap_samples: int = Field(
         default=0, ge=0, le=230400000, strict=True,
     )
@@ -241,6 +246,7 @@ class Settings(BaseSettings):
         "audio_asr_chunk_target_samples", "audio_asr_chunk_max_request_samples",
         "audio_asr_chunk_overlap_samples", "audio_asr_chunk_boundary_search_samples",
         "audio_asr_chunk_max_chunks", "audio_asr_max_concurrent_chunks",
+        "audio_asr_native_max_samples", "audio_asr_adaptive_max_total_calls",
         "audio_asr_coverage_max_tolerated_speech_map_gap_samples",
         "audio_asr_coverage_repetition_min_chars",
         "audio_asr_recovery_context_samples", "audio_asr_recovery_max_attempts_per_region",

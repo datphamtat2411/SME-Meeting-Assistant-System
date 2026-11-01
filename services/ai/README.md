@@ -1199,3 +1199,159 @@ chronological transcript with `sample_rate_hz`, immutable `start_sample` and
 timing, uncertainty, coverage and publication authority remain trusted code/Core
 responsibilities. This versioned context change requires the approved Vietnamese
 quality evaluation before production promotion.
+
+### T03 — Adaptive ASR production orchestration
+
+`OfflineTranscriptionPipeline.run(source)` now preprocesses once and delegates
+planning/execution to `AsrStrategyRunner` (`adaptive-asr-v1`). The only execution
+strategies are `whole-file` and the existing speech-aware `chunked` path. Whole-file
+and chunked inference never run concurrently for comparison in production. The
+gateway/model/language remain OpenRouter / `openai/whisper-large-v3` / `vi`, with
+OpenRouter dynamic upstream routing and no preferred upstream. Correction remains
+downstream of coverage, Recovery policy and reconciliation.
+
+#### Rollout settings and deterministic selection
+
+| Setting | Default | Validation / meaning |
+| --- | --- | --- |
+| `AI_AUDIO_ASR_STRATEGY_MODE` | `chunked` | Exactly `chunked` or `adaptive` |
+| `AI_AUDIO_ASR_NATIVE_MAX_SAMPLES` | `1920000` | Strict integer [1, 230400000]; internal 120-second trial ceiling at 16 kHz |
+| `AI_AUDIO_ASR_ADAPTIVE_MAX_TOTAL_CALLS` | `32` | Strict integer [1, 65793]; actual local requests per adaptive run, including Recovery |
+
+The maximum call setting is bounded by the project's maximum chunk count (65536),
+maximum Recovery attempts (256), and one native attempt; there is no unlimited
+setting. Integer environment text is accepted without float/bool coercion.
+Adaptive settings are rechecked at the orchestration boundary against mutation.
+
+Selection requires a successful preprocessing handoff with positive, exact
+16 kHz mono s16 sample metadata, matching preprocessing/source identity and valid
+normalized WAV. Serialized request size is exactly `44 + 2 * sample_count` bytes;
+the extracted payload is checked again by the existing executor and V2 provider.
+The upload bound is the minimum of local and capability limits. The capability
+snapshot must implement V2 and advertise OpenRouter HTTPS multipart WAV,
+`verbose_json`, documented/live-verified segment timestamps, the approved model,
+and routed-upstream policy. A known verified duration ceiling is respected;
+`None` remains unknown. Opt-in plus the finite internal sample ceiling permits a
+trial despite that uncertainty; it is not a long-form capability guarantee.
+
+Decision reasons, evaluated in the following order after handoff validation:
+
+| Reason | Condition / selected strategy |
+| --- | --- |
+| `adaptive-disabled` | Mode is `chunked`; existing chunked strategy |
+| `missing-v2-contract` | No V2 request method or typed capability profile; chunked |
+| `unsupported-provider-capability` | Incompatible gateway, format, model, language, timestamps, evidence status, routing, payload profile or known duration ceiling; chunked |
+| `native-sample-limit` | Positive sample count exceeds the internal trial ceiling; chunked |
+| `native-payload-limit` | Complete serialized WAV exceeds the effective upload limit; chunked |
+| `chunked-required` | Native plus full fallback cannot fit the adaptive budget, but chunked plus maximum Recovery can; chunked |
+| `native-eligible` | All native conditions and complete fallback reservation pass; whole-file |
+
+Every selected/fallback plan is validated before inference. If even chunked plus
+maximum configured Recovery cannot fit, fail `RESOURCE` before any provider call.
+Chunk requests exceeding the effective upload limit also fail locally before
+inference; T03 does not change the chunk planner's geometry to fit new limits.
+
+#### Plans, fallback and downstream evidence
+
+The dedicated native builder captures `whole-file-v1`, one `chunk-000000` at
+ordinal zero, full `[0,N)` core/request intervals, timeline-start/end boundaries,
+zero overlap, exact actual geometry, native sample/upload limits and preprocessing
+provenance. Validation recognizes only this strict singleton snapshot or the
+unchanged legacy planner contract. A relabeled legacy plan is insufficient.
+Native execution reuses the existing WAV extractor, bounded executor and exact
+rational nearest-sample timestamp translator through a minimal V2 segment-request
+bridge. There are no virtual chunks, synthetic timestamps or automatic retries.
+
+Before native inference, the validated fallback plan is prepared and the budget
+reserves `1 + len(chunked_plan.chunks) + configured maximum Recovery attempts`.
+Only `TIMEOUT`, `TRANSPORT`, `PROVIDER` and `MALFORMED_OUTPUT` permit the single
+native-to-chunked transition. Authentication, validation, rate limiting, resource
+failure and cancellation do not. Failed native text is discarded; fallback uses
+only its separately executed baseline. A failed fallback reports its actual
+sanitized category. Native is never retried and baseline chunks never repeat.
+
+Native success invokes existing coverage assessment on the real singleton result.
+Empty output proves neither silence nor coverage; acoustic uncertainty and missing
+speech warnings remain. It does **not** call legacy `recover_speech`. Explicit
+`skipped-by-asr-strategy` evidence uses `strategy-skipped-v1`, identical initial and
+final coverage, no attempts and no recovered results. The public Recovery stage
+completes its coverage/strategy decision without fabricated progress. Existing
+single-source reconciliation is invoked, then checked for one-to-one preservation
+of original segment text, intervals and real source/chunk identity. An incompatible
+representation fails closed. Chunked execution keeps legacy Recovery progress and
+reconciliation merging unchanged. Correction and unchanged worker validation
+remain mandatory for publication.
+
+#### Accounting and privacy
+
+`OfflineTranscriptionProvenance.strategy` contains immutable text-free telemetry:
+decision/version, final strategy, native outcome/failure, native attempts/successes/
+failures, chunked baseline and Recovery calls, total actual calls, fallback reason,
+reported costs and sanitized provider/model provenance. Adaptive pipeline versions
+append `:adaptive-asr-v1`; fallback publishes its actual chunked plan/version.
+Counters increment under a lock immediately before the borrowed transcriber request
+method, never during planning. The adaptive budget is also enforced at that boundary.
+Provider-internal routing/retries are unobservable and not counted as local calls.
+
+- Native success: one local call, zero Recovery calls.
+- Native ineligibility: zero native calls; actual baseline and permitted Recovery
+  requests only.
+- Fallback: one native call plus actual fallback baseline and Recovery calls.
+- `reported_asr_cost` is exact only when **every** initiated call reports a valid
+  cost; otherwise `None`. `reported_cost_subtotal` and `reported_cost_call_count`
+  retain partial known cost, including reported zero. No prices are estimated.
+- `native_duration_ns` / `chunked_duration_ns` measure actual monotonic executor
+  elapsed time, including extraction/validation. `total_asr_duration_ns` adds these
+  phases and actual sequential Recovery request-method time; it excludes acoustic
+  coverage, reconciliation and correction time. Concurrent call times are not
+  summed as baseline wall time. Timing fields do not define evidence equality.
+
+Candidate-bearing execution results stay transient and are omitted from repr and
+public evidence. Telemetry accepts only enums, numbers, fixed versions/chunk IDs
+and approved public provider/model identities; unknown returned identities are
+SHA-256 fingerprinted. The small upstream-name allowlist describes **returned
+provenance only**, never provider selection. No audio/text, private paths, arbitrary
+provider diagnostics, prompts or credentials enter strategy telemetry or logs.
+The preprocessing outcome owns temporary artifacts through correction and closes
+once on success, failure or cancellation; clients remain borrowed.
+
+#### Future authorized T01 / T03 quality comparison
+
+No paid run or private corpus access is authorized by T03. For a future approved
+run, use this procedure:
+
+1. Provision the independently human-reviewed corpus, manifest, references, model
+   checksum, matrix, credentials and external report directory under T01's existing
+   approval rules. Select the same baseline matrix variant, source revisions,
+   normalization, model/language/temperature and segment timestamp mode for all
+   runs. Agree a separate finite call budget covering T01 and T03.
+2. Run the **unchanged** T01 A/B/C entry point and command above with its explicit
+   opt-in and corpus budget. Keep A's native failures/unavailability and B/C's
+   shared legacy baseline unchanged. Preserve its versioned privacy-safe report.
+3. In a separately authorized evaluation caller, construct the same preprocessing,
+   planner and V2 provider settings with mode `adaptive` and explicit sample/call
+   ceilings. For each approved source call `AsrStrategyRunner.prepare`, `execute`,
+   then `recover`; invoke existing `reconcile_transcript` on exactly the selected
+   plan's baseline plus accepted Recovery results. Own/close the preprocessing
+   outcome once. These are the same orchestration APIs used in production.
+4. Score that **pre-correction** reconciled output against the same human reference
+   using T01's existing Vietnamese normalization, WER/CER and independent speech
+   support contracts. Retain genuine repeated phrases. Record actual strategy,
+   fallback, plan/component versions, call counts, reported/unknown costs, latency,
+   coverage uncertainty, provider identities and source/reference/configuration
+   identities. Store only approved privacy-safe metrics outside Git. Separately
+   exercise `OfflineTranscriptionPipeline.run` for corrected end-to-end/worker
+   acceptance; never credit correction as ASR quality improvement.
+5. Compare T03 pre-correction results to A, B and C only under matching identities
+   and denominators, explicitly distinguishing native success, local ineligibility,
+   fallback and failed execution. Review omissions, hallucinations, genuine
+   repetitions and boundary duplication with independent human evidence. Do not
+   substitute adaptive output into T01 or assert unapproved strategy quality gates.
+
+Contract tests establish orchestration correctness; live compatibility requires
+observed API evidence; Vietnamese quality requires human-reference evaluation.
+HTTP 200, CI and successful deterministic tests establish neither speech
+completeness nor lower WER/CER. Native long-form quality remains **UNESTABLISHED**.
+T04 owns speech segmentation/boundary alignment; T05 canonical reconciliation and
+alternatives; T06 coverage confidence/missing speech; T07 selective Recovery and
+admission; T08 end-to-end quality acceptance, production default and cutover.

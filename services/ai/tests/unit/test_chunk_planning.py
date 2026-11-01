@@ -31,7 +31,37 @@ from sme_meeting_ai.transcription import (
     ChunkBoundaryReason,
     ChunkPlanningProvenance,
     SpeechAwareAsrChunkPlanner,
+    validate_asr_chunk_plan,
 )
+
+
+@pytest.mark.parametrize("kind", ["version", "geometry", "payload", "source", "ordinal", "boundary"])
+def test_whole_file_plan_validation_does_not_admit_forged_plans(result_factory, kind):
+    from sme_meeting_ai.transcription.asr_strategy import build_whole_file_plan
+
+    result = result_factory(1000)
+    native = build_whole_file_plan(result, settings(), 2044)
+    validate_asr_chunk_plan(native)
+    if kind == "version":
+        legacy = SpeechAwareAsrChunkPlanner(settings()).plan(result)
+        invalid = replace(legacy, provenance=replace(legacy.provenance, planner_version="whole-file-v1"))
+    elif kind == "geometry":
+        invalid = replace(native, chunks=(replace(native.chunks[0], request_interval=SampleInterval(0, 999)),))
+    elif kind == "payload":
+        config = dict(native.provenance.effective_configuration) | {"effective_payload_limit": 2043}
+        invalid = replace(native, provenance=replace(native.provenance, effective_configuration=config))
+    elif kind == "source":
+        invalid = replace(native, source_id="different-source")
+    elif kind == "ordinal":
+        invalid = replace(native, chunks=(replace(native.chunks[0], ordinal=1),))
+    else:
+        invalid = replace(native, chunks=(replace(native.chunks[0],
+                          end_boundary_reason=ChunkBoundaryReason.FORCED_CONTINUOUS_SPEECH),))
+    with pytest.raises(AudioProcessingError):
+        validate_asr_chunk_plan(invalid)
+    legacy = SpeechAwareAsrChunkPlanner(settings()).plan(result)
+    with pytest.raises(AudioProcessingError):
+        validate_asr_chunk_plan(replace(legacy, chunks=(legacy.chunks[0],)))
 
 
 def settings(**overrides):

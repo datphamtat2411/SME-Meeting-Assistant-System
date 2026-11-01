@@ -47,6 +47,10 @@ def isolated_environment(monkeypatch):
 def test_explicit_settings_defaults_without_external_configuration():
     settings = Settings(service_name="test-ai", service_identity="ai-core", _env_file=None)
 
+    assert settings.audio_asr_strategy_mode == "chunked"
+    assert settings.audio_asr_native_max_samples == 1920000
+    assert settings.audio_asr_adaptive_max_total_calls == 32
+
     assert settings.service_name == "test-ai"
     assert settings.environment is Environment.DEVELOPMENT
     assert settings.debug is False
@@ -68,6 +72,32 @@ def test_explicit_settings_defaults_without_external_configuration():
     assert settings.audio_probe_timeout_seconds == 10
     assert settings.audio_decode_timeout_seconds == 900
     assert str(settings.audio_temp_dir) == "/tmp"
+
+
+@pytest.mark.parametrize("field,values", [
+    ("audio_asr_strategy_mode", ["native", "ADAPTIVE", " adaptive", "", True, 1]),
+    ("audio_asr_native_max_samples", [True, False, 0, -1, 230400001, 1.5, 2.0,
+                                      "1.0", "1e3", "nan", "inf", "", " 32", None]),
+    ("audio_asr_adaptive_max_total_calls", [True, 0, -1, 65794, 1.5, 2.0,
+                                           "unlimited", "NaN", "inf", "1e2", "", None]),
+])
+def test_strategy_configuration_rejects_invalid_values(field, values):
+    for value in values:
+        with pytest.raises(ValidationError):
+            Settings(service_name="test-ai", service_identity="ai-core", _env_file=None, **{field: value})
+
+
+def test_strategy_environment_is_strict_and_bounded(monkeypatch):
+    monkeypatch.setenv("AI_AUDIO_ASR_STRATEGY_MODE", "adaptive")
+    monkeypatch.setenv("AI_AUDIO_ASR_NATIVE_MAX_SAMPLES", "230400000")
+    monkeypatch.setenv("AI_AUDIO_ASR_ADAPTIVE_MAX_TOTAL_CALLS", "65793")
+    config = Settings(service_name="test-ai", service_identity="ai-core", _env_file=None)
+    assert config.audio_asr_strategy_mode == "adaptive"
+    assert config.audio_asr_native_max_samples == 230400000
+    assert config.audio_asr_adaptive_max_total_calls == 65793
+    monkeypatch.setenv("AI_AUDIO_ASR_NATIVE_MAX_SAMPLES", "true")
+    with pytest.raises(ValidationError):
+        Settings(service_name="test-ai", service_identity="ai-core", _env_file=None)
 
 
 def test_environment_overrides_are_typed_and_case_insensitive(monkeypatch):

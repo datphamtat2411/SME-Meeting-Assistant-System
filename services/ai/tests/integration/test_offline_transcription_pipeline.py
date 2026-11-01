@@ -6,7 +6,7 @@ import wave
 from collections.abc import Mapping
 from concurrent.futures import CancelledError
 from contextlib import contextmanager
-from dataclasses import FrozenInstanceError, fields, is_dataclass
+from dataclasses import FrozenInstanceError, fields, is_dataclass, replace
 from fractions import Fraction
 from pathlib import Path
 from types import SimpleNamespace
@@ -44,11 +44,15 @@ from sme_meeting_ai.transcription import (
 )
 from sme_meeting_ai.transcription.asr import (
     AsrCandidate,
+    AsrCapabilityStatus,
     AsrError,
     AsrErrorCategory,
     AsrProvenance,
+    AsrProviderCapabilities,
     AsrQualityMetadata,
+    AsrRoutingMode,
     AsrSegment,
+    AsrTimestampMode,
     AsrUsage,
 )
 from sme_meeting_ai.transcription.chunk_execution import AsrChunkResult
@@ -111,10 +115,10 @@ class Backend:
 def workflow(tmp_path, monkeypatch):
     resources = []
 
-    def make(*, count=4096, probability=0.9, **overrides):
+    def make(*, count=4096, probability=0.9, source_id="meeting-1", **overrides):
         root = tmp_path / f"run-{len(resources)}"
         root.mkdir()
-        source = AudioSource("meeting-1", root / "private-original.media")
+        source = AudioSource(source_id, root / "private-original.media")
         source.path.write_bytes(b"original media remains recoverable")
         work = root / "work"
         work.mkdir()
@@ -534,4 +538,212 @@ def test_settings_are_snapshotted_before_execution(workflow):
     output = orchestrator.run(h.source)
     assert output.status is Status.COMPLETED
     assert output.provenance.correction.requested_model == "test/corrector"
+    assert_released(h)
+
+
+def enable_v2(h, monkeypatch):
+    capabilities = AsrProviderCapabilities(
+        "openrouter", "openai/whisper-large-v3", "https-multipart", "wav", "verbose_json",
+        (AsrTimestampMode.SEGMENT,), AsrCapabilityStatus.DOCUMENTED, AsrCapabilityStatus.UNKNOWN,
+        True, 25_000_000, AsrRoutingMode.ROUTED_UPSTREAM, AsrCapabilityStatus.DOCUMENTED,
+    )
+    monkeypatch.setattr(h.transcriber, "capabilities", capabilities, raising=False)
+    original = h.transcriber.transcribe
+
+    def transcribe_request(request):
+        assert request.timestamp_mode is AsrTimestampMode.SEGMENT
+        value = original(request.audio)
+        return replace(value, provenance=replace(value.provenance, provider="openrouter",
+                       requested_model="openai/whisper-large-v3"))
+
+    monkeypatch.setattr(h.transcriber, "transcribe_request", transcribe_request, raising=False)
+
+
+def test_native_preserves_segments_skips_recovery_and_retains_uncertainty(workflow, monkeypatch, caplog):
+    h = workflow(audio_asr_strategy_mode="adaptive", probability=0.5)
+    enable_v2(h, monkeypatch)
+
+    def native(audio):
+        segments = (
+            AsrSegment(Fraction(1, 32000), Fraction(1, 16), "Đồng ý, đồng ý"),
+            AsrSegment(Fraction(1, 16), Fraction(1, 8), "Đồng ý, đồng ý"),
+        )
+        return AsrCandidate("Đồng ý, đồng ý", segments, AsrQualityMetadata(), AsrUsage(cost=Fraction(1, 100)),
+                            AsrProvenance("openrouter", "openai/whisper-large-v3", upstream_provider="DeepInfra"),
+                            audio.chunk_id)
+
+    h.asr_callback = native
+    monkeypatch.setattr(recovery, "recover_speech", lambda *a: pytest.fail("native Recovery invoked"))
+    output = pipeline(h).run(h.source)
+    assert output.status is Status.COMPLETED_WITH_WARNINGS and output.completed_stages == tuple(Stage)
+    assert len(output.evidence.chunk_plan.chunks) == len(h.asr_calls) == 1
+    assert output.provenance.planning.planner_version == "whole-file-v1"
+    assert "adaptive-asr-v1" in output.provenance.pipeline_version
+    r = output.evidence.recovery
+    assert r.stop_reason.value == "skipped-by-asr-strategy" and r.attempts == ()
+    assert r.initial_assessment is r.final_assessment is output.evidence.coverage
+    assert r.provenance.recovery_version == "strategy-skipped-v1"
+    assert output.evidence.coverage.unresolved_intervals
+    assert [s.interval for s in output.result.segments] == [SampleInterval(0, 1000), SampleInterval(1000, 2000)]
+    assert [s.text for s in output.result.segments] == ["Đồng ý, đồng ý."] * 2
+    assert all(s.source_chunk_ids == ("chunk-000000",) for s in output.result.segments)
+    assert h.correction_ids == [("segment-000000", 0), ("segment-000001", 1)]
+    telemetry = output.provenance.strategy
+    assert telemetry.total_actual_asr_calls == telemetry.native_successes == 1
+    assert telemetry.recovery_calls == 0 and telemetry.reported_asr_cost == Fraction(1, 100)
+    assert_safe(output.evidence)
+    assert_released(h)
+    assert not caplog.records
+
+
+@pytest.mark.parametrize("fallback", [False, True])
+def test_adaptive_single_preprocessing_and_exact_resource_ownership(workflow, monkeypatch, fallback):
+    from sme_meeting_ai.pipeline.models import PreprocessingOutcome
+
+    h = workflow(audio_asr_strategy_mode="adaptive")
+    enable_v2(h, monkeypatch)
+    runs, closes = [], []
+    run, close = h.preprocessing.run, PreprocessingOutcome.close
+
+    def preprocess(source):
+        runs.append(True)
+        return run(source)
+
+    def cleanup(outcome):
+        closes.append(True)
+        close(outcome)
+
+    monkeypatch.setattr(h.preprocessing, "run", preprocess)
+    monkeypatch.setattr(PreprocessingOutcome, "close", cleanup)
+
+    def respond(audio):
+        if fallback and len(h.asr_calls) == 1:
+            raise TimeoutError(PRIVATE)
+
+    h.asr_callback = respond
+    output = pipeline(h).run(h.source)
+    assert output.failure is None and runs == closes == [True]
+    telemetry = output.provenance.strategy
+    assert telemetry.fallback_used is fallback
+    assert telemetry.native_attempts == 1
+    assert telemetry.chunked_baseline_calls == (2 if fallback else 0)
+    assert telemetry.total_actual_asr_calls == len(h.asr_calls) == (3 if fallback else 1)
+    assert_released(h)
+
+
+@pytest.mark.parametrize("exception", [KeyboardInterrupt, asyncio.CancelledError, CancelledError])
+def test_native_cancellation_releases_audio_without_fallback(workflow, monkeypatch, exception):
+    h = workflow(audio_asr_strategy_mode="adaptive")
+    enable_v2(h, monkeypatch)
+    h.asr_callback = lambda audio: (_ for _ in ()).throw(exception())
+    with pytest.raises(exception):
+        pipeline(h).run(h.source)
+    assert len(h.asr_calls) == 1
+    assert_released(h)
+
+
+def test_adaptive_chunked_recovery_actual_calls_and_budget_preflight(workflow, monkeypatch):
+    h = workflow(audio_asr_strategy_mode="adaptive", audio_asr_native_max_samples=1,
+                 audio_asr_recovery_max_total_attempts=1)
+    enable_v2(h, monkeypatch)
+
+    def respond(audio):
+        if audio.chunk_id == "chunk-000001":
+            raise AsrError(AsrErrorCategory.TIMEOUT)
+        text = RAW[0]
+        return AsrCandidate(text, (AsrSegment(Fraction(0), audio.duration, text),),
+                            AsrQualityMetadata(), AsrUsage(
+                                cost=Fraction(2, 100) if audio.chunk_id.startswith("recovery-") else Fraction(0),
+                                reported=True,
+                            ), AsrProvenance("openrouter", "openai/whisper-large-v3"), audio.chunk_id)
+
+    h.asr_callback = respond
+    output = pipeline(h).run(h.source)
+    assert output.failure is None
+    t = output.provenance.strategy
+    assert t.native_attempts == 0 and t.chunked_baseline_calls == 2 and t.recovery_calls == 1
+    assert t.total_actual_asr_calls == len(h.asr_calls) == 3
+    assert t.reported_cost_call_count == 2 and t.reported_cost_subtotal == Fraction(2, 100)
+    assert t.reported_asr_cost is None and t.native_duration_ns == 0
+    assert t.total_asr_duration_ns >= t.chunked_duration_ns > 0
+    h = workflow(audio_asr_strategy_mode="adaptive", audio_asr_adaptive_max_total_calls=2)
+    enable_v2(h, monkeypatch)
+    output = pipeline(h).run(h.source)
+    assert output.status is Status.FAILED and output.failure.category == "RESOURCE"
+    assert not h.asr_calls and not h.correction_calls
+    assert_released(h)
+
+
+@pytest.mark.parametrize("category", [AsrErrorCategory.AUTHENTICATION, AsrErrorCategory.VALIDATION,
+                                      AsrErrorCategory.RATE_LIMIT, AsrErrorCategory.TIMEOUT])
+def test_failed_adaptive_execution_keeps_sanitized_attempt_metadata(workflow, monkeypatch, caplog, category):
+    h = workflow(audio_asr_strategy_mode="adaptive")
+    enable_v2(h, monkeypatch)
+
+    def fail(audio):
+        if len(h.asr_calls) == 1:
+            raise AsrError(category)
+        raise RuntimeError(PRIVATE)
+
+    h.asr_callback = fail
+    output = pipeline(h).run(h.source)
+    assert output.status is Status.FAILED and output.failure.stage is Stage.ASR
+    t = output.provenance.strategy
+    assert t.native_attempts == t.native_failures == 1 and t.native_failure is category
+    assert t.fallback_used is (category is AsrErrorCategory.TIMEOUT)
+    assert t.total_actual_asr_calls == len(h.asr_calls) == (3 if t.fallback_used else 1)
+    assert output.failure.category == ("PROVIDER" if t.fallback_used else category.value.upper())
+    assert not h.correction_calls
+    assert_safe(output)
+    assert_released(h)
+    assert not caplog.records
+
+
+def test_empty_native_success_is_not_silence_or_fabricated_coverage(workflow, monkeypatch):
+    h = workflow(audio_asr_strategy_mode="adaptive")
+    enable_v2(h, monkeypatch)
+    h.asr_callback = lambda audio: AsrCandidate("", (), AsrQualityMetadata(), AsrUsage(),
+                                               AsrProvenance("openrouter", "openai/whisper-large-v3"),
+                                               audio.chunk_id)
+    monkeypatch.setattr(recovery, "recover_speech", lambda *a: pytest.fail("native Recovery invoked"))
+    output = pipeline(h).run(h.source)
+    assert output.failure is None and output.result.segments == ()
+    assert output.evidence.coverage.quality.covered_speech_samples == 0
+    assert output.evidence.coverage.unresolved_intervals == (SampleInterval(0, 4096),)
+    assert output.evidence.recovery.attempts == () and len(h.asr_calls) == 1
+    assert output.provenance.strategy.native_successes == 1
+    assert_released(h)
+
+
+@pytest.mark.parametrize("mode", ["chunked", "adaptive"])
+def test_unchanged_worker_accepts_strategy_outcome_and_rejects_corruption(workflow, monkeypatch, mode):
+    from sme_meeting_ai.workers.transcription import (
+        ResultValidationError,
+        map_result,
+        validate_result_bytes,
+    )
+
+    media = "22222222-2222-4222-8222-222222222222"
+    h = workflow(source_id=media, audio_asr_strategy_mode=mode)
+    enable_v2(h, monkeypatch)
+    output = pipeline(h).run(h.source)
+    ids = dict(job_id="11111111-1111-4111-8111-111111111111", media_id=media,
+               source_revision="a" * 64, producer_id="33333333-3333-4333-8333-333333333333")
+    envelope = validate_result_bytes(map_result(output, h.settings, **ids))
+    assert envelope.correctionProof.contextScope == "WHOLE_MEETING"
+    assert envelope.sampleCount == 4096
+    assert [s.text for s in envelope.segments] == [s.text for s in output.result.segments]
+    corruptions = [
+        None, replace(output, result=None, status=Status.FAILED,
+                      failure=SimpleNamespace(stage=Stage.CORRECTION)),
+        replace(output, provenance=replace(output.provenance, source_id="different")),
+        replace(output, provenance=replace(output.provenance, correction=None)),
+        replace(output, evidence=replace(output.evidence, coverage=None)),
+        replace(output, result=replace(output.result, segments=())),
+        replace(output, result=replace(output.result, segments=(replace(output.result.segments[0], ordinal=4),))),
+        replace(output, result=replace(output.result, sample_count=1)),
+    ]
+    for corrupt in corruptions:
+        with pytest.raises(ResultValidationError):
+            map_result(corrupt, h.settings, **ids)
     assert_released(h)

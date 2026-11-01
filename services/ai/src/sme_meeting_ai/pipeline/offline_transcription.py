@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         AsrProvenance,
         AsrTranscriber,
     )
+    from sme_meeting_ai.transcription.asr_strategy import AsrStrategyTelemetry
     from sme_meeting_ai.transcription.chunk_planning import (
         AsrChunkPlan,
         ChunkPlanningProvenance,
@@ -146,6 +147,7 @@ class OfflineTranscriptionProvenance:
     recovery: "RecoveryProvenance | None" = None
     reconciliation: "ReconciliationProvenance | None" = None
     correction: "CorrectionProvenance | None" = None
+    strategy: "AsrStrategyTelemetry | None" = None
     sample_rate_hz: int = field(default=16000, init=False)
 
 
@@ -247,7 +249,7 @@ def _failure(error: Exception, stage: OfflineTranscriptionStage) -> OfflineTrans
     return OfflineTranscriptionFailure(stage, category)
 
 
-def _asr_evidence(plan, results, settings: Settings) -> OfflineAsrEvidence:
+def _asr_evidence(plan, results, settings: Settings, payload_limit: int | None = None) -> OfflineAsrEvidence:
     """Project local failures and validated provider provenance, never wording."""
     from sme_meeting_ai.transcription.asr import AsrErrorCategory
     from sme_meeting_ai.transcription.chunk_execution import AsrChunkResult
@@ -283,7 +285,7 @@ def _asr_evidence(plan, results, settings: Settings) -> OfflineAsrEvidence:
         outcomes.append(ReconciliationChunkOutcome(chunk.chunk_id, chunk.core_interval, state, failure))
     return OfflineAsrEvidence(tuple(outcomes), OfflineAsrProvenance(tuple(provenance), {
         "max_concurrent_chunks": settings.audio_asr_max_concurrent_chunks,
-        "max_payload_bytes": settings.audio_asr_max_payload_bytes,
+        "max_payload_bytes": settings.audio_asr_max_payload_bytes if payload_limit is None else payload_limit,
         "timeout_seconds": settings.audio_asr_timeout_seconds,
         "model": settings.audio_asr_model,
         "language": settings.audio_asr_language,
@@ -333,22 +335,25 @@ class OfflineTranscriptionPipeline:
         self._pipeline_version = pipeline_version
 
     def run(self, source: AudioSource) -> OfflineTranscriptionOutcome:
-        from sme_meeting_ai.transcription.chunk_execution import execute_asr_chunks
-        from sme_meeting_ai.transcription.chunk_planning import validate_asr_chunk_plan
+        from sme_meeting_ai.transcription.asr_strategy import (
+            STRATEGY_VERSION,
+            AsrStrategy,
+            AsrStrategyRunner,
+        )
         from sme_meeting_ai.transcription.correction import (
             TranscriptCorrectionOutcome,
             TranscriptCorrectionStatus,
             correct_transcript,
         )
         from sme_meeting_ai.transcription.reconciliation import reconcile_transcript
-        from sme_meeting_ai.transcription.recovery import (
-            RecoveryStopReason,
-            recover_speech,
-        )
+        from sme_meeting_ai.transcription.recovery import RecoveryStopReason
 
         stage = OfflineTranscriptionStage.PREPROCESSING
         source_id = source.source_id if isinstance(source, AudioSource) else ""
-        provenance = OfflineTranscriptionProvenance(self._pipeline_version, source_id)
+        version = self._pipeline_version
+        if self._settings.audio_asr_strategy_mode == "adaptive":
+            version = f"{version}:{STRATEGY_VERSION}"
+        provenance = OfflineTranscriptionProvenance(version, source_id)
         completed, warnings = [], []
         ownership = None
         metadata = preprocessing_status = preprocessing_failure = speech_map = None
@@ -356,6 +361,7 @@ class OfflineTranscriptionPipeline:
         plan = asr = coverage = recovery = reconciliation = result = failure = None
         # These are the only candidate-bearing locals; none enters public output.
         baseline = recovered = reconciled = preprocessing_result = None
+        strategy = execution = None
         cancellation = None
         try:
             _require(isinstance(source, AudioSource))
@@ -378,23 +384,26 @@ class OfflineTranscriptionPipeline:
             completed.append(stage)
 
             stage = OfflineTranscriptionStage.CHUNK_PLANNING
-            plan = self._planner.plan(preprocessing_result)
-            validate_asr_chunk_plan(plan)
+            strategy = AsrStrategyRunner(self._transcriber, self._settings)
+            strategy.prepare(preprocessing_result, self._planner)
+            plan = strategy.plan
             _require(plan.source_id == source_id and plan.sample_count == metadata.sample_count
                      and plan.provenance.preprocessing == provenance.preprocessing)
             provenance = replace(provenance, planning=plan.provenance)
             completed.append(stage)
 
             stage = OfflineTranscriptionStage.ASR
-            baseline = execute_asr_chunks(plan, preprocessing_result.normalized_artifact,
-                                          self._transcriber, self._settings)
-            asr = _asr_evidence(plan, baseline, self._settings)
+            execution = strategy.execute(preprocessing_result.normalized_artifact)
+            plan, baseline = execution.plan, execution.baseline
+            asr = _asr_evidence(plan, baseline, self._settings,
+                                strategy.telemetry.decision.effective_payload_limit)
             warnings.extend(_chunk_warnings(stage, asr.chunk_outcomes))
-            provenance = replace(provenance, asr=asr.provenance)
+            provenance = replace(provenance, asr=asr.provenance, planning=plan.provenance,
+                                 strategy=strategy.telemetry)
             completed.append(stage)
 
             stage = OfflineTranscriptionStage.COVERAGE_RECOVERY
-            recovered = recover_speech(preprocessing_result, plan, baseline, self._transcriber, self._settings)
+            recovered = strategy.recover(preprocessing_result, execution)
             recovery = OfflineRecoveryEvidence(
                 recovered.initial_assessment, recovered.final_assessment, tuple(recovered.attempts),
                 recovered.stop_reason, recovered.provenance,
@@ -417,6 +426,19 @@ class OfflineTranscriptionPipeline:
 
             stage = OfflineTranscriptionStage.RECONCILIATION
             reconciled = reconcile_transcript(plan, (*baseline, *recovered.recovered_results), self._settings)
+            if execution.selected_strategy is AsrStrategy.WHOLE_FILE:
+                # The compatibility boundary must represent each original segment
+                # once with its exact interval/text; no virtual ownership or stitch.
+                original = baseline[0].timeline_segments
+                _require(reconciled.source_id == plan.source_id and reconciled.sample_count == plan.sample_count
+                         and reconciled.provenance.source_chunks == plan.chunks
+                         and len(reconciled.segments) == len(original))
+                _require(all(
+                    segment.interval == item.interval and segment.text == item.segment.text
+                    and segment.source_chunk_ids == (plan.chunks[0].chunk_id,)
+                    and not segment.alternatives and not segment.flags
+                    for segment, item in zip(reconciled.segments, original, strict=True)
+                ))
             reconciliation = OfflineReconciliationEvidence(
                 tuple(reconciled.chunk_outcomes),
                 tuple(OfflineReconciliationSegment(
@@ -464,7 +486,12 @@ class OfflineTranscriptionPipeline:
             cancellation = error
             raise
         finally:
-            baseline = recovered = reconciled = preprocessing_result = None
+            if strategy is not None:
+                provenance = replace(provenance, strategy=strategy.telemetry)
+                if OfflineTranscriptionStage.CHUNK_PLANNING in completed:
+                    plan = strategy.plan
+                    provenance = replace(provenance, planning=plan.provenance)
+            baseline = recovered = reconciled = preprocessing_result = execution = strategy = None
             if isinstance(ownership, PreprocessingOutcome):
                 try:
                     ownership.close()

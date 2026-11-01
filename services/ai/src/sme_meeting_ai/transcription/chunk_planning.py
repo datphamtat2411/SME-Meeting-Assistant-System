@@ -216,7 +216,7 @@ def validate_asr_chunk_plan(plan: AsrChunkPlan) -> None:
         )
         provenance = plan.provenance
         _require(
-            provenance.planner_version == _PLANNER_VERSION
+            provenance.planner_version in (_PLANNER_VERSION, "whole-file-v1")
             and type(provenance.sample_rate_hz) is int and provenance.sample_rate_hz == _RATE
             and isinstance(provenance.preprocessing, PreprocessingProvenance)
         )
@@ -248,6 +248,29 @@ def validate_asr_chunk_plan(plan: AsrChunkPlan) -> None:
             and all(character in "0123456789abcdef" for character in detection.model_sha256)
         )
         configuration = provenance.effective_configuration
+        if provenance.planner_version == "whole-file-v1":
+            # A native request has its own truthful geometry and eligibility
+            # snapshot; relabeling arbitrary legacy geometry is never sufficient.
+            count = plan.sample_count
+            expected = {
+                "target_core_samples": count, "max_request_samples": count,
+                "overlap_samples": 0, "boundary_search_samples": 0, "max_chunks": 1,
+                "max_core_samples": count, "left_context_samples": 0,
+                "right_context_samples": 0, "minimum_progress_samples": count,
+                "expected_wav_bytes": 44 + count * 2,
+            }
+            _require(set(configuration) == set(expected) | {
+                "max_timeline_samples", "native_max_samples", "effective_payload_limit",
+            })
+            _require(all(type(configuration[key]) is int and configuration[key] == value
+                         for key, value in expected.items()))
+            for key in ("max_timeline_samples", "native_max_samples"):
+                _require(type(configuration[key]) is int and count <= configuration[key] <= 230400000)
+            limit = configuration["effective_payload_limit"]
+            _require(type(limit) is int and expected["expected_wav_bytes"] <= limit <= 26214400)
+            _require(len(plan.chunks) == 1)
+            _validate_plan(plan, configuration)
+            return
         for key in (
             "target_core_samples", "max_request_samples", "overlap_samples",
             "boundary_search_samples", "max_chunks", "max_timeline_samples",

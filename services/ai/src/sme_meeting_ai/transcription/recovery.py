@@ -42,6 +42,7 @@ from .coverage import (
 
 
 class RecoveryStopReason(StrEnum):
+    SKIPPED_BY_ASR_STRATEGY = "skipped-by-asr-strategy"
     SUFFICIENT_COVERAGE = "sufficient-coverage"
     NO_ACTIONABLE_REGIONS = "no-actionable-regions"
     NO_DISTINCT_WINDOW = "no-distinct-window"
