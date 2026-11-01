@@ -751,6 +751,184 @@ outside Git and the fixture root, and cannot be beside source/reference/model
 files or alias any input/configuration/baseline. No assets are downloaded, created,
 replaced or silently substituted. Keep generated reports/baselines outside Git.
 
+### T01 — Controlled ASR strategy comparison
+
+`tests/evaluation/asr_strategy_comparison.py` establishes the measurement baseline
+for ASR architecture reconstruction. It measures the **legacy** algorithms; it
+does not optimize their output or establish improved Vietnamese transcription.
+Exactly three strategy records are produced for each case:
+
+| Strategy | Execution and scored hypothesis |
+| --- | --- |
+| A: `whole-file` | One complete normalized PCM WAV request to Whisper; validated provider segment text in provider order |
+| B: `chunked-baseline` | Existing chunk planner/executor and Reconciliation, without Recovery |
+| C: `chunked-recovery` | The **same baseline `AsrChunkResult` tuple and objects as B**, plus current Recovery and Reconciliation |
+
+Preprocessing and chunk planning execute once per recording. Baseline requests
+execute once per planned eligible chunk, shared by B/C. C makes only additional
+Recovery requests. GPT correction is never instantiated or invoked, and no
+correction model is required. Only the explicitly configured
+`ConfigurationMatrix.baseline_variant` executes; other matrix geometries are not
+benchmarked. The same effective settings, `openai/whisper-large-v3`, `vi`, configured
+temperature, `verbose_json`, and segment timestamp granularity apply throughout.
+
+The whole-file path uses the existing extraction/validation/translation utilities
+with an evaluation-local full-timeline chunk, without weakening production plan
+limits. Its complete WAV must fit the payload limit. Missing/malformed timestamps,
+timeout, transport failure, unsupported inference or local oversize remain A
+failures/unavailability with null quality metrics; no chunked substitute or
+synthetic timestamps are used. Differences between top-level provider text and
+segment text are retained as a boolean diagnostic; top-level text is not scored.
+
+#### Offline verification and explicit live invocation
+
+Deterministic tests use invented contract strings, synthetic WAV bytes, fake
+preprocessing evidence/providers and a controlled clock. They cannot establish
+real Vietnamese accuracy. From `services/ai`, run only:
+
+```sh
+uv run pytest tests/evaluation/test_asr_strategy_comparison.py -q
+```
+
+Ordinary pytest excludes `evaluation`; the live test also skips without its own
+opt-in. **T01 implementation does not authorize or execute paid inference.** After
+separate authorization and provisioning by dataset/model owners, an explicit run
+would be:
+
+```sh
+RUN_ASR_COMPARISON_LIVE=1 \
+uv run --env-file /secure/config/asr-comparison.env pytest -m evaluation \
+  tests/evaluation/test_asr_strategy_comparison_quality.py \
+  --evaluation-fixture-root /secure/datasets/vietnamese-transcription-v1 \
+  --asr-comparison-config /secure/config/transcription-matrix.json \
+  --asr-comparison-output /secure/results/asr-comparison.json \
+  --asr-comparison-max-calls 200
+```
+
+`200` is an illustrative caller-selected budget, not an expected request count.
+The explicitly loaded environment must supply service identity, valid
+`OPENROUTER_API_KEY`, and a local Silero model path with matching SHA-256. Settings
+do not load an implicit `.env`; the harness never downloads models or audio.
+The manifest/reference/matrix formats and private workspace conventions above
+apply unchanged. Use opaque approved IDs, never private audio filenames as IDs.
+The output parent must already exist outside Git, dataset and protected input
+directories, without symlink/hard-link aliases to inputs, references or models.
+
+Before constructing the ASR adapter, the live executor validates **every fixture
+and required independent-human reference**, approvals, versions, hashes, paths,
+credentials, pinned model, selected settings and output location. It then performs
+all local preprocessing/planning and requires the budget to cover the sum of:
+
+```text
+eligible whole-file attempt + eligible planned baseline calls
+                           + configured maximum Recovery attempts
+```
+
+Locally oversize requests do not fabricate provider calls. Recovery's conservative
+bound is zero when even one PCM sample cannot fit. Insufficient budget rejects
+before any paid request. Prepared normalized audio and evidence remain owned until
+execution ends, so provision temporary storage for **the entire selected corpus**.
+There is no new retry/fallback system. Assets and output safety are revalidated
+before publishing the report; owned artifacts and providers are closed.
+
+#### Metrics, accounting and interpretation
+
+- `text_metrics` score the actual strategy output, retaining repetitions. B/C
+  additionally expose `provider_text_metrics` before legacy Reconciliation so raw
+  overlap wording and WER insertions remain separately visible. Existing
+  `vi-nfc-casefold-technical-1` normalization and exact WER/CER contracts are reused;
+  accents and `đ` matter, and no text deduplication occurs in evaluation.
+- `speech_metrics` reuse independently labeled human speech/non-speech sample
+  intervals, with covered/missed/material/critical/unresolved speech and silence,
+  noise/music hallucination metrics. These are **coarse timestamp support**, not
+  evidence that every word inside a long segment was recognized. VAD evidence and
+  its unresolved/suspicious states retain separate pipeline denominators.
+- Reconciliation diagnostics include chunk successes/failures, segment and flag
+  counts, union-based overlapping **provider evidence**, overlapping **reconciled
+  output**, and the reconciler's unresolved intervals/samples (the complement of
+  text evidence, potentially including silence). Neither interval statistic counts
+  genuinely repeated spoken occurrences. Legacy `duplicate-overlap` is an algorithm
+  flag; `true_duplicate_utterance_count` is always `UNESTABLISHED` without independent
+  occurrence-level acoustic annotations.
+- Recovery reports existing attempts, meaningful/no-progress indicators, failures,
+  stop reason and initial/final **pipeline** unresolved sample unions. Separately,
+  recovered speech/success rate use the signed change in **human-referenced**
+  unresolved output support between B and C. Progress/successful requests alone do
+  not establish accuracy improvement. Signed B→C WER/CER, support/loss,
+  hallucination, overlap and conflict deltas expose improvements and regressions.
+- Actual totals count A + shared baseline + additional Recovery **once**. C's
+  logical/inclusive resource summary includes shared baseline plus Recovery;
+  `incremental_provider_telemetry` contains Recovery alone. Complete reported cost,
+  known subtotal and reported-call count are distinct exact rationals; missing cost
+  stays null, without inferred pricing. Provider durations and per-strategy durations
+  are monotonic integer nanoseconds, not wall-clock timestamps. Strategy durations
+  include projection work and shared ASR/coverage time; shared preprocessing/planning
+  time is recorded separately. Additional latency is C's inclusive duration minus
+  B's, including their different reconciliation/projection work.
+- Requested/resolved model identities, source/reference/configuration/pipeline
+  identities and component versions are preserved or fingerprinted. Mismatched
+  identities yield `INCOMPATIBLE`, without comparative deltas. Canonical ordering
+  is deterministic for fixed inputs/outputs and clock; independent live inferences
+  remain nondeterministic, so A versus B is still a single-run comparison.
+
+#### Privacy, quality status and known limitations
+
+Versioned canonical reports contain numeric metrics, exact rational rates/costs,
+approved IDs/hashes, sanitized categories and public allowlisted provenance only.
+No audio, transcript/reference/candidate text, edit alignments, prompts, credentials,
+source paths, provider bodies or arbitrary exception diagnostics are serialized or
+logged. Returned unknown model/provider identity is fingerprinted rather than
+published; upstream identity is only emitted for returned allowlisted public names,
+never guessed. Candidate-bearing evidence stays transient in memory and is released
+after projection; no intermediate transcript artifacts are persisted.
+
+`status` describes execution, whereas `quality_status` uses
+`PASS`/`FAIL`/`UNESTABLISHED`/`UNAVAILABLE`. Offline success cannot yield quality PASS.
+Missing references are unavailable before preprocessing or provider requests.
+Shared-preparation failures retain a sanitized `failure_stage`: missing/invalid
+assets remain `UNAVAILABLE`, while preprocessing, artifact-validation and planning
+errors are execution `FAIL` with unavailable metrics. These categories do not
+include arbitrary exception diagnostics. A valid preprocessing outcome carrying
+speech-map warnings remains eligible for comparison; weak speech can trigger
+legacy Recovery, whereas low confidence alone does not make timestamp-supported
+likely speech actionable. The deterministic controls exercise both cases.
+Reviewed **reconciliation-stage** gates apply independently to B/C, together with
+the existing historical-loss gates. Unrelated correction/end-to-end quality gates
+are not transferred to these strategies. The current gate contract has no
+whole-file role, so **A's live quality remains UNESTABLISHED even on successful
+inference**. Consequently overall comparison quality cannot currently PASS; the
+live pytest entry point writes the report then reports that limitation. Establishing
+approved strategy-specific quality gates requires a separately authorized contract
+extension; T01 does not invent approval evidence or change the existing schema.
+
+No approved corpus, matching human references, provider timestamp/long-form
+capability, or live quality scores are established by these contract tests. The known
+`vi-continuous-speech-01.wav` regression may enter an approved corpus only with its
+matching independently human-reviewed reference, never prior Whisper text. The
+existing manifest/reference system can represent continuous speech, natural silence
+and speech resumption, weak speech, technical/code-switched speech, long audio and
+chunk-boundary regressions. Repeated phrases retain separate reference subdivisions;
+overlapping speakers can be transcribed under the existing speech labels, but there
+are no dedicated repeated-phrase/overlapping-speaker tags or speaker/word/occurrence
+annotations. Corpus owners must review representativeness separately; T01 neither
+collects nor relabels assets. A schema extension would be needed to certify those
+conditions or definitive acoustic duplicates explicitly.
+
+#### Reconstruction handoff (T02–T08)
+
+| Task | Measurements available from T01 |
+| --- | --- |
+| T02 — Provider Abstraction V2 | Timestamp availability/failures, requested/resolved identities, latency, reported costs and call counts |
+| T03 — Adaptive ASR Strategy | Controlled whole-file versus chunked accuracy/support/resource measurements and local payload ineligibility |
+| T04 — Speech Segmentation & Alignment V2 | Fixed-baseline geometry, provider overlap, boundary flags, independent omissions and timestamp-backed support |
+| T05 — Reconciliation V2 | Actual reconciled WER/CER, raw-versus-reconciled evidence, conflicts, unresolved boundaries and output overlap |
+| T06 — Coverage Assessment V2 | Independent human omissions/material loss/non-speech hallucinations alongside separate pipeline uncertainty |
+| T07 — Selective Recovery V2 | Shared-evidence B→C accuracy/support regressions, progress flags, incremental requests, latency and costs |
+| T08 — Production Cutover | Versioned identities, reproducible privacy-preserving reports, unavailable evidence and reviewed-gate outcomes |
+
+These are evaluation foundations only. T02–T08 production algorithms are not
+implemented here; old behavior is retained solely as measurable legacy evidence.
+
 ### Runtime verification
 
 ```sh

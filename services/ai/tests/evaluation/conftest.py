@@ -43,6 +43,12 @@ def pytest_addoption(parser):
                     help="Required transcription JSON output outside Git, fixtures and model directories")
     group.addoption("--transcription-evaluation-baseline", type=Path, default=None,
                     help="Optional external sanitized transcription report for compatible comparisons")
+    group.addoption("--asr-comparison-config", type=Path, default=None,
+                    help="Explicit comparison matrix; only baseline_variant is selected")
+    group.addoption("--asr-comparison-output", type=Path, default=None,
+                    help="Explicit external sanitized A/B/C report output path")
+    group.addoption("--asr-comparison-max-calls", type=int, default=None,
+                    help="Required maximum actual ASR calls covering the entire selected corpus")
 
 
 @pytest.fixture(scope="session")
@@ -150,3 +156,27 @@ def transcription_evaluation_run(request):
         yield manifest, root, output, matrix, factory, settings, baseline, check_output
     finally:
         resources.close()
+
+
+@pytest.fixture(scope="session")
+def asr_comparison_run(request):
+    """Comparison-only wiring; all provisioning/preflight lives in its executor."""
+    import os
+
+    from .asr_strategy_comparison import require_live_comparison
+
+    __tracebackhide__ = True
+    if os.environ.get("RUN_ASR_COMPARISON_LIVE") != "1":
+        pytest.skip("ASR comparison requires explicit live opt-in")
+    try:
+        settings = load_settings(env_file=None)
+        require_live_comparison(settings)
+        root = request.config.getoption("evaluation_fixture_root")
+        config = request.config.getoption("asr_comparison_config")
+        output = request.config.getoption("asr_comparison_output")
+        budget = request.config.getoption("asr_comparison_max_calls")
+        require(root is not None and config is not None and output is not None
+                and type(budget) is int and budget > 0, "explicit comparison options")
+    except (EvaluationError, ConfigurationError):
+        pytest.fail("ASR comparison requires explicit configuration, paths, credentials and call budget", pytrace=False)
+    return root, config, output, budget, settings
