@@ -1,11 +1,14 @@
+import io
 import json
 import os
 import traceback
-from dataclasses import FrozenInstanceError
+import wave
+from dataclasses import FrozenInstanceError, replace
 from decimal import Decimal
 from email import policy
 from email.parser import BytesParser
 from fractions import Fraction
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -19,13 +22,29 @@ from sme_meeting_ai.transcription import (
     AsrChunk,
     AsrError,
     AsrErrorCategory,
+    AsrTimestampMode,
+    AsrTranscriptionRequest,
+    AsrWord,
     ChunkBoundaryReason,
 )
-from sme_meeting_ai.transcription.chunk_execution import _translate_candidate
+from sme_meeting_ai.transcription.chunk_execution import _execute_chunk, _translate_candidate
 
 SECRET = "test-only-private-key"
-AUDIO = b"test-only-private-audio"
+PRIVATE_AUDIO = "test-only-private-audio"
 TEXT = "Nội dung riêng tư"
+
+
+def wav_payload(duration=Fraction(2)):
+    frame_count = duration * 16000
+    assert frame_count.denominator == 1
+    with io.BytesIO() as buffer:
+        with wave.open(buffer, "wb") as writer:
+            writer.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+            writer.writeframes(PRIVATE_AUDIO.encode().ljust(frame_count.numerator * 2, b"\0"))
+        return buffer.getvalue()
+
+
+AUDIO = wav_payload()
 
 
 @pytest.fixture(autouse=True)
@@ -41,7 +60,9 @@ def settings(**overrides):
 
 
 def chunk(**overrides):
-    return AsrAudioChunk(**{"chunk_id": "chunk-1", "payload": AUDIO,
+    duration = overrides.get("duration", Fraction(2))
+    payload = wav_payload(duration) if isinstance(duration, Fraction) and duration > 0 else AUDIO
+    return AsrAudioChunk(**{"chunk_id": "chunk-1", "payload": payload,
                             "duration": Fraction(2), **overrides})
 
 
@@ -66,7 +87,7 @@ def assert_sanitized(error, category):
     assert error.__context__ is None
     assert error.__cause__ is None
     rendered = "".join(traceback.format_exception(error)) + repr(error)
-    for sensitive in (SECRET, AUDIO.decode(), TEXT, "private-provider-diagnostic"):
+    for sensitive in (SECRET, PRIVATE_AUDIO, TEXT, "private-provider-diagnostic"):
         assert sensitive not in rendered
 
 
@@ -107,7 +128,7 @@ def test_request_contract_and_client_reuse_without_retries(caplog):
         assert len(calls) == 2
         adapter.close()
         assert not client.is_closed
-    for sensitive in (SECRET, AUDIO.decode(), TEXT):
+    for sensitive in (SECRET, PRIVATE_AUDIO, TEXT):
         assert sensitive not in caplog.text
 
 
@@ -174,7 +195,7 @@ def test_normalization_quality_usage_provenance_and_transient_repr():
         "timestamp_granularity": "segment",
     }
     for obj in (candidate, segment, chunk(), candidate.provenance):
-        for sensitive in (candidate.text, TEXT, AUDIO.decode(), SECRET):
+        for sensitive in (candidate.text, TEXT, PRIVATE_AUDIO, SECRET):
             assert sensitive not in repr(obj)
     for obj, field, value in ((candidate, "text", "changed"), (segment, "start", Fraction(1)),
                               (chunk(), "payload", b"changed")):
@@ -241,7 +262,7 @@ def test_invalid_optional_metadata(field, value):
 
 
 @pytest.mark.parametrize("field,value", [
-    ("avg_logprob", "bad"), ("avg_logprob", float("inf")),
+    ("avg_logprob", "bad"), ("avg_logprob", float("inf")), ("avg_logprob", 0.1),
     ("compression_ratio", -1), ("no_speech_prob", 1.1),
     ("temperature", -0.1), ("temperature", 1.1), ("confidence", False),
 ])
@@ -331,13 +352,13 @@ def test_oversized_response_is_bounded_and_closed():
     ({"duration": Fraction(0)}, AsrErrorCategory.VALIDATION),
     ({"duration": Fraction(-1)}, AsrErrorCategory.VALIDATION),
     ({"duration": 2.0}, AsrErrorCategory.VALIDATION),
-    ({"payload": b"x" * 65}, AsrErrorCategory.RESOURCE),
+    ({"payload": b"x" * (len(AUDIO) + 1)}, AsrErrorCategory.RESOURCE),
 ])
 def test_local_input_rejection_precedes_network(overrides, category):
     calls = []
     with httpx.Client(transport=httpx.MockTransport(lambda request: calls.append(request))) as client:
         with pytest.raises(AsrError) as caught:
-            OpenRouterWhisperAdapter(settings(audio_asr_max_payload_bytes=64), client).transcribe(chunk(**overrides))
+            OpenRouterWhisperAdapter(settings(audio_asr_max_payload_bytes=len(AUDIO)), client).transcribe(chunk(**overrides))
     assert not calls
     assert_sanitized(caught.value, category)
 
@@ -381,6 +402,8 @@ def test_documented_optional_usage_never_infers_billing(usage):
     {"seconds": True}, {"seconds": -1}, {"input_tokens": "83"}, {"output_tokens": 1.0},
     {"cost": "0.1"}, {"cost": float("inf")}, {"seconds": float("nan")},
     {"input_tokens": 83, "output_tokens": 30, "total_tokens": 112},
+    {"input_tokens": 83, "total_tokens": 82},
+    {"output_tokens": 30, "total_tokens": 29},
 ])
 def test_malformed_or_contradictory_documented_usage(usage):
     with pytest.raises(AsrError) as caught:
@@ -502,3 +525,246 @@ def test_mocked_whisper_off_grid_and_final_overrun_translate_without_losing_repe
     assert result.provenance.requested_model == result.provenance.resolved_model == "openai/whisper-large-v3"
     assert result.provenance.upstream_provider == "synthetic-provider"
     assert not caplog.records
+
+
+def invoke_v2(data, *, mode=AsrTimestampMode.SEGMENT_AND_WORD):
+    with httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200, json=data))) as client:
+        return OpenRouterWhisperAdapter(settings(), client).transcribe_request(
+            AsrTranscriptionRequest(chunk(), mode),
+        )
+
+
+def word_output():
+    return {"text": "Ừ, ừ, mình họp.", "segments": [
+        {"start": 0.00003125, "end": 1.23456789, "text": "Ừ, ừ, mình họp."},
+    ], "words": [
+        {"start": 0.00003125, "end": 0.1, "word": "Ừ,"},
+        {"start": 0.1, "end": 0.2, "word": "ừ,"},
+        {"start": 0.200001, "end": 0.5, "word": "mình"},
+        {"start": 0.5, "end": 1.23456789, "word": "họp."},
+    ]}
+
+
+def test_legacy_method_delegates_to_v2_segment_request_once(monkeypatch):
+    calls, delegated = [], []
+    with httpx.Client(transport=httpx.MockTransport(
+        lambda request: calls.append(request) or httpx.Response(200, json=output()),
+    )) as client:
+        adapter = OpenRouterWhisperAdapter(settings(), client)
+        original = adapter.transcribe_request
+
+        def record(request):
+            delegated.append(request)
+            return original(request)
+
+        monkeypatch.setattr(adapter, "transcribe_request", record)
+        audio = chunk()
+        result = adapter.transcribe(audio)
+    assert len(calls) == len(delegated) == 1
+    assert delegated[0].audio is audio
+    assert delegated[0].timestamp_mode is AsrTimestampMode.SEGMENT
+    assert result.words is None
+
+
+def test_word_request_uses_repeated_fields_no_routing_controls_or_direct_groq(caplog):
+    calls = []
+
+    def handle(request):
+        calls.append(request)
+        assert request.method == "POST"
+        assert str(request.url) == "https://openrouter.ai/api/v1/audio/transcriptions"
+        assert not request.url.query
+        assert set(request.headers) <= {
+            "host", "accept", "accept-encoding", "connection", "user-agent",
+            "authorization", "content-length", "content-type",
+        }
+        message = BytesParser(policy=policy.default).parsebytes(
+            f"Content-Type: {request.headers['content-type']}\r\n\r\n".encode() + request.read(),
+        )
+        parts = list(message.iter_parts())
+        names = [part.get_param("name", header="content-disposition") for part in parts]
+        assert sorted(names) == sorted([
+            "file", "model", "language", "temperature", "response_format",
+            "timestamp_granularities[]", "timestamp_granularities[]",
+        ])
+        granularities = [part.get_payload(decode=True).decode() for part, name in zip(parts, names)
+                         if name == "timestamp_granularities[]"]
+        assert granularities == ["segment", "word"]
+        # provider/options, chat routing controls, custom headers and alternate endpoints
+        # are absent; desired upstream metadata does not affect the request.
+        return httpx.Response(200, json=word_output())
+
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        result = OpenRouterWhisperAdapter(settings(), client).transcribe_request(
+            AsrTranscriptionRequest(chunk(), AsrTimestampMode.SEGMENT_AND_WORD),
+        )
+    assert len(calls) == 1
+    assert result.text == "Ừ, ừ, mình họp."
+    assert result.words[0] == AsrWord(Fraction(1, 32000), Fraction(1, 10), "Ừ,")
+    assert result.words[-1].end == Fraction(123456789, 100000000)
+    assert [word.text for word in result.words] == ["Ừ,", "ừ,", "mình", "họp."]
+    assert result.provenance.upstream_provider is None
+    assert dict(result.provenance.inference_config)["timestamp_granularity"] == "segment-and-word"
+    assert not caplog.records
+
+
+@pytest.mark.parametrize("words", [
+    None, {}, "words", [], [None], [{}],
+    [{"start": 0, "end": 1, "word": ""}],
+    [{"start": 0, "end": 1, "word": " \n "}],
+    [{"start": 0, "end": 1, "word": None}],
+    [{"start": 0, "end": 1, "word": "bad\ud800"}],
+    [{"start": 0, "end": 1, "word": "bad\x00word"}],
+    *[[{"start": start, "end": end, "word": TEXT}] for start, end in [
+        (-0.1, 1), (1, 1), (1.1, 1), (0, 2.00001), (0, float("inf")),
+        (float("nan"), 1), (True, 1), ("0", 1), (0, 1e200),
+    ]],
+    [{"start": 0, "end": 1, "word": TEXT}, {"start": 0.9, "end": 1.5, "word": TEXT}],
+    [{"start": 1, "end": 2, "word": TEXT}, {"start": 0, "end": 1, "word": TEXT}],
+])
+def test_requested_word_evidence_fails_closed(words):
+    data = {**output(), "words": words}
+    # json.dumps deliberately allows nonfinite constants to test the JSON guard.
+    with httpx.Client(transport=httpx.MockTransport(
+        lambda _: httpx.Response(200, content=json.dumps(data).encode()),
+    )) as client:
+        with pytest.raises(AsrError) as caught:
+            OpenRouterWhisperAdapter(settings(), client).transcribe_request(
+                AsrTranscriptionRequest(chunk(), AsrTimestampMode.SEGMENT_AND_WORD),
+            )
+    assert_sanitized(caught.value, AsrErrorCategory.MALFORMED_OUTPUT)
+
+
+def test_missing_word_key_cannot_downgrade_requested_evidence():
+    with pytest.raises(AsrError) as caught:
+        invoke_v2(output())
+    assert_sanitized(caught.value, AsrErrorCategory.MALFORMED_OUTPUT)
+
+
+def test_empty_word_array_is_valid_empty_evidence_not_silence_verification():
+    result = invoke_v2({"text": "", "segments": [], "words": []})
+    assert result.words == ()
+    assert result.quality.confidence is None
+    with pytest.raises(AsrError) as caught:
+        invoke_v2({"text": "", "segments": [], "words": [{"start": 0, "end": 1, "word": TEXT}]})
+    assert_sanitized(caught.value, AsrErrorCategory.MALFORMED_OUTPUT)
+
+
+def test_unrequested_word_evidence_is_not_promoted_or_used_to_infer_upstream():
+    result = invoke_v2(word_output(), mode=AsrTimestampMode.SEGMENT)
+    assert result.words is None
+    assert result.provenance.upstream_provider is None
+
+
+def test_word_additional_metadata_is_not_retained_in_evidence_or_provenance(caplog):
+    data = word_output()
+    data["provider_options"] = {"groq": {"prompt": "private-provider-diagnostic"}}
+    data["words"][0].update(speaker="private-provider-diagnostic", confidence=0.9,
+                            diagnostic=f"{TEXT} {SECRET} {PRIVATE_AUDIO}")
+    result = invoke_v2(data)
+    assert result.words[0].text == "Ừ,"
+    assert result.provenance.upstream_provider is None
+    assert "private-provider-diagnostic" not in repr(result)
+    assert "private-provider-diagnostic" not in repr(result.provenance)
+    assert not caplog.records
+
+
+@pytest.mark.parametrize("provider", [None, "Groq", "DeepInfra", "Together"])
+def test_observed_upstream_is_reported_not_desired_and_never_a_routing_guarantee(provider):
+    data = word_output()
+    if provider is not None:
+        data["provider"] = provider
+    with httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200, json=data))) as client:
+        adapter = OpenRouterWhisperAdapter(settings(), client)
+        result = adapter.transcribe_request(AsrTranscriptionRequest(chunk(), AsrTimestampMode.SEGMENT_AND_WORD))
+        assert result.provenance.upstream_provider == provider
+        assert adapter.capabilities.desired_upstream == "groq"
+        assert adapter.capabilities.can_guarantee_upstream("groq") is False
+
+
+@pytest.mark.parametrize("transcription_request", [
+    None, {}, chunk(), AsrTranscriptionRequest(None),
+    AsrTranscriptionRequest(chunk(), "segment"),
+    AsrTranscriptionRequest(chunk(), "word"),
+])
+def test_invalid_v2_request_is_local_validation_failure(transcription_request):
+    with httpx.Client(transport=httpx.MockTransport(lambda _: pytest.fail("network I/O"))) as client:
+        with pytest.raises(AsrError) as caught:
+            OpenRouterWhisperAdapter(settings(), client).transcribe_request(transcription_request)
+    assert_sanitized(caught.value, AsrErrorCategory.VALIDATION)
+
+
+@pytest.mark.parametrize("capability_changes", [
+    {"response_format": "json"}, {"timestamp_modes": (AsrTimestampMode.SEGMENT,)},
+])
+def test_unsupported_response_or_timestamp_capability_rejected_locally(capability_changes):
+    class RestrictedAdapter(OpenRouterWhisperAdapter):
+        @property
+        def capabilities(self):
+            return replace(super().capabilities, **capability_changes)
+
+    with httpx.Client(transport=httpx.MockTransport(lambda _: pytest.fail("network I/O"))) as client:
+        with pytest.raises(AsrError) as caught:
+            RestrictedAdapter(settings(), client).transcribe_request(
+                AsrTranscriptionRequest(chunk(), AsrTimestampMode.SEGMENT_AND_WORD),
+            )
+    assert_sanitized(caught.value, AsrErrorCategory.VALIDATION)
+
+
+@pytest.mark.parametrize("overrides", [
+    {"audio_asr_model": "openai/whisper-large-v3-turbo"},
+    {"audio_asr_model": "other/model"}, {"audio_asr_language": "en"},
+])
+def test_locked_model_and_language_fail_before_inference(overrides):
+    with httpx.Client(transport=httpx.MockTransport(lambda _: pytest.fail("network I/O"))) as client:
+        with pytest.raises(AsrError) as caught:
+            OpenRouterWhisperAdapter(settings(**overrides), client).transcribe(chunk())
+    assert_sanitized(caught.value, AsrErrorCategory.VALIDATION)
+
+
+@pytest.mark.parametrize("payload,duration", [
+    (PRIVATE_AUDIO.encode(), Fraction(2)), (AUDIO[:-1], Fraction(2)),
+    (AUDIO + b"undeclared", Fraction(2)), (AUDIO, Fraction(2) + Fraction(1, 16000)),
+    (AUDIO[:40] + (64_001).to_bytes(4, "little") + AUDIO[44:] + b"x", Fraction(2)),
+    (AUDIO[:4] + (len(AUDIO) - 7).to_bytes(4, "little") + AUDIO[8:40]
+     + (64_001).to_bytes(4, "little") + AUDIO[44:] + b"x", Fraction(2)),
+])
+def test_strict_wav_and_exact_duration_rejection(payload, duration):
+    with httpx.Client(transport=httpx.MockTransport(lambda _: pytest.fail("network I/O"))) as client:
+        with pytest.raises(AsrError) as caught:
+            OpenRouterWhisperAdapter(settings(), client).transcribe(chunk(payload=payload, duration=duration))
+    assert_sanitized(caught.value, AsrErrorCategory.VALIDATION)
+
+
+def test_documented_decimal_upload_limit_precedes_network_and_audio_parsing():
+    with httpx.Client(transport=httpx.MockTransport(lambda _: pytest.fail("network I/O"))) as client:
+        adapter = OpenRouterWhisperAdapter(settings(), client)
+        assert adapter.capabilities.effective_payload_limit == 25_000_000
+        with pytest.raises(AsrError) as caught:
+            adapter.transcribe(chunk(payload=b"x" * 25_000_001))
+    assert_sanitized(caught.value, AsrErrorCategory.RESOURCE)
+
+
+def test_exact_configured_payload_bound_is_eligible():
+    result = invoke(output(), audio_asr_max_payload_bytes=len(AUDIO))
+    assert result.text == TEXT
+
+
+def test_existing_chunk_execution_calls_legacy_adapter_with_real_wav(tmp_path):
+    path = tmp_path / "synthetic.wav"
+    path.write_bytes(AUDIO)
+    planned = AsrChunk(
+        "chunk-1", 1, SampleInterval(0, 32000), SampleInterval(0, 32000),
+        ChunkBoundaryReason.FORCED_CONTINUOUS_SPEECH, ChunkBoundaryReason.FORCED_CONTINUOUS_SPEECH,
+    )
+    calls = []
+    with httpx.Client(transport=httpx.MockTransport(
+        lambda request: calls.append(request) or httpx.Response(200, json=output()),
+    )) as client:
+        result = _execute_chunk(planned, SimpleNamespace(path=path, sample_count=32000),
+                                OpenRouterWhisperAdapter(settings(), client), len(AUDIO))
+    assert len(calls) == 1
+    assert result.failure is None
+    assert result.candidate.chunk_id == "chunk-1"
+    assert result.candidate.words is None
+    assert result.timeline_segments[0].interval == SampleInterval(1600, 19200)

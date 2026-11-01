@@ -25,6 +25,55 @@ class AsrError(Exception):
         super().__init__(category.value)
 
 
+class AsrTimestampMode(StrEnum):
+    SEGMENT = "segment"
+    SEGMENT_AND_WORD = "segment-and-word"
+
+
+class AsrRoutingMode(StrEnum):
+    ROUTED_UPSTREAM = "routed-upstream"
+
+
+class AsrCapabilityStatus(StrEnum):
+    DOCUMENTED = "documented"
+    LIVE_VERIFIED = "live-verified"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True, slots=True)
+class AsrProviderCapabilities:
+    """Transport eligibility and evidence status, not a completeness guarantee.
+
+    None for the verified duration ceiling means unknown, never unlimited.
+    Documented timestamp support may still depend on the selected upstream.
+    """
+
+    gateway: str
+    model: str
+    transport: str
+    audio_format: str
+    response_format: str
+    timestamp_modes: tuple[AsrTimestampMode, ...]
+    segment_timestamp_status: AsrCapabilityStatus
+    word_timestamp_status: AsrCapabilityStatus
+    word_timestamps_route_dependent: bool
+    effective_payload_limit: int
+    routing_mode: AsrRoutingMode
+    desired_upstream: str | None
+    capability_status: AsrCapabilityStatus
+    verified_duration_ceiling: Fraction | None = None
+    upstream_pin_supported: bool = field(default=False, init=False)
+
+    def can_guarantee_upstream(self, upstream: str) -> bool:
+        """Fail closed: V2 represents no enforceable upstream pinning mechanism.
+
+        Neither a desired upstream nor a post-response observation can authorize
+        strict upstream disclosure. A future mechanism needs its own capability
+        gate and transport enforcement before this contract can claim support.
+        """
+        return False
+
+
 @dataclass(frozen=True, slots=True)
 class AsrAudioChunk:
     """Already-materialized audio, with an exact duration in seconds.
@@ -36,6 +85,12 @@ class AsrAudioChunk:
     chunk_id: str = field(repr=False)
     payload: bytes = field(repr=False)
     duration: Fraction
+
+
+@dataclass(frozen=True, slots=True)
+class AsrTranscriptionRequest:
+    audio: AsrAudioChunk = field(repr=False)
+    timestamp_mode: AsrTimestampMode = AsrTimestampMode.SEGMENT
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +119,15 @@ class AsrSegment:
     end: Fraction
     text: str = field(repr=False)
     quality: AsrSegmentQuality = field(default_factory=AsrSegmentQuality)
+
+
+@dataclass(frozen=True, slots=True)
+class AsrWord:
+    """Provider-reported provisional timing, not independently forced alignment."""
+
+    start: Fraction
+    end: Fraction
+    text: str = field(repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,9 +162,20 @@ class AsrCandidate:
     usage: AsrUsage
     provenance: AsrProvenance
     chunk_id: str = field(repr=False)
+    words: tuple[AsrWord, ...] | None = field(default=None, repr=False)
 
 
 class AsrTranscriber(Protocol):
     def transcribe(self, chunk: AsrAudioChunk) -> AsrCandidate:
         """Return normalized, timestamped provisional evidence or an AsrError."""
+        ...
+
+
+class AsrTranscriberV2(Protocol):
+    @property
+    def capabilities(self) -> AsrProviderCapabilities:
+        ...
+
+    def transcribe_request(self, request: AsrTranscriptionRequest) -> AsrCandidate:
+        """Return the requested evidence without silent timestamp downgrades."""
         ...

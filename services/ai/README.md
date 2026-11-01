@@ -1076,38 +1076,122 @@ deployment acceptance responsibilities.
 
 ### OpenRouter STT compatibility and normalization
 
-Verified against the [STT guide](https://openrouter.ai/docs/guides/overview/multimodal/stt)
-and public `openai/whisper-large-v3/endpoints` metadata on 2026-11-01. The adapter
-continues using `POST /api/v1/audio/transcriptions`, OpenAI-compatible multipart
-WAV, `model=openai/whisper-large-v3`, `language=vi`, conservative temperature,
-`response_format=verbose_json`, and `timestamp_granularities[]=segment`.
-The configured file ceiling is 25 MiB, with a 4 MiB streamed response ceiling.
-OpenRouter rejects text/SRT/VTT response formats; this adapter requests none of them.
+**T02 Provider Contract V2** adds immutable, provider-neutral
+`AsrProviderCapabilities`, `AsrTranscriptionRequest`, `AsrTimestampMode` and
+`AsrTranscriberV2`. `AsrCandidate` remains the single transient evidence response,
+with an additive optional `words` tuple of immutable `AsrWord` records. The current
+worker still calls `transcribe(chunk)`, which delegates to a V2 segment request;
+both methods use exactly one transport implementation and one HTTP request.
 
-The guide explicitly makes structured timestamp availability provider/model
-dependent. Public metadata currently lists DeepInfra, Together and Groq, but does
-not establish each endpoint's verbose capability; routing `only`/`order` is not
-applied to transcription. No provider pinning or live compatibility is claimed.
-A 400 remains a typed provider failure; text-only/missing-segment JSON is a typed
-malformed result, never fabricated timing or verified speech coverage. Empty
-timestamped candidate output stays provisional; V1 canonical empty output is
-ineligible. Resolved-model/provider identifiers are retained only when reported.
+OpenRouter is the sole gateway: HTTPS multipart WAV to
+`POST https://openrouter.ai/api/v1/audio/transcriptions`, fixed
+`model=openai/whisper-large-v3`, `language=vi`, configured conservative temperature
+and `response_format=verbose_json`. Other model/language configurations are
+rejected locally. No direct Groq client, SDK, credentials, retries or adapter-level
+fallbacks are used. Unsupported text/SRT/VTT response formats are never requested.
+
+Capability evidence reviewed on **2026-11-01**:
+
+| Capability | Evidence/status |
+| --- | --- |
+| OpenRouter multipart WAV / verbose JSON | Documented; request encoding and validation tested with MockTransport |
+| Whisper Large V3 | Configured as `openai/whisper-large-v3`; model identity tested locally |
+| Segment timestamps | Documented; required and validated on every production response |
+| Word timestamps | Documented, route-dependent; requested evidence must be present and valid |
+| Upstream routing | `routed-upstream`; Groq is the **desired**, not guaranteed upstream |
+| Strict Groq pinning | Unsupported by the current documented STT routing contract; not live-verified |
+| Maximum verified audio duration | Unknown (`verified_duration_ceiling=None`), not unlimited |
+| Live provider verification in T02 | None; deterministic mock tests do not establish live compatibility |
+
+`AsrCapabilityStatus` distinguishes `documented`, `live-verified`, and `unknown`.
+The adapter exposes documented capabilities, not a claim of live verification or
+transcript completeness. Word support remains route-dependent even though the
+request mode is supported. Neither Whisper's internal 30-second window nor a
+successful 93-second recording establishes a maximum API duration or arbitrary
+long-form eligibility. The documented roughly 60-second **processing** timeout is
+not a recording-duration ceiling.
+
+**Strict-Groq deployment readiness: BLOCKED.** The STT guide explicitly says
+`order`, `only`, and `ignore` are not applied to transcription. The official
+tutorial also excludes `allow_fallbacks` and `sort` and states that provider pinning
+is unavailable on this endpoint. `provider.options.groq` passes options only if
+Groq serves the request; it does not select Groq. The adapter sends no such options
+or unsupported routing controls. Public endpoint metadata currently lists Groq,
+DeepInfra and Together; availability does not establish enforceable selection.
+Generic chat/model-page routing controls do not override the STT-specific contract.
+No enforceable account-level BYOK configuration has been verified for this project.
+
+`capabilities.upstream_pin_supported` is immutable false and
+`capabilities.can_guarantee_upstream("groq")` is false. Existing dynamically routed
+transcription remains available. Desired upstream lives in capability metadata;
+`AsrProvenance.provider` is `openrouter`, `requested_model` is the fixed model, and
+validated, explicitly reported `model`/`provider` response identifiers populate
+`resolved_model`/`upstream_provider`. Absent actual upstream metadata stays `None`.
+Latency, price, model slug and word availability never establish upstream identity.
+Even a response reporting Groq does **not** prevent another provider from receiving
+audio and cannot satisfy a pre-inference routing requirement.
+
+Segment mode sends `timestamp_granularities[]=segment`. Segment-and-word mode
+sends separate repeated `timestamp_granularities[]` multipart fields for `segment`
+and `word`. Missing or malformed requested words fail closed; there is no silent
+downgrade. `words=None` means unrequested/unavailable evidence; `words=()` is a
+valid empty result when the text evidence is also empty. Only word text and exact
+start/end fractions are retained; additional provider metadata is discarded.
+Word text must be nonempty valid Unicode, intervals positive, chronological and
+within the submitted recording. Word evidence is provisional ASR, not verified
+forced alignment. No timing is synthesized and genuine Vietnamese repetitions
+are preserved. T04 owns alignment improvements.
+
+Before inference, requests are validated for type, supported timestamp/response
+contract, WAV framing and physically present PCM samples, exact rational duration,
+credentials and model configuration. The effective upload ceiling is
+`min(settings.audio_asr_max_payload_bytes, 25_000_000)` bytes (decimal 25 MB,
+not 25 MiB). Oversized payloads fail locally; the adapter does not switch to
+base64, compress or resample. A reusable owned httpx client has bounded connections,
+finite timeouts, `trust_env=False` and `follow_redirects=False`; injected clients
+remain caller-owned. The streamed response ceiling stays 4 MiB. HTTP failures,
+timeouts and malformed output expose category-only errors without provider
+diagnostics, sensitive exception chains, credentials or raw body logging.
 
 Usage maps `input_tokens`, `output_tokens`, `total_tokens`, `seconds`, and `cost`.
 `AsrUsage.reported` distinguishes an absent/null usage object from a reported one;
 each missing field remains `None`, and real zero values remain zero. No chat-style
 `prompt_tokens`/`completion_tokens` or undocumented `audio_seconds` aliases are
-normalized. Malformed numeric fields and contradictory complete token totals
+normalized. Malformed numeric fields and contradictory token totals
 reject the candidate. Optional verbose `duration` is separate quality metadata,
 not a billing fallback. Provider duration/billing precision is not treated as
 sample truth; exact chunk duration comes from the supplied audio samples. Costs
 and missing token totals are never inferred. Duplicate keys, nonfinite numbers,
 invalid Unicode/control text, translation tasks, error-shaped results and invalid
 segment ordering/bounds fail safely without body logging.
+Off-grid Whisper timestamps remain exact `Fraction` values; downstream sample
+translation uses exact rational nearest-sample rounding. Only the final segment
+may overrun the exact recording end by at most 5 ms, in which case its end is
+clamped to the recording boundary after original ordering checks. Earlier overruns,
+collapsed/reversed intervals and larger overruns fail; this tolerance does not
+apply to words. Empty output proves neither silence nor verified coverage.
 Numeric normalization also bounds decimal exponent/scale and integer magnitude
 to 128 decimal places/digits before exact rational expansion, preventing tiny
 malicious JSON numbers from allocating enormous integers. Values are rejected,
 never rounded to fit.
+
+Audio, text, segment and word evidence remain transient: never persist or log raw
+ASR responses. Usage is provider-reported, never calculated from recording duration
+or catalog pricing. Only whitelisted normalized evidence and provenance are used.
+
+**T03 handoff:** inspect capabilities before strategy selection, apply the effective
+upload bound and treat the unknown verified duration ceiling as an unresolved
+eligibility constraint. Choose an explicit timestamp mode and call
+`transcribe_request`; reject strict-Groq requirements **before inference** while
+`can_guarantee_upstream("groq")` is false. Any future enforceable STT/BYOK routing
+mechanism requires a separately validated capability gate and transport enforcement.
+T02 does not change chunking, coverage, recovery, reconciliation or worker wiring.
+
+Official references (documentation review, not paid inference):
+- [STT-specific API guide](https://openrouter.ai/docs/guides/overview/multimodal/stt)
+- [Transcription tutorial and routing limitations](https://openrouter.ai/blog/tutorials/transcription-on-openrouter/)
+- [Whisper Large V3 model](https://openrouter.ai/openai/whisper-large-v3/)
+- [Public model endpoints metadata](https://openrouter.ai/api/v1/models/openai/whisper-large-v3/endpoints)
 
 Correction `vi-whole-meeting-2` / component version `2` includes the complete
 chronological transcript with `sample_rate_hz`, immutable `start_sample` and
