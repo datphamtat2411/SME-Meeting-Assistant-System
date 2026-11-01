@@ -27,20 +27,24 @@ from sme_meeting_ai.transcription import (
     AsrWord,
     ChunkBoundaryReason,
 )
-from sme_meeting_ai.transcription.chunk_execution import _execute_chunk, _translate_candidate
+from sme_meeting_ai.transcription.chunk_execution import (
+    _execute_chunk,
+    _translate_candidate,
+)
 
 SECRET = "test-only-private-key"
 PRIVATE_AUDIO = "test-only-private-audio"
 TEXT = "Nội dung riêng tư"
 
 
-def wav_payload(duration=Fraction(2)):
-    frame_count = duration * 16000
+def wav_payload(duration=Fraction(2), *, rate=16000, channels=1, sample_width=2):
+    frame_count = duration * rate
     assert frame_count.denominator == 1
+    pcm_size = frame_count.numerator * channels * sample_width
     with io.BytesIO() as buffer:
         with wave.open(buffer, "wb") as writer:
-            writer.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
-            writer.writeframes(PRIVATE_AUDIO.encode().ljust(frame_count.numerator * 2, b"\0"))
+            writer.setparams((channels, sample_width, rate, 0, "NONE", "not compressed"))
+            writer.writeframes(PRIVATE_AUDIO.encode().ljust(pcm_size, b"\0")[:pcm_size])
         return buffer.getvalue()
 
 
@@ -590,8 +594,8 @@ def test_word_request_uses_repeated_fields_no_routing_controls_or_direct_groq(ca
         granularities = [part.get_payload(decode=True).decode() for part, name in zip(parts, names)
                          if name == "timestamp_granularities[]"]
         assert granularities == ["segment", "word"]
-        # provider/options, chat routing controls, custom headers and alternate endpoints
-        # are absent; desired upstream metadata does not affect the request.
+        # Dynamic upstream selection needs no provider options, chat routing
+        # controls, custom headers or alternate endpoints.
         return httpx.Response(200, json=word_output())
 
     with httpx.Client(transport=httpx.MockTransport(handle)) as client:
@@ -669,17 +673,26 @@ def test_word_additional_metadata_is_not_retained_in_evidence_or_provenance(capl
     assert not caplog.records
 
 
-@pytest.mark.parametrize("provider", [None, "Groq", "DeepInfra", "Together"])
-def test_observed_upstream_is_reported_not_desired_and_never_a_routing_guarantee(provider):
-    data = word_output()
-    if provider is not None:
-        data["provider"] = provider
-    with httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200, json=data))) as client:
+@pytest.mark.parametrize("provider_metadata", [
+    {}, {"provider": None}, {"provider": "DeepInfra"}, {"provider": "Groq"},
+    {"provider": "Together"},
+], ids=["missing", "null", "DeepInfra", "Groq", "Together"])
+@pytest.mark.parametrize("legacy", [False, True], ids=["v2", "legacy"])
+def test_dynamic_routing_accepts_valid_evidence_and_preserves_actual_upstream(provider_metadata, legacy):
+    data = {**word_output(), **provider_metadata}
+    calls = []
+    with httpx.Client(transport=httpx.MockTransport(
+        lambda request: calls.append(request) or httpx.Response(200, json=data),
+    )) as client:
         adapter = OpenRouterWhisperAdapter(settings(), client)
-        result = adapter.transcribe_request(AsrTranscriptionRequest(chunk(), AsrTimestampMode.SEGMENT_AND_WORD))
-        assert result.provenance.upstream_provider == provider
-        assert adapter.capabilities.desired_upstream == "groq"
-        assert adapter.capabilities.can_guarantee_upstream("groq") is False
+        result = (adapter.transcribe(chunk()) if legacy else adapter.transcribe_request(
+            AsrTranscriptionRequest(chunk(), AsrTimestampMode.SEGMENT_AND_WORD),
+        ))
+    assert len(calls) == 1
+    assert result.text == data["text"]
+    assert result.segments[0].text == data["segments"][0]["text"]
+    assert result.provenance.upstream_provider == provider_metadata.get("provider")
+    assert (result.words is None) is legacy
 
 
 @pytest.mark.parametrize("transcription_request", [
@@ -734,6 +747,77 @@ def test_strict_wav_and_exact_duration_rejection(payload, duration):
         with pytest.raises(AsrError) as caught:
             OpenRouterWhisperAdapter(settings(), client).transcribe(chunk(payload=payload, duration=duration))
     assert_sanitized(caught.value, AsrErrorCategory.VALIDATION)
+
+
+@pytest.mark.parametrize("payload,duration", [
+    pytest.param(wav_payload(rate=8000), Fraction(2), id="WAV-02-8kHz"),
+    pytest.param(wav_payload(rate=48000), Fraction(2), id="WAV-03-48kHz"),
+    pytest.param(wav_payload(channels=2), Fraction(2), id="WAV-04-stereo"),
+    pytest.param(wav_payload(sample_width=1), Fraction(2), id="WAV-05-8bit"),
+    pytest.param(wav_payload(sample_width=3), Fraction(2), id="WAV-06-24bit"),
+    pytest.param(wav_payload(sample_width=4), Fraction(2), id="WAV-07-32bit"),
+    pytest.param(AUDIO[:20] + b"\x03\x00" + AUDIO[22:], Fraction(2), id="WAV-08-float-encoding"),
+    pytest.param(AUDIO[:20] + b"\x06\x00" + AUDIO[22:], Fraction(2), id="WAV-08-alaw-encoding"),
+    pytest.param(AUDIO, Fraction(2) + Fraction(1, 16000), id="WAV-09-duration-mismatch"),
+    # Keep RIFF size accurate so rejection must detect physically missing PCM,
+    # rather than merely an inconsistent outer container length.
+    pytest.param(AUDIO[:4] + (len(AUDIO) - 10).to_bytes(4, "little") + AUDIO[8:-2],
+                 Fraction(2), id="WAV-10-truncated-PCM"),
+    pytest.param(b"RIFX" + AUDIO[4:], Fraction(2), id="WAV-11-invalid-RIFF"),
+    pytest.param(AUDIO[:8] + b"FAIL" + AUDIO[12:], Fraction(2), id="WAV-11-invalid-WAVE"),
+    pytest.param(wav_payload(Fraction(0)), Fraction(2), id="WAV-12-zero-frames"),
+])
+def test_non_normalized_or_invalid_wav_is_rejected_before_http(payload, duration):
+    calls = []
+
+    def handle(request):
+        calls.append(request)
+        return httpx.Response(200, json=output())
+
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        with pytest.raises(AsrError) as caught:
+            OpenRouterWhisperAdapter(settings(), client).transcribe(chunk(payload=payload, duration=duration))
+    assert len(calls) == 0
+    assert_sanitized(caught.value, AsrErrorCategory.VALIDATION)
+
+
+def test_normalized_wav_retains_multipart_evidence_provenance_and_usage():
+    calls = []
+    data = {**output(), "model": "openai/whisper-large-v3", "provider": "DeepInfra",
+            "usage": {"seconds": 2, "cost": 0.001}}
+
+    def handle(request):
+        calls.append(request)
+        assert str(request.url) == "https://openrouter.ai/api/v1/audio/transcriptions"
+        message = BytesParser(policy=policy.default).parsebytes(
+            f"Content-Type: {request.headers['content-type']}\r\n\r\n".encode() + request.read(),
+        )
+        parts = list(message.iter_parts())
+        names = [part.get_param("name", header="content-disposition") for part in parts]
+        assert names == ["file", "model", "language", "temperature", "response_format",
+                         "timestamp_granularities[]"]
+        assert parts[0].get_filename() == "chunk.wav"
+        assert parts[0].get_content_type() == "audio/wav"
+        assert parts[0].get_payload(decode=True) == AUDIO
+        with wave.open(io.BytesIO(parts[0].get_payload(decode=True)), "rb") as reader:
+            assert reader.getparams() == (1, 2, 16000, 32000, "NONE", "not compressed")
+        assert [part.get_payload(decode=True).decode() for part in parts[1:]] == [
+            "openai/whisper-large-v3", "vi", "0", "verbose_json", "segment",
+        ]
+        return httpx.Response(200, json=data)
+
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        result = OpenRouterWhisperAdapter(settings(), client).transcribe(chunk())
+    assert len(calls) == 1
+    assert result.text == result.segments[0].text == TEXT
+    assert result.segments[0].start == Fraction(1, 10)
+    assert result.segments[0].end == Fraction(6, 5)
+    assert result.provenance.provider == "openrouter"
+    assert result.provenance.requested_model == result.provenance.resolved_model == "openai/whisper-large-v3"
+    assert result.provenance.upstream_provider == "DeepInfra"
+    assert result.usage.reported is True
+    assert result.usage.audio_seconds == Fraction(2)
+    assert result.usage.cost == Fraction(1, 1000)
 
 
 def test_documented_decimal_upload_limit_precedes_network_and_audio_parsing():

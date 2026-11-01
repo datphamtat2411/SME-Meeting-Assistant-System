@@ -10,8 +10,8 @@ from sme_meeting_ai.transcription import (
     AsrAudioChunk,
     AsrCandidate,
     AsrCapabilityStatus,
-    AsrProviderCapabilities,
     AsrProvenance,
+    AsrProviderCapabilities,
     AsrQualityMetadata,
     AsrRoutingMode,
     AsrTimestampMode,
@@ -51,18 +51,14 @@ def test_openrouter_capabilities_are_immutable_documented_not_live_verified():
         assert adapter.capabilities is capabilities
 
 
-def test_routed_upstream_cannot_satisfy_strict_groq_even_with_desired_identity():
+def test_dynamic_routing_has_no_upstream_preference_or_strict_provider_gate():
     with httpx.Client(transport=httpx.MockTransport(lambda _: pytest.fail("network I/O"))) as client:
         capabilities = OpenRouterWhisperAdapter(settings(), client).capabilities
+        assert capabilities.gateway == "openrouter"
         assert capabilities.routing_mode is AsrRoutingMode.ROUTED_UPSTREAM
-        assert capabilities.desired_upstream == "groq"
-        assert capabilities.upstream_pin_supported is False
-        assert capabilities.can_guarantee_upstream("groq") is False
-        assert capabilities.can_guarantee_upstream("other-provider") is False
-        # Preference and routing-mode metadata cannot manufacture an enforcement mechanism.
-        assert replace(capabilities, desired_upstream="other-provider").can_guarantee_upstream("other-provider") is False
-        with pytest.raises((FrozenInstanceError, TypeError)):
-            capabilities.upstream_pin_supported = True
+        assert not hasattr(capabilities, "desired_upstream")
+        assert not hasattr(capabilities, "upstream_pin_supported")
+        assert not hasattr(capabilities, "can_guarantee_upstream")
 
 
 def test_capability_limit_respects_smaller_configured_bound():

@@ -1098,8 +1098,7 @@ Capability evidence reviewed on **2026-11-01**:
 | Whisper Large V3 | Configured as `openai/whisper-large-v3`; model identity tested locally |
 | Segment timestamps | Documented; required and validated on every production response |
 | Word timestamps | Documented, route-dependent; requested evidence must be present and valid |
-| Upstream routing | `routed-upstream`; Groq is the **desired**, not guaranteed upstream |
-| Strict Groq pinning | Unsupported by the current documented STT routing contract; not live-verified |
+| Upstream routing | `routed-upstream`; dynamic selection by OpenRouter, with no preferred or required upstream |
 | Maximum verified audio duration | Unknown (`verified_duration_ceiling=None`), not unlimited |
 | Live provider verification in T02 | None; deterministic mock tests do not establish live compatibility |
 
@@ -1111,25 +1110,25 @@ successful 93-second recording establishes a maximum API duration or arbitrary
 long-form eligibility. The documented roughly 60-second **processing** timeout is
 not a recording-duration ceiling.
 
-**Strict-Groq deployment readiness: BLOCKED.** The STT guide explicitly says
-`order`, `only`, and `ignore` are not applied to transcription. The official
-tutorial also excludes `allow_fallbacks` and `sort` and states that provider pinning
-is unavailable on this endpoint. `provider.options.groq` passes options only if
-Groq serves the request; it does not select Groq. The adapter sends no such options
-or unsupported routing controls. Public endpoint metadata currently lists Groq,
-DeepInfra and Together; availability does not establish enforceable selection.
-Generic chat/model-page routing controls do not override the STT-specific contract.
-No enforceable account-level BYOK configuration has been verified for this project.
+OpenRouter dynamically selects the upstream provider for Whisper Large V3
+transcription. The application does not request, enforce, or prefer a particular
+upstream. Actual upstream identity is retained in provenance only when reliable
+provider metadata is available. Missing upstream metadata remains unknown.
+Dynamic routing is the approved policy for this project.
 
-`capabilities.upstream_pin_supported` is immutable false and
-`capabilities.can_guarantee_upstream("groq")` is false. Existing dynamically routed
-transcription remains available. Desired upstream lives in capability metadata;
+The STT guide explicitly says `order`, `only`, and `ignore` are not applied to
+transcription. The official tutorial also excludes `allow_fallbacks` and `sort`
+and states that provider pinning is unavailable on this endpoint. Provider-specific
+options do not select an upstream. The adapter sends no provider options, routing
+preferences, allowlists or blocklists. Upstreams may differ between requests;
+dynamic routing does not establish identical transcription quality across them.
+Generic chat/model-page routing controls do not override the STT-specific contract.
+
 `AsrProvenance.provider` is `openrouter`, `requested_model` is the fixed model, and
 validated, explicitly reported `model`/`provider` response identifiers populate
 `resolved_model`/`upstream_provider`. Absent actual upstream metadata stays `None`.
 Latency, price, model slug and word availability never establish upstream identity.
-Even a response reporting Groq does **not** prevent another provider from receiving
-audio and cannot satisfy a pre-inference routing requirement.
+Valid responses are accepted independently of their reported upstream identity.
 
 Segment mode sends `timestamp_granularities[]=segment`. Segment-and-word mode
 sends separate repeated `timestamp_granularities[]` multipart fields for `segment`
@@ -1143,8 +1142,11 @@ forced alignment. No timing is synthesized and genuine Vietnamese repetitions
 are preserved. T04 owns alignment improvements.
 
 Before inference, requests are validated for type, supported timestamp/response
-contract, WAV framing and physically present PCM samples, exact rational duration,
-credentials and model configuration. The effective upload ceiling is
+contract, RIFF/WAVE framing and physically present uncompressed PCM samples at
+exactly 16000 Hz, one channel and two bytes per sample (16-bit), positive frame
+count, exact rational duration `Fraction(frames, 16000)`, credentials and model
+configuration. Invalid audio fails before HTTP; normalization belongs to preprocessing.
+The effective upload ceiling is
 `min(settings.audio_asr_max_payload_bytes, 25_000_000)` bytes (decimal 25 MB,
 not 25 MiB). Oversized payloads fail locally; the adapter does not switch to
 base64, compress or resample. A reusable owned httpx client has bounded connections,
@@ -1182,9 +1184,7 @@ or catalog pricing. Only whitelisted normalized evidence and provenance are used
 **T03 handoff:** inspect capabilities before strategy selection, apply the effective
 upload bound and treat the unknown verified duration ceiling as an unresolved
 eligibility constraint. Choose an explicit timestamp mode and call
-`transcribe_request`; reject strict-Groq requirements **before inference** while
-`can_guarantee_upstream("groq")` is false. Any future enforceable STT/BYOK routing
-mechanism requires a separately validated capability gate and transport enforcement.
+`transcribe_request` under the approved dynamic routing policy.
 T02 does not change chunking, coverage, recovery, reconciliation or worker wiring.
 
 Official references (documentation review, not paid inference):

@@ -57,7 +57,13 @@ from .support import (
     verify_source,
     write_report,
 )
-from .transcription_runner import _Telemetry, _duration, _failure, _numeric_metric, _supported
+from .transcription_runner import (
+    _duration,
+    _failure,
+    _numeric_metric,
+    _supported,
+    _Telemetry,
+)
 from .transcription_support import (
     EVALUATION_VERSION,
     compute_text_metrics,

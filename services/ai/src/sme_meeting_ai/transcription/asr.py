@@ -59,19 +59,8 @@ class AsrProviderCapabilities:
     word_timestamps_route_dependent: bool
     effective_payload_limit: int
     routing_mode: AsrRoutingMode
-    desired_upstream: str | None
     capability_status: AsrCapabilityStatus
     verified_duration_ceiling: Fraction | None = None
-    upstream_pin_supported: bool = field(default=False, init=False)
-
-    def can_guarantee_upstream(self, upstream: str) -> bool:
-        """Fail closed: V2 represents no enforceable upstream pinning mechanism.
-
-        Neither a desired upstream nor a post-response observation can authorize
-        strict upstream disclosure. A future mechanism needs its own capability
-        gate and transport enforcement before this contract can claim support.
-        """
-        return False
 
 
 @dataclass(frozen=True, slots=True)

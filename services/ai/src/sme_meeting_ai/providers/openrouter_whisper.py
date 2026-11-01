@@ -20,8 +20,8 @@ from sme_meeting_ai.transcription.asr import (
     AsrCapabilityStatus,
     AsrError,
     AsrErrorCategory,
-    AsrProviderCapabilities,
     AsrProvenance,
+    AsrProviderCapabilities,
     AsrQualityMetadata,
     AsrRoutingMode,
     AsrSegment,
@@ -123,7 +123,7 @@ def _reject_constant(_):
 
 
 def _validate_wav(chunk: AsrAudioChunk) -> None:
-    """Check actual PCM frames and exact duration without altering the payload."""
+    """Require normalized 16 kHz mono s16 PCM and exact physical duration."""
     try:
         payload = chunk.payload
         if len(payload) < 44 or int.from_bytes(payload[4:8], "little") != len(payload) - 8:
@@ -131,8 +131,9 @@ def _validate_wav(chunk: AsrAudioChunk) -> None:
         with wave.open(io.BytesIO(payload), "rb") as reader:
             frames, rate = reader.getnframes(), reader.getframerate()
             frame_bytes = reader.getnchannels() * reader.getsampwidth()
-            if (reader.getcomptype() != "NONE" or frames <= 0 or rate <= 0
-                    or Fraction(frames, rate) != chunk.duration
+            if (reader.getnchannels() != 1 or reader.getsampwidth() != 2
+                    or rate != 16000 or reader.getcomptype() != "NONE" or frames <= 0
+                    or Fraction(frames, 16000) != chunk.duration
                     or len(reader.readframes(frames + 1)) != frames * frame_bytes):
                 raise ValueError
         return
@@ -159,7 +160,7 @@ class OpenRouterWhisperAdapter:
             word_timestamps_route_dependent=True,
             effective_payload_limit=min(settings.audio_asr_max_payload_bytes, _MAX_UPLOAD_BYTES),
             routing_mode=AsrRoutingMode.ROUTED_UPSTREAM,
-            desired_upstream="groq", capability_status=AsrCapabilityStatus.DOCUMENTED,
+            capability_status=AsrCapabilityStatus.DOCUMENTED,
         )
         self._owns_client = client is None
         self._client = client if client is not None else httpx.Client(
@@ -234,8 +235,8 @@ class OpenRouterWhisperAdapter:
         granularities = ["segment"]
         if request.timestamp_mode is AsrTimestampMode.SEGMENT_AND_WORD:
             granularities.append("word")
-        # httpx's multipart sequence preserves repeated non-file form parts. No
-        # provider options or chat routing controls can guarantee STT pinning.
+        # httpx's multipart sequence preserves repeated non-file form parts.
+        # OpenRouter dynamically selects the upstream; no routing controls are sent.
         parts = [
             ("file", ("chunk.wav", chunk.payload, "audio/wav")),
             ("model", (None, _MODEL)),

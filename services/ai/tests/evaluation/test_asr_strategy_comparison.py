@@ -28,9 +28,13 @@ from sme_meeting_ai.transcription.asr import (
 )
 
 from . import asr_strategy_comparison as comparison
+from . import test_transcription_runner
 from .support import EvaluationError, canonical_json
-from .test_transcription_runner import Clock, case as base_case  # noqa: F401 -- shared synthetic fixture
+from .test_transcription_runner import Clock
 from .transcription_support import ConfigurationMatrix, load_reference
+
+# Register the existing decorated fixture under the name the local wrapper uses.
+base_case = test_transcription_runner.case
 
 
 @pytest.fixture(autouse=True)
@@ -420,7 +424,9 @@ def test_r11_missing_cost_is_unknown_not_zero_or_estimated(case):
 
 
 def test_r12_no_correction_instantiation_or_invocation(case, monkeypatch):
-    from sme_meeting_ai.providers.openrouter_instruction_llm import OpenRouterInstructionLlmAdapter
+    from sme_meeting_ai.providers.openrouter_instruction_llm import (
+        OpenRouterInstructionLlmAdapter,
+    )
     from sme_meeting_ai.transcription import correction
     def forbidden(*args, **kwargs):
         raise AssertionError("correction forbidden")
