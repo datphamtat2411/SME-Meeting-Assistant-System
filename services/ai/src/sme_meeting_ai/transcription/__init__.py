@@ -29,6 +29,15 @@ from .asr_strategy import (
     NativeAttemptOutcome,
     build_whole_file_plan,
 )
+from .boundary_alignment import (
+    BoundaryAlignmentMetrics,
+    BoundaryAlignmentReport,
+    BoundaryEvidence,
+    BoundaryRisk,
+    BoundarySegmentSupport,
+    WordTimingObservation,
+    analyze_boundary_alignment,
+)
 from .chunk_execution import (
     AsrChunkResult,
     AsrTimelineSegment,
@@ -36,6 +45,7 @@ from .chunk_execution import (
     execute_asr_windows,
 )
 from .chunk_planning import (
+    AcousticBoundaryDecision,
     AsrChunk,
     AsrChunkPlan,
     ChunkBoundaryReason,
@@ -91,6 +101,14 @@ from .recovery import (
 )
 
 __all__ = [
+    "AcousticBoundaryDecision",
+    "BoundaryAlignmentMetrics",
+    "BoundaryAlignmentReport",
+    "BoundaryEvidence",
+    "BoundaryRisk",
+    "BoundarySegmentSupport",
+    "WordTimingObservation",
+    "analyze_boundary_alignment",
     "AsrAudioChunk",
     "AsrCandidate",
     "AsrCapabilityStatus",

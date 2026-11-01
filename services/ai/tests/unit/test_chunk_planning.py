@@ -1,4 +1,6 @@
 import copy
+import math
+import struct
 import traceback
 from dataclasses import FrozenInstanceError, replace
 from fractions import Fraction
@@ -39,8 +41,8 @@ from sme_meeting_ai.transcription import (
 def test_whole_file_plan_validation_does_not_admit_forged_plans(result_factory, kind):
     from sme_meeting_ai.transcription.asr_strategy import build_whole_file_plan
 
-    result = result_factory(1000)
-    native = build_whole_file_plan(result, settings(), 2044)
+    result = result_factory(128000)
+    native = build_whole_file_plan(result, settings(), 256044)
     validate_asr_chunk_plan(native)
     if kind == "version":
         legacy = SpeechAwareAsrChunkPlanner(settings()).plan(result)
@@ -66,10 +68,10 @@ def test_whole_file_plan_validation_does_not_admit_forged_plans(result_factory, 
 
 def settings(**overrides):
     values = {
-        "audio_asr_chunk_target_samples": 100,
-        "audio_asr_chunk_max_request_samples": 150,
-        "audio_asr_chunk_overlap_samples": 30,
-        "audio_asr_chunk_boundary_search_samples": 20,
+        "audio_asr_chunk_target_samples": 32000,
+        "audio_asr_chunk_max_request_samples": 48000,
+        "audio_asr_chunk_overlap_samples": 8000,
+        "audio_asr_chunk_boundary_search_samples": 8000,
     }
     return Settings(
         service_name="test-ai", service_identity="ai-core", _env_file=None,
@@ -81,7 +83,7 @@ def settings(**overrides):
 def result_factory(tmp_path):
     temporary_directories = []
 
-    def make(sample_count=1000, *, speech=None, protected=None, uncertain=()):
+    def make(sample_count=128000, *, speech=None, protected=None, uncertain=(), observations=None):
         if speech is None:
             speech = ((0, sample_count),) if sample_count > 0 else ()
         if protected is None:
@@ -91,9 +93,8 @@ def result_factory(tmp_path):
         temporary_directories.extend((audio_temp, evidence_temp))
         audio_path = Path(audio_temp.name) / "private-cuoc-hop.wav"
         evidence_path = Path(evidence_temp.name) / "evidence.bin"
-        # Metadata-only planning must never open either artifact.
+        # Planning may replay frame evidence, but must never open PCM.
         audio_path.write_bytes(b"preprocessing-owned PCM sentinel")
-        evidence_path.write_bytes(b"preprocessing-owned evidence sentinel")
         probe = AudioProbe("recording-1", "wav", "pcm_s16le", 48000, 2, "stereo", None, 0)
         normalization = AudioProvenance(
             "recording-1", "1", "ffmpeg", "7-test",
@@ -108,9 +109,18 @@ def result_factory(tmp_path):
              "speech_threshold": 0.6, "non_speech_threshold": 0.35},
         )
         frame_count = (sample_count + 511) // 512
-        speech_count = int(bool(speech))
-        uncertain_count = int(bool(uncertain))
-        non_speech_count = frame_count - speech_count - uncertain_count
+        records, counts = [], [0, 0, 0]
+        for start in range(0, sample_count, 512):
+            probability = (0.9 if any(a <= start < b for a, b in speech) else
+                           0.5 if any(a <= start < b for a, b in uncertain) else 0.1)
+            probability, rms = (observations or {}).get(start, (probability, 0.1))
+            label = 0 if probability >= 0.6 else 1 if probability <= 0.35 else 2
+            counts[label] += 1
+            end = min(start + 512, sample_count)
+            records.append(struct.pack("<QQdddBI", start, end, probability, rms,
+                                       20 * math.log10(rms) if rms else -math.inf, label, 512 - end + start))
+        evidence_path.write_bytes(b"SMEEVD\x00\x01" + b"".join(records))
+        speech_count, non_speech_count, uncertain_count = counts
         audio = NormalizedAudioArtifact(
             audio_path, "recording-1", probe, sample_count, normalization, audio_temp,
         )
@@ -156,9 +166,7 @@ def assert_partition(plan, configuration):
         assert chunk.chunk_id == f"chunk-{ordinal:06d}"
         assert core.start_sample == position
         assert 0 <= request.start_sample <= core.start_sample < core.end_sample <= request.end_sample <= plan.sample_count
-        assert core.end_sample - core.start_sample <= (
-            configuration.audio_asr_chunk_max_request_samples - configuration.audio_asr_chunk_overlap_samples
-        )
+        assert core.end_sample - core.start_sample <= plan.provenance.effective_configuration["max_core_samples"]
         assert request.end_sample - request.start_sample <= configuration.audio_asr_chunk_max_request_samples
         assert all(type(value) is int for value in (
             core.start_sample, core.end_sample, request.start_sample, request.end_sample,
@@ -172,40 +180,35 @@ def assert_partition(plan, configuration):
     assert plan.chunks[-1].end_boundary_reason is ChunkBoundaryReason.TIMELINE_END
 
 
-def test_continuous_speech_forces_maximum_cores_without_skipping_audio(result_factory):
+def test_continuous_speech_uses_acoustic_valley_not_maximum_core(result_factory):
     configuration = settings()
-    result = result_factory()
+    result = result_factory(observations={30720: (0.05, 0.0)})
     plan = SpeechAwareAsrChunkPlanner(configuration).plan(result)
     assert_partition(plan, configuration)
-    assert [chunk.core_interval.end_sample for chunk in plan.chunks] == [120, 240, 360, 480, 600, 720, 840, 960, 1000]
+    assert plan.chunks[0].core_interval.end_sample == 30720
+    assert plan.chunks[0].core_interval.end_sample != 40000
     assert all(chunk.end_boundary_reason is ChunkBoundaryReason.FORCED_CONTINUOUS_SPEECH for chunk in plan.chunks[:-1])
 
 
 @pytest.mark.parametrize("speech,expected", [
-    (((0, 95), (110, 1000)), 100),
-    (((0, 90), (91, 110), (111, 1000)), 90),  # Equal distance: lower sample wins.
-    (((0, 80), (81, 1000)), 80),  # Inclusive lower search bound.
-    (((0, 120), (121, 1000)), 120),  # Inclusive upper search/core bound.
-    (((0, 121), (122, 1000)), 120),  # Outside search: forced maximum.
+    (((0, 30000), (34000, 128000)), 32000),
+    (((0, 26000), (30000, 34000), (38000, 128000)), 28000),
+    (((0, 26000), (30000, 33000), (39000, 128000)), 36000),  # Wider gap wins tie.
 ])
-def test_nearest_natural_gap_and_ties_are_deterministic(result_factory, speech, expected):
+def test_natural_midpoint_distance_width_and_earlier_ties(result_factory, speech, expected):
     planner = SpeechAwareAsrChunkPlanner(settings())
     result = result_factory(speech=speech)
     plan = planner.plan(result)
     assert plan.chunks[0].core_interval.end_sample == expected
-    expected_reason = (
-        ChunkBoundaryReason.FORCED_CONTINUOUS_SPEECH if speech[0][1] == 121
-        else ChunkBoundaryReason.NATURAL_SILENCE_CANDIDATE
-    )
-    assert plan.chunks[0].end_boundary_reason is expected_reason
+    assert plan.chunks[0].end_boundary_reason is ChunkBoundaryReason.NATURAL_SILENCE_CANDIDATE
     assert planner.plan(result) == plan
     assert_partition(plan, settings())
 
 
-@pytest.mark.parametrize("uncertain", [((90, 110),), ((80, 100), (105, 120))])
+@pytest.mark.parametrize("uncertain", [((30000, 34000),), ((29000, 32000), (32500, 35000))])
 def test_union_of_protection_and_uncertainty_blocks_natural_boundaries(result_factory, uncertain):
-    result = result_factory(speech=((0, 70), (130, 1000)),
-                            protected=((0, 90), (110, 1000)), uncertain=uncertain)
+    result = result_factory(speech=((0, 28000), (36000, 128000)),
+                            protected=((0, 30000), (34000, 128000)), uncertain=uncertain)
     plan = SpeechAwareAsrChunkPlanner(settings()).plan(result)
     for chunk in plan.chunks:
         if chunk.end_boundary_reason is ChunkBoundaryReason.NATURAL_SILENCE_CANDIDATE:
@@ -213,12 +216,11 @@ def test_union_of_protection_and_uncertainty_blocks_natural_boundaries(result_fa
             assert all(not interval.start_sample <= boundary < interval.end_sample for interval in (
                 *result.speech_map.protected_intervals, *result.speech_map.uncertain_intervals,
             ))
-    if uncertain == ((90, 110),):
-        assert plan.chunks[0].end_boundary_reason is ChunkBoundaryReason.FORCED_CONTINUOUS_SPEECH
+    assert plan.chunks[0].end_boundary_reason is ChunkBoundaryReason.FORCED_CONTINUOUS_SPEECH
     assert_partition(plan, settings())
 
 
-@pytest.mark.parametrize("sample_count", [1, 15, 100, 120])
+@pytest.mark.parametrize("sample_count", [1, 15, 32000, 40000])
 def test_short_or_exact_maximum_recording_has_one_terminal_core(result_factory, sample_count):
     plan = SpeechAwareAsrChunkPlanner(settings()).plan(result_factory(sample_count))
     assert len(plan.chunks) == 1
@@ -227,28 +229,23 @@ def test_short_or_exact_maximum_recording_has_one_terminal_core(result_factory, 
     assert_partition(plan, settings())
 
 
-@pytest.mark.parametrize("overlap", [0, 1, 30, 31, 101])
-def test_overlap_is_total_adjacent_intersection_with_integer_context_and_clipping(result_factory, overlap):
+@pytest.mark.parametrize("overlap", [2, 31, 8000, 80000])
+@pytest.mark.parametrize("natural", [False, True])
+def test_variable_symmetric_context_and_overlap_cap(result_factory, overlap, natural):
     configuration = settings(audio_asr_chunk_overlap_samples=overlap,
-                             audio_asr_chunk_max_request_samples=120 + overlap)
-    plan = SpeechAwareAsrChunkPlanner(configuration).plan(result_factory(241))
+                             audio_asr_chunk_max_request_samples=48000 + overlap)
+    source = result_factory(160000, speech=() if natural else None)
+    plan = SpeechAwareAsrChunkPlanner(configuration).plan(source)
     assert_partition(plan, configuration)
-    left, right = overlap // 2, overlap - overlap // 2
-    for chunk in plan.chunks:
-        assert chunk.request_interval == SampleInterval(
-            max(0, chunk.core_interval.start_sample - left),
-            min(241, chunk.core_interval.end_sample + right),
-        )
+    context = min(1600 if natural else 16000, overlap // 2)
     for previous, chunk in zip(plan.chunks, plan.chunks[1:]):
         boundary = chunk.core_interval.start_sample
-        assert previous.request_interval.end_sample - chunk.request_interval.start_sample == (
-            min(241, boundary + right) - max(0, boundary - left)
-        )
-    assert plan.provenance.effective_configuration["left_context_samples"] == left
-    assert plan.provenance.effective_configuration["right_context_samples"] == right
+        assert previous.request_interval.end_sample == min(160000, boundary + context)
+        assert chunk.request_interval.start_sample == max(0, boundary - context)
+        assert previous.request_interval.end_sample - chunk.request_interval.start_sample <= overlap
 
 
-@pytest.mark.parametrize("sample_count", [121, 239, 240, 241, 999, 1000])
+@pytest.mark.parametrize("sample_count", [40001, 63999, 64000, 64001, 127999, 128000])
 def test_all_provisional_silence_is_retained_in_target_cores(result_factory, sample_count):
     configuration = settings()
     plan = SpeechAwareAsrChunkPlanner(configuration).plan(result_factory(sample_count, speech=()))
@@ -257,15 +254,10 @@ def test_all_provisional_silence_is_retained_in_target_cores(result_factory, sam
     assert sum(chunk.core_interval.end_sample - chunk.core_interval.start_sample for chunk in plan.chunks) == sample_count
 
 
-def test_small_positive_progress_and_chunk_limit_are_enforced(result_factory):
-    configuration = settings(audio_asr_chunk_target_samples=2,
-                             audio_asr_chunk_boundary_search_samples=1,
-                             audio_asr_chunk_overlap_samples=0,
-                             audio_asr_chunk_max_request_samples=3,
-                             audio_asr_chunk_max_chunks=40)
-    plan = SpeechAwareAsrChunkPlanner(configuration).plan(result_factory(40, speech=()))
-    assert_partition(plan, configuration)
-    assert plan.provenance.effective_configuration["minimum_progress_samples"] == 1
+@pytest.mark.parametrize("overlap", [0, 1])
+def test_forced_cut_without_context_fails_closed(result_factory, overlap):
+    with pytest.raises(AudioProcessingError):
+        SpeechAwareAsrChunkPlanner(settings(audio_asr_chunk_overlap_samples=overlap)).plan(result_factory())
 
 
 def test_provenance_and_models_are_immutable_deterministic_snapshots(result_factory):
@@ -277,15 +269,15 @@ def test_provenance_and_models_are_immutable_deterministic_snapshots(result_fact
     assert plan.source_id == result.provenance.source_id
     assert plan.sample_count == result.normalized_artifact.sample_count
     assert isinstance(plan.provenance, ChunkPlanningProvenance)
-    assert plan.provenance.planner_version == "1"
+    assert plan.provenance.planner_version == "speech-aware-v2"
     assert plan.provenance.sample_rate_hz == 16000
     assert plan.provenance.preprocessing == result.provenance
-    assert dict(plan.provenance.effective_configuration) == {
-        "target_core_samples": 100, "max_request_samples": 150, "overlap_samples": 30,
-        "boundary_search_samples": 20, "max_chunks": 4096, "max_core_samples": 120,
-        "left_context_samples": 15, "right_context_samples": 15,
-        "minimum_progress_samples": 80, "max_timeline_samples": 57600000,
-    }
+    captured = plan.provenance.effective_configuration
+    assert captured["natural_context_samples"] == 1600
+    assert captured["forced_context_samples"] == 4000
+    assert captured["max_core_samples"] == 40000
+    assert captured["minimum_progress_samples"] == 16000
+    assert captured["effective_payload_limit"] == 25000000
     with pytest.raises(FrozenInstanceError):
         plan.sample_count = 1
     with pytest.raises(FrozenInstanceError):
@@ -299,7 +291,8 @@ def test_provenance_and_models_are_immutable_deterministic_snapshots(result_fact
     result.normalized_artifact.provenance.target_format["channels"] = 2
     configuration.audio_asr_chunk_overlap_samples = 0
     assert plan.provenance.preprocessing.normalization.target_format["channels"] == 1
-    assert plan.provenance.effective_configuration["overlap_samples"] == 30
+    assert plan.provenance.effective_configuration["overlap_samples"] == 8000
+    validate_asr_chunk_plan(plan)  # Independent of mutated Settings and open files.
 
 
 def altered(value, **changes):
@@ -370,12 +363,8 @@ def test_duration_ceiling_uses_exact_fraction_sample_arithmetic(result_factory, 
 
 @pytest.mark.parametrize("speech", [None, ()])
 def test_chunk_count_overflow_is_resource_failure_without_partial_results(result_factory, speech):
-    # Silence requires 10 target cores; continuous speech requires 9 maximum cores.
-    planner = SpeechAwareAsrChunkPlanner(settings(audio_asr_chunk_max_chunks=9))
-    result = result_factory(1000, speech=speech)
-    if speech is None:
-        assert len(planner.plan(result).chunks) == 9
-        planner = SpeechAwareAsrChunkPlanner(settings(audio_asr_chunk_max_chunks=8))
+    planner = SpeechAwareAsrChunkPlanner(settings(audio_asr_chunk_max_chunks=2))
+    result = result_factory(speech=speech)
     with pytest.raises(AudioProcessingError) as caught:
         planner.plan(result)
     assert caught.value.category == "RESOURCE"
@@ -385,9 +374,9 @@ def test_chunk_count_overflow_is_resource_failure_without_partial_results(result
     {"audio_asr_chunk_target_samples": 0},
     {"audio_asr_chunk_target_samples": True},
     {"audio_asr_chunk_overlap_samples": 30.0},
-    {"audio_asr_chunk_overlap_samples": 150},
-    {"audio_asr_chunk_max_request_samples": 129},
-    {"audio_asr_chunk_boundary_search_samples": 100},
+    {"audio_asr_chunk_overlap_samples": 48000},
+    {"audio_asr_chunk_max_request_samples": 39999},
+    {"audio_asr_chunk_boundary_search_samples": 32000},
     {"audio_asr_chunk_max_chunks": 0},
     {"audio_max_duration_seconds": float("nan")},
 ])
@@ -400,7 +389,7 @@ def test_impossible_or_unvalidated_configuration_fails_sanitized(overrides):
 
 
 @pytest.mark.parametrize("max_chunks", [4096, 1])
-def test_planning_never_reads_closes_or_changes_owned_artifacts(result_factory, monkeypatch, max_chunks):
+def test_planning_replays_only_frames_without_changing_or_closing_artifacts(result_factory, monkeypatch, max_chunks):
     result = result_factory()
     audio, evidence = result.normalized_artifact, result.speech_evidence
     audio_bytes, evidence_bytes = audio.path.read_bytes(), evidence._path.read_bytes()
@@ -408,11 +397,16 @@ def test_planning_never_reads_closes_or_changes_owned_artifacts(result_factory, 
     def forbidden(*args, **kwargs):
         pytest.fail("planner accessed preprocessing-owned resources")
 
+    original_open = Path.open
+
+    def open_evidence_only(path, *args, **kwargs):
+        assert path != audio.path
+        return original_open(path, *args, **kwargs)
+
     with monkeypatch.context() as patch:
         patch.setattr(NormalizedAudioArtifact, "close", forbidden)
         patch.setattr(SpeechEnergyEvidence, "close", forbidden)
-        patch.setattr(SpeechEnergyEvidence, "iter_frames", forbidden)
-        patch.setattr(Path, "open", forbidden)
+        patch.setattr(Path, "open", open_evidence_only)
         planner = SpeechAwareAsrChunkPlanner(settings(audio_asr_chunk_max_chunks=max_chunks))
         if max_chunks == 1:
             with pytest.raises(AudioProcessingError):
@@ -422,3 +416,138 @@ def test_planning_never_reads_closes_or_changes_owned_artifacts(result_factory, 
     assert audio.path.read_bytes() == audio_bytes
     assert evidence._path.read_bytes() == evidence_bytes
     assert not evidence._closed
+
+
+@pytest.mark.parametrize("gap_length", [3199, 3200, 3201])
+def test_minimum_natural_gap_and_strict_safety_margin(result_factory, gap_length):
+    start = 30400
+    result = result_factory(speech=((0, start), (start + gap_length, 128000)))
+    chunk = SpeechAwareAsrChunkPlanner(settings()).plan(result).chunks[0]
+    natural = chunk.end_boundary_reason is ChunkBoundaryReason.NATURAL_SILENCE_CANDIDATE
+    assert natural is (gap_length >= 3200)
+    if natural:
+        assert start + 800 < chunk.core_interval.end_sample < start + gap_length - 800
+
+
+def test_forced_ranking_prioritizes_risk_probability_energy_then_distance(result_factory):
+    result = result_factory(
+        speech=((0, 29500), (34500, 128000)), uncertain=((29500, 34500),),
+        observations={28672: (0.01, 0), 30720: (0.2, 0.02), 33280: (0.2, 0.01)},
+    )
+    plan = SpeechAwareAsrChunkPlanner(settings()).plan(result)
+    assert plan.chunks[0].core_interval.end_sample == 33280  # Uncertain only beats protected.
+    assert plan.boundary_decisions[0].uncertain and not plan.boundary_decisions[0].protected
+
+
+@pytest.mark.parametrize("count", [40001, 40002, 72001, 80001, 128001])
+def test_final_tail_remains_valid_without_tiny_fragment(result_factory, count):
+    plan = SpeechAwareAsrChunkPlanner(settings()).plan(result_factory(count))
+    assert_partition(plan, settings())
+    minimum = plan.provenance.effective_configuration["minimum_progress_samples"]
+    tail = plan.chunks[-1].core_interval.end_sample - plan.chunks[-1].core_interval.start_sample
+    assert tail >= minimum or count in (40001, 40002)
+    assert tail > 1
+
+
+def test_effective_payload_geometry_is_captured_and_enforced(result_factory):
+    planner = SpeechAwareAsrChunkPlanner(settings())
+    plan = planner.plan(result_factory(), effective_payload_limit=72044)
+    assert plan.provenance.effective_configuration["max_request_samples"] == 36000
+    assert all(44 + 2 * (c.request_interval.end_sample - c.request_interval.start_sample) <= 72044
+               for c in plan.chunks)
+    with pytest.raises(AudioProcessingError):
+        planner.plan(result_factory(), effective_payload_limit=44)
+
+
+@pytest.mark.parametrize("kind", ["version", "context", "configuration", "decision", "source", "tail"])
+def test_v2_snapshot_validation_rejects_fabrication(result_factory, kind):
+    plan = SpeechAwareAsrChunkPlanner(settings()).plan(result_factory())
+    if kind == "version":
+        invalid = replace(plan, provenance=replace(plan.provenance, planner_version="arbitrary"))
+    elif kind == "configuration":
+        config = dict(plan.provenance.effective_configuration) | {"forced_context_samples": 1}
+        invalid = replace(plan, provenance=replace(plan.provenance, effective_configuration=config))
+    elif kind == "decision":
+        invalid = replace(plan, boundary_decisions=())
+    elif kind == "source":
+        invalid = replace(plan, sample_count=plan.sample_count + 1)
+    elif kind == "tail":
+        invalid = replace(plan, chunks=plan.chunks[:-1])
+    else:
+        first = replace(plan.chunks[0], request_interval=plan.chunks[0].core_interval)
+        invalid = replace(plan, chunks=(first, *plan.chunks[1:]))
+    with pytest.raises(AudioProcessingError):
+        validate_asr_chunk_plan(invalid)
+
+
+@pytest.mark.parametrize("invalid", [float("nan"), float("inf"), -0.1])
+def test_invalid_frame_evidence_is_rejected_sanitized(result_factory, monkeypatch, invalid):
+    result = result_factory()
+    original = SpeechEnergyEvidence.iter_frames
+
+    def frames(self):
+        for frame in original(self):
+            yield replace(frame, vad_probability=invalid)
+
+    monkeypatch.setattr(SpeechEnergyEvidence, "iter_frames", frames)
+    with pytest.raises(AudioProcessingError) as caught:
+        SpeechAwareAsrChunkPlanner(settings()).plan(result)
+    assert caught.value.category == "VALIDATION" and caught.value.__context__ is None
+
+
+def test_frames_are_replayed_once_and_bounded_by_declared_count(result_factory, monkeypatch):
+    result = result_factory()
+    original = SpeechEnergyEvidence.iter_frames
+    visits = []
+
+    def frames(self):
+        for frame in original(self):
+            visits.append(frame.start_sample)
+            yield frame
+
+    monkeypatch.setattr(SpeechEnergyEvidence, "iter_frames", frames)
+    SpeechAwareAsrChunkPlanner(settings()).plan(result)
+    assert visits == list(range(0, result.normalized_artifact.sample_count, 512))
+
+
+def test_valid_snapshot_needs_neither_audio_nor_frame_artifacts(result_factory):
+    result = result_factory()
+    plan = SpeechAwareAsrChunkPlanner(settings()).plan(result)
+    result.normalized_artifact.close()
+    result.speech_evidence.close()
+    validate_asr_chunk_plan(plan)
+
+
+def test_weak_speech_and_energy_disagreement_remain_blocked(result_factory):
+    result = result_factory(speech=((0, 30000), (34000, 128000)),
+                            protected=((0, 30500), (33500, 128000)),
+                            uncertain=((30500, 33500),), observations={28672: (0.9, 0.00001)})
+    quality = replace(result.speech_map.quality, weak_speech_frame_count=1,
+                      vad_energy_disagreement_frame_count=1)
+    speech_map = replace(result.speech_map, quality=quality)
+    result = replace(result, speech_map=speech_map, warnings=quality.warnings)
+    plan = SpeechAwareAsrChunkPlanner(settings()).plan(result)
+    assert plan.boundary_decisions[0].reason is ChunkBoundaryReason.FORCED_CONTINUOUS_SPEECH
+    assert plan.boundary_decisions[0].uncertain
+    assert_partition(plan, settings())
+
+
+@pytest.mark.parametrize("kind", ["missing", "extra", "invalid-zero"])
+def test_frame_replay_integrity_is_bounded_and_fail_closed(result_factory, monkeypatch, kind):
+    result = result_factory()
+    original = SpeechEnergyEvidence.iter_frames
+
+    def frames(self):
+        last = None
+        for frame in original(self):
+            last = frame
+            if kind == "missing" and frame.end_sample == self.sample_count:
+                return
+            yield replace(frame, dbfs=-math.inf) if kind == "invalid-zero" else frame
+        if kind == "extra":
+            yield last
+
+    monkeypatch.setattr(SpeechEnergyEvidence, "iter_frames", frames)
+    with pytest.raises(AudioProcessingError) as caught:
+        SpeechAwareAsrChunkPlanner(settings()).plan(result)
+    assert caught.value.category == "VALIDATION"

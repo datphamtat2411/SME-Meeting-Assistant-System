@@ -1355,3 +1355,131 @@ completeness nor lower WER/CER. Native long-form quality remains **UNESTABLISHED
 T04 owns speech segmentation/boundary alignment; T05 canonical reconciliation and
 alternatives; T06 coverage confidence/missing speech; T07 selective Recovery and
 admission; T08 end-to-end quality acceptance, production default and cutover.
+
+### T04 — Speech segmentation and boundary alignment V2
+
+Production chunked planning now emits **`speech-aware-v2`**. Historical planner
+`1` remains a separate snapshot-validation contract, with no selectable legacy
+planning fallback. Native T03 plans remain **`whole-file-v1`** and bypass V2
+geometry and boundary analysis. T03 selection, call-budget preflight, classified
+fallback and Recovery policy still apply; preprocessing runs once.
+
+#### Acoustic boundaries and request geometry
+
+Core intervals partition every source sample in `[0,N)` exactly once, including
+silence and weak speech. Requests borrow unmodified normalized 16 kHz mono s16
+audio; planning never opens PCM, reruns VAD or calls ASR.
+
+- Natural candidates are complement gaps of the protected/uncertain union, at
+  least 3200 samples. Cuts must be strictly inside the gap after 800-sample margins
+  on both sides. Prefer the gap midpoint clamped to the bounded search window;
+  rank by distance to configured target, wider gap, then earlier sample. These
+  are **candidate acoustic gaps**, not independently verified silence.
+- Without a natural candidate, rank existing 512-sample frame starts by
+  `2*protected_membership + uncertain_membership`, lower VAD probability, lower
+  linear RMS, target distance, then earlier sample. Probability/RMS use their
+  exact binary rational values in `[0,1]`, without rounding buckets. Shared frame
+  validation rejects invalid/nonfinite evidence, allowing `-inf` dBFS only for
+  exactly zero RMS. An acoustic valley remains `forced-continuous-speech`.
+- Frame replay is chronological and bounded by declared frame count/timeline.
+  A monotone range-min frontier discards dominated/expired candidates; retained
+  positions are bounded by the configured search window, not recording PCM.
+  Interval lookup is indexed; no full-recording rescan occurs per chunk.
+- Each natural boundary gets `min(1600, overlap_cap//2)` samples on each side;
+  each forced boundary gets `min(16000, overlap_cap//2)`. With the default 80000
+  cap, actual adjacent overlap is 3200 samples (200 ms) for natural boundaries
+  and 32000 samples (2 s) for forced boundaries. Odd caps are rounded down
+  symmetrically; source edges have no external context. These versioned rollout
+  constants are not proven optimal Vietnamese recognition parameters.
+- Effective request capacity is the minimum of configured request samples,
+  `(effective_upload_bytes-44)//2`, and a reported provider duration ceiling when
+  available. Upload bytes also respect T02's 25,000,000-byte OpenRouter ceiling.
+  The offline composition binds real provider ceilings before T03 prepares plans.
+  Worst-case forced context is reserved on both sides of every core.
+- Preferred minimum core size is `max(1,min(80000,target//2,max_core//2))`.
+  Tail-aware search avoids tiny final fragments; a shorter terminal core is
+  allowed if the preferred window contains no real frame boundary. No timestamp
+  is invented to fill that window. Empty/infeasible searches, exhausted chunk
+  limits and forced cuts without context fail closed with sanitized categories.
+
+V2 snapshots capture effective configuration, immutable preprocessing provenance,
+protected/uncertain intervals and per-boundary decisions. Version-specific
+validation checks source identity/count/rate, deterministic IDs, exact partition,
+context geometry, real frame-grid forced cuts, natural safety interiors and
+payload limits. Validation uses no current settings, open file or VAD inference.
+Actual extracted WAVs still pass the existing executor/provider checks.
+
+#### Private read-only boundary evidence and T05 handoff
+
+`OfflineAsrEvidence.boundary_alignment` retains `boundary-alignment-v2` reports
+for V2 baseline execution only. The public Core API/worker result format is
+unchanged. Reports contain no recognized text, provider diagnostics or paths.
+Each timestamped segment is matched back to its real request using the existing
+Fraction-to-sample translation. Invalid chronology, mismatched absolute timing or
+out-of-request evidence is rejected rather than clipped. Original candidates
+remain intact and are passed to the existing downstream stages.
+
+Per-boundary records identify neighbor chunk IDs, sample, acoustic reason, actual
+left/right context, segment support counts, strict crossings, near endpoints,
+union-based temporal overlap and reconciliation-review need. A near endpoint is
+inside the actual request-intersection bounds (inclusive for endpoint observations
+only); touching a boundary is not positive-duration overlap. A boundary lacking
+segment support touching it from either neighbor is `incomplete-evidence`.
+Otherwise its engineering risk is `natural-candidate` or
+`forced-continuous-speech`. Incomplete status does not reclassify missing speech
+or hallucinations in Coverage. Acoustic reason remains available when evidence
+is incomplete. Forced cuts, crossings and temporal overlap require review.
+
+Text-free segment supports retain chunk ID/segment ordinal, original absolute
+interval, actual request, owner core, core intersection and crossing observation.
+Provider word timing is marked unavailable or provider-reported after validation;
+it never changes segment timing. No extra word request, word inference or forced
+alignment occurs. T05 can join these stable IDs to the original transient
+candidates, preserving competing temporal supports and real repeated utterances.
+A long segment is never split. Identical words and overlapping timestamps do not
+establish duplicated utterances or lexical conflict; T04 chooses no wording.
+Recovery, Coverage, Reconciliation and correction algorithms are unchanged.
+
+#### Structural metrics
+
+`BoundaryAlignmentMetrics` defines:
+
+| Metric | Definition |
+| --- | --- |
+| `planner_version`, `source_sample_count`, `planned_chunk_count` | Captured V2 identity, exact N, baseline request count |
+| `natural_boundary_count`, `forced_boundary_count` | Disjoint interior-boundary reason counts |
+| `protected_boundary_count`, `uncertain_boundary_count` | Boundary membership counts; may overlap each other, not extra boundary totals |
+| `total_requested_samples` | Sum of actual baseline request lengths |
+| `total_core_samples` | Sum of core lengths, exactly N |
+| `total_context_samples` | Requested samples minus N; includes request multiplicity |
+| `total_adjacent_overlap_samples` | Union length of actual adjacent request intersections, counting each position once |
+| `maximum_request_samples` | Largest actual request length, not configured ceiling |
+| `minimum_core_samples`, `maximum_core_samples` | Smallest/largest actual core length |
+| `boundary_crossing_segment_count` | Unique `(chunk_id,segment_ordinal)` supports crossing any interior boundary; each counted once |
+| `boundary_overlap_evidence_samples` | Union length of neighboring temporal supports within their actual request intersections |
+| `incomplete_boundary_count` | Interior boundaries classified incomplete; may have either acoustic reason |
+
+Per-boundary crossing/support counts are observations, not unique spoken-word or
+utterance counts. Reduced structural overlap does not establish less duplicated
+wording, improved WER or lower paid cost.
+
+#### Authorized future T01 comparison
+
+Keep historical reports, human references, baseline measurements and quality gates
+unchanged. In a separately approved evaluation caller/output directory, label
+legacy planner `1`, `speech-aware-v2` and `whole-file-v1` distinctly (including
+actual selected strategy/fallback). The current planner entry point emits only
+V2: rerunning an old matrix with it is a **new versioned measurement**, not a
+replacement or relabeling of a historical B/C result. To reproduce the legacy
+algorithm, use its recorded revision in an isolated authorized evaluation.
+
+Compare the same independently human-reviewed references, source revisions,
+normalization, ASR model/provider settings and scoring denominators. Measure
+pre-correction WER/CER, human-assessed critical/material omissions, forced cuts,
+actual overlap, baseline/recovery request counts, reconciliation conflicts and
+hallucination indicators. Retain reported costs and measured latency only when
+available; distinguish unknown from zero and label dynamic upstream provenance.
+Also assess corrected end-to-end output separately. Preserve genuine Vietnamese
+repetitions and inspect unresolved long-segment/overlap cases for T05. No paid
+inference or private evaluation audio was used for T04 implementation. Mock
+regressions establish contracts, **not improved Vietnamese ASR quality**.

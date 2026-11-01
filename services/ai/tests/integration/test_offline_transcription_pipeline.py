@@ -126,7 +126,7 @@ def workflow(tmp_path, monkeypatch):
             service_name="test-ai", service_identity="ai-core", _env_file=None,
             audio_temp_dir=work, audio_speech_map_boundary_padding_samples=0,
             audio_speech_map_merge_gap_samples=0, audio_asr_chunk_target_samples=2048,
-            audio_asr_chunk_max_request_samples=2048, audio_asr_chunk_overlap_samples=0,
+            audio_asr_chunk_max_request_samples=2304, audio_asr_chunk_overlap_samples=256,
             audio_asr_chunk_boundary_search_samples=0, audio_asr_recovery_context_samples=128,
             transcript_correction_model=overrides.pop("transcript_correction_model", "test/corrector"),
             **overrides,
@@ -176,8 +176,11 @@ def workflow(tmp_path, monkeypatch):
                     if value is not None:
                         return value
                 text = RAW[int(audio.chunk_id[-6:]) % len(RAW)]
+                ordinal = int(audio.chunk_id[-6:])
+                left = 128 if audio.chunk_id.startswith("chunk-") and ordinal else 0
+                right = 128 if audio.chunk_id.startswith("chunk-") and (ordinal + 1) * 2048 < count else 0
                 return AsrCandidate(
-                    text, (AsrSegment(Fraction(0), audio.duration, text),),
+                    text, (AsrSegment(Fraction(left, 16000), audio.duration - Fraction(right, 16000), text),),
                     AsrQualityMetadata(confidence=0.95, language="vi"), AsrUsage(),
                     AsrProvenance("fake", "test/asr", inference_config=(
                         ("language", "vi"), ("temperature", 0.0), ("prompt", PRIVATE),
@@ -289,6 +292,13 @@ def test_complete_order_timeline_quality_provenance_and_safe_immutable_evidence(
     assert h.asr_calls == ["chunk-000000", "chunk-000001"]
     assert h.correction_calls == 1
     assert assessments == [True]
+    assert provenance.planning.planner_version == "speech-aware-v2"
+    alignment = output.evidence.asr.boundary_alignment
+    assert len(alignment.boundaries) == 1
+    assert alignment.metrics.planned_chunk_count == 2
+    assert alignment.metrics.total_core_samples == 4096
+    assert alignment.metrics.total_requested_samples == 4352
+    assert alignment.metrics.total_adjacent_overlap_samples == 256
     assert_released(h)
     assert not caplog.records
 
@@ -578,6 +588,7 @@ def test_native_preserves_segments_skips_recovery_and_retains_uncertainty(workfl
     assert output.status is Status.COMPLETED_WITH_WARNINGS and output.completed_stages == tuple(Stage)
     assert len(output.evidence.chunk_plan.chunks) == len(h.asr_calls) == 1
     assert output.provenance.planning.planner_version == "whole-file-v1"
+    assert output.evidence.asr.boundary_alignment is None
     assert "adaptive-asr-v1" in output.provenance.pipeline_version
     r = output.evidence.recovery
     assert r.stop_reason.value == "skipped-by-asr-strategy" and r.attempts == ()
@@ -592,6 +603,34 @@ def test_native_preserves_segments_skips_recovery_and_retains_uncertainty(workfl
     assert telemetry.total_actual_asr_calls == telemetry.native_successes == 1
     assert telemetry.recovery_calls == 0 and telemetry.reported_asr_cost == Fraction(1, 100)
     assert_safe(output.evidence)
+    assert_released(h)
+    assert not caplog.records
+
+
+def test_chunked_planning_captures_effective_provider_limit_before_execution(workflow, monkeypatch):
+    h = workflow()
+    enable_v2(h, monkeypatch)
+    limit = 44 + 2304 * 2
+    monkeypatch.setattr(h.transcriber, "capabilities", replace(h.transcriber.capabilities,
+                       effective_payload_limit=limit))
+    output = pipeline(h).run(h.source)
+    assert output.failure is None
+    assert output.provenance.planning.effective_configuration["effective_payload_limit"] == limit
+    assert h.asr_calls == [c.chunk_id for c in output.evidence.chunk_plan.chunks]
+    assert output.evidence.recovery.provenance.planning == output.provenance.planning
+    assert_safe(output.evidence.asr.boundary_alignment)
+    assert_released(h)
+
+
+def test_infeasible_chunked_payload_fails_before_any_provider_call(workflow, monkeypatch, caplog):
+    h = workflow()
+    enable_v2(h, monkeypatch)
+    monkeypatch.setattr(h.transcriber, "capabilities", replace(h.transcriber.capabilities,
+                       effective_payload_limit=44))
+    output = pipeline(h).run(h.source)
+    assert output.status is Status.FAILED and output.failure.stage is Stage.CHUNK_PLANNING
+    assert h.asr_calls == [] and h.correction_calls == 0
+    assert_safe(output)
     assert_released(h)
     assert not caplog.records
 

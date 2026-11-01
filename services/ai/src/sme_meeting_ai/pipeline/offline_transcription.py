@@ -9,6 +9,7 @@ import traceback
 from concurrent.futures import CancelledError
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
+from fractions import Fraction
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Mapping
 
@@ -34,6 +35,7 @@ if TYPE_CHECKING:
         AsrTranscriber,
     )
     from sme_meeting_ai.transcription.asr_strategy import AsrStrategyTelemetry
+    from sme_meeting_ai.transcription.boundary_alignment import BoundaryAlignmentReport
     from sme_meeting_ai.transcription.chunk_planning import (
         AsrChunkPlan,
         ChunkPlanningProvenance,
@@ -107,6 +109,7 @@ class OfflineAsrProvenance:
 class OfflineAsrEvidence:
     chunk_outcomes: tuple["ReconciliationChunkOutcome", ...]
     provenance: OfflineAsrProvenance
+    boundary_alignment: "BoundaryAlignmentReport | None" = None
 
 
 @dataclass(frozen=True)
@@ -252,6 +255,9 @@ def _failure(error: Exception, stage: OfflineTranscriptionStage) -> OfflineTrans
 def _asr_evidence(plan, results, settings: Settings, payload_limit: int | None = None) -> OfflineAsrEvidence:
     """Project local failures and validated provider provenance, never wording."""
     from sme_meeting_ai.transcription.asr import AsrErrorCategory
+    from sme_meeting_ai.transcription.boundary_alignment import (
+        analyze_boundary_alignment,
+    )
     from sme_meeting_ai.transcription.chunk_execution import AsrChunkResult
     from sme_meeting_ai.transcription.coverage import _valid_result
     from sme_meeting_ai.transcription.reconciliation import (
@@ -283,6 +289,8 @@ def _asr_evidence(plan, results, settings: Settings, payload_limit: int | None =
                          if any(s.segment.text.strip() for s in item.timeline_segments)
                          else ReconciliationChunkState.EMPTY)
         outcomes.append(ReconciliationChunkOutcome(chunk.chunk_id, chunk.core_interval, state, failure))
+    alignment = (analyze_boundary_alignment(plan, results)
+                 if plan.provenance.planner_version == "speech-aware-v2" else None)
     return OfflineAsrEvidence(tuple(outcomes), OfflineAsrProvenance(tuple(provenance), {
         "max_concurrent_chunks": settings.audio_asr_max_concurrent_chunks,
         "max_payload_bytes": settings.audio_asr_max_payload_bytes if payload_limit is None else payload_limit,
@@ -290,7 +298,7 @@ def _asr_evidence(plan, results, settings: Settings, payload_limit: int | None =
         "model": settings.audio_asr_model,
         "language": settings.audio_asr_language,
         "temperature": settings.audio_asr_temperature,
-    }))
+    }), alignment)
 
 
 def _chunk_warnings(stage, outcomes) -> tuple[OfflineTranscriptionWarning, ...]:
@@ -310,6 +318,21 @@ def _coverage_warnings(assessment, phase: str) -> tuple[OfflineTranscriptionWarn
         *(OfflineTranscriptionWarning(stage, "unresolved-speech", interval, phase=phase)
           for interval in assessment.unresolved_intervals),
     )
+
+
+@dataclass(frozen=True)
+class _BoundedAcousticPlanner:
+    """Bind actual provider ceilings before T03 prepares its chunked fallback."""
+
+    planner: "SpeechAwareAsrChunkPlanner"
+    effective_payload_limit: int
+    provider_max_request_samples: int
+
+    def plan(self, preprocessing):
+        return self.planner.plan(
+            preprocessing, effective_payload_limit=self.effective_payload_limit,
+            provider_max_request_samples=self.provider_max_request_samples,
+        )
 
 
 class OfflineTranscriptionPipeline:
@@ -339,6 +362,7 @@ class OfflineTranscriptionPipeline:
             STRATEGY_VERSION,
             AsrStrategy,
             AsrStrategyRunner,
+            _capabilities,
         )
         from sme_meeting_ai.transcription.correction import (
             TranscriptCorrectionOutcome,
@@ -385,7 +409,18 @@ class OfflineTranscriptionPipeline:
 
             stage = OfflineTranscriptionStage.CHUNK_PLANNING
             strategy = AsrStrategyRunner(self._transcriber, self._settings)
-            strategy.prepare(preprocessing_result, self._planner)
+            limit = self._settings.audio_asr_max_payload_bytes
+            duration_limit = 230400000
+            capabilities = _capabilities(self._transcriber)
+            if capabilities is not None:
+                provider_limit = capabilities.effective_payload_limit
+                if type(provider_limit) is int and 0 < provider_limit <= 26214400:
+                    limit = min(limit, provider_limit)
+                ceiling = capabilities.verified_duration_ceiling
+                if ceiling is not None:
+                    _require(isinstance(ceiling, Fraction) and ceiling > 0)
+                    duration_limit = min(duration_limit, (ceiling * 16000).__floor__())
+            strategy.prepare(preprocessing_result, _BoundedAcousticPlanner(self._planner, limit, duration_limit))
             plan = strategy.plan
             _require(plan.source_id == source_id and plan.sample_count == metadata.sample_count
                      and plan.provenance.preprocessing == provenance.preprocessing)
