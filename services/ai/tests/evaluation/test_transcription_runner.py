@@ -193,7 +193,10 @@ def test_stages_end_to_end_telemetry_and_private_text_are_numeric_only(case, cap
 
 
 def test_changed_context_recovery_reduces_independently_labeled_loss(case):
-    h = case(omission=True)
+    # T07 cannot fabricate a different request for an intact full-source core.
+    # Real chunked geometry supplies distinct, bounded omission observations.
+    h = case(omission=True, audio_asr_chunk_target_samples=2048,
+             audio_asr_chunk_max_request_samples=2304, audio_asr_chunk_overlap_samples=256)
     record = invoke(h)
     stages = {item["stage"]: item for item in record["stages"]}
     assert stages["baseline_asr"]["metrics"]["missed_samples"] == h.fixture.sample_count

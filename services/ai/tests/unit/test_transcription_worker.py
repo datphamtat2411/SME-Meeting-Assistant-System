@@ -113,7 +113,7 @@ def test_result_validation_fails_closed(workflow, mutation):
         validate_result_bytes(json.dumps(data).encode(), **bound)
 
 
-def test_only_unresolved_canonical_support_conservatively_projects_covered_regions(workflow):
+def test_boundary_spanning_unresolved_support_preserves_conservative_coverage(workflow):
     h = workflow(source_id=str(uuid4()))
 
     def observed(audio):
@@ -129,15 +129,17 @@ def test_only_unresolved_canonical_support_conservatively_projects_covered_regio
     outcome = pipeline(h).run(h.source)
     assert outcome.failure is None and len(outcome.result.segments) == 1
     assessment = outcome.evidence.coverage
-    covered = [i for i, region in enumerate(assessment.regions) if region.state.value == "COVERED"]
-    assert covered and any(region.state.value == "UNRESOLVED_ERROR" for region in assessment.regions)
+    # T06 marks the entire ambiguous canonical support suspicious, including the
+    # prefix that older pre-canonical coverage called COVERED. Never upgrade it.
+    assert {region.state.value for region in assessment.regions} == {"SUSPICIOUS", "UNRESOLVED_ERROR"}
+    before = tuple(assessment.regions)
     result = validate_result_bytes(map_result(outcome, h.settings, **binding(h)))
     assert result.pipelineStatus == "COMPLETED_WITH_WARNINGS"
     assert result.segments[0].qualityStatus == "UNRESOLVED"
-    assert all(result.coverage[i].coverageStatus == "UNRESOLVED_ERROR" for i in covered)
-    assert all(region.coverageStatus == "UNRESOLVED_ERROR" for region in result.coverage)
+    assert all(published.coverageStatus == original.state.value for original, published in
+               zip(assessment.regions, result.coverage, strict=True))
     assert outcome.evidence.coverage is outcome.result.coverage is assessment
-    assert all(assessment.regions[i].state.value == "COVERED" for i in covered)
+    assert assessment.regions == before
     assert outcome.provenance.coverage == assessment.provenance
     assert result.correctionProof.outputSha256 == correction_digest([s.model_dump() for s in result.segments])
 

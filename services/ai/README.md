@@ -353,10 +353,10 @@ the actual media, annotations, or model files.
 | Directory | Purpose |
 | --- | --- |
 | `annotations/` | Human-reviewed audio annotations, including readable labels and sample-accurate TSV intervals. |
-| `datasets/` | Approved evaluation fixtures and their manifest, referencing fixtures and integrity metadata. |
+| `datasets/` | Original audio and reviewed source manifests; original bytes are distinct from normalized reference WAVs. |
 | `metadata/` | Fixture metadata, source checksums, and supporting provenance. |
 | `models/` | Externally provisioned local model assets, currently including Silero VAD v5 ONNX. |
-| `reference/` | Normalized reference audio for sample-accurate fixture preparation and review. |
+| `reference/` | Normalized reference audio used for local sample-accurate fixture checks and review. |
 | `results/` | Generated evaluation reports, including baseline and experimental results. |
 | `review/` | Temporary/manual-review audio excerpts for investigating detection behavior. |
 | `tools/` | Local dataset preparation, validation, annotation, and evaluation-review helpers. |
@@ -366,14 +366,40 @@ listening-review artifacts are derived outputs, not authoritative annotations.
 Local tools support preparation and analysis; they are not part of the deployed
 AI service.
 
-The existing suite can use
-`$HOME/sme-private/datasets/vietnamese-preprocessing-v1/manifest.json` (its parent
-directory is the fixture root) and `$HOME/sme-private/models/silero-vad-v5.onnx`,
-with reports under `$HOME/sme-private/results/vietnamese-preprocessing-v1/` and
-manual listening-review excerpts under `$HOME/sme-private/review/`. Follow the
+For normalized fixture checks, use audio under
+`$HOME/sme-private/reference/vietnamese-preprocessing-v1/`, the separately pinned
+Silero model and new reports under `$HOME/sme-private/results/`. The original
+`datasets/.../manifest.json` pins **original source bytes**; it must not be reused
+unchanged against normalized WAVs, even when filenames/sample counts match.
+
+Preprocessing accepts `--evaluation-manifest` separately from
+`--evaluation-fixture-root`. Prepare a new external, versioned reference-audio
+manifest using the reviewed annotations and the normalized metadata: verify full
+WAV hashes, mono PCM16/16 kHz layout, complete sample counts and both PCM anchors.
+Keep the original manifest unchanged and retain its hash, metadata hashes and
+original→reference source hashes in a separate derivation artifact. This preserves
+annotation lineage; it does not create transcript-quality approval. Source lookup
+always uses the explicit reference root, with no fallback to `datasets/`.
+
+For example, with `REFERENCE_MANIFEST` pointing to that new external manifest and
+`REFERENCE_OUTPUT` to a new report in a different directory:
+
+```sh
+AI_SERVICE_NAME=local-reference-evaluation AI_SERVICE_IDENTITY=ai-core \
+AI_AUDIO_VAD_MODEL_PATH="$HOME/sme-private/models/silero-vad-v5.onnx" \
+AI_AUDIO_VAD_MODEL_SHA256="$SILERO_MODEL_SHA256" \
+uv run pytest -m evaluation tests/evaluation/test_preprocessing_quality.py \
+  --evaluation-fixture-root "$HOME/sme-private/reference/vietnamese-preprocessing-v1" \
+  --evaluation-manifest "$REFERENCE_MANIFEST" \
+  --evaluation-output "$REFERENCE_OUTPUT"
+```
+
+This executes local FFmpeg and pinned Silero only. Speech/silence interval labels
+are not transcript references: WER/CER still require independent human text, and
+ASR/correction provider evaluation has separate explicit opt-ins. Follow the
 existing [evaluation commands and configuration](#running-and-interpreting-results)
-and [VAD settings](#speech-detection-and-energy-evidence). Model files must be
-provisioned externally; evaluation tests do not download them implicitly.
+and [VAD settings](#speech-detection-and-energy-evidence). Models are provisioned
+externally; evaluation tests do not download them implicitly.
 
 Local usage conventions:
 
@@ -753,16 +779,19 @@ replaced or silently substituted. Keep generated reports/baselines outside Git.
 
 ### T01 — Controlled ASR strategy comparison
 
-`tests/evaluation/asr_strategy_comparison.py` establishes the measurement baseline
-for ASR architecture reconstruction. It measures the **legacy** algorithms; it
-does not optimize their output or establish improved Vietnamese transcription.
+`tests/evaluation/asr_strategy_comparison.py` provides controlled ASR-only
+diagnostics. Current reports explicitly use `asr-strategy-comparison-2` and
+`algorithm_scope=current-components`, with actual T04/T05/T06/T07 versions. They
+do not reproduce the original T01 algorithms or replace archived V1 baseline
+evidence. V1/V2 report comparisons fail as INCOMPATIBLE. No accuracy improvement
+is implied by the version change.
 Exactly three strategy records are produced for each case:
 
 | Strategy | Execution and scored hypothesis |
 | --- | --- |
 | A: `whole-file` | One complete normalized PCM WAV request to Whisper; validated provider segment text in provider order |
-| B: `chunked-baseline` | Existing chunk planner/executor and Reconciliation, without Recovery |
-| C: `chunked-recovery` | The **same baseline `AsrChunkResult` tuple and objects as B**, plus current Recovery and Reconciliation |
+| B: `chunked-baseline` | Current chunk planner/executor, T04 boundary evidence, T05 Reconciliation and T06 final-canonical coverage, without Recovery |
+| C: `chunked-recovery` | The **same baseline `AsrChunkResult` tuple and objects as B**, plus T07 Recovery's accepted reconciliation and final-canonical assessment |
 
 Preprocessing and chunk planning execute once per recording. Baseline requests
 execute once per planned eligible chunk, shared by B/C. C makes only additional
@@ -834,7 +863,7 @@ before publishing the report; owned artifacts and providers are closed.
 #### Metrics, accounting and interpretation
 
 - `text_metrics` score the actual strategy output, retaining repetitions. B/C
-  additionally expose `provider_text_metrics` before legacy Reconciliation so raw
+  additionally expose `provider_text_metrics` before Reconciliation so raw
   overlap wording and WER insertions remain separately visible. Existing
   `vi-nfc-casefold-technical-1` normalization and exact WER/CER contracts are reused;
   accents and `đ` matter, and no text deduplication occurs in evaluation.
@@ -856,6 +885,11 @@ before publishing the report; owned artifacts and providers are closed.
   unresolved output support between B and C. Progress/successful requests alone do
   not establish accuracy improvement. Signed B→C WER/CER, support/loss,
   hallucination, overlap and conflict deltas expose improvements and regressions.
+  Accepted/rejected/failed counts and admission reasons come from T07. Rejected
+  observations remain charged but do not enter hypotheses. Malformed and failed
+  attempts remain failed calls even when absent from accepted results; an actual
+  Recovery evaluation failure cannot become execution PASS. C consumes T07's
+  accepted snapshot without reconstructing or re-admitting it.
 - Actual totals count A + shared baseline + additional Recovery **once**. C's
   logical/inclusive resource summary includes shared baseline plus Recovery;
   `incremental_provider_telemetry` contains Recovery alone. Complete reported cost,
@@ -889,9 +923,10 @@ Shared-preparation failures retain a sanitized `failure_stage`: missing/invalid
 assets remain `UNAVAILABLE`, while preprocessing, artifact-validation and planning
 errors are execution `FAIL` with unavailable metrics. These categories do not
 include arbitrary exception diagnostics. A valid preprocessing outcome carrying
-speech-map warnings remains eligible for comparison; weak speech can trigger
-legacy Recovery, whereas low confidence alone does not make timestamp-supported
-likely speech actionable. The deterministic controls exercise both cases.
+speech-map warnings remains eligible for comparison. Canonically supported weak
+speech and low confidence alone do not trigger T07 requests. Missing support must
+have credible acoustic evidence and distinct bounded request geometry. Temporal
+support gains can still accompany wrong wording, so they never establish accuracy.
 Reviewed **reconciliation-stage** gates apply independently to B/C, together with
 the existing historical-loss gates. Unrelated correction/end-to-end quality gates
 are not transferred to these strategies. The current gate contract has no
@@ -1824,3 +1859,395 @@ and unresolved disagreement from established same-occurrence conflict. Historica
 results, reference annotations, WER/CER calculations and approved quality gates
 remain intact. These compatibility tests use only invented fixtures and fake
 providers; they establish no live transcription-quality improvement.
+
+### T08 — End-to-end validation and controlled cutover
+
+**The application default remains `AI_AUDIO_ASR_STRATEGY_MODE=chunked`.**
+Implementation verification, human-reference quality verification, deployment
+authorization, and actual deployment are four separate events. None implies the
+next. Live quality evaluation was **not executed** during T08 implementation.
+
+#### Architecture overview and strategy selection
+
+`tests/evaluation/asr_cutover.py` calls **`OfflineTranscriptionPipeline.run(source)`
+once per fixture, strategy and trial**. It does not duplicate the stage runner.
+The existing normalizer validates and produces complete mono PCM16 16 kHz WAV;
+Silero produces independent acoustic observations and a speech map. T03 binds
+provider payload limits and prepares a bounded chunked fallback before inference.
+
+- **OpenRouter dynamic routing:** gateway `openrouter`, model
+  `openai/whisper-large-v3`, language `vi`; no preferred or required upstream.
+  Supplied trustworthy upstream metadata is recorded using T03's public identity
+  projection; unknown metadata stays unknown. Differing or unknown upstreams mark
+  paired comparisons **potentially provider-confounded**. Identical upstream names
+  do not guarantee identical infrastructure or deterministic responses.
+- **Whole-file eligibility:** explicit `adaptive` configuration, T02 V2 segment
+  capability, native sample ceiling, complete serialized WAV payload eligibility,
+  and budget for native plus bounded fallback. The request is one complete source,
+  with no virtual overlaps or invented word timing. Empty success retains missing
+  speech uncertainty. Only classified failures permit the existing single fallback;
+  authentication, validation, rate/resource failures do not introduce hidden retries.
+- **Chunked execution / boundary alignment:** T04 partitions exact source cores,
+  bounds context overlap and concurrency, and retains natural/forced boundary
+  evidence. Provider timestamps remain observations, including uncertainty.
+- **Canonical reconciliation:** T05 selects occurrences using acoustic geometry
+  and source evidence identities, including many-to-one support. Equal text alone
+  does not justify deleting an utterance. Repeated acknowledgements are protected.
+- **Coverage V2:** T06 separates acoustic, raw-ASR and selected canonical evidence.
+  Canonical timestamps establish temporal support, **not lexical completeness**.
+  Weak speech, unsupported text and unresolved alignment remain visible. Human
+  speech/silence/noise/music labels, not VAD, supply evaluation denominators.
+- **Selective Recovery V2:** T07 starts with real T05/T06 canonical state. Each
+  distinct bounded request is evaluated against that state; acceptance requires
+  supported canonical gain or established ambiguity reduction, with protected
+  utterance and global risk non-regression. Rejected/failed text is excluded from
+  final evidence, while its actual adapter call and reported cost remain counted.
+  An intact full-source request is not artificially split to create retries.
+  Native success continues to skip Recovery requests. T07's accepted snapshot and
+  final coverage are reused before correction; speculative trials are not public
+  completed reconciliation stages.
+- **Correction and publication:** the existing whole-meeting GPT correction and
+  prompt remain unchanged. Segment IDs, timing and uncertainty stay bound to
+  canonical evidence. Existing `map_result` and `validate_result_bytes` enforce
+  corrected-only contract `1.0`, source identity, 16 kHz timeline, coverage,
+  warnings, provenance and `correctionProof`. Empty negative-control output must
+  be rejected as `EMPTY_OUTPUT`, not published as successful speech. Correction
+  heuristics detect gross drift; they do not prove that every semantic edit is
+  justified. Independent review is still necessary.
+
+The public stage names and Worker/Core API schemas are unchanged. Earlier T06
+handoff descriptions above describe its original snapshot: **T07 attempt deltas
+are now final-canonical**, with the original pre-canonical assessment retained
+separately. Whole-file Recovery metadata now uses V2, with no attempted requests.
+
+#### Deterministic regression tests
+
+New offline suites:
+
+```bash
+uv run ruff check tests/evaluation/asr_cutover.py \
+  tests/evaluation/test_asr_cutover.py tests/evaluation/test_asr_cutover_quality.py \
+  tests/evaluation/conftest.py tests/integration/test_transcription_cutover.py
+uv run pytest tests/evaluation/test_asr_cutover.py \
+  tests/integration/test_transcription_cutover.py \
+  tests/integration/test_offline_transcription_pipeline.py -q
+```
+
+They use invented audio/evidence and fake ASR/correction dependencies. Network is
+blocked in the new deterministic suites. The real preprocessing composition and
+pipeline-to-Worker publication run without replacing final outcomes. Mutation
+tests reject missing/forged proof, invalid identities/ordinals, missing coverage,
+upgraded unresolved/suspicious quality, invalid retry metadata, contradictory
+status and unsupported wire versions. Correction tests reject gross rewriting,
+expansion, segment deletion and invented segments. Rollback tests use replacement
+pipeline configuration and revalidate earlier completed envelopes/proofs.
+
+The R01–R62 regression matrix is covered collectively, not by renaming isolated
+unit tests as end-to-end tests:
+
+| Matrix | Test ownership |
+| --- | --- |
+| R01–R08, R31–R37, R46, R52–R55, R60–R62 | New `test_transcription_cutover.py`, existing real-composition `test_offline_transcription_pipeline.py` |
+| R09–R15 | Existing chunk-planning/reconciliation unit suites and real-composition boundary tests; new native repetition/technical-token publication case |
+| R16–R21 | Existing `test_coverage_validation.py` and canonical-coverage integration cases |
+| R22–R30 | Existing T07 `test_recovery.py`, T07 admitted/rejected pipeline-to-Worker cases, strict request-bound replay tests |
+| R38–R45, R56–R59 | New `test_asr_cutover.py`, established transcription metric/reference suites |
+| R47–R51 | New report/coordinator tests and existing strategy/recovery/preprocessing/cancellation/privacy suites |
+
+Full AI CI still includes package lint/tests, distribution build, locked runtime
+image build and independent-role smoke checks. Standard pytest excludes
+`evaluation` tests and needs no private assets or credentials. CI does not run the
+T08 live entry point. Synthetic passing tests cannot establish Vietnamese accuracy.
+
+#### Report, policy and quality-gate interpretation
+
+Reports use `report_schema_version=1`, `evaluation_version=asr-cutover-1` and the
+unchanged `vi-nfc-casefold-technical-1` measurement. They are canonical sorted-key
+JSON with deterministic ordering and a SHA-256 over the document excluding
+`report_sha256`. `serialize_report` and the readiness evaluator reconstruct and
+validate all derived fields, metrics, gates and integrity before using them.
+Identical recorded metrics/inputs serialize identically. Real nanosecond durations
+and process RSS remain measured values, never invented deterministic timings.
+
+`CutoverPolicy` is a strict external reviewed contract. It binds:
+
+- approval identity (opaque SHA-256) and approval version;
+- manifest digest, reference identity, `pipeline_identity()` (hashes of actual
+  checked-out production source, including uncommitted work), and
+  `configuration_digest(matrix, settings)`;
+- an explicit fixture-identity→condition-label map, all required T08 categories,
+  permitted recordings, source samples, trials (1–4), request/payload/concurrency/
+  Recovery limits, latency and Linux process-memory ceilings;
+- separately reviewed rational WER and CER regression tolerances, plus explicit
+  hallucination-sample and insertion-count tolerances. There are no built-in
+  statistically justified quality thresholds.
+
+Use the existing schema-2 approved manifest and independent reference contracts.
+T08's additional conditions (e.g. multiple speakers, overlap, natural pauses,
+genuine repetition and ambiguous negative controls) are independently reviewed
+policy labels bound to fixture identities; they are not inferred from ASR/VAD.
+`fixture_identity(fixture)` hashes stable fixture/source/reference/annotation
+identities, excluding filenames. `reference_identity(cases)` is the hash of sorted
+unique `(fixture_identity, reference_sha256, annotation_sha256)` triples. No
+reference text, model-generated reference, recording or private filename belongs
+in Git or a report.
+
+The report carries both **canonical ASR** text metrics (observed transiently at the
+real correction boundary) and corrected final text metrics. WER/CER checks apply
+to both, per paired fixture/trial and exact pooled counts. Genuine repetitions,
+Vietnamese diacritics, `d`/`đ`, technical tokens and deterministic edit tie-breaking
+are preserved. Corpus rates pool numerators and reference denominators. Reports
+count unique recording-source hashes once for independent-recording/duration
+summaries; trials and configurations are not additional independent recordings.
+This is descriptive evidence, not a statistical confidence claim.
+
+Human missing/material/critical intervals are compared as interval sets, so a
+critical omission cannot be offset by an improvement elsewhere. Silence, noise
+and music text-support numerators and human denominators are separate; T06's
+unsupported-canonical-risk samples are separately labeled internal risk. T07
+attempt/accepted/rejected/failed counts, canonical support/ambiguity improvement,
+prevented regressions and requested samples come from actual V2 metadata.
+Independent G09 review violations describe admitted transcript degradation;
+prevented trial regressions are not mislabeled as final regressions.
+
+Resource units are samples, bytes, calls and nanoseconds. Source duration is
+`source_samples / 16000`; reported costs are exact provider rationals, with known
+subtotal, null incomplete total, and unknown-cost count. Linux high-water RSS is
+**process-wide**, includes native allocations/earlier cases, and is not claimed as
+isolated per-recording memory. Deterministic/replay adapter invocations are not
+new paid acoustic requests; evidence mode stays explicit. Replay cannot establish
+live latency/cost/resource performance and leaves G10 unavailable.
+
+| Gate | Evidence and fail-closed behavior |
+| --- | --- |
+| G01 | Entire approved paired scope, compatible source/reference hashes, independent labels, valid non-synthetic quality evidence; absent evidence is UNAVAILABLE |
+| G02 | No new critical missing-speech interval against paired chunked baseline |
+| G03 | Historical material/critical loss and conservative false-success check retain `mandatory-zero-material-loss-1` |
+| G04 / G05 | Explicit separately reviewed WER/CER tolerances, per-case and pooled, canonical and corrected; no threshold means UNESTABLISHED |
+| G06 | Separate reference-confirmed silence/noise/music support and insertion-count tolerances |
+| G07 / G08 / G09 | Independent approved case-bound repetition/canonical/recovery reviews, numeric violation counts and evidence hashes; missing review/count is UNAVAILABLE; any violation fails |
+| G10 | Measured request/payload/concurrency/Recovery/source/time/memory limits; missing approved latency/memory ceiling is UNESTABLISHED |
+| G11 | Real Worker mapping/validation, including correct empty-control rejection, plus verified publication regression checks |
+| G12 | Explicit verified rollback evidence matching pipeline/configuration identity |
+
+Statuses are `PASS`, `FAIL`, `UNESTABLISHED`, `UNAVAILABLE`. All mandatory gates
+must PASS. A valid failure is never hidden by unavailable cases. Synthetic quality
+evidence leaves G01 unavailable even if structural tests pass.
+
+The original T01 A/B/C identities stay `whole-file`, `chunked-baseline`,
+`chunked-recovery`. The current diagnostic harness explicitly emits comparison
+version 2 and current component identities; **it is not a historical executable**.
+Do not relabel its results as original B/C algorithms. `HistoricalEvidence` must be supplied
+from an authorized original-revision evaluation/replay artifact, with its original
+revision, approval/evidence hash, V1 planner/reconciler/Recovery identities, and
+actual numeric ASR-only records for every paired fixture/trial and all three
+strategies. Text/reference/normalization/runtime identities must be compatible.
+Absent/incompatible historical evidence blocks readiness. No historical benchmark
+or 28-second recording is synthesized from an example manifest.
+
+#### Approved offline replay
+
+`ReplayProvider` borrows approved external response objects keyed by exact WAV
+payload SHA-256, rational duration and timestamp mode; chunk identity must also
+match. `ReplayCorrector` requires a captured exact correction request identity,
+including prompt/transcript hashes, model, output limit, temperature and reasoning
+configuration. Changed request geometry or missing response fails closed. Pass
+these providers to `run_production_case(..., evidence_mode="approved-replay")`.
+Private response loading/approval remains external; the evaluator neither searches
+developer directories nor invents uncaptured responses. Replay reproduces local
+T05/T06/T07 admission, not new acoustic behavior or live operational performance.
+
+#### Approved live evaluation — separately authorized, not executed by T08
+
+First independently review/version the corpus, references, all condition labels,
+configuration and policy. The approved `ConfigurationMatrix` has exactly one
+geometry variant; T08 executes both current production modes and every approved
+trial. The configuration identity also binds effective audio/correction settings.
+Historical A/B/C evidence is collected separately at its original revision; no
+historical evaluator is silently rewritten into a T08 production strategy.
+
+After separate authorization, an operator may invoke:
+
+```bash
+RUN_ASR_CUTOVER_LIVE=1 RUN_OPENROUTER_LIVE_EVALUATION=1 \
+uv run --env-file /secure/config/approved-evaluation.env pytest -m evaluation \
+  tests/evaluation/test_asr_cutover_quality.py \
+  --evaluation-fixture-root /secure/datasets/approved-vietnamese-asr \
+  --transcription-evaluation-config /secure/config/approved-cutover-matrix.json \
+  --asr-cutover-policy /secure/config/approved-cutover-policy.json \
+  --asr-cutover-output /secure/results/new-cutover-report.json \
+  --asr-cutover-max-calls APPROVED_INTEGER_BUDGET
+```
+
+Provision actual `OPENROUTER_API_KEY`, correction model/settings and pinned local
+VAD model path/SHA-256 through that explicit external environment. Credentials
+alone authorize nothing. No implicit `.env`, arbitrary developer audio, automatic
+downloads, missing references or in-repository output are accepted.
+
+`preflight_live` checks opt-ins, external nonsymlink paths, legal/privacy approval,
+source/reference/model hashes, complete reviewed thresholds, model identity,
+configuration approval, entire permitted scope, new safe output destination and
+total request budget before model/provider construction. Its conservative ASR
+bound is:
+
+```
+fixtures × 2 modes × trials × (configured max chunks + max Recovery attempts + 1)
+```
+
+Set reviewed chunk/Recovery limits appropriately before approving the matrix; do
+not lower a safety bound after observing outputs. Every call is ledger-bounded;
+no best-of-N selection or silent omission of a difficult fixture occurs. Source,
+reference, manifest, configuration, policy and pinned model identities are checked
+again after inference and cleanup, before exclusive creation of the report.
+
+Live collection **does not claim GO**. Its initial implementation/CI/rollback and
+independent semantic reviews are unavailable. An operator assembles reviewed
+evidence offline, without more inference:
+
+```python
+# Run from services/ai with PYTHONPATH=tests; read only approved external JSON.
+from evaluation.asr_cutover import assemble_report, evaluate_readiness, serialize_report
+
+report = assemble_report(cases, approved_policy, verified_checks,
+                         reviews=independent_case_reviews,
+                         historical=approved_original_revision_evidence)
+decision = evaluate_readiness(report, approved_policy, deployment_approval)
+```
+
+`Review` binds gate G07/G08/G09, exact normalized case SHA-256, approval identity,
+evidence SHA-256, status and explicit independently confirmed violation count.
+`Verification` binds implementation/CI/publication/rollback status and external
+test-evidence digest to pipeline/configuration hashes; passing CI requires an
+actual commit/run identity. `DeploymentApproval` binds exact report and policy
+hashes, approval identity and controlled deployment-scope hash. These are reviewed
+artifact contracts, not a substitute for operator identity/access control.
+The readiness function validates/rebuilds the report and makes **no provider,
+Git, configuration, database or infrastructure writes**. Its GO is an operator
+decision candidate, never actual deployment. The collection report's initial
+`release_decision` remains NO-GO; retain the separately approved readiness decision
+alongside its exact report hash.
+
+#### Canary deployment and rollback procedure
+
+1. **Phase 0:** leave approved production workers on
+   `AI_AUDIO_ASR_STRATEGY_MODE=chunked`.
+2. **Phase 1:** run authorized offline/live candidate evaluation with no production
+   traffic. Resolve all required CI and quality failures. Obtain a valid GO and
+   separate deployment authorization for an explicit cohort.
+3. **Phase 2:** start an explicitly controlled replacement-worker cohort with
+   `AI_AUDIO_ASR_STRATEGY_MODE=adaptive`. This is deployment-level separation;
+   there is no new per-request feature flag. Use existing queue/admission/routing
+   controls to assign each job once under the existing claim/lease lifecycle;
+   do not mirror a job to two strategies. Do not claim deterministic strategy
+   assignment by mixing workers on an uncontrolled shared queue. Review quality,
+   omissions/uncertainty, actual requests/cost, latency, failures and publication.
+4. **Phase 3:** expand only to a separately reviewed limited production cohort.
+   Do not auto-expand after a canary test passes.
+5. **Phase 4:** separately approve broader deployment. The application default
+   need not change to promote an authorized deployment configuration.
+
+**Primary rollback:** restore `AI_AUDIO_ASR_STRATEGY_MODE=chunked` on replacement
+workers for new executions. Stop/drain the candidate cohort through its normal
+worker lifecycle. Configuration is snapshotted when the pipeline is constructed;
+changing environment/settings does not instantaneously switch existing objects or
+in-flight requests. Allow bounded active work to complete or follow existing
+shutdown, cancellation, lease-loss and unfinished-job retry protections. Never
+force a second competing execution to make rollback appear immediate.
+
+No database rewrite, Core schema rollback, transcript editing or regeneration of
+completed correction proofs is required. Persisted completed envelopes remain
+unchanged and their original proofs stay valid. Validate them with their original
+source/job identities and retained execution configuration; do not reserialize old
+results using new deployment settings as a migration. Only unfinished work uses
+normal lease/fencing/retry rules, with all actual previous requests still counted.
+The deterministic rollback test verifies configuration lifecycle and completed
+envelope integrity; it does not claim an executed infrastructure rollout/drain.
+
+#### Initial T08 CI triage
+
+Latest inspected remote AI CI: run **41280678220**, commit
+`77f140727a6573ebeb4c02fe5b4c58808f8b58f4`: lint PASS; **18 failed, 1965 passed,
+3 skipped, 3 deselected**. No remote run exists for the checked T06 HEAD plus
+uncommitted T07/T08 work, and no CI success is inferred from local tests.
+
+| Observed failures | Classification / evidence / action |
+| --- | --- |
+| T01 overlap duplicate assertion | Obsolete occurrence-fixture assumption after T05; displaced equal wording is not established same occurrence. T06 already supplied an absolute-overlap fixture. Historical executable-identity limitation remains. |
+| T01 weak-speech Recovery conflict assertion | Evaluation measurement defect: historical C imported current Recovery; T07 does not schedule already canonically supported weak speech merely to create a conflict. Original-revision evidence must remain separate from current diagnostics. |
+| T01 local payload availability assertion | Fixture/configuration incompatibility: tiny cap with infeasible forced context prevented planning before A eligibility. Existing T06 compatibility work supplies feasible geometry and keeps zero-call local rejection. |
+| Eight transcription-runner failures (end-to-end, omission, 28-second synthetic contract, silence, correction failure, unavailable aggregation, unknown cost, baseline tolerance) | Fixture/configuration and evaluation-handoff incompatibilities: locked OpenRouter/Whisper evidence and final-canonical correction are required. T06 already corrected provider fixtures and stage handoff. T07 additionally makes a full-source omission non-retriable when no distinct request exists. T08 changes only that omission test to real chunked geometry, preserving the independently labeled loss assertion. The 28-second case is synthetic contract evidence, not a real recording. |
+| Four native payload-limit cases and preflight exception test | Fixture/configuration incompatibility: forced context cannot fit the tiny cap, or planner construction fails before ASR preparation. Existing T06 strategy fixtures make geometry feasible and preserve pre-inference resource rejection. |
+| Strategy 25/26-call boundary test | Obsolete hardcoded chunk-count assumption after T04 planner change; existing fixture uses the actual deterministic plan boundary. Budget invariant is preserved. |
+| Recovery tiny-payload geometry test | Production compatibility defect previously repaired: Recovery shared request limits must not require a new baseline forced-core partition. Existing request-limit separation retains payload/sample/attempt safety. |
+
+The initial T08 local triage command over runner/comparison/strategy/Recovery
+returned **169 passed, 4 failed**. Three are historical comparison tests:
+`test_r06_recovery_progress_is_not_accuracy_and_can_regress`,
+`test_r06_successful_recovery_adds_conflicts_without_accuracy_improvement`, and
+`test_r11_unique_calls_incremental_and_inclusive_costs`. They expect the original
+Recovery behavior, which the evolving imported implementation no longer provides.
+At that time the evaluator was outside the locked scope, so all three were
+reported as blockers. The separately authorized follow-up below versions current
+diagnostics rather than silently changing historical meaning. No production
+compatibility edit is justified by these failures.
+
+The first full local T08 run returned **8 failed, 2159 passed, 3 skipped,
+4 deselected**. All 71 new evaluator tests passed. Three new integration failures
+demonstrated correction-stage cancellation diagnostics leaking through exception
+arguments. The narrow production repair sanitizes cancellation arguments/chains
+and clears completed traceback frames in the pipeline's existing cleanup path,
+preserving the same cancellation object and owned artifact cleanup. Six regression
+cases cover ASR/correction with futures cancellation, asyncio cancellation and
+keyboard interruption. No correction prompt/provider/Worker contract is changed.
+
+Two additional pre-existing failures were exposed by the full suite:
+
+- `tests/unit/test_chunk_execution.py::test_recovery_window_execution_is_sequential_and_uses_absolute_request_bounds`:
+  **fixture/configuration incompatibility**. Its manually constructed target lacks
+  T07's required `CoverageEvidence`; current Recovery preflight correctly rejects
+  it before inference. Do not weaken acoustic/canonical admission to make it pass.
+- `tests/unit/test_transcription_worker.py::test_only_unresolved_canonical_support_conservatively_projects_covered_regions`:
+  **obsolete test assumption**. The forced-boundary-spanning segment retains T04/
+  T05 unresolved-boundary evidence, and T06 conservatively marks its entire support
+  suspicious. The old test requires a COVERED region. The allowed new integration
+  regression instead checks actual conservative coverage, UNRESOLVED published
+  quality and proof validity through the unchanged Worker.
+
+Both unit files were outside the original T08 edit list. The initial corrective
+rerun returned **5 failed, 2163 passed, 3 skipped, 4 deselected**. No failures were
+converted to skips or concealed.
+
+#### Local CI/reference-audio follow-up
+
+The user subsequently authorized the five test migrations and local CI-equivalent
+verification. Current comparison version 2 retains the independent-loss and cost
+invariants using genuinely distinct Recovery geometry; weak supported speech now
+tests zero unnecessary requests. Added controls verify failed/rejected request
+accounting, actual accepted snapshots and explicit incompatibility with V1.
+Executor windows now carry credible T06 evidence; separate negative cases retain
+pre-inference rejection for missing/non-speech evidence and invalid bounds. Worker
+assertions retain actual suspicious/unresolved coverage and correction proof,
+without upgrading uncertainty or changing Worker production logic.
+
+Nine private reference WAVs were independently checked against normalized metadata
+and reviewed sample counts/anchors. A separately versioned external manifest binds
+those normalized source hashes, preserving original input/annotation artifacts.
+Actual FFmpeg + pinned Silero preprocessing evaluation completed for all nine
+fixtures. Its quality status is **UNESTABLISHED**, because the reviewed manifest
+contains no quality thresholds. Both available source manifests are schema 1 with
+no transcript-reference descriptors; the transcription-reference directory is
+empty. Normalized audio is available, but WER/CER evidence is not yet available.
+
+Local CI uses the same locked sync, decoder checks, Ruff, pytest, distribution
+build, Docker build and container smoke commands as `.github/workflows/ai-ci.yml`.
+Build/smoke precede the final full pytest so no broader verification follows the
+repository's final-test stopping point. Local results do not substitute for a
+remote CI result. Production/live inference and deployment remain operator-owned.
+
+**Quality evidence is unavailable and production decision is NO-GO** until approved
+Vietnamese references, complete reviewed policy and all condition coverage,
+compatible original A/B/C evidence, passing required CI, independent semantic
+reviews, verified operational/rollback checks and deployment authorization exist.
+Unexecuted WER/CER, human material/critical loss, hallucination, live latency and
+cost remain unavailable. Small datasets and uncontrolled OpenRouter routing do not
+justify claims of statistical superiority, equivalence or identical infrastructure.

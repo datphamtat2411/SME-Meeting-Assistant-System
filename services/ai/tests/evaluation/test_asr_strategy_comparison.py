@@ -157,12 +157,14 @@ def test_r01_shared_baseline_identity_and_one_preprocessing_and_plan(case, monke
     def execution(*args):
         seen["baseline"] = execute(*args)
         return seen["baseline"]
-    def recovery(preprocessed, plan, baseline, *args):
+    def recovery(preprocessed, plan, baseline, *args, **kwargs):
         assert baseline is seen["baseline"]
-        return recover(preprocessed, plan, baseline, *args)
-    def reconciliation(plan, results, settings):
+        seen["recovered"] = recover(preprocessed, plan, baseline, *args, **kwargs)
+        return seen["recovered"]
+    def reconciliation(plan, results, settings, **kwargs):
+        seen["reconciliation"] = seen.get("reconciliation", 0) + 1
         assert all(a is b for a, b in zip(results, seen["baseline"]))
-        return reconcile(plan, results, settings)
+        return reconcile(plan, results, settings, **kwargs)
     monkeypatch.setattr(comparison.SpeechAwareAsrChunkPlanner, "plan", planning)
     monkeypatch.setattr(comparison, "execute_asr_chunks", execution)
     monkeypatch.setattr(comparison, "recover_speech", recovery)
@@ -176,6 +178,10 @@ def test_r01_shared_baseline_identity_and_one_preprocessing_and_plan(case, monke
     assert h.preprocessing_calls == h.closes == seen["planning"] == 1
     assert record["configuration_identity"]["baseline_variant"] == "selected"
     assert c["resource_telemetry"]["repeated_baseline_asr_calls"] == 0
+    assert seen["reconciliation"] == 1  # C consumes the actual admitted snapshot.
+    assert c["reconciliation_metrics"]["reconciled_segments"] == len(seen["recovered"].accepted_reconciliation.segments)
+    assert b["component_versions"]["coverage_phase"] == c["component_versions"]["coverage_phase"] == "final-canonical"
+    assert c["component_versions"]["recovery"] == "2"
 
 
 def test_r02_whole_file_payload_and_real_fractional_timestamp_translation(case):
@@ -257,7 +263,9 @@ def test_r05_displaced_equal_hypotheses_remain_ambiguous_instead_of_fabricated_d
 
 
 def test_r06_recovery_progress_is_not_accuracy_and_can_regress(case):
-    h = case(omission=True)
+    # Genuine changed-context observations, not a repeated full-source request.
+    h = case(omission=True, audio_asr_chunk_target_samples=2048,
+             audio_asr_chunk_max_request_samples=2304, audio_asr_chunk_overlap_samples=256)
     def response(chunk):
         count = round(chunk.duration * 16000)
         if chunk.chunk_id.startswith("chunk-"):
@@ -267,15 +275,16 @@ def test_r06_recovery_progress_is_not_accuracy_and_can_regress(case):
     record = invoke(h, provider(h, response))
     _, b, c = strategies(record)
     assert c["recovery_metrics"]["meaningful_progress_attempts"] > 0
+    assert c["recovery_metrics"]["accepted_attempts"] > 0
     assert c["text_metrics"]["word_errors"] >= b["text_metrics"]["word_errors"]
     assert Fraction(**record["comparison"]["deltas"]["wer"]) >= 0
     assert record["comparison"]["deltas"]["covered_speech_samples"] > 0
     assert record["comparison"]["accuracy_improvement"] is False
 
 
-def test_r06_successful_recovery_adds_conflicts_without_accuracy_improvement(case):
+def test_r06_canonically_supported_weak_speech_does_not_schedule_recovery(case):
     # The fake PCM is about -18 dBFS: a -10 dBFS floor marks weak speech,
-    # exercising real legacy Recovery despite already-correct baseline wording.
+    # but T07 does not retry intact canonical support merely to create a conflict.
     h = case(audio_speech_map_energy_floor_dbfs=-10)
     def response(chunk):
         count = round(chunk.duration * 16000)
@@ -287,19 +296,18 @@ def test_r06_successful_recovery_adds_conflicts_without_accuracy_improvement(cas
     assert b["availability"] == c["availability"] == "AVAILABLE"
     assert record["failure_stage"] is None
     assert h.preprocessing_calls == h.closes == 1
-    assert c["recovery_metrics"]["successful_recovery_requests"] > 0
+    assert c["recovery_metrics"]["successful_recovery_requests"] == 0
     assert c["recovery_metrics"]["failed_recovery_requests"] == 0
     assert c["recovery_metrics"]["meaningful_progress_attempts"] == 0
-    assert c["recovery_metrics"]["no_progress_attempts"] == c["recovery_metrics"]["recovery_attempts"]
-    assert c["recovery_metrics"]["recovery_stop_reason"] == "no-progress"
+    assert c["recovery_metrics"]["no_progress_attempts"] == c["recovery_metrics"]["recovery_attempts"] == 0
+    assert c["recovery_metrics"]["recovery_stop_reason"] == "no-actionable-regions"
+    assert not any(name.startswith("recovery-") for name in h.calls)
     assert b["text_metrics"]["word_errors"] == 0
-    assert c["text_metrics"]["word_errors"] >= b["text_metrics"]["word_errors"]
-    assert c["provider_text_metrics"]["word_insertions"] > b["provider_text_metrics"]["word_insertions"]
-    # Unrelated wording on unequal envelopes is disagreement, not T05's
-    # established same-occurrence conflicting-hypothesis relationship.
+    assert c["text_metrics"] == b["text_metrics"]
+    assert c["provider_text_metrics"] == b["provider_text_metrics"]
     assert record["comparison"]["deltas"]["conflicting_overlap_segments"] == 0
-    assert record["comparison"]["deltas"]["unresolved_boundary_segments"] > 0
-    assert record["comparison"]["deltas"]["overlapping_evidence_samples"] > 0
+    assert record["comparison"]["deltas"]["unresolved_boundary_segments"] == 0
+    assert record["comparison"]["deltas"]["overlapping_evidence_samples"] == 0
     assert record["comparison"]["accuracy_improvement"] is False
 
 
@@ -416,7 +424,8 @@ def test_r10_missing_reference_returns_three_unavailable_records_without_provide
 
 
 def test_r11_unique_calls_incremental_and_inclusive_costs(case):
-    h = case()
+    h = case(audio_asr_chunk_target_samples=2048,
+             audio_asr_chunk_max_request_samples=2304, audio_asr_chunk_overlap_samples=256)
     def response(chunk):
         text = "" if chunk.chunk_id.startswith("chunk-") else "Kubernetes API"
         return candidate(chunk, [(0, round(chunk.duration * 16000), text)] if text else [])
@@ -481,10 +490,74 @@ def test_r14_controlled_clock_canonical_report_and_identity_incompatibility(case
     h = case()
     first, second = invoke(h), invoke(h)
     assert canonical_json(first) == canonical_json(second)
+    assert first["evaluation_version"] == "asr-strategy-comparison-2"
+    assert first["algorithm_scope"] == "current-components"
     assert comparison.compare_records(first, second)["status"] == "COMPARABLE"
     for key in ("dataset_identity", "reference_identity", "configuration_identity", "pipeline_identity"):
         changed = {**second, key: {**second[key], "version": "different"}}
         assert comparison.compare_records(first, changed) == {"status": "INCOMPATIBLE", "deltas": {}}
+    original = {**first, "evaluation_version": "asr-strategy-comparison-1"}
+    assert comparison.compare_records(original, second) == {"status": "INCOMPATIBLE", "deltas": {}}
+
+
+@pytest.mark.parametrize("failure", ["malformed_output", "transport"])
+def test_failed_recovery_calls_remain_accounted_without_entering_canonical_output(case, failure):
+    h = case(audio_asr_chunk_target_samples=2048,
+             audio_asr_chunk_max_request_samples=2304, audio_asr_chunk_overlap_samples=256)
+    def response(chunk):
+        if chunk.chunk_id == "whole-file":
+            return candidate(chunk, [(0, round(chunk.duration * 16000), "Kubernetes API")])
+        if chunk.chunk_id.startswith("recovery-"):
+            if failure == "transport":
+                raise AsrError(AsrErrorCategory.TRANSPORT)
+            return candidate(chunk, [(10, 1, "private-failed-candidate")])
+        return candidate(chunk, [])
+    record = invoke(h, provider(h, response))
+    _, b, c = strategies(record)
+    calls = [call for call in record["telemetry"]["calls"] if call["stage"] == "recovery"]
+    assert calls and all(call["failure"] == failure for call in calls)
+    assert c["recovery_metrics"]["failed_recovery_requests"] == len(calls)
+    assert c["recovery_metrics"]["failed_attempts"] == len(calls)
+    assert c["recovery_metrics"]["accepted_attempts"] == 0
+    assert c["text_metrics"] == b["text_metrics"]
+    assert c["status"] == "FAIL" and c["sanitized_failure"] == "asr-recovery-failure"
+    assert record["telemetry"]["total_unique_asr_calls"] == len(h.calls)
+    assert "private-failed-candidate" not in canonical_json(record)
+
+
+def test_rejected_recovery_is_charged_but_not_scored_as_accepted_text(case, monkeypatch):
+    h = case(audio_asr_chunk_target_samples=2048,
+             audio_asr_chunk_max_request_samples=2304, audio_asr_chunk_overlap_samples=256)
+    recover = comparison.recover_speech
+    def observed(*args, **kwargs):
+        result = recover(*args, **kwargs)
+        assert result.attempts and not result.recovered_results
+        assert all(a.admission.value == "rejected" for a in result.attempts)
+        return result
+    monkeypatch.setattr(comparison, "recover_speech", observed)
+    def response(chunk):
+        return candidate(chunk, []) if chunk.chunk_id.startswith("recovery-") else candidate(
+            chunk, [(0, round(chunk.duration * 16000), "Kubernetes API")])
+    record = invoke(h, provider(h, response))
+    _, b, c = strategies(record)
+    assert record["failure_stage"] is None
+    assert c["recovery_metrics"]["rejected_attempts"] > 0
+    assert c["recovery_metrics"]["accepted_attempts"] == 0
+    assert c["provider_telemetry"]["asr_calls"] > b["provider_telemetry"]["asr_calls"]
+    assert c["text_metrics"] == b["text_metrics"]
+    assert c["provider_text_metrics"] == b["provider_text_metrics"]
+
+
+def test_recovery_evaluation_failure_cannot_be_reported_as_execution_pass(case, monkeypatch):
+    h = case()
+    recover = comparison.recover_speech
+    def broken(*args, **kwargs):
+        return replace(recover(*args, **kwargs), evaluation_failure=AsrErrorCategory.RESOURCE)
+    monkeypatch.setattr(comparison, "recover_speech", broken)
+    _, b, c = strategies(invoke(h))
+    assert b["status"] == "PASS"
+    assert c["status"] == c["quality_status"] == "FAIL"
+    assert c["sanitized_failure"] == "resource"
 
 
 def live_assets(h, tmp_path):

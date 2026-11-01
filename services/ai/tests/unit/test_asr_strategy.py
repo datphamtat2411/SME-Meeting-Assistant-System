@@ -375,3 +375,34 @@ def test_native_builder_enforces_eligibility(result_factory):
     config = settings(audio_asr_native_max_samples=999)
     with pytest.raises(Exception, match="VALIDATION|validation"):
         build_whole_file_plan(result_factory(1000), config, 2044)
+
+
+@pytest.mark.parametrize("cost", [None, Fraction(7, 1000)])
+def test_rejected_recovery_is_still_an_actual_routed_billed_request(result_factory, monkeypatch, cost):
+    from sme_meeting_ai.transcription.coverage import CoveragePhase
+    from sme_meeting_ai.transcription.recovery import RecoveryAdmissionDecision
+
+    def respond(audio, number):
+        if audio.chunk_id.startswith("chunk-"):
+            return candidate(audio, (), cost=Fraction(0))
+        return candidate(audio, (), cost=cost, upstream="Together")
+
+    runner, result, provider, _ = prepare(
+        result_factory, count=2048, provider=Provider(respond), audio_asr_native_max_samples=1,
+        audio_asr_chunk_target_samples=1024, audio_asr_chunk_max_request_samples=1536,
+        audio_asr_chunk_overlap_samples=128, audio_asr_chunk_boundary_search_samples=0,
+        audio_asr_recovery_max_total_attempts=1,
+    )
+    # The fixture's real acoustic evidence is required by canonical assessment.
+    execution = runner.execute(result.normalized_artifact)
+    output = runner.recover(result, execution)
+    assert output.final_assessment.provenance.assessment_phase is CoveragePhase.FINAL_CANONICAL
+    assert output.recovered_results == ()
+    assert output.attempts[0].admission is RecoveryAdmissionDecision.REJECTED
+    telemetry = runner.telemetry
+    assert telemetry.total_actual_asr_calls == len(provider.calls) == len(execution.baseline) + 1
+    assert telemetry.recovery_calls == 1
+    assert telemetry.reported_asr_cost == cost
+    assert telemetry.reported_cost_call_count == len(execution.baseline) + int(cost is not None)
+    assert telemetry.reported_cost_subtotal == (cost if cost is not None else Fraction(0))
+    assert telemetry.provider_provenance[-1][2].upstream_provider == "Together"

@@ -118,8 +118,9 @@ class OfflineRecoveryEvidence:
     attempts: tuple["RecoveryAttempt", ...]
     stop_reason: "RecoveryStopReason"
     provenance: "RecoveryProvenance"
-    # Historical attempt deltas refer ONLY to these pre-canonical assessments.
+    # Kept separately for phase compatibility; V2 admission deltas are canonical.
     pre_canonical_final_assessment: "SpeechCoverageAssessment | None" = None
+    initial_canonical_assessment: "SpeechCoverageAssessment | None" = None
 
 
 @dataclass(frozen=True)
@@ -360,8 +361,6 @@ class OfflineTranscriptionPipeline:
             TranscriptCorrectionStatus,
             correct_transcript,
         )
-        from sme_meeting_ai.transcription.coverage import assess_canonical_coverage
-        from sme_meeting_ai.transcription.reconciliation import reconcile_transcript
         from sme_meeting_ai.transcription.recovery import RecoveryStopReason
 
         stage = OfflineTranscriptionStage.PREPROCESSING
@@ -419,10 +418,11 @@ class OfflineTranscriptionPipeline:
             completed.append(stage)
 
             stage = OfflineTranscriptionStage.COVERAGE_RECOVERY
-            recovered = strategy.recover(preprocessing_result, execution)
+            recovered = strategy.recover(preprocessing_result, execution, boundary_alignment=asr.boundary_alignment)
             recovery = OfflineRecoveryEvidence(
                 recovered.initial_assessment, recovered.final_assessment, tuple(recovered.attempts),
-                recovered.stop_reason, recovered.provenance, recovered.final_assessment,
+                recovered.stop_reason, recovered.provenance, recovered.initial_assessment,
+                recovered.initial_canonical_assessment,
             )
             coverage = recovery.final_assessment
             provenance = replace(provenance, coverage=coverage.provenance, recovery=recovery.provenance)
@@ -437,13 +437,16 @@ class OfflineTranscriptionPipeline:
                         stage, attempt.failure.value, attempt.window.chunk.request_interval,
                         (attempt.window.chunk.chunk_id,), "attempt",
                     ))
+            if recovered.evaluation_failure is not None:
+                raise AudioProcessingError("RESOURCE")
             completed.append(stage)
 
             stage = OfflineTranscriptionStage.RECONCILIATION
-            reconciled = reconcile_transcript(
-                plan, (*baseline, *recovered.recovered_results), self._settings,
-                boundary_alignment=asr.boundary_alignment,
-            )
+            # Recovery returns the last validated, admitted T05/T06 snapshot.
+            # No speculative trial is published as a completed public stage.
+            reconciled = recovered.accepted_reconciliation
+            _require(reconciled is not None and reconciled.source_id == plan.source_id
+                     and reconciled.sample_count == plan.sample_count)
             if execution.selected_strategy is AsrStrategy.WHOLE_FILE:
                 # The compatibility boundary must represent each original segment
                 # once with its exact interval/text; no virtual ownership or stitch.
@@ -465,10 +468,7 @@ class OfflineTranscriptionPipeline:
                 ) for segment in reconciled.segments),
                 tuple(reconciled.unresolved_intervals), reconciled.provenance,
             )
-            coverage = assess_canonical_coverage(
-                preprocessing_result, plan, baseline, recovered.recovered_results, reconciled, self._settings,
-            )
-            recovery = replace(recovery, final_assessment=coverage)
+            coverage = recovered.final_assessment
             provenance = replace(provenance, reconciliation=reconciliation.provenance, coverage=coverage.provenance)
             warnings.extend(_coverage_warnings(coverage, "final"))
             warnings.extend(_chunk_warnings(stage, reconciliation.chunk_outcomes))
@@ -509,6 +509,12 @@ class OfflineTranscriptionPipeline:
             cancellation = error
             raise
         finally:
+            if cancellation is not None:
+                # Cancellation identity/lifecycle survives, provider diagnostics do
+                # not. Correction can propagate cancellation outside Exception.
+                cancellation.args = ()
+                cancellation.__cause__ = cancellation.__context__ = None
+                traceback.clear_frames(cancellation.__traceback__)
             if strategy is not None:
                 provenance = replace(provenance, strategy=strategy.telemetry)
                 if OfflineTranscriptionStage.CHUNK_PLANNING in completed:

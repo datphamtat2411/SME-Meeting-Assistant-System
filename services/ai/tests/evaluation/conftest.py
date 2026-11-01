@@ -34,7 +34,9 @@ from .transcription_support import (
 def pytest_addoption(parser):
     group = parser.getgroup("preprocessing evaluation")
     group.addoption("--evaluation-fixture-root", type=Path, default=None,
-                    help="Explicit approved local dataset directory containing manifest.json")
+                    help="Explicit approved audio root; source paths always resolve here")
+    group.addoption("--evaluation-manifest", type=Path, default=None,
+                    help="Optional explicit preprocessing manifest outside the audio root; exact source hashes still required")
     group.addoption("--evaluation-output", type=Path, default=None,
                     help="Required JSON output path outside the fixture root")
     group.addoption("--transcription-evaluation-config", type=Path, default=None,
@@ -49,30 +51,33 @@ def pytest_addoption(parser):
                     help="Explicit external sanitized A/B/C report output path")
     group.addoption("--asr-comparison-max-calls", type=int, default=None,
                     help="Required maximum actual ASR calls covering the entire selected corpus")
+    group.addoption("--asr-cutover-policy", type=Path, default=None,
+                    help="External reviewed T08 policy, scope, reference and configuration identities")
+    group.addoption("--asr-cutover-output", type=Path, default=None,
+                    help="New external sanitized T08 JSON destination")
+    group.addoption("--asr-cutover-max-calls", type=int, default=None,
+                    help="Explicit total T08 ASR request budget for both modes and all trials")
 
 
 @pytest.fixture(scope="session")
 def evaluation_run(request):
     root = request.config.getoption("evaluation_fixture_root")
+    manifest_path = request.config.getoption("evaluation_manifest")
     output = request.config.getoption("evaluation_output")
     backend = None
     try:
         require(root is not None and output is not None, "explicit fixture root and output")
-        root, output = root.resolve(), output.absolute()
-        require(output.parent.is_dir() and not output.is_symlink()
-                and not output.resolve().is_relative_to(root), "output location")
-        manifest = load_manifest(root)
+        root, output = root.absolute(), output.absolute()
+        manifest_path = manifest_path.absolute() if manifest_path is not None else root / "manifest.json"
+        manifest = load_manifest(root, manifest_path=manifest_path)
         # Do not load an implicit .env file for an evaluation; require explicit env.
         settings = load_settings(env_file=None)
         require_pinned_model(settings)
         model = settings.audio_vad_model_path
-        require(output.resolve() != model.resolve()
-                and (not output.exists() or not output.samefile(model)), "output model alias")
+        sources = [verify_source(root, fixture) for fixture in manifest.fixtures]
+        validate_output_path(output, root, [model, manifest_path, *sources])
         # Validate every fixture before loading/inferencing the model, and never
         # allow the report to overwrite original bytes through a hard-link alias.
-        for fixture in manifest.fixtures:
-            source = verify_source(root, fixture)
-            require(not output.exists() or not output.samefile(source), "output source alias")
         # Both model bytes and SHA-256 are mandatory before this real adapter loads.
         backend = SileroVadBackend.from_settings(settings)
         pipeline = AudioPreprocessingPipeline(

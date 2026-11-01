@@ -501,11 +501,15 @@ def test_revalidation_uses_union_and_failed_recovery_never_erases_baseline(hando
     )
 
     preprocessing, plan, configuration = handoff()
-    baseline = (result(plan.chunks[0], ((0, 512),)), result(plan.chunks[1], ()))
+    baseline = (canonical_result(plan.chunks[0], ((0, 512),)), canonical_result(plan.chunks[1], ()))
     initial = assess_speech_coverage(preprocessing, plan, baseline, configuration)
-    windows = plan_recovery_windows(initial, plan, configuration).windows
+    selected = final_assessment(preprocessing, plan, baseline, configuration)
+    windows = plan_recovery_windows(selected, plan, configuration).windows
     good = result(windows[0].chunk)
-    failed = AsrChunkResult(windows[1].chunk, failure=AsrErrorCategory.PROVIDER)
+    # Failure isolation does not depend on a policy scheduling a second request.
+    failed_chunk = replace(windows[0].chunk, chunk_id="recovery-000001", ordinal=len(plan.chunks) + 1,
+                           core_interval=SampleInterval(600, 1200), request_interval=SampleInterval(500, 1300))
+    failed = AsrChunkResult(failed_chunk, failure=AsrErrorCategory.PROVIDER)
     assessed = revalidate_speech_coverage(preprocessing, plan, baseline, (good, failed), configuration)
     assert states_at(assessed, 0, 512)[0].state is CoverageState.COVERED
     assert assessed.quality.covered_speech_samples <= 2048
@@ -522,7 +526,7 @@ def test_revalidation_recovers_failed_baseline_only_where_supported(handoff):
 
     preprocessing, plan, configuration = handoff()
     baseline = tuple(AsrChunkResult(c, failure=AsrErrorCategory.TIMEOUT) for c in plan.chunks)
-    initial = assess_speech_coverage(preprocessing, plan, baseline, configuration)
+    initial = final_assessment(preprocessing, plan, baseline, configuration)
     window = plan_recovery_windows(initial, plan, configuration).windows[0]
     recovered = result(window.chunk, ((100, 200),))
     assessed = revalidate_speech_coverage(preprocessing, plan, baseline, (recovered,), configuration)
@@ -538,8 +542,8 @@ def test_revalidation_deduplicates_recovery_overlap_and_rejects_identical_reques
     )
 
     preprocessing, plan, configuration = handoff()
-    baseline = tuple(result(c, ()) for c in plan.chunks)
-    initial = assess_speech_coverage(preprocessing, plan, baseline, configuration)
+    baseline = tuple(canonical_result(c, ()) for c in plan.chunks)
+    initial = final_assessment(preprocessing, plan, baseline, configuration)
     windows = plan_recovery_windows(initial, plan, configuration).windows
     recovered = tuple(result(w.chunk) for w in windows[:2])
     assessed = revalidate_speech_coverage(preprocessing, plan, baseline, recovered, configuration)
@@ -558,8 +562,8 @@ def test_revalidation_does_not_publish_sensitive_provider_metadata(handoff):
     )
 
     preprocessing, plan, configuration = handoff()
-    baseline = tuple(result(c, ()) for c in plan.chunks)
-    initial = assess_speech_coverage(preprocessing, plan, baseline, configuration)
+    baseline = tuple(canonical_result(c, ()) for c in plan.chunks)
+    initial = final_assessment(preprocessing, plan, baseline, configuration)
     window = plan_recovery_windows(initial, plan, configuration).windows[0]
     recovered = result(window.chunk, text="private-recovered-text")
     recovered = replace(recovered, candidate=replace(recovered.candidate, provenance=replace(
@@ -570,8 +574,8 @@ def test_revalidation_does_not_publish_sensitive_provider_metadata(handoff):
     assert "private-provider-prompt" not in repr(assessed)
 
 
-# T06: the existing tests above protect provisional Recovery geometry, failure
-# isolation and privacy. Final support below is independently tied to real T05
+# T06: tests above protect provisional support unions, failure isolation and
+# privacy. T07 planning requires actual final-canonical input. Final support is tied to real T05
 # selected identities; timestamp support is never lexical completeness.
 def canonical_result(chunk, bounds=None, **kwargs):
     item = result(chunk, bounds, **kwargs)
@@ -798,7 +802,7 @@ def test_v2_invalid_optional_words_cannot_support_raw_or_canonical_coverage(hand
     assert final.quality.raw_text_supported_samples == final.quality.canonical_text_supported_samples == 0
 
 
-def test_v2_recovery_progress_remains_provisional_when_t05_does_not_select_it(handoff):
+def test_v2_raw_support_remains_provisional_when_t05_does_not_select_it(handoff):
     from sme_meeting_ai.transcription import (
         plan_recovery_windows,
         reconcile_transcript,
@@ -808,7 +812,8 @@ def test_v2_recovery_progress_remains_provisional_when_t05_does_not_select_it(ha
     preprocessing, plan, configuration = handoff()
     baseline = tuple(canonical_result(c, ()) for c in plan.chunks)
     initial = assess_speech_coverage(preprocessing, plan, baseline, configuration)
-    windows = plan_recovery_windows(initial, plan, configuration).windows
+    selected = final_assessment(preprocessing, plan, baseline, configuration)
+    windows = plan_recovery_windows(selected, plan, configuration).windows
     recovered = (canonical_result(windows[0].chunk), AsrChunkResult(windows[1].chunk, failure=AsrErrorCategory.TIMEOUT))
     provisional = revalidate_speech_coverage(preprocessing, plan, baseline, recovered, configuration)
     assert provisional.quality.covered_speech_samples > initial.quality.covered_speech_samples

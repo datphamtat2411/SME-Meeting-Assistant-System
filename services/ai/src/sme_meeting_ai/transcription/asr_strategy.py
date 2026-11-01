@@ -216,6 +216,13 @@ class _TrackedTranscriber:
     def __init__(self, runner):
         self._runner = runner
 
+    def validate_recovery_request(self):
+        runner = self._runner
+        with runner._lock:
+            if runner._adaptive:
+                _require(sum(runner._calls.values()) < runner._settings.audio_asr_adaptive_max_total_calls,
+                         AsrErrorCategory.RESOURCE)
+
     def transcribe(self, audio):
         runner = self._runner
         phase = runner._phase
@@ -452,22 +459,25 @@ class AsrStrategyRunner:
                 raise AsrError(failure)
         return AsrStrategyExecutionResult(self._selected, self.plan, baseline, self.telemetry)
 
-    def recover(self, preprocessing: PreprocessingResult, execution: AsrStrategyExecutionResult):
-        from .coverage import assess_speech_coverage
+    def recover(self, preprocessing: PreprocessingResult, execution: AsrStrategyExecutionResult,
+                *, boundary_alignment=None):
         from .recovery import (
             RecoveryProvenance,
             RecoveryStopReason,
             SpeechRecoveryResult,
+            _baseline_state,
             recover_speech,
         )
 
         _require(self._executed and not self._recovered and execution.plan == self.plan)
         self._recovered = True
         if execution.selected_strategy is AsrStrategy.WHOLE_FILE:
-            coverage = assess_speech_coverage(preprocessing, execution.plan, execution.baseline, self._settings)
+            initial, canonical, coverage = _baseline_state(
+                preprocessing, execution.plan, execution.baseline, self._settings)
             return SpeechRecoveryResult(
-                execution.baseline, (), coverage, coverage, (), RecoveryStopReason.SKIPPED_BY_ASR_STRATEGY,
-                RecoveryProvenance("strategy-skipped-v1", execution.plan.provenance, {"executed_requests": 0}),
+                execution.baseline, (), initial, coverage, (), RecoveryStopReason.SKIPPED_BY_ASR_STRATEGY,
+                RecoveryProvenance("2", execution.plan.provenance, {"executed_requests": 0}), coverage, canonical,
             )
         self._phase = "recovery"
-        return recover_speech(preprocessing, execution.plan, execution.baseline, self._bridge, self._settings)
+        return recover_speech(preprocessing, execution.plan, execution.baseline, self._bridge, self._settings,
+                              boundary_alignment=boundary_alignment)

@@ -157,6 +157,60 @@ def test_missing_manifest_and_duplicate_json_keys_are_rejected(tmp_path):
         load_manifest(tmp_path)
 
 
+def test_explicit_manifest_uses_reference_audio_root_without_falling_back_to_dataset_audio(tmp_path):
+    original = tmp_path / "original"
+    reference = tmp_path / "reference"
+    original.mkdir()
+    reference.mkdir()
+    (reference / "audio").mkdir()
+    document = manifest_dict()
+    payload = b"independently pinned reference WAV bytes"
+    document["fixtures"][0]["source_sha256"] = hashlib.sha256(payload).hexdigest()
+    manifest_path = original / "manifest.json"
+    manifest_path.write_text(canonical_json(document))
+    (reference / "audio/opaque.wav").write_bytes(payload)
+    manifest = load_manifest(reference, manifest_path=manifest_path)
+    assert manifest.manifest_sha256 == hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    assert verify_source(reference, manifest.fixtures[0]) == reference / "audio/opaque.wav"
+    with pytest.raises(EvaluationError):
+        load_manifest(reference)  # No implicit search in another workspace directory.
+    (reference / "audio/opaque.wav").unlink()
+    (original / "audio").mkdir()
+    (original / "audio/opaque.wav").write_bytes(payload)
+    with pytest.raises(EvaluationError):
+        verify_source(reference, manifest.fixtures[0])
+
+
+def test_reference_audio_cannot_borrow_original_media_digest_or_follow_parent_symlink(tmp_path):
+    root = tmp_path / "reference"
+    root.mkdir()
+    (root / "audio").mkdir()
+    (root / "audio/opaque.wav").write_bytes(b"normalized bytes")
+    item = fixture_dict()
+    item["source_sha256"] = hashlib.sha256(b"original bytes").hexdigest()
+    fixture = Fixture.model_validate(item)
+    with pytest.raises(EvaluationError):
+        verify_source(root, fixture)
+    item["source_sha256"] = hashlib.sha256(b"normalized bytes").hexdigest()
+    fixture = Fixture.model_validate(item)
+    alias = tmp_path / "alias"
+    alias.symlink_to(root, target_is_directory=True)
+    with pytest.raises(EvaluationError):
+        verify_source(alias, fixture)
+
+
+def test_explicit_manifest_rejects_symlink_and_duplicate_keys(tmp_path):
+    valid = tmp_path / "valid.json"
+    valid.write_text(canonical_json(manifest_dict()))
+    alias = tmp_path / "alias.json"
+    alias.symlink_to(valid)
+    with pytest.raises(EvaluationError):
+        load_manifest(tmp_path, manifest_path=alias)
+    valid.write_text('{"schema_version": 1, "schema_version": 1}')
+    with pytest.raises(EvaluationError):
+        load_manifest(tmp_path, manifest_path=valid)
+
+
 def test_source_digest_and_symlink_escape_are_rejected(tmp_path):
     source = tmp_path / "audio"
     source.mkdir()

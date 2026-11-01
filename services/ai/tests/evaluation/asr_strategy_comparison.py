@@ -1,9 +1,10 @@
-"""T01: controlled, evaluation-only measurement of the legacy ASR algorithms.
+"""Controlled ASR-only diagnostics of the current versioned components.
 
 Only numeric projections escape execution. Preprocessing ownership spans all
 three strategies; B and C borrow the very same baseline tuple and objects. The
 offline API accepts injected providers, never the real network adapter. Only the
 separate live API can construct that adapter, after dataset-wide local preflight.
+Version 2 consumes T07 admission; it cannot replace original T01/V1 evidence.
 No correction stage, raw HTTP endpoint, candidate persistence or retry is used.
 """
 
@@ -28,6 +29,7 @@ from sme_meeting_ai.audio import (
 from sme_meeting_ai.pipeline import AudioPreprocessingPipeline
 from sme_meeting_ai.providers.openrouter_whisper import OpenRouterWhisperAdapter
 from sme_meeting_ai.transcription.asr import AsrError, AsrErrorCategory
+from sme_meeting_ai.transcription.boundary_alignment import analyze_boundary_alignment
 from sme_meeting_ai.transcription.chunk_execution import (
     AsrChunkResult,
     _execute_chunk,
@@ -39,7 +41,10 @@ from sme_meeting_ai.transcription.chunk_planning import (
     ChunkBoundaryReason,
     SpeechAwareAsrChunkPlanner,
 )
-from sme_meeting_ai.transcription.coverage import _valid_result, assess_speech_coverage
+from sme_meeting_ai.transcription.coverage import (
+    _valid_result,
+    assess_canonical_coverage,
+)
 from sme_meeting_ai.transcription.reconciliation import reconcile_transcript
 from sme_meeting_ai.transcription.recovery import recover_speech
 
@@ -78,7 +83,7 @@ from .transcription_support import (
     validate_output_path,
 )
 
-COMPARISON_VERSION = "asr-strategy-comparison-1"
+COMPARISON_VERSION = "asr-strategy-comparison-2"
 STRATEGIES = ("whole-file", "chunked-baseline", "chunked-recovery")
 MODEL = "openai/whisper-large-v3"
 _WHOLE, _BASELINE, _RECOVERY = "whole_file_asr", "baseline_asr", "recovery"
@@ -206,12 +211,15 @@ def _reconciliation_metrics(plan, baseline, results, reconciled):
 
 def _recovery_metrics(recovered, speech_metrics, recovery_calls):
     return {"recovery_attempts": len(recovered.attempts),
+            "accepted_attempts": recovered.provenance.accepted_attempt_count,
+            "rejected_attempts": recovered.provenance.rejected_attempt_count,
+            "failed_attempts": recovered.provenance.failed_attempt_count,
             "successful_recovery_requests": sum(c["failure"] is None for c in recovery_calls),
             "failed_recovery_requests": sum(c["failure"] is not None for c in recovery_calls),
             "meaningful_progress_attempts": sum(a.meaningful_progress for a in recovered.attempts),
             "no_progress_attempts": sum(not a.meaningful_progress for a in recovered.attempts),
             "recovery_stop_reason": recovered.stop_reason.value,
-            "initial_unresolved_samples": samples(recovered.initial_assessment.unresolved_intervals),
+            "initial_unresolved_samples": samples(recovered.initial_canonical_assessment.unresolved_intervals),
             "final_unresolved_samples": samples(recovered.final_assessment.unresolved_intervals),
             "recovered_speech_samples": speech_metrics["recovered_speech_samples"],
             "recovery_success_rate": speech_metrics["recovery_success_rate"],
@@ -219,7 +227,9 @@ def _recovery_metrics(recovered, speech_metrics, recovery_calls):
                                   "unresolved_samples_before": a.unresolved_samples_before,
                                   "unresolved_samples_after": a.unresolved_samples_after,
                                   "covered_speech_delta": a.covered_speech_delta,
-                                  "failure": a.failure.value if a.failure else None,
+                                   "failure": a.failure.value if a.failure else None,
+                                   "admission": a.admission.value,
+                                   "admission_reason": a.admission_reason.value,
                                   "stop_reason": a.stop_reason.value if a.stop_reason else None}
                                  for index, a in enumerate(recovered.attempts)]}
 
@@ -252,7 +262,8 @@ def _quality(row, manifest, fixture, evidence_mode):
 
 def _identity(manifest, fixture, matrix, variant, settings, expected_model_sha256):
     configuration = configuration_identity(settings, variant, matrix.configuration_version)
-    return {"schema_version": 1, "evaluation_version": COMPARISON_VERSION, "failure_stage": None,
+    return {"schema_version": 1, "evaluation_version": COMPARISON_VERSION,
+            "algorithm_scope": "current-components", "failure_stage": None,
             "measurement_version": EVALUATION_VERSION,
             "dataset_identity": {"dataset_id": manifest.dataset_id, "dataset_version": manifest.dataset_version,
                                  "manifest_sha256": manifest.manifest_sha256, "fixture_id": fixture.fixture_id,
@@ -337,12 +348,13 @@ def _prepare(manifest, fixture, root, preprocessing, settings, record, expected_
     record["pipeline_identity"]["planning_sha256"] = digest_json({
         "planner_version": plan.provenance.planner_version,
         "effective_configuration": dict(plan.provenance.effective_configuration),
-        "chunks": [{"core": bounds(c.core_interval), "request": bounds(c.request_interval)} for c in plan.chunks]})
+         "chunks": [{"core": bounds(c.core_interval), "request": bounds(c.request_interval)} for c in plan.chunks]})
+    record["pipeline_identity"]["planner_version"] = plan.provenance.planner_version
     record["failure_stage"] = None
     return _PreparedCase(manifest, fixture, root, outcome, plan, reference_text, record, whole, eligible, maximum)
 
 
-def _project_chunked(row, prepared, baseline, results, assessment, reconciled, initial=None):
+def _project_chunked(row, prepared, baseline, results, assessment, reconciled, initial=None, alignment=None):
     supported = [s.interval for s in reconciled.segments if s.text.strip()]
     kwargs = {"unresolved": assessment.unresolved_intervals,
               "pipeline_speech_samples": assessment.quality.likely_speech_samples,
@@ -358,7 +370,9 @@ def _project_chunked(row, prepared, baseline, results, assessment, reconciled, i
         result_available=True, **kwargs)
     row["reconciliation_metrics"] = _reconciliation_metrics(prepared.plan, baseline, results, reconciled)
     row["component_versions"] = {"coverage": assessment.provenance.assessor_version,
-                                 "reconciliation": reconciled.provenance.reconciler_version}
+                                 "coverage_phase": assessment.provenance.assessment_phase.value,
+                                 "reconciliation": reconciled.provenance.reconciler_version,
+                                 "alignment": alignment.alignment_version if alignment is not None else None}
     if row["status"] == "FAIL":
         row["sanitized_failure"] = "asr-chunk-failure"
 
@@ -403,7 +417,7 @@ def _strategy_comparison(before, after):
 
 def compare_records(before, after):
     """Only identical measurement/audio/reference/config/model/pipeline identities."""
-    keys = ("schema_version", "evaluation_version", "measurement_version", "dataset_identity", "reference_identity",
+    keys = ("schema_version", "evaluation_version", "algorithm_scope", "measurement_version", "dataset_identity", "reference_identity",
             "configuration_identity", "pipeline_identity", "evidence_mode")
     if any(before.get(k) != after.get(k) for k in keys):
         return {"status": "INCOMPATIBLE", "deltas": {}}
@@ -455,7 +469,7 @@ def _execute(prepared, transcriber, settings, clock, evidence_mode, maximum=None
     rows = [_empty(s) for s in STRATEGIES]
     a, b, c = rows
     ledger = _ComparisonTelemetry(clock, maximum=maximum)
-    result = baseline = recovered = reconciled = assessment = whole_result = combined = text = None
+    result = baseline = recovered = reconciled = assessment = whole_result = combined = text = alignment = None
     durations = [None, None, None]
     active = 0
     shared_duration = 0
@@ -490,11 +504,12 @@ def _execute(prepared, transcriber, settings, clock, evidence_mode, maximum=None
         baseline = execute_asr_chunks(prepared.plan, result.normalized_artifact,
                                       ledger.asr(transcriber, _BASELINE), settings)
         ledger.results(baseline)
-        assessment = assess_speech_coverage(result, prepared.plan, baseline, settings)
+        alignment = analyze_boundary_alignment(prepared.plan, baseline)
         shared_duration = _duration(clock, started)
         started = clock()
-        reconciled = reconcile_transcript(prepared.plan, baseline, settings)
-        _project_chunked(b, prepared, baseline, baseline, assessment, reconciled)
+        reconciled = reconcile_transcript(prepared.plan, baseline, settings, boundary_alignment=alignment)
+        assessment = assess_canonical_coverage(result, prepared.plan, baseline, (), reconciled, settings)
+        _project_chunked(b, prepared, baseline, baseline, assessment, reconciled, alignment=alignment)
         initial_support = [s.interval for s in reconciled.segments if s.text.strip()]
         initial_unresolved = assessment.unresolved_intervals
         durations[1] = shared_duration + _duration(clock, started)
@@ -503,16 +518,28 @@ def _execute(prepared, transcriber, settings, clock, evidence_mode, maximum=None
 
         active = 2
         started = clock()
-        recovered = recover_speech(result, prepared.plan, baseline, ledger.asr(transcriber, _RECOVERY), settings)
+        recovered = recover_speech(result, prepared.plan, baseline, ledger.asr(transcriber, _RECOVERY), settings,
+                                   boundary_alignment=alignment)
         ledger.results(recovered.recovered_results)
+        # Rejected/malformed observations consumed calls too, although they never
+        # enter recovered_results. Join only real initiated calls by request ID.
+        failures = {a.window.chunk.chunk_id: a.failure.value for a in recovered.attempts if a.failure is not None}
+        for call in ledger.calls:
+            if call["stage"] == _RECOVERY and call["call_id"] in failures:
+                call["failure"] = failures[call["call_id"]]
         # No cloning, regenerating, filtering or re-admitting the baseline.
         combined = (*baseline, *recovered.recovered_results)
-        reconciled = reconcile_transcript(prepared.plan, combined, settings)
+        reconciled = recovered.accepted_reconciliation
+        require(reconciled is not None and recovered.initial_canonical_assessment is not None, "canonical recovery handoff")
         _project_chunked(c, prepared, baseline, combined, recovered.final_assessment, reconciled,
-                         initial=(initial_support, initial_unresolved))
+                         initial=(initial_support, initial_unresolved), alignment=alignment)
         c["recovery_metrics"] = _recovery_metrics(
             recovered, c["speech_metrics"], [call for call in ledger.calls if call["stage"] == _RECOVERY])
         c["component_versions"]["recovery"] = recovered.provenance.recovery_version
+        if recovered.evaluation_failure is not None:
+            c.update(status="FAIL", sanitized_failure=recovered.evaluation_failure.value)
+        elif any(a.failure is not None for a in recovered.attempts):
+            c.update(status="FAIL", sanitized_failure="asr-recovery-failure")
         durations[2] = shared_duration + _duration(clock, started)
         _quality(c, prepared.manifest, prepared.fixture, evidence_mode)
         combined = None
@@ -532,7 +559,7 @@ def _execute(prepared, transcriber, settings, clock, evidence_mode, maximum=None
                 rows[index] = {**_empty(row["strategy_id"]), "sanitized_failure": "assets-or-reference-unavailable"}
         traceback.clear_frames(error.__traceback__)
     finally:
-        result = baseline = recovered = reconciled = assessment = whole_result = combined = text = None
+        result = baseline = recovered = reconciled = assessment = whole_result = combined = text = alignment = None
     return _finish(record, rows, ledger, durations)
 
 
@@ -646,6 +673,7 @@ def run_live_comparison(root, config_path, output, max_asr_calls, settings, *,
             check_inputs_output()
             calls = [call for record in records for call in record["telemetry"]["calls"]]
             report = {"schema_version": 1, "evaluation_version": COMPARISON_VERSION,
+                      "algorithm_scope": "current-components",
                       "dataset_identity": {"dataset_id": manifest.dataset_id, "dataset_version": manifest.dataset_version,
                                            "manifest_sha256": manifest.manifest_sha256},
                       "configuration_identity": records[0]["configuration_identity"],

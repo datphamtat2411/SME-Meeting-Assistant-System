@@ -345,11 +345,12 @@ def test_failed_baseline_remains_and_recovery_reaches_reconciliation(workflow):
     output = pipeline(h).run(h.source)
     assert output.status is Status.COMPLETED_WITH_WARNINGS
     assert output.evidence.recovery.initial_assessment.quality.failed_chunk_count == 1
-    # Recovery timestamp progress cannot erase T05's independent alignment risk.
-    assert output.evidence.recovery.pre_canonical_final_assessment.quality.covered_speech_samples == 4096
+    # Only an admitted alternative can resolve the final canonical omission.
+    assert output.evidence.recovery.pre_canonical_final_assessment.provenance.assessment_phase.value == "pre-canonical"
     assert output.evidence.coverage.quality.canonical_text_supported_samples == 4096
-    assert output.evidence.coverage.quality.ambiguous_canonical_samples > 0
-    assert output.evidence.coverage.unresolved_intervals
+    assert output.evidence.coverage.quality.ambiguous_canonical_samples == 0
+    assert not output.evidence.coverage.unresolved_intervals
+    assert any(a.admission.value == "accepted" for a in output.evidence.recovery.attempts)
     outcomes = output.evidence.reconciliation.chunk_outcomes
     assert outcomes[1].failure is AsrErrorCategory.TIMEOUT
     assert any(o.chunk_id.startswith("recovery-") for o in outcomes)
@@ -380,10 +381,15 @@ def test_stage_failure_stops_downstream_preserves_prior_safe_evidence(workflow, 
     spy_stages(h, monkeypatch)
     output = pipeline(h).run(h.source)
     index = list(Stage).index(stage)
+    if stage is Stage.RECONCILIATION:
+        # Baseline selection is speculative work inside coverage/recovery. The
+        # public reconciliation stage is committed only with final accepted state.
+        index = list(Stage).index(Stage.COVERAGE_RECOVERY)
     assert output.status is Status.FAILED and output.result is None
-    assert output.failure.stage is stage
+    assert output.failure.stage is (Stage.COVERAGE_RECOVERY if stage is Stage.RECONCILIATION else stage)
     assert output.completed_stages == tuple(Stage)[:index]
-    assert h.calls == list(Stage)[:index + 1]
+    assert h.calls == (list(Stage)[:index + 1] + [Stage.RECONCILIATION]
+                       if stage is Stage.RECONCILIATION else list(Stage)[:index + 1])
     assert (output.evidence.audio_metadata is not None) == (index > 0)
     assert (output.evidence.chunk_plan is not None) == (index > 1)
     assert (output.evidence.asr is not None) == (index > 2)
@@ -606,7 +612,7 @@ def test_native_preserves_segments_skips_recovery_and_retains_uncertainty(workfl
     assert r.final_assessment is output.evidence.coverage is output.result.coverage
     assert r.initial_assessment.provenance.assessment_phase.value == "pre-canonical"
     assert r.final_assessment.provenance.assessment_phase.value == "final-canonical"
-    assert r.provenance.recovery_version == "strategy-skipped-v1"
+    assert r.provenance.recovery_version == "2"
     assert output.evidence.coverage.unresolved_intervals
     assert [s.interval for s in output.result.segments] == [SampleInterval(0, 1000), SampleInterval(1000, 2000)]
     assert [s.text for s in output.result.segments] == ["Đồng ý, đồng ý."] * 2
@@ -802,7 +808,7 @@ def test_unchanged_worker_accepts_strategy_outcome_and_rejects_corruption(workfl
 
 
 @pytest.mark.parametrize("recovery_needed", [False, True])
-def test_v2_pipeline_consumes_existing_boundary_report_once(workflow, monkeypatch, recovery_needed):
+def test_v2_pipeline_reuses_accepted_snapshot_and_existing_boundary_report(workflow, monkeypatch, recovery_needed):
     h = workflow(audio_asr_recovery_max_total_attempts=1)
     if recovery_needed:
         def fail(audio):
@@ -819,9 +825,9 @@ def test_v2_pipeline_consumes_existing_boundary_report_once(workflow, monkeypatc
 
     monkeypatch.setattr(reconciliation, "reconcile_transcript", reconcile)
     output = pipeline(h).run(h.source)
-    assert output.failure is None and len(invocations) == 1
+    assert output.failure is None and len(invocations) == (2 if recovery_needed else 1)
     assert output.provenance.reconciliation.reconciler_version == "2"
-    ids, report = invocations[0]
+    ids, report = invocations[-1]
     assert report is output.evidence.asr.boundary_alignment
     assert len(ids) == len(set(ids)) == len(h.asr_calls) == (3 if recovery_needed else 2)
     assert_released(h)
@@ -950,8 +956,73 @@ def test_v2_final_assessment_failure_or_cancellation_preserves_cleanup(workflow,
     else:
         output = pipeline(h).run(h.source)
         assert output.status is Status.FAILED
-        assert output.failure.stage is Stage.RECONCILIATION
+        assert output.failure.stage is Stage.COVERAGE_RECOVERY
         assert output.failure.category == "VALIDATION"
         assert_safe(output)
+    assert h.correction_calls == 0
+    assert_released(h)
+
+
+@pytest.mark.parametrize("admit", [False, True])
+def test_t07_worker_publication_uses_only_admitted_canonical_evidence(workflow, admit):
+    from sme_meeting_ai.workers.transcription import map_result, validate_result_bytes
+
+    media = "22222222-2222-4222-8222-222222222222"
+    h = workflow(source_id=media, audio_asr_recovery_max_total_attempts=1)
+
+    def respond(audio):
+        if audio.chunk_id == "chunk-000001":
+            raise AsrError(AsrErrorCategory.TIMEOUT)
+        if not admit and audio.chunk_id == "chunk-000000":
+            return AsrCandidate(
+                RAW[0], (AsrSegment(Fraction(896, 16000), Fraction(1024, 16000), RAW[0]),),
+                AsrQualityMetadata(), AsrUsage(), AsrProvenance("openrouter", "openai/whisper-large-v3"), audio.chunk_id,
+            )
+        if audio.chunk_id.startswith("recovery-"):
+            text = RAW[1] if admit else RAW[0]
+            return AsrCandidate(
+                text, (AsrSegment(Fraction(0 if admit else 896, 16000),
+                                  audio.duration if admit else Fraction(1024, 16000), text),),
+                AsrQualityMetadata(), AsrUsage(cost=Fraction(3, 100), reported=True),
+                AsrProvenance("openrouter", "openai/whisper-large-v3", upstream_provider="Together"), audio.chunk_id,
+            )
+
+    h.asr_callback = respond
+    output = pipeline(h).run(h.source)
+    assert output.failure is None
+    evidence = output.evidence.recovery
+    assert evidence.provenance.accepted_attempt_count == int(admit)
+    assert evidence.provenance.rejected_attempt_count == int(not admit)
+    assert evidence.provenance.actual_attempt_count == 1
+    assert evidence.attempts[0].meaningful_progress is admit
+    assert evidence.final_assessment is output.evidence.coverage is output.result.coverage
+    assert output.provenance.strategy.recovery_calls == 1
+    raw = map_result(output, h.settings, job_id="11111111-1111-4111-8111-111111111111", media_id=media,
+                     source_revision="a" * 64, producer_id="33333333-3333-4333-8333-333333333333")
+    envelope = validate_result_bytes(raw)
+    assert any(r.recovered for r in envelope.coverage) is admit
+    assert len(output.result.segments) == (2 if admit else 1)
+    assert h.asr_calls == ["chunk-000000", "chunk-000001", "recovery-000000"]
+    assert_released(h)
+
+
+def test_t07_trial_resource_exhaustion_blocks_completed_publication(workflow, monkeypatch):
+    h = workflow(audio_asr_recovery_max_total_attempts=1)
+    h.asr_callback = lambda audio: (AsrCandidate("", (), AsrQualityMetadata(), AsrUsage(),
+        AsrProvenance("openrouter", "openai/whisper-large-v3"), audio.chunk_id)
+        if audio.chunk_id.startswith("chunk-") else None)
+    original = coverage.assess_canonical_coverage
+
+    def limited(preprocessing, plan, baseline, extra, *args):
+        if extra:
+            raise AudioProcessingError("RESOURCE")
+        return original(preprocessing, plan, baseline, extra, *args)
+
+    monkeypatch.setattr(coverage, "assess_canonical_coverage", limited)
+    output = pipeline(h).run(h.source)
+    assert output.status is Status.FAILED and output.result is None
+    assert output.failure.stage is Stage.COVERAGE_RECOVERY and output.failure.category == "RESOURCE"
+    assert output.evidence.recovery.provenance.failed_attempt_count == 1
+    assert output.evidence.recovery.attempts[0].admission_reason.value == "resource-limit"
     assert h.correction_calls == 0
     assert_released(h)

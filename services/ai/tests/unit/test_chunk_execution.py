@@ -619,22 +619,33 @@ def test_cancellation_cancels_the_bounded_pending_window(handoff, monkeypatch):
     assert shutdown_calls == [(True, True)]
 
 
-def test_recovery_window_execution_is_sequential_and_uses_absolute_request_bounds(handoff):
+@pytest.fixture
+def recovery_windows(handoff):
     from sme_meeting_ai.transcription import (
+        AcousticEvidenceState,
+        CoverageEvidence,
         CoverageRegion,
         CoverageState,
         RecoveryWindow,
-        execute_asr_windows,
     )
 
     plan, audio, _ = handoff
     region = CoverageRegion(SampleInterval(20, 200), CoverageState.UNRESOLVED_ERROR,
-                            (), (), (), 0, 0, 0, 180, 0, 0)
-    windows = tuple(RecoveryWindow(
+                            (), (), (), 0, 0, 0, 180, 0, 0,
+                            CoverageEvidence(AcousticEvidenceState.LIKELY_SPEECH, 0, 0,
+                                             False, False, False, False))
+    return tuple(RecoveryWindow(
         replace(plan.chunks[0], chunk_id=f"recovery-{i:06d}", ordinal=len(plan.chunks) + i,
                 core_interval=SampleInterval(20, 100), request_interval=SampleInterval(10 + i, 110 + i)),
         region, i + 1, "balanced-context", (plan.chunks[0].chunk_id,), plan.provenance,
     ) for i in range(2))
+
+
+def test_recovery_window_execution_is_sequential_and_uses_absolute_request_bounds(handoff, recovery_windows):
+    from sme_meeting_ai.transcription import execute_asr_windows
+
+    _, audio, _ = handoff
+    windows = recovery_windows
     transcriber = Transcriber()
     results = execute_asr_windows(tuple(reversed(windows)), audio, transcriber, settings())
     assert [r.chunk.ordinal for r in results] == [3, 4]
@@ -643,24 +654,20 @@ def test_recovery_window_execution_is_sequential_and_uses_absolute_request_bound
     assert audio.path.exists()
 
 
-def test_recovery_window_execution_validates_all_windows_before_inference(handoff):
-    from sme_meeting_ai.transcription import (
-        CoverageRegion,
-        CoverageState,
-        RecoveryWindow,
-        execute_asr_windows,
-    )
+@pytest.mark.parametrize("damage", ["out-of-source", "missing-evidence", "non-speech"])
+def test_recovery_window_execution_validates_all_windows_before_inference(handoff, recovery_windows, damage):
+    from sme_meeting_ai.transcription import AcousticEvidenceState, execute_asr_windows
 
-    plan, audio, _ = handoff
-    region = CoverageRegion(SampleInterval(20, 200), CoverageState.UNRESOLVED_ERROR,
-                            (), (), (), 0, 0, 0, 180, 0, 0)
-    window = RecoveryWindow(
-        replace(plan.chunks[0], chunk_id="recovery-000000", ordinal=3,
-                core_interval=SampleInterval(20, 100), request_interval=SampleInterval(10, 351)),
-        region, 1, "balanced-context", (plan.chunks[0].chunk_id,), plan.provenance,
-    )
+    _, audio, _ = handoff
+    first, window = recovery_windows
+    if damage == "out-of-source":
+        window = replace(window, chunk=replace(window.chunk, request_interval=SampleInterval(10, 351)))
+    else:
+        evidence = None if damage == "missing-evidence" else replace(
+            window.target_region.evidence, acoustic_state=AcousticEvidenceState.LIKELY_NON_SPEECH)
+        window = replace(window, target_region=replace(window.target_region, evidence=evidence))
     transcriber = Transcriber()
     with pytest.raises(AsrError) as caught:
-        execute_asr_windows((window,), audio, transcriber, settings())
+        execute_asr_windows((first, window), audio, transcriber, settings())
     assert caught.value.category is AsrErrorCategory.VALIDATION
     assert transcriber.calls == []

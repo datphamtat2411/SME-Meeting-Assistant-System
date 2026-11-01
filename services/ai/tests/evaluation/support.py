@@ -242,11 +242,11 @@ def _unique_keys(pairs):
     return result
 
 
-def load_manifest(root: Path) -> Manifest:
+def load_manifest(root: Path, *, manifest_path: Path | None = None) -> Manifest:
     try:
         require(root.is_dir(), "manifest")
-        path = root / "manifest.json"
-        require(path.is_file() and not path.is_symlink(), "manifest")
+        path = manifest_path if manifest_path is not None else root / "manifest.json"
+        require(path.is_file() and not any(p.is_symlink() for p in (path, *path.parents)), "manifest")
         raw = path.read_bytes()
         document = json.loads(raw, object_pairs_hook=_unique_keys)
         require(isinstance(document, dict) and "manifest_sha256" not in document, "manifest")
@@ -258,7 +258,8 @@ def load_manifest(root: Path) -> Manifest:
 def verify_source(root: Path, fixture: Fixture) -> Path:
     try:
         path = root / fixture.path
-        require(path.resolve().is_relative_to(root.resolve()) and not path.is_symlink() and path.is_file(), "source")
+        require(path.resolve().is_relative_to(root.resolve()) and path.is_file()
+                and not any(p.is_symlink() for p in (path, *path.parents)), "source")
         require(file_digest(path) == fixture.source_sha256, "source digest")
         return path
     except OSError:
