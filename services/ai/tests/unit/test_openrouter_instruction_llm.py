@@ -60,6 +60,56 @@ def sanitized(error, category):
         assert sensitive not in rendered
 
 
+@pytest.mark.parametrize("effort,temperature", [("medium", None), (None, 0), (None, None), ("none", 0), ("none", None)])
+def test_reasoning_and_optional_temperature_payload(effort, temperature):
+    model = "openai/gpt-6-luna"
+    config = settings(transcript_correction_model=model,
+                      transcript_correction_reasoning_effort=effort,
+                      transcript_correction_temperature=temperature)
+    completion = replace(request(), model=model, reasoning_effort=effort, temperature=temperature)
+
+    def handle(r):
+        body = json.loads(r.content)
+        assert body["model"] == model
+        assert body["response_format"] == {"type": "json_object"}
+        assert body["max_tokens"] == 32768
+        assert body.get("reasoning") == ({"effort": effort} if effort is not None else None)
+        assert ("temperature" in body) == (temperature is not None)
+        assert "reasoning_effort" not in body
+        return httpx.Response(200, json=output(model=model))
+
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        assert OpenRouterInstructionLlmAdapter(config, client).complete(completion).requested_model == model
+
+
+def test_reported_reasoning_tokens_are_preserved_separately():
+    response = invoke_response(httpx.Response(200, json=output(usage={
+        "completion_tokens": 100, "completion_tokens_details": {"reasoning_tokens": 60},
+    })))
+    assert response.usage.output_tokens == 100
+    assert response.usage.reasoning_tokens == 60
+
+
+@pytest.mark.parametrize("details", [[], {"reasoning_tokens": True}, {"reasoning_tokens": -1},
+                                     {"reasoning_tokens": 101}])
+def test_invalid_reasoning_usage_fails_safely(details):
+    with pytest.raises(CorrectionError) as caught:
+        invoke_response(httpx.Response(200, json=output(usage={
+            "completion_tokens": 100, "completion_tokens_details": details,
+        })))
+    sanitized(caught.value, CorrectionErrorCategory.MALFORMED_OUTPUT)
+
+
+@pytest.mark.parametrize("content", ["", '{"segments":[', '{"segments":[]}'])
+def test_reasoning_exhausted_budget_never_accepts_even_valid_json(content):
+    body = output(choices=[{"message": {"content": content}, "finish_reason": "length"}],
+                  usage={"completion_tokens": 32768,
+                         "completion_tokens_details": {"reasoning_tokens": 32768}})
+    with pytest.raises(CorrectionError) as caught:
+        invoke_response(httpx.Response(200, json=body))
+    sanitized(caught.value, CorrectionErrorCategory.MALFORMED_OUTPUT)
+
+
 def test_chat_json_contract_finite_timeout_no_adapter_retries_or_sensitive_logs(caplog):
     calls = []
 

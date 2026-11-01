@@ -124,10 +124,14 @@ class OpenRouterInstructionLlmAdapter:
         if usage is None:
             usage = {}
         _require(isinstance(usage, dict), malformed)
+        details = usage.get("completion_tokens_details")
+        if details is None:
+            details = {}
+        _require(isinstance(details, dict), malformed)
         normalized = CorrectionProviderResponse(
             text, "openrouter", request.model, data.get("model"),
             CorrectionUsage(usage.get("prompt_tokens"), usage.get("completion_tokens"), usage.get("total_tokens"),
-                            _reported_cost(usage.get("cost"))),
+                            _reported_cost(usage.get("cost")), details.get("reasoning_tokens")),
         )
         _safe_response(normalized, request, config)
         return normalized

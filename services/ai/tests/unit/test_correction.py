@@ -89,6 +89,41 @@ def invoke(reconciliation, coverage, provider, **overrides):
     return correct_transcript(reconciliation, coverage, provider, configuration(**overrides))
 
 
+@pytest.mark.parametrize("effort,temperature", [("medium", None), (None, 0), ("none", 0)])
+def test_reasoning_configuration_request_and_effective_provenance(effort, temperature):
+    reconciliation, coverage = meeting()
+    provider = Provider(payload(reconciliation))
+    outcome = invoke(reconciliation, coverage, provider, transcript_correction_reasoning_effort=effort)
+    assert outcome.status is TranscriptCorrectionStatus.COMPLETED
+    request = provider.requests[0]
+    assert request.reasoning_effort == effort
+    assert request.temperature == temperature
+    config = outcome.result.provenance.effective_configuration
+    assert config.get("reasoning_effort") == effort
+    assert config.get("temperature") == temperature
+    assert ("temperature" in config) == (temperature is not None)
+    assert json.loads(request.transcript_json) == context_payload(reconciliation)
+
+
+def test_copied_invalid_reasoning_fails_before_provider():
+    reconciliation, coverage = meeting()
+    provider = Provider(payload(reconciliation))
+    config = configuration().model_copy(update={"transcript_correction_reasoning_effort": "invalid"})
+    outcome = correct_transcript(reconciliation, coverage, provider, config)
+    assert outcome.failure.category is CorrectionErrorCategory.CONFIGURATION
+    assert not provider.requests
+
+
+def test_truncated_json_with_medium_fails_without_partial_result():
+    reconciliation, coverage = meeting()
+    provider = Provider(json.dumps(payload(reconciliation))[:-1])
+    outcome = invoke(reconciliation, coverage, provider, transcript_correction_reasoning_effort="medium")
+    assert outcome.result is None
+    assert outcome.failure.category is CorrectionErrorCategory.MALFORMED_OUTPUT
+    assert len(provider.requests) == 2
+    assert provider.requests[0] == provider.requests[1]
+
+
 def test_complete_meeting_context_vietnamese_corrections_and_trusted_mapping(caplog):
     reconciliation, coverage = meeting()
     texts = ("Chúng ta dùng Kubernetes và API v2.", "Vâng, vâng, deploy ngày mai.")

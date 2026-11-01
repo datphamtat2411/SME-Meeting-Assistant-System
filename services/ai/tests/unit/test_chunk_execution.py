@@ -330,13 +330,23 @@ def test_serialized_payload_limit_includes_wav_header_and_is_per_chunk(handoff):
     (AsrSegment(Fraction(2, 16000), Fraction(1, 16000), "private-text"),),
     (AsrSegment(Fraction(0), Fraction(0), "private-text"),),
     (AsrSegment(Fraction(0), Fraction(136, 16000), "private-text"),),
-    (AsrSegment(Fraction(1, 32000), Fraction(1, 16000), "private-text"),),
-    (AsrSegment(Fraction(0), Fraction(3, 32000), "private-text"),),
+    # Positive rational intervals can collapse after nearest-sample rounding.
+    (AsrSegment(Fraction(1, 64000), Fraction(1, 32000), "private-text"),),
+    (AsrSegment(Fraction(3, 32000), Fraction(2, 16000), "private-text"),),
+    # Sub-sample violations must fail before rounding could hide them.
+    (AsrSegment(Fraction(-1, 64000), Fraction(1, 16000), "private-text"),),
+    (AsrSegment(Fraction(0), Fraction(541, 64000), "private-text"),),
     (AsrSegment(0.0, 0.001, "private-text"),),
+    (AsrSegment(float("nan"), Fraction(1, 16000), "private-text"),),
+    (AsrSegment(Fraction(0), float("inf"), "private-text"),),
+    (AsrSegment(True, Fraction(1, 16000), "private-text"),),
+    (AsrSegment("0", Fraction(1, 16000), "private-text"),),
     (AsrSegment(Fraction(10, 16000), Fraction(20, 16000), "private-text"),
      AsrSegment(Fraction(0), Fraction(5, 16000), "private-text")),
     (AsrSegment(Fraction(0), Fraction(20, 16000), "private-text"),
      AsrSegment(Fraction(19, 16000), Fraction(21, 16000), "private-text")),
+    (AsrSegment(Fraction(0), Fraction(5, 64000), "private-text"),
+     AsrSegment(Fraction(1, 16000), Fraction(3, 16000), "private-text")),
 ])
 def test_untrusted_timestamps_fail_independently_without_clipping(handoff, segments, caplog):
     plan, audio, _ = handoff
@@ -346,6 +356,53 @@ def test_untrusted_timestamps_fail_independently_without_clipping(handoff, segme
     assert results[0].candidate is None and results[0].timeline_segments == ()
     assert all(r.failure is None for r in results[1:])
     assert not caplog.records
+
+
+@pytest.mark.parametrize("start_samples,end_samples,expected", [
+    (Fraction(0), Fraction(150), (0, 150)),
+    (Fraction(1, 4), Fraction(23, 4), (0, 6)),
+    (Fraction(1, 2), Fraction(3, 2), (0, 2)),
+    (Fraction(3, 2), Fraction(5, 2), (2, 2)),
+    (Fraction(5, 2), Fraction(7, 2), (2, 4)),
+    (Fraction(4999, 10000), Fraction(14999, 10000), (0, 1)),
+    (Fraction(5001, 10000), Fraction(15001, 10000), (1, 2)),
+])
+def test_timestamp_quantization_is_exact_nearest_sample_ties_to_even(
+    handoff, start_samples, end_samples, expected,
+):
+    plan, _, _ = handoff
+    planned = plan.chunks[1]  # Request start 105 differs from core start 120.
+    segment = AsrSegment(start_samples / 16000, end_samples / 16000, "Hello anh Hiếu nha!")
+    result = candidate(AsrAudioChunk(planned.chunk_id, b"synthetic", planned.request_interval.duration),
+                       segments=(segment,))
+    if expected[0] == expected[1]:
+        with pytest.raises(AsrError) as caught:
+            chunk_execution._translate_candidate(result, planned)
+        assert caught.value.category is AsrErrorCategory.MALFORMED_OUTPUT
+        assert str(caught.value) == "malformed_output"
+        return
+    translated = chunk_execution._translate_candidate(result, planned)
+    assert translated[0].interval == SampleInterval(105 + expected[0], 105 + expected[1])
+    assert translated[0].segment is segment
+    assert translated[0].segment.text == "Hello anh Hiếu nha!"
+    assert chunk_execution._translate_candidate(result, planned) == translated
+
+
+def test_chronological_off_grid_segments_may_become_adjacent_without_text_changes(handoff):
+    plan, _, _ = handoff
+    planned = plan.chunks[1]
+    segments = (
+        AsrSegment(Fraction(1, 64000), Fraction(5, 64000), "Hello anh Hiếu nha!"),
+        AsrSegment(Fraction(3, 32000), Fraction(17, 64000), "Hello anh Hiếu nha!"),
+        AsrSegment(Fraction(9, 32000), planned.request_interval.duration, "Ờ, tiếp tục nhé."),
+    )
+    result = candidate(AsrAudioChunk(planned.chunk_id, b"synthetic", planned.request_interval.duration),
+                       segments=segments)
+    translated = chunk_execution._translate_candidate(result, planned)
+    assert [item.interval for item in translated] == [
+        SampleInterval(105, 106), SampleInterval(107, 109), SampleInterval(109, 255),
+    ]
+    assert all(item.segment is segment for item, segment in zip(translated, segments, strict=True))
 
 
 @pytest.mark.parametrize("mutate", [

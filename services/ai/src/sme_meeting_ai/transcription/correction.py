@@ -14,10 +14,10 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from fractions import Fraction
 from types import MappingProxyType
-from typing import Mapping, Protocol
+from typing import Mapping, Protocol, get_args
 
 from sme_meeting_ai.audio.models import SampleInterval
-from sme_meeting_ai.core.config import Settings
+from sme_meeting_ai.core.config import ReasoningEffort, Settings
 
 from .coverage import CoverageState, SpeechCoverageAssessment
 from .reconciliation import (
@@ -79,7 +79,8 @@ class CorrectionRequest:
     transcript_json: str = field(repr=False)
     model: str
     max_output_tokens: int
-    temperature: float
+    temperature: float | None
+    reasoning_effort: ReasoningEffort | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +89,7 @@ class CorrectionUsage:
     output_tokens: int | None = None
     total_tokens: int | None = None
     cost: Fraction | None = None
+    reasoning_tokens: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,7 +211,7 @@ def _configuration(settings: Settings) -> dict[str, str | int | float]:
         _require(type(value) is int and 0 < value <= maximum, category)
         config[key] = value
     for key, lower, upper, inclusive in (
-        ("timeout_seconds", 0, 600, False), ("temperature", 0, 1, True),
+        ("timeout_seconds", 0, 600, False),
         ("min_text_ratio", 0, 1, False), ("max_text_ratio", 1, 3, True),
     ):
         value = getattr(settings, f"transcript_correction_{key}")
@@ -221,16 +223,32 @@ def _configuration(settings: Settings) -> dict[str, str | int | float]:
     model = settings.transcript_correction_model
     _require(isinstance(model, str) and bool(_IDENTIFIER.fullmatch(model)), category)
     config["model"] = model
+    effort = settings.transcript_correction_reasoning_effort
+    _require(effort is None or (type(effort) is str and effort in get_args(ReasoningEffort)), category)
+    if effort is not None:
+        config["reasoning_effort"] = effort
+    temperature = settings.transcript_correction_temperature
+    _require(temperature is None or (type(temperature) in (int, float)
+             and math.isfinite(temperature) and 0 <= temperature <= 1), category)
+    # Sampling is not universally compatible with reasoning. Omit conservatively
+    # whenever enabled; explicit None also supports models with no sampling at all.
+    if temperature is not None and effort in (None, "none"):
+        config["temperature"] = temperature
     return config
 
 
 def _request_payload(request: CorrectionRequest) -> dict:
     """Vendor-neutral chat fields; credentials are never part of the payload."""
-    return {"model": request.model, "temperature": request.temperature,
+    payload = {"model": request.model,
             "max_tokens": request.max_output_tokens, "stream": False,
             "response_format": {"type": "json_object"},
             "messages": [{"role": "system", "content": request.system_prompt},
-                         {"role": "user", "content": request.transcript_json}]}
+                          {"role": "user", "content": request.transcript_json}]}
+    if request.temperature is not None:
+        payload["temperature"] = request.temperature
+    if request.reasoning_effort is not None:
+        payload["reasoning"] = {"effort": request.reasoning_effort}
+    return payload
 
 
 def _validate_request(request: CorrectionRequest, config: Mapping) -> int:
@@ -240,8 +258,10 @@ def _validate_request(request: CorrectionRequest, config: Mapping) -> int:
     _require(request.model == config["model"])
     _require(type(request.max_output_tokens) is int
              and 0 < request.max_output_tokens <= config["max_output_tokens"])
-    _require(type(request.temperature) in (int, float) and math.isfinite(request.temperature)
-             and 0 <= request.temperature <= 1 and request.temperature == config["temperature"])
+    _require(request.reasoning_effort == config.get("reasoning_effort"))
+    _require(request.temperature == config.get("temperature") and (
+        request.temperature is None or (type(request.temperature) in (int, float)
+        and math.isfinite(request.temperature) and 0 <= request.temperature <= 1)))
     # One token per serialized byte is intentionally conservative (including JSON
     # escaping of Vietnamese). Reserve extra chat framing tokens. Never truncate.
     budget = len(json.dumps(_request_payload(request), ensure_ascii=True).encode("utf-8")) + 256
@@ -310,8 +330,11 @@ def _safe_response(response: CorrectionProviderResponse, request: CorrectionRequ
     _require(response.resolved_model is None or (isinstance(response.resolved_model, str)
              and bool(_IDENTIFIER.fullmatch(response.resolved_model))), malformed)
     _require(isinstance(response.usage, CorrectionUsage), malformed)
-    for value in (response.usage.input_tokens, response.usage.output_tokens, response.usage.total_tokens):
+    for value in (response.usage.input_tokens, response.usage.output_tokens,
+                  response.usage.total_tokens, response.usage.reasoning_tokens):
         _require(value is None or (type(value) is int and 0 <= value <= 1000000000), malformed)
+    if response.usage.reasoning_tokens is not None and response.usage.output_tokens is not None:
+        _require(response.usage.reasoning_tokens <= response.usage.output_tokens, malformed)
     cost = response.usage.cost
     _require(cost is None or (isinstance(cost, Fraction) and cost >= 0), malformed)
 
@@ -433,7 +456,8 @@ def correct_transcript(
             for segment in reconciliation.segments
         ]}, ensure_ascii=False, separators=(",", ":"))
         request = CorrectionRequest(_SYSTEM_PROMPT, transcript, config["model"],
-                                    config["max_output_tokens"], config["temperature"])
+                                    config["max_output_tokens"], config.get("temperature"),
+                                    config.get("reasoning_effort"))
         input_budget = _validate_request(request, config)
         for attempts in range(1, config["max_attempts"] + 1):
             category = CorrectionErrorCategory.PROVIDER

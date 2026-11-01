@@ -12,6 +12,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict, SettingsError
 
 SERVICE_IDENTITY_PATTERN = r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
 ServiceIdentity = Annotated[str, Field(pattern=SERVICE_IDENTITY_PATTERN, max_length=63)]
+ReasoningEffort = Literal["max", "xhigh", "high", "medium", "low", "minimal", "none"]
 
 
 class Environment(StrEnum):
@@ -185,6 +186,7 @@ class Settings(BaseSettings):
     transcript_correction_model: str | None = Field(
         default=None, min_length=1, max_length=256, pattern=r"^[a-zA-Z0-9_./:-]+$",
     )
+    transcript_correction_reasoning_effort: ReasoningEffort | None = None
     transcript_correction_timeout_seconds: float = Field(
         default=120, gt=0, le=600, allow_inf_nan=False,
     )
@@ -201,7 +203,7 @@ class Settings(BaseSettings):
         default=4194304, gt=0, le=16777216, strict=True,
     )
     transcript_correction_max_attempts: int = Field(default=2, gt=0, le=3, strict=True)
-    transcript_correction_temperature: float = Field(default=0, ge=0, le=1, allow_inf_nan=False)
+    transcript_correction_temperature: float | None = Field(default=0, ge=0, le=1, allow_inf_nan=False)
     transcript_correction_min_text_ratio: float = Field(default=0.65, gt=0, le=1, allow_inf_nan=False)
     transcript_correction_max_text_ratio: float = Field(default=1.5, ge=1, le=3, allow_inf_nan=False)
 
@@ -272,6 +274,12 @@ class Settings(BaseSettings):
         if isinstance(value, bool):
             raise ValueError("Correction settings must be numeric")
         return value
+
+    @field_validator("transcript_correction_temperature", mode="before")
+    @classmethod
+    def optional_correction_temperature(cls, value: object) -> object:
+        # Empty dotenv text explicitly omits sampling; absent settings retain zero.
+        return None if value == "" else value
 
     @model_validator(mode="after")
     def valid_correction_context(self) -> Self:

@@ -129,7 +129,9 @@ def _translate_candidate(candidate: AsrCandidate, chunk: AsrChunk) -> tuple[AsrT
         raise AsrError(AsrErrorCategory.MALFORMED_OUTPUT)
     translated = []
     previous_end = Fraction(0)
+    previous_end_sample = 0
     request = chunk.request_interval
+    request_sample_count = request.end_sample - request.start_sample
     for segment in candidate.segments:
         if (
             not isinstance(segment, AsrSegment) or not isinstance(segment.text, str)
@@ -137,13 +139,16 @@ def _translate_candidate(candidate: AsrCandidate, chunk: AsrChunk) -> tuple[AsrT
             or not previous_end <= segment.start < segment.end <= request.duration
         ):
             raise AsrError(AsrErrorCategory.MALFORMED_OUTPUT)
-        start, end = segment.start * _RATE, segment.end * _RATE
-        if start.denominator != 1 or end.denominator != 1:
+        # Fraction rounding is exact nearest-sample quantization, ties to even.
+        # Original rational checks above prevent rounding from hiding violations.
+        start, end = round(segment.start * _RATE), round(segment.end * _RATE)
+        if not 0 <= previous_end_sample <= start < end <= request_sample_count:
             raise AsrError(AsrErrorCategory.MALFORMED_OUTPUT)
         translated.append(AsrTimelineSegment(segment, SampleInterval(
-            request.start_sample + start.numerator, request.start_sample + end.numerator,
+            request.start_sample + start, request.start_sample + end,
         )))
         previous_end = segment.end
+        previous_end_sample = end
     return tuple(translated)
 
 

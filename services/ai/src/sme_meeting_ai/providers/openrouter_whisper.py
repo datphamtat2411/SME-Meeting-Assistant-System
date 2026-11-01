@@ -26,6 +26,7 @@ from sme_meeting_ai.transcription.asr import (
 
 _ENDPOINT = "https://openrouter.ai/api/v1/audio/transcriptions"
 _MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+_FINAL_END_TOLERANCE = Fraction(5, 1000)
 _STATUS_CATEGORIES = {
     401: AsrErrorCategory.AUTHENTICATION,
     403: AsrErrorCategory.AUTHENTICATION,
@@ -204,10 +205,18 @@ class OpenRouterWhisperAdapter:
         text = _text(data["text"])
         segments = []
         previous_end = Fraction(0)
-        for item in data["segments"]:
+        for index, item in enumerate(data["segments"]):
             if not isinstance(item, dict):
                 raise ValueError
             start, end = _number(item["start"]), _number(item["end"])
+            # Validate original ordering before any narrowly scoped end repair.
+            if not previous_end <= start < end:
+                raise ValueError
+            if end > chunk.duration:
+                if (index != len(data["segments"]) - 1
+                        or end - chunk.duration > _FINAL_END_TOLERANCE):
+                    raise ValueError
+                end = chunk.duration
             if not previous_end <= start < end <= chunk.duration:
                 raise ValueError
             segments.append(AsrSegment(

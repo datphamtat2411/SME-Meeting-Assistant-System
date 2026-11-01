@@ -2,6 +2,7 @@ import json
 import os
 import traceback
 from dataclasses import FrozenInstanceError
+from decimal import Decimal
 from email import policy
 from email.parser import BytesParser
 from fractions import Fraction
@@ -9,14 +10,18 @@ from fractions import Fraction
 import httpx
 import pytest
 
+from sme_meeting_ai.audio.models import SampleInterval
 from sme_meeting_ai.core.config import Settings
 from sme_meeting_ai.providers.openrouter_whisper import OpenRouterWhisperAdapter
 from sme_meeting_ai.transcription import (
     AsrAudioChunk,
     AsrCandidate,
+    AsrChunk,
     AsrError,
     AsrErrorCategory,
+    ChunkBoundaryReason,
 )
+from sme_meeting_ai.transcription.chunk_execution import _translate_candidate
 
 SECRET = "test-only-private-key"
 AUDIO = b"test-only-private-audio"
@@ -422,3 +427,78 @@ def test_extreme_numeric_exponents_reject_before_rational_expansion():
         with pytest.raises(AsrError) as caught:
             OpenRouterWhisperAdapter(settings(), client).transcribe(chunk())
     assert_sanitized(caught.value, AsrErrorCategory.MALFORMED_OUTPUT)
+
+
+@pytest.mark.parametrize("end", [2, 2.001, 2.0040615, 2.005])
+def test_final_end_rounding_tolerance_clamps_exactly_to_request_duration(end):
+    data = output()
+    data["segments"].append({"start": 1.3, "end": end, "text": TEXT})
+    result = invoke(data)
+    assert result.segments[0].end == Fraction(6, 5)
+    assert result.segments[1].start == Fraction(13, 10)
+    assert result.segments[1].end == chunk().duration
+    assert [segment.text for segment in result.segments] == [TEXT, TEXT]
+
+
+@pytest.mark.parametrize("bounds", [
+    [(0, 2.0050001)],  # Just above the exact 5 ms limit.
+    [(-0.000001, 2.001)],
+    [(2.002, 2.001)],
+    [(0, 1.5), (1.49999, 2.001)],
+    [(0, 2.001), (2.001, 2.004)],  # Non-final overrun, even if both are small.
+    [(0, 2.001), (1, 1.5)],  # Non-final overrun with reversed sequence.
+    [(2, 2.001)],  # Clamping would collapse the interval.
+    [(2.0001, 2.001)],  # Clamping would reverse the interval.
+])
+def test_end_tolerance_preserves_fail_closed_original_and_effective_bounds(bounds):
+    data = {"text": TEXT, "segments": [
+        {"start": start, "end": end, "text": TEXT} for start, end in bounds
+    ]}
+    with pytest.raises(AsrError) as caught:
+        invoke(data)
+    assert_sanitized(caught.value, AsrErrorCategory.MALFORMED_OUTPUT)
+
+
+def test_decimal_timestamps_normalize_without_float_conversion():
+    data = {"text": TEXT, "segments": [
+        {"start": Decimal("0.00003125"), "end": Decimal("1.23456789"), "text": TEXT},
+    ]}
+    with httpx.Client(transport=httpx.MockTransport(lambda _: pytest.fail("unexpected request"))) as client:
+        result = OpenRouterWhisperAdapter(settings(), client)._normalize(data, chunk())
+    assert result.segments[0].start == Fraction(1, 32000)
+    assert result.segments[0].end == Fraction(123456789, 100000000)
+
+
+def test_mocked_whisper_off_grid_and_final_overrun_translate_without_losing_repetition(caplog):
+    texts = ["Hello anh Hiếu nha!", "Hello anh Hiếu nha!", "Ờ, mình bắt đầu nhé."]
+    data = {
+        "task": "transcribe", "text": " ".join(texts), "language": "vi",
+        "model": "openai/whisper-large-v3", "provider": "synthetic-provider",
+        "duration": 2.0040615,
+        "usage": {"seconds": 2.0040615, "cost": 0.000178},
+        "segments": [
+            {"start": 0.00003125, "end": 0.500023, "text": texts[0]},
+            {"start": 0.500024, "end": 1.00009, "text": texts[1]},
+            {"start": 1.0001, "end": 2.0040615, "text": texts[2]},
+        ],
+    }
+    result = invoke(data)
+    planned = AsrChunk(
+        "chunk-1", 1, SampleInterval(18000, 46000), SampleInterval(16000, 48000),
+        ChunkBoundaryReason.FORCED_CONTINUOUS_SPEECH,
+        ChunkBoundaryReason.FORCED_CONTINUOUS_SPEECH,
+    )
+    translated = _translate_candidate(result, planned)
+    assert [item.interval for item in translated] == [
+        SampleInterval(16000, 24000), SampleInterval(24000, 32001), SampleInterval(32002, 48000),
+    ]
+    assert [item.segment.text for item in translated] == texts
+    assert all(item.segment is segment for item, segment in zip(translated, result.segments, strict=True))
+    assert result.text == data["text"]
+    assert result.segments[-1].end == Fraction(2)
+    assert result.quality.duration_seconds == result.usage.audio_seconds == Fraction("2.0040615")
+    assert result.usage.cost == Fraction("0.000178")
+    assert result.quality.language == "vi"
+    assert result.provenance.requested_model == result.provenance.resolved_model == "openai/whisper-large-v3"
+    assert result.provenance.upstream_provider == "synthetic-provider"
+    assert not caplog.records

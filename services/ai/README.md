@@ -538,6 +538,73 @@ gates are reported as `PASS`/`FAIL`/`UNESTABLISHED`; an explicit failure fails p
 passing runs, or inspect `quality_gate_status` in the JSON output. This evaluation
 does not execute ASR, train a model, tune thresholds or change preprocessing.
 
+### Whole-meeting correction: GPT-6 Luna Medium
+
+Configure the instruction adapter with:
+
+```dotenv
+AI_TRANSCRIPT_CORRECTION_MODEL=openai/gpt-6-luna
+AI_TRANSCRIPT_CORRECTION_REASONING_EFFORT=medium
+AI_TRANSCRIPT_CORRECTION_TEMPERATURE=
+```
+
+Verified against OpenRouter on **2026-11-01**:
+[model contract](https://openrouter.ai/openai/gpt-6-luna),
+[model catalog](https://openrouter.ai/api/v1/models), and
+[provider capabilities](https://openrouter.ai/api/v1/models/openai/gpt-6-luna/endpoints).
+The exact public ID is `openai/gpt-6-luna` (canonical slug
+`openai/gpt-6-luna-20260922`). It supports Chat Completions and
+`response_format: {"type":"json_object"}`. The adapter sends
+`reasoning: {"effort":"medium"}` using OpenRouter's
+[unified reasoning contract](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens)
+and [JSON-mode parameters](https://openrouter.ai/docs/api/reference/parameters).
+No alternate model is substituted.
+
+The strictly validated gateway efforts are `max`, `xhigh`, `high`, `medium`,
+`low`, `minimal`, and `none` (disable reasoning). Luna advertises all except
+`minimal`; check the selected model's supported efforts before configuration.
+Omitting the effort variable keeps the settings default `None` and sends no
+reasoning object; this leaves reasoning defaults to the provider, rather than
+disabling them. Empty or unknown effort values fail validation.
+
+Enabled reasoning conservatively omits temperature for every model. Blank
+temperature explicitly omits it even when effort is unset or `none`; Luna's
+advertised capabilities exclude temperature in all configurations. For other
+models, absent temperature still defaults to zero, and unset/`none` effort
+preserves the configured temperature. There are no model-name heuristics or
+runtime capability lookups; deployment configuration owns model compatibility.
+Effective provenance records the effort and only the temperature actually sent.
+
+`AI_TRANSCRIPT_CORRECTION_MAX_OUTPUT_TOKENS` bounds **reasoning plus visible JSON**,
+not just corrected text. The default is still 32768; medium can consume a substantial
+share in reasoning. Reported completion usage includes reasoning; optional
+`usage.reasoning_tokens` records the reported reasoning subset, never estimated.
+Allow enough output budget for the entire meeting, within both configured context
+and provider limits (Luna: 1050000 context, 128000 completion tokens). The existing
+131072 context / 98304 input defaults are deliberately conservative. Serialized
+byte budgeting includes reasoning request fields and never truncates or splits a
+meeting. A `length` finish reason, empty response, malformed JSON, or invalid
+segment mapping fails safely with bounded whole-context retries, never partial
+correction or raw-ASR fallback. Reasoning exhaustion is not repaired by increasing
+the budget automatically.
+
+Whole-meeting context, strict JSON keys, segment IDs/order, trusted timestamps,
+source provenance, uncertainty and text-integrity checks remain enforced. Integrity
+heuristics reject detected omission/expansion/drift; provider compatibility alone
+does not establish semantic correctness or Vietnamese correction quality.
+
+Optional live compatibility probe (billable; synthetic Vietnamese text only):
+
+```bash
+RUN_OPENROUTER_LIVE_CORRECTION=1 uv run pytest -m live_provider tests/integration/test_openrouter_correction_live.py
+```
+
+Supply `OPENROUTER_API_KEY` via the process environment/approved secret injection.
+The test does not read `.env`, invokes no ASR, sends no private meeting content,
+and fixes the requested configuration to Luna Medium with one attempt. Without
+explicit opt-in it is skipped. A successful probe establishes request/validation
+compatibility on this synthetic fixture, not production meeting quality.
+
 ### Transcription regression and quality evaluation
 
 `tests/evaluation/transcription_runner.py` evaluates the existing processing

@@ -3,6 +3,7 @@ import traceback
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from sme_meeting_ai.core.config import (
     ConfigurationError,
@@ -11,6 +12,28 @@ from sme_meeting_ai.core.config import (
     get_settings,
     load_settings,
 )
+
+
+@pytest.mark.parametrize("effort", ["max", "xhigh", "high", "medium", "low", "minimal", "none"])
+def test_correction_reasoning_environment(effort, monkeypatch):
+    monkeypatch.setenv("AI_TRANSCRIPT_CORRECTION_REASONING_EFFORT", effort)
+    monkeypatch.setenv("AI_TRANSCRIPT_CORRECTION_TEMPERATURE", "")
+    config = Settings(service_name="test-ai", service_identity="ai-core", _env_file=None)
+    assert config.transcript_correction_reasoning_effort == effort
+    assert config.transcript_correction_temperature is None
+
+
+@pytest.mark.parametrize("effort", ["", "MEDIUM", " medium", "auto", "null", True, 1, {}])
+def test_correction_reasoning_rejects_invalid_values(effort):
+    with pytest.raises(ValidationError):
+        Settings(service_name="test-ai", service_identity="ai-core", _env_file=None,
+                 transcript_correction_reasoning_effort=effort)
+
+
+def test_correction_reasoning_unset_is_backward_compatible():
+    config = Settings(service_name="test-ai", service_identity="ai-core", _env_file=None)
+    assert config.transcript_correction_reasoning_effort is None
+    assert config.transcript_correction_temperature == 0
 
 
 @pytest.fixture(autouse=True)
@@ -787,6 +810,7 @@ def test_correction_defaults_match_canonical_service_example():
     env_file = Path(__file__).resolve().parents[2] / ".env.example"
     expected = {
         "transcript_correction_model": None,
+        "transcript_correction_reasoning_effort": None,
         "transcript_correction_timeout_seconds": 120,
         "transcript_correction_context_window_tokens": 131072,
         "transcript_correction_max_input_tokens": 98304,
@@ -797,17 +821,22 @@ def test_correction_defaults_match_canonical_service_example():
         "transcript_correction_min_text_ratio": 0.65,
         "transcript_correction_max_text_ratio": 1.5,
     }
-    for config in (Settings(service_name="test-ai", service_identity="ai-core", _env_file=None),
-                   load_settings(env_file)):
-        for field, value in expected.items():
-            assert getattr(config, field) == value
+    defaults = Settings(service_name="test-ai", service_identity="ai-core", _env_file=None)
+    for field, value in expected.items():
+        assert getattr(defaults, field) == value
+    example = load_settings(env_file)
+    example_values = {**expected, "transcript_correction_model": "openai/gpt-6-luna",
+                      "transcript_correction_reasoning_effort": "medium",
+                      "transcript_correction_temperature": None}
+    for field, value in example_values.items():
+        assert getattr(example, field) == value
 
     # Loading settings alone would hide omitted example variables behind defaults.
     lines = set(env_file.read_text(encoding="utf-8").splitlines())
-    for field, value in expected.items():
+    for field, value in example_values.items():
         if value is not None:
             assert f"AI_{field.upper()}={value}" in lines
-    assert "# AI_TRANSCRIPT_CORRECTION_MODEL=vendor/approved-instruction-model" in lines
+    assert "AI_TRANSCRIPT_CORRECTION_TEMPERATURE=" in lines
 
 
 @pytest.mark.parametrize("source", ["environment", "dotenv"])
@@ -863,7 +892,7 @@ def test_correction_context_cross_field_validation():
 @pytest.mark.parametrize("field", [
     "model", "timeout_seconds", "context_window_tokens", "max_input_tokens",
     "max_output_tokens", "max_response_bytes", "max_attempts", "temperature",
-    "min_text_ratio", "max_text_ratio",
+    "min_text_ratio", "max_text_ratio", "reasoning_effort",
 ])
 def test_correction_invalid_environment_is_sanitized(monkeypatch, field):
     monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
