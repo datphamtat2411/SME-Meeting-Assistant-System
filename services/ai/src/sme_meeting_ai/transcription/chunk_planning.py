@@ -95,10 +95,15 @@ def _require(condition: bool) -> None:
         raise AudioProcessingError("VALIDATION")
 
 
-def _configuration(
+def _request_limits(
     settings: Settings, effective_payload_limit: int | None = None,
     provider_max_request_samples: int = 230400000,
 ) -> Mapping[str, int]:
+    """Validate shared request bounds, independently of baseline cut feasibility.
+
+    Recovery windows do not require a frame-grid core plus baseline forced context.
+    They still obey these same duration, configured geometry and upload limits.
+    """
     _require(isinstance(settings, Settings))
     configuration = {
         "target_core_samples": settings.audio_asr_chunk_target_samples,
@@ -134,7 +139,17 @@ def _configuration(
         "provider_max_request_samples": provider_max_request_samples,
         "max_timeline_samples": timeline_limit.numerator // timeline_limit.denominator,
     })
-    maximum = min(maximum, (payload - 44) // 2, provider_max_request_samples)
+    configuration["max_request_samples"] = max(0, min(maximum, (payload - 44) // 2, provider_max_request_samples))
+    return MappingProxyType(configuration)
+
+
+def _configuration(
+    settings: Settings, effective_payload_limit: int | None = None,
+    provider_max_request_samples: int = 230400000,
+) -> Mapping[str, int]:
+    configuration = dict(_request_limits(settings, effective_payload_limit, provider_max_request_samples))
+    maximum = configuration["max_request_samples"]
+    target, overlap = configuration["target_core_samples"], configuration["overlap_samples"]
     forced = min(16000, overlap // 2)
     if maximum - 2 * forced <= 0:
         raise AudioProcessingError("RESOURCE")
@@ -348,6 +363,35 @@ def _context(reason: ChunkBoundaryReason, configuration: Mapping[str, int]) -> i
     return 0
 
 
+def _boundary_window(start, sample_count, configuration):
+    """Preferred target is a preference; hard request/context bounds take priority."""
+    minimum = configuration["minimum_progress_samples"]
+    target = min(start + configuration["target_core_samples"],
+                 start + configuration["max_core_samples"], sample_count - minimum)
+    lower = max(start + minimum, target - configuration["boundary_search_samples"])
+    upper = min(target + configuration["boundary_search_samples"],
+                start + configuration["max_core_samples"], sample_count - minimum)
+    _require(lower <= upper)
+    return target, lower, upper
+
+
+def _forced_boundary_window(start, sample_count, configuration):
+    target, lower, upper = _boundary_window(start, sample_count, configuration)
+    if ((lower + 511) // 512) * 512 > upper:
+        # A capped or sub-frame preferred window can contain no actual VAD frame.
+        # Use its preceding real frame if progress/tail bounds permit it. Only
+        # when none exists may a real following frame leave a short final tail.
+        earlier = upper // 512 * 512
+        if earlier >= start + configuration["minimum_progress_samples"]:
+            lower = upper = earlier
+        else:
+            following = ((lower + 511) // 512) * 512
+            if following > min(start + configuration["max_core_samples"], sample_count - 1):
+                raise AudioProcessingError("RESOURCE")
+            lower = upper = following
+    return target, lower, upper
+
+
 class _IntervalIndex:
     def __init__(self, intervals):
         self.intervals = intervals
@@ -517,16 +561,15 @@ def _validate_v2(plan: AsrChunkPlan) -> None:
             _require(chunk.end_boundary_reason is ChunkBoundaryReason.TIMELINE_END)
             if ordinal and size < c["minimum_progress_samples"]:
                 previous_start = plan.chunks[ordinal - 1].core_interval.start_sample
-                lower = max(previous_start + c["minimum_progress_samples"],
-                            previous_start + target - c["boundary_search_samples"])
-                upper = min(previous_start + target + c["boundary_search_samples"],
-                            previous_start + c["max_core_samples"], plan.sample_count - c["minimum_progress_samples"])
+                _, lower, upper = _boundary_window(previous_start, plan.sample_count, c)
                 _require(reason is ChunkBoundaryReason.FORCED_CONTINUOUS_SPEECH
                          and ((lower + 511) // 512) * 512 > upper)
         else:
             _require(size >= c["minimum_progress_samples"])
-            _require(position + target - c["boundary_search_samples"] <= core.end_sample
-                     <= position + target + c["boundary_search_samples"])
+            _, lower, upper = (_forced_boundary_window(position, plan.sample_count, c)
+                               if chunk.end_boundary_reason is ChunkBoundaryReason.FORCED_CONTINUOUS_SPEECH
+                               else _boundary_window(position, plan.sample_count, c))
+            _require(lower <= core.end_sample <= upper)
             decision = plan.boundary_decisions[ordinal]
             _require(isinstance(decision, AcousticBoundaryDecision)
                      and type(decision.boundary_sample) is int and decision.boundary_sample == core.end_sample
@@ -607,12 +650,7 @@ class SpeechAwareAsrChunkPlanner:
                     end = sample_count
                     end_reason = ChunkBoundaryReason.TIMELINE_END
                 else:
-                    target = start + configuration["target_core_samples"]
-                    minimum = configuration["minimum_progress_samples"]
-                    lower = max(start + minimum, target - configuration["boundary_search_samples"])
-                    upper = min(target + configuration["boundary_search_samples"], start + maximum,
-                                sample_count - minimum)
-                    _require(lower <= upper)
+                    target, lower, upper = _boundary_window(start, sample_count, configuration)
                     while candidate_index < len(candidates) and candidates[candidate_index].end_sample <= lower:
                         candidate_index += 1
                     best = None
@@ -628,13 +666,7 @@ class SpeechAwareAsrChunkPlanner:
                         index += 1
                     if best is None:
                         _require(configuration["forced_context_samples"] > 0)
-                        # A sub-frame preferred tail window may contain no real
-                        # frame boundary. A shorter final core is then necessary;
-                        # retain the real frame grid rather than inventing a cut.
-                        frame_size = frames.contract[0]
-                        if ((lower + frame_size - 1) // frame_size) * frame_size > upper:
-                            upper = min(target + configuration["boundary_search_samples"],
-                                        start + maximum, sample_count - 1)
+                        target, lower, upper = _forced_boundary_window(start, sample_count, configuration)
                         end = frames.best(lower, upper, target)
                         end_reason = ChunkBoundaryReason.FORCED_CONTINUOUS_SPEECH
                         gap = None

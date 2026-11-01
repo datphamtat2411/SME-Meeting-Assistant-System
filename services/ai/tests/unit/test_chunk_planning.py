@@ -551,3 +551,29 @@ def test_frame_replay_integrity_is_bounded_and_fail_closed(result_factory, monke
     with pytest.raises(AudioProcessingError) as caught:
         SpeechAwareAsrChunkPlanner(settings()).plan(result)
     assert caught.value.category == "VALIDATION"
+
+
+@pytest.mark.parametrize("payload,search", [(72044, 8000), (2043, 0)])
+def test_effective_cap_shortens_preferred_core_without_losing_context_or_frame_grid(result_factory, payload, search):
+    configuration = settings(audio_asr_chunk_target_samples=32000 if search else 1024,
+                             audio_asr_chunk_max_request_samples=48000 if search else 1536,
+                             audio_asr_chunk_overlap_samples=8000 if search else 128,
+                             audio_asr_chunk_boundary_search_samples=search)
+    source = result_factory(128000 if search else 2048)
+    plan = SpeechAwareAsrChunkPlanner(configuration).plan(source, effective_payload_limit=payload)
+    assert_partition(plan, configuration)
+    c = plan.provenance.effective_configuration
+    assert c["target_core_samples"] == configuration.audio_asr_chunk_target_samples
+    assert c["forced_context_samples"] == configuration.audio_asr_chunk_overlap_samples // 2
+    assert c["max_core_samples"] < c["target_core_samples"]
+    assert all(44 + 2 * (chunk.request_interval.end_sample - chunk.request_interval.start_sample) <= payload
+               for chunk in plan.chunks)
+    assert all(chunk.core_interval.end_sample % 512 == 0 for chunk in plan.chunks[:-1])
+    validate_asr_chunk_plan(plan)
+
+
+def test_impossible_context_is_not_shrunk_to_make_a_payload_fit(result_factory):
+    planner = SpeechAwareAsrChunkPlanner(settings())
+    with pytest.raises(AudioProcessingError) as caught:
+        planner.plan(result_factory(), effective_payload_limit=300)
+    assert caught.value.category == "RESOURCE"

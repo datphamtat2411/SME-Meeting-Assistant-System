@@ -231,12 +231,29 @@ def test_r04_genuine_repetition_preserved_and_omission_is_deletion(case):
 def test_r05_overlapping_hypotheses_raw_insertions_separate_from_legacy_cleanup(case):
     h = case(count=4096, audio_asr_chunk_target_samples=2048,
              audio_asr_chunk_max_request_samples=3072, audio_asr_chunk_overlap_samples=1024)
-    _, b, _ = strategies(invoke(h))
+    def response(chunk):
+        # Real same-occurrence support: identical absolute bounds inside both
+        # requests, not merely equal wording at displaced request timestamps.
+        if chunk.chunk_id.startswith("recovery-"):
+            return candidate(chunk, [(0, round(chunk.duration * 16000), "Kubernetes API")])
+        offset = 0 if chunk.chunk_id in ("whole-file", "chunk-000000") else 1536
+        return candidate(chunk, [(1792 - offset, 2304 - offset, "Kubernetes API")])
+    _, b, _ = strategies(invoke(h, provider(h, response)))
     assert b["reconciliation_metrics"]["overlapping_evidence_samples"] > 0
     assert b["provider_text_metrics"]["word_insertions"] > 0
     assert b["reconciliation_metrics"]["duplicate_overlap_segments"] > 0
     assert b["reconciliation_metrics"]["true_duplicate_utterance_count"] == "UNESTABLISHED"
     assert b["text_metrics"]["word_errors"] == 0  # Existing algorithm, not evaluator deduplication.
+
+
+def test_r05_displaced_equal_hypotheses_remain_ambiguous_instead_of_fabricated_duplicates(case):
+    h = case(count=4096, audio_asr_chunk_target_samples=2048,
+             audio_asr_chunk_max_request_samples=3072, audio_asr_chunk_overlap_samples=1024)
+    _, b, _ = strategies(invoke(h))
+    assert b["provider_text_metrics"]["word_insertions"] > 0
+    assert b["reconciliation_metrics"]["duplicate_overlap_segments"] == 0
+    assert b["reconciliation_metrics"]["unresolved_boundary_segments"] > 0
+    assert b["text_metrics"]["word_insertions"] == b["provider_text_metrics"]["word_insertions"]
 
 
 def test_r06_recovery_progress_is_not_accuracy_and_can_regress(case):
@@ -278,7 +295,10 @@ def test_r06_successful_recovery_adds_conflicts_without_accuracy_improvement(cas
     assert b["text_metrics"]["word_errors"] == 0
     assert c["text_metrics"]["word_errors"] >= b["text_metrics"]["word_errors"]
     assert c["provider_text_metrics"]["word_insertions"] > b["provider_text_metrics"]["word_insertions"]
-    assert record["comparison"]["deltas"]["conflicting_overlap_segments"] > 0
+    # Unrelated wording on unequal envelopes is disagreement, not T05's
+    # established same-occurrence conflicting-hypothesis relationship.
+    assert record["comparison"]["deltas"]["conflicting_overlap_segments"] == 0
+    assert record["comparison"]["deltas"]["unresolved_boundary_segments"] > 0
     assert record["comparison"]["deltas"]["overlapping_evidence_samples"] > 0
     assert record["comparison"]["accuracy_improvement"] is False
 
@@ -363,7 +383,8 @@ def test_r09_whole_file_failures_never_substitute_chunked_output(case, failure, 
 
 def test_r09_payload_rejection_is_local_and_not_a_call(case):
     h = case(count=4096, audio_asr_chunk_target_samples=1024,
-             audio_asr_chunk_max_request_samples=1024, audio_asr_max_payload_bytes=2100)
+             audio_asr_chunk_max_request_samples=1280, audio_asr_chunk_overlap_samples=128,
+             audio_asr_max_payload_bytes=2604)
     a, b, c = strategies(invoke(h))
     assert a["status"] == "UNAVAILABLE" and a["sanitized_failure"] == "resource"
     assert a["resource_telemetry"]["whole_file_asr_calls"] == 0
@@ -674,7 +695,8 @@ def test_planner_validation_failure_is_not_mislabeled_missing_assets(case, monke
 
 def test_unavailable_whole_file_does_not_look_like_perfect_metrics(case):
     h = case(count=4096, audio_asr_chunk_target_samples=1024,
-             audio_asr_chunk_max_request_samples=1024, audio_asr_max_payload_bytes=2100)
+             audio_asr_chunk_max_request_samples=1280, audio_asr_chunk_overlap_samples=128,
+             audio_asr_max_payload_bytes=2604)
     record = invoke(h)
     a, _, _ = strategies(record)
     assert a["text_metrics"] is a["speech_metrics"] is None

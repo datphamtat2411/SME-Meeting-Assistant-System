@@ -271,14 +271,32 @@ def test_no_distinct_valid_audio_window_keeps_single_sample_speech(handoff):
 
 
 def test_payload_geometry_bounds_recovery_and_omitted_tail_remains_explicit(handoff):
-    configuration = settings(audio_asr_max_payload_bytes=300)
-    preprocessing, plan, _ = handoff(configuration=configuration)
+    # Baseline T04 planning needs real frame boundaries and forced context. A
+    # separately admitted Recovery window can be smaller than a VAD frame; its
+    # 300-byte cap must not require rebuilding that already validated partition.
+    preprocessing, plan, configuration = handoff()
+    configuration = configuration.model_copy(update={"audio_asr_max_payload_bytes": 300})
     materialize(preprocessing)
     output = recover_speech(preprocessing, plan, baseline(plan), Transcriber(), configuration)
     assert output.stop_reason is RecoveryStopReason.REGION_ATTEMPT_LIMIT
+    assert len(output.attempts) == configuration.audio_asr_recovery_max_attempts_per_region
     assert all(44 + 2 * (r.chunk.request_interval.end_sample - r.chunk.request_interval.start_sample)
                <= 300 for r in output.recovered_results)
     assert output.final_assessment.unresolved_intervals[-1].end_sample == 2048
+    assert output.provenance.effective_configuration["max_request_samples"] == 128
+    assert output.final_assessment.quality.covered_speech_samples < plan.sample_count
+
+
+@pytest.mark.parametrize("payload", [44, 45])
+def test_recovery_payload_without_one_pcm_sample_makes_no_provider_call(handoff, payload):
+    preprocessing, plan, configuration = handoff()
+    materialize(preprocessing)
+    configuration = configuration.model_copy(update={"audio_asr_max_payload_bytes": payload})
+    transcriber = Transcriber()
+    output = recover_speech(preprocessing, plan, baseline(plan), transcriber, configuration)
+    assert transcriber.calls == []
+    assert output.stop_reason is RecoveryStopReason.NO_DISTINCT_WINDOW
+    assert output.final_assessment.unresolved_intervals == (SampleInterval(0, 2048),)
 
 
 def test_invalid_recovery_quality_is_malformed_terminal_evidence(handoff):

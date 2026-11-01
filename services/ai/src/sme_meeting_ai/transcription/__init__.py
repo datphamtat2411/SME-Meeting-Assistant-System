@@ -70,6 +70,9 @@ from .correction import (
     correct_transcript,
 )
 from .coverage import (
+    AcousticEvidenceState,
+    CoverageEvidence,
+    CoveragePhase,
     CoverageProvenance,
     CoverageQuality,
     CoverageReason,
@@ -77,6 +80,7 @@ from .coverage import (
     CoverageState,
     SpeechCoverageAssessment,
     TranscriptCoverageInterval,
+    assess_canonical_coverage,
     assess_speech_coverage,
     revalidate_speech_coverage,
 )
@@ -105,6 +109,7 @@ from .recovery import (
 )
 
 __all__ = [
+    "AcousticEvidenceState",
     "AcousticBoundaryDecision",
     "BoundaryAlignmentMetrics",
     "BoundaryAlignmentReport",
@@ -142,6 +147,8 @@ __all__ = [
     "AsrWord",
     "ChunkBoundaryReason",
     "ChunkPlanningProvenance",
+    "CoverageEvidence",
+    "CoveragePhase",
     "CoverageProvenance",
     "CoverageQuality",
     "CoverageReason",
@@ -180,6 +187,7 @@ __all__ = [
     "TranscriptCorrectionResult",
     "TranscriptCorrectionStatus",
     "TranscriptReconciliation",
+    "assess_canonical_coverage",
     "assess_speech_coverage",
     "build_whole_file_plan",
     "correct_transcript",

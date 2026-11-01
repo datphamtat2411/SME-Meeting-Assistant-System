@@ -16,10 +16,14 @@ from typing import Literal
 
 from sme_meeting_ai.audio import AudioSource
 from sme_meeting_ai.pipeline import OfflineTranscriptionPipeline
+from sme_meeting_ai.transcription.boundary_alignment import analyze_boundary_alignment
 from sme_meeting_ai.transcription.chunk_execution import execute_asr_chunks
 from sme_meeting_ai.transcription.chunk_planning import SpeechAwareAsrChunkPlanner
 from sme_meeting_ai.transcription.correction import correct_transcript
-from sme_meeting_ai.transcription.coverage import _valid_result
+from sme_meeting_ai.transcription.coverage import (
+    _valid_result,
+    assess_canonical_coverage,
+)
 from sme_meeting_ai.transcription.reconciliation import reconcile_transcript
 from sme_meeting_ai.transcription.recovery import recover_speech
 
@@ -282,9 +286,20 @@ def _run_stages(source, fixture, reference_text, preprocessing, asr, corrector, 
              "unresolved_samples_before": a.unresolved_samples_before, "unresolved_samples_after": a.unresolved_samples_after,
              "covered_speech_delta": a.covered_speech_delta, "meaningful_progress": a.meaningful_progress,
              "stop_reason": a.stop_reason.value if a.stop_reason else None} for a in recovered.attempts]}
-        reconciled = execute("reconciliation", lambda: reconcile_transcript(plan, (*baseline, *recovered.recovered_results), settings), lambda r: {
+        coverage = None
+
+        def reconcile():
+            nonlocal coverage
+            canonical = reconcile_transcript(
+                plan, (*baseline, *recovered.recovered_results), settings,
+                boundary_alignment=analyze_boundary_alignment(plan, baseline),
+            )
+            coverage = assess_canonical_coverage(result, plan, baseline, recovered.recovered_results, canonical, settings)
+            return canonical
+
+        reconciled = execute("reconciliation", reconcile, lambda r: {
             "metrics": {**compute_transcription_metrics(fixture, [s.interval for s in r.segments if s.text.strip()],
-                                                        **_coverage_args(recovered.final_assessment)),
+                                                         **_coverage_args(coverage)),
                         **compute_text_metrics(reference_text, " ".join(s.text for s in r.segments))},
             "flags": sorted({flag.value for s in r.segments for flag in s.flags}),
         })
@@ -297,9 +312,9 @@ def _run_stages(source, fixture, reference_text, preprocessing, asr, corrector, 
                 return {"status": "FAIL", "metrics": None, "failure": outcome.failure.category.value}
             return {"metrics": {**compute_transcription_metrics(
                 fixture, [s.interval for s in outcome.result.segments if s.text.strip()],
-                **_coverage_args(recovered.final_assessment)),
+                **_coverage_args(coverage)),
                 **compute_text_metrics(reference_text, " ".join(s.text for s in outcome.result.segments))}}
-        execute("correction", lambda: correct_transcript(reconciled, recovered.final_assessment, corrector, settings), correction_projection)
+        execute("correction", lambda: correct_transcript(reconciled, coverage, corrector, settings), correction_projection)
         return stages, chunks, recovery_record, boundaries
     finally:
         if ownership is not None:

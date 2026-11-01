@@ -9,7 +9,6 @@ import traceback
 from concurrent.futures import CancelledError
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
-from fractions import Fraction
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Mapping
 
@@ -119,6 +118,8 @@ class OfflineRecoveryEvidence:
     attempts: tuple["RecoveryAttempt", ...]
     stop_reason: "RecoveryStopReason"
     provenance: "RecoveryProvenance"
+    # Historical attempt deltas refer ONLY to these pre-canonical assessments.
+    pre_canonical_final_assessment: "SpeechCoverageAssessment | None" = None
 
 
 @dataclass(frozen=True)
@@ -310,6 +311,12 @@ def _chunk_warnings(stage, outcomes) -> tuple[OfflineTranscriptionWarning, ...]:
 
 
 def _coverage_warnings(assessment, phase: str) -> tuple[OfflineTranscriptionWarning, ...]:
+    from sme_meeting_ai.transcription.coverage import CoveragePhase
+
+    # Preserve the existing worker/Core warning literals while binding each to
+    # the explicit V2 phase. Never publish a provisional post-attempt as "final".
+    expected = CoveragePhase.PRE_CANONICAL if phase == "initial" else CoveragePhase.FINAL_CANONICAL
+    _require(phase in ("initial", "final") and assessment.provenance.assessment_phase is expected)
     stage = OfflineTranscriptionStage.COVERAGE_RECOVERY
     return (
         *(OfflineTranscriptionWarning(stage, reason.value, region.interval,
@@ -318,21 +325,6 @@ def _coverage_warnings(assessment, phase: str) -> tuple[OfflineTranscriptionWarn
         *(OfflineTranscriptionWarning(stage, "unresolved-speech", interval, phase=phase)
           for interval in assessment.unresolved_intervals),
     )
-
-
-@dataclass(frozen=True)
-class _BoundedAcousticPlanner:
-    """Bind actual provider ceilings before T03 prepares its chunked fallback."""
-
-    planner: "SpeechAwareAsrChunkPlanner"
-    effective_payload_limit: int
-    provider_max_request_samples: int
-
-    def plan(self, preprocessing):
-        return self.planner.plan(
-            preprocessing, effective_payload_limit=self.effective_payload_limit,
-            provider_max_request_samples=self.provider_max_request_samples,
-        )
 
 
 class OfflineTranscriptionPipeline:
@@ -362,13 +354,13 @@ class OfflineTranscriptionPipeline:
             STRATEGY_VERSION,
             AsrStrategy,
             AsrStrategyRunner,
-            _capabilities,
         )
         from sme_meeting_ai.transcription.correction import (
             TranscriptCorrectionOutcome,
             TranscriptCorrectionStatus,
             correct_transcript,
         )
+        from sme_meeting_ai.transcription.coverage import assess_canonical_coverage
         from sme_meeting_ai.transcription.reconciliation import reconcile_transcript
         from sme_meeting_ai.transcription.recovery import RecoveryStopReason
 
@@ -409,18 +401,7 @@ class OfflineTranscriptionPipeline:
 
             stage = OfflineTranscriptionStage.CHUNK_PLANNING
             strategy = AsrStrategyRunner(self._transcriber, self._settings)
-            limit = self._settings.audio_asr_max_payload_bytes
-            duration_limit = 230400000
-            capabilities = _capabilities(self._transcriber)
-            if capabilities is not None:
-                provider_limit = capabilities.effective_payload_limit
-                if type(provider_limit) is int and 0 < provider_limit <= 26214400:
-                    limit = min(limit, provider_limit)
-                ceiling = capabilities.verified_duration_ceiling
-                if ceiling is not None:
-                    _require(isinstance(ceiling, Fraction) and ceiling > 0)
-                    duration_limit = min(duration_limit, (ceiling * 16000).__floor__())
-            strategy.prepare(preprocessing_result, _BoundedAcousticPlanner(self._planner, limit, duration_limit))
+            strategy.prepare(preprocessing_result, self._planner)
             plan = strategy.plan
             _require(plan.source_id == source_id and plan.sample_count == metadata.sample_count
                      and plan.provenance.preprocessing == provenance.preprocessing)
@@ -441,12 +422,11 @@ class OfflineTranscriptionPipeline:
             recovered = strategy.recover(preprocessing_result, execution)
             recovery = OfflineRecoveryEvidence(
                 recovered.initial_assessment, recovered.final_assessment, tuple(recovered.attempts),
-                recovered.stop_reason, recovered.provenance,
+                recovered.stop_reason, recovered.provenance, recovered.final_assessment,
             )
             coverage = recovery.final_assessment
             provenance = replace(provenance, coverage=coverage.provenance, recovery=recovery.provenance)
             warnings.extend(_coverage_warnings(recovery.initial_assessment, "initial"))
-            warnings.extend(_coverage_warnings(coverage, "final"))
             if recovery.stop_reason not in (
                 RecoveryStopReason.SUFFICIENT_COVERAGE, RecoveryStopReason.NO_ACTIONABLE_REGIONS,
             ):
@@ -485,7 +465,12 @@ class OfflineTranscriptionPipeline:
                 ) for segment in reconciled.segments),
                 tuple(reconciled.unresolved_intervals), reconciled.provenance,
             )
-            provenance = replace(provenance, reconciliation=reconciliation.provenance)
+            coverage = assess_canonical_coverage(
+                preprocessing_result, plan, baseline, recovered.recovered_results, reconciled, self._settings,
+            )
+            recovery = replace(recovery, final_assessment=coverage)
+            provenance = replace(provenance, reconciliation=reconciliation.provenance, coverage=coverage.provenance)
+            warnings.extend(_coverage_warnings(coverage, "final"))
             warnings.extend(_chunk_warnings(stage, reconciliation.chunk_outcomes))
             warnings.extend(OfflineTranscriptionWarning(stage, flag.value, segment.interval, segment.source_chunk_ids)
                             for segment in reconciliation.segments for flag in segment.flags)

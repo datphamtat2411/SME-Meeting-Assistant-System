@@ -29,7 +29,7 @@ from .chunk_planning import (
     validate_asr_chunk_plan,
 )
 from .chunk_planning import (
-    _configuration as _planning_configuration,
+    _request_limits as _planning_request_limits,
 )
 from .coverage import (
     CoverageReason,
@@ -125,7 +125,9 @@ def _require(condition: bool) -> None:
 
 
 def _configuration(settings: Settings) -> dict[str, int | float]:
-    geometry = _planning_configuration(settings)
+    # Share validation/request limits, not T04's baseline forced-core feasibility.
+    # Each Recovery window has its own unchanged core/context admission below.
+    geometry = _planning_request_limits(settings)
     configuration = {}
     for key, maximum in (
         ("context_samples", 230400000), ("max_attempts_per_region", 64),

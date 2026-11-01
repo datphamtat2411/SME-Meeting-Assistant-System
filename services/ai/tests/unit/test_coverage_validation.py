@@ -1,6 +1,7 @@
 import copy
 import math
 import traceback
+from concurrent.futures import CancelledError
 from dataclasses import FrozenInstanceError, fields, is_dataclass, replace
 from fractions import Fraction
 from pathlib import Path
@@ -567,3 +568,389 @@ def test_revalidation_does_not_publish_sensitive_provider_metadata(handoff):
     assessed = revalidate_speech_coverage(preprocessing, plan, baseline, (recovered,), configuration)
     assert "private-recovered-text" not in repr(assessed)
     assert "private-provider-prompt" not in repr(assessed)
+
+
+# T06: the existing tests above protect provisional Recovery geometry, failure
+# isolation and privacy. Final support below is independently tied to real T05
+# selected identities; timestamp support is never lexical completeness.
+def canonical_result(chunk, bounds=None, **kwargs):
+    item = result(chunk, bounds, **kwargs)
+    return replace(item, candidate=replace(item.candidate, provenance=AsrProvenance(
+        "openrouter", "openai/whisper-large-v3", upstream_provider="DeepInfra",
+        inference_config=(("language", "vi"), ("temperature", 0.0)),
+    )))
+
+
+def final_assessment(preprocessing, plan, results, configuration, *, recovered=(), canonical=None):
+    from sme_meeting_ai.transcription import (
+        assess_canonical_coverage,
+        reconcile_transcript,
+    )
+
+    if canonical is None:
+        canonical = reconcile_transcript(plan, (*results, *recovered), configuration)
+    return assess_canonical_coverage(preprocessing, plan, results, recovered, canonical, configuration)
+
+
+def test_v2_phases_independent_support_exact_timeline_and_immutable_metadata(handoff):
+    from sme_meeting_ai.transcription import CoveragePhase
+
+    preprocessing, plan, configuration = handoff(tail=17)
+    results = tuple(canonical_result(c) for c in plan.chunks)
+    provisional = assess_speech_coverage(preprocessing, plan, results, configuration)
+    final = final_assessment(preprocessing, plan, results, configuration)
+    assert provisional.provenance.assessment_phase is CoveragePhase.PRE_CANONICAL
+    assert final.provenance.assessment_phase is CoveragePhase.FINAL_CANONICAL
+    for assessment in (provisional, final):
+        assert assessment.source_id == plan.source_id
+        assert assessment.sample_count == 1553 and assessment.sample_rate_hz == 16000
+        assert assessment.provenance.assessor_version == "2"
+        assert assessment.provenance.planning == plan.provenance
+        assert assessment.quality.raw_timestamp_supported_samples == 1553
+        assert assessment.quality.raw_text_supported_samples == 1553
+        assert assessment.quality.likely_speech_with_raw_text_samples == 1553
+        with pytest.raises(FrozenInstanceError):
+            assessment.regions[0].evidence.has_raw_text_support = False
+        assert all(r.evidence.lexical_completeness_verified is False for r in assessment.regions)
+    assert all(r.evidence.canonical_support_count == 0 for r in provisional.regions)
+    assert provisional.quality.canonical_text_supported_samples is None
+    assert final.quality.canonical_text_supported_samples == 1553
+    assert final.quality.likely_speech_with_canonical_text_samples == 1553
+    assert final.quality.likely_speech_without_canonical_text_samples == 0
+    assert final == final_assessment(preprocessing, plan, tuple(reversed(results)), configuration)
+
+
+@pytest.mark.parametrize("kind", ["no-results", "empty", "blank", "unselected"])
+def test_v2_likely_speech_requires_actual_selected_nonempty_text(handoff, kind):
+    from sme_meeting_ai.transcription import reconcile_transcript
+
+    preprocessing, plan, configuration = handoff(("speech",))
+    results = (() if kind == "no-results" else (canonical_result(
+        plan.chunks[0], () if kind == "empty" else None, text=" " if kind == "blank" else "Triển khai API mới",
+    ),))
+    canonical = reconcile_transcript(plan, results, configuration)
+    if kind == "unselected":
+        canonical = replace(canonical, segments=(), unresolved_intervals=(SampleInterval(0, 512),),
+                            observations=replace(canonical.observations, canonical_segment_count=0))
+    final = final_assessment(preprocessing, plan, results, configuration, canonical=canonical)
+    assert final.quality.canonical_text_supported_samples == 0
+    assert final.quality.likely_speech_without_canonical_text_samples == 512
+    assert final.quality.covered_speech_samples == 0
+    assert final.unresolved_intervals == (SampleInterval(0, 512),)
+    assert all(r.state is CoverageState.UNRESOLVED_ERROR for r in final.regions)
+    assert all(CoverageReason.MISSING_CANONICAL_TEXT in r.reasons for r in final.regions)
+    assert final.quality.raw_only_support_samples == (512 if kind == "unselected" else 0)
+
+
+@pytest.mark.parametrize("label", ["speech", "weak", "uncertain", "high", "silence"])
+def test_v2_acoustic_dimensions_do_not_veto_or_verify_canonical_wording(handoff, label):
+    from sme_meeting_ai.transcription import AcousticEvidenceState
+
+    preprocessing, plan, configuration = handoff((label,))
+    results = (canonical_result(plan.chunks[0], text="Nội dung riêng tư cuộc họp"),)
+    final = final_assessment(preprocessing, plan, results, configuration)
+    region, = final.regions
+    assert region.evidence.has_canonical_text_support
+    assert region.evidence.canonical_support_count == 1
+    assert final.quality.canonical_text_supported_samples == 512
+    assert region.state is (CoverageState.COVERED if label == "speech" else CoverageState.SUSPICIOUS)
+    assert region.evidence.acoustic_state is {
+        "speech": AcousticEvidenceState.LIKELY_SPEECH,
+        "weak": AcousticEvidenceState.LIKELY_SPEECH,
+        "uncertain": AcousticEvidenceState.ACOUSTICALLY_UNCERTAIN,
+        "high": AcousticEvidenceState.ACOUSTICALLY_UNCERTAIN,
+        "silence": AcousticEvidenceState.LIKELY_NON_SPEECH,
+    }[label]
+    assert region.evidence.weak_speech is (label == "weak")
+    assert region.evidence.vad_energy_disagreement is (label in ("weak", "high"))
+    assert final.quality.unsupported_canonical_text_samples == (0 if label == "speech" else 512)
+    assert final.unresolved_intervals == (() if label == "speech" else (SampleInterval(0, 512),))
+    assert results[0].candidate.segments[0].text == "Nội dung riêng tư cuộc họp"
+    assert "Nội dung riêng tư" not in repr(final)
+
+
+def test_v2_protected_only_and_uncertain_without_text_are_not_silence_or_confirmed_speech(handoff):
+    preprocessing, plan, configuration = handoff(
+        ("silence", "speech", "uncertain"),
+        configuration=settings(audio_speech_map_boundary_padding_samples=512),
+    )
+    results = tuple(canonical_result(c, ()) for c in plan.chunks)
+    final = final_assessment(preprocessing, plan, results, configuration)
+    assert final.quality.likely_speech_samples == 512
+    assert final.quality.protected_only_samples == 1024
+    assert final.quality.uncertain_acoustic_samples == 512
+    assert states_at(final, 0, 512)[0].evidence.protected_only
+    assert final.unresolved_intervals == (SampleInterval(512, 1536),)
+
+
+@pytest.mark.parametrize("kind", ["duplicate", "conflict", "ambiguous", "distinct"])
+def test_v2_t05_relationships_do_not_inflate_or_clean_conflicting_support(handoff, kind):
+    from sme_meeting_ai.transcription import reconcile_transcript
+
+    preprocessing, plan, configuration = handoff()
+    wording = "Triển khai API-v2 với Kubernetes"
+    other = {"duplicate": wording, "conflict": "Triển khai API-v3 với Kubernetes",
+             "ambiguous": "Triển khai API-v2", "distinct": "Báo cáo doanh thu hôm nay"}[kind]
+    results = (canonical_result(plan.chunks[0], ((800, 1000),), text=wording),
+               canonical_result(plan.chunks[1], ((800, 1000),), text=other))
+    canonical = reconcile_transcript(plan, results, configuration)
+    final = final_assessment(preprocessing, plan, results, configuration, canonical=canonical)
+    region, = states_at(final, 800, 1000)
+    assert region.evidence.raw_asr_support_count == 2
+    assert region.evidence.canonical_support_count == (1 if kind in ("duplicate", "conflict") else 2)
+    assert final.quality.raw_text_supported_samples == final.quality.canonical_text_supported_samples == 200
+    assert final.quality.duplicate_raw_hypothesis_samples == 200
+    assert final.quality.conflicting_canonical_samples == (200 if kind == "conflict" else 0)
+    assert region.evidence.has_conflicting_hypotheses is (kind == "conflict")
+    assert region.state is (CoverageState.COVERED if kind == "duplicate" else CoverageState.SUSPICIOUS)
+    assert region.evidence.has_ambiguous_alignment is (kind in ("ambiguous", "distinct"))
+
+
+def test_v2_many_to_one_uses_one_selected_representation_and_genuine_repetition_survives(handoff):
+    preprocessing, plan, configuration = handoff()
+    left = canonical_result(plan.chunks[0], ((800, 1000),), text="Triển khai API-v2 với Kubernetes")
+    right = canonical_result(plan.chunks[1], ((800, 900), (900, 1000)))
+    segments = tuple(replace(s, text=text) for s, text in zip(
+        right.candidate.segments, ("Triển khai API-v2", "với Kubernetes"), strict=True,
+    ))
+    right = replace(right, candidate=replace(right.candidate, segments=segments), timeline_segments=tuple(
+        replace(t, segment=s) for t, s in zip(right.timeline_segments, segments, strict=True)
+    ))
+    final = final_assessment(preprocessing, plan, (left, right), configuration)
+    assert final.quality.canonical_text_supported_samples == 200
+    assert all(r.evidence.canonical_support_count == 1 for r in states_at(final, 800, 1000))
+    repeated = (canonical_result(plan.chunks[0], ((0, 512),), text="Đồng ý, đồng ý"),
+                canonical_result(plan.chunks[1], ((1536, 2048),), text="Đồng ý, đồng ý"))
+    final = final_assessment(preprocessing, plan, repeated, configuration)
+    assert final.quality.canonical_text_supported_samples == 1024
+    assert final.quality.conflicting_canonical_samples == final.quality.ambiguous_canonical_samples == 0
+    assert all(r.state is CoverageState.COVERED for r in final.regions if r.evidence.has_canonical_text_support)
+
+
+def test_v2_long_segment_preserves_internal_acoustic_risk_without_word_timestamps(handoff):
+    configuration = settings(audio_asr_chunk_target_samples=240000, audio_asr_chunk_max_request_samples=250000,
+                             audio_asr_chunk_overlap_samples=0)
+    preprocessing, plan, configuration = handoff(
+        ("speech",) * 200 + ("uncertain",) + ("speech",) * 268,
+        configuration=configuration, tail=384,
+    )
+    results = (canonical_result(plan.chunks[0], text="Chúng ta sẽ triển khai API mới..."),)
+    assert results[0].candidate.words is None
+    final = final_assessment(preprocessing, plan, results, configuration)
+    assert final.quality.canonical_text_supported_samples == 15 * 16000
+    assert final.unresolved_intervals == (SampleInterval(200 * 512, 201 * 512),)
+    assert all(not r.evidence.lexical_completeness_verified for r in final.regions)
+
+
+@pytest.mark.parametrize("damage", ["source", "count", "planning", "bounds", "wording", "selected", "support",
+                                  "alternative", "ordering", "flags", "relationship", "source-chunks"])
+def test_v2_rejects_inconsistent_canonical_handoffs_without_sensitive_errors(handoff, damage):
+    from sme_meeting_ai.transcription import (
+        ReconciliationRelationship,
+        reconcile_transcript,
+    )
+
+    preprocessing, plan, configuration = handoff()
+    results = tuple(canonical_result(c, text="private-canonical-marker") for c in plan.chunks)
+    canonical = reconcile_transcript(plan, results, configuration)
+    segment = canonical.segments[0]
+    if damage == "source":
+        canonical = replace(canonical, source_id="foreign")
+    elif damage == "count":
+        canonical = replace(canonical, sample_count=1)
+    elif damage == "planning":
+        canonical = replace(canonical, provenance=replace(canonical.provenance, planning=replace(
+            plan.provenance, planner_version="1")))
+    elif damage == "source-chunks":
+        canonical = replace(canonical, provenance=replace(canonical.provenance, source_chunks=()))
+    elif damage == "ordering":
+        canonical = replace(canonical, segments=tuple(reversed(canonical.segments)))
+    elif damage == "relationship":
+        canonical = replace(canonical, relationships=(ReconciliationRelationship(
+            (replace(segment.selected_evidence_id, segment_index=999),), (segment.selected_evidence_id,), "ambiguous",
+        ),))
+    else:
+        identity = replace(segment.selected_evidence_id, segment_index=999)
+        changes = {
+            "bounds": {"interval": SampleInterval(0, plan.sample_count + 1)},
+            "wording": {"text": "private-fabricated-wording"}, "selected": {"selected_evidence_id": identity},
+            "support": {"supporting_evidence_ids": (identity,)},
+            "alternative": {"alternative_evidence_ids": (identity,)}, "flags": {"flags": ("private-flag",)},
+        }[damage]
+        canonical = replace(canonical, segments=(replace(segment, **changes), *canonical.segments[1:]))
+    with pytest.raises(AudioProcessingError) as caught:
+        final_assessment(preprocessing, plan, results, configuration, canonical=canonical)
+    assert caught.value.category == "VALIDATION"
+    assert caught.value.__context__ is caught.value.__cause__ is None
+    assert "private-" not in "".join(traceback.format_exception(caught.value))
+
+
+def test_v2_invalid_optional_words_cannot_support_raw_or_canonical_coverage(handoff):
+    from sme_meeting_ai.transcription import AsrWord
+
+    preprocessing, plan, configuration = handoff(("speech",))
+    item = canonical_result(plan.chunks[0])
+    item = replace(item, candidate=replace(item.candidate, words=(
+        AsrWord(Fraction(0), Fraction(2), "private-word"),
+    )))
+    final = final_assessment(preprocessing, plan, (item,), configuration)
+    assert final.quality.malformed_chunk_count == 1
+    assert final.quality.raw_text_supported_samples == final.quality.canonical_text_supported_samples == 0
+
+
+def test_v2_recovery_progress_remains_provisional_when_t05_does_not_select_it(handoff):
+    from sme_meeting_ai.transcription import (
+        plan_recovery_windows,
+        reconcile_transcript,
+        revalidate_speech_coverage,
+    )
+
+    preprocessing, plan, configuration = handoff()
+    baseline = tuple(canonical_result(c, ()) for c in plan.chunks)
+    initial = assess_speech_coverage(preprocessing, plan, baseline, configuration)
+    windows = plan_recovery_windows(initial, plan, configuration).windows
+    recovered = (canonical_result(windows[0].chunk), AsrChunkResult(windows[1].chunk, failure=AsrErrorCategory.TIMEOUT))
+    provisional = revalidate_speech_coverage(preprocessing, plan, baseline, recovered, configuration)
+    assert provisional.quality.covered_speech_samples > initial.quality.covered_speech_samples
+    canonical = reconcile_transcript(plan, (*baseline, *recovered), configuration)
+    canonical = replace(canonical, segments=(), unresolved_intervals=(SampleInterval(0, 2048),),
+                        observations=replace(canonical.observations, canonical_segment_count=0))
+    final = final_assessment(preprocessing, plan, baseline, configuration, recovered=recovered, canonical=canonical)
+    assert final.quality.covered_speech_samples == final.quality.canonical_text_supported_samples == 0
+    assert final.quality.raw_only_support_samples == provisional.quality.raw_text_supported_samples
+    assert final.quality.failed_request_region_samples > 0
+
+
+def test_v2_exact_union_one_sample_gap_tail_and_quality_partitions(handoff):
+    preprocessing, plan, configuration = handoff(("speech",) * 2, tail=17)
+    results = (canonical_result(plan.chunks[0], ((0, 400), (401, 528))),)
+    final = final_assessment(preprocessing, plan, results, configuration)
+    q = final.quality
+    assert final.unresolved_intervals == (SampleInterval(400, 401), SampleInterval(528, 529))
+    assert q.likely_speech_with_canonical_text_samples + q.likely_speech_without_canonical_text_samples == q.likely_speech_samples
+    assert q.covered_speech_samples + q.suspicious_speech_samples + q.unresolved_speech_samples == q.likely_speech_samples
+    assert q.unresolved_risk_samples == 2
+    assert q.canonical_speech_support_rate == Fraction(527, 529)
+    for item in fields(q):
+        if item.name.endswith("_samples"):
+            assert 0 <= getattr(q, item.name) <= q.sample_count
+    assert sum(r.interval.end_sample - r.interval.start_sample for r in final.regions) == 529
+    assert q.reason_sample_counts[CoverageReason.MISSING_CANONICAL_TEXT] == 2
+
+
+def test_v2_silence_denominator_is_undefined_and_speech_after_silence_is_not_bridged(handoff):
+    preprocessing, plan, configuration = handoff(("silence",) * 4)
+    final = final_assessment(preprocessing, plan, tuple(canonical_result(c, ()) for c in plan.chunks), configuration)
+    assert final.quality.canonical_speech_support_rate is None
+    assert final.quality.covered_speech_rate == 0  # Historical provisional rate contract.
+    preprocessing, plan, configuration = handoff(("speech", "silence", "silence", "speech"))
+    results = (canonical_result(plan.chunks[0], ((0, 512),)), canonical_result(plan.chunks[1], ()))
+    final = final_assessment(preprocessing, plan, results, configuration)
+    assert final.unresolved_intervals == (SampleInterval(1536, 2048),)
+
+
+def test_v2_28_second_missing_canonical_support_is_not_hidden_by_unrelated_text(handoff):
+    configuration = settings(audio_asr_chunk_target_samples=320000, audio_asr_chunk_max_request_samples=480000,
+                             audio_asr_chunk_overlap_samples=80000)
+    preprocessing, plan, configuration = handoff(("silence",) * 32 + ("speech",) * 875, configuration=configuration)
+    results = (canonical_result(plan.chunks[0], ((0, 512),)), *tuple(canonical_result(c, ()) for c in plan.chunks[1:]))
+    final = final_assessment(preprocessing, plan, results, configuration)
+    assert final.quality.likely_speech_without_canonical_text_samples == 28 * 16000
+    assert SampleInterval(16384, 16384 + 28 * 16000) in final.unresolved_intervals
+    assert final.quality.covered_speech_samples == 0
+
+
+def test_v2_bounded_long_timeline_replay_and_no_inference_or_audio_ownership(handoff, monkeypatch):
+    preprocessing, plan, configuration = handoff(("speech",) * 4000)
+    results = tuple(canonical_result(c, ((c.core_interval.start_sample, c.core_interval.end_sample),)) for c in plan.chunks)
+    from sme_meeting_ai.transcription import reconcile_transcript
+
+    canonical = reconcile_transcript(plan, results, configuration)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("coverage attempted inference, lexical reconciliation or audio ownership")
+
+    monkeypatch.setattr(Path, "open", forbidden)
+    monkeypatch.setattr(NormalizedAudioArtifact, "close", forbidden)
+    monkeypatch.setattr(SpeechEnergyEvidence, "close", forbidden)
+    monkeypatch.setattr("sme_meeting_ai.transcription.reconciliation.reconcile_transcript", forbidden)
+    monkeypatch.setattr("sme_meeting_ai.transcription.reconciliation._tokens", forbidden)
+    final = final_assessment(preprocessing, plan, results, configuration, canonical=canonical)
+    assert final.quality.canonical_text_supported_samples == plan.sample_count
+    assert len(final.regions) <= 2 * len(results)
+    assert handoff.replays == [plan.source_id]
+
+
+def test_v2_cancellation_releases_borrowed_evidence_from_coverage_tracebacks(handoff, monkeypatch):
+    from sme_meeting_ai.transcription import reconcile_transcript
+
+    preprocessing, plan, configuration = handoff()
+    results = tuple(canonical_result(c, text="private-cancel-marker") for c in plan.chunks)
+    canonical = reconcile_transcript(plan, results, configuration)
+
+    def cancel(evidence):
+        raise CancelledError("private-cancel-marker")
+
+    monkeypatch.setattr(SpeechEnergyEvidence, "iter_frames", cancel)
+    with pytest.raises(CancelledError) as caught:
+        final_assessment(preprocessing, plan, results, configuration, canonical=canonical)
+    assert not caught.value.args
+    assert "private-cancel-marker" not in "".join(traceback.format_exception(caught.value))
+    tb = caught.value.__traceback__
+    while tb:
+        if tb.tb_frame.f_globals.get("__name__", "").endswith(".coverage"):
+            assert not any(isinstance(v, (AsrChunkResult, AsrCandidate)) or v is results or v is canonical
+                           for v in tb.tb_frame.f_locals.values())
+        tb = tb.tb_next
+
+
+@pytest.mark.parametrize("malformed", [False, True])
+def test_v2_final_isolates_failed_or_malformed_chunks_and_retains_neighbors(handoff, malformed):
+    preprocessing, plan, configuration = handoff(("speech",) * 6)
+    middle = AsrChunkResult(plan.chunks[1], failure=AsrErrorCategory.TIMEOUT)
+    if malformed:
+        middle = replace(canonical_result(plan.chunks[1]), candidate=object())
+    results = (canonical_result(plan.chunks[0]), middle, canonical_result(plan.chunks[2]))
+    final = final_assessment(preprocessing, plan, results, configuration)
+    assert final.quality.failed_chunk_count == (0 if malformed else 1)
+    assert final.quality.malformed_chunk_count == (1 if malformed else 0)
+    assert final.quality.raw_text_supported_samples == 2560
+    assert final.quality.canonical_text_supported_samples == 2560
+    assert final.unresolved_intervals == (SampleInterval(1280, 1792),)
+    assert states_at(final, 0, 768)[0].state is CoverageState.COVERED
+    assert states_at(final, 2304, 3072)[0].state is CoverageState.COVERED
+
+
+def test_v2_resource_limit_fails_closed_without_truncating_or_retaining_text(handoff, monkeypatch):
+    from sme_meeting_ai.transcription import coverage, reconcile_transcript
+
+    preprocessing, plan, configuration = handoff()
+    results = tuple(canonical_result(c, text="private-resource-marker") for c in plan.chunks)
+    canonical = reconcile_transcript(plan, results, configuration)
+    monkeypatch.setattr(coverage, "_MAX_SEGMENTS", 1)
+    with pytest.raises(AudioProcessingError) as caught:
+        final_assessment(preprocessing, plan, results, configuration, canonical=canonical)
+    assert caught.value.category == "RESOURCE"
+    assert "private-resource-marker" not in "".join(traceback.format_exception(caught.value))
+
+
+@pytest.mark.parametrize("natural", [False, True])
+def test_v2_t04_boundary_risk_borrows_only_actual_segment_intervals(handoff, natural):
+    from sme_meeting_ai.transcription import (
+        analyze_boundary_alignment,
+        reconcile_transcript,
+    )
+
+    labels = ("speech", "silence", "speech", "speech") if natural else ("speech",) * 4
+    configuration = settings(audio_asr_chunk_boundary_search_samples=512 if natural else 0)
+    preprocessing, plan, configuration = handoff(labels, configuration=configuration)
+    results = tuple(canonical_result(c) for c in plan.chunks)
+    report = analyze_boundary_alignment(plan, results)
+    canonical = reconcile_transcript(plan, results, configuration, boundary_alignment=report)
+    final = final_assessment(preprocessing, plan, results, configuration, canonical=canonical)
+    assert final.provenance.planning == plan.provenance
+    assert report.boundaries[0].boundary_reason == plan.chunks[0].end_boundary_reason
+    if not natural:
+        assert final.quality.ambiguous_canonical_samples > 0
+    assert all(r.interval.end_sample <= plan.sample_count for r in final.regions)
+    assert all(not r.evidence.lexical_completeness_verified for r in final.regions)

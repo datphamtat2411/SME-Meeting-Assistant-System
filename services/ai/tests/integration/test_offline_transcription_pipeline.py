@@ -275,7 +275,10 @@ def test_complete_order_timeline_quality_provenance_and_safe_immutable_evidence(
     assert output.result.quality.validated_segment_count == 2
     assert output.result.quality.changed_segment_count == 2
     assert output.evidence.coverage.quality.covered_speech_samples == 4096
-    assert output.evidence.recovery.initial_assessment is output.evidence.recovery.final_assessment
+    # V2 retains Recovery's provisional calculation separately from publication.
+    assert output.evidence.recovery.initial_assessment is output.evidence.recovery.pre_canonical_final_assessment
+    assert output.evidence.recovery.final_assessment is output.evidence.coverage is output.result.coverage
+    assert output.evidence.coverage.provenance.assessment_phase.value == "final-canonical"
     assert output.evidence.recovery.attempts == ()
     provenance = output.provenance
     assert provenance.pipeline_version == "offline-test-1"
@@ -342,8 +345,11 @@ def test_failed_baseline_remains_and_recovery_reaches_reconciliation(workflow):
     output = pipeline(h).run(h.source)
     assert output.status is Status.COMPLETED_WITH_WARNINGS
     assert output.evidence.recovery.initial_assessment.quality.failed_chunk_count == 1
-    assert output.evidence.coverage.quality.covered_speech_samples == 4096
-    assert output.evidence.coverage.unresolved_intervals == ()
+    # Recovery timestamp progress cannot erase T05's independent alignment risk.
+    assert output.evidence.recovery.pre_canonical_final_assessment.quality.covered_speech_samples == 4096
+    assert output.evidence.coverage.quality.canonical_text_supported_samples == 4096
+    assert output.evidence.coverage.quality.ambiguous_canonical_samples > 0
+    assert output.evidence.coverage.unresolved_intervals
     outcomes = output.evidence.reconciliation.chunk_outcomes
     assert outcomes[1].failure is AsrErrorCategory.TIMEOUT
     assert any(o.chunk_id.startswith("recovery-") for o in outcomes)
@@ -596,7 +602,10 @@ def test_native_preserves_segments_skips_recovery_and_retains_uncertainty(workfl
     assert "adaptive-asr-v1" in output.provenance.pipeline_version
     r = output.evidence.recovery
     assert r.stop_reason.value == "skipped-by-asr-strategy" and r.attempts == ()
-    assert r.initial_assessment is r.final_assessment is output.evidence.coverage
+    assert r.initial_assessment is r.pre_canonical_final_assessment
+    assert r.final_assessment is output.evidence.coverage is output.result.coverage
+    assert r.initial_assessment.provenance.assessment_phase.value == "pre-canonical"
+    assert r.final_assessment.provenance.assessment_phase.value == "final-canonical"
     assert r.provenance.recovery_version == "strategy-skipped-v1"
     assert output.evidence.coverage.unresolved_intervals
     assert [s.interval for s in output.result.segments] == [SampleInterval(0, 1000), SampleInterval(1000, 2000)]
@@ -860,7 +869,7 @@ def test_canonical_uncertainty_v2_publishes_with_conservative_coverage(workflow,
     assessment = output.evidence.coverage
     original_states = tuple(r.state for r in assessment.regions)
     affected_regions = [i for i, r in enumerate(assessment.regions)
-                        if r.state.value == "COVERED" and r.interval.start_sample < 2176
+                         if r.state.value == "SUSPICIOUS" and r.interval.start_sample < 2176
                         and 1920 < r.interval.end_sample]
     assert affected_regions
     raw = map_result(output, h.settings,
@@ -869,7 +878,9 @@ def test_canonical_uncertainty_v2_publishes_with_conservative_coverage(workflow,
     envelope = validate_result_bytes(raw)
     assert len(envelope.segments) == len(output.result.segments)
     assert envelope.pipelineStatus == "COMPLETED_WITH_WARNINGS"
-    assert all(envelope.segments[s.ordinal].qualityStatus == "SUSPICIOUS" for s in occurrence)
+    # Existing worker conservatively maps unresolved evidence-risk intersections
+    # to UNRESOLVED; this does not assert missing words or confirmed hallucination.
+    assert all(envelope.segments[s.ordinal].qualityStatus == "UNRESOLVED" for s in occurrence)
     assert all(envelope.coverage[i].coverageStatus == "SUSPICIOUS" for i in affected_regions)
     assert any(w.stage == "RECONCILIATION" and w.code == flag.value for w in envelope.warnings)
     assert [(s.ordinal, s.text) for s in envelope.segments] == [(s.ordinal, s.text) for s in output.result.segments]
@@ -881,4 +892,66 @@ def test_canonical_uncertainty_v2_publishes_with_conservative_coverage(workflow,
     assert tuple(r.state for r in assessment.regions) == original_states
     assert output.provenance.coverage == assessment.provenance
     assert len(h.asr_calls) == 3 and h.correction_calls == 1
+    assert_released(h)
+
+
+@pytest.mark.parametrize("mode", ["chunked", "adaptive"])
+def test_v2_final_assessment_once_after_selection_before_correction_and_consistent_publication(workflow, monkeypatch, mode):
+    h = workflow(audio_asr_strategy_mode=mode, probability=0.5)
+    enable_v2(h, monkeypatch)
+    calls = []
+    original_reconcile = reconciliation.reconcile_transcript
+    original_final = coverage.assess_canonical_coverage
+    original_correct = correction.correct_transcript
+
+    def select(*args, **kwargs):
+        calls.append("selection")
+        return original_reconcile(*args, **kwargs)
+
+    def assess(*args, **kwargs):
+        assert calls == ["selection"]
+        calls.append("final")
+        return original_final(*args, **kwargs)
+
+    def correct(canonical, assessment, *args, **kwargs):
+        assert calls == ["selection", "final"]
+        assert assessment.provenance.assessment_phase.value == "final-canonical"
+        calls.append("correction")
+        return original_correct(canonical, assessment, *args, **kwargs)
+
+    monkeypatch.setattr(reconciliation, "reconcile_transcript", select)
+    monkeypatch.setattr(coverage, "assess_canonical_coverage", assess)
+    monkeypatch.setattr(correction, "correct_transcript", correct)
+    output = pipeline(h).run(h.source)
+    assert output.failure is None
+    assert calls == ["selection", "final", "correction"]
+    assert output.evidence.coverage is output.evidence.recovery.final_assessment is output.result.coverage
+    assert output.provenance.coverage is output.evidence.coverage.provenance
+    assert output.evidence.recovery.pre_canonical_final_assessment.provenance.assessment_phase.value == "pre-canonical"
+    assert {w.phase for w in output.warnings if w.stage is Stage.COVERAGE_RECOVERY} >= {"initial", "final"}
+    assert output.provenance.strategy.total_actual_asr_calls == len(h.asr_calls)
+    assert_safe(output.evidence)
+    assert_released(h)
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_v2_final_assessment_failure_or_cancellation_preserves_cleanup(workflow, monkeypatch, cancel):
+    h = workflow()
+
+    def fail(*args, **kwargs):
+        if cancel:
+            raise CancelledError(PRIVATE)
+        raise AudioProcessingError("VALIDATION")
+
+    monkeypatch.setattr(coverage, "assess_canonical_coverage", fail)
+    if cancel:
+        with pytest.raises(CancelledError):
+            pipeline(h).run(h.source)
+    else:
+        output = pipeline(h).run(h.source)
+        assert output.status is Status.FAILED
+        assert output.failure.stage is Stage.RECONCILIATION
+        assert output.failure.category == "VALIDATION"
+        assert_safe(output)
+    assert h.correction_calls == 0
     assert_released(h)

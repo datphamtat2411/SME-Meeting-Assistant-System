@@ -149,7 +149,10 @@ def case(tmp_path):
                 text = "" if empty else "Kubernetes API" + (f" v{ordinal + 1}" if ordinal else "")
                 segments = () if empty else (AsrSegment(Fraction(0), chunk.duration, text),)
                 return AsrCandidate(text, segments, AsrQualityMetadata(), AsrUsage(cost=Fraction(1, 10)),
-                                    AsrProvenance("injected", "test/asr", "test/resolved", inference_config=(("prompt", "private-prompt-marker"),)), chunk.chunk_id)
+                                    # Injected execution still honors the real
+                                    # T02/T05 provider/model evidence contract.
+                                    AsrProvenance("openrouter", "openai/whisper-large-v3", "openai/whisper-large-v3",
+                                                  inference_config=(("language", "vi"), ("prompt", "private-prompt-marker"))), chunk.chunk_id)
 
         class Corrector:
             def complete(self, request):
@@ -258,7 +261,12 @@ def test_fixed_clock_report_matrix_is_canonical_and_preserves_boundary_evidence(
 
 def test_reports_weight_metrics_baselines_and_unavailable_cases_explicitly(case):
     h = case()
-    matrix = ConfigurationMatrix.model_validate({**matrix_document(), "variants": matrix_document()["variants"][:1]})
+    document = matrix_document()
+    # Isolate report availability/identity from actual forced-boundary risks.
+    # The short-chunk failure case is independently protected below.
+    variant = {**document["variants"][0], "target_samples": h.fixture.sample_count,
+               "max_request_samples": h.fixture.sample_count, "overlap_samples": 0, "boundary_search_samples": 0}
+    matrix = ConfigurationMatrix.model_validate({**document, "variants": [variant]})
     records = run_configuration_matrix(h.manifest, h.root, matrix, lambda settings: (h.preprocessing, h.asr, h.corrector),
                                         h.settings, expected_model_sha256="d" * 64, clock=Clock(), evidence_mode="offline-contract")
     report = build_transcription_report(h.manifest, matrix, records)
@@ -273,6 +281,24 @@ def test_reports_weight_metrics_baselines_and_unavailable_cases_explicitly(case)
     incompatible = build_transcription_report(h.manifest, matrix, records, baseline=changed)
     assert all(c["status"] == "INCOMPATIBLE" for c in incompatible["baseline_comparisons"])
     assert "Kubernetes API" not in canonical_json(compatible)
+
+
+def test_reports_do_not_hide_a_real_quality_gate_failure_behind_an_unavailable_case(case):
+    h = case()
+    matrix = ConfigurationMatrix.model_validate({**matrix_document(), "variants": matrix_document()["variants"][:1]})
+    records = run_configuration_matrix(h.manifest, h.root, matrix, lambda settings: (h.preprocessing, h.asr, h.corrector),
+                                        h.settings, expected_model_sha256="d" * 64, clock=Clock(), evidence_mode="offline-contract")
+    report = build_transcription_report(h.manifest, matrix, records)
+    available = next(record for record in records if record["availability"] == "AVAILABLE")
+    final = next(stage for stage in available["stages"] if stage["stage"] == "end_to_end")
+    assert final["metrics"]["missed_material_samples"] == 0
+    assert final["metrics"]["pipeline_unresolved_speech_samples"] > 0
+    # Preserve T01's existing conservative false-success gate; canonical risk is
+    # reported honestly and is not rewritten as human-verified missing words.
+    assert any(check["metric"] == "false_success" and check["status"] == "FAIL"
+               for check in available["quality_gates"]["checks"])
+    assert report["aggregates"]["all"]["unavailable_count"] == 1
+    assert report["quality_gate_status"] == "FAIL"
 
 
 def test_live_evaluation_requires_opt_in_and_explicit_credentials(monkeypatch):
@@ -336,3 +362,26 @@ def test_stage_aggregate_pools_edit_counts_instead_of_averaging_rates(case):
         stage["metrics"] = {"word_errors": 1 if index == 0 else 0, "reference_words": 2 if index == 0 else 8}
     report = build_transcription_report(h.manifest, matrix, modified)
     assert report["aggregates"]["all"]["stages"]["end_to_end"]["metrics"]["wer"] == {"numerator": 1, "denominator": 10}
+
+
+def test_stage_and_end_to_end_correction_both_receive_final_canonical_evidence(case, monkeypatch):
+    from sme_meeting_ai.transcription import correction
+
+    from . import transcription_runner
+
+    h = case()
+    original = correction.correct_transcript
+    seen = []
+
+    def correct(canonical, coverage, *args, **kwargs):
+        assert coverage.provenance.assessment_phase.value == "final-canonical"
+        assert coverage.provenance.planning == canonical.provenance.planning
+        assert coverage.quality.canonical_text_supported_samples == h.fixture.sample_count
+        seen.append(coverage)
+        return original(canonical, coverage, *args, **kwargs)
+
+    monkeypatch.setattr(correction, "correct_transcript", correct)
+    monkeypatch.setattr(transcription_runner, "correct_transcript", correct)
+    record = invoke(h)
+    assert len(seen) == 2 and seen[0] == seen[1]
+    assert next(s for s in record["stages"] if s["stage"] == "end_to_end")["status"] == "PASS"

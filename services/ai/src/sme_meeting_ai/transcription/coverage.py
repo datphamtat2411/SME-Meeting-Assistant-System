@@ -1,18 +1,21 @@
-"""Deterministic assessment of fallible ASR and speech evidence, never text repair.
+"""Evidence-separated Coverage V2 on the unchanged 16 kHz half-open timeline.
 
-COVERED means timestamped text supports likely speech under the captured evidence.
-It is not a ground-truth transcription guarantee. Candidates remain caller-owned,
-transient evidence; neither their text nor their segment objects enter the output.
+Independent acoustic, raw hypothesis and selected canonical support streams precede
+state derivation. Temporal wording support NEVER verifies lexical completeness.
+Recovery consumes only PRE_CANONICAL state counts; FINAL_CANONICAL requires T05
+selected evidence. Borrowed wording/audio never enters the immutable output.
 """
 
 import math
+import traceback
 from bisect import bisect_left, bisect_right
 from collections import defaultdict
+from concurrent.futures import CancelledError
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from fractions import Fraction
 from types import MappingProxyType
-from typing import Mapping
+from typing import TYPE_CHECKING, Mapping
 
 from sme_meeting_ai.audio.errors import AudioProcessingError
 from sme_meeting_ai.audio.models import SampleInterval, VadLabel
@@ -25,6 +28,7 @@ from sme_meeting_ai.core.config import Settings
 from sme_meeting_ai.pipeline.models import PreprocessingResult
 
 from .asr import (
+    AsrCandidate,
     AsrError,
     AsrErrorCategory,
     AsrProvenance,
@@ -39,6 +43,42 @@ from .chunk_planning import (
     _validate_handoff,
     validate_asr_chunk_plan,
 )
+
+if TYPE_CHECKING:
+    from .reconciliation import TranscriptReconciliation
+
+_MAX_SEGMENTS = 262144
+_MAX_REFERENCES = 1048576
+_MAX_ACTIVE = 256
+_MAX_EVENTS = 4194304
+
+
+class CoveragePhase(StrEnum):
+    PRE_CANONICAL = "pre-canonical"
+    FINAL_CANONICAL = "final-canonical"
+
+
+class AcousticEvidenceState(StrEnum):
+    LIKELY_SPEECH = "likely-speech"
+    LIKELY_NON_SPEECH = "likely-non-speech"
+    ACOUSTICALLY_UNCERTAIN = "acoustically-uncertain"
+
+
+@dataclass(frozen=True, slots=True)
+class CoverageEvidence:
+    acoustic_state: AcousticEvidenceState
+    raw_asr_support_count: int
+    canonical_support_count: int
+    has_raw_text_support: bool
+    has_canonical_text_support: bool
+    has_conflicting_hypotheses: bool
+    has_ambiguous_alignment: bool
+    weak_speech: bool = False
+    high_energy_non_speech: bool = False
+    vad_energy_disagreement: bool = False
+    protected_only: bool = False
+    # Segment timestamps cannot establish this, even with optional word evidence.
+    lexical_completeness_verified: bool = field(default=False, init=False)
 
 
 class CoverageState(StrEnum):
@@ -65,6 +105,11 @@ class CoverageReason(StrEnum):
     NEIGHBORING_GAP = "neighboring-gap"
     DUPLICATE_OVERLAP = "duplicate-overlap"
     TOLERATED_MAP_ARTIFACT = "tolerated-map-artifact"
+    MISSING_CANONICAL_TEXT = "missing-canonical-text"
+    RAW_ONLY_SUPPORT = "raw-only-support"
+    CANONICAL_CONFLICT = "canonical-conflict"
+    AMBIGUOUS_RECONCILIATION = "ambiguous-reconciliation"
+    CANONICAL_ACOUSTIC_DISAGREEMENT = "canonical-acoustic-disagreement"
 
 
 @dataclass(frozen=True)
@@ -92,6 +137,7 @@ class CoverageRegion:
     likely_speech_samples: int
     protected_samples: int
     uncertain_samples: int
+    evidence: CoverageEvidence | None = None
 
 
 @dataclass(frozen=True)
@@ -100,7 +146,10 @@ class CoverageQuality:
 
     Duplicate samples count positions with multiple timestamp supports, not the
     sum of repeated evidence durations. Reason counts can overlap each other.
-    Zero likely-speech samples yield a zero rate, never perfect coverage.
+    Legacy state counts partition likely speech under the recorded phase; only
+    PRE_CANONICAL counts are Recovery progress. V2 canonical metrics are undefined
+    (None) before selection. V2 rates with no speech denominator are also None.
+    All other observation categories overlap and must not be summed as partitions.
     """
 
     sample_count: int
@@ -116,6 +165,23 @@ class CoverageQuality:
     malformed_chunk_count: int
     missing_chunk_count: int
     reason_sample_counts: Mapping[CoverageReason, int]
+    uncertain_acoustic_samples: int = 0
+    protected_only_samples: int = 0
+    raw_timestamp_supported_samples: int = 0
+    raw_text_supported_samples: int = 0
+    raw_empty_or_untimed_samples: int = 0
+    likely_speech_with_raw_text_samples: int = 0
+    duplicate_raw_hypothesis_samples: int = 0
+    failed_request_region_samples: int = 0
+    unresolved_risk_samples: int = 0
+    canonical_text_supported_samples: int | None = None
+    likely_speech_with_canonical_text_samples: int | None = None
+    likely_speech_without_canonical_text_samples: int | None = None
+    uncertain_acoustic_with_canonical_support_samples: int | None = None
+    raw_only_support_samples: int | None = None
+    unsupported_canonical_text_samples: int | None = None
+    conflicting_canonical_samples: int | None = None
+    ambiguous_canonical_samples: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "reason_sample_counts", MappingProxyType(dict(self.reason_sample_counts)))
@@ -159,7 +225,13 @@ class CoverageQuality:
     @property
     def reason_sample_rates(self) -> Mapping[CoverageReason, Fraction]:
         return MappingProxyType({reason: Fraction(count, self.sample_count)
-                                 for reason, count in self.reason_sample_counts.items()})
+                                  for reason, count in self.reason_sample_counts.items()})
+
+    @property
+    def canonical_speech_support_rate(self) -> Fraction | None:
+        if not self.likely_speech_samples or self.likely_speech_with_canonical_text_samples is None:
+            return None
+        return Fraction(self.likely_speech_with_canonical_text_samples, self.likely_speech_samples)
 
 
 @dataclass(frozen=True)
@@ -168,6 +240,7 @@ class CoverageProvenance:
     planning: ChunkPlanningProvenance
     effective_configuration: Mapping[str, int | float]
     asr: tuple[tuple[str, AsrProvenance], ...]
+    assessment_phase: CoveragePhase = CoveragePhase.PRE_CANONICAL
     sample_rate_hz: int = field(default=16000, init=False)
 
     def __post_init__(self) -> None:
@@ -193,6 +266,11 @@ def _require(condition: bool) -> None:
         raise AudioProcessingError("VALIDATION")
 
 
+def _resource(condition: bool) -> None:
+    if not condition:
+        raise AudioProcessingError("RESOURCE")
+
+
 def _configuration(settings: Settings) -> dict[str, int | float]:
     _require(isinstance(settings, Settings))
     gap = settings.audio_asr_coverage_max_tolerated_speech_map_gap_samples
@@ -202,7 +280,9 @@ def _configuration(settings: Settings) -> dict[str, int | float]:
     _require(type(repetition) is int and 1 <= repetition <= 65536)
     _require(type(confidence) in (float, int) and math.isfinite(confidence) and 0 <= confidence <= 1)
     return {"max_tolerated_speech_map_gap_samples": gap,
-            "repetition_min_chars": repetition, "low_confidence_threshold": confidence}
+            "repetition_min_chars": repetition, "low_confidence_threshold": confidence,
+            "max_segments": _MAX_SEGMENTS, "max_references": _MAX_REFERENCES,
+            "max_active_supports": _MAX_ACTIVE, "max_events": _MAX_EVENTS}
 
 
 def _confidence(value: float | None) -> bool:
@@ -229,6 +309,8 @@ def _valid_asr_provenance(provenance: AsrProvenance) -> bool:
 def _valid_result(result: AsrChunkResult) -> bool:
     """Validate a chunk locally. No clipping, partial salvage, or timestamp repair."""
     try:
+        from .reconciliation import _quality, _safe_provenance, _words
+
         candidate = result.candidate
         translated = _translate_candidate(candidate, result.chunk)
         _require(isinstance(result.timeline_segments, tuple))
@@ -240,9 +322,13 @@ def _valid_result(result: AsrChunkResult) -> bool:
         _require(translated == result.timeline_segments)
         _require(isinstance(candidate.quality, AsrQualityMetadata) and _confidence(candidate.quality.confidence))
         _require(_valid_asr_provenance(candidate.provenance))
+        _safe_provenance(candidate.provenance)
+        # Reuse T05's structural validator only: words do not create support.
+        _words(candidate, result.chunk)
         for item in translated:
             _require(isinstance(item.segment.quality, AsrSegmentQuality)
-                     and _confidence(item.segment.quality.confidence))
+                      and _confidence(item.segment.quality.confidence))
+            _quality(item.segment.quality)
         return True
     except (AsrError, AudioProcessingError, AttributeError, TypeError, ValueError, OverflowError):
         return False
@@ -263,7 +349,9 @@ def _collect_results(plan, results, configuration):
     supports = []
     failures = []
     provenance = []
+    empty = []
     text_groups = defaultdict(list)
+    observed = words = characters = 0
     for chunk in plan.chunks:
         item = by_id.get(chunk.chunk_id)
         if item is None:
@@ -277,18 +365,24 @@ def _collect_results(plan, results, configuration):
                       else CoverageReason.MALFORMED_CHUNK)
             failures.append((chunk.request_interval, reason, chunk.chunk_id))
             continue
+        candidate = item.candidate
+        if isinstance(candidate, AsrCandidate) and isinstance(candidate.segments, tuple):
+            observed += len(candidate.segments)
+            words += len(candidate.words) if isinstance(candidate.words, tuple) else 0
+            _resource(observed <= _MAX_SEGMENTS and words <= _MAX_REFERENCES)
+            characters += sum(len(s.text) for s in candidate.segments if isinstance(getattr(s, "text", None), str))
+            _resource(characters <= 8388608)
         if not _valid_result(item):
             failures.append((chunk.request_interval, CoverageReason.MALFORMED_CHUNK, chunk.chunk_id))
             continue
         candidate = item.candidate
         # Copy only the normalized inference settings, never arbitrary provider
         # metadata (which can include prompts or sensitive diagnostics).
-        safe_config = tuple((key, value) for key, value in candidate.provenance.inference_config
-                            if (key == "language" and isinstance(value, str)
-                                and 0 < len(value) <= 16 and all(c.isalpha() or c == "-" for c in value))
-                            or (key == "temperature" and type(value) in (int, float)
-                                and math.isfinite(value) and 0 <= value <= 1))
-        provenance.append((chunk.chunk_id, replace(candidate.provenance, inference_config=safe_config)))
+        from .reconciliation import _safe_provenance
+
+        provenance.append((chunk.chunk_id, _safe_provenance(candidate.provenance)))
+        if not item.timeline_segments:
+            empty.append(chunk.request_interval)
         for timeline in item.timeline_segments:
             segment = timeline.segment
             text = " ".join(segment.text.casefold().split())
@@ -300,6 +394,8 @@ def _collect_results(plan, results, configuration):
                 timeline.interval, chunk.chunk_id, bool(text),
                 confidence is not None and confidence < configuration["low_confidence_threshold"],
             ))
+            if not text:
+                empty.append(timeline.interval)
             if len(text) >= configuration["repetition_min_chars"]:
                 text_groups[text].append(index)
     for indexes in text_groups.values():
@@ -311,7 +407,7 @@ def _collect_results(plan, results, configuration):
             support = supports[index]
             if first_end <= support.interval.start_sample or last_start >= support.interval.end_sample:
                 supports[index] = replace(support, repeated=True)
-    return supports, failures, tuple(provenance)
+    return supports, failures, tuple(provenance), tuple(empty)
 
 
 def _replay_indicators(preprocessing):
@@ -325,6 +421,7 @@ def _replay_indicators(preprocessing):
     counts = dict.fromkeys(VadLabel, 0)
     weak = high = position = 0
     for frame in evidence.iter_frames():
+        _require(sum(counts.values()) < evidence.frame_count)
         _validate_frame(frame, position, audio.sample_count, frame_samples, speech_threshold, non_speech_threshold)
         position = frame.end_sample
         counts[frame.vad_label] += 1
@@ -401,13 +498,138 @@ def _append_region(regions, region):
     regions.append(region)
 
 
-def _assess(preprocessing, plan, results, settings, recovery_results=None):
+def _canonical_streams(reconciliation, plan, results, asr):
+    """Cross-stage consistency, not another lexical reconciliation algorithm.
+
+    The private identity index is borrowed only here. The return value contains
+    intervals/IDs/enum observations, never selected or alternative wording.
+    """
+    from .reconciliation import (
+        OccurrenceRelationship,
+        ReconciledSegment,
+        ReconciliationEvidenceIdentity,
+        ReconciliationFlag,
+        ReconciliationProvenance,
+        ReconciliationRelationship,
+        TranscriptReconciliation,
+        _unresolved,
+        _valid_interval,
+    )
+
+    _require(isinstance(reconciliation, TranscriptReconciliation)
+             and reconciliation.source_id == plan.source_id
+             and type(reconciliation.sample_count) is int and reconciliation.sample_count == plan.sample_count
+             and reconciliation.sample_rate_hz == 16000)
+    provenance = reconciliation.provenance
+    _require(isinstance(provenance, ReconciliationProvenance) and provenance.reconciler_version == "2"
+             and provenance.sample_rate_hz == 16000 and provenance.planning == plan.provenance)
+    planned_ids = {c.chunk_id for c in plan.chunks}
+    extras = sorted((r.chunk for r in results if r.chunk.chunk_id not in planned_ids),
+                    key=lambda c: (c.ordinal, c.chunk_id))
+    _require(provenance.source_chunks == (*plan.chunks, *extras) and provenance.asr == asr)
+    valid_ids = {identity for identity, _ in asr}
+    observed = {(r.chunk.chunk_id, index): t for r in results if r.chunk.chunk_id in valid_ids
+                for index, t in enumerate(r.timeline_segments) if t.segment.text.strip()}
+    references = 0
+
+    def identities(values):
+        nonlocal references
+        _require(isinstance(values, tuple))
+        references += len(values)
+        _resource(references <= _MAX_REFERENCES)
+        seen = set()
+        for identity in values:
+            _require(isinstance(identity, ReconciliationEvidenceIdentity)
+                     and isinstance(identity.chunk_id, str) and type(identity.segment_index) is int
+                     and _valid_interval(identity.interval, plan.sample_count))
+            key = (identity.chunk_id, identity.segment_index)
+            _require(key in observed and observed[key].interval == identity.interval and identity not in seen)
+            seen.add(identity)
+        return seen
+
+    _require(isinstance(reconciliation.relationships, tuple))
+    _resource(len(reconciliation.relationships) <= _MAX_REFERENCES)
+    conflicts, ambiguous, conflict_ids, duplicate_ids = [], [], set(), set()
+    established = defaultdict(list)
+    for relationship in reconciliation.relationships:
+        _require(isinstance(relationship, ReconciliationRelationship)
+                 and isinstance(relationship.classification, OccurrenceRelationship))
+        left, right = identities(relationship.left), identities(relationship.right)
+        _require(bool(left) and bool(right) and not left.intersection(right))
+        for path in (relationship.left, relationship.right):
+            _require(len({i.chunk_id for i in path}) == 1
+                     and all(a.segment_index < b.segment_index and a.interval.end_sample <= b.interval.start_sample
+                             for a, b in zip(path, path[1:])))
+        _require(relationship.left[0].chunk_id != relationship.right[0].chunk_id)
+        nodes = left | right
+        kind = relationship.classification
+        if kind is OccurrenceRelationship.CONFLICTING_HYPOTHESIS:
+            conflicts.extend(i.interval for i in nodes)
+            conflict_ids.update(nodes)
+        elif kind is OccurrenceRelationship.SAME_OCCURRENCE:
+            duplicate_ids.update(nodes)
+        elif kind in (OccurrenceRelationship.PARTIAL_SUPPORT, OccurrenceRelationship.AMBIGUOUS):
+            ambiguous.extend(i.interval for i in nodes)
+        if kind in (OccurrenceRelationship.SAME_OCCURRENCE, OccurrenceRelationship.CONFLICTING_HYPOTHESIS):
+            for identity in nodes:
+                established[identity].append(nodes)
+
+    _require(isinstance(reconciliation.segments, tuple))
+    _resource(len(reconciliation.segments) <= _MAX_SEGMENTS)
+    canonical, selected, previous = [], set(), None
+    for ordinal, segment in enumerate(reconciliation.segments):
+        _require(isinstance(segment, ReconciledSegment)
+                 and _valid_interval(segment.interval, plan.sample_count)
+                 and type(segment.ordinal) is int and segment.ordinal == ordinal
+                 and segment.segment_id == f"segment-{ordinal:06d}")
+        identity = segment.selected_evidence_id
+        identities((identity,))
+        support, alternatives = identities(segment.supporting_evidence_ids), identities(segment.alternative_evidence_ids)
+        _require(identity not in selected and identity in support and alternatives <= support
+                 and identity not in alternatives and segment.interval == identity.interval)
+        related = {identity}
+        for group in established[identity]:
+            references += len(group)
+            _resource(references <= _MAX_REFERENCES)
+            related.update(group)
+        _require(support <= related and alternatives == {i for i in support if i.chunk_id != identity.chunk_id})
+        selected.add(identity)
+        original = observed[(identity.chunk_id, identity.segment_index)].segment
+        _require(isinstance(segment.text, str) and bool(segment.text.strip()) and segment.text == original.text)
+        _require(segment.source_chunk_ids == tuple(sorted({i.chunk_id for i in support})))
+        key = (segment.interval.start_sample, segment.interval.end_sample,
+               segment.source_chunk_ids, identity.segment_index)
+        _require(previous is None or previous <= key)
+        previous = key
+        _require(isinstance(segment.flags, tuple) and len(set(segment.flags)) == len(segment.flags)
+                 and all(isinstance(flag, ReconciliationFlag) for flag in segment.flags))
+        _require(isinstance(segment.alternatives, tuple) and segment.alternatives == tuple(dict.fromkeys(
+            observed[(i.chunk_id, i.segment_index)].segment.text for i in segment.alternative_evidence_ids
+            if observed[(i.chunk_id, i.segment_index)].segment.text != segment.text)))
+        if ReconciliationFlag.CONFLICTING_OVERLAP in segment.flags:
+            _require(bool(alternatives) and bool(support & conflict_ids))
+            conflicts.append(segment.interval)
+        if ReconciliationFlag.DUPLICATE_OVERLAP in segment.flags:
+            _require(bool(alternatives) and bool(support & duplicate_ids))
+        if ReconciliationFlag.UNRESOLVED_BOUNDARY in segment.flags:
+            ambiguous.append(segment.interval)
+        # Operational support IDs identify selected wording only. An unselected
+        # recovery alternative must not masquerade as accepted recovered speech.
+        canonical.append((segment.interval, (identity.chunk_id,)))
+    _require(all(_valid_interval(i, plan.sample_count) for i in reconciliation.unresolved_intervals)
+             and reconciliation.unresolved_intervals == _unresolved(plan.sample_count, reconciliation.segments)
+             and reconciliation.observations.canonical_segment_count == len(canonical))
+    return tuple(canonical), tuple(conflicts), tuple(ambiguous)
+
+
+def _assess(preprocessing, plan, results, settings, recovery_results=(), reconciliation=None):
     configuration = _configuration(settings)
     _validate_handoff(preprocessing)
     validate_asr_chunk_plan(plan)
     _require(plan.source_id == preprocessing.provenance.source_id
              and plan.sample_count == preprocessing.normalized_artifact.sample_count
-             and plan.provenance.preprocessing == preprocessing.provenance)
+             and plan.provenance.preprocessing == preprocessing.provenance
+             and plan.sample_count <= 230400000)
     _require(isinstance(results, tuple) and len(results) <= len(plan.chunks))
     planned = {chunk.chunk_id: chunk for chunk in plan.chunks}
     seen = set()
@@ -420,9 +642,9 @@ def _assess(preprocessing, plan, results, settings, recovery_results=None):
         _require(item.chunk.chunk_id in planned and item.chunk == planned[item.chunk.chunk_id]
                  and item.chunk.chunk_id not in seen)
         seen.add(item.chunk.chunk_id)
-    supports, failures, asr_provenance = _collect_results(plan, results, configuration)
     recovery_ids = set()
-    if recovery_results is not None:
+    _require(isinstance(recovery_results, tuple))
+    if recovery_results:
         # Recovery is supplemental evidence, never a replacement partition.
         # Validate the complete handoff; only failure-free, structurally valid
         # candidates contribute support. Failed attempts stay in recovery output.
@@ -434,8 +656,7 @@ def _assess(preprocessing, plan, results, settings, recovery_results=None):
                  and len(recovery_results) <= limits["max_total_attempts"])
         requests = {c.request_interval for c in plan.chunks}
         ordinals = {c.ordinal for c in plan.chunks}
-        accepted = []
-        for item in sorted(recovery_results, key=lambda item: (item.chunk.ordinal, item.chunk.chunk_id)):
+        for item in recovery_results:
             _require(isinstance(item, AsrChunkResult))
             _validate_recovery_chunk(item.chunk, plan.sample_count, limits)
             chunk = item.chunk
@@ -445,21 +666,31 @@ def _assess(preprocessing, plan, results, settings, recovery_results=None):
             recovery_ids.add(chunk.chunk_id)
             ordinals.add(chunk.ordinal)
             requests.add(chunk.request_interval)
-            if item.failure is None and _valid_result(item):
-                accepted.append(item)
-        supports, failures, asr_provenance = _collect_results(
-            replace(plan, chunks=(*plan.chunks, *(item.chunk for item in accepted))),
-            (*results, *accepted), configuration,
-        )
+    combined = (*results, *recovery_results)
+    chunks = (*plan.chunks, *sorted((r.chunk for r in recovery_results), key=lambda c: (c.ordinal, c.chunk_id)))
+    supports, failures, asr_provenance, empty = _collect_results(replace(plan, chunks=chunks), combined, configuration)
+    final = reconciliation is not None
+    if final:
+        _require(all(p.provider == "openrouter" and p.requested_model == settings.audio_asr_model
+                     == "openai/whisper-large-v3" and all(key != "language" or value == settings.audio_asr_language
+                                                         for key, value in p.inference_config)
+                     for _, p in asr_provenance))
+        canonical, conflicts, ambiguous = _canonical_streams(reconciliation, plan, combined, asr_provenance)
+    else:
+        canonical, conflicts, ambiguous = (), (), ()
     indicators = _replay_indicators(preprocessing)
     speech_map = preprocessing.speech_map
     tolerated = _tolerated_gaps(speech_map, indicators, configuration["max_tolerated_speech_map_gap_samples"])
 
-    # One boundary sweep counts every absolute sample once. Event multiplicities
-    # retain duplicate support and overlapping failures without extending bounds.
+    # Independent streams share only exact event boundaries. Every measurement is
+    # a union predicate over each elementary interval, never a sum of hypotheses.
     events = defaultdict(list)
+    event_count = 0
 
     def add(interval, kind, identity=None):
+        nonlocal event_count
+        event_count += 2
+        _resource(event_count <= _MAX_EVENTS)
         events[interval.start_sample].append((kind, identity, 1))
         events[interval.end_sample].append((kind, identity, -1))
 
@@ -471,22 +702,30 @@ def _assess(preprocessing, plan, results, settings, recovery_results=None):
             add(interval, kind)
     for index, support in enumerate(supports):
         add(support.interval, "support", index)
+    for index, (interval, _) in enumerate(canonical):
+        add(interval, "canonical", index)
+    for kind, intervals in (("conflict", conflicts), ("ambiguous", ambiguous), ("empty", empty)):
+        for interval in intervals:
+            add(interval, kind)
     for interval, reason, chunk_id in failures:
         add(interval, reason, chunk_id)
     events[0]
     events[plan.sample_count]
     positions = sorted(events)
     active = set()
+    selected = set()
     active_errors = set()
     counts = defaultdict(int)
     coverage, regions = [], []
+    measurements = defaultdict(int)
     for start, end in zip(positions, positions[1:]):
         for kind, identity, delta in events[start]:
-            if kind == "support":
+            if kind in ("support", "canonical"):
+                stream = active if kind == "support" else selected
                 if delta == 1:
-                    active.add(identity)
+                    stream.add(identity)
                 else:
-                    active.remove(identity)
+                    stream.remove(identity)
             else:
                 counts[kind] += delta
                 if identity is not None:
@@ -494,17 +733,56 @@ def _assess(preprocessing, plan, results, settings, recovery_results=None):
                         active_errors.add(identity)
                     else:
                         active_errors.remove(identity)
+        _resource(len(active) <= _MAX_ACTIVE and len(selected) <= _MAX_ACTIVE)
         likely, protected = bool(counts["speech"]), bool(counts["protected"])
         uncertain = bool(counts["uncertain"] or counts[CoverageReason.UNCERTAIN_VAD]
                          or counts[CoverageReason.HIGH_ENERGY_NON_SPEECH])
-        chunk_ids = tuple(sorted({supports[i].chunk_id for i in active}))
+        raw_ids = tuple(sorted({supports[i].chunk_id for i in active}))
+        chunk_ids = tuple(sorted({identity for i in selected for identity in canonical[i][1]})) if final else raw_ids
         evidence_count = len(active)
         duplicate_count = max(0, evidence_count - 1)
         text_count = sum(supports[i].has_text for i in active)
+        canonical_count = len(selected)
+        weak = bool(counts[CoverageReason.WEAK_SPEECH])
+        high = bool(counts[CoverageReason.HIGH_ENERGY_NON_SPEECH])
+        contradiction = weak or high or bool(counts[CoverageReason.NON_SPEECH_VAD])
+        acoustic_state = (AcousticEvidenceState.LIKELY_SPEECH
+                          if likely and not uncertain and not counts[CoverageReason.NON_SPEECH_VAD]
+                          else AcousticEvidenceState.ACOUSTICALLY_UNCERTAIN if uncertain or likely
+                          else AcousticEvidenceState.LIKELY_NON_SPEECH)
+        evidence = CoverageEvidence(
+            acoustic_state, evidence_count, canonical_count, bool(text_count), bool(canonical_count),
+            bool(counts["conflict"]), bool(counts["ambiguous"]), weak, high, weak or high,
+            protected and not likely,
+        )
+        length = end - start
+        observations = {
+            "uncertain_acoustic_samples": acoustic_state is AcousticEvidenceState.ACOUSTICALLY_UNCERTAIN,
+            "protected_only_samples": protected and not likely,
+            "raw_timestamp_supported_samples": bool(active),
+            "raw_text_supported_samples": bool(text_count),
+            "raw_empty_or_untimed_samples": bool(counts["empty"]),
+            "likely_speech_with_raw_text_samples": likely and bool(text_count),
+            "duplicate_raw_hypothesis_samples": evidence_count > 1,
+        }
+        if final:
+            observations.update({
+                "canonical_text_supported_samples": bool(canonical_count),
+                "likely_speech_with_canonical_text_samples": likely and bool(canonical_count),
+                "likely_speech_without_canonical_text_samples": likely and not canonical_count,
+                "uncertain_acoustic_with_canonical_support_samples": (
+                    acoustic_state is AcousticEvidenceState.ACOUSTICALLY_UNCERTAIN and bool(canonical_count)),
+                "raw_only_support_samples": bool(text_count) and not canonical_count,
+                "unsupported_canonical_text_samples": bool(canonical_count) and (not likely or uncertain or contradiction),
+                "conflicting_canonical_samples": bool(counts["conflict"]),
+                "ambiguous_canonical_samples": bool(counts["ambiguous"]),
+            })
+        for name, present in observations.items():
+            measurements[name] += length if present else 0
         interval = SampleInterval(start, end)
         if active:
             _append_map(coverage, TranscriptCoverageInterval(
-                interval, chunk_ids, evidence_count, duplicate_count, bool(text_count), text_count,
+                interval, raw_ids, evidence_count, duplicate_count, bool(text_count), text_count,
             ))
         reasons = {reason for reason in CoverageReason if counts[reason]}
         if not active and not likely:
@@ -512,7 +790,9 @@ def _assess(preprocessing, plan, results, settings, recovery_results=None):
         failure = any(reason in reasons for reason in (
             CoverageReason.FAILED_CHUNK, CoverageReason.MALFORMED_CHUNK, CoverageReason.MISSING_CHUNK_RESULT,
         ))
-        if not (likely or protected or uncertain or active or failure or reasons):
+        if failure:
+            measurements["failed_request_region_samples"] += length
+        if not (likely or protected or uncertain or active or selected or failure or reasons):
             continue
         if protected and not likely:
             reasons.add(CoverageReason.PROTECTED_ONLY)
@@ -534,23 +814,43 @@ def _assess(preprocessing, plan, results, settings, recovery_results=None):
             reasons.add(CoverageReason.LOW_CONFIDENCE)
         if any(supports[i].repeated for i in active):
             reasons.add(CoverageReason.REPEATED_NON_OVERLAP_TEXT)
-        # A baseline error remains visible in reasons/provenance but cannot
-        # override newly validated recovery support at these exact samples.
+        # Phase-specific derivation happens AFTER evidence collection. Raw source
+        # support cannot substitute for actual canonical selection in FINAL.
         recovery_support = any(supports[i].chunk_id in recovery_ids and supports[i].has_text for i in active)
-        if (failure and not (likely and recovery_support)) or ((likely or uncertain) and not text_count):
+        baseline_failure = any(identity in planned for identity in active_errors)
+        if final:
+            if likely and not canonical_count:
+                reasons.add(CoverageReason.MISSING_CANONICAL_TEXT)
+                reasons.add(CoverageReason.MISSING_SPEECH)
+            if text_count and not canonical_count:
+                reasons.add(CoverageReason.RAW_ONLY_SUPPORT)
+            if evidence.has_conflicting_hypotheses:
+                reasons.add(CoverageReason.CANONICAL_CONFLICT)
+            if evidence.has_ambiguous_alignment:
+                reasons.add(CoverageReason.AMBIGUOUS_RECONCILIATION)
+            if canonical_count and (not likely or uncertain or contradiction):
+                reasons.add(CoverageReason.CANONICAL_ACOUSTIC_DISAGREEMENT)
+                if not likely:
+                    reasons.add(CoverageReason.UNSUPPORTED_CANDIDATE)
+            if (likely or uncertain or failure) and not canonical_count:
+                state = CoverageState.UNRESOLVED_ERROR
+            elif (not likely or uncertain or contradiction or evidence.has_conflicting_hypotheses
+                  or evidence.has_ambiguous_alignment):
+                state = CoverageState.SUSPICIOUS
+            else:
+                state = CoverageState.COVERED
+        elif (baseline_failure and not (likely and recovery_support)) or ((likely or uncertain) and not text_count):
             state = CoverageState.UNRESOLVED_ERROR
         elif (not likely or uncertain or counts[CoverageReason.WEAK_SPEECH]
               or counts[CoverageReason.NON_SPEECH_VAD] or not text_count):
             state = CoverageState.SUSPICIOUS
         else:
-            # Repetition and confidence remain visible weak indicators. They do
-            # not alone override timestamped text supported by likely speech.
             state = CoverageState.COVERED
         _append_region(regions, CoverageRegion(
             interval, state, tuple(reason for reason in CoverageReason if reason in reasons),
             chunk_ids, tuple(sorted(active_errors)), evidence_count, duplicate_count, text_count,
             end - start if likely else 0, end - start if protected else 0,
-            end - start if counts["uncertain"] else 0,
+            end - start if counts["uncertain"] else 0, evidence,
         ))
 
     # Neighboring chunk gaps are contextual suspicion evidence, not timestamp
@@ -580,7 +880,7 @@ def _assess(preprocessing, plan, results, settings, recovery_results=None):
                         and any(i in contextual_chunks for i in core_ordinals(region.interval)))
         suspicious_neighbor = (region.state is CoverageState.SUSPICIOUS
                                and bool(contextual_ids.intersection(region.supporting_chunk_ids)))
-        if gap_neighbor or suspicious_neighbor:
+        if not final and (gap_neighbor or suspicious_neighbor):
             reasons = {*region.reasons, CoverageReason.NEIGHBORING_GAP}
             regions[index] = replace(region, reasons=tuple(r for r in CoverageReason if r in reasons))
 
@@ -607,20 +907,50 @@ def _assess(preprocessing, plan, results, settings, recovery_results=None):
                        and (region.likely_speech_samples or region.uncertain_samples or region.evidence_count
                             or CoverageReason.UNCERTAIN_VAD in region.reasons
                             or CoverageReason.HIGH_ENERGY_NON_SPEECH in region.reasons)))
-        if actionable and not (artifact and region.state is not CoverageState.UNRESOLVED_ERROR):
+        if actionable and (final or not (artifact and region.state is not CoverageState.UNRESOLVED_ERROR)):
             _append_interval(unresolved, region.interval.start_sample, region.interval.end_sample)
+    measurements["unresolved_risk_samples"] = sum(i.end_sample - i.start_sample for i in unresolved)
+    # Legacy chunk counters remain baseline request counters for Recovery and
+    # Correction. V2 failed_request_region_samples includes supplemental failures.
+    baseline_failures = tuple(f for f in failures if f[2] in planned)
     quality = CoverageQuality(
         plan.sample_count, len(plan.chunks), sum(speech_counts.values()), speech_counts[CoverageState.COVERED],
         speech_counts[CoverageState.SUSPICIOUS], speech_counts[CoverageState.UNRESOLVED_ERROR],
         unsupported, duplicates, artifacts,
-        sum(reason is CoverageReason.FAILED_CHUNK for _, reason, _ in failures),
-        sum(reason is CoverageReason.MALFORMED_CHUNK for _, reason, _ in failures),
-        sum(reason is CoverageReason.MISSING_CHUNK_RESULT for _, reason, _ in failures), reason_samples,
+        sum(reason is CoverageReason.FAILED_CHUNK for _, reason, _ in baseline_failures),
+        sum(reason is CoverageReason.MALFORMED_CHUNK for _, reason, _ in baseline_failures),
+        sum(reason is CoverageReason.MISSING_CHUNK_RESULT for _, reason, _ in baseline_failures), reason_samples,
+        **measurements,
     )
     return SpeechCoverageAssessment(
         plan.source_id, plan.sample_count, tuple(coverage), tuple(regions), tuple(unresolved), quality,
-        CoverageProvenance("1", plan.provenance, configuration, asr_provenance),
+        CoverageProvenance("2", plan.provenance, configuration, asr_provenance,
+                           CoveragePhase.FINAL_CANONICAL if final else CoveragePhase.PRE_CANONICAL),
     )
+
+
+def _run_assessment(preprocessing, plan, results, settings, recovery_results=(), reconciliation=None):
+    category = "VALIDATION"
+    cancellation = None
+    try:
+        return _assess(preprocessing, plan, results, settings, recovery_results, reconciliation)
+    except AudioProcessingError as error:
+        category = error.category
+        traceback.clear_frames(error.__traceback__)
+    except (MemoryError, OSError) as error:
+        category = "RESOURCE"
+        traceback.clear_frames(error.__traceback__)
+    except BaseException as error:
+        if not isinstance(error, Exception) or isinstance(error, CancelledError):
+            cancellation = error
+            error.args = ()
+            error.__cause__ = error.__context__ = None
+        traceback.clear_frames(error.__traceback__)
+    finally:
+        preprocessing = plan = results = settings = recovery_results = reconciliation = None
+    if cancellation is not None:
+        raise cancellation.with_traceback(None)
+    raise AudioProcessingError(category)
 
 
 def assess_speech_coverage(
@@ -633,17 +963,10 @@ def assess_speech_coverage(
     and inconsistent global handoffs fail closed. Invalid chunk output is isolated
     to its original request interval; no timestamp is clipped or repaired.
     """
-    category = None
     try:
-        return _assess(preprocessing, plan, results, settings)
-    except AudioProcessingError as error:
-        category = error.category
-    except (MemoryError, OSError):
-        category = "RESOURCE"
-    except (AttributeError, TypeError, ValueError, KeyError, OverflowError):
-        category = "VALIDATION"
-    # Raise outside handlers so sensitive input-bearing exception context is gone.
-    raise AudioProcessingError(category)
+        return _run_assessment(preprocessing, plan, results, settings)
+    finally:
+        preprocessing = plan = results = settings = None
 
 
 def revalidate_speech_coverage(
@@ -657,13 +980,25 @@ def revalidate_speech_coverage(
     Recovered timestamps without text or acoustic support never verify speech.
     All evidence is borrowed; only text-free assessment metadata is returned.
     """
-    category = "VALIDATION"
     try:
-        return _assess(preprocessing, plan, baseline_results, settings, recovery_results)
-    except AudioProcessingError as error:
-        category = error.category
-    except (MemoryError, OSError):
-        category = "RESOURCE"
-    except (AttributeError, TypeError, ValueError, KeyError, OverflowError):
-        pass
-    raise AudioProcessingError(category)
+        return _run_assessment(preprocessing, plan, baseline_results, settings, recovery_results)
+    finally:
+        preprocessing = plan = baseline_results = recovery_results = settings = None
+
+
+def assess_canonical_coverage(
+    preprocessing: PreprocessingResult, plan: AsrChunkPlan,
+    baseline_results: tuple[AsrChunkResult, ...], recovery_results: tuple[AsrChunkResult, ...],
+    reconciliation: "TranscriptReconciliation", settings: Settings,
+) -> SpeechCoverageAssessment:
+    """Assess actual T05 selection once, without modifying it or scheduling work.
+
+    Canonical metrics measure temporal support for selected wording, never human
+    accuracy or word completeness. Unresolved intervals are an evidence-risk union.
+    """
+    try:
+        if reconciliation is None:
+            raise AudioProcessingError("VALIDATION")
+        return _run_assessment(preprocessing, plan, baseline_results, settings, recovery_results, reconciliation)
+    finally:
+        preprocessing = plan = baseline_results = recovery_results = reconciliation = settings = None

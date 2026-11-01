@@ -76,7 +76,7 @@ def candidate(audio, segments=None, *, cost=Fraction(1, 100), upstream="DeepInfr
     )
 
 
-def prepare(result_factory, *, count=1000, provider=None, **overrides):
+def prepare(result_factory, *, count=1000, provider=None, planner=None, **overrides):
     config = settings(**({"audio_asr_strategy_mode": "adaptive"} | overrides))
     result = result_factory(count)
     with wave.open(str(result.normalized_artifact.path), "wb") as output:
@@ -84,7 +84,7 @@ def prepare(result_factory, *, count=1000, provider=None, **overrides):
         output.writeframes((PRIVATE.encode() * (count * 2 // len(PRIVATE) + 1))[:count * 2])
     provider = provider or Provider()
     runner = AsrStrategyRunner(provider, config)
-    decision = runner.prepare(result, SpeechAwareAsrChunkPlanner(config))
+    decision = runner.prepare(result, planner or SpeechAwareAsrChunkPlanner(config))
     return runner, result, provider, decision
 
 
@@ -116,6 +116,11 @@ def test_exact_serialized_payload_and_effective_limit(result_factory, limit, rea
     provider.capabilities = replace(CAPABILITIES, effective_payload_limit=limit if provider_limit else 25_000_000)
     runner, result, provider, decision = prepare(
         result_factory, provider=provider, audio_asr_max_payload_bytes=25_000_000 if provider_limit else limit,
+        # T04 forced contexts must be feasible under this tiny upload limit.
+        # Keep a preferred target larger than the effective core to exercise
+        # resource-bound planning rather than weakening payload admission.
+        audio_asr_chunk_target_samples=1024, audio_asr_chunk_max_request_samples=1536,
+        audio_asr_chunk_overlap_samples=128, audio_asr_chunk_boundary_search_samples=0,
     )
     assert decision.reason == reason and decision.effective_payload_limit == limit
     execution = runner.execute(result.normalized_artifact)
@@ -123,6 +128,8 @@ def test_exact_serialized_payload_and_effective_limit(result_factory, limit, rea
     if limit == 2043:
         assert all(call[1] < Fraction(1000, 16000) for call in provider.calls)
         assert runner.telemetry.native_attempts == 0
+    assert runner._fallback_plan.provenance.effective_configuration["effective_payload_limit"] == limit
+    assert all(call[3] <= limit for call in provider.calls)
 
 
 @pytest.mark.parametrize("changes", [
@@ -135,6 +142,13 @@ def test_exact_serialized_payload_and_effective_limit(result_factory, limit, rea
 def test_incompatible_capabilities_select_chunked_before_calls(result_factory, changes):
     provider = Provider()
     provider.capabilities = replace(CAPABILITIES, **changes)
+    if "verified_duration_ceiling" in changes:
+        # A real provider ceiling below the configured forced context makes the
+        # fallback infeasible too. Reject before any request, not just native.
+        with pytest.raises(AsrError) as caught:
+            prepare(result_factory, provider=provider)
+        assert caught.value.category is AsrErrorCategory.RESOURCE and not provider.calls
+        return
     _, _, provider, decision = prepare(result_factory, provider=provider)
     assert decision.reason == "unsupported-provider-capability" and not provider.calls
 
@@ -270,17 +284,42 @@ def test_preflight_budget_and_payload_geometry_never_spend_native_first(result_f
     with pytest.raises(AsrError) as caught:
         prepare(result_factory, provider=provider, audio_asr_adaptive_max_total_calls=1)
     assert caught.value.category is AsrErrorCategory.RESOURCE and provider.calls == []
-    with pytest.raises(AsrError):
-        prepare(result_factory, provider=provider, audio_asr_max_payload_bytes=45)
+    # Construct the planner before applying an impossible effective request cap;
+    # this exercises the strategy's public preflight error boundary, not __init__.
+    with pytest.raises(AsrError) as caught:
+        prepare(result_factory, provider=provider, planner=SpeechAwareAsrChunkPlanner(settings()),
+                audio_asr_max_payload_bytes=45)
+    assert caught.value.category is AsrErrorCategory.RESOURCE
+    assert caught.value.__cause__ is caught.value.__context__ is None
     assert provider.calls == []
 
 
-@pytest.mark.parametrize("budget,reason", [(25, "chunked-required"), (26, "native-eligible")])
-def test_budget_boundary_can_require_chunked_without_native_spend(result_factory, budget, reason):
+@pytest.mark.parametrize("allow_native", [False, True])
+def test_budget_boundary_can_require_chunked_without_native_spend(result_factory, allow_native):
+    # Budget the actual T04 plan, not the historical V1 chunk-count constant.
+    config = settings()
+    planned = SpeechAwareAsrChunkPlanner(config).plan(result_factory(1000))
+    required = len(planned.chunks) + config.audio_asr_recovery_max_total_attempts
+    budget = required + int(allow_native)
     runner, result, provider, decision = prepare(result_factory, audio_asr_adaptive_max_total_calls=budget)
-    assert decision.reason == reason and provider.calls == []
+    assert decision.reason == ("native-eligible" if allow_native else "chunked-required") and provider.calls == []
     execution = runner.execute(result.normalized_artifact)
-    assert execution.telemetry.native_attempts == int(budget == 26)
+    assert execution.telemetry.native_attempts == int(allow_native)
+    assert execution.telemetry.total_actual_asr_calls <= budget
+
+
+def test_provider_duration_ceiling_is_bound_before_chunk_planning(result_factory):
+    provider = Provider()
+    provider.capabilities = replace(CAPABILITIES, verified_duration_ceiling=Fraction(1, 16))
+    runner, result, provider, decision = prepare(
+        result_factory, count=2048, provider=provider, audio_asr_chunk_target_samples=1024,
+        audio_asr_chunk_max_request_samples=1536, audio_asr_chunk_overlap_samples=128,
+        audio_asr_chunk_boundary_search_samples=0,
+    )
+    assert decision.selected_strategy is AsrStrategy.CHUNKED and not provider.calls
+    assert runner.plan.provenance.effective_configuration["provider_max_request_samples"] == 1000
+    runner.execute(result.normalized_artifact)
+    assert all(duration <= Fraction(1, 16) for _, duration, _, _ in provider.calls)
 
 
 def test_unknown_provider_identifier_is_not_public_diagnostics(result_factory):

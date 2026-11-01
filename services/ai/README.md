@@ -1666,4 +1666,161 @@ intact. Public region bounds, Recovery attribution and retry counts also remain
 intact. Canonical uncertainty is never promoted to ACCEPTED to satisfy publication.
 Worker/Core validators, correction proof, warning-status checks and wire schemas
 retain their existing strict contracts. No additional model call is introduced.
-Coverage Assessment V2 (T06) remains a separate task.
+T06 below adds an actual post-reconciliation assessment; this conservative worker
+projection remains in place as a publication safety check.
+
+### T06 — Evidence-Separated Coverage Assessment V2
+
+`transcription/coverage.py` provides a single deterministic evidence model and
+interval sweep with `assessor_version="2"` and explicit `CoveragePhase` provenance:
+
+1. `assess_speech_coverage` / `revalidate_speech_coverage`: **pre-canonical** raw
+   temporal/text support for existing Recovery. Canonical metrics are `None`
+   (unassessed), not an assertion that canonical text is missing.
+2. After existing Recovery and T05 selection, `assess_canonical_coverage`:
+   **final-canonical** acoustic/raw/selected-canonical support and uncertainty.
+3. Existing GPT correction receives that final assessment. It cannot repair or
+   create coverage evidence. No extra provider, VAD, LLM or network call occurs.
+
+Each region has immutable, text-free `CoverageEvidence`: acoustic classification,
+raw and selected canonical support counts, text-presence flags, conflict/alignment
+flags, weak speech, high-energy non-speech, VAD/energy disagreement and protection
+without likely speech. Likely speech remains a fallible Speech Map observation;
+replayed frames retain contradictory observations, including map-merged non-speech.
+Protection alone is not likely speech. Low-energy speech is retained with risk.
+
+`COVERED` means **provisionally supported under the recorded phase**, never verified
+transcript completeness. In final assessment, actual selected nonempty wording over
+likely speech is required, with no acoustic contradiction or unresolved canonical
+conflict/alignment. `SUSPICIOUS` records weak, contradictory or uncertain support;
+it does not establish hallucination. `UNRESOLVED_ERROR` records material missing
+support or request evidence. Long segment timestamps support wording temporally;
+`lexical_completeness_verified` is always false. Internal omissions cannot generally
+be localized without independent word/reference evidence; no synthetic timestamps,
+missing tokens or replacement wording are produced.
+
+T05 selected identities, original intervals and exact wording are checked against
+locally valid source results. Supporting/alternative identities, chronological
+ordering, source/count/planning provenance, flags and occurrence relationships are
+validated without rerunning lexical reconciliation. Alternatives never count as
+canonical support; final operational chunk IDs identify selected wording only.
+Same-occurrence redundancy does not inflate union support or independently cause
+an error. Genuine nonoverlapping Vietnamese repetition is not penalized. Conflicts,
+partial/ambiguous alignment and T04 unresolved boundaries remain visible.
+
+#### Exact quality measurements
+
+All sample measurements are exact half-open source sample unions in `[0,N)`, with
+`N=sample_count` at 16000 Hz. Unless explicitly stated otherwise, their rate
+denominator would be `N`; counts need no denominator. Categories **overlap** and
+must not be added as disjoint timeline partitions.
+
+| Metric | Meaning |
+| --- | --- |
+| `sample_count` | Entire unchanged normalized source timeline (`N`) |
+| `likely_speech_samples` | Speech Map likely-speech union, retaining fallibility |
+| `uncertain_acoustic_samples` | Map/frame uncertainty, high-energy non-speech, or map/non-speech contradiction |
+| `protected_only_samples` | Protected union outside Speech Map likely speech |
+| `raw_timestamp_supported_samples` | Union of validated raw segment timestamps |
+| `raw_text_supported_samples` | Union of raw timestamps with nonempty wording |
+| `raw_empty_or_untimed_samples` | Union of blank segment intervals and successful empty-request envelopes; no location is invented for untimed wording |
+| `likely_speech_with_raw_text_samples` | Likely speech intersected with raw text support |
+| `duplicate_raw_hypothesis_samples` | Positions with more than one raw timestamp hypothesis (also legacy `duplicate_coverage_samples`) |
+| `failed_request_region_samples` | Failed/malformed/missing baseline or supplied supplemental request union, including overlaps with established support |
+| `canonical_text_supported_samples` | Union of actual nonempty T05 selected segments |
+| `likely_speech_with_canonical_text_samples` | Likely speech intersected with selected canonical support |
+| `likely_speech_without_canonical_text_samples` | Likely speech minus selected canonical support |
+| `uncertain_acoustic_with_canonical_support_samples` | Uncertain acoustic union intersected with canonical support |
+| `raw_only_support_samples` | Nonempty raw support minus selected canonical support |
+| `unsupported_canonical_text_samples` | Canonical support with weak/uncertain/non-speech acoustic corroboration; acoustic-disagreement risk, not confirmed hallucination |
+| `conflicting_canonical_samples` | T05 conflicting-hypothesis/flag interval union |
+| `ambiguous_canonical_samples` | Partial/ambiguous T05 evidence and unresolved-boundary interval union |
+| `unresolved_risk_samples` | Union of actionable/unresolved evidence risk, exactly `unresolved_intervals` |
+
+Canonical-specific measurements are undefined before selection. In final phase,
+canonical-supported plus canonical-unsupported likely speech equals
+`likely_speech_samples`. Legacy covered/suspicious/unresolved state counts also
+partition likely speech **within each phase**. `canonical_speech_support_rate` is
+an exact `Fraction` over likely speech, or `None` for an undefined denominator or
+phase. Historical Recovery rates retain zero for no likely speech, never 100%.
+Legacy failure/malformed/missing chunk counts remain **baseline** counters with
+`chunk_count` as their denominator. Reason counts/rates overlap; their denominator
+is `N`. Provider confidence remains an observation, not an accuracy percentage.
+
+`unresolved_intervals` is a sorted, merged, nonoverlapping risk union, not a
+ground-truth missing-word map. Single-sample gaps and the final recording tail are
+retained. Final risk cannot be hidden using the legacy pre-canonical flanked-map
+artifact tolerance. Neither detector confidence nor timestamp span resolves
+independently observed uncertainty.
+
+#### Orchestration, publication and T07 handoff
+
+The public stage enum is unchanged. On successful chunked and whole-file runs,
+`outcome.evidence.coverage`, `outcome.evidence.recovery.final_assessment` and
+`outcome.result.coverage` are the same final-canonical object; coverage provenance
+also matches. Recovery's `initial_assessment`, internal post-attempt assessments
+and historical attempt deltas remain pre-canonical. The published recovery evidence
+retains `pre_canonical_final_assessment` separately. Do not compare cross-phase
+counts as Recovery progress. Whole-file success still skips Recovery under T03.
+
+Warning wire literals remain `initial` (pre-canonical), `final` (final-canonical),
+and `attempt`, because unchanged worker/Core validators require them. Phase checks
+bind warning generation to explicit assessment provenance. Final reasons use the
+stable enum registry, including `missing-canonical-text`, `raw-only-support`,
+`canonical-conflict`, `ambiguous-reconciliation`, and
+`canonical-acoustic-disagreement`. Correction and worker modules are unchanged;
+the worker may conservatively project risk-intersecting text to `UNRESOLVED`.
+
+Each assessment validates and replays existing chronological frames once, without
+opening PCM or invoking Silero. Sorted independent interval events give
+`O(F + E log E + E*A + R)` bounded work (`A <= 256` simultaneous hypotheses;
+`R` bounded reference checks). Caps are 262144 segments, 1048576 references/words,
+8388608 segment-text characters, and 4194304 events, in addition to existing source
+duration/chunk limits. Pathological evidence fails closed, without truncation.
+Temporary state is bounded by evidence/interval count; no global all-pairs segment
+comparison, PCM buffering, provider diagnostics, prompts or text-bearing objects
+enter coverage output. Safe ASR provenance retains supplied dynamic upstream
+identity only; unknown upstream identity stays unknown. Borrowed artifacts remain
+owned by preprocessing. Failure/cancellation clears private coverage frames and
+borrowed handoffs, and the pipeline retains its existing cleanup ownership.
+
+T07 should consume the separated likely/uncertain speech, raw-only, selected
+canonical, failure, conflict/alignment and unresolved-risk dimensions to prioritize
+real risks, avoid redundant requests, evaluate selected Recovery evidence and
+regression, and measure same-phase progress within cost/latency limits. T06 leaves
+request geometry, budgets, retries, admission and progress algorithms in existing
+Recovery. Deterministic structural tests establish no Vietnamese WER/CER,
+human-verified omission/hallucination or final corrected-quality improvement.
+
+The T06 implementation snapshot inherited 18 failures from T05 AI CI run
+`41280678220` at `77f1407`; exact pre-existing failures and focused verification
+commands are recorded in `plan.md`. A local regression result does not establish a
+successful GitHub CI run for a newer commit.
+
+#### Baseline integration compatibility follow-up
+
+Provider upload/duration limits are now bound by `AsrStrategyRunner.prepare` before
+baseline/fallback planning, for both direct and offline use. The pipeline delegates
+that decision to the runner instead of adding another planner wrapper. Infeasible
+planning fails before inference with sanitized ASR validation/resource categories.
+
+The preferred chunk target is bounded by the actual core capacity and remaining
+tail. A sub-frame search window uses a real adjacent VAD-frame boundary within
+hard progress/request limits. Planning and snapshot validation share the same
+window rules. Forced context is never silently reduced to fit an upload cap;
+infeasible context remains a resource failure.
+
+Shared request/settings validation is separate from baseline forced-core
+feasibility. Existing Recovery uses the former for its independently admitted
+core/context windows. A tiny Recovery request need not be a new baseline VAD-frame
+partition. Request/sample/time/attempt budgets and the scheduling/progress rules
+are unchanged; caps too small for one PCM sample produce no request.
+
+Offline evaluation fakes use the locked OpenRouter/Whisper evidence identity.
+Stage-only evaluation now follows T04 boundary analysis and T06 final canonical
+coverage before correction, matching the actual offline pipeline. Regression
+fixtures distinguish genuine same-occurrence evidence from displaced equal text
+and unresolved disagreement from established same-occurrence conflict. Historical
+results, reference annotations, WER/CER calculations and approved quality gates
+remain intact. These compatibility tests use only invented fixtures and fake
+providers; they establish no live transcription-quality improvement.

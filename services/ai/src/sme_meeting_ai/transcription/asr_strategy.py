@@ -15,6 +15,7 @@ from enum import StrEnum
 from fractions import Fraction
 from threading import Lock
 
+from sme_meeting_ai.audio.errors import AudioProcessingError
 from sme_meeting_ai.audio.models import NormalizedAudioArtifact, SampleInterval
 from sme_meeting_ai.core.config import Settings
 from sme_meeting_ai.pipeline.models import PreprocessingResult
@@ -303,6 +304,24 @@ class AsrStrategyRunner:
             )
 
     def prepare(self, preprocessing: PreprocessingResult, planner: SpeechAwareAsrChunkPlanner) -> AsrStrategyDecision:
+        """Bind actual provider limits before planning; sanitize preflight failures."""
+        failure = AsrErrorCategory.VALIDATION
+        try:
+            return self._prepare(preprocessing, planner)
+        except AsrError as error:
+            failure = error.category
+            traceback.clear_frames(error.__traceback__)
+        except AudioProcessingError as error:
+            failure = (AsrErrorCategory.RESOURCE if error.category == "RESOURCE" else AsrErrorCategory.VALIDATION)
+            traceback.clear_frames(error.__traceback__)
+        except (MemoryError, OSError) as error:
+            failure = AsrErrorCategory.RESOURCE
+            traceback.clear_frames(error.__traceback__)
+        finally:
+            preprocessing = planner = None
+        raise AsrError(failure)
+
+    def _prepare(self, preprocessing: PreprocessingResult, planner: SpeechAwareAsrChunkPlanner) -> AsrStrategyDecision:
         from .chunk_execution import _validate_handoff as validate_execution
         from .recovery import _configuration as recovery_configuration
 
@@ -334,7 +353,14 @@ class AsrStrategyRunner:
         self._decision = AsrStrategyDecision(selected, STRATEGY_VERSION, reason, count, expected_bytes, limit)
         self._selected = selected
         # Prepare but never execute baseline comparison work speculatively.
-        chunked = planner.plan(preprocessing)
+        duration_limit = 230400000
+        if capabilities is not None and capabilities.verified_duration_ceiling is not None:
+            ceiling = capabilities.verified_duration_ceiling
+            _require(isinstance(ceiling, Fraction) and ceiling > 0)
+            duration_limit = min(duration_limit, (ceiling * 16000).__floor__())
+            _require(duration_limit > 0, AsrErrorCategory.RESOURCE)
+        chunked = planner.plan(preprocessing, effective_payload_limit=limit,
+                               provider_max_request_samples=duration_limit)
         validate_asr_chunk_plan(chunked)
         _require(chunked.source_id == preprocessing.provenance.source_id
                  and chunked.sample_count == count and chunked.provenance.preprocessing == preprocessing.provenance)
