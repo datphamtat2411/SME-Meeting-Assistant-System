@@ -60,7 +60,7 @@ def sanitized(error, category):
         assert sensitive not in rendered
 
 
-@pytest.mark.parametrize("effort,temperature", [("medium", None), (None, 0), (None, None), ("none", 0), ("none", None)])
+@pytest.mark.parametrize("effort,temperature", [("low", None), ("medium", None), (None, 0), (None, None), ("none", 0), ("none", None)])
 def test_reasoning_and_optional_temperature_payload(effort, temperature):
     model = "openai/gpt-6-luna"
     config = settings(transcript_correction_model=model,

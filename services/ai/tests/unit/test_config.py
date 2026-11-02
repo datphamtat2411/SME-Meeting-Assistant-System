@@ -856,7 +856,7 @@ def test_correction_defaults_match_canonical_service_example():
         assert getattr(defaults, field) == value
     example = load_settings(env_file)
     example_values = {**expected, "transcript_correction_model": "openai/gpt-6-luna",
-                      "transcript_correction_reasoning_effort": "medium",
+                      "transcript_correction_reasoning_effort": "low",
                       "transcript_correction_temperature": None}
     for field, value in example_values.items():
         assert getattr(example, field) == value
@@ -892,6 +892,17 @@ def test_correction_configuration_overrides(monkeypatch, tmp_path, source):
     assert config.transcript_correction_timeout_seconds == 2.5
     assert config.transcript_correction_min_text_ratio == 0.7
     assert config.transcript_correction_max_text_ratio == 1.4
+
+
+def test_correction_reasoning_environment_overrides_dotenv(monkeypatch, tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text("AI_SERVICE_NAME=test-ai\nAI_SERVICE_IDENTITY=ai-core\n"
+                        "AI_TRANSCRIPT_CORRECTION_REASONING_EFFORT=medium\n")
+    monkeypatch.setenv("AI_TRANSCRIPT_CORRECTION_REASONING_EFFORT", "low")
+
+    config = load_settings(env_file)
+
+    assert config.transcript_correction_reasoning_effort == "low"
 
 
 @pytest.mark.parametrize("field,invalid", [

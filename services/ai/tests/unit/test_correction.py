@@ -89,7 +89,7 @@ def invoke(reconciliation, coverage, provider, **overrides):
     return correct_transcript(reconciliation, coverage, provider, configuration(**overrides))
 
 
-@pytest.mark.parametrize("effort,temperature", [("medium", None), (None, 0), ("none", 0)])
+@pytest.mark.parametrize("effort,temperature", [("low", None), ("medium", None), (None, 0), ("none", 0)])
 def test_reasoning_configuration_request_and_effective_provenance(effort, temperature):
     reconciliation, coverage = meeting()
     provider = Provider(payload(reconciliation))
@@ -140,6 +140,14 @@ def test_complete_meeting_context_vietnamese_corrections_and_trusted_mapping(cap
     assert request.model == "vendor/approved" and request.temperature == 0
     assert "untrusted" in request.system_prompt.lower()
     assert "translation" in request.system_prompt.lower()
+    assert "unchanged" in request.system_prompt.lower()
+    assert "audio" in request.system_prompt.lower()
+    assert "actively correcting\nsupported recognition errors" in request.system_prompt
+    assert "both earlier and later speech" in request.system_prompt
+    assert "Repetition elsewhere is corroboration, not a prerequisite" in request.system_prompt
+    assert "Preservation is the fallback for unresolved alternatives" in request.system_prompt
+    assert "default and preferred action is to copy" not in request.system_prompt
+    assert "Copy segment_id and ordinal verbatim" in request.system_prompt
     output = outcome.result
     assert output.coverage is coverage
     assert output.unresolved_intervals == reconciliation.unresolved_intervals
@@ -157,6 +165,8 @@ def test_complete_meeting_context_vietnamese_corrections_and_trusted_mapping(cap
     assert output.provenance.attempts == 1
     assert output.provenance.prompt_version
     assert output.provenance.correction_version
+    assert output.provenance.prompt_version == "vi-whole-meeting-5"
+    assert output.provenance.rejected_segment_count == 0
     assert output.provenance.usage == CorrectionUsage(100, 50, 150)
     assert output.provenance.effective_configuration["max_attempts"] == 2
     with pytest.raises(FrozenInstanceError):
@@ -365,6 +375,92 @@ def test_normalized_unicode_and_numbers_are_allowed_without_deduplicating_repeti
     texts = ("Tôi họp lúc 10 giờ.", "Vâng, vâng, vâng, vâng.")
     outcome = invoke(reconciliation, coverage, Provider(payload(reconciliation, texts)))
     assert [segment.text for segment in outcome.result.segments] == list(texts)
+
+
+def test_unsupported_multiword_rewrite_falls_back_only_that_segment():
+    original = ("Tôi nói về mạch ngầm", "chúng ta sửa lỗi chính tả")
+    proposed = ("Tôi nói về chiến lược", "Chúng ta sửa lỗi chính tả.")
+    reconciliation, coverage = meeting(original)
+
+    outcome = invoke(reconciliation, coverage, Provider(payload(reconciliation, proposed)))
+
+    assert outcome.status is TranscriptCorrectionStatus.COMPLETED
+    assert [segment.text for segment in outcome.result.segments] == [original[0], proposed[1]]
+    assert outcome.result.quality.changed_segment_count == 1
+    assert outcome.result.provenance.rejected_segment_count == 1
+
+
+def test_repeated_words_are_preserved_when_proposal_deduplicates_them():
+    original = ("vâng vâng, tôi tôi sẽ thử",)
+    proposed = ("Vâng, tôi sẽ thử",)
+    reconciliation, coverage = meeting(original)
+
+    outcome = invoke(reconciliation, coverage, Provider(payload(reconciliation, proposed)))
+
+    assert outcome.status is TranscriptCorrectionStatus.COMPLETED
+    assert outcome.result.segments[0].text == original[0]
+    assert outcome.result.provenance.rejected_segment_count == 1
+
+
+def test_numbers_and_identifiers_are_preserved_when_proposal_rewrites_them():
+    original = ("Mã API v2, lúc 10 giờ",)
+    proposed = ("Mã API v3, lúc 11 giờ",)
+    reconciliation, coverage = meeting(original)
+
+    outcome = invoke(reconciliation, coverage, Provider(payload(reconciliation, proposed)))
+
+    assert outcome.status is TranscriptCorrectionStatus.COMPLETED
+    assert outcome.result.segments[0].text == original[0]
+    assert outcome.result.provenance.rejected_segment_count == 1
+
+
+@pytest.mark.parametrize("source,proposed", [
+    ("chúng ta dùng configg hôm nay", "Chúng ta dùng config hôm nay."),
+    ("tôi kiểm tra tài liêu", "Tôi kiểm tra tài liệu."),
+])
+def test_minimal_spelling_and_diacritic_proposals_remain_eligible(source, proposed):
+    reconciliation, coverage = meeting((source,))
+
+    outcome = invoke(reconciliation, coverage, Provider(payload(reconciliation, (proposed,))))
+
+    assert outcome.status is TranscriptCorrectionStatus.COMPLETED
+    assert outcome.result.segments[0].text == proposed
+    assert outcome.result.quality.changed_segment_count == 1
+    assert outcome.result.provenance.rejected_segment_count == 0
+    assert reconciliation.segments[0].text == source
+
+
+@pytest.mark.parametrize("with_repeated_context", [False, True])
+def test_minimal_colloquial_spelling_repair_is_allowed_with_or_without_repeated_context(with_repeated_context):
+    source = "đó là một lời nhắc nhỡ"
+    repaired = "Đó là một lời nhắc nhở."
+    texts = ("lời nhắc nhở này hữu ích", source, "vâng vâng, một lời nhắc nhở") if with_repeated_context else (source,)
+    reconciliation, coverage = meeting(texts)
+    proposed = tuple(repaired if text == source else text for text in texts)
+    provider = Provider(payload(reconciliation, proposed))
+
+    outcome = invoke(reconciliation, coverage, provider)
+
+    assert [s.text for s in outcome.result.segments] == list(proposed)
+    assert outcome.result.provenance.rejected_segment_count == 0
+    assert len(provider.requests) == 1
+    assert json.loads(provider.requests[0].transcript_json) == context_payload(reconciliation)
+    assert [s.text for s in reconciliation.segments] == list(texts)
+
+
+@pytest.mark.parametrize("source,proposed", [
+    ("tôi gặp Minh trước cuộc họp", "Tôi gặp Bình trước cuộc họp."),
+    ("hệ thống dùng JWT để ký", "Hệ thống dùng JWS để ký."),
+])
+def test_source_name_and_identifier_substitutions_preserve_original(source, proposed):
+    reconciliation, coverage = meeting((source,))
+
+    outcome = invoke(reconciliation, coverage, Provider(payload(reconciliation, (proposed,))))
+
+    assert outcome.status is TranscriptCorrectionStatus.COMPLETED
+    assert outcome.result.segments[0].text == source
+    assert outcome.result.quality.changed_segment_count == 0
+    assert outcome.result.provenance.rejected_segment_count == 1
 
 
 def test_global_text_accounting_rejects_many_small_omissions():
