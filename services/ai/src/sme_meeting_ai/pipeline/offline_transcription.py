@@ -292,7 +292,7 @@ def _asr_evidence(plan, results, settings: Settings, payload_limit: int | None =
                          else ReconciliationChunkState.EMPTY)
         outcomes.append(ReconciliationChunkOutcome(chunk.chunk_id, chunk.core_interval, state, failure))
     alignment = (analyze_boundary_alignment(plan, results)
-                 if plan.provenance.planner_version == "speech-aware-v2" else None)
+                 if plan.provenance.planner_version in ("speech-aware-v2", "speech-aware-v3") else None)
     return OfflineAsrEvidence(tuple(outcomes), OfflineAsrProvenance(tuple(provenance), {
         "max_concurrent_chunks": settings.audio_asr_max_concurrent_chunks,
         "max_payload_bytes": settings.audio_asr_max_payload_bytes if payload_limit is None else payload_limit,

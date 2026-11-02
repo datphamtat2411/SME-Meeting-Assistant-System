@@ -269,7 +269,7 @@ def test_provenance_and_models_are_immutable_deterministic_snapshots(result_fact
     assert plan.source_id == result.provenance.source_id
     assert plan.sample_count == result.normalized_artifact.sample_count
     assert isinstance(plan.provenance, ChunkPlanningProvenance)
-    assert plan.provenance.planner_version == "speech-aware-v2"
+    assert plan.provenance.planner_version == "speech-aware-v3"
     assert plan.provenance.sample_rate_hz == 16000
     assert plan.provenance.preprocessing == result.provenance
     captured = plan.provenance.effective_configuration
@@ -577,3 +577,59 @@ def test_impossible_context_is_not_shrunk_to_make_a_payload_fit(result_factory):
     with pytest.raises(AudioProcessingError) as caught:
         planner.plan(result_factory(), effective_payload_limit=300)
     assert caught.value.category == "RESOURCE"
+
+
+@pytest.mark.parametrize("gap_start,gap_end,count", [
+    (8000, 56000, 64000),  # Even a short recording needs independent decoding.
+    (16000, 80000, 160000),  # Restart before the ordinary minimum core size.
+    (160000, 224000, 240000),  # Restart even when the final tail is short.
+    (80000, 144000, 320000),  # Interruption outside the preferred search window.
+])
+def test_long_internal_silence_restarts_near_resumed_evidence(result_factory, gap_start, gap_end, count):
+    configuration = Settings(_env_file=None)
+    result = result_factory(count, speech=((0, gap_start), (gap_end, count)))
+    plan = SpeechAwareAsrChunkPlanner(configuration).plan(result)
+    assert_partition(plan, configuration)
+    assert len(plan.chunks) == 2
+    left, right = plan.chunks
+    assert right.core_interval.start_sample == gap_end
+    assert right.request_interval.start_sample == gap_end
+    assert left.request_interval.end_sample == gap_end
+    assert plan.boundary_decisions[0].candidate_gap == SampleInterval(gap_start, gap_end)
+    assert right.start_boundary_reason is ChunkBoundaryReason.SPEECH_RESUMPTION
+    validate_asr_chunk_plan(plan)
+
+
+def test_interruption_still_honors_chunk_budget_without_skipping_silence(result_factory):
+    result = result_factory(160000, speech=((0, 16000), (80000, 160000)))
+    with pytest.raises(AudioProcessingError) as caught:
+        SpeechAwareAsrChunkPlanner(Settings(_env_file=None, audio_asr_chunk_max_chunks=1)).plan(result)
+    assert caught.value.category == "RESOURCE"
+
+
+def test_existing_v2_continuous_plan_snapshot_still_validates(result_factory):
+    plan = SpeechAwareAsrChunkPlanner(settings()).plan(result_factory())
+    configuration = {k: v for k, v in plan.provenance.effective_configuration.items()
+                     if k not in {"interruption_gap_samples", "interruption_padding_samples"}}
+    old = replace(plan, provenance=replace(plan.provenance, planner_version="speech-aware-v2",
+                                          effective_configuration=configuration))
+    validate_asr_chunk_plan(old)
+
+
+@pytest.mark.parametrize("kind", ["context", "gap", "reason"])
+def test_restart_snapshot_requires_exact_acoustic_edge_and_independent_context(result_factory, kind):
+    result = result_factory(160000, speech=((0, 16000), (80000, 160000)))
+    plan = SpeechAwareAsrChunkPlanner(Settings(_env_file=None)).plan(result)
+    if kind == "context":
+        right = replace(plan.chunks[1], request_interval=SampleInterval(78400, 160000))
+        invalid = replace(plan, chunks=(plan.chunks[0], right))
+    elif kind == "gap":
+        decision = replace(plan.boundary_decisions[0], candidate_gap=SampleInterval(16000, 79999))
+        invalid = replace(plan, boundary_decisions=(decision,))
+    else:
+        left = replace(plan.chunks[0], end_boundary_reason=ChunkBoundaryReason.NATURAL_SILENCE_CANDIDATE)
+        right = replace(plan.chunks[1], start_boundary_reason=ChunkBoundaryReason.NATURAL_SILENCE_CANDIDATE)
+        decision = replace(plan.boundary_decisions[0], reason=ChunkBoundaryReason.NATURAL_SILENCE_CANDIDATE)
+        invalid = replace(plan, chunks=(left, right), boundary_decisions=(decision,))
+    with pytest.raises(AudioProcessingError):
+        validate_asr_chunk_plan(invalid)

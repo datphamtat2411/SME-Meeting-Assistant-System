@@ -203,7 +203,11 @@ def test_raw_only_final_evidence_remains_actionable(handoff):
 
 
 def test_plan_preserves_exact_cores_source_limits_and_distinct_geometries(handoff):
-    preprocessing, plan, configuration = handoff(("speech",) * 10)
+    # This planning assertion needs all alternatives, independently of a local
+    # pilot's smaller environment-level live request budget.
+    preprocessing, plan, configuration = handoff(
+        ("speech",) * 10, configuration=settings(audio_asr_recovery_max_total_attempts=16),
+    )
     original = baseline(plan)
     report = analyze_boundary_alignment(plan, original)
     _, final = state(preprocessing, plan, original, configuration)

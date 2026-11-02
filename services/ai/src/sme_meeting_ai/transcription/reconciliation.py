@@ -650,7 +650,9 @@ def _boundary_context(plan, results, evidence, report):
                  and boundary.boundary_reason is left.end_boundary_reason
                  and isinstance(boundary.boundary_risk, BoundaryRisk))
         _require(boundary.boundary_risk is not BoundaryRisk.NATURAL_CANDIDATE
-                 or boundary.boundary_reason is ChunkBoundaryReason.NATURAL_SILENCE_CANDIDATE)
+                 or boundary.boundary_reason in (
+                     ChunkBoundaryReason.NATURAL_SILENCE_CANDIDATE, ChunkBoundaryReason.SPEECH_RESUMPTION,
+                 ))
         risk = {BoundaryRisk.NATURAL_CANDIDATE: 0, BoundaryRisk.FORCED_CONTINUOUS_SPEECH: 1,
                 BoundaryRisk.INCOMPLETE_EVIDENCE: 2}[boundary.boundary_risk]
         risks[left.chunk_id].append((boundary.boundary_sample, risk))

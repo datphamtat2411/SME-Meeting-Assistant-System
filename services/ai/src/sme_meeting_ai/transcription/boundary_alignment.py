@@ -186,7 +186,7 @@ def _collect(plan, results, boundary_samples):
 
 def _analyze(plan, results):
     validate_asr_chunk_plan(plan)
-    _require(plan.provenance.planner_version == "speech-aware-v2")
+    _require(plan.provenance.planner_version in ("speech-aware-v2", "speech-aware-v3"))
     boundary_samples = tuple(c.core_interval.end_sample for c in plan.chunks[:-1])
     by_id, supports = _collect(plan, results, boundary_samples)
     boundaries, temporal_overlaps, request_overlaps = [], [], []
@@ -203,7 +203,9 @@ def _analyze(plan, results):
         temporal_overlaps.extend(overlaps)
         reason = left.end_boundary_reason
         risk = (BoundaryRisk.INCOMPLETE_EVIDENCE if incomplete else
-                BoundaryRisk.NATURAL_CANDIDATE if reason is ChunkBoundaryReason.NATURAL_SILENCE_CANDIDATE
+                BoundaryRisk.NATURAL_CANDIDATE if reason in (
+                    ChunkBoundaryReason.NATURAL_SILENCE_CANDIDATE, ChunkBoundaryReason.SPEECH_RESUMPTION,
+                )
                 else BoundaryRisk.FORCED_CONTINUOUS_SPEECH)
         both = (*left_support, *right_support)
         crossing = sum(s.interval.start_sample < boundary < s.interval.end_sample for s in both)
@@ -219,7 +221,8 @@ def _analyze(plan, results):
     cores = tuple(c.core_interval.end_sample - c.core_interval.start_sample for c in plan.chunks)
     metrics = BoundaryAlignmentMetrics(
         plan.provenance.planner_version, plan.sample_count, len(plan.chunks),
-        sum(b.reason is ChunkBoundaryReason.NATURAL_SILENCE_CANDIDATE for b in plan.boundary_decisions),
+        sum(b.reason in (ChunkBoundaryReason.NATURAL_SILENCE_CANDIDATE, ChunkBoundaryReason.SPEECH_RESUMPTION)
+            for b in plan.boundary_decisions),
         sum(b.reason is ChunkBoundaryReason.FORCED_CONTINUOUS_SPEECH for b in plan.boundary_decisions),
         sum(b.protected for b in plan.boundary_decisions), sum(b.uncertain for b in plan.boundary_decisions),
         sum(requests), sum(cores), sum(requests) - plan.sample_count, _union_length(sorted(request_overlaps)),

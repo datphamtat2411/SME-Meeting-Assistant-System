@@ -33,12 +33,13 @@ from sme_meeting_ai.pipeline.preprocessing import (
 )
 
 _RATE = 16000
-_PLANNER_VERSION = "speech-aware-v2"
+_PLANNER_VERSION = "speech-aware-v3"
 
 
 class ChunkBoundaryReason(StrEnum):
     TIMELINE_START = "timeline-start"
     NATURAL_SILENCE_CANDIDATE = "natural-silence-candidate"
+    SPEECH_RESUMPTION = "speech-resumption"
     FORCED_CONTINUOUS_SPEECH = "forced-continuous-speech"
     TIMELINE_END = "timeline-end"
 
@@ -160,6 +161,7 @@ def _configuration(
         "forced_context_samples": forced,
         "minimum_progress_samples": max(1, min(80000, target // 2, (maximum - 2 * forced) // 2)),
         "minimum_gap_samples": 3200, "gap_margin_samples": 800,
+        "interruption_gap_samples": 32000, "interruption_padding_samples": 0,
     })
     return MappingProxyType(configuration)
 
@@ -269,7 +271,7 @@ def validate_asr_chunk_plan(plan: AsrChunkPlan) -> None:
         )
         provenance = plan.provenance
         _require(
-            provenance.planner_version in ("1", _PLANNER_VERSION, "whole-file-v1")
+            provenance.planner_version in ("1", "speech-aware-v2", _PLANNER_VERSION, "whole-file-v1")
             and type(provenance.sample_rate_hz) is int and provenance.sample_rate_hz == _RATE
             and isinstance(provenance.preprocessing, PreprocessingProvenance)
         )
@@ -301,7 +303,7 @@ def validate_asr_chunk_plan(plan: AsrChunkPlan) -> None:
             and all(character in "0123456789abcdef" for character in detection.model_sha256)
         )
         configuration = provenance.effective_configuration
-        if provenance.planner_version == _PLANNER_VERSION:
+        if provenance.planner_version in ("speech-aware-v2", _PLANNER_VERSION):
             _validate_v2(plan)
             return
         if provenance.planner_version == "whole-file-v1":
@@ -355,6 +357,8 @@ def validate_asr_chunk_plan(plan: AsrChunkPlan) -> None:
 
 
 def _context(reason: ChunkBoundaryReason, configuration: Mapping[str, int]) -> int:
+    if reason is ChunkBoundaryReason.SPEECH_RESUMPTION:
+        return configuration["interruption_padding_samples"]
     if reason is ChunkBoundaryReason.NATURAL_SILENCE_CANDIDATE:
         return configuration["natural_context_samples"]
     if reason is ChunkBoundaryReason.FORCED_CONTINUOUS_SPEECH:
@@ -500,12 +504,15 @@ class _AcousticFrontier:
 
 def _validate_v2(plan: AsrChunkPlan) -> None:
     c = plan.provenance.effective_configuration
+    interruption_aware = plan.provenance.planner_version == _PLANNER_VERSION
     keys = {
         "target_core_samples", "configured_max_request_samples", "max_request_samples", "overlap_samples",
         "boundary_search_samples", "max_chunks", "max_timeline_samples", "effective_payload_limit",
         "provider_max_request_samples", "max_core_samples", "natural_context_samples",
         "forced_context_samples", "minimum_progress_samples", "minimum_gap_samples", "gap_margin_samples",
     }
+    if interruption_aware:
+        keys.update(("interruption_gap_samples", "interruption_padding_samples"))
     _require(set(c) == keys)
     _require(all(type(value) is int and 0 <= value <= 230400000 for value in c.values()))
     target, configured, overlap = c["target_core_samples"], c["configured_max_request_samples"], c["overlap_samples"]
@@ -522,6 +529,8 @@ def _validate_v2(plan: AsrChunkPlan) -> None:
         "minimum_progress_samples": max(1, min(80000, target // 2, (maximum - 2 * forced) // 2)),
         "minimum_gap_samples": 3200, "gap_margin_samples": 800,
     }
+    if interruption_aware:
+        expected.update({"interruption_gap_samples": 32000, "interruption_padding_samples": 0})
     _require(maximum > 2 * forced and all(c[key] == value for key, value in expected.items()))
     normalization = plan.provenance.preprocessing.normalization
     _require(plan.provenance.preprocessing.detection.effective_configuration.get("frame_samples") == 512)
@@ -560,27 +569,31 @@ def _validate_v2(plan: AsrChunkPlan) -> None:
         if final:
             _require(chunk.end_boundary_reason is ChunkBoundaryReason.TIMELINE_END)
             if ordinal and size < c["minimum_progress_samples"]:
-                previous_start = plan.chunks[ordinal - 1].core_interval.start_sample
-                _, lower, upper = _boundary_window(previous_start, plan.sample_count, c)
-                _require(reason is ChunkBoundaryReason.FORCED_CONTINUOUS_SPEECH
-                         and ((lower + 511) // 512) * 512 > upper)
+                if not (interruption_aware and _is_interruption_restart(plan.boundary_decisions[-1], plan.sample_count, c)):
+                    previous_start = plan.chunks[ordinal - 1].core_interval.start_sample
+                    _, lower, upper = _boundary_window(previous_start, plan.sample_count, c)
+                    _require(reason is ChunkBoundaryReason.FORCED_CONTINUOUS_SPEECH
+                             and ((lower + 511) // 512) * 512 > upper)
         else:
-            _require(size >= c["minimum_progress_samples"])
-            _, lower, upper = (_forced_boundary_window(position, plan.sample_count, c)
-                               if chunk.end_boundary_reason is ChunkBoundaryReason.FORCED_CONTINUOUS_SPEECH
-                               else _boundary_window(position, plan.sample_count, c))
-            _require(lower <= core.end_sample <= upper)
             decision = plan.boundary_decisions[ordinal]
+            _require(isinstance(decision, AcousticBoundaryDecision))
+            restart = interruption_aware and _is_interruption_restart(decision, plan.sample_count, c)
+            _require(restart or size >= c["minimum_progress_samples"])
+            if not restart:
+                _, lower, upper = (_forced_boundary_window(position, plan.sample_count, c)
+                                   if chunk.end_boundary_reason is ChunkBoundaryReason.FORCED_CONTINUOUS_SPEECH
+                                   else _boundary_window(position, plan.sample_count, c))
+                _require(lower <= core.end_sample <= upper)
             _require(isinstance(decision, AcousticBoundaryDecision)
                      and type(decision.boundary_sample) is int and decision.boundary_sample == core.end_sample
                      and decision.reason is chunk.end_boundary_reason
                      and type(decision.protected) is bool and decision.protected == protected.contains(core.end_sample)
                      and type(decision.uncertain) is bool and decision.uncertain == uncertain.contains(core.end_sample))
-            if decision.reason is ChunkBoundaryReason.NATURAL_SILENCE_CANDIDATE:
+            if decision.reason in (ChunkBoundaryReason.NATURAL_SILENCE_CANDIDATE, ChunkBoundaryReason.SPEECH_RESUMPTION):
                 gap = decision.candidate_gap
                 _require(isinstance(gap, SampleInterval) and 0 <= gap.start_sample < gap.end_sample <= plan.sample_count
                          and gap.end_sample - gap.start_sample >= 3200
-                         and gap.start_sample + 800 < core.end_sample < gap.end_sample - 800
+                          and (restart or gap.start_sample + 800 < core.end_sample < gap.end_sample - 800)
                          and not protected.intersects(gap) and not uncertain.intersects(gap))
                 _require(gap.start_sample == 0 or protected.contains(gap.start_sample - 1)
                          or uncertain.contains(gap.start_sample - 1))
@@ -591,6 +604,23 @@ def _validate_v2(plan: AsrChunkPlan) -> None:
                          and decision.candidate_gap is None and forced > 0 and core.end_sample % 512 == 0)
         position, reason = core.end_sample, chunk.end_boundary_reason
     _require(position == plan.sample_count)
+
+
+def _interruption_cut(gap: SampleInterval, sample_count: int, configuration: Mapping[str, int]) -> int | None:
+    # Both protection and uncertainty (including energy disagreement) block the
+    # gap. Restart at the first resumed evidence, not at VAD's later onset. The
+    # existing protected padding and energy disagreement already precede speech.
+    # Every sample of the gap remains in the ordinary contiguous core partition.
+    if (0 < gap.start_sample < gap.end_sample < sample_count
+            and gap.end_sample - gap.start_sample >= configuration["interruption_gap_samples"]):
+        return gap.end_sample
+    return None
+
+
+def _is_interruption_restart(decision, sample_count, configuration):
+    return (decision.reason is ChunkBoundaryReason.SPEECH_RESUMPTION
+            and isinstance(decision.candidate_gap, SampleInterval)
+            and decision.boundary_sample == _interruption_cut(decision.candidate_gap, sample_count, configuration))
 
 
 class SpeechAwareAsrChunkPlanner:
@@ -635,6 +665,9 @@ class SpeechAwareAsrChunkPlanner:
         ):
             raise AudioProcessingError("RESOURCE")
         candidates = _silence_candidates(result)
+        interruptions = tuple((cut, gap) for gap in candidates
+                              if (cut := _interruption_cut(gap, sample_count, configuration)) is not None)
+        interruption_index = 0
         protected = _IntervalIndex(result.speech_map.protected_intervals)
         uncertain = _IntervalIndex(result.speech_map.uncertain_intervals)
         candidate_index = 0
@@ -646,7 +679,17 @@ class SpeechAwareAsrChunkPlanner:
             while start < sample_count:
                 if len(chunks) >= configuration["max_chunks"]:
                     raise AudioProcessingError("RESOURCE")
-                if sample_count - start <= maximum:
+                while interruption_index < len(interruptions) and interruptions[interruption_index][0] <= start:
+                    interruption_index += 1
+                restart = (interruptions[interruption_index] if interruption_index < len(interruptions)
+                           and interruptions[interruption_index][0] - start <= maximum else None)
+                if restart is not None:
+                    end, gap = restart
+                    end_reason = ChunkBoundaryReason.SPEECH_RESUMPTION
+                    decisions.append(AcousticBoundaryDecision(
+                        end, end_reason, protected.contains(end), uncertain.contains(end), gap,
+                    ))
+                elif sample_count - start <= maximum:
                     end = sample_count
                     end_reason = ChunkBoundaryReason.TIMELINE_END
                 else:
