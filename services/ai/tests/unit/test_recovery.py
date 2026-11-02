@@ -387,6 +387,55 @@ def test_rejected_state_never_enters_subsequent_trial(handoff, monkeypatch):
     assert all(r.chunk.chunk_id != "recovery-000000" for r in output.recovered_results)
 
 
+def test_blocked_and_seen_candidate_prefix_cannot_hide_later_recoverable_speech(handoff):
+    preprocessing, plan, configuration = handoff(
+        ("silence", "speech", "silence", "speech", "silence"),
+        configuration=settings(audio_asr_recovery_max_total_attempts=3),
+    )
+    materialize(preprocessing)
+    original = baseline(plan)
+    _, final = state(preprocessing, plan, original, configuration)
+    preview = plan_recovery_windows(final, plan, configuration)
+    assert len(preview.windows) == 3
+    assert all(w.target_region.interval == SampleInterval(512, 1024) for w in preview.windows)
+    provider = Transcriber(lambda audio, start: observation(
+        audio, start, ((1536, 2048, "Phần lời nói được phục hồi"),),
+    ))
+    output = recover_speech(preprocessing, plan, original, provider, configuration)
+    assert [a.window.target_region.interval for a in output.attempts] == [
+        SampleInterval(512, 1024), SampleInterval(512, 1024), SampleInterval(1536, 2048),
+    ]
+    assert [a.admission for a in output.attempts] == [Decision.REJECTED, Decision.REJECTED, Decision.ACCEPTED]
+    assert output.stop_reason is RecoveryStopReason.TOTAL_ATTEMPT_LIMIT
+    assert output.final_assessment.quality.likely_speech_without_canonical_text_samples == 512
+    assert [(s.interval, s.text) for s in output.accepted_reconciliation.segments] == [
+        (SampleInterval(1536, 2048), "Phần lời nói được phục hồi"),
+    ]
+    assert len(provider.calls) == output.provenance.actual_attempt_count == 3
+    assert len({a.window.chunk.request_interval for a in output.attempts}) == 3
+    assert output.provenance.total_requested_samples == sum(count for _, _, count in provider.calls)
+
+
+def test_region_sample_exhaustion_does_not_hide_a_later_window_that_fits(handoff):
+    preprocessing, plan, configuration = handoff(
+        ("silence", "speech", "silence", "speech"), tail=128,
+        configuration=settings(audio_asr_recovery_max_total_attempts=1,
+                               audio_asr_recovery_max_request_samples_per_region=512),
+    )
+    materialize(preprocessing)
+    provider = Transcriber(lambda audio, start: observation(
+        audio, start, ((1536, 1664, "Tiếp tục cuộc họp"),),
+    ))
+    output = recover_speech(preprocessing, plan, baseline(plan), provider, configuration)
+    assert len(provider.calls) == len(output.attempts) == 1
+    attempt, = output.attempts
+    assert attempt.window.target_region.interval == SampleInterval(1536, 1664)
+    assert attempt.admission is Decision.ACCEPTED
+    assert attempt.requested_samples <= 512
+    assert output.stop_reason is RecoveryStopReason.TOTAL_ATTEMPT_LIMIT
+    assert output.final_assessment.quality.likely_speech_without_canonical_text_samples == 512
+
+
 def test_long_omission_and_silence_hallucination_remain_separate(handoff):
     configuration = settings(audio_asr_chunk_target_samples=320000,
                              audio_asr_chunk_max_request_samples=480000,

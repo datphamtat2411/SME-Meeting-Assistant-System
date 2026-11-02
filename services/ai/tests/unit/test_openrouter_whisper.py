@@ -496,7 +496,11 @@ def test_decimal_timestamps_normalize_without_float_conversion():
     assert result.segments[0].end == Fraction(123456789, 100000000)
 
 
-@pytest.mark.parametrize("duration,end", [("19.154", "19.16"), ("2.001", "2.02"), ("2.013", "2.02")])
+@pytest.mark.parametrize("duration,end", [
+    ("19.154", "19.16"), ("2.001", "2.02"), ("2.013", "2.02"),
+    ("26.192", "26.199999"), ("26.192", "26.2"), ("26.192", "26.200001"),
+    ("26.192", "26.19996875"), ("26.192", "26.20003125"),
+])
 def test_final_whisper_timestamp_tick_preserves_all_segments_and_exact_source_end(duration, end):
     audio = chunk(duration=Fraction(duration))
     data = {"text": TEXT, "segments": [
@@ -509,14 +513,39 @@ def test_final_whisper_timestamp_tick_preserves_all_segments_and_exact_source_en
     assert result.segments[0].end == 1
     assert result.segments[-1].end == Fraction(duration)
     assert [s.text for s in result.segments] == [TEXT, TEXT]
+    planned = AsrChunk(
+        audio.chunk_id, 1, SampleInterval(247680, 247680 + int(audio.duration * 16000)),
+        SampleInterval(247680, 247680 + int(audio.duration * 16000)),
+        ChunkBoundaryReason.FORCED_CONTINUOUS_SPEECH,
+        ChunkBoundaryReason.FORCED_CONTINUOUS_SPEECH,
+    )
+    translated = _translate_candidate(result, planned)
+    assert len(translated) == 2
+    assert translated[-1].interval.end_sample == planned.request_interval.end_sample
+    assert [s.segment.text for s in translated] == [TEXT, TEXT]
 
 
-@pytest.mark.parametrize("end", ["19.17", "19.18", "19.160001"])
+@pytest.mark.parametrize("end", ["19.17", "19.18", "19.159968749", "19.160031251"])
 def test_final_tick_repair_does_not_accept_non_quantized_or_extra_ticks(end):
     data = {"text": TEXT, "segments": [{"start": 0, "end": Decimal(end), "text": TEXT}]}
     with httpx.Client(transport=httpx.MockTransport(lambda _: pytest.fail("unexpected network"))) as client:
         with pytest.raises(ValueError):
             OpenRouterWhisperAdapter(settings(), client)._normalize(data, chunk(duration=Fraction("19.154")))
+
+
+@pytest.mark.parametrize("bounds", [
+    [("0", "26.199999"), ("26.2", "26.21")],
+    [("26.192", "26.199999")],
+    [("0", "20"), ("19.999999", "26.199999")],
+])
+def test_final_tick_jitter_never_repairs_nonfinal_collapsed_or_overlapping_intervals(bounds):
+    data = {"text": TEXT, "segments": [
+        {"start": Decimal(start), "end": Decimal(end), "text": TEXT}
+        for start, end in bounds
+    ]}
+    with httpx.Client(transport=httpx.MockTransport(lambda _: pytest.fail("unexpected network"))) as client:
+        with pytest.raises(ValueError):
+            OpenRouterWhisperAdapter(settings(), client)._normalize(data, chunk(duration=Fraction("26.192")))
 
 
 def test_mocked_whisper_off_grid_and_final_overrun_translate_without_losing_repetition(caplog):

@@ -39,6 +39,7 @@ _MAX_UPLOAD_BYTES = 25_000_000
 _MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 _FINAL_END_TOLERANCE = Fraction(5, 1000)
 _TIMESTAMP_QUANTUM = Fraction(1, 50)
+_TIMESTAMP_TICK_TOLERANCE = Fraction(1, 32000)
 _STATUS_CATEGORIES = {
     401: AsrErrorCategory.AUTHENTICATION,
     403: AsrErrorCategory.AUTHENTICATION,
@@ -288,11 +289,13 @@ class OpenRouterWhisperAdapter:
                 raise ValueError
             if end > chunk.duration:
                 # Whisper's final 20 ms tick may round past physical EOF (e.g.
-                # 19.160 vs 19.154 s). Permit that one exact tick, not a larger
-                # blanket tolerance, arbitrary overruns, or non-final repair.
+                # 19.160 vs 19.154 s). Serialization may jitter around that tick
+                # by less than the normalized timeline can resolve. Permit only
+                # half a 16 kHz sample, never an arbitrary extra timestamp tick.
                 next_tick = math.ceil(chunk.duration / _TIMESTAMP_QUANTUM) * _TIMESTAMP_QUANTUM
                 if (index != len(data["segments"]) - 1 or
-                        (end - chunk.duration > _FINAL_END_TOLERANCE and end != next_tick)):
+                        (end - chunk.duration > _FINAL_END_TOLERANCE
+                         and abs(end - next_tick) > _TIMESTAMP_TICK_TOLERANCE)):
                     raise ValueError
                 end = chunk.duration
             if not previous_end <= start < end <= chunk.duration:

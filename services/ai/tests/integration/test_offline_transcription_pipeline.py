@@ -2,15 +2,18 @@
 
 import asyncio
 import json
+import math
 import wave
 from collections.abc import Mapping
 from concurrent.futures import CancelledError
 from contextlib import contextmanager
 from dataclasses import FrozenInstanceError, fields, is_dataclass, replace
+from decimal import Decimal
 from fractions import Fraction
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from sme_meeting_ai.audio import (
@@ -35,6 +38,7 @@ from sme_meeting_ai.pipeline import (
 from sme_meeting_ai.pipeline import (
     OfflineTranscriptionStatus as Status,
 )
+from sme_meeting_ai.providers.openrouter_whisper import OpenRouterWhisperAdapter
 from sme_meeting_ai.transcription import (
     chunk_execution,
     correction,
@@ -332,6 +336,52 @@ def test_warning_partial_asr_terminal_recovery_and_unresolved_survive_correction
     assert_safe(output.evidence)
     assert_released(h)
     assert not caplog.records
+
+
+def test_middle_chunk_final_tick_jitter_survives_correction_handoff(workflow, monkeypatch):
+    h = workflow(count=8192)
+    planned = {}
+    original_plan = h.planner.plan
+
+    def capture_plan(*args, **kwargs):
+        plan = original_plan(*args, **kwargs)
+        planned.update((c.chunk_id, c) for c in plan.chunks)
+        return plan
+
+    monkeypatch.setattr(h.planner, "plan", capture_plan)
+    wording = "Phần lời nói ở giữa phải được giữ nguyên"
+    seen = []
+    with httpx.Client(transport=httpx.MockTransport(lambda _: pytest.fail("unexpected network"))) as client:
+        adapter = OpenRouterWhisperAdapter(h.settings, client)
+
+        def respond(audio):
+            if audio.chunk_id != "chunk-000001":
+                return None
+            chunk = planned[audio.chunk_id]
+            start = Fraction(chunk.core_interval.start_sample - chunk.request_interval.start_sample, 16000)
+            end = Fraction(math.ceil(audio.duration * 50), 50) - Fraction(1, 1000000)
+            assert end - audio.duration > Fraction(5, 1000)
+            return adapter._normalize({"text": wording, "segments": [{
+                "start": Decimal(start.numerator) / Decimal(start.denominator),
+                "end": Decimal(end.numerator) / Decimal(end.denominator), "text": wording,
+            }]}, audio)
+
+        def correction_request(request):
+            entries = json.loads(request.transcript_json)["segments"]
+            seen.extend(e["text"] for e in entries)
+            return CorrectionProviderResponse(json.dumps({"segments": [
+                {k: e[k] for k in ("segment_id", "ordinal", "text")} for e in entries
+            ]}), "fake", request.model)
+
+        h.asr_callback = respond
+        h.correction_callback = correction_request
+        outcome = pipeline(h).run(h.source)
+    assert outcome.failure is None
+    assert outcome.evidence.asr.chunk_outcomes[1].failure is None
+    assert wording in seen
+    assert wording in [s.text for s in outcome.result.segments]
+    assert outcome.provenance.asr.effective_configuration["final_timestamp_policy"] == "next-whisper-20ms-tick-v2"
+    assert_released(h)
 
 
 def test_failed_baseline_remains_and_recovery_reaches_reconciliation(workflow):

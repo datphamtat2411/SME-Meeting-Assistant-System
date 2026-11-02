@@ -14,6 +14,7 @@ from bisect import bisect_left
 from concurrent.futures import CancelledError
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
+from itertools import islice
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Mapping
 
@@ -442,7 +443,7 @@ def _near(samples, interval, context):
     return index < len(samples) and samples[index] <= interval.end_sample + context
 
 
-def _plan(assessment, plan, settings, boundary_alignment=None):
+def _planning_context(assessment, plan, settings, boundary_alignment):
     validate_asr_chunk_plan(plan)
     configuration = _configuration(settings)
     _final_contract(assessment, plan)
@@ -455,13 +456,16 @@ def _plan(assessment, plan, settings, boundary_alignment=None):
     regions = tuple(sorted((r for r in assessment.regions if _risk(r) is not None), key=lambda r: (
         _risk(r)[0], r.interval.start_sample, r.interval.end_sample,
     )))
+    return configuration, regions, forced, natural
+
+
+def _iter_windows(regions, plan, configuration, forced, natural):
+    """Enumerate geometry lazily; runtime eligibility precedes the call ceiling."""
     seen = {c.request_interval for c in plan.chunks}
     maximum = configuration["max_request_samples"]
-    windows = []
+    number = 0
     if maximum:
         for region in regions:
-            if len(windows) >= configuration["max_total_attempts"]:
-                break
             start, end = region.interval.start_sample, region.interval.end_sample
             context = configuration["context_samples"]
             if _near(natural, region.interval, context) and not _near(forced, region.interval, context):
@@ -470,17 +474,15 @@ def _plan(assessment, plan, settings, boundary_alignment=None):
             # when an intact target already fits. Never split a full-source core
             # merely to resend an already executed whole-file request.
             size = (maximum - min(2 * context, maximum // 2) if end - start > maximum else end - start)
-            while start < end and len(windows) < configuration["max_total_attempts"]:
+            while start < end:
                 core = SampleInterval(start, min(end, start + size))
                 alternatives = 0
                 for strategy in _STRATEGIES:
-                    if (alternatives >= configuration["max_attempts_per_region"]
-                            or len(windows) >= configuration["max_total_attempts"]):
+                    if alternatives >= configuration["max_attempts_per_region"]:
                         break
                     request = _request(core, plan.sample_count, context, maximum, strategy)
                     if request in seen:
                         continue
-                    number = len(windows)
                     chunk = AsrChunk(
                         f"recovery-{number:06d}", len(plan.chunks) + number, core, request,
                         ChunkBoundaryReason.TIMELINE_START if core.start_sample == 0
@@ -494,11 +496,18 @@ def _plan(assessment, plan, settings, boundary_alignment=None):
                         and request.start_sample < c.request_interval.end_sample
                     ))
                     alternatives += 1
-                    windows.append(RecoveryWindow(chunk, region, alternatives, strategy, context_ids,
-                                                  plan.provenance, _risk(region)[1]))
                     seen.add(request)
+                    yield RecoveryWindow(chunk, region, alternatives, strategy, context_ids,
+                                         plan.provenance, _risk(region)[1])
+                    number += 1
                 start = core.end_sample
-    return RecoveryPlan(plan.source_id, plan.sample_count, regions, tuple(windows),
+
+
+def _plan(assessment, plan, settings, boundary_alignment=None):
+    configuration, regions, forced, natural = _planning_context(assessment, plan, settings, boundary_alignment)
+    windows = tuple(islice(_iter_windows(regions, plan, configuration, forced, natural),
+                           configuration["max_total_attempts"]))
+    return RecoveryPlan(plan.source_id, plan.sample_count, regions, windows,
                         RecoveryProvenance("2", plan.provenance, configuration, target_region_count=len(regions)))
 
 
@@ -696,8 +705,8 @@ def _recover(preprocessing, plan, baseline_results, transcriber, settings, bound
     evaluation_failure = None
     stop = RecoveryStopReason.NO_ACTIONABLE_REGIONS
     while roots:
-        active_plan = plan_recovery_windows(final, plan, settings, boundary_alignment=boundary_alignment)
-        if not active_plan.target_regions:
+        _, regions, forced, natural = _planning_context(final, plan, settings, boundary_alignment)
+        if not regions:
             stop = RecoveryStopReason.SUFFICIENT_COVERAGE
             break
         if len(attempts) >= configuration["max_total_attempts"]:
@@ -705,7 +714,7 @@ def _recover(preprocessing, plan, baseline_results, transcriber, settings, bound
             break
         proposed = None
         owners = ()
-        for window in active_plan.windows:
+        for window in _iter_windows(regions, plan, configuration, forced, natural):
             target = window.target_region.interval
             index = bisect_left(root_ends, target.start_sample + 1)
             own = []
