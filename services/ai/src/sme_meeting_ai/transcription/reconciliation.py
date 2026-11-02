@@ -56,6 +56,10 @@ _MAX_REFERENCES = 1048576
 _PRESENTATION = frozenset(".,;:!?…\"'“”‘’()[]{}")
 # These alone are not discriminating lexical anchors. Diacritics are retained.
 _COMMON = frozenset("ừ vâng dạ ok ờ ạ uh um là và của có các cái một những thì mà với cho ở đã sẽ đang chúng ta tôi bạn này đó rồi đúng không được".split())
+# Only light grammatical omissions inside a censored observation may align.
+# Negation, quantities, technical words and arbitrary substitutions never skip.
+# Every skipped word survives in the selected complete observed representation.
+_CENSOR_OMISSIONS = frozenset("nó mình anh chị em họ chúng ta cái các của cho ở với thì mà là và ạ à ờ ừ nhé nhỉ".split())
 
 
 class ReconciliationFlag(StrEnum):
@@ -185,7 +189,7 @@ def _configuration(settings: Settings) -> dict[str, int]:
     _require(isinstance(settings, Settings))
     minimum = settings.audio_asr_reconciliation_min_shared_tokens
     _require(type(minimum) is int and 2 <= minimum <= 64)
-    return {"min_shared_tokens": minimum, "max_nodes": _MAX_NODES,
+    return {"min_shared_tokens": minimum, "censored_partial_alignment_version": 2, "max_nodes": _MAX_NODES,
             "max_text_characters": _MAX_TEXT_CHARACTERS, "max_tokens": _MAX_TOKENS,
             "max_active": _MAX_ACTIVE, "max_local_nodes": _MAX_LOCAL_NODES,
             "max_path_tokens": _MAX_PATH_TOKENS, "max_candidates": _MAX_CANDIDATES,
@@ -318,6 +322,8 @@ class _Evidence:
     quality: AsrSegmentQuality
     # Actual provider word intervals only, never inferred token positions.
     timed_words: tuple[tuple[str, SampleInterval], ...] = field(default=(), repr=False)
+    # Source observation order, not a guess from proximity to a timestamp edge.
+    request_final: bool = False
 
     @property
     def identity(self) -> ReconciliationEvidenceIdentity:
@@ -429,7 +435,8 @@ def _collect(chunks, results):
                             timed = []
                         if segment.text.strip():
                             local.append(_Evidence(chunk, index, timeline.interval, segment.text,
-                                                   tokens, quality, tuple(timed)))
+                                                   tokens, quality, tuple(timed),
+                                                   index + 1 == len(item.candidate.segments)))
                     evidence.extend(local)
                     provenance.append((chunk.chunk_id, safe))
                     state = (ReconciliationChunkState.CANDIDATE_EVIDENCE if local
@@ -572,13 +579,114 @@ def _mutual_centers(left, right):
     return 2 * a[0] <= b[0] + b[1] < 2 * a[1] and 2 * b[0] <= a[0] + a[1] < 2 * b[1]
 
 
+def _path_covers(complete, fragment, work):
+    """Exact interval containment, including real gaps between intact segments."""
+    work.spend(len(complete) + len(fragment))
+    index = 0
+    for item in fragment:
+        cursor = item.interval.start_sample
+        while index < len(complete) and complete[index].interval.end_sample <= cursor:
+            index += 1
+        scan = index
+        while scan < len(complete) and complete[scan].interval.start_sample <= cursor:
+            cursor = max(cursor, complete[scan].interval.end_sample)
+            if cursor >= item.interval.end_sample:
+                break
+            scan += 1
+        if cursor < item.interval.end_sample:
+            return False
+    return True
+
+
+def _word_support(path):
+    # None is unknown, never a synthetic token timestamp. _collect only retains
+    # provider word intervals when they describe the complete observed segment.
+    return tuple(interval for item in path for interval in (
+        tuple(interval for _, interval in item.timed_words) if item.timed_words
+        else (None,) * len(_lexical(item.tokens))
+    ))
+
+
+def _censored_phrase_mapping(part, whole, work):
+    """Unique monotonic placement, with bounded light-word omissions only.
+
+    Counts *all* placements before testing edge censorship, so a repeated phrase
+    inside one broad segment remains ambiguous. No token timestamps are inferred.
+    Counts saturate at two; a byte per state keeps memory within the work budget.
+    """
+    m, n = len(part), len(whole)
+    work.spend((m + 1) * (n + 1))
+    ways = [bytearray(n + 1) for _ in range(m)] + [bytearray([1]) * (n + 1)]
+    for i in range(m - 1, -1, -1):
+        for j in range(n - 1, -1, -1):
+            matched = ways[i + 1][j + 1] if part[i] == whole[j] else 0
+            omitted = ways[i][j + 1] if whole[j] in _CENSOR_OMISSIONS else 0
+            ways[i][j] = min(2, matched + omitted)
+    count, start = 0, None
+    for j, value in enumerate(whole):
+        if value == part[0]:
+            local = ways[1][j + 1]
+            count += local
+            if count > 1:
+                return None
+            if local:
+                start = j
+    if count != 1:
+        return None
+    indices = [start]
+    i, j = 1, start + 1
+    while i < m:
+        matched = part[i] == whole[j] and ways[i + 1][j + 1]
+        if matched:
+            indices.append(j)
+            i += 1
+        j += 1
+    return tuple(indices)
+
+
+def _censored_subsumption(short, full, part, whole, short_spans, full_spans, minimum, work):
+    """Prove a redundant request-edge fragment, not arbitrary text containment.
+
+    A unique ordered phrase can contain common words without requiring every
+    individual token to be globally unique. Source censorship, complete temporal
+    containment and independent request context are mandatory additional evidence.
+    Additional full-path wording always survives; lexical edits are never inferred.
+    """
+    if not 0 < len(part) < len(whole) or short[0].chunk.chunk_id == full[0].chunk.chunk_id:
+        return False
+    words = {value for value in part if any(_word(c) for c in value)}
+    if len(words) < minimum or not words - (_COMMON | _CENSOR_OMISSIONS):
+        return False
+    source, other = short[0].chunk, full[0].chunk
+    leading = (short[0].interval.start_sample == source.request_interval.start_sample
+               and other.request_interval.start_sample < source.request_interval.start_sample)
+    trailing = (short[-1].request_final and short[-1].interval.end_sample > source.core_interval.end_sample
+                and source.request_interval.end_sample < other.request_interval.end_sample)
+    if not (leading or trailing):
+        return False
+    if not _path_covers(full, short, work):
+        return False
+    mapping = _censored_phrase_mapping(part, whole, work)
+    if mapping is None or not (leading and mapping[-1] == len(whole) - 1 or trailing and mapping[0] == 0):
+        return False
+    work.spend(len(part) + len(whole))
+    support_short = tuple(interval for a, b, interval in short_spans for _ in range(a, b))
+    support_full = tuple(interval for a, b, interval in full_spans for _ in range(a, b))
+    if any(not _overlap(support_short[i], support_full[j]) for i, j in enumerate(mapping)):
+        return False
+    actual_short, actual_full = _word_support(short), _word_support(full)
+    return all(actual_short[i] is None or actual_full[j] is None or _overlap(actual_short[i], actual_full[j])
+               for i, j in enumerate(mapping))
+
+
 def _align_paths(left, right, minimum, work):
     """Unique, monotonic exact anchors; no unrestricted fuzzy text merging.
 
     Complete equal streams map position-to-position. Substitution conflicts are
     admitted only for isolated single-token disagreements between equal flanks,
     with an identical observed source envelope. All other partial correspondences
-    are nondestructive. Repeated/noninformative anchors cannot prove identity.
+    are nondestructive except unique, temporally contained source-censored
+    fragments. Repeated/noninformative anchors alone cannot prove identity.
     """
     work.comparisons += 1
     a, spans_a = _path_values(left, work)
@@ -602,6 +710,9 @@ def _align_paths(left, right, minimum, work):
         if (unique or words_agree) and _monotonic_temporal_support(spans_a, spans_b):
             return OccurrenceRelationship.SAME_OCCURRENCE
         return OccurrenceRelationship.AMBIGUOUS
+    if (_censored_subsumption(left, right, a, b, spans_a, spans_b, minimum, work)
+            or _censored_subsumption(right, left, b, a, spans_b, spans_a, minimum, work)):
+        return OccurrenceRelationship.SAME_OCCURRENCE
     if not unique:
         return OccurrenceRelationship.AMBIGUOUS if set(a) & set(b) else OccurrenceRelationship.DISTINCT_OCCURRENCE
     if (len(a) == len(b) and a and a[0] == b[0] and a[-1] == b[-1]
@@ -611,6 +722,47 @@ def _align_paths(left, right, minimum, work):
             and _monotonic_temporal_support(spans_a, spans_b)):
         return OccurrenceRelationship.CONFLICTING_HYPOTHESIS
     return OccurrenceRelationship.PARTIAL_SUPPORT
+
+
+def _source_fragments(path, work):
+    # Censorship can affect intact prefix/suffix source paths. Do not enumerate
+    # arbitrary token windows, split segments or construct lexical bridge nodes.
+    fragments = [path]
+    for split in range(1, len(path)):
+        work.spend(len(path))
+        fragments.extend((path[:split], path[split:]))
+    return tuple(fragments)
+
+
+def _alignment_edges(evidence, minimum, work):
+    edges = []
+    for left, right in _candidate_regions(evidence, work):
+        def align(a, b):
+            return _align_paths(tuple(evidence[n] for n in a), tuple(evidence[n] for n in b), minimum, work)
+
+        kind = align(left, right)
+        _resource(len(edges) < _MAX_CANDIDATES)
+        edges.append(_Edge(left, right, kind))
+        if kind in _ESTABLISHED:
+            continue
+        # An unrelated concurrent segment can connect a work region without
+        # belonging to the same utterance. Refine only against original paths,
+        # retaining the original uncertainty as well as established subpaths.
+        left_fragments, right_fragments = _source_fragments(left, work), _source_fragments(right, work)
+        for a in left_fragments:
+            for b in right_fragments:
+                work.spend(1)
+                if (a, b) == (left, right):
+                    continue
+                x = evidence[a[0]].interval.start_sample, evidence[a[-1]].interval.end_sample
+                y = evidence[b[0]].interval.start_sample, evidence[b[-1]].interval.end_sample
+                if max(x[0], y[0]) >= min(x[1], y[1]):
+                    continue
+                relation = align(a, b)
+                if relation in _ESTABLISHED:
+                    _resource(len(edges) < _MAX_CANDIDATES)
+                    edges.append(_Edge(a, b, relation))
+    return edges
 
 
 def _boundary_context(plan, results, evidence, report):
@@ -673,6 +825,17 @@ def _intersection_length(a, b):
 def _select_path(paths, evidence, boundary_risk, work):
     """Rank complete representations only after occurrence consistency passes."""
     values = {path: tuple(value for n in path for value in _lexical(evidence[n].tokens)) for path in paths}
+    eligible = paths
+    if len({len(value) for value in values.values()}) > 1:
+        # Partial relationships cannot collectively authorize a shorter path or
+        # sacrifice even one original sample of timestamp support. Full equal-
+        # stream V2 selection keeps its existing ranking contract.
+        maximum = max(len(value) for value in values.values())
+        eligible = tuple(path for path in paths if len(values[path]) == maximum
+                         and all(_path_covers(tuple(evidence[n] for n in path),
+                                              tuple(evidence[n] for n in other), work) for other in paths))
+        if not eligible:
+            return None
     support = Counter(values.values())  # one vote per independent source request
     # Unknown quality does not lose to a known number. Only mutually available,
     # comparable provider fields participate; no invented aggregate confidence.
@@ -690,13 +853,11 @@ def _select_path(paths, evidence, boundary_risk, work):
                 max(boundary_risk.get(n, 0) for n in path), quality, len(path),
                 tuple((evidence[n].chunk.ordinal, evidence[n].chunk.chunk_id, evidence[n].segment_index) for n in path))
 
-    return min(paths, key=rank)
+    return min(eligible, key=rank)
 
 
 def _canonical_graph(evidence, minimum, boundary_risk, work):
-    edges = [_Edge(left, right, _align_paths(tuple(evidence[n] for n in left),
-                                           tuple(evidence[n] for n in right), minimum, work))
-             for left, right in _candidate_regions(evidence, work)]
+    edges = _alignment_edges(evidence, minimum, work)
     identities = tuple(item.identity for item in evidence)
     adjacency, established = defaultdict(set), {}
     uncertain = {n for n, risk in boundary_risk.items() if risk}
@@ -732,6 +893,11 @@ def _canonical_graph(evidence, minimum, boundary_risk, work):
     redundant = conflicting = many = one = 0
     for group, paths in groups:
         chosen = _select_path(paths, evidence, boundary_risk, work)
+        if chosen is None:
+            rejected.update(group)
+            uncertain.update(group)
+            identity_uncertain.update(group)
+            continue
         consumed.update(group)
         conflict = any(established[(a, b)] is OccurrenceRelationship.CONFLICTING_HYPOTHESIS
                        for a, b in combinations(paths, 2))
@@ -739,7 +905,7 @@ def _canonical_graph(evidence, minimum, boundary_risk, work):
         alternatives = tuple(n for path in paths if path != chosen for n in path)
         for path in paths:
             if path != chosen:
-                if tuple(_lexical(evidence[n].tokens) for n in path) == tuple(_lexical(evidence[n].tokens) for n in chosen):
+                if not conflict:
                     redundant += len(path)
                 elif tuple(v for n in path for v in _lexical(evidence[n].tokens)) == tuple(
                         v for n in chosen for v in _lexical(evidence[n].tokens)):

@@ -630,6 +630,50 @@ def _admission(current, before, trial, after, candidate_id, target):
     return Reason.NO_CANONICAL_IMPROVEMENT, metrics
 
 
+def _replay_residual_ambiguity(baseline, candidate):
+    """A timestamp residual after acoustic replay repair is not a new occurrence.
+
+    This is restricted to explicit two-observation replay selections. Genuine
+    repeated speech elsewhere and new unmatched wording use normal admission.
+    A matching fragment in a repaired observation's residual remains uncertain;
+    temporal support gain alone must not readmit the discarded replay.
+    """
+    from .chunk_execution import AsrRecheckOutcome, _boilerplate_only
+    from .reconciliation import _COMMON, _CENSOR_OMISSIONS, _Work, _censored_phrase_mapping, _lexical, _tokens
+
+    work = _Work()
+    for source in baseline:
+        if source.recheck_outcome is not AsrRecheckOutcome.REPLAY_REPLACED:
+            continue
+        first, second = source.decoding_attempts
+        indices = tuple(published for published, _ in second.segment_selections)
+        primary = tuple(source.timeline_segments[i] for i in indices)
+        prefix_end = (source.timeline_segments[first.segment_selections[-1][0]].interval.end_sample
+                      if first.segment_selections else source.chunk.core_interval.start_sample)
+        residuals = ((prefix_end, primary[0].interval.start_sample),
+                     (source.chunk.core_interval.end_sample, source.chunk.request_interval.end_sample))
+        relevant = tuple(item for item in candidate.timeline_segments
+                         if any(a < b and item.interval.start_sample < b and a < item.interval.end_sample
+                                for a, b in residuals))
+        if not relevant:
+            continue
+        if _boilerplate_only(candidate.candidate):
+            # Actual independent non-boilerplate speech observations already
+            # explain this repaired context. A known decoder-failure family is
+            # not independent corroboration of a new occurrence in its residual.
+            return True
+        wholes = [tuple(value for item in primary for value in _lexical(_tokens(item.segment.text)))]
+        if first.segment_selections:
+            wholes.append(_lexical(_tokens(source.timeline_segments[first.segment_selections[-1][0]].segment.text)))
+        for item in relevant:
+            part = _lexical(_tokens(item.segment.text))
+            if part and not set(part) - (_COMMON | _CENSOR_OMISSIONS):
+                return True
+            if len(set(part)) >= 2 and any(_censored_phrase_mapping(part, whole, work) is not None for whole in wholes):
+                return True
+    return False
+
+
 def _evaluate(preprocessing, plan, baseline, accepted, candidate, current, before, settings, boundary_alignment):
     from .coverage import _valid_result, assess_canonical_coverage
     from .reconciliation import _safe_provenance, reconcile_transcript
@@ -644,8 +688,11 @@ def _evaluate(preprocessing, plan, baseline, accepted, candidate, current, befor
         _require(_valid_result(candidate))
         provenance = _safe_provenance(candidate.candidate.provenance)
         _require(provenance.provider == "openrouter" and provenance.requested_model == settings.audio_asr_model
-                 == "openai/whisper-large-v3" and settings.audio_asr_language == "vi"
-                 and all(k != "language" or v == "vi" for k, v in provenance.inference_config))
+                  == "openai/whisper-large-v3" and settings.audio_asr_language == "vi"
+                  and all(k != "language" or v == "vi" for k, v in provenance.inference_config))
+        if _replay_residual_ambiguity(baseline, candidate):
+            return (RecoveryAdmissionDecision.REJECTED, RecoveryAdmissionReason.NEW_AMBIGUITY,
+                    None, None, None, metrics)
         trial = reconcile_transcript(plan, (*baseline, *accepted, candidate), settings,
                                      boundary_alignment=boundary_alignment)
         after = assess_canonical_coverage(preprocessing, plan, baseline, (*accepted, candidate), trial, settings)

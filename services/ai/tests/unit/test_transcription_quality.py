@@ -105,3 +105,40 @@ def test_quality_summary_requires_actual_final_canonical_evidence(handoff):
     canonical = reconcile_transcript(plan, raw, config)
     with pytest.raises(AudioProcessingError):
         summarize_transcript_quality(preprocessing, provisional, canonical)
+
+
+def test_censored_reconciliation_preserves_one_sample_missing_interval(handoff):
+    from .test_reconciliation import result
+
+    preprocessing, plan, config = handoff()
+    raw = (result(plan.chunks[0], (700, 1100, "Hôm nay kiểm thử API Kubernetes"),
+                  (1101, 1150, "Tiếp tục cuộc họp")),
+           result(plan.chunks[1], (768, 1099, "API Kubernetes")))
+    canonical = reconcile_transcript(plan, raw, config)
+    assert len(canonical.segments) == 2
+    coverage = final_assessment(preprocessing, plan, raw, config, canonical=canonical)
+    quality = summarize_transcript_quality(preprocessing, coverage, canonical)
+    assert SampleInterval(1100, 1101) in tuple(g.interval for g in quality.suspected_gaps)
+    assert quality.suspected_speech_samples == 1599
+    assert quality.word_omissions_verified is False
+
+
+def test_music_silence_resumption_and_hallucination_evidence_survive_partial_alignment(handoff):
+    from .test_asr_recheck import BOILERPLATE
+    from .test_reconciliation import result
+
+    preprocessing, plan, config = handoff(("high", "silence", "speech", "speech", "speech", "speech"))
+    wording = "Hôm nay kiểm thử API Kubernetes"
+    raw = (result(plan.chunks[0], (0, 512, BOILERPLATE)),
+           result(plan.chunks[1], (1500, 2200, wording)),
+           result(plan.chunks[2], (1792, 2100, "API Kubernetes"), (2400, 2600, wording)))
+    canonical = reconcile_transcript(plan, raw, config)
+    assert [(s.text, s.interval) for s in canonical.segments] == [
+        (BOILERPLATE, SampleInterval(0, 512)),
+        (wording, SampleInterval(1500, 2200)), (wording, SampleInterval(2400, 2600)),
+    ]
+    coverage = final_assessment(preprocessing, plan, raw, config, canonical=canonical)
+    quality = summarize_transcript_quality(preprocessing, coverage, canonical)
+    assert coverage.quality.unsupported_canonical_text_samples == 512
+    assert quality.suspected_speech_samples == 1148
+    assert quality.word_omissions_verified is False

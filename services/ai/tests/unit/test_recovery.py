@@ -550,6 +550,75 @@ def test_real_t05_trial_cannot_damage_protected_speech_to_fill_a_gap(handoff, ki
         assert metrics["new_conflict_samples"] > 0
 
 
+@pytest.mark.parametrize("different_wording", [False, True])
+def test_censored_recovery_context_is_admitted_only_with_preserved_baseline_and_new_speech(handoff, different_wording):
+    from .test_reconciliation import result as source_result
+
+    preprocessing, plan, configuration = handoff()
+    original = (source_result(plan.chunks[0], (600, 1100, "Hôm nay kiểm thử API Kubernetes"),
+                              provenance=PROVENANCE),
+                *tuple(result(c, ()) for c in plan.chunks[1:]))
+    current, before = state(preprocessing, plan, original, configuration)
+    chunk = replace(plan.chunks[0], chunk_id="recovery-000000", ordinal=len(plan.chunks),
+                    core_interval=SampleInterval(900, 1200), request_interval=SampleInterval(768, 1408))
+    extra = source_result(chunk, (768, 1000, "API-v3 Kubernetes" if different_wording else "API Kubernetes"),
+                          (1100, 1200, "Nội dung tiếp theo"), provenance=PROVENANCE)
+    decision, reason, failure, trial, after, metrics = recovery._evaluate(
+        preprocessing, plan, original, (), extra, current, before, configuration, None,
+    )
+    assert failure is None
+    if different_wording:
+        assert decision is Decision.REJECTED and reason is Reason.NEW_AMBIGUITY
+        assert trial is after is None
+    else:
+        assert decision is Decision.ACCEPTED and reason is Reason.NEW_SUPPORTED_SPEECH
+        assert metrics["new_canonical_supported_speech_samples"] == 100
+        assert [(s.text, s.interval) for s in trial.segments] == [
+            ("Hôm nay kiểm thử API Kubernetes", SampleInterval(600, 1100)),
+            ("Nội dung tiếp theo", SampleInterval(1100, 1200)),
+        ]
+        assert recovery._protected(current, trial)
+
+
+@pytest.mark.parametrize("kind", ["left-residual", "right-context", "prefix-replay", "uncorroborated-boilerplate",
+                                 "new-words", "later-repetition"])
+def test_recovery_does_not_readmit_rechecked_replay_as_new_speech_without_occurrence_evidence(handoff, kind):
+    from sme_meeting_ai.transcription.chunk_execution import AsrDecodeAttempt, AsrRecheckOutcome
+
+    from .test_reconciliation import result as source_result
+
+    preprocessing, plan, configuration = handoff()
+    full = "Khi kiểm thử đã xong rồi, kiểm thử đã ổn rồi"
+    base = source_result(plan.chunks[0], (0, 700, "Lời mở đầu"), (750, 1024, full), provenance=PROVENANCE)
+    base = replace(base, decoding_attempts=(
+        AsrDecodeAttempt(base.chunk.request_interval, True, segment_selections=((0, 0),)),
+        AsrDecodeAttempt(base.chunk.core_interval, True, segment_selections=((1, 4),)),
+    ), recheck_outcome=AsrRecheckOutcome.REPLAY_REPLACED)
+    original = (base, *tuple(result(c, ()) for c in plan.chunks[1:]))
+    current, before = state(preprocessing, plan, original, configuration)
+    a, b, wording = {
+        "left-residual": (700, 750, "Khi kiểm thử"),
+        "right-context": (1100, 1150, "Kiểm thử đã ổn rồi"),
+        "prefix-replay": (700, 750, "Lời mở đầu"),
+        "uncorroborated-boilerplate": (700, 750, "Hãy subscribe cho kênh Ghiền Mì Gõ để không bỏ lỡ những video hấp dẫn"),
+        "new-words": (700, 750, "Tôi phản đối"),
+        "later-repetition": (1300, 1350, "Kiểm thử đã ổn rồi"),
+    }[kind]
+    chunk = replace(plan.chunks[0], chunk_id="recovery-000000", ordinal=len(plan.chunks),
+                    core_interval=SampleInterval(a, b), request_interval=SampleInterval(max(0, a - 100), b + 100))
+    extra = source_result(chunk, (a, b, wording), provenance=PROVENANCE)
+    decision, reason, failure, trial, after, _ = recovery._evaluate(
+        preprocessing, plan, original, (), extra, current, before, configuration, None,
+    )
+    assert failure is None
+    if kind in {"left-residual", "right-context", "prefix-replay", "uncorroborated-boilerplate"}:
+        assert decision is Decision.REJECTED and reason is Reason.NEW_AMBIGUITY
+        assert trial is after is None
+    else:
+        assert decision is Decision.ACCEPTED and reason is Reason.NEW_SUPPORTED_SPEECH
+        assert any(s.text == wording and s.interval == SampleInterval(a, b) for s in trial.segments)
+
+
 def test_no_unproven_ambiguity_reduction_from_identical_observation(handoff):
     preprocessing, plan, configuration = handoff()
     original = tuple(result(c, ((800, 1000),), text="vâng") for c in plan.chunks)

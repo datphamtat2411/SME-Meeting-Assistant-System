@@ -28,8 +28,10 @@ from .asr import (
     AsrCandidate,
     AsrError,
     AsrErrorCategory,
+    AsrQualityMetadata,
     AsrSegment,
     AsrTranscriber,
+    AsrUsage,
 )
 from .chunk_planning import AsrChunk, AsrChunkPlan, validate_asr_chunk_plan
 
@@ -55,10 +57,14 @@ class AsrDecodeAttempt:
     interval: SampleInterval
     selected: bool
     failure: AsrErrorCategory | None = None
+    # For an explicitly mixed observation: (published ordinal, provider ordinal).
+    # Empty means the historical whole-observation selection contract.
+    segment_selections: tuple[tuple[int, int], ...] = ()
 
 
 class AsrRecheckOutcome(StrEnum):
     REPLACED = "replaced"
+    REPLAY_REPLACED = "replay-replaced"
     CORROBORATED = "corroborated"
     INCONCLUSIVE = "inconclusive"
     LIMIT_REACHED = "limit-reached"
@@ -107,6 +113,112 @@ def _boilerplate_only(candidate):
                 or "khong bo lo" not in value or "video" not in value):
             return False
     return True
+
+
+def _edge_replay_index(candidate, chunk):
+    """A repetition signal schedules independent ASR; it never deletes wording."""
+    from .reconciliation import _COMMON, _lexical, _tokens
+
+    if len(candidate.segments) < 2 or len(candidate.segments) > 256:
+        return None
+    previous, final = candidate.segments[-2:]
+    core_end = Fraction(chunk.core_interval.end_sample - chunk.request_interval.start_sample, _RATE)
+    if (previous.end != final.start or not previous.start < previous.end <= core_end
+            or not final.start < core_end < final.end
+            or final.end != chunk.request_interval.duration
+            or len(previous.text) + len(final.text) > 65536):
+        return None
+    whole, part = _lexical(_tokens(previous.text)), _lexical(_tokens(final.text))
+    # Nontrivial ordered lexical replay only. These limits govern the recheck
+    # signal, not canonical deletion or an acoustic confidence claim.
+    if not 4 <= len(part) <= len(whole) <= 8192 or len(set(part)) < 3 or not set(part) - _COMMON:
+        return None
+    cursor = iter(whole)
+    if all(any(value == other for other in cursor) for value in part):
+        return len(candidate.segments) - 2
+    return None
+
+
+def _rechecked_replay(original, retry, primary_index):
+    """Select intact source segments after an independent exact-core observation.
+
+    The earlier context is borrowed unchanged from the original request. Only a
+    uniquely re-observed complete utterance can replace the suspect terminal pair;
+    neither text editing nor segment/timestamp slicing is permitted.
+    """
+    from .reconciliation import _lexical, _tokens
+
+    chunk = original.chunk
+    source, observed = original.candidate, retry.candidate
+    if (source.provenance != observed.provenance or _boilerplate_only(observed)
+            or len(observed.segments) > 256
+            or sum(len(s.text) for s in observed.segments) > 65536):
+        return None
+    primary, replay = source.segments[primary_index:]
+    core_end = Fraction(chunk.core_interval.end_sample - chunk.request_interval.start_sample, _RATE)
+    replay_words = tuple(w for w in source.words or () if replay.start <= w.start and w.end <= replay.end)
+    if replay_words and max(w.end for w in replay_words) <= core_end:
+        # Provider-timed wording wholly inside core may be real repetition.
+        return None
+    target = _lexical(_tokens(primary.text))
+    values = tuple(_lexical(_tokens(s.text)) for s in observed.segments)
+    if sum(map(len, values)) > 8192:
+        return None
+    matches = []
+    for start in range(len(values)):
+        stream = []
+        for end in range(start, len(values)):
+            if not values[end]:
+                break
+            stream.extend(values[end])
+            if len(stream) > len(target):
+                break
+            if tuple(stream) == target:
+                matches.append(tuple(range(start, end + 1)))
+                if len(matches) > 1:
+                    return None
+                break
+    if len(matches) != 1:
+        return None
+    path = matches[0]
+    offset = Fraction(chunk.core_interval.start_sample - chunk.request_interval.start_sample, _RATE)
+    chosen = tuple(replace(observed.segments[i], start=observed.segments[i].start + offset,
+                           end=observed.segments[i].end + offset) for i in path)
+    if chosen[0].start < primary.start or chosen[-1].end != core_end:
+        return None
+    cursor = replay.start
+    for segment in chosen:
+        if segment.end <= cursor:
+            continue
+        if segment.start > cursor:
+            return None
+        cursor = segment.end
+    if cursor < core_end:
+        return None
+    if any(i not in path and s.start + offset < core_end and replay.start < s.end + offset
+           for i, s in enumerate(observed.segments)):
+        return None
+    prefix = source.segments[:primary_index]
+    segments = (*prefix, *chosen)
+    words = None
+    if source.words is not None or observed.words is not None:
+        words = tuple(w for w in source.words or () if w.end <= primary.start) + tuple(
+            replace(w, start=w.start + offset, end=w.end + offset)
+            for w in observed.words or ()
+            if any(observed.segments[i].start <= w.start and w.end <= observed.segments[i].end for i in path)
+        )
+    value = replace(source, text=" ".join(s.text for s in segments), segments=segments, words=words,
+                    quality=AsrQualityMetadata(), usage=AsrUsage())
+    return AsrChunkResult(
+        chunk, value, _translate_candidate(value, chunk),
+        decoding_attempts=(
+            AsrDecodeAttempt(chunk.request_interval, bool(prefix),
+                             segment_selections=tuple((i, i) for i in range(len(prefix)))),
+            AsrDecodeAttempt(chunk.core_interval, True,
+                             segment_selections=tuple((len(prefix) + i, provider_index)
+                                                      for i, provider_index in enumerate(path))),
+        ), recheck_outcome=AsrRecheckOutcome.REPLAY_REPLACED,
+    )
 
 
 def _require(condition: bool) -> None:
@@ -260,7 +372,11 @@ def _execute_chunk(
     try:
         original = _decode_chunk(chunk, audio, transcriber, payload_limit)
         if (original.failure is not None or recheck_budget is None
-                or chunk.core_interval == chunk.request_interval or not _boilerplate_only(original.candidate)):
+                or chunk.core_interval == chunk.request_interval):
+            return original
+        boilerplate = _boilerplate_only(original.candidate)
+        replay_index = None if boilerplate else _edge_replay_index(original.candidate, chunk)
+        if not boilerplate and replay_index is None:
             return original
         first = AsrDecodeAttempt(chunk.request_interval, True)
         if not recheck_budget.reserve():
@@ -276,7 +392,14 @@ def _execute_chunk(
         second = AsrDecodeAttempt(chunk.core_interval, False, retry.failure)
         outcome = AsrRecheckOutcome.INCONCLUSIVE
         if retry.failure is None:
-            if _comparison(retry.candidate.text) == _comparison(original.candidate.text):
+            if replay_index is not None:
+                if _valid_result(original):
+                    value = _rechecked_replay(original, retry, replay_index)
+                    if value is not None and _valid_result(value):
+                        return value
+                if _comparison(retry.candidate.text) == _comparison(original.candidate.text):
+                    outcome = AsrRecheckOutcome.CORROBORATED
+            elif _comparison(retry.candidate.text) == _comparison(original.candidate.text):
                 outcome = AsrRecheckOutcome.CORROBORATED
             elif (retry.candidate.text.strip() and not _boilerplate_only(retry.candidate)
                   and len(retry.candidate.text.split()) >= len(original.candidate.text.split())):

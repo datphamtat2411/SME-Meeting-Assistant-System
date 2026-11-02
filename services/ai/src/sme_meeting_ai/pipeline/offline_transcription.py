@@ -339,7 +339,7 @@ def _asr_evidence(plan, results, settings: Settings, payload_limit: int | None =
         "model": settings.audio_asr_model,
         "language": settings.audio_asr_language,
         "temperature": settings.audio_asr_temperature,
-        "decoder_recheck_version": "context-core-v1",
+        "decoder_recheck_version": "context-core-replay-v2",
         "final_timestamp_policy": "next-whisper-20ms-tick-v2",
     }), alignment, tuple((r.chunk.chunk_id, r.recheck_outcome, r.decoding_attempts)
                          for r in results if r.recheck_outcome is not None))

@@ -338,9 +338,42 @@ def _valid_result(result: AsrChunkResult) -> bool:
                          and (attempt.failure is None or isinstance(attempt.failure, AsrErrorCategory))
                          and (not attempt.selected or attempt.failure is None))
             selected = [a for a in attempts if a.selected]
-            _require(len(selected) == 1 and all(selected[0].interval.start_sample <= t.interval.start_sample
-                                               < t.interval.end_sample <= selected[0].interval.end_sample
-                                               for t in translated))
+            if any(a.segment_selections for a in attempts):
+                _require(result.recheck_outcome is AsrRecheckOutcome.REPLAY_REPLACED and len(attempts) == 2
+                         and 1 <= len(selected) <= 2)
+                origins = set()
+                for attempt in attempts:
+                    if not attempt.selected:
+                        _require(attempt.segment_selections == ())
+                        continue
+                    _require(isinstance(attempt.segment_selections, tuple)
+                             and 0 < len(attempt.segment_selections) <= len(translated))
+                    previous = (-1, -1)
+                    for pair in attempt.segment_selections:
+                        _require(isinstance(pair, tuple) and len(pair) == 2
+                                 and all(type(i) is int for i in pair))
+                        published, provider = pair
+                        _require(0 <= published < len(translated) and 0 <= provider < _MAX_SEGMENTS
+                                 and previous[0] < published and previous[1] < provider and published not in origins)
+                        interval = translated[published].interval
+                        _require(attempt.interval.start_sample <= interval.start_sample
+                                 < interval.end_sample <= attempt.interval.end_sample)
+                        origins.add(published)
+                        previous = pair
+                _require(origins == set(range(len(translated))))
+                first, second = attempts
+                prefix = tuple(published for published, _ in first.segment_selections)
+                suffix = tuple(published for published, _ in second.segment_selections)
+                _require(first.interval == result.chunk.request_interval and second.interval == result.chunk.core_interval
+                         and second.selected and prefix == tuple(range(len(prefix)))
+                         and suffix == tuple(range(len(prefix), len(translated)))
+                         and first.segment_selections == tuple((i, i) for i in prefix))
+            else:
+                _require(result.recheck_outcome is not AsrRecheckOutcome.REPLAY_REPLACED
+                         and all(a.segment_selections == () for a in attempts)
+                         and len(selected) == 1 and all(selected[0].interval.start_sample <= t.interval.start_sample
+                                                       < t.interval.end_sample <= selected[0].interval.end_sample
+                                                       for t in translated))
         else:
             _require(result.recheck_outcome is None)
         _require(isinstance(candidate.quality, AsrQualityMetadata) and _confidence(candidate.quality.confidence))
