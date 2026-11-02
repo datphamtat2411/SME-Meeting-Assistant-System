@@ -35,6 +35,10 @@ if TYPE_CHECKING:
     )
     from sme_meeting_ai.transcription.asr_strategy import AsrStrategyTelemetry
     from sme_meeting_ai.transcription.boundary_alignment import BoundaryAlignmentReport
+    from sme_meeting_ai.transcription.chunk_execution import (
+        AsrDecodeAttempt,
+        AsrRecheckOutcome,
+    )
     from sme_meeting_ai.transcription.chunk_planning import (
         AsrChunkPlan,
         ChunkPlanningProvenance,
@@ -109,6 +113,7 @@ class OfflineAsrEvidence:
     chunk_outcomes: tuple["ReconciliationChunkOutcome", ...]
     provenance: OfflineAsrProvenance
     boundary_alignment: "BoundaryAlignmentReport | None" = None
+    decoder_rechecks: tuple[tuple[str, "AsrRecheckOutcome", tuple["AsrDecodeAttempt", ...]], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -292,7 +297,7 @@ def _asr_evidence(plan, results, settings: Settings, payload_limit: int | None =
                          else ReconciliationChunkState.EMPTY)
         outcomes.append(ReconciliationChunkOutcome(chunk.chunk_id, chunk.core_interval, state, failure))
     alignment = (analyze_boundary_alignment(plan, results)
-                 if plan.provenance.planner_version in ("speech-aware-v2", "speech-aware-v3") else None)
+                 if plan.provenance.planner_version in ("speech-aware-v2", "speech-aware-v3", "speech-aware-v5") else None)
     return OfflineAsrEvidence(tuple(outcomes), OfflineAsrProvenance(tuple(provenance), {
         "max_concurrent_chunks": settings.audio_asr_max_concurrent_chunks,
         "max_payload_bytes": settings.audio_asr_max_payload_bytes if payload_limit is None else payload_limit,
@@ -300,7 +305,10 @@ def _asr_evidence(plan, results, settings: Settings, payload_limit: int | None =
         "model": settings.audio_asr_model,
         "language": settings.audio_asr_language,
         "temperature": settings.audio_asr_temperature,
-    }), alignment)
+        "decoder_recheck_version": "context-core-v1",
+        "final_timestamp_policy": "next-whisper-20ms-tick-v1",
+    }), alignment, tuple((r.chunk.chunk_id, r.recheck_outcome, r.decoding_attempts)
+                         for r in results if r.recheck_outcome is not None))
 
 
 def _chunk_warnings(stage, outcomes) -> tuple[OfflineTranscriptionWarning, ...]:
@@ -413,6 +421,9 @@ class OfflineTranscriptionPipeline:
             asr = _asr_evidence(plan, baseline, self._settings,
                                 strategy.telemetry.decision.effective_payload_limit)
             warnings.extend(_chunk_warnings(stage, asr.chunk_outcomes))
+            warnings.extend(OfflineTranscriptionWarning(
+                stage, f"decoder-recheck-{decision.value}", attempts[-1].interval, (identity,), "decode",
+            ) for identity, decision, attempts in asr.decoder_rechecks)
             provenance = replace(provenance, asr=asr.provenance, planning=plan.provenance,
                                  strategy=strategy.telemetry)
             completed.append(stage)

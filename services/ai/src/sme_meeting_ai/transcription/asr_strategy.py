@@ -290,6 +290,7 @@ class AsrStrategyRunner:
         self._native_duration_ns = self._chunked_duration_ns = self._recovery_duration_ns = 0
         self._cost, self._cost_calls, self._provenance = Fraction(0), 0, []
         self._prepared = self._executed = self._recovered = False
+        self._decoder_rechecks = 0
 
     @property
     def telemetry(self) -> AsrStrategyTelemetry | None:
@@ -453,6 +454,7 @@ class AsrStrategyRunner:
             self._fallback_used, self._fallback_reason = True, failure
             self._selected, self.plan = AsrStrategy.CHUNKED, self._fallback_plan
         baseline = self._execute_plan(audio, "chunked")
+        self._decoder_rechecks = sum(max(0, len(r.decoding_attempts) - 1) for r in baseline)
         if self._fallback_used:
             failure = next((item.failure for item in baseline if item.failure is not None), None)
             if failure is not None:
@@ -466,6 +468,8 @@ class AsrStrategyRunner:
             RecoveryStopReason,
             SpeechRecoveryResult,
             _baseline_state,
+            _configuration,
+            _remaining,
             recover_speech,
         )
 
@@ -479,5 +483,17 @@ class AsrStrategyRunner:
                 RecoveryProvenance("2", execution.plan.provenance, {"executed_requests": 0}), coverage, canonical,
             )
         self._phase = "recovery"
-        return recover_speech(preprocessing, execution.plan, execution.baseline, self._bridge, self._settings,
-                              boundary_alignment=boundary_alignment)
+        remaining = self._settings.audio_asr_recovery_max_total_attempts - self._decoder_rechecks
+        if remaining <= 0:
+            initial, canonical, coverage = _baseline_state(
+                preprocessing, execution.plan, execution.baseline, self._settings, boundary_alignment)
+            stop = (RecoveryStopReason.TOTAL_ATTEMPT_LIMIT if _remaining(coverage)
+                    else RecoveryStopReason.NO_ACTIONABLE_REGIONS)
+            configuration = dict(_configuration(self._settings), decoder_recheck_calls=self._decoder_rechecks)
+            return SpeechRecoveryResult(
+                execution.baseline, (), initial, coverage, (), stop,
+                RecoveryProvenance("2", execution.plan.provenance, configuration), coverage, canonical,
+            )
+        limits = self._settings.model_copy(update={"audio_asr_recovery_max_total_attempts": remaining})
+        return recover_speech(preprocessing, execution.plan, execution.baseline, self._bridge, limits,
+                               boundary_alignment=boundary_alignment)

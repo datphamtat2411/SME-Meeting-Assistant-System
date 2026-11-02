@@ -186,7 +186,7 @@ def _collect(plan, results, boundary_samples):
 
 def _analyze(plan, results):
     validate_asr_chunk_plan(plan)
-    _require(plan.provenance.planner_version in ("speech-aware-v2", "speech-aware-v3"))
+    _require(plan.provenance.planner_version in ("speech-aware-v2", "speech-aware-v3", "speech-aware-v5"))
     boundary_samples = tuple(c.core_interval.end_sample for c in plan.chunks[:-1])
     by_id, supports = _collect(plan, results, boundary_samples)
     boundaries, temporal_overlaps, request_overlaps = [], [], []

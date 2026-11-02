@@ -269,7 +269,7 @@ def test_provenance_and_models_are_immutable_deterministic_snapshots(result_fact
     assert plan.source_id == result.provenance.source_id
     assert plan.sample_count == result.normalized_artifact.sample_count
     assert isinstance(plan.provenance, ChunkPlanningProvenance)
-    assert plan.provenance.planner_version == "speech-aware-v3"
+    assert plan.provenance.planner_version == "speech-aware-v5"
     assert plan.provenance.sample_rate_hz == 16000
     assert plan.provenance.preprocessing == result.provenance
     captured = plan.provenance.effective_configuration
@@ -586,7 +586,7 @@ def test_impossible_context_is_not_shrunk_to_make_a_payload_fit(result_factory):
     (80000, 144000, 320000),  # Interruption outside the preferred search window.
 ])
 def test_long_internal_silence_restarts_near_resumed_evidence(result_factory, gap_start, gap_end, count):
-    configuration = Settings(_env_file=None)
+    configuration = Settings(_env_file=None, service_name="test-ai", service_identity="ai-core")
     result = result_factory(count, speech=((0, gap_start), (gap_end, count)))
     plan = SpeechAwareAsrChunkPlanner(configuration).plan(result)
     assert_partition(plan, configuration)
@@ -603,7 +603,8 @@ def test_long_internal_silence_restarts_near_resumed_evidence(result_factory, ga
 def test_interruption_still_honors_chunk_budget_without_skipping_silence(result_factory):
     result = result_factory(160000, speech=((0, 16000), (80000, 160000)))
     with pytest.raises(AudioProcessingError) as caught:
-        SpeechAwareAsrChunkPlanner(Settings(_env_file=None, audio_asr_chunk_max_chunks=1)).plan(result)
+        SpeechAwareAsrChunkPlanner(Settings(_env_file=None, service_name="test-ai", service_identity="ai-core",
+                                            audio_asr_chunk_max_chunks=1)).plan(result)
     assert caught.value.category == "RESOURCE"
 
 
@@ -619,7 +620,7 @@ def test_existing_v2_continuous_plan_snapshot_still_validates(result_factory):
 @pytest.mark.parametrize("kind", ["context", "gap", "reason"])
 def test_restart_snapshot_requires_exact_acoustic_edge_and_independent_context(result_factory, kind):
     result = result_factory(160000, speech=((0, 16000), (80000, 160000)))
-    plan = SpeechAwareAsrChunkPlanner(Settings(_env_file=None)).plan(result)
+    plan = SpeechAwareAsrChunkPlanner(Settings(_env_file=None, service_name="test-ai", service_identity="ai-core")).plan(result)
     if kind == "context":
         right = replace(plan.chunks[1], request_interval=SampleInterval(78400, 160000))
         invalid = replace(plan, chunks=(plan.chunks[0], right))
@@ -633,3 +634,44 @@ def test_restart_snapshot_requires_exact_acoustic_edge_and_independent_context(r
         invalid = replace(plan, chunks=(left, right), boundary_decisions=(decision,))
     with pytest.raises(AudioProcessingError):
         validate_asr_chunk_plan(invalid)
+
+
+def test_forced_cut_keeps_real_acoustic_valley_instead_of_global_rebalancing(result_factory):
+    configuration = Settings(_env_file=None, service_name="test-ai", service_identity="ai-core")
+    count = 32 * 16000
+    late_valley = 740 * 512
+    source = result_factory(count, observations={late_valley: (0.01, 0.0)})
+    plan = SpeechAwareAsrChunkPlanner(configuration).plan(source)
+    assert len(plan.chunks) == 2
+    assert plan.chunks[0].core_interval.end_sample == late_valley
+    assert_partition(plan, configuration)
+    validate_asr_chunk_plan(plan)
+
+
+def test_future_restart_does_not_rebalance_an_earlier_acoustic_search(result_factory):
+    configuration = Settings(_env_file=None, service_name="test-ai", service_identity="ai-core")
+    source = result_factory(48 * 16000, speech=((0, 32 * 16000), (36 * 16000, 48 * 16000)))
+    plan = SpeechAwareAsrChunkPlanner(configuration).plan(source)
+    assert plan.chunks[0].core_interval.end_sample == configuration.audio_asr_chunk_target_samples
+    restart = next(c for c in plan.chunks if c.start_boundary_reason is ChunkBoundaryReason.SPEECH_RESUMPTION)
+    assert restart.core_interval.start_sample == restart.request_interval.start_sample == 36 * 16000
+    assert_partition(plan, configuration)
+
+
+def test_historical_v3_greedy_geometry_still_validates(result_factory):
+    from sme_meeting_ai.transcription.chunk_planning import AcousticBoundaryDecision
+
+    configuration = Settings(_env_file=None, service_name="test-ai", service_identity="ai-core")
+    source = result_factory(32 * 16000)
+    current = SpeechAwareAsrChunkPlanner(configuration).plan(source)
+    cut = 740 * 512
+    reason = ChunkBoundaryReason.FORCED_CONTINUOUS_SPEECH
+    old = replace(current, chunks=(
+        AsrChunk("chunk-000000", 0, SampleInterval(0, cut), SampleInterval(0, cut + 16000),
+                 ChunkBoundaryReason.TIMELINE_START, reason),
+        AsrChunk("chunk-000001", 1, SampleInterval(cut, current.sample_count),
+                 SampleInterval(cut - 16000, current.sample_count), reason, ChunkBoundaryReason.TIMELINE_END),
+    ), boundary_decisions=(AcousticBoundaryDecision(cut, reason, True, False),),
+        provenance=replace(current.provenance, planner_version="speech-aware-v3"))
+    validate_asr_chunk_plan(old)
+    validate_asr_chunk_plan(replace(old, provenance=current.provenance))

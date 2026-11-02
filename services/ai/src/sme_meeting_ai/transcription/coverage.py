@@ -35,7 +35,13 @@ from .asr import (
     AsrQualityMetadata,
     AsrSegmentQuality,
 )
-from .chunk_execution import AsrChunkResult, AsrTimelineSegment, _translate_candidate
+from .chunk_execution import (
+    AsrChunkResult,
+    AsrDecodeAttempt,
+    AsrRecheckOutcome,
+    AsrTimelineSegment,
+    _translate_candidate,
+)
 from .chunk_planning import (
     AsrChunk,
     AsrChunkPlan,
@@ -320,6 +326,23 @@ def _valid_result(result: AsrChunkResult) -> bool:
             _require(type(interval.start_sample) is int and type(interval.end_sample) is int
                      and 0 <= interval.start_sample < interval.end_sample)
         _require(translated == result.timeline_segments)
+        if result.decoding_attempts:
+            attempts = result.decoding_attempts
+            _require(isinstance(attempts, tuple) and 1 <= len(attempts) <= 2
+                     and isinstance(result.recheck_outcome, AsrRecheckOutcome))
+            for attempt in attempts:
+                _require(isinstance(attempt, AsrDecodeAttempt) and isinstance(attempt.interval, SampleInterval)
+                         and type(attempt.selected) is bool
+                         and result.chunk.request_interval.start_sample <= attempt.interval.start_sample
+                         < attempt.interval.end_sample <= result.chunk.request_interval.end_sample
+                         and (attempt.failure is None or isinstance(attempt.failure, AsrErrorCategory))
+                         and (not attempt.selected or attempt.failure is None))
+            selected = [a for a in attempts if a.selected]
+            _require(len(selected) == 1 and all(selected[0].interval.start_sample <= t.interval.start_sample
+                                               < t.interval.end_sample <= selected[0].interval.end_sample
+                                               for t in translated))
+        else:
+            _require(result.recheck_outcome is None)
         _require(isinstance(candidate.quality, AsrQualityMetadata) and _confidence(candidate.quality.confidence))
         _require(_valid_asr_provenance(candidate.provenance))
         _safe_provenance(candidate.provenance)

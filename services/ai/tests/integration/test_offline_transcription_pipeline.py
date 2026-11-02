@@ -298,7 +298,7 @@ def test_complete_order_timeline_quality_provenance_and_safe_immutable_evidence(
     assert h.asr_calls == ["chunk-000000", "chunk-000001"]
     assert h.correction_calls == 1
     assert assessments == [True]
-    assert provenance.planning.planner_version == "speech-aware-v3"
+    assert provenance.planning.planner_version == "speech-aware-v5"
     alignment = output.evidence.asr.boundary_alignment
     assert len(alignment.boundaries) == 1
     assert alignment.metrics.planned_chunk_count == 2

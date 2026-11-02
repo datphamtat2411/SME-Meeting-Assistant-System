@@ -88,6 +88,32 @@ def prepare(result_factory, *, count=1000, provider=None, planner=None, **overri
     return runner, result, provider, decision
 
 
+@pytest.mark.parametrize("recovery_budget", [2, 3])
+def test_decoder_rechecks_share_the_recording_envelope_with_recovery(result_factory, recovery_budget):
+    seen = set()
+
+    def respond(audio, _):
+        first = audio.chunk_id not in seen
+        seen.add(audio.chunk_id)
+        text = ("Hãy subscribe cho kênh Ghiền Mì Gõ để không bỏ lỡ những video hấp dẫn" if first else
+                "Nhóm xác nhận đầy đủ nội dung thời hạn triển khai và kết quả kiểm thử vào ngày mai")
+        return candidate(audio, (AsrSegment(Fraction(0), audio.duration, text),))
+
+    runner, result, provider, _ = prepare(
+        result_factory, count=64000, provider=Provider(respond), audio_asr_strategy_mode="chunked",
+        audio_asr_recovery_max_total_attempts=recovery_budget,
+    )
+    execution = runner.execute(result.normalized_artifact)
+    assert len(execution.plan.chunks) == 2
+    assert len(provider.calls) == 4
+    recovered = runner.recover(result, execution)
+    assert len(provider.calls) <= len(execution.plan.chunks) + recovery_budget
+    assert runner.telemetry.total_actual_asr_calls == len(provider.calls)
+    assert len(recovered.attempts) <= recovery_budget - 2
+    if recovery_budget == 2:
+        assert not recovered.attempts and runner.telemetry.recovery_calls == 0
+
+
 @pytest.mark.parametrize("mode,reason,strategy", [
     ("chunked", "adaptive-disabled", AsrStrategy.CHUNKED),
     ("adaptive", "native-eligible", AsrStrategy.WHOLE_FILE),

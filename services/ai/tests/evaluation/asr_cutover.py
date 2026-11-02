@@ -203,7 +203,7 @@ class ResourceMetrics(Contract):
 class Components(Contract):
     provider_contract: Literal["2"]
     strategy: Literal["adaptive-asr-v1"]
-    planner: Literal["speech-aware-v2", "speech-aware-v3", "whole-file-v1"]
+    planner: Literal["speech-aware-v2", "speech-aware-v3", "speech-aware-v5", "whole-file-v1"]
     alignment: Literal["boundary-alignment-v2"] | None
     reconciler: Literal["2"]
     coverage: Literal["2"]

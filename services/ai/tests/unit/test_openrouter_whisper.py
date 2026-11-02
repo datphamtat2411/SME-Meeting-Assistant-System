@@ -496,6 +496,29 @@ def test_decimal_timestamps_normalize_without_float_conversion():
     assert result.segments[0].end == Fraction(123456789, 100000000)
 
 
+@pytest.mark.parametrize("duration,end", [("19.154", "19.16"), ("2.001", "2.02"), ("2.013", "2.02")])
+def test_final_whisper_timestamp_tick_preserves_all_segments_and_exact_source_end(duration, end):
+    audio = chunk(duration=Fraction(duration))
+    data = {"text": TEXT, "segments": [
+        {"start": 0, "end": 1, "text": TEXT},
+        {"start": 1, "end": Decimal(end), "text": TEXT},
+    ]}
+    with httpx.Client(transport=httpx.MockTransport(lambda _: pytest.fail("unexpected network"))) as client:
+        result = OpenRouterWhisperAdapter(settings(), client)._normalize(data, audio)
+    assert len(result.segments) == 2
+    assert result.segments[0].end == 1
+    assert result.segments[-1].end == Fraction(duration)
+    assert [s.text for s in result.segments] == [TEXT, TEXT]
+
+
+@pytest.mark.parametrize("end", ["19.17", "19.18", "19.160001"])
+def test_final_tick_repair_does_not_accept_non_quantized_or_extra_ticks(end):
+    data = {"text": TEXT, "segments": [{"start": 0, "end": Decimal(end), "text": TEXT}]}
+    with httpx.Client(transport=httpx.MockTransport(lambda _: pytest.fail("unexpected network"))) as client:
+        with pytest.raises(ValueError):
+            OpenRouterWhisperAdapter(settings(), client)._normalize(data, chunk(duration=Fraction("19.154")))
+
+
 def test_mocked_whisper_off_grid_and_final_overrun_translate_without_losing_repetition(caplog):
     texts = ["Hello anh Hiếu nha!", "Hello anh Hiếu nha!", "Ờ, mình bắt đầu nhé."]
     data = {

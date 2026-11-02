@@ -33,7 +33,7 @@ from sme_meeting_ai.pipeline.preprocessing import (
 )
 
 _RATE = 16000
-_PLANNER_VERSION = "speech-aware-v3"
+_PLANNER_VERSION = "speech-aware-v5"
 
 
 class ChunkBoundaryReason(StrEnum):
@@ -271,7 +271,7 @@ def validate_asr_chunk_plan(plan: AsrChunkPlan) -> None:
         )
         provenance = plan.provenance
         _require(
-            provenance.planner_version in ("1", "speech-aware-v2", _PLANNER_VERSION, "whole-file-v1")
+            provenance.planner_version in ("1", "speech-aware-v2", "speech-aware-v3", _PLANNER_VERSION, "whole-file-v1")
             and type(provenance.sample_rate_hz) is int and provenance.sample_rate_hz == _RATE
             and isinstance(provenance.preprocessing, PreprocessingProvenance)
         )
@@ -303,7 +303,7 @@ def validate_asr_chunk_plan(plan: AsrChunkPlan) -> None:
             and all(character in "0123456789abcdef" for character in detection.model_sha256)
         )
         configuration = provenance.effective_configuration
-        if provenance.planner_version in ("speech-aware-v2", _PLANNER_VERSION):
+        if provenance.planner_version in ("speech-aware-v2", "speech-aware-v3", _PLANNER_VERSION):
             _validate_v2(plan)
             return
         if provenance.planner_version == "whole-file-v1":
@@ -504,7 +504,7 @@ class _AcousticFrontier:
 
 def _validate_v2(plan: AsrChunkPlan) -> None:
     c = plan.provenance.effective_configuration
-    interruption_aware = plan.provenance.planner_version == _PLANNER_VERSION
+    interruption_aware = plan.provenance.planner_version in ("speech-aware-v3", _PLANNER_VERSION)
     keys = {
         "target_core_samples", "configured_max_request_samples", "max_request_samples", "overlap_samples",
         "boundary_search_samples", "max_chunks", "max_timeline_samples", "effective_payload_limit",

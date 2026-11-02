@@ -2,12 +2,16 @@
 
 import io
 import math
+import re
 import time
 import traceback
+import unicodedata
 import wave
 from concurrent.futures import FIRST_COMPLETED, CancelledError, ThreadPoolExecutor, wait
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from enum import StrEnum
 from fractions import Fraction
+from threading import Lock
 from typing import TYPE_CHECKING
 
 from sme_meeting_ai.audio.errors import AudioProcessingError
@@ -45,6 +49,22 @@ class AsrTimelineSegment:
 
 
 @dataclass(frozen=True, slots=True)
+class AsrDecodeAttempt:
+    """Actual source request/selection only; discarded wording is never retained."""
+
+    interval: SampleInterval
+    selected: bool
+    failure: AsrErrorCategory | None = None
+
+
+class AsrRecheckOutcome(StrEnum):
+    REPLACED = "replaced"
+    CORROBORATED = "corroborated"
+    INCONCLUSIVE = "inconclusive"
+    LIMIT_REACHED = "limit-reached"
+
+
+@dataclass(frozen=True, slots=True)
 class AsrChunkResult:
     """Transient evidence or category-only failure, never a durable transcript."""
 
@@ -52,6 +72,41 @@ class AsrChunkResult:
     candidate: AsrCandidate | None = field(default=None, repr=False)
     timeline_segments: tuple[AsrTimelineSegment, ...] = ()
     failure: AsrErrorCategory | None = None
+    decoding_attempts: tuple[AsrDecodeAttempt, ...] = ()
+    recheck_outcome: AsrRecheckOutcome | None = None
+
+
+class _RecheckBudget:
+    def __init__(self, maximum):
+        self.remaining = maximum
+        self.lock = Lock()
+
+    def reserve(self):
+        with self.lock:
+            if self.remaining <= 0:
+                return False
+            self.remaining -= 1
+            return True
+
+
+def _comparison(text):
+    folded = unicodedata.normalize("NFKD", text.casefold().replace("đ", "d"))
+    folded = "".join(c for c in folded if not unicodedata.combining(c))
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", folded).split())
+
+
+def _boilerplate_only(candidate):
+    """Known Whisper failure family is a re-observation signal, never a blacklist."""
+    texts = [s.text for s in candidate.segments if s.text.strip()]
+    if not texts:
+        return False
+    for text in texts:
+        value = _comparison(text)
+        if (len(value.split()) > 64 or not re.match(
+                r"^(?:cac ban )?(?:hay |nho |dung quen )?(?:subscribe|subcribe|dang ky) (?:cho )?kenh\b", value)
+                or "khong bo lo" not in value or "video" not in value):
+            return False
+    return True
 
 
 def _require(condition: bool) -> None:
@@ -89,6 +144,8 @@ def _validate_handoff(
         _require(type(concurrency) is int and 1 <= concurrency <= 4)
         _require(type(payload_limit) is int and 0 < payload_limit <= 26214400)
         _require(type(timeout) in (int, float) and math.isfinite(timeout) and 0 < timeout <= 600)
+        rechecks = settings.audio_asr_recovery_max_total_attempts
+        _require(type(rechecks) is int and 1 <= rechecks <= 256)
         with wave.open(str(audio.path), "rb") as reader:
             _validate_wav(reader, plan.sample_count)
         return
@@ -152,7 +209,7 @@ def _translate_candidate(candidate: AsrCandidate, chunk: AsrChunk) -> tuple[AsrT
     return tuple(translated)
 
 
-def _execute_chunk(
+def _decode_chunk(
     chunk: AsrChunk, audio: NormalizedAudioArtifact, transcriber: AsrTranscriber, payload_limit: int,
 ) -> AsrChunkResult:
     failure = AsrErrorCategory.RESOURCE
@@ -195,6 +252,54 @@ def _execute_chunk(
     return AsrChunkResult(chunk=chunk, failure=failure)
 
 
+def _execute_chunk(
+    chunk: AsrChunk, audio: NormalizedAudioArtifact, transcriber: AsrTranscriber, payload_limit: int,
+    recheck_budget: _RecheckBudget | None = None,
+) -> AsrChunkResult:
+    original = retry = value = None
+    try:
+        original = _decode_chunk(chunk, audio, transcriber, payload_limit)
+        if (original.failure is not None or recheck_budget is None
+                or chunk.core_interval == chunk.request_interval or not _boilerplate_only(original.candidate)):
+            return original
+        first = AsrDecodeAttempt(chunk.request_interval, True)
+        if not recheck_budget.reserve():
+            return replace(original, decoding_attempts=(first,), recheck_outcome=AsrRecheckOutcome.LIMIT_REACHED)
+        # Decode the exact original core independently, without the possibly
+        # poisoned overlap. No silence insertion, sample removal or new wording.
+        retry = _decode_chunk(replace(chunk, request_interval=chunk.core_interval), audio, transcriber, payload_limit)
+        if retry.failure is None:
+            from .coverage import _valid_result
+
+            if not _valid_result(retry):
+                retry = AsrChunkResult(retry.chunk, failure=AsrErrorCategory.MALFORMED_OUTPUT)
+        second = AsrDecodeAttempt(chunk.core_interval, False, retry.failure)
+        outcome = AsrRecheckOutcome.INCONCLUSIVE
+        if retry.failure is None:
+            if _comparison(retry.candidate.text) == _comparison(original.candidate.text):
+                outcome = AsrRecheckOutcome.CORROBORATED
+            elif (retry.candidate.text.strip() and not _boilerplate_only(retry.candidate)
+                  and len(retry.candidate.text.split()) >= len(original.candidate.text.split())):
+                # Candidate coordinates must remain relative to the unchanged
+                # published request. This exact offset preserves provider timing.
+                offset = Fraction(chunk.core_interval.start_sample - chunk.request_interval.start_sample, _RATE)
+                value = replace(retry.candidate, segments=tuple(
+                    replace(s, start=s.start + offset, end=s.end + offset) for s in retry.candidate.segments
+                ), words=(tuple(replace(w, start=w.start + offset, end=w.end + offset)
+                                for w in retry.candidate.words) if retry.candidate.words is not None else None))
+                return AsrChunkResult(
+                    chunk, value, _translate_candidate(value, chunk),
+                    decoding_attempts=(replace(first, selected=False), replace(second, selected=True)),
+                    recheck_outcome=AsrRecheckOutcome.REPLACED,
+                )
+        return replace(original, decoding_attempts=(first, second), recheck_outcome=outcome)
+    except BaseException as error:
+        traceback.clear_frames(error.__traceback__)
+        raise
+    finally:
+        original = retry = value = None
+
+
 def execute_asr_chunks(
     plan: AsrChunkPlan, normalized_audio: NormalizedAudioArtifact,
     transcriber: AsrTranscriber, settings: Settings,
@@ -217,9 +322,10 @@ def execute_asr_chunks(
     pending = set()
     chunks = iter(plan.chunks)
     results = {}
+    rechecks = _RecheckBudget(settings.audio_asr_recovery_max_total_attempts)
     try:
         for _ in range(min(concurrency, len(plan.chunks))):
-            pending.add(executor.submit(_execute_chunk, next(chunks), normalized_audio, transcriber, payload_limit))
+            pending.add(executor.submit(_execute_chunk, next(chunks), normalized_audio, transcriber, payload_limit, rechecks))
         while pending:
             completed, pending = wait(pending, return_when=FIRST_COMPLETED)
             # Consume every completion before replenishing the bounded window.
@@ -230,7 +336,7 @@ def execute_asr_chunks(
             for _ in completed:
                 chunk = next(chunks, None)
                 if chunk is not None:
-                    pending.add(executor.submit(_execute_chunk, chunk, normalized_audio, transcriber, payload_limit))
+                    pending.add(executor.submit(_execute_chunk, chunk, normalized_audio, transcriber, payload_limit, rechecks))
     finally:
         for future in pending:
             future.cancel()
