@@ -232,6 +232,50 @@ def pipeline(h):
     )
 
 
+def test_pipeline_budget_failure_explains_required_calls_without_partial_dispatch(workflow):
+    h = workflow(audio_asr_max_total_calls=1)
+    output = pipeline(h).run(h.source)
+    assert output.status is Status.FAILED
+    assert output.failure.stage is Stage.CHUNK_PLANNING
+    assert output.failure.category == "RESOURCE"
+    assert not h.asr_calls and not h.correction_calls
+    envelope = output.provenance.strategy.resource_plan
+    assert envelope.baseline_calls == 2 and envelope.maximum_calls == 18
+    assert envelope.authorized_calls == 1
+    assert_released(h)
+
+
+def test_success_exposes_temporal_support_and_unverified_lexical_completeness(workflow):
+    h = workflow()
+    output = pipeline(h).run(h.source)
+    summary = output.evidence.quality_summary
+    assert summary.canonical_timestamp_support_samples == 4096
+    assert summary.suspected_speech_samples == 0
+    assert summary.lexical_completeness == "unverified"
+    assert summary.word_omissions_verified is False
+    assert_safe(summary)
+    assert output.evidence.warning_summary == ()
+
+
+def test_warning_summary_unions_overlapping_records_but_retains_phase_and_details():
+    from sme_meeting_ai.pipeline.offline_transcription import (
+        OfflineTranscriptionWarning,
+        summarize_warnings,
+    )
+
+    detailed = (
+        OfflineTranscriptionWarning(Stage.COVERAGE_RECOVERY, "missing-speech", SampleInterval(0, 512), phase="initial"),
+        OfflineTranscriptionWarning(Stage.COVERAGE_RECOVERY, "missing-speech", SampleInterval(0, 512), phase="final"),
+        OfflineTranscriptionWarning(Stage.COVERAGE_RECOVERY, "missing-speech", SampleInterval(256, 768), phase="final"),
+    )
+    summaries = summarize_warnings(detailed)
+    final, = [s for s in summaries if s.phase == "final"]
+    assert final.record_count == 2
+    assert final.intervals == (SampleInterval(0, 768),)
+    assert final.interval_samples == 768
+    assert sum(s.record_count for s in summaries) == len(detailed)
+
+
 def assert_released(h):
     assert list(h.work.iterdir()) == []
     assert h.source.path.read_bytes() == b"original media remains recoverable"

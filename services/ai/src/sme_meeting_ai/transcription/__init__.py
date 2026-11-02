@@ -20,6 +20,7 @@ from .asr import (
     AsrWord,
 )
 from .asr_strategy import (
+    AsrResourcePlan,
     AsrStrategy,
     AsrStrategyDecision,
     AsrStrategyExecutionResult,
@@ -84,6 +85,12 @@ from .coverage import (
     assess_speech_coverage,
     revalidate_speech_coverage,
 )
+from .quality import (
+    AcousticGapKind,
+    GapAcousticEvidence,
+    TranscriptQualitySummary,
+    summarize_transcript_quality,
+)
 from .reconciliation import (
     OccurrenceRelationship,
     ReconciledSegment,
@@ -113,6 +120,7 @@ from .recovery import (
 
 __all__ = [
     "AcousticEvidenceState",
+    "AcousticGapKind",
     "AcousticBoundaryDecision",
     "BoundaryAlignmentMetrics",
     "BoundaryAlignmentReport",
@@ -132,6 +140,7 @@ __all__ = [
     "AsrProviderCapabilities",
     "AsrProvenance",
     "AsrQualityMetadata",
+    "AsrResourcePlan",
     "AsrRoutingMode",
     "AsrSegment",
     "AsrSegmentQuality",
@@ -157,6 +166,7 @@ __all__ = [
     "CoverageReason",
     "CoverageRegion",
     "CoverageState",
+    "GapAcousticEvidence",
     "CorrectedSegment",
     "CorrectionError",
     "CorrectionErrorCategory",
@@ -193,6 +203,7 @@ __all__ = [
     "TranscriptCorrectionResult",
     "TranscriptCorrectionStatus",
     "TranscriptReconciliation",
+    "TranscriptQualitySummary",
     "assess_canonical_coverage",
     "assess_speech_coverage",
     "build_whole_file_plan",
@@ -203,5 +214,6 @@ __all__ = [
     "recover_speech",
     "revalidate_speech_coverage",
     "reconcile_transcript",
+    "summarize_transcript_quality",
     "validate_asr_chunk_plan",
 ]

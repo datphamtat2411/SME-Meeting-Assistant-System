@@ -109,6 +109,9 @@ def test_decoder_rechecks_share_the_recording_envelope_with_recovery(result_fact
     recovered = runner.recover(result, execution)
     assert len(provider.calls) <= len(execution.plan.chunks) + recovery_budget
     assert runner.telemetry.total_actual_asr_calls == len(provider.calls)
+    assert runner.telemetry.decoder_recheck_calls == 2
+    assert runner.telemetry.resource_plan.supplemental_calls == recovery_budget
+    assert runner.telemetry.resource_plan.maximum_calls == len(execution.plan.chunks) + recovery_budget
     assert len(recovered.attempts) <= recovery_budget - 2
     if recovery_budget == 2:
         assert not recovered.attempts and runner.telemetry.recovery_calls == 0

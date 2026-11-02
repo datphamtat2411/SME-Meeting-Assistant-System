@@ -81,6 +81,27 @@ class AsrStrategyDecision:
 
 
 @dataclass(frozen=True, slots=True)
+class AsrResourcePlan:
+    """Actual technical requirements versus standing spending authorization.
+
+    Supplemental calls are shared by decoder rechecks and Recovery, not added
+    twice. Requested samples are an upper bound, never a billing-price estimate.
+    """
+
+    source_sample_count: int
+    baseline_calls: int
+    supplemental_calls: int
+    native_calls: int
+    maximum_calls: int
+    authorized_calls: int
+    baseline_request_samples: int
+    maximum_request_samples: int
+    maximum_requested_samples: int
+    effective_payload_limit: int
+    verified_provider_duration_samples: int | None
+
+
+@dataclass(frozen=True, slots=True)
 class AsrStrategyTelemetry:
     decision: AsrStrategyDecision
     selected_strategy: AsrStrategy
@@ -102,6 +123,8 @@ class AsrStrategyTelemetry:
     native_duration_ns: int = field(compare=False)
     chunked_duration_ns: int = field(compare=False)
     total_asr_duration_ns: int = field(compare=False)
+    resource_plan: AsrResourcePlan | None = None
+    decoder_recheck_calls: int = 0
 
     @property
     def strategy_reason(self) -> AsrStrategyReason:
@@ -219,17 +242,13 @@ class _TrackedTranscriber:
     def validate_recovery_request(self):
         runner = self._runner
         with runner._lock:
-            if runner._adaptive:
-                _require(sum(runner._calls.values()) < runner._settings.audio_asr_adaptive_max_total_calls,
-                         AsrErrorCategory.RESOURCE)
+            _require(sum(runner._calls.values()) < runner._call_limit, AsrErrorCategory.RESOURCE)
 
     def transcribe(self, audio):
         runner = self._runner
         phase = runner._phase
         with runner._lock:
-            if runner._adaptive:
-                _require(sum(runner._calls.values()) < runner._settings.audio_asr_adaptive_max_total_calls,
-                         AsrErrorCategory.RESOURCE)
+            _require(sum(runner._calls.values()) < runner._call_limit, AsrErrorCategory.RESOURCE)
             runner._calls[phase] += 1
         candidate = None
         started = time.monotonic_ns()
@@ -274,9 +293,14 @@ class AsrStrategyRunner:
         _require(type(settings.audio_asr_native_max_samples) is int
                  and 1 <= settings.audio_asr_native_max_samples <= 230400000)
         _require(type(settings.audio_asr_adaptive_max_total_calls) is int
-                 and 1 <= settings.audio_asr_adaptive_max_total_calls <= 65793)
+                  and 1 <= settings.audio_asr_adaptive_max_total_calls <= 65793)
+        _require(type(settings.audio_asr_max_total_calls) is int
+                 and 1 <= settings.audio_asr_max_total_calls <= 65793)
         self._settings = settings.model_copy(deep=True)
         self._adaptive = settings.audio_asr_strategy_mode == "adaptive"
+        self._call_limit = min(settings.audio_asr_max_total_calls,
+                               settings.audio_asr_adaptive_max_total_calls if self._adaptive else 65793)
+        self._resource_plan = None
         self._transcriber = transcriber
         self._bridge = _TrackedTranscriber(self)
         self._lock = Lock()
@@ -309,6 +333,7 @@ class AsrStrategyRunner:
                 tuple(sorted(self._provenance, key=lambda item: (item[0], item[1]))),
                 self._native_duration_ns, self._chunked_duration_ns,
                 self._native_duration_ns + self._chunked_duration_ns + self._recovery_duration_ns,
+                self._resource_plan, self._decoder_rechecks,
             )
 
     def prepare(self, preprocessing: PreprocessingResult, planner: SpeechAwareAsrChunkPlanner) -> AsrStrategyDecision:
@@ -374,16 +399,31 @@ class AsrStrategyRunner:
                  and chunked.sample_count == count and chunked.provenance.preprocessing == preprocessing.provenance)
         self._fallback_plan = chunked
         self._settings = settings.model_copy(update={"audio_asr_max_payload_bytes": limit})
-        if self._adaptive:
-            recovery = recovery_configuration(self._settings)
-            chunked_calls = len(chunked.chunks) + recovery["max_total_attempts"]
-            budget = settings.audio_asr_adaptive_max_total_calls
-            if selected is AsrStrategy.WHOLE_FILE and chunked_calls == budget:
-                # Native plus its full fallback cannot fit, but chunked alone can.
-                selected = self._selected = AsrStrategy.CHUNKED
-                self._decision = replace(self._decision, selected_strategy=selected,
-                                         reason=AsrStrategyReason.CHUNKED_REQUIRED)
-            _require(int(selected is AsrStrategy.WHOLE_FILE) + chunked_calls <= budget, AsrErrorCategory.RESOURCE)
+        recovery = recovery_configuration(self._settings)
+        supplemental = recovery["max_total_attempts"]
+        chunked_calls = len(chunked.chunks) + supplemental
+        budget = min(settings.audio_asr_max_total_calls,
+                     settings.audio_asr_adaptive_max_total_calls if self._adaptive else 65793)
+        if selected is AsrStrategy.WHOLE_FILE and chunked_calls == budget:
+            # Native plus its full fallback cannot fit, but chunked alone can.
+            selected = self._selected = AsrStrategy.CHUNKED
+            self._decision = replace(self._decision, selected_strategy=selected,
+                                     reason=AsrStrategyReason.CHUNKED_REQUIRED)
+        native = int(selected is AsrStrategy.WHOLE_FILE)
+        baseline_samples = sum(c.request_interval.end_sample - c.request_interval.start_sample
+                               for c in chunked.chunks)
+        maximum_request = chunked.provenance.effective_configuration["max_request_samples"]
+        self._resource_plan = AsrResourcePlan(
+            count, len(chunked.chunks), supplemental, native, native + chunked_calls, budget,
+            baseline_samples, max(maximum_request, native * count),
+            baseline_samples + native * count + supplemental * maximum_request,
+            chunked.provenance.effective_configuration["effective_payload_limit"],
+            duration_limit if capabilities is not None and capabilities.verified_duration_ceiling is not None else None,
+        )
+        # Keep the failed requirement available in text-free telemetry. Never
+        # execute a baseline prefix and discover insufficient authorization later.
+        _require(self._resource_plan.maximum_calls <= budget, AsrErrorCategory.RESOURCE)
+        self._call_limit = self._resource_plan.maximum_calls
         self.plan = (build_whole_file_plan(preprocessing, settings, limit)
                      if selected is AsrStrategy.WHOLE_FILE else chunked)
         for chunk in chunked.chunks:

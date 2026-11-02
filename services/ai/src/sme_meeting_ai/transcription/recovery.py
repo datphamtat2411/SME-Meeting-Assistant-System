@@ -231,7 +231,7 @@ def _configuration(settings: Settings) -> dict[str, int | float]:
     configuration.update({
         "max_request_samples": min(geometry["max_request_samples"], max(0, (payload - 44) // 2)),
         "max_payload_bytes": payload, "max_timeline_samples": geometry["max_timeline_samples"],
-        "concurrency": 1,
+        "concurrency": 1, "fair_observation_rounds": 1,
     })
     return configuration
 
@@ -460,28 +460,32 @@ def _planning_context(assessment, plan, settings, boundary_alignment):
 
 
 def _iter_windows(regions, plan, configuration, forced, natural):
-    """Enumerate geometry lazily; runtime eligibility precedes the call ceiling."""
+    """One observation per target before another context strategy on early targets.
+
+    Risk order remains deterministic within each round. No target is discarded
+    for being short/weak, and runtime admission/budgets remain independent.
+    """
     seen = {c.request_interval for c in plan.chunks}
     maximum = configuration["max_request_samples"]
+    alternatives = {}
     number = 0
     if maximum:
-        for region in regions:
-            start, end = region.interval.start_sample, region.interval.end_sample
-            context = configuration["context_samples"]
-            if _near(natural, region.interval, context) and not _near(forced, region.interval, context):
-                context //= 2
-            # Split only for the hard request ceiling; context remains optional
-            # when an intact target already fits. Never split a full-source core
-            # merely to resend an already executed whole-file request.
-            size = (maximum - min(2 * context, maximum // 2) if end - start > maximum else end - start)
-            while start < end:
-                core = SampleInterval(start, min(end, start + size))
-                alternatives = 0
-                for strategy in _STRATEGIES:
-                    if alternatives >= configuration["max_attempts_per_region"]:
-                        break
+        for strategy in _STRATEGIES:
+            for region in regions:
+                start, end = region.interval.start_sample, region.interval.end_sample
+                context = configuration["context_samples"]
+                if _near(natural, region.interval, context) and not _near(forced, region.interval, context):
+                    context //= 2
+                # Context is optional when an intact target fits. Split only
+                # for the hard request ceiling, never to manufacture more work.
+                size = (maximum - min(2 * context, maximum // 2) if end - start > maximum else end - start)
+                while start < end:
+                    core = SampleInterval(start, min(end, start + size))
+                    key = (region.interval, core)
                     request = _request(core, plan.sample_count, context, maximum, strategy)
-                    if request in seen:
+                    start = core.end_sample
+                    count = alternatives.get(key, 0)
+                    if count >= configuration["max_attempts_per_region"] or request in seen:
                         continue
                     chunk = AsrChunk(
                         f"recovery-{number:06d}", len(plan.chunks) + number, core, request,
@@ -495,12 +499,11 @@ def _iter_windows(regions, plan, configuration, forced, natural):
                         c.request_interval.start_sample < request.end_sample
                         and request.start_sample < c.request_interval.end_sample
                     ))
-                    alternatives += 1
+                    alternatives[key] = count + 1
                     seen.add(request)
-                    yield RecoveryWindow(chunk, region, alternatives, strategy, context_ids,
-                                         plan.provenance, _risk(region)[1])
+                    yield RecoveryWindow(chunk, region, count + 1, strategy, context_ids,
+                                          plan.provenance, _risk(region)[1])
                     number += 1
-                start = core.end_sample
 
 
 def _plan(assessment, plan, settings, boundary_alignment=None):

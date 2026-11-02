@@ -154,6 +154,9 @@ class Settings(BaseSettings):
         default=120, gt=0, le=600, allow_inf_nan=False,
     )
     audio_asr_strategy_mode: Literal["chunked", "adaptive"] = "chunked"
+    # Standing per-recording authorization, not a duration-derived allocation.
+    # Preflight reserves the actual plan and one shared supplemental allowance.
+    audio_asr_max_total_calls: int = Field(default=256, gt=0, le=65793, strict=True)
     # Internal trial ceiling, not a verified provider recording-duration limit.
     audio_asr_native_max_samples: int = Field(default=1920000, gt=0, le=230400000, strict=True)
     # At most the validated chunk limit + Recovery limit + one native request.
@@ -247,6 +250,7 @@ class Settings(BaseSettings):
         "audio_asr_chunk_overlap_samples", "audio_asr_chunk_boundary_search_samples",
         "audio_asr_chunk_max_chunks", "audio_asr_max_concurrent_chunks",
         "audio_asr_native_max_samples", "audio_asr_adaptive_max_total_calls",
+        "audio_asr_max_total_calls",
         "audio_asr_coverage_max_tolerated_speech_map_gap_samples",
         "audio_asr_coverage_repetition_min_chars",
         "audio_asr_recovery_context_samples", "audio_asr_recovery_max_attempts_per_region",

@@ -23,6 +23,8 @@ from .offline_transcription import (
     OfflineTranscriptionStage,
     OfflineTranscriptionStatus,
     OfflineTranscriptionWarning,
+    OfflineWarningSummary,
+    summarize_warnings,
 )
 from .preprocessing import AudioPreprocessingPipeline
 
@@ -41,6 +43,7 @@ __all__ = [
     "OfflineTranscriptionStage",
     "OfflineTranscriptionStatus",
     "OfflineTranscriptionWarning",
+    "OfflineWarningSummary",
     "PreprocessingAudioMetadata",
     "PreprocessingFailure",
     "PreprocessingOutcome",
@@ -48,4 +51,5 @@ __all__ = [
     "PreprocessingResult",
     "PreprocessingStage",
     "PreprocessingStatus",
+    "summarize_warnings",
 ]

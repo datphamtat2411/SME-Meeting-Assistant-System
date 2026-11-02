@@ -6,6 +6,7 @@ the published evidence; only validated correction can publish transcript text.
 """
 
 import traceback
+from collections import defaultdict
 from concurrent.futures import CancelledError
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
@@ -53,6 +54,7 @@ if TYPE_CHECKING:
         CoverageProvenance,
         SpeechCoverageAssessment,
     )
+    from sme_meeting_ai.transcription.quality import TranscriptQualitySummary
     from sme_meeting_ai.transcription.reconciliation import (
         ReconciliationChunkOutcome,
         ReconciliationFlag,
@@ -96,6 +98,36 @@ class OfflineTranscriptionWarning:
     interval: SampleInterval | None = None
     source_chunk_ids: tuple[str, ...] = ()
     phase: str | None = None
+
+
+@dataclass(frozen=True)
+class OfflineWarningSummary:
+    stage: OfflineTranscriptionStage
+    phase: str | None
+    code: str
+    record_count: int
+    intervals: tuple[SampleInterval, ...]
+
+    @property
+    def interval_samples(self) -> int:
+        return sum(i.end_sample - i.start_sample for i in self.intervals)
+
+
+def summarize_warnings(warnings) -> tuple[OfflineWarningSummary, ...]:
+    """Union observations by stage/phase/code without deleting detailed records.
+
+    Counts across reasons/phases overlap; they must not be summed as failures.
+    """
+    from sme_meeting_ai.transcription.quality import _union
+
+    groups = defaultdict(list)
+    for warning in warnings:
+        groups[(warning.stage, warning.phase, warning.code)].append(warning.interval)
+    return tuple(OfflineWarningSummary(
+        stage, phase, code, len(intervals), _union(i for i in intervals if i is not None),
+    ) for (stage, phase, code), intervals in sorted(
+        groups.items(), key=lambda item: (item[0][0].value, item[0][1] or "", item[0][2]),
+    ))
 
 
 @dataclass(frozen=True)
@@ -176,6 +208,8 @@ class OfflineTranscriptionEvidence:
     reconciliation: OfflineReconciliationEvidence | None
     warnings: tuple[OfflineTranscriptionWarning, ...]
     provenance: OfflineTranscriptionProvenance
+    quality_summary: "TranscriptQualitySummary | None" = None
+    warning_summary: tuple[OfflineWarningSummary, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -369,6 +403,7 @@ class OfflineTranscriptionPipeline:
             TranscriptCorrectionStatus,
             correct_transcript,
         )
+        from sme_meeting_ai.transcription.quality import summarize_transcript_quality
         from sme_meeting_ai.transcription.recovery import RecoveryStopReason
 
         stage = OfflineTranscriptionStage.PREPROCESSING
@@ -381,7 +416,7 @@ class OfflineTranscriptionPipeline:
         ownership = None
         metadata = preprocessing_status = preprocessing_failure = speech_map = None
         preprocessing_completed = ()
-        plan = asr = coverage = recovery = reconciliation = result = failure = None
+        plan = asr = coverage = recovery = reconciliation = result = failure = quality_summary = None
         # These are the only candidate-bearing locals; none enters public output.
         baseline = recovered = reconciled = preprocessing_result = None
         strategy = execution = None
@@ -480,6 +515,7 @@ class OfflineTranscriptionPipeline:
                 tuple(reconciled.unresolved_intervals), reconciled.provenance,
             )
             coverage = recovered.final_assessment
+            quality_summary = summarize_transcript_quality(preprocessing_result, coverage, reconciled)
             provenance = replace(provenance, reconciliation=reconciliation.provenance, coverage=coverage.provenance)
             warnings.extend(_coverage_warnings(coverage, "final"))
             warnings.extend(_chunk_warnings(stage, reconciliation.chunk_outcomes))
@@ -553,6 +589,7 @@ class OfflineTranscriptionPipeline:
         evidence = OfflineTranscriptionEvidence(
             source_id, metadata, preprocessing_status, preprocessing_completed, preprocessing_failure,
             speech_map, plan, asr, coverage, recovery, reconciliation, published_warnings, provenance,
+            quality_summary, summarize_warnings(published_warnings),
         )
         return OfflineTranscriptionOutcome(
             status, tuple(completed), result, failure, evidence, published_warnings, provenance,
