@@ -260,17 +260,53 @@ def test_r62_live_preflight_requires_separate_authorization_before_asset_access(
     assert json.loads(serialize_report(make_report()))["release_decision"] == "NO-GO"
 
 
-def test_real_entry_coordination_runs_once_and_projects_only_numeric_evidence(production_case_fixture, caplog):
+@pytest.mark.parametrize("retry", [False, True])
+def test_real_entry_coordination_runs_once_and_projects_only_numeric_evidence(
+    production_case_fixture, monkeypatch, caplog, retry,
+):
+    from sme_meeting_ai.transcription import correction
+
     h = production_case_fixture()
+    requests, provenance = [], []
+    complete = h.corrector.complete
+    correct = correction.correct_transcript
+
+    def observed_complete(request):
+        requests.append(request)
+        response = complete(request)
+        if retry and len(requests) == 1:
+            response = replace(response, text="private-response-marker")
+        return replace(response, usage=correction.CorrectionUsage(211, 29, 240, Fraction(2, 5), 5))
+
+    def observed_correct(*args, **kwargs):
+        outcome = correct(*args, **kwargs)
+        if outcome.result is not None:
+            provenance.append(outcome.result.provenance)
+        return outcome
+
+    monkeypatch.setattr(h.corrector, "complete", observed_complete)
+    monkeypatch.setattr(correction, "correct_transcript", observed_correct)
     row = run_production_case(h.manifest, h.fixture, h.root, h.preprocessing, h.asr, h.corrector, h.settings)
     assert row["execution_status"] == row["publication_validation"] == "PASS"
     assert h.preprocessing_calls == h.closes == 1
     assert row["resources"]["asr_calls"] == len(h.calls) == 1
-    assert row["resources"]["correction_calls"] == 1
+    assert len(provenance) == 1  # One correction operation; retries are actual provider invocations.
+    p = provenance[0]
+    assert row["resources"]["correction_calls"] == len(requests) == p.attempts == 1 + int(retry)
+    # V5 provenance describes its accepted response; evaluation must independently
+    # count and charge every invocation, including a rejected response before retry.
+    assert p.usage == correction.CorrectionUsage(211, 29, 240, Fraction(2, 5), 5)
+    assert row["resources"]["unknown_cost_count"] == 0
+    assert Fraction(**row["resources"]["reported_cost"]) == Fraction(1, 10) + len(requests) * Fraction(2, 5)
+    assert row["resources"]["reported_cost"] == row["resources"]["known_cost_subtotal"]
+    assert all(request == requests[0] for request in requests)
+    assert set(json.loads(requests[0].transcript_json)) == {"sample_rate_hz", "segments"}
     assert row["metrics"]["text"]["wer"]["numerator"] == 0
     assert row["components"]["coverage"] == row["components"]["recovery"] == "2"
+    assert row["components"]["correction"] == p.correction_version == "4"
+    assert row["components"]["correction_prompt_identity"] == digest_json(p.prompt_version)
     rendered = canonical_json(row) + caplog.text
-    for secret in ("Kubernetes API", "private-prompt-marker", str(h.root), h.fixture.path):
+    for secret in ("Kubernetes API", "private-prompt-marker", "private-response-marker", str(h.root), h.fixture.path):
         assert secret not in rendered
 
 

@@ -165,7 +165,8 @@ def test_complete_meeting_context_vietnamese_corrections_and_trusted_mapping(cap
     assert output.provenance.attempts == 1
     assert output.provenance.prompt_version
     assert output.provenance.correction_version
-    assert output.provenance.prompt_version == "vi-whole-meeting-5"
+    assert output.provenance.prompt_version == "vi-whole-meeting-5.3"
+    assert output.provenance.correction_version == "4"
     assert output.provenance.rejected_segment_count == 0
     assert output.provenance.usage == CorrectionUsage(100, 50, 150)
     assert output.provenance.effective_configuration["max_attempts"] == 2
@@ -461,6 +462,102 @@ def test_source_name_and_identifier_substitutions_preserve_original(source, prop
     assert outcome.result.segments[0].text == source
     assert outcome.result.quality.changed_segment_count == 0
     assert outcome.result.provenance.rejected_segment_count == 1
+
+
+@pytest.mark.parametrize("evidence_first", [False, True])
+@pytest.mark.parametrize("source,proposed,corroboration", [
+    ("hôm nay chị Mai Hải Vânn sẽ trình bày", "Hôm nay chị Mai Hải Vân sẽ trình bày.",
+     "mời Mai Hải Vân nói tiếp"),
+    ("mình chào chị Lan Êm Ai trong nhóm", "Mình chào chị Lan MI trong nhóm.",
+     "Lan MI đang làm dự án này"),
+    ("chúng ta dùng JTW để ký", "Chúng ta dùng JWT để ký.", "hệ thống dùng JWT hằng ngày"),
+    ("hôm nay gặp Vânn Nguyễn ở đây", "Hôm nay gặp Vân Nguyễn ở đây.", "Vân Nguyễn đang báo cáo"),
+    ("hôm nay chị Mai Hải Vânn sẽ trình bày", "Hôm nay chị Mai Hải Vân sẽ trình bày.",
+     "mai hải vân đang báo cáo"),
+])
+def test_original_cross_segment_phrase_support_allows_proposed_repairs(
+    evidence_first, source, proposed, corroboration,
+):
+    # These proposals test eligibility and context flow, not LLM discovery.
+    texts = (corroboration, source) if evidence_first else (source, corroboration)
+    corrected = (corroboration, proposed) if evidence_first else (proposed, corroboration)
+    reconciliation, coverage = meeting(texts)
+    provider = Provider(payload(reconciliation, corrected))
+    outcome = invoke(reconciliation, coverage, provider)
+    assert outcome.status is TranscriptCorrectionStatus.COMPLETED
+    assert [s.text for s in outcome.result.segments] == list(corrected)
+    assert outcome.result.provenance.rejected_segment_count == 0
+    assert len(provider.requests) == 1
+    assert json.loads(provider.requests[0].transcript_json) == context_payload(reconciliation)
+    assert outcome.result.coverage is coverage
+    assert [s.text for s in reconciliation.segments] == list(texts)
+    for before, after in zip(reconciliation.segments, outcome.result.segments, strict=True):
+        for name in ("segment_id", "ordinal", "interval", "source_chunk_ids", "flags"):
+            assert getattr(before, name) == getattr(after, name)
+
+
+@pytest.mark.parametrize("corroboration", [
+    "Vân có mặt hôm nay",
+    "Mai Hải Vânn đang báo cáo",
+    "Mai Hải Vânn",
+    "Mai Hải Vần đang báo cáo",
+])
+def test_weak_context_does_not_disable_name_protection(corroboration):
+    source = "hôm nay chị Mai Hải Vânn sẽ trình bày"
+    reconciliation, coverage = meeting((source, corroboration))
+    proposed = ("Hôm nay chị Mai Hải Vân sẽ trình bày.", corroboration)
+    outcome = invoke(reconciliation, coverage, Provider(payload(reconciliation, proposed)))
+    assert outcome.result.segments[0].text == source
+    assert outcome.result.provenance.rejected_segment_count == 1
+
+
+def test_proposed_outputs_cannot_corroborate_one_another():
+    texts = ("hôm nay chị Mai Hải Vânn sẽ trình bày", "Mai Hải Vânn đang báo cáo")
+    reconciliation, coverage = meeting(texts)
+    proposed = tuple(text.replace("Vânn", "Vân") for text in texts)
+    outcome = invoke(reconciliation, coverage, Provider(payload(reconciliation, proposed)))
+    assert [s.text for s in outcome.result.segments] == list(texts)
+    assert outcome.result.provenance.rejected_segment_count == 2
+
+
+def test_same_segment_and_cross_boundary_fragments_are_not_independent_evidence():
+    source = "tôi gặp Mai Hải Vânn rồi nhắc Mai Hải Vân"
+    reconciliation, coverage = meeting((source, "Mai Hải", "Vân đang nói"))
+    proposed = (source.replace("Vânn", "Vân"), "Mai Hải", "Vân đang nói")
+    outcome = invoke(reconciliation, coverage, Provider(payload(reconciliation, proposed)))
+    assert outcome.result.segments[0].text == source
+    assert outcome.result.provenance.rejected_segment_count == 1
+
+
+def test_context_never_rewrites_without_model_proposal_or_deduplicates_speech():
+    texts = ("Mai Hải Vânn đang nói", "Mai Hải Vân đang nói", "vâng vâng tôi tôi đồng ý")
+    reconciliation, coverage = meeting(texts)
+    outcome = invoke(reconciliation, coverage, Provider(payload(reconciliation)))
+    assert [s.text for s in outcome.result.segments] == list(texts)
+    assert outcome.result.quality.changed_segment_count == 0
+
+
+@pytest.mark.parametrize("source,proposal,context", [
+    ("chạy API v2 lúc 10 giờ", "chạy API v3 lúc 10 giờ", "chạy API v3 vào tuần sau"),
+    ("tôi gặp Mai Hải Vân hôm nay", "tôi vừa gặp Mai Hải Vân hôm nay", "tôi vừa gặp khách"),
+    ("vâng vâng tôi tôi đồng ý về cách triển khai này", "vâng tôi đồng ý về cách triển khai này",
+     "vâng tôi đồng ý về cách triển khai này với bạn"),
+    ("tôi nói về mạch ngầm hôm nay", "tôi nói về chiến lược hôm nay", "chủ đề này rất quan trọng"),
+])
+def test_context_support_does_not_waive_other_edit_constraints(source, proposal, context):
+    reconciliation, coverage = meeting((source, context))
+    outcome = invoke(reconciliation, coverage, Provider(payload(reconciliation, (proposal, context))))
+    assert outcome.result.segments[0].text == source
+    assert outcome.result.provenance.rejected_segment_count == 1
+
+
+def test_colloquial_tone_only_reading_needs_no_repeated_canonical_phrase():
+    source = "đừng nói chuyện tầm pháo mãi"
+    proposed = "Đừng nói chuyện tầm phào mãi."
+    reconciliation, coverage = meeting((source,))
+    outcome = invoke(reconciliation, coverage, Provider(payload(reconciliation, (proposed,))))
+    assert outcome.result.segments[0].text == proposed
+    assert outcome.result.provenance.rejected_segment_count == 0
 
 
 def test_global_text_accounting_rejects_many_small_omissions():

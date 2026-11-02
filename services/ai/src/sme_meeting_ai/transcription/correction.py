@@ -27,14 +27,17 @@ from .reconciliation import (
     TranscriptReconciliation,
 )
 
-_VERSION = "3"
-_PROMPT_VERSION = "vi-whole-meeting-5"
+_VERSION = "4"
+_PROMPT_VERSION = "vi-whole-meeting-5.3"
 _IDENTIFIER = re.compile(r"[a-zA-Z0-9_./:-]{1,256}\Z")
-_SYSTEM_PROMPT = """Vietnamese whole-meeting ASR error correction, version vi-whole-meeting-5.
+_SYSTEM_PROMPT = """Vietnamese whole-meeting ASR error correction, version vi-whole-meeting-5.3.
 Your task is to recover the speaker's intended wording by actively correcting
 supported recognition errors. Do not merely copy the ASR, and do not rewrite the
 conversation. Correct clear errors wherever they occur; leave only unresolved
 wording unchanged. Accuracy means both fixing mistakes and preserving correct speech.
+Recover the actual colloquial wording, not the technically correct concept that
+the speaker ought to have used. Check the written syllables before interpreting
+an odd expression through the meeting topic.
 
 Read the entire chronological meeting before deciding edits. Compare each suspect
 span with both earlier and later speech, not just its isolated sentence. Establish
@@ -45,15 +48,33 @@ speaker-specific habits when the context establishes them; do not invent speaker
 identities or assume every segment belongs to the same person. Repeated ASR errors
 are not proof that their spelling is correct, and matching topics do not make two
 different expressions interchangeable.
+For near-matching recurring names and terms, compare the complete expressions and
+their unchanged neighboring words across ORIGINAL earlier and later speech. A clearer
+occurrence can repair a garbled one; capitalization or frequency does not certify
+the ASR spelling. Require support for both the wording and the same referent. Keep
+distinct people and intentionally different aliases distinct; do not replace a
+spoken acronym with its full expansion merely because they name the same person.
 
-For a likely recognition error, compare close-sounding or close-spelling candidates
-against this whole-meeting evidence. Consider Vietnamese tone marks, vowel marks,
-initials, final consonants, word boundaries, colloquial pronunciation, and phonetic
-renderings of English. Prefer a minimal phonologically plausible repair that fits
-what this speaker is saying over a more formal or topic-associated substitute.
-Existing dictionary words can still be ASR substitutions when the surrounding
-utterance strongly supports a nearby spoken form. Conversely, unusual grammar or
-an informal expression alone is not evidence of a recognition error.
+Rà soát mặt chữ tiếng Việt trước khi đoán nghĩa theo chủ đề:
+1. Với cụm từ bất thường, thử BỎ TỪNG DẤU THANH một, rồi đọc lại đúng chuỗi
+   nhận được. Chỉ bỏ sắc, huyền, hỏi, ngã, nặng; giữ nguyên phụ âm, chữ cái và
+   dấu nguyên âm (ă, â, ê, ô, ơ, ư, đ). Đừng chỉ ghi nhận chung rằng có thể sai dấu:
+   hãy kiểm tra cách đọc thực sự tạo ra khi bỏ một dấu. Sau đó mới thử đổi/thêm
+   thanh, dấu nguyên âm, phụ âm hoặc ranh giới từ nếu chưa có cách đọc thuyết phục.
+2. Kiểm tra xem cách đọc gần đó có thành một từ láy, thành ngữ hay cụm khẩu ngữ
+   quen thuộc không. Hai tiếng cùng vần có thể là từ láy bị sai thanh ở một tiếng.
+   Từng tiếng riêng lẻ có nghĩa không bảo đảm cả cụm đã được nhận đúng. Một cách
+   sửa nhỏ có thể đúng dù cách viết ấy chưa xuất hiện ở nơi nào khác trong cuộc họp.
+3. Nếu một sửa thanh nhỏ khôi phục được cách nói quen thuộc và hợp câu đang nói,
+   chọn cách đọc đó; đừng đổi các âm tiết thành một khái niệm khác chỉ vì khái niệm
+   ấy hợp chủ đề. Người nói có thể đùa, chơi chữ hoặc dùng nhãn không chuẩn chuyên
+   môn. Đừng sửa ý tưởng của họ thành kiến thức đúng hay văn phong trang trọng hơn.
+4. Từ đang đúng chính tả vẫn có thể là từ ASR nhận nhầm. Kiểm tra cả kết hợp từ,
+   hướng hành động và ý của câu để phát hiện cách nói gần âm phù hợp hơn. Bao gồm
+   cách đọc tiếng Anh phiên âm, nhưng giữ các từ tiếng Anh thực sự được nói.
+5. Chỉ sửa khi có cả căn cứ mặt chữ/âm gần và ngữ cảnh lời nói. Gần chữ nhất không
+   tự động là đúng; cách nói lạ không tự động là sai. Giữ phần còn mơ hồ, đồng thời
+   sửa những lỗi khác có căn cứ độc lập. Không bắt buộc mỗi đoạn phải có thay đổi.
 
 Actively fix supported spelling, diacritic, obvious transcription-typo, terminology,
 and code-switching errors, as well as punctuation and casing. A correct candidate
@@ -63,10 +84,16 @@ Do not restrict yourself to punctuation-only changes or require a change in ever
 segment. Apply a supported repair consistently to occurrences with the same meaning,
 while retaining the repeated speech itself. Review proposed changes against their
 original wording and neighboring segments before returning them.
+Also review suspect spans you left unchanged: was a tone-only reading overlooked?
+Recheck recurring names and phonetic English, and retain every independently
+supported repair found during the review. Fixing one error is not a reason to
+drop another. There is no required number of edits. Return only the requested JSON,
+not the review or an explanation.
 
 You have text, not the audio. Use its sound/spelling clues without pretending to
 have listened. When several interpretations remain similarly plausible and the
-meeting does not distinguish them, return that segment's exact original ASR text.
+meeting does not distinguish them, keep that span unchanged while correcting
+independently supported errors elsewhere in the same segment.
 Preservation is the fallback for unresolved alternatives, not the goal of correction.
 Do not replace wording solely to make it more natural, grammatical, logical,
 academic, professional, or consistent with the topic. Context and lexical fidelity
@@ -425,7 +452,29 @@ def _protected_source_tokens(text: str) -> Counter:
     return protected
 
 
-def _unsupported_lexical_edit(source: str, corrected: str) -> bool:
+def _context_supports_replacement(source, corrected, span, context, ordinal):
+    """Corroborate a proposed span, never generate or auto-apply a replacement.
+
+    An unchanged neighboring token anchors the corrected phrase. Only another
+    ORIGINAL segment may corroborate it; proposed text cannot bootstrap evidence.
+    NFC/casefold is allowed, but evidence must preserve the actual diacritics.
+    """
+    source_start, source_end, corrected_start, corrected_end = span
+    phrases = []
+    if (source_start and corrected_start
+            and source[source_start - 1] == corrected[corrected_start - 1]):
+        phrases.append(corrected[corrected_start - 1:corrected_end])
+    if (source_end < len(source) and corrected_end < len(corrected)
+            and source[source_end] == corrected[corrected_end]):
+        phrases.append(corrected[corrected_start:corrected_end + 1])
+    return any(
+        owner != ordinal and words[start:start + len(phrase)] == phrase
+        for phrase in phrases
+        for owner, words, start in context.get(phrase[0], ())
+    )
+
+
+def _unsupported_lexical_edit(source: str, corrected: str, context=None, ordinal=-1) -> bool:
     """Identify edits that have too little lexical support to publish safely.
 
     This is a conservative token-alignment check, not a semantic or edit-distance
@@ -444,8 +493,8 @@ def _unsupported_lexical_edit(source: str, corrected: str) -> bool:
 
     protected = _protected_source_tokens(source)
     corrected_counts = Counter(corrected_words)
-    if any(corrected_counts[word] < count for word, count in protected.items()):
-        return True
+    missing_protected = {word for word, count in protected.items() if corrected_counts[word] < count}
+    source_tokens, corrected_tokens = _words(source), _words(corrected)
 
     unsupported_replacements = 0
     matcher = SequenceMatcher(None, source_words, corrected_words, autojunk=False)
@@ -455,6 +504,13 @@ def _unsupported_lexical_edit(source: str, corrected: str) -> bool:
         source_span = source_words[source_start:source_end]
         corrected_span = corrected_words[corrected_start:corrected_end]
         if tag in ("delete", "insert"):
+            return True
+        if context is not None and _context_supports_replacement(
+            source_tokens, corrected_tokens,
+            (source_start, source_end, corrected_start, corrected_end), context, ordinal,
+        ):
+            continue
+        if missing_protected.intersection(source_span):
             return True
         if set(source_span).isdisjoint(corrected_span):
             if len(source_span) >= 2 or len(corrected_span) > len(source_span):
@@ -516,8 +572,15 @@ def _validated_texts(response, reconciliation, config):
 
     texts = []
     rejected_segment_count = 0
+    # Index original occurrences once, instead of rescanning the entire meeting
+    # for every proposed replacement. Word tuples are shared, not copied per token.
+    context = {}
+    for segment in reconciliation.segments:
+        words = _words(segment.text)
+        for start, word in enumerate(words):
+            context.setdefault(word, []).append((segment.ordinal, words, start))
     for source, proposed in zip(reconciliation.segments, proposed_texts, strict=True):
-        if proposed != source.text and _unsupported_lexical_edit(source.text, proposed):
+        if proposed != source.text and _unsupported_lexical_edit(source.text, proposed, context, source.ordinal):
             texts.append(source.text)
             rejected_segment_count += 1
         else:

@@ -564,13 +564,13 @@ gates are reported as `PASS`/`FAIL`/`UNESTABLISHED`; an explicit failure fails p
 passing runs, or inspect `quality_gate_status` in the JSON output. This evaluation
 does not execute ASR, train a model, tune thresholds or change preprocessing.
 
-### Whole-meeting correction: GPT-6 Luna Medium
+### Whole-meeting correction: GPT-6 Luna reasoning effort
 
 Configure the instruction adapter with:
 
 ```dotenv
 AI_TRANSCRIPT_CORRECTION_MODEL=openai/gpt-6-luna
-AI_TRANSCRIPT_CORRECTION_REASONING_EFFORT=medium
+AI_TRANSCRIPT_CORRECTION_REASONING_EFFORT=none
 AI_TRANSCRIPT_CORRECTION_TEMPERATURE=
 ```
 
@@ -581,7 +581,7 @@ Verified against OpenRouter on **2026-11-01**:
 The exact public ID is `openai/gpt-6-luna` (canonical slug
 `openai/gpt-6-luna-20260922`). It supports Chat Completions and
 `response_format: {"type":"json_object"}`. The adapter sends
-`reasoning: {"effort":"medium"}` using OpenRouter's
+`reasoning: {"effort":"none"}` using OpenRouter's
 [unified reasoning contract](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens)
 and [JSON-mode parameters](https://openrouter.ai/docs/api/reference/parameters).
 No alternate model is substituted.
@@ -618,6 +618,21 @@ Whole-meeting context, strict JSON keys, segment IDs/order, trusted timestamps,
 source provenance, uncertainty and text-integrity checks remain enforced. Integrity
 heuristics reject detected omission/expansion/drift; provider compatibility alone
 does not establish semantic correctness or Vietnamese correction quality.
+
+The active corrector is single-pass `vi-whole-meeting-5.3`, component `4`, with
+original-context corroboration for LLM-proposed recurring-name/term repairs. The
+current comparison configuration uses **none** reasoning, also set in `.env.example`.
+The [prompt follow-up evaluation](docs/TRANSCRIPT_CORRECTION_PROMPT_FOLLOWUP.md)
+records the previous medium aggregate best (**74/578 word errors and 203/1901
+character errors**), the high comparison (**75/578 and 203/1901**) and the latest
+none comparison (**76/578 and 207/1901**). The none run preserved the recurring-name
+and acronym repairs but did not fix either tone target. The complete quality goal is
+not yet validated as stable, and one unrelated reference-harmful edit remains.
+
+The [V6 evaluation](docs/TRANSCRIPT_CORRECTION_V6_EVALUATION.md) and
+[V5.1 follow-up](docs/TRANSCRIPT_CORRECTION_V51_EVALUATION.md) retain the earlier
+rejected experiments, V5 restoration and guard-only replay. The later continuation
+used separately authorized budgets without resetting those earlier ledgers.
 
 Optional live compatibility probe (billable; synthetic Vietnamese text only):
 

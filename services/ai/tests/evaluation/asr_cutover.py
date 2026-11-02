@@ -208,7 +208,7 @@ class Components(Contract):
     reconciler: Literal["2"]
     coverage: Literal["2"]
     recovery: Literal["2"]
-    correction: Literal["1", "2"]
+    correction: Literal["1", "2", "3", "4"]
     correction_prompt_identity: Digest
     correction_model_identity: Digest
 
