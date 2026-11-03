@@ -71,6 +71,8 @@ services:
     image: sme-ai-core:secure-integration
     restart: unless-stopped
     environment:
+      AI_SERVICE_NAME: sme-meeting-ai
+      AI_SERVICE_IDENTITY: ai-core
       AI_ENVIRONMENT: development
       AI_HTTP_HOST: 0.0.0.0
       AI_HTTP_PORT: "8000"

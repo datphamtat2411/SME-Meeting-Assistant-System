@@ -24,10 +24,12 @@ class JavaFastApiMtlsTests {
         TestPki.create(pki);
         int port;
         try (var socket = new ServerSocket(0)) { port = socket.getLocalPort(); }
-        var builder = new ProcessBuilder(python.toString(), "-m", "sme_meeting_ai.api").directory(ai.toFile())
+        // Run outside the service checkout so load_settings() cannot read a private .env.
+        var builder = new ProcessBuilder(python.toString(), "-m", "sme_meeting_ai.api").directory(pki.toFile())
             .redirectOutput(ProcessBuilder.Redirect.DISCARD).redirectError(ProcessBuilder.Redirect.DISCARD);
-        builder.environment().keySet().removeIf(k -> k.startsWith("AI_"));
+        builder.environment().keySet().removeIf(k -> k.startsWith("AI_") || k.equals("OPENROUTER_API_KEY"));
         builder.environment().putAll(java.util.Map.of(
+            "AI_SERVICE_NAME", "e2e01-ai-http-fixture", "AI_SERVICE_IDENTITY", "ai-core",
             "AI_ENVIRONMENT", "development", "AI_HTTP_HOST", "127.0.0.1", "AI_HTTP_PORT", Integer.toString(port),
             "AI_TLS_CERT_FILE", pki.resolve("server.crt").toString(), "AI_TLS_KEY_FILE", pki.resolve("server.key").toString(),
             "AI_TLS_CLIENT_CA_FILE", pki.resolve("ca.crt").toString()));

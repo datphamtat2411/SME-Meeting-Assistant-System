@@ -5,6 +5,7 @@ Only these test-owned --rm containers are stopped; no volumes/topology are remov
 """
 import asyncio
 import importlib.util
+import json
 import os
 import shutil
 import subprocess
@@ -16,6 +17,7 @@ from pathlib import Path
 import boto3
 import pytest
 from botocore.config import Config
+from dotenv import dotenv_values
 from pydantic import SecretStr
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -28,6 +30,61 @@ spec.loader.exec_module(smoke)
 
 def docker(*args):
     return subprocess.check_output(["docker", *args], stderr=subprocess.PIPE, text=True, timeout=120).strip()
+
+
+def fixture_settings(pki, broker_port, storage_port, password):
+    # Settings otherwise consumes the developer's process environment even when
+    # dotenv is disabled. Isolate initialization without changing service defaults.
+    with pytest.MonkeyPatch.context() as isolated:
+        for name in tuple(os.environ):
+            if name.startswith("AI_") or name == "OPENROUTER_API_KEY":
+                isolated.delenv(name)
+        return smoke.Settings(_env_file=None,
+            service_name="e2e01-transport-fixture", service_identity="ai-worker", environment="test",
+            rabbitmq_url=f"amqps://localhost:{broker_port}/sme-integration",
+            rabbitmq_ca_file=pki / "ca.crt", rabbitmq_username=SecretStr("fixture"), rabbitmq_password=SecretStr(password),
+            s3_endpoint_url=f"https://localhost:{storage_port}", s3_ca_file=pki / "ca.crt", s3_bucket="transport-fixture",
+            s3_access_key_id=SecretStr("fixture"), s3_secret_access_key=SecretStr(password), audio_temp_dir=pki)
+
+
+def test_fixture_settings_ignore_developer_environment_and_dotenv(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("AI_SERVICE_IDENTITY=INVALID_IDENTITY\nAI_RABBITMQ_URL=amqp://wrong.invalid\n")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "INVALID_IDENTITY")
+    monkeypatch.setenv("AI_RABBITMQ_URL", "amqp://wrong.invalid")
+    monkeypatch.setenv("AI_CORE_API_CLIENT_KEY_FILE", "/unrelated/private/key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "unused-fixture-sentinel")
+    settings = fixture_settings(tmp_path, 45671, 49443, "ephemeral-fixture-password")
+    assert settings.service_name == "e2e01-transport-fixture"
+    assert settings.service_identity == "ai-worker"
+    assert settings.environment == "test"
+    assert settings.rabbitmq_url == "amqps://localhost:45671/sme-integration"
+    assert settings.s3_endpoint_url == "https://localhost:49443"
+    assert settings.core_api_client_key_file is None
+    assert settings.openrouter_api_key is None
+    assert settings.audio_temp_dir == tmp_path
+
+
+def test_compose_and_worker_examples_supply_required_ai_settings(tmp_path):
+    # Render configuration only: no daemon, CA, private dotenv or service startup.
+    env = dict(os.environ, BROKER_ENV_FILE="/dev/null", STORAGE_ENV_FILE="/dev/null", WORKER_ENV_FILE="/dev/null",
+        BROKER_TLS_DIR=str(tmp_path), STORAGE_TLS_DIR=str(tmp_path), AI_TLS_DIR=str(tmp_path),
+        WORKER_TLS_DIR=str(tmp_path), AI_DNS="ai-fixture.invalid")
+    rendered = subprocess.check_output(["docker", "compose", "--env-file", "/dev/null", "-f", str(HERE / "compose.yaml"),
+        "--profile", "http", "--profile", "checks", "config", "--format", "json"], env=env, text=True, timeout=20)
+    compose_environment = json.loads(rendered)["services"]["ai-core"]["environment"]
+    worker_environment = dotenv_values(HERE / "worker.env.example")
+    for values, identity in ((compose_environment, "ai-core"), (worker_environment, "ai-worker")):
+        with pytest.MonkeyPatch.context() as isolated:
+            for name in tuple(os.environ):
+                if name.startswith("AI_") or name == "OPENROUTER_API_KEY":
+                    isolated.delenv(name)
+            for name, value in values.items():
+                isolated.setenv(name, value)
+            settings = smoke.Settings(_env_file=None)
+            assert settings.service_name
+            assert settings.service_identity == identity
+            assert settings.environment == "development"
 
 
 @pytest.fixture(scope="module")
@@ -79,10 +136,7 @@ def services(tmp_path_factory):
             names.append(name)
         broker_port = int(docker("port", names[0], "5671/tcp").rsplit(":", 1)[1])
         storage_port = int(docker("port", names[1], "9000/tcp").rsplit(":", 1)[1])
-        settings = smoke.Settings(_env_file=None, rabbitmq_url=f"amqps://localhost:{broker_port}/sme-integration",
-            rabbitmq_ca_file=pki / "ca.crt", rabbitmq_username=SecretStr("fixture"), rabbitmq_password=SecretStr(password),
-            s3_endpoint_url=f"https://localhost:{storage_port}", s3_ca_file=pki / "ca.crt", s3_bucket="transport-fixture",
-            s3_access_key_id=SecretStr("fixture"), s3_secret_access_key=SecretStr(password))
+        settings = fixture_settings(pki, broker_port, storage_port, password)
         for _ in range(90):
             try:
                 smoke.verified_socket(smoke.Endpoint("localhost", broker_port), pki / "ca.crt")

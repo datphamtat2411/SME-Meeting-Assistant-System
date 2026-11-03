@@ -137,6 +137,10 @@ environments are distinct. Supply bootstrap files:
 - `storage.env`: `RUSTFS_ACCESS_KEY`, `RUSTFS_SECRET_KEY` (operator bootstrap only).
 - `worker.env`: worker example plus **separate** `AI_RABBITMQ_USERNAME/PASSWORD`,
   `AI_S3_ACCESS_KEY_ID/SECRET_ACCESS_KEY`. These are not administrator accounts.
+  Keep the required `AI_SERVICE_NAME` and `AI_SERVICE_IDENTITY=ai-worker` from the
+  example; the smoke CLI disables implicit `.env` loading and reads its process
+  environment. These settings name the process; mTLS identity still comes only
+  from the verified certificate URI SAN.
 - Core's normal DB/JWT/SMTP settings plus `core.env.example` and separate publisher
   `RABBITMQ_USERNAME/PASSWORD`, storage `APP_MEDIA_STORAGE_ACCESS_KEY/SECRET_KEY`.
 
@@ -204,6 +208,9 @@ mvn -q -Dtest=SecureTransportTests,SecureTransportSpringTests,TransportConfigura
 using `services/ai/.venv/bin/python` (`E2E01_AI_PYTHON` override), calls readiness
 with Java and tests handshake/hostname/expiry failures. These are real network
 processes with **isolated certificates**, not proof of approved-CA enrollment.
+The child process runs in its temporary PKI directory with explicit service
+settings, preventing a developer's `.env` or inherited AI/provider settings from
+supplying hidden test prerequisites.
 AI readiness deliberately needs mTLS but has no operation grant; identity-negative
 readiness tests validate the Java workload loader. Existing AI protected-operation
 tests separately prove core-api grants and reject other identities/headers.
@@ -218,6 +225,11 @@ E2E01_DOCKER_FIXTURES=true uv run --locked pytest ../../infra/local/secure-integ
 The Docker fixture tests use real RabbitMQ/RustFS and actual Java Rabbit/AWS SDK
 and Python aio-pika/boto3 clients, with synthetic RAM-backed data and unrelated
 ephemeral test CAs. They stop only their own uniquely named `--rm` containers.
+Fixture settings explicitly select the `test` environment and `ai-worker` process
+identity, disable dotenv loading, and exclude inherited AI/provider settings.
+The versioned AI Compose environment and worker example also supply the required
+service name/identity; a configuration-only regression validates both against
+the existing AI settings schema without reading a developer's `.env`.
 They do not access the Development CA, deployed workloads or persistent volumes.
 TLS negatives require certificate failures, not connection refusal as a substitute.
 
