@@ -226,12 +226,34 @@ class CorrectionProvenance:
     attempts: int
     usage: CorrectionUsage
     rejected_segment_count: int = 0
+    proposed_edit_count: int = 0
+    accepted_edit_count: int = 0
+    rejected_edit_count: int = 0
+    rejection_reason_counts: Mapping[str, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "effective_configuration",
                            MappingProxyType(dict(self.effective_configuration)))
         if type(self.rejected_segment_count) is not int or self.rejected_segment_count < 0:
             raise ValueError("Invalid rejected segment count")
+        counts = (self.proposed_edit_count, self.accepted_edit_count, self.rejected_edit_count)
+        if any(type(count) is not int or count < 0 for count in counts):
+            raise ValueError("Invalid correction edit counts")
+        if self.correction_version == "5" and (
+            self.accepted_edit_count + self.rejected_edit_count != self.proposed_edit_count
+            or self.rejected_segment_count > self.rejected_edit_count
+        ):
+            raise ValueError("Invalid correction edit counts")
+        reasons = self.rejection_reason_counts
+        allowed = frozenset(("unresolvable_span", "overlap_conflict", "partial_token", "noop_edit",
+                             "protected_token", "unsafe_expansion", "unsafe_length_change",
+                             "unsupported_lexical_change"))
+        if (not isinstance(reasons, Mapping) or any(
+            type(reason) is not str or reason not in allowed or type(count) is not int or count < 0
+            for reason, count in reasons.items()
+        ) or sum(reasons.values()) != self.rejected_edit_count):
+            raise ValueError("Invalid correction rejection reasons")
+        object.__setattr__(self, "rejection_reason_counts", MappingProxyType(dict(sorted(reasons.items()))))
 
 
 @dataclass(frozen=True)
@@ -254,6 +276,26 @@ class TranscriptCorrectionResult:
 class TranscriptCorrectionFailure:
     category: CorrectionErrorCategory
     attempts: int
+    reason: str | None = None
+
+    def __post_init__(self) -> None:
+        _validate_failure_reason(self.reason)
+
+
+def _validate_failure_reason(reason: str | None) -> None:
+    """Only closed diagnostic vocabularies may cross an internal failure boundary."""
+    if reason is None:
+        return
+    # Lazy imports preserve V5's dependency boundary and the V6 modules' imports
+    # of these canonical models. Never accept arbitrary exception/provider text.
+    from .correction_v6 import V6FailureReason
+    from .correction_v6_generation import V6GenerationReason
+
+    if type(reason) is not str or reason not in {
+        *(item.value for item in V6FailureReason), *(item.value for item in V6GenerationReason),
+        "invalid_correction_result",
+    }:
+        raise ValueError("Invalid correction failure reason")
 
 
 @dataclass(frozen=True, slots=True)

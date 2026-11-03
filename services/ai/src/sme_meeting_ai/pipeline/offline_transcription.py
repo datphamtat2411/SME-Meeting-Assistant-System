@@ -11,7 +11,7 @@ from concurrent.futures import CancelledError
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Mapping
+from typing import TYPE_CHECKING, Literal, Mapping
 
 from sme_meeting_ai.audio.errors import AudioErrorCategory, AudioProcessingError
 from sme_meeting_ai.audio.models import AudioSource, SampleInterval, SpeechMap
@@ -50,6 +50,9 @@ if TYPE_CHECKING:
         TranscriptCorrectionProvider,
         TranscriptCorrectionResult,
     )
+    from sme_meeting_ai.transcription.correction_v6_generation import (
+        V6CorrectionProvider,
+    )
     from sme_meeting_ai.transcription.coverage import (
         CoverageProvenance,
         SpeechCoverageAssessment,
@@ -87,6 +90,13 @@ class OfflineTranscriptionFailure:
     stage: OfflineTranscriptionStage
     category: str
     attempts: int | None = None
+    reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.reason is not None:
+            from sme_meeting_ai.transcription.correction import _validate_failure_reason
+
+            _validate_failure_reason(self.reason)
 
 
 @dataclass(frozen=True)
@@ -250,7 +260,7 @@ class _CorrectionCancelled(BaseException):
 class _BorrowedCorrector:
     """Let futures cancellation cross correction's ordinary provider-error catch."""
 
-    def __init__(self, provider: "TranscriptCorrectionProvider"):
+    def __init__(self, provider: "TranscriptCorrectionProvider | V6CorrectionProvider"):
         self._provider = provider
 
     def complete(self, request):
@@ -380,17 +390,20 @@ class OfflineTranscriptionPipeline:
 
     def __init__(
         self, preprocessing: AudioPreprocessingPipeline, planner: "SpeechAwareAsrChunkPlanner",
-        transcriber: "AsrTranscriber", correction_provider: "TranscriptCorrectionProvider",
+        transcriber: "AsrTranscriber", correction_provider: "TranscriptCorrectionProvider | V6CorrectionProvider",
         settings: Settings, pipeline_version: str = "1",
+        *, correction_mode: Literal["v5_full", "v6_edits"] = "v5_full",
     ):
         _require(isinstance(settings, Settings))
         _require(isinstance(pipeline_version, str) and bool(pipeline_version.strip()))
+        _require(type(correction_mode) is str and correction_mode in ("v5_full", "v6_edits"))
         self._preprocessing = preprocessing
         self._planner = planner
         self._transcriber = transcriber
         self._correction_provider = correction_provider
         self._settings = settings.model_copy(deep=True)
         self._pipeline_version = pipeline_version
+        self._correction_mode = correction_mode
 
     def run(self, source: AudioSource) -> OfflineTranscriptionOutcome:
         from sme_meeting_ai.transcription.asr_strategy import (
@@ -526,12 +539,21 @@ class OfflineTranscriptionPipeline:
             completed.append(stage)
 
             stage = OfflineTranscriptionStage.CORRECTION
-            corrected = correct_transcript(reconciled, coverage, _BorrowedCorrector(self._correction_provider),
-                                           self._settings)
+            if self._correction_mode == "v6_edits":
+                from sme_meeting_ai.transcription.correction_v6_pipeline import (
+                    correct_transcript_v6,
+                )
+
+                corrected = correct_transcript_v6(
+                    reconciled, coverage, _BorrowedCorrector(self._correction_provider), self._settings,
+                )
+            else:
+                corrected = correct_transcript(reconciled, coverage, _BorrowedCorrector(self._correction_provider),
+                                               self._settings)
             _require(isinstance(corrected, TranscriptCorrectionOutcome))
             if corrected.status is TranscriptCorrectionStatus.FAILED:
                 raise _Stopped(OfflineTranscriptionFailure(
-                    stage, corrected.failure.category.value.upper(), corrected.failure.attempts,
+                    stage, corrected.failure.category.value.upper(), corrected.failure.attempts, corrected.failure.reason,
                 ))
             result = corrected.result
             provenance = replace(provenance, correction=result.provenance)
