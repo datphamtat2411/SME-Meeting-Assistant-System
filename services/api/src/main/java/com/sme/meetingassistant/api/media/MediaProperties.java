@@ -27,6 +27,9 @@ public class MediaProperties {
         private String secretKey;
         private boolean pathStyleAccess = true;
         private boolean createBucketIfMissing;
+        private String caFile;
+        public String getCaFile() { return caFile; }
+        public void setCaFile(String value) { caFile = value; }
         public String getEndpoint() { return endpoint; }
         public void setEndpoint(String value) { endpoint = value; }
         public String getRegion() { return region; }

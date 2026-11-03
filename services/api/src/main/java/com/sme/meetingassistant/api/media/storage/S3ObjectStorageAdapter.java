@@ -1,6 +1,7 @@
 package com.sme.meetingassistant.api.media.storage;
 
 import com.sme.meetingassistant.api.media.MediaProperties;
+import com.sme.meetingassistant.api.transport.PemTls;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.file.Files;
@@ -44,10 +45,29 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
         if (hasAccessKey != hasSecretKey) throw new IllegalStateException("Both S3 credentials must be configured together.");
         var serviceConfig = S3Configuration.builder()
             .pathStyleAccessEnabled(this.properties.isPathStyleAccess()).build();
-        this.client = S3Client.builder().endpointOverride(endpoint).region(Region.of(this.properties.getRegion()))
-            .credentialsProvider(credentialsProvider()).serviceConfiguration(serviceConfig).build();
+        var builder = S3Client.builder().endpointOverride(endpoint).region(Region.of(this.properties.getRegion()))
+            .credentialsProvider(credentialsProvider()).serviceConfiguration(serviceConfig);
+        if (this.properties.getCaFile() != null && !this.properties.getCaFile().isBlank()) {
+            builder.httpClientBuilder(verifiedHttps(this.properties.getEndpoint(), Path.of(this.properties.getCaFile())));
+        }
+        this.client = builder.build();
         this.presigner = S3Presigner.builder().endpointOverride(endpoint).region(Region.of(this.properties.getRegion()))
             .credentialsProvider(credentialsProvider()).serviceConfiguration(serviceConfig).build();
+    }
+
+    /** Dedicated SDK trust, preserving Apache's hostname verification. No global JVM truststore changes. */
+    public static software.amazon.awssdk.http.apache.ApacheHttpClient.Builder verifiedHttps(String endpoint, Path ca) {
+        URI uri = URI.create(endpoint);
+        if (!"https".equals(uri.getScheme()) || uri.getHost() == null || uri.getUserInfo() != null
+                || uri.getQuery() != null || uri.getFragment() != null) {
+            throw new IllegalStateException("Explicit S3 trust requires an HTTPS endpoint");
+        }
+        try {
+            var trust = PemTls.trustManager(ca);
+            return software.amazon.awssdk.http.apache.ApacheHttpClient.builder()
+                .connectionTimeout(Duration.ofSeconds(3)).socketTimeout(Duration.ofSeconds(15))
+                .tlsTrustManagersProvider(() -> new javax.net.ssl.TrustManager[]{trust});
+        } catch (Exception e) { throw new IllegalStateException("Invalid S3 TLS trust configuration"); }
     }
 
     @Override

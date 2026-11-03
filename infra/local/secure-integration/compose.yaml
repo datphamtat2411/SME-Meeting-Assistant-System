@@ -1,0 +1,121 @@
+name: sme-meeting-secure-integration
+
+# Separate project and volumes; never overlay/recreate the plaintext local project.
+services:
+  rabbitmq:
+    image: rabbitmq:4.1-management
+    restart: unless-stopped
+    env_file: ["${BROKER_ENV_FILE:?external broker bootstrap environment required}"]
+    volumes:
+      - type: bind
+        source: ./rabbitmq.conf
+        target: /etc/rabbitmq/rabbitmq.conf
+        read_only: true
+      - type: bind
+        source: ./enabled_plugins
+        target: /etc/rabbitmq/enabled_plugins
+        read_only: true
+      - type: bind
+        source: ${BROKER_TLS_DIR:?external broker TLS directory required}
+        target: /run/secrets/broker
+        read_only: true
+        bind: {create_host_path: false}
+      - broker_secure_data:/var/lib/rabbitmq
+    ports: ["127.0.0.1:5671:5671"]
+    networks:
+      integration:
+        aliases: ["${BROKER_DNS:-rabbitmq.internal}"]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  storage-permissions:
+    image: alpine:3.22
+    user: root
+    command: ["chown", "10001:10001", "/data"]
+    volumes: ["storage_secure_data:/data"]
+    restart: "no"
+  storage:
+    image: rustfs/rustfs:1.0.3
+    depends_on:
+      storage-permissions: {condition: service_completed_successfully}
+    restart: unless-stopped
+    env_file: ["${STORAGE_ENV_FILE:?external storage bootstrap environment required}"]
+    environment:
+      RUSTFS_ADDRESS: ":9000"
+      RUSTFS_CONSOLE_ENABLE: "false"
+      RUSTFS_TLS_PATH: /run/secrets/storage
+    command: ["/data"]
+    ports: ["127.0.0.1:9443:9000"]
+    volumes:
+      - storage_secure_data:/data
+      - type: bind
+        source: ${STORAGE_TLS_DIR:?external storage TLS directory required}
+        target: /run/secrets/storage
+        read_only: true
+        bind: {create_host_path: false}
+    networks:
+      integration:
+        aliases: ["${STORAGE_DNS:-storage.internal}"]
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "--cacert", "/run/secrets/storage/issuer-ca.crt", "https://${STORAGE_DNS:-storage.internal}:9000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  ai-core:
+    profiles: ["http"]
+    build: ../../../services/ai
+    image: sme-ai-core:secure-integration
+    restart: unless-stopped
+    environment:
+      AI_ENVIRONMENT: development
+      AI_HTTP_HOST: 0.0.0.0
+      AI_HTTP_PORT: "8000"
+      AI_TLS_CERT_FILE: /run/secrets/ai-core/ai-server.crt
+      AI_TLS_KEY_FILE: /run/secrets/ai-core/ai-server.key
+      AI_TLS_CLIENT_CA_FILE: /run/secrets/ai-core/client-ca.crt
+    volumes:
+      - type: bind
+        source: ${AI_TLS_DIR:?existing AI runtime TLS directory required}
+        target: /run/secrets/ai-core
+        read_only: true
+        bind: {create_host_path: false}
+    ports: ["127.0.0.1:8444:8000"]
+    networks:
+      integration:
+        aliases: ["${AI_DNS:?preserve actual enrolled AI server DNS SAN}"]
+    read_only: true
+    tmpfs: ["/tmp:mode=1777,size=64m"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+  # SDK/verified TLS health checks run without mounting any server private keys.
+  transport-health:
+    profiles: ["checks"]
+    image: sme-ai-core:secure-integration
+    entrypoint: ["python", "/checks/smoke.py", "--infrastructure"]
+    env_file: ["${WORKER_ENV_FILE:?external worker transport environment required}"]
+    volumes:
+      - type: bind
+        source: ./smoke.py
+        target: /checks/smoke.py
+        read_only: true
+      - type: bind
+        source: ${WORKER_TLS_DIR:?external worker TLS/trust directory required}
+        target: /run/secrets/ai-worker
+        read_only: true
+        bind: {create_host_path: false}
+    networks: [integration]
+    read_only: true
+    tmpfs: ["/tmp:mode=1777,size=64m"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+networks:
+  integration: {}
+volumes:
+  broker_secure_data:
+  storage_secure_data:
