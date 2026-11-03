@@ -1,7 +1,8 @@
-# Secure development integration — E2E-01 / E2E-03
+# Secure development integration — E2E-01 / E2E-03 / E2E-04
 
 This opt-in project provides direct HTTP mTLS, AMQPS and immutable S3 HTTPS.
-Core Worker V1 endpoints are implemented separately; this is not final transcription E2E acceptance. Contract:
+Core Worker V1 endpoints and the E2E-04 controlled acceptance are implemented
+here; E2E-05 final fully connected acceptance is not claimed. Contract:
 [`CORE_API_AI_TRANSCRIPTION_WORKER_V1.md`](../../../contracts/CORE_API_AI_TRANSCRIPTION_WORKER_V1.md).
 
 ## Prerequisites and boundary
@@ -554,6 +555,43 @@ Objects remain available after publication failure and lost completion responses
 No lifecycle/cleanup policy is installed. Accepted results, accepted audio and objects
 still eligible for reconciliation remain protected. Future orphan retention requires
 an approved policy and Core-reference reconciliation; no arbitrary expiry is assumed.
+
+## E2E-04 Core-owned controlled acceptance
+
+After the secure broker/storage checks and controlled activation prerequisites
+above, enable Core's existing outbox and transcription capability with
+`external-quorum`, dead-letter reconciliation, the verified infrastructure
+attestation, and the separately provisioned Core/worker identities. Do not
+enable these flags by editing the committed example files; load the approved
+values from the external Core environment.
+
+The acceptance test requires an externally provisioned active Core account and
+the host-resolvable private service endpoints. It creates a synthetic meeting,
+uploads a valid WAV through Core's presigned HTTPS boundary, finalizes the
+media, creates the processing job, and waits for the public Core job and
+transcript views. The worker uses its real Core mTLS client, AMQPS consumer,
+storage client, lease/claim protocol, preprocessing, result publication, and
+completion path. Only ASR and correction are deterministic harness providers;
+the production OpenRouter composition is unchanged.
+
+For a host-run worker, use the host storage boundary port (`9443`) in the
+external worker environment; the container example uses the Compose boundary
+port (`9000`). Keep the worker's `AI_S3_STORAGE_ID` equal to Core's
+`APP_WORKER_TRANSCRIPTION_STORAGE_ID`.
+
+Required test-only values are `E2E04_CORE_EMAIL`, `E2E04_CORE_PASSWORD`, and
+the worker `AI_*` transport/storage settings from the external environment.
+The test deliberately disables dotenv loading and requires explicit opt-in:
+
+```sh
+cd services/ai
+RUN_WORKER_LIVE_ACCEPTANCE=1 uv run --locked pytest -q -s \
+  tests/integration/test_worker_live_acceptance.py
+```
+
+The test prints only meeting/media/job UUIDs and terminal status as evidence.
+It does not claim shared Development CA approval, paid-provider execution, or
+E2E-05 final fully connected acceptance.
 
 ## E2E-03 isolated verification and activation
 

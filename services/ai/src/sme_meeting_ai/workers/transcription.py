@@ -19,6 +19,7 @@ from uuid import uuid4
 from pydantic import AfterValidator, Field, ValidationError, model_validator
 
 from sme_meeting_ai.audio.models import AudioSource, SampleInterval, SpeechMapWarning
+from sme_meeting_ai.core.config import Environment
 from sme_meeting_ai.integrations.core_api import (
     MAX_RESULT_BYTES,
     CoreError,
@@ -752,8 +753,13 @@ class TranscriptionWorker:
 class TranscriptionExecution:
     """Runtime-owned composition; synchronous resources outlive active readers."""
 
-    def __init__(self, settings):
+    def __init__(self, settings, *, pipeline_factory=None):
         self.settings = settings
+        # The default remains the production OpenRouter composition. The factory
+        # is an explicit harness seam, not an environment-controlled provider swap.
+        if pipeline_factory is not None and settings.environment is not Environment.TEST:
+            raise ValueError("Controlled pipeline injection requires test environment")
+        self._pipeline_factory = pipeline_factory
         self._async = AsyncExitStack()
         self._sync = ExitStack()
         self.worker = None
@@ -785,28 +791,33 @@ class TranscriptionExecution:
         failed = False
         phase = "provider"
         try:
-            secret = self.settings.openrouter_api_key
-            key = secret.get_secret_value() if secret is not None else ""
-            if (not key or any(ord(c) < 33 or ord(c) > 126 for c in key)
-                    or not self.settings.transcript_correction_model):
-                raise ValueError
+            if self._pipeline_factory is None:
+                secret = self.settings.openrouter_api_key
+                key = secret.get_secret_value() if secret is not None else ""
+                if (not key or any(ord(c) < 33 or ord(c) > 126 for c in key)
+                        or not self.settings.transcript_correction_model):
+                    raise ValueError
             phase = "core"
             core = CoreApiClient(self.settings)
             self._async.push_async_callback(core.aclose)
             phase = "storage"
             storage = self._sync.enter_context(ObjectStorage(self.settings))
-            phase = "vad"
-            backend = SileroVadBackend.from_settings(self.settings)
-            self._sync.callback(backend.close)
-            phase = "provider"
-            transcriber = self._sync.enter_context(OpenRouterWhisperAdapter(self.settings))
-            corrector = self._sync.enter_context(OpenRouterInstructionLlmAdapter(self.settings))
             phase = "pipeline"
-            pipeline = OfflineTranscriptionPipeline(
-                AudioPreprocessingPipeline(AudioNormalizer(self.settings),
-                    AudioEvidenceDetector(self.settings, backend), SpeechMapBuilder(self.settings)),
-                SpeechAwareAsrChunkPlanner(self.settings), transcriber, corrector, self.settings,
-            )
+            if self._pipeline_factory is not None:
+                pipeline = self._pipeline_factory(self.settings, self._sync)
+            else:
+                phase = "vad"
+                backend = SileroVadBackend.from_settings(self.settings)
+                self._sync.callback(backend.close)
+                phase = "provider"
+                transcriber = self._sync.enter_context(OpenRouterWhisperAdapter(self.settings))
+                corrector = self._sync.enter_context(OpenRouterInstructionLlmAdapter(self.settings))
+                phase = "pipeline"
+                pipeline = OfflineTranscriptionPipeline(
+                    AudioPreprocessingPipeline(AudioNormalizer(self.settings),
+                        AudioEvidenceDetector(self.settings, backend), SpeechMapBuilder(self.settings)),
+                    SpeechAwareAsrChunkPlanner(self.settings), transcriber, corrector, self.settings,
+                )
             self.worker = TranscriptionWorker(self.settings, core, storage, pipeline)
             phase = "broker"
             self.broker = await self._async.enter_async_context(RabbitConsumer(self.settings))

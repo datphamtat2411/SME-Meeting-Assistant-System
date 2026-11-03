@@ -15,7 +15,7 @@ from tls_support import create_test_pki
 from unit.test_worker_integrations import S3, event_body
 
 from sme_meeting_ai.audio.vad import SileroVadBackend
-from sme_meeting_ai.core.config import Settings
+from sme_meeting_ai.core.config import Environment, Settings
 from sme_meeting_ai.integrations import core_api, messaging, object_storage
 from sme_meeting_ai.observability.logging import configure_logging
 from sme_meeting_ai.pipeline import OfflineTranscriptionPipeline
@@ -36,7 +36,7 @@ def pki(tmp_path_factory):
 @pytest.fixture
 def composition(tmp_path, monkeypatch, pki):
     monkeypatch.setattr(os, "environ", {})
-    config = Settings(service_name="worker-test", service_identity="ai-core", _env_file=None,
+    config = Settings(service_name="worker-test", service_identity="ai-core", environment="test", _env_file=None,
         OPENROUTER_API_KEY=SECRET, transcript_correction_model="test/corrector",
         core_api_base_url="https://localhost", core_api_server_ca_file=pki / "ca.crt",
         core_api_client_cert_file=pki / "ai-worker.crt", core_api_client_key_file=pki / "ai-worker.key",
@@ -274,6 +274,33 @@ def test_broker_connection_closes_even_when_stop_fails(composition, monkeypatch)
         await execution.__aexit__(None, None, None)  # idempotent ownership release
     asyncio.run(run())
     assert sorted(h.closed) == sorted(h.acquired)
+
+
+def test_explicit_pipeline_factory_skips_production_provider_bootstrap(composition):
+    h = composition
+    calls = []
+
+    def factory(settings, resources):
+        calls.append((settings, resources))
+        return SimpleNamespace(run=lambda source: None)
+
+    async def run():
+        execution = TranscriptionExecution(h.settings, pipeline_factory=factory)
+        await execution.__aenter__()
+        assert len(calls) == 1
+        assert h.acquired == ["core", "storage", "broker"]
+        await execution.__aexit__(None, None, None)
+
+    asyncio.run(run())
+    assert sorted(h.closed) == ["broker", "core", "storage"]
+
+
+@pytest.mark.parametrize("environment", [Environment.DEVELOPMENT, Environment.STAGING, Environment.PRODUCTION])
+def test_explicit_pipeline_factory_is_test_environment_only(composition, environment):
+    settings = composition.settings.model_copy(update={"environment": environment})
+
+    with pytest.raises(ValueError, match="requires test environment"):
+        TranscriptionExecution(settings, pipeline_factory=lambda *_: None)
 
 
 @pytest.mark.parametrize("suffix,port,vhost", [("", 5671, "/"), ("/", 5671, "/"),

@@ -1,0 +1,560 @@
+"""Opt-in Level A Core-to-worker acceptance using only isolated test resources."""
+
+import asyncio
+import base64
+import hashlib
+import hmac
+import importlib.util
+import json
+import os
+import secrets
+import signal
+import socket
+import ssl
+import subprocess
+import sys
+import time
+import uuid
+from contextlib import contextmanager
+from pathlib import Path
+from types import SimpleNamespace
+
+import httpx
+import pytest
+import test_transport_services as transport
+import test_worker_infrastructure as worker_infrastructure
+from botocore.exceptions import ClientError
+
+ROOT = Path(__file__).resolve().parents[4]
+AI_ROOT = ROOT / "services" / "ai"
+_helper_spec = importlib.util.spec_from_file_location(
+    "e2e04_acceptance_helpers", AI_ROOT / "tests/integration/test_worker_live_acceptance.py"
+)
+_helpers = importlib.util.module_from_spec(_helper_spec)
+sys.modules[_helper_spec.name] = _helpers
+_helper_spec.loader.exec_module(_helpers)
+CoreAdmission = _helpers.CoreAdmission
+synthetic_wav = _helpers.synthetic_wav
+
+
+services = transport.services
+storage_boundary = worker_infrastructure.storage_boundary
+broker = worker_infrastructure.broker
+storage_admin = worker_infrastructure.storage_admin
+
+pytestmark = [pytest.mark.live_infrastructure, pytest.mark.skipif(
+    os.environ.get("RUN_WORKER_REAL_ACCEPTANCE") != "1",
+    reason="Explicit isolated Level A E2E-04 opt-in is required")]
+
+
+def _run(command, *, env=None, cwd=None, timeout=120):
+    result = subprocess.run(command, env=env, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+    if result.returncode != 0:
+        raise RuntimeError("isolated E2E-04 fixture command failed")
+    return result.stdout.strip()
+
+
+def _free_port():
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def _docker_port(container, port):
+    return int(_run(["docker", "port", container, port]).rsplit(":", 1)[1])
+
+
+def _psql(database, password, sql):
+    env = dict(os.environ, PGPASSWORD=password)
+    return _run(["docker", "exec", database["name"], "psql", "-U", database["user"],
+                 "-d", database["database"], "-At", "-v", "ON_ERROR_STOP=1", "-c", sql], env=env)
+
+
+@pytest.fixture
+def postgres(tmp_path):
+    password = secrets.token_urlsafe(24)
+    name = "e2e04-postgres-" + uuid.uuid4().hex[:10]
+    env = dict(os.environ, POSTGRES_USER="e2e04", POSTGRES_PASSWORD=password, POSTGRES_DB="e2e04")
+    database = {"name": name, "user": "e2e04", "password": password, "database": "e2e04"}
+    try:
+        _run(["docker", "run", "--rm", "-d", "--name", name, "-p", "127.0.0.1::5432",
+              "--tmpfs", "/var/lib/postgresql/data:rw,noexec,nosuid,nodev,size=512m",
+              "-e", "POSTGRES_USER", "-e", "POSTGRES_PASSWORD", "-e", "POSTGRES_DB", "postgres:17"], env=env)
+        database["port"] = _docker_port(name, "5432/tcp")
+        for _ in range(90):
+            result = subprocess.run(["docker", "exec", name, "pg_isready", "-U", "e2e04", "-d", "e2e04"],
+                                    capture_output=True, timeout=10)
+            if result.returncode == 0:
+                yield database
+                return
+            time.sleep(1)
+        raise RuntimeError("isolated PostgreSQL did not become ready")
+    finally:
+        subprocess.run(["docker", "stop", "--time", "5", name], capture_output=True, timeout=20)
+
+
+def _application_credentials(settings, pki):
+    users = {role: "e2e04-" + role + "-" + uuid.uuid4().hex[:8]
+             for role in ("publisher", "worker", "reconciler")}
+    passwords = {role: secrets.token_urlsafe(24) for role in users}
+    definitions = broker.definitions("sme-integration", users)
+    salt = secrets.token_bytes(4)
+    definitions["users"] = []
+    for role, user in users.items():
+        digest = base64.b64encode(salt + hashlib.sha256(salt + passwords[role].encode()).digest()).decode()
+        definitions["users"].append({"name": user, "password_hash": digest,
+                                      "hashing_algorithm": "rabbit_password_hashing_sha256", "tags": []})
+    encoded = base64.b64encode(json.dumps(definitions).encode()).decode()
+    if broker.cli(settings["names"][0], "eval", f'rabbit_definitions:import_raw(base64:decode(<<"{encoded}">>)).').strip() != "ok":
+        raise RuntimeError("isolated RabbitMQ application account provisioning failed")
+    broker.verify(broker.inspect(settings["names"][0], "sme-integration"))
+
+    storage_passwords = {role: secrets.token_urlsafe(24) for role in ("core", "worker")}
+    admin = storage_admin.Admin(settings["endpoint"], pki / "ca.crt", "fixture", settings["root_secret"])
+    storage_users = {}
+    for role in ("core", "worker"):
+        user = "e2e04-" + role + "-" + uuid.uuid4().hex[:8]
+        admin.provision(settings["bucket"], role, user, storage_passwords[role])
+        storage_users[role] = user
+    return SimpleNamespace(
+        publisher_user=users["publisher"], publisher_password=passwords["publisher"],
+        worker_user=users["worker"], worker_password=passwords["worker"],
+        reconciler_user=users["reconciler"], reconciler_password=passwords["reconciler"],
+        storage_core_user=storage_users["core"], storage_core_password=storage_passwords["core"],
+        storage_worker_user=storage_users["worker"], storage_worker_password=storage_passwords["worker"],
+    )
+
+
+def _make_jwt_keys(directory):
+    private = directory / "jwt-private.pem"
+    public = directory / "jwt-public.pem"
+    _run(["openssl", "genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048",
+          "-out", str(private)], timeout=60)
+    _run(["openssl", "rsa", "-in", str(private), "-pubout", "-out", str(public)], timeout=60)
+    private.chmod(0o600)
+    public.chmod(0o644)
+    return private, public
+
+
+def _clean_core_environment():
+    env = dict(os.environ)
+    prefixes = ("APP_", "DB_", "RABBITMQ_", "SERVER_", "SPRING_")
+    for name in tuple(env):
+        if name.startswith(prefixes) or name == "JAVA_TOOL_OPTIONS":
+            env.pop(name)
+    return env
+
+
+def _tls_client(pki, *, certificate="core-api", ca="ca"):
+    context = ssl.create_default_context(cafile=str(pki / f"{ca}.crt"))
+    if certificate:
+        context.load_cert_chain(pki / f"{certificate}.crt", pki / f"{certificate}.key")
+    return httpx.Client(verify=context, trust_env=False, timeout=3)
+
+
+@contextmanager
+def _ai_process(tmp_path, pki):
+    port = _free_port()
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith("AI_") and key != "OPENROUTER_API_KEY"}
+    env.update(AI_SERVICE_NAME="e2e04-ai-core", AI_SERVICE_IDENTITY="ai-core", AI_ENVIRONMENT="test",
+               AI_INTERNAL_ALLOWED_CALLERS='["core-api"]', AI_HTTP_HOST="127.0.0.1", AI_HTTP_PORT=str(port),
+               AI_TLS_CERT_FILE=str(pki / "ai-server.crt"), AI_TLS_KEY_FILE=str(pki / "ai-server.key"),
+               AI_TLS_CLIENT_CA_FILE=str(pki / "ca.crt"))
+    url = f"https://localhost:{port}"
+    log_path = tmp_path / "ai-core.log"
+    with log_path.open("w") as log:
+        process = subprocess.Popen([sys.executable, "-m", "sme_meeting_ai.api"], cwd=tmp_path, env=env,
+                                   stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+        try:
+            with _tls_client(pki) as client:
+                for _ in range(100):
+                    if process.poll() is not None:
+                        raise RuntimeError(f"AI Core startup failed: exit={process.returncode}; log={log_path}")
+                    try:
+                        response = client.get(url + "/health/ready")
+                        if response.status_code == 200 and response.json() == {"status": "ready"}:
+                            break
+                    except httpx.TransportError:
+                        pass
+                    time.sleep(0.1)
+                else:
+                    raise RuntimeError(f"AI Core readiness timed out; log={log_path}")
+            # Health requires a trusted client certificate, but intentionally no
+            # application-operation grant. Do not invent one for this probe.
+            for certificate, ca, target in ((None, "ca", url), ("rogue", "ca", url),
+                                             ("core-api", "rogue-ca", url),
+                                             ("core-api", "ca", url.replace("localhost", "127.0.0.1"))):
+                with _tls_client(pki, certificate=certificate, ca=ca) as client:
+                    with pytest.raises(httpx.TransportError):
+                        client.get(target + "/health/ready")
+            print("E2E04_BOOTSTRAP real_fastapi=ready mtls_negatives=passed")
+            yield url
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+
+
+@contextmanager
+def _core_process(tmp_path, database, transport_settings, credentials, pki, ai_url):
+    public_port = _free_port()
+    private_port = _free_port()
+    jwt_private, jwt_public = _make_jwt_keys(tmp_path)
+    setup_key = base64.b64encode(secrets.token_bytes(32)).decode()
+    csrf_key = base64.b64encode(secrets.token_bytes(32)).decode()
+    abuse_key = base64.b64encode(secrets.token_bytes(32)).decode()
+    env = _clean_core_environment()
+    env.update({
+        "SPRING_PROFILES_ACTIVE": "secure-integration",
+        "SERVER_ADDRESS": "127.0.0.1",
+        "SERVER_PORT": str(public_port),
+        "APP_ENVIRONMENT": "test",
+        "APP_HTTP_SECURITY_CORS_ALLOWED_ORIGINS": f"http://127.0.0.1:{public_port}",
+        "DB_URL": f"jdbc:postgresql://127.0.0.1:{database['port']}/{database['database']}",
+        "DB_USERNAME": database["user"],
+        "DB_PASSWORD": database["password"],
+        "RABBITMQ_HOST": "localhost",
+        "RABBITMQ_PORT": str(transport_settings["broker_port"]),
+        "RABBITMQ_VIRTUAL_HOST": "sme-integration",
+        "RABBITMQ_USERNAME": credentials.publisher_user,
+        "RABBITMQ_PASSWORD": credentials.publisher_password,
+        "RABBITMQ_CA_FILE": str(pki / "ca.crt"),
+        "RABBITMQ_RECONCILER_USERNAME": credentials.reconciler_user,
+        "RABBITMQ_RECONCILER_PASSWORD": credentials.reconciler_password,
+        "APP_MEDIA_STORAGE_ENDPOINT": transport_settings["endpoint"],
+        "APP_MEDIA_STORAGE_REGION": "us-east-1",
+        "APP_MEDIA_STORAGE_BUCKET": transport_settings["bucket"],
+        "APP_MEDIA_STORAGE_ACCESS_KEY": credentials.storage_core_user,
+        "APP_MEDIA_STORAGE_SECRET_KEY": credentials.storage_core_password,
+        "APP_MEDIA_STORAGE_PATH_STYLE_ACCESS": "true",
+        "APP_MEDIA_STORAGE_CREATE_BUCKET_IF_MISSING": "false",
+        "APP_MEDIA_STORAGE_CA_FILE": str(pki / "ca.crt"),
+        "APP_MEDIA_UPLOAD_ALLOWED_EXTENSIONS": "wav",
+        "APP_MEDIA_UPLOAD_ALLOWED_CONTENT_TYPES": "audio/wav",
+        "APP_MEDIA_UPLOAD_MAX_SIZE_BYTES": "8388608",
+        "APP_MEDIA_UPLOAD_MAX_DURATION_MS": "60000",
+        "APP_MEDIA_OUTBOX_ENABLED": "true",
+        "APP_MEDIA_OUTBOX_POLL_DELAY_MS": "100",
+        "APP_MEDIA_OUTBOX_LEASE_SECONDS": "60",
+        "APP_MEDIA_OUTBOX_CONFIRM_TIMEOUT_SECONDS": "5",
+        "APP_MEDIA_OUTBOX_MAX_ATTEMPTS": "5",
+        "APP_MEDIA_PROCESSING_STAGE_LEASE_SECONDS": "120",
+        "APP_MEDIA_PROCESSING_MAX_RETRIES": "0",
+        "APP_MEDIA_MESSAGING_TOPOLOGY": "external-quorum",
+        "APP_WORKER_TRANSCRIPTION_ENABLED": "true",
+        "APP_WORKER_TRANSCRIPTION_STORAGE_ID": "private",
+        "APP_WORKER_TRANSCRIPTION_INFRASTRUCTURE_VERIFIED": "true",
+        "APP_WORKER_DEAD_LETTER_ENABLED": "true",
+        "APP_TRANSPORT_PRIVATE_ENABLED": "true",
+        "APP_TRANSPORT_PRIVATE_ADDRESS": "127.0.0.1",
+        "APP_TRANSPORT_PRIVATE_PORT": str(private_port),
+        "APP_TRANSPORT_PRIVATE_HOSTNAME": "localhost",
+        "APP_TRANSPORT_PRIVATE_CERTIFICATE": str(pki / "server.crt"),
+        "APP_TRANSPORT_PRIVATE_KEY": str(pki / "server.key"),
+        "APP_TRANSPORT_PRIVATE_ISSUER_CA": str(pki / "ca.crt"),
+        "APP_TRANSPORT_PRIVATE_CLIENT_CA": str(pki / "ca.crt"),
+        "APP_TRANSPORT_AI_ENABLED": "true",
+        "APP_TRANSPORT_AI_PROBE": "true",
+        "APP_TRANSPORT_AI_BASE_URL": ai_url,
+        "APP_TRANSPORT_AI_SERVER_CA": str(pki / "ca.crt"),
+        "APP_TRANSPORT_AI_ISSUER_CA": str(pki / "ca.crt"),
+        "APP_TRANSPORT_AI_CERTIFICATE": str(pki / "core-api.crt"),
+        "APP_TRANSPORT_AI_KEY": str(pki / "core-api.key"),
+        "APP_AUTH_TRANSPORT_ENABLED": "true",
+        "APP_AUTH_JWT_PRIVATE_KEY_LOCATION": "file:" + str(jwt_private),
+        "APP_AUTH_JWT_PUBLIC_KEY_LOCATION": "file:" + str(jwt_public),
+        "APP_AUTH_JWT_KEY_ID": "e2e04",
+        "APP_AUTH_JWT_ISSUER": "e2e04-core",
+        "APP_AUTH_JWT_AUDIENCE": "e2e04-client",
+        "APP_ACCOUNT_SETUP_SIGNING_KEY": setup_key,
+        "APP_ACCOUNT_SETUP_WORKER_ENABLED": "false",
+        "APP_ACCOUNT_SETUP_SENDER": "e2e04@example.invalid",
+        "APP_EMAIL_DELIVERY_WORKER_ENABLED": "false",
+        "APP_EMAIL_DELIVERY_SENDER": "e2e04@example.invalid",
+        "APP_AUTH_CSRF_SIGNING_KEY": csrf_key,
+        "APP_AUTH_ABUSE_HASHING_KEY": abuse_key,
+        "SPRING_MAIL_HOST": "127.0.0.1",
+    })
+    log_path = tmp_path / "core.log"
+    process = None
+    with log_path.open("w", encoding="utf-8") as log:
+        try:
+            process = subprocess.Popen(["mvn", "-q", "-DskipTests", "spring-boot:run"], cwd=ROOT / "services/api",
+                                       env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+            health_url = f"http://127.0.0.1:{public_port}/actuator/health/readiness"
+            for _ in range(240):
+                if process.poll() is not None:
+                    raise RuntimeError(f"Core startup failed: exit={process.returncode}; log={log_path}")
+                try:
+                    response = httpx.get(health_url, trust_env=False, timeout=2)
+                    if (response.status_code == 200
+                            and "PASS core-api-to-ai readiness (Java mTLS)" in log_path.read_text()):
+                        break
+                except httpx.HTTPError:
+                    pass
+                time.sleep(1)
+            else:
+                raise RuntimeError("isolated Core did not become ready")
+            path = f"/internal/v1/worker/processing-jobs/{uuid.uuid4()}/transcription/deliveries/{uuid.uuid4()}"
+            with _tls_client(pki, certificate="core-api") as client:
+                assert client.get(f"https://localhost:{private_port}" + path).status_code == 403
+            with _tls_client(pki, certificate="ai-worker") as client:
+                assert client.get(f"https://localhost:{private_port}" + path,
+                                  headers={"X-Request-Id": "e2e04-boundary"}).status_code == 404
+            assert httpx.get(f"http://127.0.0.1:{public_port}" + path, trust_env=False).status_code == 403
+            print("E2E04_BOOTSTRAP real_core=ready java_ai_mtls=passed private_boundary=passed")
+            yield SimpleNamespace(public_url=f"http://127.0.0.1:{public_port}", private_port=private_port,
+                                  setup_key=setup_key, process=process, environment=env)
+        finally:
+            if process is not None and process.poll() is None:
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                    process.wait(timeout=20)
+                except (ProcessLookupError, subprocess.TimeoutExpired):
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
+
+def _seed_user(database, core):
+    user_id = uuid.uuid4()
+    token_id = uuid.uuid4()
+    email = f"e2e04-{user_id.hex}@example.invalid"
+    password = "E2e04-isolated-password-2026!"
+    key = base64.b64decode(core.setup_key)
+    signature = hmac.new(key, f"sme-account-setup-v1:{token_id}".encode(), hashlib.sha256).digest()
+    token = f"{token_id}.{base64.urlsafe_b64encode(signature).decode().rstrip('=')}"
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    sql = (
+        "INSERT INTO users(id,email,email_normalized,display_name,global_role,account_status) "
+        f"VALUES ('{user_id}','{email}','{email.lower()}','E2E-04 Fixture','EMPLOYEE','PENDING_SETUP'); "
+        "INSERT INTO account_setup_tokens(id,user_id,token_hash,requested_at,expires_at) "
+        f"VALUES ('{token_id}','{user_id}','{token_hash}',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP + INTERVAL '24 hours');"
+    )
+    _psql(database, database["password"], sql)
+    response = httpx.post(core.public_url + "/api/v1/auth/account-setup", trust_env=False, timeout=20,
+                          json={"token": token, "password": password})
+    if not response.is_success or response.json().get("success") is not True:
+        raise RuntimeError("isolated Core account setup failed")
+    return email, password
+
+
+def _worker_environment(tmp_path, database, transport_settings, credentials, core, pki):
+    worker_temp = tmp_path / "worker-temp"
+    worker_temp.mkdir(mode=0o700)
+    env = dict(os.environ)
+    for name in tuple(env):
+        if name.startswith("AI_") or name == "OPENROUTER_API_KEY":
+            env.pop(name)
+    env.update({
+        "AI_SERVICE_NAME": "e2e04-ai-worker",
+        "AI_SERVICE_IDENTITY": "ai-worker",
+        "AI_ENVIRONMENT": "test",
+        "AI_LOG_LEVEL": "INFO",
+        "AI_WORKER_SHUTDOWN_TIMEOUT_SECONDS": "10",
+        "AI_CORE_API_BASE_URL": f"https://localhost:{core.private_port}",
+        "AI_CORE_API_SERVER_CA_FILE": str(pki / "ca.crt"),
+        "AI_CORE_API_CLIENT_CERT_FILE": str(pki / "ai-worker.crt"),
+        "AI_CORE_API_CLIENT_KEY_FILE": str(pki / "ai-worker.key"),
+        "AI_RABBITMQ_URL": f"amqps://localhost:{transport_settings['broker_port']}/sme-integration",
+        "AI_RABBITMQ_USERNAME": credentials.worker_user,
+        "AI_RABBITMQ_PASSWORD": credentials.worker_password,
+        "AI_RABBITMQ_CA_FILE": str(pki / "ca.crt"),
+        "AI_S3_ENDPOINT_URL": transport_settings["endpoint"],
+        "AI_S3_STORAGE_ID": "private",
+        "AI_S3_BUCKET": transport_settings["bucket"],
+        "AI_S3_ACCESS_KEY_ID": credentials.storage_worker_user,
+        "AI_S3_SECRET_ACCESS_KEY": credentials.storage_worker_password,
+        "AI_S3_CA_FILE": str(pki / "ca.crt"),
+        "AI_AUDIO_TEMP_DIR": str(worker_temp),
+    })
+    return env
+
+
+def _start_worker(tmp_path, database, transport_settings, credentials, core, pki):
+    log_path = tmp_path / "worker.log"
+    log = log_path.open("w", encoding="utf-8")
+    process = subprocess.Popen([sys.executable, "tests/integration/e2e04_worker_process.py"], cwd=AI_ROOT,
+                               env=_worker_environment(tmp_path, database, transport_settings, credentials, core, pki),
+                               stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+    try:
+        for _ in range(60):
+            if process.poll() is not None:
+                raise RuntimeError("isolated worker stopped before consuming")
+            if "worker.transcription.consuming" in log_path.read_text(encoding="utf-8", errors="replace"):
+                return process, log
+            time.sleep(0.5)
+        raise RuntimeError("isolated worker did not reach consuming state")
+    except Exception:
+        log.close()
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGTERM)
+            process.wait(timeout=20)
+        raise
+
+
+def _stop_worker(process, log):
+    try:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGTERM)
+            process.wait(timeout=20)
+        if process.returncode != 0:
+            raise AssertionError("Worker process failed during isolated acceptance")
+    finally:
+        log.close()
+
+
+def _evidence(database, job_id):
+    sql = f"""
+        SELECT json_build_object(
+            'eventId', d.event_id,
+            'claimStageRunId', c.execution_stage_run_id,
+            'producerStageRunId', r.producer_stage_run_id,
+            'resultSha256', v.result_sha256,
+            'correctionSha256', v.correction_sha256,
+            'sourceSha256', m.sha256,
+            'sourceRevision', v.source_revision,
+            'generation', d.generation,
+            'receiptCount', (SELECT count(*) FROM transcription_worker_receipts WHERE processing_job_id=d.processing_job_id),
+            'transcriptCount', (SELECT count(*) FROM transcripts WHERE processing_job_id=d.processing_job_id),
+            'receiptId', r.receipt_id,
+            'transcriptId', r.transcript_id,
+            'outcome', r.outcome,
+            'transcriptStatus', r.transcript_status,
+            'outboxStatus', o.status,
+            'stages', (SELECT json_agg(json_build_object('id', s.id, 'code', s.stage_code, 'status', s.status)
+                         ORDER BY s.created_at, s.id)
+                       FROM processing_stage_runs s WHERE s.processing_job_id = d.processing_job_id)
+        )
+        FROM transcription_worker_deliveries d
+        JOIN transcription_worker_claims c ON c.event_id = d.event_id
+        JOIN transcription_worker_receipts r ON r.event_id = d.event_id
+        JOIN transcription_worker_results v ON v.producer_stage_run_id = r.producer_stage_run_id
+        JOIN outbox_events o ON o.id = d.event_id
+        JOIN meeting_media m ON m.id=d.source_media_id
+        WHERE d.processing_job_id = '{job_id}'
+    """
+    raw = _psql(database, database["password"], sql)
+    if not raw:
+        raise AssertionError("Core durable Worker V1 evidence was not found")
+    return json.loads(raw)
+
+
+def _assert_acknowledged(container):
+    queues = broker.inspect(container, "sme-integration")
+    work = next(queue for queue in queues if queue["name"] == broker.WORK)
+    assert work["messages"] == work["messages_ready"] == work["messages_unacknowledged"] == work["consumers"] == 0
+    dead = next(queue for queue in queues if queue["name"] == broker.DEAD)
+    assert dead["messages"] == 0
+    assert work["retained_dead_letters"] == 0
+
+
+def _assert_result_storage(settings, job_id, evidence):
+    # Use the same protected HTTPS boundary, never the private RustFS backend.
+    client = worker_infrastructure.storage_client(settings)
+    key = f"processing/{job_id}/transcription/results/{evidence['producerStageRunId']}.json"
+    try:
+        body = client.get_object(Bucket=settings.s3_bucket, Key=key)["Body"]
+        try:
+            raw = body.read()
+        finally:
+            body.close()
+        assert hashlib.sha256(raw).hexdigest() == evidence["resultSha256"]
+        result = json.loads(raw)
+        assert result["processingJobId"] == job_id
+        assert result["producerStageRunId"] == evidence["producerStageRunId"]
+        assert result["sourceRevision"] == evidence["sourceRevision"] == evidence["sourceSha256"]
+        assert result["correctionProof"]["outputSha256"] == evidence["correctionSha256"]
+        with pytest.raises(ClientError) as denied:
+            client.put_object(Bucket=settings.s3_bucket, Key=key, Body=b"replacement")
+        assert denied.value.response["ResponseMetadata"]["HTTPStatusCode"] == 403
+        with pytest.raises(ClientError) as conflict:
+            client.put_object(Bucket=settings.s3_bucket, Key=key, Body=b"replacement", IfNoneMatch="*")
+        assert conflict.value.response["ResponseMetadata"]["HTTPStatusCode"] in (409, 412)
+    finally:
+        client.close()
+
+
+def test_real_core_to_worker_level_a_acceptance(services, storage_boundary, postgres, tmp_path):
+    if os.environ.get("RUN_WORKER_REAL_ACCEPTANCE") != "1":
+        pytest.skip("Explicit isolated Level A E2E-04 opt-in is required")
+
+    service_settings, pki, names = services
+    boundary_settings, boundary_pki, topology = storage_boundary
+    assert pki == boundary_pki
+    assert topology["backend"]
+    transport_settings = {
+        "broker_port": _docker_port(names[0], "5671/tcp"),
+        "endpoint": boundary_settings.s3_endpoint_url,
+        "bucket": boundary_settings.s3_bucket,
+        "names": names,
+        "root_secret": service_settings.s3_secret_access_key.get_secret_value(),
+    }
+    credentials = _application_credentials(transport_settings, pki)
+    with _ai_process(tmp_path, pki) as ai_url, _core_process(
+            tmp_path, postgres, transport_settings, credentials, pki, ai_url) as core:
+        email, password = _seed_user(postgres, core)
+        worker, worker_log = _start_worker(tmp_path, postgres, transport_settings, credentials, core, pki)
+        admission = CoreAdmission(SimpleNamespace(s3_ca_file=pki / "ca.crt"), public_url=core.public_url,
+                                   email=email, password=password)
+
+        async def exercise():
+            audio = synthetic_wav()
+            try:
+                meeting_id, media_id, job_id = await admission.admit(audio)
+                job, transcript = await admission.wait_for_acceptance(
+                    meeting_id, job_id, worker_alive=lambda: worker.poll() is None)
+                assert job["status"] in ("COMPLETED", "COMPLETED_WITH_WARNINGS")
+                assert transcript["processingJobId"] == job_id
+                return meeting_id, media_id, job_id, transcript
+            finally:
+                await admission.close()
+
+        try:
+            meeting_id, media_id, job_id, transcript = asyncio.run(exercise())
+            evidence = _evidence(postgres, job_id)
+            _stop_worker(worker, worker_log)
+            _assert_acknowledged(names[0])
+            assert evidence["outcome"] == "RESULT_ACCEPTED"
+            assert evidence["receiptCount"] == evidence["transcriptCount"] == 1
+            assert evidence["generation"] == 0
+            assert evidence["sourceSha256"] == hashlib.sha256(synthetic_wav()).hexdigest()
+            _assert_result_storage(boundary_settings, job_id, evidence)
+            assert evidence["outboxStatus"] == "PUBLISHED"
+            assert evidence["transcriptStatus"] in ("READY", "READY_WITH_WARNINGS")
+            assert evidence["transcriptId"] == transcript["id"]
+            assert any(stage["code"] == "FINALIZING_TRANSCRIPT" and stage["status"] in ("SUCCEEDED", "SUCCEEDED_WITH_WARNING")
+                       for stage in evidence["stages"])
+            print("E2E04_EVIDENCE " + " ".join((
+                f"meeting_id={meeting_id}", f"media_id={media_id}", f"job_id={job_id}",
+                f"event_id={evidence['eventId']}", f"claim_stage_run_id={evidence['claimStageRunId']}",
+                f"producer_stage_run_id={evidence['producerStageRunId']}",
+                f"result_sha256={evidence['resultSha256']}", f"receipt_id={evidence['receiptId']}",
+                f"transcript_id={evidence['transcriptId']}", f"delivery_state={evidence['outcome']}",
+                "ack=confirmed")))
+        except Exception:
+            # Read-only bounded metadata survives teardown, without tokens, keys,
+            # source/result object names, provider output or transcript text.
+            summary = _psql(postgres, postgres["password"], """
+                SELECT json_build_object(
+                    'jobs', (SELECT json_agg(json_build_object('id',id,'status',status,'error',error_code)) FROM processing_jobs),
+                    'outbox', (SELECT json_agg(json_build_object('id',id,'status',status,'attempts',attempt_count,'error',last_error)) FROM outbox_events),
+                    'receipts', (SELECT json_agg(json_build_object('id',receipt_id,'outcome',outcome,'error',error_code)) FROM transcription_worker_receipts))
+            """)
+            print("E2E04_DIAGNOSTIC " + summary)
+            queues = broker.inspect(names[0], "sme-integration")
+            print("E2E04_BROKER " + json.dumps([{field: q[field] for field in
+                  ("name", "messages", "messages_ready", "messages_unacknowledged", "consumers")} for q in queues]))
+            for line in (tmp_path / "worker.log").read_text().splitlines():
+                if line.startswith(("E2E04_WORK_FAILURE ", "E2E04_COMMAND ")):
+                    print(line)
+            raise
+        finally:
+            if worker.poll() is None:
+                _stop_worker(worker, worker_log)
