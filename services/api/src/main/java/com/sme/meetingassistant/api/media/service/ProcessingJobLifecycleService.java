@@ -115,6 +115,24 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
 
     @Override
     @Transactional
+    public StageClaim startTranscriptionWorkerStage(UUID jobId, String stageCode) {
+        if (!List.of("TRANSCRIPTION", "CONTEXTUAL_CORRECTION", "FINALIZING_TRANSCRIPT").contains(stageCode)) {
+            throw new IllegalArgumentException("Unsupported transcription capability stage.");
+        }
+        StageClaim claim = startStage(jobId, stageCode, null, null);
+        repository.renewStageLease(claim, 120);
+        return claim;
+    }
+
+    @Override
+    @Transactional
+    public void renewTranscriptionWorkerLease(StageClaim claim) {
+        requireClaim(claim);
+        repository.renewStageLease(claim, 120);
+    }
+
+    @Override
+    @Transactional
     public void renewStageLease(StageClaim claim) {
         requireClaim(claim);
         this.repository.renewStageLease(claim, leaseSeconds());

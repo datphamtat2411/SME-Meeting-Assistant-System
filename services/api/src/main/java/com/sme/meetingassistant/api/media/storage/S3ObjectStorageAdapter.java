@@ -106,6 +106,22 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
     }
 
     @Override
+    public byte[] readBounded(String objectKey, int maximum) throws IOException {
+        if (maximum < 1 || maximum > 8388608) throw new IllegalArgumentException("Invalid result read limit.");
+        try (var input = client.getObject(GetObjectRequest.builder().bucket(properties.getBucket()).key(objectKey).build())) {
+            if (input.response().contentLength() == null || input.response().contentLength() > maximum
+                    || input.response().contentLength() < 1 || input.response().contentEncoding() != null) {
+                input.abort(); throw new IOException("Invalid result object size or encoding.");
+            }
+            byte[] bytes = input.readNBytes(maximum + 1);
+            if (bytes.length > maximum || bytes.length != input.response().contentLength()) {
+                input.abort(); throw new IOException("Invalid result object size.");
+            }
+            return bytes;
+        }
+    }
+
+    @Override
     public boolean putAcceptedIfAbsent(String objectKey, Path validatedFile, String sha256) {
         var request = PutObjectRequest.builder()
             .bucket(this.properties.getBucket()).key(objectKey)

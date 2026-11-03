@@ -65,6 +65,12 @@ public class RequestObservabilityFilter extends OncePerRequestFilter {
 
 	private String resolveRequestId(HttpServletRequest request) {
 		String suppliedRequestId = request.getHeader(RequestIdContext.HEADER_NAME);
+		// A verified private worker carries Core-issued event correlation, not a forwarding identity.
+		if (com.sme.meetingassistant.api.transport.PrivateConnector.workerAuthorized(request)
+				&& suppliedRequestId != null && !suppliedRequestId.isBlank() && suppliedRequestId.length() <= 128
+				&& suppliedRequestId.chars().noneMatch(Character::isISOControl)) {
+			return suppliedRequestId;
+		}
 		if (isTrustedPeer(request) && isCanonicalUuid(suppliedRequestId)) {
 			return suppliedRequestId;
 		}

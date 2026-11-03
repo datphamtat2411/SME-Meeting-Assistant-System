@@ -62,7 +62,8 @@ class MediaProcessingServiceTests {
         this.properties.getUpload().setFfprobePath("ffprobe");
         when(this.authenticatedUser.requireUserId()).thenReturn(this.actor);
         this.service = new MediaProcessingService(this.repository, this.storage, this.inspector,
-            this.meetingAccess, this.authenticatedUser, this.properties);
+            this.meetingAccess, this.authenticatedUser, this.properties,
+            org.mockito.Mockito.mock(com.sme.meetingassistant.api.media.worker.TranscriptionWorkerCapability.class));
     }
 
     @Test

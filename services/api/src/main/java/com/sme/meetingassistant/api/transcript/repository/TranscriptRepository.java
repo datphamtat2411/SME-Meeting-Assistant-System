@@ -240,7 +240,7 @@ public class TranscriptRepository implements ProcessingTranscriptEvidence {
                     sortedMetadata(s.confidenceMetadata()))).toList(),
                 result.coverage().stream().map(c -> new CoverageResult(c.startMs(), c.endMs(),
                     c.coverageStatus(), c.recovered(), c.retryCount(), sortedMetadata(c.metadata()))).toList(),
-                result.speakers());
+                result.speakers(),result.warningCount());
             byte[] bytes = this.json.writeValueAsString(canonical).getBytes(StandardCharsets.UTF_8);
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
         } catch (JacksonException | NoSuchAlgorithmException exception) {
@@ -271,6 +271,7 @@ public class TranscriptRepository implements ProcessingTranscriptEvidence {
                 || r.status() == null || r.sourceStageRunId() == null
                 || r.segments() == null || r.segments().isEmpty()
                 || r.coverage() == null || r.speakers() == null
+                || r.warningCount() < 0 || r.warningCount() > 4096
                 || (r.durationMs() != null && r.durationMs() < 0)) {
             throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY);
         }
@@ -332,7 +333,7 @@ public class TranscriptRepository implements ProcessingTranscriptEvidence {
             .anyMatch(segment -> !"ACCEPTED".equals(segment.qualityStatus()));
         boolean flaggedRegions = result.coverage().stream()
             .anyMatch(region -> !"COVERED".equals(region.coverageStatus()));
-        boolean hasWarnings = flaggedSegments || flaggedRegions || finalizationWarned;
+        boolean hasWarnings = flaggedSegments || flaggedRegions || finalizationWarned || result.warningCount() > 0;
         if (result.status() == TranscriptIngestion.Status.READY && hasWarnings) {
             throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
                 "READY cannot contain unresolved speech, suspicious text, or stage warnings.");
@@ -538,6 +539,11 @@ public class TranscriptRepository implements ProcessingTranscriptEvidence {
 
     /** Shared meeting lock, acquired before re-checking edit authorization. */
     public void lockMeetingForReview(UUID meetingId) { lockMeeting(meetingId); }
+
+    /** Immutable publication identity, independent of current/human-edited content. */
+    public UUID publicationId(UUID jobId) {
+        return jdbc.queryForObject("SELECT id FROM transcripts WHERE processing_job_id=?",UUID.class,jobId);
+    }
 
     private void lockMeeting(UUID meetingId) {
         this.jdbc.query("SELECT id FROM meetings WHERE id=? FOR UPDATE",

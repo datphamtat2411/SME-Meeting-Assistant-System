@@ -1,0 +1,265 @@
+openapi: 3.1.0
+info:
+  title: Core Transcription Worker V1
+  version: '1.0'
+  description: Private mTLS only. Normative semantics remain in CORE_API_AI_TRANSCRIPTION_WORKER_V1.md. Control bodies are limited to 16384 UTF-8 bytes, with no duplicate keys or coercion. Every response is Cache-Control no-store.
+servers:
+  - url: https://core-api.internal:8443/internal/v1/worker
+security:
+  - workerMtls: []
+paths:
+  /processing-jobs/{jobId}/transcription/claim:
+    parameters: [{$ref: '#/components/parameters/Job'}, {$ref: '#/components/parameters/RequestId'}]
+    post:
+      operationId: transcription.claim
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ClaimCommand'}
+      responses:
+        '200':
+          description: WORKER_CLAIMED with claim data, or durable delivery status.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+        default: {$ref: '#/components/responses/Error'}
+  /processing-jobs/{jobId}/transcription/deliveries/{eventId}:
+    parameters: [{$ref: '#/components/parameters/Job'}, {$ref: '#/components/parameters/RequestId'}, {in: path, name: eventId, required: true, schema: {type: string, format: uuid}}]
+    get:
+      operationId: transcription.read-delivery
+      responses:
+        '200':
+          description: Durable status, no replay property, token or transcript text.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+        default: {$ref: '#/components/responses/Error'}
+  /processing-jobs/{jobId}/transcription/renew:
+    parameters: [{$ref: '#/components/parameters/Job'}, {$ref: '#/components/parameters/RequestId'}]
+    post:
+      operationId: transcription.renew
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/OwnerCommand'}
+      responses:
+        '200':
+          description: Live owner lease renewed.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+        default: {$ref: '#/components/responses/Error'}
+  /processing-jobs/{jobId}/transcription/complete:
+    parameters: [{$ref: '#/components/parameters/Job'}, {$ref: '#/components/parameters/RequestId'}]
+    post:
+      operationId: transcription.complete
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CompleteCommand'}
+      responses:
+        '200':
+          description: Committed RESULT_ACCEPTED with stable receipt and boolean replay.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+        default: {$ref: '#/components/responses/Error'}
+  /processing-jobs/{jobId}/transcription/fail:
+    parameters: [{$ref: '#/components/parameters/Job'}, {$ref: '#/components/parameters/RequestId'}]
+    post:
+      operationId: transcription.fail
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/FailCommand'}
+      responses:
+        '200':
+          description: Committed FAILURE_RECORDED or covering success, with boolean replay.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+        default: {$ref: '#/components/responses/Error'}
+components:
+  securitySchemes:
+    workerMtls: {type: mutualTLS, description: Exactly urn:sme:service:ai-worker URI SAN plus the operation-specific grant. Public connector denies all internal routes.}
+  parameters:
+    Job: {in: path, name: jobId, required: true, schema: {type: string, format: uuid}}
+    RequestId: {in: header, name: X-Request-Id, required: true, schema: {type: string, minLength: 1, maxLength: 128}}
+  responses:
+    Error:
+      description: Safe RE02 error. 422 unsupported contract or validation; 404 unknown delivery; 409 identity, command, result, ownership or busy conflict; 413 oversized body; 503 unavailable capability/storage.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Envelope'}
+  schemas:
+    UUID: {type: string, format: uuid, pattern: '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$'}
+    Digest: {type: string, pattern: '^[a-f0-9]{64}$'}
+    ClaimCommand:
+      type: object
+      additionalProperties: false
+      required: [contractVersion, eventId, eventType, eventSchemaVersion, meetingId, sourceMediaId, requestedByUserId, generation, claimRequestId]
+      properties:
+        contractVersion: {const: '1.0'}
+        eventId: {$ref: '#/components/schemas/UUID'}
+        eventType: {enum: [PROCESSING_JOB_QUEUED, PROCESSING_JOB_RETRY_REQUESTED]}
+        eventSchemaVersion: {type: integer, minimum: 1, maximum: 2}
+        meetingId: {$ref: '#/components/schemas/UUID'}
+        sourceMediaId: {$ref: '#/components/schemas/UUID'}
+        requestedByUserId: {$ref: '#/components/schemas/UUID'}
+        generation: {type: integer, minimum: 0}
+        claimRequestId: {$ref: '#/components/schemas/UUID'}
+    OwnerCommand:
+      type: object
+      required: [contractVersion, eventId, generation, executionStageRunId, claimToken]
+      properties:
+        contractVersion: {const: '1.0'}
+        eventId: {$ref: '#/components/schemas/UUID'}
+        generation: {type: integer, minimum: 0}
+        executionStageRunId: {$ref: '#/components/schemas/UUID'}
+        claimToken: {$ref: '#/components/schemas/UUID'}
+      unevaluatedProperties: false
+    CompleteCommand:
+      type: object
+      required: [contractVersion, eventId, generation, executionStageRunId, claimToken, commandId, resultSha256, resultProducerStageRunId]
+      additionalProperties: false
+      properties:
+        contractVersion: {const: '1.0'}
+        eventId: {$ref: '#/components/schemas/UUID'}
+        generation: {type: integer, minimum: 0}
+        executionStageRunId: {$ref: '#/components/schemas/UUID'}
+        claimToken: {$ref: '#/components/schemas/UUID'}
+        commandId: {$ref: '#/components/schemas/UUID'}
+        resultSha256: {$ref: '#/components/schemas/Digest'}
+        resultProducerStageRunId: {$ref: '#/components/schemas/UUID'}
+    FailCommand:
+      type: object
+      additionalProperties: false
+      required: [contractVersion, commandId, eventId, generation, executionStageRunId, claimToken, phase, category, completedThrough, metrics]
+      properties:
+        contractVersion: {const: '1.0'}
+        commandId: {$ref: '#/components/schemas/UUID'}
+        eventId: {$ref: '#/components/schemas/UUID'}
+        generation: {type: integer, minimum: 0}
+        executionStageRunId: {$ref: '#/components/schemas/UUID'}
+        claimToken: {$ref: '#/components/schemas/UUID'}
+        phase: {enum: [SOURCE_DOWNLOAD, PREPROCESSING, CHUNK_PLANNING, ASR, COVERAGE_RECOVERY, RECONCILIATION, CORRECTION, RESULT_VALIDATION, RESULT_STORAGE, PUBLICATION, INTERRUPTED]}
+        category: {enum: [VALIDATION, DECODING, RESOURCE, TIMEOUT, PROVIDER, TRANSPORT, RATE_LIMIT, AUTHENTICATION, CONFIGURATION, CONTEXT_OVERFLOW, MALFORMED_OUTPUT, SUSPICIOUS_OUTPUT, INTEGRITY, NOT_FOUND, EMPTY_OUTPUT, CANCELLED]}
+        completedThrough: {enum: [null, RECONCILIATION]}
+        metrics:
+          type: object
+          additionalProperties: false
+          properties:
+            sampleCount: {type: integer, minimum: 0}
+            chunkCount: {type: integer, minimum: 0}
+            retryCount: {type: integer, minimum: 0}
+            warningCount: {type: integer, minimum: 0}
+            unresolvedRegionCount: {type: integer, minimum: 0}
+    Envelope:
+      type: object
+      required: [success, code, message, data, meta]
+      additionalProperties: false
+      properties:
+        success: {type: boolean}
+        code: {type: string}
+        message: {type: string}
+        meta: {type: object, required: [requestId, timestamp], properties: {requestId: {type: string}, timestamp: {type: string, format: date-time}}}
+        errors: {type: array, items: {type: object}}
+        data:
+          oneOf:
+            - {type: 'null'}
+            - {$ref: '#/components/schemas/Claim'}
+            - allOf: [{$ref: '#/components/schemas/Lease'}]
+              unevaluatedProperties: false
+            - {$ref: '#/components/schemas/Delivery'}
+    Lease:
+      type: object
+      required: [contractVersion, leaseExpiresAt, serverTime, renewAfterSeconds]
+      properties:
+        contractVersion: {const: '1.0'}
+        leaseExpiresAt: {type: string, format: date-time}
+        serverTime: {type: string, format: date-time}
+        renewAfterSeconds: {const: 30}
+    Claim:
+      allOf:
+        - {$ref: '#/components/schemas/Lease'}
+        - type: object
+          required: [eventId, generation, processingJobId, meetingId, sourceMediaId, executionStageRunId, executionStageCode, claimToken, leaseSeconds, source, resultSlot, reusableResult]
+          properties:
+            eventId: {$ref: '#/components/schemas/UUID'}
+            generation: {type: integer, minimum: 0}
+            processingJobId: {$ref: '#/components/schemas/UUID'}
+            meetingId: {$ref: '#/components/schemas/UUID'}
+            sourceMediaId: {$ref: '#/components/schemas/UUID'}
+            executionStageRunId: {$ref: '#/components/schemas/UUID'}
+            executionStageCode: {enum: [TRANSCRIPTION, CONTEXTUAL_CORRECTION, FINALIZING_TRANSCRIPT]}
+            claimToken: {$ref: '#/components/schemas/UUID'}
+            leaseSeconds: {const: 120}
+            source:
+              type: object
+              additionalProperties: false
+              required: [sourceMediaId, sourceRevision, storageId, objectKey, contentType, sizeBytes, sha256, durationMs]
+              properties:
+                sourceMediaId: {$ref: '#/components/schemas/UUID'}
+                sourceRevision: {$ref: '#/components/schemas/Digest'}
+                storageId: {type: string, minLength: 1, maxLength: 64}
+                objectKey: {type: string, minLength: 1, maxLength: 1024}
+                contentType: {type: string, minLength: 1, maxLength: 128}
+                sizeBytes: {type: integer, minimum: 1}
+                sha256: {$ref: '#/components/schemas/Digest'}
+                durationMs: {type: integer, minimum: 1}
+            resultSlot:
+              type: object
+              required: [storageId, objectKey, maxBytes]
+              additionalProperties: false
+              properties: {storageId: {type: string}, objectKey: {type: string}, maxBytes: {const: 8388608}}
+            reusableResult:
+              oneOf:
+                - {type: 'null'}
+                - type: object
+                  required: [storageId, objectKey, producerStageRunId]
+                  additionalProperties: false
+                  properties: {storageId: {type: string}, objectKey: {type: string}, producerStageRunId: {$ref: '#/components/schemas/UUID'}}
+      unevaluatedProperties: false
+    Delivery:
+      type: object
+      additionalProperties: false
+      required: [contractVersion, processingJobId, eventId, generation, state, receipt]
+      properties:
+        contractVersion: {const: '1.0'}
+        processingJobId: {$ref: '#/components/schemas/UUID'}
+        eventId: {$ref: '#/components/schemas/UUID'}
+        generation: {type: integer, minimum: 0}
+        state: {enum: [RESULT_ACCEPTED, FAILURE_RECORDED, SUPERSEDED, AVAILABLE, RUNNING, AWAITING_RECONCILIATION]}
+        receipt:
+          oneOf:
+            - {type: 'null'}
+            - {$ref: '#/components/schemas/SuccessReceipt'}
+            - {$ref: '#/components/schemas/FailureReceipt'}
+            - {type: object, additionalProperties: false, required: [generation], properties: {generation: {type: integer, minimum: 1}}}
+            - {type: object, additionalProperties: false, required: [coveringReceiptId], properties: {coveringReceiptId: {$ref: '#/components/schemas/UUID'}}}
+        replay: {type: boolean}
+    SuccessReceipt:
+      type: object
+      additionalProperties: false
+      required: [receiptId, resultSha256, correctionSha256, transcriptId, transcriptStatus, acceptedAt]
+      properties:
+        receiptId: {$ref: '#/components/schemas/UUID'}
+        resultSha256: {$ref: '#/components/schemas/Digest'}
+        correctionSha256: {$ref: '#/components/schemas/Digest'}
+        transcriptId: {$ref: '#/components/schemas/UUID'}
+        transcriptStatus: {enum: [READY, READY_WITH_WARNINGS]}
+        acceptedAt: {type: string, format: date-time}
+    FailureReceipt:
+      type: object
+      additionalProperties: false
+      required: [receiptId, errorCode, retryable, retryExhausted, recordedAt]
+      properties:
+        receiptId: {$ref: '#/components/schemas/UUID'}
+        errorCode: {type: string, pattern: '^[A-Z][A-Z0-9_]{0,79}$'}
+        retryable: {type: boolean}
+        retryExhausted: {type: boolean}
+        recordedAt: {type: string, format: date-time}

@@ -63,6 +63,7 @@ class ProcessingJobAdmissionIntegrationTests {
     @Autowired ProcessingJobLifecycle lifecycle;
     @Autowired MediaRepository repository;
     @MockitoBean ObjectStorage storage;
+    @MockitoBean com.sme.meetingassistant.api.media.worker.TranscriptionWorkerCapability workerCapability;
 
     private UUID organizer;
 
