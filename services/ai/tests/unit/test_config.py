@@ -3,6 +3,7 @@ import traceback
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from sme_meeting_ai.core.config import (
     ConfigurationError,
@@ -11,6 +12,28 @@ from sme_meeting_ai.core.config import (
     get_settings,
     load_settings,
 )
+
+
+@pytest.mark.parametrize("effort", ["max", "xhigh", "high", "medium", "low", "minimal", "none"])
+def test_correction_reasoning_environment(effort, monkeypatch):
+    monkeypatch.setenv("AI_TRANSCRIPT_CORRECTION_REASONING_EFFORT", effort)
+    monkeypatch.setenv("AI_TRANSCRIPT_CORRECTION_TEMPERATURE", "")
+    config = Settings(service_name="test-ai", service_identity="ai-core", _env_file=None)
+    assert config.transcript_correction_reasoning_effort == effort
+    assert config.transcript_correction_temperature is None
+
+
+@pytest.mark.parametrize("effort", ["", "MEDIUM", " medium", "auto", "null", True, 1, {}])
+def test_correction_reasoning_rejects_invalid_values(effort):
+    with pytest.raises(ValidationError):
+        Settings(service_name="test-ai", service_identity="ai-core", _env_file=None,
+                 transcript_correction_reasoning_effort=effort)
+
+
+def test_correction_reasoning_unset_is_backward_compatible():
+    config = Settings(service_name="test-ai", service_identity="ai-core", _env_file=None)
+    assert config.transcript_correction_reasoning_effort is None
+    assert config.transcript_correction_temperature == 0
 
 
 @pytest.fixture(autouse=True)
@@ -23,6 +46,10 @@ def isolated_environment(monkeypatch):
 
 def test_explicit_settings_defaults_without_external_configuration():
     settings = Settings(service_name="test-ai", service_identity="ai-core", _env_file=None)
+
+    assert settings.audio_asr_strategy_mode == "chunked"
+    assert settings.audio_asr_native_max_samples == 1920000
+    assert settings.audio_asr_adaptive_max_total_calls == 32
 
     assert settings.service_name == "test-ai"
     assert settings.environment is Environment.DEVELOPMENT
@@ -45,6 +72,32 @@ def test_explicit_settings_defaults_without_external_configuration():
     assert settings.audio_probe_timeout_seconds == 10
     assert settings.audio_decode_timeout_seconds == 900
     assert str(settings.audio_temp_dir) == "/tmp"
+
+
+@pytest.mark.parametrize("field,values", [
+    ("audio_asr_strategy_mode", ["native", "ADAPTIVE", " adaptive", "", True, 1]),
+    ("audio_asr_native_max_samples", [True, False, 0, -1, 230400001, 1.5, 2.0,
+                                      "1.0", "1e3", "nan", "inf", "", " 32", None]),
+    ("audio_asr_adaptive_max_total_calls", [True, 0, -1, 65794, 1.5, 2.0,
+                                           "unlimited", "NaN", "inf", "1e2", "", None]),
+])
+def test_strategy_configuration_rejects_invalid_values(field, values):
+    for value in values:
+        with pytest.raises(ValidationError):
+            Settings(service_name="test-ai", service_identity="ai-core", _env_file=None, **{field: value})
+
+
+def test_strategy_environment_is_strict_and_bounded(monkeypatch):
+    monkeypatch.setenv("AI_AUDIO_ASR_STRATEGY_MODE", "adaptive")
+    monkeypatch.setenv("AI_AUDIO_ASR_NATIVE_MAX_SAMPLES", "230400000")
+    monkeypatch.setenv("AI_AUDIO_ASR_ADAPTIVE_MAX_TOTAL_CALLS", "65793")
+    config = Settings(service_name="test-ai", service_identity="ai-core", _env_file=None)
+    assert config.audio_asr_strategy_mode == "adaptive"
+    assert config.audio_asr_native_max_samples == 230400000
+    assert config.audio_asr_adaptive_max_total_calls == 65793
+    monkeypatch.setenv("AI_AUDIO_ASR_NATIVE_MAX_SAMPLES", "true")
+    with pytest.raises(ValidationError):
+        Settings(service_name="test-ai", service_identity="ai-core", _env_file=None)
 
 
 def test_environment_overrides_are_typed_and_case_insensitive(monkeypatch):
@@ -107,6 +160,12 @@ def test_example_dotenv_loads_documented_defaults():
     assert type(settings.audio_vad_frame_samples) is int
     assert settings.audio_vad_model_path is None
     assert settings.audio_vad_model_sha256 is None
+    assert settings.audio_asr_chunk_target_samples == 320000
+    assert settings.audio_asr_chunk_max_request_samples == 480000
+    assert settings.audio_asr_chunk_overlap_samples == 80000
+    assert settings.audio_asr_chunk_boundary_search_samples == 80000
+    assert settings.audio_asr_chunk_max_chunks == 4096
+    assert settings.audio_asr_max_concurrent_chunks == 2
 
 
 @pytest.mark.parametrize(
@@ -431,3 +490,492 @@ def test_speech_map_invalid_settings_are_sanitized(monkeypatch, field, values):
         assert field in str(caught.value)
         assert "private-invalid" not in "".join(traceback.format_exception(caught.value))
         assert caught.value.__context__ is None
+
+
+def test_asr_chunk_defaults_and_environment_overrides(monkeypatch):
+    monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
+    defaults = load_settings(env_file=None)
+    expected = {
+        "audio_asr_chunk_target_samples": 320000,
+        "audio_asr_chunk_max_request_samples": 480000,
+        "audio_asr_chunk_overlap_samples": 80000,
+        "audio_asr_chunk_boundary_search_samples": 80000,
+        "audio_asr_chunk_max_chunks": 4096,
+    }
+    for field, value in expected.items():
+        assert getattr(defaults, field) == value
+    overrides = dict(zip(expected, (100, 150, 31, 20, 10), strict=True))
+    for field, value in overrides.items():
+        monkeypatch.setenv(f"AI_{field.upper()}", str(value))
+    settings = load_settings(env_file=None)
+    for field, value in overrides.items():
+        assert getattr(settings, field) == value
+        assert type(getattr(settings, field)) is int
+
+
+@pytest.mark.parametrize("overrides", [
+    {"audio_asr_chunk_target_samples": 1, "audio_asr_chunk_boundary_search_samples": 0,
+     "audio_asr_chunk_overlap_samples": 0, "audio_asr_chunk_max_request_samples": 1,
+     "audio_asr_chunk_max_chunks": 1},
+    {"audio_asr_chunk_target_samples": 230400000,
+     "audio_asr_chunk_max_request_samples": 230400000,
+     "audio_asr_chunk_overlap_samples": 0,
+     "audio_asr_chunk_boundary_search_samples": 230399999,
+     "audio_asr_chunk_max_chunks": 65536},
+    {"audio_asr_chunk_target_samples": 320000,
+     "audio_asr_chunk_max_request_samples": 400000},
+])
+def test_asr_chunk_setting_boundaries(overrides):
+    settings = Settings(
+        service_name="test-ai", service_identity="ai-core", _env_file=None, **overrides,
+    )
+    for field, value in overrides.items():
+        assert getattr(settings, field) == value
+
+
+@pytest.mark.parametrize("field,values", [
+    ("audio_asr_chunk_target_samples", [0, -1, 230400001, True, 100.0, 1.5]),
+    ("audio_asr_chunk_max_request_samples", [0, -1, 230400001, True, 480000.0, 1.5]),
+    ("audio_asr_chunk_overlap_samples", [-1, 230400001, True, 80000.0, 1.5]),
+    ("audio_asr_chunk_boundary_search_samples", [-1, 230400001, True, 80000.0, 1.5]),
+    ("audio_asr_chunk_max_chunks", [0, -1, 65537, True, 4096.0, 1.5]),
+])
+def test_asr_chunk_direct_values_require_bounded_integers(field, values):
+    for value in values:
+        with pytest.raises(ValueError):
+            Settings(
+                service_name="test-ai", service_identity="ai-core", _env_file=None,
+                **{field: value},
+            )
+
+
+@pytest.mark.parametrize("field", [
+    "audio_asr_chunk_target_samples", "audio_asr_chunk_max_request_samples",
+    "audio_asr_chunk_overlap_samples", "audio_asr_chunk_boundary_search_samples",
+    "audio_asr_chunk_max_chunks",
+])
+@pytest.mark.parametrize("value", ["-1", "230400001", "1.5", "100.0", "nan", "inf", "true", "private-invalid"])
+def test_asr_chunk_invalid_environment_values_are_sanitized(monkeypatch, field, value):
+    monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
+    monkeypatch.setenv(f"AI_{field.upper()}", value)
+    with pytest.raises(ConfigurationError) as caught:
+        load_settings(env_file=None)
+    assert field in str(caught.value)
+    assert "private-invalid" not in "".join(traceback.format_exception(caught.value))
+    assert caught.value.__context__ is None
+
+
+@pytest.mark.parametrize("overrides", [
+    {"audio_asr_chunk_max_request_samples": 399999},
+    {"audio_asr_chunk_overlap_samples": 480000},
+    {"audio_asr_chunk_boundary_search_samples": 320000},
+    {"audio_asr_chunk_boundary_search_samples": 320001},
+])
+def test_asr_chunk_cross_field_contracts(overrides):
+    with pytest.raises(ValueError):
+        Settings(
+            service_name="test-ai", service_identity="ai-core", _env_file=None, **overrides,
+        )
+
+
+def test_asr_provider_defaults():
+    settings = Settings(service_name="test-ai", service_identity="ai-core", _env_file=None)
+    assert settings.openrouter_api_key is None
+    assert settings.audio_asr_model == "openai/whisper-large-v3"
+    assert settings.audio_asr_language == "vi"
+    assert settings.audio_asr_temperature == 0
+    assert settings.audio_asr_max_payload_bytes == 26214400
+    assert settings.audio_asr_timeout_seconds == 120
+    assert settings.audio_asr_max_concurrent_chunks == 1
+
+
+@pytest.mark.parametrize("source", ["environment", "dotenv"])
+def test_asr_settings_alias_overrides_and_secret_redaction(monkeypatch, tmp_path, source):
+    values = {
+        "AI_SERVICE_NAME": "test-ai", "AI_SERVICE_IDENTITY": "ai-core",
+        "OPENROUTER_API_KEY": "test-only-private-key",
+        "AI_AUDIO_ASR_MODEL": "vendor/compatible-model",
+        "AI_AUDIO_ASR_LANGUAGE": "en", "AI_AUDIO_ASR_TEMPERATURE": "0.2",
+        "AI_AUDIO_ASR_MAX_PAYLOAD_BYTES": "4096", "AI_AUDIO_ASR_TIMEOUT_SECONDS": "2.5",
+        "AI_AUDIO_ASR_MAX_CONCURRENT_CHUNKS": "4",
+    }
+    env_file = None
+    if source == "environment":
+        for key, value in values.items():
+            monkeypatch.setenv(key, value)
+    else:
+        env_file = tmp_path / ".env"
+        env_file.write_text("\n".join(f"{key}={value}" for key, value in values.items()))
+    settings = load_settings(env_file)
+    assert settings.openrouter_api_key.get_secret_value() == "test-only-private-key"
+    assert "test-only-private-key" not in repr(settings)
+    assert "test-only-private-key" not in settings.model_dump_json()
+    assert settings.audio_asr_model == "vendor/compatible-model"
+    assert settings.audio_asr_language == "en"
+    assert settings.audio_asr_temperature == 0.2
+    assert settings.audio_asr_max_payload_bytes == 4096
+    assert settings.audio_asr_timeout_seconds == 2.5
+    assert settings.audio_asr_max_concurrent_chunks == 4
+
+
+@pytest.mark.parametrize("field,values", [
+    ("audio_asr_model", ["", "private invalid", "x" * 257]),
+    ("audio_asr_language", ["", "private invalid", "x" * 17]),
+    ("audio_asr_temperature", ["nan", "inf", "-0.1", "1.1"]),
+    ("audio_asr_timeout_seconds", ["0", "-1", "nan", "inf", "601"]),
+    ("audio_asr_max_payload_bytes", ["0", "-1", "nan", "inf", "26214401", "1.5"]),
+    ("audio_asr_max_concurrent_chunks", ["0", "-1", "5", "nan", "inf", "1.5", "1.0", "true"]),
+])
+def test_asr_provider_invalid_settings_are_sanitized(monkeypatch, field, values):
+    monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-only-private-key")
+    for value in [*values, "private invalid value"]:
+        monkeypatch.setenv(f"AI_{field.upper()}", value)
+        with pytest.raises(ConfigurationError) as caught:
+            load_settings(None)
+        assert field in str(caught.value)
+        rendered = "".join(traceback.format_exception(caught.value))
+        assert "private invalid value" not in rendered
+        assert "test-only-private-key" not in rendered
+        assert caught.value.__context__ is None
+
+
+@pytest.mark.parametrize("temperature,timeout,payload", [(0, 0.01, 1), (1, 600, 26214400)])
+def test_asr_provider_setting_boundaries(temperature, timeout, payload):
+    settings = Settings(
+        service_name="test-ai", service_identity="ai-core", _env_file=None,
+        audio_asr_temperature=temperature, audio_asr_timeout_seconds=timeout,
+        audio_asr_max_payload_bytes=payload,
+    )
+    assert settings.audio_asr_temperature == temperature
+    assert settings.audio_asr_timeout_seconds == timeout
+    assert settings.audio_asr_max_payload_bytes == payload
+
+
+@pytest.mark.parametrize("value", [1, 4])
+def test_asr_concurrency_boundaries(value):
+    settings = Settings(
+        service_name="test-ai", service_identity="ai-core", _env_file=None,
+        audio_asr_max_concurrent_chunks=value,
+    )
+    assert settings.audio_asr_max_concurrent_chunks == value
+
+
+@pytest.mark.parametrize("value", [True, False, 1.0, 1.5, 0, -1, 5])
+def test_asr_concurrency_requires_a_strict_bounded_integer(value):
+    with pytest.raises(ValueError):
+        Settings(
+            service_name="test-ai", service_identity="ai-core", _env_file=None,
+            audio_asr_max_concurrent_chunks=value,
+        )
+
+
+def test_coverage_defaults_match_documented_configuration():
+    defaults = Settings(service_name="test-ai", service_identity="ai-core", _env_file=None)
+    documented = load_settings(Path(__file__).resolve().parents[2] / ".env.example")
+    for value in (defaults, documented):
+        assert value.audio_asr_coverage_max_tolerated_speech_map_gap_samples == 0
+        assert value.audio_asr_coverage_repetition_min_chars == 16
+        assert value.audio_asr_coverage_low_confidence_threshold == 0.35
+
+
+@pytest.mark.parametrize("source", ["environment", "dotenv"])
+def test_coverage_configuration_overrides(monkeypatch, tmp_path, source):
+    values = {
+        "AI_SERVICE_NAME": "test-ai", "AI_SERVICE_IDENTITY": "ai-core",
+        "AI_AUDIO_ASR_COVERAGE_MAX_TOLERATED_SPEECH_MAP_GAP_SAMPLES": "512",
+        "AI_AUDIO_ASR_COVERAGE_REPETITION_MIN_CHARS": "24",
+        "AI_AUDIO_ASR_COVERAGE_LOW_CONFIDENCE_THRESHOLD": "0.25",
+    }
+    env_file = None
+    if source == "environment":
+        for key, value in values.items():
+            monkeypatch.setenv(key, value)
+    else:
+        env_file = tmp_path / ".env"
+        env_file.write_text("\n".join(f"{k}={v}" for k, v in values.items()))
+    loaded = load_settings(env_file)
+    assert loaded.audio_asr_coverage_max_tolerated_speech_map_gap_samples == 512
+    assert type(loaded.audio_asr_coverage_max_tolerated_speech_map_gap_samples) is int
+    assert loaded.audio_asr_coverage_repetition_min_chars == 24
+    assert loaded.audio_asr_coverage_low_confidence_threshold == 0.25
+
+
+@pytest.mark.parametrize("field,values", [
+    ("audio_asr_coverage_max_tolerated_speech_map_gap_samples", [-1, 230400001, True, 1.0, 1.5]),
+    ("audio_asr_coverage_repetition_min_chars", [0, -1, 65537, True, 16.0, 1.5]),
+    ("audio_asr_coverage_low_confidence_threshold", [-0.01, 1.01, float("nan"), float("inf")]),
+])
+def test_coverage_settings_are_bounded_and_strict(field, values):
+    for value in values:
+        with pytest.raises(ValueError):
+            Settings(service_name="test-ai", service_identity="ai-core", _env_file=None,
+                     **{field: value})
+
+
+@pytest.mark.parametrize("gap,repetition,confidence", [(0, 1, 0), (230400000, 65536, 1)])
+def test_coverage_configuration_boundaries(gap, repetition, confidence):
+    loaded = Settings(
+        service_name="test-ai", service_identity="ai-core", _env_file=None,
+        audio_asr_coverage_max_tolerated_speech_map_gap_samples=gap,
+        audio_asr_coverage_repetition_min_chars=repetition,
+        audio_asr_coverage_low_confidence_threshold=confidence,
+    )
+    assert loaded.audio_asr_coverage_max_tolerated_speech_map_gap_samples == gap
+    assert loaded.audio_asr_coverage_repetition_min_chars == repetition
+    assert loaded.audio_asr_coverage_low_confidence_threshold == confidence
+
+
+@pytest.mark.parametrize("field,values", [
+    ("audio_asr_coverage_max_tolerated_speech_map_gap_samples", ["-1", "230400001", "1.0", "true"]),
+    ("audio_asr_coverage_repetition_min_chars", ["0", "65537", "16.0", "true"]),
+    ("audio_asr_coverage_low_confidence_threshold", ["-0.01", "1.01", "nan", "inf"]),
+])
+def test_invalid_coverage_environment_is_sanitized(monkeypatch, field, values):
+    monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
+    for value in [*values, "private-invalid"]:
+        monkeypatch.setenv(f"AI_{field.upper()}", value)
+        with pytest.raises(ConfigurationError) as caught:
+            load_settings(None)
+        assert field in str(caught.value)
+        assert "private-invalid" not in "".join(traceback.format_exception(caught.value))
+        assert caught.value.__context__ is None
+
+
+def test_reconciliation_defaults_match_documented_configuration():
+    defaults = Settings(service_name="test-ai", service_identity="ai-core", _env_file=None)
+    documented = load_settings(Path(__file__).resolve().parents[2] / ".env.example")
+    assert defaults.audio_asr_reconciliation_min_shared_tokens == 2
+    assert documented.audio_asr_reconciliation_min_shared_tokens == 2
+
+
+@pytest.mark.parametrize("source", ["environment", "dotenv"])
+def test_reconciliation_configuration_overrides(monkeypatch, tmp_path, source):
+    monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
+    env_file = None
+    if source == "environment":
+        monkeypatch.setenv("AI_AUDIO_ASR_RECONCILIATION_MIN_SHARED_TOKENS", "5")
+    else:
+        env_file = tmp_path / ".env"
+        env_file.write_text("AI_AUDIO_ASR_RECONCILIATION_MIN_SHARED_TOKENS=5\n")
+    assert load_settings(env_file).audio_asr_reconciliation_min_shared_tokens == 5
+
+
+@pytest.mark.parametrize("value", [2, 64])
+def test_reconciliation_configuration_boundaries(value):
+    loaded = Settings(service_name="test-ai", service_identity="ai-core", _env_file=None,
+                      audio_asr_reconciliation_min_shared_tokens=value)
+    assert loaded.audio_asr_reconciliation_min_shared_tokens == value
+
+
+@pytest.mark.parametrize("value", [True, False, 2.0, 2.5, 1, 65])
+def test_reconciliation_configuration_requires_strict_bounded_integer(value):
+    with pytest.raises(ValueError):
+        Settings(service_name="test-ai", service_identity="ai-core", _env_file=None,
+                 audio_asr_reconciliation_min_shared_tokens=value)
+
+
+@pytest.mark.parametrize("value", ["1", "65", "2.0", "true", "nan", "private-invalid"])
+def test_invalid_reconciliation_configuration_is_sanitized(monkeypatch, value):
+    monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
+    monkeypatch.setenv("AI_AUDIO_ASR_RECONCILIATION_MIN_SHARED_TOKENS", value)
+    with pytest.raises(ConfigurationError) as caught:
+        load_settings(None)
+    assert "audio_asr_reconciliation_min_shared_tokens" in str(caught.value)
+    assert "private-invalid" not in "".join(traceback.format_exception(caught.value))
+    assert caught.value.__context__ is None
+
+
+def test_recovery_defaults_match_documented_configuration():
+    expected = {
+        "audio_asr_recovery_context_samples": 16000,
+        "audio_asr_recovery_max_attempts_per_region": 3,
+        "audio_asr_recovery_max_request_samples_per_region": 1440000,
+        "audio_asr_recovery_max_total_attempts": 16,
+        "audio_asr_recovery_max_total_request_samples": 2400000,
+        "audio_asr_recovery_max_wall_time_seconds": 300,
+        "audio_asr_recovery_pause_max_samples": 8000,
+        "audio_asr_recovery_pause_noise_margin_db": 6,
+        "audio_asr_recovery_pause_strong_speech_threshold": 0.8,
+    }
+    for configuration in (Settings(service_name="test-ai", service_identity="ai-core", _env_file=None),
+                          load_settings(Path(__file__).resolve().parents[2] / ".env.example")):
+        for field, value in expected.items():
+            assert getattr(configuration, field) == value
+
+
+@pytest.mark.parametrize("field", [
+    "audio_asr_recovery_context_samples", "audio_asr_recovery_max_attempts_per_region",
+    "audio_asr_recovery_max_request_samples_per_region", "audio_asr_recovery_max_total_attempts",
+    "audio_asr_recovery_max_total_request_samples",
+])
+@pytest.mark.parametrize("value", [0, -1, True, 1.0, 1.5, 230400001])
+def test_recovery_counts_are_strict_positive_and_bounded(field, value):
+    with pytest.raises(ValueError):
+        Settings(service_name="test-ai", service_identity="ai-core", _env_file=None, **{field: value})
+
+
+@pytest.mark.parametrize("value", [0, -1, True, float("nan"), float("inf"), 3601])
+def test_recovery_wall_time_is_positive_finite_bounded(value):
+    with pytest.raises(ValueError):
+        Settings(service_name="test-ai", service_identity="ai-core", _env_file=None,
+                 audio_asr_recovery_max_wall_time_seconds=value)
+
+
+def test_recovery_environment_accepts_integer_text_and_sanitizes_invalid_input(monkeypatch):
+    monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
+    monkeypatch.setenv("AI_AUDIO_ASR_RECOVERY_MAX_TOTAL_ATTEMPTS", "4")
+    assert load_settings(None).audio_asr_recovery_max_total_attempts == 4
+    monkeypatch.setenv("AI_AUDIO_ASR_RECOVERY_MAX_TOTAL_ATTEMPTS", "private-invalid")
+    with pytest.raises(ConfigurationError) as caught:
+        load_settings(None)
+    assert "private-invalid" not in "".join(traceback.format_exception(caught.value))
+
+
+def test_correction_defaults_match_canonical_service_example():
+    env_file = Path(__file__).resolve().parents[2] / ".env.example"
+    expected = {
+        "transcript_correction_model": None,
+        "transcript_correction_reasoning_effort": None,
+        "transcript_correction_timeout_seconds": 120,
+        "transcript_correction_context_window_tokens": 131072,
+        "transcript_correction_max_input_tokens": 98304,
+        "transcript_correction_max_output_tokens": 32768,
+        "transcript_correction_max_response_bytes": 4194304,
+        "transcript_correction_max_attempts": 2,
+        "transcript_correction_temperature": 0,
+        "transcript_correction_min_text_ratio": 0.65,
+        "transcript_correction_max_text_ratio": 1.5,
+    }
+    defaults = Settings(service_name="test-ai", service_identity="ai-core", _env_file=None)
+    for field, value in expected.items():
+        assert getattr(defaults, field) == value
+    example = load_settings(env_file)
+    example_values = {**expected, "transcript_correction_model": "openai/gpt-6-luna",
+                      "transcript_correction_reasoning_effort": "low",
+                      "transcript_correction_temperature": None}
+    for field, value in example_values.items():
+        assert getattr(example, field) == value
+
+    # Loading settings alone would hide omitted example variables behind defaults.
+    lines = set(env_file.read_text(encoding="utf-8").splitlines())
+    for field, value in example_values.items():
+        if value is not None:
+            assert f"AI_{field.upper()}={value}" in lines
+    assert "AI_TRANSCRIPT_CORRECTION_TEMPERATURE=" in lines
+
+
+@pytest.mark.parametrize("source", ["environment", "dotenv"])
+def test_correction_configuration_overrides(monkeypatch, tmp_path, source):
+    values = {"AI_SERVICE_NAME": "test-ai", "AI_SERVICE_IDENTITY": "ai-core",
+              "AI_TRANSCRIPT_CORRECTION_MODEL": "vendor/approved",
+              "AI_TRANSCRIPT_CORRECTION_MAX_ATTEMPTS": "3",
+              "AI_TRANSCRIPT_CORRECTION_MAX_INPUT_TOKENS": "40000",
+              "AI_TRANSCRIPT_CORRECTION_TIMEOUT_SECONDS": "2.5",
+              "AI_TRANSCRIPT_CORRECTION_MIN_TEXT_RATIO": "0.7",
+              "AI_TRANSCRIPT_CORRECTION_MAX_TEXT_RATIO": "1.4"}
+    env_file = None
+    if source == "environment":
+        for key, value in values.items():
+            monkeypatch.setenv(key, value)
+    else:
+        env_file = tmp_path / ".env"
+        env_file.write_text("\n".join(f"{key}={value}" for key, value in values.items()))
+    config = load_settings(env_file)
+    assert config.transcript_correction_model == "vendor/approved"
+    assert config.transcript_correction_max_attempts == 3
+    assert config.transcript_correction_max_input_tokens == 40000
+    assert config.transcript_correction_timeout_seconds == 2.5
+    assert config.transcript_correction_min_text_ratio == 0.7
+    assert config.transcript_correction_max_text_ratio == 1.4
+
+
+def test_correction_reasoning_environment_overrides_dotenv(monkeypatch, tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text("AI_SERVICE_NAME=test-ai\nAI_SERVICE_IDENTITY=ai-core\n"
+                        "AI_TRANSCRIPT_CORRECTION_REASONING_EFFORT=medium\n")
+    monkeypatch.setenv("AI_TRANSCRIPT_CORRECTION_REASONING_EFFORT", "low")
+
+    config = load_settings(env_file)
+
+    assert config.transcript_correction_reasoning_effort == "low"
+
+
+@pytest.mark.parametrize("field,invalid", [
+    ("transcript_correction_context_window_tokens", [0, 2000001, True, 131072.0]),
+    ("transcript_correction_max_input_tokens", [0, 2000001, True, 100.0]),
+    ("transcript_correction_max_output_tokens", [0, 131073, True, 100.0]),
+    ("transcript_correction_max_response_bytes", [0, 16777217, True, 100.0]),
+    ("transcript_correction_max_attempts", [0, 4, True, 2.0]),
+    ("transcript_correction_timeout_seconds", [0, 601, True, float("inf"), float("nan")]),
+    ("transcript_correction_temperature", [-0.1, 1.1, True, float("nan")]),
+    ("transcript_correction_min_text_ratio", [0, 1.01, True, float("nan")]),
+    ("transcript_correction_max_text_ratio", [0.99, 3.01, True, float("inf")]),
+    ("transcript_correction_model", ["", "private invalid", "x" * 257]),
+])
+def test_correction_settings_are_strict_finite_and_bounded(field, invalid):
+    for value in invalid:
+        with pytest.raises(ValueError):
+            Settings(service_name="test-ai", service_identity="ai-core", _env_file=None,
+                     **{field: value})
+
+
+def test_correction_context_cross_field_validation():
+    with pytest.raises(ValueError):
+        Settings(service_name="test-ai", service_identity="ai-core", _env_file=None,
+                 transcript_correction_context_window_tokens=131071)
+
+
+@pytest.mark.parametrize("field", [
+    "model", "timeout_seconds", "context_window_tokens", "max_input_tokens",
+    "max_output_tokens", "max_response_bytes", "max_attempts", "temperature",
+    "min_text_ratio", "max_text_ratio", "reasoning_effort",
+])
+def test_correction_invalid_environment_is_sanitized(monkeypatch, field):
+    monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
+    monkeypatch.setenv(f"AI_TRANSCRIPT_CORRECTION_{field.upper()}", "private invalid")
+    with pytest.raises(ConfigurationError) as caught:
+        load_settings(None)
+    assert "private invalid" not in "".join(traceback.format_exception(caught.value))
+    assert caught.value.__context__ is None
+
+
+@pytest.mark.parametrize("field,value", [
+    ("core_api_base_url", "http://core.internal"),
+    ("core_api_base_url", "https://user:private-secret@core.internal"),
+    ("s3_endpoint_url", "http://storage.internal"),
+    ("rabbitmq_url", "amqp://private-secret@broker.internal"),
+    ("core_api_max_attempts", 4), ("core_api_timeout_seconds", 16),
+    ("core_api_connect_timeout_seconds", 4), ("s3_download_timeout_seconds", float("inf")),
+    ("rabbitmq_delivery_limit", 6), ("worker_concurrency", 65),
+])
+def test_worker_integration_settings_fail_closed(field, value):
+    with pytest.raises(ValueError):
+        Settings(service_name="test", service_identity="ai-core", _env_file=None, **{field: value})
+
+
+def test_worker_credentials_are_secret_and_outbound_tls_is_distinct():
+    settings = Settings(service_name="test", service_identity="ai-core", _env_file=None,
+                        rabbitmq_password="private-broker", s3_access_key_id="private-access",
+                        s3_secret_access_key="private-storage")
+    for value in ("private-broker", "private-access", "private-storage"):
+        assert value not in repr(settings) and value not in settings.model_dump_json()
+    assert settings.core_api_client_key_file is None
+    assert settings.tls_key_file is None
+    assert settings.core_api_max_attempts == 3
+    assert settings.rabbitmq_delivery_limit == 5
+
+
+def test_partial_outbound_mtls_rejected_without_loading_files(tmp_path):
+    with pytest.raises(ValueError):
+        Settings(service_name="test", service_identity="ai-core", _env_file=None,
+                 core_api_base_url="https://core.internal",
+                 core_api_client_key_file=tmp_path / "private-key")

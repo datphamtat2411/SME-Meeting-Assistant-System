@@ -1,3 +1,4 @@
+from contextlib import ExitStack
 from pathlib import Path
 
 import pytest
@@ -19,38 +20,70 @@ from .support import (
     require_pinned_model,
     verify_source,
 )
+from .transcription_runner import require_live_evaluation
+from .transcription_support import (
+    external_file,
+    load_baseline,
+    load_configuration,
+    load_reference,
+    require_transcription_manifest,
+    validate_output_path,
+)
 
 
 def pytest_addoption(parser):
     group = parser.getgroup("preprocessing evaluation")
     group.addoption("--evaluation-fixture-root", type=Path, default=None,
-                    help="Explicit approved local dataset directory containing manifest.json")
+                    help="Explicit approved audio root; source paths always resolve here")
+    group.addoption("--evaluation-manifest", type=Path, default=None,
+                    help="Optional explicit preprocessing manifest outside the audio root; exact source hashes still required")
     group.addoption("--evaluation-output", type=Path, default=None,
                     help="Required JSON output path outside the fixture root")
+    group.addoption("--transcription-evaluation-config", type=Path, default=None,
+                    help="Required versioned transcription configuration matrix")
+    group.addoption("--transcription-evaluation-output", type=Path, default=None,
+                    help="Required transcription JSON output outside Git, fixtures and model directories")
+    group.addoption("--transcription-evaluation-baseline", type=Path, default=None,
+                    help="Optional external sanitized transcription report for compatible comparisons")
+    group.addoption("--asr-comparison-config", type=Path, default=None,
+                    help="Explicit comparison matrix; only baseline_variant is selected")
+    group.addoption("--asr-comparison-output", type=Path, default=None,
+                    help="Explicit external sanitized A/B/C report output path")
+    group.addoption("--asr-comparison-max-calls", type=int, default=None,
+                    help="Required maximum actual ASR calls covering the entire selected corpus")
+    group.addoption("--asr-cutover-policy", type=Path, default=None,
+                    help="External reviewed T08 policy, scope, reference and configuration identities")
+    group.addoption("--asr-cutover-output", type=Path, default=None,
+                    help="New external sanitized T08 JSON destination")
+    group.addoption("--asr-cutover-max-calls", type=int, default=None,
+                    help="Explicit total T08 ASR request budget for both modes and all trials")
+    group.addoption("--asr-pilot-approval", type=Path, default=None,
+                    help="External human-reviewed pilot scope and operational limits")
+    group.addoption("--asr-pilot-output", type=Path, default=None,
+                    help="New external sanitized pilot report destination")
+    group.addoption("--asr-pilot-max-calls", type=int, default=None,
+                    help="Explicit pilot ASR call budget across both modes and every trial")
 
 
 @pytest.fixture(scope="session")
 def evaluation_run(request):
     root = request.config.getoption("evaluation_fixture_root")
+    manifest_path = request.config.getoption("evaluation_manifest")
     output = request.config.getoption("evaluation_output")
     backend = None
     try:
         require(root is not None and output is not None, "explicit fixture root and output")
-        root, output = root.resolve(), output.absolute()
-        require(output.parent.is_dir() and not output.is_symlink()
-                and not output.resolve().is_relative_to(root), "output location")
-        manifest = load_manifest(root)
+        root, output = root.absolute(), output.absolute()
+        manifest_path = manifest_path.absolute() if manifest_path is not None else root / "manifest.json"
+        manifest = load_manifest(root, manifest_path=manifest_path)
         # Do not load an implicit .env file for an evaluation; require explicit env.
         settings = load_settings(env_file=None)
         require_pinned_model(settings)
         model = settings.audio_vad_model_path
-        require(output.resolve() != model.resolve()
-                and (not output.exists() or not output.samefile(model)), "output model alias")
+        sources = [verify_source(root, fixture) for fixture in manifest.fixtures]
+        validate_output_path(output, root, [model, manifest_path, *sources])
         # Validate every fixture before loading/inferencing the model, and never
         # allow the report to overwrite original bytes through a hard-link alias.
-        for fixture in manifest.fixtures:
-            source = verify_source(root, fixture)
-            require(not output.exists() or not output.samefile(source), "output source alias")
         # Both model bytes and SHA-256 are mandatory before this real adapter loads.
         backend = SileroVadBackend.from_settings(settings)
         pipeline = AudioPreprocessingPipeline(
@@ -63,3 +96,98 @@ def evaluation_run(request):
     finally:
         if backend is not None:
             backend.close()
+
+
+@pytest.fixture(scope="session")
+def transcription_evaluation_run(request):
+    __tracebackhide__ = True
+    resources = ExitStack()
+    try:
+        # No implicit .env, credential search, model loading or provider creation
+        # before the explicit live opt-in and all local assets are validated.
+        settings = load_settings(env_file=None)
+        require_live_evaluation(settings)
+        root = request.config.getoption("evaluation_fixture_root")
+        output = request.config.getoption("transcription_evaluation_output")
+        config_path = request.config.getoption("transcription_evaluation_config")
+        baseline_path = request.config.getoption("transcription_evaluation_baseline")
+        require(root is not None and output is not None and config_path is not None, "explicit transcription options")
+        require(not root.is_symlink(), "fixture root")
+        root = root.absolute()
+        repository = Path(__file__).resolve().parents[4]
+        require(not root.resolve().is_relative_to(repository), "external fixture root")
+        manifest = load_manifest(root)
+        require_transcription_manifest(manifest)
+        matrix = load_configuration(config_path)
+        for variant in matrix.variants:
+            variant.settings(settings)  # Validate every variant before inference.
+        require_pinned_model(settings)
+        protected = [settings.audio_vad_model_path]
+        for fixture in manifest.fixtures:
+            protected.append(external_file(root, fixture.path))
+            verify_source(root, fixture)
+            if fixture.reference is not None:
+                load_reference(root, fixture)
+                protected.append(external_file(root, fixture.reference.path))
+        require(all(not path.resolve().is_relative_to(repository) for path in protected), "external private assets")
+        for path in (config_path, baseline_path):
+            if path is not None:
+                require(not path.resolve().is_relative_to(repository), "external evaluation inputs")
+
+        def check_output():
+            validate_output_path(output, root, protected)
+            for path in (config_path, baseline_path):
+                if path is not None:
+                    require(output.resolve() != path.resolve()
+                            and (not output.exists() or not path.exists() or not output.samefile(path)), "output input alias")
+
+        check_output()
+        baseline = load_baseline(baseline_path) if baseline_path is not None else None
+        backend = SileroVadBackend.from_settings(settings)
+        resources.callback(backend.close)
+
+        def factory(effective):
+            from sme_meeting_ai.providers.openrouter_instruction_llm import (
+                OpenRouterInstructionLlmAdapter,
+            )
+            from sme_meeting_ai.providers.openrouter_whisper import (
+                OpenRouterWhisperAdapter,
+            )
+
+            transcriber = resources.enter_context(OpenRouterWhisperAdapter(effective))
+            corrector = resources.enter_context(OpenRouterInstructionLlmAdapter(effective))
+            pipeline = AudioPreprocessingPipeline(
+                AudioNormalizer(effective), AudioEvidenceDetector(effective, backend), SpeechMapBuilder(effective),
+            )
+            return pipeline, transcriber, corrector
+    except (EvaluationError, ConfigurationError, AudioProcessingError, OSError, ValueError):
+        resources.close()
+        pytest.fail("transcription evaluation unavailable; explicit opt-in, approved references/configuration, credentials and pinned model required", pytrace=False)
+    try:
+        yield manifest, root, output, matrix, factory, settings, baseline, check_output
+    finally:
+        resources.close()
+
+
+@pytest.fixture(scope="session")
+def asr_comparison_run(request):
+    """Comparison-only wiring; all provisioning/preflight lives in its executor."""
+    import os
+
+    from .asr_strategy_comparison import require_live_comparison
+
+    __tracebackhide__ = True
+    if os.environ.get("RUN_ASR_COMPARISON_LIVE") != "1":
+        pytest.skip("ASR comparison requires explicit live opt-in")
+    try:
+        settings = load_settings(env_file=None)
+        require_live_comparison(settings)
+        root = request.config.getoption("evaluation_fixture_root")
+        config = request.config.getoption("asr_comparison_config")
+        output = request.config.getoption("asr_comparison_output")
+        budget = request.config.getoption("asr_comparison_max_calls")
+        require(root is not None and config is not None and output is not None
+                and type(budget) is int and budget > 0, "explicit comparison options")
+    except (EvaluationError, ConfigurationError):
+        pytest.fail("ASR comparison requires explicit configuration, paths, credentials and call budget", pytrace=False)
+    return root, config, output, budget, settings

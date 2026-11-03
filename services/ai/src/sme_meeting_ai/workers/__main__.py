@@ -8,6 +8,7 @@ from sme_meeting_ai.core.config import ConfigurationError, Settings, load_settin
 from sme_meeting_ai.observability.logging import configure_logging
 
 from .runtime import ResourceFactory, WorkerExecution, WorkerRuntime
+from .transcription import TranscriptionExecution
 
 
 async def run_worker(
@@ -40,8 +41,8 @@ def main() -> int:
         return 1
     configure_logging(settings)
     try:
-        # Intentionally unregistered until a real worker execution is supplied.
-        return asyncio.run(run_worker(settings))
+        execution = TranscriptionExecution(settings)
+        return asyncio.run(run_worker(settings, execution, (lambda: execution,)))
     except KeyboardInterrupt:
         return 0
     except Exception:

@@ -319,7 +319,38 @@ def test_entrypoint_validates_before_logging(monkeypatch, capsys):
     assert capsys.readouterr().err == "worker.configuration.failed\n"
 
 
-def test_entrypoint_missing_registration_returns_nonzero(monkeypatch):
+def test_entrypoint_missing_worker_configuration_returns_nonzero(monkeypatch):
     monkeypatch.setattr(entrypoint, "load_settings", settings)
     monkeypatch.setattr(entrypoint, "configure_logging", lambda _: None)
     assert entrypoint.main() == 1
+
+
+def test_shutdown_uses_one_deadline_across_drain_and_cleanup():
+    async def run():
+        started = asyncio.Event()
+        cleaned = []
+
+        @asynccontextmanager
+        async def resource():
+            try:
+                yield
+            finally:
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    cleaned.append(True)
+
+        async def execute(stop):
+            started.set()
+            await asyncio.Event().wait()
+
+        runtime = WorkerRuntime(settings(worker_shutdown_timeout_seconds=0.1), execute, [resource])
+        task = asyncio.create_task(runtime.run())
+        await started.wait()
+        begin = asyncio.get_running_loop().time()
+        runtime.request_shutdown()
+        assert await task == 1
+        # Scheduling allowance still distinguishes one budget from two or three.
+        assert asyncio.get_running_loop().time() - begin < 0.17
+        assert cleaned == [True]
+    asyncio.run(run())

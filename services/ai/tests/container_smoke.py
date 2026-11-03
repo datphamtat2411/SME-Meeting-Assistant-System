@@ -32,10 +32,57 @@ response = urllib.request.urlopen(request, context=context, timeout=1)
 assert response.status == 200
 assert json.load(response) == {{'status': 'ready'}}
 """
+SAFE_EVENTS = frozenset({
+    "http.runtime.failed", "http.configuration.failed", "worker.configuration.failed",
+    "worker.runtime.failed", "worker.starting", "worker.started", "worker.stopped", "worker.failed",
+    "worker.startup.failed", "worker.execution.missing", "worker.execution.failed",
+    "worker.execution.timeout", "worker.cleanup.failed", "worker.cleanup.timeout",
+    "worker.shutdown.requested", "worker.transcription.consuming",
+    *(f"worker.transcription.startup.{phase}.failed" for phase in
+      ("provider", "core", "storage", "vad", "pipeline", "broker")),
+})
+TEST_SECRET = "smoke-only-provider-key"
+
+
+def lifecycle_events(logs):
+    observed = []
+    for line in logs.splitlines():
+        try:
+            data = json.loads(line)
+            event = data.get("event") if isinstance(data, dict) else None
+        except ValueError:
+            event = line
+        if isinstance(event, str) and event in SAFE_EVENTS:
+            observed.append(event)
+    return observed
+
+
+def diagnostics(logs):
+    # Redaction by projection, not fragile regex replacement of arbitrary output.
+    observed = lifecycle_events(logs)
+    return (f"events={observed[-24:]!r} traceback={'Traceback' in logs} "
+            f"suppressed_lines={max(0, len(logs.splitlines()) - len(observed))}")
+
+
+def assert_exit(cid, role, phase, expected_exit, expected_events):
+    actual = docker("wait", cid)
+    logs = docker("logs", cid)
+    observed = set(lifecycle_events(logs))
+    detail = (f"role={role} phase={phase} expected_exit={expected_exit} actual_exit={actual} "
+              f"expected_events={sorted(expected_events)} {diagnostics(logs)}")
+    assert actual == expected_exit, detail
+    assert expected_events <= observed, detail
+    assert "Traceback" not in logs and TEST_SECRET not in logs, detail
+    if expected_exit != "0":
+        assert not observed & {"worker.started", "worker.transcription.consuming", "worker.stopped"}, detail
 
 
 def docker(*args):
-    return subprocess.check_output(["docker", *args], text=True, stderr=subprocess.STDOUT).strip()
+    result = subprocess.run(["docker", *args], text=True, capture_output=True, timeout=30)
+    assert result.returncode == 0, f"Docker operation={args[0]} exit={result.returncode}; output suppressed"
+    # Docker forwards a container's stderr to the CLI's stderr even on success.
+    # Preserve it for projection/assertions, never dump it as raw diagnostics.
+    return (result.stdout + (result.stderr if args[0] == "logs" else "")).strip()
 
 
 def probe(cid, code):
@@ -48,14 +95,16 @@ def wait_ready(cid, code):
     for _ in range(50):
         if probe(cid, code) == 0:
             return
-        assert json.loads(docker("inspect", cid))[0]["State"]["Running"], docker("logs", cid)
+        assert json.loads(docker("inspect", cid))[0]["State"]["Running"], (
+            f"role=sme-ai-http phase=readiness {diagnostics(docker('logs', cid))}"
+        )
         time.sleep(0.2)
-    raise AssertionError("HTTP never became ready")
+    raise AssertionError(f"role=sme-ai-http phase=readiness timeout {diagnostics(docker('logs', cid))}")
 
 
 def stop(cid):
     docker("stop", "--time=10", cid)
-    assert docker("wait", cid) == "0", docker("logs", cid)
+    assert_exit(cid, "sme-ai-http", "shutdown", "0", set())
 
 
 def main():
@@ -84,21 +133,32 @@ def main():
             assert "/tmp" in host["Tmpfs"]
             stop(http)
 
-            for role, environment, event in [
-                ("sme-ai-http", "production", "http.runtime.failed"),
-                ("sme-ai-worker", "test", "worker.execution.missing"),
+            for role, environment, phase, extra, expected in [
+                ("sme-ai-http", "production", "tls", [], {"http.runtime.failed"}),
+                ("sme-ai-worker", "test", "missing-credentials", [], {
+                    "worker.transcription.startup.provider.failed", "worker.startup.failed", "worker.failed"}),
+                ("sme-ai-worker", "test", "missing-correction", ["-e", f"OPENROUTER_API_KEY={TEST_SECRET}"], {
+                    "worker.transcription.startup.provider.failed", "worker.startup.failed", "worker.failed"}),
+                ("sme-ai-worker", "test", "invalid-core-tls", [
+                    "-e", f"OPENROUTER_API_KEY={TEST_SECRET}", "-e", "AI_TRANSCRIPT_CORRECTION_MODEL=test/corrector",
+                    "-e", "AI_CORE_API_BASE_URL=https://core.invalid",
+                    "-e", "AI_CORE_API_SERVER_CA_FILE=/missing/ca",
+                    "-e", "AI_CORE_API_CLIENT_CERT_FILE=/missing/cert",
+                    "-e", "AI_CORE_API_CLIENT_KEY_FILE=/missing/key",
+                ], {"worker.transcription.startup.core.failed", "worker.startup.failed", "worker.failed"}),
             ]:
-                cid = docker("run", "-d", *COMMON, "-e", f"AI_ENVIRONMENT={environment}", image, role)
+                cid = docker("run", "-d", *COMMON, "-e", f"AI_ENVIRONMENT={environment}", *extra, image, role)
                 ids.append(cid)
                 deadline = time.monotonic() + 10
                 while json.loads(docker("inspect", cid))[0]["State"]["Running"]:
                     if role == "sme-ai-http":
                         assert probe(cid, PROBE.format("ready", "ready")) != 0
-                    assert time.monotonic() < deadline, "runtime did not fail promptly"
+                    assert time.monotonic() < deadline, (
+                        f"role={role} phase={phase} expected_exit=1 actual_exit=running "
+                        f"{diagnostics(docker('logs', cid))}"
+                    )
                     time.sleep(0.1)
-                assert docker("wait", cid) == "1"
-                logs = docker("logs", cid)
-                assert event in logs and "Traceback" not in logs
+                assert_exit(cid, role, phase, "1", expected)
 
             pki = create_test_pki(Path(temporary))
             mounts = []
@@ -127,7 +187,7 @@ def main():
         finally:
             if ids:
                 docker("rm", "-f", *ids)
-    print("Container smoke passed: restricted HTTP, worker failure, production fail-closed, verified mTLS and SIGTERM")
+    print("Container smoke passed: restricted HTTP, worker startup rejection, production fail-closed, verified mTLS and SIGTERM")
 
 
 if __name__ == "__main__":

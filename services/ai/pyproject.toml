@@ -3,7 +3,10 @@ name = "sme-meeting-ai"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
+    "aio-pika>=9.5.8,<10",
+    "boto3>=1.40.0,<2",
     "fastapi>=0.143.0",
+    "httpx>=0.28.1",
     "numpy>=2.2.6,<3",
     "onnxruntime>=1.22.1,<2",
     "pydantic-settings>=2.15.0",
@@ -16,7 +19,6 @@ sme-ai-worker = "sme_meeting_ai.workers.__main__:main"
 
 [dependency-groups]
 dev = [
-    "httpx>=0.28.1",
     "pytest>=9.1.1",
     "ruff>=0.17.0",
 ]
@@ -30,6 +32,8 @@ testpaths = ["tests"]
 addopts = "-m 'not evaluation'"
 markers = [
     "evaluation: real preprocessing inference against approved external Vietnamese fixtures and a pinned local model",
+    "live_provider: explicitly opted-in external provider compatibility check using synthetic content",
+    "live_infrastructure: explicitly opted-in isolated Core/RabbitMQ/S3/provider acceptance using a pre-admitted synthetic fixture",
 ]
 
 [tool.ruff]

@@ -19,6 +19,7 @@ def create_test_pki(directory: Path) -> Path:
     for name, san, ca, days, purpose in [
         ("server", "DNS:localhost,IP:127.0.0.1", "ca", "1", "serverAuth"),
         ("core-api", "URI:urn:sme:service:core-api", "ca", "1", "clientAuth"),
+        ("ai-worker", "URI:urn:sme:service:ai-worker", "ca", "1", "clientAuth"),
         ("other", "URI:urn:sme:service:other-service", "ca", "1", "clientAuth"),
         ("ambiguous", "URI:urn:sme:service:core-api,URI:urn:sme:service:other", "ca", "1", "clientAuth"),
         ("cn-only", "DNS:core-api", "ca", "1", "clientAuth"),

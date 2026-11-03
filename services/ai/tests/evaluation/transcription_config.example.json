@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "configuration_version": "replace-with-reviewed-matrix-version",
+  "baseline_variant": "baseline",
+  "baseline_policies": [],
+  "variants": [
+    {
+      "variant_id": "baseline",
+      "version": "1",
+      "target_samples": 320000,
+      "max_request_samples": 480000,
+      "overlap_samples": 80000,
+      "boundary_search_samples": 80000
+    },
+    {
+      "variant_id": "short-context",
+      "version": "1",
+      "target_samples": 160000,
+      "max_request_samples": 320000,
+      "overlap_samples": 80000,
+      "boundary_search_samples": 40000
+    },
+    {
+      "variant_id": "long-context",
+      "version": "1",
+      "target_samples": 640000,
+      "max_request_samples": 800000,
+      "overlap_samples": 80000,
+      "boundary_search_samples": 80000
+    }
+  ]
+}
