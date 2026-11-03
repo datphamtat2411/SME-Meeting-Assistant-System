@@ -165,7 +165,7 @@ def test_example_dotenv_loads_documented_defaults():
     assert settings.audio_asr_chunk_overlap_samples == 80000
     assert settings.audio_asr_chunk_boundary_search_samples == 80000
     assert settings.audio_asr_chunk_max_chunks == 4096
-    assert settings.audio_asr_max_concurrent_chunks == 1
+    assert settings.audio_asr_max_concurrent_chunks == 2
 
 
 @pytest.mark.parametrize(
