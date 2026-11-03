@@ -427,6 +427,7 @@ def serialize_v6_meeting(reconciliation: TranscriptReconciliation) -> str:
         category, reason = CorrectionErrorCategory.RESOURCE, V6GenerationReason.RESOURCE_EXHAUSTED
         traceback.clear_frames(error.__traceback__)
     except Exception as error:
+        category, reason = CorrectionErrorCategory.RESOURCE, V6GenerationReason.RESOURCE_EXHAUSTED
         traceback.clear_frames(error.__traceback__)
     finally:
         reconciliation = None
@@ -600,6 +601,7 @@ def _generate_span_proposal(
         failure = V6GenerationFailure(CorrectionErrorCategory.RESOURCE, V6GenerationReason.RESOURCE_EXHAUSTED, attempts)
         traceback.clear_frames(error.__traceback__)
     except Exception as error:
+        failure = V6GenerationFailure(CorrectionErrorCategory.RESOURCE, V6GenerationReason.RESOURCE_EXHAUSTED, attempts)
         traceback.clear_frames(error.__traceback__)
     finally:
         reconciliation = provider = settings = request = response = transcript = None

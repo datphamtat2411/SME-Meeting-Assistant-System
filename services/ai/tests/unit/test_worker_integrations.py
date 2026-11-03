@@ -135,7 +135,7 @@ def test_source_stream_verification_and_private_cleanup(tmp_path):
 
 @pytest.mark.parametrize("kind,category", [
     ("missing", "NOT_FOUND"), ("size", "INTEGRITY"), ("digest", "INTEGRITY"),
-    ("timeout", "TIMEOUT"), ("alias", "VALIDATION"), ("oversize", "VALIDATION"),
+    ("timeout", "TIMEOUT"), ("alias", "CONFIGURATION"), ("oversize", "VALIDATION"),
 ])
 def test_storage_failures_cleanup_and_sanitization(tmp_path, kind, category):
     s3 = S3()
@@ -244,6 +244,51 @@ def test_security_and_version_errors_stop_intake(status, code):
             with pytest.raises(CoreError) as caught:
                 await client.lookup(decode(event_body()))
             assert caught.value.stop_intake
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("status,code,expected,retryable,stop", [
+    (400, "VALIDATION_ERROR", "VALIDATION_ERROR", False, False),
+    (401, "UNAUTHORIZED", "WORKER_TRANSPORT", False, True),
+    (403, "FORBIDDEN", "WORKER_TRANSPORT", False, True),
+    (404, "WORKER_DELIVERY_NOT_FOUND", "WORKER_DELIVERY_NOT_FOUND", False, False),
+    (409, "WORKER_ATTEMPT_BUSY", "WORKER_ATTEMPT_BUSY", False, False),
+    (413, "PAYLOAD_TOO_LARGE", "PAYLOAD_TOO_LARGE", False, False),
+    (415, "UNSUPPORTED_MEDIA_TYPE", "UNSUPPORTED_MEDIA_TYPE", False, False),
+    (422, "VALIDATION_ERROR", "VALIDATION_ERROR", False, False),
+    (429, "RATE_LIMITED", "WORKER_TRANSPORT", True, False),
+    (503, "SERVICE_UNAVAILABLE", "SERVICE_UNAVAILABLE", True, False),
+    (422, "private-remote-value", "WORKER_TRANSPORT", False, False),
+])
+def test_core_error_codes_are_safe_and_status_drives_policy(status, code, expected, retryable, stop):
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda _: httpx.Response(status, json=envelope(None, code, False)),
+        )) as http:
+            client = CoreApiClient(Settings(service_name="test", service_identity="ai-core",
+                                           _env_file=None), client=http)
+            with pytest.raises(CoreError) as caught:
+                await client.request(decode(event_body()), "claim", {}, once=True)
+            error = caught.value
+            assert (error.status, error.code, error.retryable, error.stop_intake) == (
+                status, expected, retryable, stop)
+            assert "private-remote-value" not in str(error)
+    asyncio.run(run())
+
+
+def test_malformed_core_error_retains_http_status_without_body():
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda _: httpx.Response(422, content=b"private-malformed-response"),
+        )) as http:
+            client = CoreApiClient(Settings(service_name="test", service_identity="ai-core",
+                                           _env_file=None), client=http)
+            with pytest.raises(CoreError) as caught:
+                await client.request(decode(event_body()), "claim", {}, once=True)
+            assert caught.value.status == 422
+            assert caught.value.code == "WORKER_RESPONSE_INVALID"
+            assert not caught.value.retryable
+            assert "private-malformed-response" not in str(caught.value)
     asyncio.run(run())
 
 

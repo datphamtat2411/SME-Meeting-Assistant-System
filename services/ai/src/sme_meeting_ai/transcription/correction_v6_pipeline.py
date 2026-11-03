@@ -256,6 +256,7 @@ def _correct_span_transcript(
         category, reason = CorrectionErrorCategory.RESOURCE, "resource_exhausted"
         traceback.clear_frames(error.__traceback__)
     except Exception as error:
+        category, reason = CorrectionErrorCategory.RESOURCE, "resource_exhausted"
         traceback.clear_frames(error.__traceback__)
     finally:
         # Do not retain candidate-bearing inputs/proposals in cancellation frames.

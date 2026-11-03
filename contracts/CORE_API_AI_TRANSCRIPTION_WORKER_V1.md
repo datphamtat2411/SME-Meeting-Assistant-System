@@ -1,6 +1,6 @@
 # Core API ↔ AI Transcription Worker — Contract V1
 
-> **Version:** 1.0 · **Decision date:** 2026-10-31  
+> **Version:** 1.0 · **Decision date:** 2026-10-31 · **Revision:** F02-2026-11-04
 > **Status:** Project-directed implementation baseline for contract-first AI development.  
 > **Owners:** API owns the receiver, canonical state and persistence; AI owns the worker and producer.  
 > **Delivery status:** The HTTP operations specified here are implementation targets, not existing deployed APIs. API interoperability and Security/Operations deployment acceptance are separate deliverables.
@@ -206,6 +206,13 @@ Request fields: `{contractVersion, commandId, eventId, generation, executionStag
 - `completedThrough`: `null` or `RECONCILIATION`. The latter requires the existing pipeline's completed-stage prefix through reconciliation and validated text-free evidence. It is not set merely because an ASR provider returned 200.
 - `metrics`: only optional `sampleCount`, `chunkCount`, `retryCount`, `warningCount`, `unresolvedRegionCount`, each a nonnegative integer; at most five keys. It is not arbitrary JSON diagnostics. Core maps these into its existing typed stage metrics (for example sample count to sample-derived `durationMs`); it does not pass new wire keys through `SafeAiDiagnostics` unchecked.
 
+`PREPROCESSING/MALFORMED_OUTPUT` identifies a deterministic invalid internal
+normalized artifact or preprocessing handoff, not invalid source media or a
+provider response. Preserve source validation and decoding separately. Typed
+preflight timeouts and configuration/model failures retain their categories.
+Uncertain result-storage PUTs are reconciled by receipt lookup and broker
+redelivery, not reported as a contradictory failure.
+
 Core derives a safe code, summary and retry classification. On durable failure it returns `200 FAILURE_RECORDED`, including `replay`. An exact retry uses the same receipt. A failure cannot overwrite accepted success; lookup returns the covering success receipt. A competing/divergent terminal command is a conflict, not an overwrite.
 
 ## 6. Accepted source and storage boundaries
@@ -360,6 +367,7 @@ Core applies the following stable code families; it derives safe summaries and t
 | Correction context overflow | `LLM_CONTEXT_UNSUPPORTED` | Nonretryable until approved configuration/strategy changes |
 | Provider authentication or worker configuration invalid | `WORKER_CONFIGURATION_INVALID` | Nonretryable; stop intake and surface a sanitized operational error |
 | Result mapping/digest/contract invalid | `TRANSCRIPT_RESULT_INVALID` | Nonretryable; no canonical transcript |
+| Invalid intermediate pipeline evidence, local correction request or handoff | `TRANSCRIPTION_EVIDENCE_INVALID` | Nonretryable; no canonical transcript |
 | Successful correction has no nonblank segment | `TRANSCRIPTION_EMPTY` | Nonretryable V1 |
 | Finalization retry has no matching corrected artifact | `TRANSCRIPT_RESULT_MISSING` | Retryable only through Core-approved retry/reprocessing |
 | Worker interruption/cancellation without a known accepted result | `WORKER_INTERRUPTED` | Retryable if durable failure can be recorded under a live claim |
@@ -370,11 +378,21 @@ Apply these mapping rules in order, without parsing exception text:
 
 1. `CONFIGURATION|AUTHENTICATION` → `WORKER_CONFIGURATION_INVALID`.
 2. `SOURCE_DOWNLOAD/NOT_FOUND` → `SOURCE_MEDIA_MISSING`; `SOURCE_DOWNLOAD/INTEGRITY` → `SOURCE_MEDIA_INTEGRITY`; `SOURCE_DOWNLOAD|PREPROCESSING` with `VALIDATION|DECODING` → `SOURCE_MEDIA_INVALID`.
-3. `CORRECTION/CONTEXT_OVERFLOW` → `LLM_CONTEXT_UNSUPPORTED`; `RESULT_VALIDATION/EMPTY_OUTPUT` → `TRANSCRIPTION_EMPTY`.
-4. `PUBLICATION/NOT_FOUND` on a finalization-only claim → `TRANSCRIPT_RESULT_MISSING`.
-5. `RESULT_VALIDATION|RESULT_STORAGE` with `VALIDATION|MALFORMED_OUTPUT|SUSPICIOUS_OUTPUT|INTEGRITY` → `TRANSCRIPT_RESULT_INVALID`.
-6. Phase `INTERRUPTED` or category `CANCELLED` → `WORKER_INTERRUPTED`; remaining correction failures → `LLM_CORRECTION_FAILED`; remaining ASR provider/output failures → `ASR_FAILED`.
-7. Remaining `TRANSPORT|TIMEOUT|RESOURCE|PROVIDER|RATE_LIMIT` failures → `TRANSCRIPTION_TEMPORARY`. Other invalid phase/category combinations are rejected with 422, not guessed into success or retry.
+3. `CHUNK_PLANNING|ASR|COVERAGE_RECOVERY|RECONCILIATION|CORRECTION` with `VALIDATION`, or `PREPROCESSING/MALFORMED_OUTPUT` → `TRANSCRIPTION_EVIDENCE_INVALID`.
+4. `CORRECTION/CONTEXT_OVERFLOW` → `LLM_CONTEXT_UNSUPPORTED`; `RESULT_VALIDATION/EMPTY_OUTPUT` → `TRANSCRIPTION_EMPTY`.
+5. `PUBLICATION/NOT_FOUND` on a finalization-only claim → `TRANSCRIPT_RESULT_MISSING`.
+6. `RESULT_VALIDATION|RESULT_STORAGE` with `VALIDATION|MALFORMED_OUTPUT|SUSPICIOUS_OUTPUT|INTEGRITY` → `TRANSCRIPT_RESULT_INVALID`.
+7. Phase `INTERRUPTED` or category `CANCELLED` → `WORKER_INTERRUPTED`; remaining correction failures → `LLM_CORRECTION_FAILED`; remaining ASR provider/output failures → `ASR_FAILED`.
+8. Remaining `TRANSPORT|TIMEOUT|RESOURCE|PROVIDER|RATE_LIMIT` failures → `TRANSCRIPTION_TEMPORARY`. Other invalid phase/category combinations, including `ASR/DECODING` and `PUBLICATION/NOT_FOUND` on non-finalization claims, are rejected with 422, not guessed into success or retry.
+
+Revision F02-2026-11-04 changes existing `CORRECTION/VALIDATION` from retryable
+`LLM_CORRECTION_FAILED` to nonretryable `TRANSCRIPTION_EVIDENCE_INVALID` and adds
+previously unclassified pairs. The wire version remains `1.0`, but this is a
+semantic compatibility change: deploy the revised Core before workers using the
+new pairs, and coordinate all existing consumers of correction failures. Core-first
+ordering alone does not preserve prior retry semantics. Existing receipts are not
+rewritten. Deployed-consumer compatibility and operational approval are not
+established by this integration baseline.
 
 Core's existing explicit retry admission and transactional outbox are the **only processing retry loop**. V1 target is at most **3 admitted retries after the initial generation**, persisted by Core. On exhaustion persist a nonretryable failure (`retryable=false`, `retryExhausted=true`); do not keep offering impossible retries. Existing deployment values must be aligned deliberately. Worker never calls a public retry API or allocates its own generation.
 

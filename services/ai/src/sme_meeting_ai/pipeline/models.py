@@ -113,10 +113,13 @@ class PreprocessingResult:
 class PreprocessingFailure:
     stage: PreprocessingStage
     category: AudioErrorCategory
+    origin: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "stage", PreprocessingStage(self.stage))
         object.__setattr__(self, "category", AudioErrorCategory(self.category))
+        if self.origin not in (None, "source", "evidence"):
+            raise ValueError("Invalid preprocessing failure origin")
 
 
 def _close_ownership(ownership: ExitStack) -> None:

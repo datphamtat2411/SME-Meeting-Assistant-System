@@ -251,7 +251,7 @@ def correction_digest(segments):
             digest.update(struct.pack(">iqqi", segment["ordinal"], segment["startMs"], segment["endMs"], len(encoded)))
             digest.update(encoded)
         return digest.hexdigest()
-    except Exception:
+    except (ValueError, TypeError, KeyError, OverflowError, struct.error):
         failed = True
     if failed:
         raise ResultValidationError()
@@ -281,13 +281,13 @@ def _interval_ms(interval, count):
                 endMs=(interval.end_sample * 1000 + 15999) // 16000)
 
 
-def _provenance(outcome, settings):
+def _provenance(outcome, settings, asr_adapter_version):
     p = outcome.provenance
     pre = p.preprocessing
     versions = [
         ("normalization", pre.normalization.normalizer_version),
         ("detection", pre.detection.detector_version), ("speech-map", pre.speech_map.mapper_version),
-        ("planning", p.planning.planner_version), ("asr-adapter", "openrouter-whisper-v1"),
+        ("planning", p.planning.planner_version), ("asr-adapter", asr_adapter_version),
         ("coverage", p.coverage.assessor_version), ("recovery", p.recovery.recovery_version),
         ("reconciliation", p.reconciliation.reconciler_version), ("correction", p.correction.correction_version),
     ]
@@ -312,8 +312,9 @@ def _provenance(outcome, settings):
                               sha256=pre.detection.model_sha256), models=models)
 
 
-def map_result(outcome, settings, *, job_id, media_id, source_revision, producer_id):
-    category = "VALIDATION"
+def map_result(outcome, settings, *, job_id, media_id, source_revision, producer_id,
+               asr_adapter_version="openrouter-whisper-v1"):
+    category = "RESOURCE"
     try:
         _require(isinstance(outcome, OfflineTranscriptionOutcome)
                  and outcome.status in (OfflineTranscriptionStatus.COMPLETED, OfflineTranscriptionStatus.COMPLETED_WITH_WARNINGS)
@@ -383,7 +384,8 @@ def map_result(outcome, settings, *, job_id, media_id, source_revision, producer
                     sourceMediaId=media_id, sourceRevision=source_revision, producerStageRunId=producer_id,
                     pipelineStatus=outcome.status.value, languageCode=settings.audio_asr_language,
                     sampleRateHz=16000, sampleCount=count, durationMs=(count * 1000 + 15999) // 16000,
-                    segments=segments, coverage=coverage, warnings=warnings, provenance=_provenance(outcome, settings),
+                    segments=segments, coverage=coverage, warnings=warnings,
+                    provenance=_provenance(outcome, settings, asr_adapter_version),
                     correctionProof=dict(contextScope="WHOLE_MEETING", promptVersion=result.provenance.prompt_version,
                                          outputSha256=correction_digest(segments)))
         raw = json.dumps(data, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
@@ -422,14 +424,47 @@ def pipeline_failure(outcome):
             and outcome.completed_stages == tuple(OfflineTranscriptionStage)[:-1]
             and outcome.evidence.reconciliation is not None and outcome.evidence.coverage is not None
             and outcome.evidence.source_id == outcome.provenance.source_id
-            and outcome.evidence.reconciliation.provenance == outcome.provenance.reconciliation):
+            and outcome.evidence.reconciliation.provenance == outcome.provenance.reconciliation
+            and type(outcome.provenance.sample_count) is int
+            and 0 < outcome.provenance.sample_count <= 230400000
+            and len(outcome.warnings) <= 2147483647
+            and len(outcome.evidence.coverage.unresolved_intervals) <= 2147483647):
         completed = "RECONCILIATION"
         count = outcome.provenance.sample_count
-        if type(count) is int and 0 <= count <= 230400000:
-            metrics["sampleCount"] = count
+        metrics["sampleCount"] = count
         metrics["warningCount"] = len(outcome.warnings)
         metrics["unresolvedRegionCount"] = len(outcome.evidence.coverage.unresolved_intervals)
     return WorkFailure(failure.stage.name, category, completed, metrics)
+
+
+def _eligible_failure(failure, stage):
+    """Only submit combinations explicitly classified by the V1 revision."""
+    p, c = failure.phase, failure.category
+    phases = {s.name for s in OfflineTranscriptionStage} | {
+        "SOURCE_DOWNLOAD", "RESULT_VALIDATION", "RESULT_STORAGE", "PUBLICATION", "INTERRUPTED"}
+    if p not in phases or c not in _CATEGORIES:
+        return False
+    if c in ("AUTHENTICATION", "CONFIGURATION", "CANCELLED") or p == "INTERRUPTED":
+        return True
+    if p == "SOURCE_DOWNLOAD" and c in ("NOT_FOUND", "INTEGRITY"):
+        return True
+    if p in ("SOURCE_DOWNLOAD", "PREPROCESSING") and c in ("VALIDATION", "DECODING"):
+        return True
+    if p in ("CHUNK_PLANNING", "ASR", "COVERAGE_RECOVERY", "RECONCILIATION", "CORRECTION") and c == "VALIDATION":
+        return True
+    if p == "PREPROCESSING" and c == "MALFORMED_OUTPUT":
+        return True
+    if p == "CORRECTION":
+        return True
+    if p == "RESULT_VALIDATION" and c == "EMPTY_OUTPUT":
+        return True
+    if p == "PUBLICATION" and c == "NOT_FOUND":
+        return stage == "FINALIZING_TRANSCRIPT"
+    if p in ("RESULT_VALIDATION", "RESULT_STORAGE") and c in ("VALIDATION", "MALFORMED_OUTPUT", "SUSPICIOUS_OUTPUT", "INTEGRITY"):
+        return True
+    if p == "ASR" and c in ("PROVIDER", "MALFORMED_OUTPUT", "SUSPICIOUS_OUTPUT", "EMPTY_OUTPUT"):
+        return True
+    return c in ("TRANSPORT", "TIMEOUT", "RESOURCE", "PROVIDER", "RATE_LIMIT")
 
 
 @dataclass(frozen=True, repr=False)
@@ -555,7 +590,9 @@ class TranscriptionWorker:
             if outcome.status is OfflineTranscriptionStatus.FAILED:
                 raise pipeline_failure(outcome)
             phase = "RESULT_VALIDATION"
-            raw = map_result(outcome, self.settings, **binding, producer_id=claim.executionStageRunId)
+            raw = map_result(outcome, getattr(self.pipeline, "effective_settings", self.settings), **binding,
+                             producer_id=claim.executionStageRunId,
+                             asr_adapter_version=getattr(self.pipeline, "asr_adapter_version", "openrouter-whisper-v1"))
             if fence.is_set():
                 raise WorkFailure("INTERRUPTED", "CANCELLED")
             phase = "RESULT_STORAGE"
@@ -671,14 +708,16 @@ class TranscriptionWorker:
                 if failure:
                     if failure.category in ("CONFIGURATION", "AUTHENTICATION"):
                         self.stop_intake.set()
-                    if failure.phase == "RESULT_STORAGE" and failure.category in ("TRANSPORT", "TIMEOUT", "RESOURCE"):
+                    if failure.phase == "RESULT_STORAGE" and failure.category in ("TRANSPORT", "TIMEOUT", "RESOURCE", "NOT_FOUND"):
                         # PUT may have succeeded. Keep immutable bytes for the next
                         # authorized owner; never contradict an uncertain result.
                         status = await self.core.lookup(event)
-                    else:
+                    elif _eligible_failure(failure, claim.executionStageCode):
                         command = dict(**claim_fields(claim), commandId=str(uuid4()), phase=failure.phase,
                             category=failure.category, completedThrough=failure.completed_through, metrics=failure.metrics)
                         status = await self._terminal_command(event, claim, guard, "fail", command)
+                    else:
+                        status = None
                 else:
                     command = dict(**claim_fields(claim), commandId=str(uuid4()), resultSha256=prepared.digest,
                                    resultProducerStageRunId=prepared.producer_id)

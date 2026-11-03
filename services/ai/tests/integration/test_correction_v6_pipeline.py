@@ -585,7 +585,8 @@ def test_trusted_result_construction_failure_is_atomic_and_sanitized(v6_workflow
         monkeypatch.setattr(bridge, "apply_v6_edits", invalid)
     outcome = v6_pipeline(h).run(h.source)
     assert outcome.result is None and outcome.status is Status.FAILED
-    assert outcome.failure == OfflineTranscriptionFailure(Stage.CORRECTION, "VALIDATION", 1, "invalid_correction_result")
+    expected = ("RESOURCE", "resource_exhausted") if kind == "constructor" else ("VALIDATION", "invalid_correction_result")
+    assert outcome.failure == OfflineTranscriptionFailure(Stage.CORRECTION, expected[0], 1, expected[1])
     assert h.correction_calls == 1
     assert PRIVATE not in repr(outcome) + caplog.text
     assert_released(h)

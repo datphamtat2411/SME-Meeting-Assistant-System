@@ -13,6 +13,7 @@ public final class SafeProcessingFailureSummary {
             case "STAGE_LEASE_EXPIRED" -> "Processing worker stopped reporting progress.";
             case "WORKER_DELIVERY_EXHAUSTED" -> "Processing delivery requires Core-approved recovery.";
             case "ASR_FAILED", "TRANSCRIPTION_TEMPORARY" -> "Audio transcription failed.";
+            case "TRANSCRIPTION_EVIDENCE_INVALID" -> "Transcription evidence validation failed.";
             case "LLM_CORRECTION_FAILED" -> "Whole-meeting contextual correction failed.";
             case "SUMMARY_FAILED", "SUMMARY_PROVIDER_FAILURE" -> "Meeting summary processing failed.";
             case "PROCESSING_DISPATCH_FAILED" -> "Processing job dispatch failed.";

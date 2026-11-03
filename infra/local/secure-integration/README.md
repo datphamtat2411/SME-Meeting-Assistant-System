@@ -571,8 +571,10 @@ uploads a valid WAV through Core's presigned HTTPS boundary, finalizes the
 media, creates the processing job, and waits for the public Core job and
 transcript views. The worker uses its real Core mTLS client, AMQPS consumer,
 storage client, lease/claim protocol, preprocessing, result publication, and
-completion path. Only ASR and correction are deterministic harness providers;
-the production OpenRouter composition is unchanged.
+completion path. VAD, ASR and correction are deterministic harness boundaries;
+the production OpenRouter composition is unchanged. The input is a synthetic
+440 Hz tone, not Vietnamese speech. This mode verifies integration contracts,
+not speech detection, transcription quality, or a real OpenRouter request.
 
 For a host-run worker, use the host storage boundary port (`9443`) in the
 external worker environment; the container example uses the Compose boundary
@@ -592,6 +594,44 @@ RUN_WORKER_LIVE_ACCEPTANCE=1 uv run --locked pytest -q -s \
 The test prints only meeting/media/job UUIDs and terminal status as evidence.
 It does not claim shared Development CA approval, paid-provider execution, or
 E2E-05 final fully connected acceptance.
+
+### Isolated Level A harness
+
+The opt-in isolated harness creates its own synthetic account, meeting and media,
+PostgreSQL 17, RabbitMQ quorum broker, RustFS and Nginx HTTPS storage boundary.
+It starts the actual FastAPI service, Spring Boot Core API and Python worker
+subprocess. Fixture-generated ephemeral PKI authenticates the service identities;
+it does not use or provision the shared Development CA. The temporary fixture
+containers, networks and PKI are test-owned and cleaned up at teardown; no shared
+queues, data, certificates or volumes should be removed.
+
+Prerequisites: Docker daemon and permission to run containers and create isolated
+networks, access to the fixture image versions, Java 21 and Maven, Python and `uv`
+with the locked AI dependencies, OpenSSL and the audio decoding tools required by
+the pipeline. From `services/ai` run:
+
+```sh
+E2E01_DOCKER_FIXTURES=true RUN_WORKER_REAL_ACCEPTANCE=1 \
+uv run --locked pytest -c pyproject.toml -q \
+../../infra/local/secure-integration/tests/test_worker_e2e04.py -s --tb=short
+```
+
+Mode A uses controlled VAD, an emulated ASR response normalized by the OpenRouter
+adapter, and controlled contextual correction. No external inference is performed.
+A pass must include correlated Core receipt/transcript and result digests, an
+original-delivery ACK invocation and client completion after the terminal receipt,
+plus separately observed queue settlement and empty DLQ. AMQP consumer ACK has no
+publisher-confirm-style broker reply. A failure may print bounded job, receipt,
+queue and phase classifications; fixture log locations are emitted for startup
+diagnosis. Keep credentials, keys, object paths and transcript text out of reports.
+
+Repository BUILD rules restrict test execution after the focused test: follow the
+active task plan and report any acceptance gates that cannot be run. The separate
+external acceptance above requires its explicitly configured endpoints, workload
+identities and active test account. Real OpenRouter inference additionally requires
+approved provider credentials and suitable audio; shared-environment acceptance
+requires separately provisioned and approved Development CA, broker/storage IAM
+and networking. E2E-05 owns final fully connected acceptance.
 
 ## E2E-03 isolated verification and activation
 

@@ -9,6 +9,8 @@ public record WorkerFailure(String code,boolean retryable) {
         if(p.equals("SOURCE_DOWNLOAD") && c.equals("NOT_FOUND")) return failure("SOURCE_MEDIA_MISSING",false);
         if(p.equals("SOURCE_DOWNLOAD") && c.equals("INTEGRITY")) return failure("SOURCE_MEDIA_INTEGRITY",false);
         if(Set.of("SOURCE_DOWNLOAD","PREPROCESSING").contains(p) && Set.of("VALIDATION","DECODING").contains(c)) return failure("SOURCE_MEDIA_INVALID",false);
+        if(c.equals("VALIDATION") && Set.of("CHUNK_PLANNING","ASR","COVERAGE_RECOVERY","RECONCILIATION","CORRECTION").contains(p)
+            || p.equals("PREPROCESSING") && c.equals("MALFORMED_OUTPUT")) return failure("TRANSCRIPTION_EVIDENCE_INVALID",false);
         if(p.equals("CORRECTION") && c.equals("CONTEXT_OVERFLOW")) return failure("LLM_CONTEXT_UNSUPPORTED",false);
         if(p.equals("RESULT_VALIDATION") && c.equals("EMPTY_OUTPUT")) return failure("TRANSCRIPTION_EMPTY",false);
         if(p.equals("PUBLICATION") && c.equals("NOT_FOUND") && stage.equals("FINALIZING_TRANSCRIPT")) return failure("TRANSCRIPT_RESULT_MISSING",true);

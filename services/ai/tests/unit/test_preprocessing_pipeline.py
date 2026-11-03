@@ -259,9 +259,9 @@ def test_stage_failures_preserve_category_partial_metadata_and_ownership(
 
 
 @pytest.mark.parametrize("stage,exception,category", [
-    (PreprocessingStage.NORMALIZATION, RuntimeError, "DECODING"),
-    (PreprocessingStage.DETECTION, RuntimeError, "INFERENCE"),
-    (PreprocessingStage.SPEECH_MAP, RuntimeError, "VALIDATION"),
+    (PreprocessingStage.NORMALIZATION, RuntimeError, "RESOURCE"),
+    (PreprocessingStage.DETECTION, RuntimeError, "RESOURCE"),
+    (PreprocessingStage.SPEECH_MAP, RuntimeError, "RESOURCE"),
     (PreprocessingStage.NORMALIZATION, OSError, "RESOURCE"),
     (PreprocessingStage.DETECTION, MemoryError, "RESOURCE"),
     (PreprocessingStage.SPEECH_MAP, TimeoutError, "TIMEOUT"),
@@ -282,7 +282,7 @@ def test_unexpected_exceptions_are_sanitized(workflow, monkeypatch, stage, excep
         assert outcome.result is None
         assert outcome.failure.stage == stage
         assert outcome.failure.category == category
-        assert set(vars(outcome.failure)) == {"stage", "category"}
+        assert set(vars(outcome.failure)) == {"stage", "category", "origin"}
         assert "private-" not in repr(outcome)
         assert "secret" not in repr(outcome)
 

@@ -1,8 +1,8 @@
 """Opt-in cross-service acceptance through Core-owned business admission.
 
 The test uses real Core HTTP admission, outbox publication, RabbitMQ, mTLS
-Worker V1 calls, HTTPS storage, preprocessing, and transcript persistence. ASR
-and correction are injected only through the explicit test pipeline factory.
+Worker V1 calls, HTTPS storage, preprocessing, and transcript persistence. VAD,
+ASR and correction are controlled test boundaries, not live inference.
 """
 
 import asyncio
@@ -14,6 +14,7 @@ import struct
 import sys
 import wave
 from contextlib import ExitStack, contextmanager
+from decimal import Decimal
 from fractions import Fraction
 from types import SimpleNamespace
 from uuid import uuid4
@@ -22,9 +23,9 @@ import httpx
 import pytest
 
 from sme_meeting_ai.audio import (
-    AudioSource,
     AudioEvidenceDetector,
     AudioNormalizer,
+    AudioSource,
     SpeechMapBuilder,
 )
 from sme_meeting_ai.core.config import Settings, load_settings
@@ -32,13 +33,7 @@ from sme_meeting_ai.pipeline import (
     AudioPreprocessingPipeline,
     OfflineTranscriptionPipeline,
 )
-from sme_meeting_ai.transcription.asr import (
-    AsrCandidate,
-    AsrProvenance,
-    AsrQualityMetadata,
-    AsrSegment,
-    AsrUsage,
-)
+from sme_meeting_ai.providers.openrouter_whisper import OpenRouterWhisperAdapter
 from sme_meeting_ai.transcription.chunk_planning import SpeechAwareAsrChunkPlanner
 from sme_meeting_ai.transcription.correction import CorrectionProviderResponse
 from sme_meeting_ai.workers.__main__ import run_worker
@@ -67,16 +62,18 @@ class ControlledVadBackend:
 
 
 class ControlledAsr:
+    """Synthetic provider response normalized by the production adapter; no network call."""
+
+    def __init__(self, settings, resources):
+        self.client = resources.enter_context(httpx.Client(transport=httpx.MockTransport(
+            lambda _: pytest.fail("controlled ASR must not use the network"))))
+        self.adapter = OpenRouterWhisperAdapter(settings, client=self.client)
+
     def transcribe(self, audio):
         text = "Cuộc họp thống nhất kế hoạch triển khai"
-        return AsrCandidate(
-            text,
-            (AsrSegment(Fraction(0), audio.duration, text),),
-            AsrQualityMetadata(confidence=1.0, language="vi"),
-            AsrUsage(),
-            AsrProvenance("e2e04-controlled", "e2e04/asr"),
-            audio.chunk_id,
-        )
+        duration = Decimal(audio.duration.numerator) / Decimal(audio.duration.denominator)
+        return self.adapter._normalize({"text": text, "language": "vi", "confidence": 1,
+                                        "segments": [{"start": 0, "end": duration, "text": text}]}, audio)
 
 
 class ControlledCorrection:
@@ -104,10 +101,11 @@ def controlled_pipeline(settings, resources):
             SpeechMapBuilder(settings),
         ),
         SpeechAwareAsrChunkPlanner(settings),
-        ControlledAsr(),
+        ControlledAsr(settings, resources),
         ControlledCorrection(),
         settings,
         pipeline_version="e2e04-controlled-1",
+        asr_adapter_version="e2e04-controlled-openrouter-normalizer-v1",
     )
 
 
@@ -265,6 +263,37 @@ def test_controlled_pipeline_processes_synthetic_media(tmp_path):
     assert outcome.failure is None, (
         f"pipeline failure: {outcome.failure.stage.name} / {outcome.failure.category}; locations={failures}"
         if outcome.failure else "unexpected failure")
+    from sme_meeting_ai.workers.transcription import map_result
+
+    p = outcome.provenance
+    assert p.asr.asr
+    for _, model in p.asr.asr:
+        assert model.provider == "openrouter"
+        assert model.requested_model == settings.audio_asr_model == "openai/whisper-large-v3"
+        config = dict(model.inference_config)
+        assert config["language"] == settings.audio_asr_language == "vi"
+        assert config["temperature"] == settings.audio_asr_temperature
+        assert model.resolved_model is None and model.upstream_provider is None
+    with ExitStack() as resources:
+        candidate = controlled_pipeline(settings, resources)._transcriber.transcribe(
+            SimpleNamespace(duration=Fraction(1), chunk_id="fixture"))
+    config = dict(candidate.provenance.inference_config)
+    assert config["response_format"] == "verbose_json"
+    assert config["timestamp_granularity"] == "segment"
+    binding = dict(job_id=str(uuid4()), media_id=p.source_id, source_revision="a" * 64,
+                   producer_id=str(uuid4()))
+    with ExitStack() as resources:
+        pipeline = controlled_pipeline(settings, resources)
+        effective = pipeline.effective_settings
+        first = json.loads(map_result(outcome, effective, asr_adapter_version=pipeline.asr_adapter_version, **binding))
+        second = json.loads(map_result(outcome, effective.model_copy(deep=True),
+                                       asr_adapter_version=pipeline.asr_adapter_version, **binding))
+        changed = effective.model_copy(update={"transcript_correction_model": "other/model"})
+        third = json.loads(map_result(outcome, changed, asr_adapter_version=pipeline.asr_adapter_version, **binding))
+    assert effective.transcript_correction_model == "e2e04/correction"
+    assert first["provenance"]["configurationSha256"] == second["provenance"]["configurationSha256"]
+    assert first["provenance"]["configurationSha256"] != third["provenance"]["configurationSha256"]
+    assert {c["name"]: c["version"] for c in first["provenance"]["components"]}["asr-adapter"] == "e2e04-controlled-openrouter-normalizer-v1"
 
 
 def require_opt_in():

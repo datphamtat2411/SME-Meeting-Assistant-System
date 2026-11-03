@@ -19,10 +19,12 @@ from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
+import boto3
 import httpx
 import pytest
 import test_transport_services as transport
 import test_worker_infrastructure as worker_infrastructure
+from botocore.config import Config
 from botocore.exceptions import ClientError
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -455,17 +457,47 @@ def _assert_acknowledged(container):
     assert work["retained_dead_letters"] == 0
 
 
-def _assert_result_storage(settings, job_id, evidence):
-    # Use the same protected HTTPS boundary, never the private RustFS backend.
-    client = worker_infrastructure.storage_client(settings)
+def _assert_original_ack(log_path, evidence):
+    events = [json.loads(line.removeprefix("E2E04_ACK ")) for line in
+              log_path.read_text(encoding="utf-8").splitlines() if line.startswith("E2E04_ACK ")]
+    matching = [item for item in events if item["eventId"] == evidence["eventId"]]
+    assert [item["operation"] for item in matching] == ["invoked", "client_completed"]
+    for item in matching:
+        assert item["terminal"] == {"state": "RESULT_ACCEPTED", "receiptId": evidence["receiptId"]}
+        assert isinstance(item["deliveryTag"], int) and item["deliveryTag"] > 0
+        assert item["redelivered"] is False
+    assert matching[0]["deliveryTag"] == matching[1]["deliveryTag"]
+    assert matching[0]["channel"] == matching[1]["channel"]
+    return matching[0]
+
+
+def _assert_result_storage(settings, job_id, evidence, credentials):
+    # Administrative access is used only to provision a separate synthetic source.
+    root = worker_infrastructure.storage_client(settings)
+    def workload(user, password):
+        return boto3.client("s3", endpoint_url=settings.s3_endpoint_url, verify=str(settings.s3_ca_file),
+                            aws_access_key_id=user, aws_secret_access_key=password, region_name="us-east-1",
+                            config=Config(s3={"addressing_style": "path"}, retries={"total_max_attempts": 1}))
+    client = workload(credentials.storage_worker_user, credentials.storage_worker_password)
+    core = workload(credentials.storage_core_user, credentials.storage_core_password)
     key = f"processing/{job_id}/transcription/results/{evidence['producerStageRunId']}.json"
+    source = f"meetings/{uuid.uuid4()}/sources/e2e04-permission-fixture"
+    created = f"processing/{job_id}/transcription/results/{uuid.uuid4()}.json"
+    copy_target = f"processing/{job_id}/transcription/results/{uuid.uuid4()}.json"
+    multipart = f"processing/{job_id}/transcription/results/{uuid.uuid4()}.json"
     try:
+        root.put_object(Bucket=settings.s3_bucket, Key=source, Body=b"synthetic source")
+        assert client.get_object(Bucket=settings.s3_bucket, Key=source)["Body"].read() == b"synthetic source"
+        client.put_object(Bucket=settings.s3_bucket, Key=created, Body=b"synthetic result", IfNoneMatch="*")
+        assert client.get_object(Bucket=settings.s3_bucket, Key=created)["Body"].read() == b"synthetic result"
+        assert core.get_object(Bucket=settings.s3_bucket, Key=created)["Body"].read() == b"synthetic result"
         body = client.get_object(Bucket=settings.s3_bucket, Key=key)["Body"]
         try:
             raw = body.read()
         finally:
             body.close()
         assert hashlib.sha256(raw).hexdigest() == evidence["resultSha256"]
+        assert core.get_object(Bucket=settings.s3_bucket, Key=key)["Body"].read() == raw
         result = json.loads(raw)
         assert result["processingJobId"] == job_id
         assert result["producerStageRunId"] == evidence["producerStageRunId"]
@@ -477,8 +509,27 @@ def _assert_result_storage(settings, job_id, evidence):
         with pytest.raises(ClientError) as conflict:
             client.put_object(Bucket=settings.s3_bucket, Key=key, Body=b"replacement", IfNoneMatch="*")
         assert conflict.value.response["ResponseMetadata"]["HTTPStatusCode"] in (409, 412)
+        client.meta.events.register("before-call.s3.CopyObject",
+                                    lambda params, **_: params["headers"].update({"If-None-Match": "*"}))
+        for action in (
+            lambda: client.put_object(Bucket=settings.s3_bucket, Key=source, Body=b"replacement", IfNoneMatch="*"),
+            lambda: client.delete_object(Bucket=settings.s3_bucket, Key=source),
+            lambda: client.delete_object(Bucket=settings.s3_bucket, Key=key),
+            lambda: client.copy_object(Bucket=settings.s3_bucket, Key=copy_target,
+                                       CopySource={"Bucket": settings.s3_bucket, "Key": source}),
+            lambda: client.create_multipart_upload(Bucket=settings.s3_bucket, Key=multipart),
+            lambda: client.list_objects_v2(Bucket=settings.s3_bucket),
+            lambda: client.put_bucket_policy(Bucket=settings.s3_bucket, Policy='{"Version":"2012-10-17","Statement":[]}'),
+        ):
+            with pytest.raises(ClientError) as denied:
+                action()
+            assert denied.value.response["ResponseMetadata"]["HTTPStatusCode"] == 403
+        assert core.get_object(Bucket=settings.s3_bucket, Key=key)["Body"].read() == raw
+        assert client.get_object(Bucket=settings.s3_bucket, Key=source)["Body"].read() == b"synthetic source"
     finally:
         client.close()
+        core.close()
+        root.close()
 
 
 def test_real_core_to_worker_level_a_acceptance(services, storage_boundary, postgres, tmp_path):
@@ -520,12 +571,13 @@ def test_real_core_to_worker_level_a_acceptance(services, storage_boundary, post
             meeting_id, media_id, job_id, transcript = asyncio.run(exercise())
             evidence = _evidence(postgres, job_id)
             _stop_worker(worker, worker_log)
+            ack = _assert_original_ack(tmp_path / "worker.log", evidence)
             _assert_acknowledged(names[0])
             assert evidence["outcome"] == "RESULT_ACCEPTED"
             assert evidence["receiptCount"] == evidence["transcriptCount"] == 1
             assert evidence["generation"] == 0
             assert evidence["sourceSha256"] == hashlib.sha256(synthetic_wav()).hexdigest()
-            _assert_result_storage(boundary_settings, job_id, evidence)
+            _assert_result_storage(boundary_settings, job_id, evidence, credentials)
             assert evidence["outboxStatus"] == "PUBLISHED"
             assert evidence["transcriptStatus"] in ("READY", "READY_WITH_WARNINGS")
             assert evidence["transcriptId"] == transcript["id"]
@@ -537,7 +589,10 @@ def test_real_core_to_worker_level_a_acceptance(services, storage_boundary, post
                 f"producer_stage_run_id={evidence['producerStageRunId']}",
                 f"result_sha256={evidence['resultSha256']}", f"receipt_id={evidence['receiptId']}",
                 f"transcript_id={evidence['transcriptId']}", f"delivery_state={evidence['outcome']}",
-                "ack=confirmed")))
+                f"correction_sha256={evidence['correctionSha256']}",
+                f"ack_invoked=true ack_client_completed=true delivery_tag={ack['deliveryTag']}",
+                f"channel={ack['channel']} redelivered={str(ack['redelivered']).lower()} "
+                "broker_settled=true dlq_empty=true")))
         except Exception:
             # Read-only bounded metadata survives teardown, without tokens, keys,
             # source/result object names, provider output or transcript text.

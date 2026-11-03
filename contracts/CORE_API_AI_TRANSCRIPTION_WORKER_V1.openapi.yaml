@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: Core Transcription Worker V1
   version: '1.0'
-  description: Private mTLS only. Normative semantics remain in CORE_API_AI_TRANSCRIPTION_WORKER_V1.md. Control bodies are limited to 16384 UTF-8 bytes, with no duplicate keys or coercion. Every response is Cache-Control no-store.
+  description: Private mTLS only. F02-2026-11-04 changes correction validation retry semantics; coordinated rollout is required. Normative semantics remain in CORE_API_AI_TRANSCRIPTION_WORKER_V1.md. Control bodies are limited to 16384 UTF-8 bytes, with no duplicate keys or coercion. Every response is Cache-Control no-store.
 servers:
   - url: https://core-api.internal:8443/internal/v1/worker
 security:
@@ -137,8 +137,20 @@ components:
         resultProducerStageRunId: {$ref: '#/components/schemas/UUID'}
     FailCommand:
       type: object
+      description: Classification is phase/category specific; intermediate evidence validation is nonretryable. See contract revision F02-2026-11-04.
       additionalProperties: false
       required: [contractVersion, commandId, eventId, generation, executionStageRunId, claimToken, phase, category, completedThrough, metrics]
+      allOf:
+        - if:
+            properties:
+              completedThrough: {const: RECONCILIATION}
+          then:
+            properties:
+              phase: {enum: [CORRECTION, RESULT_VALIDATION, RESULT_STORAGE, PUBLICATION]}
+              metrics:
+                required: [sampleCount, warningCount, unresolvedRegionCount]
+                properties:
+                  sampleCount: {type: integer, minimum: 1, maximum: 230400000}
       properties:
         contractVersion: {const: '1.0'}
         commandId: {$ref: '#/components/schemas/UUID'}

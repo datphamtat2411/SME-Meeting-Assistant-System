@@ -162,12 +162,12 @@ def _open_source(source: AudioSource, max_bytes: int):
     category = None
     try:
         if not isinstance(source.source_id, str) or not source.source_id or len(source.source_id) > 1024:
-            raise AudioProcessingError("VALIDATION")
+            raise AudioProcessingError("VALIDATION", origin="source")
         # Pin a regular inode, reject symlinks, and never block opening a FIFO.
         descriptor = os.open(source.path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         info = os.fstat(descriptor)
         if not stat.S_ISREG(info.st_mode) or not info.st_mode & 0o444 or info.st_size <= 0:
-            raise AudioProcessingError("VALIDATION")
+            raise AudioProcessingError("VALIDATION", origin="source")
         if info.st_size > max_bytes:
             raise AudioProcessingError("RESOURCE")
     except AudioProcessingError as error:
@@ -177,12 +177,12 @@ def _open_source(source: AudioSource, max_bytes: int):
     if category is not None:
         if descriptor is not None:
             os.close(descriptor)
-        raise AudioProcessingError(category)
+        raise AudioProcessingError(category, origin="source")
     try:
         yield descriptor
         after = os.fstat(descriptor)
         if (after.st_size, after.st_mtime_ns, after.st_ctime_ns) != (info.st_size, info.st_mtime_ns, info.st_ctime_ns):
-            raise AudioProcessingError("VALIDATION")
+            raise AudioProcessingError("VALIDATION", origin="source")
     finally:
         os.close(descriptor)
 
@@ -314,6 +314,7 @@ class AudioNormalizer:
         artifact = None
         category = None
         succeeded = False
+        origin = "source"
         try:
             with _open_source(source, self._settings.audio_max_input_bytes) as descriptor:
                 metadata = self._probe(source.source_id, f"/proc/self/fd/{descriptor}", (descriptor,))
@@ -343,6 +344,7 @@ class AudioNormalizer:
                 ], timeout_seconds=self._settings.audio_decode_timeout_seconds,
                     pass_fds=(descriptor,), output_path=partial_path,
                     max_output_bytes=max_bytes, max_samples=max_samples)
+                origin = "evidence"
                 sample_count = self._sample_count(partial_path, max_samples)
                 output_metadata = self._probe(source.source_id, str(partial_path), output=True)
                 if (output_metadata.container, output_metadata.codec, output_metadata.sample_rate_hz, output_metadata.channels) != ("wav", "pcm_s16le", _RATE, 1):
@@ -378,6 +380,7 @@ class AudioNormalizer:
             return artifact
         except AudioProcessingError as error:
             category = error.category
+            origin = error.origin or origin
         except (OSError, MemoryError):
             category = "RESOURCE"
         finally:
@@ -386,4 +389,4 @@ class AudioNormalizer:
                     temporary.cleanup()
                 except OSError:
                     category = "RESOURCE"
-        raise AudioProcessingError(category)
+        raise AudioProcessingError(category, origin=origin)
