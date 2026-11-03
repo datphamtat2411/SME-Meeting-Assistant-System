@@ -187,3 +187,63 @@ Initial worktree clean; no Git writes authorized. Sequential isolated Docker run
   Final worktree: 3 modified tracked test files, 20 added/untracked campaign files;
   all changes intentionally left uncommitted. Final status recorded in task output.
 - **E2E-04 R02–R09 RECOVERY CAMPAIGN VERIFIED — 8/8 REAL ACCEPTANCE PASS**
+
+## Recovery closure audit — 2026-11-04
+
+This addendum audits the preceding historical campaign; it is not a fresh real
+acceptance run. Historical commands, outcomes and limitations above are retained.
+
+- Actual initial checkout: target branch, HEAD
+  `3dba2e3e678b5cd45792e6b47bb69f6c51b14686`, exactly 3 tracked modifications
+  and 20 untracked campaign files. All 23 were read, including the original plan.
+- Concurrent external change: while the audit was read-only, HEAD advanced to
+  `de4d3a5678445e2dd98f93eb42fe55dd83eb2029`
+  (`feat: Implement Recovery Acceptance Campaign`). That commit contains the
+  22 implementation/evidence files; the untracked original `plan.md` disappeared.
+  The auditing agent did not create, amend or reset that commit. The new closure
+  planning snapshot accounts for the original 23rd path without changing tests.
+- Security: manually inspected all intended contents and tracked changes; a
+  dependency-free, value-free scan read every committed file, including former
+  untracked additions. No real secrets, keys/certificates, credential-bearing
+  URLs, Authorization values, private object keys, provider payloads, private
+  transcript/audio content or private infrastructure details were found.
+  Three automated literal-sensitive-field findings are deliberate synthetic
+  test sentinels; another mocked storage password is also synthetic. Runtime
+  credentials are generated in isolated fixtures and are not embedded in the
+  reviewed changes. Ledger UUIDs identify synthetic isolated test runs; retained
+  artifact hashes concern synthetic inputs/results. No sanitization or credential
+  rotation was necessary; no exposure requiring separate remediation was found.
+- Integrity: R02 discards an actual accepted response at the client-adapter
+  boundary, not packet-level loss. R03/R08 send actual process-group SIGKILL.
+  R04/R07 wait real lease time and use real Core sweeper/rejection. R05 exercises
+  valid same-binding reuse and invalid unchanged bytes. R06 uses the real
+  non-locally-retryable PROVIDER classification and Core's four generations.
+  R07 preserves PostgreSQL across Core restart. R09 requires two distinct real
+  database claim waiters before releasing the bounded test-held row lock.
+- Independent evidence: inspected the preserved final-run Worker logs and ran
+  `python3 /tmp/opencode/recovery_runtime_audit.py`: **PASS**, 14 logs covering
+  R02–R09 (R05 A/B), R01 and original no-fault Level A. Checks confirmed matching
+  job identities, actual fault observations, real redelivery, provider-failure
+  generations/replays/exhaustion, owner-only execution and bound durable HTTP
+  confirmation before every observed ACK. Pipeline run counts were respectively
+  R02=1, R03=1 across both processes, R04=1, R05A/B=0/0, R06=4, R07=2,
+  R08=1 in generation 1 only, R09=1, R01=1, Level A=1.
+- Evidence limitation: PostgreSQL/broker snapshots, simultaneous waiter evidence,
+  and the aggregate 11-pass/zero-skip and 122-pass summaries remain the preserved
+  historical ledger evidence. Worker logs corroborate the listed behavior but
+  cannot independently recreate those already-cleaned isolated services. Source
+  assertions require durable cardinalities, unchanged source/result bytes and
+  zero broker/DLQ obligations. No relevant defect or fresh real-replay need was
+  discovered; the 921-second campaign was not rerun merely for this audit.
+- Actual audit commands:
+  - `python3 /tmp/opencode/recovery_audit_scan.py --commit de4d3a5678445e2dd98f93eb42fe55dd83eb2029 --expected-count 22`: all 22 files scanned; only the synthetic findings described above.
+  - From `services/ai`: `uv run --locked ruff check . ../../infra/local/secure-integration`: **PASS**.
+  - `git diff --check 3dba2e3e678b5cd45792e6b47bb69f6c51b14686 HEAD`: **PASS**.
+  - `git diff --exit-code 3dba2e3e678b5cd45792e6b47bb69f6c51b14686 HEAD -- services/ai/src services/api contracts AGENTS.md`: **empty/PASS**.
+  - `docker ps -a --filter name=e2e01- --filter name=e2e04- --format '{{.Names}} {{.Status}}'`: no matching containers.
+  - `pgrep -f '[e]2e04_worker_process.py|[s]me_meeting_ai.api|[M]eetingAssistantApiApplication'`: no matching processes (exit 1 means no match).
+- Closure commit scope is only this audit addendum and the planning snapshot;
+  the source campaign is already in `de4d3a5`. Staged bytes, full staged diff,
+  exact paths/count and whitespace must pass before the authorized commit.
+  The resulting closure SHA is recorded in the final acceptance ledger/report
+  rather than attempting to embed a commit's own SHA in its contents.
