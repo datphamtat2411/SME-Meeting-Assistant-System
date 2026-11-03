@@ -48,7 +48,6 @@ services:
       RUSTFS_CONSOLE_ENABLE: "false"
       RUSTFS_TLS_PATH: /run/secrets/storage
     command: ["/data"]
-    ports: ["127.0.0.1:9443:9000"]
     volumes:
       - storage_secure_data:/data
       - type: bind
@@ -57,13 +56,37 @@ services:
         read_only: true
         bind: {create_host_path: false}
     networks:
-      integration:
+      storage-backend:
         aliases: ["${STORAGE_DNS:-storage.internal}"]
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "--show-error", "--cacert", "/run/secrets/storage/issuer-ca.crt", "https://${STORAGE_DNS:-storage.internal}:9000/health"]
       interval: 10s
       timeout: 5s
       retries: 12
+
+  storage-boundary:
+    image: nginx:1.28-alpine
+    user: "10001:10001"
+    entrypoint: ["nginx", "-c", "/etc/nginx/storage-boundary.conf", "-g", "daemon off;"]
+    depends_on:
+      storage: {condition: service_healthy}
+    restart: unless-stopped
+    ports: ["127.0.0.1:9443:9000"]
+    volumes:
+      - ./storage-boundary.conf:/etc/nginx/storage-boundary.conf:ro
+      - type: bind
+        source: ${STORAGE_TLS_DIR:?external storage TLS directory required}
+        target: /run/secrets/storage
+        read_only: true
+        bind: {create_host_path: false}
+    networks:
+      integration:
+        aliases: ["${STORAGE_DNS:-storage.internal}"]
+      storage-backend: {}
+    read_only: true
+    tmpfs: ["/tmp:mode=1777,size=32m"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
 
   ai-core:
     profiles: ["http"]
@@ -118,6 +141,8 @@ services:
 
 networks:
   integration: {}
+  storage-backend:
+    internal: true
 volumes:
   broker_secure_data:
   storage_secure_data:

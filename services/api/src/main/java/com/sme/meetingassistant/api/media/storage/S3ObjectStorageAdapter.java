@@ -174,6 +174,9 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
     }
 
     private void ensureBucketExists() {
+        // Externally provisioned secure buckets require no ListBucket/admin grant
+        // merely to sign a pending-upload URL. The eventual PUT reports absence.
+        if (!this.properties.isCreateBucketIfMissing()) return;
         try {
             this.client.headBucket(HeadBucketRequest.builder().bucket(this.properties.getBucket()).build());
         } catch (S3Exception exception) {

@@ -876,7 +876,10 @@ public class MediaRepository {
 
     public boolean hasTranscriptionWorkerClaim(UUID jobId) {
         return Boolean.TRUE.equals(jdbc.queryForObject(
-            "SELECT EXISTS(SELECT 1 FROM transcription_worker_claims WHERE processing_job_id=?)",Boolean.class,jobId));
+            """
+            SELECT EXISTS(SELECT 1 FROM transcription_worker_claims WHERE processing_job_id=?)
+                OR EXISTS(SELECT 1 FROM transcription_worker_reconciliations WHERE processing_job_id=?)
+            """,Boolean.class,jobId,jobId));
     }
 
     public boolean retryJobAndOutbox(Job job, UUID eventId, String stageCode, int maxRetries) {

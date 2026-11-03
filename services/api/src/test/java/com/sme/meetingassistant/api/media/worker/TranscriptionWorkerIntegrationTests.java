@@ -24,6 +24,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.node.ObjectNode;
 
 /** Real PostgreSQL locks, constraints, migrations and commit/rollback; isolated S3 bytes. */
@@ -36,6 +38,8 @@ class TranscriptionWorkerIntegrationTests {
     @Autowired MediaRepository mediaRepository;
     @Autowired ProcessingJobLifecycleService lifecycle;
     @Autowired JdbcTemplate jdbc;
+    @Autowired DeadLetterReconciliation reconciliation;
+    @Autowired PlatformTransactionManager transactions;
     @MockitoBean ObjectStorage storage;
     @MockitoBean TranscriptionWorkerCapability capability;
     UUID actor,meeting,media,job,event;
@@ -86,6 +90,137 @@ class TranscriptionWorkerIntegrationTests {
             partial?Map.of("sampleCount",28000L,"warningCount",0L,"unresolvedRegionCount",0L):Map.of());
     }
     int count(String table) { return jdbc.queryForObject("SELECT count(*) FROM "+table+" WHERE processing_job_id=?",Integer.class,job); }
+    DeadLetterEvent deadEvent() {
+        return new DeadLetterEvent(event,job,meeting,media,actor,0,"PROCESSING_JOB_QUEUED",1,null,"a".repeat(64));
+    }
+    @Test void exhaustedUnclaimedDeliveryCommitsFailureAndReplayWithoutInventingWorkerClaim() {
+        assertThat(reconciliation.reconcile(deadEvent())).isEqualTo("EXHAUSTED");
+        assertThat(worker.status(job,event)).containsEntry("state","FAILURE_RECORDED");
+        assertThat(count("transcription_worker_claims")).isZero();
+        assertThat(reconciliation.reconcile(deadEvent())).isEqualTo("EXHAUSTED");
+        assertThat(count("transcription_worker_receipts")).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT error_code FROM processing_jobs WHERE id=?",String.class,job))
+            .isEqualTo("WORKER_DELIVERY_EXHAUSTED");
+    }
+    @Test void liveDeliveryIsDurablyDeferredAndSweeperOutcomeIsPreserved() {
+        var c=worker.claim(job,claimCommand);
+        assertThat(reconciliation.reconcile(deadEvent())).isEqualTo("DEFERRED");
+        assertThat(worker.status(job,event)).containsEntry("state","RUNNING");
+        jdbc.update("UPDATE processing_stage_runs SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE id=?",c.get("executionStageRunId"));
+        lifecycle.expireAbandonedStages();
+        assertThat(reconciliation.reconcile(deadEvent())).isEqualTo("TERMINAL");
+        assertThat(jdbc.queryForObject("SELECT error_code FROM transcription_worker_receipts WHERE processing_job_id=?",String.class,job)).isEqualTo("STAGE_LEASE_EXPIRED");
+    }
+    @Test void acceptedAndNewerGenerationSurviveDeadLetter() throws Exception {
+        var c=worker.claim(job,claimCommand); completion.complete(job,corrected(c,false));
+        assertThat(reconciliation.reconcile(deadEvent())).isEqualTo("TERMINAL");
+        assertThat(count("transcripts")).isEqualTo(1);
+    }
+    @Test void concurrentDeadLettersCreateOneDurableOutcome() throws Exception {
+        var outcomes=race(()->reconciliation.reconcile(deadEvent()),()->reconciliation.reconcile(deadEvent()));
+        assertThat(outcomes).containsOnly("EXHAUSTED");
+        assertThat(count("transcription_worker_receipts")).isEqualTo(1);
+    }
+    @Test void unknownBindingAndContradictoryIdentityAreQuarantinedWithoutFailingJob() {
+        var wrong=new DeadLetterEvent(event,job,meeting,UUID.randomUUID(),actor,0,"PROCESSING_JOB_QUEUED",1,null,"b".repeat(64));
+        assertThat(reconciliation.reconcile(wrong)).isEqualTo("QUARANTINED");
+        assertThat(count("transcription_worker_receipts")).isZero();
+        assertThat(worker.status(job,event)).containsEntry("state","AVAILABLE");
+        reconciliation.quarantine("c".repeat(64),"INVALID_ENVELOPE",12);
+        reconciliation.quarantine("c".repeat(64),"INVALID_ENVELOPE",12);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM transcription_worker_quarantine WHERE evidence_sha256=?",Integer.class,"c".repeat(64))).isEqualTo(1);
+    }
+    @Test void dispositionFailureRollsBackExhaustion() {
+        jdbc.execute("CREATE FUNCTION test_dlq_reject() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test rollback'; END; $$");
+        jdbc.execute("CREATE TRIGGER test_dlq_reject BEFORE INSERT ON transcription_worker_reconciliations FOR EACH ROW EXECUTE FUNCTION test_dlq_reject()");
+        try {
+            assertThatThrownBy(()->reconciliation.reconcile(deadEvent())).isInstanceOf(RuntimeException.class);
+            assertThat(worker.status(job,event)).containsEntry("state","AVAILABLE");
+            assertThat(count("transcription_worker_receipts")).isZero();
+        } finally {
+            jdbc.execute("DROP TRIGGER test_dlq_reject ON transcription_worker_reconciliations");
+            jdbc.execute("DROP FUNCTION test_dlq_reject()");
+        }
+        assertThat(reconciliation.reconcile(deadEvent())).isEqualTo("EXHAUSTED");
+    }
+    @Test void deadLetterRetryBudgetIsFiniteAcrossFourAdmittedGenerations() {
+        UUID current=event;
+        for(int generation=0;generation<=3;generation++) {
+            var delivery=new DeadLetterEvent(current,job,meeting,media,actor,generation,
+                generation==0?"PROCESSING_JOB_QUEUED":"PROCESSING_JOB_RETRY_REQUESTED",generation==0?1:2,
+                generation==0?null:"TRANSCRIPTION","d".repeat(64));
+            assertThat(reconciliation.reconcile(delivery)).isEqualTo("EXHAUSTED");
+            var receipt=(Map<?,?>)worker.status(job,current).get("receipt");
+            assertThat(receipt.get("retryable")).isEqualTo(generation<3);
+            assertThat(receipt.get("retryExhausted")).isEqualTo(generation==3);
+            if(generation<3) {
+                current=UUID.randomUUID();
+                assertThat(mediaRepository.retryJobAndOutbox(mediaRepository.findJob(job).orElseThrow(),current,"TRANSCRIPTION",3)).isTrue();
+            }
+        }
+        assertThat(count("transcription_worker_receipts")).isEqualTo(4);
+        assertThat(mediaRepository.retryJobAndOutbox(mediaRepository.findJob(job).orElseThrow(),UUID.randomUUID(),"TRANSCRIPTION",3)).isFalse();
+    }
+    @Test void deadLetterCompletionAndSweeperRacesPreserveTheirAuthoritativeOutcome() throws Exception {
+        var c=worker.claim(job,claimCommand); var cmd=corrected(c,false);
+        race(()->completion.complete(job,cmd).get("state"),()->reconciliation.reconcile(deadEvent()));
+        assertThat(reconciliation.reconcile(deadEvent())).isEqualTo("TERMINAL");
+        assertThat(worker.status(job,event)).containsEntry("state","RESULT_ACCEPTED");
+        assertThat(count("transcripts")).isEqualTo(1);
+    }
+    @Test void deadLetterRacingLeaseSweeperDoesNotReplaceExpiryReceipt() throws Exception {
+        var c=worker.claim(job,claimCommand);
+        jdbc.update("UPDATE processing_stage_runs SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE id=?",c.get("executionStageRunId"));
+        race(()->{lifecycle.expireAbandonedStages();return "swept";},()->reconciliation.reconcile(deadEvent()));
+        // SKIP LOCKED legitimately lets this sweep miss the job if reconciliation
+        // owns it. The next scheduled sweep, then durable recovery, must converge.
+        assertThat(count("transcription_worker_reconciliations")).isEqualTo(1);
+        lifecycle.expireAbandonedStages();
+        new DeadLetterRecovery(jdbc,reconciliation).recover();
+        assertThat(jdbc.queryForObject("SELECT disposition FROM transcription_worker_reconciliations WHERE event_id=?",String.class,event)).isEqualTo("TERMINAL");
+        assertThat(jdbc.queryForObject("SELECT error_code FROM transcription_worker_receipts WHERE event_id=?",String.class,event)).isEqualTo("STAGE_LEASE_EXPIRED");
+        assertThat(reconciliation.reconcile(deadEvent())).isEqualTo("TERMINAL");
+    }
+    @Test void lockedJobIsSkippedThenDurableDeferredRecoverySurvivesFreshInstance() {
+        var c=worker.claim(job,claimCommand);
+        jdbc.update("UPDATE processing_stage_runs SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE id=?",c.get("executionStageRunId"));
+        new TransactionTemplate(transactions).executeWithoutResult(tx->{
+            jdbc.queryForObject("SELECT id FROM meetings WHERE id=? FOR UPDATE",UUID.class,meeting);
+            jdbc.queryForObject("SELECT id FROM processing_jobs WHERE id=? FOR UPDATE",UUID.class,job);
+            try(var pool=Executors.newSingleThreadExecutor()) {
+                pool.submit(()->lifecycle.expireAbandonedStages()).get(10,TimeUnit.SECONDS);
+            } catch(Exception failure) { throw new AssertionError(failure); }
+            assertThat(count("transcription_worker_receipts")).isZero();
+            assertThat(reconciliation.reconcile(deadEvent())).isEqualTo("DEFERRED");
+        });
+        assertThat(worker.status(job,event)).containsEntry("state","AWAITING_RECONCILIATION");
+        assertThatThrownBy(()->worker.renew(job,owner(c))).hasMessage("WORKER_LEASE_LOST");
+        // No broker redelivery or old process-local state is needed after commit.
+        lifecycle.expireAbandonedStages();
+        var receipt=worker.status(job,event).get("receipt");
+        new DeadLetterRecovery(jdbc,reconciliation).recover();
+        assertThat(reconciliation.reconcile(deadEvent())).isEqualTo("TERMINAL");
+        new DeadLetterRecovery(jdbc,reconciliation).recover();
+        assertThat(worker.status(job,event)).containsEntry("state","FAILURE_RECORDED").containsEntry("receipt",receipt);
+        assertThat(count("transcription_worker_receipts")).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT retry_count FROM processing_jobs WHERE id=?",Integer.class,job)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM outbox_events WHERE aggregate_id=?",Integer.class,job)).isEqualTo(1);
+    }
+    @Test void existingFailureReceiptWinsAcrossReconciliationReplay() {
+        var c=worker.claim(job,claimCommand);
+        var failed=worker.fail(job,failure(c,false));
+        assertThat(reconciliation.reconcile(deadEvent())).isEqualTo("TERMINAL");
+        assertThat(reconciliation.reconcile(deadEvent())).isEqualTo("TERMINAL");
+        assertThat(worker.status(job,event)).containsEntry("receipt",failed.get("receipt"));
+        assertThat(count("transcription_worker_receipts")).isEqualTo(1);
+    }
+    @Test void newerAdmissionWithoutOldReceiptIsPreserved() {
+        jdbc.update("UPDATE processing_jobs SET retry_count=1 WHERE id=?",job);
+        event(UUID.randomUUID(),1);
+        assertThat(reconciliation.reconcile(deadEvent())).isEqualTo("SUPERSEDED");
+        assertThat(count("transcription_worker_receipts")).isZero();
+        assertThat(jdbc.queryForObject("SELECT status FROM processing_jobs WHERE id=?",String.class,job)).isEqualTo("PENDING");
+    }
     @Test void claimReplayRenewAndCompetingOwnerAreFenced() {
         assertThat(worker.status(job,event).get("state")).isEqualTo("AVAILABLE");
         var c=worker.claim(job,claimCommand); var replay=worker.claim(job,claimCommand);

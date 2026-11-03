@@ -1,7 +1,7 @@
-# E2E-01 — secure development integration
+# Secure development integration — E2E-01 / E2E-03
 
-This opt-in project prepares direct HTTP mTLS, AMQPS and S3 HTTPS. It does not
-implement Worker V1 business endpoints or establish transcription E2E. Contract:
+This opt-in project provides direct HTTP mTLS, AMQPS and immutable S3 HTTPS.
+Core Worker V1 endpoints are implemented separately; this is not final transcription E2E acceptance. Contract:
 [`CORE_API_AI_TRANSCRIPTION_WORKER_V1.md`](../../../contracts/CORE_API_AI_TRANSCRIPTION_WORKER_V1.md).
 
 ## Prerequisites and boundary
@@ -177,24 +177,18 @@ Existing MockMvc MI tests explicitly mock the connector customizer to isolate
 the token policy; real sockets test the outer
 connector boundary. Do not expose the private listener to preserve an old URL.
 
-## Accounts and E2E-03 prerequisites
+## Accounts and activation prerequisites
 
-Broker bootstrap only creates an isolated vhost/admin; an operator must create
-separate least-privilege accounts before application smoke. Core publishes to
-`meeting.processing` (`write=^meeting\\.processing$`); the worker reads only
-`meeting.processing.jobs` (`read=^meeting\\.processing\\.jobs$`, no configure/admin
-grant). E2E-03 owns exchange/queue declarations and may assign Core a separate
-topology-provisioner identity. Do not give the worker broad permissions just to
-make a passive queue check pass. AMQP smoke opens/closes a channel; it declares,
-publishes, consumes and acknowledges nothing. Management HTTP is disabled.
+Broker bootstrap creates only an isolated vhost/admin. The operator provisions
+topology and separate application accounts as described below. Applications have
+no configure/admin grants. AMQP transport smoke opens/closes a channel; it does
+not prove queue reliability. Management HTTP remains disabled.
 
 An operator must provision the private bucket, separate Core/worker storage keys
 and a harmless `integration/transport-probe.txt` object for verified HEAD checks.
-Neither application uses bootstrap admin credentials. Final worker namespace IAM,
-conditional-create enforcement, corrected-object immutability and reconciliation
-are **E2E-03**. Live worker admission remains blocked until those checks, quorum
-work/DLQ topology, delivery-limit/overflow/at-least-once DLX and reconciliation
-are accepted. No queue types/policies or persistent infrastructure are migrated here.
+Neither application uses bootstrap admin credentials. Live worker admission remains
+blocked until quorum topology, identity separation, storage boundary and DLQ
+reconciliation are verified. No pre-existing infrastructure is automatically migrated.
 
 ## Focused verification and evidence categories
 
@@ -307,3 +301,305 @@ development settings. The original `infra/local/media-processing/compose.yaml`
 and its volumes remain available. Public internal routes remain denied; MI callers
 still require the private boundary. Do not run `down -v`, delete queues, or remove
 volumes. The secure project's separate volumes remain for a later restart.
+
+## E2E-03 broker topology and accounts
+
+RabbitMQ **4.1** is required by this fixture. Both queues are durable quorum:
+
+| Exchange | Routing key | Queue |
+| --- | --- | --- |
+| `meeting.processing` (durable direct) | `processing.job.queued` | `meeting.processing.jobs` |
+| `meeting.processing.dlx` (durable direct) | `meeting.processing.jobs.dead` | `meeting.processing.jobs.dead` |
+
+The work queue explicitly sets `x-delivery-limit=5` (initial delivery plus five
+redeliveries), `x-overflow=reject-publish`, `x-dead-letter-strategy=at-least-once`
+and the above DLX/routing key. DLQ uses `x-delivery-limit=-1` to preserve database
+outages, has no DLX and no replay consumer. Reconciliation is the only DLQ owner;
+permanent poison is persisted and ACKed, rather than requeued. Temporary unroutable
+DLX transfers stay in the source quorum queue until routing recovers. Single-node
+local quorum proves persistence/semantics, not multi-node availability.
+
+RabbitMQ 4.1's internal dead-letter publisher-confirm/retry timer defaults to
+**180000 ms**. Binding restoration need not trigger immediate transfer. The real
+acceptance test reads that runtime value and allows one interval plus 30 seconds,
+while proving retention in Raft and subsequent target confirmation/source settlement.
+It does not republish or shorten the production timer. `broker.py verify` additionally
+inspects the effective Raft handler/overflow/delivery limit and the stream feature flag,
+not only declaration arguments.
+
+Provision through the existing broker container's local CLI; no management HTTP
+listener, administrator application credentials or extra runtime service is needed.
+Set `$BROKER_CONTAINER` to the **explicit intended** secure container name and
+`$BROKER_VHOST=sme-integration`. Operator account creation reads three distinct
+external secrets `BROKER_PUBLISHER_PASSWORD`, `BROKER_WORKER_PASSWORD`,
+`BROKER_RECONCILER_PASSWORD`. It refuses existing users and never rotates credentials.
+
+```sh
+python3 infra/local/secure-integration/broker.py preflight --container "$BROKER_CONTAINER" --vhost "$BROKER_VHOST"
+# Explicit operator action on a fresh/approved installation only:
+python3 infra/local/secure-integration/broker.py accounts --container "$BROKER_CONTAINER" --vhost "$BROKER_VHOST" \
+  --publisher-user core-publisher --worker-user ai-transcription --reconciler-user core-reconciler
+python3 infra/local/secure-integration/broker.py provision --container "$BROKER_CONTAINER" --vhost "$BROKER_VHOST" \
+  --publisher-user core-publisher --worker-user ai-transcription --reconciler-user core-reconciler
+python3 infra/local/secure-integration/broker.py verify --container "$BROKER_CONTAINER" --vhost "$BROKER_VHOST"
+```
+
+Expected: durable `type=quorum`, exact argument values and bindings, no conflicting
+policy overlay. `verify` inspects actual broker properties; it rejects effective or
+operator policy overlays requiring explicit review. `provision` never deletes a
+classic queue and will report **BLOCKED**. Keep provisioning errors for operator
+review; do not retry with deletion. Application grants in this vhost:
+
+| Account | Configure | Write | Read | Tags |
+| --- | --- | --- | --- | --- |
+| Core publisher | none | exact main exchange | none | none |
+| AI worker | none | none | exact work queue | none |
+| Core reconciler | none | none | exact DLQ | none |
+| External operator | approved administration | administration | administration | operator-managed |
+
+Secure Core sets `spring.rabbitmq.dynamic=false` and
+`app.media.messaging.topology=external-quorum`; its publisher cannot administer
+resources. Simple local development retains `legacy` declarations on its separate
+project/volumes. Explicit application-owned `quorum` mode exists for isolated fixtures;
+an incompatible classic declaration fails rather than deleting anything. Outbox
+publication remains persistent, mandatory and confirm-fenced. A negative confirm,
+return, connection failure or uncertain response does not mark publication complete.
+Outbox dispatch exhaustion is separately durable and must be operationally reconciled;
+it is never permission to allocate a new business generation automatically.
+
+### Controlled classic-to-quorum migration
+
+**No queue/volume migration has been performed by these changes.** The tooling has
+no delete operation. These steps require operator approval and a recorded maintenance
+window; they are not Compose startup or CI steps.
+
+1. Record the container/project/vhost, RabbitMQ version, definitions, queue types,
+   arguments, policies, bindings, ready/unacknowledged depths and consumer counts.
+   Run `preflight` above and retain its safe JSON outside Git. Export definitions
+   using approved broker backup tooling; definitions do **not** back up messages.
+   Retain existing broker data backups without removing the live volumes.
+2. Pause new processing admission and **every Core outbox publisher replica**.
+   Record pending/publishing/published/failed outbox IDs and durable admission
+   generations in PostgreSQL. Let in-flight publisher confirms resolve; preserve
+   uncertain outbox rows/leases for idempotent publication after restart. Do not
+   mark uncertain events published manually. Verify no remaining publisher connections.
+3. Keep compatible consumers running only to drain/reconcile existing work. Quiesce
+   workers after durable outcomes, then stop all consumers and let outstanding
+   deliveries return. Reconcile the classic DLQ with durable Core evidence using
+   an explicitly approved adapter/maintenance procedure; the new consumer's broker
+   metadata requirements must not be bypassed. Do not ACK unknown events by hand.
+   If any event cannot be proven durably handled, migration is **BLOCKED**.
+4. Record both queues again. Run:
+
+   ```sh
+   python3 infra/local/secure-integration/broker.py migration-ready --container "$BROKER_CONTAINER" --vhost "$BROKER_VHOST"
+   ```
+
+   `QUEUE-READY` requires zero total, ready, unacknowledged messages and consumers in
+   both queues, plus zero retained internal dead letters for a quorum work queue.
+   Ordinary ready/unacknowledged depths alone can hide a pending DLX transfer.
+   It is only a queue check: separately prove all publishers/intake/replicas
+   remain paused and every drained event has a receipt/reconciliation disposition.
+   Never infer emptiness from a successful AMQP declaration or a single old snapshot.
+5. With independent approval, an operator may remove **only these now-verified empty
+   classic queues**, using broker operations requiring both `if-empty` and `if-unused`.
+   Recheck immediately under the maintenance pause. No tool here automates that
+   destructive step. Do not delete exchanges with unrelated bindings, reset nodes,
+   delete volumes, purge messages, or discard unacknowledged deliveries. A queue
+   redeclaration `PRECONDITION_FAILED` is a blocker, never a deletion trigger.
+6. Run `provision` and `verify`. Verify application grants separately with
+   `rabbitmqctl list_permissions -p "$BROKER_VHOST"`. Save new inspection evidence.
+7. Start Core reconciliation, then workers, then the existing outbox publishers;
+   reopen admission last. Preserve original outbox/event IDs. An uncertain prior
+   publish can produce a duplicate; durable receipt identity makes it safe.
+8. Compare retained admission/outbox IDs to receipts, active leases, queue depths and
+   reconciliation backlog. Investigate dispatch failures and unknown poison hashes.
+   Do not declare migration complete until every prior event is accounted for.
+
+**Rollback/recovery:** before queue removal, resume the original paused deployment
+against unchanged classic resources. After quorum provisioning, never redeclare
+classic on those names. Prefer repairing/restarting the quorum deployment while
+preserving its data. Returning to classic requires another approved pause and the
+same drain/reconciliation/zero-depth proof; nonempty quorum queues block rollback.
+Restore broker backups only under an approved recovery procedure, alongside retained
+DB receipts and outbox identities. Broker data and PostgreSQL cannot be rolled back
+independently while processing continues. No destructive rollback command is provided.
+
+## Core durable reconciliation and diagnostics
+
+Enable `APP_WORKER_DEAD_LETTER_ENABLED=true` with the separate
+`RABBITMQ_RECONCILER_USERNAME/PASSWORD`. The connection clones the existing verified
+TLS client configuration; no plaintext alternative exists. Prefetch and concurrency
+are one per Core replica. The listener does not declare queues.
+
+The decoder enforces strict UTF-8 JSON, duplicate/unknown-field rejection, 16 KiB,
+UUID/scalar types, schema, stable message/header identities and broker `x-death`
+queue/exchange/reason/count/routing key. Core verifies persisted admission identities
+and retry stage before locking Meeting then job. Existing receipts win, newer
+generations are preserved, and a live/running stage is never failed by an old DLQ.
+For unclaimed eligible work Core starts/fails its own existing lifecycle stage and
+records `WORKER_DELIVERY_EXHAUSTED`; no fake worker claim or extra retry loop exists.
+Generation three records `retryable=false,retryExhausted=true`. Explicit Core retry
+admission/outbox remains the sole way to allocate the next generation.
+
+Dispositions in `transcription_worker_reconciliations`:
+
+- `TERMINAL`: existing accepted/failure receipt preserved.
+- `SUPERSEDED`: newer durable generation preserved.
+- `EXHAUSTED`: authoritative transport-exhaustion receipt committed atomically.
+- `DEFERRED`: a durable recovery obligation replaces the broker copy while its
+  original execution can still finish. Every 30 seconds at most 25 are rechecked.
+  The existing lease sweeper supplies `STAGE_LEASE_EXPIRED`; reconciliation preserves
+  that receipt. A crash/restart cannot drop this obligation.
+- `OPERATOR_REVIEW`: inconsistent/noneligible canonical state, no guessed failure
+  and no automatic replay. Inspect canonical history before any approved repair.
+
+ACK is sent only after the transaction returns. Lost ACK replays the same row.
+DB failures close the channel without ACK; listener recovery backs off. Poison has
+durable `transcription_worker_quarantine` evidence: SHA-256, byte size, fixed reason
+and timestamp, **no body/header dump or trusted guessed job ID**. Duplicate hashes
+do not accumulate repeated payloads. Correlate with operator-held original evidence
+under approved access; this table intentionally cannot reconstruct private payloads.
+Unknown/invalid bindings never mutate a guessed job. No poison replay is automatic.
+
+Read-only diagnostics through the existing approved PostgreSQL client:
+
+```sql
+SELECT disposition,count(*),min(recorded_at) FROM transcription_worker_reconciliations GROUP BY disposition;
+SELECT reason,count(*),min(recorded_at) FROM transcription_worker_quarantine GROUP BY reason;
+SELECT event_id,processing_job_id,checked_at FROM transcription_worker_reconciliations
+ WHERE disposition IN ('DEFERRED','OPERATOR_REVIEW') ORDER BY checked_at LIMIT 100;
+SELECT error_code,retryable,retry_exhausted,count(*) FROM transcription_worker_receipts GROUP BY 1,2,3;
+```
+
+Use broker `preflight` to monitor ready/unacknowledged depths and consumer counts;
+also inspect total messages and `retained_dead_letters`, which include the durable
+internal transfer obligation when the target route is unavailable;
+inspect sanitized `worker.dlq.disposition`, `worker.dlq.persistence.unavailable`,
+`worker.dlq.recovery.failed` logs. Alert on absent consumers, growing/old backlog,
+operator review, poison, retry exhaustion and connection failures. On broker restart
+resume the same queues/identities. On unavailable reconciliation keep DLQ data; restore
+Core/DB and let it drain, without replaying to work queue. Never query/log claim tokens,
+source descriptors, private object keys, transcript text or credentials for diagnostics.
+
+## Immutable result storage boundary and IAM
+
+**Compatibility finding:** real RustFS **1.0.3** atomically supports conditional PUT
+and concurrent single-winner creation, but rejects `s3:if-none-match` bucket policy
+conditions with `InvalidArgument`. Client headers alone are insufficient.
+
+The existing HTTPS endpoint therefore uses `nginx:1.28-alpine` as a narrow storage
+authorization boundary. It is non-root (UID 10001), read-only, no capabilities or
+access logs, with the existing storage certificate/trust mounted read-only. It
+preserves S3 Host/signatures and streams to RustFS over **verified HTTPS** using
+`storage.internal` as upstream certificate name. Keep that enrolled DNS SAN; a DNS
+change needs a corresponding reviewed boundary config change. RustFS has no host
+port or integration-network attachment; only the internal `storage-backend` network
+can reach it. Do not attach worker/Core containers to that network or publish its
+port. Operator Docker access is infrastructure administration, never a workload grant.
+
+For result paths, only GET/HEAD and a non-copy, query-free PUT with exact
+`If-None-Match: *` reach RustFS. POST/multipart, copy, unconditional PUT and DELETE
+are denied. Ambiguous encoded/traversal/double-slash paths are rejected; signed query
+strings for other authorized operations are preserved. RustFS performs the atomic
+precondition check. Protected source deletion is also denied. IAM separately limits
+the worker to accepted-source GET, result GET/PUT, no listing/deletion/admin. Core
+reads results and retains its required pending/source and intelligence operations;
+it cannot PUT corrected results. No schema-validation logic is duplicated here.
+
+Use the operator-only `storage_admin.py` from the existing AI virtual environment.
+It signs native RustFS admin HTTPS calls using existing botocore, checks explicit
+trust, refuses existing user credentials, and does no delete/rotation. Environment:
+`STORAGE_ADMIN_ENDPOINT`, `STORAGE_ADMIN_CA_FILE`, `STORAGE_ADMIN_ACCESS_KEY`,
+`STORAGE_ADMIN_SECRET_KEY`, `STORAGE_NEW_USER`, `STORAGE_NEW_SECRET`. Keep these in
+external restricted operator configuration; never export them into application
+containers. Pre-create the private bucket through the approved operator workflow.
+
+```sh
+# services/ai; render secret-free policies for review:
+uv run --locked python ../../infra/local/secure-integration/storage_admin.py policy --bucket meeting-media --role worker
+uv run --locked python ../../infra/local/secure-integration/storage_admin.py policy --bucket meeting-media --role core
+# Explicit operator provisioning, separately load each role's NEW_USER/NEW_SECRET:
+uv run --locked python ../../infra/local/secure-integration/storage_admin.py provision --bucket meeting-media --role worker
+uv run --locked python ../../infra/local/secure-integration/storage_admin.py provision --bucket meeting-media --role core
+```
+
+Provisioning refuses an existing/uninspectable user. Partial provisioning leaves
+restricted evidence for operator recovery, not destructive rollback. Application
+secrets must be distinct from each other and bootstrap root. Existing broader IAM
+users need reviewed grant replacement; do not attach these policies to already
+privileged application accounts. Grant a transport probe object explicitly to the
+approved probe identity; application namespace policies do not grant that unrelated
+key. Keep `app.media.storage.create-bucket-if-missing=false` in secure mode.
+
+Denials return sanitized S3 `AccessDenied` XML and close the HTTP connection. This
+is necessary for an early final response to `Expect: 100-continue`: the client may
+legitimately withhold the chunked body, so that connection must not be reused while
+Nginx discards the unsent body. Upstream IAM 403 responses use the same boundary
+response. Successful requests retain normal keepalive and verified upstream TLS.
+The real fixture tests alternate denials and successful reads using the same boto3
+and Java SDK pools, and recheck protected source/result bytes after every negative.
+The fixture backend has no published port and only an internal network; a client
+container on the workload network must fail to connect to its direct IP. Workers
+must use the integration network, never host networking or the backend network;
+Docker-host/operator access remains infrastructure administration.
+
+Result identity remains Core-derived:
+`processing/{jobId}/transcription/results/{executionStageRunId}.json`, typed
+`CORRECTED_TRANSCRIPT`, maximum 8388608 bytes. Core's existing bounded streaming,
+exact-byte SHA-256, source/producer/schema and correction digest checks remain the
+acceptance boundary. A 409/412 or uncertain PUT never authorizes replacement or
+deletion: read the same bounded object and validate all bytes before authorized reuse.
+Objects remain available after publication failure and lost completion responses.
+No lifecycle/cleanup policy is installed. Accepted results, accepted audio and objects
+still eligible for reconciliation remain protected. Future orphan retention requires
+an approved policy and Core-reference reconciliation; no arbitrary expiry is assumed.
+
+## E2E-03 isolated verification and activation
+
+These fixtures use uniquely named `--rm` containers, synthetic data, ephemeral test
+CAs and local RAM-backed storage. They do not enroll/modify the approved Development
+CA or shared credentials/data. Tests stop only their own fixtures. Broker application
+restart preserves its temporary data; it does not remove persistent volumes. Destructive
+classic/quorum incompatibility checks run only on a test-named queue in those fixtures.
+
+```sh
+# services/api; compilation plus focused PostgreSQL, Worker V1, outbox and TLS checks:
+mvn -q -Dtest=DeadLetterEventTests,DeadLetterConsumerTests,TranscriptionWorkerIntegrationTests,OutboxPublisherTests,WorkerJsonTests,WorkerHttpContractTests,WorkerResultStorageTests,TranscriptionWorkerMtlsTests test
+# services/ai; real broker/RustFS/Nginx, actual Python SDKs and existing Java SDK checks:
+E2E01_DOCKER_FIXTURES=true uv run --locked pytest ../../infra/local/secure-integration/tests/test_broker_configuration.py ../../infra/local/secure-integration/tests/test_worker_infrastructure.py ../../infra/local/secure-integration/tests/test_transport_services.py -q
+# Existing worker adapters/runtime/contract integration (no providers):
+uv run --locked pytest tests/unit/test_worker_integrations.py tests/unit/test_transcription_worker.py tests/unit/test_worker_runtime.py tests/integration/test_worker_composition.py tests/integration/test_transcription_worker_integration.py -q
+uv run --locked ruff check ../../infra/local/secure-integration/broker.py ../../infra/local/secure-integration/storage_admin.py ../../infra/local/secure-integration/tests/test_broker_configuration.py ../../infra/local/secure-integration/tests/test_worker_infrastructure.py ../../infra/local/secure-integration/tests/test_transport_services.py
+```
+
+The real fixture tests verify broker arguments, delivery-limit handoff, unroutable
+mandatory returns, capacity NACK, missing DLQ routing recovery, work/DLQ lost ACK,
+broker application restart, classic/quorum conflict and worker administration denial.
+Storage tests prove concurrent creation, retained original bytes, the native RustFS
+policy limitation, enforced boundary denial and separate worker/Core grants. Existing
+transport fixtures exercise actual Java Rabbit/AWS clients and TLS negatives.
+PostgreSQL tests exercise rollback, duplicate concurrent reconciliation, completion/
+sweeper races, newer generations, poison and four-generation exhaustion. These do
+not establish real AI inference interoperability or final shared-CA acceptance.
+
+The sweeper intentionally uses `FOR UPDATE SKIP LOCKED`. A sweep racing a job-locked
+reconciliation may leave the durable `DEFERRED` row until the next sweep. Tests prove
+that interleaving explicitly, then execute the ordinary next sweep and a fresh
+recovery instance. The final `STAGE_LEASE_EXPIRED` receipt must remain identical;
+reconciliation must never replace it with transport exhaustion or admit a retry.
+
+Before live activation, run the `compose config --quiet`, start and transport checks
+above, broker `verify`, and the approved synthetic permission/immutability checks
+against **the boundary endpoint**, with external non-root credentials. Record exact
+deployment versions, effective broker policies, account grants and TLS fingerprints.
+Only then set `APP_WORKER_TRANSCRIPTION_INFRASTRUCTURE_VERIFIED=true`, enable DLQ
+reconciliation, worker capability and outbox under the controlled deployment process.
+The verified flag is an operator attestation to recorded checks, not a replacement
+for them; it defaults false. Secure capability startup rejects missing attestation,
+disabled reconciliation or a topology mode other than `external-quorum`.
+
+Do not use `down -v`, queue purge, direct backend exposure or result deletion to make
+checks pass. No automated cleanup of shared fixture prefixes is provided. Stop the
+secure project with the non-destructive `stop` command above. E2E-04 still owns real
+worker interoperability; E2E-05 still owns final fully connected acceptance.

@@ -18,6 +18,13 @@ public class TranscriptionWorkerCapability {
         storageId=env.getProperty("app.worker.transcription.storage-id","");
         if(enabled) {
             try {
+                if(env.acceptsProfiles(org.springframework.core.env.Profiles.of("secure-integration"))
+                    && (!"external-quorum".equals(env.getProperty("app.media.messaging.topology"))
+                        || !env.getProperty("app.worker.dead-letter.enabled",Boolean.class,false)
+                        || !env.getProperty("app.worker.transcription.infrastructure-verified",Boolean.class,false)
+                        || media.getStorage().getAccessKey()==null || media.getStorage().getAccessKey().isBlank()
+                        || media.getStorage().getSecretKey()==null || media.getStorage().getSecretKey().isBlank()))
+                    throw new IllegalStateException();
                 var storage=media.getStorage(); var uri=URI.create(storage.getEndpoint());
                 if(!env.getProperty("app.transport.private.enabled",Boolean.class,false)
                     || !storageId.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,63}")

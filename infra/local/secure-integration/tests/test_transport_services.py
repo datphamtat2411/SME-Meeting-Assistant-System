@@ -72,7 +72,12 @@ def test_compose_and_worker_examples_supply_required_ai_settings(tmp_path):
         WORKER_TLS_DIR=str(tmp_path), AI_DNS="ai-fixture.invalid")
     rendered = subprocess.check_output(["docker", "compose", "--env-file", "/dev/null", "-f", str(HERE / "compose.yaml"),
         "--profile", "http", "--profile", "checks", "config", "--format", "json"], env=env, text=True, timeout=20)
-    compose_environment = json.loads(rendered)["services"]["ai-core"]["environment"]
+    configuration = json.loads(rendered)
+    assert not configuration["services"]["storage"].get("ports")
+    assert set(configuration["services"]["storage"]["networks"]) == {"storage-backend"}
+    assert configuration["networks"]["storage-backend"]["internal"] is True
+    assert "storage-boundary" in configuration["services"]
+    compose_environment = configuration["services"]["ai-core"]["environment"]
     worker_environment = dotenv_values(HERE / "worker.env.example")
     for values, identity in ((compose_environment, "ai-core"), (worker_environment, "ai-worker")):
         with pytest.MonkeyPatch.context() as isolated:
@@ -153,7 +158,7 @@ def services(tmp_path_factory):
         client.create_bucket(Bucket=settings.s3_bucket)
         client.put_object(Bucket=settings.s3_bucket, Key="transport.txt", Body=b"synthetic TLS fixture")
         client.close()
-        yield settings, pki
+        yield settings, pki, names
     finally:
         for name in reversed(names):
             # --rm may already have removed a failed fixture. Do not mask the
@@ -162,7 +167,7 @@ def services(tmp_path_factory):
 
 
 def test_actual_python_stacks_and_tls_negatives(services, monkeypatch):
-    settings, pki = services
+    settings, pki, _ = services
     monkeypatch.setenv("E2E01_STORAGE_PROBE_KEY", "transport.txt")
     for target, ca, protocol in ((asyncio.run(smoke.broker(settings)), settings.rabbitmq_ca_file, "amqp"),
                                 (smoke.storage(settings), settings.s3_ca_file, "http")):
@@ -171,7 +176,7 @@ def test_actual_python_stacks_and_tls_negatives(services, monkeypatch):
 
 
 def test_actual_java_broker_and_aws_stacks(services):
-    settings, pki = services
+    settings, pki, _ = services
     env = dict(os.environ, E2E01_INFRA_FIXTURE="true", RABBITMQ_HOST="localhost",
         RABBITMQ_PORT=str(smoke.endpoint(settings.rabbitmq_url, "amqps", 5671).port), RABBITMQ_VIRTUAL_HOST="sme-integration",
         RABBITMQ_USERNAME="fixture", RABBITMQ_PASSWORD=settings.rabbitmq_password.get_secret_value(),
