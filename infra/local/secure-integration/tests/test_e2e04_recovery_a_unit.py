@@ -220,11 +220,26 @@ def test_existing_ack_observer_semantics_are_unchanged_without_fault_injection(m
     async def handle(self, delivery):
         await delivery.ack()
 
+    # Diagnostic installation mutates test-process adapters. Restore every seam
+    # on fixture teardown so the combined recovery unit run remains isolated.
+    for target, attributes in (
+        (observer.TranscriptionWorker, ("_prepare",)),
+        (observer.CoreApiClient, ("request", "claim", "_once")),
+        (observer.ObjectStorage, ("get_result", "put_result", "source_file")),
+    ):
+        for attribute in attributes:
+            monkeypatch.setattr(target, attribute, getattr(target, attribute))
     monkeypatch.setattr(observer.TranscriptionWorker, "handle", handle)
     observer.install_diagnostics(RecoveryControl.child(Environment.DEVELOPMENT, {}))
 
     class Delivery:
         message_id = str(uuid4())
+        body = json.dumps({"eventId": message_id, "processingJobId": str(uuid4()), "schemaVersion": 1}).encode()
+        headers = {"eventId": message_id, "eventType": "PROCESSING_JOB_QUEUED"}
+        content_type = "application/json"
+        delivery_mode = 2
+        exchange = "meeting.processing"
+        routing_key = "processing.job.queued"
         delivery_tag = 42
         channel = SimpleNamespace(number=7)
         redelivered = False

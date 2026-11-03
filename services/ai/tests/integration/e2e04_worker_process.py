@@ -12,11 +12,19 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 
-from e2e04_recovery_control import POST_CLAIM, PRE_ACK, RecoveryControl
-from test_worker_live_acceptance import ControlledExecution, controlled_pipeline
+from e2e04_recovery_control import POST_CLAIM, PRE_ACK, PRE_CLAIM, RecoveryControl
+from e2e04_recovery_faults import (
+    RecoveryFaults,
+    campaign_pipeline,
+    checkpoint_source,
+    emit,
+    execution_binding,
+)
+from test_worker_live_acceptance import ControlledExecution
 
 from sme_meeting_ai.core.config import ConfigurationError, Environment, load_settings
 from sme_meeting_ai.integrations.core_api import CoreApiClient, CoreError
+from sme_meeting_ai.integrations.object_storage import ObjectStorage, StorageError
 from sme_meeting_ai.observability.logging import configure_logging
 from sme_meeting_ai.workers.__main__ import run_worker
 from sme_meeting_ai.workers.transcription import (
@@ -27,6 +35,7 @@ from sme_meeting_ai.workers.transcription import (
 
 _HEADER_NAMES = frozenset(("eventId", "eventType", "schemaVersion", "x-delivery-count"))
 _BROKER_HEADERS = frozenset(("x-delivery-count",))
+_EVENT_TYPES = frozenset(("PROCESSING_JOB_QUEUED", "PROCESSING_JOB_RETRY_REQUESTED"))
 _delivery_context = ContextVar("e2e04_delivery", default={})
 
 
@@ -108,6 +117,8 @@ def message_observation(delivery):
     except (UnicodeDecodeError, TypeError, ValueError):
         payload = {}
     headers = delivery.headers or {}
+    event_type = headers.get("eventType")
+    event_type = event_type if type(event_type) is str and event_type in _EVENT_TYPES else "invalid"
     channel = getattr(delivery.channel, "number", None)
     if type(channel) is not int or channel <= 0:
         channel = "unknown"
@@ -125,15 +136,13 @@ def message_observation(delivery):
         "messageId": _safe_diagnostic_text(delivery.message_id),
         "bodySha256": hashlib.sha256(bytes(delivery.body)).hexdigest(),
         "headerEventId": _header_event_id(headers.get("eventId")),
-        "headerEventType": ("PROCESSING_JOB_QUEUED"
-                            if headers.get("eventType") == "PROCESSING_JOB_QUEUED" else "invalid"),
+        "headerEventType": event_type,
         # Spring creates this non-secret template UUID at runtime. Only a
         # canonical UUID is exposed for the test harness to clone the message.
         "publisherListenerId": _header_event_id(headers.get("spring_listener_return_correlation")),
         "headersSha256": headers_sha256(headers),
         "headerEvidence": header_evidence(headers),
-        "eventType": ("PROCESSING_JOB_QUEUED"
-                      if headers.get("eventType") == "PROCESSING_JOB_QUEUED" else "invalid"),
+        "eventType": event_type,
         "schemaVersion": payload.get("schemaVersion") if type(payload.get("schemaVersion")) is int else -1,
         "exchange": _safe_diagnostic_text(getattr(delivery, "exchange", None)),
         "routingKey": _safe_diagnostic_text(getattr(delivery, "routing_key", None)),
@@ -168,17 +177,31 @@ def claim_observation(event, attempt, *, result=None, error=None):
     return record
 
 
-def install_diagnostics(control=None):
+def install_diagnostics(control=None, *, scenario=""):
     """Emit only bounded classifications and identifiers in this test process."""
     prepare = TranscriptionWorker._prepare
     handle = TranscriptionWorker.handle
     request = CoreApiClient.request
     claim = CoreApiClient.claim
+    once = CoreApiClient._once
+    get_result = ObjectStorage.get_result
+    put_result = ObjectStorage.put_result
+    source_file = ObjectStorage.source_file
     terminal = {}
     claim_attempts = {}
     control = control or RecoveryControl.child(Environment.DEVELOPMENT, {})
+    faults = RecoveryFaults(control, scenario)
+    worker_loop = None
+
+    async def observed_once(self, event, operation, body, deadline):
+        async def actual(event, operation, body, deadline):
+            return await once(self, event, operation, body, deadline)
+
+        return await faults.once(actual, event, operation, body, deadline)
 
     async def observed_claim(self, event):
+        if scenario == "concurrent_claims":
+            await control.checkpoint(PRE_CLAIM, event_id=event.eventId)
         attempt = claim_attempts.get(event.eventId, 0) + 1
         claim_attempts[event.eventId] = attempt
         print("E2E04_CLAIM " + json.dumps({
@@ -205,6 +228,8 @@ def install_diagnostics(control=None):
             "stageRunId": claim.executionStageRunId,
             **_delivery_context.get(),
         }, separators=(",", ":")), flush=True)
+        token = execution_binding.set({"eventId": claim.eventId, "processingJobId": claim.processingJobId,
+                                       "generation": claim.generation, "stageRunId": claim.executionStageRunId})
         try:
             return prepare(self, claim, fence)
         except WorkFailure as failure:
@@ -212,6 +237,33 @@ def install_diagnostics(control=None):
                   f"stage={claim.executionStageRunId} phase={failure.phase} category={failure.category} "
                   f"completed_through={failure.completed_through}", flush=True)
             raise
+        finally:
+            execution_binding.reset(token)
+
+    def observed_get(self, storage, key, fence=None):
+        try:
+            raw = get_result(self, storage, key, fence)
+        except StorageError as error:
+            emit("E2E04_STORAGE", operation="get_result", outcome=error.category, **execution_binding.get())
+            raise
+        emit("E2E04_STORAGE", operation="get_result", outcome="found",
+             sha256=hashlib.sha256(raw).hexdigest(), **execution_binding.get())
+        return raw
+
+    def observed_put(self, storage, key, raw, fence=None):
+        emit("E2E04_STORAGE", operation="put_result", phase="attempt",
+             sha256=hashlib.sha256(raw).hexdigest(), **execution_binding.get())
+        result = put_result(self, storage, key, raw, fence)
+        emit("E2E04_STORAGE", operation="put_result", phase="completed",
+             sha256=hashlib.sha256(result).hexdigest(), **execution_binding.get())
+        return result
+
+    def observed_source(self, source, fence=None):
+        context = source_file(self, source, fence)
+        if scenario == "crash_inflight":
+            return checkpoint_source(context, control, worker_loop,
+                                     event_id=execution_binding.get()["eventId"])
+        return context
 
     async def observed_request(self, event, operation, body=None, **options):
         try:
@@ -219,12 +271,23 @@ def install_diagnostics(control=None):
             if getattr(result, "durable", False):
                 terminal[event.eventId] = {"state": result.state,
                                            "receiptId": (result.receipt or {}).get("receiptId")}
+            emit("E2E04_HTTP", eventId=event.eventId, generation=event.generation,
+                 operation=operation, status=200, state=getattr(result, "state", None),
+                 receiptId=(getattr(result, "receipt", None) or {}).get("receiptId"),
+                 budgetUsed=getattr(options.get("budget"), "used", None))
+            if operation == "fail":
+                emit("E2E04_FAILURE", eventId=event.eventId, generation=event.generation,
+                     phase=body["phase"], category=body["category"], completedThrough=body["completedThrough"],
+                     metrics=body["metrics"], receipt=result.receipt)
             if operation in ("fail", "complete"):
                 print(f"E2E04_COMMAND operation={operation} status=200 state={result.state}", flush=True)
                 print("E2E04_COMMAND_JSON " + json.dumps({"eventId": event.eventId, "operation": operation,
                       "status": 200, "state": result.state, **_delivery_context.get()}), flush=True)
             return result
         except CoreError as error:
+            emit("E2E04_HTTP", eventId=event.eventId, generation=event.generation,
+                 operation=operation, status=error.status, code=error.code,
+                 budgetUsed=getattr(options.get("budget"), "used", None))
             if operation in ("fail", "complete"):
                 print(f"E2E04_COMMAND operation={operation} status={error.status} code={error.code}", flush=True)
                 print("E2E04_COMMAND_JSON " + json.dumps({"eventId": event.eventId, "operation": operation,
@@ -232,6 +295,8 @@ def install_diagnostics(control=None):
             raise
 
     async def observed_handle(self, delivery):
+        nonlocal worker_loop
+        worker_loop = asyncio.get_running_loop()
         class DeliveryObserver:
             def __getattr__(self, name):
                 return getattr(delivery, name)
@@ -248,7 +313,7 @@ def install_diagnostics(control=None):
                     channel=identity["channel"], redelivered=delivery.redelivered,
                     action="ack", phase="invoked",
                 )
-                print("E2E04_ACK " + json.dumps({**identity, "operation": "invoked"}), flush=True)
+                emit("E2E04_ACK", **identity, operation="invoked")
                 await control.checkpoint(PRE_ACK, event_id=event_id)
                 await delivery.ack()
                 await control.observe_delivery(
@@ -256,7 +321,7 @@ def install_diagnostics(control=None):
                     channel=identity["channel"], redelivered=delivery.redelivered,
                     action="ack", phase="client_completed",
                 )
-                print("E2E04_ACK " + json.dumps({**identity, "operation": "client_completed"}), flush=True)
+                emit("E2E04_ACK", **identity, operation="client_completed")
 
             async def nack(self, *args, **kwargs):
                 await control.observe_delivery(
@@ -299,6 +364,10 @@ def install_diagnostics(control=None):
     TranscriptionWorker.handle = observed_handle
     CoreApiClient.request = observed_request
     CoreApiClient.claim = observed_claim
+    CoreApiClient._once = observed_once
+    ObjectStorage.get_result = observed_get
+    ObjectStorage.put_result = observed_put
+    ObjectStorage.source_file = observed_source
 
 
 def main() -> int:
@@ -306,13 +375,15 @@ def main() -> int:
         settings = load_settings(env_file=None)
         if settings.environment is not Environment.TEST:
             raise ConfigurationError("controlled E2E-04 requires test environment")
-        control = RecoveryControl.child(settings.environment, os.environ)
+        control = RecoveryControl.child(
+            settings.environment, os.environ,
+            timeout=float(os.environ.get("AI_E2E04_CONTROL_TIMEOUT", "5")))
 
         async def run():
             try:
-                install_diagnostics(control)
+                install_diagnostics(control, scenario=os.environ.get("AI_E2E04_FAULT", ""))
                 configure_logging(settings)
-                execution = TranscriptionExecution(settings, pipeline_factory=controlled_pipeline)
+                execution = TranscriptionExecution(settings, pipeline_factory=campaign_pipeline)
                 return await run_worker(settings, ControlledExecution(execution), (lambda: execution,))
             finally:
                 await control.close()

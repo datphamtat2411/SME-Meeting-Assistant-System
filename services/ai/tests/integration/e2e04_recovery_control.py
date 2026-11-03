@@ -16,13 +16,19 @@ from sme_meeting_ai.core.config import Environment
 
 POST_CLAIM = "post_claim"
 PRE_ACK = "pre_ack"
-_CHECKPOINTS = frozenset((POST_CLAIM, PRE_ACK))
+POST_COMPLETE = "post_complete"
+PRE_COMPLETE = "pre_complete"
+CORE_RESTORED = "core_restored"
+SOURCE_OPEN = "source_open"
+PRE_CLAIM = "pre_claim"
+_CHECKPOINTS = frozenset((POST_CLAIM, PRE_ACK, POST_COMPLETE, PRE_COMPLETE,
+                          CORE_RESTORED, SOURCE_OPEN, PRE_CLAIM))
 _ACTIONS = frozenset(("ack", "nack", "reject"))
 _PHASES = frozenset(("invoked", "client_completed"))
 _CONTROL_SOCKET = "AI_E2E04_CONTROL_SOCKET"
 _CONTROL_RUN_ID = "AI_E2E04_CONTROL_RUN_ID"
 _SAFE_TEXT = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
-_MAX_TIMEOUT = 30.0
+_MAX_TIMEOUT = 240.0  # Real 120s lease plus the existing 60s sweeper cadence.
 _MAX_MESSAGE = 4096
 
 
@@ -192,7 +198,7 @@ class _ParentControl:
         self._path.chmod(0o600)
         self._server.listen(1)
         self._server.settimeout(0.1)
-        self._accept_deadline = time.monotonic() + _MAX_TIMEOUT
+        self._accept_deadline = time.monotonic() + 30.0
         self._connection = None
         self._send_lock = threading.Lock()
         self._condition = threading.Condition()
@@ -546,7 +552,7 @@ class _ChildControl:
         if self._reader is None:
             raise ControlClosed("control channel closed")
         try:
-            raw = await self._reader.readline()
+            raw = await asyncio.wait_for(self._reader.readline(), self._timeout)
         except (OSError, asyncio.TimeoutError):
             await self._close_unlocked()
             raise ControlClosed("control channel closed") from None
