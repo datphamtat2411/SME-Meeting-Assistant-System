@@ -281,7 +281,7 @@ def _interval_ms(interval, count):
                 endMs=(interval.end_sample * 1000 + 15999) // 16000)
 
 
-def _provenance(outcome, settings, asr_adapter_version):
+def _provenance(outcome, settings, asr_adapter_version, correction_mode=None):
     p = outcome.provenance
     pre = p.preprocessing
     versions = [
@@ -291,6 +291,14 @@ def _provenance(outcome, settings, asr_adapter_version):
         ("coverage", p.coverage.assessor_version), ("recovery", p.recovery.recovery_version),
         ("reconciliation", p.reconciliation.reconciler_version), ("correction", p.correction.correction_version),
     ]
+    effective = p.correction.effective_configuration
+    reported_mode = effective.get("correction_mode")
+    if correction_mode is not None:
+        _require(reported_mode is None or reported_mode == correction_mode)
+        versions.append(("correction-mode", correction_mode))
+    validator = effective.get("validator_version")
+    if validator is not None:
+        versions.append(("correction-validator", validator))
     models = []
     for _, model in (*p.asr.asr, *p.coverage.asr, *p.reconciliation.asr):
         entry = dict(role="ASR", provider=model.provider, requestedModel=model.requested_model,
@@ -302,9 +310,14 @@ def _provenance(outcome, settings, asr_adapter_version):
     # Explicit effective inference configuration only. No transport credentials,
     # paths, endpoints, provider response maps or environment dumps are included.
     config = {k: v for k, v in settings.model_dump(mode="json").items()
-              if k.startswith(("audio_", "transcript_correction_"))
-              and k not in ("audio_temp_dir", "audio_vad_model_path")}
-    snapshot = json.dumps(dict(version="worker-config-v1", settings=config), sort_keys=True,
+               if k.startswith(("audio_", "transcript_correction_"))
+               and k not in ("audio_temp_dir", "audio_vad_model_path", "transcript_correction_mode")}
+    stable_keys = {"context_window_tokens", "max_input_tokens", "max_output_tokens", "max_response_bytes",
+                   "max_attempts", "timeout_seconds", "min_text_ratio", "max_text_ratio", "model",
+                   "reasoning_effort", "temperature", "correction_mode", "schema_name", "validator_version"}
+    correction = {k: v for k, v in effective.items() if k in stable_keys}
+    snapshot = json.dumps(dict(version="worker-config-v2", settings=config, correction_mode=correction_mode,
+                               correction_effective=correction), sort_keys=True,
                           separators=(",", ":"), allow_nan=False).encode()
     return dict(pipelineVersion=p.pipeline_version, configurationSha256=hashlib.sha256(snapshot).hexdigest(),
                 components=[dict(name=name, version=version) for name, version in versions],
@@ -313,7 +326,7 @@ def _provenance(outcome, settings, asr_adapter_version):
 
 
 def map_result(outcome, settings, *, job_id, media_id, source_revision, producer_id,
-               asr_adapter_version="openrouter-whisper-v1"):
+               asr_adapter_version="openrouter-whisper-v1", correction_mode=None):
     category = "RESOURCE"
     try:
         _require(isinstance(outcome, OfflineTranscriptionOutcome)
@@ -385,7 +398,7 @@ def map_result(outcome, settings, *, job_id, media_id, source_revision, producer
                     pipelineStatus=outcome.status.value, languageCode=settings.audio_asr_language,
                     sampleRateHz=16000, sampleCount=count, durationMs=(count * 1000 + 15999) // 16000,
                     segments=segments, coverage=coverage, warnings=warnings,
-                    provenance=_provenance(outcome, settings, asr_adapter_version),
+                    provenance=_provenance(outcome, settings, asr_adapter_version, correction_mode),
                     correctionProof=dict(contextScope="WHOLE_MEETING", promptVersion=result.provenance.prompt_version,
                                          outputSha256=correction_digest(segments)))
         raw = json.dumps(data, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
@@ -590,8 +603,11 @@ class TranscriptionWorker:
             if outcome.status is OfflineTranscriptionStatus.FAILED:
                 raise pipeline_failure(outcome)
             phase = "RESULT_VALIDATION"
+            from sme_meeting_ai.pipeline import OfflineTranscriptionPipeline
+            actual_mode = self.pipeline._correction_mode if isinstance(self.pipeline, OfflineTranscriptionPipeline) else None
             raw = map_result(outcome, getattr(self.pipeline, "effective_settings", self.settings), **binding,
-                             producer_id=claim.executionStageRunId,
+                              producer_id=claim.executionStageRunId,
+                              correction_mode=actual_mode,
                              asr_adapter_version=getattr(self.pipeline, "asr_adapter_version", "openrouter-whisper-v1"))
             if fence.is_set():
                 raise WorkFailure("INTERRUPTED", "CANCELLED")
@@ -822,6 +838,9 @@ class TranscriptionExecution:
         from sme_meeting_ai.providers.openrouter_instruction_llm import (
             OpenRouterInstructionLlmAdapter,
         )
+        from sme_meeting_ai.providers.openrouter_instruction_llm_v62 import (
+            OpenRouterInstructionLlmV62Adapter,
+        )
         from sme_meeting_ai.providers.openrouter_whisper import OpenRouterWhisperAdapter
         from sme_meeting_ai.transcription.chunk_planning import (
             SpeechAwareAsrChunkPlanner,
@@ -831,6 +850,9 @@ class TranscriptionExecution:
         phase = "provider"
         try:
             if self._pipeline_factory is None:
+                mode = self.settings.transcript_correction_mode
+                if type(mode) is not str or mode not in ("v5_full", "v62_edits"):
+                    raise ValueError
                 secret = self.settings.openrouter_api_key
                 key = secret.get_secret_value() if secret is not None else ""
                 if (not key or any(ord(c) < 33 or ord(c) > 126 for c in key)
@@ -850,13 +872,25 @@ class TranscriptionExecution:
                 self._sync.callback(backend.close)
                 phase = "provider"
                 transcriber = self._sync.enter_context(OpenRouterWhisperAdapter(self.settings))
-                corrector = self._sync.enter_context(OpenRouterInstructionLlmAdapter(self.settings))
+                if mode == "v5_full":
+                    corrector = self._sync.enter_context(OpenRouterInstructionLlmAdapter(self.settings))
+                    if type(corrector) is not OpenRouterInstructionLlmAdapter:
+                        raise ValueError
+                elif mode == "v62_edits":
+                    corrector = self._sync.enter_context(OpenRouterInstructionLlmV62Adapter(self.settings))
+                    if type(corrector) is not OpenRouterInstructionLlmV62Adapter or isinstance(corrector, OpenRouterInstructionLlmAdapter):
+                        raise ValueError
+                else:
+                    raise ValueError
                 phase = "pipeline"
                 pipeline = OfflineTranscriptionPipeline(
                     AudioPreprocessingPipeline(AudioNormalizer(self.settings),
                         AudioEvidenceDetector(self.settings, backend), SpeechMapBuilder(self.settings)),
                     SpeechAwareAsrChunkPlanner(self.settings), transcriber, corrector, self.settings,
+                    correction_mode=mode,
                 )
+                if pipeline._correction_mode != mode or pipeline._correction_provider is not corrector:
+                    raise ValueError
             self.worker = TranscriptionWorker(self.settings, core, storage, pipeline)
             phase = "broker"
             self.broker = await self._async.enter_async_context(RabbitConsumer(self.settings))

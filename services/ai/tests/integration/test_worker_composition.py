@@ -278,6 +278,7 @@ def test_broker_connection_closes_even_when_stop_fails(composition, monkeypatch)
 
 def test_explicit_pipeline_factory_skips_production_provider_bootstrap(composition):
     h = composition
+    h.settings = h.settings.model_copy(update={"transcript_correction_mode": "v62_edits", "openrouter_api_key": None})
     calls = []
 
     def factory(settings, resources):
@@ -293,6 +294,31 @@ def test_explicit_pipeline_factory_skips_production_provider_bootstrap(compositi
 
     asyncio.run(run())
     assert sorted(h.closed) == ["broker", "core", "storage"]
+
+
+def test_unvalidated_mode_fails_before_any_resources(composition):
+    h = composition
+    h.settings = h.settings.model_copy(update={"transcript_correction_mode": "invalid"})
+
+    async def run():
+        with pytest.raises(RuntimeError, match="startup.failed"):
+            await TranscriptionExecution(h.settings).__aenter__()
+    asyncio.run(run())
+    assert not h.acquired and not h.consumed
+
+
+def test_mismatched_adapter_fails_and_closes_resources(composition, monkeypatch):
+    from sme_meeting_ai.providers import openrouter_instruction_llm_v62
+    h = composition
+    h.settings = h.settings.model_copy(update={"transcript_correction_mode": "v62_edits"})
+    monkeypatch.setattr(openrouter_instruction_llm_v62, "OpenRouterInstructionLlmV62Adapter", OpenRouterInstructionLlmAdapter)
+
+    async def run():
+        with pytest.raises(RuntimeError, match="startup.failed"):
+            await TranscriptionExecution(h.settings).__aenter__()
+    asyncio.run(run())
+    assert sorted(h.closed) == sorted(h.acquired)
+    assert not h.consumed
 
 
 @pytest.mark.parametrize("environment", [Environment.DEVELOPMENT, Environment.STAGING, Environment.PRODUCTION])

@@ -448,13 +448,52 @@ def _evidence(database, job_id):
     return json.loads(raw)
 
 
-def _assert_acknowledged(container):
-    queues = broker.inspect(container, "sme-integration")
-    work = next(queue for queue in queues if queue["name"] == broker.WORK)
-    assert work["messages"] == work["messages_ready"] == work["messages_unacknowledged"] == work["consumers"] == 0
-    dead = next(queue for queue in queues if queue["name"] == broker.DEAD)
-    assert dead["messages"] == 0
-    assert work["retained_dead_letters"] == 0
+def _consumer_metadata(container, credentials):
+    """Identify work consumers without printing connection addresses or credentials."""
+    try:
+        consumers = json.loads(broker.cli(container, "list_consumers", "-p", "sme-integration",
+                                          "queue_name", "channel_pid", "--formatter=json"))
+        channels = json.loads(broker.cli(container, "list_channels", "pid", "connection", "user",
+                                         "--formatter=json"))
+        by_pid = {str(channel["pid"]): channel for channel in channels}
+        roles = {getattr(credentials, role + "_user"): role for role in
+                 ("worker", "publisher", "reconciler")} if credentials else {}
+        result = []
+        for consumer in consumers:
+            if consumer["queue_name"] != broker.WORK:
+                continue
+            channel = by_pid.get(str(consumer["channel_pid"]), {})
+            connection = channel.get("connection")
+            result.append({"channel": hashlib.sha256(str(consumer["channel_pid"]).encode()).hexdigest()[:12],
+                           "connection": hashlib.sha256(str(connection).encode()).hexdigest()[:12]
+                           if connection is not None else "unknown",
+                           "workload": roles.get(channel.get("user"), "unknown")})
+        return json.dumps(result)
+    except Exception:
+        return "consumer metadata unavailable"
+
+
+def _assert_acknowledged(container, credentials=None, *, timeout=5, interval=0.5):
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            queues = broker.inspect(container, "sme-integration")
+            work = next(queue for queue in queues if queue["name"] == broker.WORK)
+            dead = next(queue for queue in queues if queue["name"] == broker.DEAD)
+            state = {field: work[field] for field in ("messages", "messages_ready", "messages_unacknowledged",
+                                                       "consumers", "retained_dead_letters")}
+            state["dead_messages"] = dead["messages"]
+            if any(type(value) is not int or value < 0 for value in state.values()):
+                raise ValueError("invalid broker counters")
+        except Exception:
+            raise AssertionError("broker inspection failed (details suppressed)") from None
+        if all(value == 0 for value in state.values()):
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            metadata = _consumer_metadata(container, credentials) if state["consumers"] else "not applicable"
+            raise AssertionError(f"broker settlement timed out: {state}; work consumers={metadata}")
+        time.sleep(min(interval, remaining))
 
 
 def _assert_original_ack(log_path, evidence):
@@ -572,7 +611,7 @@ def test_real_core_to_worker_level_a_acceptance(services, storage_boundary, post
             evidence = _evidence(postgres, job_id)
             _stop_worker(worker, worker_log)
             ack = _assert_original_ack(tmp_path / "worker.log", evidence)
-            _assert_acknowledged(names[0])
+            _assert_acknowledged(names[0], credentials)
             assert evidence["outcome"] == "RESULT_ACCEPTED"
             assert evidence["receiptCount"] == evidence["transcriptCount"] == 1
             assert evidence["generation"] == 0
@@ -603,9 +642,12 @@ def test_real_core_to_worker_level_a_acceptance(services, storage_boundary, post
                     'receipts', (SELECT json_agg(json_build_object('id',receipt_id,'outcome',outcome,'error',error_code)) FROM transcription_worker_receipts))
             """)
             print("E2E04_DIAGNOSTIC " + summary)
-            queues = broker.inspect(names[0], "sme-integration")
-            print("E2E04_BROKER " + json.dumps([{field: q[field] for field in
-                  ("name", "messages", "messages_ready", "messages_unacknowledged", "consumers")} for q in queues]))
+            try:
+                queues = broker.inspect(names[0], "sme-integration")
+                print("E2E04_BROKER " + json.dumps([{field: q[field] for field in
+                      ("name", "messages", "messages_ready", "messages_unacknowledged", "consumers")} for q in queues]))
+            except Exception:
+                print("E2E04_BROKER inspection unavailable")
             for line in (tmp_path / "worker.log").read_text().splitlines():
                 if line.startswith(("E2E04_WORK_FAILURE ", "E2E04_COMMAND ")):
                     print(line)

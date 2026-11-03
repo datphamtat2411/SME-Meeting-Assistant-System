@@ -12,8 +12,6 @@ import pytest
 from integration.test_offline_transcription_pipeline import pipeline
 from integration.test_offline_transcription_pipeline import workflow as workflow
 from integration.test_transcription_worker_integration import Delivery, cleanup, setup
-from unit.test_correction import Provider, configuration, meeting, payload
-from unit.test_transcription_worker import binding
 
 from sme_meeting_ai.integrations.core_api import CoreApiClient
 from sme_meeting_ai.pipeline.offline_transcription import OfflineTranscriptionPipeline
@@ -24,13 +22,15 @@ from sme_meeting_ai.transcription.correction import (
 )
 from sme_meeting_ai.workers import transcription
 from sme_meeting_ai.workers.transcription import (
-    _eligible_failure,
     ResultValidationError,
     TranscriptionWorker,
+    _eligible_failure,
     map_result,
     pipeline_failure,
     validate_result_bytes,
 )
+from unit.test_correction import Provider, configuration, meeting, payload
+from unit.test_transcription_worker import binding
 
 PRIVATE = "private-exception-content"
 
