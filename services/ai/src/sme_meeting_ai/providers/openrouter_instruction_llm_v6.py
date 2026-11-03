@@ -6,6 +6,7 @@ never consumed, and no provider output is repaired, logged or echoed into errors
 
 import time
 import traceback
+from collections.abc import Mapping
 from decimal import Decimal
 from typing import Self
 
@@ -135,7 +136,7 @@ class OpenRouterInstructionLlmV6Adapter:
 
     def _complete(self, request: V6CorrectionRequest) -> CorrectionProviderResponse:
         config = _v6_configuration(self._settings)
-        _validate_v6_request(request, config)
+        self._validate_request(request, config)
         secret = self._settings.openrouter_api_key
         key = secret.get_secret_value() if isinstance(secret, SecretStr) else ""
         _require_v6(bool(key) and all(33 <= ord(char) <= 126 for char in key),
@@ -167,6 +168,11 @@ class OpenRouterInstructionLlmV6Adapter:
         _validate_v6_response(normalized, request, config)
         self._check_deadline(deadline)
         return normalized
+
+    @staticmethod
+    def _validate_request(request: V6CorrectionRequest, config: Mapping) -> int:
+        """Pin V6 identity; versioned adapters must override this dispatch hook."""
+        return _validate_v6_request(request, config)
 
     @staticmethod
     def _check_deadline(deadline: float) -> None:

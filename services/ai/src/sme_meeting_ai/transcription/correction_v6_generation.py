@@ -9,7 +9,7 @@ import json
 import math
 import traceback
 import unicodedata
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from fractions import Fraction
@@ -452,9 +452,14 @@ def _v6_request_payload(request: V6CorrectionRequest) -> dict:
 
 
 def _validate_v6_request(request: V6CorrectionRequest, config: Mapping) -> int:
+    return _validate_span_request(request, config, system_prompt=V6_SYSTEM_PROMPT)
+
+
+def _validate_span_request(request: V6CorrectionRequest, config: Mapping, *, system_prompt: str) -> int:
+    """Shared preflight; version-specific callers must pin their exact prompt."""
     category, reason = CorrectionErrorCategory.VALIDATION, V6GenerationReason.INVALID_REQUEST
     _require_v6(isinstance(request, V6CorrectionRequest), category, reason)
-    _require_v6(type(request.system_prompt) is str and request.system_prompt == V6_SYSTEM_PROMPT
+    _require_v6(type(request.system_prompt) is str and request.system_prompt == system_prompt
                 and type(request.transcript_json) is str and bool(request.transcript_json.strip()), category, reason)
     _require_v6(request.model == config["model"] and type(request.max_output_tokens) is int
                 and 0 < request.max_output_tokens <= config["max_output_tokens"]
@@ -544,14 +549,26 @@ def generate_v6_proposal(
     Usage describes the accepted response, as in V5.3; missing usage/cost is never
     inferred for failed attempts. Task 03 consumes the proposal without retrying.
     """
+    return _generate_span_proposal(
+        reconciliation, provider, settings, system_prompt=V6_SYSTEM_PROMPT,
+        prompt_version=V6_PROMPT_VERSION, validate_request=_validate_v6_request,
+    )
+
+
+def _generate_span_proposal(
+    reconciliation: TranscriptReconciliation, provider: V6CorrectionProvider, settings: Settings, *,
+    system_prompt: str, prompt_version: str,
+    validate_request: Callable[[V6CorrectionRequest, Mapping], int],
+) -> V6GenerationOutcome:
+    """Version-pinned callers share parsing, bounded retries and sanitized failures."""
     attempts = 0
     failure = V6GenerationFailure(CorrectionErrorCategory.VALIDATION, V6GenerationReason.INVALID_RECONCILIATION, 0)
     try:
         config = _v6_configuration(settings)
         transcript = serialize_v6_meeting(reconciliation)
-        request = V6CorrectionRequest(V6_SYSTEM_PROMPT, transcript, config["model"], config["max_output_tokens"],
+        request = V6CorrectionRequest(system_prompt, transcript, config["model"], config["max_output_tokens"],
                                       config.get("temperature"), config.get("reasoning_effort"))
-        input_budget = _validate_v6_request(request, config)
+        input_budget = validate_request(request, config)
         for attempts in range(1, config["max_attempts"] + 1):
             try:
                 response = provider.complete(request)
@@ -559,7 +576,7 @@ def generate_v6_proposal(
                 proposal = parse_v6_proposal(response.text, reconciliation)
                 return V6GenerationOutcome(result=V6GenerationResult(
                     proposal, response.provider, response.requested_model, response.resolved_model,
-                    response.usage, attempts, V6_PROMPT_VERSION, CORRECTION_V6_SCHEMA_NAME,
+                    response.usage, attempts, prompt_version, CORRECTION_V6_SCHEMA_NAME,
                     {**config, "serialized_input_token_budget": input_budget},
                 ))
             except V6ValidationError as error:

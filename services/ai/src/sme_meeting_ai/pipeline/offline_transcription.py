@@ -392,11 +392,11 @@ class OfflineTranscriptionPipeline:
         self, preprocessing: AudioPreprocessingPipeline, planner: "SpeechAwareAsrChunkPlanner",
         transcriber: "AsrTranscriber", correction_provider: "TranscriptCorrectionProvider | V6CorrectionProvider",
         settings: Settings, pipeline_version: str = "1",
-        *, correction_mode: Literal["v5_full", "v6_edits"] = "v5_full",
+        *, correction_mode: Literal["v5_full", "v6_edits", "v61_edits", "v62_edits"] = "v5_full",
     ):
         _require(isinstance(settings, Settings))
         _require(isinstance(pipeline_version, str) and bool(pipeline_version.strip()))
-        _require(type(correction_mode) is str and correction_mode in ("v5_full", "v6_edits"))
+        _require(type(correction_mode) is str and correction_mode in ("v5_full", "v6_edits", "v61_edits", "v62_edits"))
         self._preprocessing = preprocessing
         self._planner = planner
         self._transcriber = transcriber
@@ -539,7 +539,23 @@ class OfflineTranscriptionPipeline:
             completed.append(stage)
 
             stage = OfflineTranscriptionStage.CORRECTION
-            if self._correction_mode == "v6_edits":
+            if self._correction_mode == "v62_edits":
+                from sme_meeting_ai.transcription.correction_v62_pipeline import (
+                    correct_transcript_v62,
+                )
+
+                corrected = correct_transcript_v62(
+                    reconciled, coverage, _BorrowedCorrector(self._correction_provider), self._settings,
+                )
+            elif self._correction_mode == "v61_edits":
+                from sme_meeting_ai.transcription.correction_v61_pipeline import (
+                    correct_transcript_v61,
+                )
+
+                corrected = correct_transcript_v61(
+                    reconciled, coverage, _BorrowedCorrector(self._correction_provider), self._settings,
+                )
+            elif self._correction_mode == "v6_edits":
                 from sme_meeting_ai.transcription.correction_v6_pipeline import (
                     correct_transcript_v6,
                 )

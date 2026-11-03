@@ -19,6 +19,9 @@ from sme_meeting_ai.core.config import Settings
 from sme_meeting_ai.integrations import core_api, messaging, object_storage
 from sme_meeting_ai.observability.logging import configure_logging
 from sme_meeting_ai.pipeline import OfflineTranscriptionPipeline
+from sme_meeting_ai.providers.openrouter_instruction_llm import (
+    OpenRouterInstructionLlmAdapter,
+)
 from sme_meeting_ai.workers import __main__ as entrypoint
 from sme_meeting_ai.workers.transcription import TranscriptionExecution
 
@@ -164,6 +167,8 @@ def test_actual_main_constructs_consumes_and_sigterm_closes(composition, capsys,
 
     async def inspect(self, stop):
         assert isinstance(self.worker.pipeline, OfflineTranscriptionPipeline)
+        assert self.worker.pipeline._correction_mode == "v5_full"
+        assert type(self.worker.pipeline._correction_provider) is OpenRouterInstructionLlmAdapter
         assert not h.consumed
         await original(self, stop)
 

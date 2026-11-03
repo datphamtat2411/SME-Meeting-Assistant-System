@@ -7,6 +7,7 @@ lexical acceptance, provider lifecycle, persistence, or publication.
 
 import math
 import traceback
+from collections.abc import Callable
 from concurrent.futures import CancelledError
 
 from sme_meeting_ai.core.config import Settings
@@ -151,11 +152,15 @@ def _quality(reconciliation: TranscriptReconciliation, texts: tuple[str, ...]) -
 def _result(
     reconciliation: TranscriptReconciliation, coverage: SpeechCoverageAssessment,
     generation: V6GenerationResult, edits: V6EditResult,
+    *, correction_version: str = _VERSION, correction_mode: str = "v6_edits",
+    validator_version: str | None = None,
 ) -> TranscriptCorrectionResult:
     _require(isinstance(edits, V6EditResult) and len(edits.texts) == len(reconciliation.segments)
              and all(type(text) is str for text in edits.texts)
              and type(edits.rejected_segment_count) is int
              and 0 <= edits.rejected_segment_count <= len(reconciliation.segments))
+    contextual_count = getattr(edits, "contextual_edit_count", 0) if correction_mode == "v62_edits" else 0
+    _require(type(contextual_count) is int and 0 <= contextual_count <= edits.accepted_edit_count)
     corrected = tuple(CorrectedSegment(
         segment_id=source.segment_id, ordinal=source.ordinal, interval=source.interval,
         text=text, source_chunk_ids=source.source_chunk_ids, flags=source.flags,
@@ -171,10 +176,12 @@ def _result(
              for value in (quality.character_ratio, quality.word_ratio, quality.minimum_segment_character_ratio,
                            quality.maximum_segment_character_ratio, quality.minimum_content_overlap)))
     provenance = CorrectionProvenance(
-        correction_version=_VERSION, prompt_version=generation.prompt_version, provider=generation.provider,
+        correction_version=correction_version, prompt_version=generation.prompt_version, provider=generation.provider,
         requested_model=generation.requested_model, resolved_model=generation.resolved_model,
-        effective_configuration={**generation.effective_configuration, "correction_mode": "v6_edits",
-                                 "schema_name": generation.schema_name},
+        effective_configuration={**generation.effective_configuration, "correction_mode": correction_mode,
+                                  "schema_name": generation.schema_name,
+                                  **({"validator_version": validator_version} if validator_version is not None else {}),
+                                  **({"contextual_edit_count": contextual_count} if correction_mode == "v62_edits" else {})},
         attempts=generation.attempts, usage=generation.usage, rejected_segment_count=edits.rejected_segment_count,
         proposed_edit_count=edits.proposed_edit_count, accepted_edit_count=edits.accepted_edit_count,
         rejected_edit_count=edits.rejected_edit_count, rejection_reason_counts=edits.rejection_reason_counts,
@@ -192,12 +199,25 @@ def correct_transcript_v6(
     Only final engine texts enter the canonical result. Locally rejected edits
     warn; structural/global failures are terminal and keep no partial correction.
     """
+    return _correct_span_transcript(
+        reconciliation, coverage, provider, settings,
+        generate=generate_v6_proposal, apply=apply_v6_edits, prompt_version=V6_PROMPT_VERSION,
+    )
+
+
+def _correct_span_transcript(
+    reconciliation: TranscriptReconciliation, coverage: SpeechCoverageAssessment,
+    provider: V6CorrectionProvider, settings: Settings,
+    *, generate: Callable, apply: Callable, prompt_version: str,
+    correction_version: str = _VERSION, correction_mode: str = "v6_edits", validator_version: str | None = None,
+) -> TranscriptCorrectionOutcome:
+    """Shared trusted construction/failure semantics; callers pin both algorithms."""
     attempts = 0
     category, reason = CorrectionErrorCategory.VALIDATION, "invalid_reconciliation"
     try:
         _trusted_handoff(reconciliation, coverage)
         reason = "invalid_correction_result"
-        generation = generate_v6_proposal(reconciliation, provider, settings)
+        generation = generate(reconciliation, provider, settings)
         _require(isinstance(generation, V6GenerationOutcome))
         if generation.failure is not None:
             failure = generation.failure
@@ -208,14 +228,19 @@ def correct_transcript_v6(
         _require(isinstance(accepted, V6GenerationResult))
         attempts = accepted.attempts
         _require(type(attempts) is int and 1 <= attempts <= 3
-                 and accepted.prompt_version == V6_PROMPT_VERSION and accepted.schema_name == CORRECTION_V6_SCHEMA_NAME)
-        edits = apply_v6_edits(
+                  and accepted.prompt_version == prompt_version and accepted.schema_name == CORRECTION_V6_SCHEMA_NAME)
+        edits = apply(
             reconciliation, accepted.proposal,
             min_text_ratio=settings.transcript_correction_min_text_ratio,
             max_text_ratio=settings.transcript_correction_max_text_ratio,
         )
-        result = _result(reconciliation, coverage, accepted, edits)
-        has_warnings = _warnings(reconciliation, coverage) or edits.rejected_edit_count > 0
+        result = _result(
+            reconciliation, coverage, accepted, edits, correction_version=correction_version,
+            correction_mode=correction_mode, validator_version=validator_version,
+        )
+        has_warnings = (_warnings(reconciliation, coverage) or edits.rejected_edit_count > 0
+                        or (correction_mode == "v62_edits"
+                            and result.provenance.effective_configuration["contextual_edit_count"] > 0))
         status = (TranscriptCorrectionStatus.COMPLETED_WITH_WARNINGS if has_warnings
                   else TranscriptCorrectionStatus.COMPLETED)
         return TranscriptCorrectionOutcome(status, result)

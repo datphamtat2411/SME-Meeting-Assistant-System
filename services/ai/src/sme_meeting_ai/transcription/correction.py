@@ -239,15 +239,18 @@ class CorrectionProvenance:
         counts = (self.proposed_edit_count, self.accepted_edit_count, self.rejected_edit_count)
         if any(type(count) is not int or count < 0 for count in counts):
             raise ValueError("Invalid correction edit counts")
-        if self.correction_version == "5" and (
+        if self.correction_version in ("5", "6.1", "6.2") and (
             self.accepted_edit_count + self.rejected_edit_count != self.proposed_edit_count
             or self.rejected_segment_count > self.rejected_edit_count
         ):
             raise ValueError("Invalid correction edit counts")
         reasons = self.rejection_reason_counts
         allowed = frozenset(("unresolvable_span", "overlap_conflict", "partial_token", "noop_edit",
-                             "protected_token", "unsafe_expansion", "unsafe_length_change",
-                             "unsupported_lexical_change"))
+                              "protected_token", "unsafe_expansion", "unsafe_length_change",
+                              "unsupported_lexical_change"))
+        if self.correction_version in ("6.1", "6.2"):
+            allowed |= frozenset(("insufficient_lexical_similarity", "unsupported_phrase_alignment",
+                                  "insufficient_context_evidence", "unsafe_phrase_contraction"))
         if (not isinstance(reasons, Mapping) or any(
             type(reason) is not str or reason not in allowed or type(count) is not int or count < 0
             for reason, count in reasons.items()
