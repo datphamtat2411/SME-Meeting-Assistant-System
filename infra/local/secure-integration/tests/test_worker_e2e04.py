@@ -16,9 +16,12 @@ import sys
 import time
 import uuid
 from contextlib import contextmanager
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
+import aio_pika
 import boto3
 import httpx
 import pytest
@@ -29,6 +32,9 @@ from botocore.exceptions import ClientError
 
 ROOT = Path(__file__).resolve().parents[4]
 AI_ROOT = ROOT / "services" / "ai"
+sys.path.insert(0, str(AI_ROOT / "tests/integration"))
+import e2e04_worker_process as worker_diagnostics  # noqa: E402
+
 _helper_spec = importlib.util.spec_from_file_location(
     "e2e04_acceptance_helpers", AI_ROOT / "tests/integration/test_worker_live_acceptance.py"
 )
@@ -70,6 +76,262 @@ def _psql(database, password, sql):
     env = dict(os.environ, PGPASSWORD=password)
     return _run(["docker", "exec", database["name"], "psql", "-U", database["user"],
                  "-d", database["database"], "-At", "-v", "ON_ERROR_STOP=1", "-c", sql], env=env)
+
+
+@dataclass(frozen=True)
+class OutboxWireEvent:
+    """The exact wire source retained by Core's authoritative outbox row."""
+
+    body: bytes = field(repr=False)
+    message_id: str
+    event_id: str
+    processing_job_id: str
+    event_type: str
+    schema_version: int
+    headers: tuple[tuple[str, str], ...]
+    exchange: str
+    routing_key: str
+    content_type: str
+    delivery_mode: int
+
+
+def _delivery_mode_number(value):
+    value = getattr(value, "value", value)
+    if type(value) is not int:
+        raise AssertionError("invalid delivery mode")
+    return value
+
+
+def _headers_sha256(headers):
+    return worker_diagnostics.headers_sha256(headers)
+
+
+def _wire_fingerprint(wire, *, message=None):
+    body = wire.body if message is None else message.body
+    message_id = wire.message_id if message is None else message.message_id
+    headers = dict(wire.headers) if message is None else (message.headers or {})
+    content_type = wire.content_type if message is None else message.content_type
+    delivery_mode = wire.delivery_mode if message is None else _delivery_mode_number(message.delivery_mode)
+    try:
+        payload = json.loads(body.decode("utf-8"))
+        event_id = payload["eventId"]
+        processing_job_id = payload["processingJobId"]
+        schema_version = payload["schemaVersion"]
+    except (UnicodeDecodeError, TypeError, ValueError, KeyError):
+        raise AssertionError("invalid durable event wire body") from None
+    if (event_id != wire.event_id or message_id != wire.event_id or processing_job_id != wire.processing_job_id
+            or schema_version != wire.schema_version
+            or headers.get("eventId") != wire.event_id
+            or headers.get("eventType") != wire.event_type):
+        raise AssertionError("durable event identity is inconsistent")
+    return {
+        "eventId": event_id,
+        "processingJobId": processing_job_id,
+        "messageId": message_id,
+        "bodySha256": hashlib.sha256(body).hexdigest(),
+        "headerEventId": headers.get("eventId"),
+        "headerEventType": headers.get("eventType"),
+        "publisherListenerId": worker_diagnostics._header_event_id(
+            headers.get("spring_listener_return_correlation")),
+        "headersSha256": _headers_sha256(headers),
+        "headerEvidence": worker_diagnostics.header_evidence(headers),
+        "eventType": wire.event_type,
+        "schemaVersion": schema_version,
+        "exchange": wire.exchange,
+        "routingKey": wire.routing_key,
+        "contentType": content_type,
+        "deliveryMode": delivery_mode,
+    }
+
+
+def _exact_duplicate_message(wire, original):
+    source = _wire_fingerprint(wire)
+    message = aio_pika.Message(
+        wire.body,
+        message_id=wire.message_id,
+        headers=dict(wire.headers),
+        content_type=wire.content_type,
+        delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+    )
+    duplicate = _wire_fingerprint(wire, message=message)
+    _assert_wire_match(source, original, "original event")
+    _assert_wire_match(duplicate, original, "duplicate")
+    return message
+
+
+def _header_differences(expected, observed):
+    def index(items):
+        return {("name", item["name"]) if "name" in item else ("nameSha256", item["nameSha256"]): item
+                for item in items}
+
+    left, right = index(expected), index(observed)
+    details = []
+    for identity in sorted(left.keys() | right.keys()):
+        a, b = left.get(identity), right.get(identity)
+        excluded = (a or b)["excluded"]
+        differs = a != b
+        details.append({identity[0]: identity[1], "excluded": excluded, "different": differs,
+                        "expected": {"present": a is not None, **(
+                            {"type": a["type"], **({"sha256": a["sha256"]} if differs else {})} if a else {})},
+                        "observed": {"present": b is not None, **(
+                            {"type": b["type"], **({"sha256": b["sha256"]} if differs else {})} if b else {})}})
+    return details
+
+
+def _assert_wire_match(expected, observed, label):
+    # Delivery observations include broker/consumer state that is never republished.
+    metadata = {"deliveryTag", "channel", "redelivered", "deliveryCount", "headerEvidence"}
+    missing = sorted(expected.keys() - observed.keys())
+    unexpected = sorted(observed.keys() - expected.keys() - metadata)
+    different = sorted(key for key in expected.keys() & observed.keys()
+                       if key != "headerEvidence"
+                       if type(expected[key]) is not type(observed[key]) or expected[key] != observed[key])
+    header_details = _header_differences(expected.get("headerEvidence", []), observed.get("headerEvidence", []))
+    if (missing or unexpected or different
+            or any(item["different"] and not item["excluded"] for item in header_details)):
+        details = []
+        for key in different:
+            def safe(value):
+                kind = type(value).__name__
+                digest = hashlib.sha256(str(value).encode("utf-8", errors="backslashreplace")).hexdigest()
+                return f"{kind}:sha256={digest}"
+            details.append(f"{key}(expected={safe(expected[key])},observed={safe(observed[key])})")
+        # Unexpected keys can themselves contain secrets; expose only their digests.
+        unknown = [hashlib.sha256(str(key).encode()).hexdigest() for key in unexpected[:20]]
+        raise AssertionError(f"{label} wire properties differ: missing={missing[:20]}, "
+                             f"unexpected_sha256={unknown}, different={details[:20]}, "
+                             f"headers={json.dumps(header_details, sort_keys=True, separators=(',', ':'))}")
+
+
+def _outbox_wire_event(database, job_id):
+    job_id = str(uuid.UUID(str(job_id)))
+    raw = _psql(database, database["password"], f"""
+        SELECT json_build_object(
+            'eventId', id,
+            'eventType', event_type,
+            'payload', payload::text,
+            'status', status
+        )
+        FROM outbox_events
+        WHERE aggregate_id = '{job_id}'::uuid
+          AND event_type = 'PROCESSING_JOB_QUEUED'
+        ORDER BY occurred_at, id
+        LIMIT 1
+    """)
+    if not raw:
+        raise AssertionError("authoritative queued outbox event was not found")
+    row = json.loads(raw)
+    if row["status"] != "PUBLISHED":
+        raise AssertionError("authoritative queued outbox event was not published")
+    body = row["payload"].encode("utf-8")
+    try:
+        payload = json.loads(body.decode("utf-8"))
+        event_id = str(uuid.UUID(str(row["eventId"])))
+        if payload["eventId"] != event_id or payload["processingJobId"] != job_id:
+            raise ValueError
+        schema_version = payload["schemaVersion"]
+        if type(schema_version) is not int:
+            raise ValueError
+    except (UnicodeDecodeError, TypeError, ValueError, KeyError):
+        raise AssertionError("authoritative queued outbox event has invalid identity") from None
+    event_type = row["eventType"]
+    return OutboxWireEvent(
+        body=body,
+        message_id=event_id,
+        event_id=event_id,
+        processing_job_id=job_id,
+        event_type=event_type,
+        schema_version=schema_version,
+        headers=(("eventId", event_id), ("eventType", event_type)),
+        exchange=broker.EXCHANGE,
+        routing_key=broker.ROUTE,
+        content_type="application/json",
+        delivery_mode=2,
+    )
+
+
+def _with_publisher_headers(wire, original):
+    # RabbitTemplate uses a per-instance UUID for mandatory-return routing and
+    # the CorrelationData event ID for returned-message correlation.
+    listener = original.get("publisherListenerId")
+    if (type(listener) is not str or listener == "invalid"
+            or worker_diagnostics._header_event_id(listener) != listener):
+        raise AssertionError("invalid publisher listener identity")
+    reconstructed = replace(wire, headers=(*wire.headers,
+        ("spring_listener_return_correlation", listener),
+        ("spring_returned_message_correlation", wire.event_id)))
+    _assert_wire_match(_wire_fingerprint(reconstructed), original, "original event")
+    return reconstructed
+
+
+async def _publish_exact_duplicate(transport_settings, credentials, pki, wire, original):
+    message = _exact_duplicate_message(wire, original)
+    endpoint = urlsplit(f"amqps://localhost:{transport_settings['broker_port']}/sme-integration")
+    context = ssl.create_default_context(cafile=str(pki / "ca.crt"))
+    connection = await aio_pika.connect(
+        host=endpoint.hostname,
+        port=endpoint.port,
+        ssl=True,
+        ssl_context=context,
+        login=credentials.publisher_user,
+        password=credentials.publisher_password,
+        virtualhost=endpoint.path[1:],
+    )
+    try:
+        channel = await connection.channel(publisher_confirms=True, on_return_raises=True)
+        exchange = await channel.get_exchange(wire.exchange, ensure=False)
+        confirmation = await exchange.publish(message, wire.routing_key, mandatory=True)
+        if confirmation is None:
+            raise AssertionError("duplicate publication was not confirmed")
+    finally:
+        await connection.close()
+    return _wire_fingerprint(wire, message=message)
+
+
+def _log_records(log_path, prefix):
+    if not log_path.exists():
+        return []
+    records = []
+    for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.startswith(prefix):
+            continue
+        try:
+            record = json.loads(line[len(prefix):])
+        except (TypeError, ValueError):
+            continue
+        if isinstance(record, dict):
+            records.append(record)
+    return records
+
+
+def _wait_for_log_record(log_path, prefix, predicate, *, timeout=15, interval=0.05):
+    deadline = time.monotonic() + timeout
+    while True:
+        records = _log_records(log_path, prefix)
+        for record in records:
+            if predicate(record):
+                return record
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise AssertionError(f"{prefix} observation timed out")
+        time.sleep(min(interval, remaining))
+
+
+def _assert_r01_evidence(evidence):
+    if any((evidence.get("claimCount") != 1,
+            evidence.get("acceptedReceiptCount") != 1,
+            evidence.get("failureReceiptCount") != 0,
+            evidence.get("receiptCount") != 1,
+            evidence.get("canonicalTranscriptCount") != 1,
+            evidence.get("transcriptCount") != 1,
+            evidence.get("receiptToTranscriptCount") != 1,
+            evidence.get("resultCount") != 1,
+            evidence.get("generation") != 0,
+            evidence.get("contradictoryTerminalCount", 0) != 0)):
+        raise AssertionError("R01 durable effect cardinality is inconsistent")
+    if any(disposition not in ("TERMINAL", "SUPERSEDED")
+           for disposition in evidence.get("reconciliationDispositions", [])):
+        raise AssertionError("R01 duplicate reconciliation is not terminal")
 
 
 @pytest.fixture
@@ -347,7 +609,8 @@ def _seed_user(database, core):
     return email, password
 
 
-def _worker_environment(tmp_path, database, transport_settings, credentials, core, pki):
+def _worker_environment(tmp_path, database, transport_settings, credentials, core, pki,
+                        *, control_environment=None, worker_concurrency=1):
     worker_temp = tmp_path / "worker-temp"
     worker_temp.mkdir(mode=0o700)
     env = dict(os.environ)
@@ -376,14 +639,22 @@ def _worker_environment(tmp_path, database, transport_settings, credentials, cor
         "AI_S3_CA_FILE": str(pki / "ca.crt"),
         "AI_AUDIO_TEMP_DIR": str(worker_temp),
     })
+    if worker_concurrency != 1:
+        env["AI_WORKER_CONCURRENCY"] = str(worker_concurrency)
+    if control_environment:
+        env.update(control_environment)
     return env
 
 
-def _start_worker(tmp_path, database, transport_settings, credentials, core, pki):
+def _start_worker(tmp_path, database, transport_settings, credentials, core, pki,
+                  *, control_environment=None, worker_concurrency=1):
     log_path = tmp_path / "worker.log"
     log = log_path.open("w", encoding="utf-8")
     process = subprocess.Popen([sys.executable, "tests/integration/e2e04_worker_process.py"], cwd=AI_ROOT,
-                               env=_worker_environment(tmp_path, database, transport_settings, credentials, core, pki),
+                               env=_worker_environment(
+                                   tmp_path, database, transport_settings, credentials, core, pki,
+                                   control_environment=control_environment,
+                                   worker_concurrency=worker_concurrency),
                                stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
     try:
         for _ in range(60):
@@ -535,6 +806,14 @@ def _assert_result_storage(settings, job_id, evidence, credentials):
             raw = body.read()
         finally:
             body.close()
+        if evidence.get("sourceObjectKey"):
+            source_body = client.get_object(
+                Bucket=settings.s3_bucket, Key=evidence["sourceObjectKey"])["Body"]
+            try:
+                source_raw = source_body.read()
+            finally:
+                source_body.close()
+            assert hashlib.sha256(source_raw).hexdigest() == evidence["sourceSha256"]
         assert hashlib.sha256(raw).hexdigest() == evidence["resultSha256"]
         assert core.get_object(Bucket=settings.s3_bucket, Key=key)["Body"].read() == raw
         result = json.loads(raw)
