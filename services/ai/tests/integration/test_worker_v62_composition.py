@@ -10,7 +10,9 @@ from integration.test_correction_v6_worker import BINDING, MEDIA
 from integration.test_correction_v61_pipeline import span_workflow as span_workflow
 from integration.test_correction_v61_pipeline import v61_workflow as v61_workflow
 from integration.test_correction_v61_pipeline import workflow as workflow
-from integration.test_offline_transcription_pipeline import pipeline as controlled_pipeline
+from integration.test_offline_transcription_pipeline import (
+    pipeline as controlled_pipeline,
+)
 from integration.test_transcription_worker_integration import Delivery, FakeCore
 from integration.test_worker_composition import composition as composition
 from integration.test_worker_composition import pki as pki
