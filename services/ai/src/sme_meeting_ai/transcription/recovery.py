@@ -748,7 +748,14 @@ def _replay_residual_ambiguity(baseline, candidate):
     temporal support gain alone must not readmit the discarded replay.
     """
     from .chunk_execution import AsrRecheckOutcome, _boilerplate_only
-    from .reconciliation import _COMMON, _CENSOR_OMISSIONS, _Work, _censored_phrase_mapping, _lexical, _tokens
+    from .reconciliation import (
+        _CENSOR_OMISSIONS,
+        _COMMON,
+        _censored_phrase_mapping,
+        _lexical,
+        _tokens,
+        _Work,
+    )
 
     work = _Work()
     for source in baseline:

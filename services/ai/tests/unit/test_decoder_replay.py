@@ -9,7 +9,12 @@ from fractions import Fraction
 import pytest
 
 from sme_meeting_ai.transcription import chunk_execution
-from sme_meeting_ai.transcription.asr import AsrError, AsrErrorCategory, AsrSegment, AsrWord
+from sme_meeting_ai.transcription.asr import (
+    AsrError,
+    AsrErrorCategory,
+    AsrSegment,
+    AsrWord,
+)
 from sme_meeting_ai.transcription.coverage import _valid_result
 
 from .test_asr_recheck import BOILERPLATE

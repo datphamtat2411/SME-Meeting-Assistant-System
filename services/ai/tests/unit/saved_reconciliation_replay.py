@@ -26,7 +26,10 @@ from sme_meeting_ai.transcription.asr import (
     AsrSegmentQuality,
     AsrUsage,
 )
-from sme_meeting_ai.transcription.chunk_execution import AsrChunkResult, _translate_candidate
+from sme_meeting_ai.transcription.chunk_execution import (
+    AsrChunkResult,
+    _translate_candidate,
+)
 from sme_meeting_ai.transcription.chunk_planning import AsrChunk, ChunkBoundaryReason
 
 _ROW = re.compile(r"\[([0-9.]+)s - ([0-9.]+)s\] (.*)")

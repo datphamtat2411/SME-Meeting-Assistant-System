@@ -13,7 +13,11 @@ from fractions import Fraction
 import pytest
 
 from sme_meeting_ai.audio.errors import AudioProcessingError
-from sme_meeting_ai.audio.models import NormalizedAudioArtifact, SampleInterval, VadLabel
+from sme_meeting_ai.audio.models import (
+    NormalizedAudioArtifact,
+    SampleInterval,
+    VadLabel,
+)
 from sme_meeting_ai.audio.speech_map import SpeechMapBuilder
 from sme_meeting_ai.core.config import load_settings
 from sme_meeting_ai.transcription import (
@@ -763,7 +767,10 @@ def test_censored_recovery_context_is_admitted_only_with_preserved_baseline_and_
 @pytest.mark.parametrize("kind", ["left-residual", "right-context", "prefix-replay", "uncorroborated-boilerplate",
                                  "new-words", "later-repetition"])
 def test_recovery_does_not_readmit_rechecked_replay_as_new_speech_without_occurrence_evidence(handoff, kind):
-    from sme_meeting_ai.transcription.chunk_execution import AsrDecodeAttempt, AsrRecheckOutcome
+    from sme_meeting_ai.transcription.chunk_execution import (
+        AsrDecodeAttempt,
+        AsrRecheckOutcome,
+    )
 
     from .test_reconciliation import result as source_result
 
