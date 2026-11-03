@@ -2,6 +2,7 @@
 
 import asyncio
 import io
+import math
 import traceback
 import wave
 from array import array
@@ -12,7 +13,9 @@ from fractions import Fraction
 import pytest
 
 from sme_meeting_ai.audio.errors import AudioProcessingError
-from sme_meeting_ai.audio.models import NormalizedAudioArtifact, SampleInterval
+from sme_meeting_ai.audio.models import NormalizedAudioArtifact, SampleInterval, VadLabel
+from sme_meeting_ai.audio.speech_map import SpeechMapBuilder
+from sme_meeting_ai.core.config import load_settings
 from sme_meeting_ai.transcription import (
     AsrCandidate,
     AsrChunkResult,
@@ -24,6 +27,7 @@ from sme_meeting_ai.transcription import (
     AsrUsage,
     CoveragePhase,
     RecoveryStopReason,
+    SpeechAwareAsrChunkPlanner,
     assess_canonical_coverage,
     assess_speech_coverage,
     plan_recovery_windows,
@@ -59,6 +63,7 @@ def _handoff(request):
     def handoff(*args, configuration=None, **kwargs):
         return make(*args, configuration=configuration or settings(), **kwargs)
 
+    handoff.frames = make.frames
     return handoff
 
 
@@ -117,6 +122,180 @@ def state(preprocessing, plan, original, configuration, extra=()):
     canonical = reconcile_transcript(plan, (*original, *extra), configuration)
     final = assess_canonical_coverage(preprocessing, plan, original, extra, canonical, configuration)
     return canonical, final
+
+
+def acoustic_handoff(handoff, labels, *, configuration=None, probability=0.65,
+                     pause_rms=0.0001, noise_rms=0.00008):
+    preprocessing, _, configuration = handoff(
+        tuple({"pause": "weak", "noise": "silence"}.get(label, label) for label in labels),
+        configuration=configuration,
+    )
+    frames = handoff.frames[preprocessing.provenance.source_id]
+    for index, label in enumerate(labels):
+        if label not in ("pause", "noise"):
+            continue
+        p, rms = (probability, pause_rms) if label == "pause" else (0.1, noise_rms)
+        vad = (VadLabel.LIKELY_SPEECH if p >= 0.6 else VadLabel.LIKELY_NON_SPEECH
+               if p <= 0.35 else VadLabel.UNCERTAIN)
+        frames[index] = replace(frames[index], vad_probability=p, vad_label=vad, rms=rms,
+                                dbfs=20 * math.log10(rms) if rms else -math.inf)
+    evidence = replace(
+        preprocessing.speech_evidence,
+        likely_speech_frame_count=sum(f.vad_label is VadLabel.LIKELY_SPEECH for f in frames),
+        likely_non_speech_frame_count=sum(f.vad_label is VadLabel.LIKELY_NON_SPEECH for f in frames),
+        uncertain_frame_count=sum(f.vad_label is VadLabel.UNCERTAIN for f in frames),
+    )
+    speech_map = SpeechMapBuilder(configuration).build(preprocessing.normalized_artifact, evidence)
+    preprocessing = replace(
+        preprocessing, speech_evidence=evidence, speech_map=speech_map, warnings=speech_map.quality.warnings,
+        provenance=replace(preprocessing.provenance, speech_map=speech_map.provenance),
+    )
+    return preprocessing, SpeechAwareAsrChunkPlanner(configuration).plan(preprocessing), configuration
+
+
+def boundary_pause(handoff, count=4, *, noise_frames=4, **kwargs):
+    labels = ("noise",) * noise_frames + ("speech",) + ("pause",) * count + ("speech",) + ("noise",) * noise_frames
+    preprocessing, plan, configuration = acoustic_handoff(handoff, labels, **kwargs)
+    gap = SampleInterval((noise_frames + 1) * 512, (noise_frames + 1 + count) * 512)
+    bounds = ((gap.start_sample - 512, gap.start_sample), (gap.end_sample, gap.end_sample + 512))
+    occurrences = {c.chunk_id: [] for c in plan.chunks}
+    for a, b in bounds:
+        owner = next(c for c in plan.chunks if c.request_interval.start_sample <= a < b <= c.request_interval.end_sample)
+        occurrences[owner.chunk_id].append((a, b))
+    original = tuple(result(c, tuple(occurrences[c.chunk_id])) for c in plan.chunks)
+    return preprocessing, plan, configuration, original, gap
+
+
+@pytest.mark.parametrize("count", [1, 4, 12])
+@pytest.mark.parametrize("probability", [0.5, 0.65])
+def test_pause_gate_defers_boundary_noise_without_hiding_unresolved_evidence(handoff, count, probability):
+    preprocessing, plan, config, original, gap = boundary_pause(handoff, count, probability=probability)
+    _, before = state(preprocessing, plan, original, config)
+    planned = plan_recovery_windows(before, plan, config, preprocessing=preprocessing)
+    assert planned.windows == planned.target_regions == ()
+    assert planned.provenance.deferred_pause_intervals == (gap,)
+    assert planned.provenance.effective_configuration["pause_gate_version"] == 1
+    provider = Transcriber()
+    output = recover_speech(preprocessing, plan, original, provider, config)
+    assert provider.calls == [] and output.attempts == ()
+    assert output.final_assessment == before
+    assert gap in output.final_assessment.unresolved_intervals
+    assert output.provenance.deferred_pause_intervals == (gap,)
+    assert output.provenance.remaining_actionable_region_count == 0
+    assert output.stop_reason is RecoveryStopReason.NO_ACTIONABLE_REGIONS
+
+
+@pytest.mark.parametrize("wording", ["ừ", "vâng", "dạ"])
+@pytest.mark.parametrize("probability", [0.65, 0.9])
+def test_pause_gate_recovers_short_vietnamese_speech_above_background(handoff, wording, probability):
+    preprocessing, plan, config, original, gap = boundary_pause(
+        handoff, 2, probability=probability, pause_rms=0.1,
+    )
+    materialize(preprocessing)
+    provider = Transcriber(lambda audio, start: observation(
+        audio, start, ((gap.start_sample, gap.end_sample, wording),),
+    ))
+    output = recover_speech(preprocessing, plan, original, provider, config)
+    assert len(provider.calls) == 1 and output.attempts[0].admission is Decision.ACCEPTED
+    assert output.provenance.deferred_pause_intervals == ()
+    assert (wording, gap) in [(s.text, s.interval) for s in output.accepted_reconciliation.segments]
+    assert output.final_assessment.quality.likely_speech_without_canonical_text_samples == 0
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"probability": 0.9},  # Quiet but strongly corroborated by VAD.
+    {"noise_rms": 0.000001},  # Quiet speech is still well above this recording's background.
+    {"noise_frames": 0},  # No trustworthy background estimate: keep the target eligible.
+    {"noise_frames": 1},  # Too little background evidence to justify deferral.
+])
+def test_pause_gate_preserves_quiet_speech_or_insufficient_background(handoff, kwargs):
+    preprocessing, plan, config, original, gap = boundary_pause(handoff, 2, **kwargs)
+    materialize(preprocessing)
+    provider = Transcriber(lambda audio, _: candidate(audio, text="", segments=()))
+    output = recover_speech(preprocessing, plan, original, provider, config)
+    assert len(provider.calls) == 1
+    assert output.provenance.deferred_pause_intervals == ()
+    assert gap in output.final_assessment.unresolved_intervals
+
+
+def test_pause_gate_keeps_isolated_low_energy_utterance_eligible(handoff):
+    preprocessing, plan, config = acoustic_handoff(handoff, ("noise",) * 4 + ("pause",) * 2 + ("noise",) * 4)
+    materialize(preprocessing)
+    provider = Transcriber(lambda audio, _: candidate(audio, text="", segments=()))
+    output = recover_speech(preprocessing, plan, baseline(plan), provider, config)
+    assert len(provider.calls) == 1
+    assert output.provenance.deferred_pause_intervals == ()
+
+
+def test_pause_gate_measures_whole_missing_span_before_fragment_duration(handoff):
+    preprocessing, plan, config, original, gap = boundary_pause(handoff, 17)
+    _, final = state(preprocessing, plan, original, config)
+    regions = []
+    for region in final.regions:
+        if gap.start_sample <= region.interval.start_sample < region.interval.end_sample <= gap.end_sample:
+            for start in range(region.interval.start_sample, region.interval.end_sample, 512):
+                end = min(start + 512, region.interval.end_sample)
+                regions.append(replace(region, interval=SampleInterval(start, end), likely_speech_samples=end - start,
+                                       protected_samples=end - start if region.protected_samples else 0))
+        else:
+            regions.append(region)
+    planned = plan_recovery_windows(replace(final, regions=tuple(regions)), plan, config, preprocessing=preprocessing)
+    assert planned.windows
+    assert planned.provenance.deferred_pause_intervals == ()
+
+
+@pytest.mark.parametrize("evidence_kind", ["failed-request", "raw-text", "conflict", "ambiguity"])
+def test_pause_gate_preserves_independent_omission_or_alignment_evidence(handoff, evidence_kind):
+    preprocessing, plan, config, original, gap = boundary_pause(handoff)
+    _, final = state(preprocessing, plan, original, config)
+    regions = []
+    for region in final.regions:
+        if gap.start_sample <= region.interval.start_sample < region.interval.end_sample <= gap.end_sample:
+            if evidence_kind == "failed-request":
+                region = replace(region, error_chunk_ids=(plan.chunks[0].chunk_id,))
+            else:
+                field = {"raw-text": "has_raw_text_support", "conflict": "has_conflicting_hypotheses",
+                         "ambiguity": "has_ambiguous_alignment"}[evidence_kind]
+                region = replace(region, evidence=replace(region.evidence, **{field: True}))
+        regions.append(region)
+    planned = plan_recovery_windows(replace(final, regions=tuple(regions)), plan, config, preprocessing=preprocessing)
+    assert planned.windows and planned.provenance.deferred_pause_intervals == ()
+
+
+@pytest.mark.parametrize("overrides", [
+    {"audio_asr_recovery_pause_max_samples": 0},
+    {"audio_asr_recovery_pause_max_samples": 1024},
+    {"audio_asr_recovery_pause_noise_margin_db": 1},
+    {"audio_asr_recovery_pause_strong_speech_threshold": 0.6},
+])
+def test_pause_gate_settings_control_deferral_without_changing_coverage(handoff, overrides):
+    preprocessing, plan, config, original, _ = boundary_pause(handoff, configuration=settings(**overrides))
+    _, final = state(preprocessing, plan, original, config)
+    planned = plan_recovery_windows(final, plan, config, preprocessing=preprocessing)
+    assert planned.windows and planned.provenance.deferred_pause_intervals == ()
+
+
+@pytest.mark.parametrize("field,values", [
+    ("audio_asr_recovery_pause_max_samples", [-1, 16001, True, 1.0]),
+    ("audio_asr_recovery_pause_noise_margin_db", [-1, 21, True, float("nan"), float("inf")]),
+    ("audio_asr_recovery_pause_strong_speech_threshold", [-0.1, 1.1, True, float("nan"), float("inf")]),
+])
+def test_pause_gate_configuration_is_bounded_and_rejects_boolean_numbers(field, values):
+    for value in values:
+        with pytest.raises(ValueError):
+            settings(**{field: value})
+
+
+def test_pause_gate_configuration_can_be_set_from_environment(monkeypatch):
+    monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
+    monkeypatch.setenv("AI_AUDIO_ASR_RECOVERY_PAUSE_MAX_SAMPLES", "3200")
+    monkeypatch.setenv("AI_AUDIO_ASR_RECOVERY_PAUSE_NOISE_MARGIN_DB", "4.5")
+    monkeypatch.setenv("AI_AUDIO_ASR_RECOVERY_PAUSE_STRONG_SPEECH_THRESHOLD", "0.85")
+    config = load_settings(None)
+    assert config.audio_asr_recovery_pause_max_samples == 3200
+    assert config.audio_asr_recovery_pause_noise_margin_db == 4.5
+    assert config.audio_asr_recovery_pause_strong_speech_threshold == 0.85
 
 
 def test_admission_accumulates_current_state_and_preserves_borrowed_baseline(handoff, monkeypatch, caplog):
@@ -336,6 +515,7 @@ def test_success_is_not_admission_and_rejected_text_is_private(handoff, caplog, 
     provider = Transcriber(respond)
     output = recover_speech(preprocessing, plan, original, provider, configuration)
     assert not output.recovered_results
+    assert len(provider.calls) == len(output.attempts) == 1
     assert all(not a.meaningful_progress and a.covered_speech_delta == 0 for a in output.attempts)
     assert all(a.admission is (Decision.FAILED if kind in {"quality", "malformed"} else Decision.REJECTED)
                for a in output.attempts)
@@ -360,7 +540,7 @@ def test_genuine_distinct_repetitions_are_preserved(handoff, wording):
 
 
 def test_rejected_state_never_enters_subsequent_trial(handoff, monkeypatch):
-    preprocessing, plan, configuration = handoff()
+    preprocessing, plan, configuration = handoff(("silence", "speech", "silence", "speech", "silence"))
     materialize(preprocessing)
     from sme_meeting_ai.transcription import reconciliation
 
@@ -405,20 +585,20 @@ def test_blocked_and_seen_candidate_prefix_cannot_hide_later_recoverable_speech(
     ))
     output = recover_speech(preprocessing, plan, original, provider, configuration)
     assert [a.window.target_region.interval for a in output.attempts] == [
-        SampleInterval(512, 1024), SampleInterval(1536, 2048), SampleInterval(512, 1024),
+        SampleInterval(512, 1024), SampleInterval(1536, 2048),
     ]
-    assert [a.admission for a in output.attempts] == [Decision.REJECTED, Decision.ACCEPTED, Decision.REJECTED]
-    assert output.stop_reason is RecoveryStopReason.TOTAL_ATTEMPT_LIMIT
+    assert [a.admission for a in output.attempts] == [Decision.REJECTED, Decision.ACCEPTED]
+    assert output.stop_reason is RecoveryStopReason.NO_ADMISSIBLE_IMPROVEMENT
     assert output.final_assessment.quality.likely_speech_without_canonical_text_samples == 512
     assert [(s.interval, s.text) for s in output.accepted_reconciliation.segments] == [
         (SampleInterval(1536, 2048), "Phần lời nói được phục hồi"),
     ]
-    assert len(provider.calls) == output.provenance.actual_attempt_count == 3
-    assert len({a.window.chunk.request_interval for a in output.attempts}) == 3
+    assert len(provider.calls) == output.provenance.actual_attempt_count == 2
+    assert len({a.window.chunk.request_interval for a in output.attempts}) == 2
     assert output.provenance.total_requested_samples == sum(count for _, _, count in provider.calls)
 
 
-def test_distinct_target_gets_first_observation_before_rejecting_an_early_event_twice(handoff):
+def test_distinct_target_gets_observation_after_an_early_event_is_rejected(handoff):
     preprocessing, plan, config = handoff(
         ("silence", "speech", "silence", "speech", "silence"),
         configuration=settings(audio_asr_recovery_max_total_attempts=2),

@@ -191,6 +191,14 @@ class Settings(BaseSettings):
     audio_asr_recovery_max_wall_time_seconds: float = Field(
         default=300, gt=0, le=3600, allow_inf_nan=False,
     )
+    # Pause deferral controls scheduling only; zero disables it without changing coverage.
+    audio_asr_recovery_pause_max_samples: int = Field(default=8000, ge=0, le=16000, strict=True)
+    audio_asr_recovery_pause_noise_margin_db: float = Field(
+        default=6, ge=0, le=20, allow_inf_nan=False,
+    )
+    audio_asr_recovery_pause_strong_speech_threshold: float = Field(
+        default=0.8, ge=0, le=1, allow_inf_nan=False,
+    )
     transcript_correction_model: str | None = Field(
         default=None, min_length=1, max_length=256, pattern=r"^[a-zA-Z0-9_./:-]+$",
     )
@@ -256,6 +264,7 @@ class Settings(BaseSettings):
         "audio_asr_recovery_context_samples", "audio_asr_recovery_max_attempts_per_region",
         "audio_asr_recovery_max_request_samples_per_region",
         "audio_asr_recovery_max_total_attempts", "audio_asr_recovery_max_total_request_samples",
+        "audio_asr_recovery_pause_max_samples",
         "audio_asr_reconciliation_min_shared_tokens", mode="before",
     )
     @classmethod
@@ -298,11 +307,14 @@ class Settings(BaseSettings):
             raise ValueError("Correction input and output allowances must fit the context window")
         return self
 
-    @field_validator("audio_asr_recovery_max_wall_time_seconds", mode="before")
+    @field_validator(
+        "audio_asr_recovery_max_wall_time_seconds", "audio_asr_recovery_pause_noise_margin_db",
+        "audio_asr_recovery_pause_strong_speech_threshold", mode="before",
+    )
     @classmethod
     def reject_boolean_recovery_time(cls, value: object) -> object:
         if isinstance(value, bool):
-            raise ValueError("Recovery wall time must be numeric")
+            raise ValueError("Recovery settings must be numeric")
         return value
 
     @model_validator(mode="after")

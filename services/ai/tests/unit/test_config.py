@@ -800,6 +800,9 @@ def test_recovery_defaults_match_documented_configuration():
         "audio_asr_recovery_max_total_attempts": 16,
         "audio_asr_recovery_max_total_request_samples": 2400000,
         "audio_asr_recovery_max_wall_time_seconds": 300,
+        "audio_asr_recovery_pause_max_samples": 8000,
+        "audio_asr_recovery_pause_noise_margin_db": 6,
+        "audio_asr_recovery_pause_strong_speech_threshold": 0.8,
     }
     for configuration in (Settings(service_name="test-ai", service_identity="ai-core", _env_file=None),
                           load_settings(Path(__file__).resolve().parents[2] / ".env.example")):

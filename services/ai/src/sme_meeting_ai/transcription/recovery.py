@@ -23,7 +23,9 @@ from sme_meeting_ai.audio.models import (
     AudioSource,
     NormalizedAudioArtifact,
     SampleInterval,
+    VadLabel,
 )
+from sme_meeting_ai.audio.speech_map import _validate_contracts, _validate_frame
 from sme_meeting_ai.core.config import Settings
 from sme_meeting_ai.pipeline.models import PreprocessingResult
 from sme_meeting_ai.pipeline.preprocessing import _validate_normalization
@@ -132,12 +134,14 @@ class RecoveryProvenance:
     canonical_ambiguity_reduction_samples: int = 0
     rejected_regression_count: int = 0
     rejected_redundancy_count: int = 0
+    deferred_pause_intervals: tuple[SampleInterval, ...] = ()
     execution_duration_ns: int = field(default=0, compare=False)
     sample_rate_hz: int = field(default=16000, init=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "planning", replace(self.planning))
         object.__setattr__(self, "effective_configuration", MappingProxyType(dict(self.effective_configuration)))
+        object.__setattr__(self, "deferred_pause_intervals", tuple(self.deferred_pause_intervals))
 
 
 @dataclass(frozen=True)
@@ -232,7 +236,16 @@ def _configuration(settings: Settings) -> dict[str, int | float]:
         "max_request_samples": min(geometry["max_request_samples"], max(0, (payload - 44) // 2)),
         "max_payload_bytes": payload, "max_timeline_samples": geometry["max_timeline_samples"],
         "concurrency": 1, "fair_observation_rounds": 1,
+        "pause_gate_version": 1, "pause_noise_percentile": 20, "pause_min_noise_frames": 4,
+        "pause_min_strong_speech_fraction": 0.5, "max_non_improving_observations_per_region": 1,
     })
+    maximum = settings.audio_asr_recovery_pause_max_samples
+    _require(type(maximum) is int and 0 <= maximum <= 16000)
+    configuration["pause_max_samples"] = maximum
+    for key, maximum in (("pause_noise_margin_db", 20), ("pause_strong_speech_threshold", 1)):
+        value = getattr(settings, f"audio_asr_recovery_{key}")
+        _require(type(value) in (float, int) and math.isfinite(value) and 0 <= value <= maximum)
+        configuration[key] = value
     return configuration
 
 
@@ -443,7 +456,95 @@ def _near(samples, interval, context):
     return index < len(samples) and samples[index] <= interval.end_sample + context
 
 
-def _planning_context(assessment, plan, settings, boundary_alignment):
+def _pause_deferrals(preprocessing, assessment, configuration):
+    """Scheduling evidence only: never relabel acoustics or declare a gap resolved.
+
+    A single replay borrows real frames, not fresh VAD/audio inference. Use whole
+    adjoining missing spans so event fragmentation cannot turn a long omission
+    into a set of short pauses. Missing/weak background evidence fails open.
+    """
+    if not configuration["pause_max_samples"]:
+        return ()
+    _require(isinstance(preprocessing, PreprocessingResult))
+    audio, evidence = preprocessing.normalized_artifact, preprocessing.speech_evidence
+    _require(audio.source_id == assessment.source_id and audio.sample_count == assessment.sample_count)
+    canonical = _union(r.interval for r in assessment.regions if r.evidence.has_canonical_text_support)
+    starts, ends = {i.start_sample for i in canonical}, {i.end_sample for i in canonical}
+    groups = []
+    for region in assessment.regions:
+        e = region.evidence
+        if e.has_canonical_text_support or _risk(region) is None:
+            continue
+        protected = bool(region.error_chunk_ids or e.has_raw_text_support
+                         or e.has_conflicting_hypotheses or e.has_ambiguous_alignment)
+        if groups and groups[-1][0].end_sample == region.interval.start_sample:
+            previous, guard = groups[-1]
+            groups[-1] = (SampleInterval(previous.start_sample, region.interval.end_sample), guard or protected)
+        else:
+            groups.append((region.interval, protected))
+    gaps = tuple(interval for interval, protected in groups
+                 if not protected and interval.end_sample - interval.start_sample <= configuration["pause_max_samples"]
+                 and (interval.start_sample in ends or interval.end_sample in starts))
+    if not gaps:
+        return ()
+    contract = _validate_contracts(audio, evidence)
+    frame_samples, speech_threshold, _ = contract
+    strong_threshold = max(speech_threshold, configuration["pause_strong_speech_threshold"])
+    peaks, strong = [-math.inf] * len(gaps), [0] * len(gaps)
+    # Bounded 1 dB bins; the lower bin edge keeps deferral conservative. Weight
+    # real samples only, excluding model-only tail padding from all statistics.
+    background = [0] * 121
+    background_samples = position = observed = cursor = 0
+    for frame in evidence.iter_frames():
+        _require(observed < evidence.frame_count)
+        _validate_frame(frame, position, audio.sample_count, *contract)
+        position, observed = frame.end_sample, observed + 1
+        if frame.vad_label is VadLabel.LIKELY_NON_SPEECH:
+            index = max(0, 120 + math.floor(frame.dbfs)) if frame.rms else 0
+            length = frame.end_sample - frame.start_sample
+            background[index] += length
+            background_samples += length
+        while cursor < len(gaps) and gaps[cursor].end_sample <= frame.start_sample:
+            cursor += 1
+        index = cursor
+        while index < len(gaps) and gaps[index].start_sample < frame.end_sample:
+            gap = gaps[index]
+            overlap = min(gap.end_sample, frame.end_sample) - max(gap.start_sample, frame.start_sample)
+            peaks[index] = max(peaks[index], frame.dbfs)
+            if frame.vad_probability >= strong_threshold:
+                strong[index] += overlap
+            index += 1
+    _require(position == audio.sample_count and observed == evidence.frame_count)
+    if background_samples < configuration["pause_min_noise_frames"] * frame_samples:
+        return ()
+    percentile = math.ceil(background_samples * configuration["pause_noise_percentile"] / 100)
+    cumulative = 0
+    for index, samples in enumerate(background):
+        cumulative += samples
+        if cumulative >= percentile:
+            noise_dbfs = index - 120
+            break
+    floor = preprocessing.speech_map.provenance.effective_configuration["energy_floor_dbfs"]
+    ceiling = min(floor, noise_dbfs + configuration["pause_noise_margin_db"])
+    return tuple(gap for index, gap in enumerate(gaps)
+                 if peaks[index] <= ceiling and strong[index] < (
+                     gap.end_sample - gap.start_sample) * configuration["pause_min_strong_speech_fraction"])
+
+
+def _eligible_regions(assessment, deferred=()):
+    ends = [i.end_sample for i in deferred]
+    regions = []
+    for region in assessment.regions:
+        if _risk(region) is None:
+            continue
+        index = bisect_left(ends, region.interval.end_sample)
+        if index < len(deferred) and deferred[index].start_sample <= region.interval.start_sample:
+            continue
+        regions.append(region)
+    return tuple(regions)
+
+
+def _planning_context(assessment, plan, settings, boundary_alignment, deferred=()):
     validate_asr_chunk_plan(plan)
     configuration = _configuration(settings)
     _final_contract(assessment, plan)
@@ -453,17 +554,17 @@ def _planning_context(assessment, plan, settings, boundary_alignment):
                                                effective.get("provider_max_request_samples", 230400000),
                                                max(0, (effective.get("effective_payload_limit", 25000000) - 44) // 2))
     forced, natural = _boundary_samples(boundary_alignment, plan)
-    regions = tuple(sorted((r for r in assessment.regions if _risk(r) is not None), key=lambda r: (
+    regions = tuple(sorted(_eligible_regions(assessment, deferred), key=lambda r: (
         _risk(r)[0], r.interval.start_sample, r.interval.end_sample,
     )))
     return configuration, regions, forced, natural
 
 
-def _iter_windows(regions, plan, configuration, forced, natural):
+def _iter_windows(regions, plan, configuration, forced, natural, deferred=()):
     """One observation per target before another context strategy on early targets.
 
-    Risk order remains deterministic within each round. No target is discarded
-    for being short/weak, and runtime admission/budgets remain independent.
+    Risk order remains deterministic within each round. Pause deferral is based
+    on combined evidence, never duration alone; admission/budgets are independent.
     """
     seen = {c.request_interval for c in plan.chunks}
     maximum = configuration["max_request_samples"]
@@ -472,60 +573,68 @@ def _iter_windows(regions, plan, configuration, forced, natural):
     if maximum:
         for strategy in _STRATEGIES:
             for region in regions:
-                start, end = region.interval.start_sample, region.interval.end_sample
                 context = configuration["context_samples"]
                 if _near(natural, region.interval, context) and not _near(forced, region.interval, context):
                     context //= 2
                 # Context is optional when an intact target fits. Split only
                 # for the hard request ceiling, never to manufacture more work.
-                size = (maximum - min(2 * context, maximum // 2) if end - start > maximum else end - start)
-                while start < end:
-                    core = SampleInterval(start, min(end, start + size))
-                    key = (region.interval, core)
-                    request = _request(core, plan.sample_count, context, maximum, strategy)
-                    start = core.end_sample
-                    count = alternatives.get(key, 0)
-                    if count >= configuration["max_attempts_per_region"] or request in seen:
-                        continue
-                    chunk = AsrChunk(
-                        f"recovery-{number:06d}", len(plan.chunks) + number, core, request,
-                        ChunkBoundaryReason.TIMELINE_START if core.start_sample == 0
-                        else ChunkBoundaryReason.FORCED_CONTINUOUS_SPEECH,
-                        ChunkBoundaryReason.TIMELINE_END if core.end_sample == plan.sample_count
-                        else ChunkBoundaryReason.FORCED_CONTINUOUS_SPEECH,
-                    )
-                    _validate_recovery_chunk(chunk, plan.sample_count, configuration)
-                    context_ids = tuple(c.chunk_id for c in plan.chunks if (
-                        c.request_interval.start_sample < request.end_sample
-                        and request.start_sample < c.request_interval.end_sample
-                    ))
-                    alternatives[key] = count + 1
-                    seen.add(request)
-                    yield RecoveryWindow(chunk, region, count + 1, strategy, context_ids,
-                                          plan.provenance, _risk(region)[1])
-                    number += 1
+                for available in _difference((region.interval,), deferred):
+                    start, end = available.start_sample, available.end_sample
+                    size = (maximum - min(2 * context, maximum // 2) if end - start > maximum else end - start)
+                    while start < end:
+                        core = SampleInterval(start, min(end, start + size))
+                        key = (region.interval, core)
+                        request = _request(core, plan.sample_count, context, maximum, strategy)
+                        start = core.end_sample
+                        count = alternatives.get(key, 0)
+                        if count >= configuration["max_attempts_per_region"] or request in seen:
+                            continue
+                        chunk = AsrChunk(
+                            f"recovery-{number:06d}", len(plan.chunks) + number, core, request,
+                            ChunkBoundaryReason.TIMELINE_START if core.start_sample == 0
+                            else ChunkBoundaryReason.FORCED_CONTINUOUS_SPEECH,
+                            ChunkBoundaryReason.TIMELINE_END if core.end_sample == plan.sample_count
+                            else ChunkBoundaryReason.FORCED_CONTINUOUS_SPEECH,
+                        )
+                        _validate_recovery_chunk(chunk, plan.sample_count, configuration)
+                        context_ids = tuple(c.chunk_id for c in plan.chunks if (
+                            c.request_interval.start_sample < request.end_sample
+                            and request.start_sample < c.request_interval.end_sample
+                        ))
+                        alternatives[key] = count + 1
+                        seen.add(request)
+                        yield RecoveryWindow(chunk, region, count + 1, strategy, context_ids,
+                                              plan.provenance, _risk(region)[1])
+                        number += 1
 
 
-def _plan(assessment, plan, settings, boundary_alignment=None):
+def _plan(assessment, plan, settings, boundary_alignment=None, preprocessing=None):
     configuration, regions, forced, natural = _planning_context(assessment, plan, settings, boundary_alignment)
-    windows = tuple(islice(_iter_windows(regions, plan, configuration, forced, natural),
+    deferred = _pause_deferrals(preprocessing, assessment, configuration) if preprocessing is not None else ()
+    if deferred:
+        _, regions, _, _ = _planning_context(assessment, plan, settings, boundary_alignment, deferred)
+    windows = tuple(islice(_iter_windows(regions, plan, configuration, forced, natural, deferred),
                            configuration["max_total_attempts"]))
     return RecoveryPlan(plan.source_id, plan.sample_count, regions, windows,
-                        RecoveryProvenance("2", plan.provenance, configuration, target_region_count=len(regions)))
+                        RecoveryProvenance("2", plan.provenance, configuration, target_region_count=len(regions),
+                                           deferred_pause_intervals=deferred))
 
 
 def plan_recovery_windows(
     assessment: SpeechCoverageAssessment, plan: AsrChunkPlan, settings: Settings,
     *, boundary_alignment: "BoundaryAlignmentReport | None" = None,
+    preprocessing: PreprocessingResult | None = None,
 ) -> RecoveryPlan:
     """Plan bounded distinct alternatives without executing or transferring ownership.
 
     Alternatives are bounded metadata, not authorization to exceed execution
     budgets. Targets beyond those budgets remain in the assessment unresolved.
+    Supplying preprocessing enables the execution path's frame-based pause gate;
+    without those observations, planning conservatively keeps targets eligible.
     """
     category = "VALIDATION"
     try:
-        return _plan(assessment, plan, settings, boundary_alignment)
+        return _plan(assessment, plan, settings, boundary_alignment, preprocessing)
     except AudioProcessingError as error:
         category = error.category
     except MemoryError:
@@ -726,7 +835,7 @@ def _provenance(plan, initial_plan, final, attempts, started_ns):
         failed_attempt_count=sum(a.admission is Decision.FAILED for a in attempts),
         total_requested_samples=sum(a.requested_samples for a in attempts),
         accepted_recovery_result_count=len(accepted),
-        remaining_actionable_region_count=sum(_risk(r) is not None for r in final.regions),
+        remaining_actionable_region_count=len(_eligible_regions(final, initial_plan.provenance.deferred_pause_intervals)),
         target_resolved_samples=sum(a.unresolved_samples_before - a.unresolved_samples_after for a in accepted),
         canonical_support_gain_samples=sum(a.new_canonical_supported_speech_samples for a in accepted),
         canonical_ambiguity_reduction_samples=sum(a.resolved_ambiguity_samples for a in accepted),
@@ -743,11 +852,13 @@ def _recover(preprocessing, plan, baseline_results, transcriber, settings, bound
     started, started_ns = time.monotonic(), time.monotonic_ns()
     initial, current, final = _baseline_state(preprocessing, plan, baseline_results, settings, boundary_alignment)
     initial_final = final
-    initial_plan = plan_recovery_windows(final, plan, settings, boundary_alignment=boundary_alignment)
+    initial_plan = plan_recovery_windows(final, plan, settings, boundary_alignment=boundary_alignment,
+                                         preprocessing=preprocessing)
     configuration = initial_plan.provenance.effective_configuration
+    deferred = initial_plan.provenance.deferred_pause_intervals
     roots = sorted((r.interval for r in initial_plan.target_regions), key=lambda i: i.start_sample)
     root_ends = [r.end_sample for r in roots]
-    counts, samples, rejections = [0] * len(roots), [0] * len(roots), [0] * len(roots)
+    counts, samples = [0] * len(roots), [0] * len(roots)
     blocked = set()
     seen = {c.request_interval for c in plan.chunks}
     accepted, attempts = (), []
@@ -755,16 +866,17 @@ def _recover(preprocessing, plan, baseline_results, transcriber, settings, bound
     evaluation_failure = None
     stop = RecoveryStopReason.NO_ACTIONABLE_REGIONS
     while roots:
-        _, regions, forced, natural = _planning_context(final, plan, settings, boundary_alignment)
+        _, regions, forced, natural = _planning_context(final, plan, settings, boundary_alignment, deferred)
         if not regions:
-            stop = RecoveryStopReason.SUFFICIENT_COVERAGE
+            stop = (RecoveryStopReason.NO_ACTIONABLE_REGIONS if _remaining(final)
+                    else RecoveryStopReason.SUFFICIENT_COVERAGE)
             break
         if len(attempts) >= configuration["max_total_attempts"]:
             stop = RecoveryStopReason.TOTAL_ATTEMPT_LIMIT
             break
         proposed = None
         owners = ()
-        for window in _iter_windows(regions, plan, configuration, forced, natural):
+        for window in _iter_windows(regions, plan, configuration, forced, natural, deferred):
             target = window.target_region.interval
             index = bisect_left(root_ends, target.start_sample + 1)
             own = []
@@ -845,11 +957,10 @@ def _recover(preprocessing, plan, baseline_results, transcriber, settings, bound
             disposition = stop = RecoveryStopReason.TERMINAL_FAILURE
             blocked.update(owners)
         elif decision is RecoveryAdmissionDecision.REJECTED:
-            for i in owners:
-                rejections[i] += 1
-            if any(rejections[i] >= 2 for i in owners):
-                blocked.update(owners)
-                disposition = stop = RecoveryStopReason.NO_ADMISSIBLE_IMPROVEMENT
+            # A successful empty/redundant/non-improving observation has already
+            # spent this target's useful call. Only transient failures retry it.
+            blocked.update(owners)
+            disposition = stop = RecoveryStopReason.NO_ADMISSIBLE_IMPROVEMENT
         after = _remaining(final, window.target_region.interval)
         if not _remaining(final):
             disposition = stop = RecoveryStopReason.SUFFICIENT_COVERAGE
