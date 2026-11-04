@@ -13,6 +13,7 @@ import java.util.EnumSet;
 import java.util.Map;
 import java.util.UUID;
 import jakarta.servlet.DispatcherType;
+import org.springframework.boot.test.context.TestConfiguration;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.boot.tomcat.servlet.TomcatServletWebServerFactory;
@@ -69,7 +70,7 @@ class TranscriptionWorkerMtlsTests {
                 .header("X-Service-Identity","urn:sme:service:ai-worker").POST(HttpRequest.BodyPublishers.ofString(claim.toString())).build(),HttpResponse.BodyHandlers.ofString()).statusCode()).isEqualTo(403);
         } finally {server.stop();server.destroy();app.close();}
     }
-    @Configuration(proxyBeanMethods=false) @EnableWebMvc @EnableWebSecurity
+    @TestConfiguration(proxyBeanMethods=false) @EnableWebMvc @EnableWebSecurity
     @Import(SecureTransportConfiguration.class)
     static class App {
         @Bean TranscriptionWorkerController controller() {

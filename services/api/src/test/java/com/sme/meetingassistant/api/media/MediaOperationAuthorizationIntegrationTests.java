@@ -13,6 +13,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.sme.meetingassistant.api.media.storage.ObjectStorage;
+import com.sme.meetingassistant.api.media.worker.TranscriptionWorkerCapability;
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
 import java.security.Principal;
 import java.util.UUID;
@@ -49,6 +50,7 @@ class MediaOperationAuthorizationIntegrationTests {
     @Autowired JdbcTemplate jdbc;
     @Autowired ObjectMapper json;
     @MockitoBean ObjectStorage storage;
+    @MockitoBean TranscriptionWorkerCapability workerCapability;
 
     private UUID organizer, participant, manager, administrator, outsider, meeting, media;
 

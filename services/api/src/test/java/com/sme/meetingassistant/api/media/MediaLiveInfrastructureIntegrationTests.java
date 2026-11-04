@@ -8,6 +8,7 @@ import com.sme.meetingassistant.api.media.outbox.MediaMessagingConfiguration;
 import com.sme.meetingassistant.api.media.outbox.OutboxPublisher;
 import com.sme.meetingassistant.api.media.storage.ObjectStorage;
 import com.sme.meetingassistant.api.media.validation.MediaInspector;
+import com.sme.meetingassistant.api.media.worker.TranscriptionWorkerCapability;
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -37,6 +38,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
@@ -110,6 +112,7 @@ class MediaLiveInfrastructureIntegrationTests {
     @Autowired MediaInspector inspector;
     @Autowired RabbitTemplate rabbit;
     @Autowired MediaProperties properties;
+    @MockitoBean TranscriptionWorkerCapability workerCapability;
     private UUID organizer;
     private UUID meeting;
 

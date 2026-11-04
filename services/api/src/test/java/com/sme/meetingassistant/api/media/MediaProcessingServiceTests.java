@@ -23,6 +23,7 @@ import com.sme.meetingassistant.api.media.service.MediaProcessingService;
 import com.sme.meetingassistant.api.media.storage.ObjectStorage;
 import com.sme.meetingassistant.api.media.validation.MediaInspection;
 import com.sme.meetingassistant.api.media.validation.MediaInspector;
+import com.sme.meetingassistant.api.media.worker.TranscriptionWorkerCapability;
 import com.sme.meetingassistant.api.meeting.service.MeetingMediaAccess;
 import com.sme.meetingassistant.api.userorganization.service.AuthenticatedUserId;
 import java.time.OffsetDateTime;
@@ -48,6 +49,7 @@ class MediaProcessingServiceTests {
     @Mock private MediaRepository repository;
     @Mock private ObjectStorage storage;
     @Mock private MediaInspector inspector;
+    @Mock private TranscriptionWorkerCapability workerCapability;
     @Mock private MeetingMediaAccess meetingAccess;
     @Mock private AuthenticatedUserId authenticatedUser;
     private MediaProcessingService service;
@@ -63,7 +65,7 @@ class MediaProcessingServiceTests {
         when(this.authenticatedUser.requireUserId()).thenReturn(this.actor);
         this.service = new MediaProcessingService(this.repository, this.storage, this.inspector,
             this.meetingAccess, this.authenticatedUser, this.properties,
-            org.mockito.Mockito.mock(com.sme.meetingassistant.api.media.worker.TranscriptionWorkerCapability.class));
+            this.workerCapability);
     }
 
     @Test
@@ -111,6 +113,22 @@ class MediaProcessingServiceTests {
             this.service.createJob(this.meetingId, UUID.randomUUID(), "job-key"));
         assertEquals(404, denied.getStatusCode().value());
         verify(this.repository, never()).findMedia(any(UUID.class));
+        verify(this.repository, never()).insertJobAndOutbox(any(Job.class), any(UUID.class), org.mockito.ArgumentMatchers.<String>anyList());
+    }
+
+    @Test
+    void unavailableTranscriptionWorkerRejectsNewProcessingJobBeforeJobWrite() {
+        UUID mediaId = UUID.randomUUID();
+        when(this.repository.findMedia(mediaId)).thenReturn(Optional.of(media(mediaId, "AVAILABLE")));
+        when(this.repository.claimIdempotency(any(), anyString(), anyString(), anyString(), any(UUID.class)))
+            .thenAnswer(invocation -> invocation.getArgument(4));
+        doThrow(new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE))
+            .when(this.workerCapability).requireAvailable();
+
+        ResponseStatusException rejected = assertThrows(ResponseStatusException.class, () ->
+            this.service.createJob(this.meetingId, mediaId, "worker-unavailable"));
+
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, rejected.getStatusCode());
         verify(this.repository, never()).insertJobAndOutbox(any(Job.class), any(UUID.class), org.mockito.ArgumentMatchers.<String>anyList());
     }
 
