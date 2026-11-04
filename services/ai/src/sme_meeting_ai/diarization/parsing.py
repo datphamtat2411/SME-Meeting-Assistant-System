@@ -4,7 +4,12 @@ import json
 import math
 import re
 
-from .models import DiarizationError, DiarizationErrorCategory, DiarizationResult, SpeakerTurn
+from .models import (
+    DiarizationError,
+    DiarizationErrorCategory,
+    DiarizationResult,
+    SpeakerTurn,
+)
 
 MAX_OUTPUT_BYTES = 8 * 1024 * 1024
 _MAX_SEGMENTS = 100_000

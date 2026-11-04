@@ -52,7 +52,8 @@ and configure `AI_DIARIZATION_TIMEOUT_SECONDS` if needed (default 300; maximum
 3600). `AI_DIARIZATION_MODEL` selects a pinned version of the same model.
 Missing credentials affect only calls to this adapter. Local files are limited to
 100 MB. Optional positive `num_speakers`, `min_speakers`, and `max_speakers`
-are hints, not participant identities.
+are hints, not participant identities. Pending predictions are polled every 15
+seconds within the overall deadline; HTTP 429 fails immediately as `RATE_LIMIT`.
 
 ```python
 from sme_meeting_ai.core.config import load_settings
@@ -79,14 +80,27 @@ Run offline tests and the explicitly opted-in live smoke test from this director
 
 ```sh
 uv run pytest tests/unit/test_diarization.py
-# Supply a short, non-sensitive audio recording you are permitted to upload.
-AI_RUN_REPLICATE_LIVE=1 AI_DIARIZATION_LIVE_AUDIO=/path/to/short.wav \
-  uv run pytest -m live_provider tests/integration/test_replicate_diarization_live.py
+# Supply a short, non-sensitive two-speaker recording you are permitted to upload.
+AI_RUN_REPLICATE_LIVE=1 AI_DIARIZATION_LIVE_AUDIO=/path/to/two-speaker.wav \
+  uv run --env-file .env pytest -m live_provider \
+  tests/integration/test_replicate_diarization_live.py -v -s
 ```
 
-The live test also requires `REPLICATE_API_TOKEN` in the environment and incurs
-external inference. The model's public schema describes a file URI rather than
-the internal JSON schema; live compatibility must be confirmed using this test.
+The live test requires `REPLICATE_API_TOKEN` in the environment or local `.env`,
+an explicit audio path, and the opt-in shown above; it incurs external inference.
+The `--env-file` flag also makes `.env` available to the process; omit it when
+using environment variables and no `.env` file. The test prints only the types of
+expected JSON fields and the normalized turn/speaker counts, never speaker labels
+or provider data. It requires at least two detected clusters for this fixture.
+
+**Real-provider JSON compatibility: NOT VERIFIED.** The pinned model's public
+schema lists `audio`, `num_speakers`, `min_speakers`, and `max_speakers` as input
+and a file URI as output; it does not specify the file's JSON contents. The current
+parser expects an object with `segments` entries containing `speaker`, `start`,
+and `stop` (timestamps as `H:MM:SS.fraction` strings), plus `speakers.count` and
+`speakers.labels`. These fields are assumptions covered by offline mocks, not an
+observed provider contract. Run the live test and inspect the actual structure
+before recording compatibility; do not commit audio or sensitive output.
 
 ## Runtime packaging details
 

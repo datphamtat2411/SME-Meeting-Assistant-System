@@ -13,12 +13,17 @@ from urllib.parse import urlsplit
 import httpx
 
 from sme_meeting_ai.core.config import Settings
-from sme_meeting_ai.diarization import DiarizationError, DiarizationErrorCategory, DiarizationResult
+from sme_meeting_ai.diarization import (
+    DiarizationError,
+    DiarizationErrorCategory,
+    DiarizationResult,
+)
 from sme_meeting_ai.diarization.parsing import MAX_OUTPUT_BYTES, parse_output
 
 _API = "https://api.replicate.com"
 _MAX_UPLOAD_BYTES = 100_000_000
 _MAX_API_BYTES = 1024 * 1024
+_POLL_INTERVAL_SECONDS = 15
 
 
 def _delivery_url(value: object) -> str:
@@ -102,19 +107,23 @@ class ReplicateDiarizationAdapter:
                 or (num_speakers is not None and min_speakers is not None and num_speakers < min_speakers)
                 or (num_speakers is not None and max_speakers is not None and num_speakers > max_speakers)):
             raise DiarizationError(DiarizationErrorCategory.VALIDATION)
+        fd = None
         try:
-            path = Path(audio_path)
-            # Nonblocking open avoids hanging on a FIFO before fstat.
-            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
-        except (OSError, ValueError, TypeError):
-            raise DiarizationError(DiarizationErrorCategory.VALIDATION) from None
-        with os.fdopen(fd, "rb") as audio:
             try:
-                info = os.fstat(audio.fileno())
-            except OSError:
+                path = Path(audio_path)
+                # Nonblocking open avoids hanging on a FIFO before fstat.
+                fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+                info = os.fstat(fd)
+                if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= _MAX_UPLOAD_BYTES:
+                    raise DiarizationError(DiarizationErrorCategory.VALIDATION)
+                audio = os.fdopen(fd, "rb")
+                fd = None  # The file object owns the descriptor now.
+            except (OSError, ValueError, TypeError):
                 raise DiarizationError(DiarizationErrorCategory.VALIDATION) from None
-            if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= _MAX_UPLOAD_BYTES:
-                raise DiarizationError(DiarizationErrorCategory.VALIDATION)
+        finally:
+            if fd is not None:
+                os.close(fd)
+        with audio:
             secret = self._settings.replicate_api_token
             token = secret.get_secret_value() if secret else ""
             if not token or any(ord(char) < 33 or ord(char) > 126 for char in token):
@@ -148,7 +157,7 @@ class ReplicateDiarizationAdapter:
                     prediction_id = prediction.get("id")
                     if not isinstance(prediction_id, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,128}", prediction_id):
                         raise DiarizationError(DiarizationErrorCategory.MALFORMED_OUTPUT)
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(_POLL_INTERVAL_SECONDS)
                     prediction = await _json_request(client, "GET", f"{_API}/v1/predictions/{prediction_id}", headers=auth)
                 if prediction.get("status") in ("failed", "canceled"):
                     raise DiarizationError(DiarizationErrorCategory.PROVIDER)
