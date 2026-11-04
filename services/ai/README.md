@@ -42,6 +42,54 @@ uv run sme-ai-http
 uv run sme-ai-worker
 ```
 
+## Standalone speaker diarization
+
+The standalone engine uploads a readable local audio file to Replicate for external
+inference with `konieshadow/speaker-diarization`, pinned by default to version
+`c58b6b038f6de30f93eaccd6aecb59d1b9a48ac13b22be000bcffe853efb2c20`.
+Set `REPLICATE_API_TOKEN` in the environment or `.env` (see `.env.example`),
+and configure `AI_DIARIZATION_TIMEOUT_SECONDS` if needed (default 300; maximum
+3600). `AI_DIARIZATION_MODEL` selects a pinned version of the same model.
+Missing credentials affect only calls to this adapter. Local files are limited to
+100 MB. Optional positive `num_speakers`, `min_speakers`, and `max_speakers`
+are hints, not participant identities.
+
+```python
+from sme_meeting_ai.core.config import load_settings
+from sme_meeting_ai.diarization import TimedTranscriptSegment, align_speakers
+from sme_meeting_ai.providers.replicate_diarization import ReplicateDiarizationAdapter
+
+diarizer = ReplicateDiarizationAdapter(load_settings())
+diarization = diarizer.diarize("meeting.wav")
+segments = [TimedTranscriptSegment(ordinal=0, start_ms=1000, end_ms=3000)]
+assignments = align_speakers(segments, diarization.turns)
+print(diarization.turns, assignments)
+```
+
+Turns contain half-open, integer millisecond intervals; timestamps round to the
+nearest millisecond with half milliseconds rounded up. Anonymous `SPEAKER_00`
+labels represent recording-local clusters, not verified human identities.
+Original turns, including overlaps, remain available. Alignment accumulates
+overlap per speaker and returns `None` for no overlap or an exact tie; a single
+ASR segment spanning several turns receives at most one dominant speaker and is
+not split. Errors are `DiarizationError` with a sanitized `category`. Full ASR
+integration and the FastAPI demo endpoint belong to Task 02.
+
+Run offline tests and the explicitly opted-in live smoke test from this directory:
+
+```sh
+uv run pytest tests/unit/test_diarization.py
+# Supply a short, non-sensitive audio recording you are permitted to upload.
+AI_RUN_REPLICATE_LIVE=1 AI_DIARIZATION_LIVE_AUDIO=/path/to/short.wav \
+  uv run pytest -m live_provider tests/integration/test_replicate_diarization_live.py
+```
+
+The live test also requires `REPLICATE_API_TOKEN` in the environment and incurs
+external inference. The model's public schema describes a file URI rather than
+the internal JSON schema; live compatibility must be confirmed using this test.
+
+## Runtime packaging details
+
 Module equivalents are `uv run python -m sme_meeting_ai.api` and
 `uv run python -m sme_meeting_ai.workers`. HTTP runs one Uvicorn process without
 reload, access logging, or proxy-header interpretation. Local binding defaults

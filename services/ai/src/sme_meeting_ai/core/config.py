@@ -140,6 +140,14 @@ class Settings(BaseSettings):
     openrouter_api_key: SecretStr | None = Field(
         default=None, validation_alias="OPENROUTER_API_KEY", repr=False,
     )
+    replicate_api_token: SecretStr | None = Field(
+        default=None, validation_alias="REPLICATE_API_TOKEN", repr=False,
+    )
+    diarization_model: str = Field(
+        default="konieshadow/speaker-diarization:c58b6b038f6de30f93eaccd6aecb59d1b9a48ac13b22be000bcffe853efb2c20",
+        pattern=r"^konieshadow/speaker-diarization:[a-f0-9]{64}$",
+    )
+    diarization_timeout_seconds: float = Field(default=300, gt=0, le=3600, allow_inf_nan=False)
     audio_asr_model: str = Field(
         default="openai/whisper-large-v3", min_length=1, max_length=256,
         pattern=r"^[a-zA-Z0-9_./:-]+$",
