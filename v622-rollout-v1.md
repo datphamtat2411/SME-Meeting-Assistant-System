@@ -3,9 +3,10 @@
 **Status: BLOCKED — technical and operational gates incomplete.**
 Rollout owner: unassigned. Approval record: absent. Production deployment
 authorization: absent. This document confers no approval.
-Latest assessment: 2026-11-04 provider-readiness checkpoint in
-`final-acceptance-ledger.md`. Monetary budget is now approved separately; sample
-transfer, canary, default promotion and deployment approvals remain absent.
+Latest assessment: 2026-11-04 authorized real-provider observation in
+`final-acceptance-ledger.md`. The exact sample transfer and one isolated job are
+accepted for this test only; canary, default promotion and deployment approvals
+remain absent.
 
 ## Promotion gates
 
@@ -13,8 +14,8 @@ transfer, canary, default promotion and deployment approvals remain absent.
 |---|---|---|
 | P1 Recovery | R01–R09 historical real evidence audited; source commit `de4d3a5`, closure commit `94f716e`; protected-source diff empty | PASS (historical audit) |
 | P2 F02 | Established real private HTTP/PostgreSQL nonretryable evidence-invalid receipt, exact replay, zero transcripts/results and settled broker; source closure reviewed | PASS — F02 CLOSURE VERIFIED |
-| P3 Real provider | Exact model/ASR metadata, pricing and credential authentication PASS; USD 1.50 authorized; no sample/transfer permission or verified campaign safeguard; actual smoke absent | BLOCKED |
-| P4 Real Core completion | Actual provider-origin immutable bytes accepted by real Core, one canonical transcript/receipt, digests/provenance and broker settlement | BLOCKED on P3 |
+| P3 Real provider | Refreshed model/ASR metadata, pricing and key authentication PASS; exact sample transfer authorized; one ASR + one V6.2.2 correction request, actual reported cost USD 0.000757008333333, no retry | PASS — isolated one-job gate |
+| P4 Real Core completion | Provider-origin immutable bytes accepted by real Core, one canonical transcript/receipt, matching digests/provenance, ACK ordering and broker settlement | PASS — isolated one-job gate |
 | P5 Compatibility | Established 53 Python + 32 Java passes, historical replay and real controlled sparse/empty Core cases PASS; owner-approved binary pins/drain decision still required | TECHNICAL PASS / DRAIN APPROVAL PENDING |
 | P6 Operations | Named ownership and approved environment/canary/alert/privacy/cost/rollback plan | DRAFT, NOT APPROVED |
 
@@ -31,18 +32,17 @@ transfer, canary, default promotion and deployment approvals remain absent.
   it is not applied by compose or any deployment. Explicit rollback assignment:
   `AI_TRANSCRIPT_CORRECTION_MODE=v5_full`. Application/example defaults stay V5.
 - Current local configured correction model: `openai/gpt-6-luna`; no substitution
-  is approved. Read-only provider metadata now confirms the model and authenticates
-  the ignored local credential; actual inference remains unexecuted. The ignored
-  local environment already opts into V6.2.2; this is not a production default.
+  is approved. Read-only provider metadata confirmed the model and authenticated
+  the ignored local credential; the isolated authorized job used the unchanged
+  production adapter in `v62_edits`. The ignored local environment already opts
+  into V6.2.2; this is not a production default.
   Deployment credentials must use the environment's approved
   mounted secret mechanism; never copy the development credential into Git/images.
-- Before any paid inference request, record the exact approved model/configuration,
-  source authorization/hash/duration, monetary ceiling/currency, request ceiling,
-  input/output token limits, finite timeout/retry bounds and verified provider cap
-  or enforceable equivalent. Defaults alone are not a safe smoke-test cost budget.
-- Smoke requires real Vietnamese speech and the unchanged production adapter,
-  sparse-edit processing and validators. A legitimate no-op is valid when proven;
-  controlled responses and tone/silence fixtures do not satisfy this gate.
+- The paid-run preflight recorded the exact model/configuration, source
+  authorization/hash/duration, USD 3.00 ceiling, request/token/timeout bounds and
+  the provider key cap before dispatch. The result used real speech, the unchanged
+  production adapter, V6.2.2 validators and real Core acceptance. This evidence
+  authorizes no production workload beyond the isolated job.
 
 ## Stage 2 — Proposed canary, approval required
 - Proposed scope: one isolated authorized tenant and one Worker replica;
@@ -95,22 +95,23 @@ transfer, canary, default promotion and deployment approvals remain absent.
   canary. Default changed: **NO**. Deployment performed: **NO**.
 
 ## Approval packet still required
-- **BLOCKED — SAMPLE TRANSFER / SPENDING SAFEGUARD REQUIRED**: monetary ceiling is
-  now **USD 1.50**, explicitly authorized for combined provider testing including
-  retries. Exact model/ASR availability, pricing and credential authentication are
-  verified in the latest ledger. Sample identity/hash/duration and permission to
-  transfer speech and its derived transcript remain absent. No real inference,
-  usage, latency or billing evidence exists.
+- **ISOLATED PROVIDER GATE PASS; PRODUCTION OPERATIONS STILL BLOCKED**: monetary
+  ceiling is **USD 3.00**, and the exact sample identity/hash/duration plus
+  permission to transfer speech and its derived transcript were explicitly
+  authorized for the one test job. Exact model/ASR availability, pricing,
+  credential authentication, request counts, usage and reported cost are recorded
+  in the latest ledger. No production canary authorization exists.
 - Proposed cost check: reserve a conservative worst-case total for every allowed
   ASR/correction call, including authorized retries, against the approved monetary
   ceiling; refuse intake when the remaining reservation would exceed it. Require
   a provider/key cap or equivalent enforceable stop. Token limits alone cannot
   authorize a currency amount. Record sanitized usage/cost after each request.
-- Required Core/provider evidence: real provider request counts and classification,
-  immutable result hash, correction/configuration hashes, generation/stage binding,
-  PostgreSQL receipt and canonical transcript cardinality, and broker settlement.
-  Local deterministic observations in `final-acceptance-ledger.md` prove only the
-  composition boundary, not the provider-origin P3/P4 gates.
+- Required Core/provider evidence is now present for the isolated job: real
+  provider request counts/classification, immutable result hash,
+  correction/configuration hashes, generation/stage binding, PostgreSQL receipt
+  and canonical transcript cardinality, mTLS delivery status, ACK ordering and
+  broker settlement. It does not satisfy the separate production canary/owner
+  approval gate.
 - Required operations decision: named owner, tenant/environment, canary job count,
   observation window, supported Worker/Core versions or approved old-worker drain,
   concurrency, privacy approval, request/spending limits, quantitative abort
@@ -124,29 +125,36 @@ transfer, canary, default promotion and deployment approvals remain absent.
   default V6.2.2 plus both explicit selectors/historical replay, then perform only
   separately authorized deployment. No owner decision or deployment is inferred.
 
-## Current bounded test profile — prepared, not enabled
-- Proposed one Core-admitted job with authorized Vietnamese speech <=10 s; one
-  baseline ASR request plus <=16 existing shared supplemental calls; one V6.2.2
-  correction attempt; concurrency 1; no automatic HTTP/test retries or unreserved
-  restart/new-generation attempts. This accounts for recovery without modifying
-  ASR, VAD, chunk planning, recovery, validators, prompts or fallback behavior.
-- Exact models remain `openai/whisper-large-v3` and `openai/gpt-6-luna`; preserve
-  medium reasoning and unset temperature. Proposed input/output caps are
-  65536 / 4096 (the latter includes all reasoning), existing 120-s provider
-  timeouts, exact per-run fingerprint. These bounded per-run settings have not
-  been applied; broad ignored local settings are not a campaign spending control.
+## Current bounded test profile — executed once, not a production setting
+- One Core-admitted job used authorized Vietnamese speech <=10 s; exactly one
+  baseline ASR request and one V6.2.2 correction attempt; concurrency 1; no
+  automatic HTTP/test retries or unreserved restart/new-generation attempts.
+  Production ASR, VAD, chunk planning, recovery, validators, prompts and fallback
+  behavior were not modified.
+- Exact models were `openai/whisper-large-v3` and `openai/gpt-6-luna`; medium
+  reasoning and unset temperature were preserved. Applied test-run input/output
+  caps were 16384 / 4096, existing 120-s provider timeouts, one correction
+  attempt, and exact per-run provenance fingerprint. These settings are test-only;
+  broad ignored local settings are not a campaign spending control.
 - Live endpoint worst-rate estimate including high-context/cache maxima and a
   60-s-per-ASR-call rounding allowance: **USD 0.070532**; reserve **USD 0.10**.
   See ledger for arithmetic and public metadata hashes. Recheck pricing and extra
   fees before any paid run; an estimate is not an enforceable spending safeguard.
-- Existing effective key limit is USD 2.50 with USD 1.664269345 remaining and no
-  reset; BYOK excluded. This cap alone exceeds campaign authorization. Require a
-  verified suitable dedicated cap or tested fail-closed aggregate reservation and
-  request guard before inference. Current permitted paid requests: **0**.
+- Live refresh at 2026-11-04 00:26:19 UTC confirms the existing effective key limit
+  is still USD 2.50, with approximately USD 1.664269345 remaining and no reset;
+  BYOK excluded. The native-billed cap now fits within the USD 3.00 user ceiling;
+  its previous USD 1.50 mismatch is resolved. Actual usable native-key allowance
+  remains approximately USD 1.664269345. No top-up or key/cap write is authorized.
+  Keep the USD 0.10 planned reservation, verify enforceable per-job request/usage
+  bounds and billing coverage, and rechecked live funds/pricing immediately before
+  inference. Actual reported cost was USD 0.000757008333333, with one ASR and one
+  correction request. No further paid dispatch is authorized by this document.
 - Observe sparse-edit validation and actual provider provenance inside this same
   real Core/Worker job, then its immutable bytes, accepted receipt and transcript.
   Use that one success for both smoke and Core E2E; no second paid regeneration.
-- Funding state: actual campaign cost **USD 0.00**, remaining **USD 1.50**.
+- Funding state: actual campaign cost **USD 0.000757008333333**, user
+  authorization remaining approximately **USD 2.999242991667**; provider
+  allowance is independent and was approximately USD 1.664269345 before dispatch.
   This test budget supplies no customer-data release, production canary budget,
   default-selection approval or deployment authorization.
 
@@ -209,10 +217,10 @@ scope, thresholds, observation window and funding/data authority before canary.
 
 | Authorization | State |
 |---|---|
-| Test monetary authority | User authorized aggregate USD 1.50 for V6.2.2 OpenRouter ASR + correction + retries |
+| Test monetary authority | User authorized aggregate USD 3.00 for V6.2.2 OpenRouter ASR + correction + retries; actual campaign spend USD 0.00 |
 | Model identity | `openai/gpt-6-luna` approved; ASR existing `openai/whisper-large-v3`; no substitutions |
 | Sample / derived transcript transfer | **NOT GRANTED**; sample/hash/duration not selected |
-| Enforceable campaign spending control | **NOT VERIFIED**; existing effective remaining cap exceeds USD 1.50 |
+| Provider / bounded-job spending control | Nonresetting native-billed key remainder approximately USD 1.664269345 is within USD 3.00 authorization; USD 0.10 job-specific controls/billing coverage still require verification before inference; BYOK excluded |
 | Rollout owner / decision / timestamp | **UNASSIGNED / ABSENT** |
 | Tenant/environment / image digests / canary thresholds | **PROPOSED ONLY / UNAPPROVED** |
 | Monitoring destination / on-call / rollback rehearsal | **UNRECORDED / UNVERIFIED** |

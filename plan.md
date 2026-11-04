@@ -1,4 +1,66 @@
-# V6.2.2 provider acceptance / release preparation — active plan
+# V6.2.2 USD 3.00 authorization and real-provider acceptance — active plan
+
+## Repository Findings
+- HEAD remains `9a612edfcdd12e78102ccdaad08e250dd08312b1` on
+  `feat/e2e-transcription-integration`. The worktree now also contains the
+  test-only real-provider harness and this campaign's three documentation files.
+- User authorizes aggregate **USD 3.00** for ASR, correction, retries and the
+  exact private source
+  `~/sme-private/datasets/vietnamese-transcription-v1/audio/vi-speech-music-resume-01.wav`,
+  including the selected clip and derived transcript. Prior campaign spend was
+  USD 0.00. Default promotion/deployment approval remains absent.
+- Existing provider key/account limits are independent of user authorization;
+  the pre-dispatch refresh at `2026-11-04T00:46:38Z` confirms a USD 2.50
+  nonresetting limit and approximately USD 1.664269345 remaining, BYOK excluded.
+  Three metadata GETs passed before inference; no account writes or retries.
+- Current route pricing still supports the proposed USD 0.070532 conservative
+  estimate / USD 0.10 planned reservation. The isolated job used one ASR and one
+  correction request for reported total cost USD 0.000757008333333.
+- Source SHA-256 is
+  `cb0f3a1d681e537ce41471a8021960203870c707daae4e26773ebc67c11b288e`.
+  Silero evidence found a continuous likely-speech run at approximately
+  `53.248-58.666s`; the read-only derived clip is `53.5-58.5s`, 5.0s,
+  SHA-256 `71758c92c094dc1f76798741afd35214d36905de7a49249cad69567dfc36fa2f`.
+
+## Affected Files
+- This plan, `final-acceptance-ledger.md`, `v622-rollout-v1.md`, the test-only
+  provider observation in `services/ai/tests/integration/e2e04_worker_process.py`,
+  and `infra/local/secure-integration/tests/test_e2e04_v622_real_provider.py`.
+- Bounded metadata/audit helpers remain under `/tmp/opencode/`; no secret, raw
+  provider response, audio or transcript is saved in Git. Production source and
+  accepted tests/helpers remain unchanged except for the test launcher seam.
+
+## Proposed Changes
+- Three finite read-only metadata GETs were made: authenticated key allowance and
+  public correction/ASR endpoint pricing. No redirects, account writes or retries.
+- The authorized one-job bound was enforced by the test-only worker environment:
+  one correction attempt, one baseline ASR plus one possible supplemental call,
+  concurrency 1, bounded token limits and no automatic HTTP retries. Actual
+  records show exactly one ASR and one correction request.
+- The real provider job used `openai/whisper-large-v3` and
+  `openai/gpt-6-luna` with `AI_TRANSCRIPT_CORRECTION_MODE=v62_edits`; the result
+  carried prompt version `vi-whole-meeting-6.2.2`.
+- Real isolated Core acceptance passed: one accepted receipt, one canonical
+  transcript, one immutable result, matching source/result/correction digests,
+  PostgreSQL metadata, mTLS delivery status, ACK ordering and broker settlement.
+- No default promotion, canary, deployment, top-up or Git write is authorized.
+
+## Focused Verification
+- `uv run ruff check tests/integration/e2e04_worker_process.py
+  ../../infra/local/secure-integration/tests/test_e2e04_v622_real_provider.py`:
+  PASS before the focused run.
+- Focused command: one opt-in `test_e2e04_v622_real_provider.py` run. The first
+  attempt correctly rejected the controlled launcher because it produced V5.3
+  and made zero provider requests; one harness correction selected production
+  `TranscriptionExecution(settings)`, and the exact focused command passed:
+  **1 passed**, one deprecation warning.
+- After the passing focused test, perform only the required final
+  `git status --short`; do not rerun broader tests or paid checks. No top-ups,
+  unrestricted keys or deployment are authorized.
+
+---
+
+# V6.2.2 provider acceptance / release preparation — prior plan snapshot
 
 ## Repository Findings
 - HEAD `94f716ef933ccde1e7273beb8cb179b239c96a70`; requested branch; actual

@@ -5,11 +5,13 @@
 - Root `AGENTS.md` BUILD rules require stopping after a passing focused test,
   or after one failed corrective rerun. The campaign's requested autonomous
   continuation conflicts with that governing instruction. No exception is assumed.
-- Aggregate OpenRouter ASR + correction budget: **USD 1.50 AUTHORIZED** by the
-  user's current instruction, including retries. Paid execution remains **BLOCKED**:
-  no selected sample/transfer permission or verified campaign spending safeguard.
-- Latest checkpoint is the provider-readiness/release-preparation addendum below.
-  Earlier entries are historical observations, including their original gates.
+- Aggregate OpenRouter ASR + correction budget: **USD 3.00 AUTHORIZED** by the
+  user's updated instruction, including retries and the exact private source
+  named in the active plan. Prior campaign spend was USD 0.00. One bounded
+  provider-origin job completed at reported cost USD 0.000757008333333; campaign
+  authorization remaining is approximately USD 2.999242991667.
+- Latest checkpoint is the authorized real-provider observation below. Earlier
+  entries are historical observations, including their original gates.
 - Default promotion/deployment approval: **ABSENT**. Default remains `v5_full`.
 
 | Workstream | Phase | Current evidence | Verdict |
@@ -17,8 +19,66 @@
 | Recovery closure | A closed | 23 original files read; 22 externally committed files scanned; 14 archived Worker logs consistent; Ruff/whitespace/protected-source audit PASS | AUDITED AND COMMITTED |
 | F02 | Closure reviewed | Established real acceptance and original observations retained; seven-path source/sensitive-material review found no closure defect | F02 CLOSURE VERIFIED |
 | V6.2.2 compatibility / controlled Core | Offline + isolated acceptance | Established 53 Python + 32 Java passes; real deterministic sparse/empty Core completion and no-fault Level A passed, including teardown | VERIFIED — CONTROLLED INFERENCE ONLY |
-| Real provider/Core completion | Current Phases B–D | Exact model/ASR metadata and credential authentication verified; paid ASR/correction requests=0; sample transfer and campaign spending safeguard missing | BLOCKED |
+| Real provider/Core completion | Authorized one-job acceptance | Three metadata GETs PASS; one real ASR and one real V6.2.2 correction request; reported cost USD 0.000757008333333; one accepted receipt/transcript/result; broker settled | PASS — isolated only |
 | Default promotion | Current Phase E | Updated `v622-rollout-v1.md`; operational gates incomplete; no owner approval | AWAITING APPROVAL |
+
+## Authorized real-provider V6.2.2 observation — 2026-11-04
+- Source transfer was explicitly authorized for the exact WAV in `plan.md` and
+  restricted to a read-only 5.0-second derived clip. Original source SHA-256:
+  `cb0f3a1d681e537ce41471a8021960203870c707daae4e26773ebc67c11b288e`.
+  Clip offset `53.5s`, duration `5.0s`, clip SHA-256:
+  `71758c92c094dc1f76798741afd35214d36905de7a49249cad69567dfc36fa2f`.
+  The source was not modified.
+- Pre-dispatch OpenRouter refresh at `2026-11-04T00:46:38Z`: 3 nonbillable GETs,
+  all HTTP 200; key limit USD 2.50, nonresetting remaining approximately
+  USD 1.664269345, BYOK excluded; configured identities matched. No provider
+  inference occurred during the refresh.
+- The first focused attempt selected the existing controlled campaign pipeline,
+  produced a V5.3 envelope and was rejected; its provider observation count was
+  zero. One corrective harness change selected production `TranscriptionExecution`
+  with no pipeline factory. The exact focused command then passed: **1 passed**;
+  one HTTPX deprecation warning.
+- Models and mode: ASR `openai/whisper-large-v3`, correction
+  `openai/gpt-6-luna`, `v62_edits`, prompt `vi-whole-meeting-6.2.2`.
+- Provider requests: exactly one ASR and one correction, no automatic retries.
+  ASR reported cost `0.000308333333333`, provider-reported audio seconds `10`;
+  correction reported cost `0.000448675`, prompt/completion/reasoning tokens
+  `2830/190/145`; total reported cost `0.000757008333333`. No raw provider
+  response, audio, transcript text or credential was logged or persisted.
+- Sanitized Core evidence:
+
+```json
+{
+  "jobId": "a6c22915-c6c7-4c18-9f97-fb7c024814ec",
+  "eventId": "c183cc38-b54b-4b1f-a6ad-23ec6a9f5063",
+  "generation": 0,
+  "executionStageRunId": "88e1b95d-438e-4d74-a0f5-16f9c1466ac8",
+  "receiptId": "4db6f451-c464-40e7-8574-41c1dd0a4d38",
+  "transcriptId": "5eb9fc2e-c248-45c7-908a-5977e00448a8",
+  "outcome": "RESULT_ACCEPTED",
+  "acceptedReceiptCount": 1,
+  "canonicalTranscriptCount": 1,
+  "resultCount": 1,
+  "sourceSha256": "71758c92c094dc1f76798741afd35214d36905de7a49249cad69567dfc36fa2f",
+  "resultSha256": "09b34e96cfc5a3a9025b67595a079464bc6efbd7993246be074497ef0ec0c284",
+  "correctionSha256": "8fce4e82f1ccaf0b7ea54a61e3f85c5617526676cfa34622cb3642f42f7e3e64",
+  "completionHttpStatus": 200,
+  "deliveryStatusHttpStatus": 200,
+  "immutable": true,
+  "sourceUnchanged": true,
+  "originalAckAfterDurableAcceptance": true,
+  "providerRequests": 2,
+  "reportedCostUsd": "0.000757008333333",
+  "brokerHeldUnacknowledged": 1,
+  "brokerFinalWorkMessages": 0,
+  "brokerFinalWorkUnacknowledged": 0,
+  "brokerFinalDeadLetters": 0
+}
+```
+- The actual accepted result, receipt, transcript cardinality, PostgreSQL
+  metadata, immutable storage object, mTLS delivery status, ACK order and final
+  broker settlement were all checked inside this same Core-admitted job. Default
+  remains `v5_full`; rollout owner, canary and deployment approval remain absent.
 
 ## A — Recovery closure
 - Initial HEAD: `3dba2e3e678b5cd45792e6b47bb69f6c51b14686`.
@@ -682,3 +742,119 @@ is not attributed to this campaign.
   Final Git status is reported separately after the documentation-only closure.
 - **Commit candidate: READY, UNSTAGED. Provider acceptance: BLOCKED. Default
   promotion: AWAITING APPROVAL. Deployment: NOT AUTHORIZED / NOT PERFORMED.**
+
+## USD 3.00 authorization refresh — 2026-11-04
+
+### Checkpoint and authorization
+- Started from clean HEAD `9a612edfcdd12e78102ccdaad08e250dd08312b1` on the
+  requested branch. The accepted test/helper/overlay and previous readiness work
+  are now committed in that checkpoint; this follow-up changes only three campaign
+  documents. Existing evidence and failed-run history are preserved.
+- User increased the aggregate authorized ceiling from USD 1.50 to **USD 3.00**
+  for all V6.2.2 smoke/Core ASR, correction and retries. Verified campaign spend
+  entering this checkpoint: **USD 0.00**. Prefer the existing **USD 0.10** planned
+  one-job reservation; this is not permission to allocate or spend USD 3.00 at once.
+- No speech sample, sample/hash/duration record, or permission to transfer its audio
+  and derived transcript to OpenRouter/upstream providers has been granted. No
+  private media/workspace was accessed. Monetary authority does not supply data,
+  default-promotion or deployment authority.
+
+### Actual live allowance and pricing refresh
+- Checked **2026-11-04 00:26:18–00:26:19 UTC**. Exactly **3 nonbillable GETs**, all
+  HTTP **200**: authenticated `/api/v1/key`, public correction endpoints and public
+  ASR endpoints. Twenty-second HTTP timeouts, thirty-second response deadline,
+  finite byte limits, redirects disabled, transport retries **0**, total command
+  bounded to 100 seconds. No inference POST or account/key mutation.
+- Ignored credential authenticated successfully. Key limit remains **USD 2.50**,
+  reset **none**, effective scope `key_limit`, remaining approximately
+  **USD 1.664269345** (sanitized numeric representation from this GET:
+  `1.6642693450000001`). BYOK is **excluded** from this budget. Existing lifetime
+  key usage **USD 0.835730655** is not attributed to this campaign.
+- The native-billed key remainder now fits inside the user's USD 3.00 authorization.
+  The old USD 1.50/key-cap mismatch is **RESOLVED**. Current available native-key
+  ceiling is the minimum of the two independent remainders: approximately
+  **USD 1.664269345**, not USD 3.00. No cap increase, top-up or new key was attempted.
+  This does not establish coverage of excluded BYOK billing or the preferred
+  USD 0.10 job-specific reservation; verify actual billing scope and enforceable
+  per-job limits before dispatch, and recheck live allowance immediately beforehand.
+- Configured identities still match `openai/gpt-6-luna` and
+  `openai/whisper-large-v3`. Correction metadata: **7 status-0 routes**, one
+  unavailable status-`-2` route; active routes advertise structured output,
+  response format and reasoning. ASR metadata: **3 status-0 routes**. Availability
+  is metadata-level evidence, not actual inference/timestamp/schema compatibility.
+- Current maximum published correction base rates remain USD **0.20 / million
+  input**, **1.00 / million output**. Published high-context/cache overrides reach
+  **0.40 / million input**, **1.50 / million output**, **0.50 / million cache-write**.
+  Use these maxima without cache discounts for the conservative reservation even
+  though the planned input is below the 272000-token override threshold.
+- ASR route rates remain USD **0.0000075**, **0.000025** and
+  **0.0000308333333333 per second** under the previously verified ASR billing unit;
+  round the maximum up to **USD 0.000031/s**. No search/tools/plugins are planned;
+  published web-search fees are outside this inference profile. Recheck units,
+  rates and any extra charges immediately before an eventual paid run.
+
+| Public endpoint metadata | SHA-256 |
+|---|---|
+| Correction endpoints | `2ddd2998497e618509db4da6a3cee6e7fcfefc91f36ea776ff46d18eb23e34f3` |
+| ASR endpoints | `71d3c216b18b2f6cca3f72bc9cef883ad16dc5e055d89be7d93fca57f1a92bef` |
+
+### Preferred minimal paid run — prepared, not executed
+- Retain one Core-admitted job for both smoke and Core acceptance; target **one
+  ASR + one correction**, with no standalone paid regeneration. Use individually
+  authorized Vietnamese speech <=10 s and prove one baseline chunk before dispatch.
+- Preserve existing algorithms and their shared supplemental allowance: worst-case
+  **17 ASR calls + 1 correction**, including recovery/rechecks; no automatic HTTP,
+  test, restart or new-generation retries. A failed/ambiguous dispatch consumes its
+  reservation until reconciled. Do not retry merely because unused budget exists.
+- Existing proposed limits remain 65536 input and 4096 combined visible/reasoning
+  output tokens, one correction attempt, concurrency 1, finite 120-s provider
+  timeouts. Broad ignored development settings have not been executed or changed.
+- Refreshed worst-rate arithmetic is unchanged:
+  correction `65536 * 0.00000050 + 4096 * 0.00000150 = USD 0.038912`;
+  conservative ASR `17 * 60 * 0.000031 = USD 0.031620`;
+  total **USD 0.070532**, preferred reservation **USD 0.10**. The 60-s allowance is
+  conservative budgeting, not a claim of a provider minimum. No funds are spent
+  or provider-reserved by this calculation. Refuse dispatch if any bound is unknown
+  or would exceed either current user authorization or effective provider allowance.
+
+### Actual requests, usage and funds
+
+| Item | This refresh / campaign total |
+|---|---|
+| Nonbillable metadata/documentation operations | 3 / 17 (12 API/schema + 5 documentation total) |
+| Billable ASR / correction requests | 0 / 0 |
+| Billable retries | 0 |
+| Input / output / reasoning tokens consumed | 0 / 0 / 0 |
+| Audio/transcript bytes transferred for inference | 0 |
+| Actual aggregate campaign expenditure | **USD 0.00**; no inference dispatched |
+| Remaining user authorization | **USD 3.00** |
+| Effective native-key remaining allowance, observed | **approximately USD 1.664269345** |
+| Preferred one-job reservation | **USD 0.10 planned, not executed** |
+
+### Remaining acceptance and release gates
+- **BLOCKED — SAMPLE TRANSFER AUTHORIZATION REQUIRED.** Select and authorize the
+  <=10-s Vietnamese speech sample and its derived-transcript transfer to
+  OpenRouter/upstream. Verify the actual request/reservation guard and current
+  billing coverage before enabling inference. If cost cannot be bounded, stop
+  before sending another request. Real-provider smoke and provider-origin Core
+  acceptance remain **NOT EXECUTED**.
+- Established F02, recovery, 53 Python/32 Java and controlled Core evidence remain
+  accepted; no regression risk from this documentation-only update justifies
+  repeating those tests. No new Core job, transcript, receipt or broker obligation.
+- **V6.2.2 DEFAULT PROMOTION — AWAITING APPROVAL**. Application/example default
+  remains `v5_full`; rollout owner and deployment authorization remain absent.
+
+### Focused verification of this refresh
+- Three-document diff reviewed. Read-only
+  `.venv/bin/python -B /tmp/opencode/v622_budget_doc_audit_20261104.py`: **PASS**.
+  Exact scope: 3 modified documents, 0 untracked, 0 staged. Credential comparison
+  performed in memory without disclosure: **0 sensitive findings**.
+- Historical acceptance/readiness ledger body preserved exactly. Protected
+  algorithm/prompt/validator/schema/default/`AGENTS.md` diff against closure
+  `94f716e`: **empty/PASS**. `git diff --check`: **PASS**.
+- Decimal reservation calculation: **PASS**, USD 0.070532 estimate <= USD 0.10
+  planned reservation <= both observed native-key and authorized user remainders.
+  Application/runtime tests were not rerun for this documentation-only update;
+  their established results remain historical, not new provider evidence.
+- No source, provider-account or Git write operation. Final Git status is reported
+  separately after this documentation checkpoint.

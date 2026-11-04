@@ -370,6 +370,72 @@ def install_diagnostics(control=None, *, scenario=""):
     ObjectStorage.source_file = observed_source
 
 
+def install_real_provider_diagnostics():
+    """Observe live provider usage without retaining audio or candidate text."""
+    if os.environ.get("AI_E2E04_REAL_PROVIDER_DIAGNOSTICS") != "1":
+        return
+
+    from sme_meeting_ai.providers.openrouter_instruction_llm_v62 import (
+        OpenRouterInstructionLlmV62Adapter,
+    )
+    from sme_meeting_ai.providers.openrouter_whisper import OpenRouterWhisperAdapter
+
+    asr_original = OpenRouterWhisperAdapter.transcribe_request
+    correction_original = OpenRouterInstructionLlmV62Adapter.complete
+    counts = {"asr": 0, "correction": 0}
+
+    def safe_category(error):
+        category = getattr(error, "category", None)
+        value = getattr(category, "value", None)
+        return value if isinstance(value, str) else type(error).__name__
+
+    def safe_cost(value):
+        return None if value is None else str(value)
+
+    def observed_asr(self, request):
+        counts["asr"] += 1
+        try:
+            result = asr_original(self, request)
+        except Exception as error:
+            emit("E2E04_REAL_PROVIDER", boundary="asr", outcome="failed",
+                 requestCount=counts["asr"], category=safe_category(error))
+            raise
+        usage = result.usage
+        provenance = result.provenance
+        emit(
+            "E2E04_REAL_PROVIDER", boundary="asr", outcome="accepted",
+            requestCount=counts["asr"], provider=provenance.provider,
+            requestedModel=provenance.requested_model, resolvedModel=provenance.resolved_model,
+            upstreamProvider=provenance.upstream_provider,
+            inputTokens=usage.input_tokens, outputTokens=usage.output_tokens,
+            totalTokens=usage.total_tokens, cost=safe_cost(usage.cost),
+            audioSeconds=safe_cost(usage.audio_seconds), reported=usage.reported,
+        )
+        return result
+
+    def observed_correction(self, request):
+        counts["correction"] += 1
+        try:
+            result = correction_original(self, request)
+        except Exception as error:
+            emit("E2E04_REAL_PROVIDER", boundary="correction", outcome="failed",
+                 requestCount=counts["correction"], category=safe_category(error))
+            raise
+        usage = result.usage
+        emit(
+            "E2E04_REAL_PROVIDER", boundary="correction", outcome="accepted",
+            requestCount=counts["correction"], provider=result.provider,
+            requestedModel=result.requested_model, resolvedModel=result.resolved_model,
+            inputTokens=usage.input_tokens, outputTokens=usage.output_tokens,
+            totalTokens=usage.total_tokens, reasoningTokens=usage.reasoning_tokens,
+            cost=safe_cost(usage.cost),
+        )
+        return result
+
+    OpenRouterWhisperAdapter.transcribe_request = observed_asr
+    OpenRouterInstructionLlmV62Adapter.complete = observed_correction
+
+
 def main() -> int:
     try:
         settings = load_settings(env_file=None)
@@ -382,6 +448,7 @@ def main() -> int:
         async def run():
             try:
                 install_diagnostics(control, scenario=os.environ.get("AI_E2E04_FAULT", ""))
+                install_real_provider_diagnostics()
                 configure_logging(settings)
                 composition = os.environ.get("AI_E2E04_COMPOSITION", "")
                 if composition == "v622":
@@ -393,6 +460,9 @@ def main() -> int:
                     with controlled_v622_boundaries(settings, case=os.environ.get("AI_E2E04_V622_CASE")) as state:
                         observed = ObservedV622Execution(TranscriptionExecution(settings), state)
                         return await run_worker(settings, observed, (lambda: observed,))
+                if composition == "real-provider":
+                    execution = TranscriptionExecution(settings)
+                    return await run_worker(settings, ControlledExecution(execution), (lambda: execution,))
                 if composition:
                     raise ConfigurationError("unsupported test composition")
                 execution = TranscriptionExecution(settings, pipeline_factory=campaign_pipeline)
