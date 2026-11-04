@@ -163,7 +163,7 @@ def test_ack_observer_correlates_delivery_and_rejects_redelivery(monkeypatch, tm
     monkeypatch.syspath_prepend(str(root / "infra/local/secure-integration/tests"))
     observer = importlib.import_module("e2e04_worker_process")
     acceptance = importlib.import_module("test_worker_e2e04")
-    event = SimpleNamespace(eventId="event-1")
+    event = SimpleNamespace(eventId="event-1", generation=0)
 
     async def request(*args, **kwargs):
         return SimpleNamespace(durable=True, state="RESULT_ACCEPTED", receipt={"receiptId": "receipt-1"})
@@ -178,9 +178,13 @@ def test_ack_observer_correlates_delivery_and_rejects_redelivery(monkeypatch, tm
     calls = []
 
     class FakeDelivery:
+        body = b"{}"
         message_id = "event-1"
         delivery_tag = 42
         channel = SimpleNamespace(number=7)
+        headers = {}
+        delivery_mode = 2
+        content_type = "application/json"
 
         async def ack(self):
             calls.append("ack")
@@ -223,9 +227,13 @@ def test_ack_observer_does_not_report_client_completion_on_failure(monkeypatch, 
     observer.install_diagnostics()
 
     class FailedDelivery:
+        body = b"{}"
         message_id = "event-1"
         delivery_tag = 42
         channel = SimpleNamespace(number=7)
+        headers = {}
+        delivery_mode = 2
+        content_type = "application/json"
         redelivered = False
 
         async def ack(self):
@@ -233,6 +241,7 @@ def test_ack_observer_does_not_report_client_completion_on_failure(monkeypatch, 
 
     with pytest.raises(RuntimeError):
         asyncio.run(TranscriptionWorker.handle(None, FailedDelivery()))
-    output = capsys.readouterr().out
-    assert '"operation": "invoked"' in output
-    assert '"operation": "client_completed"' not in output
+    records = [json.loads(line.removeprefix("E2E04_ACK "))
+               for line in capsys.readouterr().out.splitlines()
+               if line.startswith("E2E04_ACK ")]
+    assert [item["operation"] for item in records] == ["invoked"]
