@@ -73,8 +73,8 @@ labels represent recording-local clusters, not verified human identities.
 Original turns, including overlaps, remain available. Alignment accumulates
 overlap per speaker and returns `None` for no overlap or an exact tie; a single
 ASR segment spanning several turns receives at most one dominant speaker and is
-not split. Errors are `DiarizationError` with a sanitized `category`. Full ASR
-integration and the FastAPI demo endpoint belong to Task 02.
+not split. Errors are `DiarizationError` with a sanitized `category`. The integrated
+uploaded-audio workflow is described in the local demo section below.
 
 Run offline tests and the explicitly opted-in live smoke test from this directory:
 
@@ -93,14 +93,312 @@ using environment variables and no `.env` file. The test prints only the types o
 expected JSON fields and the normalized turn/speaker counts, never speaker labels
 or provider data. It requires at least two detected clusters for this fixture.
 
-**Real-provider JSON compatibility: NOT VERIFIED.** The pinned model's public
-schema lists `audio`, `num_speakers`, `min_speakers`, and `max_speakers` as input
-and a file URI as output; it does not specify the file's JSON contents. The current
-parser expects an object with `segments` entries containing `speaker`, `start`,
-and `stop` (timestamps as `H:MM:SS.fraction` strings), plus `speakers.count` and
-`speakers.labels`. These fields are assumptions covered by offline mocks, not an
-observed provider contract. Run the live test and inspect the actual structure
-before recording compatibility; do not commit audio or sensitive output.
+**Task 01 live baseline:** the Task 02 specification reports a successful real
+prediction with the pinned model: JSON file output, `segments` list, string
+`speaker`/`start`/`stop`, `speakers` dictionary with integer `count` and list
+`labels`, normalized to 8 turns and 2 clusters. Its reported runtime was about
+216 seconds. This baseline is separate from live verification of the integrated
+HTTP workflow; rerun the opt-in smoke test when verifying a new environment.
+
+## Development-only uploaded-audio demo (Task 02)
+
+The existing HTTP application can run this ephemeral vertical slice:
+
+```text
+Upload → FFprobe validation → queued job → existing offline preprocessing/VAD
+→ Whisper ASR + coverage/recovery/reconciliation → contextual LLM correction
+→ Replicate diarization → temporal overlap alignment → pollable JSON result
+```
+
+No Core API, RabbitMQ, PostgreSQL, MinIO/S3, meeting records, or production worker
+messages are required. The demo composes the reusable AI components directly; it
+does not instantiate `TranscriptionExecution`. ASR and correction settings,
+including `v5_full` and `v62_edits`, retain their existing semantics. There is no
+additional transcription or correction pass. Diarization only adds metadata to
+corrected text.
+
+### Prerequisites and startup
+
+From `services/ai`, use Python **3.12** and `uv`. Install **FFmpeg and FFprobe** in
+`/usr/bin` or `/bin`, provision a valid **Silero v5-compatible ONNX model** outside
+Git, and allow network access to OpenRouter and Replicate. Provide sufficient
+temporary disk for bounded uploads plus normalized PCM/evidence (the existing
+audio limits also apply). Set these in local `.env` or the process environment:
+
+| Setting | Requirement/default |
+| --- | --- |
+| `AI_SERVICE_NAME`, `AI_SERVICE_IDENTITY` | Required; example `sme-meeting-ai`, `ai-core` |
+| `AI_ENVIRONMENT` | Must be `development` for demo routes |
+| `AI_DEMO_ENABLED` | Explicit `true`; defaults to `false` |
+| `AI_HTTP_HOST`, `AI_HTTP_PORT` | Literal `127.0.0.1` (or `::1`), default port `8000` |
+| `AI_AUDIO_VAD_MODEL_PATH` | Absolute path to the externally provisioned ONNX model |
+| `AI_AUDIO_VAD_MODEL_SHA256` | Expected lowercase SHA-256 when pinning/checksum verification is required; a configured mismatch fails initialization |
+| `OPENROUTER_API_KEY` | Valid inference credential; do not commit it |
+| `AI_TRANSCRIPT_CORRECTION_MODEL` | Explicit approved instruction model; no fallback model is selected |
+| `AI_TRANSCRIPT_CORRECTION_MODE` | Existing `v5_full` default or explicit `v62_edits` |
+| `AI_TRANSCRIPT_CORRECTION_*`, `AI_AUDIO_ASR_*` | Existing timeouts, context, reasoning, sampling, strategy and call budgets apply |
+| `REPLICATE_API_TOKEN` | Required for successful diarization; absent/invalid configuration becomes enrichment failure, preserving transcript |
+| `AI_DIARIZATION_MODEL` | Existing pinned model shown above |
+| `AI_DIARIZATION_TIMEOUT_SECONDS` | Existing prediction/upload/download deadline, default `300` seconds |
+| `AI_AUDIO_TEMP_DIR` | Default `/tmp`; demo requires a location under `/tmp` or `/var/tmp`, outside Git |
+| `AI_DEMO_MAX_UPLOAD_BYTES` | Default `100000000`; effective file limit is also bounded by `AI_AUDIO_MAX_INPUT_BYTES` |
+| `AI_DEMO_MAX_CONCURRENT_JOBS` | Default `1`, maximum `4`; must fit `AI_AUDIO_VAD_MAX_CONCURRENT_RECORDINGS` |
+| `AI_DEMO_MAX_QUEUED_JOBS` | Default `2`, maximum `16` |
+| `AI_DEMO_MAX_RETAINED_JOBS` | Default `32`, maximum `128` completed/failed results |
+| `AI_DEMO_RESULT_TTL_SECONDS` | Default `900` seconds after completion/failure, maximum `86400` |
+| `AI_HTTP_SHUTDOWN_TIMEOUT_SECONDS` | Existing bounded shutdown grace, default `30` seconds |
+| `AI_DEMO_WEB_ORIGIN` | Optional exact loopback HTTP browser origin with port, e.g. `http://localhost:5173` |
+
+```sh
+# First-time setup only; preserve an existing configured .env.
+cp .env.example .env
+uv sync --locked
+# Edit .env: enable demo, configure the real VAD file/checksum and inference settings.
+uv run sme-ai-http
+```
+
+Startup initializes the actual VAD model and configured OpenRouter adapters off
+the event loop. Missing ASR/correction/VAD prerequisites fail startup with a
+sanitized marker; no dummy model is substituted. Replicate is optional enrichment.
+The same application retains `/health/live` and `/health/ready`. Demo routes are
+absent in `test`, `staging`, `production`, or with a non-loopback bind, even if
+`AI_DEMO_ENABLED=true`. Existing internal mTLS authorization remains independent.
+Run **one** HTTP process; jobs cannot be shared across Uvicorn workers.
+
+### Public JSON contract for the Web client
+
+All demo responses use `Cache-Control: no-store`. No wildcard/global CORS is
+enabled. Requests require a loopback TCP peer and a local Host with the configured
+API port; forwarded headers cannot establish local access. When an `Origin` header
+is present, it must be the local API origin or exactly `AI_DEMO_WEB_ORIGIN`.
+For the future Vite client, proxy `/demo` to `http://127.0.0.1:8000` with
+`changeOrigin: true` and set `AI_DEMO_WEB_ORIGIN` to the actual local Vite origin.
+This uses same-origin browser requests through the proxy, without opening CORS.
+
+**POST `/demo/v1/jobs`**, `multipart/form-data`:
+
+| Field | Meaning |
+| --- | --- |
+| `file` | Required, exactly one audio file; client filename/MIME are not trusted |
+| `num_speakers` | Optional integer count hint, `1..1000` |
+| `min_speakers` | Optional integer minimum hint, `1..1000` |
+| `max_speakers` | Optional integer maximum hint, `1..1000` |
+
+Omit unused hints. Require `min <= max` and, when present, `min <= num <= max`.
+Duplicate/unknown fields and non-integer hints are rejected. Existing preprocessing
+accepts supported single-audio-stream PCM WAV, MP3, AAC M4A/MP4, or Opus WebM.
+The upload is byte-limited while receiving, then probed using the existing audio
+validator. Full decode and VAD remain part of the worker's transcription stage.
+Upload/probe time precedes acceptance; inference does not delay acceptance.
+
+Example request (replace the path with a recording you are permitted to upload):
+
+```sh
+curl --fail-with-body -X POST http://127.0.0.1:8000/demo/v1/jobs \
+  -F 'file=@/absolute/path/to/permitted-two-speaker.wav' \
+  -F 'min_speakers=2' -F 'max_speakers=2'
+```
+
+Example `202 Accepted` (illustrative IDs/content throughout this section):
+
+```json
+{"jobId":"8a7faac8-8d41-4459-84e5-b1bb3327f9a2","status":"queued","stage":"queued"}
+```
+
+The `Location` response header is `/demo/v1/jobs/{jobId}`.
+
+**GET `/demo/v1/jobs/{jobId}`**, `200 OK` for a known job:
+
+```sh
+curl --fail-with-body http://127.0.0.1:8000/demo/v1/jobs/REPLACE_WITH_RETURNED_JOB_ID
+```
+
+Example processing response:
+
+```json
+{
+  "jobId": "8a7faac8-8d41-4459-84e5-b1bb3327f9a2",
+  "status": "processing", "stage": "diarization", "result": null, "error": null
+}
+```
+
+Example completed response (illustrative, **not actual inference output**):
+
+```json
+{
+  "jobId": "8a7faac8-8d41-4459-84e5-b1bb3327f9a2",
+  "status": "completed", "stage": "completed", "error": null,
+  "result": {
+    "durationMs": 4500, "language": "vi",
+    "segments": [
+      {"ordinal": 0, "startMs": 500, "endMs": 2000, "speakerLabel": "SPEAKER_00", "text": "Chào mọi người."},
+      {"ordinal": 1, "startMs": 2200, "endMs": 4000, "speakerLabel": "SPEAKER_01", "text": "Em xin báo cáo tiến độ."}
+    ],
+    "diarization": {
+      "status": "completed", "errorCode": null,
+      "speakers": [{"label": "SPEAKER_00"}, {"label": "SPEAKER_01"}],
+      "turns": [
+        {"startMs": 500, "endMs": 2000, "speakerLabel": "SPEAKER_00"},
+        {"startMs": 2200, "endMs": 4000, "speakerLabel": "SPEAKER_01"}
+      ]
+    }
+  }
+}
+```
+
+`status` is `queued | processing | completed | failed`. Queued jobs have stage
+`queued`, processing jobs have stage `transcription | diarization`, completed jobs
+have stage `completed`. `transcription` covers preprocessing, Whisper, recovery,
+reconciliation and contextual correction. There are no estimated percentages.
+Terminal transcription failures keep stage `transcription`, with no result:
+
+```json
+{
+  "jobId": "8a7faac8-8d41-4459-84e5-b1bb3327f9a2",
+  "status": "failed", "stage": "transcription", "result": null,
+  "error": {"code": "PROCESSING_FAILED", "message": "Audio transcription could not be completed."}
+}
+```
+
+Job error codes are `PROCESSING_FAILED`, `TIMEOUT`, or `SHUTDOWN`. Error messages
+are sanitized; provider diagnostics, paths, secrets and transcript fragments are
+never included. HTTP errors use `{"error":{"code":"...","message":"..."}}`.
+
+| HTTP status | Meaning |
+| --- | --- |
+| `202` | Validated upload accepted; body contains the transient job ID |
+| `200` | Poll succeeded, including terminal failed jobs |
+| `404` | Unknown/expired/evicted job, restarted process, or disabled demo route |
+| `403` | Nonlocal peer/Host or disallowed Origin |
+| `413` | File or total request exceeds bounded upload limits |
+| `415` | Request must be multipart |
+| `422` | Invalid audio, multipart fields, or speaker hints |
+| `429` | Admission full; `Retry-After: 2` (also while shutting down) |
+| `503` | Demo unavailable or temporary upload I/O unavailable |
+
+Successful transcription with failed diarization is still overall **completed**:
+all corrected segments remain, their `speakerLabel` values are `null`, and
+`diarization` is `{"status":"failed","errorCode":"TIMEOUT","speakers":[],"turns":[]}`
+(example category). Categories are `CONFIGURATION`, `AUTHENTICATION`, `RATE_LIMIT`,
+`TIMEOUT`, `TRANSPORT`, `PROVIDER`, `MALFORMED_OUTPUT`, `VALIDATION`, or
+`PROCESSING_FAILED`. Do not retry ASR automatically for an enrichment failure.
+Legitimate no-speech output has `segments: []` and diarization `status: "skipped"`,
+`errorCode: null`, empty speakers/turns. Empty output with unresolved speech is a
+failed job rather than fabricated silence.
+
+### Timing, lifecycle and limits
+
+Transcript timing comes from absolute normalized **16 kHz sample positions**:
+`startMs = start_sample // 16`, `endMs = (end_sample + 15) // 16`, and
+`durationMs = (sample_count + 15) // 16`. This floors starts and ceils ends using
+exact integer arithmetic. The exact same intervals feed `align_speakers()` and
+the public response. Corrected text, segment ordinals and ordering are preserved;
+segments are never split/merged or retimed to match speakers. Diarization receives
+the original uploaded recording, and its normalized turns/clusters, including
+overlaps and repeated turns, are preserved. No overlap or an exact overlap tie
+produces a null speaker.
+
+Admission counts receiving/probing uploads plus queued/running jobs against the
+bounded `concurrency + queue` capacity. Blocking inference runs in a dedicated
+`ThreadPoolExecutor`; it never runs on the FastAPI event-loop thread. Uploads use
+server-owned names in private temporary directories and are deleted before terminal
+result publication. Rejected/invalid uploads are also cleaned up. Results remain
+only in memory; expiry is checked on lookup and by a periodic reaper (at most 30
+seconds between sweeps). Oldest terminal jobs can be evicted before TTL when the
+retained-result count is full. Active jobs do not expire as completed results.
+
+The **overall cooperative processing budget** starts when a worker begins and is
+derived from existing settings, in seconds:
+
+```text
+4 * audio_probe_timeout + audio_decode_timeout + audio_vad_timeout
++ audio_asr_max_total_calls * audio_asr_timeout
++ audio_asr_recovery_max_wall_time
++ transcript_correction_max_attempts * transcript_correction_timeout
++ diarization_timeout + 60
+```
+
+At defaults this is about 9.3 hours: a conservative maximum authorized call
+envelope, **not expected latency** for a short recording. Native stage/call budgets
+still apply; short demos normally take minutes with variable provider queueing.
+The overall deadline is checked at transcription/diarization boundaries. It cannot
+interrupt a synchronous thread. A transcription deadline violation fails the job;
+a diarization deadline violation preserves corrected text with failed enrichment.
+Changing ASR call/timeout budgets changes this envelope automatically.
+
+Shutdown stops admission, cancels and cleans queued work, and waits the configured
+HTTP shutdown grace for running work. If a thread outlives that grace, it continues
+to own its audio and AI resources until it really returns; the last future callback
+closes providers/VAD and the temporary root. Python executor threads may therefore
+keep the process alive past HTTP lifespan shutdown. Canceling an asyncio task does
+not forcibly stop inference. An abrupt OS kill cannot guarantee application cleanup.
+
+### Focused offline and authorized live verification
+
+Offline tests use injected providers; they do **not** establish live inference:
+
+```sh
+uv run pytest tests/unit/test_demo_pipeline.py tests/unit/test_demo_jobs.py \
+  tests/integration/test_demo_api.py tests/integration/test_demo_composition.py \
+  tests/integration/test_demo_live.py tests/unit/test_diarization.py \
+  tests/integration/test_replicate_diarization_live.py \
+  tests/integration/test_offline_transcription_pipeline.py \
+  tests/unit/test_http_runtime.py tests/unit/test_http_security.py \
+  tests/unit/test_http_entrypoint.py tests/unit/test_config.py -q
+uv run ruff check src/sme_meeting_ai/demo src/sme_meeting_ai/api/demo.py \
+  src/sme_meeting_ai/api/app.py src/sme_meeting_ai/core/config.py \
+  tests/unit/test_demo_pipeline.py tests/unit/test_demo_jobs.py \
+  tests/integration/test_demo_api.py tests/integration/test_demo_composition.py \
+  tests/integration/test_demo_live.py
+```
+
+The API tests perform real local FFprobe upload validation on synthetic WAVs.
+Default live tests skip unless explicitly opted in. To execute the actual
+upload-to-result flow with **permitted short Vietnamese two-speaker audio**:
+
+```sh
+AI_RUN_DEMO_LIVE=1 AI_DEMO_LIVE_AUDIO=/absolute/path/to/permitted-two-speaker.wav \
+  uv run --env-file .env pytest tests/integration/test_demo_live.py -m live_provider -v -s
+```
+
+This launches the real HTTP process on an ephemeral loopback port, uploads once,
+polls every 2 seconds, and checks corrected text, successful diarization and at
+least two attributed speaker labels. All transcription stages must have completed
+for a result to be published. It prints counts only, not transcript/provider data.
+The smoke observer allows 30 minutes for a **short** fixture (separate from the
+service's conservative processing budget). No Core/queue/storage service is
+started. External inference may incur cost; OpenRouter/Replicate have their own
+data-retention policies. A one-speaker recording can check connectivity but cannot
+pass this two-speaker attribution check.
+
+Task 02 implementation-session live status: **not executed**. Credentials/model
+configuration were present, but no explicit permitted audio fixture was supplied.
+The Task 01 provider baseline above does not establish this HTTP end-to-end test.
+
+### Handoff to `app/demo-asr-pipeline`
+
+1. Use the local Vite proxy described above. Submit a `FormData` with `file` and
+   any optional count hints; let the browser set its multipart boundary.
+2. On `202`, store the returned `jobId` in component/application **memory only**.
+3. Poll `GET /demo/v1/jobs/{jobId}` about every **2 seconds**, using one outstanding
+   poll at a time. Honor `Retry-After` on capacity rejection of new uploads.
+4. Render queued/processing state from `status` and the backed `stage` literals.
+   Stop polling at completed/failed; treat `404` as discarded/expired state.
+5. For completed results, render segments **in returned order**, keyed by source
+   ordinal. Display `startMs`/`endMs`, corrected `text`, and `speakerLabel` or an
+   explicit unknown-speaker label. Render text as text, not trusted HTML.
+6. If overall completed but diarization failed, keep the full transcript visible
+   and show an attribution-unavailable message. Labels are recording-local
+   anonymous clusters, never account/user identities. No-overlap/ties may also be
+   unknown when diarization succeeded.
+7. Discard job ID, transcript, polling timers and local audio references on reload
+   or unmount. Do not restore them from browser storage or the URL. The backend
+   intentionally offers no listing/recovery API or persistent meeting state.
+
+Intended limitations: jobs vanish on process restart; results have bounded TTL
+and count retention; anonymous cluster labels are not identities; dominant-speaker
+segment alignment cannot represent every within-segment transition; inference
+latency and cost vary. Completed processing does not certify lexical completeness.
 
 ## Runtime packaging details
 

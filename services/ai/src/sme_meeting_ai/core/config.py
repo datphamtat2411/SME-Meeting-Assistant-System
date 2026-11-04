@@ -49,6 +49,13 @@ class Settings(BaseSettings):
     http_shutdown_timeout_seconds: float = Field(
         default=30, gt=0, le=300, allow_inf_nan=False,
     )
+    demo_enabled: bool = False
+    demo_max_upload_bytes: int = Field(default=100000000, gt=0, le=100000000)
+    demo_max_concurrent_jobs: int = Field(default=1, ge=1, le=4)
+    demo_max_queued_jobs: int = Field(default=2, ge=0, le=16)
+    demo_max_retained_jobs: int = Field(default=32, ge=1, le=128)
+    demo_result_ttl_seconds: float = Field(default=900, gt=0, le=86400, allow_inf_nan=False)
+    demo_web_origin: str | None = None
     tls_cert_file: Path | None = None
     tls_key_file: Path | None = None
     tls_client_ca_file: Path | None = None
@@ -231,6 +238,33 @@ class Settings(BaseSettings):
     transcript_correction_temperature: float | None = Field(default=0, ge=0, le=1, allow_inf_nan=False)
     transcript_correction_min_text_ratio: float = Field(default=0.65, gt=0, le=1, allow_inf_nan=False)
     transcript_correction_max_text_ratio: float = Field(default=1.5, ge=1, le=3, allow_inf_nan=False)
+
+    @property
+    def demo_available(self) -> bool:
+        return (self.demo_enabled and self.environment is Environment.DEVELOPMENT
+                and self.http_host in ("127.0.0.1", "::1"))
+
+    @field_validator("demo_web_origin")
+    @classmethod
+    def local_demo_origin(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        parts = urlsplit(value)
+        if (parts.scheme != "http" or parts.hostname not in ("127.0.0.1", "localhost", "::1")
+                or parts.username or parts.password or parts.path or parts.query or parts.fragment
+                or any(ord(c) <= 32 for c in value) or parts.port is None):
+            raise ValueError("Demo Web origin must be an explicit local HTTP origin with port")
+        return value
+
+    @model_validator(mode="after")
+    def local_demo_resources(self) -> Self:
+        if self.demo_available:
+            root = self.audio_temp_dir.resolve()
+            if not any(root.is_relative_to(Path(parent).resolve()) for parent in ("/tmp", "/var/tmp")):
+                raise ValueError("Demo temporary files require /tmp or /var/tmp")
+            if self.demo_max_concurrent_jobs > self.audio_vad_max_concurrent_recordings:
+                raise ValueError("Demo concurrency must fit the configured VAD recording capacity")
+        return self
 
     @field_validator("rabbitmq_url", "s3_endpoint_url", "core_api_base_url")
     @classmethod
