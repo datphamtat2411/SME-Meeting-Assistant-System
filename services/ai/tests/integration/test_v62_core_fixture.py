@@ -1,4 +1,4 @@
-"""Generate the synthetic Core compatibility fixture using the real worker composition.
+"""Check the synthetic Core fixture against current real worker composition bytes.
 
 Run from services/ai with V62_FIXTURE_DIR pointing to the API worker-v1 resources:
 V62_FIXTURE_DIR=../api/src/test/resources/worker-v1 .venv/bin/pytest -q tests/integration/test_v62_core_fixture.py
@@ -13,7 +13,6 @@ import os
 from pathlib import Path
 
 import httpx
-import pytest
 from integration.test_correction_v6_worker import BINDING, MEDIA
 from integration.test_worker_v62_composition import (
     composition as composition,
@@ -35,8 +34,7 @@ from sme_meeting_ai.workers.transcription import TranscriptionExecution, map_res
 
 FIXTURE_DIR = os.environ.get("V62_FIXTURE_DIR")
 
-@pytest.mark.skipif(FIXTURE_DIR is None, reason="explicit fixture generation only")
-def test_generate_v62_core_fixture(composition, v61_workflow):
+def test_v62_core_fixture_matches_production_composition(composition, v61_workflow):
     h = composition
     h.settings = h.settings.model_copy(update={"transcript_correction_mode": "v62_edits"})
     flow = v61_workflow(source_id=MEDIA, texts=("nhóm bàn về chày chuỗi rồi nói và mã JWT hôm nay", "cuộc họp giữ nguyên nội dung"))
@@ -62,9 +60,13 @@ def test_generate_v62_core_fixture(composition, v61_workflow):
             snapshot = json.dumps(dict(version="worker-config-v2", settings=config, correction_mode="v62_edits",
                                        correction_effective=effective), sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
             assert json.loads(raw)["provenance"]["configurationSha256"] == hashlib.sha256(snapshot).hexdigest()
-            directory = Path(FIXTURE_DIR)
-            (directory / "v62-worker.json").write_bytes(raw)
-            (directory / "v62-worker-config.json").write_bytes(snapshot)
-            (directory / "v62-worker.sha256").write_text(hashlib.sha256(raw).hexdigest() + "\n", encoding="ascii")
+            generated = {"v62-worker.json": raw, "v62-worker-config.json": snapshot,
+                         "v62-worker.sha256": (hashlib.sha256(raw).hexdigest() + "\n").encode("ascii")}
+            directory = Path(FIXTURE_DIR) if FIXTURE_DIR else Path(__file__).resolve().parents[3] / "api/src/test/resources/worker-v1"
+            for name, content in generated.items():
+                if FIXTURE_DIR:
+                    (directory / name).write_bytes(content)
+                else:
+                    assert (directory / name).read_bytes() == content, f"stale Python-generated Core fixture: {name}"
 
     asyncio.run(generate())

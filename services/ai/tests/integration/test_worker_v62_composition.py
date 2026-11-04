@@ -20,6 +20,7 @@ from unit.test_correction_v6 import edit
 from unit.test_correction_v6 import offline_environment as offline_environment
 from unit.test_worker_integrations import S3, event_body
 
+from sme_meeting_ai.core.config import Settings
 from sme_meeting_ai.providers.openrouter_instruction_llm_v62 import (
     OpenRouterInstructionLlmV62Adapter,
 )
@@ -178,6 +179,60 @@ def test_selected_provider_runs_real_v62_pipeline(composition, v61_workflow):
             other = validate_result_bytes(map_result(outcome, changed, correction_mode="v62_edits", **BINDING), **BINDING)
             assert other.provenance.configurationSha256 != wire.provenance.configurationSha256
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("case", ["empty", "noop", "sparse"])
+def test_environment_selected_v62_edit_contracts(composition, v61_workflow, monkeypatch, case):
+    h = composition
+    monkeypatch.setenv("AI_TRANSCRIPT_CORRECTION_MODE", "v62_edits")
+    values = h.settings.model_dump(exclude={"transcript_correction_mode", "openrouter_api_key"})
+    h.settings = Settings(_env_file=None, OPENROUTER_API_KEY=h.settings.openrouter_api_key, **values)
+    assert h.settings.transcript_correction_mode == "v62_edits"
+    texts = ("nhóm bàn về chày chuỗi rồi nói và mã JWT hôm nay", "cuộc họp giữ nguyên nội dung")
+    flow = v61_workflow(source_id=MEDIA, texts=texts)
+    requests = []
+    entries = {
+        "empty": [], "noop": [edit("chày chuỗi", "chày chuỗi")],
+        "sparse": [edit("chày chuỗi rồi nói", "trầy xước rồi nói"), edit("JWT", "JWS")],
+    }[case]
+
+    def respond(request):
+        requests.append(json.loads(request.content))
+        return provider_response({"edits": entries})
+
+    async def run():
+        async with TranscriptionExecution(h.settings) as execution:
+            pipeline = execution.worker.pipeline
+            assert execution._pipeline_factory is None
+            assert type(pipeline._correction_provider) is OpenRouterInstructionLlmV62Adapter
+            assert pipeline._correction_mode == pipeline.effective_settings.transcript_correction_mode == "v62_edits"
+            pipeline._preprocessing, pipeline._planner, pipeline._transcriber = flow.preprocessing, flow.planner, flow.transcriber
+            provider = pipeline._correction_provider
+            provider._client.close()
+            provider._client = httpx.Client(transport=httpx.MockTransport(respond))
+            outcome = pipeline.run(flow.source)
+            assert outcome.failure is None and len(requests) == 1
+            assert requests[0]["messages"][0]["content"] == V62_SYSTEM_PROMPT
+            p = outcome.provenance.correction
+            assert (p.proposed_edit_count, p.accepted_edit_count, p.rejected_edit_count) == {
+                "empty": (0, 0, 0), "noop": (1, 0, 1), "sparse": (2, 1, 1),
+            }[case]
+            assert dict(p.rejection_reason_counts) == {
+                "empty": {}, "noop": {"noop_edit": 1}, "sparse": {"protected_token": 1},
+            }[case]
+            expected = (texts[0].replace("chày chuỗi rồi nói", "trầy xước rồi nói"), texts[1]) if case == "sparse" else texts
+            assert tuple(segment.text for segment in outcome.result.segments) == expected
+            original_segments = json.loads(requests[0]["messages"][1]["content"])["segments"]
+            assert tuple(segment["text"] for segment in original_segments) == texts
+            assert all(not hasattr(segment, "text") for segment in outcome.evidence.reconciliation.segments)
+            raw = map_result(outcome, pipeline.effective_settings, correction_mode="v62_edits", **BINDING)
+            wire = validate_result_bytes(raw, **BINDING)
+            assert wire.correctionProof.outputSha256 == correction_digest(json.loads(raw)["segments"])
+            assert wire.provenance.configurationSha256 == fingerprint(outcome, pipeline.effective_settings, "v62_edits")
+            assert wire.correctionProof.promptVersion == "vi-whole-meeting-6.2.2"
+            assert wire.pipelineStatus == ("COMPLETED" if case == "empty" else "COMPLETED_WITH_WARNINGS")
+    asyncio.run(run())
+    assert sorted(h.closed) == sorted(h.acquired)
 
 
 def test_v62_worker_completion_storage_receipt_and_ack(composition, v61_workflow):

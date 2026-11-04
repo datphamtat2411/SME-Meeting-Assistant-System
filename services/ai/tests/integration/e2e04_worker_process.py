@@ -383,6 +383,18 @@ def main() -> int:
             try:
                 install_diagnostics(control, scenario=os.environ.get("AI_E2E04_FAULT", ""))
                 configure_logging(settings)
+                composition = os.environ.get("AI_E2E04_COMPOSITION", "")
+                if composition == "v622":
+                    from e2e04_v622_composition import (
+                        ObservedV622Execution,
+                        controlled_v622_boundaries,
+                    )
+
+                    with controlled_v622_boundaries(settings, case=os.environ.get("AI_E2E04_V622_CASE")) as state:
+                        observed = ObservedV622Execution(TranscriptionExecution(settings), state)
+                        return await run_worker(settings, observed, (lambda: observed,))
+                if composition:
+                    raise ConfigurationError("unsupported test composition")
                 execution = TranscriptionExecution(settings, pipeline_factory=campaign_pipeline)
                 return await run_worker(settings, ControlledExecution(execution), (lambda: execution,))
             finally:

@@ -5,11 +5,12 @@ import hashlib
 import json
 import os
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 
 from test_worker_live_acceptance import controlled_pipeline
 
+from sme_meeting_ai.core.config import Environment
 from sme_meeting_ai.integrations.core_api import CoreError
 from sme_meeting_ai.transcription.correction import (
     CorrectionError,
@@ -31,7 +32,7 @@ def emit(prefix, **fields):
 class RecoveryFaults:
     def __init__(self, control, scenario):
         if scenario not in ("", "lost_completion", "lease_expiry", "provider_failure",
-                            "core_outage", "crash_inflight", "concurrent_claims"):
+                            "core_outage", "crash_inflight", "concurrent_claims", "evidence_invalid"):
             raise ValueError("unsupported recovery fault")
         self.control = control
         self.scenario = scenario
@@ -79,13 +80,17 @@ class RecoveryFaults:
                  receiptId=result.receipt["receiptId"])
             await self.control.checkpoint(POST_COMPLETE, event_id=event.eventId)
             raise CoreError()
-        if self.scenario == "provider_failure" and operation == "fail":
+        if self.scenario in ("provider_failure", "evidence_invalid") and operation == "fail":
             replay = await call(event, operation, body, None)
             assert replay.replay is True and replay.receipt == result.receipt
             emit("E2E04_REPLAY", eventId=event.eventId, generation=event.generation,
                  operation="fail", receiptId=result.receipt["receiptId"],
-                 replay=replay.replay, commandId=body["commandId"],
-                 commandSha256=hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest())
+                  replay=replay.replay, commandId=body["commandId"],
+                  commandSha256=hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest())
+            if self.scenario == "evidence_invalid":
+                emit("E2E04_F02_REPLAY", eventId=event.eventId, generation=event.generation,
+                     status=200, originalReplay=result.replay, replay=replay.replay,
+                     receiptId=result.receipt["receiptId"], commandId=body["commandId"])
         return result
 
     async def stale_probe(self, call, event, body):
@@ -106,14 +111,30 @@ class ControlledProviderFailure:
 
 
 def campaign_pipeline(settings, resources):
+    scenario = os.environ.get("AI_E2E04_FAULT")
+    if scenario == "evidence_invalid" and settings.environment is not Environment.TEST:
+        raise ValueError("F02 evidence injection requires test environment")
     pipeline = controlled_pipeline(settings, resources)
-    if os.environ.get("AI_E2E04_FAULT") == "provider_failure":
+    boundary = nullcontext
+    if scenario == "provider_failure":
         pipeline._correction_provider = ControlledProviderFailure()
+    elif scenario == "evidence_invalid":
+        from e2e04_f02_evidence import (
+            ForbiddenCorrectionProvider,
+            invalid_correction_handoff,
+        )
+
+        pipeline._correction_provider = ForbiddenCorrectionProvider()
+
+        def boundary():
+            return invalid_correction_handoff(settings.environment)
+
     original = pipeline.run
 
     def observed_run(source):
         emit("E2E04_PIPELINE", phase="started", **execution_binding.get())
-        outcome = original(source)
+        with boundary():
+            outcome = original(source)
         emit("E2E04_PIPELINE_RESULT", status=outcome.status.value,
              completedStages=[stage.name for stage in outcome.completed_stages],
              failurePhase=outcome.failure.stage.name if outcome.failure else None,
