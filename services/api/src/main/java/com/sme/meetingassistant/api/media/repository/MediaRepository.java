@@ -843,13 +843,17 @@ public class MediaRepository {
                 """, (rs, row) -> rs.getObject("id", UUID.class), jobId);
             if (expired.isEmpty()) continue;
             this.jdbc.update("""
-                UPDATE processing_stage_runs SET status = 'FAILED', retryable = TRUE,
+                UPDATE processing_stage_runs SET status = 'FAILED', retryable = NOT EXISTS (
+                    SELECT 1 FROM transcription_worker_claims c JOIN transcription_worker_deliveries d ON d.event_id=c.event_id
+                    WHERE c.execution_stage_run_id=processing_stage_runs.id AND d.generation>=3),
                   error_code = 'STAGE_LEASE_EXPIRED', completed_at = CURRENT_TIMESTAMP
                 WHERE processing_job_id = ? AND status = 'RUNNING'
                   AND (lease_expires_at IS NULL OR lease_expires_at <= clock_timestamp())
                 """, jobId);
             this.jdbc.update("""
-                UPDATE processing_jobs SET status = 'FAILED', retryable = TRUE,
+                UPDATE processing_jobs SET status = 'FAILED', retryable = NOT EXISTS (
+                    SELECT 1 FROM transcription_worker_claims c JOIN transcription_worker_deliveries d ON d.event_id=c.event_id
+                    WHERE c.processing_job_id=processing_jobs.id AND d.generation>=3),
                   error_code = 'STAGE_LEASE_EXPIRED',
                   error_summary = 'Processing worker stopped reporting progress.',
                   completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP,
@@ -868,6 +872,14 @@ public class MediaRepository {
                 AND attempt_number = (SELECT MAX(attempt_number) FROM processing_stage_runs
                   WHERE processing_job_id = ? AND stage_code = ?))
             """, Boolean.class, jobId, stageCode, jobId, stageCode));
+    }
+
+    public boolean hasTranscriptionWorkerClaim(UUID jobId) {
+        return Boolean.TRUE.equals(jdbc.queryForObject(
+            """
+            SELECT EXISTS(SELECT 1 FROM transcription_worker_claims WHERE processing_job_id=?)
+                OR EXISTS(SELECT 1 FROM transcription_worker_reconciliations WHERE processing_job_id=?)
+            """,Boolean.class,jobId,jobId));
     }
 
     public boolean retryJobAndOutbox(Job job, UUID eventId, String stageCode, int maxRetries) {

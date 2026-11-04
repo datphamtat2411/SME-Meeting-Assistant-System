@@ -1,0 +1,13 @@
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.py[cod]
+# Runtime material must live outside the checkout, even when ignored.
+*.env
+*.crt
+*.key
+*.pem
+*.p12
+*.pfx
+*.csr
+*.srl

@@ -25,6 +25,10 @@ public interface ProcessingJobLifecycle {
 
     void renewStageLease(StageClaim claim);
 
+    /** Worker V1's short lease is capability-specific; other stage leases are unchanged. */
+    StageClaim startTranscriptionWorkerStage(UUID jobId, String stageCode);
+    void renewTranscriptionWorkerLease(StageClaim claim);
+
     void completeStage(StageClaim claim, String outcome, String errorCode, String metricsJson);
 
     /** Worker failure details are untrusted and ignored; Core derives safe summaries from errorCode. */

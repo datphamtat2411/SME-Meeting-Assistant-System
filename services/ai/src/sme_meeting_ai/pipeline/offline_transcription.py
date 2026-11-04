@@ -282,16 +282,11 @@ def _failure(error: Exception, stage: OfflineTranscriptionStage) -> OfflineTrans
         CorrectionErrorCategory,
     )
 
-    category = {
-        OfflineTranscriptionStage.PREPROCESSING: "INFERENCE",
-        OfflineTranscriptionStage.CHUNK_PLANNING: "VALIDATION",
-        OfflineTranscriptionStage.ASR: "PROVIDER",
-        OfflineTranscriptionStage.COVERAGE_RECOVERY: "VALIDATION",
-        OfflineTranscriptionStage.RECONCILIATION: "VALIDATION",
-        OfflineTranscriptionStage.CORRECTION: "PROVIDER",
-    }[stage]
+    category = "RESOURCE"
     if isinstance(error, AudioProcessingError) and isinstance(error.category, AudioErrorCategory):
         category = error.category.value
+        if stage is OfflineTranscriptionStage.PREPROCESSING and error.origin == "evidence" and category in ("VALIDATION", "DECODING"):
+            category = "MALFORMED_OUTPUT"
     elif isinstance(error, AsrError) and isinstance(error.category, AsrErrorCategory):
         category = error.category.value.upper()
     elif isinstance(error, CorrectionError) and isinstance(error.category, CorrectionErrorCategory):
@@ -393,9 +388,11 @@ class OfflineTranscriptionPipeline:
         transcriber: "AsrTranscriber", correction_provider: "TranscriptCorrectionProvider | V6CorrectionProvider",
         settings: Settings, pipeline_version: str = "1",
         *, correction_mode: Literal["v5_full", "v6_edits", "v61_edits", "v62_edits"] = "v5_full",
+        asr_adapter_version: str = "openrouter-whisper-v1",
     ):
         _require(isinstance(settings, Settings))
         _require(isinstance(pipeline_version, str) and bool(pipeline_version.strip()))
+        _require(isinstance(asr_adapter_version, str) and bool(asr_adapter_version.strip()))
         _require(type(correction_mode) is str and correction_mode in ("v5_full", "v6_edits", "v61_edits", "v62_edits"))
         self._preprocessing = preprocessing
         self._planner = planner
@@ -404,6 +401,12 @@ class OfflineTranscriptionPipeline:
         self._settings = settings.model_copy(deep=True)
         self._pipeline_version = pipeline_version
         self._correction_mode = correction_mode
+        self.asr_adapter_version = asr_adapter_version
+
+    @property
+    def effective_settings(self) -> Settings:
+        """Return a defensive copy of the snapshot used by this pipeline."""
+        return self._settings.model_copy(deep=True)
 
     def run(self, source: AudioSource) -> OfflineTranscriptionOutcome:
         from sme_meeting_ai.transcription.asr_strategy import (
@@ -437,7 +440,8 @@ class OfflineTranscriptionPipeline:
         try:
             _require(isinstance(source, AudioSource))
             ownership = self._preprocessing.run(source)
-            _require(isinstance(ownership, PreprocessingOutcome))
+            if not isinstance(ownership, PreprocessingOutcome):
+                raise AudioProcessingError("VALIDATION", origin="evidence")
             metadata = ownership.audio_metadata
             preprocessing_status = ownership.status
             preprocessing_completed = tuple(ownership.completed_stages)
@@ -447,7 +451,11 @@ class OfflineTranscriptionPipeline:
                 sample_count=metadata.sample_count if metadata is not None else None,
             )
             if ownership.status is PreprocessingStatus.FAILED:
-                raise _Stopped(OfflineTranscriptionFailure(stage, ownership.failure.category.value))
+                failed = ownership.failure
+                category = failed.category.value
+                if failed.origin == "evidence" and category in ("VALIDATION", "DECODING"):
+                    category = "MALFORMED_OUTPUT"
+                raise _Stopped(OfflineTranscriptionFailure(stage, category))
             preprocessing_result = ownership.result
             speech_map = preprocessing_result.speech_map
             warnings.extend(OfflineTranscriptionWarning(stage, warning.value)

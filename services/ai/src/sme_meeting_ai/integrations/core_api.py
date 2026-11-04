@@ -190,10 +190,11 @@ class CoreError(Exception):
 
     def __init__(self, status=0, code="WORKER_TRANSPORT", retry_after=0):
         self.status = status
-        self.code = code if code in {
+        self.code = code if isinstance(code, str) and code in {
             "WORKER_CONTRACT_UNSUPPORTED", "WORKER_DELIVERY_NOT_FOUND", "WORKER_IDENTITY_CONFLICT",
             "WORKER_ATTEMPT_BUSY", "WORKER_LEASE_LOST", "WORKER_RESULT_CONFLICT", "WORKER_COMMAND_CONFLICT",
-            "WORKER_RESPONSE_INVALID",
+            "WORKER_RESPONSE_INVALID", "VALIDATION_ERROR", "PAYLOAD_TOO_LARGE", "UNSUPPORTED_MEDIA_TYPE",
+            "SERVICE_UNAVAILABLE",
         } else "WORKER_TRANSPORT"
         self.retry_after = min(30, max(0, retry_after))
         self.stop_intake = status in (401, 403) or self.code == "WORKER_CONTRACT_UNSUPPORTED"
@@ -262,6 +263,7 @@ class CoreApiClient:
         if deadline is not None:
             duration = min(duration, deadline - asyncio.get_running_loop().time())
         error = CoreError()
+        response_status = 0
         try:
             if duration <= 0:
                 raise CoreError(409, "WORKER_LEASE_LOST")
@@ -270,16 +272,17 @@ class CoreApiClient:
                     json=body, headers={"X-Request-Id": event.requestId},
                     timeout=httpx.Timeout(duration, connect=min(duration, self.settings.core_api_connect_timeout_seconds)),
                 ) as response:
+                    response_status = response.status_code
                     if response.status_code in (401, 403):
                         raise CoreError(response.status_code)
                     raw = bytearray()
                     async for chunk in response.aiter_bytes():
                         if len(raw) + len(chunk) > 65536:
-                            raise CoreError(0, "WORKER_RESPONSE_INVALID")
+                            raise CoreError(response_status if response_status != 200 else 0, "WORKER_RESPONSE_INVALID")
                         raw.extend(chunk)
                     data = strict_json(bytes(raw), 65536)
                     if not isinstance(data, dict) or set(data) - {"success", "code", "message", "data", "meta", "errors"}:
-                        raise CoreError(0, "WORKER_RESPONSE_INVALID")
+                        raise CoreError(response_status if response_status != 200 else 0, "WORKER_RESPONSE_INVALID")
                     if response.status_code != 200:
                         retry_after = response.headers.get("retry-after", "0")
                         delay = 0
@@ -318,7 +321,7 @@ class CoreApiClient:
         except (httpx.HTTPError, TimeoutError):
             error = CoreError()
         except (ValueError, TypeError, KeyError, RecursionError, ValidationError):
-            error = CoreError(0, "WORKER_RESPONSE_INVALID")
+            error = CoreError(response_status if response_status != 200 else 0, "WORKER_RESPONSE_INVALID")
         raise CoreError(error.status, error.code, error.retry_after)
 
     async def lookup(self, event, **options):

@@ -15,6 +15,9 @@ class AudioErrorCategory(StrEnum):
 class AudioProcessingError(Exception):
     """Never contains source paths, subprocess output, or OS error details."""
 
-    def __init__(self, category: AudioErrorCategory | str):
+    def __init__(self, category: AudioErrorCategory | str, *, origin: str | None = None):
+        if origin not in (None, "source", "evidence"):
+            raise ValueError("Invalid audio error origin")
         self.category = AudioErrorCategory(category)
+        self.origin = origin
         super().__init__(f"Audio processing failed: {self.category.value}")

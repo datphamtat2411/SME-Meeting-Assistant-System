@@ -36,6 +36,21 @@ def test_correction_reasoning_unset_is_backward_compatible():
     assert config.transcript_correction_temperature == 0
 
 
+def test_correction_mode_default_override_and_sanitized_invalid(monkeypatch):
+    monkeypatch.setenv("AI_SERVICE_NAME", "test-ai")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
+    assert load_settings(None).transcript_correction_mode == "v5_full"
+    monkeypatch.setenv("AI_TRANSCRIPT_CORRECTION_MODE", "v5_full")
+    assert load_settings(None).transcript_correction_mode == "v5_full"
+    monkeypatch.setenv("AI_TRANSCRIPT_CORRECTION_MODE", "v62_edits")
+    assert load_settings(None).transcript_correction_mode == "v62_edits"
+    for invalid in ("v6_edits", "v61_edits", "private invalid"):
+        monkeypatch.setenv("AI_TRANSCRIPT_CORRECTION_MODE", invalid)
+        with pytest.raises(ConfigurationError) as caught:
+            load_settings(None)
+        assert invalid not in str(caught.value)
+
+
 @pytest.fixture(autouse=True)
 def isolated_environment(monkeypatch):
     monkeypatch.setattr(os, "environ", {})

@@ -443,7 +443,11 @@ def _safe_response(response: CorrectionProviderResponse, request: CorrectionRequ
     malformed = CorrectionErrorCategory.MALFORMED_OUTPUT
     _require(isinstance(response, CorrectionProviderResponse), malformed)
     _require(isinstance(response.text, str), malformed)
-    _require(len(response.text.encode("utf-8")) <= config["max_response_bytes"],
+    try:
+        response_size = len(response.text.encode("utf-8"))
+    except UnicodeError:
+        raise CorrectionError(malformed) from None
+    _require(response_size <= config["max_response_bytes"],
              CorrectionErrorCategory.RESOURCE)
     _require(response.requested_model == request.model, malformed)
     _require(isinstance(response.provider, str) and bool(_IDENTIFIER.fullmatch(response.provider)), malformed)
@@ -594,7 +598,10 @@ def _integrity(
 
 def _validated_texts(response, reconciliation, config):
     malformed = CorrectionErrorCategory.MALFORMED_OUTPUT
-    data = _strict_json(response.text)
+    try:
+        data = _strict_json(response.text)
+    except (ValueError, UnicodeError, RecursionError):
+        raise CorrectionError(malformed) from None
     _require(isinstance(data, dict) and set(data) == {"segments"}, malformed)
     entries = data["segments"]
     _require(isinstance(entries, list) and len(entries) == len(reconciliation.segments), malformed)
@@ -607,7 +614,10 @@ def _validated_texts(response, reconciliation, config):
         # An ASCII JSON envelope can hide unpaired surrogates behind escapes.
         # Validate decoded text before accounting or constructing final segments;
         # UnicodeError follows the bounded, sanitized malformed-output path.
-        text.encode("utf-8")
+        try:
+            text.encode("utf-8")
+        except UnicodeError:
+            raise CorrectionError(malformed) from None
         _require(not source.text.strip() or bool(text.strip()), malformed)
         _require(bool(source.text.strip()) or not text.strip(), CorrectionErrorCategory.SUSPICIOUS_OUTPUT)
         a, b = _words(source.text), _words(text)
@@ -679,7 +689,7 @@ def correct_transcript(
     output. Provider access, finite HTTP execution, and retries have distinct owners.
     """
     attempts = 0
-    category = CorrectionErrorCategory.VALIDATION
+    category = CorrectionErrorCategory.RESOURCE
     try:
         config = _configuration(settings)
         _handoff(reconciliation, coverage)
@@ -693,10 +703,15 @@ def correct_transcript(
                                     config.get("reasoning_effort"))
         input_budget = _validate_request(request, config)
         for attempts in range(1, config["max_attempts"] + 1):
-            category = CorrectionErrorCategory.PROVIDER
             try:
-                response = provider.complete(request)
-                category = CorrectionErrorCategory.MALFORMED_OUTPUT
+                try:
+                    response = provider.complete(request)
+                except CorrectionError:
+                    raise
+                except (MemoryError, RecursionError):
+                    raise
+                except Exception:
+                    raise CorrectionError(CorrectionErrorCategory.PROVIDER) from None
                 _safe_response(response, request, config)
                 texts, quality, rejected_segment_count = _validated_texts(
                     response, reconciliation, config,
@@ -719,21 +734,14 @@ def correct_transcript(
             except CorrectionError as error:
                 category = (error.category if isinstance(error.category, CorrectionErrorCategory)
                             else CorrectionErrorCategory.PROVIDER)
-            except MemoryError:
-                category = CorrectionErrorCategory.RESOURCE
-            except (ValueError, TypeError, KeyError, OverflowError, RecursionError, UnicodeError):
-                pass
             except Exception:
-                # Injected providers must not leak arbitrary diagnostics either.
-                category = CorrectionErrorCategory.PROVIDER
+                category = CorrectionErrorCategory.RESOURCE
             if category not in _RETRYABLE:
                 break
     except CorrectionError as error:
         category = error.category
-    except MemoryError:
+    except Exception:
         category = CorrectionErrorCategory.RESOURCE
-    except (AttributeError, TypeError, ValueError, KeyError, OverflowError, RecursionError):
-        pass
     return TranscriptCorrectionOutcome(TranscriptCorrectionStatus.FAILED, failure=TranscriptCorrectionFailure(
         category, attempts,
     ))

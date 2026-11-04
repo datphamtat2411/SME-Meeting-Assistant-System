@@ -47,6 +47,10 @@ class InternalResultControllerSecurityIntegrationTests {
     private static final String PREVIOUS="BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA";
 
     @Autowired MockMvc mvc;
+    // This MockMvc suite isolates the existing MI token policy. The mandatory outer
+    // connector/dispatch boundary is exercised via real sockets in SecureTransportTests.
+    @MockitoBean(name="privateConnector")
+    org.springframework.boot.web.server.WebServerFactoryCustomizer<org.springframework.boot.tomcat.servlet.TomcatServletWebServerFactory> connectorCustomizer;
     @MockitoBean IntelligenceResultIngestion ingestion;
     private UUID stage, claim;
     private String digest;

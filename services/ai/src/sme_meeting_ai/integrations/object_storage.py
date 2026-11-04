@@ -158,7 +158,7 @@ class ObjectStorage:
 
     def _store(self, storage_id):
         if storage_id != self.settings.s3_storage_id:
-            raise StorageError("VALIDATION")
+            raise StorageError("CONFIGURATION")
 
     def _read(self, storage_id, key, maximum, *, output=None, expected_size=None, fence=None):
         self._store(storage_id)

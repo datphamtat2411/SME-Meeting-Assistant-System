@@ -217,9 +217,11 @@ class AudioPreprocessingPipeline:
         )
         stage = PreprocessingStage.NORMALIZATION
         category = None
+        origin = "source"
         try:
             _require(isinstance(source, AudioSource))
             audio = self._normalizer.normalize(source)
+            origin = "evidence"
             _require(isinstance(audio, NormalizedAudioArtifact))
             _take_ownership(ownership, artifacts, audio, source)
             _validate_normalization(source, audio)
@@ -251,22 +253,19 @@ class AudioPreprocessingPipeline:
             )
         except AudioProcessingError as error:
             category = error.category
+            origin = error.origin or origin
         except TimeoutError:
             category = AudioErrorCategory.TIMEOUT
         except (OSError, MemoryError):
             category = AudioErrorCategory.RESOURCE
         except Exception:
-            category = {
-                PreprocessingStage.NORMALIZATION: AudioErrorCategory.DECODING,
-                PreprocessingStage.DETECTION: AudioErrorCategory.INFERENCE,
-                PreprocessingStage.SPEECH_MAP: AudioErrorCategory.VALIDATION,
-            }[stage]
+            category = AudioErrorCategory.RESOURCE
         except BaseException:
             # Cancellation/interrupts are not ordinary terminal stage outcomes.
             _close_ownership(ownership)
             raise
         return PreprocessingOutcome(
             status=PreprocessingStatus.FAILED, completed_stages=tuple(completed), result=None,
-            failure=PreprocessingFailure(stage, category), audio_metadata=metadata,
+            failure=PreprocessingFailure(stage, category, origin), audio_metadata=metadata,
             provenance=provenance, partial_artifacts=tuple(artifacts), _ownership=ownership,
         )

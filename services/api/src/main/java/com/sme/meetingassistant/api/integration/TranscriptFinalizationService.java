@@ -28,6 +28,13 @@ public class TranscriptFinalizationService {
         this.lifecycle = lifecycle;
     }
 
+    /** Lock-order entry point for atomic adapters using this application boundary. */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public void lockMeeting(UUID meetingId) { transcripts.lockMeetingForReview(meetingId); }
+
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public UUID publicationId(UUID jobId) { return transcripts.publicationId(jobId); }
+
     @Transactional
     public void finalizeTranscript(StageClaim claim, TranscriptResult result) {
         if (claim == null || claim.stageRunId() == null || claim.claimToken() == null

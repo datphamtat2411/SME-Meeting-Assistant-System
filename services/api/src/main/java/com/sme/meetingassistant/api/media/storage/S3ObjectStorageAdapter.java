@@ -1,6 +1,7 @@
 package com.sme.meetingassistant.api.media.storage;
 
 import com.sme.meetingassistant.api.media.MediaProperties;
+import com.sme.meetingassistant.api.transport.PemTls;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.file.Files;
@@ -44,10 +45,29 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
         if (hasAccessKey != hasSecretKey) throw new IllegalStateException("Both S3 credentials must be configured together.");
         var serviceConfig = S3Configuration.builder()
             .pathStyleAccessEnabled(this.properties.isPathStyleAccess()).build();
-        this.client = S3Client.builder().endpointOverride(endpoint).region(Region.of(this.properties.getRegion()))
-            .credentialsProvider(credentialsProvider()).serviceConfiguration(serviceConfig).build();
+        var builder = S3Client.builder().endpointOverride(endpoint).region(Region.of(this.properties.getRegion()))
+            .credentialsProvider(credentialsProvider()).serviceConfiguration(serviceConfig);
+        if (this.properties.getCaFile() != null && !this.properties.getCaFile().isBlank()) {
+            builder.httpClientBuilder(verifiedHttps(this.properties.getEndpoint(), Path.of(this.properties.getCaFile())));
+        }
+        this.client = builder.build();
         this.presigner = S3Presigner.builder().endpointOverride(endpoint).region(Region.of(this.properties.getRegion()))
             .credentialsProvider(credentialsProvider()).serviceConfiguration(serviceConfig).build();
+    }
+
+    /** Dedicated SDK trust, preserving Apache's hostname verification. No global JVM truststore changes. */
+    public static software.amazon.awssdk.http.apache.ApacheHttpClient.Builder verifiedHttps(String endpoint, Path ca) {
+        URI uri = URI.create(endpoint);
+        if (!"https".equals(uri.getScheme()) || uri.getHost() == null || uri.getUserInfo() != null
+                || uri.getQuery() != null || uri.getFragment() != null) {
+            throw new IllegalStateException("Explicit S3 trust requires an HTTPS endpoint");
+        }
+        try {
+            var trust = PemTls.trustManager(ca);
+            return software.amazon.awssdk.http.apache.ApacheHttpClient.builder()
+                .connectionTimeout(Duration.ofSeconds(3)).socketTimeout(Duration.ofSeconds(15))
+                .tlsTrustManagersProvider(() -> new javax.net.ssl.TrustManager[]{trust});
+        } catch (Exception e) { throw new IllegalStateException("Invalid S3 TLS trust configuration"); }
     }
 
     @Override
@@ -82,6 +102,22 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
                 StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
             this.client.getObject(GetObjectRequest.builder().bucket(this.properties.getBucket())
                 .key(objectKey).build(), ResponseTransformer.toOutputStream(output));
+        }
+    }
+
+    @Override
+    public byte[] readBounded(String objectKey, int maximum) throws IOException {
+        if (maximum < 1 || maximum > 8388608) throw new IllegalArgumentException("Invalid result read limit.");
+        try (var input = client.getObject(GetObjectRequest.builder().bucket(properties.getBucket()).key(objectKey).build())) {
+            if (input.response().contentLength() == null || input.response().contentLength() > maximum
+                    || input.response().contentLength() < 1 || input.response().contentEncoding() != null) {
+                input.abort(); throw new IOException("Invalid result object size or encoding.");
+            }
+            byte[] bytes = input.readNBytes(maximum + 1);
+            if (bytes.length > maximum || bytes.length != input.response().contentLength()) {
+                input.abort(); throw new IOException("Invalid result object size.");
+            }
+            return bytes;
         }
     }
 
@@ -138,6 +174,9 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
     }
 
     private void ensureBucketExists() {
+        // Externally provisioned secure buckets require no ListBucket/admin grant
+        // merely to sign a pending-upload URL. The eventual PUT reports absence.
+        if (!this.properties.isCreateBucketIfMissing()) return;
         try {
             this.client.headBucket(HeadBucketRequest.builder().bucket(this.properties.getBucket()).build());
         } catch (S3Exception exception) {

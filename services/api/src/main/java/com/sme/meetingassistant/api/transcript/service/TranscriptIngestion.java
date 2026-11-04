@@ -12,7 +12,16 @@ public interface TranscriptIngestion {
 
     record TranscriptResult(UUID meetingId, UUID sourceMediaId, UUID processingJobId,
             UUID sourceStageRunId, String languageCode, Long durationMs, Status status,
-            List<SegmentResult> segments, List<CoverageResult> coverage, List<SpeakerResult> speakers) {}
+            List<SegmentResult> segments, List<CoverageResult> coverage, List<SpeakerResult> speakers,
+            @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_DEFAULT)
+            int warningCount) {
+        public TranscriptResult(UUID meetingId, UUID sourceMediaId, UUID processingJobId,
+                UUID sourceStageRunId, String languageCode, Long durationMs, Status status,
+                List<SegmentResult> segments, List<CoverageResult> coverage, List<SpeakerResult> speakers) {
+            this(meetingId,sourceMediaId,processingJobId,sourceStageRunId,languageCode,durationMs,status,
+                segments,coverage,speakers,0);
+        }
+    }
 
     /** text must be the validated LLM-corrected text, never raw ASR output. */
     record SegmentResult(int ordinal, long startMs, long endMs, String text, String qualityStatus,

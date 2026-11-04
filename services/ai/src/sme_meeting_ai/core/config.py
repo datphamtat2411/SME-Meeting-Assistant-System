@@ -199,6 +199,7 @@ class Settings(BaseSettings):
     audio_asr_recovery_pause_strong_speech_threshold: float = Field(
         default=0.8, ge=0, le=1, allow_inf_nan=False,
     )
+    transcript_correction_mode: Literal["v5_full", "v62_edits"] = "v5_full"
     transcript_correction_model: str | None = Field(
         default=None, min_length=1, max_length=256, pattern=r"^[a-zA-Z0-9_./:-]+$",
     )

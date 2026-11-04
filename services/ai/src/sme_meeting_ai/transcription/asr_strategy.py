@@ -339,19 +339,24 @@ class AsrStrategyRunner:
     def prepare(self, preprocessing: PreprocessingResult, planner: SpeechAwareAsrChunkPlanner) -> AsrStrategyDecision:
         """Bind actual provider limits before planning; sanitize preflight failures."""
         failure = AsrErrorCategory.VALIDATION
+        audio_failure = None
         try:
             return self._prepare(preprocessing, planner)
         except AsrError as error:
             failure = error.category
             traceback.clear_frames(error.__traceback__)
         except AudioProcessingError as error:
-            failure = (AsrErrorCategory.RESOURCE if error.category == "RESOURCE" else AsrErrorCategory.VALIDATION)
+            audio_failure = error.category
             traceback.clear_frames(error.__traceback__)
         except (MemoryError, OSError) as error:
             failure = AsrErrorCategory.RESOURCE
             traceback.clear_frames(error.__traceback__)
         finally:
             preprocessing = planner = None
+        if audio_failure is not None:
+            if audio_failure in ("VALIDATION", "RESOURCE", "TIMEOUT"):
+                raise AsrError(AsrErrorCategory(audio_failure.lower()))
+            raise AudioProcessingError(audio_failure)
         raise AsrError(failure)
 
     def _prepare(self, preprocessing: PreprocessingResult, planner: SpeechAwareAsrChunkPlanner) -> AsrStrategyDecision:

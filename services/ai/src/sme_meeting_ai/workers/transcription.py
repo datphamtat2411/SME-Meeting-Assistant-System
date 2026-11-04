@@ -19,6 +19,7 @@ from uuid import uuid4
 from pydantic import AfterValidator, Field, ValidationError, model_validator
 
 from sme_meeting_ai.audio.models import AudioSource, SampleInterval, SpeechMapWarning
+from sme_meeting_ai.core.config import Environment
 from sme_meeting_ai.integrations.core_api import (
     MAX_RESULT_BYTES,
     CoreError,
@@ -250,7 +251,7 @@ def correction_digest(segments):
             digest.update(struct.pack(">iqqi", segment["ordinal"], segment["startMs"], segment["endMs"], len(encoded)))
             digest.update(encoded)
         return digest.hexdigest()
-    except Exception:
+    except (ValueError, TypeError, KeyError, OverflowError, struct.error):
         failed = True
     if failed:
         raise ResultValidationError()
@@ -280,16 +281,24 @@ def _interval_ms(interval, count):
                 endMs=(interval.end_sample * 1000 + 15999) // 16000)
 
 
-def _provenance(outcome, settings):
+def _provenance(outcome, settings, asr_adapter_version, correction_mode=None):
     p = outcome.provenance
     pre = p.preprocessing
     versions = [
         ("normalization", pre.normalization.normalizer_version),
         ("detection", pre.detection.detector_version), ("speech-map", pre.speech_map.mapper_version),
-        ("planning", p.planning.planner_version), ("asr-adapter", "openrouter-whisper-v1"),
+        ("planning", p.planning.planner_version), ("asr-adapter", asr_adapter_version),
         ("coverage", p.coverage.assessor_version), ("recovery", p.recovery.recovery_version),
         ("reconciliation", p.reconciliation.reconciler_version), ("correction", p.correction.correction_version),
     ]
+    effective = p.correction.effective_configuration
+    reported_mode = effective.get("correction_mode")
+    if correction_mode is not None:
+        _require(reported_mode is None or reported_mode == correction_mode)
+        versions.append(("correction-mode", correction_mode))
+    validator = effective.get("validator_version")
+    if validator is not None:
+        versions.append(("correction-validator", validator))
     models = []
     for _, model in (*p.asr.asr, *p.coverage.asr, *p.reconciliation.asr):
         entry = dict(role="ASR", provider=model.provider, requestedModel=model.requested_model,
@@ -301,9 +310,14 @@ def _provenance(outcome, settings):
     # Explicit effective inference configuration only. No transport credentials,
     # paths, endpoints, provider response maps or environment dumps are included.
     config = {k: v for k, v in settings.model_dump(mode="json").items()
-              if k.startswith(("audio_", "transcript_correction_"))
-              and k not in ("audio_temp_dir", "audio_vad_model_path")}
-    snapshot = json.dumps(dict(version="worker-config-v1", settings=config), sort_keys=True,
+               if k.startswith(("audio_", "transcript_correction_"))
+               and k not in ("audio_temp_dir", "audio_vad_model_path", "transcript_correction_mode")}
+    stable_keys = {"context_window_tokens", "max_input_tokens", "max_output_tokens", "max_response_bytes",
+                   "max_attempts", "timeout_seconds", "min_text_ratio", "max_text_ratio", "model",
+                   "reasoning_effort", "temperature", "correction_mode", "schema_name", "validator_version"}
+    correction = {k: v for k, v in effective.items() if k in stable_keys}
+    snapshot = json.dumps(dict(version="worker-config-v2", settings=config, correction_mode=correction_mode,
+                               correction_effective=correction), sort_keys=True,
                           separators=(",", ":"), allow_nan=False).encode()
     return dict(pipelineVersion=p.pipeline_version, configurationSha256=hashlib.sha256(snapshot).hexdigest(),
                 components=[dict(name=name, version=version) for name, version in versions],
@@ -311,8 +325,9 @@ def _provenance(outcome, settings):
                               sha256=pre.detection.model_sha256), models=models)
 
 
-def map_result(outcome, settings, *, job_id, media_id, source_revision, producer_id):
-    category = "VALIDATION"
+def map_result(outcome, settings, *, job_id, media_id, source_revision, producer_id,
+               asr_adapter_version="openrouter-whisper-v1", correction_mode=None):
+    category = "RESOURCE"
     try:
         _require(isinstance(outcome, OfflineTranscriptionOutcome)
                  and outcome.status in (OfflineTranscriptionStatus.COMPLETED, OfflineTranscriptionStatus.COMPLETED_WITH_WARNINGS)
@@ -382,7 +397,8 @@ def map_result(outcome, settings, *, job_id, media_id, source_revision, producer
                     sourceMediaId=media_id, sourceRevision=source_revision, producerStageRunId=producer_id,
                     pipelineStatus=outcome.status.value, languageCode=settings.audio_asr_language,
                     sampleRateHz=16000, sampleCount=count, durationMs=(count * 1000 + 15999) // 16000,
-                    segments=segments, coverage=coverage, warnings=warnings, provenance=_provenance(outcome, settings),
+                    segments=segments, coverage=coverage, warnings=warnings,
+                    provenance=_provenance(outcome, settings, asr_adapter_version, correction_mode),
                     correctionProof=dict(contextScope="WHOLE_MEETING", promptVersion=result.provenance.prompt_version,
                                          outputSha256=correction_digest(segments)))
         raw = json.dumps(data, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
@@ -421,14 +437,47 @@ def pipeline_failure(outcome):
             and outcome.completed_stages == tuple(OfflineTranscriptionStage)[:-1]
             and outcome.evidence.reconciliation is not None and outcome.evidence.coverage is not None
             and outcome.evidence.source_id == outcome.provenance.source_id
-            and outcome.evidence.reconciliation.provenance == outcome.provenance.reconciliation):
+            and outcome.evidence.reconciliation.provenance == outcome.provenance.reconciliation
+            and type(outcome.provenance.sample_count) is int
+            and 0 < outcome.provenance.sample_count <= 230400000
+            and len(outcome.warnings) <= 2147483647
+            and len(outcome.evidence.coverage.unresolved_intervals) <= 2147483647):
         completed = "RECONCILIATION"
         count = outcome.provenance.sample_count
-        if type(count) is int and 0 <= count <= 230400000:
-            metrics["sampleCount"] = count
+        metrics["sampleCount"] = count
         metrics["warningCount"] = len(outcome.warnings)
         metrics["unresolvedRegionCount"] = len(outcome.evidence.coverage.unresolved_intervals)
     return WorkFailure(failure.stage.name, category, completed, metrics)
+
+
+def _eligible_failure(failure, stage):
+    """Only submit combinations explicitly classified by the V1 revision."""
+    p, c = failure.phase, failure.category
+    phases = {s.name for s in OfflineTranscriptionStage} | {
+        "SOURCE_DOWNLOAD", "RESULT_VALIDATION", "RESULT_STORAGE", "PUBLICATION", "INTERRUPTED"}
+    if p not in phases or c not in _CATEGORIES:
+        return False
+    if c in ("AUTHENTICATION", "CONFIGURATION", "CANCELLED") or p == "INTERRUPTED":
+        return True
+    if p == "SOURCE_DOWNLOAD" and c in ("NOT_FOUND", "INTEGRITY"):
+        return True
+    if p in ("SOURCE_DOWNLOAD", "PREPROCESSING") and c in ("VALIDATION", "DECODING"):
+        return True
+    if p in ("CHUNK_PLANNING", "ASR", "COVERAGE_RECOVERY", "RECONCILIATION", "CORRECTION") and c == "VALIDATION":
+        return True
+    if p == "PREPROCESSING" and c == "MALFORMED_OUTPUT":
+        return True
+    if p == "CORRECTION":
+        return True
+    if p == "RESULT_VALIDATION" and c == "EMPTY_OUTPUT":
+        return True
+    if p == "PUBLICATION" and c == "NOT_FOUND":
+        return stage == "FINALIZING_TRANSCRIPT"
+    if p in ("RESULT_VALIDATION", "RESULT_STORAGE") and c in ("VALIDATION", "MALFORMED_OUTPUT", "SUSPICIOUS_OUTPUT", "INTEGRITY"):
+        return True
+    if p == "ASR" and c in ("PROVIDER", "MALFORMED_OUTPUT", "SUSPICIOUS_OUTPUT", "EMPTY_OUTPUT"):
+        return True
+    return c in ("TRANSPORT", "TIMEOUT", "RESOURCE", "PROVIDER", "RATE_LIMIT")
 
 
 @dataclass(frozen=True, repr=False)
@@ -554,7 +603,12 @@ class TranscriptionWorker:
             if outcome.status is OfflineTranscriptionStatus.FAILED:
                 raise pipeline_failure(outcome)
             phase = "RESULT_VALIDATION"
-            raw = map_result(outcome, self.settings, **binding, producer_id=claim.executionStageRunId)
+            from sme_meeting_ai.pipeline import OfflineTranscriptionPipeline
+            actual_mode = self.pipeline._correction_mode if isinstance(self.pipeline, OfflineTranscriptionPipeline) else None
+            raw = map_result(outcome, getattr(self.pipeline, "effective_settings", self.settings), **binding,
+                              producer_id=claim.executionStageRunId,
+                              correction_mode=actual_mode,
+                             asr_adapter_version=getattr(self.pipeline, "asr_adapter_version", "openrouter-whisper-v1"))
             if fence.is_set():
                 raise WorkFailure("INTERRUPTED", "CANCELLED")
             phase = "RESULT_STORAGE"
@@ -670,14 +724,16 @@ class TranscriptionWorker:
                 if failure:
                     if failure.category in ("CONFIGURATION", "AUTHENTICATION"):
                         self.stop_intake.set()
-                    if failure.phase == "RESULT_STORAGE" and failure.category in ("TRANSPORT", "TIMEOUT", "RESOURCE"):
+                    if failure.phase == "RESULT_STORAGE" and failure.category in ("TRANSPORT", "TIMEOUT", "RESOURCE", "NOT_FOUND"):
                         # PUT may have succeeded. Keep immutable bytes for the next
                         # authorized owner; never contradict an uncertain result.
                         status = await self.core.lookup(event)
-                    else:
+                    elif _eligible_failure(failure, claim.executionStageCode):
                         command = dict(**claim_fields(claim), commandId=str(uuid4()), phase=failure.phase,
                             category=failure.category, completedThrough=failure.completed_through, metrics=failure.metrics)
                         status = await self._terminal_command(event, claim, guard, "fail", command)
+                    else:
+                        status = None
                 else:
                     command = dict(**claim_fields(claim), commandId=str(uuid4()), resultSha256=prepared.digest,
                                    resultProducerStageRunId=prepared.producer_id)
@@ -752,8 +808,13 @@ class TranscriptionWorker:
 class TranscriptionExecution:
     """Runtime-owned composition; synchronous resources outlive active readers."""
 
-    def __init__(self, settings):
+    def __init__(self, settings, *, pipeline_factory=None):
         self.settings = settings
+        # The default remains the production OpenRouter composition. The factory
+        # is an explicit harness seam, not an environment-controlled provider swap.
+        if pipeline_factory is not None and settings.environment is not Environment.TEST:
+            raise ValueError("Controlled pipeline injection requires test environment")
+        self._pipeline_factory = pipeline_factory
         self._async = AsyncExitStack()
         self._sync = ExitStack()
         self.worker = None
@@ -777,6 +838,9 @@ class TranscriptionExecution:
         from sme_meeting_ai.providers.openrouter_instruction_llm import (
             OpenRouterInstructionLlmAdapter,
         )
+        from sme_meeting_ai.providers.openrouter_instruction_llm_v62 import (
+            OpenRouterInstructionLlmV62Adapter,
+        )
         from sme_meeting_ai.providers.openrouter_whisper import OpenRouterWhisperAdapter
         from sme_meeting_ai.transcription.chunk_planning import (
             SpeechAwareAsrChunkPlanner,
@@ -785,28 +849,48 @@ class TranscriptionExecution:
         failed = False
         phase = "provider"
         try:
-            secret = self.settings.openrouter_api_key
-            key = secret.get_secret_value() if secret is not None else ""
-            if (not key or any(ord(c) < 33 or ord(c) > 126 for c in key)
-                    or not self.settings.transcript_correction_model):
-                raise ValueError
+            if self._pipeline_factory is None:
+                mode = self.settings.transcript_correction_mode
+                if type(mode) is not str or mode not in ("v5_full", "v62_edits"):
+                    raise ValueError
+                secret = self.settings.openrouter_api_key
+                key = secret.get_secret_value() if secret is not None else ""
+                if (not key or any(ord(c) < 33 or ord(c) > 126 for c in key)
+                        or not self.settings.transcript_correction_model):
+                    raise ValueError
             phase = "core"
             core = CoreApiClient(self.settings)
             self._async.push_async_callback(core.aclose)
             phase = "storage"
             storage = self._sync.enter_context(ObjectStorage(self.settings))
-            phase = "vad"
-            backend = SileroVadBackend.from_settings(self.settings)
-            self._sync.callback(backend.close)
-            phase = "provider"
-            transcriber = self._sync.enter_context(OpenRouterWhisperAdapter(self.settings))
-            corrector = self._sync.enter_context(OpenRouterInstructionLlmAdapter(self.settings))
             phase = "pipeline"
-            pipeline = OfflineTranscriptionPipeline(
-                AudioPreprocessingPipeline(AudioNormalizer(self.settings),
-                    AudioEvidenceDetector(self.settings, backend), SpeechMapBuilder(self.settings)),
-                SpeechAwareAsrChunkPlanner(self.settings), transcriber, corrector, self.settings,
-            )
+            if self._pipeline_factory is not None:
+                pipeline = self._pipeline_factory(self.settings, self._sync)
+            else:
+                phase = "vad"
+                backend = SileroVadBackend.from_settings(self.settings)
+                self._sync.callback(backend.close)
+                phase = "provider"
+                transcriber = self._sync.enter_context(OpenRouterWhisperAdapter(self.settings))
+                if mode == "v5_full":
+                    corrector = self._sync.enter_context(OpenRouterInstructionLlmAdapter(self.settings))
+                    if type(corrector) is not OpenRouterInstructionLlmAdapter:
+                        raise ValueError
+                elif mode == "v62_edits":
+                    corrector = self._sync.enter_context(OpenRouterInstructionLlmV62Adapter(self.settings))
+                    if type(corrector) is not OpenRouterInstructionLlmV62Adapter or isinstance(corrector, OpenRouterInstructionLlmAdapter):
+                        raise ValueError
+                else:
+                    raise ValueError
+                phase = "pipeline"
+                pipeline = OfflineTranscriptionPipeline(
+                    AudioPreprocessingPipeline(AudioNormalizer(self.settings),
+                        AudioEvidenceDetector(self.settings, backend), SpeechMapBuilder(self.settings)),
+                    SpeechAwareAsrChunkPlanner(self.settings), transcriber, corrector, self.settings,
+                    correction_mode=mode,
+                )
+                if pipeline._correction_mode != mode or pipeline._correction_provider is not corrector:
+                    raise ValueError
             self.worker = TranscriptionWorker(self.settings, core, storage, pipeline)
             phase = "broker"
             self.broker = await self._async.enter_async_context(RabbitConsumer(self.settings))

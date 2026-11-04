@@ -46,15 +46,18 @@ public class MediaProcessingService {
     private final MeetingMediaAccess meetingAccess;
     private final AuthenticatedUserId authenticatedUser;
     private final MediaProperties properties;
+    private final com.sme.meetingassistant.api.media.worker.TranscriptionWorkerCapability workerCapability;
 
     public MediaProcessingService(MediaRepository repository, ObjectStorage storage, MediaInspector inspector,
-            MeetingMediaAccess meetingAccess, AuthenticatedUserId authenticatedUser, MediaProperties properties) {
+            MeetingMediaAccess meetingAccess, AuthenticatedUserId authenticatedUser, MediaProperties properties,
+            com.sme.meetingassistant.api.media.worker.TranscriptionWorkerCapability workerCapability) {
         this.repository = repository;
         this.storage = storage;
         this.inspector = inspector;
         this.meetingAccess = meetingAccess;
         this.authenticatedUser = authenticatedUser;
         this.properties = properties;
+        this.workerCapability = workerCapability;
     }
 
     @Transactional
@@ -351,6 +354,7 @@ public class MediaProcessingService {
         this.repository.lockAdmissionUser(actor);
         UUID claimedId = claimIdempotency(actor, operation, idempotencyKey, fingerprint, job.id());
         if (!claimedId.equals(job.id())) return toResponse(job(claimedId));
+        this.workerCapability.requireAvailable();
 
         // The user lock remains held through all counts, job and outbox inserts
         // in this @Transactional PostgreSQL transaction.
@@ -430,7 +434,13 @@ public class MediaProcessingService {
             fingerprint, jobId);
         if (!claim.claimed()) return toResponse(job(jobId));
         if (!"FAILED".equals(target.status())) throw conflict("Only failed processing jobs can be retried.");
-        int maxRetries = this.properties.getProcessing().getMaxRetries();
+        boolean transcriptRetry = "OFFLINE_MEETING_PROCESSING".equals(target.jobType())
+            && (stageCode == null && target.currentStage() == null
+                || List.of("TRANSCRIPTION", "CONTEXTUAL_CORRECTION", "FINALIZING_TRANSCRIPT")
+                    .contains(stageCode == null ? java.util.Objects.toString(target.currentStage(), "") : stageCode));
+        boolean workerJob = transcriptRetry && (this.repository.hasTranscriptionWorkerClaim(jobId) || this.workerCapability.isEnabled());
+        int maxRetries = workerJob ? 3 : this.properties.getProcessing().getMaxRetries();
+        if (transcriptRetry) this.workerCapability.requireAvailable();
         if (maxRetries < 0) {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
                 "Processing retry policy is invalid.");

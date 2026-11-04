@@ -1,0 +1,28 @@
+{
+  "contractVersion":"1.0",
+  "resultType":"CORRECTED_TRANSCRIPT",
+  "processingJobId":"11111111-1111-4111-8111-111111111111",
+  "sourceMediaId":"44444444-4444-4444-8444-444444444444",
+  "sourceRevision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "producerStageRunId":"22222222-2222-4222-8222-222222222222",
+  "pipelineStatus":"COMPLETED",
+  "languageCode":"vi",
+  "sampleRateHz":16000,
+  "sampleCount":28000,
+  "durationMs":1750,
+  "segments":[
+    {"ordinal":0,"startMs":0,"endMs":1000,"text":"Xin chào.","qualityStatus":"ACCEPTED"},
+    {"ordinal":1,"startMs":1000,"endMs":1750,"text":"Chốt lịch họp.","qualityStatus":"ACCEPTED"}
+  ],
+  "coverage":[{"startMs":0,"endMs":1750,"coverageStatus":"COVERED","recovered":false,"retryCount":0}],
+  "warnings":[],
+  "provenance":{
+    "pipelineVersion":"offline-v1",
+    "configurationSha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "components":[{"name":"correction","version":"1"}],
+    "vadModel":{"modelId":"silero-vad","modelVersion":"5","sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},
+    "models":[{"role":"ASR","provider":"openrouter","requestedModel":"whisper","resolvedModel":null},
+      {"role":"CORRECTION","provider":"openrouter","requestedModel":"correction","resolvedModel":null}]
+  },
+  "correctionProof":{"contextScope":"WHOLE_MEETING","promptVersion":"correction-v1","outputSha256":"dfa8c6d7a8a5297c28f1b4f7f4fcea73a0c21b04fe4e3377a5b9ad29e9acb70a"}
+}
