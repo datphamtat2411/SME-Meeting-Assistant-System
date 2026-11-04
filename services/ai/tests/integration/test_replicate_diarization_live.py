@@ -1,7 +1,9 @@
 import json
 import os
+import re
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -43,6 +45,47 @@ def test_live_replicate_diarization(monkeypatch):
         return parse(data, model_id)
 
     monkeypatch.setattr(replicate_diarization, "parse_output", inspect_structure)
+
+    original_request = replicate_diarization._json_request
+
+    async def trace_request(client, method, url, **kwargs):
+        if url.endswith("/v1/files"):
+            stage = "upload"
+        elif url.endswith("/v1/predictions"):
+            stage = "create_prediction"
+        else:
+            stage = "poll_prediction"
+
+        print(f"[Replicate] {stage}: START", flush=True)
+        response = await original_request(client, method, url, **kwargs)
+        if stage == "upload":
+            urls = response.get("urls", {})
+            value = urls.get("get") if isinstance(urls, dict) else None
+            parts = urlsplit(value) if isinstance(value, str) else None
+            print("[Replicate] upload URL diagnostics:", {
+                "type": type(value).__name__,
+                "length": len(value) if isinstance(value, str) else None,
+                "scheme": parts.scheme if parts else None,
+                "hostname": parts.hostname if parts else None,
+                "path_length": len(parts.path) if parts else None,
+                "api_file_prefix": parts.path.startswith("/v1/files/") if parts else None,
+                "matches_current_regex": (
+                    bool(re.fullmatch(r"/v1/files/[a-zA-Z0-9_-]{1,128}", parts.path)) if parts else None
+                ),
+                "has_query": bool(parts.query) if parts else None,
+                "has_fragment": bool(parts.fragment) if parts else None,
+            }, flush=True)
+        print(
+            f"[Replicate] {stage}: "
+            f"keys={sorted(response.keys())}, "
+            f"status={response.get('status')}, "
+            f"output_type={type(response.get('output')).__name__}, "
+            f"urls_type={type(response.get('urls')).__name__}",
+            flush=True,
+        )
+        return response
+
+    monkeypatch.setattr(replicate_diarization, "_json_request", trace_request)
     result = ReplicateDiarizationAdapter(settings).diarize(Path(audio_path))
     assert result.turns
     assert all(turn.speaker_label in result.speakers for turn in result.turns)

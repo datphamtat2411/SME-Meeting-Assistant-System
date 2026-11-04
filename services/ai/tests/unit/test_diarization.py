@@ -109,6 +109,29 @@ def settings(**kwargs):
     return Settings(service_name="test", service_identity="ai-core", _env_file=None, **kwargs)
 
 
+def test_upload_url_accepts_opaque_file_path():
+    url = "https://api.replicate.com/v1/files/abc.def:ghi"
+    assert replicate_diarization._upload_url(url) == url
+
+
+@pytest.mark.parametrize("url", [
+    "https://other.example/v1/files/abc.def:ghi",
+    "https://api.replicate.com.evil.example/v1/files/abc",
+    "http://api.replicate.com/v1/files/abc",
+    "https://api.replicate.com/v1/files/",
+    "https://api.replicate.com/v1/files/abc?token=value",
+    "https://api.replicate.com/v1/files/abc#fragment",
+    "https://api.replicate.com/v1/files/../abc",
+    "https://api.replicate.com/v1/files/./abc",
+    "https://api.replicate.com/v1/files/a\nb",
+    "https://api.replicate.com/v1/files/" + "a" * 8192,
+])
+def test_upload_url_rejects_untrusted_urls(url):
+    with pytest.raises(DiarizationError) as exc:
+        replicate_diarization._upload_url(url)
+    assert exc.value.category == DiarizationErrorCategory.MALFORMED_OUTPUT
+
+
 def test_provider_request(tmp_path):
     audio = tmp_path / "meeting.wav"
     audio.write_bytes(b"audio-bytes")

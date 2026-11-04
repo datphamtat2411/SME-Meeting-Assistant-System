@@ -38,12 +38,20 @@ def _delivery_url(value: object) -> str:
 
 
 def _upload_url(value: object) -> str:
-    if isinstance(value, str):
+    if not isinstance(value, str) or not 0 < len(value) <= 8192:
+        raise DiarizationError(DiarizationErrorCategory.MALFORMED_OUTPUT)
+    if any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise DiarizationError(DiarizationErrorCategory.MALFORMED_OUTPUT)
+
+    try:
         parts = urlsplit(value)
         if (parts.scheme == "https" and parts.netloc == "api.replicate.com"
-                and re.fullmatch(r"/v1/files/[a-zA-Z0-9_-]{1,128}", parts.path)
-                and not parts.query and not parts.fragment):
+                and parts.path.startswith("/v1/files/") and len(parts.path) > len("/v1/files/")
+                and not parts.query and not parts.fragment
+                and not any(segment in (".", "..") for segment in parts.path.split("/"))):
             return value
+    except ValueError:
+        pass
     return _delivery_url(value)
 
 
