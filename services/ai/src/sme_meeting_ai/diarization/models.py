@@ -14,6 +14,7 @@ class DiarizationErrorCategory(StrEnum):
     PROVIDER = "provider"
     MALFORMED_OUTPUT = "malformed_output"
     VALIDATION = "validation"
+    INPUT_TOO_LARGE = "input_too_large"
 
 
 class DiarizationError(Exception):
@@ -46,6 +47,15 @@ class DiarizationResult:
     turns: tuple[SpeakerTurn, ...]
     speakers: tuple[str, ...]
     model_id: str
+
+    def validate_duration(self, duration_ms: int) -> None:
+        """Validate normalized turns against the independently established audio timeline."""
+        if type(duration_ms) is not int or duration_ms < 0:
+            raise DiarizationError(DiarizationErrorCategory.VALIDATION)
+        if any(type(turn.start_ms) is not int or type(turn.end_ms) is not int
+               or turn.start_ms < 0 or turn.start_ms >= turn.end_ms
+               or turn.start_ms >= duration_ms or turn.end_ms > duration_ms for turn in self.turns):
+            raise DiarizationError(DiarizationErrorCategory.MALFORMED_OUTPUT)
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,6 +1,8 @@
 import json
 import os
 import traceback
+from decimal import Decimal
+from fractions import Fraction
 
 import httpx
 import pytest
@@ -122,6 +124,63 @@ def test_alignment_cases_and_identity():
         SpeakerTurn(1000, 3000, "SPEAKER_02")])[0].speaker_label == "SPEAKER_01"
 
 
+@pytest.mark.parametrize(("turns", "expected"), [
+    ([(0, 1000, "01")], "SPEAKER_01"),
+    ([(1000, 1100, "01")], None),
+    ([(0, 1, "01")], None),
+    ([(0, 499, "01")], None),
+    ([(0, 500, "01")], "SPEAKER_01"),
+    ([(0, 600, "01"), (400, 1000, "02")], None),
+    ([(0, 700, "01"), (0, 551, "02")], None),
+    ([(0, 700, "01"), (0, 550, "02")], "SPEAKER_01"),
+    ([(0, 800, "01"), (300, 500, "02")], "SPEAKER_01"),
+    ([(0, 700, "01"), (300, 1000, "02")], None),
+    ([(0, 400, "01"), (0, 400, "01")], None),
+    ([(0, 600, "01"), (100, 600, "01"), (0, 700, "02")], None),
+    ([(0, 500, "01"), (500, 1000, "02")], None),
+])
+def test_conservative_alignment(turns, expected):
+    evidence = [SpeakerTurn(start, end, f"SPEAKER_{label}") for start, end, label in turns]
+    segment = TimedTranscriptSegment(42, 0, 1000)
+    assert align_speakers([segment], evidence)[0].speaker_label == expected
+    assert align_speakers([segment], reversed(evidence))[0].speaker_label == expected
+
+
+def test_alignment_preserves_inputs_and_long_mixed_segments():
+    segments = [TimedTranscriptSegment(9, 0, 100_000), TimedTranscriptSegment(2, 100_000, 101_000)]
+    turns = [SpeakerTurn(100_000, 101_000, "SPEAKER_02"),
+             SpeakerTurn(49_000, 100_000, "SPEAKER_02"),
+             SpeakerTurn(0, 51_000, "SPEAKER_01")]
+    original_segments, original_turns = segments[:], turns[:]
+    result = align_speakers(segments, turns)
+    assert [(item.ordinal, item.speaker_label) for item in result] == [(9, None), (2, "SPEAKER_02")]
+    assert segments == original_segments and turns == original_turns
+
+
+def test_configurable_thresholds_and_exact_boundaries():
+    segment = [TimedTranscriptSegment(1, 0, 1000)]
+    turns = [SpeakerTurn(0, 500, "SPEAKER_01"), SpeakerTurn(0, 350, "SPEAKER_02")]
+    assert align_speakers(segment, turns)[0].speaker_label == "SPEAKER_01"
+    assert align_speakers(segment, turns, min_coverage_ratio=Decimal("0.5"),
+                          min_dominance_margin_ratio=Fraction(3, 20))[0].speaker_label == "SPEAKER_01"
+    assert align_speakers(segment, turns, min_coverage_ratio=0.501)[0].speaker_label is None
+    assert align_speakers(segment, turns, min_dominance_margin_ratio=0.151)[0].speaker_label is None
+    assert align_speakers(segment, [SpeakerTurn(0, 1, "SPEAKER_01")],
+                          min_coverage_ratio=0, min_dominance_margin_ratio=0)[0].speaker_label == "SPEAKER_01"
+    assert align_speakers(segment, [SpeakerTurn(0, 1000, "SPEAKER_01")],
+                          min_coverage_ratio=1, min_dominance_margin_ratio=1)[0].speaker_label == "SPEAKER_01"
+    assert align_speakers(segment, [SpeakerTurn(0, 500, "SPEAKER_01"), SpeakerTurn(0, 500, "SPEAKER_02")],
+                          min_coverage_ratio=0, min_dominance_margin_ratio=0)[0].speaker_label is None
+
+
+@pytest.mark.parametrize("name", ["min_coverage_ratio", "min_dominance_margin_ratio"])
+@pytest.mark.parametrize("value", [True, False, None, "0.5", 1j, float("nan"), float("inf"),
+                                    -float("inf"), -0.01, 1.01])
+def test_invalid_alignment_thresholds_fail_even_for_empty_input(name, value):
+    with pytest.raises((TypeError, ValueError)):
+        align_speakers([], [], **{name: value})
+
+
 def settings(**kwargs):
     return Settings(service_name="test", service_identity="ai-core", _env_file=None, **kwargs)
 
@@ -166,7 +225,7 @@ def test_provider_request(tmp_path):
             return httpx.Response(201, json={"id": "abc123", "status": "succeeded",
                                              "output": "https://replicate.delivery/output"})
         assert request.url.host == "replicate.delivery"
-        assert request.headers["authorization"] == f"Bearer {SECRET}"
+        assert "authorization" not in request.headers
         return httpx.Response(200, content=payload([segment("A", "0:00:00", "0:00:01")], ["A"]))
 
     adapter = ReplicateDiarizationAdapter(settings(REPLICATE_API_TOKEN=SECRET), transport=httpx.MockTransport(handler))
@@ -264,7 +323,8 @@ def test_invalid_audio_sources_are_validation_errors_and_close_descriptors(tmp_p
     adapter = ReplicateDiarizationAdapter(settings(REPLICATE_API_TOKEN=SECRET))
     with pytest.raises(DiarizationError) as exc:
         adapter.diarize(path)
-    assert exc.value.category == DiarizationErrorCategory.VALIDATION
+    assert exc.value.category == (DiarizationErrorCategory.INPUT_TOO_LARGE if kind == "oversized"
+                                  else DiarizationErrorCategory.VALIDATION)
     assert str(path) not in "".join(traceback.format_exception(exc.value))
     assert len(opened) == (0 if kind == "missing" else 1)
     for fd in opened:
@@ -324,7 +384,7 @@ def test_terminal_and_malformed_prediction_states(tmp_path, status, category):
     assert calls == ["/v1/files", "/v1/predictions"]
 
 
-def test_polling_rate_limit_fails_fast(tmp_path, monkeypatch):
+def test_polling_rate_limit_retries_bounded(tmp_path, monkeypatch):
     path = tmp_path / "audio.wav"
     path.write_bytes(b"audio")
     calls = []
@@ -341,15 +401,118 @@ def test_polling_rate_limit_fails_fast(tmp_path, monkeypatch):
             return httpx.Response(201, json={"urls": {"get": "https://api.replicate.com/v1/files/abc"}})
         if request.method == "POST":
             return httpx.Response(201, json={"id": "abc", "status": "starting"})
-        return httpx.Response(429, headers={"Retry-After": "30"}, text="private-provider-diagnostic")
+        return httpx.Response(429, headers={"Retry-After": "3"}, text="private-provider-diagnostic")
 
     adapter = ReplicateDiarizationAdapter(settings(REPLICATE_API_TOKEN=SECRET), transport=httpx.MockTransport(handler))
     with pytest.raises(DiarizationError) as exc:
         adapter.diarize(path)
     assert exc.value.category == DiarizationErrorCategory.RATE_LIMIT
     assert "private-provider-diagnostic" not in "".join(traceback.format_exception(exc.value))
-    assert calls == ["/v1/files", "/v1/predictions", "/v1/predictions/abc"]
-    assert waits == [15]
+    assert calls == ["/v1/files", "/v1/predictions"] + ["/v1/predictions/abc"] * 3
+    assert waits == [15, 3, 3]
+
+
+@pytest.mark.parametrize("status,category", [(400, "validation"), (422, "validation"),
+                                             (403, "authentication"), (413, "input_too_large"),
+                                             (408, "timeout"), (504, "timeout")])
+def test_http_classification_without_upload_retry(tmp_path, status, category):
+    path = tmp_path / "audio"
+    path.write_bytes(b"audio")
+    calls = []
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(status, text="private")
+    adapter = ReplicateDiarizationAdapter(settings(REPLICATE_API_TOKEN=SECRET), transport=httpx.MockTransport(handler))
+    with pytest.raises(DiarizationError) as exc:
+        adapter.diarize(path)
+    assert exc.value.category.value == category
+    assert len(calls) == 1
+    assert path.read_bytes() == b"audio"
+
+
+@pytest.mark.parametrize("failure,expected_calls", [(500, 1), (429, 3), ("transport", 1)])
+def test_prediction_creation_retry_safety(tmp_path, monkeypatch, failure, expected_calls):
+    path = tmp_path / "audio"
+    path.write_bytes(b"audio")
+    calls, waits = [], []
+    async def wait(seconds):
+        waits.append(seconds)
+    monkeypatch.setattr(replicate_diarization.asyncio, "sleep", wait)
+    def handler(request):
+        calls.append(request.url.path)
+        if request.url.path == "/v1/files":
+            return httpx.Response(201, json={"urls": {"get": "https://api.replicate.com/v1/files/a"}})
+        if failure == "transport":
+            raise httpx.ConnectError("secret")
+        return httpx.Response(failure)
+    adapter = ReplicateDiarizationAdapter(settings(REPLICATE_API_TOKEN=SECRET), transport=httpx.MockTransport(handler))
+    with pytest.raises(DiarizationError):
+        adapter.diarize(path)
+    assert calls.count("/v1/predictions") == expected_calls
+    assert waits == ([1, 2] if failure == 429 else [])
+
+
+def test_disabled_provider_and_upload_boundary(tmp_path, monkeypatch):
+    path = tmp_path / "audio"
+    path.write_bytes(b"audio")
+    calls = []
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(401)
+    disabled = ReplicateDiarizationAdapter(settings(REPLICATE_API_TOKEN=SECRET, diarization_enabled=False),
+                                            transport=httpx.MockTransport(handler))
+    with pytest.raises(DiarizationError) as exc:
+        disabled.diarize(path)
+    assert exc.value.category == DiarizationErrorCategory.CONFIGURATION and not calls
+    monkeypatch.setattr(replicate_diarization, "_MAX_UPLOAD_BYTES", 5)
+    enabled = ReplicateDiarizationAdapter(settings(REPLICATE_API_TOKEN=SECRET), transport=httpx.MockTransport(handler))
+    with pytest.raises(DiarizationError) as exc:
+        enabled.diarize(path)
+    assert exc.value.category == DiarizationErrorCategory.AUTHENTICATION and len(calls) == 1
+    path.write_bytes(b"audio!")
+    with pytest.raises(DiarizationError) as exc:
+        enabled.diarize(path)
+    assert exc.value.category == DiarizationErrorCategory.INPUT_TOO_LARGE and len(calls) == 1
+
+
+def test_output_fetch_retries_transport_without_recreating_prediction(tmp_path, monkeypatch):
+    path = tmp_path / "audio"
+    path.write_bytes(b"audio")
+    calls, waits = [], []
+    async def wait(seconds):
+        waits.append(seconds)
+    monkeypatch.setattr(replicate_diarization.asyncio, "sleep", wait)
+    def handler(request):
+        calls.append(request.url.path)
+        if request.url.path == "/v1/files":
+            return httpx.Response(201, json={"urls": {"get": "https://api.replicate.com/v1/files/a"}})
+        if request.url.path == "/v1/predictions":
+            return httpx.Response(201, json={"status": "succeeded", "output": "https://replicate.delivery/output"})
+        assert "authorization" not in request.headers
+        if calls.count("/output") < 3:
+            raise httpx.ConnectError("private")
+        return httpx.Response(200, content=payload())
+    adapter = ReplicateDiarizationAdapter(settings(REPLICATE_API_TOKEN=SECRET), transport=httpx.MockTransport(handler))
+    assert adapter.diarize(path).turns == ()
+    assert calls == ["/v1/files", "/v1/predictions", "/output", "/output", "/output"]
+    assert waits == [1, 2] and path.read_bytes() == b"audio"
+
+
+def test_retry_after_exceeding_deadline_stops_requests(tmp_path):
+    path = tmp_path / "audio"
+    path.write_bytes(b"audio")
+    calls = []
+    def handler(request):
+        calls.append(request.url.path)
+        if request.url.path == "/v1/files":
+            return httpx.Response(201, json={"urls": {"get": "https://api.replicate.com/v1/files/a"}})
+        return httpx.Response(429, headers={"Retry-After": "9999"})
+    adapter = ReplicateDiarizationAdapter(settings(REPLICATE_API_TOKEN=SECRET, diarization_timeout_seconds=1),
+                                         transport=httpx.MockTransport(handler))
+    with pytest.raises(DiarizationError) as exc:
+        adapter.diarize(path)
+    assert exc.value.category == DiarizationErrorCategory.TIMEOUT
+    assert calls == ["/v1/files", "/v1/predictions"]
 
 
 def test_polling_deadline_cancels_wait_without_extra_requests(tmp_path):

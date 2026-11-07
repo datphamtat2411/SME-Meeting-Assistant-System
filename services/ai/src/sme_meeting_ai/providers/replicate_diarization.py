@@ -7,6 +7,8 @@ import os
 import re
 import stat
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -59,6 +61,8 @@ def _status(response: httpx.Response) -> None:
     if 200 <= response.status_code < 300:
         return
     category = {401: DiarizationErrorCategory.AUTHENTICATION, 403: DiarizationErrorCategory.AUTHENTICATION,
+                400: DiarizationErrorCategory.VALIDATION, 422: DiarizationErrorCategory.VALIDATION,
+                413: DiarizationErrorCategory.INPUT_TOO_LARGE,
                 429: DiarizationErrorCategory.RATE_LIMIT, 408: DiarizationErrorCategory.TIMEOUT,
                 504: DiarizationErrorCategory.TIMEOUT}.get(response.status_code, DiarizationErrorCategory.PROVIDER)
     raise DiarizationError(category)
@@ -73,10 +77,50 @@ async def _body(response: httpx.Response, limit: int) -> bytes:
     return bytes(chunks)
 
 
-async def _json_request(client: httpx.AsyncClient, method: str, url: str, **kwargs) -> dict:
-    async with client.stream(method, url, **kwargs) as response:
-        _status(response)
-        body = await _body(response, _MAX_API_BYTES)
+def _retry_after(value: str | None) -> float | None:
+    if not value:
+        return None
+    if value.isascii() and value.isdigit() and len(value) <= 10:
+        return float(int(value))
+    try:
+        date = parsedate_to_datetime(value)
+        if date.tzinfo is None:
+            return None
+        return max(0, (date - datetime.now(timezone.utc)).total_seconds())
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+async def _request_body(client, method, url, *, limit, deadline, retry, **kwargs):
+    for attempt in range(3):
+        category = None
+        delay = None
+        try:
+            async with client.stream(method, url, **kwargs) as response:
+                if 200 <= response.status_code < 300:
+                    return await _body(response, limit)
+                code = response.status_code
+                allowed = (retry == "read" and code in (408, 429, 500, 502, 503, 504)
+                           or retry == "create" and code == 429)
+                if not allowed or attempt == 2:
+                    _status(response)
+                delay = _retry_after(response.headers.get("Retry-After"))
+        except httpx.TimeoutException:
+            category = DiarizationErrorCategory.TIMEOUT
+        except (httpx.TransportError, OSError):
+            category = DiarizationErrorCategory.TRANSPORT
+        if category is not None and (retry != "read" or attempt == 2):
+            raise DiarizationError(category) from None
+        delay = max(2 ** attempt, delay or 0)
+        remaining = deadline - asyncio.get_running_loop().time()
+        if delay >= remaining:
+            raise DiarizationError(DiarizationErrorCategory.TIMEOUT)
+        await asyncio.sleep(delay)
+    raise DiarizationError(DiarizationErrorCategory.PROVIDER)
+
+
+async def _json_request(client: httpx.AsyncClient, method: str, url: str, *, deadline, retry=None, **kwargs) -> dict:
+    body = await _request_body(client, method, url, limit=_MAX_API_BYTES, deadline=deadline, retry=retry, **kwargs)
     import json
 
     value = json.loads(body)
@@ -109,6 +153,8 @@ class ReplicateDiarizationAdapter:
         raise DiarizationError(category)
 
     def _diarize(self, audio_path, num_speakers, min_speakers, max_speakers):
+        if not self._settings.diarization_enabled:
+            raise DiarizationError(DiarizationErrorCategory.CONFIGURATION)
         hints = {"num_speakers": num_speakers, "min_speakers": min_speakers, "max_speakers": max_speakers}
         if (any(value is not None and (type(value) is not int or not 1 <= value <= 1000) for value in hints.values())
                 or (min_speakers is not None and max_speakers is not None and min_speakers > max_speakers)
@@ -122,8 +168,10 @@ class ReplicateDiarizationAdapter:
                 # Nonblocking open avoids hanging on a FIFO before fstat.
                 fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
                 info = os.fstat(fd)
-                if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= _MAX_UPLOAD_BYTES:
+                if not stat.S_ISREG(info.st_mode) or info.st_size <= 0:
                     raise DiarizationError(DiarizationErrorCategory.VALIDATION)
+                if info.st_size > _MAX_UPLOAD_BYTES:
+                    raise DiarizationError(DiarizationErrorCategory.INPUT_TOO_LARGE)
                 audio = os.fdopen(fd, "rb")
                 fd = None  # The file object owns the descriptor now.
             except (OSError, ValueError, TypeError):
@@ -144,12 +192,13 @@ class ReplicateDiarizationAdapter:
 
     async def _request(self, audio, filename, token, hints):
         timeout = self._settings.diarization_timeout_seconds
-        async with asyncio.timeout(timeout):
+        deadline = asyncio.get_running_loop().time() + timeout
+        async with asyncio.timeout_at(deadline):
             async with httpx.AsyncClient(transport=self._transport, trust_env=False, follow_redirects=False,
                                          timeout=httpx.Timeout(min(timeout, 30))) as client:
                 auth = {"Authorization": f"Bearer {token}"}
                 content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
-                uploaded = await _json_request(client, "POST", f"{_API}/v1/files", headers=auth,
+                uploaded = await _json_request(client, "POST", f"{_API}/v1/files", deadline=deadline, headers=auth,
                                                files={"content": (filename, audio, content_type)})
                 urls = uploaded.get("urls")
                 if not isinstance(urls, dict):
@@ -157,6 +206,7 @@ class ReplicateDiarizationAdapter:
                 audio_url = _upload_url(urls.get("get"))
                 prediction = await _json_request(
                     client, "POST", f"{_API}/v1/predictions",
+                    deadline=deadline, retry="create",
                     headers={**auth, "Cancel-After": f"{max(5, math.ceil(timeout))}s"},
                     json={"version": self._settings.diarization_model.split(":", 1)[1],
                           "input": {"audio": audio_url, **hints}},
@@ -166,13 +216,13 @@ class ReplicateDiarizationAdapter:
                     if not isinstance(prediction_id, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,128}", prediction_id):
                         raise DiarizationError(DiarizationErrorCategory.MALFORMED_OUTPUT)
                     await asyncio.sleep(_POLL_INTERVAL_SECONDS)
-                    prediction = await _json_request(client, "GET", f"{_API}/v1/predictions/{prediction_id}", headers=auth)
+                    prediction = await _json_request(client, "GET", f"{_API}/v1/predictions/{prediction_id}",
+                                                     deadline=deadline, retry="read", headers=auth)
                 if prediction.get("status") in ("failed", "canceled"):
                     raise DiarizationError(DiarizationErrorCategory.PROVIDER)
                 if prediction.get("status") != "succeeded":
                     raise DiarizationError(DiarizationErrorCategory.MALFORMED_OUTPUT)
                 output_url = _delivery_url(prediction.get("output"))
-                async with client.stream("GET", output_url, headers=auth) as response:
-                    _status(response)
-                    data = await _body(response, MAX_OUTPUT_BYTES)
+                data = await _request_body(client, "GET", output_url, limit=MAX_OUTPUT_BYTES,
+                                           deadline=deadline, retry="read")
                 return parse_output(data, self._settings.diarization_model)

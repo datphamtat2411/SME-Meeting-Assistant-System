@@ -150,6 +150,7 @@ class Settings(BaseSettings):
     replicate_api_token: SecretStr | None = Field(
         default=None, validation_alias="REPLICATE_API_TOKEN", repr=False,
     )
+    diarization_enabled: bool = True
     diarization_model: str = Field(
         default="konieshadow/speaker-diarization:c58b6b038f6de30f93eaccd6aecb59d1b9a48ac13b22be000bcffe853efb2c20",
         pattern=r"^konieshadow/speaker-diarization:[a-f0-9]{64}$",

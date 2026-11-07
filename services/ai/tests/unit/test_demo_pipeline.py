@@ -118,6 +118,30 @@ def test_equal_simultaneous_speaker_overlap_is_unknown(tmp_path):
     assert len(result.diarization.turns) == 2
 
 
+@pytest.mark.parametrize("end,expected", [(6251, "completed"), (6252, "failed"), (7000, "failed")])
+def test_duration_checked_before_alignment_preserves_transcription(tmp_path, end, expected):
+    path, pipeline, diarizer = components(tmp_path, turns=(SpeakerTurn(6000, end, "SPEAKER_01"),))
+    result = DemoPipelineRunner(pipeline, diarizer, language="vi").run(path)
+    assert result.diarization.status == expected
+    assert [s.text for s in result.segments] == [s.text for s in outcome("x").result.segments]
+    if expected == "failed":
+        assert result.diarization.errorCode == "MALFORMED_OUTPUT"
+        assert all(s.speakerLabel is None for s in result.segments)
+
+
+def test_insufficient_alignment_evidence_preserves_transcript_and_turns(tmp_path):
+    turns = (SpeakerTurn(1000, 1100, "SPEAKER_01"),
+             SpeakerTurn(3000, 3700, "SPEAKER_01"),
+             SpeakerTurn(3000, 3551, "SPEAKER_02"))
+    path, pipeline, diarizer = components(tmp_path, turns=turns)
+    result = DemoPipelineRunner(pipeline, diarizer, language="vi").run(path)
+    assert [s.speakerLabel for s in result.segments] == [None, None, None]
+    assert [s.text for s in result.segments] == [s.text for s in outcome("x").result.segments]
+    assert [(t.startMs, t.endMs, t.speakerLabel) for t in result.diarization.turns] == [
+        (t.start_ms, t.end_ms, t.speaker_label) for t in turns
+    ]
+
+
 @pytest.mark.parametrize("error,code", [
     (DiarizationError(DiarizationErrorCategory.TIMEOUT), "TIMEOUT"),
     (DiarizationError(DiarizationErrorCategory.AUTHENTICATION), "AUTHENTICATION"),

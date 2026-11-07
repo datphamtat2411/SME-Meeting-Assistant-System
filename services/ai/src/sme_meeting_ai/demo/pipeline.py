@@ -142,6 +142,7 @@ class DemoPipelineRunner:
                 evidence = self._diarizer.diarize(audio_path, **hints.model_dump())
                 if deadline is not None and self._clock() >= deadline:
                     raise TimeoutError
+                evidence.validate_duration((count + 15) // 16)
                 # Exactly the public timestamps are used; do not split/retime text.
                 timed = tuple(TimedTranscriptSegment(s.ordinal, s.startMs, s.endMs) for s in segments)
                 assignments = align_speakers(timed, evidence.turns)
