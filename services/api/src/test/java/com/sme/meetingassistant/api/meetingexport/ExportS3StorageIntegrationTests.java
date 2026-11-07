@@ -107,7 +107,7 @@ class ExportS3StorageIntegrationTests {
             assertThat(valid.statusCode()).isEqualTo(200);
             assertThat(valid.body()).isEqualTo(content);
             assertThat(valid.headers().firstValue("Content-Disposition").orElse(""))
-                    .isEqualTo("attachment; filename=\\"meeting-minutes-"+exportId+".pdf\\"");
+                    .isEqualTo("attachment; filename=\"meeting-minutes-"+exportId+".pdf\"");
             assertThat(valid.headers().firstValue("Content-Type").orElse(""))
                     .isEqualTo("application/pdf");
             assertThat(valid.headers().firstValue("Cache-Control").orElse(""))
