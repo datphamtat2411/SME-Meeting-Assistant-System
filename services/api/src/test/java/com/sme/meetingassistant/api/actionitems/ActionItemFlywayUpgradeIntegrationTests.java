@@ -15,7 +15,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
-/** AI-02/AI-04/AI-05/AI-08.3: historical Action Items survive latest V33. */
+/** AI-02/AI-04/AI-05/AI-08.3: historical Action Items survive latest V34. */
 @ActiveProfiles("test")
 @SpringBootTest
 @Import(PostgresTestConfiguration.class)
@@ -24,7 +24,7 @@ class ActionItemFlywayUpgradeIntegrationTests {
     @Autowired JdbcTemplate jdbc;
 
     @Test
-    void persistedV28MeetingIntelligenceDataUpgradesThroughV33WithoutHistoryRewrites() {
+    void persistedV28MeetingIntelligenceDataUpgradesThroughV34WithoutHistoryRewrites() {
         String schema = "ai02_upgrade_" + UUID.randomUUID().toString().replace("-", "");
         try {
             Flyway previous = Flyway.configure()
@@ -67,9 +67,9 @@ class ActionItemFlywayUpgradeIntegrationTests {
                 SELECT version FROM %s.flyway_schema_history
                 WHERE success AND version IS NOT NULL ORDER BY installed_rank
                 """.formatted(schema), String.class);
-            assertThat(versions).hasSize(33);
-            assertThat(versions.getLast()).isEqualTo("33");
-            assertThat(versions.stream().distinct().count()).isEqualTo(33);
+            assertThat(versions).hasSize(34);
+            assertThat(versions.getLast()).isEqualTo("34");
+            assertThat(versions.stream().distinct().count()).isEqualTo(34);
             assertThat(jdbc.queryForObject("""
                 SELECT checksum FROM %s.flyway_schema_history WHERE version='23'
                 """.formatted(schema), Integer.class)).isEqualTo(checksum23);
@@ -83,7 +83,8 @@ class ActionItemFlywayUpgradeIntegrationTests {
                     "meeting_intelligence_source_snapshots", "action_item_batch_receipts",
                     "action_items", "action_item_evidence", "action_item_history",
                     "meeting_action_item_scopes", "action_item_creation_idempotency",
-                    "user_preferences", "action_item_assignment_events")) {
+                    "user_preferences", "action_item_assignment_events",
+                    "action_item_assignment_revocations")) {
                 assertThat(jdbc.queryForObject("""
                     SELECT count(*) FROM information_schema.tables
                     WHERE table_schema=? AND table_name=?

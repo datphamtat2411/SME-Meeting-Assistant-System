@@ -14,7 +14,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
-/** AI-08.3: forward-only V32 to V33 upgrade preserves real historical Action Items. */
+/** AI-08.3/4: forward-only V32 to V34 upgrade preserves real historical Action Items. */
 @ActiveProfiles("test")
 @SpringBootTest
 @Import(PostgresTestConfiguration.class)
@@ -23,7 +23,7 @@ class ActionItemAssignmentFlywayUpgradeIntegrationTests {
     @Autowired JdbcTemplate jdbc;
 
     @Test
-    void existingManualItemAndHistorySurviveAdditionOfImmutableEventSchema() {
+    void existingManualItemAndHistorySurviveEventAndRevocationSchema() {
         String schema = "ai08_events_" + UUID.randomUUID().toString().replace("-", "");
         try {
             Flyway before = Flyway.configure()
@@ -71,7 +71,7 @@ class ActionItemAssignmentFlywayUpgradeIntegrationTests {
             assertThat(jdbc.queryForObject("""
                 SELECT version FROM %s.flyway_schema_history WHERE success
                 ORDER BY installed_rank DESC LIMIT 1
-                """.formatted(schema), String.class)).isEqualTo("33");
+                """.formatted(schema), String.class)).isEqualTo("34");
             assertThat(jdbc.queryForObject("""
                 SELECT count(*) FROM %s.action_items WHERE id=? AND assignee_user_id=?
                 """.formatted(schema), Integer.class, item, actor)).isEqualTo(1);

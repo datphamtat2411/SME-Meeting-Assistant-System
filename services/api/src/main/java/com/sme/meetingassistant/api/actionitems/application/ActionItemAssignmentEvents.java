@@ -24,6 +24,9 @@ public class ActionItemAssignmentEvents {
 
     public enum Kind { ASSIGNED, REASSIGNED }
 
+    /** An official assignment was terminally revoked at its audited status change. */
+    public record Invalidated(UUID actionItemId) {}
+
     /** Transactional event notification; listener must not make an independent commit. */
     public record Recorded(UUID eventId) {}
 
@@ -48,6 +51,34 @@ public class ActionItemAssignmentEvents {
         }
         publisher.publishEvent(new Recorded(eventId));
         return eventId;
+    }
+
+    /**
+     * DONE/CANCELLED permanently revokes the latest official assignment,
+     * even if DONE is later reopened. No event is fabricated on reopen.
+     * Called after the canonical status and STATUS history are persisted.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void invalidate(UUID actionItemId, long version, UUID historyId, String reason) {
+        if (actionItemId == null || historyId == null || version < 0
+                || (!"DONE".equals(reason) && !"CANCELLED".equals(reason))) {
+            throw new IllegalArgumentException("Invalid assignment termination");
+        }
+        List<UUID> latest = jdbc.query("""
+            SELECT id FROM action_item_assignment_events WHERE action_item_id=?
+            ORDER BY action_item_version DESC LIMIT 1
+            """, (rs, row) -> rs.getObject(1, UUID.class), actionItemId);
+        if (!latest.isEmpty()) {
+            // Repeated completion after a reopen cannot rewrite a previous
+            // revocation; only the first terminal transition is evidence.
+            jdbc.update("""
+                INSERT INTO action_item_assignment_revocations
+                    (event_id,action_item_id,status_history_id,action_item_version,reason)
+                VALUES (?,?,?,?,?)
+                ON CONFLICT (event_id) DO NOTHING
+                """, latest.getFirst(), actionItemId, historyId, version, reason);
+        }
+        publisher.publishEvent(new Invalidated(actionItemId));
     }
 
     /**

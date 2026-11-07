@@ -56,6 +56,31 @@ public class ActionItemAssignmentNotificationService implements ActionItemAssign
         if (inserted == 0) validateReplay(dedupeKey, eventId, assigneeUserId, recipientEmail);
     }
 
+    @Override
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void supersedeForActionItem(UUID actionItemId, UUID stillCurrentEventId) {
+        if (actionItemId == null) throw new IllegalArgumentException("Missing canonical item ID");
+        jdbc.update("""
+            UPDATE email_deliveries delivery
+               SET status='SKIPPED',
+                   skip_reason='SUPERSEDED_BY_ACTION_ITEM_CHANGE',
+                   last_error_code=NULL,last_error_summary=NULL,next_attempt_at=NULL,
+                   updated_at=clock_timestamp()
+             WHERE delivery.notification_type='ACTION_ITEM_ASSIGNED'
+               AND delivery.related_entity_type='ACTION_ITEM_ASSIGNMENT'
+               AND delivery.status IN ('PENDING','FAILED')
+               AND EXISTS (
+                   SELECT 1 FROM action_item_assignment_events event
+                    WHERE event.id=delivery.related_entity_id
+                      AND event.action_item_id=?
+                      AND (?::uuid IS NULL OR event.id<>?::uuid)
+               )
+            """, actionItemId, stillCurrentEventId, stillCurrentEventId);
+        // SENT and already in-flight SENDING attempts cannot be revoked
+        // reliably over SMTP. The worker rechecks current policy and
+        // fences stale attempts before their next handoff.
+    }
+
     private void validateReplay(String dedupeKey, UUID eventId, UUID assigneeUserId,
             String recipientEmail) {
         List<Boolean> matchingRows = jdbc.query("""

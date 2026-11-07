@@ -14,4 +14,7 @@ public interface ActionItemAssignmentNotificationPort {
      */
     void enqueueAssigned(UUID eventId, UUID actionItemId, UUID assigneeUserId,
             String recipientEmail);
+
+    /** Supersede obsolete unsent assignment intents in the authoritative transaction. */
+    void supersedeForActionItem(UUID actionItemId, UUID stillCurrentEventId);
 }

@@ -335,6 +335,10 @@ public class ActionItemService {
             // do not fabricate an ASSIGNEE history transition for a proposal.
             assignmentEvents.record(id, old.version() + 1, statusHistory,
                 old.assigneeUserId(), Kind.ASSIGNED);
+        } else if (target == ActionItemStatus.DONE || target == ActionItemStatus.CANCELLED) {
+            // Keep immutable evidence of terminal invalidation. Otherwise a
+            // subsequent DONE -> OPEN reopen could resurrect pending mail.
+            assignmentEvents.invalidate(id, old.version() + 1, statusHistory, target.name());
         }
         return visibleForActor(byId(id), actor);
     }
