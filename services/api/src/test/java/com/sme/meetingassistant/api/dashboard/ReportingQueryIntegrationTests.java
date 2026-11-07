@@ -295,10 +295,11 @@ class ReportingQueryIntegrationTests {
         UUID mediaId = UUID.randomUUID();
         jdbc.update("""
             INSERT INTO meeting_media(id,meeting_id,source_type,status,object_key,
-                content_type,expected_size_bytes,uploaded_by_user_id,size_bytes,
-                duration_ms,available_at)
-            VALUES (?,?,'UPLOAD','AVAILABLE',?,'audio/wav',1024,?,1024,1000,CURRENT_TIMESTAMP)
-            """, mediaId, meetingId, "de02/" + mediaId, requester);
+                pending_object_key,content_type,expected_size_bytes,uploaded_by_user_id,
+                size_bytes,duration_ms,available_at)
+            VALUES (?,?,'UPLOAD','AVAILABLE',?,?,'audio/wav',1024,?,1024,1000,CURRENT_TIMESTAMP)
+            """, mediaId, meetingId, "de02/ready/" + mediaId,
+                "de02/pending/" + mediaId, requester);
         jdbc.update("""
             INSERT INTO processing_jobs(id,meeting_id,source_media_id,status,requested_by_user_id)
             VALUES (?,?,?,?,?)
