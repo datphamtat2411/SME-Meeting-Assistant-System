@@ -51,7 +51,7 @@ public final class ActionItemProposalSinkService implements ActionItemProposalSi
                   AND snapshot.id=? AND snapshot.meeting_id=?
                   AND snapshot.transcript_id=? AND snapshot.content_revision=?
             )
-            """, batch.stageRunId(), batch.processingJobId(),
+            """, Boolean.class, batch.stageRunId(), batch.processingJobId(),
             batch.processingJobId(), batch.meetingId(),
             batch.sourceSnapshotId(), batch.meetingId(),
             batch.transcriptId(), batch.contentRevision());
