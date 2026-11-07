@@ -15,7 +15,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
-/** AI-02: V29 must upgrade a persisted V28 database without modifying older checksums. */
+/** AI-02/AI-04: V28 and V29 histories upgrade through V30 without rewriting prior checksums. */
 @ActiveProfiles("test")
 @SpringBootTest
 @Import(PostgresTestConfiguration.class)
@@ -24,7 +24,7 @@ class ActionItemFlywayUpgradeIntegrationTests {
     @Autowired JdbcTemplate jdbc;
 
     @Test
-    void persistedV28MeetingIntelligenceDataUpgradesToV29WithoutHistoryRewrites() {
+    void persistedV28MeetingIntelligenceDataUpgradesThroughV30WithoutHistoryRewrites() {
         String schema = "ai02_upgrade_" + UUID.randomUUID().toString().replace("-", "");
         try {
             Flyway previous = Flyway.configure()
@@ -67,9 +67,9 @@ class ActionItemFlywayUpgradeIntegrationTests {
                 SELECT version FROM %s.flyway_schema_history
                 WHERE success AND version IS NOT NULL ORDER BY installed_rank
                 """.formatted(schema), String.class);
-            assertThat(versions).hasSize(29);
-            assertThat(versions.getLast()).isEqualTo("29");
-            assertThat(versions.stream().distinct().count()).isEqualTo(29);
+            assertThat(versions).hasSize(30);
+            assertThat(versions.getLast()).isEqualTo("30");
+            assertThat(versions.stream().distinct().count()).isEqualTo(30);
             assertThat(jdbc.queryForObject("""
                 SELECT checksum FROM %s.flyway_schema_history WHERE version='23'
                 """.formatted(schema), Integer.class)).isEqualTo(checksum23);
@@ -81,13 +81,67 @@ class ActionItemFlywayUpgradeIntegrationTests {
                 """.formatted(schema), Integer.class, meeting, user)).isEqualTo(1);
             for (String table : List.of(
                     "meeting_intelligence_source_snapshots", "action_item_batch_receipts",
-                    "action_items", "action_item_evidence", "action_item_history")) {
+                    "action_items", "action_item_evidence", "action_item_history",
+                    "meeting_action_item_scopes")) {
                 assertThat(jdbc.queryForObject("""
                     SELECT count(*) FROM information_schema.tables
                     WHERE table_schema=? AND table_name=?
                     """, Integer.class, schema, table))
                     .describedAs("Expected preserved/new schema table " + table).isEqualTo(1);
             }
+        } finally {
+            jdbc.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE");
+        }
+    }
+
+    @Test
+    void persistedV29ActionItemSurvivesV30AndLegacyMeetingIsNotAutoClassified() {
+        String schema = "ai04_upgrade_" + UUID.randomUUID().toString().replace("-", "");
+        try {
+            Flyway old = Flyway.configure()
+                .dataSource(dataSource).schemas(schema).locations("classpath:db/migration")
+                .target(MigrationVersion.fromVersion("29")).load();
+            old.migrate();
+            old.validate();
+
+            UUID actor = UUID.randomUUID(), meeting = UUID.randomUUID();
+            UUID unit = UUID.randomUUID(), item = UUID.randomUUID();
+            String email = "ai04-upgrade-" + actor + "@example.invalid";
+            jdbc.update("""
+                INSERT INTO %s.organizational_units(id,code,name,status)
+                VALUES (?,?,'Historical unit','ACTIVE')
+                """.formatted(schema), unit, "AI04-" + unit);
+            jdbc.update("""
+                INSERT INTO %s.users(id,email,email_normalized,display_name,password_hash,
+                    global_role,account_status,primary_org_unit_id)
+                VALUES (?,?,?,'Historical organizer','test-only','EMPLOYEE','ACTIVE',?)
+                """.formatted(schema), actor,email,email,unit);
+            jdbc.update("""
+                INSERT INTO %s.meetings(id,title,organizer_user_id,created_by_user_id)
+                VALUES (?,'Historical meeting',?,?)
+                """.formatted(schema), meeting,actor,actor);
+            jdbc.update("""
+                INSERT INTO %s.action_items(id,meeting_id,title,status,source_type,
+                    assignee_user_id,created_by_user_id)
+                VALUES (?,?,'Existing task','OPEN','MANUAL',?,?)
+                """.formatted(schema), item,meeting,actor,actor);
+            Integer checksum29 = jdbc.queryForObject("""
+                SELECT checksum FROM %s.flyway_schema_history WHERE version='29'
+                """.formatted(schema),Integer.class);
+
+            Flyway upgraded = Flyway.configure()
+                .dataSource(dataSource).schemas(schema).locations("classpath:db/migration").load();
+            upgraded.migrate();
+            upgraded.validate();
+            assertThat(jdbc.queryForObject("""
+                SELECT checksum FROM %s.flyway_schema_history WHERE version='29'
+                """.formatted(schema),Integer.class)).isEqualTo(checksum29);
+            assertThat(jdbc.queryForObject("""
+                SELECT title FROM %s.action_items WHERE id=?
+                """.formatted(schema),String.class,item)).isEqualTo("Existing task");
+            assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM %s.meeting_action_item_scopes WHERE meeting_id=?
+                """.formatted(schema),Integer.class,meeting)).isZero();
         } finally {
             jdbc.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE");
         }
