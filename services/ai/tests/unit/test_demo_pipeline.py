@@ -65,16 +65,16 @@ def components(tmp_path, *, turns=(), segments=None):
     pipeline = Mock()
     pipeline.run.side_effect = lambda source: outcome(source.source_id, segments)
     diarizer = Mock()
-    diarizer.diarize.return_value = DiarizationResult(tuple(turns), ("SPEAKER_00", "SPEAKER_01"), "pinned")
+    diarizer.diarize.return_value = DiarizationResult(tuple(turns), ("SPEAKER_01", "SPEAKER_02"), "pinned")
     return path, pipeline, diarizer
 
 
 def test_corrected_text_absolute_rounding_ordinals_and_alignment_share_one_timeline(tmp_path, monkeypatch):
     turns = (
-        SpeakerTurn(1000, 1500, "SPEAKER_00"),
-        SpeakerTurn(1500, 2001, "SPEAKER_00"),
-        SpeakerTurn(1200, 1600, "SPEAKER_01"),
-        SpeakerTurn(3000, 4000, "SPEAKER_01"),
+        SpeakerTurn(1000, 1500, "SPEAKER_01"),
+        SpeakerTurn(1500, 2001, "SPEAKER_01"),
+        SpeakerTurn(1200, 1600, "SPEAKER_02"),
+        SpeakerTurn(3000, 4000, "SPEAKER_02"),
     )
     path, pipeline, diarizer = components(tmp_path, turns=turns)
     observed = []
@@ -98,11 +98,11 @@ def test_corrected_text_absolute_rounding_ordinals_and_alignment_share_one_timel
         (s.ordinal, s.startMs, s.endMs) for s in result.segments
     ]
     assert [s.text for s in result.segments] == [s.text for s in outcome("x").result.segments]
-    assert [s.speakerLabel for s in result.segments] == ["SPEAKER_00", "SPEAKER_01", None]
+    assert [s.speakerLabel for s in result.segments] == ["SPEAKER_01", "SPEAKER_02", None]
     assert [(t.startMs, t.endMs, t.speakerLabel) for t in result.diarization.turns] == [
         (t.start_ms, t.end_ms, t.speaker_label) for t in turns
     ]
-    assert [s.label for s in result.diarization.speakers] == ["SPEAKER_00", "SPEAKER_01"]
+    assert [s.label for s in result.diarization.speakers] == ["SPEAKER_01", "SPEAKER_02"]
     source = pipeline.run.call_args.args[0]
     assert source.path == path and source.source_id
     diarizer.diarize.assert_called_once_with(path, num_speakers=None, min_speakers=1, max_speakers=3)
@@ -111,7 +111,7 @@ def test_corrected_text_absolute_rounding_ordinals_and_alignment_share_one_timel
 
 def test_equal_simultaneous_speaker_overlap_is_unknown(tmp_path):
     path, pipeline, diarizer = components(tmp_path, turns=(
-        SpeakerTurn(0, 6000, "SPEAKER_00"), SpeakerTurn(0, 6000, "SPEAKER_01"),
+        SpeakerTurn(0, 6000, "SPEAKER_01"), SpeakerTurn(0, 6000, "SPEAKER_02"),
     ))
     result = DemoPipelineRunner(pipeline, diarizer, language="vi").run(path)
     assert all(s.speakerLabel is None for s in result.segments)

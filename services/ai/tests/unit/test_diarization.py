@@ -53,11 +53,11 @@ def test_normalization_stable_order_and_overlap():
         segment("A", "0:00:05", "0:00:06"),
     ], ["B", "A"])
     result = parse_output(data, MODEL)
-    assert result.turns == (SpeakerTurn(0, 3000, "SPEAKER_00"),
-                            SpeakerTurn(0, 1000, "SPEAKER_01"),
-                            SpeakerTurn(2000, 5000, "SPEAKER_01"),
-                            SpeakerTurn(5000, 6000, "SPEAKER_00"))
-    assert result.speakers == ("SPEAKER_00", "SPEAKER_01")
+    assert result.turns == (SpeakerTurn(0, 3000, "SPEAKER_01"),
+                            SpeakerTurn(0, 1000, "SPEAKER_02"),
+                            SpeakerTurn(2000, 5000, "SPEAKER_02"),
+                            SpeakerTurn(5000, 6000, "SPEAKER_01"))
+    assert result.speakers == ("SPEAKER_01", "SPEAKER_02")
     assert result.model_id == MODEL
 
 
@@ -66,7 +66,24 @@ def test_empty_and_more_than_ten_speakers():
     labels = [f"P{i}" for i in range(12)]
     data = payload([segment(label, f"0:00:{i:02d}", f"0:00:{i + 1:02d}")
                     for i, label in enumerate(labels)], labels)
-    assert parse_output(data, MODEL).speakers[-1] == "SPEAKER_11"
+    result = parse_output(data, MODEL)
+    expected = tuple(f"SPEAKER_{i:02d}" for i in range(1, 13))
+    assert result.speakers == expected
+    assert tuple(turn.speaker_label for turn in result.turns) == expected
+
+
+def test_numbering_remains_valid_beyond_99_and_matches_turn_references():
+    labels = [f"P{i}" for i in range(100)]
+    segments = [
+        segment(label, f"0:{i // 60:02d}:{i % 60:02d}",
+                f"0:{(i + 1) // 60:02d}:{(i + 1) % 60:02d}")
+        for i, label in reversed(list(enumerate(labels)))
+    ]
+    result = parse_output(payload(segments, list(reversed(labels))), MODEL)
+    expected = tuple(f"SPEAKER_{i:02d}" for i in range(1, 101))
+    assert result.speakers == expected
+    assert tuple(turn.speaker_label for turn in result.turns) == expected
+    assert result.turns[0].start_ms == 0 and result.turns[-1].start_ms == 99_000
 
 
 @pytest.mark.parametrize("data", [
@@ -87,22 +104,22 @@ def test_bad_output(data):
 
 
 def test_alignment_cases_and_identity():
-    turns = (SpeakerTurn(500, 3500, "SPEAKER_00"),
-             SpeakerTurn(3500, 6000, "SPEAKER_01"),
-             SpeakerTurn(10000, 11000, "SPEAKER_00"),
-             SpeakerTurn(11000, 12000, "SPEAKER_00"),
-             SpeakerTurn(10000, 12000, "SPEAKER_01"))
+    turns = (SpeakerTurn(500, 3500, "SPEAKER_01"),
+             SpeakerTurn(3500, 6000, "SPEAKER_02"),
+             SpeakerTurn(10000, 11000, "SPEAKER_01"),
+             SpeakerTurn(11000, 12000, "SPEAKER_01"),
+             SpeakerTurn(10000, 12000, "SPEAKER_02"))
     segments = (TimedTranscriptSegment(9, 1000, 3000), TimedTranscriptSegment(2, 3000, 5000),
                 TimedTranscriptSegment(7, 8000, 9000), TimedTranscriptSegment(3, 6000, 8000),
                 TimedTranscriptSegment(5, 10000, 12000))
     result = align_speakers(segments, turns)
     assert [(x.ordinal, x.speaker_label) for x in result] == [
-        (9, "SPEAKER_00"), (2, "SPEAKER_01"), (7, None), (3, None), (5, None)]
+        (9, "SPEAKER_01"), (2, "SPEAKER_02"), (7, None), (3, None), (5, None)]
     assert align_speakers([], turns) == ()
     assert align_speakers(segments[:1], ())[0].speaker_label is None
     assert align_speakers([TimedTranscriptSegment(1, 0, 4000)], [
-        SpeakerTurn(0, 1000, "SPEAKER_00"), SpeakerTurn(2000, 4000, "SPEAKER_00"),
-        SpeakerTurn(1000, 3000, "SPEAKER_01")])[0].speaker_label == "SPEAKER_00"
+        SpeakerTurn(0, 1000, "SPEAKER_01"), SpeakerTurn(2000, 4000, "SPEAKER_01"),
+        SpeakerTurn(1000, 3000, "SPEAKER_02")])[0].speaker_label == "SPEAKER_01"
 
 
 def settings(**kwargs):
@@ -154,7 +171,7 @@ def test_provider_request(tmp_path):
 
     adapter = ReplicateDiarizationAdapter(settings(REPLICATE_API_TOKEN=SECRET), transport=httpx.MockTransport(handler))
     result = adapter.diarize(audio, min_speakers=1, max_speakers=3)
-    assert result.turns == (SpeakerTurn(0, 1000, "SPEAKER_00"),)
+    assert result.turns == (SpeakerTurn(0, 1000, "SPEAKER_01"),)
     assert len(requests) == 3
 
 

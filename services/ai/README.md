@@ -68,7 +68,7 @@ print(diarization.turns, assignments)
 ```
 
 Turns contain half-open, integer millisecond intervals; timestamps round to the
-nearest millisecond with half milliseconds rounded up. Anonymous `SPEAKER_00`
+nearest millisecond with half milliseconds rounded up. Anonymous `SPEAKER_01`
 labels represent recording-local clusters, not verified human identities.
 Original turns, including overlaps, remain available. Alignment accumulates
 overlap per speaker and returns `None` for no overlap or an exact tie; a single
@@ -231,15 +231,15 @@ Example completed response (illustrative, **not actual inference output**):
   "result": {
     "durationMs": 4500, "language": "vi",
     "segments": [
-      {"ordinal": 0, "startMs": 500, "endMs": 2000, "speakerLabel": "SPEAKER_00", "text": "Chào mọi người."},
-      {"ordinal": 1, "startMs": 2200, "endMs": 4000, "speakerLabel": "SPEAKER_01", "text": "Em xin báo cáo tiến độ."}
+      {"ordinal": 0, "startMs": 500, "endMs": 2000, "speakerLabel": "SPEAKER_01", "text": "Chào mọi người."},
+      {"ordinal": 1, "startMs": 2200, "endMs": 4000, "speakerLabel": "SPEAKER_02", "text": "Em xin báo cáo tiến độ."}
     ],
     "diarization": {
       "status": "completed", "errorCode": null,
-      "speakers": [{"label": "SPEAKER_00"}, {"label": "SPEAKER_01"}],
+      "speakers": [{"label": "SPEAKER_01"}, {"label": "SPEAKER_02"}],
       "turns": [
-        {"startMs": 500, "endMs": 2000, "speakerLabel": "SPEAKER_00"},
-        {"startMs": 2200, "endMs": 4000, "speakerLabel": "SPEAKER_01"}
+        {"startMs": 500, "endMs": 2000, "speakerLabel": "SPEAKER_01"},
+        {"startMs": 2200, "endMs": 4000, "speakerLabel": "SPEAKER_02"}
       ]
     }
   }

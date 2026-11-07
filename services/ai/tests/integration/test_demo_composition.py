@@ -25,13 +25,13 @@ def test_real_offline_composition_corrects_once_then_adds_speakers(workflow):
     h = workflow()
     diarizer = Mock()
     diarizer.diarize.return_value = DiarizationResult(
-        (SpeakerTurn(0, 128, "SPEAKER_00"), SpeakerTurn(128, 256, "SPEAKER_01")),
-        ("SPEAKER_00", "SPEAKER_01"), "pinned",
+        (SpeakerTurn(0, 128, "SPEAKER_01"), SpeakerTurn(128, 256, "SPEAKER_02")),
+        ("SPEAKER_01", "SPEAKER_02"), "pinned",
     )
     result = DemoPipelineRunner(pipeline(h), diarizer, language="vi").run(h.source.path)
     assert [s.text for s in result.segments] == [text + "." for text in RAW]
     assert [(s.ordinal, s.startMs, s.endMs, s.speakerLabel) for s in result.segments] == [
-        (0, 0, 128, "SPEAKER_00"), (1, 128, 256, "SPEAKER_01"),
+        (0, 0, 128, "SPEAKER_01"), (1, 128, 256, "SPEAKER_02"),
     ]
     assert len(h.asr_calls) == 2 and h.correction_calls == 1
     assert list(h.work.iterdir()) == []

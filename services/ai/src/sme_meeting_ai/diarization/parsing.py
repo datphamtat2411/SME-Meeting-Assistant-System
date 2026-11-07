@@ -92,6 +92,6 @@ def _parse(data: bytes, model_id: str) -> DiarizationResult:
     turns = []
     for start, label, end in raw:
         if label not in mapping:
-            mapping[label] = f"SPEAKER_{len(mapping):02d}"
+            mapping[label] = f"SPEAKER_{len(mapping) + 1:02d}"
         turns.append(SpeakerTurn(start, end, mapping[label]))
     return DiarizationResult(tuple(turns), tuple(mapping.values()), model_id)

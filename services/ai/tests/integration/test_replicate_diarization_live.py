@@ -109,8 +109,8 @@ def test_live_configuration_loads_dotenv(tmp_path, monkeypatch):
 
         def diarize(self, path):
             assert path == audio
-            return SimpleNamespace(turns=[SimpleNamespace(speaker_label="SPEAKER_00")],
-                                   speakers=("SPEAKER_00", "SPEAKER_01"))
+            return SimpleNamespace(turns=[SimpleNamespace(speaker_label="SPEAKER_01")],
+                                   speakers=("SPEAKER_01", "SPEAKER_02"))
 
     monkeypatch.setattr(__import__(__name__, fromlist=["ReplicateDiarizationAdapter"]),
                         "ReplicateDiarizationAdapter", FakeAdapter)
