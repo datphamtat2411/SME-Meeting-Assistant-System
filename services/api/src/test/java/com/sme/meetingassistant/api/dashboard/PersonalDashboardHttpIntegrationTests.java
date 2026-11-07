@@ -289,7 +289,8 @@ class PersonalDashboardHttpIntegrationTests {
         }
 
         MvcResult get() throws Exception {
-            var req = get("/api/v1/dashboard/me").principal(principal(actor));
+            var req = org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                    .get("/api/v1/dashboard/me").principal(principal(actor));
             if (params.length % 2 != 0) throw new IllegalArgumentException("Bad test params");
             for (int i = 0; i < params.length; i += 2) req.param(params[i], params[i+1]);
             return mvc.perform(req).andExpect(status().isOk()).andReturn();
