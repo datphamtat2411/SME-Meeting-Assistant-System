@@ -17,6 +17,14 @@ public interface ObjectStorage {
     }
     /** Create an accepted source once. False means an object already exists at this key. */
     boolean putAcceptedIfAbsent(String objectKey, Path validatedFile, String sha256);
+    /**
+     * Private server-side immutable byte write. Does not issue client capabilities.
+     * Export-only callers enforce a bounded object size and verify a subsequent GET.
+     */
+    default boolean putImmutableBytesIfAbsent(String objectKey, byte[] bytes,
+            String contentType, String sha256) {
+        throw new UnsupportedOperationException("Immutable private bytes storage is not installed.");
+    }
     void delete(String objectKey);
     /** Server-side bounded listing; never expose this namespace to callers. */
     ListedObjects list(String prefix,String continuationToken,int limit);
