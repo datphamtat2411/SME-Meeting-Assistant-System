@@ -429,8 +429,18 @@ class ActionItemProposalSinkIntegrationTests {
         assertThat(restricted.path("confirmedByUserId").isNull()).isTrue();
         mvc.perform(get("/api/v1/meetings/{id}",meeting).principal(outside))
             .andExpect(status().isNotFound());
-        mvc.perform(get("/api/v1/action-items/{id}",task).principal(()->UUID.randomUUID().toString()))
-            .andExpect(status().isNotFound());
+        // Unknown identity is 401; a real active but unrelated user must
+        // receive concealed 404 at the resource-authorization boundary.
+        UUID uninvolved=UUID.randomUUID();
+        String unrelatedEmail="ai06-unrelated-"+uninvolved+"@example.invalid";
+        jdbc.update("""
+            INSERT INTO users(id,email,email_normalized,display_name,password_hash,global_role,account_status)
+            VALUES (?,?,?,'Unrelated active user','test-only','EMPLOYEE','ACTIVE')
+            """,uninvolved,unrelatedEmail,unrelatedEmail);
+        mvc.perform(get("/api/v1/action-items/{id}",task)
+                .principal(()->uninvolved.toString())).andExpect(status().isNotFound());
+        mvc.perform(get("/api/v1/action-items/{id}",task)
+                .principal(()->UUID.randomUUID().toString())).andExpect(status().isUnauthorized());
 
         MvcResult complete=mvc.perform(post("/api/v1/action-items/{id}/complete",task)
                 .principal(outside)
