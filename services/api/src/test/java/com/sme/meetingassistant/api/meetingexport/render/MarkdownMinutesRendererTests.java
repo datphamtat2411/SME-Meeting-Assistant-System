@@ -50,13 +50,17 @@ class MarkdownMinutesRendererTests {
                 "Chuẩn bị báo cáo thử nghiệm", "Chi tiết công việc tiếng Việt",
                 "Evidence segment (ID)", "Nguồn lỗi thời", "Lần chọn phiên bản",
                 "Content revision", "Độ không chắc chắn AI", "Vùng chưa đủ coverage");
-        assertThat(text).contains(SOURCE_ID.toString(), TRANSCRIPT_ID.toString(),
-                DECISION_ID.toString(), ACTION_ID.toString());
+        // Canonical UUIDs remain readable in rendered Markdown, while the
+        // source escapes hyphens in the UTF-8 Markdown representation.
+        assertThat(text).contains(SOURCE_ID.toString().replace("-", "\\-"),
+                TRANSCRIPT_ID.toString().replace("-", "\\-"),
+                DECISION_ID.toString().replace("-", "\\-"),
+                ACTION_ID.toString().replace("-", "\\-"));
         assertThat(text).contains("SUMMARY_SOURCE_STALE".replace("_", "\\_"),
                 "TRANSCRIPT_INCOMPLETE_COVERAGE".replace("_", "\\_"));
         assertThat(text).contains("CẢNH BÁO NGUỒN", "CẢNH BÁO:", "NEEDS_REVIEW".replace("_", "\\_"));
         assertThat(text).contains("Source fingerprint (SHA-256)", "a".repeat(64),
-                MarkdownMinutesRenderer.VERSION);
+                MarkdownMinutesRenderer.VERSION.replace("-", "\\-"));
         assertThat(text).doesNotContain("\r", "\uFEFF", "2026-11-07T12:00:00Z\n\n## Dấu");
         assertThat(rendered.sizeBytes()).isEqualTo(rendered.utf8().length);
         assertThat(rendered.mediaType()).isEqualTo("text/markdown; charset=UTF-8");
@@ -114,7 +118,7 @@ class MarkdownMinutesRendererTests {
         String text = RENDERER.render(adversarial).text();
 
         assertThat(text).contains("> \\# Fake heading",
-                "> &lt;script&gt;alert('x')&lt;/script&gt;",
+                "> &lt;script&gt;alert\\('x'\\)&lt;/script&gt;",
                 "> \\[độc hại\\]\\(javascript:alert\\(1\\)\\)",
                 "> \\!\\[\\]\\(https://evil\\.example/pixel\\)",
                 "> \\|X\\|Y\\|", "> \\#\\#\\# Approved");
@@ -146,7 +150,7 @@ class MarkdownMinutesRendererTests {
                 transcript, List.of("TRANSCRIPT_NOT_AVAILABLE", "SUMMARY_NOT_AVAILABLE"),
                 false, 1);
         String text = RENDERER.render(missing).text();
-        assertThat(text).contains("Chưa có bản tóm tắt", "Không có transcript hiện tại",
+        assertThat(text).contains("Chưa có bản tóm tắt", "Chưa có transcript hiện tại",
                 "Không có quyết định CONFIRMED", "Không có Action Item chính thức",
                 "TRANSCRIPT_NOT_AVAILABLE".replace("_", "\\_"),
                 "SUMMARY_NOT_AVAILABLE".replace("_", "\\_"));
