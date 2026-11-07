@@ -14,6 +14,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
 /**
@@ -26,6 +28,7 @@ import org.springframework.test.context.ActiveProfiles;
 class AssignmentRevocationFlywayUpgradeIntegrationTests {
     @Autowired DataSource dataSource;
     @Autowired JdbcTemplate jdbc;
+    @Autowired PlatformTransactionManager transactionManager;
 
     @Test
     void v33EventSurvivesV34AndHistoricalTerminalStateIsProvablyRevocable() {
@@ -61,11 +64,17 @@ class AssignmentRevocationFlywayUpgradeIntegrationTests {
                     (id,action_item_id,change_type,from_value,to_value,changed_by_user_id)
                 VALUES (?,?,'ASSIGNEE',NULL,?,?)
                 """.formatted(schema), history, item, user.toString(), user);
-            jdbc.update("""
-                INSERT INTO %s.action_item_assignment_events
-                    (id,action_item_id,action_item_version,history_id,assignee_user_id,event_type)
-                VALUES (?,?,0,?,?,'ASSIGNED')
-                """.formatted(schema), event, item, history, user);
+            // At historical V33 the trigger uses the connection search_path.
+            // Model the historical schema's real search_path for this pre-upgrade
+            // insert; the new V34 replacement no longer depends on it.
+            new TransactionTemplate(transactionManager).executeWithoutResult(tx -> {
+                jdbc.execute("SET LOCAL search_path TO " + schema + ", public");
+                jdbc.update("""
+                    INSERT INTO %s.action_item_assignment_events
+                        (id,action_item_id,action_item_version,history_id,assignee_user_id,event_type)
+                    VALUES (?,?,0,?,?,'ASSIGNED')
+                    """.formatted(schema), event, item, history, user);
+            });
             Integer oldChecksum = jdbc.queryForObject("""
                 SELECT checksum FROM %s.flyway_schema_history WHERE version='33'
                 """.formatted(schema), Integer.class);
@@ -85,6 +94,29 @@ class AssignmentRevocationFlywayUpgradeIntegrationTests {
             assertThat(jdbc.queryForObject("""
                 SELECT count(*) FROM %s.action_item_assignment_events WHERE id=?
                 """.formatted(schema), Integer.class, event)).isEqualTo(1);
+
+            // The V34 forward-only trigger repair works with qualified SQL
+            // even when the caller does not change session search_path.
+            UUID nextItem = UUID.randomUUID(), nextHistory = UUID.randomUUID();
+            UUID nextEvent = UUID.randomUUID();
+            jdbc.update("""
+                INSERT INTO %s.action_items(id,meeting_id,title,status,assignee_user_id,
+                    source_type,created_by_user_id)
+                VALUES (?,?,'Post-upgrade assignment','OPEN',?,'MANUAL',?)
+                """.formatted(schema), nextItem, meeting, user, user);
+            jdbc.update("""
+                INSERT INTO %s.action_item_history
+                    (id,action_item_id,change_type,from_value,to_value,changed_by_user_id)
+                VALUES (?,?,'ASSIGNEE',NULL,?,?)
+                """.formatted(schema), nextHistory, nextItem, user.toString(), user);
+            jdbc.update("""
+                INSERT INTO %s.action_item_assignment_events
+                    (id,action_item_id,action_item_version,history_id,assignee_user_id,event_type)
+                VALUES (?,?,0,?,?,'ASSIGNED')
+                """.formatted(schema), nextEvent, nextItem, nextHistory, user);
+            assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM %s.action_item_assignment_events WHERE id=?
+                """.formatted(schema), Integer.class, nextEvent)).isEqualTo(1);
             assertThat(jdbc.queryForObject("""
                 SELECT count(*) FROM %s.action_item_assignment_revocations WHERE event_id=?
                 """.formatted(schema), Integer.class, event)).isZero();

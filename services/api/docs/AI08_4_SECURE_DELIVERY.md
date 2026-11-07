@@ -3,6 +3,9 @@
 **Base:** AI-08.3 passed API CI at `08a15d1bb9c899da918ad718d5197c20f6fa003c`.
 **Integration branch:** `api/action-items-integration`.
 **Migration:** `V34__action_item_assignment_revocations.sql`, forward-only after V33.
+V34 also repairs V33's trigger lookups with `CREATE OR REPLACE FUNCTION` and
+schema-qualified queries based on `TG_TABLE_SCHEMA`; the historical V33
+migration file and Flyway checksum are not modified.
 
 ## 1. Authoritative send-time eligibility
 
