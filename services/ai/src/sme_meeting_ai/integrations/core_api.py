@@ -195,6 +195,7 @@ class CoreError(Exception):
             "WORKER_ATTEMPT_BUSY", "WORKER_LEASE_LOST", "WORKER_RESULT_CONFLICT", "WORKER_COMMAND_CONFLICT",
             "WORKER_RESPONSE_INVALID", "VALIDATION_ERROR", "PAYLOAD_TOO_LARGE", "UNSUPPORTED_MEDIA_TYPE",
             "SERVICE_UNAVAILABLE",
+            "DIARIZATION_SOURCE_STALE", "DIARIZATION_RESULT_INVALID", "DIARIZATION_RESULT_MISSING",
         } else "WORKER_TRANSPORT"
         self.retry_after = min(30, max(0, retry_after))
         self.stop_intake = status in (401, 403) or self.code == "WORKER_CONTRACT_UNSUPPORTED"
@@ -209,6 +210,11 @@ class TransportBudget:
 
 
 class CoreApiClient:
+    capability = "transcription"
+
+    def response_limit(self, operation):
+        return 65536
+
     def __init__(self, settings: Settings, *, client=None, sleep=asyncio.sleep):
         self.settings = settings
         self.sleep = sleep
@@ -258,7 +264,8 @@ class CoreApiClient:
 
     async def _once(self, event, operation, body, deadline):
         base = self.settings.core_api_base_url or "https://core.invalid"
-        path = f"/internal/v1/worker/processing-jobs/{event.processingJobId}/transcription/{operation}"
+        path = f"/internal/v1/worker/processing-jobs/{event.processingJobId}/{self.capability}/{operation}"
+        maximum = self.response_limit(operation)
         duration = self.settings.core_api_timeout_seconds
         if deadline is not None:
             duration = min(duration, deadline - asyncio.get_running_loop().time())
@@ -277,10 +284,10 @@ class CoreApiClient:
                         raise CoreError(response.status_code)
                     raw = bytearray()
                     async for chunk in response.aiter_bytes():
-                        if len(raw) + len(chunk) > 65536:
+                        if len(raw) + len(chunk) > maximum:
                             raise CoreError(response_status if response_status != 200 else 0, "WORKER_RESPONSE_INVALID")
                         raw.extend(chunk)
-                    data = strict_json(bytes(raw), 65536)
+                    data = strict_json(bytes(raw), maximum)
                     if not isinstance(data, dict) or set(data) - {"success", "code", "message", "data", "meta", "errors"}:
                         raise CoreError(response_status if response_status != 200 else 0, "WORKER_RESPONSE_INVALID")
                     if response.status_code != 200:
@@ -296,26 +303,7 @@ class CoreApiClient:
                         raise CoreError(0, "WORKER_RESPONSE_INVALID")
                     if "no-store" not in {v.strip() for v in response.headers.get("cache-control", "").lower().split(",")}:
                         raise CoreError(0, "WORKER_RESPONSE_INVALID")
-                    payload = data["data"]
-                    if payload.get("contractVersion") != "1.0":
-                        raise CoreError(422, "WORKER_CONTRACT_UNSUPPORTED")
-                    model = Claim if operation == "claim" and data.get("code") == "WORKER_CLAIMED" else (
-                        Lease if operation == "renew" else DeliveryStatus)
-                    result = model.model_validate(payload)
-                    if isinstance(result, (Claim, DeliveryStatus)) and (
-                        result.processingJobId != event.processingJobId or result.eventId != event.eventId
-                        or result.generation != event.generation
-                    ):
-                        raise CoreError(409, "WORKER_IDENTITY_CONFLICT")
-                    if isinstance(result, Claim) and (result.meetingId != event.meetingId
-                            or result.sourceMediaId != event.sourceMediaId):
-                        raise CoreError(409, "WORKER_IDENTITY_CONFLICT")
-                    if isinstance(result, DeliveryStatus):
-                        if operation.startswith("deliveries/") and "replay" in payload:
-                            raise CoreError(0, "WORKER_RESPONSE_INVALID")
-                        if operation in ("complete", "fail") and type(payload.get("replay")) is not bool:
-                            raise CoreError(0, "WORKER_RESPONSE_INVALID")
-                    return result
+                    return self.decode_response(event, operation, data)
         except CoreError as caught:
             error = caught
         except (httpx.HTTPError, TimeoutError):
@@ -323,6 +311,28 @@ class CoreApiClient:
         except (ValueError, TypeError, KeyError, RecursionError, ValidationError):
             error = CoreError(response_status if response_status != 200 else 0, "WORKER_RESPONSE_INVALID")
         raise CoreError(error.status, error.code, error.retry_after)
+
+    def decode_response(self, event, operation, data):
+        payload = data["data"]
+        if payload.get("contractVersion") != "1.0":
+            raise CoreError(422, "WORKER_CONTRACT_UNSUPPORTED")
+        model = Claim if operation == "claim" and data.get("code") == "WORKER_CLAIMED" else (
+            Lease if operation == "renew" else DeliveryStatus)
+        result = model.model_validate(payload)
+        if isinstance(result, (Claim, DeliveryStatus)) and (
+            result.processingJobId != event.processingJobId or result.eventId != event.eventId
+            or result.generation != event.generation
+        ):
+            raise CoreError(409, "WORKER_IDENTITY_CONFLICT")
+        if isinstance(result, Claim) and (result.meetingId != event.meetingId
+                or result.sourceMediaId != event.sourceMediaId):
+            raise CoreError(409, "WORKER_IDENTITY_CONFLICT")
+        if isinstance(result, DeliveryStatus):
+            if operation.startswith("deliveries/") and "replay" in payload:
+                raise CoreError(0, "WORKER_RESPONSE_INVALID")
+            if operation in ("complete", "fail") and type(payload.get("replay")) is not bool:
+                raise CoreError(0, "WORKER_RESPONSE_INVALID")
+        return result
 
     async def lookup(self, event, **options):
         return await self.request(event, f"deliveries/{event.eventId}", **options)

@@ -16,6 +16,8 @@ import com.sme.meetingassistant.api.transcript.service.TranscriptIngestion.*;
 import java.util.*;
 import java.util.concurrent.*;
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
@@ -99,6 +101,65 @@ class DiarizationWorkerIntegrationTests {
     protected String stageStatus() {return jdbc.queryForObject("SELECT status FROM processing_stage_runs WHERE id=?",String.class,stage);}
     protected void expire() {jdbc.update("UPDATE processing_stage_runs SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE id=?",stage);}
     private void conflict(Runnable action) { assertThatThrownBy(action::run).isInstanceOf(WorkerException.class); }
+
+    @Test void claimVersionMatchesTheImmutablePersistedNotification() {
+        var notification=WorkerJson.MAPPER.readTree(jdbc.queryForObject("SELECT payload::text FROM outbox_events WHERE id=?",String.class,event));
+        assertThat(notification.path("schemaVersion").isIntegralNumber()).isTrue();
+        assertThat(notification.path("schemaVersion").intValue()).isEqualTo(1);
+        conflict(()->worker.claim(job,new DiarizationCommands.Claim(event,request.eventType(),2,meeting,media,stage,UUID.randomUUID())));
+        assertThat(count("diarization_worker_claims")).isZero();
+        var data=claim();
+        assertThat(data.get("eventSchemaVersion")).isEqualTo(notification.path("schemaVersion").intValue());
+        assertThat(data.get("executionStageRunId")).isEqualTo(stage);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings={"missing","null","\"1\"","true","false","1.0","1.5","0","-1","2","[]","{}","999999999999999999999"})
+    void hardCodedClaimVersionCannotAuthorizeInvalidPersistedNotification(String version) {
+        insertHistoricalNotification(version,"PROCESSING_DIARIZATION_REQUESTED");
+        String original=jdbc.queryForObject("SELECT payload::text FROM outbox_events WHERE id=?",String.class,event);
+        assertThat(worker.status(job,event).get("state")).isEqualTo("AVAILABLE");
+        assertThatThrownBy(()->worker.claim(job,request)).isInstanceOfSatisfying(WorkerException.class,e->{
+            assertThat(e.status()).isEqualTo(422);
+            assertThat(e.code()).isEqualTo("VALIDATION_ERROR");
+            assertThat(e.getMessage()).isEqualTo("VALIDATION_ERROR");
+        });
+        assertThat(count("diarization_worker_claims")).isZero();
+        assertThat(stageStatus()).isEqualTo("PENDING");
+        assertThat(jdbc.queryForObject("SELECT status FROM transcripts WHERE id=?",String.class,transcript)).isEqualTo("READY");
+        assertThat(jdbc.queryForObject("SELECT payload::text FROM outbox_events WHERE id=?",String.class,event)).isEqualTo(original);
+    }
+
+    @Test void matchingVersionCannotAuthorizeWrongPersistedEventType() {
+        insertHistoricalNotification("1","PROCESSING_JOB_QUEUED");
+        assertThatThrownBy(()->worker.claim(job,request)).isInstanceOfSatisfying(WorkerException.class,
+            e->assertThat(e.code()).isEqualTo("WORKER_DELIVERY_NOT_FOUND"));
+        assertThat(count("diarization_worker_claims")).isZero();
+        assertThat(stageStatus()).isEqualTo("PENDING");
+    }
+
+    private void insertHistoricalNotification(String version,String eventType) {
+        UUID originalEvent=event;
+        var payload=(ObjectNode)WorkerJson.MAPPER.readTree(jdbc.queryForObject("SELECT payload::text FROM outbox_events WHERE id=?",String.class,event));
+        event=UUID.randomUUID();stage=UUID.randomUUID();
+        payload.put("eventId",event.toString()).put("stageRunId",stage.toString());
+        if("missing".equals(version)) payload.remove("schemaVersion");
+        else payload.set("schemaVersion",WorkerJson.MAPPER.readTree(version));
+        // Insert legacy evidence directly; never rewrite a committed immutable event
+        // or disable the database's dispatch/notification guards for compatibility tests.
+        jdbc.update("INSERT INTO processing_stage_runs(id,processing_job_id,stage_code,attempt_number,status) VALUES (?,?,'DIARIZING',2,'PENDING')",stage,job);
+        jdbc.update("""
+            INSERT INTO outbox_events(id,aggregate_type,aggregate_id,event_type,payload,occurred_at)
+            SELECT ?,aggregate_type,aggregate_id,?,CAST(? AS jsonb),occurred_at FROM outbox_events WHERE id=?
+            """,event,eventType,payload.toString(),originalEvent);
+        jdbc.update("""
+            INSERT INTO processing_diarization_dispatches(stage_run_id,processing_job_id,meeting_id,
+              source_media_id,source_revision,transcript_id,transcript_revision,event_id,created_at)
+            SELECT ?,processing_job_id,meeting_id,source_media_id,source_revision,transcript_id,transcript_revision,?,created_at
+            FROM processing_diarization_dispatches WHERE event_id=?
+            """,stage,event,originalEvent);
+        request=new DiarizationCommands.Claim(event,"PROCESSING_DIARIZATION_REQUESTED",1,meeting,media,stage,UUID.randomUUID());
+    }
 
     @Test void duplicateClaimsRecoverOnlyOriginalOwnerAndAuthoritativeTextFreeSnapshot() {
         var first=claim();assertThat(worker.claim(job,request).get("claimToken")).isEqualTo(owner.claimToken());

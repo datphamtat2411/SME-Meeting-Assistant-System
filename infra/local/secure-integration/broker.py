@@ -17,30 +17,39 @@ DEAD = WORK + ".dead"
 EXCHANGE = "meeting.processing"
 DLX = EXCHANGE + ".dlx"
 ROUTE = "processing.job.queued"
+DIARIZATION_WORK = "meeting.processing.diarization"
+DIARIZATION_DEAD = DIARIZATION_WORK + ".dead"
+DIARIZATION_ROUTE = "processing.diarization.requested"
 
 
 class Blocked(Exception):
     pass
 
 
-def definitions(vhost, users):
+def definitions(vhost, users, *, diarization=False):
     args = {"x-queue-type": "quorum", "x-delivery-limit": 5,
             "x-overflow": "reject-publish", "x-dead-letter-exchange": DLX,
             "x-dead-letter-routing-key": DEAD, "x-dead-letter-strategy": "at-least-once"}
+    work = (WORK, DIARIZATION_WORK) if diarization else (WORK,)
+    dead = (DEAD, DIARIZATION_DEAD) if diarization else (DEAD,)
+    routes = (ROUTE, DIARIZATION_ROUTE) if diarization else (ROUTE,)
     return {
         "vhosts": [{"name": vhost}],
         "exchanges": [{"name": name, "vhost": vhost, "type": "direct", "durable": True,
                        "auto_delete": False, "internal": False, "arguments": {}} for name in (EXCHANGE, DLX)],
         "queues": [{"name": name, "vhost": vhost, "durable": True, "auto_delete": False,
-                    "arguments": args if name == WORK else {"x-queue-type": "quorum", "x-delivery-limit": -1}}
-                   for name in (WORK, DEAD)],
+                    "arguments": {**args, "x-dead-letter-routing-key": target} if name in work
+                    else {"x-queue-type": "quorum", "x-delivery-limit": -1}}
+                   for name, target in (*zip(work, dead), *zip(dead, dead))],
         "bindings": [{"source": source, "vhost": vhost, "destination": queue,
                       "destination_type": "queue", "routing_key": route, "arguments": {}}
-                     for source, queue, route in ((EXCHANGE, WORK, ROUTE), (DLX, DEAD, DEAD))],
+                     for source, queue, route in (
+                         *((EXCHANGE, queue, route) for queue, route in zip(work, routes)),
+                         *((DLX, queue, queue) for queue in dead))],
         "permissions": [{"user": users[role], "vhost": vhost, "configure": "^$",
                          "write": r"^meeting\.processing$" if role == "publisher" else "^$",
-                         "read": {"publisher": "^$", "worker": r"^meeting\.processing\.jobs$",
-                                  "reconciler": r"^meeting\.processing\.jobs\.dead$"}[role]}
+                          "read": {"publisher": "^$", "worker": (r"^meeting\.processing\.(jobs|diarization)$" if diarization else r"^meeting\.processing\.jobs$"),
+                                   "reconciler": (r"^meeting\.processing\.(jobs|diarization)\.dead$" if diarization else r"^meeting\.processing\.jobs\.dead$")}[role]}
                         for role in users],
     }
 
@@ -56,18 +65,20 @@ def inspect(container, vhost):
     for queue in queues:
         # rabbitmqctl's Erlang AMQP tables are JSON [key,type,value] triples.
         queue["arguments"] = {key: value for key, _, value in queue["arguments"]}
-        if queue["name"] == WORK and queue["type"] == "quorum":
-            state = runtime(container, vhost)
+        if queue["name"] in (WORK, DIARIZATION_WORK) and queue["type"] == "quorum":
+            state = runtime(container, vhost, queue["name"])
             queue["retained_dead_letters"] = state["num_discarded"] + state["num_discard_checked_out"]
     return queues
 
 
-def runtime(container, vhost):
+def runtime(container, vhost, queue=WORK):
     """Read only bounded Raft counters/config; never dump pending message bodies."""
     encoded = base64.b64encode(vhost.encode()).decode()
+    if queue not in (WORK, DIARIZATION_WORK):
+        raise Blocked("BLOCKED: unknown worker queue")
     expression = (
         f'V=base64:decode(<<"{encoded}">>), '
-        '{ok,Q}=rabbit_amqqueue:lookup(rabbit_misc:r(V,queue,<<"meeting.processing.jobs">>)), '
+        f'{{ok,Q}}=rabbit_amqqueue:lookup(rabbit_misc:r(V,queue,<<"{queue}">>)), '
         '{ok,{_,M},_}=ra:local_query(amqqueue:get_pid(Q),fun rabbit_fifo:overview/1), '
         '{ok,T}=application:get_env(rabbit,dead_letter_worker_publisher_confirm_timeout), '
         'C=maps:with([dead_letter_handler,overflow_strategy,delivery_limit,dead_lettering_enabled],maps:get(config,M)), '
@@ -93,12 +104,12 @@ def migration_ready(queues):
         # depths. Total messages must also be zero before migration readiness.
         if any(queue.get(field) != 0 for field in ("messages", "messages_ready", "messages_unacknowledged", "consumers")):
             raise Blocked("BLOCKED: queued/unacknowledged work, consumers or incomplete inspection; preserve data")
-        if queue.get("name") == WORK and queue.get("type") == "quorum" and queue.get("retained_dead_letters") != 0:
+        if queue.get("name") in (WORK, DIARIZATION_WORK) and queue.get("type") == "quorum" and queue.get("retained_dead_letters") != 0:
             raise Blocked("BLOCKED: retained internal dead letters or incomplete Raft inspection; preserve data")
 
 
-def verify(queues):
-    expected = definitions("unused", {})["queues"]
+def verify(queues, *, diarization=False):
+    expected = definitions("unused", {}, diarization=diarization)["queues"]
     for definition in expected:
         queue = next((q for q in queues if q["name"] == definition["name"]), None)
         if queue is None or queue["type"] != "quorum" or not queue["durable"]:
@@ -115,25 +126,29 @@ def main():
     parser.add_argument("action", choices=("preflight", "migration-ready", "accounts", "provision", "verify"))
     parser.add_argument("--container", required=True)
     parser.add_argument("--vhost", required=True)
+    parser.add_argument("--diarization", action="store_true", help="Include the independent diarization quorum route and grants")
     for role in ("publisher", "worker", "reconciler"):
         parser.add_argument("--" + role + "-user")
     args = parser.parse_args()
     queues = inspect(args.container, args.vhost)
-    selected = [q for q in queues if q["name"] in (WORK, DEAD)]
+    names = (WORK, DEAD, DIARIZATION_WORK, DIARIZATION_DEAD) if args.diarization else (WORK, DEAD)
+    selected = [q for q in queues if q["name"] in names]
     print(json.dumps(selected, indent=2))  # bounded resource metadata only; no messages/secrets
     if args.action == "migration-ready":
-        if len(selected) != 2:
-            raise Blocked("BLOCKED: both queues must be inspected")
+        if len(selected) != len(names):
+            raise Blocked("BLOCKED: every selected queue must be inspected")
         migration_ready(selected)
         print("QUEUE-READY: additionally verify all replicas/intake/publishers paused and DB evidence recorded")
     elif args.action == "verify":
-        verify(queues)
-        state = runtime(args.container, args.vhost)
-        verify_runtime(state)
-        print(json.dumps(state, indent=2))
+        verify(queues, diarization=args.diarization)
+        for queue in ((WORK, DIARIZATION_WORK) if args.diarization else (WORK,)):
+            state = runtime(args.container, args.vhost, queue)
+            verify_runtime(state)
+            print(json.dumps(state, indent=2))
         bindings = json.loads(cli(args.container, "list_bindings", "-p", args.vhost,
                                  "source_name", "destination_name", "routing_key", "--formatter=json"))
-        for source, target, route in ((EXCHANGE, WORK, ROUTE), (DLX, DEAD, DEAD)):
+        for binding in definitions(args.vhost, {}, diarization=args.diarization)["bindings"]:
+            source, target, route = binding["source"], binding["destination"], binding["routing_key"]
             if not any(b["source_name"] == source and b["destination_name"] == target
                        and b["routing_key"] == route for b in bindings):
                 raise Blocked("BLOCKED: required binding missing")
@@ -145,7 +160,7 @@ def main():
         users = {role: getattr(args, role + "_user") for role in ("publisher", "worker", "reconciler")}
         if not all(users.values()) or len(set(users.values())) != 3:
             raise Blocked("BLOCKED: three distinct application user names required")
-        document = definitions(args.vhost, users)
+        document = definitions(args.vhost, users, diarization=args.diarization)
         if args.action == "accounts":
             existing = json.loads(cli(args.container, "list_users", "--formatter=json"))
             if any(user["user"] in users.values() for user in existing):
@@ -164,7 +179,7 @@ def main():
         if cli(args.container, "eval", f'rabbit_definitions:import_raw(base64:decode(<<"{encoded}">>)).').strip() != "ok":
             raise Blocked("BLOCKED: definition import failed; inspect broker resource metadata")
         if args.action == "provision":
-            verify(inspect(args.container, args.vhost))
+            verify(inspect(args.container, args.vhost), diarization=args.diarization)
 
 
 if __name__ == "__main__":

@@ -11,6 +11,78 @@ every request. POSTs require unencoded UTF-8 `application/json`, at most 16 KiB,
 with exact fields, no duplicate properties or trailing JSON. IDs are UUIDs;
 SHA-256 values are lowercase hexadecimal. All POSTs include `contractVersion:"1.0"`.
 
+## Diarization notification schema 1
+
+Event type: `PROCESSING_DIARIZATION_REQUESTED`. The existing routing key is
+`processing.diarization.requested`. New notifications contain exactly these fields:
+
+```json
+{
+  "eventId": "11111111-1111-4111-8111-111111111111",
+  "processingJobId": "22222222-2222-4222-8222-222222222222",
+  "meetingId": "33333333-3333-4333-8333-333333333333",
+  "sourceMediaId": "44444444-4444-4444-8444-444444444444",
+  "sourceRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "transcriptId": "55555555-5555-4555-8555-555555555555",
+  "transcriptRevision": 0,
+  "stageRunId": "66666666-6666-4666-8666-666666666666",
+  "schemaVersion": 1,
+  "occurredAt": "2026-11-07T00:00:00Z"
+}
+```
+
+All identity fields are required UUIDs. `sourceRevision` is the accepted source's
+lowercase SHA-256; `transcriptRevision` is a nonnegative integer pinned at dispatch.
+`stageRunId` identifies the authorized DIARIZING attempt. `occurredAt` is the
+notification creation timestamp with UTC offset. No text, audio, URLs or claim
+credentials are included. Existing identity/revision meanings are unchanged.
+
+`schemaVersion` is required, is an integer, and must equal `1`. It identifies the
+notification structure, independently of HTTP `contractVersion:"1.0"`. Neither
+version is configurable. Missing, null, string (`"1"`), boolean, fractional
+(`1.0` included), out-of-range and unsupported versions are invalid; no coercion,
+defaulting or version inference from the event type is permitted.
+
+RabbitMQ metadata uses persistent delivery and `application/json`, with message ID
+and `eventId` header equal to payload `eventId`, `eventType` header equal to
+`PROCESSING_DIARIZATION_REQUESTED`, and integer `eventSchemaVersion` header equal
+to payload `schemaVersion`. The publisher reads and validates the version from
+the persisted outbox payload and sends those same payload bytes on every attempt.
+It does not generate a version during publication or add this header to unrelated
+processing notifications. Invalid persisted versions follow existing bounded
+outbox failure/backoff handling without publication or payload mutation.
+
+Before claiming, the worker must read and strictly validate the incoming payload
+version and matching integer broker header, event identity/type and other required
+fields. It must not invent `eventSchemaVersion:1`. The claim copies the validated
+notification version into `eventSchemaVersion` and maps `stageRunId` to
+`executionStageRunId`; `processingJobId` selects the HTTP job path. The notification
+remains untrusted until Core verifies the persisted event and authorizes ownership.
+
+### Legacy versionless notifications
+
+Previously committed payloads remain unchanged. A versionless notification cannot
+be made valid by attaching a version header or supplying literal `1` in a claim.
+The updated publisher refuses it; Core rejects its claim with sanitized
+`422 VALIDATION_ERROR`. Unsupported/malformed stored versions are also rejected.
+Version mismatches in otherwise valid claims use existing identity/validation
+errors. Existing dispatch/notification immutability guards remain enforced.
+
+Before activation, operators should inventory legacy diarization outbox rows
+(including pending, failed and already published events) and outstanding broker
+deliveries while diarization intake is paused. Preserve their payloads, job/stage
+history, transcripts and durable receipts. Do not rewrite events, synthesize
+headers, disable immutability guards or automatically replay historical work.
+Finalization/publication retries retain the original event and cannot upgrade it.
+
+Recovery needs explicit authorization and the established Core lifecycle: once an
+old attempt has a terminal, retry-eligible disposition, an explicitly admitted
+diarization retry creates a fresh attempt/dispatch with schema 1. For a still-PENDING
+legacy attempt, this change supplies no automatic terminalization or replacement
+path; a separately reviewed, authorized Core/operator remediation is required
+before a permitted retry/reprocess can be admitted. Existing receipts remain
+readable; this change does not alter completion/failure operations or stage history.
+
 ## Operations
 
 | Method/path | Grant | Request fields after contractVersion | Response data |
@@ -25,7 +97,9 @@ SHA-256 values are lowercase hexadecimal. All POSTs include `contractVersion:"1.
 Claim requires `eventType:"PROCESSING_DIARIZATION_REQUESTED"` and
 `eventSchemaVersion:1` (SPK-07 notification identity). Core checks the immutable
 dispatch, admission plan, outbox event identity and exact pending DIARIZING run.
-The worker cannot choose another stage or create a retry.
+It also strictly validates `schemaVersion` in that immutable outbox payload and
+compares it to the requested `eventSchemaVersion`; supplying literal `1` alone is
+insufficient. The worker cannot choose another stage or create a retry.
 
 Claim context contains contractVersion, eventId/eventType/eventSchemaVersion,
 processingJobId, meetingId, executionStageRunId, executionStageCode, claimToken,

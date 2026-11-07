@@ -13,7 +13,7 @@ public class DiarizationWorkerRepository {
     private final JdbcTemplate jdbc;
     public DiarizationWorkerRepository(JdbcTemplate jdbc) { this.jdbc=jdbc; }
     public record Delivery(UUID job,UUID event,UUID stage,UUID meeting,UUID media,String sourceRevision,
-        UUID transcript,long revision,int attempt,int latest,String stageStatus,String jobStatus) {}
+        UUID transcript,long revision,int attempt,int latest,String stageStatus,String jobStatus,JsonNode notification) {}
     public record Claim(UUID stage,UUID token,UUID request,String fingerprint,JsonNode source,
         OffsetDateTime expires,boolean live) {
         @Override public String toString() { return "DiarizationClaim[redacted]"; }
@@ -25,7 +25,7 @@ public class DiarizationWorkerRepository {
 
     public Delivery delivery(UUID job,UUID event) {
         return jdbc.query("""
-            SELECT d.*,s.attempt_number,s.status AS stage_status,j.status AS job_status,
+            SELECT d.*,e.payload AS notification_payload,s.attempt_number,s.status AS stage_status,j.status AS job_status,
               (SELECT MAX(x.attempt_number) FROM processing_stage_runs x
                 WHERE x.processing_job_id=j.id AND x.stage_code='DIARIZING') AS latest
             FROM processing_diarization_dispatches d
@@ -41,7 +41,8 @@ public class DiarizationWorkerRepository {
             WHERE d.processing_job_id=? AND d.event_id=?
             """,(r,n)->new Delivery(job,event,r.getObject("stage_run_id",UUID.class),r.getObject("meeting_id",UUID.class),
                 r.getObject("source_media_id",UUID.class),r.getString("source_revision"),r.getObject("transcript_id",UUID.class),
-                r.getLong("transcript_revision"),r.getInt("attempt_number"),r.getInt("latest"),r.getString("stage_status"),r.getString("job_status")),job,event)
+                r.getLong("transcript_revision"),r.getInt("attempt_number"),r.getInt("latest"),r.getString("stage_status"),r.getString("job_status"),
+                MAPPER.readTree(r.getString("notification_payload"))),job,event)
             .stream().findFirst().orElseThrow(()->new WorkerException(404,"WORKER_DELIVERY_NOT_FOUND"));
     }
     public void lockJob(UUID job) { jdbc.queryForObject("SELECT id FROM processing_jobs WHERE id=? FOR UPDATE",UUID.class,job); }

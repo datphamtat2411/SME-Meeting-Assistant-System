@@ -680,7 +680,7 @@ public class MediaRepository {
         String payload;
         try {
             payload = mapper.writeValueAsString(new DiarizationRequestedEvent(eventId, jobId, job.meetingId(),
-                job.sourceMediaId(), revision, source.transcriptId(), source.contentRevision(), stageRunId, createdAt));
+                job.sourceMediaId(), revision, source.transcriptId(), source.contentRevision(), stageRunId, 1, createdAt));
         } catch (JacksonException failure) {
             throw new IllegalStateException("Could not serialize diarization notification.", failure);
         }
@@ -1317,7 +1317,7 @@ public class MediaRepository {
             int schemaVersion, OffsetDateTime occurredAt) { }
     public record DiarizationRequestedEvent(UUID eventId, UUID processingJobId, UUID meetingId,
             UUID sourceMediaId, String sourceRevision, UUID transcriptId, long transcriptRevision,
-            UUID stageRunId, OffsetDateTime occurredAt) { }
+            UUID stageRunId, int schemaVersion, OffsetDateTime occurredAt) { }
 
     /** Domain-level lifecycle conflict, distinct from an invalid JDBC operation. */
     public static class ProcessingLifecycleConflictException extends RuntimeException {

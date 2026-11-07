@@ -9,6 +9,7 @@ import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle.StageCl
 import com.sme.meetingassistant.api.media.service.ProcessingTranscriptEvidence;
 import com.sme.meetingassistant.api.media.service.ProcessingTranscriptEvidence.TimingSnapshot;
 import com.sme.meetingassistant.api.media.worker.WorkerException;
+import com.sme.meetingassistant.api.media.worker.WorkerJson;
 import java.math.BigInteger;
 import java.util.*;
 import org.springframework.beans.factory.ObjectProvider;
@@ -59,7 +60,8 @@ public class DiarizationWorkerService {
     @Transactional
     public Map<String,Object> claim(UUID job,DiarizationCommands.Claim cmd) {
         var d=lock(job,cmd.eventId());
-        if(!"PROCESSING_DIARIZATION_REQUESTED".equals(cmd.eventType()) || cmd.eventSchemaVersion()!=1
+        int eventVersion=(int)WorkerJson.number(d.notification(),"schemaVersion",1,1);
+        if(!"PROCESSING_DIARIZATION_REQUESTED".equals(cmd.eventType()) || cmd.eventSchemaVersion()!=eventVersion
             || !d.meeting().equals(cmd.meetingId()) || !d.media().equals(cmd.sourceMediaId()) || !d.stage().equals(cmd.executionStageRunId()))
             throw WorkerException.conflict("WORKER_IDENTITY_CONFLICT");
         if(repository.receipt(d.event()).isPresent() || d.attempt()<d.latest()) return status(d);
@@ -78,7 +80,7 @@ public class DiarizationWorkerService {
             repository.insertClaim(d,cmd,stage.claimToken(),src);
         }
         var c=repository.claim(d.event()).orElseThrow();var data=base(d);
-        data.put("eventType","PROCESSING_DIARIZATION_REQUESTED");data.put("eventSchemaVersion",1);
+        data.put("eventType","PROCESSING_DIARIZATION_REQUESTED");data.put("eventSchemaVersion",eventVersion);
         data.put("meetingId",d.meeting());data.put("executionStageCode","DIARIZING");data.put("claimToken",c.token());
         data.putAll(lease(c));data.put("source",c.source());
         data.put("transcript",Map.of("transcriptId",d.transcript(),"transcriptRevision",d.revision()));

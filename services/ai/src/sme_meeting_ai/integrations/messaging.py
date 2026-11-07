@@ -80,8 +80,10 @@ def decode_event(body, *, headers, message_id, content_type, delivery_mode):
 class RabbitConsumer:
     """No queue declarations/migration, publisher rights or automatic ACK contexts."""
 
-    def __init__(self, settings):
+    def __init__(self, settings, *, queue_name=None, prefetch=None):
         self.settings = settings
+        self.queue_name = queue_name or settings.rabbitmq_queue
+        self.prefetch = prefetch or settings.worker_concurrency
         self.connection = self.channel = self.queue = None
         self.tag = None
         self.active = set()
@@ -113,8 +115,8 @@ class RabbitConsumer:
                     timeout=self.settings.rabbitmq_connect_timeout_seconds,
                 )
                 self.channel = await self.connection.channel()
-                await self.channel.set_qos(prefetch_count=self.settings.worker_concurrency)
-                self.queue = await self.channel.get_queue(self.settings.rabbitmq_queue, ensure=True)
+                await self.channel.set_qos(prefetch_count=self.prefetch)
+                self.queue = await self.channel.get_queue(self.queue_name, ensure=True)
         except asyncio.CancelledError:
             await self.__aexit__(None, None, None)
             raise

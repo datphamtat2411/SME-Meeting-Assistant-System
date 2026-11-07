@@ -206,11 +206,15 @@ class DiarizationLifecycleIntegrationTests {
         assertThat(original.path("stageRunId").asText()).isEqualTo(jdbc.queryForObject("SELECT id FROM processing_stage_runs WHERE processing_job_id=? AND stage_code='DIARIZING'", UUID.class, job).toString());
         assertThat(original.path("eventId").asText()).isNotBlank();
         assertThat(original.path("occurredAt").asText()).isNotBlank();
-        assertThat(original.size()).isEqualTo(9);
+        assertThat(original.path("schemaVersion").isIntegralNumber()).isTrue();
+        assertThat(original.path("schemaVersion").intValue()).isEqualTo(1);
+        assertThat(original.size()).isEqualTo(10);
         assertThat(original.toString()).doesNotContain("Canonical", "objectKey", "https:", "claimToken");
         finalization.finalizeTranscript(finalizer, accepted);
         assertThat(dispatches()).isEqualTo(1);
         assertThat(event()).isEqualTo(original);
+        assertThatThrownBy(() -> jdbc.update("UPDATE outbox_events SET payload=jsonb_set(payload,'{schemaVersion}','2'::jsonb) WHERE id=?",
+            UUID.fromString(original.path("eventId").asText()))).isInstanceOf(DataIntegrityViolationException.class);
         assertThatThrownBy(() -> jdbc.update("UPDATE processing_diarization_dispatches SET transcript_revision=1 WHERE processing_job_id=?", job))
             .isInstanceOf(DataIntegrityViolationException.class);
         assertThatThrownBy(() -> jdbc.update("""
@@ -330,6 +334,8 @@ class DiarizationLifecycleIntegrationTests {
         assertThat(status()).isEqualTo("RUNNING");
         assertThat(stages("DIARIZING")).isEqualTo(2);
         assertThat(dispatches()).isEqualTo(2);
+        assertThat(event().path("schemaVersion").isIntegralNumber()).isTrue();
+        assertThat(event().path("schemaVersion").intValue()).isEqualTo(1);
         assertThat(stages("TRANSCRIPTION")).isEqualTo(1);
         assertThat(stages("CONTEXTUAL_CORRECTION")).isEqualTo(1);
         assertThat(stages("FINALIZING_TRANSCRIPT")).isEqualTo(1);
@@ -482,17 +488,22 @@ class DiarizationLifecycleIntegrationTests {
     void brokerFailureAndExhaustionPreserveTranscriptAndPendingIntent() throws Exception {
         finalizeTranscript();
         var original = transcripts.current(meeting).orElseThrow();
+        var originalEvent = event();
         UUID eventId = UUID.fromString(event().path("eventId").asText());
         jdbc.update("UPDATE outbox_events SET status='PUBLISHED' WHERE aggregate_id=? AND event_type='PROCESSING_JOB_QUEUED'", job);
         var first = repository.claimPendingOutbox(1000, 60, 2).stream().filter(e -> e.id().equals(eventId)).findFirst().orElseThrow();
         assertThat(repository.markPublishFailed(first.id(), first.claimToken(), first.attemptCount(), 2, "BrokerUnavailable")).isTrue();
         jdbc.update("UPDATE outbox_events SET next_attempt_at=CURRENT_TIMESTAMP WHERE id=?", eventId);
         var second = repository.claimPendingOutbox(1000, 60, 2).stream().filter(e -> e.id().equals(eventId)).findFirst().orElseThrow();
+        assertThat(second.payload()).isEqualTo(first.payload());
+        assertThat(json.readTree(second.payload()).path("schemaVersion").isIntegralNumber()).isTrue();
+        assertThat(json.readTree(second.payload()).path("schemaVersion").intValue()).isEqualTo(1);
         assertThat(repository.markPublishFailed(second.id(), second.claimToken(), second.attemptCount(), 2, "BrokerUnavailable")).isTrue();
         assertThat(jdbc.queryForObject("SELECT status FROM outbox_events WHERE id=?", String.class, eventId)).isEqualTo("FAILED");
         assertThat(status()).isEqualTo("RUNNING");
         assertThat(transcripts.current(meeting).orElseThrow()).isEqualTo(original);
         assertThat(dispatches()).isEqualTo(1);
+        assertThat(event()).isEqualTo(originalEvent);
         assertThatThrownBy(() -> lifecycle.completeJob(job)).isInstanceOf(ProcessingLifecycleConflictException.class);
     }
 
