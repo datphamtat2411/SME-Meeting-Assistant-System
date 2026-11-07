@@ -405,6 +405,229 @@ class ActionItemsIntegrationTests {
                 org.springframework.dao.DataIntegrityViolationException.class);
     }
 
+    @Test void commandIdentityPreventsAccidentalConfirmReopenOrRejectCancel() throws Exception {
+        UUID manual=createManual(assignee.getId(),null);
+        MvcResult created=mvc.perform(get("/api/v1/action-items/{id}",manual)
+                .principal(principal(organizer))).andExpect(status().isOk()).andReturn();
+        String etag=created.getResponse().getHeader(HttpHeaders.ETAG);
+        mvc.perform(post("/api/v1/action-items/{id}/confirm",manual)
+                .principal(principal(organizer)).header(HttpHeaders.IF_MATCH,etag))
+            .andExpect(status().isConflict());
+        mvc.perform(post("/api/v1/action-items/{id}/reject",manual)
+                .principal(principal(organizer)).header(HttpHeaders.IF_MATCH,etag))
+            .andExpect(status().isConflict());
+        mvc.perform(post("/api/v1/action-items/{id}/reopen",manual)
+                .principal(principal(organizer)).header(HttpHeaders.IF_MATCH,etag))
+            .andExpect(status().isConflict());
+
+        MvcResult done=mvc.perform(post("/api/v1/action-items/{id}/complete",manual)
+                .principal(principal(assignee)).header(HttpHeaders.IF_MATCH,etag))
+            .andExpect(status().isOk()).andReturn();
+        String doneTag=done.getResponse().getHeader(HttpHeaders.ETAG);
+        mvc.perform(post("/api/v1/action-items/{id}/confirm",manual)
+                .principal(principal(organizer)).header(HttpHeaders.IF_MATCH,doneTag))
+            .andExpect(status().isConflict());
+        mvc.perform(post("/api/v1/action-items/{id}/start",manual)
+                .principal(principal(organizer)).header(HttpHeaders.IF_MATCH,doneTag))
+            .andExpect(status().isConflict());
+        MvcResult reopened=mvc.perform(post("/api/v1/action-items/{id}/reopen",manual)
+                .principal(principal(organizer)).header(HttpHeaders.IF_MATCH,doneTag))
+            .andExpect(status().isOk()).andReturn();
+        assertThat(body(reopened).path("data").path("status").asText()).isEqualTo("OPEN");
+        assertThat(body(reopened).path("data").path("completedByUserId").isNull()).isTrue();
+        assertThat(jdbc.queryForObject(
+            "SELECT count(*) FROM action_item_history WHERE action_item_id=? AND change_type='STATUS'",
+            Integer.class,manual)).isEqualTo(4);
+        assertThat(jdbc.queryForObject(
+            "SELECT status FROM action_items WHERE id=?",String.class,manual)).isEqualTo("OPEN");
+
+        UUID proposal=createAiProposal();
+        MvcResult initial=mvc.perform(get("/api/v1/action-items/{id}",proposal)
+                .principal(principal(organizer))).andExpect(status().isOk()).andReturn();
+        String proposedTag=initial.getResponse().getHeader(HttpHeaders.ETAG);
+        mvc.perform(post("/api/v1/action-items/{id}/reopen",proposal)
+                .principal(principal(organizer)).header(HttpHeaders.IF_MATCH,proposedTag))
+            .andExpect(status().isConflict());
+        mvc.perform(post("/api/v1/action-items/{id}/cancel",proposal)
+                .principal(principal(organizer)).header(HttpHeaders.IF_MATCH,proposedTag))
+            .andExpect(status().isConflict());
+        mvc.perform(post("/api/v1/action-items/{id}/start",proposal)
+                .principal(principal(organizer)).header(HttpHeaders.IF_MATCH,proposedTag))
+            .andExpect(status().isConflict());
+        mvc.perform(post("/api/v1/action-items/{id}/confirm",proposal)
+                .principal(principal(organizer)).header(HttpHeaders.IF_MATCH,proposedTag))
+            .andExpect(status().isUnprocessableEntity()); // missing owner
+        MvcResult rejected=mvc.perform(post("/api/v1/action-items/{id}/reject",proposal)
+                .principal(principal(organizer)).header(HttpHeaders.IF_MATCH,proposedTag))
+            .andExpect(status().isOk()).andReturn();
+        assertThat(body(rejected).path("data").path("status").asText()).isEqualTo("CANCELLED");
+        mvc.perform(post("/api/v1/action-items/{id}/confirm",proposal)
+                .principal(principal(organizer))
+                .header(HttpHeaders.IF_MATCH,rejected.getResponse().getHeader(HttpHeaders.ETAG)))
+            .andExpect(status().isConflict());
+    }
+
+    @Test void typedPatchDistinguishesOmittedFieldNullClearAndNoOpWithoutForgedHistory()
+            throws Exception {
+        UUID item=createManual(assignee.getId(),LocalDate.parse("2026-12-25"));
+        MvcResult initial=mvc.perform(get("/api/v1/action-items/{id}",item)
+                .principal(principal(organizer))).andExpect(status().isOk()).andReturn();
+        String tag=initial.getResponse().getHeader(HttpHeaders.ETAG);
+        int historyBefore=jdbc.queryForObject(
+            "SELECT count(*) FROM action_item_history WHERE action_item_id=?",
+            Integer.class,item);
+        MvcResult noOp=mvc.perform(patch("/api/v1/action-items/{id}",item)
+                .principal(principal(organizer)).header(HttpHeaders.IF_MATCH,tag)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsString(Map.of("title","Send the project brief"))))
+            .andExpect(status().isOk()).andReturn();
+        assertThat(noOp.getResponse().getHeader(HttpHeaders.ETAG)).isEqualTo(tag);
+        assertThat(jdbc.queryForObject(
+            "SELECT count(*) FROM action_item_history WHERE action_item_id=?",
+            Integer.class,item)).isEqualTo(historyBefore);
+
+        MvcResult details=mvc.perform(patch("/api/v1/action-items/{id}",item)
+                .principal(principal(organizer)).header(HttpHeaders.IF_MATCH,tag)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"details\":\"Team details\\nLine two\"}"))
+            .andExpect(status().isOk()).andReturn();
+        String v1=details.getResponse().getHeader(HttpHeaders.ETAG);
+        assertThat(v1).isNotEqualTo(tag);
+        assertThat(body(details).path("data").path("dueDate").asText()).isEqualTo("2026-12-25");
+        MvcResult cleared=mvc.perform(patch("/api/v1/action-items/{id}",item)
+                .principal(principal(organizer)).header(HttpHeaders.IF_MATCH,v1)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"details\":null,\"dueDate\":null}"))
+            .andExpect(status().isOk()).andReturn();
+        assertThat(body(cleared).path("data").path("details").isNull()).isTrue();
+        assertThat(body(cleared).path("data").path("dueDate").isNull()).isTrue();
+        assertThat(jdbc.queryForObject(
+            "SELECT count(*) FROM action_item_history WHERE action_item_id=? AND change_type='CONTENT'",
+            Integer.class,item)).isEqualTo(2);
+        assertThat(jdbc.queryForObject(
+            "SELECT count(*) FROM action_item_history WHERE action_item_id=? AND change_type='DUE_DATE'",
+            Integer.class,item)).isEqualTo(2);
+        mvc.perform(patch("/api/v1/action-items/{id}",item)
+                .principal(principal(organizer)).header(HttpHeaders.IF_MATCH,tag)
+                .contentType(MediaType.APPLICATION_JSON).content("{\"title\":\"Lost write\"}"))
+            .andExpect(status().isPreconditionFailed());
+    }
+
+    @Test void typedPatchRejectsUnknownOrMistypedFieldsAndActiveAssignmentCannotClear()
+            throws Exception {
+        UUID item=createManual(assignee.getId(),null);
+        String tag=mvc.perform(get("/api/v1/action-items/{id}",item)
+                .principal(principal(organizer))).andReturn().getResponse()
+            .getHeader(HttpHeaders.ETAG);
+        for (String bad : List.of(
+            "{}", "[]", "{\"title\":null}", "{\"details\":42}",
+            "{\"dueDate\":123}", "{\"dueDate\":\"yesterday\"}",
+            "{\"assigneeUserId\":false}", "{\"priority\":\"HIGH\"}",
+            "{\"title\":\"Nice\",\"processingJobId\":\"forged\"}",
+            "{\"title\":\"Broken\\ncontrol\"}", "{\"details\":\"bad\\u001b\"}",
+            "{\"assigneeUserId\":null}")) {
+            mvc.perform(patch("/api/v1/action-items/{id}",item)
+                    .principal(principal(organizer)).header(HttpHeaders.IF_MATCH,tag)
+                    .contentType(MediaType.APPLICATION_JSON).content(bad))
+                .andExpect(status().isUnprocessableEntity());
+        }
+        mvc.perform(patch("/api/v1/action-items/{id}",item)
+                .principal(principal(organizer))
+                .contentType(MediaType.APPLICATION_JSON).content("{\"title\":\"x\"}"))
+            .andExpect(status().isPreconditionRequired());
+        assertThat(jdbc.queryForObject(
+            "SELECT version FROM action_items WHERE id=?",Long.class,item)).isZero();
+    }
+
+    @Test void createManualWithIdempotencyKeyReplaysCurrentResourceAndRejectsDifferentIntent()
+            throws Exception {
+        String key="ai05-"+UUID.randomUUID();
+        Map<String,Object> payload=Map.of("meetingId",meetingId,
+            "title","Retry safe manual work","assigneeUserId",assignee.getId());
+        MvcResult first=mvc.perform(post("/api/v1/action-items")
+                .principal(principal(organizer)).header("Idempotency-Key",key)
+                .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(payload)))
+            .andExpect(status().isCreated()).andReturn();
+        UUID id=UUID.fromString(body(first).path("data").path("id").asText());
+        MvcResult again=mvc.perform(post("/api/v1/action-items")
+                .principal(principal(organizer)).header("Idempotency-Key",key)
+                .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(payload)))
+            .andExpect(status().isCreated()).andReturn();
+        assertThat(body(again).path("data").path("id").asText()).isEqualTo(id.toString());
+        assertThat(jdbc.queryForObject(
+            "SELECT count(*) FROM action_items WHERE id=?",Integer.class,id)).isEqualTo(1);
+        assertThat(jdbc.queryForObject(
+            "SELECT count(*) FROM action_item_history WHERE action_item_id=?",
+            Integer.class,id)).isEqualTo(2);
+        assertThat(jdbc.queryForObject(
+            "SELECT count(*) FROM action_item_creation_idempotency WHERE actor_user_id=?",
+            Integer.class,organizer.getId())).isEqualTo(1);
+
+        MvcResult edited=mvc.perform(patch("/api/v1/action-items/{id}",id)
+                .principal(principal(organizer))
+                .header(HttpHeaders.IF_MATCH,first.getResponse().getHeader(HttpHeaders.ETAG))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"title\":\"Human revised task\"}"))
+            .andExpect(status().isOk()).andReturn();
+        MvcResult replay=mvc.perform(post("/api/v1/action-items")
+                .principal(principal(organizer)).header("Idempotency-Key",key)
+                .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(payload)))
+            .andExpect(status().isCreated()).andReturn();
+        assertThat(body(replay).path("data").path("title").asText())
+            .isEqualTo("Human revised task");
+        assertThat(replay.getResponse().getHeader(HttpHeaders.ETAG))
+            .isEqualTo(edited.getResponse().getHeader(HttpHeaders.ETAG));
+        assertThat(jdbc.queryForObject(
+            "SELECT count(*) FROM action_item_history WHERE action_item_id=?",
+            Integer.class,id)).isEqualTo(3);
+
+        Map<String,Object> changed=Map.of("meetingId",meetingId,"title","Different intent",
+            "assigneeUserId",assignee.getId());
+        mvc.perform(post("/api/v1/action-items")
+                .principal(principal(organizer)).header("Idempotency-Key",key)
+                .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(changed)))
+            .andExpect(status().isConflict());
+    }
+
+    @Test void invalidCreateDoesNotConsumeIdempotencyKeyAndExpiredKeyCanBeReused()
+            throws Exception {
+        String key="ai05-expiry-"+UUID.randomUUID();
+        Map<String,Object> invalid=Map.of("meetingId",meetingId,"title","Bad\\ncontrol",
+            "assigneeUserId",assignee.getId());
+        mvc.perform(post("/api/v1/action-items").principal(principal(organizer))
+                .header("Idempotency-Key",key).contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsString(invalid)))
+            .andExpect(status().isCreated()); // literal backslash is not newline
+        String fresh="ai05-bad-"+UUID.randomUUID();
+        mvc.perform(post("/api/v1/action-items").principal(principal(organizer))
+                .header("Idempotency-Key",fresh).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"meetingId\":\""+meetingId+"\",\"title\":\"bad\\ncontrol\","
+                    +"\"assigneeUserId\":\""+assignee.getId()+"\"}"))
+            .andExpect(status().isUnprocessableEntity());
+        assertThat(jdbc.queryForObject(
+            "SELECT count(*) FROM action_item_creation_idempotency WHERE actor_user_id=? AND request_digest IS NULL",
+            Integer.class,organizer.getId())).isZero();
+
+        Map<String,Object> good=Map.of("meetingId",meetingId,"title","After rejected create",
+            "assigneeUserId",assignee.getId());
+        MvcResult first=mvc.perform(post("/api/v1/action-items")
+                .principal(principal(organizer)).header("Idempotency-Key",fresh)
+                .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(good)))
+            .andExpect(status().isCreated()).andReturn();
+        UUID old=UUID.fromString(body(first).path("data").path("id").asText());
+        jdbc.update("""
+            UPDATE action_item_creation_idempotency
+               SET created_at=CURRENT_TIMESTAMP-INTERVAL '48 hours',
+                   expires_at=CURRENT_TIMESTAMP-INTERVAL '24 hours'
+             WHERE actor_user_id=?
+            """,organizer.getId());
+        MvcResult second=mvc.perform(post("/api/v1/action-items")
+                .principal(principal(organizer)).header("Idempotency-Key",fresh)
+                .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(good)))
+            .andExpect(status().isCreated()).andReturn();
+        assertThat(body(second).path("data").path("id").asText()).isNotEqualTo(old.toString());
+    }
+
     private UUID unit() {
         UUID id=UUID.randomUUID();
         jdbc.update("INSERT INTO organizational_units(id,code,name,status) VALUES (?,?,?,'ACTIVE')",
