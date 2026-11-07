@@ -53,6 +53,23 @@ class OutboxPublisherTests {
     }
 
     @Test
+    void diarizationNotificationUsesItsDedicatedRouteAndNeverChangesStageState() {
+        event = new Outbox(UUID.randomUUID(), "PROCESSING_DIARIZATION_REQUESTED", "{}", 1, UUID.randomUUID());
+        props.getOutbox().setDiarizationRoutingKey("processing.diarization.requested");
+        oneClaim();
+        when(repository.markPublished(event.id(), event.claimToken())).thenReturn(true);
+        doAnswer(invocation -> {
+            CorrelationData cd = invocation.getArgument(3);
+            cd.getFuture().complete(new CorrelationData.Confirm(true, null));
+            return null;
+        }).when(rabbit).send(eq("meeting.processing"), eq("processing.diarization.requested"),
+            any(Message.class), any(CorrelationData.class));
+        publisher.publishPending();
+        verify(repository).markPublished(event.id(), event.claimToken());
+        verify(repository, never()).completeStage(any(), any(), any(), any());
+    }
+
+    @Test
     void confirmedRoutableEventIsPersistentAndFencedByClaimToken() {
         oneClaim();
         when(repository.markPublished(event.id(), event.claimToken())).thenReturn(true);

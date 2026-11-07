@@ -96,6 +96,7 @@ public class MediaProperties {
     public static class Outbox {
         private String exchange;
         private String routingKey;
+        private String diarizationRoutingKey = "processing.diarization.requested";
         private long pollDelayMs = 2000;
         private int maxAttempts = 12;
         private int leaseSeconds = 60;
@@ -104,6 +105,8 @@ public class MediaProperties {
         public void setExchange(String value) { exchange = value; }
         public String getRoutingKey() { return routingKey; }
         public void setRoutingKey(String value) { routingKey = value; }
+        public String getDiarizationRoutingKey() { return diarizationRoutingKey; }
+        public void setDiarizationRoutingKey(String value) { diarizationRoutingKey = value; }
         public long getPollDelayMs() { return pollDelayMs; }
         public void setPollDelayMs(long value) { pollDelayMs = value; }
         public int getMaxAttempts() { return maxAttempts; }
@@ -121,6 +124,9 @@ public class MediaProperties {
         private List<String> requiredDownstreamStages = new ArrayList<>();
         /** Disable new canonical Action Item proposal handoffs until deliberately enabled. */
         private boolean actionItemHandoffEnabled;
+        private boolean diarizationEnabled;
+        public boolean isDiarizationEnabled() { return diarizationEnabled; }
+        public void setDiarizationEnabled(boolean value) { diarizationEnabled = value; }
         public int getMaxRetries() { return maxRetries; }
         public void setMaxRetries(int value) { maxRetries = value; }
         public int getStageLeaseSeconds() { return stageLeaseSeconds; }

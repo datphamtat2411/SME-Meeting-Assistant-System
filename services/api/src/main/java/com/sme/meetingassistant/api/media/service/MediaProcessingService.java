@@ -47,10 +47,12 @@ public class MediaProcessingService {
     private final AuthenticatedUserId authenticatedUser;
     private final MediaProperties properties;
     private final com.sme.meetingassistant.api.media.worker.TranscriptionWorkerCapability workerCapability;
+    private final ProcessingTranscriptEvidence transcriptEvidence;
 
     public MediaProcessingService(MediaRepository repository, ObjectStorage storage, MediaInspector inspector,
             MeetingMediaAccess meetingAccess, AuthenticatedUserId authenticatedUser, MediaProperties properties,
-            com.sme.meetingassistant.api.media.worker.TranscriptionWorkerCapability workerCapability) {
+            com.sme.meetingassistant.api.media.worker.TranscriptionWorkerCapability workerCapability,
+            ProcessingTranscriptEvidence transcriptEvidence) {
         this.repository = repository;
         this.storage = storage;
         this.inspector = inspector;
@@ -58,6 +60,7 @@ public class MediaProcessingService {
         this.authenticatedUser = authenticatedUser;
         this.properties = properties;
         this.workerCapability = workerCapability;
+        this.transcriptEvidence = transcriptEvidence;
     }
 
     @Transactional
@@ -402,7 +405,10 @@ public class MediaProcessingService {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
                 "Action Item proposal handoff is disabled; required stage cannot be planned.");
         }
-        return List.copyOf(stages);
+        var plan = new java.util.ArrayList<String>();
+        if (properties.getProcessing().isDiarizationEnabled()) plan.add("DIARIZING");
+        plan.addAll(stages);
+        return List.copyOf(plan);
     }
 
     @Transactional(readOnly = true)
@@ -430,9 +436,16 @@ public class MediaProcessingService {
         String operation = "PROCESSING_JOB_RETRY:" + jobId;
         String fingerprint = fingerprint(stageCode == null ? "JOB" : "STAGE\n" + stageCode);
         this.repository.lockAdmissionUser(actor);
-        var claim = this.repository.claimIdempotencyWithStatus(actor, operation, idempotencyKey,
-            fingerprint, jobId);
+        MediaRepository.IdempotencyClaim claim;
+        try {
+            claim = this.repository.claimIdempotencyWithStatus(actor, operation, idempotencyKey,
+                fingerprint, jobId);
+        } catch (MediaRepository.IdempotencyConflictException conflictingRetry) {
+            throw conflict("The Idempotency-Key was already used for a different request.");
+        }
         if (!claim.claimed()) return toResponse(job(jobId));
+        target = job(jobId);
+        if ("DIARIZING".equals(stageCode)) return retryDiarization(target);
         if (!"FAILED".equals(target.status())) throw conflict("Only failed processing jobs can be retried.");
         boolean transcriptRetry = "OFFLINE_MEETING_PROCESSING".equals(target.jobType())
             && (stageCode == null && target.currentStage() == null
@@ -458,6 +471,35 @@ public class MediaProcessingService {
             throw conflict("The processing job changed or reached its retry limit.");
         }
         return toResponse(job(jobId));
+    }
+
+    private ProcessingJobResponse retryDiarization(Job target) {
+        int maxRetries = properties.getProcessing().getMaxRetries();
+        if (maxRetries < 0) throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+            "Processing retry policy is invalid.");
+        if (!List.of("RUNNING", "COMPLETED_WITH_WARNINGS").contains(target.status())
+                || target.retryCount() >= maxRetries
+                || !repository.hasRetryableFailedStage(target.id(), "DIARIZING")) {
+            throw conflict("The requested diarization attempt is not eligible for retry.");
+        }
+        // A reopened job must respect the same meeting/user capacity as new admissions.
+        if (!"RUNNING".equals(target.status())) {
+            if (repository.activeJobsForMeeting(target.meetingId()) > 0)
+                throw conflict("Another processing job is already active for this meeting.");
+            if (repository.activeJobsForUser(target.requestedBy()) >= positiveLimit(
+                    properties.getAdmission().getMaxActiveJobsPerUser(), "max-active-jobs-per-user"))
+                throw rateLimited("Too many active processing jobs.", 0);
+        }
+        transcriptEvidence.lockDiarizationSource(target.id());
+        var source = transcriptEvidence.diarizationSource(target.id()).orElse(null);
+        try {
+            if (!repository.retryDiarizationAndOutbox(target, source, maxRetries)) {
+                throw conflict("The processing job changed or its diarization retry is ineligible.");
+            }
+        } catch (org.springframework.dao.DuplicateKeyException concurrentAdmission) {
+            throw conflict("Another processing job is already active for this meeting.");
+        }
+        return toResponse(job(target.id()));
     }
 
     private void validateUploadMetadata(String extension, String contentType, long expectedBytes) {

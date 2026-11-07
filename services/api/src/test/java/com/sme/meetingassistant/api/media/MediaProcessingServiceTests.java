@@ -65,7 +65,7 @@ class MediaProcessingServiceTests {
         when(this.authenticatedUser.requireUserId()).thenReturn(this.actor);
         this.service = new MediaProcessingService(this.repository, this.storage, this.inspector,
             this.meetingAccess, this.authenticatedUser, this.properties,
-            this.workerCapability);
+            this.workerCapability, null);
     }
 
     @Test

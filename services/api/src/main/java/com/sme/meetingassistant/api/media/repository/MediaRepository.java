@@ -4,6 +4,7 @@ import com.sme.meetingassistant.api.observability.RequestIdContext;
 import com.sme.meetingassistant.api.media.dto.ProcessingStageResponse;
 import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle.StageClaim;
 import com.sme.meetingassistant.api.media.service.ProcessingTranscriptEvidence.Evidence;
+import com.sme.meetingassistant.api.media.service.ProcessingTranscriptEvidence.DiarizationSource;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.OffsetDateTime;
@@ -207,10 +208,11 @@ public class MediaRepository {
     public void insertJobAndOutbox(Job job, UUID eventId, List<String> requiredDownstreamStages) {
         int inserted = this.jdbc.update("""
             INSERT INTO processing_jobs (id, meeting_id, source_media_id, job_type, status,
-              requested_by_user_id, reprocess_of_job_id, queued_at, created_at, updated_at)
-            VALUES (?, ?, ?, 'OFFLINE_MEETING_PROCESSING', 'PENDING', ?, ?, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+              requested_by_user_id, reprocess_of_job_id, diarization_planned, queued_at, created_at, updated_at)
+            VALUES (?, ?, ?, 'OFFLINE_MEETING_PROCESSING', 'PENDING', ?, ?, ?, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             ON CONFLICT DO NOTHING
-            """, job.id(), job.meetingId(), job.sourceMediaId(), job.requestedBy(), job.reprocessOfJobId());
+            """, job.id(), job.meetingId(), job.sourceMediaId(), job.requestedBy(), job.reprocessOfJobId(),
+            requiredDownstreamStages.contains("DIARIZING"));
         if (inserted != 1) throw new JobAdmissionConflictException();
         // Each newly admitted job must complete whole-meeting contextual correction.
         // Historical pre-hardening jobs have no planned correction attempt.
@@ -324,6 +326,16 @@ public class MediaRepository {
         }
 
         List<StageAttempt> latest = latestAttempt(jobId, stageCode);
+        if ("DIARIZING".equals(stageCode)) {
+            if (!isDiarizationPlanned(jobId) || latest.isEmpty() || !hasSuccessfulFinalization(jobId)) {
+                throw new ProcessingLifecycleConflictException("Diarization requires an admitted plan and successful finalization.");
+            }
+            requireDiarizationBindingSource(jobId, latest.getFirst().id());
+        }
+        if (List.of("GENERATING_SUMMARY", "EXTRACTING_DECISIONS", "EXTRACTING_ACTION_ITEMS", "INDEXING")
+                .contains(stageCode)) {
+            requireTerminalDiarization(jobId);
+        }
         if (!latest.isEmpty() && !"PENDING".equals(latest.getFirst().status())) {
             throw new ProcessingLifecycleConflictException("A completed/failed stage cannot be restarted without an explicit retry.");
         }
@@ -523,6 +535,7 @@ public class MediaRepository {
                     "Contextual correction requires whole-meeting evidence, output digest and prompt version.");
             }
         }
+        if ("DIARIZING".equals(current.stageCode())) requireDiarizationBindingSource(jobId, stageRunId);
         int changed = this.jdbc.update("""
             UPDATE processing_stage_runs SET status = ?, error_code = ?,
               metrics = CAST(? AS jsonb), completed_at = CURRENT_TIMESTAMP
@@ -536,7 +549,8 @@ public class MediaRepository {
         UUID jobId = stageJobId(stageRunId);
         String jobStatus = lockJobStatus(jobId);
         StageRun current = lockStage(stageRunId);
-        if ("FAILED".equals(current.status()) && "FAILED".equals(jobStatus)
+        boolean optionalDiarization = "DIARIZING".equals(current.stageCode()) && isDiarizationPlanned(jobId);
+        if ("FAILED".equals(current.status()) && ("FAILED".equals(jobStatus) || optionalDiarization)
                 && isLatestClaim(jobId, claim) && sameStageFailure(stageRunId, errorCode, retryable)) {
             return;
         }
@@ -545,9 +559,13 @@ public class MediaRepository {
             throw new ProcessingLifecycleConflictException("Stage attempt is not current or job is not running.");
         }
         this.jdbc.update("""
-            UPDATE processing_stage_runs SET status = 'FAILED', retryable = ?, error_code = ?,
+            UPDATE processing_stage_runs SET status = 'FAILED', retryable = ?, error_code = ?, error_summary = ?,
               completed_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'RUNNING'
-            """, retryable, errorCode, stageRunId);
+            """, retryable, errorCode, safeSummary, stageRunId);
+        if (optionalDiarization) {
+            recordDiarizationWarning(jobId);
+            return;
+        }
         int changed = this.jdbc.update("""
             UPDATE processing_jobs SET status = 'FAILED', current_stage = ?, retryable = ?,
               error_code = ?, error_summary = ?, completed_at = CURRENT_TIMESTAMP,
@@ -564,8 +582,8 @@ public class MediaRepository {
     public boolean hasPendingPipelineStages(UUID jobId) {
         return Boolean.TRUE.equals(this.jdbc.queryForObject("""
             SELECT EXISTS (SELECT 1 FROM processing_stage_runs
-              WHERE processing_job_id=? AND status='PENDING'
-                AND stage_code IN ('GENERATING_SUMMARY', 'EXTRACTING_DECISIONS',
+              WHERE processing_job_id=? AND status IN ('PENDING','RUNNING')
+                AND stage_code IN ('DIARIZING', 'GENERATING_SUMMARY', 'EXTRACTING_DECISIONS',
                                    'EXTRACTING_ACTION_ITEMS', 'INDEXING'))
             """, Boolean.class, jobId));
     }
@@ -575,6 +593,147 @@ public class MediaRepository {
             SELECT EXISTS(SELECT 1 FROM processing_jobs
                 WHERE id=? AND job_type='DERIVED_STAGE_PROCESSING')
             """, Boolean.class, jobId));
+    }
+
+    public boolean isDiarizationPlanned(UUID jobId) {
+        return Boolean.TRUE.equals(jdbc.queryForObject(
+            "SELECT diarization_planned FROM processing_jobs WHERE id=?", Boolean.class, jobId));
+    }
+
+    /** Also called before intelligence snapshot I/O; startStage repeats it under the Job lock. */
+    public void requireTerminalDiarization(UUID jobId) {
+        if (isDiarizationPlanned(jobId) && latestAttempt(jobId, "DIARIZING").stream()
+                .noneMatch(s -> isSuccessful(s.status()) || "FAILED".equals(s.status()))) {
+            throw new ProcessingLifecycleConflictException("Downstream processing must wait for terminal diarization.");
+        }
+    }
+
+    private boolean hasSuccessfulFinalization(UUID jobId) {
+        return latestAttempt(jobId, "FINALIZING_TRANSCRIPT").stream().anyMatch(s -> isSuccessful(s.status()));
+    }
+
+    /** Transcript's port owns publication/revision validation; Media owns the pinned binding. */
+    public void requireDiarizationSource(UUID jobId, DiarizationSource source) {
+        lockJobStatus(jobId);
+        var latest = latestAttempt(jobId, "DIARIZING");
+        if (source == null || !source.current() || !isDiarizationPlanned(jobId) || latest.isEmpty()
+                || !Boolean.TRUE.equals(jdbc.queryForObject("""
+                    SELECT EXISTS (SELECT 1 FROM processing_diarization_dispatches
+                      WHERE stage_run_id=? AND processing_job_id=? AND transcript_id=? AND transcript_revision=?)
+                    """, Boolean.class, latest.getFirst().id(), jobId, source.transcriptId(), source.contentRevision()))) {
+            throw new ProcessingLifecycleConflictException("Diarization publication is missing, superseded or has changed revision.");
+        }
+        requireDiarizationBindingSource(jobId, latest.getFirst().id());
+    }
+
+    private String acceptedDiarizationRevision(UUID jobId) {
+        var revisions = jdbc.query("""
+            SELECT m.sha256 FROM meeting_media m JOIN processing_jobs j
+              ON j.source_media_id=m.id AND j.meeting_id=m.meeting_id
+            WHERE j.id=? AND m.status='AVAILABLE' AND m.sha256 ~ '^[a-f0-9]{64}$'
+              AND m.object_key=('meetings/' || j.meeting_id || '/sources/' || m.id)
+              AND m.size_bytes>0 AND m.duration_ms>0 AND m.available_at IS NOT NULL
+            FOR SHARE OF m
+            """, (rs, row) -> rs.getString("sha256"), jobId);
+        if (revisions.size() != 1) throw new ProcessingLifecycleConflictException(
+            "Diarization requires accepted source media with a trustworthy revision.");
+        return revisions.getFirst();
+    }
+
+    private void requireDiarizationBindingSource(UUID jobId, UUID stageRunId) {
+        String revision = acceptedDiarizationRevision(jobId);
+        if (!hasSuccessfulFinalization(jobId) || !hasSuccessfulTranscription(jobId)
+                || (hasCorrectionPlan(jobId) && !hasSuccessfulContextualCorrection(jobId))
+                || !Boolean.TRUE.equals(jdbc.queryForObject("""
+            SELECT EXISTS (SELECT 1 FROM processing_diarization_dispatches
+              WHERE processing_job_id=? AND stage_run_id=? AND source_revision=?)
+            """, Boolean.class, jobId, stageRunId, revision))) {
+            throw new ProcessingLifecycleConflictException("Diarization dispatch does not match the accepted source revision.");
+        }
+    }
+
+    /** Caller holds Meeting lock; the binding and outbox notification commit together. */
+    public void dispatchPlannedDiarization(UUID jobId, DiarizationSource source) {
+        String status = lockJobStatus(jobId);
+        var latest = latestAttempt(jobId, "DIARIZING");
+        if (!"RUNNING".equals(status) || !isDiarizationPlanned(jobId) || source == null
+                || !hasSuccessfulFinalization(jobId) || !hasSuccessfulTranscription(jobId)
+                || (hasCorrectionPlan(jobId) && !hasSuccessfulContextualCorrection(jobId)) || latest.size() != 1
+                || !"PENDING".equals(latest.getFirst().status())
+                || !isLatestAttempt(jobId, "FINALIZING_TRANSCRIPT", source.finalizationStageId())) {
+            throw new ProcessingLifecycleConflictException("Planned diarization requires canonical successful finalization.");
+        }
+        UUID stageRunId = latest.getFirst().id();
+        if (Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM processing_diarization_dispatches WHERE stage_run_id=?)", Boolean.class, stageRunId))) return;
+        String revision = acceptedDiarizationRevision(jobId);
+        Job job = findJob(jobId).orElseThrow();
+        UUID eventId = UUID.randomUUID();
+        OffsetDateTime createdAt = jdbc.queryForObject("SELECT CURRENT_TIMESTAMP", OffsetDateTime.class);
+        String payload;
+        try {
+            payload = mapper.writeValueAsString(new DiarizationRequestedEvent(eventId, jobId, job.meetingId(),
+                job.sourceMediaId(), revision, source.transcriptId(), source.contentRevision(), stageRunId, createdAt));
+        } catch (JacksonException failure) {
+            throw new IllegalStateException("Could not serialize diarization notification.", failure);
+        }
+        jdbc.update("""
+            INSERT INTO outbox_events(id,aggregate_type,aggregate_id,event_type,payload,occurred_at)
+            VALUES (?,'PROCESSING_JOB',?,'PROCESSING_DIARIZATION_REQUESTED',CAST(? AS jsonb),?)
+            """, eventId, jobId, payload, createdAt);
+        jdbc.update("""
+            INSERT INTO processing_diarization_dispatches(stage_run_id,processing_job_id,meeting_id,
+              source_media_id,source_revision,transcript_id,transcript_revision,event_id,created_at)
+            VALUES (?,?,?,?,?,?,?,?,?)
+            """, stageRunId, jobId, job.meetingId(), job.sourceMediaId(), revision,
+            source.transcriptId(), source.contentRevision(), eventId, createdAt);
+    }
+
+    private void recordDiarizationWarning(UUID jobId) {
+        jdbc.update("""
+            UPDATE processing_jobs SET warning_summary='DIARIZING failed; corrected transcript remains available.',
+              updated_at=CURRENT_TIMESTAMP,version=version+1 WHERE id=? AND status='RUNNING'
+            """, jobId);
+    }
+
+    /** Recovery completes only jobs whose optional failure was the last unresolved work. */
+    public List<UUID> jobsAwaitingOptionalCompletion() {
+        return jdbc.query("""
+            SELECT j.id FROM processing_jobs j WHERE j.status='RUNNING' AND j.diarization_planned
+              AND EXISTS (SELECT 1 FROM processing_stage_runs d WHERE d.processing_job_id=j.id
+                AND d.stage_code='DIARIZING' AND d.status='FAILED'
+                AND d.attempt_number=(SELECT MAX(x.attempt_number) FROM processing_stage_runs x
+                  WHERE x.processing_job_id=j.id AND x.stage_code='DIARIZING'))
+              AND NOT EXISTS (SELECT 1 FROM processing_stage_runs s WHERE s.processing_job_id=j.id
+                AND (s.status IN ('PENDING','RUNNING') OR (s.status='FAILED' AND s.stage_code<>'DIARIZING'))
+                AND s.attempt_number=(SELECT MAX(x.attempt_number) FROM processing_stage_runs x
+                  WHERE x.processing_job_id=j.id AND x.stage_code=s.stage_code))
+            ORDER BY j.updated_at,j.id LIMIT 25
+            """, (rs, row) -> rs.getObject("id", UUID.class));
+    }
+
+    /** Same job, new attempt and intent; never admit transcription/correction work. */
+    public boolean retryDiarizationAndOutbox(Job job, DiarizationSource source, int maxRetries) {
+        String status = lockJobStatus(job.id());
+        if (!List.of("RUNNING", "COMPLETED_WITH_WARNINGS").contains(status)
+                || !isDiarizationPlanned(job.id()) || source == null || !source.current()
+                || !hasRetryableFailedStage(job.id(), "DIARIZING")) return false;
+        if (Boolean.TRUE.equals(jdbc.queryForObject("""
+            SELECT EXISTS (SELECT 1 FROM processing_stage_runs WHERE processing_job_id=? AND status='RUNNING')
+            """, Boolean.class, job.id()))) return false;
+        int updated = jdbc.update("""
+            UPDATE processing_jobs SET status='RUNNING',current_stage='DIARIZING',completed_at=NULL,
+              retryable=FALSE,retry_count=retry_count+1,error_code=NULL,error_summary=NULL,
+              updated_at=CURRENT_TIMESTAMP,version=version+1
+            WHERE id=? AND retry_count=? AND retry_count<?
+            """, job.id(), job.retryCount(), maxRetries);
+        if (updated != 1) return false;
+        jdbc.update("""
+            INSERT INTO processing_stage_runs(id,processing_job_id,stage_code,attempt_number,status)
+            SELECT ?,?,'DIARIZING',MAX(attempt_number)+1,'PENDING'
+            FROM processing_stage_runs WHERE processing_job_id=? AND stage_code='DIARIZING'
+            """, UUID.randomUUID(), job.id(), job.id());
+        dispatchPlannedDiarization(job.id(), source);
+        return true;
     }
 
     /** Derived-only completion has its own policy: never demand same-job ASR. */
@@ -624,8 +783,14 @@ public class MediaRepository {
                 WHERE x.processing_job_id = s.processing_job_id AND x.stage_code = s.stage_code)
             """, (rs, row) -> new StageCompletion(rs.getObject("id", UUID.class),
                 rs.getString("stage_code"), rs.getString("status")), jobId);
-        if (stages.stream().anyMatch(s -> List.of("RUNNING", "PENDING", "FAILED").contains(s.status()))) {
+        boolean diarizationPlanned = isDiarizationPlanned(jobId);
+        if (stages.stream().anyMatch(s -> List.of("RUNNING", "PENDING").contains(s.status())
+                || ("FAILED".equals(s.status()) && !(diarizationPlanned && "DIARIZING".equals(s.stageCode()))))) {
             throw new ProcessingLifecycleConflictException("Processing stages are still active or have failed.");
+        }
+        if (diarizationPlanned && stages.stream().noneMatch(s -> "DIARIZING".equals(s.stageCode())
+                && (isSuccessful(s.status()) || "FAILED".equals(s.status())))) {
+            throw new ProcessingLifecycleConflictException("Planned diarization has no terminal outcome.");
         }
         if (!hasSuccessfulTranscription(jobId)) {
             throw new ProcessingLifecycleConflictException("Processing cannot complete without transcription.");
@@ -644,10 +809,12 @@ public class MediaRepository {
         if (evidence.suspicious() && "READY".equals(evidence.status())) {
             throw new ProcessingLifecycleConflictException("Unresolved transcript quality cannot be marked READY.");
         }
-        boolean withWarnings = "READY_WITH_WARNINGS".equals(evidence.status())
+        boolean diarizationFailed = stages.stream().anyMatch(s -> "DIARIZING".equals(s.stageCode()) && "FAILED".equals(s.status()));
+        boolean withWarnings = diarizationFailed || "READY_WITH_WARNINGS".equals(evidence.status())
             || stages.stream().anyMatch(s -> "SUCCEEDED_WITH_WARNING".equals(s.status()));
         String outcome = withWarnings ? "COMPLETED_WITH_WARNINGS" : "COMPLETED";
         String summary = withWarnings ? "Processing completed with transcript or stage quality warnings." : null;
+        if (diarizationFailed) summary = "DIARIZING failed; processing completed with capability or transcript quality warnings.";
         int changed = this.jdbc.update("""
             UPDATE processing_jobs SET status = ?, warning_summary = ?, retryable = FALSE,
               error_code = NULL, error_summary = NULL, completed_at = CURRENT_TIMESTAMP,
@@ -846,10 +1013,18 @@ public class MediaRepository {
                 UPDATE processing_stage_runs SET status = 'FAILED', retryable = NOT EXISTS (
                     SELECT 1 FROM transcription_worker_claims c JOIN transcription_worker_deliveries d ON d.event_id=c.event_id
                     WHERE c.execution_stage_run_id=processing_stage_runs.id AND d.generation>=3),
-                  error_code = 'STAGE_LEASE_EXPIRED', completed_at = CURRENT_TIMESTAMP
+                  error_code = 'STAGE_LEASE_EXPIRED', completed_at = CURRENT_TIMESTAMP,
+                  error_summary = 'Processing worker stopped reporting progress.'
                 WHERE processing_job_id = ? AND status = 'RUNNING'
                   AND (lease_expires_at IS NULL OR lease_expires_at <= clock_timestamp())
                 """, jobId);
+            boolean onlyDiarization = isDiarizationPlanned(jobId)
+                && expired.stream().allMatch(id -> "DIARIZING".equals(stageIdentity(id).stageCode()));
+            if (onlyDiarization) {
+                recordDiarizationWarning(jobId);
+                failed++;
+                continue;
+            }
             this.jdbc.update("""
                 UPDATE processing_jobs SET status = 'FAILED', retryable = NOT EXISTS (
                     SELECT 1 FROM transcription_worker_claims c JOIN transcription_worker_deliveries d ON d.event_id=c.event_id
@@ -949,7 +1124,7 @@ public class MediaRepository {
                 claim_token = NULL, claim_expires_at = NULL,
                 last_error = COALESCE(last_error, 'OUTBOX_CONFIRM_NOT_OBSERVED')
               WHERE status = 'PENDING' AND aggregate_type = 'PROCESSING_JOB'
-                AND event_type IN ('PROCESSING_JOB_QUEUED', 'PROCESSING_JOB_RETRY_REQUESTED')
+                AND event_type IN ('PROCESSING_JOB_QUEUED', 'PROCESSING_JOB_RETRY_REQUESTED', 'PROCESSING_DIARIZATION_REQUESTED')
                 AND attempt_count >= ?
                 AND (claim_expires_at IS NULL OR claim_expires_at <= CURRENT_TIMESTAMP)
               RETURNING aggregate_id, aggregate_type, event_type, payload
@@ -974,7 +1149,7 @@ public class MediaRepository {
             WITH candidates AS (
               SELECT id FROM outbox_events
               WHERE status = 'PENDING' AND aggregate_type = 'PROCESSING_JOB'
-                AND event_type IN ('PROCESSING_JOB_QUEUED', 'PROCESSING_JOB_RETRY_REQUESTED')
+                AND event_type IN ('PROCESSING_JOB_QUEUED', 'PROCESSING_JOB_RETRY_REQUESTED', 'PROCESSING_DIARIZATION_REQUESTED')
                 AND attempt_count < ?
                 AND next_attempt_at <= CURRENT_TIMESTAMP
                 AND (claim_expires_at IS NULL OR claim_expires_at <= CURRENT_TIMESTAMP)
@@ -1132,6 +1307,9 @@ public class MediaRepository {
     public record JobRetryEvent(UUID eventId, UUID processingJobId, UUID meetingId, UUID sourceMediaId,
             UUID requestedByUserId, String retryFromStage, int attemptNumber, String requestId,
             int schemaVersion, OffsetDateTime occurredAt) { }
+    public record DiarizationRequestedEvent(UUID eventId, UUID processingJobId, UUID meetingId,
+            UUID sourceMediaId, String sourceRevision, UUID transcriptId, long transcriptRevision,
+            UUID stageRunId, OffsetDateTime occurredAt) { }
 
     /** Domain-level lifecycle conflict, distinct from an invalid JDBC operation. */
     public static class ProcessingLifecycleConflictException extends RuntimeException {

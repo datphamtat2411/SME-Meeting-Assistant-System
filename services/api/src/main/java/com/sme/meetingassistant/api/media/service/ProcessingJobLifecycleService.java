@@ -70,6 +70,7 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
     @Transactional
     public void expireAbandonedStages() {
         this.repository.expireAbandonedStages(25);
+        for (UUID jobId : repository.jobsAwaitingOptionalCompletion()) completeJob(jobId);
     }
 
     @Override
@@ -78,6 +79,7 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
         requireCode(stageCode, 48, "stageCode");
         requireOptionalText(providerName, 80, "providerName");
         requireOptionalText(modelName, 160, "modelName");
+        if ("DIARIZING".equals(stageCode)) requireCurrentDiarizationSource(jobId);
         if ("EXTRACTING_ACTION_ITEMS".equals(stageCode)
                 && !properties.getProcessing().isActionItemHandoffEnabled()) {
             throw new org.springframework.web.server.ResponseStatusException(
@@ -92,6 +94,8 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
                     "Derived processing requires its verified pinned Summary source.");
             }
         } else {
+            if (List.of("GENERATING_SUMMARY", "EXTRACTING_DECISIONS", "EXTRACTING_ACTION_ITEMS", "INDEXING")
+                    .contains(stageCode)) repository.requireTerminalDiarization(jobId);
             if (List.of("GENERATING_SUMMARY", "EXTRACTING_DECISIONS",
                     "EXTRACTING_ACTION_ITEMS", "INDEXING").contains(stageCode)
                     && !this.transcriptEvidence.hasFinalizedTranscript(jobId)) {
@@ -169,12 +173,26 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
                 && this.transcriptEvidence.forFinalization(identity.jobId(), claim.stageRunId()).isEmpty()) {
             throw new ProcessingLifecycleConflictException("Canonical transcript must exist before stage success.");
         }
+        if ("DIARIZING".equals(identity.stageCode())) requireCurrentDiarizationSource(identity.jobId());
         if (isIntelligenceStage(identity.stageCode())
                 && !hasAcceptedResult(identity.jobId(),claim.stageRunId(),identity.stageCode())) {
             throw new ProcessingLifecycleConflictException(
                 "AI-dependent stage cannot succeed without matching canonical acceptance evidence.");
         }
         this.repository.completeStage(claim, outcome, errorCode, metricsJson);
+    }
+
+    private void requireCurrentDiarizationSource(UUID jobId) {
+        transcriptEvidence.lockDiarizationSource(jobId);
+        repository.requireDiarizationSource(jobId, transcriptEvidence.diarizationSource(jobId).orElse(null));
+    }
+
+    @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public void dispatchPlannedDiarization(UUID jobId) {
+        if (!repository.isDiarizationPlanned(jobId)) return;
+        transcriptEvidence.lockDiarizationSource(jobId);
+        repository.dispatchPlannedDiarization(jobId, transcriptEvidence.diarizationSource(jobId).orElse(null));
     }
 
     @Override
@@ -186,6 +204,10 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
         // provider payloads or credentials. Never persist it as business state.
         this.repository.failStage(claim, errorCode,
             SafeProcessingFailureSummary.forCode(errorCode), retryable);
+        var identity = repository.stageIdentity(claim.stageRunId());
+        if ("DIARIZING".equals(identity.stageCode()) && !repository.hasPendingPipelineStages(identity.jobId())) {
+            completeJob(identity.jobId());
+        }
     }
 
     @Override

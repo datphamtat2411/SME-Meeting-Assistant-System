@@ -55,7 +55,9 @@ public class OutboxPublisher {
                     .setHeader("eventType", event.eventType())
                     .build();
                 CorrelationData correlation = new CorrelationData(event.id().toString());
-                this.rabbitTemplate.send(outbox.getExchange(), outbox.getRoutingKey(), message, correlation);
+                String routingKey = "PROCESSING_DIARIZATION_REQUESTED".equals(event.eventType())
+                    ? outbox.getDiarizationRoutingKey() : outbox.getRoutingKey();
+                this.rabbitTemplate.send(outbox.getExchange(), routingKey, message, correlation);
                 var confirm = correlation.getFuture().get(confirmTimeoutSeconds, TimeUnit.SECONDS);
                 if (!confirm.ack()) {
                     throw new IllegalStateException("RabbitMQ did not confirm event publication");

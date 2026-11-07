@@ -11,6 +11,15 @@ import java.util.UUID;
 public interface ProcessingTranscriptEvidence {
     record Evidence(UUID finalizationStageId, String status, boolean suspicious) {}
 
+    /** Identity-only publication evidence; no transcript text or storage capability. */
+    record DiarizationSource(UUID transcriptId, UUID finalizationStageId,
+            long contentRevision, boolean current) {}
+
+    /** Serialize source reads with publication and human review, before taking the Job lock. */
+    void lockDiarizationSource(UUID jobId);
+
+    Optional<DiarizationSource> diarizationSource(UUID jobId);
+
     Optional<Evidence> forFinalization(UUID processingJobId, UUID finalizationStageRunId);
 
     /** Latest successful finalization stage must have canonical transcript evidence. */

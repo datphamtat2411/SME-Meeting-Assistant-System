@@ -91,10 +91,17 @@ public class TranscriptRepository implements ProcessingTranscriptEvidence {
                   OR (j.status='RUNNING' AND EXISTS (
                     SELECT 1 FROM processing_stage_runs pending
                     WHERE pending.processing_job_id=j.id AND pending.status='PENDING'
-                      AND pending.stage_code IN ('GENERATING_SUMMARY', 'EXTRACTING_DECISIONS',
+                      AND pending.stage_code IN ('DIARIZING', 'GENERATING_SUMMARY', 'EXTRACTING_DECISIONS',
                                                  'EXTRACTING_ACTION_ITEMS', 'INDEXING')
                   ))
-                )
+                 )
+                AND (NOT j.diarization_planned OR EXISTS (
+                  SELECT 1 FROM processing_diarization_dispatches d
+                  JOIN outbox_events o ON o.id=d.event_id
+                  WHERE d.processing_job_id=j.id AND d.transcript_id=t.id
+                    AND d.transcript_revision=t.content_revision
+                    AND o.event_type='PROCESSING_DIARIZATION_REQUESTED'
+                ))
             )
             """, Boolean.class, result.processingJobId(), result.sourceStageRunId()));
         if (!committedTogether) {
@@ -407,6 +414,38 @@ public class TranscriptRepository implements ProcessingTranscriptEvidence {
             """, (rs, row) -> rs.getObject(1, UUID.class), processingJobId);
         if (latest.size() != 1) return Optional.empty();
         return forFinalization(processingJobId, latest.getFirst());
+    }
+
+    @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public void lockDiarizationSource(UUID jobId) {
+        jdbc.query("""
+            SELECT m.id FROM meetings m JOIN processing_jobs j ON j.meeting_id=m.id
+            WHERE j.id=? FOR UPDATE OF m
+            """, (rs, row) -> rs.getObject(1, UUID.class), jobId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<DiarizationSource> diarizationSource(UUID jobId) {
+        var sources = jdbc.query("""
+            SELECT t.id,t.source_stage_run_id,t.content_revision,t.is_current
+            FROM transcripts t
+            JOIN processing_jobs j ON j.id=t.processing_job_id
+              AND j.meeting_id=t.meeting_id AND j.source_media_id=t.source_media_id
+            JOIN processing_stage_runs s ON s.id=t.source_stage_run_id
+              AND s.processing_job_id=j.id AND s.stage_code='FINALIZING_TRANSCRIPT'
+            WHERE j.id=? AND j.job_type='OFFLINE_MEETING_PROCESSING'
+              AND s.status IN ('SUCCEEDED','SUCCEEDED_WITH_WARNING')
+              AND s.attempt_number=(SELECT MAX(x.attempt_number) FROM processing_stage_runs x
+                WHERE x.processing_job_id=j.id AND x.stage_code='FINALIZING_TRANSCRIPT')
+              AND t.status IN ('READY','READY_WITH_WARNINGS') AND t.finalized_at IS NOT NULL
+              AND t.publication_sha256 ~ '^[a-f0-9]{64}$'
+              AND EXISTS (SELECT 1 FROM transcript_segments seg WHERE seg.transcript_id=t.id)
+            """, (rs, row) -> new DiarizationSource(rs.getObject("id", UUID.class),
+                rs.getObject("source_stage_run_id", UUID.class), rs.getLong("content_revision"),
+                rs.getBoolean("is_current")), jobId);
+        return sources.size() == 1 ? Optional.of(sources.getFirst()) : Optional.empty();
     }
 
     @Transactional(readOnly = true)
