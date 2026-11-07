@@ -203,17 +203,31 @@ class ActionItemPersistenceIntegrationTests {
         UUID receipt = UUID.randomUUID(), item = UUID.randomUUID();
         insertReceipt(receipt, stage, snapshot, transcript, 3, 1);
         insertCandidate(item, receipt, "candidate-1", transcript, 3);
+        // A second legitimate meeting has its own active job. Never create
+        // two active jobs inside one meeting merely to fabricate foreign evidence.
+        UUID otherMeeting = UUID.randomUUID(), otherMedia = UUID.randomUUID();
         UUID otherJob = UUID.randomUUID(), otherTranscript = UUID.randomUUID();
         UUID foreignSegment = UUID.randomUUID();
         jdbc.update("""
+            INSERT INTO meetings(id,title,organizer_user_id,created_by_user_id)
+            VALUES (?,'Another meeting',?,?)
+            """, otherMeeting, actor, actor);
+        jdbc.update("""
+            INSERT INTO meeting_media(id,meeting_id,source_type,status,object_key,pending_object_key,
+                content_type,expected_size_bytes,size_bytes,duration_ms,uploaded_by_user_id,available_at)
+            VALUES (?,?,'UPLOAD','AVAILABLE',?,?,'audio/wav',100,100,10000,?,CURRENT_TIMESTAMP)
+            """, otherMedia, otherMeeting,
+            "meetings/" + otherMeeting + "/sources/" + otherMedia,
+            "meetings/" + otherMeeting + "/pending/" + otherMedia, actor);
+        jdbc.update("""
             INSERT INTO processing_jobs(id,meeting_id,source_media_id,requested_by_user_id,status)
             VALUES (?,?,?,?,'RUNNING')
-            """, otherJob, meeting, media, actor);
+            """, otherJob, otherMeeting, otherMedia, actor);
         jdbc.update("""
             INSERT INTO transcripts(id,meeting_id,source_media_id,processing_job_id,version_number,
                 language_code,status,is_current,content_revision)
-            VALUES (?,?,?,?,2,'vi','READY',FALSE,3)
-            """, otherTranscript, meeting, media, otherJob);
+            VALUES (?,?,?,?,1,'vi','READY',TRUE,3)
+            """, otherTranscript, otherMeeting, otherMedia, otherJob);
         jdbc.update("""
             INSERT INTO transcript_segments(id,transcript_id,ordinal,start_ms,end_ms,current_text,quality_status)
             VALUES (?,?,0,0,1000,'Foreign evidence','ACCEPTED')
