@@ -9,7 +9,7 @@ from sme_meeting_ai.audio.models import SampleInterval
 from sme_meeting_ai.core.config import ConfigurationError, Settings
 from sme_meeting_ai.demo.models import SpeakerHints
 from sme_meeting_ai.demo.pipeline import (
-    DemoPipelineRunner,
+    DemoPipelineRunner as SharedDemoPipelineRunner,
     DemoProcessingError,
     build_demo_runner,
     processing_budget_seconds,
@@ -18,7 +18,10 @@ from sme_meeting_ai.diarization import (
     DiarizationError,
     DiarizationErrorCategory,
     DiarizationResult,
+    DiarizationRequest,
+    DiarizationService,
     SpeakerTurn,
+    TimedTranscriptSegment,
     align_speakers,
 )
 from sme_meeting_ai.pipeline.offline_transcription import (
@@ -37,6 +40,10 @@ from sme_meeting_ai.transcription.correction import (
 )
 
 PRIVATE = "private-provider-body-token-and-transcript"
+
+
+def DemoPipelineRunner(pipeline, provider, **kwargs):
+    return SharedDemoPipelineRunner(pipeline, DiarizationService(provider), **kwargs)
 
 
 def outcome(source_id, segments=None):
@@ -65,7 +72,8 @@ def components(tmp_path, *, turns=(), segments=None):
     pipeline = Mock()
     pipeline.run.side_effect = lambda source: outcome(source.source_id, segments)
     diarizer = Mock()
-    diarizer.diarize.return_value = DiarizationResult(tuple(turns), ("SPEAKER_01", "SPEAKER_02"), "pinned")
+    labels = tuple(dict.fromkeys(turn.speaker_label for turn in turns))
+    diarizer.diarize.return_value = DiarizationResult(tuple(turns), labels, "pinned")
     return path, pipeline, diarizer
 
 
@@ -83,7 +91,7 @@ def test_corrected_text_absolute_rounding_ordinals_and_alignment_share_one_timel
         observed.extend(segments)
         return align_speakers(segments, evidence)
 
-    monkeypatch.setattr("sme_meeting_ai.demo.pipeline.align_speakers", align)
+    monkeypatch.setattr("sme_meeting_ai.diarization.service.align_speakers", align)
     stages = []
     result = DemoPipelineRunner(pipeline, diarizer, language="vi").run(
         path, hints=SpeakerHints(min_speakers=1, max_speakers=3), on_stage=stages.append,
@@ -107,6 +115,12 @@ def test_corrected_text_absolute_rounding_ordinals_and_alignment_share_one_timel
     assert source.path == path and source.source_id
     diarizer.diarize.assert_called_once_with(path, num_speakers=None, min_speakers=1, max_speakers=3)
     assert "text" not in repr(result)
+    direct = DiarizationService(diarizer).run(DiarizationRequest(path, result.durationMs, tuple(
+        TimedTranscriptSegment(s.ordinal, s.startMs, s.endMs) for s in result.segments)))
+    assert [(s.ordinal, s.speakerLabel) for s in result.segments] == [
+        (a.ordinal, a.speaker_label) for a in direct.assignments]
+    assert tuple((t.startMs, t.endMs, t.speakerLabel) for t in result.diarization.turns) == tuple(
+        (t.start_ms, t.end_ms, t.speaker_label) for t in direct.raw_turns)
 
 
 def test_equal_simultaneous_speaker_overlap_is_unknown(tmp_path):

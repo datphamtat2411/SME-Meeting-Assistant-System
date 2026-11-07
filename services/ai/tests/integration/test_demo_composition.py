@@ -5,8 +5,8 @@ import pytest
 from test_offline_transcription_pipeline import RAW, pipeline
 from test_offline_transcription_pipeline import workflow as workflow
 
-from sme_meeting_ai.demo.pipeline import DemoPipelineRunner, DemoProcessingError
-from sme_meeting_ai.diarization import DiarizationResult, SpeakerTurn
+from sme_meeting_ai.demo.pipeline import DemoPipelineRunner as SharedDemoPipelineRunner, DemoProcessingError
+from sme_meeting_ai.diarization import DiarizationResult, DiarizationService, SpeakerTurn
 from sme_meeting_ai.transcription.asr import (
     AsrCandidate,
     AsrError,
@@ -19,6 +19,10 @@ from sme_meeting_ai.transcription.correction import (
     CorrectionError,
     CorrectionErrorCategory,
 )
+
+
+def DemoPipelineRunner(pipeline, provider, **kwargs):
+    return SharedDemoPipelineRunner(pipeline, DiarizationService(provider), **kwargs)
 
 
 def test_real_offline_composition_corrects_once_then_adds_speakers(workflow):

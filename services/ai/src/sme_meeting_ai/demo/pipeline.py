@@ -9,9 +9,10 @@ from uuid import uuid4
 from sme_meeting_ai.audio.models import AudioSource, SampleInterval
 from sme_meeting_ai.core.config import ConfigurationError, Settings
 from sme_meeting_ai.diarization import (
-    DiarizationError,
+    DiarizationRequest,
+    DiarizationService,
+    SpeakerHints as DiarizationSpeakerHints,
     TimedTranscriptSegment,
-    align_speakers,
 )
 from sme_meeting_ai.pipeline.offline_transcription import (
     OfflineTranscriptionOutcome,
@@ -104,9 +105,9 @@ def _corrected_segments(outcome, source_id):
 
 
 class DemoPipelineRunner:
-    def __init__(self, pipeline, diarizer, *, language: str, close: Callable[[], None] = lambda: None,
+    def __init__(self, pipeline, diarization_service: DiarizationService, *, language: str, close: Callable[[], None] = lambda: None,
                  clock: Callable[[], float] = time.monotonic):
-        self._pipeline, self._diarizer = pipeline, diarizer
+        self._pipeline, self._diarization_service = pipeline, diarization_service
         self._language, self._close, self._clock = language, close, clock
 
     def close(self):
@@ -139,23 +140,23 @@ class DemoPipelineRunner:
             try:
                 if deadline is not None and self._clock() >= deadline:
                     raise TimeoutError
-                evidence = self._diarizer.diarize(audio_path, **hints.model_dump())
+                timed = tuple(TimedTranscriptSegment(s.ordinal, s.startMs, s.endMs) for s in segments)
+                result = self._diarization_service.run(DiarizationRequest(
+                    audio_path, (count + 15) // 16, timed, DiarizationSpeakerHints(**hints.model_dump()),
+                ))
                 if deadline is not None and self._clock() >= deadline:
                     raise TimeoutError
-                evidence.validate_duration((count + 15) // 16)
-                # Exactly the public timestamps are used; do not split/retime text.
-                timed = tuple(TimedTranscriptSegment(s.ordinal, s.startMs, s.endMs) for s in segments)
-                assignments = align_speakers(timed, evidence.turns)
-                enriched = tuple(s.model_copy(update={"speakerLabel": assignment.speaker_label})
-                                 for s, assignment in zip(segments, assignments, strict=True))
-                diarization = DemoDiarization(
-                    status="completed", speakers=tuple(DemoSpeaker(label=s) for s in evidence.speakers),
-                    turns=tuple(DemoTurn(startMs=t.start_ms, endMs=t.end_ms, speakerLabel=t.speaker_label)
-                                for t in evidence.turns),
-                )
-                segments = enriched
-            except DiarizationError as error:
-                diarization = DemoDiarization(status="failed", errorCode=error.category.value.upper())
+                if result.diagnostic_status == "completed":
+                    enriched = tuple(s.model_copy(update={"speakerLabel": assignment.speaker_label})
+                                     for s, assignment in zip(segments, result.assignments, strict=True))
+                    diarization = DemoDiarization(
+                        status="completed", speakers=tuple(DemoSpeaker(label=s) for s in result.speaker_labels),
+                        turns=tuple(DemoTurn(startMs=t.start_ms, endMs=t.end_ms, speakerLabel=t.speaker_label)
+                                    for t in result.raw_turns),
+                    )
+                    segments = enriched
+                elif result.diagnostic_status == "failed":
+                    diarization = DemoDiarization(status="failed", errorCode=result.error_category.upper())
             except TimeoutError:
                 diarization = DemoDiarization(status="failed", errorCode="TIMEOUT")
             except Exception:
@@ -213,7 +214,7 @@ def build_demo_runner(settings: Settings) -> DemoPipelineRunner:
             AudioPreprocessingPipeline(normalizer, AudioEvidenceDetector(settings, backend), SpeechMapBuilder(settings)),
             SpeechAwareAsrChunkPlanner(settings), transcriber, corrector, settings, correction_mode=mode,
         )
-        return DemoPipelineRunner(pipeline, ReplicateDiarizationAdapter(settings),
+        return DemoPipelineRunner(pipeline, DiarizationService(ReplicateDiarizationAdapter(settings)),
                                   language=settings.audio_asr_language, close=resources.close)
     except Exception:
         try:
