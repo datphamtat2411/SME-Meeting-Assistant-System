@@ -2,6 +2,8 @@ package com.sme.meetingassistant.api.actionitems;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.sme.meetingassistant.api.actionitem.service.ActionItemBatchFingerprint;
 import com.sme.meetingassistant.api.actionitem.service.ActionItemProposalSink;
@@ -14,6 +16,8 @@ import com.sme.meetingassistant.api.meetingintelligence.service.ActionItemPropos
 import com.sme.meetingassistant.api.meetingintelligence.service.ActionItemProposalHandoff.SourceReference;
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
 import java.time.LocalDate;
+import java.util.Map;
+import java.security.Principal;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
@@ -24,9 +28,15 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
+import tools.jackson.databind.JsonNode;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.IllegalTransactionStateException;
@@ -45,6 +55,7 @@ import tools.jackson.databind.ObjectMapper;
     "app.media.processing.action-item-handoff-enabled=true"
 })
 @Import(PostgresTestConfiguration.class)
+@AutoConfigureMockMvc
 class ActionItemProposalSinkIntegrationTests {
     @Autowired JdbcTemplate jdbc;
     @Autowired ActionItemProposalSink sink;
@@ -52,6 +63,7 @@ class ActionItemProposalSinkIntegrationTests {
     @Autowired ProcessingJobLifecycle mediaLifecycle;
     @Autowired PlatformTransactionManager transactionManager;
     @Autowired ObjectMapper mapper;
+    @Autowired MockMvc mvc;
 
     private UUID actor, meeting, media, job, transcript, segment, snapshot, stage;
     private UUID claimToken;
@@ -358,4 +370,163 @@ class ActionItemProposalSinkIntegrationTests {
             .isInstanceOf(IllegalTransactionStateException.class);
         assertThat(receiptCount()).isZero();
     }
+    /** AI-06: one non-mocked chain crosses MI, Media, Transcript, Action Items and HTTP. */
+    @Test
+    void pinnedTranscriptToHumanReviewToOutsideAssigneeCompletionIsOneAuditedLineage()
+            throws Exception {
+        UUID external=UUID.randomUUID();
+        String email="ai06-official-"+external+"@example.invalid";
+        jdbc.update("""
+            INSERT INTO users(id,email,email_normalized,display_name,password_hash,global_role,account_status)
+            VALUES (?,?,?,'External assignee','test-only','EMPLOYEE','ACTIVE')
+            """,external,email,email);
+
+        assertThat(handoff.handoff(claim(),source,candidates())).isEqualTo(new Receipt(false,1));
+        UUID task=soleItem();
+        assertThat(receiptCount()).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT status FROM processing_stage_runs WHERE id=?",
+            String.class,stage)).isEqualTo("SUCCEEDED");
+        assertThat(jdbc.queryForObject("""
+            SELECT source_snapshot_id FROM action_item_batch_receipts WHERE stage_run_id=?
+            """,UUID.class,stage)).isEqualTo(snapshot);
+
+        Principal organizer=() -> actor.toString(), outside=() -> external.toString();
+        MvcResult proposal=mvc.perform(get("/api/v1/action-items/{id}",task)
+                .principal(organizer)).andExpect(status().isOk()).andReturn();
+        String proposedTag=proposal.getResponse().getHeader(HttpHeaders.ETAG);
+        JsonNode proposed=mapper.readTree(proposal.getResponse().getContentAsString()).path("data");
+        assertThat(proposed.path("status").asText()).isEqualTo("PROPOSED");
+        assertThat(proposed.path("assigneeUserId").isNull()).isTrue();
+
+        mvc.perform(post("/api/v1/action-items/{id}/confirm",task)
+                .principal(organizer).header(HttpHeaders.IF_MATCH,proposedTag))
+            .andExpect(status().isUnprocessableEntity());
+        mvc.perform(get("/api/v1/action-items/{id}",task)
+                .principal(outside)).andExpect(status().isNotFound());
+
+        MvcResult assigned=mvc.perform(patch("/api/v1/action-items/{id}",task)
+                .principal(organizer).header(HttpHeaders.IF_MATCH,proposedTag)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(mapper.writeValueAsString(Map.of("assigneeUserId",external))))
+            .andExpect(status().isOk()).andReturn();
+        mvc.perform(get("/api/v1/action-items/{id}",task)
+                .principal(outside)).andExpect(status().isNotFound());
+
+        MvcResult confirmed=mvc.perform(post("/api/v1/action-items/{id}/confirm",task)
+                .principal(organizer)
+                .header(HttpHeaders.IF_MATCH,assigned.getResponse().getHeader(HttpHeaders.ETAG)))
+            .andExpect(status().isOk()).andReturn();
+        JsonNode accepted=mapper.readTree(confirmed.getResponse().getContentAsString()).path("data");
+        assertThat(accepted.path("status").asText()).isEqualTo("OPEN");
+        assertThat(accepted.path("confirmedByUserId").asText()).isEqualTo(actor.toString());
+
+        MvcResult outsiderDetail=mvc.perform(get("/api/v1/action-items/{id}",task)
+                .principal(outside)).andExpect(status().isOk()).andReturn();
+        JsonNode restricted=mapper.readTree(outsiderDetail.getResponse().getContentAsString())
+            .path("data");
+        assertThat(restricted.path("title").asText()).isEqualTo("Gửi báo cáo quý");
+        assertThat(restricted.path("processingJobId").isNull()).isTrue();
+        assertThat(restricted.path("confirmedByUserId").isNull()).isTrue();
+        mvc.perform(get("/api/v1/meetings/{id}",meeting).principal(outside))
+            .andExpect(status().isNotFound());
+        mvc.perform(get("/api/v1/action-items/{id}",task).principal(()->UUID.randomUUID().toString()))
+            .andExpect(status().isNotFound());
+
+        MvcResult complete=mvc.perform(post("/api/v1/action-items/{id}/complete",task)
+                .principal(outside)
+                .header(HttpHeaders.IF_MATCH,outsiderDetail.getResponse().getHeader(HttpHeaders.ETAG)))
+            .andExpect(status().isOk()).andReturn();
+        assertThat(mapper.readTree(complete.getResponse().getContentAsString())
+            .path("data").path("status").asText()).isEqualTo("DONE");
+        assertThat(jdbc.queryForObject("""
+            SELECT completed_by_user_id FROM action_items WHERE id=?
+            """,UUID.class,task)).isEqualTo(external);
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM action_item_history WHERE action_item_id=?
+                AND change_type='STATUS'
+            """,Integer.class,task)).isEqualTo(3);
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM action_item_history WHERE action_item_id=?
+                AND change_type='ASSIGNEE' AND changed_by_user_id=?
+            """,Integer.class,task,actor)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM action_item_evidence
+             WHERE action_item_id=? AND transcript_id=? AND transcript_segment_id=?
+            """,Integer.class,task,transcript,segment)).isEqualTo(1);
+        assertThat(receiptCount()).isEqualTo(1);
+        assertThat(proposalCount()).isEqualTo(1);
+    }
+
+    @Test
+    void warningQualityEvidenceCanProduceUnassignedProposalButNeverOfficialWorkAutomatically()
+            throws Exception {
+        jdbc.update("UPDATE transcripts SET status='READY_WITH_WARNINGS' WHERE id=?",transcript);
+        jdbc.update("UPDATE transcript_segments SET quality_status='SUSPICIOUS' WHERE id=?",segment);
+        assertThat(handoff.handoff(claim(),source,candidates())).isEqualTo(new Receipt(false,1));
+        UUID item=soleItem();
+        assertThat(jdbc.queryForObject(
+            "SELECT status FROM action_items WHERE id=?",String.class,item)).isEqualTo("PROPOSED");
+        assertThat(jdbc.queryForObject(
+            "SELECT assignee_user_id FROM action_items WHERE id=?",UUID.class,item)).isNull();
+        assertThat(jdbc.queryForObject(
+            "SELECT confirmed_by_user_id FROM action_items WHERE id=?",UUID.class,item)).isNull();
+        Principal user=()->actor.toString();
+        MvcResult proposed=mvc.perform(get("/api/v1/action-items/{id}",item)
+                .principal(user)).andExpect(status().isOk()).andReturn();
+        mvc.perform(post("/api/v1/action-items/{id}/confirm",item)
+                .principal(user)
+                .header(HttpHeaders.IF_MATCH,proposed.getResponse().getHeader(HttpHeaders.ETAG)))
+            .andExpect(status().isUnprocessableEntity());
+        assertThat(jdbc.queryForObject(
+            "SELECT status FROM processing_stage_runs WHERE id=?",String.class,stage))
+            .isEqualTo("SUCCEEDED");
+        assertThat(jdbc.queryForObject(
+            "SELECT status FROM action_items WHERE id=?",String.class,item)).isEqualTo("PROPOSED");
+    }
+
+    @Test
+    void multiCandidateBatchWithLateForeignEvidenceMustRollbackEarlierCandidateAndReceipt() {
+        List<Candidate> list=List.of(
+            new Candidate("first","Valid first proposed task",null,null,List.of(segment)),
+            new Candidate("second","Bad second evidence",null,null,List.of(UUID.randomUUID())));
+        assertThatThrownBy(() -> accept(batch(list)))
+            .isInstanceOf(DataIntegrityViolationException.class);
+        assertThat(receiptCount()).isZero();
+        assertThat(proposalCount()).isZero();
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM action_item_history WHERE action_item_id IN
+                (SELECT id FROM action_items WHERE processing_job_id=?)
+            """,Integer.class,job)).isZero();
+        assertThat(jdbc.queryForObject(
+            "SELECT status FROM processing_stage_runs WHERE id=?",String.class,stage))
+            .isEqualTo("RUNNING");
+    }
+
+    @Test
+    void liveMediaClaimAndPinnedSnapshotAreBothRequiredBeforeDurableHandoff() {
+        SourceReference wrongHash=new SourceReference(snapshot,transcript,3,"f".repeat(64));
+        assertThatThrownBy(() -> handoff.handoff(claim(),wrongHash,candidates()))
+            .isInstanceOf(IllegalArgumentException.class);
+        StageClaim stolen=new StageClaim(stage,UUID.randomUUID());
+        assertThatThrownBy(() -> handoff.handoff(stolen,source,candidates()))
+            .isInstanceOf(RuntimeException.class);
+        assertThat(receiptCount()).isZero();
+        assertThat(proposalCount()).isZero();
+        assertThat(jdbc.queryForObject(
+            "SELECT status FROM processing_stage_runs WHERE id=?",String.class,stage))
+            .isEqualTo("RUNNING");
+    }
+
+    @Test
+    void notReadyTranscriptCannotBeUsedForActionItemExtraction() {
+        jdbc.update("UPDATE transcripts SET status='PROCESSING' WHERE id=?",transcript);
+        assertThatThrownBy(() -> handoff.handoff(claim(),source,candidates()))
+            .isInstanceOf(IllegalArgumentException.class);
+        assertThat(receiptCount()).isZero();
+        assertThat(proposalCount()).isZero();
+        assertThat(jdbc.queryForObject(
+            "SELECT status FROM processing_stage_runs WHERE id=?",String.class,stage))
+            .isEqualTo("RUNNING");
+    }
+
 }
