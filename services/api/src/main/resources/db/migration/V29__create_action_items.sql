@@ -219,7 +219,11 @@ DECLARE
     expected_count INTEGER;
     actual_count INTEGER;
 BEGIN
-    batch_id := CASE WHEN TG_TABLE_NAME='action_items' THEN NEW.proposal_batch_id ELSE NEW.id END;
+    IF TG_TABLE_NAME = 'action_items' THEN
+        batch_id := NEW.proposal_batch_id;
+    ELSE
+        batch_id := NEW.id;
+    END IF;
     IF batch_id IS NULL THEN
         RETURN NULL;
     END IF;
