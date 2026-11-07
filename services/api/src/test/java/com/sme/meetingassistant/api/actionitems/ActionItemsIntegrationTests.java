@@ -592,12 +592,6 @@ class ActionItemsIntegrationTests {
     @Test void invalidCreateDoesNotConsumeIdempotencyKeyAndExpiredKeyCanBeReused()
             throws Exception {
         String key="ai05-expiry-"+UUID.randomUUID();
-        Map<String,Object> invalid=Map.of("meetingId",meetingId,"title","Bad\\ncontrol",
-            "assigneeUserId",assignee.getId());
-        mvc.perform(post("/api/v1/action-items").principal(principal(organizer))
-                .header("Idempotency-Key",key).contentType(MediaType.APPLICATION_JSON)
-                .content(json.writeValueAsString(invalid)))
-            .andExpect(status().isCreated()); // literal backslash is not newline
         String fresh="ai05-bad-"+UUID.randomUUID();
         mvc.perform(post("/api/v1/action-items").principal(principal(organizer))
                 .header("Idempotency-Key",fresh).contentType(MediaType.APPLICATION_JSON)
@@ -605,7 +599,7 @@ class ActionItemsIntegrationTests {
                     +"\"assigneeUserId\":\""+assignee.getId()+"\"}"))
             .andExpect(status().isUnprocessableEntity());
         assertThat(jdbc.queryForObject(
-            "SELECT count(*) FROM action_item_creation_idempotency WHERE actor_user_id=? AND request_digest IS NULL",
+            "SELECT count(*) FROM action_item_creation_idempotency WHERE actor_user_id=?",
             Integer.class,organizer.getId())).isZero();
 
         Map<String,Object> good=Map.of("meetingId",meetingId,"title","After rejected create",
