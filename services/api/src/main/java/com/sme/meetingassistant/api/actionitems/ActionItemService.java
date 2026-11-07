@@ -58,44 +58,17 @@ public class ActionItemService implements ActionItemProposalPort {
         return byId(id);
     }
 
-    /** AI output is persisted as a proposal and can never create assigned work directly. */
+    /**
+     * AI-02 safety gate: the legacy item-at-a-time API carries no trusted
+     * stage claim, immutable source snapshot or batch receipt identity.
+     * Never invent those values to satisfy a database constraint.
+     * AI-03 will replace this port with MI-10 ActionItemProposalSink.
+     */
     @Override
     @Transactional
     public ActionItemView propose(ActionItemProposal proposal) {
-        validateProposal(proposal);
-        requireActiveAssigneeWhenPresent(proposal.suggestedAssigneeUserId());
-        for (UUID segmentId : proposal.transcriptSegmentIds()) {
-            Integer matches = jdbc.queryForObject("""
-                SELECT count(*) FROM transcript_segments segment
-                JOIN transcripts transcript ON transcript.id=segment.transcript_id
-                WHERE segment.id=? AND transcript.meeting_id=? AND transcript.processing_job_id=?
-                  AND transcript.is_current=true AND transcript.status IN ('READY','READY_WITH_WARNINGS')
-                """, Integer.class, segmentId, proposal.meetingId(), proposal.processingJobId());
-            if (matches == null || matches != 1) throw invalid();
-        }
-
-        UUID existingId = findBySourceKey(proposal.processingJobId(), proposal.sourceItemKey());
-        if (existingId != null) return replayOrConflict(existingId, proposal);
-
-        UUID id = UUID.randomUUID();
-        int inserted = jdbc.update("""
-            INSERT INTO action_items(id,meeting_id,title,details,status,assignee_user_id,due_date,
-                source_type,processing_job_id,source_item_key)
-            VALUES (?,?,?,?,'PROPOSED',?,?,'AI_EXTRACTED',?,?)
-            ON CONFLICT (processing_job_id,source_item_key) WHERE source_type='AI_EXTRACTED' DO NOTHING
-            """, id, proposal.meetingId(), requiredTitle(proposal.title()), optional(proposal.details()),
-            proposal.suggestedAssigneeUserId(), proposal.dueDate(), proposal.processingJobId(), proposal.sourceItemKey());
-        if (inserted == 0) {
-            existingId = findBySourceKey(proposal.processingJobId(), proposal.sourceItemKey());
-            if (existingId == null) throw new ResponseStatusException(HttpStatus.CONFLICT);
-            return replayOrConflict(existingId, proposal);
-        }
-
-        for (UUID segmentId : proposal.transcriptSegmentIds()) {
-            jdbc.update("INSERT INTO action_item_evidence(action_item_id,transcript_segment_id) VALUES (?,?)", id, segmentId);
-        }
-        history(id, "STATUS", null, "PROPOSED", null);
-        return byId(id);
+        throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+            "Legacy proposal port is disabled; canonical MI-10 batch acceptance is required.");
     }
 
     @Transactional(readOnly = true)
@@ -261,39 +234,6 @@ public class ActionItemService implements ActionItemProposalPort {
         return byId(id);
     }
 
-    private ActionItemView replayOrConflict(UUID id, ActionItemProposal proposal) {
-        ActionItemView existing = byId(id);
-        List<UUID> evidence = jdbc.query("""
-            SELECT transcript_segment_id FROM action_item_evidence
-             WHERE action_item_id=? ORDER BY transcript_segment_id
-            """, (rs, row) -> rs.getObject(1, UUID.class), id);
-        List<UUID> proposedEvidence = proposal.transcriptSegmentIds().stream().sorted().toList();
-        if (!existing.meetingId().equals(proposal.meetingId())
-                || !existing.title().equals(requiredTitle(proposal.title()))
-                || !Objects.equals(existing.details(), optional(proposal.details()))
-                || !Objects.equals(existing.assigneeUserId(), proposal.suggestedAssigneeUserId())
-                || !Objects.equals(existing.dueDate(), proposal.dueDate())
-                || !evidence.equals(proposedEvidence)) {
-            throw conflict();
-        }
-        return existing;
-    }
-
-    private void validateProposal(ActionItemProposal proposal) {
-        if (proposal == null || proposal.meetingId() == null || proposal.processingJobId() == null
-                || proposal.sourceItemKey() == null || proposal.sourceItemKey().isBlank()
-                || proposal.sourceItemKey().length() > 128 || proposal.transcriptSegmentIds() == null
-                || proposal.transcriptSegmentIds().isEmpty() || proposal.transcriptSegmentIds().stream().anyMatch(Objects::isNull)
-                || proposal.transcriptSegmentIds().stream().distinct().count() != proposal.transcriptSegmentIds().size()) {
-            throw invalid();
-        }
-        requiredTitle(proposal.title());
-        Integer jobMatches = jdbc.queryForObject("""
-            SELECT count(*) FROM processing_jobs WHERE id=? AND meeting_id=?
-            """, Integer.class, proposal.processingJobId(), proposal.meetingId());
-        if (jobMatches == null || jobMatches != 1) throw invalid();
-    }
-
     private static boolean allowed(ActionItemStatus from, ActionItemStatus to) {
         return switch (from) {
             case PROPOSED -> to == ActionItemStatus.OPEN || to == ActionItemStatus.CANCELLED;
@@ -306,15 +246,6 @@ public class ActionItemService implements ActionItemProposalPort {
 
     private void requireActiveAssignee(UUID assignee) {
         if (assignee == null || !meetingAccess.isActiveAssignee(assignee)) throw invalid();
-    }
-    private void requireActiveAssigneeWhenPresent(UUID assignee) {
-        if (assignee != null) requireActiveAssignee(assignee);
-    }
-    private UUID findBySourceKey(UUID jobId, String sourceKey) {
-        List<UUID> ids = jdbc.query("""
-            SELECT id FROM action_items WHERE processing_job_id=? AND source_item_key=?
-            """, (rs, row) -> rs.getObject(1, UUID.class), jobId, sourceKey);
-        return ids.isEmpty() ? null : ids.getFirst();
     }
     private ActionItemView byId(UUID id) {
         List<ActionItemView> rows = jdbc.query("""
