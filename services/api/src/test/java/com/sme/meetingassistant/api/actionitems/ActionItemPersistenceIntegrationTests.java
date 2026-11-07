@@ -303,6 +303,36 @@ class ActionItemPersistenceIntegrationTests {
             .isInstanceOf(DataIntegrityViolationException.class);
     }
 
+    @Test
+    void databaseRefusesInvalidDirectSqlStateTransitionEvenWhenVersionIncrements() {
+        UUID item = UUID.randomUUID();
+        jdbc.update("""
+            INSERT INTO action_items(id,meeting_id,title,status,source_type,assignee_user_id,created_by_user_id)
+            VALUES (?,?,'Direct SQL action','OPEN','MANUAL',?,?)
+            """,item,meeting,actor,actor);
+        assertThatThrownBy(() -> jdbc.update("""
+            UPDATE action_items SET status='PROPOSED', version=version+1 WHERE id=?
+            """,item)).isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void databaseRejectsDoneToCancelledWithoutReopenAndValidLifecycleHistoryRemainsAppendOnly() {
+        UUID item = UUID.randomUUID();
+        jdbc.update("""
+            INSERT INTO action_items(id,meeting_id,title,status,source_type,assignee_user_id,created_by_user_id)
+            VALUES (?,?,'Terminal state action','OPEN','MANUAL',?,?)
+            """,item,meeting,actor,actor);
+        jdbc.update("""
+            UPDATE action_items SET status='DONE',completed_by_user_id=?,completed_at=CURRENT_TIMESTAMP,
+                version=version+1 WHERE id=?
+            """,actor,item);
+        assertThatThrownBy(() -> jdbc.update("""
+            UPDATE action_items SET status='CANCELLED',completed_by_user_id=NULL,completed_at=NULL,
+                cancelled_by_user_id=?,cancelled_at=CURRENT_TIMESTAMP,version=version+1
+             WHERE id=?
+            """,actor,item)).isInstanceOf(DataIntegrityViolationException.class);
+    }
+
     private void insertStage(UUID id, String code, int attempt) {
         jdbc.update("""
             INSERT INTO processing_stage_runs(id,processing_job_id,stage_code,attempt_number,status,
