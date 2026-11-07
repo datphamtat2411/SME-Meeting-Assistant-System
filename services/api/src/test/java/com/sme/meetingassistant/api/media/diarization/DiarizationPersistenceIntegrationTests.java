@@ -275,12 +275,13 @@ class DiarizationPersistenceIntegrationTests extends DiarizationIntegrationFixtu
         var before=reader.read(OffsetDateTime.now());
         claim();var cmd=upload(artifact());completion.complete(job,cmd);
         completion.complete(job,cmd);
-        var after=new DiarizationMetrics(jdbc,new SimpleMeterRegistry()).read(OffsetDateTime.now());
+        var end=OffsetDateTime.now();
+        var after=new DiarizationMetrics(jdbc,new SimpleMeterRegistry()).read(end);
         assertThat(after.accepted()).isEqualTo(before.accepted()+1);
         assertThat(after.speakerSum()).isEqualTo(before.speakerSum()+2);
         assertThat(after.unknownSum()).isEqualTo(before.unknownSum()+1);
         assertThat(after.measurements()).isEqualTo(before.measurements()+1);
-        assertThat(new DiarizationMetrics(jdbc,new SimpleMeterRegistry()).read(OffsetDateTime.now())).isEqualTo(after);
+        assertThat(new DiarizationMetrics(jdbc,new SimpleMeterRegistry()).read(end)).isEqualTo(after);
         assertThat(reader.read(OffsetDateTime.now().plusDays(2)).accepted()).isZero();
     }
 
@@ -290,9 +291,9 @@ class DiarizationPersistenceIntegrationTests extends DiarizationIntegrationFixtu
             .isInstanceOf(DataIntegrityViolationException.class);
         var registry=new SimpleMeterRegistry();new DiarizationMetrics(jdbc,registry);
         assertThat(registry.getMeters()).isNotEmpty().allSatisfy(meter->{
-            assertThat(meter.getId().getName()).startsWith("diarization.window.");
+            assertThat(meter.getId().getName()).isIn(DiarizationMetrics.EXPORTED_NAMES);
             assertThat(meter.getId().getTags()).allSatisfy(tag->{
-                assertThat(tag.getKey()).isIn("outcome","le","le_seconds");
+                assertThat(tag.getKey()).isIn("outcome","le","le_seconds","state");
                 assertThat(tag.getValue()).doesNotContain(job.toString(),meeting.toString(),transcript.toString());
             });
         });

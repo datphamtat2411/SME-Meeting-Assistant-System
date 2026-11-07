@@ -4,13 +4,18 @@ import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.time.OffsetDateTime;
 import java.util.Map;
+import java.util.Set;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /** Bounded, database-derived rolling-window gauges; never count replayable events. */
 @Component
 public class DiarizationMetrics {
     private final JdbcTemplate jdbc;
+    private final TransactionTemplate snapshotTransaction;
     private volatile Snapshot cached;
     private volatile long refreshedAt;
     private boolean attempted;
@@ -20,10 +25,31 @@ public class DiarizationMetrics {
             long measurements,long speakerSum,long unknownSum,long speakerZero,long speakerOne,
             long speakerTwo,long speakerFive,long speakerTen,long unknownZero,long unknownOne,
             long unknownFive,long unknownTen,long unknownHundred,long latency30,long latency120,
-            long latency300,long latency900,long latency3600) { }
+            long latency300,long latency900,long latency3600,long leaseExpirations,Backlog backlog) { }
+
+    public record Backlog(long outstanding,long actionable,long stale,long superseded,double oldestAgeSeconds) { }
+    public static final Set<String> EXPORTED_NAMES=Set.of(
+        "diarization.window.outcomes","diarization.window.retries","diarization.window.stage.duration.count",
+        "diarization.window.stage.duration.seconds","diarization.window.stage.duration.bucket",
+        "diarization.window.accepted.measurements","diarization.window.speakers.sum","diarization.window.speakers.bucket",
+        "diarization.window.unknown.assignments.sum","diarization.window.unknown.assignments.bucket",
+        "diarization.window.lease.expirations","diarization.verified.only.outstanding",
+        "diarization.verified.only.count","diarization.verified.only.oldest.age.seconds","diarization.metrics.aggregation.healthy");
 
     public DiarizationMetrics(JdbcTemplate jdbc, MeterRegistry registry) {
-        this.jdbc=jdbc;
+        this.jdbc=new JdbcTemplate(java.util.Objects.requireNonNull(jdbc.getDataSource()));
+        this.jdbc.setQueryTimeout(5);
+        snapshotTransaction=new TransactionTemplate(new DataSourceTransactionManager(jdbc.getDataSource()));
+        snapshotTransaction.setReadOnly(true);
+        snapshotTransaction.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
+        snapshotTransaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        gauge(registry,"diarization.window.lease.expirations",null,null,s->s.leaseExpirations());
+        gauge(registry,"diarization.verified.only.outstanding",null,null,s->s.backlog().outstanding());
+        gauge(registry,"diarization.verified.only.count","state","actionable",s->s.backlog().actionable());
+        gauge(registry,"diarization.verified.only.count","state","stale",s->s.backlog().stale());
+        gauge(registry,"diarization.verified.only.count","state","superseded",s->s.backlog().superseded());
+        gauge(registry,"diarization.verified.only.oldest.age.seconds",null,null,s->s.backlog().oldestAgeSeconds());
+        Gauge.builder("diarization.metrics.aggregation.healthy",this,m->m.current()==null?0:1).register(registry);
         gauge(registry,"diarization.window.outcomes", "outcome", "accepted", s->s.accepted());
         gauge(registry,"diarization.window.outcomes", "outcome", "failed", s->s.failed());
         gauge(registry,"diarization.window.retries", null, null, s->s.retries());
@@ -68,18 +94,24 @@ public class DiarizationMetrics {
         if(!attempted || now-refreshedAt>=60_000_000_000L) {
             attempted=true;
             refreshedAt=now;
-            try { cached=read(OffsetDateTime.now()); }
-            catch (org.springframework.dao.DataAccessException failure) { cached=null; }
+            try { cached=read(null); }
+            catch (org.springframework.dao.DataAccessException | org.springframework.transaction.TransactionException failure) { cached=null; }
         }
         return cached;
     }
 
     /** A 24-hour half-open window; no identifiers, text or arbitrary SQL input. */
     Snapshot read(OffsetDateTime end) {
+        return snapshotTransaction.execute(tx->readSnapshot(end==null
+            ?jdbc.queryForObject("SELECT transaction_timestamp()",OffsetDateTime.class):end));
+    }
+
+    private Snapshot readSnapshot(OffsetDateTime end) {
         OffsetDateTime start=end.minusHours(24);
         Map<String,Object> outcomes=jdbc.queryForMap("""
             SELECT count(*) FILTER (WHERE outcome='RESULT_ACCEPTED') AS accepted,
-                   count(*) FILTER (WHERE outcome='FAILURE_RECORDED') AS failed
+                   count(*) FILTER (WHERE outcome='FAILURE_RECORDED') AS failed,
+                   count(*) FILTER (WHERE error_code='STAGE_LEASE_EXPIRED') AS expired
             FROM diarization_worker_receipts WHERE recorded_at>=? AND recorded_at<?
             """,start,end);
         Map<String,Object> stages=jdbc.queryForMap("""
@@ -109,10 +141,21 @@ public class DiarizationMetrics {
               count(*) FILTER (WHERE unknown_assignment_count<=100) AS u100
             FROM diarization_acceptance_measurements WHERE recorded_at>=? AND recorded_at<?
             """,start,end);
+        Map<String,Object> backlog=jdbc.queryForMap("""
+            SELECT count(*) AS outstanding,
+                count(*) FILTER (WHERE state='actionable') AS actionable,
+                count(*) FILTER (WHERE state='stale') AS stale,
+                count(*) FILTER (WHERE state='superseded') AS superseded,
+                coalesce(greatest(0,extract(epoch FROM CAST(? AS timestamptz)-min(verified_at))),0) AS age
+            FROM (SELECT verified_at, CASE WHEN superseded THEN 'superseded'
+                WHEN current_binding AND lease_expires_at>? THEN 'actionable' ELSE 'stale' END AS state
+                FROM diarization_verified_only_backlog) classified
+            """,end,end);
         return new Snapshot(n(outcomes,"accepted"),n(outcomes,"failed"),retries,n(stages,"success_count"),d(stages,"success_seconds"),
             n(stages,"failed_count"),d(stages,"failed_seconds"),n(m,"n"),n(m,"speakers"),n(m,"unknowns"),
             n(m,"s0"),n(m,"s1"),n(m,"s2"),n(m,"s5"),n(m,"s10"),n(m,"u0"),n(m,"u1"),n(m,"u5"),n(m,"u10"),n(m,"u100"),
-            n(stages,"l30"),n(stages,"l120"),n(stages,"l300"),n(stages,"l900"),n(stages,"l3600"));
+            n(stages,"l30"),n(stages,"l120"),n(stages,"l300"),n(stages,"l900"),n(stages,"l3600"),n(outcomes,"expired"),
+            new Backlog(n(backlog,"outstanding"),n(backlog,"actionable"),n(backlog,"stale"),n(backlog,"superseded"),d(backlog,"age")));
     }
     private static long n(Map<String,Object> row,String name) { return ((Number)row.get(name)).longValue(); }
     private static double d(Map<String,Object> row,String name) { return ((Number)row.get(name)).doubleValue(); }

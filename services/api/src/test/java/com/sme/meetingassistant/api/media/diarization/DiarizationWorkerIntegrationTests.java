@@ -198,7 +198,7 @@ class DiarizationWorkerIntegrationTests extends DiarizationIntegrationFixture {
             jdbc.update("INSERT INTO "+schema+".processing_jobs(id,meeting_id,source_media_id,requested_by_user_id,status) VALUES (?,?,?,?,'PENDING')",job,meeting,media,actor);
             var upgraded=org.flywaydb.core.Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema)
                 .locations("classpath:db/migration").load();
-            assertThat(upgraded.migrate().migrationsExecuted).isEqualTo(2);upgraded.validate();
+            assertThat(upgraded.migrate().migrationsExecuted).isEqualTo(3);upgraded.validate();
             assertThat(jdbc.queryForObject("SELECT diarization_planned FROM "+schema+".processing_jobs WHERE id=?",Boolean.class,job)).isFalse();
             assertThat(jdbc.queryForObject("SELECT count(*) FROM information_schema.tables WHERE table_schema=? AND table_name LIKE 'diarization_worker_%'",Long.class,schema)).isEqualTo(4);
         } finally {jdbc.execute("DROP SCHEMA IF EXISTS "+schema+" CASCADE");}

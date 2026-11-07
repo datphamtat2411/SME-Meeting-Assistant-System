@@ -26,6 +26,11 @@ public final class PrivateConnector {
     }
 
     public static Connector configure(TomcatServletWebServerFactory factory, Settings settings) {
+        return configure(factory, settings, false);
+    }
+
+    public static Connector configure(TomcatServletWebServerFactory factory, Settings settings, boolean monitoring) {
+        if (monitoring && !settings.enabled()) throw new IllegalStateException("Private monitoring requires mTLS");
         Connector connector = null;
         if (settings.enabled()) {
             try {
@@ -55,7 +60,7 @@ public final class PrivateConnector {
             } catch (Exception e) { throw new IllegalStateException("Invalid private mTLS connector configuration"); }
         }
         // Always installed, even with the private connector disabled.
-        factory.addEngineValves(new BoundaryValve(connector));
+        factory.addEngineValves(new BoundaryValve(connector, monitoring));
         // A RequestDispatcher forward/include does not revisit the engine pipeline.
         // Guard every servlet dispatch as well, using only the Valve's in-process attestation.
         factory.addInitializers(context -> context.addFilter("internal-dispatch-boundary", (request, response, chain) -> {
@@ -76,6 +81,7 @@ public final class PrivateConnector {
         try {
             if (!attestation.principal().equals(ServiceIdentity.from(attestation.leaf()))) return false;
             return WorkerOperations.allowed(attestation.principal(), WorkerOperations.operation(request.getMethod(), path))
+                || monitoringAuthorized(request)
                 || ("urn:sme:service:mi-worker".equals(attestation.principal())
                     && path.startsWith("/internal/api/v1/meeting-intelligence/"));
         } catch (Exception e) { return false; }
@@ -91,6 +97,21 @@ public final class PrivateConnector {
         } catch (Exception e) { return false; }
     }
 
+    public static final String METRICS_PATH = "/internal/monitoring/prometheus";
+
+    /** No worker permissions, headers, JWTs or browser sessions establish this identity. */
+    public static boolean monitoringAuthorized(HttpServletRequest request) {
+        if (!(request.getAttribute(ATTESTATION) instanceof Attestation attestation)) return false;
+        try {
+            return attestation.principal().equals(ServiceIdentity.from(attestation.leaf()))
+                && monitorOperation(attestation.principal(), request.getMethod(), request.getServletPath());
+        } catch (Exception e) { return false; }
+    }
+
+    private static boolean monitorOperation(String principal, String method, String path) {
+        return "urn:sme:service:monitoring".equals(principal) && "GET".equals(method) && METRICS_PATH.equals(path);
+    }
+
     private static void deny(jakarta.servlet.http.HttpServletResponse response, int status, String code) throws IOException {
         response.setStatus(status); response.setContentType("application/json");
         response.setHeader("Cache-Control", "no-store");
@@ -101,7 +122,8 @@ public final class PrivateConnector {
 
     private static final class BoundaryValve extends ValveBase {
         private final Connector privateConnector;
-        BoundaryValve(Connector connector) { super(true); privateConnector = connector; }
+        private final boolean monitoring;
+        BoundaryValve(Connector connector, boolean monitoring) { super(true); privateConnector = connector; this.monitoring = monitoring; }
 
         @Override public void invoke(Request request, Response response) throws IOException, ServletException {
             request.removeAttribute(ATTESTATION);
@@ -109,6 +131,10 @@ public final class PrivateConnector {
             String path = request.getDecodedRequestURI();
             String context = request.getContextPath();
             if (!context.isEmpty()) path = path.substring(context.length());
+            if (path.equals("/actuator/prometheus") || path.startsWith("/actuator/prometheus/")
+                    || path.equals("/actuator/metrics") || path.startsWith("/actuator/metrics/")) {
+                deny(response, 403, "AUTHZ_FORBIDDEN"); return;
+            }
             boolean internal = path.equals("/internal") || path.startsWith("/internal/");
             boolean privateRequest = privateConnector != null && request.getConnector() == privateConnector;
             if (internal && !privateRequest || privateRequest && !internal) {
@@ -130,7 +156,8 @@ public final class PrivateConnector {
                 boolean worker = WorkerOperations.allowed(principal, WorkerOperations.operation(request.getMethod(), path));
                 boolean mi = "urn:sme:service:mi-worker".equals(principal)
                     && path.startsWith("/internal/api/v1/meeting-intelligence/");
-                if (!worker && !mi) { deny(response, 403, "AUTHZ_FORBIDDEN"); return; }
+                boolean monitor = monitoring && monitorOperation(principal, request.getMethod(), path);
+                if (!worker && !mi && !monitor) { deny(response, 403, "AUTHZ_FORBIDDEN"); return; }
                 request.setAttribute(ATTESTATION, new Attestation(principal, leaf));
             }
             getNext().invoke(request, response);
