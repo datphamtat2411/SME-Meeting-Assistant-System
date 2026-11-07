@@ -4,7 +4,7 @@
 -- Forward-only repair of the V33 event trigger's unqualified lookups:
 -- CREATE OR REPLACE keeps V33 and its Flyway checksum unchanged.
 CREATE OR REPLACE FUNCTION ai_validate_assignment_event() RETURNS TRIGGER
-LANGUAGE plpgsql AS $
+LANGUAGE plpgsql AS $$
 DECLARE
     item_row RECORD;
     history_row RECORD;
@@ -69,7 +69,7 @@ BEGIN
 
     RETURN NEW;
 END;
-$;
+$$;
 
 CREATE TABLE action_item_assignment_revocations (
     event_id UUID PRIMARY KEY REFERENCES action_item_assignment_events(id) ON DELETE RESTRICT,
