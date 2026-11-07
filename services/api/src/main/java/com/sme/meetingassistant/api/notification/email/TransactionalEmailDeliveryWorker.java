@@ -81,7 +81,7 @@ public final class TransactionalEmailDeliveryWorker {
                             AND updated_at < clock_timestamp() - INTERVAL '5 minutes'))
                  ORDER BY created_at,id LIMIT 1 FOR UPDATE SKIP LOCKED
             ) RETURNING id,notification_type,related_entity_type,related_entity_id,
-                        recipient_user_id,recipient_email,attempt_count
+                        recipient_user_id,recipient_email,dedupe_key,attempt_count
             """, new MapSqlParameterSource("supported", supported),
             (rs, index) -> new Delivery(
                 rs.getObject("id", UUID.class),
@@ -90,6 +90,7 @@ public final class TransactionalEmailDeliveryWorker {
                 rs.getObject("related_entity_id", UUID.class),
                 rs.getObject("recipient_user_id", UUID.class),
                 rs.getString("recipient_email"),
+                rs.getString("dedupe_key"),
                 rs.getInt("attempt_count")));
         if (claimed.isEmpty()) return false;
 
@@ -100,7 +101,8 @@ public final class TransactionalEmailDeliveryWorker {
             if (!claimStillOwned(job)) return true;
             var prepared = handlers.get(job.type()).prepare(
                 new TransactionalEmailHandler.DeliveryContext(job.contextId(),
-                    job.relatedEntityType(), job.recipientUserId(), job.recipientEmail()));
+                    job.relatedEntityType(), job.recipientUserId(), job.recipientEmail(),
+                    job.dedupeKey()));
             if (prepared.content().isEmpty()) {
                 markSkipped(job, prepared.skipReason());
                 return true;
@@ -201,5 +203,6 @@ public final class TransactionalEmailDeliveryWorker {
     }
 
     private record Delivery(UUID id, String type, String relatedEntityType, UUID contextId,
-                            UUID recipientUserId, String recipientEmail, int attempts) { }
+                            UUID recipientUserId, String recipientEmail, String dedupeKey,
+                            int attempts) { }
 }

@@ -145,6 +145,117 @@ public class MeetingNotificationService {
             enabled ? null : "USER_PREFERENCE_DISABLED", key);
     }
 
+    /**
+     * Every optional Meeting email must be authenticated against its durable
+     * recipient ID, exact currently approved address, and current preferences
+     * before the shared worker hands content to SMTP.
+     *
+     * Unlike legacy compose(id,email), this cannot accidentally authorize an
+     * old intent because another account later receives the same email.
+     */
+    @Transactional(readOnly = true)
+    public TransactionalEmailHandler.Prepared prepareMeeting(
+            TransactionalEmailHandler.DeliveryContext delivery, MeetingStatus status,
+            String notificationType) {
+        String rejection = ineligibleRecipient(delivery, "MEETING");
+        if (rejection != null) return TransactionalEmailHandler.Prepared.skipped(rejection);
+        if (!currentScheduleNotice(delivery, notificationType)) {
+            return TransactionalEmailHandler.Prepared.skipped("SUPERSEDED_BY_MEETING_CHANGE");
+        }
+        return compose(delivery.relatedEntityId(), delivery.recipientEmail(), status, notificationType)
+                .map(TransactionalEmailHandler.Prepared::ready)
+                .orElseGet(() -> TransactionalEmailHandler.Prepared.skipped(
+                    "MEETING_NO_LONGER_ELIGIBLE"));
+    }
+
+    @Transactional(readOnly = true)
+    public TransactionalEmailHandler.Prepared prepareParticipant(
+            TransactionalEmailHandler.DeliveryContext delivery, boolean addition) {
+        String rejection = ineligibleRecipient(delivery, "MEETING_PARTICIPANT");
+        if (rejection != null) return TransactionalEmailHandler.Prepared.skipped(rejection);
+        var membership = participants.findById(delivery.relatedEntityId()).orElse(null);
+        if (membership == null || !delivery.recipientUserId().equals(membership.getUserId())) {
+            return TransactionalEmailHandler.Prepared.skipped("MEETING_NO_LONGER_ELIGIBLE");
+        }
+        var content = addition
+                ? composeParticipantAdded(delivery.relatedEntityId(), delivery.recipientEmail())
+                : composeParticipantRemoved(delivery.relatedEntityId(), delivery.recipientEmail());
+        return content.map(TransactionalEmailHandler.Prepared::ready)
+                .orElseGet(() -> TransactionalEmailHandler.Prepared.skipped(
+                    "MEETING_NO_LONGER_ELIGIBLE"));
+    }
+
+    private String ineligibleRecipient(TransactionalEmailHandler.DeliveryContext delivery,
+            String expectedEntityType) {
+        if (delivery == null || delivery.relatedEntityId() == null
+                || delivery.recipientUserId() == null || delivery.recipientEmail() == null
+                || !expectedEntityType.equals(delivery.relatedEntityType())) {
+            return "MEETING_NO_LONGER_ELIGIBLE";
+        }
+        var active = users.activeRecipient(delivery.recipientUserId()).orElse(null);
+        if (active == null || !delivery.recipientEmail().equals(active.email())) {
+            return "RECIPIENT_NO_LONGER_ELIGIBLE";
+        }
+        if (!preferences.meetingEmailEnabled(delivery.recipientUserId())) {
+            return "USER_PREFERENCE_DISABLED";
+        }
+        return null;
+    }
+
+    /**
+     * A normal metadata-only meeting edit increments the aggregate's version,
+     * but MUST NOT invalidate a still-useful scheduled email. Accordingly we
+     * compare the event-version encoded in durable *notification intents*,
+     * rather than requiring meeting.version to equal the old event version.
+     *
+     * A later material reschedule/cancel always records a newer schedule
+     * intent, including when the recipient has opted out (SKIPPED). This
+     * detects even an older SENDING attempt that pending supersession could
+     * not rewrite. Malformed/foreign keys fail closed.
+     */
+    private boolean currentScheduleNotice(TransactionalEmailHandler.DeliveryContext delivery,
+            String notificationType) {
+        Long currentVersion = scheduleIntentVersion(delivery.dedupeKey(),
+                delivery.relatedEntityId(), notificationType, delivery.recipientUserId());
+        if (currentVersion == null) return false;
+        List<Map.Entry<String,String>> recorded = jdbc.query("""
+            SELECT notification_type,dedupe_key FROM email_deliveries
+             WHERE related_entity_type='MEETING' AND related_entity_id=?
+               AND recipient_user_id=?
+               AND notification_type IN (
+                   'MEETING_SCHEDULED','MEETING_RESCHEDULED','MEETING_CANCELLED')
+            """, (rs, row) -> Map.entry(rs.getString(1), rs.getString(2)),
+                delivery.relatedEntityId(), delivery.recipientUserId());
+        if (recorded.isEmpty()) return false;
+        boolean foundSelf = false;
+        for (var entry : recorded) {
+            Long candidateVersion = scheduleIntentVersion(entry.getValue(),
+                    delivery.relatedEntityId(), entry.getKey(), delivery.recipientUserId());
+            if (candidateVersion == null || candidateVersion > currentVersion) return false;
+            if (delivery.dedupeKey().equals(entry.getValue())
+                    && notificationType.equals(entry.getKey())) foundSelf = true;
+        }
+        return foundSelf;
+    }
+
+    private static Long scheduleIntentVersion(String key, UUID meetingId, String type,
+            UUID userId) {
+        if (key == null || meetingId == null || userId == null
+                || !Set.of("MEETING_SCHEDULED", "MEETING_RESCHEDULED",
+                    "MEETING_CANCELLED").contains(type)) return null;
+        String prefix = "meeting:" + meetingId + ":" + type + ":";
+        String suffix = ":" + userId;
+        if (!key.startsWith(prefix) || !key.endsWith(suffix)
+                || key.length() <= prefix.length() + suffix.length()) return null;
+        try {
+            long version = Long.parseLong(
+                key.substring(prefix.length(), key.length() - suffix.length()));
+            return version < 0 ? null : version;
+        } catch (NumberFormatException bad) {
+            return null;
+        }
+    }
+
     @Transactional(readOnly = true)
     public Optional<TransactionalEmailHandler.Content> composeParticipantAdded(UUID membershipId,
             String email) {

@@ -20,7 +20,13 @@ public interface TransactionalEmailHandler {
      * recipient user ID and entity kind, without changing Meeting/Account handlers.
      */
     record DeliveryContext(UUID relatedEntityId, String relatedEntityType,
-                           UUID recipientUserId, String recipientEmail) {}
+                           UUID recipientUserId, String recipientEmail, String dedupeKey) {
+        /** Keep compatible with existing purpose-specific callers. */
+        public DeliveryContext(UUID relatedEntityId, String relatedEntityType,
+                UUID recipientUserId, String recipientEmail) {
+            this(relatedEntityId, relatedEntityType, recipientUserId, recipientEmail, null);
+        }
+    }
 
     record Prepared(Optional<Content> content, String skipReason) {
         public Prepared {

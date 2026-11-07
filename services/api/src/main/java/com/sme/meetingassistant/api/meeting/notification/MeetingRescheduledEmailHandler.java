@@ -17,4 +17,7 @@ public class MeetingRescheduledEmailHandler implements TransactionalEmailHandler
     @Override public Optional<Content> compose(UUID meetingId, String recipientEmail) {
         return notifications.compose(meetingId,recipientEmail,MeetingStatus.SCHEDULED,"MEETING_RESCHEDULED");
     }
+    @Override public Prepared prepare(DeliveryContext delivery) {
+        return notifications.prepareMeeting(delivery, MeetingStatus.SCHEDULED, "MEETING_RESCHEDULED");
+    }
 }
