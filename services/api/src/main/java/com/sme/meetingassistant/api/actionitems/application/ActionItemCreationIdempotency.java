@@ -80,8 +80,8 @@ public class ActionItemCreationIdempotency {
 
     private String fingerprint(CreateActionItemRequest request) {
         List<Object> fields = Arrays.asList(
-            request.meetingId().toString(), request.title().trim(),
-            request.details()==null || request.details().isBlank() ? null : request.details().trim(),
+            request.meetingId().toString(), request.title().strip(),
+            request.details()==null || request.details().isBlank() ? null : request.details().strip(),
             request.assigneeUserId().toString(),
             request.dueDate()==null ? null : request.dueDate().toString());
         return sha256(json.writeValueAsString(fields));

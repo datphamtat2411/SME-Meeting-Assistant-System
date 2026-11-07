@@ -220,7 +220,7 @@ public class ActionItemService {
     @Transactional
     public ActionItemView update(UUID id, UUID actorId, String ifMatch, PatchActionItemRequest patch) {
         meetingAccess.requireCurrentActiveActor(actorId);
-        ActionItemView old = byId(id);
+        ActionItemView old = byIdForUpdate(id);
         meetingAccess.requireManageActionItems(old.meetingId(), actorId);
         ActionItemEtags.requireMatch(old, ifMatch);
         if (patch == null) throw invalid();
@@ -319,6 +319,16 @@ public class ActionItemService {
     private void requireActiveAssignee(UUID assignee) {
         if (assignee == null || !meetingAccess.isActiveAssignee(assignee)) throw invalid();
     }
+    /** Serialize even an effective no-op with a competing conditional writer. */
+    private ActionItemView byIdForUpdate(UUID id) {
+        List<ActionItemView> rows = jdbc.query("""
+            SELECT ai.*, (ai.due_date<? AND ai.status NOT IN ('DONE','CANCELLED')) AS overdue
+              FROM action_items ai WHERE ai.id=? FOR UPDATE
+            """, ROW, today(), id);
+        if (rows.isEmpty()) throw notFound();
+        return rows.getFirst();
+    }
+
     private ActionItemView byId(UUID id) {
         List<ActionItemView> rows = jdbc.query("""
             SELECT ai.*, (ai.due_date<? AND ai.status NOT IN ('DONE','CANCELLED')) AS overdue
