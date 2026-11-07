@@ -622,6 +622,89 @@ class ActionItemsIntegrationTests {
         assertThat(body(second).path("data").path("id").asText()).isNotEqualTo(old.toString());
     }
 
+
+    @Test void invisibleMeetingRowsNeverAffectFilteredTotalsOrPagination() throws Exception {
+        UUID visible=createManual(assignee.getId(),null);
+        UUID otherMeeting=UUID.randomUUID(), otherTask=UUID.randomUUID();
+        jdbc.update("""
+            INSERT INTO meetings(id,title,organizer_user_id,created_by_user_id)
+            VALUES (?,'Unrelated secret meeting',?,?)
+            """,otherMeeting,outsider.getId(),outsider.getId());
+        jdbc.update("""
+            INSERT INTO action_items(id,meeting_id,title,status,source_type,
+                assignee_user_id,created_by_user_id)
+            VALUES (?,?,'secret-needle-only-in-hidden-meeting','OPEN','MANUAL',?,?)
+            """,otherTask,otherMeeting,outsider.getId(),outsider.getId());
+
+        MvcResult listing=mvc.perform(get("/api/v1/action-items")
+                .principal(principal(organizer)).param("page","0").param("size","1"))
+            .andExpect(status().isOk()).andReturn();
+        assertThat(body(listing).path("meta").path("pagination").path("totalElements").asLong())
+            .isEqualTo(1);
+        assertThat(body(listing).path("data").get(0).path("id").asText())
+            .isEqualTo(visible.toString());
+        MvcResult next=mvc.perform(get("/api/v1/action-items")
+                .principal(principal(organizer)).param("page","1").param("size","1"))
+            .andExpect(status().isOk()).andReturn();
+        assertThat(body(next).path("meta").path("pagination").path("totalElements").asLong())
+            .isEqualTo(1);
+        assertThat(body(next).path("data").size()).isZero();
+
+        MvcResult secret=mvc.perform(get("/api/v1/action-items")
+                .principal(principal(organizer)).param("q","secret-needle")
+                .param("meetingId",otherMeeting.toString()).param("page","0").param("size","1"))
+            .andExpect(status().isOk()).andReturn();
+        assertThat(body(secret).path("data").size()).isZero();
+        assertThat(body(secret).path("meta").path("pagination").path("totalElements").asLong())
+            .isZero();
+        mvc.perform(get("/api/v1/action-items/{id}",otherTask)
+                .principal(principal(organizer))).andExpect(status().isNotFound());
+        MvcResult permitted=mvc.perform(get("/api/v1/action-items")
+                .principal(principal(outsider)).param("meetingId",otherMeeting.toString()))
+            .andExpect(status().isOk()).andReturn();
+        assertThat(body(permitted).path("meta").path("pagination").path("totalElements").asLong())
+            .isEqualTo(1);
+    }
+
+    @Test void inactiveAssigneePreservesTaskAndHistoryButCannotActUntilManagerReassignment()
+            throws Exception {
+        UUID item=createManual(outsider.getId(),null);
+        MvcResult official=mvc.perform(get("/api/v1/action-items/{id}",item)
+                .principal(principal(outsider))).andExpect(status().isOk()).andReturn();
+        jdbc.update("UPDATE users SET account_status='INACTIVE' WHERE id=?",outsider.getId());
+
+        // A deactivated assignee retains database provenance, not API permissions.
+        assertThat(jdbc.queryForObject(
+            "SELECT assignee_user_id FROM action_items WHERE id=?",UUID.class,item))
+            .isEqualTo(outsider.getId());
+        mvc.perform(get("/api/v1/action-items/{id}",item)
+                .principal(principal(outsider))).andExpect(status().isUnauthorized());
+        mvc.perform(post("/api/v1/action-items/{id}/complete",item)
+                .principal(principal(outsider))
+                .header(HttpHeaders.IF_MATCH,official.getResponse().getHeader(HttpHeaders.ETAG)))
+            .andExpect(status().isUnauthorized());
+
+        MvcResult updated=mvc.perform(patch("/api/v1/action-items/{id}",item)
+                .principal(principal(organizer))
+                .header(HttpHeaders.IF_MATCH,official.getResponse().getHeader(HttpHeaders.ETAG))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsString(Map.of("assigneeUserId",assignee.getId()))))
+            .andExpect(status().isOk()).andReturn();
+        assertThat(body(updated).path("data").path("assigneeUserId").asText())
+            .isEqualTo(assignee.getId().toString());
+        assertThat(jdbc.queryForObject(
+            "SELECT count(*) FROM action_item_history WHERE action_item_id=? AND change_type='ASSIGNEE'",
+            Integer.class,item)).isEqualTo(2);
+        MvcResult completed=mvc.perform(post("/api/v1/action-items/{id}/complete",item)
+                .principal(principal(assignee))
+                .header(HttpHeaders.IF_MATCH,updated.getResponse().getHeader(HttpHeaders.ETAG)))
+            .andExpect(status().isOk()).andReturn();
+        assertThat(body(completed).path("data").path("status").asText()).isEqualTo("DONE");
+        assertThat(jdbc.queryForObject(
+            "SELECT completed_by_user_id FROM action_items WHERE id=?",UUID.class,item))
+            .isEqualTo(assignee.getId());
+    }
+
     private UUID unit() {
         UUID id=UUID.randomUUID();
         jdbc.update("INSERT INTO organizational_units(id,code,name,status) VALUES (?,?,?,'ACTIVE')",
