@@ -53,7 +53,7 @@ public class ActionItemService {
         history(id, "STATUS", null, "OPEN", actorId);
         history(id, "ASSIGNEE", null, request.assigneeUserId().toString(), actorId);
         if (request.dueDate() != null) history(id, "DUE_DATE", null, request.dueDate().toString(), actorId);
-        return byId(id);
+        return visibleForActor(byId(id), actorId);
     }
 
     /**
@@ -154,6 +154,11 @@ public class ActionItemService {
         return new PageImpl<>(items, pageable, total == null ? 0 : total);
     }
 
+    private ActionItemView visibleForActor(ActionItemView item, UUID actorId) {
+        return meetingAccess.canReadMeetingContent(item.meetingId(), actorId)
+            ? item : limitedActionItemView(item);
+    }
+
     private static boolean isOfficial(ActionItemView item) {
         return "MANUAL".equals(item.sourceType()) || item.confirmedByUserId() != null;
     }
@@ -208,7 +213,7 @@ public class ActionItemService {
         if (!Objects.equals(old.dueDate(), dueDate)) {
             history(id, "DUE_DATE", string(old.dueDate()), string(dueDate), actorId);
         }
-        return byId(id);
+        return visibleForActor(byId(id), actorId);
     }
 
     @Transactional public ActionItemView confirm(UUID id, UUID actor, String tag) {
@@ -262,7 +267,7 @@ public class ActionItemService {
             completedBy, completedAt, cancelledBy, cancelledAt, id, old.version());
         if (updated != 1) throw preconditionFailed();
         history(id, "STATUS", old.status().name(), target.name(), actor);
-        return byId(id);
+        return visibleForActor(byId(id), actor);
     }
 
     private static boolean allowed(ActionItemStatus from, ActionItemStatus to) {
