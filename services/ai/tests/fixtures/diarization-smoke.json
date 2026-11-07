@@ -1,0 +1,27 @@
+{
+  "durationMs": 3000,
+  "sampleRate": 8000,
+  "segments": [
+    {"ordinal": 7, "startMs": 100, "endMs": 900, "text": "Nhóm thống nhất kế hoạch."},
+    {"ordinal": 11, "startMs": 1600, "endMs": 2200, "text": "Tôi sẽ chuẩn bị tài liệu."},
+    {"ordinal": 19, "startMs": 2300, "endMs": 2900, "text": "Cảm ơn mọi người."}
+  ],
+  "scenarios": {
+    "one": {
+      "turns": [[0, 3000, "SPEAKER_01"]],
+      "labels": ["SPEAKER_01"],
+      "assignments": ["SPEAKER_01", "SPEAKER_01", "SPEAKER_01"]
+    },
+    "two": {
+      "turns": [[0, 1200, "SPEAKER_01"], [1200, 3000, "SPEAKER_02"]],
+      "labels": ["SPEAKER_01", "SPEAKER_02"],
+      "assignments": ["SPEAKER_01", "SPEAKER_02", "SPEAKER_02"]
+    },
+    "overlap": {
+      "turns": [[0, 1400, "SPEAKER_01"], [1000, 3000, "SPEAKER_02"], [2300, 2900, "SPEAKER_01"]],
+      "labels": ["SPEAKER_01", "SPEAKER_02"],
+      "assignments": ["SPEAKER_01", "SPEAKER_02", null]
+    },
+    "zero": {"turns": [], "labels": [], "assignments": [null, null, null]}
+  }
+}
