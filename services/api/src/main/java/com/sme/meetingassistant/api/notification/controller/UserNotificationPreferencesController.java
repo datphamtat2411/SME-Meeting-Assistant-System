@@ -2,15 +2,16 @@ package com.sme.meetingassistant.api.notification.controller;
 
 import com.sme.meetingassistant.api.common.ApiResponse;
 import com.sme.meetingassistant.api.common.ApiResponseFactory;
+import com.sme.meetingassistant.api.notification.preferences.PatchNotificationPreferencesRequest;
 import com.sme.meetingassistant.api.notification.preferences.UserNotificationPreferences;
 import com.sme.meetingassistant.api.notification.preferences.UserNotificationPreferencesService;
-import java.util.Map;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import tools.jackson.databind.JsonNode;
 
 @RestController
 @RequestMapping("/api/v1/me/preferences")
@@ -31,7 +32,8 @@ public class UserNotificationPreferencesController {
 
     @PatchMapping
     public ResponseEntity<ApiResponse<UserNotificationPreferences>> patch(
-            @RequestBody Map<String, Object> payload) {
-        return ResponseEntity.ok(responses.success(preferences.patchCurrent(payload)));
+            @RequestBody JsonNode payload) {
+        return ResponseEntity.ok(responses.success(
+                preferences.patchCurrent(PatchNotificationPreferencesRequest.from(payload))));
     }
 }
