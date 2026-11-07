@@ -5,16 +5,20 @@ on:
     branches:
       - develop
       - 'ai/**'
+      - 'integration/**'
     paths:
       - 'services/ai/**'
+      - 'services/api/**'
       - 'contracts/CORE_API_AI_TRANSCRIPTION_WORKER_V1.md'
       - '.github/workflows/ai-ci.yml'
   pull_request:
     branches:
       - develop
       - 'ai/**'
+      - 'integration/**'
     paths:
       - 'services/ai/**'
+      - 'services/api/**'
       - 'contracts/CORE_API_AI_TRANSCRIPTION_WORKER_V1.md'
       - '.github/workflows/ai-ci.yml'
   workflow_dispatch:

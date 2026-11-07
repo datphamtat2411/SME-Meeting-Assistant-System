@@ -57,9 +57,9 @@ class Spk11HarnessTests {
     }
 
     @Test void unexpectedExitReportsNumericStatusAndDiscardsUncontrolledStderr() throws Exception {
-        String python=Spk11FullStackSmokeTests.AI.resolve(".venv/bin/python").toString();
-        try(var process=new Spk11FullStackSmokeTests.WorkerProcess(Map.of(),python,"-c",
-            "import sys; sys.stdin.readline(); sys.stderr.write('SECRET credentials transcript'); sys.exit(7)")) {
+        // Test the subprocess protocol without requiring the optional AI virtualenv.
+        try(var process=new Spk11FullStackSmokeTests.WorkerProcess(Map.of(),"/bin/sh","-c",
+            "IFS= read -r ignored; printf '%s' 'SECRET credentials transcript' >&2; exit 7")) {
             assertThatThrownBy(process::next).isInstanceOf(AssertionError.class)
                 .hasMessage("SPK11_WORKER_EXIT_WITHOUT_ENVELOPE exitCode=7");
         }

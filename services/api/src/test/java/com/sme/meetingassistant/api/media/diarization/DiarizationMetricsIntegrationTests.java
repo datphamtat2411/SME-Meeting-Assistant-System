@@ -20,19 +20,19 @@ import org.springframework.test.annotation.DirtiesContext;
 @DirtiesContext(classMode=DirtiesContext.ClassMode.BEFORE_CLASS)
 class DiarizationMetricsIntegrationTests extends DiarizationIntegrationFixture {
     @BeforeEach void baselineView() throws Exception {
-        try(var input=new org.springframework.core.io.ClassPathResource("db/migration/V32__diarization_verified_only_monitoring.sql").getInputStream()) {
+        try(var input=new org.springframework.core.io.ClassPathResource("db/migration/V38__diarization_verified_only_monitoring.sql").getInputStream()) {
             String sql=new String(input.readAllBytes(),java.nio.charset.StandardCharsets.UTF_8);
-            jdbc.execute("CREATE OR REPLACE VIEW spk12_v32_baseline AS "+sql.split("CREATE VIEW diarization_verified_only_backlog AS",2)[1]);
+            jdbc.execute("CREATE OR REPLACE VIEW spk12_v38_baseline AS "+sql.split("CREATE VIEW diarization_verified_only_backlog AS",2)[1]);
         }
     }
-    private void equivalentToV32() {
+    private void equivalentToV38() {
         assertThat(jdbc.queryForObject("""
             SELECT count(*) FROM (
-                (SELECT * FROM spk12_v32_baseline EXCEPT ALL SELECT * FROM diarization_verified_only_backlog)
+                (SELECT * FROM spk12_v38_baseline EXCEPT ALL SELECT * FROM diarization_verified_only_backlog)
                 UNION ALL
-                (SELECT * FROM diarization_verified_only_backlog EXCEPT ALL SELECT * FROM spk12_v32_baseline)
+                (SELECT * FROM diarization_verified_only_backlog EXCEPT ALL SELECT * FROM spk12_v38_baseline)
             ) differences
-            """,Long.class)).as("V32 classification equivalence, including null bindings").isZero();
+            """,Long.class)).as("V38 classification equivalence, including null bindings").isZero();
     }
     private DiarizationMetrics reader() { return new DiarizationMetrics(jdbc,new SimpleMeterRegistry()); }
     private DiarizationCommands.Complete verified() throws Exception {
@@ -41,7 +41,7 @@ class DiarizationMetricsIntegrationTests extends DiarizationIntegrationFixture {
     }
     private OffsetDateTime now() { return jdbc.queryForObject("SELECT clock_timestamp()",OffsetDateTime.class); }
     private void backlog(long total,long active,long stale,long superseded) {
-        equivalentToV32();
+        equivalentToV38();
         var b=reader().read(now()).backlog();
         assertThat(b.outstanding()).isEqualTo(total);assertThat(b.actionable()).isEqualTo(active);
         assertThat(b.stale()).isEqualTo(stale);assertThat(b.superseded()).isEqualTo(superseded);
@@ -148,7 +148,7 @@ class DiarizationMetricsIntegrationTests extends DiarizationIntegrationFixture {
             transactions.executeWithoutResult(tx->{
                 seedRepresentativeHistory(jobs);
                 work[index]=assertEfficientPlan("v33-representative-"+jobs,jobs*3+1);
-                equivalentToV32();
+                equivalentToV38();
                 assertThat(jdbc.queryForObject("SELECT count(*) FROM diarization_verified_only_backlog",Long.class)).isEqualTo(1+jobs/16+jobs/64);
                 var classified=jdbc.queryForMap("""
                     SELECT count(*) FILTER (WHERE superseded) superseded,
@@ -173,7 +173,7 @@ class DiarizationMetricsIntegrationTests extends DiarizationIntegrationFixture {
         transactions.executeWithoutResult(tx->{
             seedMonitoringHistory();
             assertEfficientPlan("v33-concentrated-4096",4097);
-            equivalentToV32();
+            equivalentToV38();
         });
         backlog(33,1,0,32);
         var end=now();var snapshot=reader().read(end);

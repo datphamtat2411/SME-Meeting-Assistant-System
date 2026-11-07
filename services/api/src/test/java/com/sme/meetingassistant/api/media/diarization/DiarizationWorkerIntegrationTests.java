@@ -187,18 +187,18 @@ class DiarizationWorkerIntegrationTests extends DiarizationIntegrationFixture {
         assertThat(count("diarization_worker_receipts")).isEqualTo(1);
     }
 
-    @Test void v29UpgradeAndFreshMigrationValidateWithoutChangingHistoricalPlan() {
+    @Test void v34UpgradeAndFreshMigrationValidateWithoutChangingHistoricalPlan() {
         var dataSource=jdbc.getDataSource();String schema="spk08_"+UUID.randomUUID().toString().replace("-","");
         try {
             org.flywaydb.core.Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema)
-                .locations("classpath:db/migration").target("29").load().migrate();
+                .locations("classpath:db/migration").target("34").load().migrate();
             jdbc.update("INSERT INTO "+schema+".users SELECT * FROM public.users WHERE id=?",actor);
             jdbc.update("INSERT INTO "+schema+".meetings SELECT * FROM public.meetings WHERE id=?",meeting);
             jdbc.update("INSERT INTO "+schema+".meeting_media SELECT * FROM public.meeting_media WHERE id=?",media);
             jdbc.update("INSERT INTO "+schema+".processing_jobs(id,meeting_id,source_media_id,requested_by_user_id,status) VALUES (?,?,?,?,'PENDING')",job,meeting,media,actor);
             var upgraded=org.flywaydb.core.Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema)
                 .locations("classpath:db/migration").load();
-            assertThat(upgraded.migrate().migrationsExecuted).isEqualTo(4);upgraded.validate();
+            assertThat(upgraded.migrate().migrationsExecuted).isEqualTo(5);upgraded.validate();
             assertThat(jdbc.queryForObject("SELECT diarization_planned FROM "+schema+".processing_jobs WHERE id=?",Boolean.class,job)).isFalse();
             assertThat(jdbc.queryForObject("SELECT count(*) FROM information_schema.tables WHERE table_schema=? AND table_name LIKE 'diarization_worker_%'",Long.class,schema)).isEqualTo(4);
         } finally {jdbc.execute("DROP SCHEMA IF EXISTS "+schema+" CASCADE");}
