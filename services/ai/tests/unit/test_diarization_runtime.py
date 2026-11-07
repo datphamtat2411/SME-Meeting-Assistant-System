@@ -71,6 +71,28 @@ def test_disabled_execution_initializes_nothing_and_camel_enablement_alias():
     asyncio.run(run())
 
 
+def test_spawned_service_configures_structured_logging(monkeypatch):
+    from sme_meeting_ai.workers import diarization as module
+
+    observed = []
+    monkeypatch.setattr(module, "configure_logging", lambda config: observed.append(config))
+
+    class Sender:
+        def send(self, result):
+            observed.append(result)
+
+        def close(self):
+            observed.append("closed")
+
+    class Service:
+        def run(self, request):
+            return "completed"
+
+    config = settings()
+    module._service_child(Sender(), Service(), None, config)
+    assert observed == [config, "completed", "closed"]
+
+
 @pytest.mark.parametrize("options", [
     {}, {"diarization_worker_provider_approved": True},
     {"diarization_worker_provider_approved": True, "environment": "production"},

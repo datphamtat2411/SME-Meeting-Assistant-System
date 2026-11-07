@@ -37,7 +37,7 @@ bindings compare UUID values. Python serialization emits lowercase UUIDs.
 SHA-256 strings are always lowercase. The artifact contains no transcript
 text, correction metadata, participant identifiers, provider credentials,
 storage locations, or free-form diagnostics. There is no `processingStage`
-wire field: `DIARIZING` is a contract constant for future integration.
+wire field: `DIARIZING` is a contract constant.
 
 ## Independent trusted context
 
@@ -50,7 +50,7 @@ results from another attempt/job/source/transcript are rejected.
 
 Core must obtain transcript identity, revision, ordinals, and duration from an
 authenticated, Core-authoritative pinned transcript-processing snapshot. The
-future producer must receive that authorized snapshot, rather than inventing
+producer receives that authorized snapshot, rather than inventing
 values from an untrusted queue message. The producing attempt must likewise be
 authorized independently. A matching self-asserted identity or digest is not
 authorization. These pure contract classes cannot establish context origin.
@@ -87,7 +87,7 @@ Completed inference may find zero speakers: empty labels and turns with all
 expected assignments explicitly null is valid. An empty snapshot can have
 empty assignments. `failed` and `skipped` service outcomes, or a completed
 response containing an error category, cannot be adapted to this artifact.
-Future stage-specific failure reporting is a separate lifecycle mechanism.
+Stage-specific failure reporting uses the separate worker control contract.
 
 ## Model provenance
 

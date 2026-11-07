@@ -113,11 +113,19 @@ public class DiarizationWorkerRepository {
             VALUES (?,?,?,?,?,'FAILURE_RECORDED','DIARIZATION_FAILED',?)
             """,UUID.randomUUID(),d.job(),d.event(),d.stage(),cmd.commandId(),retryable);
     }
-    public void accept(Delivery d,DiarizationCommands.Complete cmd,Verification v) {
+    public UUID accept(Delivery d,DiarizationCommands.Complete cmd,Verification v) {
+        UUID receipt=UUID.randomUUID();
         jdbc.update("""
             INSERT INTO diarization_worker_receipts(receipt_id,processing_job_id,event_id,execution_stage_run_id,command_id,outcome,verification_id)
             VALUES (?,?,?,?,?,'RESULT_ACCEPTED',?)
-            """,UUID.randomUUID(),d.job(),d.event(),d.stage(),cmd.commandId(),v.id());
+            """,receipt,d.job(),d.event(),d.stage(),cmd.commandId(),v.id());
+        return receipt;
+    }
+    public void measureAcceptance(Delivery d,UUID receipt,int speakers,int unknown,int segments) {
+        jdbc.update("""
+            INSERT INTO diarization_acceptance_measurements(execution_stage_run_id,processing_job_id,event_id,receipt_id,
+                speaker_count,unknown_assignment_count,segment_count) VALUES (?,?,?,?,?,?,?)
+            """,d.stage(),d.job(),d.event(),receipt,speakers,unknown,segments);
     }
     public OffsetDateTime now() { return jdbc.queryForObject("SELECT clock_timestamp()",OffsetDateTime.class); }
     public static String resultKey(UUID job,UUID stage) {return "processing/"+job+"/diarization/results/"+stage+".json";}

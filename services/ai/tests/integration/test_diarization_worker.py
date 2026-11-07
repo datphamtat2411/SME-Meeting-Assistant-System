@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import io
 import json
+import logging
 import threading
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -279,6 +280,26 @@ def test_success_exact_contract_no_text_unknown_assignment_and_duplicate(tmp_pat
         assert provider.calls[0][1] == dict(num_speakers=None, min_speakers=None, max_speakers=None)
         _, duplicate = asyncio.run(execute(h))
         assert duplicate.actions == ["ack"] and len(provider.calls) == len(s3.puts) == 1
+
+
+def test_lifecycle_logs_are_sanitized_and_distinguish_replay(tmp_path, caplog):
+    from sme_meeting_ai.observability.logging import JsonFormatter
+
+    with caplog.at_level(logging.INFO, logger="sme_meeting_ai.workers.diarization"):
+        with harness(tmp_path) as h:
+            asyncio.run(execute(h))
+            asyncio.run(execute(h))
+            token = h[4].token
+    output = [JsonFormatter("test").format(record) for record in caplog.records]
+    events = [json.loads(line)["event"] for line in output]
+    assert events.count("worker.diarization.notification.valid") == 2
+    assert events.count("worker.diarization.claimed") == 1
+    assert events.count("worker.diarization.inference.started") == 1
+    assert events.count("worker.diarization.inference.completed") == 1
+    assert events.count("worker.diarization.artifact.validated") == 1
+    assert events.count("worker.diarization.result_accepted") == 2
+    assert token not in "".join(output)
+    assert "synthetic retained audio" not in "".join(output)
 
 
 @pytest.mark.parametrize("location", ["body", "header"])

@@ -181,15 +181,18 @@ WORKER_ATTEMPT_BUSY (Retry-After:5), WORKER_LEASE_LOST, DIARIZATION_SOURCE_STALE
 
 ## SPK-10 boundary
 
-No production `DiarizationSpeakerProjection` implementation exists in SPK-08.
-Verification commits independently, but cannot succeed DIARIZING or acknowledge
-delivery. SPK-10 must implement `project(ValidatedResult)` with canonical speaker
-persistence inside `DiarizationWorkerService.projectVerified`'s existing transaction.
+SPK-10 implements `DiarizationSpeakerProjection` for canonical speaker persistence.
+Verification commits independently and cannot by itself succeed DIARIZING or
+acknowledge delivery. Projection runs inside `DiarizationWorkerService.projectVerified`'s
+acceptance transaction.
 That transaction rechecks ownership/revisions and atomically joins projection,
 acceptance receipt, stage success and any resulting job transition. Failure rolls
 back all acceptance mutations while retaining the verified artifact. Application
 and deferred database guards prevent stage success without an acceptance receipt.
 No storage network I/O belongs in the projection transaction.
+
+See the [operations guide](../services/ai/ops/DIARIZATION_WORKER.md) for
+deployment prerequisites, outstanding approval and recovery procedures.
 
 Planning and worker capability are disabled by default. Enabling the control
 capability requires the private connector, trusted HTTPS logical storage and an

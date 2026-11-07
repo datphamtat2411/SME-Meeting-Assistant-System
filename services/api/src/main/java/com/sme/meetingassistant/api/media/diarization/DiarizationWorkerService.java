@@ -156,7 +156,9 @@ public class DiarizationWorkerService {
             throw WorkerException.conflict("WORKER_RESULT_CONFLICT");
         projection.project(result);
         // Projection exceptions roll back every mutation below; verification committed independently.
-        repository.accept(d,cmd,v);
+        var receipt=repository.accept(d,cmd,v);
+        repository.measureAcceptance(d,receipt,result.speakerLabels().size(),
+            result.diagnostics().unknownAssignmentCount(),result.assignments().size());
         lifecycle.completeStage(new StageClaim(d.stage(),cmd.owner().claimToken()),"SUCCEEDED",null,null);
         if(!lifecycle.hasPendingPipelineStages(job)) lifecycle.completeJob(job);
         return status(d);

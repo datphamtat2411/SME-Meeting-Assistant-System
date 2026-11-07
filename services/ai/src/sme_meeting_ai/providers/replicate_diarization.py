@@ -1,6 +1,7 @@
 """Replicate files/predictions adapter with bounded asynchronous network I/O."""
 
 import asyncio
+import logging
 import math
 import mimetypes
 import os
@@ -21,11 +22,13 @@ from sme_meeting_ai.diarization import (
     DiarizationResult,
 )
 from sme_meeting_ai.diarization.parsing import MAX_OUTPUT_BYTES, parse_output
+from sme_meeting_ai.observability.logging import log_event
 
 _API = "https://api.replicate.com"
 _MAX_UPLOAD_BYTES = 100_000_000
 _MAX_API_BYTES = 1024 * 1024
 _POLL_INTERVAL_SECONDS = 15
+logger = logging.getLogger(__name__)
 
 
 def _delivery_url(value: object) -> str:
@@ -198,6 +201,8 @@ class ReplicateDiarizationAdapter:
                                          timeout=httpx.Timeout(min(timeout, 30))) as client:
                 auth = {"Authorization": f"Bearer {token}"}
                 content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+                log_event(logger, logging.INFO, "worker.diarization.provider.upload_attempt",
+                          upload_bytes=os.fstat(audio.fileno()).st_size)
                 uploaded = await _json_request(client, "POST", f"{_API}/v1/files", deadline=deadline, headers=auth,
                                                files={"content": (filename, audio, content_type)})
                 urls = uploaded.get("urls")

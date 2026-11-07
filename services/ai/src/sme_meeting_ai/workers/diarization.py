@@ -45,7 +45,7 @@ from sme_meeting_ai.observability.context import (
     correlation_scope,
     new_correlation_context,
 )
-from sme_meeting_ai.observability.logging import log_event
+from sme_meeting_ai.observability.logging import configure_logging, log_event
 from sme_meeting_ai.providers.replicate_diarization import (
     _MAX_UPLOAD_BYTES as PROVIDER_MAX_UPLOAD_BYTES,
 )
@@ -59,11 +59,13 @@ class WorkFailure(Exception):
         super().__init__("WORKER_DIARIZATION_FAILED")
 
 
-def _service_child(sender, service, request):
+def _service_child(sender, service, request, logging_settings=None):
     # Spawned without inheriting broker, S3, HTTP connections or executor threads.
     # Only normalized service evidence crosses back; never exception/provider text.
     try:
         try:
+            if logging_settings is not None:
+                configure_logging(logging_settings)
             result = service.run(request)
         except Exception:
             result = DiarizationResponse("failed", error_category="processing_failed")
@@ -80,14 +82,15 @@ class IsolatedService:
     The existing adapter still enforces its own timeout and remote Cancel-After.
     """
 
-    def __init__(self, service):
+    def __init__(self, service, logging_settings=None):
         self.service = service
+        self.logging_settings = logging_settings
         self.closed = threading.Event()
 
     def run(self, request, fence, deadline):
         context = multiprocessing.get_context("spawn")
         receiver, sender = context.Pipe(duplex=False)
-        process = context.Process(target=_service_child, args=(sender, self.service, request), daemon=True)
+        process = context.Process(target=_service_child, args=(sender, self.service, request, self.logging_settings), daemon=True)
         started = False
         try:
             if fence.is_set() or self.closed.is_set():
@@ -224,6 +227,7 @@ class DiarizationWorker:
                 phase = "RESULT_VALIDATION"
                 digest = hashlib.sha256(raw).hexdigest()
                 validate_result(raw, context, digest)
+                log_event(logger, logging.INFO, "worker.diarization.artifact.validated")
                 return ResultArtifact(raw, digest)
             if claim.source.sizeBytes > PROVIDER_MAX_UPLOAD_BYTES:
                 raise WorkFailure("PREPROCESSING", "VALIDATION")
@@ -234,7 +238,9 @@ class DiarizationWorker:
                 phase = "INFERENCE"
                 request = DiarizationRequest(path, snapshot.durationMs, tuple(
                     TimedTranscriptSegment(s.ordinal, s.startMs, s.endMs) for s in snapshot.segments))
+                log_event(logger, logging.INFO, "worker.diarization.inference.started")
                 outcome = self.runner.run(request, fence, deadline)
+                log_event(logger, logging.INFO, "worker.diarization.inference.completed")
             if fence.is_set():
                 raise WorkFailure("INTERRUPTED", "CANCELLED")
             if not isinstance(outcome, DiarizationResponse):
@@ -257,6 +263,7 @@ class DiarizationWorker:
             if stored != artifact.data:
                 raise WorkFailure(phase, "INTEGRITY")
             validate_result(stored, context, artifact.sha256)
+            log_event(logger, logging.INFO, "worker.diarization.artifact.validated")
             return artifact
         except WorkFailure:
             raise
@@ -335,6 +342,7 @@ class DiarizationWorker:
             event = decode_notification(delivery)
             correlation = new_correlation_context(request_id=event.requestId, job_id=event.processingJobId)
             with correlation_scope(correlation):
+                log_event(logger, logging.INFO, "worker.diarization.notification.valid")
                 maximum = started + self.settings.diarization_worker_execution_timeout_seconds
                 async with asyncio.timeout_at(maximum):
                     status = await self.core.lookup(event, deadline=maximum)
@@ -346,6 +354,7 @@ class DiarizationWorker:
                     if isinstance(claim, DiarizationStatus):
                         await self.disposition(delivery, claim)
                         return
+                    log_event(logger, logging.INFO, "worker.diarization.claimed")
                     guard = LeaseKeeper(self.core, event, claim, asyncio.get_running_loop().time() - begin, maximum)
                     self._fences.add(guard.fence)
                     failure = None
@@ -385,6 +394,8 @@ class DiarizationWorker:
             log_event(logger, logging.WARNING, "worker.diarization.execution.timeout" if isinstance(error, TimeoutError)
                       else f"worker.diarization.control.{error.code.lower()}")
             if guard:
+                if isinstance(error, CoreError) and error.code == "WORKER_LEASE_LOST":
+                    log_event(logger, logging.WARNING, "worker.diarization.lease.lost")
                 guard.lose()
             await self.disposition(delivery, await self.reconcile(event) if event else None)
         except asyncio.CancelledError:
@@ -425,6 +436,7 @@ class DiarizationWorker:
             await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
             await broker.stop()
             await broker.drain()
+            log_event(logger, logging.INFO, "worker.diarization.stopped")
         except Exception:
             self.stop_intake.set()
             log_event(logger, logging.ERROR, "worker.diarization.broker.paused")
@@ -486,7 +498,7 @@ class DiarizationExecution:
             from sme_meeting_ai.providers.replicate_diarization import (
                 ReplicateDiarizationAdapter,
             )
-            runner = IsolatedService(DiarizationService(ReplicateDiarizationAdapter(s)))
+            runner = IsolatedService(DiarizationService(ReplicateDiarizationAdapter(s)), logging_settings=s)
             self._sync.callback(runner.close)
             self.worker = DiarizationWorker(s, core, storage, runner)
             self.broker = await self._async.enter_async_context(RabbitConsumer(s, queue_name=QUEUE,

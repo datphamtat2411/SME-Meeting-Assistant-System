@@ -11,9 +11,11 @@ import com.sme.meetingassistant.api.media.worker.WorkerJson;
 import com.sme.meetingassistant.api.transcript.repository.TranscriptRepository;
 import com.sme.meetingassistant.api.transcript.service.TranscriptIngestion.*;
 import java.util.*;
+import java.time.OffsetDateTime;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -67,6 +69,7 @@ class DiarizationPersistenceIntegrationTests extends DiarizationIntegrationFixtu
         assertThat(clusters()).isZero();assertThat(revision()).isZero();
         assertThat(segments()).allSatisfy(row->{assertThat(row.get("speaker_cluster_id")).isNull();assertThat(row.get("version")).isEqualTo(0L);});
         assertThat(count("diarization_worker_receipts")).isZero();assertThat(stageStatus()).isEqualTo("RUNNING");
+        assertThat(count("diarization_acceptance_measurements")).isZero();
         assertThat(jobStatus()).isEqualTo("RUNNING");assertThat(count("diarization_worker_verifications")).isEqualTo(1);
     }
     private static void conflict(Runnable action) {
@@ -81,6 +84,8 @@ class DiarizationPersistenceIntegrationTests extends DiarizationIntegrationFixtu
         var coverage=jdbc.queryForList("SELECT * FROM transcript_coverage_regions WHERE transcript_id=? ORDER BY start_ms",transcript);
         claim();var n=artifact();var cmd=upload(n);var response=completion.complete(job,cmd);
         assertThat(response.get("state")).isEqualTo("RESULT_ACCEPTED");assertThat(response.get("acknowledge")).isEqualTo(true);
+        assertThat(jdbc.queryForMap("SELECT speaker_count,unknown_assignment_count,segment_count FROM diarization_acceptance_measurements WHERE execution_stage_run_id=?",stage))
+            .containsEntry("speaker_count",2).containsEntry("unknown_assignment_count",1).containsEntry("segment_count",3);
         assertThat(transcripts.speakers(meeting)).extracting(s->s.label()).containsExactlyInAnyOrder("SPEAKER_01","SPEAKER_02");
         assertThat(transcripts.speakers(meeting)).allSatisfy(s->assertThat(s.userId()).isNull());
         var view=transcripts.current(meeting).orElseThrow();assertThat(view.contentRevision()).isEqualTo(1);
@@ -111,6 +116,8 @@ class DiarizationPersistenceIntegrationTests extends DiarizationIntegrationFixtu
         for(var a:n.withArray("assignments")) {if(speakers==0) ((ObjectNode)a).putNull("speakerLabel");else ((ObjectNode)a).put("speakerLabel","SPEAKER_01");}
         n.putObject("diagnostics").put("unknownAssignmentCount",speakers==0?3:0);
         var before=segments();var cmd=upload(n);assertThat(completion.complete(job,cmd).get("state")).isEqualTo("RESULT_ACCEPTED");
+        assertThat(jdbc.queryForMap("SELECT speaker_count,unknown_assignment_count,segment_count FROM diarization_acceptance_measurements WHERE execution_stage_run_id=?",stage))
+            .containsEntry("speaker_count",speakers).containsEntry("unknown_assignment_count",speakers==0?3:0).containsEntry("segment_count",3);
         assertThat(clusters()).isEqualTo(speakers);assertThat(revision()).isEqualTo(speakers);
         if(speakers==0) assertThat(segments()).isEqualTo(before);
         assertThat(stageStatus()).isEqualTo("SUCCEEDED");assertThat(jobStatus()).isEqualTo("COMPLETED_WITH_WARNINGS");
@@ -134,6 +141,9 @@ class DiarizationPersistenceIntegrationTests extends DiarizationIntegrationFixtu
         jdbc.update("UPDATE transcripts SET is_current=FALSE WHERE id=?",transcript);
         clearInvocations(storage,projection);
         assertThat(completion.complete(job,cmd)).isEqualTo(accepted);verifyNoInteractions(storage,projection);
+        assertThat(count("diarization_acceptance_measurements")).isEqualTo(1);
+        assertThat(jdbc.queryForMap("SELECT speaker_count,unknown_assignment_count,segment_count FROM diarization_acceptance_measurements WHERE execution_stage_run_id=?",stage))
+            .containsEntry("speaker_count",2).containsEntry("unknown_assignment_count",1).containsEntry("segment_count",3);
         assertThat(segments()).isEqualTo(before);assertThat(transcripts.speakers(meeting)).isEmpty();
         assertThat(jdbc.queryForList("SELECT id FROM speaker_clusters WHERE transcript_id=?",UUID.class,transcript)).containsExactlyInAnyOrderElementsOf(speakers.stream().map(s->s.id()).toList());
         assertThat(revision()).isEqualTo(3);assertThat(count("diarization_worker_receipts")).isEqualTo(1);
@@ -203,12 +213,17 @@ class DiarizationPersistenceIntegrationTests extends DiarizationIntegrationFixtu
     }
 
     @Test void retryPinnedAfterHumanCorrectionPreservesTextAndItsRevisionHistory() throws Exception {
+        var metrics=new DiarizationMetrics(jdbc,new SimpleMeterRegistry());
+        var beforeMetrics=metrics.read(OffsetDateTime.now());
         claim();worker.fail(job,new DiarizationCommands.Fail(UUID.randomUUID(),owner,"INFERENCE","TIMEOUT"));
         transactions.executeWithoutResult(tx->transcripts.correct(meeting,segment(7),actor,"Authorized human correction.","Review",0));
         transactions.executeWithoutResult(tx->{
             transcriptEvidence.lockDiarizationSource(job);
             assertThat(mediaRepository.retryDiarizationAndOutbox(mediaRepository.findJob(job).orElseThrow(),transcriptEvidence.diarizationSource(job).orElseThrow(),2)).isTrue();
         });
+        var afterRetry=metrics.read(OffsetDateTime.now());
+        assertThat(afterRetry.failed()).isEqualTo(beforeMetrics.failed()+1);
+        assertThat(afterRetry.retries()).isEqualTo(beforeMetrics.retries()+1);
         stage=jdbc.queryForObject("SELECT id FROM processing_stage_runs WHERE processing_job_id=? AND stage_code='DIARIZING' AND attempt_number=2",UUID.class,job);
         event=jdbc.queryForObject("SELECT event_id FROM processing_diarization_dispatches WHERE stage_run_id=?",UUID.class,stage);
         request=new DiarizationCommands.Claim(event,"PROCESSING_DIARIZATION_REQUESTED",1,meeting,media,stage,UUID.randomUUID());
@@ -251,7 +266,36 @@ class DiarizationPersistenceIntegrationTests extends DiarizationIntegrationFixtu
             assertThat(first.get(20,TimeUnit.SECONDS)).isEqualTo(second.get(20,TimeUnit.SECONDS));
         }
         assertThat(clusters()).isEqualTo(2);assertThat(revision()).isEqualTo(1);assertThat(count("diarization_worker_receipts")).isEqualTo(1);
+        assertThat(count("diarization_acceptance_measurements")).isEqualTo(1);
         verify(projection,times(1)).project(any());
+    }
+
+    @Test void durableWindowReaderReconstructsCommittedStateWithoutReplayInflation() throws Exception {
+        var reader=new DiarizationMetrics(jdbc,new SimpleMeterRegistry());
+        var before=reader.read(OffsetDateTime.now());
+        claim();var cmd=upload(artifact());completion.complete(job,cmd);
+        completion.complete(job,cmd);
+        var after=new DiarizationMetrics(jdbc,new SimpleMeterRegistry()).read(OffsetDateTime.now());
+        assertThat(after.accepted()).isEqualTo(before.accepted()+1);
+        assertThat(after.speakerSum()).isEqualTo(before.speakerSum()+2);
+        assertThat(after.unknownSum()).isEqualTo(before.unknownSum()+1);
+        assertThat(after.measurements()).isEqualTo(before.measurements()+1);
+        assertThat(new DiarizationMetrics(jdbc,new SimpleMeterRegistry()).read(OffsetDateTime.now())).isEqualTo(after);
+        assertThat(reader.read(OffsetDateTime.now().plusDays(2)).accepted()).isZero();
+    }
+
+    @Test void acceptedMeasurementsAreImmutableAndMeterTagsAreBounded() throws Exception {
+        claim();completion.complete(job,upload(artifact()));
+        assertThatThrownBy(()->jdbc.update("UPDATE diarization_acceptance_measurements SET speaker_count=9 WHERE execution_stage_run_id=?",stage))
+            .isInstanceOf(DataIntegrityViolationException.class);
+        var registry=new SimpleMeterRegistry();new DiarizationMetrics(jdbc,registry);
+        assertThat(registry.getMeters()).isNotEmpty().allSatisfy(meter->{
+            assertThat(meter.getId().getName()).startsWith("diarization.window.");
+            assertThat(meter.getId().getTags()).allSatisfy(tag->{
+                assertThat(tag.getKey()).isIn("outcome","le","le_seconds");
+                assertThat(tag.getValue()).doesNotContain(job.toString(),meeting.toString(),transcript.toString());
+            });
+        });
     }
 
     @Test void humanCorrectionHoldingMeetingLockWinsAndFencesWaitingAcceptance() throws Exception {

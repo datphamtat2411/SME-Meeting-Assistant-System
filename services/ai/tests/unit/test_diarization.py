@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import traceback
 from decimal import Decimal
@@ -240,6 +241,34 @@ def test_provider_request(tmp_path):
     result = adapter.diarize(audio, min_speakers=1, max_speakers=3)
     assert result.turns == (SpeakerTurn(0, 1000, "SPEAKER_01"),)
     assert len(requests) == 3
+
+
+def test_provider_upload_observation_is_bounded_and_sanitized(tmp_path, caplog):
+    from sme_meeting_ai.observability.logging import JsonFormatter
+
+    path = tmp_path / "private-name.wav"
+    path.write_bytes(b"private-audio")
+    adapter = ReplicateDiarizationAdapter(settings(REPLICATE_API_TOKEN=SECRET), transport=httpx.MockTransport(
+        lambda _: httpx.Response(401, text="private-provider-diagnostic")))
+    with caplog.at_level(logging.INFO, logger="sme_meeting_ai.providers.replicate_diarization"):
+        with pytest.raises(DiarizationError) as exc:
+            adapter.diarize(path)
+    assert exc.value.category == DiarizationErrorCategory.AUTHENTICATION
+    records = [json.loads(JsonFormatter("test").format(record)) for record in caplog.records]
+    observations = [r for r in records if r["event"] == "worker.diarization.provider.upload_attempt"]
+    assert len(observations) == 1 and observations[0]["upload_bytes"] == len(b"private-audio")
+    serialized = json.dumps(records)
+    for private in (SECRET, "private-audio", "private-name", "private-provider-diagnostic"):
+        assert private not in serialized
+
+
+def test_provider_validation_does_not_record_upload(tmp_path, caplog):
+    path = tmp_path / "audio.wav"
+    path.write_bytes(b"audio")
+    with caplog.at_level(logging.INFO, logger="sme_meeting_ai.providers.replicate_diarization"):
+        with pytest.raises(DiarizationError):
+            ReplicateDiarizationAdapter(settings()).diarize(path)
+    assert not caplog.records
 
 
 @pytest.mark.parametrize("status,category", [(401, "authentication"), (429, "rate_limit"), (500, "provider")])
