@@ -173,7 +173,11 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
                 && this.transcriptEvidence.forFinalization(identity.jobId(), claim.stageRunId()).isEmpty()) {
             throw new ProcessingLifecycleConflictException("Canonical transcript must exist before stage success.");
         }
-        if ("DIARIZING".equals(identity.stageCode())) requireCurrentDiarizationSource(identity.jobId());
+        if ("DIARIZING".equals(identity.stageCode())) {
+            transcriptEvidence.lockDiarizationSource(identity.jobId());
+            repository.requireAcceptedDiarizationSource(identity.jobId(), claim.stageRunId(),
+                transcriptEvidence.diarizationSource(identity.jobId()).orElse(null));
+        }
         if (isIntelligenceStage(identity.stageCode())
                 && !hasAcceptedResult(identity.jobId(),claim.stageRunId(),identity.stageCode())) {
             throw new ProcessingLifecycleConflictException(

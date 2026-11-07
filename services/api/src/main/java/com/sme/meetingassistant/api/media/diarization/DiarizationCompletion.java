@@ -19,6 +19,20 @@ public class DiarizationCompletion {
     public DiarizationCompletion(DiarizationWorkerService worker,ObjectStorage storage) {this.worker=worker;this.storage=storage;}
     public Map<String,Object> complete(UUID job,DiarizationCommands.Complete cmd) {
         if(TransactionSynchronizationManager.isActualTransactionActive()) throw new IllegalStateException("Result verification requires no transaction.");
+        try {return completeResult(job,cmd);}
+        catch(WorkerException conflict) {
+            // Another identical completion can commit between our short database transactions.
+            // Only the existing authenticated, digest-bound accepted replay may recover that race.
+            if(conflict.status()==409) {
+                try {
+                    var replay=worker.completionReplay(job,cmd);
+                    if(replay!=null && "RESULT_ACCEPTED".equals(replay.get("state"))) return replay;
+                } catch(WorkerException rejectedReplay) { /* Preserve the original sanitized conflict. */ }
+            }
+            throw conflict;
+        }
+    }
+    private Map<String,Object> completeResult(UUID job,DiarizationCommands.Complete cmd) {
         var replay=worker.completionReplay(job,cmd);if(replay!=null) return replay;
         var context=worker.completionContext(job,cmd);byte[] bytes;
         String key=DiarizationWorkerRepository.resultKey(job,cmd.resultProducerStageRunId());

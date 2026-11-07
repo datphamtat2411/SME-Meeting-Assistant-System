@@ -8,10 +8,10 @@ import org.junit.jupiter.api.Test;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 /** A test-only projection double exercises the transaction seam; no canonical speakers are written. */
-class DiarizationProjectionBoundaryIntegrationTests extends DiarizationWorkerIntegrationTests {
+class DiarizationProjectionBoundaryIntegrationTests extends DiarizationIntegrationFixture {
     @MockitoBean DiarizationSpeakerProjection projection;
 
-    @Override @Test void verificationIsDurableIdempotentNonterminalAndCannotBypassProjection() throws Exception {
+    @Test void verificationIsDurableIdempotentNonterminalAndCannotBypassProjection() throws Exception {
         claim();var cmd=upload(artifact());
         doThrow(new IllegalStateException("projection unavailable")).when(projection).project(any());
         assertThatThrownBy(()->completion.complete(job,cmd)).isInstanceOf(IllegalStateException.class);

@@ -12,7 +12,6 @@ import com.sme.meetingassistant.api.media.worker.WorkerException;
 import com.sme.meetingassistant.api.media.worker.WorkerJson;
 import java.math.BigInteger;
 import java.util.*;
-import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -23,10 +22,10 @@ public class DiarizationWorkerService {
     private final ProcessingJobLifecycle lifecycle;
     private final ProcessingTranscriptEvidence transcripts;
     private final MediaProperties properties;
-    private final ObjectProvider<DiarizationSpeakerProjection> projection;
+    private final DiarizationSpeakerProjection projection;
     public DiarizationWorkerService(DiarizationWorkerRepository repository,DiarizationWorkerCapability capability,
             ProcessingJobLifecycle lifecycle,ProcessingTranscriptEvidence transcripts,MediaProperties properties,
-            ObjectProvider<DiarizationSpeakerProjection> projection) {
+            DiarizationSpeakerProjection projection) {
         this.repository=repository;this.capability=capability;this.lifecycle=lifecycle;this.transcripts=transcripts;
         this.properties=properties;this.projection=projection;
     }
@@ -122,7 +121,6 @@ public class DiarizationWorkerService {
         var v=repository.verification(d.event());
         if(v.isPresent()) {
             requireVerification(v.get(),cmd);timing(d);source(d,repository.claim(d.event()).orElseThrow());
-            if(projection.getIfAvailable()==null) return status(d);
         }
         return null;
     }
@@ -156,8 +154,7 @@ public class DiarizationWorkerService {
             || !result.sourceRevision().equals(context.sourceRevision()) || !result.transcriptId().equals(context.transcriptId())
             || !result.transcriptRevision().equals(context.transcriptRevision()) || !result.producerStageRunId().equals(context.producerStageRunId()))
             throw WorkerException.conflict("WORKER_RESULT_CONFLICT");
-        var operation=projection.getIfAvailable();if(operation==null) return status(d);
-        operation.project(result);
+        projection.project(result);
         // Projection exceptions roll back every mutation below; verification committed independently.
         repository.accept(d,cmd,v);
         lifecycle.completeStage(new StageClaim(d.stage(),cmd.owner().claimToken()),"SUCCEEDED",null,null);

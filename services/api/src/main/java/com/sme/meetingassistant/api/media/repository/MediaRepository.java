@@ -634,6 +634,27 @@ public class MediaRepository {
         requireDiarizationBindingSource(jobId, latest.getFirst().id());
     }
 
+    /** Completion alone may observe the speaker-only revision advance, proven by this attempt's receipt. */
+    public void requireAcceptedDiarizationSource(UUID jobId, UUID stageRunId, DiarizationSource source) {
+        lockJobStatus(jobId);
+        if (source == null || !source.current() || !isDiarizationPlanned(jobId)
+                || !isLatestAttempt(jobId, "DIARIZING", stageRunId)
+                || !Boolean.TRUE.equals(jdbc.queryForObject("""
+                    SELECT EXISTS (SELECT 1 FROM processing_diarization_dispatches d
+                      JOIN diarization_worker_receipts r ON r.processing_job_id=d.processing_job_id
+                        AND r.execution_stage_run_id=d.stage_run_id AND r.event_id=d.event_id AND r.outcome='RESULT_ACCEPTED'
+                      JOIN diarization_worker_verifications v ON v.verification_id=r.verification_id
+                        AND v.command_id=r.command_id AND v.producer_stage_run_id=d.stage_run_id
+                        AND v.transcript_id=d.transcript_id AND v.transcript_revision=d.transcript_revision
+                        AND v.source_revision=d.source_revision
+                      WHERE d.processing_job_id=? AND d.stage_run_id=? AND d.transcript_id=?
+                        AND (?=v.transcript_revision OR ?=v.transcript_revision+1))
+                    """, Boolean.class, jobId, stageRunId, source.transcriptId(), source.contentRevision(), source.contentRevision()))) {
+            throw new ProcessingLifecycleConflictException("Diarization completion requires its accepted current speaker projection.");
+        }
+        requireDiarizationBindingSource(jobId, stageRunId);
+    }
+
     private String acceptedDiarizationRevision(UUID jobId) {
         var revisions = jdbc.query("""
             SELECT m.sha256 FROM meeting_media m JOIN processing_jobs j
