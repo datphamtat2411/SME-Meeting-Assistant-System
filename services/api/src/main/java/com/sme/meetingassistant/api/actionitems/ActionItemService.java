@@ -1,7 +1,5 @@
 package com.sme.meetingassistant.api.actionitems;
 
-import com.sme.meetingassistant.api.actionitems.application.ActionItemProposalPort;
-import com.sme.meetingassistant.api.actionitems.dto.ActionItemProposal;
 import com.sme.meetingassistant.api.actionitems.dto.CreateActionItemRequest;
 import com.sme.meetingassistant.api.meeting.service.MeetingActionItemAccess;
 import java.sql.ResultSet;
@@ -26,7 +24,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 @Service
-public class ActionItemService implements ActionItemProposalPort {
+public class ActionItemService {
     private static final RowMapper<ActionItemView> ROW = ActionItemService::map;
     private static final java.util.Set<String> PATCH_FIELDS = java.util.Set.of(
         "title", "details", "assigneeUserId", "dueDate");
@@ -56,19 +54,6 @@ public class ActionItemService implements ActionItemProposalPort {
         history(id, "ASSIGNEE", null, request.assigneeUserId().toString(), actorId);
         if (request.dueDate() != null) history(id, "DUE_DATE", null, request.dueDate().toString(), actorId);
         return byId(id);
-    }
-
-    /**
-     * AI-02 safety gate: the legacy item-at-a-time API carries no trusted
-     * stage claim, immutable source snapshot or batch receipt identity.
-     * Never invent those values to satisfy a database constraint.
-     * AI-03 will replace this port with MI-10 ActionItemProposalSink.
-     */
-    @Override
-    @Transactional
-    public ActionItemView propose(ActionItemProposal proposal) {
-        throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
-            "Legacy proposal port is disabled; canonical MI-10 batch acceptance is required.");
     }
 
     @Transactional(readOnly = true)

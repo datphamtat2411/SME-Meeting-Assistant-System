@@ -1,15 +1,13 @@
 package com.sme.meetingassistant.api.meetingintelligence.service;
 
 import com.sme.meetingassistant.api.actionitem.service.ActionItemProposalSink;
+import com.sme.meetingassistant.api.actionitem.service.ActionItemBatchFingerprint;
 import com.sme.meetingassistant.api.media.MediaProperties;
 import org.springframework.beans.factory.annotation.Autowired;
 import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle;
 import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle.StageClaim;
 import com.sme.meetingassistant.api.transcript.service.TranscriptSourceGuard;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.HashSet;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.beans.factory.ObjectProvider;
@@ -125,7 +123,7 @@ public class ActionItemProposalHandoff {
         var batch = new ActionItemProposalSink.Batch(stage.meetingId(), stage.jobId(),
             claim.stageRunId(), source.snapshotId(), source.transcriptId(),
             source.contentRevision(), !provenance.current(),
-            fingerprint(candidates), candidates);
+            ActionItemBatchFingerprint.sha256(mapper, candidates), candidates);
         var receipt = sink.acceptProposed(batch);
         if (receipt == null || receipt.newProposals() < 0
                 || receipt.newProposals() > candidates.size()
@@ -187,13 +185,5 @@ public class ActionItemProposalHandoff {
         return false;
     }
 
-    private String fingerprint(List<ActionItemProposalSink.Candidate> items) {
-        byte[] encoded = mapper.writeValueAsBytes(items);
-        try {
-            return HexFormat.of().formatHex(
-                MessageDigest.getInstance("SHA-256").digest(encoded));
-        } catch (NoSuchAlgorithmException impossible) {
-            throw new IllegalStateException("SHA-256 is unavailable.", impossible);
-        }
-    }
+
 }

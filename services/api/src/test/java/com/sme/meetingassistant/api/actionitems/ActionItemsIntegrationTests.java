@@ -5,8 +5,6 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
-import com.sme.meetingassistant.api.actionitems.application.ActionItemProposalPort;
-import com.sme.meetingassistant.api.actionitems.dto.ActionItemProposal;
 import com.sme.meetingassistant.api.userorganization.entity.AccountStatus;
 import com.sme.meetingassistant.api.userorganization.entity.GlobalRole;
 import com.sme.meetingassistant.api.userorganization.entity.UserEntity;
@@ -43,7 +41,6 @@ class ActionItemsIntegrationTests {
     @Autowired ObjectMapper json;
     @Autowired UserRepository users;
     @Autowired JdbcTemplate jdbc;
-    @Autowired ActionItemProposalPort proposals;
 
     UserEntity organizer;
     UserEntity assignee;
@@ -123,19 +120,6 @@ class ActionItemsIntegrationTests {
         assertThat(body(result).path("data").path("overdue").asBoolean()).isTrue();
         mvc.perform(get("/api/v1/action-items").principal(principal(organizer)).param("overdue", "true"))
             .andExpect(status().isOk());
-    }
-
-    @Test void legacySingleProposalPortFailsClosedWithoutForgedBatchProvenance() {
-        var proposal = new ActionItemProposal(meetingId, UUID.randomUUID(), "candidate-1",
-            "Send the project brief", null, null, null, List.of(UUID.randomUUID()));
-
-        org.assertj.core.api.Assertions.assertThatThrownBy(() -> proposals.propose(proposal))
-            .isInstanceOf(org.springframework.web.server.ResponseStatusException.class)
-            .hasMessageContaining("503");
-
-        assertThat(jdbc.queryForObject(
-            "SELECT count(*) FROM action_items WHERE meeting_id=? AND source_type='AI_EXTRACTED'",
-            Integer.class, meetingId)).isZero();
     }
 
     @Test void departmentManagerSeesAndManagesOnlyActionItemsWithinGrantedOrganizerUnit() throws Exception {
