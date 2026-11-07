@@ -1,6 +1,7 @@
 package com.sme.meetingassistant.api.actionitems;
 
 import com.sme.meetingassistant.api.actionitems.dto.CreateActionItemRequest;
+import com.sme.meetingassistant.api.actionitems.dto.PatchActionItemRequest;
 import com.sme.meetingassistant.api.common.ApiResponse;
 import com.sme.meetingassistant.api.common.ApiResponseFactory;
 import com.sme.meetingassistant.api.userorganization.service.AuthenticatedUserId;
@@ -10,7 +11,7 @@ import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.Size;
 import java.net.URI;
 import java.util.List;
-import java.util.Map;
+import tools.jackson.databind.JsonNode;
 import java.util.UUID;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
@@ -55,8 +56,9 @@ public class ActionItemController {
     }
 
     @PostMapping
-    public ResponseEntity<ApiResponse<ActionItemView>> create(@Valid @RequestBody CreateActionItemRequest request) {
-        ActionItemView item = service.createManual(caller.requireUserId(), request);
+    public ResponseEntity<ApiResponse<ActionItemView>> create(@Valid @RequestBody CreateActionItemRequest request,
+            @RequestHeader(value="Idempotency-Key",required=false) String idempotencyKey) {
+        ActionItemView item = service.createManual(caller.requireUserId(), request, idempotencyKey);
         return ResponseEntity.created(URI.create("/api/v1/action-items/" + item.id()))
             .header(HttpHeaders.ETAG, ActionItemEtags.of(item)).body(responses.success(item));
     }
@@ -70,8 +72,9 @@ public class ActionItemController {
     @PatchMapping("/{actionItemId}")
     public ResponseEntity<ApiResponse<ActionItemView>> update(@PathVariable UUID actionItemId,
             @RequestHeader(value=HttpHeaders.IF_MATCH, required=false) String ifMatch,
-            @RequestBody Map<String,Object> patch) {
-        return result(service.update(actionItemId, caller.requireUserId(), ifMatch, patch));
+            @RequestBody JsonNode patch) {
+        return result(service.update(actionItemId, caller.requireUserId(), ifMatch,
+            PatchActionItemRequest.from(patch)));
     }
 
     @PostMapping("/{actionItemId}/confirm")

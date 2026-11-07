@@ -1,18 +1,22 @@
 package com.sme.meetingassistant.api.actionitems;
 
 import com.sme.meetingassistant.api.actionitems.dto.CreateActionItemRequest;
+import com.sme.meetingassistant.api.actionitems.dto.PatchActionItemRequest;
+import com.sme.meetingassistant.api.actionitems.application.ActionItemCreationIdempotency;
+import com.sme.meetingassistant.api.actionitems.ActionItemLifecycle.Command;
 import com.sme.meetingassistant.api.meeting.service.MeetingActionItemAccess;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
+import java.util.Arrays;
 import java.util.Objects;
 import java.util.UUID;
-import org.springframework.dao.DataAccessException;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
@@ -22,37 +26,72 @@ import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
+import tools.jackson.databind.ObjectMapper;
 
 @Service
 public class ActionItemService {
     private static final RowMapper<ActionItemView> ROW = ActionItemService::map;
-    private static final java.util.Set<String> PATCH_FIELDS = java.util.Set.of(
-        "title", "details", "assigneeUserId", "dueDate");
-
     private final JdbcTemplate jdbc;
     private final MeetingActionItemAccess meetingAccess;
+    private final ActionItemCreationIdempotency idempotency;
+    private final ObjectMapper json;
+    private final ZoneId businessZone;
 
-    public ActionItemService(JdbcTemplate jdbc, MeetingActionItemAccess meetingAccess) {
+    public ActionItemService(JdbcTemplate jdbc, MeetingActionItemAccess meetingAccess,
+            ActionItemCreationIdempotency idempotency, ObjectMapper json,
+            @Value("${app.action-items.business-zone:UTC}") String zoneId) {
         this.jdbc = jdbc;
         this.meetingAccess = meetingAccess;
+        this.idempotency = idempotency;
+        this.json = json;
+        this.businessZone = ZoneId.of(zoneId);
     }
 
     @Transactional
     public ActionItemView createManual(UUID actorId, CreateActionItemRequest request) {
+        return createManual(actorId, request, null);
+    }
+
+    /**
+     * Permission and current actor/assignee validation precede replay.
+     * A consumed key is a retry token, never an authorization capability.
+     * Receipt, canonical item and initial history commit/rollback together.
+     */
+    @Transactional
+    public ActionItemView createManual(UUID actorId, CreateActionItemRequest request,
+            String idempotencyKey) {
         meetingAccess.requireCurrentActiveActor(actorId);
+        if (request == null || request.meetingId() == null || request.assigneeUserId() == null) {
+            throw invalid();
+        }
         meetingAccess.requireManageActionItems(request.meetingId(), actorId);
         requireActiveAssignee(request.assigneeUserId());
+        String title = requiredTitle(request.title());
+        String details = optional(request.details());
+
+        if (idempotencyKey != null) {
+            UUID prior = idempotency.claimOrReplay(actorId, idempotencyKey, request);
+            if (prior != null) {
+                ActionItemView item = byId(prior);
+                if (!request.meetingId().equals(item.meetingId()) ||
+                        !"MANUAL".equals(item.sourceType())) throw notFound();
+                return visibleForActor(item, actorId);
+            }
+        }
 
         UUID id = UUID.randomUUID();
         jdbc.update("""
             INSERT INTO action_items(id,meeting_id,title,details,status,assignee_user_id,due_date,
                 source_type,created_by_user_id)
             VALUES (?,?,?,?,'OPEN',?,?,'MANUAL',?)
-            """, id, request.meetingId(), requiredTitle(request.title()), optional(request.details()),
+            """, id, request.meetingId(), title, details,
             request.assigneeUserId(), request.dueDate(), actorId);
         history(id, "STATUS", null, "OPEN", actorId);
         history(id, "ASSIGNEE", null, request.assigneeUserId().toString(), actorId);
-        if (request.dueDate() != null) history(id, "DUE_DATE", null, request.dueDate().toString(), actorId);
+        if (request.dueDate() != null) {
+            history(id, "DUE_DATE", null, request.dueDate().toString(), actorId);
+        }
+        if (idempotencyKey != null) idempotency.complete(actorId, idempotencyKey, id);
         return visibleForActor(byId(id), actorId);
     }
 
@@ -79,6 +118,7 @@ public class ActionItemService {
     public Page<ActionItemView> list(UUID actorId, UUID meetingId, ActionItemStatus status,
             String q, String assignee, Boolean overdue, Pageable pageable) {
         meetingAccess.requireCurrentActiveActor(actorId);
+        LocalDate today = today();
         // No preflight requireActionItemReadable(meetingId): an official
         // assignee outside the meeting may filter their own work by meeting.
         // Unknown/unauthorized meetingId values yield the same empty result.
@@ -126,8 +166,9 @@ public class ActionItemService {
         }
         if (overdue != null) {
             where.append(overdue
-                ? " AND ai.due_date<CURRENT_DATE AND ai.status NOT IN ('DONE','CANCELLED')"
-                : " AND (ai.due_date IS NULL OR ai.due_date>=CURRENT_DATE OR ai.status IN ('DONE','CANCELLED'))");
+                ? " AND ai.due_date<? AND ai.status NOT IN ('DONE','CANCELLED')"
+                : " AND (ai.due_date IS NULL OR ai.due_date>=? OR ai.status IN ('DONE','CANCELLED'))");
+            params.add(today);
         }
 
         // COUNT and LIMIT/OFFSET share one permission-filtered FROM/WHERE.
@@ -135,7 +176,7 @@ public class ActionItemService {
         // scoped managers); do not reveal processing job or reviewer identities.
         Long total = jdbc.queryForObject("SELECT count(*) " + where, Long.class, params.toArray());
         String sql = """
-            SELECT ai.*, (ai.due_date<CURRENT_DATE AND ai.status NOT IN ('DONE','CANCELLED')) AS overdue,
+            SELECT ai.*, (ai.due_date<? AND ai.status NOT IN ('DONE','CANCELLED')) AS overdue,
                    (meeting.organizer_user_id=? OR EXISTS (
                         SELECT 1 FROM meeting_participants visible
                          WHERE visible.meeting_id=ai.meeting_id AND visible.user_id=?
@@ -143,7 +184,7 @@ public class ActionItemService {
             """ + where + " ORDER BY " + sortColumn(pageable) + " "
             + pageable.getSort().stream().findFirst().map(order -> order.getDirection().name()).orElse("DESC")
             + ", ai.id LIMIT ? OFFSET ?";
-        List<Object> pageParams = new ArrayList<>(List.of(actorId, actorId));
+        List<Object> pageParams = new ArrayList<>(List.of(today, actorId, actorId));
         pageParams.addAll(params);
         pageParams.add(pageable.getPageSize());
         pageParams.add(pageable.getOffset());
@@ -177,76 +218,81 @@ public class ActionItemService {
     }
 
     @Transactional
-    public ActionItemView update(UUID id, UUID actorId, String ifMatch, Map<String, Object> patch) {
+    public ActionItemView update(UUID id, UUID actorId, String ifMatch, PatchActionItemRequest patch) {
         meetingAccess.requireCurrentActiveActor(actorId);
         ActionItemView old = byId(id);
         meetingAccess.requireManageActionItems(old.meetingId(), actorId);
         ActionItemEtags.requireMatch(old, ifMatch);
-        if (patch == null || patch.isEmpty() || !PATCH_FIELDS.containsAll(patch.keySet())) throw invalid();
-        if (old.status() == ActionItemStatus.DONE || old.status() == ActionItemStatus.CANCELLED) throw conflict();
-
-        String title = old.title();
-        String details = old.details();
-        UUID assigneeId = old.assigneeUserId();
-        LocalDate dueDate = old.dueDate();
-        if (patch.containsKey("title")) title = requiredTitle(asString(patch.get("title")));
-        if (patch.containsKey("details")) details = optional(asString(patch.get("details")));
-        if (patch.containsKey("assigneeUserId")) {
-            assigneeId = asUuid(patch.get("assigneeUserId"));
-            if (assigneeId != null) requireActiveAssignee(assigneeId);
-            if ((old.status() == ActionItemStatus.OPEN || old.status() == ActionItemStatus.IN_PROGRESS)
-                    && assigneeId == null) throw invalid();
+        if (patch == null) throw invalid();
+        if (old.status() == ActionItemStatus.DONE || old.status() == ActionItemStatus.CANCELLED) {
+            throw conflict();
         }
-        if (patch.containsKey("dueDate")) dueDate = asDate(patch.get("dueDate"));
+
+        String title = patch.titlePresent() ? requiredTitle(patch.title()) : old.title();
+        String details = patch.detailsPresent() ? optional(patch.details()) : old.details();
+        UUID assigneeId = patch.assigneePresent() ? patch.assigneeUserId() : old.assigneeUserId();
+        LocalDate dueDate = patch.dueDatePresent() ? patch.dueDate() : old.dueDate();
+        if (patch.assigneePresent() && assigneeId != null) requireActiveAssignee(assigneeId);
+        if ((old.status() == ActionItemStatus.OPEN || old.status() == ActionItemStatus.IN_PROGRESS)
+                && assigneeId == null) throw invalid();
+
+        // An idempotent PATCH with no effective change does not create a new
+        // ETag version or fabricate an audit event.
+        boolean contentChanged = !old.title().equals(title) || !Objects.equals(old.details(), details);
+        boolean assignmentChanged = !Objects.equals(old.assigneeUserId(), assigneeId);
+        boolean dueChanged = !Objects.equals(old.dueDate(), dueDate);
+        if (!contentChanged && !assignmentChanged && !dueChanged) {
+            return visibleForActor(old, actorId);
+        }
 
         int updated = jdbc.update("""
             UPDATE action_items SET title=?,details=?,assignee_user_id=?,due_date=?,updated_at=CURRENT_TIMESTAMP,
                 version=version+1 WHERE id=? AND version=?
             """, title, details, assigneeId, dueDate, id, old.version());
         if (updated != 1) throw preconditionFailed();
-        if (!old.title().equals(title) || !Objects.equals(old.details(), details)) {
+        if (contentChanged) {
             history(id, "CONTENT", content(old.title(), old.details()), content(title, details), actorId);
         }
-        if (!Objects.equals(old.assigneeUserId(), assigneeId)) {
+        if (assignmentChanged) {
             history(id, "ASSIGNEE", string(old.assigneeUserId()), string(assigneeId), actorId);
         }
-        if (!Objects.equals(old.dueDate(), dueDate)) {
+        if (dueChanged) {
             history(id, "DUE_DATE", string(old.dueDate()), string(dueDate), actorId);
         }
         return visibleForActor(byId(id), actorId);
     }
 
     @Transactional public ActionItemView confirm(UUID id, UUID actor, String tag) {
-        return transition(id, actor, tag, ActionItemStatus.OPEN);
+        return transition(id, actor, tag, Command.CONFIRM);
     }
     @Transactional public ActionItemView reject(UUID id, UUID actor, String tag) {
-        return transition(id, actor, tag, ActionItemStatus.CANCELLED);
+        return transition(id, actor, tag, Command.REJECT);
     }
     @Transactional public ActionItemView start(UUID id, UUID actor, String tag) {
-        return transition(id, actor, tag, ActionItemStatus.IN_PROGRESS);
+        return transition(id, actor, tag, Command.START);
     }
     @Transactional public ActionItemView complete(UUID id, UUID actor, String tag) {
-        return transition(id, actor, tag, ActionItemStatus.DONE);
+        return transition(id, actor, tag, Command.COMPLETE);
     }
     @Transactional public ActionItemView cancel(UUID id, UUID actor, String tag) {
-        return transition(id, actor, tag, ActionItemStatus.CANCELLED);
+        return transition(id, actor, tag, Command.CANCEL);
     }
     @Transactional public ActionItemView reopen(UUID id, UUID actor, String tag) {
-        return transition(id, actor, tag, ActionItemStatus.OPEN);
+        return transition(id, actor, tag, Command.REOPEN);
     }
 
-    private ActionItemView transition(UUID id, UUID actor, String tag, ActionItemStatus target) {
+    private ActionItemView transition(UUID id, UUID actor, String tag, Command command) {
         meetingAccess.requireCurrentActiveActor(actor);
         ActionItemView old = byId(id);
         boolean manager = meetingAccess.canManageActionItems(old.meetingId(), actor);
         boolean assignee = actor.equals(old.assigneeUserId()) && isOfficial(old);
-        boolean organizerOnly = target == ActionItemStatus.CANCELLED || (target == ActionItemStatus.OPEN
-            && old.status() == ActionItemStatus.PROPOSED);
-        if (organizerOnly ? !manager : !manager && !assignee) throw notFound();
+        if (ActionItemLifecycle.requiresManager(command) ? !manager : !manager && !assignee) {
+            throw notFound();
+        }
         ActionItemEtags.requireMatch(old, tag);
-        if (!allowed(old.status(), target)) throw conflict();
-        if (target == ActionItemStatus.OPEN && (old.status() == ActionItemStatus.PROPOSED
-                || old.status() == ActionItemStatus.DONE)) {
+        ActionItemStatus target = ActionItemLifecycle.target(command, old.status());
+        if (target == ActionItemStatus.OPEN || target == ActionItemStatus.IN_PROGRESS
+                || target == ActionItemStatus.DONE) {
             if (old.assigneeUserId() == null) throw invalid();
             requireActiveAssignee(old.assigneeUserId());
         }
@@ -270,24 +316,14 @@ public class ActionItemService {
         return visibleForActor(byId(id), actor);
     }
 
-    private static boolean allowed(ActionItemStatus from, ActionItemStatus to) {
-        return switch (from) {
-            case PROPOSED -> to == ActionItemStatus.OPEN || to == ActionItemStatus.CANCELLED;
-            case OPEN -> to == ActionItemStatus.IN_PROGRESS || to == ActionItemStatus.DONE || to == ActionItemStatus.CANCELLED;
-            case IN_PROGRESS -> to == ActionItemStatus.DONE || to == ActionItemStatus.CANCELLED;
-            case DONE -> to == ActionItemStatus.OPEN;
-            case CANCELLED -> false;
-        };
-    }
-
     private void requireActiveAssignee(UUID assignee) {
         if (assignee == null || !meetingAccess.isActiveAssignee(assignee)) throw invalid();
     }
     private ActionItemView byId(UUID id) {
         List<ActionItemView> rows = jdbc.query("""
-            SELECT ai.*, (ai.due_date<CURRENT_DATE AND ai.status NOT IN ('DONE','CANCELLED')) AS overdue
+            SELECT ai.*, (ai.due_date<? AND ai.status NOT IN ('DONE','CANCELLED')) AS overdue
               FROM action_items ai WHERE ai.id=?
-            """, ROW, id);
+            """, ROW, today(), id);
         if (rows.isEmpty()) throw notFound();
         return rows.getFirst();
     }
@@ -320,29 +356,32 @@ public class ActionItemService {
             default -> "ai.created_at";
         }).orElse("ai.created_at");
     }
+    private LocalDate today() { return LocalDate.now(businessZone); }
+
     private static String requiredTitle(String title) {
-        if (title == null || title.isBlank() || title.trim().length() > 500) throw invalid();
-        return title.trim();
+        if (title == null || title.isBlank()) throw invalid();
+        String normalized = title.strip();
+        if (normalized.length() > 500 || invalidTitleControls(normalized)) throw invalid();
+        return normalized;
     }
-    private static String optional(String value) { return value == null || value.isBlank() ? null : value.trim(); }
-    private static String asString(Object value) {
-        if (value == null || !(value instanceof String string)) throw invalid();
-        return string;
+    private static String optional(String value) {
+        if (value == null || value.isBlank()) return null;
+        String normalized = value.strip();
+        if (normalized.length() > 10000 || invalidDetailsControls(normalized)) throw invalid();
+        return normalized;
     }
-    private static UUID asUuid(Object value) {
-        if (value == null) return null;
-        if (value instanceof String string) try { return UUID.fromString(string); }
-        catch (IllegalArgumentException ignored) { throw invalid(); }
-        throw invalid();
+    private static boolean invalidTitleControls(String text) {
+        return text.codePoints().anyMatch(Character::isISOControl);
     }
-    private static LocalDate asDate(Object value) {
-        if (value == null) return null;
-        if (value instanceof String string) try { return LocalDate.parse(string); }
-        catch (RuntimeException ignored) { throw invalid(); }
-        throw invalid();
+    private static boolean invalidDetailsControls(String text) {
+        return text.codePoints().anyMatch(cp -> Character.isISOControl(cp)
+            && cp != '\\n' && cp != '\\t');
     }
     private static String string(Object value) { return value == null ? null : value.toString(); }
-    private static String content(String title, String details) { return title + "\n" + Objects.toString(details, ""); }
+    /** Structured audit values avoid ambiguity when details contain newlines. */
+    private String content(String title, String details) {
+        return json.writeValueAsString(Arrays.asList(title, details));
+    }
     private static String escapeLike(String value) { return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_"); }
     private static ResponseStatusException invalid() { return new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY); }
     private static ResponseStatusException notFound() { return new ResponseStatusException(HttpStatus.NOT_FOUND); }
