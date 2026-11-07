@@ -15,7 +15,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
-/** AI-02/AI-04: V28 and V29 histories upgrade through V30 without rewriting prior checksums. */
+/** AI-02/AI-04/AI-05: V28, V29 and V30 persist safely through latest V31. */
 @ActiveProfiles("test")
 @SpringBootTest
 @Import(PostgresTestConfiguration.class)
@@ -24,7 +24,7 @@ class ActionItemFlywayUpgradeIntegrationTests {
     @Autowired JdbcTemplate jdbc;
 
     @Test
-    void persistedV28MeetingIntelligenceDataUpgradesThroughV30WithoutHistoryRewrites() {
+    void persistedV28MeetingIntelligenceDataUpgradesThroughV31WithoutHistoryRewrites() {
         String schema = "ai02_upgrade_" + UUID.randomUUID().toString().replace("-", "");
         try {
             Flyway previous = Flyway.configure()
@@ -67,9 +67,9 @@ class ActionItemFlywayUpgradeIntegrationTests {
                 SELECT version FROM %s.flyway_schema_history
                 WHERE success AND version IS NOT NULL ORDER BY installed_rank
                 """.formatted(schema), String.class);
-            assertThat(versions).hasSize(30);
-            assertThat(versions.getLast()).isEqualTo("30");
-            assertThat(versions.stream().distinct().count()).isEqualTo(30);
+            assertThat(versions).hasSize(31);
+            assertThat(versions.getLast()).isEqualTo("31");
+            assertThat(versions.stream().distinct().count()).isEqualTo(31);
             assertThat(jdbc.queryForObject("""
                 SELECT checksum FROM %s.flyway_schema_history WHERE version='23'
                 """.formatted(schema), Integer.class)).isEqualTo(checksum23);
@@ -82,7 +82,7 @@ class ActionItemFlywayUpgradeIntegrationTests {
             for (String table : List.of(
                     "meeting_intelligence_source_snapshots", "action_item_batch_receipts",
                     "action_items", "action_item_evidence", "action_item_history",
-                    "meeting_action_item_scopes")) {
+                    "meeting_action_item_scopes", "action_item_creation_idempotency")) {
                 assertThat(jdbc.queryForObject("""
                     SELECT count(*) FROM information_schema.tables
                     WHERE table_schema=? AND table_name=?
@@ -95,7 +95,7 @@ class ActionItemFlywayUpgradeIntegrationTests {
     }
 
     @Test
-    void persistedV29ActionItemSurvivesV30AndLegacyMeetingIsNotAutoClassified() {
+    void persistedV29ActionItemSurvivesV31AndLegacyMeetingIsNotAutoClassified() {
         String schema = "ai04_upgrade_" + UUID.randomUUID().toString().replace("-", "");
         try {
             Flyway old = Flyway.configure()
@@ -146,4 +146,76 @@ class ActionItemFlywayUpgradeIntegrationTests {
             jdbc.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE");
         }
     }
+    @Test
+    void persistedV30ActionItemAndScopeSurviveV31WithoutChecksumChange() {
+        String schema="ai05_upgrade_"+UUID.randomUUID().toString().replace("-","");
+        try {
+            Flyway old=Flyway.configure().dataSource(dataSource).schemas(schema)
+                .locations("classpath:db/migration")
+                .target(MigrationVersion.fromVersion("30")).load();
+            old.migrate();
+            old.validate();
+            UUID actor=UUID.randomUUID(),meeting=UUID.randomUUID(),item=UUID.randomUUID(),
+                unit=UUID.randomUUID();
+            String email="ai05-v30-"+actor+"@example.invalid";
+            jdbc.update("""
+                INSERT INTO %s.organizational_units(id,code,name,status)
+                VALUES (?,?,'V30 unit','ACTIVE')
+                """.formatted(schema),unit,"AI05-"+unit);
+            jdbc.update("""
+                INSERT INTO %s.users(id,email,email_normalized,display_name,password_hash,
+                    global_role,account_status,primary_org_unit_id)
+                VALUES (?,?,?,'V30 owner','test-only','EMPLOYEE','ACTIVE',?)
+                """.formatted(schema),actor,email,email,unit);
+            jdbc.update("""
+                INSERT INTO %s.meetings(id,title,organizer_user_id,created_by_user_id)
+                VALUES (?,'V30 meeting',?,?)
+                """.formatted(schema),meeting,actor,actor);
+            jdbc.update("""
+                INSERT INTO %s.meeting_action_item_scopes(meeting_id,org_unit_id,recorded_by_user_id)
+                VALUES (?,?,?)
+                """.formatted(schema),meeting,unit,actor);
+            jdbc.update("""
+                INSERT INTO %s.action_items(id,meeting_id,title,status,source_type,
+                    assignee_user_id,created_by_user_id)
+                VALUES (?,?,'Preexisting task','OPEN','MANUAL',?,?)
+                """.formatted(schema),item,meeting,actor,actor);
+            Integer v29=jdbc.queryForObject("""
+                SELECT checksum FROM %s.flyway_schema_history WHERE version='29'
+                """.formatted(schema),Integer.class);
+            Integer v30=jdbc.queryForObject("""
+                SELECT checksum FROM %s.flyway_schema_history WHERE version='30'
+                """.formatted(schema),Integer.class);
+            Flyway current=Flyway.configure().dataSource(dataSource).schemas(schema)
+                .locations("classpath:db/migration").load();
+            current.migrate();
+            current.validate();
+            assertThat(jdbc.queryForObject("""
+                SELECT checksum FROM %s.flyway_schema_history WHERE version='29'
+                """.formatted(schema),Integer.class)).isEqualTo(v29);
+            assertThat(jdbc.queryForObject("""
+                SELECT checksum FROM %s.flyway_schema_history WHERE version='30'
+                """.formatted(schema),Integer.class)).isEqualTo(v30);
+            assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM %s.action_items WHERE id=? AND title='Preexisting task'
+                """.formatted(schema),Integer.class,item)).isEqualTo(1);
+            assertThat(jdbc.queryForObject("""
+                SELECT org_unit_id FROM %s.meeting_action_item_scopes WHERE meeting_id=?
+                """.formatted(schema),UUID.class,meeting)).isEqualTo(unit);
+            assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM information_schema.tables
+                WHERE table_schema=? AND table_name='action_item_creation_idempotency'
+                """,Integer.class,schema)).isEqualTo(1);
+            assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM pg_trigger tg
+                JOIN pg_class rel ON tg.tgrelid=rel.oid
+                JOIN pg_namespace ns ON rel.relnamespace=ns.oid
+                WHERE ns.nspname=? AND rel.relname='action_items'
+                  AND tg.tgname='trg_ai05_action_item_transition' AND NOT tg.tgisinternal
+                """,Integer.class,schema)).isEqualTo(1);
+        } finally {
+            jdbc.execute("DROP SCHEMA IF EXISTS "+schema+" CASCADE");
+        }
+    }
+
 }
