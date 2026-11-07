@@ -112,6 +112,9 @@ ExportPersistenceIntegrationTests:
 7. Raw SQL constraint violation tests for unsupported format, illegal transition, immutable identity/pin, READY mutation/deletion.
 8. Deferred commit-level idempotency receipt completeness and cross-actor/meeting FK test.
 9. Idempotency expiry yields a new row but preserves old historical export.
+10. V34→V35 migration against a populated historical schema: existing meeting preserved, migration history/checksums V1–V34 unchanged, new metadata tables usable with zero fabricated export rows.
+
+The four older Action Items/Notifications upgrade suites are explicitly pinned to **target V34** when validating their own historical V31–V34 behavior; without an explicit target they accidentally asserted that no later migration could ever exist. This preserves their original test meaning while allowing V35 and future migrations. A dedicated DE-06 test owns forward-upgrade acceptance for V35.
 
 CI closure criteria: final branch HEAD == API CI SHA, full Maven verify BUILD SUCCESS, tests from this suite executed with 0 failures/errors/skips, no regressions. A previously green DE-05 commit is not sufficient.
 
