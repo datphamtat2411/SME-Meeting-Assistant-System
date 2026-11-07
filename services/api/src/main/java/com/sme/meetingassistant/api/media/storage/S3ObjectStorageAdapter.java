@@ -36,6 +36,7 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
     private final MediaProperties.Storage properties;
     private final S3Client client;
     private final S3Presigner presigner;
+    private final S3Presigner exportPresigner;
 
     public S3ObjectStorageAdapter(MediaProperties properties) {
         this.properties = properties.getStorage();
@@ -53,6 +54,25 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
         this.client = builder.build();
         this.presigner = S3Presigner.builder().endpointOverride(endpoint).region(Region.of(this.properties.getRegion()))
             .credentialsProvider(credentialsProvider()).serviceConfiguration(serviceConfig).build();
+        String publicEndpoint = this.properties.getPublicDownloadEndpoint();
+        if (publicEndpoint == null || publicEndpoint.isBlank()) {
+            this.exportPresigner = this.presigner;
+        } else {
+            URI external = URI.create(publicEndpoint);
+            String externalPath = external.getRawPath();
+            if (!"https".equalsIgnoreCase(external.getScheme())
+                    || external.getHost() == null || external.getUserInfo() != null
+                    || external.getRawQuery() != null || external.getRawFragment() != null
+                    || (externalPath != null && !externalPath.isEmpty()
+                            && !"/".equals(externalPath))) {
+                throw new IllegalStateException(
+                        "Public export download endpoint must be a trusted HTTPS origin");
+            }
+            this.exportPresigner = S3Presigner.builder().endpointOverride(external)
+                .region(Region.of(this.properties.getRegion()))
+                .credentialsProvider(credentialsProvider())
+                .serviceConfiguration(serviceConfig).build();
+        }
     }
 
     /** Dedicated SDK trust, preserving Apache's hostname verification. No global JVM truststore changes. */
@@ -84,6 +104,29 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
         var request = GetObjectRequest.builder().bucket(this.properties.getBucket()).key(objectKey).build();
         return this.presigner.presignGetObject(GetObjectPresignRequest.builder().signatureDuration(ttl)
             .getObjectRequest(request).build()).url().toExternalForm();
+    }
+
+    @Override
+    public String createExportDownloadCapability(String objectKey, Duration ttl,
+            String safeFilename, String contentType) {
+        if (objectKey == null || !objectKey.matches(
+                "^exports/[0-9a-f-]{36}/artifacts/[0-9a-f]{64}[.](pdf|md)$")
+                || safeFilename == null || !safeFilename.matches(
+                "^meeting-minutes-[0-9a-f-]{36}[.](pdf|md)$")
+                || !safeFilename.endsWith(objectKey.endsWith(".pdf") ? ".pdf" : ".md")
+                || ttl == null || ttl.compareTo(Duration.ofSeconds(30)) < 0
+                || ttl.compareTo(Duration.ofMinutes(5)) > 0
+                || !contentType.equals(objectKey.endsWith(".pdf")
+                        ? "application/pdf" : "text/markdown; charset=UTF-8")) {
+            throw new IllegalArgumentException("Invalid private export capability request");
+        }
+        var request = GetObjectRequest.builder().bucket(properties.getBucket())
+            .key(objectKey).responseContentType(contentType)
+            .responseContentDisposition("attachment; filename=\"" + safeFilename + "\"")
+            .responseCacheControl("private, no-store").build();
+        return exportPresigner.presignGetObject(GetObjectPresignRequest.builder()
+            .signatureDuration(ttl).getObjectRequest(request).build())
+            .url().toExternalForm();
     }
 
     @Override
@@ -184,6 +227,7 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
 
     @PreDestroy
     void closeClients() {
+        if (this.exportPresigner != this.presigner) this.exportPresigner.close();
         this.presigner.close();
         this.client.close();
     }
