@@ -8,11 +8,11 @@ zero, including 23/23 full-stack cases, AI lint and offline tests, and Core Mave
 verification. See [evidence](../../../infra/local/diarization-smoke/VERIFICATION.md).
 Inference was mocked; this is not provider approval, production IAM verification,
 or an accuracy evaluation. Provider policy approval and deployment-specific
-infrastructure evidence remain outstanding. Required outcome, retry, speaker,
-export integration and target-deployment evidence remain outstanding. Core records
-durable acceptance measurements and exposes bounded-window Micrometer gauges to
-an in-process registry. A sanitized provider-upload observation is available in
-worker logs, but no worker metrics exporter is configured.
+infrastructure evidence remain outstanding. SPK-12 adds the opt-in private mTLS
+exporter, durable backlog monitoring, dashboards and alerts described below.
+See [current engineering evidence](SPK12_VERIFICATION.md) and the formal
+[production evidence matrix](DIARIZATION_PRODUCTION_READINESS.md). A sanitized
+provider-upload observation remains a log event, not a worker metric exporter.
 
 ## Processing and contracts
 
@@ -215,10 +215,9 @@ and require the upstream contract's separately authorized remediation.
    paused on unresolved delivery already stops intake and preserves unacknowledged
    work. Inspect outstanding stages, leases, outbox and receipts before shutdown.
 
-## Monitoring specification and gaps
+## Monitoring
 
-No diarization dashboard backend is configured by this guide. Existing structured
-logs include startup failure, consuming, valid intake, claim, inference start/end,
+Existing structured logs include startup failure, consuming, valid intake, claim, inference start/end,
 artifact validation, terminal disposition, phase/category failure, pause and shutdown.
 `worker.diarization.finished` carries bounded `duration_ms` for a worker delivery,
 not authoritative stage latency. Terminal disposition events can repeat on broker
@@ -241,10 +240,14 @@ Core's `DiarizationMetrics` registers these **rolling 24-hour gauges**, refreshe
 on demand at most once per 60 seconds per process. They are not lifetime counters;
 the window is `[now-24h, now)`. Values may decrease as records age out. A failed
 refresh returns NaN rather than fabricating zero. Do not sum identical global
-database gauges across replicas. The four indexed aggregate queries scan only the
-window, not transcript segments. Separate queries can observe commits at slightly
-different instants. Gauge names below use Micrometer dot naming; exporter-specific
-name conversion may differ.
+database gauges across replicas. One read-only repeatable-read transaction uses
+database transaction time and five aggregates (plus the time query), each bounded
+by a five-second statement timeout. All gauges on a scrape share the cached snapshot;
+readers do not acquire business-row locks. Window queries use indexed durable
+sources; the separate backlog query covers **all history**, not transcript segments.
+`diarization.metrics.aggregation.healthy` is 1 on success, 0 on failed refresh;
+other gauges become NaN when unavailable. Cache failures last at most the next
+60-second refresh. Gauge names below use Micrometer dot naming.
 
 | Name | Units / bounded tags | Durable source |
 |---|---|---|
@@ -257,6 +260,11 @@ name conversion may differ.
 | `diarization.window.speakers.sum` / `diarization.window.unknown.assignments.sum` | speakers / segments | Immutable accepted measurement counts. |
 | `diarization.window.speakers.bucket` | cumulative attempts; `le=0|1|2|5|10|1000` | Same measurements. |
 | `diarization.window.unknown.assignments.bucket` | cumulative attempts; `le=0|1|5|10|100|16384` | Same measurements. |
+| `diarization.window.lease.expirations` | attempts | Durable `STAGE_LEASE_EXPIRED` receipts within the window. |
+| `diarization.verified.only.outstanding` | unresolved verifications | All verified evidence without a terminal receipt. |
+| `diarization.verified.only.count` | `state=actionable|stale|superseded` | Exclusive classification described below. |
+| `diarization.verified.only.oldest.age.seconds` | seconds | Nonnegative snapshot time minus oldest unresolved `verified_at`; zero for an empty backlog or a clamped nonpositive age. |
+| `diarization.metrics.aggregation.healthy` | 0 or 1 | Per-replica snapshot-read health; independent of business outcomes. |
 
 The receipt, projection, measurement, stage success and resulting job transition
 commit atomically. Receipt uniqueness prevents replay and competing completions from
@@ -269,33 +277,156 @@ accepted receipts remain counted in outcomes but have **no historical measuremen
 current human-reviewed assignments cannot safely reconstruct them. Exclude them
 from speaker/unknown averages, using `accepted.measurements` as denominator.
 
-Core has Micrometer and Actuator, but only health is exposed by the current web
-management configuration and no approved metrics exporter is configured here.
-An operator must provision and verify an authenticated private exporter/collector
-before deployment; no public management endpoint is enabled by this change. A
-verified-only backlog view also requires separately approved state monitoring.
-Never use meeting, user, job, token, text or object key as metric tags.
+### Private scrape configuration
 
-Once a private exporter maps these gauges to the monitoring system, examples are:
+Enable monitoring independently of diarization admission with
+`APP_MONITORING_PRIVATE_ENABLED=true`. It also requires
+`APP_TRANSPORT_PRIVATE_ENABLED=true`, an explicit private or loopback bind
+`APP_TRANSPORT_PRIVATE_ADDRESS`, hostname, port, server certificate/key, issuer CA
+and client CA (the `APP_TRANSPORT_PRIVATE_*` settings). Missing TLS/private binding
+fails startup. Enroll a dedicated `clientAuth` certificate whose only URI service
+identity is **`urn:sme:service:monitoring`**. It has GET-only access to
+`/internal/monitoring/prometheus` and no worker privileges. Workers cannot scrape.
+No header can attest private connectivity or identity. NetworkPolicy/firewall rules
+must restrict the private listener to approved service networks and collectors.
 
-- accepted vs failed: plot `diarization.window.outcomes` grouped by `outcome`;
-- mean execution seconds: `stage.duration.seconds / stage.duration.count` per outcome;
-- latency, speaker and unknown distributions: plot each cumulative `bucket` family;
-- retry frequency: `diarization.window.retries` alongside terminal outcomes;
-- verified-only backlog: use an authorized, indexed state-derived view of
-  verifications lacking terminal receipts; no such gauge is claimed here.
+Use [the Prometheus scrape example](diarization-prometheus.yml), replacing its
+placeholders with approved target/secret mounts. Validate the server DNS SAN and
+CA; never set `insecure_skip_verify`. Keep the client key collector-readable only.
+Use a 30-second scrape interval and a 15-second scrape timeout initially. Investigate
+timeouts using query evidence; do not simply extend the five-second SQL budget.
+Public Actuator exposes only health; both Actuator metrics endpoints remain
+`access=none`. Monitoring and production diarization default off.
 
-Once available, dashboard views should show throughput and stage-latency percentiles,
-accepted versus failed/superseded attempts, category/phase breakdown, explicit retry
-rate, pending/running backlog, expired leases and recovery, verified-only age,
-unknown-assignment distribution and provider-upload-size histogram. Proposed alerts,
-requiring calibration against actual service objectives: startup failure persisting
-10 minutes; authentication failures for 10 minutes; elevated 429 rate over 15 minutes;
-repeated expired leases over 15 minutes; backlog rising for 30 minutes; verified-only
-age over 15 minutes; repeated integrity failures over 15 minutes; optional failure
-rate above an agreed baseline for 30 minutes. Use minimum traffic and sustained
-windows to avoid alerting on isolated transient errors. Separate inference-phase
-provider failures from publication/storage integrity and Core transport failures.
+Only approved diarization gauge families and bounded tags are exported. A sensitive
+tag, non-gauge type or normalized-name collision fails the entire scrape with a
+sanitized 503. Never add meeting/user/job IDs, tokens, text or object keys as tags.
+Add deployment labels **at the collector**, not as registry common tags.
+
+### Dashboard and aggregation semantics
+
+Import [the Grafana dashboard](diarization-dashboard.json), choose the Prometheus
+datasource, environment and cluster; install [recording/alert rules](diarization.rules.yml).
+All targets sharing `(environment, cluster)` must read the same authoritative database.
+Separate databases need separate cluster labels. `max by (...)` deduplicates the
+same database-wide measurements across Core replicas; **never sum replicas**.
+Per-instance `up` and aggregation health remain separate so one healthy replica
+cannot conceal an unhealthy one. Database readers and Prometheus rule fixtures
+test restart reconstruction and two-replica deduplication. Snapshots can differ by
+up to the 60-second refresh interval; max is a conservative approximation, not a
+cross-replica transaction. NaN/no data must render unavailable, never a healthy zero.
+
+Real Prometheus names replace dots with underscores, **and strip reserved `_bucket`
+suffixes for these gauges**. Distribution families are therefore
+`diarization_window_stage_duration{le_seconds=...}`,
+`diarization_window_speakers{le=...}` and
+`diarization_window_unknown_assignments{le=...}`. All other listed names use ordinary
+dot-to-underscore conversion. Socket tests assert the complete real export.
+
+The dashboard plots rolling counts, mean duration (sum/count with zero counts
+excluded), cumulative distributions, retries, backlog states/age, lease expirations,
+health and availability. Cumulative buckets are gauge snapshots, not installed
+histograms. Read a percentile only as the first boundary reaching the desired
+fraction of the total (an upper-bound interval estimate). No interpolated p95 is
+claimed; the final latency boundary is `infinity`, not standard `+Inf`/`le`.
+Do not apply `histogram_quantile`, `rate` or `increase` to these families. Speaker
+and unknown means use `diarization_window_accepted_measurements`, not all accepted
+receipts. There is no installed provider-upload histogram or phase/category metric;
+use sanitized worker logs for those investigations.
+
+Validate locally with `python3 services/ai/ops/validate_monitoring.py` (Docker,
+Prometheus v3.5.0 promtool). It evaluates all 12 actual panel queries, scrape syntax,
+replica deduplication, transient suppression, sustained alerts and missing targets.
+The full engineering gate includes this validator. This does not deploy Grafana,
+Prometheus or Alertmanager; verify actual dashboards and routed notifications in
+the target environment.
+
+### Alerts and initial thresholds
+
+Every threshold is **provisional**, not an approved SLO. Initial rules cover a
+target down or absent for 5 minutes; aggregation unhealthy for 3 minutes; any
+verified-only backlog for 15 minutes; oldest age >900 seconds for 10 minutes;
+net 24h lease-expiration gauge growth >5 over 15 minutes held for 10 minutes;
+24h failure share >20% with ≥20 outcomes held for 30 minutes; and net retry gauge
+growth >5 over 15 minutes with ≥10 retries held for 30 minutes. `delta` measures
+**net change in a rolling gauge**, not a rate or exact new-event count: records
+aging out can offset incoming records. Calibrate with operators and traffic.
+Each alert references a runbook anchor; replace relative references with the
+deployed documentation URL when provisioning. Route to the designated Core/worker
+on-call and validate delivery before canary authorization.
+
+### Verified-only recovery
+
+V32 defines the durable semantics; V33 preserves them while filtering unresolved
+evidence first and computing one latest DIARIZING attempt per relevant job using
+existing indexes. No time cutoff hides old verifications. Terminal accepted **or
+failed** receipts remove evidence from the backlog without deleting it.
+
+Classification precedence is:
+
+1. **Superseded:** a higher-numbered DIARIZING attempt exists for the same job,
+   regardless of the old claim's apparent validity.
+2. **Actionable:** not superseded, stage RUNNING, claim token matches the immutable
+   worker claim and its `urn:sme:service:ai-worker` owner; job RUNNING in DIARIZING
+   with admitted plan; transcript current with pinned revision/dispatch binding;
+   source AVAILABLE with pinned hashes, availability/size/duration and canonical
+   source key; lease strictly later than snapshot time.
+3. **Stale:** every other unresolved verification (including expired lease, changed
+   token/revision/source or no-longer-current transcript/job). Null bindings cannot
+   become actionable.
+
+These states sum to outstanding. The oldest age covers **all three states** and
+is measured from immutable verification time, not last delivery, refresh or retry.
+An old stale record is visible indefinitely; an empty backlog has age zero.
+
+On a sustained alert:
+
+1. Core on-call inspects authorized job/stage and delivery-status evidence; worker
+   on-call stops dedicated diarization intake and drains in-flight work. Keep
+   transcription operational. Preserve the unacknowledged delivery and immutable
+   object. An alert is not authorization to mutate business state.
+2. Reconcile the existing terminal receipt first. `RESULT_ACCEPTED`,
+   `FAILURE_RECORDED` or `SUPERSEDED` with the contract's terminal acknowledgment
+   permit ACK; `RESULT_VERIFIED` never does. Replay/status inspection is not another
+   acceptance. Follow the original delivery protocol, not an ad-hoc broker ACK.
+3. Only an original authorized live owner with the **same completion command ID,
+   event, execution stage, claim token, digest and producer** may retry exact
+   completion while current source/revision, lease and fences remain valid. An
+   actionable gauge alone does not provide that authority or those secrets.
+   Recover the original command only through authorized secure worker state.
+4. For expired claims allow Core's existing lease sweeper to record terminal failure;
+   the former owner cannot publish or renew it. For superseded attempts inspect
+   the newer attempt and terminal delivery disposition; never revive the old token.
+   Stale human revisions remain authoritative. If normal reconciliation cannot
+   resolve evidence, retain it and escalate to the Core lifecycle owner.
+5. After a terminal, retry-eligible failure, an authorized user can request the
+   isolated retry described in the operator runbook: POST job `/retry`,
+   `Idempotency-Key`, `{"stageCode":"DIARIZING"}`. Core eligibility and configured
+   retry limit apply. Never rerun ASR/correction merely to clear this alert.
+6. Confirm a committed terminal receipt and reconciled delivery, inspect fresh
+   metrics after the refresh interval, then authorize resumption of intake.
+   Never fabricate a receipt, update stage status directly, overwrite an artifact
+   or bypass lease authorization.
+
+### Monitoring outages
+
+First check per-replica `up`, collector target `lastError`, certificate expiry/CA/
+URI SAN, private DNS/network and default-off settings. A 401/403 scrape error is an
+observable authorization failure at the collector and is covered by sustained
+exporter-unavailable alerts. TLS rejection occurs before HTTP. The connector Valve
+can reject before application request logging; no denial counter or HTTP-status
+metric is installed. Do not invent an authorization series. Where an approved
+edge/TLS log collector observes denials, route repeated 401/403 or client-certificate
+failures over 10 minutes to security/on-call, without recording identity material.
+Collector target metadata can be inspected read-only through its authorized
+`/api/v1/targets?state=active` endpoint; sanitize `lastError` before incident storage.
+
+If `up=1` but aggregation health=0, examine database connectivity, migration status,
+query timeout and persisted plan evidence. A scrape can succeed while business
+gauges are unavailable. Diagnose before restarting; never infer zero backlog from
+NaN. Restore connectivity/configuration and wait for the next 60-second refresh;
+verify healthy aggregation, backlog and a routed test notification. Monitoring
+recovery does not authorize worker recovery or production activation.
 
 ## Deployment and rollback
 

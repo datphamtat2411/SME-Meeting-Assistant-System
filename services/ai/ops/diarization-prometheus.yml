@@ -1,0 +1,25 @@
+# Merge into an authorized collector's config. These are deployment placeholders.
+global:
+  scrape_interval: 30s
+  evaluation_interval: 1m
+rule_files:
+  - /etc/prometheus/diarization.rules.yml
+scrape_configs:
+  - job_name: core-diarization
+    scheme: https
+    metrics_path: /internal/monitoring/prometheus
+    scrape_timeout: 15s
+    tls_config:
+      ca_file: /run/monitoring/core-ca.crt
+      cert_file: /run/monitoring/monitor.crt
+      key_file: /run/monitoring/monitor.key
+      server_name: core.private.example.invalid
+      min_version: TLS12
+    static_configs:
+      - targets: ['core.private.example.invalid:8443']
+        labels:
+          environment: staging
+          cluster: primary
+# Enroll a clientAuth leaf with exactly URI:urn:sme:service:monitoring.
+# Add each Core replica as a separate private target; never use a public ingress.
+# Supply Alertmanager routing in the target collector's approved configuration.

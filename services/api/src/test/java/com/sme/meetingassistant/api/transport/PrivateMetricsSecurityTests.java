@@ -99,6 +99,7 @@ class PrivateMetricsSecurityTests {
         assertThat(context.getEnvironment().getProperty("app.media.processing.diarization-enabled",Boolean.class)).isFalse();
         try(var client=client("monitor")) {
             var response=get(client,privateBase(),PATH);assertThat(response.statusCode()).isEqualTo(200);
+            Files.writeString(Path.of("target/spk12-prometheus.txt"),response.body());
             assertThat(response.headers().firstValue("Cache-Control")).hasValue("no-store");
             assertThat(response.body()).contains("# TYPE diarization_window_outcomes gauge","diarization_verified_only_outstanding", "diarization_metrics_aggregation_healthy 1.0");
             assertThat(response.body()).doesNotContain("# TYPE diarization_window_stage_duration histogram","jvm_","http_server_","meetingId","transcriptId","claimToken","objectKey");
@@ -107,6 +108,14 @@ class PrivateMetricsSecurityTests {
                 if(line.contains("{")) for(String tag:line.substring(line.indexOf('{')+1,line.indexOf('}')).split(","))
                     assertThat(tag.split("=")[0]).isIn("outcome","le","le_seconds","state");
             }
+            var actual=response.body().lines().filter(l->!l.startsWith("#")&&!l.isBlank())
+                .map(l->l.split("[ {]",2)[0]).collect(java.util.stream.Collectors.toSet());
+            assertThat(actual).containsExactlyInAnyOrderElementsOf(
+                List.of("diarization_window_outcomes","diarization_window_retries","diarization_window_stage_duration_count",
+                    "diarization_window_stage_duration_seconds","diarization_window_stage_duration","diarization_window_accepted_measurements",
+                    "diarization_window_speakers_sum","diarization_window_speakers","diarization_window_unknown_assignments_sum",
+                    "diarization_window_unknown_assignments","diarization_window_lease_expirations","diarization_verified_only_outstanding",
+                    "diarization_verified_only_count","diarization_verified_only_oldest_age_seconds","diarization_metrics_aggregation_healthy"));
         }
     }
     @Test void monitoringIdentityCannotClaimCompleteOrReadWorkerDeliveries() throws Exception {
@@ -128,6 +137,15 @@ class PrivateMetricsSecurityTests {
             .tag("outcome","secret-meeting-identifier").register(registry);
         try(var client=client("monitor")) {
             var response=get(client,privateBase(),PATH);assertThat(response.statusCode()).isEqualTo(503);
+            assertThat(response.body()).isEqualTo("Metrics unavailable.\n");
+        } finally {registry.remove(meter);}
+    }
+    @Test void unapprovedNameCollidingWithAnExportedFamilyFailsClosed() throws Exception {
+        var meter=io.micrometer.core.instrument.Gauge.builder("diarization_verified_only_count",()->99)
+            .tag("state","private-meeting-value").register(registry);
+        try(var client=client("monitor")) {
+            var response=get(client,privateBase(),PATH);
+            assertThat(response.statusCode()).isEqualTo(503);
             assertThat(response.body()).isEqualTo("Metrics unavailable.\n");
         } finally {registry.remove(meter);}
     }

@@ -17,12 +17,17 @@ import org.springframework.boot.micrometer.metrics.autoconfigure.MetricsAutoConf
 import org.springframework.boot.micrometer.metrics.autoconfigure.export.prometheus.PrometheusMetricsExportAutoConfiguration;
 import org.springframework.boot.test.context.ConfigDataApplicationContextInitializer;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.boot.convert.ApplicationConversionService;
+import org.springframework.boot.actuate.endpoint.Access;
 
 class PrivateMetricsConfigurationTests {
     // No @SpringBootTest metrics customizer: exercise production auto-configuration
     // and the actual application.properties, without database or inference startup.
     private final ApplicationContextRunner runtime=new ApplicationContextRunner()
-        .withInitializer(new ConfigDataApplicationContextInitializer())
+        .withInitializer(context->{
+            context.getEnvironment().setConversionService(new ApplicationConversionService());
+            new ConfigDataApplicationContextInitializer().initialize(context);
+        })
         .withConfiguration(AutoConfigurations.of(MetricsAutoConfiguration.class,PrometheusMetricsExportAutoConfiguration.class))
         .withUserConfiguration(PrivateMetricsController.class);
 
@@ -31,10 +36,21 @@ class PrivateMetricsConfigurationTests {
             assertThat(context).hasNotFailed().doesNotHaveBean(PrivateMetricsController.class).doesNotHaveBean(PrometheusMeterRegistry.class);
         });
     }
+    @ParameterizedTest @ValueSource(strings={"none","read-only","unrestricted"})
+    void productionConversionBindsLowercaseActuatorAccess(String value) {
+        runtime.withPropertyValues("management.endpoint.prometheus.access="+value).run(context->{
+            assertThat(context).hasNotFailed();
+            assertThat(context.getEnvironment().getProperty("management.endpoint.prometheus.access",Access.class))
+                .isEqualTo(Access.valueOf(value.replace('-','_').toUpperCase(Locale.ROOT)));
+        });
+    }
     @Test void productionOptInConstructsTheSupportedRegistryWithoutInference() {
         runtime.withPropertyValues("app.monitoring.private.enabled=true").run(context->{
             assertThat(context).hasNotFailed().hasSingleBean(PrometheusMeterRegistry.class).hasSingleBean(PrivateMetricsController.class);
             var registry=context.getBean(PrometheusMeterRegistry.class);
+            assertThat(context.getBeanDefinitionNames()).noneMatch(name->name.toLowerCase(Locale.ROOT).contains("inference"));
+            assertThat(context.getEnvironment().getProperty("management.endpoint.prometheus.access",Access.class)).isEqualTo(Access.NONE);
+            assertThat(context.getEnvironment().getProperty("management.endpoint.metrics.access",Access.class)).isEqualTo(Access.NONE);
             io.micrometer.core.instrument.Gauge.builder("diarization.verified.only.outstanding",()->2).register(registry);
             assertThat(context.getBean(PrivateMetricsController.class).scrape().getBody())
                 .contains("# TYPE diarization_verified_only_outstanding gauge","diarization_verified_only_outstanding 2.0");

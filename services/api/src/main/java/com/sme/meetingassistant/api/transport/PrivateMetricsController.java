@@ -19,10 +19,17 @@ public class PrivateMetricsController {
     @GetMapping(value=PrivateConnector.METRICS_PATH,produces="text/plain; version=0.0.4; charset=utf-8")
     public ResponseEntity<String> scrape() {
         var meters=registry.getMeters().stream().filter(m->DiarizationMetrics.EXPORTED_NAMES.contains(m.getId().getName())).toList();
-        // Common deployment tags are also checked: never accidentally export sensitive tags.
-        if(meters.stream().anyMatch(m->m.getId().getTags().stream().anyMatch(t->!safeTag(t.getKey(),t.getValue()))))
+        // Use the registry's supported conversion: Prometheus removes reserved gauge
+        // suffixes such as _bucket. Dot replacement silently omitted distributions.
+        var convention=registry.config().namingConvention();
+        Set<String> names=meters.stream().map(m->m.getId().getConventionName(convention)).collect(Collectors.toSet());
+        // Check complete selected families, including a non-allowlisted name that
+        // normalizes to an approved family. Common deployment tags also fail closed.
+        if(registry.getMeters().stream().filter(m->names.contains(m.getId().getConventionName(convention)))
+            .anyMatch(m->!DiarizationMetrics.EXPORTED_NAMES.contains(m.getId().getName())
+                || m.getId().getType()!=io.micrometer.core.instrument.Meter.Type.GAUGE
+                || m.getId().getTags().stream().anyMatch(t->!safeTag(t.getKey(),t.getValue()))))
             return ResponseEntity.status(503).header("Cache-Control","no-store").body("Metrics unavailable.\n");
-        Set<String> names=meters.stream().map(m->m.getId().getName().replace('.','_')).collect(Collectors.toSet());
         return ResponseEntity.ok().header("Cache-Control","no-store").body(registry.scrape("text/plain; version=0.0.4; charset=utf-8",names));
     }
     private static boolean safeTag(String key,String value) {

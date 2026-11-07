@@ -40,6 +40,7 @@ def main():
         ("ai-tests", AI, ["uv", "run", "--locked", "pytest", *(["tests"] if args.full_suites else focused),
                            "-m", "not evaluation and not live_provider and not live_infrastructure"]),
         ("ai-build", AI, ["uv", "build"]),
+        ("monitoring-rules", ROOT, ["python3", "services/ai/ops/validate_monitoring.py"]),
         ("core-verify", API, ["./mvnw", "-B", "-ntp", *([] if args.full_suites else [
             "-Dtest=*Diarization*,Spk11FullStackSmokeTests"]), "verify"]),
     ]
