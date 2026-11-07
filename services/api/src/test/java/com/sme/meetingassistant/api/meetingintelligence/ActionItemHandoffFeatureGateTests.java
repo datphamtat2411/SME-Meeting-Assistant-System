@@ -36,7 +36,7 @@ class ActionItemHandoffFeatureGateTests {
         props.getProcessing().setRequiredDownstreamStages(
             List.of("GENERATING_SUMMARY","EXTRACTING_ACTION_ITEMS"));
         var service=new MediaProcessingService(mock(MediaRepository.class),null,null,null,null,props,
-            mock(com.sme.meetingassistant.api.media.worker.TranscriptionWorkerCapability.class));
+            mock(com.sme.meetingassistant.api.media.worker.TranscriptionWorkerCapability.class), null);
         assertThatThrownBy(()->ReflectionTestUtils.invokeMethod(service,"plannedDownstreamStages"))
             .satisfies(ActionItemHandoffFeatureGateTests::is503);
         props.getProcessing().setRequiredDownstreamStages(List.of("GENERATING_SUMMARY"));

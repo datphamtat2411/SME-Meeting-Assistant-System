@@ -31,6 +31,8 @@ class ProductionEndpointExposureTests {
 
 	@Autowired
 	private MockMvc mockMvc;
+	@Autowired
+	private org.springframework.boot.actuate.endpoint.web.WebEndpointsSupplier webEndpoints;
 
 	@Test
 	void productionLivenessAndReadinessRemainAvailableWithoutDetails() throws Exception {
@@ -40,13 +42,26 @@ class ProductionEndpointExposureTests {
 
 	@Test
 	void productionDiagnosticsAndDocumentationAreUnavailable() throws Exception {
-		assertUnavailable("/actuator/metrics");
 		assertUnavailable("/actuator/env");
 		assertUnavailable("/actuator/configprops");
 		assertUnavailable("/actuator/beans");
 		assertUnavailable("/actuator/mappings");
 		assertUnavailable("/v3/api-docs");
 		assertUnavailable("/swagger-ui/index.html");
+	}
+
+	@Test
+	void productionMetricsAreExplicitlyDeniedAndOnlyHealthIsExposed() throws Exception {
+		assertThat(this.webEndpoints.getEndpoints()).extracting(endpoint -> endpoint.getEndpointId().toString())
+				.containsExactly("health");
+		for (String path : java.util.List.of("/actuator/metrics", "/actuator/metrics/diarization.window.outcomes",
+				"/actuator/prometheus", "/internal/monitoring/prometheus")) {
+			var result = this.mockMvc.perform(get(path)
+					.principal(() -> "00000000-0000-0000-0000-000000000001")
+					.header("X-Service-Identity", "urn:sme:service:monitoring"))
+					.andExpect(status().isForbidden()).andReturn();
+			assertThat(result.getResponse().getContentAsString()).doesNotContain("# TYPE", "diarization_", "jvm_");
+		}
 	}
 
 	private void assertHealthProbe(String path) throws Exception {

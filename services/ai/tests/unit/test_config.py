@@ -874,7 +874,7 @@ def test_correction_defaults_match_canonical_service_example():
         assert getattr(defaults, field) == value
     example = load_settings(env_file)
     example_values = {**expected, "transcript_correction_model": "openai/gpt-6-luna",
-                      "transcript_correction_reasoning_effort": "low",
+                      "transcript_correction_reasoning_effort": "medium",
                       "transcript_correction_temperature": None}
     for field, value in example_values.items():
         assert getattr(example, field) == value

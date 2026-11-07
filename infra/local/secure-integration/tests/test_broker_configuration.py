@@ -33,3 +33,19 @@ def test_migration_readiness_rejects_nonempty_or_active_queues():
             "messages_ready": 0, "messages_unacknowledged": 0, "consumers": 0, "retained_dead_letters": 1}])
     with pytest.raises(broker.Blocked):
         broker.migration_ready([{}])
+
+
+def test_diarization_opt_in_has_dedicated_durable_route_and_bounded_recovery():
+    definitions = broker.definitions("fixture", {"publisher": "core", "worker": "ai", "reconciler": "dlq"}, diarization=True)
+    queues = {q["name"]: q for q in definitions["queues"]}
+    assert set(queues) == {broker.WORK, broker.DEAD, broker.DIARIZATION_WORK, broker.DIARIZATION_DEAD}
+    args = queues[broker.DIARIZATION_WORK]["arguments"]
+    assert queues[broker.DIARIZATION_WORK]["durable"] and args["x-queue-type"] == "quorum"
+    assert args["x-delivery-limit"] == 5 and args["x-dead-letter-strategy"] == "at-least-once"
+    assert any(b["destination"] == broker.DIARIZATION_WORK and b["routing_key"] == "processing.diarization.requested"
+               for b in definitions["bindings"])
+    import re
+    worker = next(p for p in definitions["permissions"] if p["user"] == "ai")
+    assert re.fullmatch(worker["read"], broker.WORK)
+    assert re.fullmatch(worker["read"], broker.DIARIZATION_WORK)
+    assert worker["configure"] == worker["write"] == "^$"

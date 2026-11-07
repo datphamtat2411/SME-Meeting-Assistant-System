@@ -171,10 +171,18 @@ function MeetingWorkspace({ meeting }: { meeting: Meeting }) {
   )
   const speakerMappings = getSpeakerMappings(transcript)
 
-  const [activeTab, setActiveTab] = useState<WorkspaceTab>('overview')
+  const isLiveDemo =
+    meeting.id === 'meeting-07-live-support-triage' &&
+    meeting.status === 'in_progress'
+  const [activeTab, setActiveTab] = useState<WorkspaceTab>(
+    isLiveDemo ? 'transcript' : 'overview'
+  )
   const [highlightedSegmentId, setHighlightedSegmentId] = useState<
     string | null
   >(null)
+  const [manualSpeakerMappings, setManualSpeakerMappings] = useState<
+    Record<string, string>
+  >({})
   const [assistantMessages, setAssistantMessages] = useState<
     AssistantMessage[]
   >(() => conversation?.messages ?? [])
@@ -251,7 +259,7 @@ function MeetingWorkspace({ meeting }: { meeting: Meeting }) {
     ])
   }
 
-  if (meeting.status !== 'completed') {
+  if (meeting.status !== 'completed' && !isLiveDemo) {
     return (
       <>
         <MeetingHeader
@@ -283,13 +291,15 @@ function MeetingWorkspace({ meeting }: { meeting: Meeting }) {
         className='gap-6'
       >
         <TabsList className='h-auto w-full justify-start gap-1 overflow-x-auto rounded-none border-b bg-transparent p-0'>
-          <TabsTrigger
-            value='overview'
-            className='min-w-28 rounded-none border-b-2 border-transparent py-3 data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none'
-          >
-            <Sparkles />
-            Overview
-          </TabsTrigger>
+          {!isLiveDemo && (
+            <TabsTrigger
+              value='overview'
+              className='min-w-28 rounded-none border-b-2 border-transparent py-3 data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none'
+            >
+              <Sparkles />
+              Overview
+            </TabsTrigger>
+          )}
           <TabsTrigger
             value='transcript'
             className='min-w-28 rounded-none border-b-2 border-transparent py-3 data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none'
@@ -297,13 +307,15 @@ function MeetingWorkspace({ meeting }: { meeting: Meeting }) {
             <MessageSquare />
             Transcript
           </TabsTrigger>
-          <TabsTrigger
-            value='action-items'
-            className='min-w-28 rounded-none border-b-2 border-transparent py-3 data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none'
-          >
-            <ListChecks />
-            Action Items
-          </TabsTrigger>
+          {!isLiveDemo && (
+            <TabsTrigger
+              value='action-items'
+              className='min-w-28 rounded-none border-b-2 border-transparent py-3 data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none'
+            >
+              <ListChecks />
+              Action Items
+            </TabsTrigger>
+          )}
           <TabsTrigger
             value='ask-ai'
             className='min-w-28 rounded-none border-b-2 border-transparent py-3 data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none'
@@ -329,6 +341,14 @@ function MeetingWorkspace({ meeting }: { meeting: Meeting }) {
             segments={transcript}
             speakerMappings={speakerMappings}
             highlightedSegmentId={highlightedSegmentId}
+            allowManualMapping={isLiveDemo}
+            manualSpeakerMappings={manualSpeakerMappings}
+            onMapSpeaker={(label, name) =>
+              setManualSpeakerMappings((mappings) => ({
+                ...mappings,
+                [label]: name,
+              }))
+            }
           />
         </TabsContent>
         <TabsContent value='action-items'>
@@ -629,10 +649,16 @@ function TranscriptTab({
   segments,
   speakerMappings,
   highlightedSegmentId,
+  allowManualMapping,
+  manualSpeakerMappings,
+  onMapSpeaker,
 }: {
   segments: TranscriptSegment[]
   speakerMappings: SpeakerMapping[]
   highlightedSegmentId: string | null
+  allowManualMapping: boolean
+  manualSpeakerMappings: Record<string, string>
+  onMapSpeaker: (label: string, name: string) => void
 }) {
   return (
     <div className='grid gap-6 xl:grid-cols-[minmax(0,1fr)_280px]'>
@@ -643,7 +669,7 @@ function TranscriptTab({
             Vietnamese Transcript
           </CardTitle>
           <CardDescription>
-            Speaker-aware transcript segments from the completed meeting.
+            Speaker-aware transcript segments from this meeting.
           </CardDescription>
         </CardHeader>
         <CardContent className='pt-6'>
@@ -655,6 +681,7 @@ function TranscriptTab({
                     key={segment.id}
                     segment={segment}
                     highlighted={highlightedSegmentId === segment.id}
+                    mappedName={manualSpeakerMappings[segment.speakerLabel]}
                   />
                 ))}
               </div>
@@ -665,7 +692,12 @@ function TranscriptTab({
         </CardContent>
       </Card>
 
-      <SpeakerMappingCard mappings={speakerMappings} />
+      <SpeakerMappingCard
+        mappings={speakerMappings}
+        allowManualMapping={allowManualMapping}
+        manualSpeakerMappings={manualSpeakerMappings}
+        onMapSpeaker={onMapSpeaker}
+      />
     </div>
   )
 }
@@ -673,12 +705,15 @@ function TranscriptTab({
 export function TranscriptSegmentRow({
   segment,
   highlighted,
+  mappedName,
 }: {
   segment: TranscriptSegment
   highlighted: boolean
+  mappedName?: string
 }) {
-  const participant = segment.participantId
-    ? getMemberById(segment.participantId)
+  const participantId = segment.participantId
+  const participant = participantId
+    ? getMemberById(participantId)
     : undefined
   const speakerLabel = formatSpeakerLabel(segment.speakerLabel)
 
@@ -703,10 +738,12 @@ export function TranscriptSegmentRow({
           )}
           <div className='min-w-0'>
             <p className='truncate font-medium'>
-              {participant?.name ?? speakerLabel}
+              {mappedName?.trim() || participant?.name || speakerLabel}
             </p>
             <p className='text-xs text-muted-foreground'>
-              {participant ? speakerLabel : 'Participant not mapped'}
+              {participant || mappedName?.trim()
+                ? speakerLabel
+                : 'Participant not mapped'}
             </p>
           </div>
         </div>
@@ -734,7 +771,17 @@ type SpeakerMapping = {
   member?: Member
 }
 
-function SpeakerMappingCard({ mappings }: { mappings: SpeakerMapping[] }) {
+function SpeakerMappingCard({
+  mappings,
+  allowManualMapping,
+  manualSpeakerMappings,
+  onMapSpeaker,
+}: {
+  mappings: SpeakerMapping[]
+  allowManualMapping: boolean
+  manualSpeakerMappings: Record<string, string>
+  onMapSpeaker: (label: string, name: string) => void
+}) {
   return (
     <Card className='h-fit'>
       <CardHeader className='border-b'>
@@ -743,7 +790,9 @@ function SpeakerMappingCard({ mappings }: { mappings: SpeakerMapping[] }) {
           Speaker Mapping
         </CardTitle>
         <CardDescription>
-          Detected speaker labels linked to meeting participants.
+          {allowManualMapping
+            ? 'Enter a name for each detected speaker.'
+            : 'Detected speaker labels linked to meeting participants.'}
         </CardDescription>
       </CardHeader>
       <CardContent className='pt-5'>
@@ -758,9 +807,21 @@ function SpeakerMappingCard({ mappings }: { mappings: SpeakerMapping[] }) {
                   {formatSpeakerLabel(mapping.detectedLabel)}
                 </Badge>
                 <span className='text-muted-foreground'>→</span>
-                <span className='min-w-0 truncate font-medium'>
-                  {mapping.member?.name ?? 'Not mapped'}
-                </span>
+                {allowManualMapping ? (
+                  <Input
+                    aria-label={`Name for ${formatSpeakerLabel(mapping.detectedLabel)}`}
+                    className='min-w-0 flex-1'
+                    placeholder='Enter name'
+                    value={manualSpeakerMappings[mapping.detectedLabel] ?? ''}
+                    onChange={(event) =>
+                      onMapSpeaker(mapping.detectedLabel, event.target.value)
+                    }
+                  />
+                ) : (
+                  <span className='min-w-0 truncate font-medium'>
+                    {mapping.member?.name ?? 'Not mapped'}
+                  </span>
+                )}
               </div>
             ))}
           </div>

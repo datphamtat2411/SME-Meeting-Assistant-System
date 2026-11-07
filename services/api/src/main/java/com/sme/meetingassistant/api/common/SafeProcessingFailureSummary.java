@@ -15,6 +15,8 @@ public final class SafeProcessingFailureSummary {
             case "ASR_FAILED", "TRANSCRIPTION_TEMPORARY" -> "Audio transcription failed.";
             case "TRANSCRIPTION_EVIDENCE_INVALID" -> "Transcription evidence validation failed.";
             case "LLM_CORRECTION_FAILED" -> "Whole-meeting contextual correction failed.";
+            case "DIARIZATION_FAILED" -> "Speaker diarization failed.";
+            case "DIARIZATION_SOURCE_STALE" -> "Speaker diarization source changed.";
             case "SUMMARY_FAILED", "SUMMARY_PROVIDER_FAILURE" -> "Meeting summary processing failed.";
             case "PROCESSING_DISPATCH_FAILED" -> "Processing job dispatch failed.";
             default -> "Processing stage failed.";

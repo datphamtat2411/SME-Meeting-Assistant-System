@@ -1,0 +1,79 @@
+rule_files: [diarization.rules.yml]
+evaluation_interval: 1m
+tests:
+  - name: Replica gauges are deduplicated and transient work does not page
+    interval: 1m
+    input_series:
+      - series: 'diarization_window_outcomes{job="core-diarization",environment="test",cluster="a",instance="one",outcome="accepted"}'
+        values: '40+0x60'
+      - series: 'diarization_window_outcomes{job="core-diarization",environment="test",cluster="a",instance="two",outcome="accepted"}'
+        values: '40+0x60'
+      - series: 'diarization_verified_only_outstanding{job="core-diarization",environment="test",cluster="a",instance="one"}'
+        values: '1 1 1 0+0x57'
+      - series: 'up{job="core-diarization",environment="test",cluster="a",instance="one"}'
+        values: '1+0x60'
+    promql_expr_test:
+      - expr: spk12:outcomes24h
+        eval_time: 10m
+        exp_samples:
+          - labels: 'spk12:outcomes24h{environment="test",cluster="a",outcome="accepted"}'
+            value: 40
+      - expr: ALERTS{alertstate="firing"}
+        eval_time: 20m
+        exp_samples: []
+  - name: Sustained operational conditions fire after their hold periods
+    interval: 1m
+    input_series:
+      - series: 'up{job="core-diarization",environment="test",cluster="a",instance="one"}'
+        values: '1+0x90'
+      - series: 'diarization_metrics_aggregation_healthy{job="core-diarization",environment="test",cluster="a",instance="one"}'
+        values: '0+0x90'
+      - series: 'diarization_verified_only_outstanding{job="core-diarization",environment="test",cluster="a",instance="one"}'
+        values: '1+0x90'
+      - series: 'diarization_verified_only_oldest_age_seconds{job="core-diarization",environment="test",cluster="a",instance="one"}'
+        values: '1800+0x90'
+      - series: 'diarization_window_outcomes{job="core-diarization",environment="test",cluster="a",instance="one",outcome="accepted"}'
+        values: '100+0x90'
+      - series: 'diarization_window_outcomes{job="core-diarization",environment="test",cluster="a",instance="one",outcome="failed"}'
+        values: '50+0x90'
+      - series: 'diarization_window_retries{job="core-diarization",environment="test",cluster="a",instance="one"}'
+        values: '10+1x90'
+      - series: 'diarization_window_lease_expirations{job="core-diarization",environment="test",cluster="a",instance="one"}'
+        values: '0+1x90'
+    promql_expr_test:
+      - expr: count(ALERTS{alertstate="firing"})
+        eval_time: 2m
+        exp_samples: []
+      - expr: count by (alertname) (ALERTS{alertstate="firing"})
+        eval_time: 60m
+        exp_samples:
+          - labels: '{alertname="DiarizationAggregationUnhealthy"}'
+            value: 1
+          - labels: '{alertname="DiarizationVerifiedOnlyPersists"}'
+            value: 1
+          - labels: '{alertname="DiarizationOldVerification"}'
+            value: 1
+          - labels: '{alertname="DiarizationLeaseExpirationGrowth"}'
+            value: 1
+          - labels: '{alertname="DiarizationSustainedFailures"}'
+            value: 1
+          - labels: '{alertname="DiarizationSustainedRetryGrowth"}'
+            value: 1
+  - name: Unavailable target alerts
+    interval: 1m
+    input_series:
+      - series: 'up{job="core-diarization",environment="test",cluster="a",instance="one"}'
+        values: '0+0x10'
+    promql_expr_test:
+      - expr: count(ALERTS{alertstate="firing",alertname="DiarizationExporterUnavailable"})
+        eval_time: 6m
+        exp_samples:
+          - labels: '{}'
+            value: 1
+  - name: Entire scrape job missing alerts
+    promql_expr_test:
+      - expr: count(ALERTS{alertstate="firing",alertname="DiarizationExporterUnavailable"})
+        eval_time: 6m
+        exp_samples:
+          - labels: '{}'
+            value: 1

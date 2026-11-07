@@ -51,6 +51,9 @@ public interface ProcessingJobLifecycle {
     /** True while this job has preplanned downstream work not yet started. */
     boolean hasPendingPipelineStages(UUID jobId);
 
+    /** Called in the canonical transcript finalization transaction, after stage success. */
+    void dispatchPlannedDiarization(UUID jobId);
+
     /**
      * Stage-scoped intermediate binary. Claim is required for producer ownership.
      */

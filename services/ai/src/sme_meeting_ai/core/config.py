@@ -7,7 +7,14 @@ from pathlib import Path
 from typing import Annotated, Literal, Self
 from urllib.parse import urlsplit
 
-from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    Field,
+    SecretStr,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict, SettingsError
 
 SERVICE_IDENTITY_PATTERN = r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
@@ -49,6 +56,13 @@ class Settings(BaseSettings):
     http_shutdown_timeout_seconds: float = Field(
         default=30, gt=0, le=300, allow_inf_nan=False,
     )
+    demo_enabled: bool = False
+    demo_max_upload_bytes: int = Field(default=100000000, gt=0, le=100000000)
+    demo_max_concurrent_jobs: int = Field(default=1, ge=1, le=4)
+    demo_max_queued_jobs: int = Field(default=2, ge=0, le=16)
+    demo_max_retained_jobs: int = Field(default=32, ge=1, le=128)
+    demo_result_ttl_seconds: float = Field(default=900, gt=0, le=86400, allow_inf_nan=False)
+    demo_web_origin: str | None = None
     tls_cert_file: Path | None = None
     tls_key_file: Path | None = None
     tls_client_ca_file: Path | None = None
@@ -140,6 +154,24 @@ class Settings(BaseSettings):
     openrouter_api_key: SecretStr | None = Field(
         default=None, validation_alias="OPENROUTER_API_KEY", repr=False,
     )
+    replicate_api_token: SecretStr | None = Field(
+        default=None, validation_alias="REPLICATE_API_TOKEN", repr=False,
+    )
+    diarization_enabled: bool = True
+    diarization_worker_enabled: bool = Field(default=False, validation_alias=AliasChoices(
+        "AI_DIARIZATION_WORKER_ENABLED", "diarizationWorkerEnabled", "diarization_worker_enabled",
+    ))
+    diarization_worker_concurrency: int = Field(default=1, ge=1, le=4)
+    diarization_worker_execution_timeout_seconds: float = Field(default=900, gt=0, le=7200, allow_inf_nan=False)
+    diarization_worker_provider_approved: bool = False
+    diarization_worker_projection_ready: bool = False
+    diarization_worker_s3_access_key_id: SecretStr | None = Field(default=None, repr=False)
+    diarization_worker_s3_secret_access_key: SecretStr | None = Field(default=None, repr=False)
+    diarization_model: str = Field(
+        default="konieshadow/speaker-diarization:c58b6b038f6de30f93eaccd6aecb59d1b9a48ac13b22be000bcffe853efb2c20",
+        pattern=r"^konieshadow/speaker-diarization:[a-f0-9]{64}$",
+    )
+    diarization_timeout_seconds: float = Field(default=300, gt=0, le=3600, allow_inf_nan=False)
     audio_asr_model: str = Field(
         default="openai/whisper-large-v3", min_length=1, max_length=256,
         pattern=r"^[a-zA-Z0-9_./:-]+$",
@@ -223,6 +255,33 @@ class Settings(BaseSettings):
     transcript_correction_temperature: float | None = Field(default=0, ge=0, le=1, allow_inf_nan=False)
     transcript_correction_min_text_ratio: float = Field(default=0.65, gt=0, le=1, allow_inf_nan=False)
     transcript_correction_max_text_ratio: float = Field(default=1.5, ge=1, le=3, allow_inf_nan=False)
+
+    @property
+    def demo_available(self) -> bool:
+        return (self.demo_enabled and self.environment is Environment.DEVELOPMENT
+                and self.http_host in ("127.0.0.1", "::1"))
+
+    @field_validator("demo_web_origin")
+    @classmethod
+    def local_demo_origin(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        parts = urlsplit(value)
+        if (parts.scheme != "http" or parts.hostname not in ("127.0.0.1", "localhost", "::1")
+                or parts.username or parts.password or parts.path or parts.query or parts.fragment
+                or any(ord(c) <= 32 for c in value) or parts.port is None):
+            raise ValueError("Demo Web origin must be an explicit local HTTP origin with port")
+        return value
+
+    @model_validator(mode="after")
+    def local_demo_resources(self) -> Self:
+        if self.demo_available:
+            root = self.audio_temp_dir.resolve()
+            if not any(root.is_relative_to(Path(parent).resolve()) for parent in ("/tmp", "/var/tmp")):
+                raise ValueError("Demo temporary files require /tmp or /var/tmp")
+            if self.demo_max_concurrent_jobs > self.audio_vad_max_concurrent_recordings:
+                raise ValueError("Demo concurrency must fit the configured VAD recording capacity")
+        return self
 
     @field_validator("rabbitmq_url", "s3_endpoint_url", "core_api_base_url")
     @classmethod

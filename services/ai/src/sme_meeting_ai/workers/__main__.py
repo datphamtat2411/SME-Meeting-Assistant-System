@@ -41,7 +41,11 @@ def main() -> int:
         return 1
     configure_logging(settings)
     try:
-        execution = TranscriptionExecution(settings)
+        if settings.diarization_worker_enabled:
+            from .execution import AiWorkerExecution
+            execution = AiWorkerExecution(settings)
+        else:
+            execution = TranscriptionExecution(settings)
         return asyncio.run(run_worker(settings, execution, (lambda: execution,)))
     except KeyboardInterrupt:
         return 0
