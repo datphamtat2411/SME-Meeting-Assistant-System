@@ -518,6 +518,43 @@ class ActionItemProposalSinkIntegrationTests {
     }
 
     @Test
+    void concurrentRealHandoffsWithSameMediaClaimProduceOneCompletedStageAndOneBatch()
+            throws Exception {
+        var pool=Executors.newFixedThreadPool(2);
+        CountDownLatch ready=new CountDownLatch(2),go=new CountDownLatch(1);
+        try {
+            java.util.concurrent.Callable<Object> deliver=() -> {
+                ready.countDown();
+                if (!go.await(15,TimeUnit.SECONDS)) throw new AssertionError("Start timeout");
+                try {
+                    return handoff.handoff(claim(),source,candidates());
+                } catch (RuntimeException rejected) {
+                    return rejected;
+                }
+            };
+            Future<Object> first=pool.submit(deliver),second=pool.submit(deliver);
+            assertThat(ready.await(15,TimeUnit.SECONDS)).isTrue();
+            go.countDown();
+            Object a=first.get(45,TimeUnit.SECONDS),b=second.get(45,TimeUnit.SECONDS);
+            assertThat(List.of(a,b).stream().filter(v -> v instanceof Receipt).count()).isEqualTo(1);
+            assertThat(List.of(a,b).stream().filter(v -> v instanceof RuntimeException).count())
+                .isEqualTo(1);
+            assertThat(receiptCount()).isEqualTo(1);
+            assertThat(proposalCount()).isEqualTo(1);
+            assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM action_item_history WHERE action_item_id=?
+                    AND change_type='STATUS' AND to_value='PROPOSED'
+                """,Integer.class,soleItem())).isEqualTo(1);
+            assertThat(jdbc.queryForObject(
+                "SELECT status FROM processing_stage_runs WHERE id=?",String.class,stage))
+                .isEqualTo("SUCCEEDED");
+        } finally {
+            go.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
     void notReadyTranscriptCannotBeUsedForActionItemExtraction() {
         jdbc.update("UPDATE transcripts SET status='PROCESSING' WHERE id=?",transcript);
         assertThatThrownBy(() -> handoff.handoff(claim(),source,candidates()))
