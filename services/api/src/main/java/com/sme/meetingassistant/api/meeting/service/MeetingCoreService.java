@@ -85,6 +85,9 @@ public class MeetingCoreService implements MeetingMediaAccess, MeetingIntelligen
             }
         }
         meetings.saveAndFlush(meeting);
+        // Meeting owns a stable optional department classification for Action Items.
+        // Existing/historical meetings are NOT silently backfilled from today's directory.
+        meetings.captureActionItemScopeAtCreation(meeting.getId(), actor.getId());
         List<MeetingParticipantEntity> memberships = new ArrayList<>();
         for (UUID participantId : initial) {
             MeetingParticipantEntity membership = new MeetingParticipantEntity(
@@ -358,8 +361,7 @@ public class MeetingCoreService implements MeetingMediaAccess, MeetingIntelligen
     @Override
     @Transactional(readOnly = true)
     public void requireActionItemReadable(UUID meetingId, UUID actorId) {
-        MeetingEntity meeting = mediaMeetingForCurrentActor(meetingId, actorId);
-        if (!hasMeetingReadAccess(meeting, actorId) && !hasScopedActionItemManager(meeting, actorId)) {
+        if (!canReadActionItems(meetingId, actorId)) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND);
         }
     }
@@ -382,22 +384,24 @@ public class MeetingCoreService implements MeetingMediaAccess, MeetingIntelligen
 
     @Override
     @Transactional(readOnly = true)
-    public void requireManageActionItems(UUID meetingId, UUID actorId) {
-        if (!canManageActionItems(meetingId, actorId)) throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+    public boolean isOrganizer(UUID meetingId, UUID actorId) {
+        return mediaMeetingForCurrentActor(meetingId, actorId).getOrganizerUserId().equals(actorId);
     }
 
     @Override
     @Transactional(readOnly = true)
-    public boolean isOrganizer(UUID meetingId, UUID actorId) {
-        MeetingEntity meeting = mediaMeetingForCurrentActor(meetingId, actorId);
-        return meeting.getOrganizerUserId().equals(actorId);
+    public void requireManageActionItems(UUID meetingId, UUID actorId) {
+        if (!canManageActionItems(meetingId, actorId)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+        }
     }
 
     @Override
     @Transactional(readOnly = true)
     public boolean canManageActionItems(UUID meetingId, UUID actorId) {
         MeetingEntity meeting = mediaMeetingForCurrentActor(meetingId, actorId);
-        return meeting.getOrganizerUserId().equals(actorId) || hasScopedActionItemManager(meeting, actorId);
+        return meeting.getOrganizerUserId().equals(actorId)
+            || hasScopedActionItemManager(meeting, actorId);
     }
 
     @Override
@@ -408,16 +412,17 @@ public class MeetingCoreService implements MeetingMediaAccess, MeetingIntelligen
 
     @Override
     @Transactional(readOnly = true)
-    public List<UUID> actionItemManagerMeetingIds(UUID actorId) {
-        UserEntity actor = authorization.requireActiveActor();
-        if (!actor.getId().equals(actorId)) throw new ResponseStatusException(HttpStatus.NOT_FOUND);
-        if (actor.getGlobalRole() != com.sme.meetingassistant.api.userorganization.entity.GlobalRole.DEPARTMENT_MANAGER) {
-            return List.of();
-        }
-        var scope = authorization.requireDirectoryManagementScope();
-        if (scope.allUnits()) return meetings.findAll().stream().map(MeetingEntity::getId).toList();
-        if (scope.unitIds().isEmpty()) return List.of();
-        return meetings.findIdsByOrganizerOrgUnitIn(scope.unitIds());
+    public boolean canReadMeetingContent(UUID meetingId, UUID actorId) {
+        MeetingEntity meeting = mediaMeetingForCurrentActor(meetingId, actorId);
+        return hasMeetingReadAccess(meeting, actorId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public boolean canReadActionItems(UUID meetingId, UUID actorId) {
+        MeetingEntity meeting = mediaMeetingForCurrentActor(meetingId, actorId);
+        return hasMeetingReadAccess(meeting, actorId)
+            || hasScopedActionItemManager(meeting, actorId);
     }
 
     private boolean hasMeetingReadAccess(MeetingEntity meeting, UUID actorId) {
@@ -425,16 +430,17 @@ public class MeetingCoreService implements MeetingMediaAccess, MeetingIntelligen
             || participants.existsByMeetingIdAndUserIdAndRemovedAtIsNull(meeting.getId(), actorId);
     }
 
-    /** Managers may manage only action items belonging to meetings organized inside their granted unit scope. */
+    /**
+     * Management-scope rows grant directory powers; Action Item visibility
+     * additionally requires a stable, Meeting-owned unit classification.
+     * Neither historical organizer transfers nor unscoped legacy meetings
+     * can confer implicit rights.
+     */
     private boolean hasScopedActionItemManager(MeetingEntity meeting, UUID actorId) {
-        var actor = authorization.requireActiveActor();
-        if (!actor.getId().equals(actorId)
-                || actor.getGlobalRole() != com.sme.meetingassistant.api.userorganization.entity.GlobalRole.DEPARTMENT_MANAGER) {
-            return false;
-        }
-        UUID organizerUnit = users.activePrimaryOrgUnitId(meeting.getOrganizerUserId()).orElse(null);
-        if (organizerUnit == null) return false;
-        return authorization.requireDirectoryManagementScope().includes(organizerUnit);
+        UserEntity current = authorization.requireActiveActor();
+        return current.getId().equals(actorId)
+            && current.getGlobalRole() == com.sme.meetingassistant.api.userorganization.entity.GlobalRole.DEPARTMENT_MANAGER
+            && meetings.hasActiveGrantedActionItemScope(meeting.getId(), actorId);
     }
 
     @Override

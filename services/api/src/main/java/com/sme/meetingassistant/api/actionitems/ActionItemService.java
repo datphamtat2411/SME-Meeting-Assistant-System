@@ -56,40 +56,56 @@ public class ActionItemService {
         return byId(id);
     }
 
+    /**
+     * Detail and collection use the same resource rights. Only a *confirmed*
+     * assignment (or manual OPEN work) extends read access outside the meeting.
+     * Mere AI suggestions, including rejected proposals with a prefilled
+     * assignee, never become a read capability.
+     */
     @Transactional(readOnly = true)
     public ActionItemView detail(UUID id, UUID actorId) {
         meetingAccess.requireCurrentActiveActor(actorId);
         ActionItemView item = byId(id);
-        if (!actorId.equals(item.assigneeUserId())) {
-            meetingAccess.requireActionItemReadable(item.meetingId(), actorId);
+        boolean meetingContent = meetingAccess.canReadMeetingContent(item.meetingId(), actorId);
+        if (!meetingContent
+                && !meetingAccess.canReadActionItems(item.meetingId(), actorId)
+                && !(actorId.equals(item.assigneeUserId()) && isOfficial(item))) {
+            throw notFound();
         }
-        return item;
+        return meetingContent ? item : limitedActionItemView(item);
     }
 
     @Transactional(readOnly = true)
     public Page<ActionItemView> list(UUID actorId, UUID meetingId, ActionItemStatus status,
             String q, String assignee, Boolean overdue, Pageable pageable) {
         meetingAccess.requireCurrentActiveActor(actorId);
-        boolean managerVisible = false;
-        List<UUID> managedMeetingIds = List.of();
-        if (meetingId != null) {
-            meetingAccess.requireActionItemReadable(meetingId, actorId);
-            managerVisible = meetingAccess.canManageActionItems(meetingId, actorId);
-        } else {
-            managedMeetingIds = meetingAccess.actionItemManagerMeetingIds(actorId);
-        }
-
-        String managerMeetingPredicate = managedMeetingIds.isEmpty() ? ""
-            : " OR ai.meeting_id IN (" + String.join(",", java.util.Collections.nCopies(managedMeetingIds.size(), "?")) + ")";
+        // No preflight requireActionItemReadable(meetingId): an official
+        // assignee outside the meeting may filter their own work by meeting.
+        // Unknown/unauthorized meetingId values yield the same empty result.
         StringBuilder where = new StringBuilder("""
             FROM action_items ai JOIN meetings meeting ON meeting.id=ai.meeting_id
-            WHERE (meeting.organizer_user_id=? OR ai.assignee_user_id=? OR EXISTS (
-                SELECT 1 FROM meeting_participants participant WHERE participant.meeting_id=ai.meeting_id
-                  AND participant.user_id=? AND participant.removed_at IS NULL) OR (?=true AND ai.meeting_id=?)
-            """).append(managerMeetingPredicate).append(")");
-        List<Object> params = new ArrayList<>(List.of(actorId, actorId, actorId, managerVisible,
-            meetingId == null ? new UUID(0, 0) : meetingId));
-        params.addAll(managedMeetingIds);
+            WHERE (
+                meeting.organizer_user_id=?
+                OR EXISTS (
+                    SELECT 1 FROM meeting_participants participant
+                     WHERE participant.meeting_id=ai.meeting_id
+                       AND participant.user_id=? AND participant.removed_at IS NULL)
+                OR (ai.assignee_user_id=? AND
+                    (ai.source_type='MANUAL' OR ai.confirmed_by_user_id IS NOT NULL))
+                OR EXISTS (
+                    SELECT 1 FROM meeting_action_item_scopes scope
+                    JOIN organizational_units unit ON unit.id=scope.org_unit_id
+                       AND unit.status='ACTIVE'
+                    JOIN manager_scope_units grant_record
+                       ON grant_record.org_unit_id=scope.org_unit_id
+                    JOIN users manager_actor ON manager_actor.id=grant_record.user_id
+                       AND manager_actor.account_status='ACTIVE'
+                       AND manager_actor.global_role='DEPARTMENT_MANAGER'
+                    WHERE scope.meeting_id=ai.meeting_id
+                      AND grant_record.user_id=?)
+            )
+            """);
+        List<Object> params = new ArrayList<>(List.of(actorId, actorId, actorId, actorId));
         if (meetingId != null) { where.append(" AND ai.meeting_id=?"); params.add(meetingId); }
         if (status != null) { where.append(" AND ai.status=?"); params.add(status.name()); }
         if (assignee != null && !assignee.isBlank()) {
@@ -114,15 +130,45 @@ public class ActionItemService {
                 : " AND (ai.due_date IS NULL OR ai.due_date>=CURRENT_DATE OR ai.status IN ('DONE','CANCELLED'))");
         }
 
+        // COUNT and LIMIT/OFFSET share one permission-filtered FROM/WHERE.
+        // Return minimal item-only projection for non-members (assignees,
+        // scoped managers); do not reveal processing job or reviewer identities.
         Long total = jdbc.queryForObject("SELECT count(*) " + where, Long.class, params.toArray());
-        String sql = "SELECT ai.*, (ai.due_date<CURRENT_DATE AND ai.status NOT IN ('DONE','CANCELLED')) AS overdue "
-            + where + " ORDER BY " + sortColumn(pageable) + " "
+        String sql = """
+            SELECT ai.*, (ai.due_date<CURRENT_DATE AND ai.status NOT IN ('DONE','CANCELLED')) AS overdue,
+                   (meeting.organizer_user_id=? OR EXISTS (
+                        SELECT 1 FROM meeting_participants visible
+                         WHERE visible.meeting_id=ai.meeting_id AND visible.user_id=?
+                           AND visible.removed_at IS NULL)) AS meeting_content_visible
+            """ + where + " ORDER BY " + sortColumn(pageable) + " "
             + pageable.getSort().stream().findFirst().map(order -> order.getDirection().name()).orElse("DESC")
             + ", ai.id LIMIT ? OFFSET ?";
-        params.add(pageable.getPageSize());
-        params.add(pageable.getOffset());
-        List<ActionItemView> items = jdbc.query(sql, ROW, params.toArray());
+        List<Object> pageParams = new ArrayList<>(List.of(actorId, actorId));
+        pageParams.addAll(params);
+        pageParams.add(pageable.getPageSize());
+        pageParams.add(pageable.getOffset());
+        List<ActionItemView> items = jdbc.query(sql, (rs, row) -> {
+            ActionItemView item = map(rs, row);
+            return rs.getBoolean("meeting_content_visible") ? item : limitedActionItemView(item);
+        }, pageParams.toArray());
         return new PageImpl<>(items, pageable, total == null ? 0 : total);
+    }
+
+    private static boolean isOfficial(ActionItemView item) {
+        return "MANUAL".equals(item.sourceType()) || item.confirmedByUserId() != null;
+    }
+
+    /**
+     * An assignee or manager may see *the task* without general meeting
+     * content privileges. Omit sensitive producer/job and reviewer identities.
+     * Meeting ID is retained as an opaque reference, not a content capability.
+     */
+    private static ActionItemView limitedActionItemView(ActionItemView item) {
+        return new ActionItemView(
+            item.id(), item.meetingId(), item.title(), item.details(), item.status(),
+            item.assigneeUserId(), item.dueDate(), item.overdue(), item.sourceType(),
+            null, null, null, null, null, null, null, null,
+            item.version(), item.createdAt(), item.updatedAt());
     }
 
     @Transactional
@@ -188,7 +234,7 @@ public class ActionItemService {
         meetingAccess.requireCurrentActiveActor(actor);
         ActionItemView old = byId(id);
         boolean manager = meetingAccess.canManageActionItems(old.meetingId(), actor);
-        boolean assignee = actor.equals(old.assigneeUserId());
+        boolean assignee = actor.equals(old.assigneeUserId()) && isOfficial(old);
         boolean organizerOnly = target == ActionItemStatus.CANCELLED || (target == ActionItemStatus.OPEN
             && old.status() == ActionItemStatus.PROPOSED);
         if (organizerOnly ? !manager : !manager && !assignee) throw notFound();
