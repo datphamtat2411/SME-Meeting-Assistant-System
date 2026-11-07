@@ -671,7 +671,10 @@ class ActionItemsIntegrationTests {
         UUID item=createManual(outsider.getId(),null);
         MvcResult official=mvc.perform(get("/api/v1/action-items/{id}",item)
                 .principal(principal(outsider))).andExpect(status().isOk()).andReturn();
-        jdbc.update("UPDATE users SET account_status='INACTIVE' WHERE id=?",outsider.getId());
+        // This test is transactional: update the managed JPA entity as well,
+        // so identity-cache reads cannot return an earlier ACTIVE snapshot.
+        ReflectionTestUtils.setField(outsider, "accountStatus", AccountStatus.INACTIVE);
+        users.saveAndFlush(outsider);
 
         // A deactivated assignee retains database provenance, not API permissions.
         assertThat(jdbc.queryForObject(
