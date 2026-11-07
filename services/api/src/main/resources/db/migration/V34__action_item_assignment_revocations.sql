@@ -26,7 +26,8 @@ BEGIN
         TG_TABLE_SCHEMA)
         INTO history_row USING NEW.action_item_id, NEW.history_id;
 
-    IF NOT FOUND OR item_row.version IS NULL
+    -- EXECUTE does not set PL/pgSQL FOUND; validate the actual row values.
+    IF item_row.version IS NULL
        OR item_row.version <> NEW.action_item_version
        OR item_row.assignee_user_id IS DISTINCT FROM NEW.assignee_user_id
        OR item_row.status NOT IN ('OPEN', 'IN_PROGRESS')
