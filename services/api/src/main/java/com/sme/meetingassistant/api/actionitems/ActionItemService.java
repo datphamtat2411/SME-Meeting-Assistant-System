@@ -375,7 +375,7 @@ public class ActionItemService {
     }
     private static boolean invalidDetailsControls(String text) {
         return text.codePoints().anyMatch(cp -> Character.isISOControl(cp)
-            && cp != '\\n' && cp != '\\t');
+            && cp != '\n' && cp != '\t');
     }
     private static String string(Object value) { return value == null ? null : value.toString(); }
     /** Structured audit values avoid ambiguity when details contain newlines. */
