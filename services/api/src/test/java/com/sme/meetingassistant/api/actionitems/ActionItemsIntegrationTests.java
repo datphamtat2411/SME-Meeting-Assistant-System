@@ -125,52 +125,17 @@ class ActionItemsIntegrationTests {
             .andExpect(status().isOk());
     }
 
-    @Test void aiProposalRemainsProposedUntilAssigneeIsSetAndHumanConfirms() throws Exception {
-        UUID mediaId = UUID.randomUUID();
-        UUID jobId = UUID.randomUUID();
-        UUID transcriptId = UUID.randomUUID();
-        UUID segmentId = UUID.randomUUID();
-        jdbc.update("""
-            INSERT INTO meeting_media(id,meeting_id,source_type,status,object_key,pending_object_key,content_type,
-                expected_size_bytes,size_bytes,duration_ms,uploaded_by_user_id,available_at)
-            VALUES (?,?,'UPLOAD','AVAILABLE',?,?, 'audio/wav',10,10,1000,?,CURRENT_TIMESTAMP)
-            """, mediaId, meetingId, "action-items/final/" + mediaId,
-            "action-items/pending/" + mediaId, organizer.getId());
-        jdbc.update("""
-            INSERT INTO processing_jobs(id,meeting_id,source_media_id,status,requested_by_user_id,queued_at)
-            VALUES (?,?,?,'QUEUED',?,CURRENT_TIMESTAMP)
-            """, jobId, meetingId, mediaId, organizer.getId());
-        jdbc.update("""
-            INSERT INTO transcripts(id,meeting_id,source_media_id,processing_job_id,version_number,
-                language_code,status,is_current,duration_ms,finalized_at)
-            VALUES (?,?,?,?,1,'en','READY',true,1000,CURRENT_TIMESTAMP)
-            """, transcriptId, meetingId, mediaId, jobId);
-        jdbc.update("""
-            INSERT INTO transcript_segments(id,transcript_id,ordinal,start_ms,end_ms,current_text,quality_status)
-            VALUES (?,?,0,0,1000,'Send the brief','ACCEPTED')
-            """, segmentId, transcriptId);
+    @Test void legacySingleProposalPortFailsClosedWithoutForgedBatchProvenance() {
+        var proposal = new ActionItemProposal(meetingId, UUID.randomUUID(), "candidate-1",
+            "Send the project brief", null, null, null, List.of(UUID.randomUUID()));
 
-        var proposal = proposals.propose(new ActionItemProposal(meetingId, jobId, "candidate-1",
-            "Send the project brief", null, null, null, List.of(segmentId)));
-        assertThat(proposal.status()).isEqualTo(ActionItemStatus.PROPOSED);
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM action_item_evidence WHERE action_item_id=?",
-            Integer.class, proposal.id())).isEqualTo(1);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> proposals.propose(proposal))
+            .isInstanceOf(org.springframework.web.server.ResponseStatusException.class)
+            .hasMessageContaining("503");
 
-        String tag = ActionItemEtags.of(proposal);
-        mvc.perform(post("/api/v1/action-items/{id}/confirm", proposal.id()).principal(principal(organizer))
-                .header(HttpHeaders.IF_MATCH, tag))
-            .andExpect(status().isUnprocessableEntity());
-
-        MvcResult assigned = mvc.perform(patch("/api/v1/action-items/{id}", proposal.id())
-                .principal(principal(organizer)).header(HttpHeaders.IF_MATCH, tag)
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(json.writeValueAsString(Map.of("assigneeUserId", assignee.getId()))))
-            .andExpect(status().isOk()).andReturn();
-        mvc.perform(post("/api/v1/action-items/{id}/confirm", proposal.id()).principal(principal(organizer))
-                .header(HttpHeaders.IF_MATCH, assigned.getResponse().getHeader(HttpHeaders.ETAG)))
-            .andExpect(status().isOk());
-        assertThat(jdbc.queryForObject("SELECT status FROM action_items WHERE id=?", String.class, proposal.id()))
-            .isEqualTo("OPEN");
+        assertThat(jdbc.queryForObject(
+            "SELECT count(*) FROM action_items WHERE meeting_id=? AND source_type='AI_EXTRACTED'",
+            Integer.class, meetingId)).isZero();
     }
 
     @Test void departmentManagerSeesAndManagesOnlyActionItemsWithinGrantedOrganizerUnit() throws Exception {
