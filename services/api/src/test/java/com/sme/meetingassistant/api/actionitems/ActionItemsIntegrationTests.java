@@ -437,7 +437,7 @@ class ActionItemsIntegrationTests {
         assertThat(body(reopened).path("data").path("completedByUserId").isNull()).isTrue();
         assertThat(jdbc.queryForObject(
             "SELECT count(*) FROM action_item_history WHERE action_item_id=? AND change_type='STATUS'",
-            Integer.class,manual)).isEqualTo(4);
+            Integer.class,manual)).isEqualTo(3); // OPEN(create), DONE, OPEN(reopen)
         assertThat(jdbc.queryForObject(
             "SELECT status FROM action_items WHERE id=?",String.class,manual)).isEqualTo("OPEN");
 
