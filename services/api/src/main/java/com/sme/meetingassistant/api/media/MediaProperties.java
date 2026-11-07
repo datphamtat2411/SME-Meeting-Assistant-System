@@ -28,6 +28,11 @@ public class MediaProperties {
         private boolean pathStyleAccess = true;
         private boolean createBucketIfMissing;
         private String caFile;
+        // Optional browser-reachable HTTPS endpoint for presigning exports.
+        // Never use an internal container-only hostname in a user capability.
+        private String publicDownloadEndpoint;
+        public String getPublicDownloadEndpoint() { return publicDownloadEndpoint; }
+        public void setPublicDownloadEndpoint(String value) { publicDownloadEndpoint = value; }
         public String getCaFile() { return caFile; }
         public void setCaFile(String value) { caFile = value; }
         public String getEndpoint() { return endpoint; }

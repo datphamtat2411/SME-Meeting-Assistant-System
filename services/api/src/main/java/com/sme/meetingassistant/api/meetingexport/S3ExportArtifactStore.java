@@ -11,7 +11,7 @@ import org.springframework.stereotype.Component;
  * Namespace is server-generated; never accept a user-supplied storage key.
  */
 @Component
-public final class S3ExportArtifactStore implements ExportArtifactStore {
+public final class S3ExportArtifactStore implements ExportArtifactStore, ExportDownloadStore {
     private static final int MAX_ARTIFACT_BYTES = 32 * 1024 * 1024;
     private final ObjectStorage storage;
 
@@ -62,6 +62,48 @@ public final class S3ExportArtifactStore implements ExportArtifactStore {
         } catch (IOException | RuntimeException ex) {
             if (ex instanceof IntegrityFailure integrity) throw integrity;
             throw new StorageFailure("Private export storage read failed", ex);
+        }
+    }
+
+    /**
+     * Downloads are NOT issued against an unverified READY record.
+     * Rechecking the complete object digest costs one bounded read (32 MiB
+     * maximum), but prevents issuing capabilities to corrupted/replaced data.
+     * DE-12 may benchmark a trusted checksum-backed optimization later.
+     */
+    @Override
+    public String createVerifiedCapability(ExportRecord record, java.time.Duration ttl) {
+        if (record == null || record.status() != ExportStatus.READY
+                || record.artifactSha256() == null
+                || record.artifactSizeBytes() == null
+                || record.artifactSizeBytes() < 1
+                || record.artifactSizeBytes() > MAX_ARTIFACT_BYTES
+                || record.readyAt() == null
+                || !ExportDigests.artifactKey(record.id(), record.format(),
+                        record.artifactSha256()).equals(record.objectKey())) {
+            throw new IntegrityFailure("Persisted export metadata does not match READY artifact");
+        }
+        String contentType = record.format() == ExportFormat.PDF
+                ? "application/pdf" : "text/markdown; charset=UTF-8";
+        try {
+            var head = storage.head(record.objectKey());
+            if (head.sizeBytes() != record.artifactSizeBytes()
+                    || !contentType.equals(head.contentType())) {
+                throw new IntegrityFailure("Export object metadata mismatch");
+            }
+            // Whole-content integrity proof; S3 ETag alone is not a SHA-256.
+            byte[] bytes = storage.readBounded(record.objectKey(),
+                    Math.toIntExact(record.artifactSizeBytes()));
+            if (bytes.length != record.artifactSizeBytes()
+                    || !record.artifactSha256().equals(ExportSnapshotCodec.sha256(bytes))) {
+                throw new IntegrityFailure("Export object checksum mismatch");
+            }
+            String filename = "meeting-minutes-" + record.id() + "." + record.format().extension();
+            return storage.createExportDownloadCapability(record.objectKey(), ttl,
+                    filename, contentType);
+        } catch (IOException | RuntimeException ex) {
+            if (ex instanceof IntegrityFailure integrity) throw integrity;
+            throw new StorageFailure("Verified private export capability failed", ex);
         }
     }
 

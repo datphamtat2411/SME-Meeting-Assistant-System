@@ -9,6 +9,14 @@ import java.util.List;
 public interface ObjectStorage {
     String createUploadCapability(String objectKey, String contentType, long contentLength, Duration ttl);
     String createDownloadCapability(String objectKey, Duration ttl);
+    /**
+     * Export-only presigning with bounded TTL and server-generated download
+     * metadata. S3 implementation signs response headers into the URL.
+     */
+    default String createExportDownloadCapability(String objectKey, Duration ttl,
+            String safeFilename, String contentType) {
+        throw new UnsupportedOperationException("Private export download not installed.");
+    }
     StoredObject head(String objectKey);
     void downloadTo(String objectKey, Path destination) throws IOException;
     /** Bounded private control-result read. Implementations must enforce the limit during streaming. */
