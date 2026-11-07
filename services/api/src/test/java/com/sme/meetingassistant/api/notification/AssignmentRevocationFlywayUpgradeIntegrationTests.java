@@ -80,7 +80,8 @@ class AssignmentRevocationFlywayUpgradeIntegrationTests {
                 """.formatted(schema), Integer.class);
 
             Flyway upgraded = Flyway.configure().dataSource(dataSource).schemas(schema)
-                .locations("classpath:db/migration").load();
+                .locations("classpath:db/migration")
+                .target(MigrationVersion.fromVersion("34")).load();
             upgraded.migrate();
             upgraded.validate();
 

@@ -358,12 +358,12 @@ class DiarizationMetricsIntegrationTests extends DiarizationIntegrationFixture {
             SELECT gen_random_uuid(),job_id,event_id,stage_id,'FAILURE_RECORDED','DIARIZATION_TIMEOUT',true FROM spk12_attempts WHERE NOT unresolved
             """);
     }
-    @Test void v32UpgradePreservesEvidenceAndClassification() throws Exception {
+    @Test void v38UpgradePreservesEvidenceAndClassification() throws Exception {
         verified();String schema="spk12_"+UUID.randomUUID().toString().replace("-","");
         try {
             var source=jdbc.getDataSource();
             org.flywaydb.core.Flyway.configure().dataSource(source).schemas(schema).defaultSchema(schema)
-                .locations("classpath:db/migration").target("32").load().migrate();
+                .locations("classpath:db/migration").target("38").load().migrate();
             transactions.executeWithoutResult(tx->{
                 jdbc.execute("SET LOCAL search_path TO "+schema+",public");
                 for(String table:List.of("users","meetings","meeting_media","processing_jobs","processing_stage_runs",
