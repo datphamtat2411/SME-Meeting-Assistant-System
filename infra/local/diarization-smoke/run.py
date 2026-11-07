@@ -59,12 +59,12 @@ def main():
                     report = API / "target/surefire-reports/TEST-com.sme.meetingassistant.api.transport.Spk11FullStackSmokeTests.xml"
                     try:
                         suite = ET.parse(report).getroot()
-                        if int(suite.attrib["tests"]) < 1 or any(int(suite.attrib.get(k, "0")) for k in ("skipped", "errors", "failures")):
+                        if int(suite.attrib["tests"]) < 23 or any(int(suite.attrib.get(k, "0")) for k in ("skipped", "errors", "failures")):
                             code = 1
                     except (OSError, KeyError, ValueError, ET.ParseError):
                         code = 1
                     if code:
-                        log.write("\nSPK-11 full-stack evidence missing, skipped, or unsuccessful.\n")
+                        log.write("\nSPK-11 full-stack evidence missing, fewer than 23 cases, skipped, or unsuccessful.\n")
             except (OSError, subprocess.TimeoutExpired):
                 code = 124
         results.append(dict(check=name, exitCode=code, seconds=round(time.monotonic()-start, 2)))

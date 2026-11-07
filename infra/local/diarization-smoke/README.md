@@ -1,5 +1,31 @@
 # SPK-11 reliability gate
 
+
+> **MERGE-06 integrated gate:** on `integration/speaker-diarization`, the
+> `Diarization Full-Stack CI` workflow runs the same
+> `python3 infra/local/diarization-smoke/run.py --full-stack --full-suites`
+> command against disposable infrastructure. A successful API CI or AI CI run
+> alone does **not** establish this opt-in full-stack smoke passed. The gate
+> requires **at least 23 executed, zero skipped, zero failing** SPK-11 cases,
+> plus the offline AI/Core suites and monitoring-rule validation. See the
+> workflow run on the exact commit before declaring the integration accepted.
+>
+> **Integrated Flyway ordering:** original diarization V29–V33 are now
+> **V35–V39**, respectively. Develop's Action Items/Notifications retain
+> V29–V34 unchanged. Historical SPK-11/SPK-12 evidence keeps its original
+> version numbers; apply the mapping below for current operations:
+>
+> | Original diarization migration | Integration migration |
+> |---|---|
+> | V29 independent stage | V35 |
+> | V30 worker boundary | V36 |
+> | V31 acceptance measurements | V37 |
+> | V32 verified-only monitoring | V38 |
+> | V33 bounded classification | V39 |
+>
+> Production activation is still **not approved**. All worker/admission flags
+> remain default-off; inference here uses deterministic mocks, not a live provider.
+
 **Current status:** SPK-11 is accepted. Worker bootstrap and all **23 full-stack
 smoke cases pass**, including recovery and PostgreSQL rollback. Full offline AI
 tests, AI lint, AI packaging, Core Maven verification, and migration checks pass.

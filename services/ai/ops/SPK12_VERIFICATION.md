@@ -1,5 +1,15 @@
 # SPK12-FINAL engineering evidence
 
+
+> **Historical report, retained for traceability (MERGE-06):** all V29–V33
+> references, test counts, SQL performance baselines, and the branch/commit
+> below describe verification on the original diarization feature branch.
+> When integrated with develop, those same SQL contents are renamed to
+> V35–V39 (V31→V37, V32→V38, V33→V39). The original performance
+> measurements must not be represented as newly measured CI results.
+> Integrated verification is tracked separately by
+> `Diarization Full-Stack CI` on `integration/speaker-diarization`.
+
 Baseline: `6addeab84f08ccff5a9d976d3533c56b3aad0018`, branch
 `ai/module-speaker-diarization`. Production remains disabled. No live inference,
 target infrastructure access, approvals or Git writes were performed.

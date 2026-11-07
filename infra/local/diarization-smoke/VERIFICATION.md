@@ -1,5 +1,14 @@
 # SPK-11 verification evidence
 
+
+> **Historical evidence notice (MERGE-06):** this report records a gate on
+> `ai/module-speaker-diarization` before integration. Its original V29–V33
+> references and historical counts are retained verbatim. On
+> `integration/speaker-diarization`, these SQL scripts are now V35–V39;
+> V1–V34 retain develop checksums. The integration CI must independently
+> rerun the full-stack gate on the integration commit; this report alone
+> is not proof of the merged branch's present status.
+
 Status: **SPK-11 accepted; mandatory aggregate gate passes** (2026-11-07).
 SPK11-HARNESS-01's worker initialization and subsequent demonstrated fixture
 defects are resolved. Cross-language acceptance, recovery, rollback, lint,

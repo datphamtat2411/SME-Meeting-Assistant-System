@@ -21,8 +21,8 @@ These shell checks cover the supplied environment only; compare with the actual
 rendered manifests and effective Spring/worker configuration. Spring properties,
 profiles and explicit exporter overrides must be included in review. Preserve
 `management.endpoints.web.exposure.include=health`, both metrics endpoint access
-settings `none`, and opt-in Prometheus registry/private monitoring. Verify Flyway
-history/validation through V33; do not repair checksums or downgrade SQL on rollback.
+settings `none`, and opt-in Prometheus registry/private monitoring. Verify Flyway history/validation through **V39**: develop's V1–V34 and the
+integrated diarization V35–V39. Do not repair checksums or downgrade SQL on rollback.
 
 Before proposing enabled canary values, obtain references in
 [the approval matrix](DIARIZATION_PRODUCTION_READINESS.md). The required
@@ -150,7 +150,7 @@ projection or quality issue is NO-GO. Human release authority records the decisi
 
 Rollback order: disable new admission, drain/stop dedicated intake, reconcile live
 leases/deliveries/receipts through existing lifecycle, then roll application image
-if required. Preserve V31/V32/V33, source/result artifacts, human corrections and
+if required. Preserve all V1–V39 migrations (including V37/V38/V39 diarization evidence), source/result artifacts, human corrections and
 accepted state. Verify ordinary transcription/downstream processing and monitoring.
 Record unresolved work and ownership; never clear it by SQL mutation or fabricated
 receipt. Production authorization remains a separate signed human decision.

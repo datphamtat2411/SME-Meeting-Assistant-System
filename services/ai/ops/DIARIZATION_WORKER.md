@@ -1,5 +1,13 @@
 # Diarization architecture and operations
 
+
+> **Integration migration map (MERGE-06):** the operational schema on
+> `integration/speaker-diarization` uses V35 (stage), V36 (worker boundary),
+> V37 (acceptance measurements), V38 (verified-only monitoring), and
+> V39 (bounded verified-only classification). These are byte-identical SQL
+> scripts to original diarization V29–V33, reordered after develop V1–V34.
+> Historical SPK verification reports preserve their original numbering.
+
 ## Readiness status
 
 **Production activation is not approved.** The recorded SPK-11 mandatory gate
@@ -256,7 +264,7 @@ other gauges become NaN when unavailable. Cache failures last at most the next
 | `diarization.window.stage.duration.count` | attempts; `outcome=accepted|failed` | Receipted stage rows with valid `started_at` and `completed_at`, by completion time. |
 | `diarization.window.stage.duration.seconds` | seconds sum; same outcome tags | Same rows; excludes queue time and invalid or incomplete timings. |
 | `diarization.window.stage.duration.bucket` | cumulative attempts; `le_seconds=30|120|300|900|3600|infinity` | Same valid completed rows, accepted and failed combined. |
-| `diarization.window.accepted.measurements` | accepted attempts | Immutable post-V31 acceptance measurements, by `recorded_at`. |
+| `diarization.window.accepted.measurements` | accepted attempts | Immutable post-V37 acceptance measurements, by `recorded_at`. |
 | `diarization.window.speakers.sum` / `diarization.window.unknown.assignments.sum` | speakers / segments | Immutable accepted measurement counts. |
 | `diarization.window.speakers.bucket` | cumulative attempts; `le=0|1|2|5|10|1000` | Same measurements. |
 | `diarization.window.unknown.assignments.bucket` | cumulative attempts; `le=0|1|5|10|100|16384` | Same measurements. |
@@ -271,7 +279,7 @@ commit atomically. Receipt uniqueness prevents replay and competing completions 
 adding another measurement. PostgreSQL is authoritative after restart; no callback
 counter or broker ACK constitutes acceptance. `RESULT_VERIFIED` is not terminal;
 supersession is not counted as success or failure without a terminal receipt.
-Abandoned/incomplete attempts have no completed duration. Post-V31 accepted
+Abandoned/incomplete attempts have no completed duration. Post-V37 accepted
 measurements contain the validated accepted counts and are append-only. Older
 accepted receipts remain counted in outcomes but have **no historical measurement**:
 current human-reviewed assignments cannot safely reconstruct them. Exclude them
@@ -357,7 +365,7 @@ on-call and validate delivery before canary authorization.
 
 ### Verified-only recovery
 
-V32 defines the durable semantics; V33 preserves them while filtering unresolved
+V38 defines the durable semantics; V39 preserves them while filtering unresolved
 evidence first and computing one latest DIARIZING attempt per relevant job using
 existing indexes. No time cutoff hides old verifications. Terminal accepted **or
 failed** receipts remove evidence from the backlog without deleting it.

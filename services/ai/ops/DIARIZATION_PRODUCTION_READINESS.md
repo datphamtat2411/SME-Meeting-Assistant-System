@@ -1,5 +1,12 @@
 # SPK-12 production approval evidence
 
+
+> **MERGE-06 migration translation:** this operations matrix describes
+> diarization migration V31/V32/V33 from the original feature branch.
+> After integration those are **V37/V38/V39**; the full new stage/worker
+> sequence is V35–V39, after the existing develop V1–V34.
+> References to local engineering evidence do not imply production approval.
+
 ## Decision record
 
 - Engineering evidence: [SPK12_VERIFICATION.md](SPK12_VERIFICATION.md).
@@ -28,7 +35,7 @@ decision. Roles below are required responsibilities, not appointed individuals.
 | Infrastructure | Dedicated diarization IAM | Separate worker credential settings and local least-privilege boundary tests. | Effective target IAM/policy/credential separation, deny tests. | Platform / PENDING |
 | Infrastructure | Source read permissions | Pinned source identity and bounded verified reads in worker tests. | Target source-only read policy, TLS and audit evidence. | Storage owner / PENDING |
 | Infrastructure | Create-only result writes | Immutable result key, conditional create and uncertain-write reconciliation tested. | Backend conditional-write enforcement and effective deny overwrite/delete policy. | Storage owner / PENDING |
-| Infrastructure | Immutable storage | V31 acceptance/evidence immutability and artifact preservation tested locally. | Target retention/Object Lock or equivalent policy and recovery ownership. | Storage owner / PENDING |
+| Infrastructure | Immutable storage | V37 acceptance/evidence immutability and artifact preservation tested locally. | Target retention/Object Lock or equivalent policy and recovery ownership. | Storage owner / PENDING |
 | Infrastructure | Dedicated credentials | Separate diarization credential configuration, no production secrets supplied. | Secret-manager references, rotation/least privilege, no shared ASR credentials. | Platform / PENDING |
 | Infrastructure | Network / TLS | Real socket private attestation, mTLS identity/operation tests; secure local full-stack. | Target network isolation, CA/DNS trust, RabbitMQ/storage TLS. | Network + PKI / PENDING |
 | Infrastructure | Certificate rotation | Startup validates TLS material and socket tests reject unauthorized identity. | Target renewal/reload/rolling strategy, expiry monitoring and rotation drill. | PKI / PENDING |
@@ -37,7 +44,7 @@ decision. Roles below are required responsibilities, not appointed individuals.
 | Monitoring | Dashboard | Importable 12-panel Grafana JSON; actual queries parsed/evaluated by promtool. | Target import/datasource/screens and operator access. | Monitoring / PENDING |
 | Monitoring | Alert routing | Executable recording/alert rules, sustained and transient fixtures; provisional thresholds. | Receiver ownership, routed notification test and threshold approval. | On-call + monitoring / PENDING |
 | Monitoring | Multi-replica aggregation | Database reconstruction tests and two-replica max/dedup rule test. | Actual target labels and all replicas sharing the intended DB. | Monitoring / PENDING |
-| Monitoring | Backlog visibility | V32 semantics, V33 measured plans/scaling/equivalence and oldest all-history age tests. | Target volume/plan review, backlog dashboard confirmation. | Core + DBA / PENDING |
+| Monitoring | Backlog visibility | V38 semantics, V39 measured plans/scaling/equivalence and oldest all-history age tests. | Target volume/plan review, backlog dashboard confirmation. | Core + DBA / PENDING |
 | Monitoring | Recovery ownership | Exact-command/receipt/lease recovery and drain procedures documented. | Named Core, worker, DBA and incident/release owners. | Operations / PENDING |
 | AI validation | Pinned model compatibility | Configured `konieshadow/speaker-diarization:c58b6b038f6de30f93eaccd6aecb59d1b9a48ac13b22be000bcffe853efb2c20`; offline adapter/contract tests. | Authorized current provider/model live compatibility, input/output limits. | AI owner / PENDING |
 | AI validation | Controlled live testing | No live calls authorized/performed; synthetic offline smoke only. | Approved scope/audio, spend limit, signed execution authorization and recorded results. | AI + privacy / PENDING |
