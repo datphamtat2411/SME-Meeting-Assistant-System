@@ -3,6 +3,8 @@ package com.sme.meetingassistant.api.actionitems;
 import com.sme.meetingassistant.api.actionitems.dto.CreateActionItemRequest;
 import com.sme.meetingassistant.api.actionitems.dto.PatchActionItemRequest;
 import com.sme.meetingassistant.api.actionitems.application.ActionItemCreationIdempotency;
+import com.sme.meetingassistant.api.actionitems.application.ActionItemAssignmentEvents;
+import com.sme.meetingassistant.api.actionitems.application.ActionItemAssignmentEvents.Kind;
 import com.sme.meetingassistant.api.actionitems.ActionItemLifecycle.Command;
 import com.sme.meetingassistant.api.meeting.service.MeetingActionItemAccess;
 import java.sql.ResultSet;
@@ -34,15 +36,18 @@ public class ActionItemService {
     private final JdbcTemplate jdbc;
     private final MeetingActionItemAccess meetingAccess;
     private final ActionItemCreationIdempotency idempotency;
+    private final ActionItemAssignmentEvents assignmentEvents;
     private final ObjectMapper json;
     private final ZoneId businessZone;
 
     public ActionItemService(JdbcTemplate jdbc, MeetingActionItemAccess meetingAccess,
-            ActionItemCreationIdempotency idempotency, ObjectMapper json,
+            ActionItemCreationIdempotency idempotency,
+            ActionItemAssignmentEvents assignmentEvents, ObjectMapper json,
             @Value("${app.action-items.business-zone:UTC}") String zoneId) {
         this.jdbc = jdbc;
         this.meetingAccess = meetingAccess;
         this.idempotency = idempotency;
+        this.assignmentEvents = assignmentEvents;
         this.json = json;
         this.businessZone = ZoneId.of(zoneId);
     }
@@ -87,10 +92,15 @@ public class ActionItemService {
             """, id, request.meetingId(), title, details,
             request.assigneeUserId(), request.dueDate(), actorId);
         history(id, "STATUS", null, "OPEN", actorId);
-        history(id, "ASSIGNEE", null, request.assigneeUserId().toString(), actorId);
+        UUID assignmentHistory = history(id, "ASSIGNEE", null,
+            request.assigneeUserId().toString(), actorId);
         if (request.dueDate() != null) {
             history(id, "DUE_DATE", null, request.dueDate().toString(), actorId);
         }
+        // A manual OPEN task is an official obligation. History, event and
+        // optional email intent all commit or roll back with this command.
+        assignmentEvents.record(id, 0L, assignmentHistory,
+            request.assigneeUserId(), Kind.ASSIGNED);
         if (idempotencyKey != null) idempotency.complete(actorId, idempotencyKey, id);
         return visibleForActor(byId(id), actorId);
     }
@@ -254,7 +264,14 @@ public class ActionItemService {
             history(id, "CONTENT", content(old.title(), old.details()), content(title, details), actorId);
         }
         if (assignmentChanged) {
-            history(id, "ASSIGNEE", string(old.assigneeUserId()), string(assigneeId), actorId);
+            UUID assignmentHistory = history(id, "ASSIGNEE",
+                string(old.assigneeUserId()), string(assigneeId), actorId);
+            // A proposed assignee is only a hint; reassignments become official
+            // only after the proposal is confirmed by a human.
+            if (isOfficial(old)) {
+                assignmentEvents.record(id, old.version() + 1, assignmentHistory,
+                    assigneeId, Kind.REASSIGNED);
+            }
         }
         if (dueChanged) {
             history(id, "DUE_DATE", string(old.dueDate()), string(dueDate), actorId);
@@ -312,7 +329,13 @@ public class ActionItemService {
             """, target.name(), confirmation, actor, confirmation, confirmation ? now : null,
             completedBy, completedAt, cancelledBy, cancelledAt, id, old.version());
         if (updated != 1) throw preconditionFailed();
-        history(id, "STATUS", old.status().name(), target.name(), actor);
+        UUID statusHistory = history(id, "STATUS", old.status().name(), target.name(), actor);
+        if (confirmation) {
+            // The STATUS history row proves actual human confirmation;
+            // do not fabricate an ASSIGNEE history transition for a proposal.
+            assignmentEvents.record(id, old.version() + 1, statusHistory,
+                old.assigneeUserId(), Kind.ASSIGNED);
+        }
         return visibleForActor(byId(id), actor);
     }
 
@@ -337,11 +360,13 @@ public class ActionItemService {
         if (rows.isEmpty()) throw notFound();
         return rows.getFirst();
     }
-    private void history(UUID id, String type, String from, String to, UUID actor) {
+    private UUID history(UUID id, String type, String from, String to, UUID actor) {
+        UUID historyId = UUID.randomUUID();
         jdbc.update("""
             INSERT INTO action_item_history(id,action_item_id,change_type,from_value,to_value,changed_by_user_id)
             VALUES (?,?,?,?,?,?)
-            """, UUID.randomUUID(), id, type, from, to, actor);
+            """, historyId, id, type, from, to, actor);
+        return historyId;
     }
 
     private static ActionItemView map(ResultSet rs, int row) throws SQLException {

@@ -5,8 +5,11 @@ import java.util.UUID;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
-/** A privacy-minimal renderer for one official action-item assignment. */
-@ConditionalOnProperty(prefix = "app.notification", name = "action-item-assignment-enabled",
+/**
+ * Provisional renderer retained from teammate branch. Delivery stays OFF until
+ * AI-08.4 implements send-time canonical eligibility and recipient revalidation.
+ */
+@ConditionalOnProperty(prefix = "app.notification", name = "action-item-assignment-delivery-enabled",
         havingValue = "true", matchIfMissing = false)
 @Component
 public final class ActionItemAssignedEmailHandler implements TransactionalEmailHandler {
@@ -16,8 +19,8 @@ public final class ActionItemAssignedEmailHandler implements TransactionalEmailH
     }
 
     @Override
-    public Optional<Content> compose(UUID actionItemId, String recipientEmail) {
-        if (actionItemId == null || recipientEmail == null || recipientEmail.isBlank()) {
+    public Optional<Content> compose(UUID assignmentEventId, String recipientEmail) {
+        if (assignmentEventId == null || recipientEmail == null || recipientEmail.isBlank()) {
             return Optional.empty();
         }
         return Optional.of(new Content("Action item assigned",

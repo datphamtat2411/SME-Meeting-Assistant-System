@@ -14,7 +14,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
-/** AI-08.2: V31 canonical data upgrades to V32 without rewriting earlier migrations. */
+/** AI-08.2/08.3: V31 canonical data upgrades through V32 and V33 without rewriting history. */
 @ActiveProfiles("test")
 @SpringBootTest
 @Import(PostgresTestConfiguration.class)
@@ -23,7 +23,7 @@ class NotificationPreferencesFlywayUpgradeIntegrationTests {
     @Autowired JdbcTemplate jdbc;
 
     @Test
-    void existingAccountAndFlywayChecksumsSurviveV31ToV32() {
+    void existingAccountAndFlywayChecksumsSurviveV31ToV33() {
         String schema = "ai08_pref_" + UUID.randomUUID().toString().replace("-", "");
         try {
             Flyway before = Flyway.configure()
@@ -57,7 +57,7 @@ class NotificationPreferencesFlywayUpgradeIntegrationTests {
             assertThat(jdbc.queryForObject("""
                 SELECT version FROM %s.flyway_schema_history
                  WHERE success ORDER BY installed_rank DESC LIMIT 1
-                """.formatted(schema), String.class)).isEqualTo("32");
+                """.formatted(schema), String.class)).isEqualTo("33");
             assertThat(jdbc.queryForObject("""
                 SELECT count(*) FROM %s.users WHERE id=? AND email_normalized=?
                 """.formatted(schema), Integer.class, userId, email)).isEqualTo(1);
