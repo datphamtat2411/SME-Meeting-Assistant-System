@@ -313,6 +313,98 @@ class ActionItemsIntegrationTests {
             .andExpect(status().isNotFound());
     }
 
+    @Test void externalAssigneeCanTransitionOfficialTaskButCommandResponsesStayScoped() throws Exception {
+        UUID item=createManual(outsider.getId(),null);
+        MvcResult before=mvc.perform(get("/api/v1/action-items/{id}",item)
+                .principal(principal(outsider))).andExpect(status().isOk()).andReturn();
+        assertThat(body(before).path("data").path("createdByUserId").isNull()).isTrue();
+        MvcResult after=mvc.perform(post("/api/v1/action-items/{id}/start",item)
+                .principal(principal(outsider))
+                .header(HttpHeaders.IF_MATCH,before.getResponse().getHeader(HttpHeaders.ETAG)))
+            .andExpect(status().isOk()).andReturn();
+        assertThat(body(after).path("data").path("status").asText()).isEqualTo("IN_PROGRESS");
+        assertThat(body(after).path("data").path("createdByUserId").isNull()).isTrue();
+        assertThat(body(after).path("data").path("completedByUserId").isNull()).isTrue();
+        mvc.perform(get("/api/v1/meetings/{id}",meetingId)
+                .principal(principal(outsider))).andExpect(status().isNotFound());
+        MvcResult list=mvc.perform(get("/api/v1/action-items").principal(principal(outsider))
+                .param("assignee","me").param("meetingId",meetingId.toString())
+                .param("status","IN_PROGRESS")).andExpect(status().isOk()).andReturn();
+        assertThat(body(list).path("meta").path("pagination").path("totalElements").asLong())
+            .isEqualTo(1);
+        assertThat(body(list).path("data").get(0).path("createdByUserId").isNull()).isTrue();
+    }
+
+    @Test void scopedManagerCommandResponsesHideMeetingProvenanceAndNonManagersGetNoDelegation()
+            throws Exception {
+        UUID unitId=unit();
+        organizer.assignPrimaryOrgUnit(unitId);
+        users.saveAndFlush(organizer);
+        meetingId=newMeeting(List.of(assignee.getId()));
+        UUID id=createManual(assignee.getId(),null);
+        UserEntity manager=user(GlobalRole.DEPARTMENT_MANAGER,unitId);
+        UserEntity employeeWithGrant=user(GlobalRole.EMPLOYEE,unitId);
+        jdbc.update("INSERT INTO manager_scope_units(user_id,org_unit_id,granted_by_user_id) VALUES (?,?,?)",
+            manager.getId(),unitId,organizer.getId());
+        jdbc.update("INSERT INTO manager_scope_units(user_id,org_unit_id,granted_by_user_id) VALUES (?,?,?)",
+            employeeWithGrant.getId(),unitId,organizer.getId());
+        mvc.perform(get("/api/v1/action-items/{id}",id).principal(principal(employeeWithGrant)))
+            .andExpect(status().isNotFound());
+        MvcResult old=mvc.perform(get("/api/v1/action-items/{id}",id)
+                .principal(principal(manager))).andExpect(status().isOk()).andReturn();
+        MvcResult cancelled=mvc.perform(post("/api/v1/action-items/{id}/cancel",id)
+                .principal(principal(manager))
+                .header(HttpHeaders.IF_MATCH,old.getResponse().getHeader(HttpHeaders.ETAG)))
+            .andExpect(status().isOk()).andReturn();
+        assertThat(body(cancelled).path("data").path("createdByUserId").isNull()).isTrue();
+        assertThat(body(cancelled).path("data").path("cancelledByUserId").isNull()).isTrue();
+
+        manager.assignGlobalRole(GlobalRole.EMPLOYEE);
+        users.saveAndFlush(manager);
+        mvc.perform(get("/api/v1/action-items/{id}",id).principal(principal(manager)))
+            .andExpect(status().isNotFound());
+        MvcResult lost=mvc.perform(get("/api/v1/action-items")
+                .principal(principal(manager)).param("meetingId",meetingId.toString()))
+            .andExpect(status().isOk()).andReturn();
+        assertThat(body(lost).path("meta").path("pagination").path("totalElements").asLong())
+            .isZero();
+    }
+
+    @Test void deactivatedOrganizationalUnitImmediatelyRevokesManagementPower() throws Exception {
+        UUID unitId=unit();
+        organizer.assignPrimaryOrgUnit(unitId);
+        users.saveAndFlush(organizer);
+        meetingId=newMeeting(List.of(assignee.getId()));
+        UUID id=createManual(assignee.getId(),null);
+        UserEntity manager=user(GlobalRole.DEPARTMENT_MANAGER,unitId);
+        jdbc.update("INSERT INTO manager_scope_units(user_id,org_unit_id,granted_by_user_id) VALUES (?,?,?)",
+            manager.getId(),unitId,organizer.getId());
+        mvc.perform(get("/api/v1/action-items/{id}",id).principal(principal(manager)))
+            .andExpect(status().isOk());
+        jdbc.update("UPDATE organizational_units SET status='INACTIVE' WHERE id=?",unitId);
+        mvc.perform(get("/api/v1/action-items/{id}",id).principal(principal(manager)))
+            .andExpect(status().isNotFound());
+        MvcResult list=mvc.perform(get("/api/v1/action-items")
+                .principal(principal(manager)).param("meetingId",meetingId.toString()))
+            .andExpect(status().isOk()).andReturn();
+        assertThat(body(list).path("meta").path("pagination").path("totalElements").asLong())
+            .isZero();
+    }
+
+    @Test void capturedMeetingScopeCannotBeUpdatedBySqlWithoutExplicitReclassification() throws Exception {
+        UUID unit1=unit(), unit2=unit();
+        organizer.assignPrimaryOrgUnit(unit1);
+        users.saveAndFlush(organizer);
+        meetingId=newMeeting(List.of());
+        assertThat(jdbc.queryForObject(
+            "SELECT org_unit_id FROM meeting_action_item_scopes WHERE meeting_id=?",
+            UUID.class,meetingId)).isEqualTo(unit1);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> jdbc.update(
+            "UPDATE meeting_action_item_scopes SET org_unit_id=? WHERE meeting_id=?",
+            unit2,meetingId)).isInstanceOf(
+                org.springframework.dao.DataIntegrityViolationException.class);
+    }
+
     private UUID unit() {
         UUID id=UUID.randomUUID();
         jdbc.update("INSERT INTO organizational_units(id,code,name,status) VALUES (?,?,?,'ACTIVE')",
