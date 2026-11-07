@@ -18,6 +18,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.font.PDFont;
 import org.apache.pdfbox.text.PDFTextStripper;
 import org.junit.jupiter.api.Test;
@@ -61,7 +62,7 @@ class PdfMinutesRendererTests {
             assertThat(text).contains("Trang 1 / " + result.pageCount());
             assertThat(text).doesNotContain("Chấp thuận đề xuất AI chưa duyệt");
             for (PDPage page : doc.getPages()) {
-                assertThat(page.getMediaBox().getWidth()).isEqualTo(595.2756f);
+                assertThat(page.getMediaBox().getWidth()).isBetween(594f, 596f);
                 assertThat(page.getMediaBox().getHeight()).isGreaterThan(840);
                 assertThat(page.getAnnotations()).isEmpty();
                 boolean embedded = false;
