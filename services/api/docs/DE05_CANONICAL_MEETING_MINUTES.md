@@ -41,7 +41,7 @@ MinutesSnapshot has these fields:
 - sourceFingerprint: lowercase 64-hex SHA-256 of deterministically serialized CanonicalContent excluding assembledAt, requestId and sourceFingerprint
 - completeness: COMPLETE, PARTIAL or NEEDS_REVIEW; these are **presentation conclusions**, not new canonical source statuses
 - meeting: id, title, description, organizerUserId, lifecycle status, scheduledStartAt, scheduledEndAt, startedAt, endedAt
-- summary: availability, id, versionNumber, content, sourceType, qualityStatus, transcriptId, contentRevision, isStale, aiWarnings
+- summary: availability, id, versionNumber, content, sourceType, qualityStatus, transcriptId, contentRevision, selectionEpoch, isStale, aiWarnings
 - confirmedDecisions: id, content, canonical CONFIRMED status, sourceType, transcriptId/revision, stale/version and human-confirmation attribution, evidenceSegmentIds, aiUncertainty and aiWarnings
 - officialActionItems: id, title, details, canonical current status, sourceType, assigneeUserId, dueDate, optimistic version, confirmedBy/confirmedAt, createdAt
 - transcript: availability, id, processingJobId, versionNumber, languageCode, canonical status, contentRevision, durationMs, suspiciousSegments, unresolvedSegments, unresolvedCoverageRegions
@@ -71,7 +71,7 @@ The SHA-256 digest hashes a versioned typed CanonicalContent structure containin
 
 Canonical-source order is stable: Decisions by createdAt DESC and ID DESC, Action Items by createdAt ASC and ID ASC. Java records and immutable List.copyOf prevent accidental mutation of the assembled result.
 
-Two reads of identical canonical source state produce the same fingerprint even if their assembledAt times differ; changing a Summary version/selection, transcript revision, Decision edit, Action Item mutation or meeting title updates the fingerprint. Fingerprint is a source snapshot identity, **not an authentication token**, not an artifact SHA and not a substitute for permission rechecks. DE-11 will define durable snapshot serializer version/template renderer version and freshness reconciliation.
+Two reads of identical canonical source state produce the same fingerprint even if their assembledAt times differ; changing a Summary version/selectionEpoch, transcript revision, Decision edit, Action Item mutation or meeting title updates the fingerprint. Fingerprint is a source snapshot identity, **not an authentication token**, not an artifact SHA and not a substitute for permission rechecks. DE-11 will define durable snapshot serializer version/template renderer version and freshness reconciliation.
 
 Large Meetings fail explicitly instead of being partially rendered without disclosure: hard limit of 2,000 Decisions and 2,000 canonical Action Items per snapshot. Those are engineering safety caps pending Product/Operations acceptance; no unbounded full-source collections or silent truncation.
 
@@ -83,10 +83,11 @@ MeetingMinutesHttpIntegrationTests runs Spring MockMvc and actual PostgreSQL Tes
 2. Organizer/member allowed; Admin/Manager/non-member assignee/outside actor denied; removed participant and inactive session denied; unknown meeting ID not enumerable.
 3. Real AI-generated Summary stored through a FK-complete receipt/source snapshot, with quality warning; changes to transcript content_revision mark current Summary stale and rotate fingerprint.
 4. Current human-corrected Decision and official Action Item edits rotate fingerprint without mutating canonical source on GET.
-5. Suspicious transcript segment and unresolved coverage region generate material warnings without including full speech text.
-6. Interleaved concurrent transcript correction between Meeting and later source reads still yields one PostgreSQL REPEATABLE_READ snapshot; next GET observes the changed revision.
-7. Real signed RS256 JWT and active session necessary; logout revokes access.
-8. Common API Response, no-store cache header, lowercase SHA-256 identity and stable repeated GETs.
+5. Summary A → B → A selection epoch advances the fingerprint even when A's restored content is byte-identical.
+6. Suspicious transcript segment and unresolved coverage region generate material warnings without including full speech text.
+7. Interleaved concurrent transcript correction between Meeting and later source reads still yields one PostgreSQL REPEATABLE_READ snapshot; next GET observes the changed revision.
+8. Real signed RS256 JWT and active session necessary; logout revokes access.
+9. Common API Response, no-store cache header, lowercase SHA-256 identity and stable repeated GETs.
 
 **Closure gate:** final HEAD SHA equals API CI SHA; job conclusion success; full Maven verify BUILD SUCCESS; new integration suite runs with 0 failures/errors/skips. **Product contract:** D08/D09 still pending; CI green cannot approve them.
 

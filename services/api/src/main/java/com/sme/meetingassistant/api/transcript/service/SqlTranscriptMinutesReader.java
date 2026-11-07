@@ -40,8 +40,7 @@ public class SqlTranscriptMinutesReader implements TranscriptMinutesSource {
                        AND s.quality_status='UNRESOLVED') AS unresolved_segments,
                    (SELECT count(*) FROM transcript_coverage_regions c
                      WHERE c.transcript_id=t.id
-                       AND (c.coverage_status <> 'COVERED' OR c.recovered=FALSE
-                            AND c.coverage_status <> 'COVERED')) AS unresolved_coverage
+                       AND c.coverage_status <> 'COVERED' AND NOT c.recovered) AS unresolved_coverage
               FROM transcripts t WHERE t.meeting_id=? AND t.is_current
             """, (rs, ignored) -> new Reference(
                     rs.getObject("id", UUID.class),

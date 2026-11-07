@@ -93,10 +93,10 @@ public class MinutesAssembler {
                         || !s.aiWarnings().isEmpty() ? "NEEDS_REVIEW" : "AVAILABLE",
                 s.id(), s.versionNumber(), s.content(), s.sourceType(),
                 s.qualityStatus(), s.transcriptId(), s.contentRevision(),
-                s.isStale(), s.aiWarnings()))
+                s.selectionEpoch(), s.isStale(), s.aiWarnings()))
             .orElse(new MinutesSnapshot.Summary(
                     "NOT_AVAILABLE", null, null, null, null, null, null, null,
-                    false, List.of()));
+                    0L, false, List.of()));
 
         List<MinutesSnapshot.Decision> decisions = mi.confirmedDecisions().stream()
             .map(MinutesAssembler::decision).toList();

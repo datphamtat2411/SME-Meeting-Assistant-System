@@ -214,6 +214,47 @@ class MeetingMinutesHttpIntegrationTests {
     }
 
     @Test
+    void summaryActivationEpochMakesAbaSelectionDetectableByFingerprint() throws Exception {
+        UUID organizer = user("EMPLOYEE");
+        UUID meeting = meeting(organizer, "Repeat activation");
+        Source source = transcript(meeting, organizer);
+        summary(meeting, source, "Snapshot A", "READY");
+        UUID a = jdbc.queryForObject("""
+            SELECT id FROM meeting_summary_versions WHERE meeting_id=? AND is_current
+            """, UUID.class, meeting);
+
+        JsonNode original = data(request(meeting, organizer));
+        String originalHash = original.path("sourceFingerprint").asText();
+        assertThat(original.path("summary").path("selectionEpoch").asLong()).isZero();
+
+        // A -> B. B must retain canonical human edit attribution and source.
+        jdbc.update("UPDATE meeting_summary_versions SET is_current=FALSE WHERE id=?", a);
+        UUID b = UUID.randomUUID();
+        jdbc.update("""
+            INSERT INTO meeting_summary_versions(id,meeting_id,version_number,content,source_type,
+                based_on_summary_version_id,created_by_user_id,transcript_id,content_revision,
+                quality_status,is_current,selection_epoch)
+            VALUES (?,?,2,'Snapshot B','HUMAN_EDIT',?,?,?,0,'READY',TRUE,1)
+            """, b, meeting, a, organizer, source.transcript());
+        JsonNode switched = data(request(meeting, organizer));
+        assertThat(switched.path("summary").path("content").asText()).isEqualTo("Snapshot B");
+        assertThat(switched.path("sourceFingerprint").asText()).isNotEqualTo(originalHash);
+
+        // B -> A: canonical visible A text/ID/version return to their old
+        // values, but selection_epoch increases to prevent an ABA collision.
+        jdbc.update("UPDATE meeting_summary_versions SET is_current=FALSE WHERE id=?", b);
+        jdbc.update("""
+            UPDATE meeting_summary_versions SET is_current=TRUE,selection_epoch=2 WHERE id=?
+            """, a);
+        JsonNode backToA = data(request(meeting, organizer));
+        assertThat(backToA.path("summary").path("content").asText()).isEqualTo("Snapshot A");
+        assertThat(backToA.path("summary").path("id").asText()).isEqualTo(a.toString());
+        assertThat(backToA.path("summary").path("versionNumber").asInt()).isEqualTo(1);
+        assertThat(backToA.path("summary").path("selectionEpoch").asLong()).isEqualTo(2);
+        assertThat(backToA.path("sourceFingerprint").asText()).isNotEqualTo(originalHash);
+    }
+
+    @Test
     void transcriptWarningsPreserveSuspiciousSegmentsAndUnresolvedCoverage() throws Exception {
         UUID organizer = user("EMPLOYEE");
         UUID m = meeting(organizer, "Họp có đoạn chưa rõ");

@@ -40,8 +40,8 @@ public record MinutesSnapshot(
      */
     public record Summary(String availability, UUID id, Integer versionNumber,
             String content, String sourceType, String qualityStatus,
-            UUID transcriptId, Long contentRevision, boolean isStale,
-            List<String> aiWarnings) {
+            UUID transcriptId, Long contentRevision, long selectionEpoch,
+            boolean isStale, List<String> aiWarnings) {
         public Summary {
             aiWarnings = List.copyOf(aiWarnings);
         }
