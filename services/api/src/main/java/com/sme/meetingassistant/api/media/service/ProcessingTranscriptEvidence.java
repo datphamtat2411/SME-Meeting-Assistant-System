@@ -20,6 +20,15 @@ public interface ProcessingTranscriptEvidence {
 
     Optional<DiarizationSource> diarizationSource(UUID jobId);
 
+    record TimingSegment(int ordinal,long startMs,long endMs) {}
+    record TimingSnapshot(UUID transcriptId,long transcriptRevision,long durationMs,
+            java.util.List<TimingSegment> segments) {
+        public TimingSnapshot { segments=java.util.List.copyOf(segments); }
+    }
+    /** Caller holds the Meeting lock. Only committed, current canonical timing is returned. */
+    Optional<TimingSnapshot> diarizationTiming(UUID jobId,UUID meetingId,UUID mediaId,
+        UUID transcriptId,long revision,int maximumSegments);
+
     Optional<Evidence> forFinalization(UUID processingJobId, UUID finalizationStageRunId);
 
     /** Latest successful finalization stage must have canonical transcript evidence. */

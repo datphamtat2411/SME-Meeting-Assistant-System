@@ -448,6 +448,28 @@ public class TranscriptRepository implements ProcessingTranscriptEvidence {
         return sources.size() == 1 ? Optional.of(sources.getFirst()) : Optional.empty();
     }
 
+    @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public Optional<TimingSnapshot> diarizationTiming(UUID jobId,UUID meetingId,UUID mediaId,
+            UUID transcriptId,long revision,int maximumSegments) {
+        if(maximumSegments<1 || maximumSegments>16_384) throw new IllegalArgumentException("Invalid timing bound.");
+        var headers=jdbc.query("""
+            SELECT id,content_revision,duration_ms FROM transcripts
+            WHERE id=? AND processing_job_id=? AND meeting_id=? AND source_media_id=?
+              AND content_revision=? AND is_current AND finalized_at IS NOT NULL
+              AND status IN ('READY','READY_WITH_WARNINGS') AND duration_ms>0
+            """,(r,n)->new TimingSnapshot(r.getObject("id",UUID.class),r.getLong("content_revision"),
+                r.getLong("duration_ms"),List.of()),transcriptId,jobId,meetingId,mediaId,revision);
+        if(headers.size()!=1) return Optional.empty();
+        var segments=jdbc.query("""
+            SELECT ordinal,start_ms,end_ms FROM transcript_segments WHERE transcript_id=? ORDER BY ordinal LIMIT ?
+            """,(r,n)->new TimingSegment(r.getInt("ordinal"),r.getLong("start_ms"),r.getLong("end_ms")),transcriptId,maximumSegments+1);
+        var h=headers.getFirst();
+        if(segments.isEmpty() || segments.size()>maximumSegments || segments.stream().anyMatch(s->
+            s.ordinal()<0 || s.startMs()<0 || s.endMs()<=s.startMs() || s.endMs()>h.durationMs())) return Optional.empty();
+        return Optional.of(new TimingSnapshot(h.transcriptId(),h.transcriptRevision(),h.durationMs(),segments));
+    }
+
     @Transactional(readOnly = true)
     public Optional<TranscriptView> current(UUID meetingId) {
         List<Header> headers = this.jdbc.query("""

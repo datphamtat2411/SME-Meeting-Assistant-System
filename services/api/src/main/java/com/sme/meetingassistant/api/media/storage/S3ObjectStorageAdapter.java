@@ -107,7 +107,7 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
 
     @Override
     public byte[] readBounded(String objectKey, int maximum) throws IOException {
-        if (maximum < 1 || maximum > 8388608) throw new IllegalArgumentException("Invalid result read limit.");
+        if (maximum < 1 || maximum > 16777216) throw new IllegalArgumentException("Invalid result read limit.");
         try (var input = client.getObject(GetObjectRequest.builder().bucket(properties.getBucket()).key(objectKey).build())) {
             if (input.response().contentLength() == null || input.response().contentLength() > maximum
                     || input.response().contentLength() < 1 || input.response().contentEncoding() != null) {
@@ -156,6 +156,9 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
 
     @Override
     public void delete(String objectKey) {
+        if (objectKey != null && objectKey.matches("processing/[^/]+/diarization/results/.*")) {
+            throw new IllegalArgumentException("Diarization result objects are immutable.");
+        }
         this.client.deleteObject(DeleteObjectRequest.builder().bucket(this.properties.getBucket()).key(objectKey).build());
     }
 

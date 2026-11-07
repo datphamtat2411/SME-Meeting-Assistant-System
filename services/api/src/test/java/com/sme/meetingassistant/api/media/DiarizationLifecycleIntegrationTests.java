@@ -278,11 +278,13 @@ class DiarizationLifecycleIntegrationTests {
         assertThatThrownBy(this::start).isInstanceOf(ProcessingLifecycleConflictException.class);
         assertThatThrownBy(() -> lifecycle.startStage(job, "INDEXING", null, null)).isInstanceOf(ProcessingLifecycleConflictException.class);
         assertThatThrownBy(() -> lifecycle.completeJob(job)).isInstanceOf(ProcessingLifecycleConflictException.class);
-        lifecycle.completeStage(diarization, "SUCCEEDED", null, null);
+        assertThatThrownBy(() -> lifecycle.completeStage(diarization, "SUCCEEDED", null, null))
+            .isInstanceOf(ProcessingLifecycleConflictException.class);
+        lifecycle.failStage(diarization, "DIARIZATION_FAILED", null, true);
         StageClaim indexing = lifecycle.startStage(job, "INDEXING", null, null);
         lifecycle.completeStage(indexing, "SUCCEEDED", null, null);
         lifecycle.completeJob(job);
-        assertThat(status()).isEqualTo("COMPLETED");
+        assertThat(status()).isEqualTo("COMPLETED_WITH_WARNINGS");
     }
 
     @Test
@@ -336,9 +338,11 @@ class DiarizationLifecycleIntegrationTests {
         assertThatThrownBy(() -> lifecycle.completeStage(failed, "SUCCEEDED", null, null)).isInstanceOf(ProcessingLifecycleConflictException.class);
         assertThatThrownBy(() -> lifecycle.renewStageLease(failed)).isInstanceOf(ProcessingLifecycleConflictException.class);
         assertThatThrownBy(() -> lifecycle.failStage(failed, "DIARIZATION_FAILED", null, true)).isInstanceOf(ProcessingLifecycleConflictException.class);
-        lifecycle.completeStage(start(), "SUCCEEDED", null, null);
-        lifecycle.completeJob(job);
-        assertThat(status()).isEqualTo("COMPLETED");
+        var retried = start();
+        assertThatThrownBy(() -> lifecycle.completeStage(retried, "SUCCEEDED", null, null))
+            .isInstanceOf(ProcessingLifecycleConflictException.class);
+        assertThatThrownBy(() -> lifecycle.completeJob(job)).isInstanceOf(ProcessingLifecycleConflictException.class);
+        assertThat(status()).isEqualTo("RUNNING");
         assertThat(transcripts.current(meeting).orElseThrow().id()).isEqualTo(transcript);
         assertThat(transcripts.current(meeting).orElseThrow().contentRevision()).isEqualTo(1);
     }
@@ -464,13 +468,13 @@ class DiarizationLifecycleIntegrationTests {
     }
 
     @Test
-    void successfulDiarizationPreservesTranscriptQualityWarnings() throws Exception {
+    void missingSpeakerProjectionCannotSucceedOrEraseTranscriptQualityWarnings() throws Exception {
         admit();
         TranscriptResult warned = prepareFinalization(true);
         finalization.finalizeTranscript(finalizer, warned);
-        lifecycle.completeStage(start(), "SUCCEEDED", null, null);
-        lifecycle.completeJob(job);
-        assertThat(status()).isEqualTo("COMPLETED_WITH_WARNINGS");
+        var claim=start();
+        assertThatThrownBy(() -> lifecycle.completeStage(claim, "SUCCEEDED", null, null)).isInstanceOf(ProcessingLifecycleConflictException.class);
+        assertThat(status()).isEqualTo("RUNNING");
         assertThat(transcripts.current(meeting).orElseThrow().status()).isEqualTo("READY_WITH_WARNINGS");
     }
 

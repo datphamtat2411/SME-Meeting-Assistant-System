@@ -24,15 +24,20 @@ def policy(bucket, role):
     prefix = f"arn:aws:s3:::{bucket}/"
     source = prefix + "meetings/*/sources/*"
     result = prefix + "processing/*/transcription/results/*.json"
+    diarization = prefix + "processing/*/diarization/results/*.json"
     statements = [
-        {"Effect": "Allow", "Action": ["s3:GetObject"], "Resource": [source, result]},
+        {"Effect": "Allow", "Action": ["s3:GetObject"], "Resource": [source,
+            diarization if role == "diarization-worker" else result]},
     ]
     if role == "worker":
         statements.append({"Effect": "Allow", "Action": ["s3:PutObject"], "Resource": [result]})
+    elif role == "diarization-worker":
+        statements.append({"Effect": "Allow", "Action": ["s3:PutObject"], "Resource": [diarization]})
     elif role == "core":
         pending = prefix + "meetings/*/pending/*"
         intelligence = prefix + "processing/*/intelligence/*"
         statements.extend([
+            {"Effect": "Allow", "Action": ["s3:GetObject"], "Resource": [diarization]},
             {"Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject"], "Resource": [pending, source, intelligence]},
             {"Effect": "Allow", "Action": ["s3:DeleteObject"], "Resource": [pending, intelligence]},
             {"Effect": "Allow", "Action": ["s3:ListBucket"], "Resource": [prefix[:-1]],
@@ -86,7 +91,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("policy", "provision"))
     parser.add_argument("--bucket", required=True)
-    parser.add_argument("--role", choices=("worker", "core"), required=True)
+    parser.add_argument("--role", choices=("worker", "diarization-worker", "core"), required=True)
     args = parser.parse_args()
     if args.action == "policy":
         print(json.dumps(policy(args.bucket, args.role), indent=2))

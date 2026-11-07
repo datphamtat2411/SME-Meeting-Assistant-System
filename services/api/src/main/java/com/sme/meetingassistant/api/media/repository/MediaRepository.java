@@ -535,7 +535,15 @@ public class MediaRepository {
                     "Contextual correction requires whole-meeting evidence, output digest and prompt version.");
             }
         }
-        if ("DIARIZING".equals(current.stageCode())) requireDiarizationBindingSource(jobId, stageRunId);
+        if ("DIARIZING".equals(current.stageCode())) {
+            requireDiarizationBindingSource(jobId, stageRunId);
+            if (!Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT EXISTS (SELECT 1 FROM diarization_worker_receipts
+                  WHERE processing_job_id=? AND execution_stage_run_id=? AND outcome='RESULT_ACCEPTED')
+                """, Boolean.class, jobId, stageRunId))) {
+                throw new ProcessingLifecycleConflictException("Diarization success requires canonical speaker acceptance.");
+            }
+        }
         int changed = this.jdbc.update("""
             UPDATE processing_stage_runs SET status = ?, error_code = ?,
               metrics = CAST(? AS jsonb), completed_at = CURRENT_TIMESTAMP
