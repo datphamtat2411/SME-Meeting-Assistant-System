@@ -1,6 +1,7 @@
 package com.sme.meetingassistant.api.meetingexport.render;
 
 import com.sme.meetingassistant.api.meetingminutes.MinutesSnapshot;
+import java.awt.Color;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -104,7 +105,7 @@ public final class PdfMinutesRenderer {
             try (PDPageContentStream stream = new PDPageContentStream(pdf, pdf.getPage(i),
                     PDPageContentStream.AppendMode.APPEND, true, true)) {
                 stream.setLineWidth(0.6f);
-                stream.setStrokingColor(190, 190, 190);
+                stream.setStrokingColor(new Color(190, 190, 190));
                 stream.moveTo(MARGIN, 46);
                 stream.lineTo(W - MARGIN, 46);
                 stream.stroke();
@@ -121,7 +122,7 @@ public final class PdfMinutesRenderer {
         if (value.isEmpty()) return;
         stream.beginText();
         stream.setFont(font, size);
-        stream.setNonStrokingColor(gray, gray, gray);
+        stream.setNonStrokingColor(new Color(gray, gray, gray));
         stream.newLineAtOffset(x, y);
         stream.showText(value);
         stream.endText();
@@ -307,7 +308,7 @@ public final class PdfMinutesRenderer {
             stream = new PDPageContentStream(pdf, page);
             y = H - MARGIN - 9;
             stream.setLineWidth(0.6f);
-            stream.setStrokingColor(215, 215, 215);
+            stream.setStrokingColor(new Color(215, 215, 215));
             stream.moveTo(MARGIN, H - 38);
             stream.lineTo(W - MARGIN, H - 38);
             stream.stroke();
