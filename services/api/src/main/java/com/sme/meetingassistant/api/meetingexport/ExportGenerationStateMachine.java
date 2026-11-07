@@ -58,6 +58,33 @@ public class ExportGenerationStateMachine {
         return claimed.isEmpty() ? Optional.empty() : repository.find(claimed.getFirst());
     }
 
+    /**
+     * DE-09 production dispatch: only fully staged immutable intakes may run.
+     * Kept distinct from DE-06 claimNext so historical state-machine tests can
+     * exercise raw PENDING intents without fabricating an S3 intake.
+     */
+    @Transactional
+    public Optional<ExportRecord> claimNextStaged(int leaseSeconds) {
+        requireLease(leaseSeconds);
+        UUID token = UUID.randomUUID();
+        List<UUID> claimed = jdbc.query("""
+            WITH candidate AS (
+                SELECT e.id FROM meeting_exports e
+                  JOIN meeting_export_intakes i ON i.export_id=e.id
+                 WHERE e.status='PENDING'
+                 ORDER BY e.created_at,e.id LIMIT 1 FOR UPDATE OF e SKIP LOCKED
+            )
+            UPDATE meeting_exports e
+               SET status='GENERATING',claim_token=?,
+                   generation_attempt=e.generation_attempt+1,
+                   lease_expires_at=clock_timestamp() + (? * INTERVAL '1 second'),
+                   row_version=e.row_version+1
+              FROM candidate WHERE e.id=candidate.id
+            RETURNING e.id
+            """, (rs, ignored) -> rs.getObject(1, UUID.class), token, leaseSeconds);
+        return claimed.isEmpty() ? Optional.empty() : repository.find(claimed.getFirst());
+    }
+
     /** Heartbeat may only extend a live claim; it never transfers ownership. */
     @Transactional
     public boolean renew(UUID exportId, UUID claimToken, int leaseSeconds) {

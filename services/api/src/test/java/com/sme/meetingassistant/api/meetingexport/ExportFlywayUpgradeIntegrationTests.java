@@ -54,8 +54,12 @@ class ExportFlywayUpgradeIntegrationTests {
             Map<String, Integer> beforeChecksums = checksums(schema);
             assertThat(beforeChecksums).hasSize(34).containsKey("34");
 
+            // DE-06 owns the V34 -> V35 forward-upgrade contract. Newer
+            // DE-09+ migrations have their own acceptance suites; do not
+            // accidentally make this historical test assert the final HEAD.
             Flyway upgraded = Flyway.configure().dataSource(dataSource).schemas(schema)
-                    .locations("classpath:db/migration").load();
+                    .locations("classpath:db/migration")
+                    .target(MigrationVersion.fromVersion("35")).load();
             upgraded.migrate();
             upgraded.validate();
 

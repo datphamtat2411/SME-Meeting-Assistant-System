@@ -107,7 +107,7 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
 
     @Override
     public byte[] readBounded(String objectKey, int maximum) throws IOException {
-        if (maximum < 1 || maximum > 8388608) throw new IllegalArgumentException("Invalid result read limit.");
+        if (maximum < 1 || maximum > (objectKey != null && objectKey.startsWith("exports/") ? 33554432 : 8388608)) throw new IllegalArgumentException("Invalid result read limit.");
         try (var input = client.getObject(GetObjectRequest.builder().bucket(properties.getBucket()).key(objectKey).build())) {
             if (input.response().contentLength() == null || input.response().contentLength() > maximum
                     || input.response().contentLength() < 1 || input.response().contentEncoding() != null) {
@@ -135,6 +135,29 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
             if (exception.statusCode() == 412) return false;
             // A 409 is an indeterminate concurrent/conditional write conflict, not proof
             // that the target was accepted. The caller retries after checking HEAD.
+            throw exception;
+        }
+    }
+
+    @Override
+    public boolean putImmutableBytesIfAbsent(String objectKey, byte[] bytes,
+            String contentType, String sha256) {
+        if (objectKey == null || !objectKey.startsWith("exports/")
+                || bytes == null || bytes.length < 1 || bytes.length > 33554432) {
+            throw new IllegalArgumentException("Invalid bounded export object");
+        }
+        var request = PutObjectRequest.builder()
+            .bucket(this.properties.getBucket()).key(objectKey)
+            .ifNoneMatch("*").contentType(contentType)
+            .contentLength((long) bytes.length)
+            .metadata(Map.of("sha256", sha256))
+            .build();
+        try {
+            this.client.putObject(request, RequestBody.fromBytes(bytes));
+            return true;
+        } catch (S3Exception exception) {
+            if (exception.statusCode() == 412) return false;
+            // 409 is not proof of acceptance; outer integrity verifier handles it.
             throw exception;
         }
     }
