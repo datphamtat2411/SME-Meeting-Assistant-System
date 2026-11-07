@@ -9,7 +9,13 @@ from .models import (
     SpeakerTurn,
     TimedTranscriptSegment,
 )
-from .service import DiarizationProvider, DiarizationRequest, DiarizationResponse, DiarizationService, SpeakerHints
+from .service import (
+    DiarizationProvider,
+    DiarizationRequest,
+    DiarizationResponse,
+    DiarizationService,
+    SpeakerHints,
+)
 
 __all__ = [
     "DiarizationError", "DiarizationErrorCategory", "DiarizationResult", "SpeakerAssignment",

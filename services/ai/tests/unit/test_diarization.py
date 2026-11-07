@@ -105,6 +105,14 @@ def test_bad_output(data):
     assert exc.value.category == DiarizationErrorCategory.MALFORMED_OUTPUT
 
 
+def test_oversized_output_is_rejected():
+    from sme_meeting_ai.diarization.parsing import MAX_OUTPUT_BYTES
+
+    with pytest.raises(DiarizationError) as exc:
+        parse_output(b" " * (MAX_OUTPUT_BYTES + 1), MODEL)
+    assert exc.value.category == DiarizationErrorCategory.MALFORMED_OUTPUT
+
+
 def test_alignment_cases_and_identity():
     turns = (SpeakerTurn(500, 3500, "SPEAKER_01"),
              SpeakerTurn(3500, 6000, "SPEAKER_02"),
@@ -473,6 +481,30 @@ def test_disabled_provider_and_upload_boundary(tmp_path, monkeypatch):
     with pytest.raises(DiarizationError) as exc:
         enabled.diarize(path)
     assert exc.value.category == DiarizationErrorCategory.INPUT_TOO_LARGE and len(calls) == 1
+
+
+@pytest.mark.parametrize("size,category,calls_expected", [
+    (99_999_999, DiarizationErrorCategory.AUTHENTICATION, 1),
+    (100_000_000, DiarizationErrorCategory.AUTHENTICATION, 1),
+    (100_000_001, DiarizationErrorCategory.INPUT_TOO_LARGE, 0),
+])
+def test_sparse_real_upload_limit(tmp_path, monkeypatch, size, category, calls_expected):
+    path = tmp_path / "audio.wav"
+    with path.open("wb") as audio:
+        audio.truncate(size)
+    calls = []
+
+    async def reject_upload(audio, filename, token, hints):
+        calls.append(filename)
+        raise DiarizationError(DiarizationErrorCategory.AUTHENTICATION)
+
+    adapter = ReplicateDiarizationAdapter(settings(REPLICATE_API_TOKEN=SECRET))
+    monkeypatch.setattr(adapter, "_request", reject_upload)
+    with pytest.raises(DiarizationError) as exc:
+        adapter.diarize(path)
+    assert exc.value.category == category
+    assert len(calls) == calls_expected
+    assert path.stat().st_size == size
 
 
 def test_output_fetch_retries_transport_without_recreating_prediction(tmp_path, monkeypatch):

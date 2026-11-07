@@ -7,8 +7,12 @@ from typing import Literal, Protocol
 
 from .alignment import align_speakers
 from .models import (
-    DiarizationError, DiarizationErrorCategory, DiarizationResult, SpeakerAssignment,
-    SpeakerTurn, TimedTranscriptSegment,
+    DiarizationError,
+    DiarizationErrorCategory,
+    DiarizationResult,
+    SpeakerAssignment,
+    SpeakerTurn,
+    TimedTranscriptSegment,
 )
 
 

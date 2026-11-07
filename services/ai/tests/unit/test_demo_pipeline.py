@@ -10,6 +10,8 @@ from sme_meeting_ai.core.config import ConfigurationError, Settings
 from sme_meeting_ai.demo.models import SpeakerHints
 from sme_meeting_ai.demo.pipeline import (
     DemoPipelineRunner as SharedDemoPipelineRunner,
+)
+from sme_meeting_ai.demo.pipeline import (
     DemoProcessingError,
     build_demo_runner,
     processing_budget_seconds,
@@ -17,8 +19,8 @@ from sme_meeting_ai.demo.pipeline import (
 from sme_meeting_ai.diarization import (
     DiarizationError,
     DiarizationErrorCategory,
-    DiarizationResult,
     DiarizationRequest,
+    DiarizationResult,
     DiarizationService,
     SpeakerTurn,
     TimedTranscriptSegment,

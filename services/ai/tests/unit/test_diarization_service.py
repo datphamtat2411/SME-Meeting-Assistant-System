@@ -5,8 +5,14 @@ from unittest.mock import Mock
 import pytest
 
 from sme_meeting_ai.diarization import (
-    DiarizationError, DiarizationErrorCategory, DiarizationRequest, DiarizationResult,
-    DiarizationService, SpeakerHints, SpeakerTurn, TimedTranscriptSegment,
+    DiarizationError,
+    DiarizationErrorCategory,
+    DiarizationRequest,
+    DiarizationResult,
+    DiarizationService,
+    SpeakerHints,
+    SpeakerTurn,
+    TimedTranscriptSegment,
 )
 
 
@@ -45,6 +51,7 @@ def test_skipped_and_empty_speaker_result_are_distinct():
 
 
 @pytest.mark.parametrize("hints", [dict(num_speakers=0), dict(num_speakers=True), dict(max_speakers=1001),
+    dict(min_speakers=-1), dict(max_speakers=False), dict(num_speakers=2.0),
     dict(num_speakers="2"), dict(min_speakers=3, max_speakers=2),
     dict(num_speakers=1, min_speakers=2), dict(num_speakers=4, max_speakers=3)])
 def test_invalid_hints_are_sanitized(hints):
@@ -53,7 +60,9 @@ def test_invalid_hints_are_sanitized(hints):
     assert error.value.category == DiarizationErrorCategory.VALIDATION
 
 
-@pytest.mark.parametrize("hints", [SpeakerHints(num_speakers=2), SpeakerHints(min_speakers=2, max_speakers=4)])
+@pytest.mark.parametrize("hints", [SpeakerHints(), SpeakerHints(num_speakers=2), SpeakerHints(min_speakers=2),
+    SpeakerHints(max_speakers=4), SpeakerHints(min_speakers=2, max_speakers=4),
+    SpeakerHints(num_speakers=2, min_speakers=1, max_speakers=3)])
 def test_valid_hints_forwarded(hints):
     provider = Mock()
     provider.diarize.return_value = DiarizationResult((), (), "model")

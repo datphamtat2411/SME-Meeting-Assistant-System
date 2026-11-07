@@ -11,9 +11,9 @@ from sme_meeting_ai.core.config import ConfigurationError, Settings
 from sme_meeting_ai.diarization import (
     DiarizationRequest,
     DiarizationService,
-    SpeakerHints as DiarizationSpeakerHints,
     TimedTranscriptSegment,
 )
+from sme_meeting_ai.diarization import SpeakerHints as DiarizationSpeakerHints
 from sme_meeting_ai.pipeline.offline_transcription import (
     OfflineTranscriptionOutcome,
     OfflineTranscriptionStage,

@@ -5,8 +5,13 @@ import pytest
 from test_offline_transcription_pipeline import RAW, pipeline
 from test_offline_transcription_pipeline import workflow as workflow
 
-from sme_meeting_ai.demo.pipeline import DemoPipelineRunner as SharedDemoPipelineRunner, DemoProcessingError
-from sme_meeting_ai.diarization import DiarizationResult, DiarizationService, SpeakerTurn
+from sme_meeting_ai.demo.pipeline import DemoPipelineRunner as SharedDemoPipelineRunner
+from sme_meeting_ai.demo.pipeline import DemoProcessingError
+from sme_meeting_ai.diarization import (
+    DiarizationResult,
+    DiarizationService,
+    SpeakerTurn,
+)
 from sme_meeting_ai.transcription.asr import (
     AsrCandidate,
     AsrError,
@@ -40,6 +45,51 @@ def test_real_offline_composition_corrects_once_then_adds_speakers(workflow):
     assert len(h.asr_calls) == 2 and h.correction_calls == 1
     assert list(h.work.iterdir()) == []
     assert h.source.path.exists()
+
+
+def test_offline_three_segment_overlap_smoke(workflow):
+    h = workflow(count=6144)
+    with wave.open(str(h.source.path), "wb") as stream:
+        stream.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+        stream.writeframes(b"\xa0\x0f" * 6144)
+    original_audio = h.source.path.read_bytes()
+    turns = (
+        SpeakerTurn(0, 128, "SPEAKER_01"),
+        SpeakerTurn(128, 256, "SPEAKER_02"),
+        SpeakerTurn(256, 384, "SPEAKER_01"),
+        SpeakerTurn(256, 384, "SPEAKER_02"),
+    )
+    provider = Mock()
+    provider.diarize.return_value = DiarizationResult(turns, ("SPEAKER_01", "SPEAKER_02"), "pinned")
+    result = DemoPipelineRunner(pipeline(h), provider, language="vi").run(h.source.path)
+    assert [(s.startMs, s.endMs, s.text, s.speakerLabel) for s in result.segments] == [
+        (0, 128, RAW[0] + ".", "SPEAKER_01"),
+        (128, 256, RAW[1] + ".", "SPEAKER_02"),
+        (256, 384, RAW[0] + ".", None),
+    ]
+    assert [s.label for s in result.diarization.speakers] == ["SPEAKER_01", "SPEAKER_02"]
+    assert [(t.startMs, t.endMs, t.speakerLabel) for t in result.diarization.turns] == [
+        (t.start_ms, t.end_ms, t.speaker_label) for t in turns
+    ]
+    assert result.diarization.status == "completed"
+    assert h.source.path.read_bytes() == original_audio
+    assert list(h.work.iterdir()) == []
+
+
+def test_real_offline_transcript_survives_diarizer_failure(workflow):
+    h = workflow()
+    provider = Mock()
+    provider.diarize.side_effect = RuntimeError("private diagnostic")
+    result = DemoPipelineRunner(pipeline(h), provider, language="vi").run(h.source.path)
+    assert [(s.startMs, s.endMs, s.text, s.speakerLabel) for s in result.segments] == [
+        (0, 128, RAW[0] + ".", None), (128, 256, RAW[1] + ".", None),
+    ]
+    assert result.diarization.status == "failed"
+    assert result.diarization.errorCode == "PROCESSING_FAILED"
+    assert "private diagnostic" not in result.model_dump_json()
+    assert len(h.asr_calls) == 2 and h.correction_calls == 1
+    provider.diarize.assert_called_once()
+    assert list(h.work.iterdir()) == []
 
 
 def test_real_silence_outcome_is_successfully_empty_without_diarization(workflow):
