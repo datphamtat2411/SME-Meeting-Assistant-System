@@ -1251,7 +1251,7 @@ Speaker diarization SHALL remain logically separate from ASR so failure in diari
 
 ### ARCH-DIAR-002 — Anonymous speaker identity is valid technical output
 
-AI Core MAY produce stable local labels such as `SPEAKER_00` before any human participant mapping exists.
+AI Core MAY produce stable local labels such as `SPEAKER_01` before any human participant mapping exists.
 
 ### ARCH-DIAR-003 — Speaker mapping is a business-facing correction layer
 

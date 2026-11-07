@@ -1,0 +1,66 @@
+groups:
+  - name: spk12-database-gauges
+    interval: 1m
+    rules:
+      - record: spk12:outcomes24h
+        expr: max by (environment, cluster, outcome) (diarization_window_outcomes{job="core-diarization"})
+      - record: spk12:retries24h
+        expr: max by (environment, cluster) (diarization_window_retries{job="core-diarization"})
+      - record: spk12:lease_expirations24h
+        expr: max by (environment, cluster) (diarization_window_lease_expirations{job="core-diarization"})
+      - record: spk12:verified_only
+        expr: max by (environment, cluster) (diarization_verified_only_outstanding{job="core-diarization"})
+      - record: spk12:oldest_seconds
+        expr: max by (environment, cluster) (diarization_verified_only_oldest_age_seconds{job="core-diarization"})
+  - name: spk12-provisional-alerts
+    interval: 1m
+    rules:
+      - alert: DiarizationExporterUnavailable
+        expr: up{job="core-diarization"} == 0 or absent(up{job="core-diarization"})
+        for: 5m
+        labels: {severity: warning, threshold: provisional}
+        annotations:
+          summary: Private diarization exporter unavailable
+          runbook_url: DIARIZATION_WORKER.md#monitoring-outages
+      - alert: DiarizationAggregationUnhealthy
+        expr: diarization_metrics_aggregation_healthy{job="core-diarization"} == 0
+        for: 3m
+        labels: {severity: warning, threshold: provisional}
+        annotations:
+          summary: Diarization database aggregation unhealthy
+          runbook_url: DIARIZATION_WORKER.md#monitoring-outages
+      - alert: DiarizationVerifiedOnlyPersists
+        expr: spk12:verified_only > 0
+        for: 15m
+        labels: {severity: warning, threshold: provisional}
+        annotations:
+          summary: Verified-only evidence remains unresolved
+          runbook_url: DIARIZATION_WORKER.md#verified-only-recovery
+      - alert: DiarizationOldVerification
+        expr: spk12:oldest_seconds > 900
+        for: 10m
+        labels: {severity: warning, threshold: provisional}
+        annotations:
+          summary: Oldest unresolved verification exceeds fifteen minutes
+          runbook_url: DIARIZATION_WORKER.md#verified-only-recovery
+      - alert: DiarizationLeaseExpirationGrowth
+        expr: delta(spk12:lease_expirations24h[15m]) > 5
+        for: 10m
+        labels: {severity: warning, threshold: provisional}
+        annotations:
+          summary: Rolling lease expirations show sustained net growth
+          runbook_url: DIARIZATION_WORKER.md#verified-only-recovery
+      - alert: DiarizationSustainedFailures
+        expr: (spk12:outcomes24h{outcome="failed"} / ignoring(outcome) sum without(outcome) (spk12:outcomes24h) > 0.2) and ignoring(outcome) (sum without(outcome) (spk12:outcomes24h) >= 20)
+        for: 30m
+        labels: {severity: warning, threshold: provisional}
+        annotations:
+          summary: Rolling diarization failure share exceeds twenty percent
+          runbook_url: DIARIZATION_WORKER.md#operator-runbook
+      - alert: DiarizationSustainedRetryGrowth
+        expr: delta(spk12:retries24h[15m]) > 5 and spk12:retries24h >= 10
+        for: 30m
+        labels: {severity: warning, threshold: provisional}
+        annotations:
+          summary: Rolling retry attempts show sustained net growth
+          runbook_url: DIARIZATION_WORKER.md#operator-runbook

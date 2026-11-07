@@ -56,6 +56,12 @@ class JsonFormatter(logging.Formatter):
             "event": event,
             "service": self.service_name,
         }
+        duration = getattr(record, "_sme_duration_ms", None)
+        if type(duration) is int and 0 <= duration <= 86400000:
+            data["duration_ms"] = duration
+        upload_bytes = getattr(record, "_sme_upload_bytes", None)
+        if type(upload_bytes) is int and 0 < upload_bytes <= 100000000:
+            data["upload_bytes"] = upload_bytes
         context = get_correlation_context()
         if context is not None:
             for field in (
@@ -85,8 +91,14 @@ def configure_logging(settings: Settings | None = None) -> None:
     logger.propagate = False
 
 
-def log_event(logger: logging.Logger, level: int, event: str) -> None:
+def log_event(logger: logging.Logger, level: int, event: str, *, duration_ms: int | None = None,
+              upload_bytes: int | None = None) -> None:
     """Log a bounded stable event name, with no free-text payload API."""
     if not _valid_event(event):
         raise ValueError("Invalid event name")
-    logger.log(level, "", extra={_EVENT_KEY: _StructuredEvent(event)})
+    extra = {_EVENT_KEY: _StructuredEvent(event)}
+    if type(duration_ms) is int and 0 <= duration_ms <= 86400000:
+        extra["_sme_duration_ms"] = duration_ms
+    if type(upload_bytes) is int and 0 < upload_bytes <= 100000000:
+        extra["_sme_upload_bytes"] = upload_bytes
+    logger.log(level, "", extra=extra)

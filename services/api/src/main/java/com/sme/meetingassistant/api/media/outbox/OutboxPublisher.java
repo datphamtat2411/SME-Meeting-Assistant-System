@@ -2,6 +2,7 @@ package com.sme.meetingassistant.api.media.outbox;
 
 import com.sme.meetingassistant.api.media.MediaProperties;
 import com.sme.meetingassistant.api.media.repository.MediaRepository;
+import com.sme.meetingassistant.api.media.worker.WorkerJson;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
@@ -47,15 +48,25 @@ public class OutboxPublisher {
             if (claimed.isEmpty()) return;
             var event = claimed.get(0);
             try {
-                Message message = MessageBuilder.withBody(event.payload().getBytes(StandardCharsets.UTF_8))
+                byte[] payload = event.payload().getBytes(StandardCharsets.UTF_8);
+                var builder = MessageBuilder.withBody(payload)
                     .setContentType(MessageProperties.CONTENT_TYPE_JSON)
                     .setDeliveryMode(MessageDeliveryMode.PERSISTENT)
                     .setMessageId(event.id().toString())
                     .setHeader("eventId", event.id().toString())
-                    .setHeader("eventType", event.eventType())
-                    .build();
+                    .setHeader("eventType", event.eventType());
+                boolean diarization = "PROCESSING_DIARIZATION_REQUESTED".equals(event.eventType());
+                if (diarization) {
+                    // Retry the persisted notification, never manufacture a version
+                    // for legacy payloads or upgrade them during publication.
+                    int version = (int) WorkerJson.number(WorkerJson.parse(payload, 16384), "schemaVersion", 1, 1);
+                    builder.setHeader("eventSchemaVersion", version);
+                }
+                Message message = builder.build();
                 CorrelationData correlation = new CorrelationData(event.id().toString());
-                this.rabbitTemplate.send(outbox.getExchange(), outbox.getRoutingKey(), message, correlation);
+                String routingKey = diarization
+                    ? outbox.getDiarizationRoutingKey() : outbox.getRoutingKey();
+                this.rabbitTemplate.send(outbox.getExchange(), routingKey, message, correlation);
                 var confirm = correlation.getFuture().get(confirmTimeoutSeconds, TimeUnit.SECONDS);
                 if (!confirm.ack()) {
                     throw new IllegalStateException("RabbitMQ did not confirm event publication");

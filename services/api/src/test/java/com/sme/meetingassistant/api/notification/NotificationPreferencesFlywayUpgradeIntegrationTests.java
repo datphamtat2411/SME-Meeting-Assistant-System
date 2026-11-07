@@ -47,7 +47,8 @@ class NotificationPreferencesFlywayUpgradeIntegrationTests {
 
             Flyway current = Flyway.configure()
                     .dataSource(dataSource).schemas(schema)
-                    .locations("classpath:db/migration").load();
+                    .locations("classpath:db/migration")
+                    .target(MigrationVersion.fromVersion("34")).load();
             current.migrate();
             current.validate();
 

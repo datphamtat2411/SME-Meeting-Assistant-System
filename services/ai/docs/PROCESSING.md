@@ -61,7 +61,7 @@ Transcript availability and transcript quality are distinct.
 
 Conceptual transcript states include `PROCESSING`, `READY`, `READY_WITH_WARNINGS`, and `FAILED`. Region-level coverage information distinguishes verified text from unresolved or suspicious speech.
 
-Diarization identifies speaker clusters, not verified organizational identities. Labels such as `SPEAKER_00` remain anonymous until mapped through an authorized process.
+Diarization identifies speaker clusters, not verified organizational identities. Labels such as `SPEAKER_01` remain anonymous until mapped through an authorized process.
 
 - Speaker alignment uses timeline evidence.
 - Unknown speakers are valid outcomes.

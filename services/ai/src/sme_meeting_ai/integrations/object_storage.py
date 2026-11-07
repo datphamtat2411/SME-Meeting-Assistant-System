@@ -47,8 +47,13 @@ def _category(error):
 
 
 class ObjectStorage:
-    def __init__(self, settings, *, client=None):
+    def __init__(self, settings, *, client=None, result_max_bytes=MAX_RESULT_BYTES,
+                 namespace="sme-transcription-worker"):
         self.settings = settings
+        self.result_max_bytes = result_max_bytes
+        if namespace not in ("sme-transcription-worker", "sme-diarization-worker"):
+            raise StorageError("CONFIGURATION")
+        self.namespace = namespace
         self.client = client
         self._owned = client is None
         self._root = None
@@ -82,7 +87,7 @@ class ObjectStorage:
                         retries={"total_max_attempts": 1},
                         max_pool_connections=self.settings.worker_concurrency,
                         s3={"addressing_style": "path" if self.settings.s3_path_style else "virtual"}))
-            base = self.settings.audio_temp_dir / "sme-transcription-worker"
+            base = self.settings.audio_temp_dir / self.namespace
             base.mkdir(mode=0o700, exist_ok=True)
             info = base.lstat()
             if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
@@ -241,13 +246,13 @@ class ObjectStorage:
 
     def get_result(self, storage_id, key, fence=None):
         with self._operation():
-            raw, _ = self._read(storage_id, key, MAX_RESULT_BYTES, fence=fence)
+            raw, _ = self._read(storage_id, key, self.result_max_bytes, fence=fence)
             return raw
 
     def put_result(self, storage_id, key, raw, fence=None):
         with self._operation():
             self._store(storage_id)
-            if not 0 < len(raw) <= MAX_RESULT_BYTES or not key.startswith("processing/"):
+            if not 0 < len(raw) <= self.result_max_bytes or not key.startswith("processing/"):
                 raise StorageError("VALIDATION")
             category = None
             try:
@@ -263,7 +268,7 @@ class ObjectStorage:
                 recover = not isinstance(error, StorageError) and category != "AUTHENTICATION"
             if recover:
                 try:
-                    existing, _ = self._read(storage_id, key, MAX_RESULT_BYTES, fence=fence)
+                    existing, _ = self._read(storage_id, key, self.result_max_bytes, fence=fence)
                     return existing
                 except StorageError as error:
                     if error.category != "NOT_FOUND":

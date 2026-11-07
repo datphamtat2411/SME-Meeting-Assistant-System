@@ -1151,8 +1151,8 @@ Speaker diarization output SHALL be treated as a clustering hypothesis, not veri
 Labels such as:
 
 ```text
-SPEAKER_00
 SPEAKER_01
+SPEAKER_02
 ```
 
 represent diarization clusters and MUST NOT automatically mean known organizational users.

@@ -98,7 +98,12 @@ public final class PemTls {
             verifier.checkClientTrusted(chain.toArray(X509Certificate[]::new), leaf.getPublicKey().getAlgorithm());
             if (!expected.equals(ServiceIdentity.from(leaf))) throw new IllegalStateException("Incorrect service identity");
         } else {
-            verifier.checkServerTrusted(chain.toArray(X509Certificate[]::new), leaf.getPublicKey().getAlgorithm());
+            String serverAuthType = switch (leaf.getPublicKey().getAlgorithm()) {
+                case "EC" -> "ECDHE_ECDSA";
+                case "RSA" -> "ECDHE_RSA";
+                default -> throw new IllegalStateException("Unsupported TLS server key algorithm");
+            };
+            verifier.checkServerTrusted(chain.toArray(X509Certificate[]::new), serverAuthType);
             var sans = leaf.getSubjectAlternativeNames();
             if (expected == null || sans == null || sans.stream().noneMatch(san -> Integer.valueOf(2).equals(san.get(0))
                     && expected.equalsIgnoreCase(String.valueOf(san.get(1))))) {

@@ -1,5 +1,6 @@
 """Application construction with explicit, application-local lifecycle state."""
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -41,18 +42,50 @@ def create_app(
     if settings is None:
         settings = get_settings()
     runtime = RuntimeState()
+    demo_jobs = None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        nonlocal demo_jobs
         try:
             if settings.environment in {Environment.STAGING, Environment.PRODUCTION}:
                 if not identity_source_available(identity_source):
                     raise ConfigurationError("Internal service security unavailable")
             configure_logging(settings)
+            if settings.demo_available:
+                from sme_meeting_ai.demo.jobs import DemoJobManager
+                from sme_meeting_ai.demo.pipeline import build_demo_runner
+
+                # Startup does real VAD/provider initialization, without running
+                # inference or connecting to production worker infrastructure.
+                initialization = asyncio.create_task(asyncio.to_thread(build_demo_runner, settings))
+                try:
+                    runner = await asyncio.shield(initialization)
+                except asyncio.CancelledError:
+                    def close_initialized(future):
+                        if not future.cancelled() and future.exception() is None:
+                            try:
+                                future.result().close()
+                            except Exception:
+                                pass
+                    initialization.add_done_callback(close_initialized)
+                    raise
+                try:
+                    demo_jobs = DemoJobManager(settings, runner)
+                except Exception:
+                    try:
+                        runner.close()
+                    except Exception:
+                        pass
+                    raise ConfigurationError("Demo job initialization failed") from None
+                app.state.demo_jobs = demo_jobs
+                demo_jobs.start()
             runtime.initialized = True
             yield
         finally:
             runtime.initialized = False
+            if demo_jobs is not None:
+                await demo_jobs.aclose()
 
     app = FastAPI(
         debug=False,
@@ -72,4 +105,10 @@ def create_app(
     app.state.operation_policy = snapshot_policy(operation_policy)
     app.add_middleware(RequestMiddleware)
     app.include_router(router)
+    if settings.demo_available:
+        from .demo import DemoRequestMiddleware
+        from .demo import router as demo_router
+
+        app.add_middleware(DemoRequestMiddleware, settings=settings)
+        app.include_router(demo_router)
     return app

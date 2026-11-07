@@ -23,13 +23,18 @@ public class SecureTransportConfiguration {
 
     @Bean WebServerFactoryCustomizer<TomcatServletWebServerFactory> privateConnector(Environment env) {
         boolean enabled = env.getProperty("app.transport.private.enabled", Boolean.class, false);
+        boolean monitoring = env.getProperty("app.monitoring.private.enabled", Boolean.class, false);
+        if (monitoring && (!enabled || !privateAddress(env.getProperty("app.transport.private.address", "127.0.0.1")))) {
+            throw new IllegalStateException("Private monitoring requires an explicit private mTLS bind");
+        }
         if (enabled && env.getProperty("app.transport.private.port", Integer.class, 8443)
                 .equals(env.getProperty("server.port", Integer.class, 8080))) {
             throw new IllegalStateException("Public and private connector ports must differ");
         }
         return factory -> {
             if (!enabled && (env.getProperty("app.mi.internal-result.enabled", Boolean.class, false)
-                    || env.getProperty("app.worker.transcription.enabled", Boolean.class, false))) {
+                    || env.getProperty("app.worker.transcription.enabled", Boolean.class, false)
+                    || env.getProperty("app.worker.diarization.enabled", Boolean.class, false))) {
                 throw new IllegalStateException("Internal receivers require the private mTLS connector");
             }
             PrivateConnector.configure(factory, !enabled ? PrivateConnector.Settings.disabled()
@@ -37,8 +42,30 @@ public class SecureTransportConfiguration {
                 env.getProperty("app.transport.private.port", Integer.class, 8443),
                 env.getProperty("app.transport.private.hostname"),
                 path(env, "app.transport.private.certificate"), path(env, "app.transport.private.key"),
-                path(env, "app.transport.private.issuer-ca"), path(env, "app.transport.private.client-ca")));
+                path(env, "app.transport.private.issuer-ca"), path(env, "app.transport.private.client-ca")), monitoring);
         };
+    }
+
+    private static boolean privateAddress(String address) {
+        // Literal only: do not rely on mutable DNS, forwarded headers or wildcard interfaces.
+        if (address == null || !address.matches("[0-9a-fA-F:.]+")) return false;
+        try {
+            var ip = java.net.InetAddress.getByName(address);
+            byte[] bytes = ip.getAddress();
+            return ip.isLoopbackAddress() || ip.isSiteLocalAddress()
+                || (bytes.length == 16 && (bytes[0] & 0xfe) == 0xfc);
+        } catch (Exception e) { return false; }
+    }
+
+    @Bean @Order(-1)
+    SecurityFilterChain monitoringTransportChain(HttpSecurity http, Environment env) throws Exception {
+        boolean enabled = env.getProperty("app.monitoring.private.enabled", Boolean.class, false);
+        http.securityMatcher("/internal/monitoring/**", "/actuator/prometheus/**", "/actuator/metrics/**");
+        http.sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS));
+        http.csrf(c -> c.disable());
+        http.authorizeHttpRequests(a -> a.requestMatchers(r -> enabled && PrivateConnector.monitoringAuthorized(r))
+            .permitAll().anyRequest().denyAll());
+        return http.build();
     }
 
     @Bean @Order(0)

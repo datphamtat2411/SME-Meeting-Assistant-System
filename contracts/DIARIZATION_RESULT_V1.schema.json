@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sme:diarization-result:1.0",
+  "title": "Offline diarization result 1.0",
+  "description": "Shape schema. DIARIZATION_RESULT_V1.md additionally specifies strict JSON lexical rules, trusted snapshot bindings, canonical order, reference/completeness invariants and exact-byte integrity; this schema alone is not an acceptance validator.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contractVersion", "resultType", "processingJobId", "sourceMediaId", "sourceRevision", "transcriptId", "transcriptRevision", "producerStageRunId", "modelId", "status", "speakerLabels", "turns", "assignments", "diagnostics"],
+  "properties": {
+    "contractVersion": {"const": "1.0"},
+    "resultType": {"const": "DIARIZATION_RESULT"},
+    "processingJobId": {"$ref": "#/$defs/uuid"},
+    "sourceMediaId": {"$ref": "#/$defs/uuid"},
+    "sourceRevision": {"$ref": "#/$defs/sha256"},
+    "transcriptId": {"$ref": "#/$defs/uuid"},
+    "transcriptRevision": {"$ref": "#/$defs/count"},
+    "producerStageRunId": {"$ref": "#/$defs/uuid"},
+    "modelId": {
+      "type": "string", "minLength": 1, "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*(?:/[A-Za-z0-9][A-Za-z0-9_.-]*)*(?::[A-Za-z0-9][A-Za-z0-9_.-]*)?$",
+      "description": "Safe ASCII model identifier; additionally reject '..' and reserved credential components/prefixes defined in the normative document. Preserve actual model identity; a version suffix is optional."
+    },
+    "status": {"const": "COMPLETED"},
+    "speakerLabels": {
+      "type": "array", "maxItems": 1000, "uniqueItems": true,
+      "items": {"$ref": "#/$defs/speakerLabel"},
+      "description": "Exactly SPEAKER_01 through SPEAKER_N in order, minimum two digits, no gaps or extra zero padding."
+    },
+    "turns": {
+      "type": "array", "maxItems": 100000,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["startMs", "endMs", "speakerLabel"],
+        "properties": {
+          "startMs": {"$ref": "#/$defs/count"},
+          "endMs": {"type": "integer", "minimum": 1, "description": "Integer token, at most 4300 digits; bounded by the independent trusted duration."},
+          "speakerLabel": {"$ref": "#/$defs/speakerLabel"}
+        }
+      },
+      "description": "Nondecreasing start times; 0 <= startMs < endMs <= independent trustedDurationMs. Preserve overlaps and all evidence. Every declared label must occur in at least one turn."
+    },
+    "assignments": {
+      "type": "array", "maxItems": 16384,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["ordinal", "speakerLabel"],
+        "properties": {
+          "ordinal": {"$ref": "#/$defs/count"},
+          "speakerLabel": {"oneOf": [{"$ref": "#/$defs/speakerLabel"}, {"type": "null"}]}
+        }
+      },
+      "description": "Exactly one per pinned segment, unique ordinals in snapshot order (not necessarily consecutive). Non-null labels must be declared."
+    },
+    "diagnostics": {
+      "type": "object", "additionalProperties": false, "required": ["unknownAssignmentCount"],
+      "properties": {"unknownAssignmentCount": {"type": "integer", "minimum": 0, "maximum": 16384}},
+      "description": "Count must equal the number of null assignment labels. No provider text or operational errors."
+    }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string", "minLength": 36, "maxLength": 36, "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$"
+    },
+    "sha256": {"type": "string", "minLength": 64, "maxLength": 64, "pattern": "^[0-9a-f]{64}$"},
+    "count": {"type": "integer", "minimum": 0, "description": "Integer JSON token only, at most 4300 decimal digits; no booleans, strings, fractions or exponent notation."},
+    "speakerLabel": {"type": "string", "minLength": 10, "maxLength": 12, "pattern": "^SPEAKER_(?:0[1-9]|[1-9][0-9]{1,3})$"}
+  }
+}

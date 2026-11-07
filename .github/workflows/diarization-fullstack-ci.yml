@@ -1,0 +1,101 @@
+name: Diarization Full-Stack CI
+
+on:
+  push:
+    branches:
+      - 'integration/**'
+    paths:
+      - 'services/api/**'
+      - 'services/ai/**'
+      - 'infra/local/diarization-smoke/**'
+      - '.github/workflows/diarization-fullstack-ci.yml'
+      - '.github/workflows/api-ci.yml'
+      - '.github/workflows/ai-ci.yml'
+  pull_request:
+    branches:
+      - develop
+    paths:
+      - 'services/api/**'
+      - 'services/ai/**'
+      - 'infra/local/diarization-smoke/**'
+      - '.github/workflows/diarization-fullstack-ci.yml'
+      - '.github/workflows/api-ci.yml'
+      - '.github/workflows/ai-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }} - ${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  isolated-full-stack:
+    name: Diarization integration full-stack gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+
+    steps:
+      - name: Check out integration source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: |
+            services/api/pom.xml
+            services/api/.mvn/wrapper/maven-wrapper.properties
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version-file: services/ai/.python-version
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: services/ai/uv.lock
+
+      - name: Check isolated Docker environment
+        run: docker info
+
+      - name: Check audio and TLS tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ffmpeg openssl
+          ffmpeg -version
+          ffprobe -version
+          openssl version
+
+      - name: Install locked AI dependencies
+        run: uv sync --locked --project services/ai
+
+      - name: Verify isolated full-stack and full offline suites
+        run: python3 infra/local/diarization-smoke/run.py --full-stack --full-suites
+
+      - name: Summarize gate results
+        if: always()
+        run: |
+          if test -f services/api/target/spk11-gate/results.json; then
+            python3 -m json.tool services/api/target/spk11-gate/results.json
+          else
+            echo 'SPK-11 gate produced no results.json'
+          fi
+
+      - name: Upload sanitized gate summary and Surefire evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diarization-fullstack-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            services/api/target/spk11-gate/results.json
+            services/api/target/surefire-reports/TEST-com.sme.meetingassistant.api.transport.Spk11FullStackSmokeTests.xml
