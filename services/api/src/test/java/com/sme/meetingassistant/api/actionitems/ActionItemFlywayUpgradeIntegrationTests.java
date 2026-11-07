@@ -15,7 +15,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
-/** AI-02/AI-04/AI-05: V28, V29 and V30 persist safely through latest V31. */
+/** AI-02/AI-04/AI-05/AI-08.1: existing data survives latest V32 with unchanged checksums. */
 @ActiveProfiles("test")
 @SpringBootTest
 @Import(PostgresTestConfiguration.class)
@@ -24,7 +24,7 @@ class ActionItemFlywayUpgradeIntegrationTests {
     @Autowired JdbcTemplate jdbc;
 
     @Test
-    void persistedV28MeetingIntelligenceDataUpgradesThroughV31WithoutHistoryRewrites() {
+    void persistedV28MeetingIntelligenceDataUpgradesThroughV32WithoutHistoryRewrites() {
         String schema = "ai02_upgrade_" + UUID.randomUUID().toString().replace("-", "");
         try {
             Flyway previous = Flyway.configure()
@@ -67,9 +67,9 @@ class ActionItemFlywayUpgradeIntegrationTests {
                 SELECT version FROM %s.flyway_schema_history
                 WHERE success AND version IS NOT NULL ORDER BY installed_rank
                 """.formatted(schema), String.class);
-            assertThat(versions).hasSize(31);
-            assertThat(versions.getLast()).isEqualTo("31");
-            assertThat(versions.stream().distinct().count()).isEqualTo(31);
+            assertThat(versions).hasSize(32);
+            assertThat(versions.getLast()).isEqualTo("32");
+            assertThat(versions.stream().distinct().count()).isEqualTo(32);
             assertThat(jdbc.queryForObject("""
                 SELECT checksum FROM %s.flyway_schema_history WHERE version='23'
                 """.formatted(schema), Integer.class)).isEqualTo(checksum23);
@@ -82,7 +82,8 @@ class ActionItemFlywayUpgradeIntegrationTests {
             for (String table : List.of(
                     "meeting_intelligence_source_snapshots", "action_item_batch_receipts",
                     "action_items", "action_item_evidence", "action_item_history",
-                    "meeting_action_item_scopes", "action_item_creation_idempotency")) {
+                    "meeting_action_item_scopes", "action_item_creation_idempotency",
+                    "user_preferences")) {
                 assertThat(jdbc.queryForObject("""
                     SELECT count(*) FROM information_schema.tables
                     WHERE table_schema=? AND table_name=?

@@ -6,6 +6,7 @@ import com.sme.meetingassistant.api.meeting.entity.MeetingStatus;
 import com.sme.meetingassistant.api.meeting.repository.MeetingParticipantRepository;
 import com.sme.meetingassistant.api.meeting.repository.MeetingRepository;
 import com.sme.meetingassistant.api.userorganization.service.OrganizationalIdentityLookup;
+import com.sme.meetingassistant.api.notification.application.EmailNotificationPreferenceLookup;
 import com.sme.meetingassistant.api.notification.email.TransactionalEmailHandler;
 import java.util.*;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -20,11 +21,14 @@ public class MeetingNotificationService {
     private final MeetingParticipantRepository participants;
     private final MeetingRepository meetings;
     private final OrganizationalIdentityLookup users;
+    private final EmailNotificationPreferenceLookup preferences;
 
     public MeetingNotificationService(JdbcTemplate jdbc, MeetingParticipantRepository participants,
-            MeetingRepository meetings, OrganizationalIdentityLookup users) {
+            MeetingRepository meetings, OrganizationalIdentityLookup users,
+            EmailNotificationPreferenceLookup preferences) {
         this.jdbc = jdbc; this.participants = participants;
         this.meetings = meetings; this.users = users;
+        this.preferences = preferences;
     }
 
     /** Must be called inside the business transaction; never sends SMTP synchronously. */
@@ -41,12 +45,14 @@ public class MeetingNotificationService {
             if (user == null) continue;
             String key = "meeting:" + meeting.getId() + ":" + notificationType
                 + ":" + meeting.getVersion() + ":" + id;
+            boolean enabled = preferences.meetingEmailEnabled(id);
             jdbc.update("""
                 INSERT INTO email_deliveries(id,notification_type,recipient_user_id,recipient_email,
-                    related_entity_type,related_entity_id,status,dedupe_key,created_at,updated_at)
-                VALUES (?, ?, ?, ?, 'MEETING', ?, 'PENDING', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    related_entity_type,related_entity_id,status,skip_reason,dedupe_key,created_at,updated_at)
+                VALUES (?, ?, ?, ?, 'MEETING', ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 ON CONFLICT (dedupe_key) DO NOTHING
-                """, UUID.randomUUID(), notificationType, id, user.email(), meeting.getId(), key);
+                """, UUID.randomUUID(), notificationType, id, user.email(), meeting.getId(),
+                enabled ? "PENDING" : "SKIPPED", enabled ? null : "USER_PREFERENCE_DISABLED", key);
         }
     }
 
@@ -128,13 +134,15 @@ public class MeetingNotificationService {
         var recipient = users.activeRecipient(membership.getUserId()).orElse(null);
         if (recipient == null) return;
         String key = "meeting-participant:" + membership.getId() + ":" + eventType;
+        boolean enabled = preferences.meetingEmailEnabled(membership.getUserId());
         jdbc.update("""
             INSERT INTO email_deliveries(id,notification_type,recipient_user_id,recipient_email,
-                related_entity_type,related_entity_id,status,dedupe_key,created_at,updated_at)
-            VALUES (?,?,?,?, 'MEETING_PARTICIPANT',?,'PENDING',?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
+                related_entity_type,related_entity_id,status,skip_reason,dedupe_key,created_at,updated_at)
+            VALUES (?,?,?,?, 'MEETING_PARTICIPANT',?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
             ON CONFLICT (dedupe_key) DO NOTHING
             """, UUID.randomUUID(), eventType, membership.getUserId(), recipient.email(),
-            membership.getId(), key);
+            membership.getId(), enabled ? "PENDING" : "SKIPPED",
+            enabled ? null : "USER_PREFERENCE_DISABLED", key);
     }
 
     @Transactional(readOnly = true)
