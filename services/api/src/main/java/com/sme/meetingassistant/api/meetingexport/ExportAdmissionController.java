@@ -26,7 +26,7 @@ import io.swagger.v3.oas.annotations.Operation;
  */
 @RestController
 @RequestMapping("/api/v1/meetings")
-@ConditionalOnProperty(name="app.exports.public-admission-enabled", havingValue="true")
+@ConditionalOnProperty(name={"app.exports.public-admission-enabled","app.exports.worker.enabled"}, havingValue="true")
 public class ExportAdmissionController {
     private final MinutesAssembler minutes;
     private final ExportSubmissionService submission;
@@ -51,10 +51,6 @@ public class ExportAdmissionController {
             @Valid @RequestBody Request request,
             @RequestHeader("Idempotency-Key") String idempotencyKey) {
         var snapshot = minutes.current(meetingId);
-        if (!"COMPLETE".equals(snapshot.completeness()) || snapshot.proposalsIncluded()) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT,
-                    "Minutes have outstanding completeness or review warnings");
-        }
         var record = submission.submit(meetingId, request.format(), idempotencyKey, snapshot);
         return ResponseEntity.status(HttpStatus.ACCEPTED)
                 .cacheControl(CacheControl.noStore())
