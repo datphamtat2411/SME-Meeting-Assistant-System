@@ -209,7 +209,8 @@ class Spk11FullStackSmokeTests {
     @ParameterizedTest @ValueSource(strings={"one","two","overlap","zero"})
     void successPersistsCanonicalSpeakersAndPreservesEvidence(String scenario) throws Exception {
         var before=content();try(var process=process(scenario,null,Map.of())) {
-            assertThat(process.finished().path("acks").asInt()).isEqualTo(1);
+            var stats=process.finished();
+            assertThat(stats.path("acks").asInt()).as("Worker terminal ACK; sanitized counters: %s",stats).isEqualTo(1);
         }
         accepted(scenario,before);assertThat(revision()).isEqualTo(scenario.equals("zero")?0:1);
         assertThat(count("diarization_worker_claims")).isEqualTo(1);
@@ -235,7 +236,8 @@ class Spk11FullStackSmokeTests {
     @Test void transientRateLimitRecoversWithinBudget() throws Exception {
         var before=content();try(var process=process("rate-transient",null,Map.of())) {
             var stats=process.finished();assertThat(stats.path("predictions").asInt()).isEqualTo(2);
-            assertThat(stats.path("backoffs").toString()).isEqualTo("[2]");
+            assertThat(stats.path("backoffs").size()).isEqualTo(1);
+            assertThat(stats.path("backoffs").get(0).asDouble()).isEqualTo(2.0);
         } accepted("two",before);
     }
 
@@ -340,8 +342,21 @@ class Spk11FullStackSmokeTests {
             process.paused("uploaded");stale=completionCommand();expire();process.resume();
             assertThat(process.finished().path("acks").asInt()).isZero();
         }
-        assertThat(clusters()).isZero();recovery.expireAbandonedStages();retry();
-        try(var process=process("two",null,Map.of())) {process.finished();}
+        assertThat(clusters()).isZero();recovery.expireAbandonedStages();
+        assertThat(worker.status(job,event)).containsEntry("state","FAILURE_RECORDED");
+        // This single-delivery harness must ACK the old durable failure before
+        // publishing a new attempt, otherwise it consumes only the old redelivery.
+        try(var terminal=process("two",null,Map.of())) {
+            var stats=terminal.finished();assertThat(stats.path("acks").asInt()).isEqualTo(1);
+            assertThat(stats.path("claims").asInt()).isZero();assertThat(stats.path("uploads").asInt()).isZero();
+        }
+        retry();
+        try(var process=process("two",null,Map.of())) {
+            var stats=process.finished();
+            assertThat(stats.path("uploads").asInt()).as("Retry execution; sanitized counters: %s; new attempt state: %s",
+                stats,worker.status(job,event).get("state")).isEqualTo(1);
+            assertThat(stats.path("claims").asInt()).isEqualTo(1);assertThat(stats.path("acks").asInt()).isEqualTo(1);
+        }
         var accepted=worker.status(job,event);var speakers=transcripts.speakers(meeting);
         assertThatThrownBy(()->completion.complete(job,stale)).isInstanceOf(com.sme.meetingassistant.api.media.worker.WorkerException.class);
         assertThat(transcripts.speakers(meeting)).isEqualTo(speakers);assertThat(worker.status(job,event)).isEqualTo(accepted);accepted("two",before);
@@ -413,7 +428,7 @@ class Spk11FullStackSmokeTests {
             "rabbitmq_password",Spk11Infrastructure.PASSWORD,"rabbitmq_ca_file",infra.directory.resolve("ca.crt").toString()));
         settings.putAll(Map.of("s3_endpoint_url",infra.storageUrl(),"s3_storage_id","spk11","s3_bucket",Spk11Infrastructure.BUCKET,
             "s3_access_key_id",Spk11Infrastructure.USER,"s3_secret_access_key",Spk11Infrastructure.PASSWORD,"s3_ca_file",infra.directory.resolve("ca.crt").toString(),
-            "audio_temp_dir",infra.directory.resolve("audio").toString()));
+            "audio_temp_dir",infra.audioDirectory.toString()));
         var config=new LinkedHashMap<String,Object>(faults);config.put("settings",settings);config.put("mode",mode);if(pause!=null) config.put("pause",pause);
         return new WorkerProcess(config);
     }
@@ -423,22 +438,76 @@ class Spk11FullStackSmokeTests {
         final BufferedReader output;
         final BufferedWriter input;
         WorkerProcess(Map<String,Object> config) throws Exception {
-            String python=System.getenv().getOrDefault("SPK11_PYTHON",AI.resolve(".venv/bin/python").toString());
-            var builder=new ProcessBuilder(python,"-m","integration.spk11_worker_process").directory(AI.toFile()).redirectError(ProcessBuilder.Redirect.DISCARD);
+            this(config,System.getenv().getOrDefault("SPK11_PYTHON",AI.resolve(".venv/bin/python").toString()),
+                "-m","integration.spk11_worker_process");
+        }
+        WorkerProcess(Map<String,Object> config,String... command) throws Exception {
+            var builder=new ProcessBuilder(command).directory(AI.toFile()).redirectError(ProcessBuilder.Redirect.DISCARD);
             builder.environment().clear();builder.environment().put("PATH",System.getenv().getOrDefault("PATH","/usr/bin:/bin"));
             builder.environment().put("LANG","C.UTF-8");builder.environment().put("PYTHONPATH",AI.resolve("tests")+":"+AI.resolve("src"));
-            process=builder.start();output=process.inputReader();input=process.outputWriter();
+            try {process=builder.start();}
+            catch(IOException failure) {throw new IOException("SPK11_WORKER_LAUNCH_FAILED");}
+            output=process.inputReader();input=process.outputWriter();
             input.write(WorkerJson.MAPPER.writeValueAsString(config));input.newLine();input.flush();
         }
         JsonNode next() throws Exception {
             try(var pool=Executors.newVirtualThreadPerTaskExecutor()) {
-                var read=pool.submit(output::readLine);
+                var read=pool.submit(()->readEnvelope(output));
                 try {
                     String line=read.get(90,TimeUnit.SECONDS);
-                    assertThat(line).as("Worker process must report its sanitized checkpoint").isNotNull();
-                    var message=WorkerJson.MAPPER.readTree(line);assertThat(message.has("failure")).as("Worker transport/control initialization").isFalse();return message;
-                } catch(Exception failure) {process.destroyForcibly();throw failure;}
+                    if(line==null) {
+                        String exit=process.waitFor(2,TimeUnit.SECONDS)?Integer.toString(process.exitValue()):"RUNNING";
+                        throw new AssertionError("SPK11_WORKER_EXIT_WITHOUT_ENVELOPE exitCode="+exit);
+                    }
+                    return decode(line);
+                } catch(TimeoutException failure) {
+                    process.destroyForcibly();throw new AssertionError("SPK11_WORKER_CHECKPOINT_TIMEOUT");
+                } catch(ExecutionException failure) {
+                    process.destroyForcibly();throw new AssertionError("SPK11_WORKER_PROTOCOL_INVALID");
+                }
             }
+        }
+        static String readEnvelope(Reader output) throws IOException {
+            var line=new StringBuilder();
+            for(int value;(value=output.read())!=-1;) {
+                if(value=='\n') return line.toString();
+                if(line.length()>=4096) throw new AssertionError("SPK11_WORKER_PROTOCOL_INVALID");
+                line.append((char)value);
+            }
+            if(!line.isEmpty()) throw new AssertionError("SPK11_WORKER_PROTOCOL_INVALID");
+            return null;
+        }
+        static JsonNode decode(String line) {
+            JsonNode message;
+            try {message=WorkerJson.MAPPER.readTree(line);}
+            catch(Exception failure) {throw new AssertionError("SPK11_WORKER_PROTOCOL_INVALID");}
+            if(message==null || !message.isObject()) throw new AssertionError("SPK11_WORKER_PROTOCOL_INVALID");
+            if(message.has("failure")) {
+                String phase=message.path("phase").asText(),category=message.path("category").asText();
+                if(message.size()!=3 || !message.path("failure").asText().equals("SPK11_WORKER_PROCESS_FAILED")
+                    || !Set.of("CONFIGURATION","PROVIDER_SETUP","TEMP_STORAGE","CORE_MTLS","RABBITMQ","WORKER_STARTUP","RUNTIME").contains(phase)
+                    || !Set.of("VALIDATION","CONFIGURATION","AUTHENTICATION","FILESYSTEM","TIMEOUT","TRANSPORT","RESOURCE","INTERRUPTED","UNEXPECTED").contains(category))
+                    throw new AssertionError("SPK11_WORKER_PROTOCOL_INVALID");
+                throw new AssertionError("SPK11_WORKER_PROCESS_FAILED phase="+phase+" category="+category);
+            }
+            String checkpoint=message.path("checkpoint").asText();
+            if(!Set.of("before-claim","claimed","inference","uploaded","accepted","finished").contains(checkpoint))
+                throw new AssertionError("SPK11_WORKER_PROTOCOL_INVALID");
+            if(!checkpoint.equals("finished")) {
+                if(message.size()!=1) throw new AssertionError("SPK11_WORKER_PROTOCOL_INVALID");
+            } else {
+                if(message.size()!=12) throw new AssertionError("SPK11_WORKER_PROTOCOL_INVALID");
+                for(String count:List.of("claims","completes","failures","acks","uploads","predictions","lookups","core_errors","core_status","rejects")) {
+                    var value=message.path(count);
+                    if(!value.isIntegralNumber() || !value.canConvertToInt() || value.asInt()<0 || value.asInt()>1000000)
+                        throw new AssertionError("SPK11_WORKER_PROTOCOL_INVALID");
+                }
+                var backoffs=message.path("backoffs");
+                if(!backoffs.isArray() || backoffs.size()>32) throw new AssertionError("SPK11_WORKER_PROTOCOL_INVALID");
+                for(var value:backoffs) if(!value.isNumber() || !(value.asDouble()>=0 && value.asDouble()<=30))
+                    throw new AssertionError("SPK11_WORKER_PROTOCOL_INVALID");
+            }
+            return message;
         }
         void paused(String name) throws Exception {assertThat(next().path("checkpoint").asText()).isEqualTo(name);}
         void resume() throws Exception {input.write("continue\n");input.flush();}

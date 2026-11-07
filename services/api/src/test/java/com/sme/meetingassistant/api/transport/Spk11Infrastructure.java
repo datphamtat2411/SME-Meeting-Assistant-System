@@ -1,7 +1,10 @@
 package com.sme.meetingassistant.api.transport;
 
 import com.sme.meetingassistant.api.media.storage.S3ObjectStorageAdapter;
+import java.io.IOException;
 import java.nio.file.*;
+import java.nio.file.attribute.PosixFileAttributes;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.time.Duration;
 import java.util.Comparator;
 import javax.net.ssl.SSLContext;
@@ -22,6 +25,7 @@ final class Spk11Infrastructure implements AutoCloseable {
     static final String PASSWORD = "spk11-synthetic-only-password";
     static final String BUCKET = "spk11-media";
     final Path directory;
+    final Path audioDirectory;
     final Network network = Network.newNetwork();
     final PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:17");
     GenericContainer<?> broker, storage, boundary;
@@ -30,6 +34,7 @@ final class Spk11Infrastructure implements AutoCloseable {
     Spk11Infrastructure() throws Exception {
         directory = Files.createTempDirectory("spk11-");
         try {
+            audioDirectory = prepareAudioDirectory(directory);
             TestPki.run(directory, "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2",
                 "-subj", "/CN=SPK11 disposable CA", "-keyout", "ca.key", "-out", "ca.crt");
             for (String server : new String[]{"server", "storage", "broker"})
@@ -75,6 +80,15 @@ final class Spk11Infrastructure implements AutoCloseable {
         } catch (Exception failure) {
             close(); throw failure;
         }
+    }
+
+    static Path prepareAudioDirectory(Path directory) throws IOException {
+        var permissions = PosixFilePermissions.fromString("rwx------");
+        var audio = Files.createDirectory(directory.resolve("audio"), PosixFilePermissions.asFileAttribute(permissions));
+        var info = Files.readAttributes(audio, PosixFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+        if (!info.isDirectory() || info.isSymbolicLink() || !info.owner().equals(Files.getOwner(directory, LinkOption.NOFOLLOW_LINKS))
+            || !info.permissions().equals(permissions)) throw new IOException("SPK11_AUDIO_ROOT_INVALID");
+        return audio;
     }
 
     private MountableFile file(String name) { return MountableFile.forHostPath(directory.resolve(name), 0444); }

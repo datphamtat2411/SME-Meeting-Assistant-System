@@ -1,8 +1,10 @@
 # SPK-11 reliability gate
 
-**Current status:** the offline gate passes; full-stack worker initialization is
-blocked. See [VERIFICATION.md](VERIFICATION.md) for the recorded failure and the
-unverified scenarios. The full-stack command currently exits nonzero.
+**Current status:** SPK-11 is accepted. Worker bootstrap and all **23 full-stack
+smoke cases pass**, including recovery and PostgreSQL rollback. Full offline AI
+tests, AI lint, AI packaging, Core Maven verification, and migration checks pass.
+See [VERIFICATION.md](VERIFICATION.md) for the runtime root-cause evidence and
+complete matrix.
 
 ## Execution
 
@@ -21,6 +23,17 @@ AI/Core suites. No provider approval file, production environment file, shared
 development infrastructure, cloud service, or paid inference is required.
 The normal `uv run pytest tests` and `./mvnw verify` commands automatically
 include the offline additions; Docker smoke is explicitly opt-in.
+
+For the existing focused success method, run from `services/api`:
+
+```sh
+SPK11_FULL_STACK=1 ./mvnw -B -ntp '-Dtest=Spk11FullStackSmokeTests#successPersistsCanonicalSpeakersAndPreservesEvidence' test
+```
+
+It runs the four unchanged success parameters (one, two, overlapping, and zero
+speakers), asserting canonical PostgreSQL state, immutable evidence, durable
+`RESULT_ACCEPTED`, and terminal worker ACK. This focused flow passed before the
+complete acceptance matrix was run.
 
 Logs, Maven XML reports, and machine-readable gate results are under
 `services/api/target/` (untracked build output). A nonzero runner exit means at
@@ -46,12 +59,18 @@ do not interpret skipped smoke tests as end-to-end verification.
   provider HTTP transport seam and a synchronous service runner to expose
   deterministic pipe checkpoints. The production spawned inference boundary is
   separately covered by the existing worker/runtime tests.
+- Before any worker starts, infrastructure atomically creates its disposable
+  audio root with POSIX `0700`, verifies ownership and a real non-symlink
+  directory, and rejects preexisting paths. Existing lifecycle cleanup removes
+  it. Production storage's ownership, permission, and private-run locking checks
+  remain authoritative.
 - Core business admission and isolated retry use the existing authorized public
   controller/service boundary with a synthetic test principal. Upstream work is
   deterministically finalized through the production finalization service;
   ASR/correction provider execution is forbidden in the Python smoke process.
   Unchanged upstream stage rows provide durable retry execution evidence.
-- Pipe checkpoints expose only phase names and execution counts. Credentials,
+- Pipe checkpoints expose only phase names, execution counts, numeric HTTP status,
+  and bounded backoff durations. Credentials,
   claim tokens, transcript text, and raw provider diagnostics are never printed.
   The subprocess environment is cleared and all provider traffic uses an
   explicit `httpx.MockTransport`. No model-selection defaults are changed.
@@ -63,6 +82,26 @@ do not interpret skipped smoke tests as end-to-end verification.
 The fixture is generated PCM WAV containing two synthetic tones, with explicit
 Vietnamese transcript segments and noncontiguous ordinals. Fake speaker turns
 are deterministic contract evidence, **not a DER corpus or accuracy claim**.
+
+## Safe subprocess diagnostics
+
+Controlled errors retain the `SPK11_WORKER_PROCESS_FAILED` JSON identifier with
+allowlisted `phase` and `category` fields. Phases are `CONFIGURATION`,
+`PROVIDER_SETUP`, `TEMP_STORAGE`, `CORE_MTLS`, `RABBITMQ`, `WORKER_STARTUP`, and
+`RUNTIME`. Categories are fixed validation/configuration/authentication,
+filesystem, timeout/transport/resource, interruption, or unexpected-error codes.
+
+The Java reader bounds and validates the protocol before displaying identifiers
+or counters. Early subprocess exit reports only its numeric exit code;
+uncontrolled stderr is discarded. Raw exceptions, secrets, local paths, claim
+tokens, provider responses and transcript contents are never failure diagnostics.
+Successful checkpoint sequencing is unchanged.
+
+The verified original defect was an absent intermediate `audio` directory, not
+a production storage policy problem. Follow-on harness defects were a required
+request-body override on a bodyless status lookup, textual comparison of numeric
+backoff JSON, and processing an old terminal redelivery before a new retry.
+The corrections and before/after evidence are recorded in the verification report.
 
 ## Recovery semantics under test
 
