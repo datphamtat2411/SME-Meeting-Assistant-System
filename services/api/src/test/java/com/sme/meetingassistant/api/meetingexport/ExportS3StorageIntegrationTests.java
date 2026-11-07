@@ -29,7 +29,7 @@ import software.amazon.awssdk.services.s3.model.CreateBucketRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 
 /**
- * Actual AWS SDK/S3-compatible MinIO boundary; no mocked S3 semantics.
+ * Actual AWS SDK/S3-compatible RustFS boundary; no mocked S3 semantics.
  * Isolated private bucket, conditional immutable writes, signed GET headers.
  * In tests the ephemeral Docker endpoint is HTTP; the HTTP API rejects
  * insecure presigned URLs, while deployment must provide public HTTPS origin.
@@ -38,13 +38,16 @@ class ExportS3StorageIntegrationTests {
     private static final String ACCESS="de10-storage-admin";
     private static final String SECRET="de10-private-test-secret-value";
     private static final String BUCKET="de10-private-exports";
-    private static final GenericContainer<?> MINIO=new GenericContainer<>(
-            DockerImageName.parse("minio/minio:RELEASE.2025-02-07T23-21-09Z"))
-            .withEnv("MINIO_ROOT_USER", ACCESS).withEnv("MINIO_ROOT_PASSWORD", SECRET)
-            .withExposedPorts(9000).withCommand("server","/data","--address",":9000")
-            .waitingFor(Wait.forHttp("/minio/health/ready")
+    private static final GenericContainer<?> RUSTFS=new GenericContainer<>(
+            DockerImageName.parse("rustfs/rustfs:1.0.3"))
+            .withEnv("RUSTFS_ACCESS_KEY", ACCESS)
+            .withEnv("RUSTFS_SECRET_KEY", SECRET)
+            .withEnv("RUSTFS_ADDRESS", ":9000")
+            .withEnv("RUSTFS_CONSOLE_ENABLE", "false")
+            .withExposedPorts(9000).withCommand("/data")
+            .waitingFor(Wait.forHttp("/health/ready")
                     .forPort(9000).forStatusCode(200))
-            .withStartupTimeout(Duration.ofMinutes(2));
+            .withStartupTimeout(Duration.ofMinutes(3));
 
     private static S3Client admin;
     private static S3ObjectStorageAdapter storage;
@@ -53,8 +56,8 @@ class ExportS3StorageIntegrationTests {
 
     @BeforeAll
     static void start() {
-        MINIO.start();
-        endpoint="http://"+MINIO.getHost()+":"+MINIO.getMappedPort(9000);
+        RUSTFS.start();
+        endpoint="http://"+RUSTFS.getHost()+":"+RUSTFS.getMappedPort(9000);
         admin=S3Client.builder().endpointOverride(URI.create(endpoint))
                 .region(Region.US_EAST_1)
                 .serviceConfiguration(software.amazon.awssdk.services.s3.S3Configuration
@@ -77,7 +80,7 @@ class ExportS3StorageIntegrationTests {
     @AfterAll
     static void stop() {
         if(admin!=null)admin.close();
-        MINIO.stop();
+        RUSTFS.stop();
     }
 
     @Test

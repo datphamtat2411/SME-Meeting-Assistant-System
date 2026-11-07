@@ -85,12 +85,12 @@ new issuance is rejected immediately and the TTL remains <=5 minutes.
   presigning and may differ from internal S3 endpoint. A public signed URL
   cannot simply have its hostname replaced: host is part of signature.
 - When the endpoint is not set, the existing S3 presigner endpoint is used.
-  If it is HTTP (e.g. a Docker-internal MinIO address), the public API fails
+  If it is HTTP (e.g. a Docker-internal RustFS address), the public API fails
   closed with 503; do not ship insecure browser URLs.
 - Production storage MUST have private bucket policy, TLS, encryption at rest,
   separate least-privilege prefixes/roles and no public-read ACL; these
   operations requirements must be verified in deployment, not inferred from
-  local MinIO being private by default. Ensure the public download origin is
+  local RustFS being private by default. Ensure the public download origin is
   both reachable by clients and correctly routed to the same private bucket.
 - Bounded full-object integrity verification costs a GET of up to 32 MiB per
   capability; DE12 must benchmark this and only optimize it using an
@@ -114,7 +114,7 @@ only the network presigner is a controlled fake. Tests cover:
   503 without provider URL or secret leakage.
 - Invalid TTL overrides fail application construction.
 
-ExportS3StorageIntegrationTests uses actual S3 SDK/MinIO container and verifies:
+ExportS3StorageIntegrationTests uses actual S3 SDK/RustFS 1.0.3 container and verifies:
 - Private bucket anonymous GET denied.
 - Conditional immutable write; signed GET fetches exact file bytes.
 - Signed Content-Disposition, Content-Type and Cache-Control honored by S3.
