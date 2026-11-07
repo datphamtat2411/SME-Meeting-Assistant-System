@@ -77,7 +77,8 @@ CREATE TABLE action_items (
         (source_type='AI_EXTRACTED'
             AND processing_job_id IS NOT NULL AND proposal_batch_id IS NOT NULL
             AND source_item_key IS NOT NULL AND source_item_key ~ '^[A-Za-z0-9._-]{1,128}$'
-            AND transcript_id IS NOT NULL AND content_revision >= 0
+            AND transcript_id IS NOT NULL AND content_revision IS NOT NULL
+            AND content_revision >= 0
             AND created_by_user_id IS NULL)
     ),
     CONSTRAINT ck_action_items_confirmation_pair CHECK
@@ -90,10 +91,14 @@ CREATE TABLE action_items (
             AND (status NOT IN ('OPEN','IN_PROGRESS','DONE')
                  OR confirmed_by_user_id IS NOT NULL))
     ),
+    CONSTRAINT ck_action_items_completion_pair CHECK
+        ((completed_by_user_id IS NULL) = (completed_at IS NULL)),
     CONSTRAINT ck_action_items_completion CHECK
-        ((status = 'DONE') = (completed_by_user_id IS NOT NULL AND completed_at IS NOT NULL)),
+        ((status = 'DONE') = (completed_by_user_id IS NOT NULL)),
+    CONSTRAINT ck_action_items_cancellation_pair CHECK
+        ((cancelled_by_user_id IS NULL) = (cancelled_at IS NULL)),
     CONSTRAINT ck_action_items_cancellation CHECK
-        ((status = 'CANCELLED') = (cancelled_by_user_id IS NOT NULL AND cancelled_at IS NOT NULL)),
+        ((status = 'CANCELLED') = (cancelled_by_user_id IS NOT NULL)),
     CONSTRAINT ux_action_items_meeting_id UNIQUE (meeting_id, id),
     CONSTRAINT ux_ai_item_transcript_identity UNIQUE (id, transcript_id),
     CONSTRAINT fk_ai_item_exact_receipt FOREIGN KEY
