@@ -11,8 +11,6 @@ import com.sme.meetingassistant.api.actionitem.service.ActionItemBatchFingerprin
 import com.sme.meetingassistant.api.actionitem.service.ActionItemProposalSink;
 import com.sme.meetingassistant.api.actionitem.service.ActionItemProposalSink.Batch;
 import com.sme.meetingassistant.api.actionitem.service.ActionItemProposalSink.Candidate;
-import com.sme.meetingassistant.api.actionitems.ActionItemService;
-import com.sme.meetingassistant.api.actionitems.dto.CreateActionItemRequest;
 import com.sme.meetingassistant.api.notification.email.TransactionalEmailHandler;
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
 import java.security.Principal;
@@ -62,7 +60,6 @@ class ActionItemAssignmentNotificationIntegrationTests {
     @Autowired MockMvc mvc;
     @Autowired ObjectMapper json;
     @Autowired ActionItemProposalSink sink;
-    @Autowired ActionItemService service;
     @Autowired PlatformTransactionManager txManager;
     @Autowired List<TransactionalEmailHandler> registeredHandlers;
 
@@ -151,10 +148,12 @@ class ActionItemAssignmentNotificationIntegrationTests {
         assertThat(intentCount(proposed)).isEqualTo(1);
         UUID event = eventId(proposed, 2L);
         assertEvent(proposed, event, 2L, "ASSIGNED", firstAssignee, "STATUS", "PENDING");
+        // The human's PROPOSED assignee edit is auditable, but it is not
+        // an official assignment and therefore produced no event at that time.
         assertThat(jdbc.queryForObject("""
             SELECT count(*) FROM action_item_history WHERE action_item_id=?
                 AND change_type='ASSIGNEE' AND from_value IS NULL
-            """, Integer.class, proposed)).isZero();
+            """, Integer.class, proposed)).isEqualTo(1);
     }
 
     @Test
@@ -204,9 +203,20 @@ class ActionItemAssignmentNotificationIntegrationTests {
     void outerBusinessRollbackRemovesTaskHistoryEventAndIntent() {
         String title = "Rollback atomic action " + UUID.randomUUID();
         var tx = new TransactionTemplate(txManager);
-        assertThatThrownBy(() -> tx.executeWithoutResult(status -> {
-            service.createManual(organizer,
-                    new CreateActionItemRequest(meeting, title, null, firstAssignee, null));
+        assertThatThrownBy(() -> tx.executeWithoutResult(transaction -> {
+            // Enter through the real HTTP authorization boundary while an
+            // independent enclosing PostgreSQL transaction remains active.
+            try {
+                mvc.perform(post("/api/v1/action-items")
+                    .principal(principal())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(json.writeValueAsString(Map.of(
+                        "meetingId", meeting, "title", title,
+                        "assigneeUserId", firstAssignee))))
+                    .andExpect(status().isCreated());
+            } catch (Exception requestFailure) {
+                throw new IllegalStateException("Authorized HTTP setup failed", requestFailure);
+            }
             throw new IllegalStateException("Deliberate business rollback");
         })).isInstanceOf(IllegalStateException.class)
           .hasMessageContaining("Deliberate business rollback");

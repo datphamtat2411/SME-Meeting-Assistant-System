@@ -2,9 +2,13 @@ package com.sme.meetingassistant.api.notification;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import com.sme.meetingassistant.api.actionitems.ActionItemService;
-import com.sme.meetingassistant.api.actionitems.dto.CreateActionItemRequest;
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.servlet.MockMvc;
+import tools.jackson.databind.ObjectMapper;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -17,6 +21,7 @@ import org.springframework.test.context.TestPropertySource;
 /** Default-disabled notification integration must not suppress audit events. */
 @ActiveProfiles("test")
 @SpringBootTest
+@AutoConfigureMockMvc
 @Import(PostgresTestConfiguration.class)
 @TestPropertySource(properties = {
         "app.notification.action-item-assignment-enabled=false",
@@ -25,10 +30,11 @@ import org.springframework.test.context.TestPropertySource;
 })
 class ActionItemAssignmentFeatureGateIntegrationTests {
     @Autowired JdbcTemplate jdbc;
-    @Autowired ActionItemService service;
+    @Autowired MockMvc mvc;
+    @Autowired ObjectMapper json;
 
     @Test
-    void disablingNotificationLeavesCanonicalAssignmentEventButNoEmailIntent() {
+    void disablingNotificationLeavesCanonicalAssignmentEventButNoEmailIntent() throws Exception {
         UUID actor = UUID.randomUUID(), meeting = UUID.randomUUID();
         String email = "ai08-gate-" + actor + "@example.invalid";
         jdbc.update("""
@@ -40,8 +46,15 @@ class ActionItemAssignmentFeatureGateIntegrationTests {
             VALUES (?,'AI08 gated meeting',?,?)
             """, meeting, actor, actor);
 
-        UUID item = service.createManual(actor,
-                new CreateActionItemRequest(meeting,"Official without email",null,actor,null)).id();
+        var response = mvc.perform(post("/api/v1/action-items")
+                .principal(() -> actor.toString())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsString(java.util.Map.of(
+                    "meetingId", meeting, "title", "Official without email",
+                    "assigneeUserId", actor))))
+            .andExpect(status().isCreated()).andReturn();
+        UUID item = UUID.fromString(json.readTree(
+            response.getResponse().getContentAsString()).path("data").path("id").asText());
         assertThat(jdbc.queryForObject("""
             SELECT count(*) FROM action_item_assignment_events WHERE action_item_id=?
             """, Integer.class, item)).isEqualTo(1);
