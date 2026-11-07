@@ -21,7 +21,7 @@ import tools.jackson.databind.ObjectMapper;
  * PostgreSQL foreign keys independently enforce receipt/segment lineage.
  */
 @Service
-public final class ActionItemProposalSinkService implements ActionItemProposalSink {
+public class ActionItemProposalSinkService implements ActionItemProposalSink {
     private final JdbcTemplate jdbc;
     private final ObjectMapper mapper;
 
