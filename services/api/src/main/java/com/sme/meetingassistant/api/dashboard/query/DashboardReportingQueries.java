@@ -53,6 +53,40 @@ public class DashboardReportingQueries {
                 processing.visibleJobStatusCounts(currentActorId));
     }
 
+    /**
+     * DE-03 personal projection: one consistent DB view with only the data
+     * required by the personal dashboard. Management and technical job aggregates
+     * are deliberately excluded, since their Product semantics remain pending.
+     */
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public PersonalProjection personal(UUID currentActorId, Instant asOf,
+            Window scheduledStarts, Window actualEnds) {
+        Objects.requireNonNull(currentActorId, "currentActorId");
+        Objects.requireNonNull(asOf, "asOf");
+        Objects.requireNonNull(scheduledStarts, "scheduledStarts");
+        Objects.requireNonNull(actualEnds, "actualEnds");
+        return new PersonalProjection(asOf,
+                meeting.countVisibleByStatus(currentActorId),
+                meeting.scheduledStartingIn(currentActorId, scheduledStarts.fromInclusive(),
+                        scheduledStarts.toExclusive(), scheduledStarts.limit()),
+                meeting.endedIn(currentActorId, actualEnds.fromInclusive(),
+                        actualEnds.toExclusive(), actualEnds.limit()),
+                actions.assignedOfficial(currentActorId, asOf));
+    }
+
+    /** Current authorized state, not a historical as-of snapshot. */
+    public record PersonalProjection(Instant asOf,
+            Map<MeetingStatus, Long> visibleMeetingStates,
+            List<MeetingReportingPort.MeetingRow> scheduledWindow,
+            List<MeetingReportingPort.MeetingRow> endedWindow,
+            ActionItemReportingPort.OfficialCounts assignedOfficialActions) {
+        public PersonalProjection {
+            visibleMeetingStates = Map.copyOf(visibleMeetingStates);
+            scheduledWindow = List.copyOf(scheduledWindow);
+            endedWindow = List.copyOf(endedWindow);
+        }
+    }
+
     /** Explicit internal query bounds: no implicit product horizon is selected. */
     public record Window(Instant fromInclusive, Instant toExclusive, int limit) {
         public Window {
