@@ -6,6 +6,7 @@ import com.sme.meetingassistant.api.meeting.entity.MeetingStatus;
 import com.sme.meetingassistant.api.meeting.repository.MeetingParticipantRepository;
 import com.sme.meetingassistant.api.meeting.repository.MeetingRepository;
 import com.sme.meetingassistant.api.userorganization.service.OrganizationalIdentityLookup;
+import com.sme.meetingassistant.api.notification.application.EmailNotificationPreferenceLookup;
 import com.sme.meetingassistant.api.notification.email.TransactionalEmailHandler;
 import java.util.*;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -20,11 +21,14 @@ public class MeetingNotificationService {
     private final MeetingParticipantRepository participants;
     private final MeetingRepository meetings;
     private final OrganizationalIdentityLookup users;
+    private final EmailNotificationPreferenceLookup preferences;
 
     public MeetingNotificationService(JdbcTemplate jdbc, MeetingParticipantRepository participants,
-            MeetingRepository meetings, OrganizationalIdentityLookup users) {
+            MeetingRepository meetings, OrganizationalIdentityLookup users,
+            EmailNotificationPreferenceLookup preferences) {
         this.jdbc = jdbc; this.participants = participants;
         this.meetings = meetings; this.users = users;
+        this.preferences = preferences;
     }
 
     /** Must be called inside the business transaction; never sends SMTP synchronously. */
@@ -41,12 +45,14 @@ public class MeetingNotificationService {
             if (user == null) continue;
             String key = "meeting:" + meeting.getId() + ":" + notificationType
                 + ":" + meeting.getVersion() + ":" + id;
+            boolean enabled = preferences.meetingEmailEnabled(id);
             jdbc.update("""
                 INSERT INTO email_deliveries(id,notification_type,recipient_user_id,recipient_email,
-                    related_entity_type,related_entity_id,status,dedupe_key,created_at,updated_at)
-                VALUES (?, ?, ?, ?, 'MEETING', ?, 'PENDING', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    related_entity_type,related_entity_id,status,skip_reason,dedupe_key,created_at,updated_at)
+                VALUES (?, ?, ?, ?, 'MEETING', ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 ON CONFLICT (dedupe_key) DO NOTHING
-                """, UUID.randomUUID(), notificationType, id, user.email(), meeting.getId(), key);
+                """, UUID.randomUUID(), notificationType, id, user.email(), meeting.getId(),
+                enabled ? "PENDING" : "SKIPPED", enabled ? null : "USER_PREFERENCE_DISABLED", key);
         }
     }
 
@@ -128,13 +134,126 @@ public class MeetingNotificationService {
         var recipient = users.activeRecipient(membership.getUserId()).orElse(null);
         if (recipient == null) return;
         String key = "meeting-participant:" + membership.getId() + ":" + eventType;
+        boolean enabled = preferences.meetingEmailEnabled(membership.getUserId());
         jdbc.update("""
             INSERT INTO email_deliveries(id,notification_type,recipient_user_id,recipient_email,
-                related_entity_type,related_entity_id,status,dedupe_key,created_at,updated_at)
-            VALUES (?,?,?,?, 'MEETING_PARTICIPANT',?,'PENDING',?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
+                related_entity_type,related_entity_id,status,skip_reason,dedupe_key,created_at,updated_at)
+            VALUES (?,?,?,?, 'MEETING_PARTICIPANT',?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
             ON CONFLICT (dedupe_key) DO NOTHING
             """, UUID.randomUUID(), eventType, membership.getUserId(), recipient.email(),
-            membership.getId(), key);
+            membership.getId(), enabled ? "PENDING" : "SKIPPED",
+            enabled ? null : "USER_PREFERENCE_DISABLED", key);
+    }
+
+    /**
+     * Every optional Meeting email must be authenticated against its durable
+     * recipient ID, exact currently approved address, and current preferences
+     * before the shared worker hands content to SMTP.
+     *
+     * Unlike legacy compose(id,email), this cannot accidentally authorize an
+     * old intent because another account later receives the same email.
+     */
+    @Transactional(readOnly = true)
+    public TransactionalEmailHandler.Prepared prepareMeeting(
+            TransactionalEmailHandler.DeliveryContext delivery, MeetingStatus status,
+            String notificationType) {
+        String rejection = ineligibleRecipient(delivery, "MEETING");
+        if (rejection != null) return TransactionalEmailHandler.Prepared.skipped(rejection);
+        if (!currentScheduleNotice(delivery, notificationType)) {
+            return TransactionalEmailHandler.Prepared.skipped("SUPERSEDED_BY_MEETING_CHANGE");
+        }
+        return compose(delivery.relatedEntityId(), delivery.recipientEmail(), status, notificationType)
+                .map(TransactionalEmailHandler.Prepared::ready)
+                .orElseGet(() -> TransactionalEmailHandler.Prepared.skipped(
+                    "MEETING_NO_LONGER_ELIGIBLE"));
+    }
+
+    @Transactional(readOnly = true)
+    public TransactionalEmailHandler.Prepared prepareParticipant(
+            TransactionalEmailHandler.DeliveryContext delivery, boolean addition) {
+        String rejection = ineligibleRecipient(delivery, "MEETING_PARTICIPANT");
+        if (rejection != null) return TransactionalEmailHandler.Prepared.skipped(rejection);
+        var membership = participants.findById(delivery.relatedEntityId()).orElse(null);
+        if (membership == null || !delivery.recipientUserId().equals(membership.getUserId())) {
+            return TransactionalEmailHandler.Prepared.skipped("MEETING_NO_LONGER_ELIGIBLE");
+        }
+        var content = addition
+                ? composeParticipantAdded(delivery.relatedEntityId(), delivery.recipientEmail())
+                : composeParticipantRemoved(delivery.relatedEntityId(), delivery.recipientEmail());
+        return content.map(TransactionalEmailHandler.Prepared::ready)
+                .orElseGet(() -> TransactionalEmailHandler.Prepared.skipped(
+                    "MEETING_NO_LONGER_ELIGIBLE"));
+    }
+
+    private String ineligibleRecipient(TransactionalEmailHandler.DeliveryContext delivery,
+            String expectedEntityType) {
+        if (delivery == null || delivery.relatedEntityId() == null
+                || delivery.recipientUserId() == null || delivery.recipientEmail() == null
+                || !expectedEntityType.equals(delivery.relatedEntityType())) {
+            return "MEETING_NO_LONGER_ELIGIBLE";
+        }
+        var active = users.activeRecipient(delivery.recipientUserId()).orElse(null);
+        if (active == null || !delivery.recipientEmail().equals(active.email())) {
+            return "RECIPIENT_NO_LONGER_ELIGIBLE";
+        }
+        if (!preferences.meetingEmailEnabled(delivery.recipientUserId())) {
+            return "USER_PREFERENCE_DISABLED";
+        }
+        return null;
+    }
+
+    /**
+     * A normal metadata-only meeting edit increments the aggregate's version,
+     * but MUST NOT invalidate a still-useful scheduled email. Accordingly we
+     * compare the event-version encoded in durable *notification intents*,
+     * rather than requiring meeting.version to equal the old event version.
+     *
+     * A later material reschedule/cancel always records a newer schedule
+     * intent, including when the recipient has opted out (SKIPPED). This
+     * detects even an older SENDING attempt that pending supersession could
+     * not rewrite. Malformed/foreign keys fail closed.
+     */
+    private boolean currentScheduleNotice(TransactionalEmailHandler.DeliveryContext delivery,
+            String notificationType) {
+        Long currentVersion = scheduleIntentVersion(delivery.dedupeKey(),
+                delivery.relatedEntityId(), notificationType, delivery.recipientUserId());
+        if (currentVersion == null) return false;
+        List<Map.Entry<String,String>> recorded = jdbc.query("""
+            SELECT notification_type,dedupe_key FROM email_deliveries
+             WHERE related_entity_type='MEETING' AND related_entity_id=?
+               AND recipient_user_id=?
+               AND notification_type IN (
+                   'MEETING_SCHEDULED','MEETING_RESCHEDULED','MEETING_CANCELLED')
+            """, (rs, row) -> Map.entry(rs.getString(1), rs.getString(2)),
+                delivery.relatedEntityId(), delivery.recipientUserId());
+        if (recorded.isEmpty()) return false;
+        boolean foundSelf = false;
+        for (var entry : recorded) {
+            Long candidateVersion = scheduleIntentVersion(entry.getValue(),
+                    delivery.relatedEntityId(), entry.getKey(), delivery.recipientUserId());
+            if (candidateVersion == null || candidateVersion > currentVersion) return false;
+            if (delivery.dedupeKey().equals(entry.getValue())
+                    && notificationType.equals(entry.getKey())) foundSelf = true;
+        }
+        return foundSelf;
+    }
+
+    private static Long scheduleIntentVersion(String key, UUID meetingId, String type,
+            UUID userId) {
+        if (key == null || meetingId == null || userId == null
+                || !Set.of("MEETING_SCHEDULED", "MEETING_RESCHEDULED",
+                    "MEETING_CANCELLED").contains(type)) return null;
+        String prefix = "meeting:" + meetingId + ":" + type + ":";
+        String suffix = ":" + userId;
+        if (!key.startsWith(prefix) || !key.endsWith(suffix)
+                || key.length() <= prefix.length() + suffix.length()) return null;
+        try {
+            long version = Long.parseLong(
+                key.substring(prefix.length(), key.length() - suffix.length()));
+            return version < 0 ? null : version;
+        } catch (NumberFormatException bad) {
+            return null;
+        }
     }
 
     @Transactional(readOnly = true)

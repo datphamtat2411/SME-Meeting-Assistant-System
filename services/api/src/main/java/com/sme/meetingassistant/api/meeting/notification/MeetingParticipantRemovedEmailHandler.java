@@ -16,4 +16,7 @@ public final class MeetingParticipantRemovedEmailHandler implements Transactiona
     @Override public Optional<Content> compose(UUID membershipId, String recipientEmail) {
         return notifications.composeParticipantRemoved(membershipId, recipientEmail);
     }
+    @Override public Prepared prepare(DeliveryContext delivery) {
+        return notifications.prepareParticipant(delivery, false);
+    }
 }

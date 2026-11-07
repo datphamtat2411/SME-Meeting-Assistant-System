@@ -1,15 +1,13 @@
 package com.sme.meetingassistant.api.meetingintelligence.service;
 
 import com.sme.meetingassistant.api.actionitem.service.ActionItemProposalSink;
+import com.sme.meetingassistant.api.actionitem.service.ActionItemBatchFingerprint;
 import com.sme.meetingassistant.api.media.MediaProperties;
 import org.springframework.beans.factory.annotation.Autowired;
 import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle;
 import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle.StageClaim;
 import com.sme.meetingassistant.api.transcript.service.TranscriptSourceGuard;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.HashSet;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.beans.factory.ObjectProvider;
@@ -23,8 +21,8 @@ import tools.jackson.databind.ObjectMapper;
 /**
  * MI-10: strictly internal handoff to the *Action Items-owned* canonical
  * proposal sink. Does not create Decisions, Action Items tables or HTTP routes.
- * No sink is installed until MI-01 G7; fail closed rather than reporting
- * accepted extraction or completing the Media stage.
+ * The canonical sink may be installed before MI-01 G7 production approval;
+ * feature gating still rejects unapproved extraction before DB mutation.
  */
 @Service
 public class ActionItemProposalHandoff {
@@ -125,7 +123,7 @@ public class ActionItemProposalHandoff {
         var batch = new ActionItemProposalSink.Batch(stage.meetingId(), stage.jobId(),
             claim.stageRunId(), source.snapshotId(), source.transcriptId(),
             source.contentRevision(), !provenance.current(),
-            fingerprint(candidates), candidates);
+            ActionItemBatchFingerprint.sha256(mapper, candidates), candidates);
         var receipt = sink.acceptProposed(batch);
         if (receipt == null || receipt.newProposals() < 0
                 || receipt.newProposals() > candidates.size()
@@ -187,13 +185,5 @@ public class ActionItemProposalHandoff {
         return false;
     }
 
-    private String fingerprint(List<ActionItemProposalSink.Candidate> items) {
-        byte[] encoded = mapper.writeValueAsBytes(items);
-        try {
-            return HexFormat.of().formatHex(
-                MessageDigest.getInstance("SHA-256").digest(encoded));
-        } catch (NoSuchAlgorithmException impossible) {
-            throw new IllegalStateException("SHA-256 is unavailable.", impossible);
-        }
-    }
+
 }

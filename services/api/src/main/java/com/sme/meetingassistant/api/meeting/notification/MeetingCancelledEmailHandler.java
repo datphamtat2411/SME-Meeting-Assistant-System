@@ -14,4 +14,7 @@ public class MeetingCancelledEmailHandler implements TransactionalEmailHandler {
     @Override public Optional<Content> compose(UUID meetingId, String recipientEmail) {
         return notifications.compose(meetingId,recipientEmail,MeetingStatus.CANCELLED,"MEETING_CANCELLED");
     }
+    @Override public Prepared prepare(DeliveryContext delivery) {
+        return notifications.prepareMeeting(delivery, MeetingStatus.CANCELLED, "MEETING_CANCELLED");
+    }
 }

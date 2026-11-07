@@ -80,41 +80,58 @@ public final class TransactionalEmailDeliveryWorker {
                         OR (status='SENDING'
                             AND updated_at < clock_timestamp() - INTERVAL '5 minutes'))
                  ORDER BY created_at,id LIMIT 1 FOR UPDATE SKIP LOCKED
-            ) RETURNING id,notification_type,related_entity_id,recipient_email,attempt_count
+            ) RETURNING id,notification_type,related_entity_type,related_entity_id,
+                        recipient_user_id,recipient_email,dedupe_key,attempt_count
             """, new MapSqlParameterSource("supported", supported),
             (rs, index) -> new Delivery(
                 rs.getObject("id", UUID.class),
                 rs.getString("notification_type"),
+                rs.getString("related_entity_type"),
                 rs.getObject("related_entity_id", UUID.class),
+                rs.getObject("recipient_user_id", UUID.class),
                 rs.getString("recipient_email"),
+                rs.getString("dedupe_key"),
                 rs.getInt("attempt_count")));
         if (claimed.isEmpty()) return false;
 
         Delivery job = claimed.getFirst();
         try {
-            var prepared = handlers.get(job.type()).compose(job.contextId(), job.recipientEmail());
-            if (prepared.isEmpty()) {
-                markSkipped(job.id(), "ACTION_NO_LONGER_ELIGIBLE");
+            // A long-lived worker may have lost this lease to another attempt.
+            // No renderer or SMTP call may proceed with a superseded claim.
+            if (!claimStillOwned(job)) return true;
+            var prepared = handlers.get(job.type()).prepare(
+                new TransactionalEmailHandler.DeliveryContext(job.contextId(),
+                    job.relatedEntityType(), job.recipientUserId(), job.recipientEmail(),
+                    job.dedupeKey()));
+            if (prepared.content().isEmpty()) {
+                markSkipped(job, prepared.skipReason());
                 return true;
             }
-            send(job.recipientEmail(), prepared.get());
+            // Recheck the durable claim immediately before SMTP. A business
+            // change can invalidate the claim while the renderer is running.
+            if (!claimStillOwned(job)) return true;
+            send(job.recipientEmail(), prepared.content().orElseThrow());
+            // Generation fencing prevents an old SMTP attempt from overwriting
+            // a newer worker's claim result (SMTP itself remains at-least-once).
             jdbc.update("""
                 UPDATE email_deliveries SET status='SENT',sent_at=clock_timestamp(),
                     last_error_code=NULL,last_error_summary=NULL,next_attempt_at=NULL,
-                    updated_at=clock_timestamp() WHERE id=? AND status='SENDING'
-                """, job.id());
+                    updated_at=clock_timestamp()
+                 WHERE id=? AND status='SENDING' AND attempt_count=?
+                """, job.id(), job.attempts());
         } catch (RuntimeException deliveryError) {
-            // Deliberately discard exception details (including possible SMTP response).
+            // Do not persist/log the exception: SMTP may include provider secrets.
             int retryMinutes = Math.min(60, 1 << Math.min(job.attempts(), 6));
             if (job.attempts() >= 5) {
-                markDead(job.id(), "SMTP_DELIVERY_FAILED");
+                markDead(job, "SMTP_DELIVERY_FAILED");
             } else {
                 jdbc.update("""
                     UPDATE email_deliveries SET status='FAILED',
                         next_attempt_at=clock_timestamp() + (? * INTERVAL '1 minute'),
                         last_error_code='SMTP_DELIVERY_FAILED',last_error_summary=NULL,
-                        updated_at=clock_timestamp() WHERE id=? AND status='SENDING'
-                """, retryMinutes, job.id());
+                        updated_at=clock_timestamp()
+                     WHERE id=? AND status='SENDING' AND attempt_count=?
+                """, retryMinutes, job.id(), job.attempts());
             }
         }
         return true;
@@ -157,24 +174,35 @@ public final class TransactionalEmailDeliveryWorker {
         }
     }
 
-    private void markSkipped(UUID id, String reason) {
+    /** Check status AND claim generation without holding a PostgreSQL lock during SMTP. */
+    private boolean claimStillOwned(Delivery job) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+            SELECT EXISTS (
+                SELECT 1 FROM email_deliveries
+                 WHERE id=? AND status='SENDING' AND attempt_count=?
+            )
+            """, Boolean.class, job.id(), job.attempts()));
+    }
+
+    private void markSkipped(Delivery job, String reason) {
         jdbc.update("""
             UPDATE email_deliveries
                SET status='SKIPPED', skip_reason=?,last_error_code=NULL,
                    last_error_summary=NULL,next_attempt_at=NULL,
                    updated_at=clock_timestamp()
-             WHERE id=? AND status='SENDING'
-            """, reason, id);
+             WHERE id=? AND status='SENDING' AND attempt_count=?
+            """, reason, job.id(), job.attempts());
     }
 
-    private void markDead(UUID id, String code) {
+    private void markDead(Delivery job, String code) {
         jdbc.update("""
             UPDATE email_deliveries SET status='DEAD',last_error_code=?,
                 last_error_summary=NULL,next_attempt_at=NULL,updated_at=clock_timestamp()
-             WHERE id=? AND status='SENDING'
-            """, code, id);
+             WHERE id=? AND status='SENDING' AND attempt_count=?
+            """, code, job.id(), job.attempts());
     }
 
-    private record Delivery(UUID id, String type, UUID contextId, String recipientEmail,
+    private record Delivery(UUID id, String type, String relatedEntityType, UUID contextId,
+                            UUID recipientUserId, String recipientEmail, String dedupeKey,
                             int attempts) { }
 }

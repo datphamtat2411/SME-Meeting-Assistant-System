@@ -140,6 +140,14 @@ class AccountSetupIntegrationTests {
     @Test
     void smtpWorkerDeliversDedicatedTokenWithoutPersistingItsPlaintext() throws Exception {
         UUID userId = createPending();
+        // Security/setup communication is mandatory; optional notification
+        // preferences may never suppress a one-time account activation.
+        jdbc.update("""
+            INSERT INTO user_preferences(user_id,meeting_email_enabled,action_item_email_enabled)
+            VALUES (?,false,false)
+            ON CONFLICT (user_id) DO UPDATE
+                SET meeting_email_enabled=false,action_item_email_enabled=false
+            """, userId);
         assertThat(worker.deliverOne()).isTrue();
         ArgumentCaptor<SimpleMailMessage> captor = ArgumentCaptor.forClass(SimpleMailMessage.class);
         verify(smtp).send(captor.capture());

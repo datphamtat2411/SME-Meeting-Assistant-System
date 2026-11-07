@@ -16,4 +16,7 @@ public final class MeetingParticipantAddedEmailHandler implements TransactionalE
     @Override public Optional<Content> compose(UUID membershipId, String recipientEmail) {
         return notifications.composeParticipantAdded(membershipId, recipientEmail);
     }
+    @Override public Prepared prepare(DeliveryContext delivery) {
+        return notifications.prepareParticipant(delivery, true);
+    }
 }

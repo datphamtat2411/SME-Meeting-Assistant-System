@@ -21,6 +21,12 @@ public class OrganizationalIdentityLookup {
         return id != null && users.findById(id)
             .filter(user -> user.getAccountStatus() == AccountStatus.ACTIVE).isPresent();
     }
+    public Optional<UUID> activePrimaryOrgUnitId(UUID id) {
+        if (id == null) return Optional.empty();
+        return users.findById(id)
+            .filter(user -> user.getAccountStatus() == AccountStatus.ACTIVE)
+            .map(user -> user.getPrimaryOrgUnitId());
+    }
     public Optional<Recipient> activeRecipient(UUID id) {
         if (id == null) return Optional.empty();
         return users.findById(id)
