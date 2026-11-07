@@ -40,7 +40,7 @@ public class ActionItemMinutesReader implements ActionItemMinutesSource {
         meetingAccess.requireReadable(meetingId, actor);
         List<ActionItemView> official = new ArrayList<>();
         for (int page = 0; page <= MAX_ITEMS / PAGE_SIZE; page++) {
-            var batch = items.list(actor, meetingId, null, null, null, null, null,
+            var batch = items.list(actor, meetingId, null, null, null, null,
                     PageRequest.of(page, PAGE_SIZE, Sort.by(Sort.Direction.ASC, "createdAt")));
             if (batch.getTotalElements() > MAX_ITEMS) {
                 throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
