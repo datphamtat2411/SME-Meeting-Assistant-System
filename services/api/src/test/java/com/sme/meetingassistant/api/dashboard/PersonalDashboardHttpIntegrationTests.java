@@ -178,7 +178,9 @@ class PersonalDashboardHttpIntegrationTests {
         UUID b = meeting(alice, "SCHEDULED", sameTime, null);
         UUID exclusiveStart = meeting(alice, "SCHEDULED", NOW.plus(Duration.ofDays(7)), null);
         UUID endedInside = meeting(alice, "ENDED", null, NOW.minus(Duration.ofDays(2)));
-        UUID endedExclusive = meeting(alice, "ENDED", null, NOW.minus(Duration.ofDays(3)));
+        UUID endedAtInclusiveLowerBound = meeting(alice, "ENDED", null,
+                NOW.minus(Duration.ofDays(3)));
+        UUID endedAtExclusiveUpperBound = meeting(alice, "ENDED", null, NOW);
 
         JsonNode bounded = data(request(alice, "upcomingDays", "7",
                 "recentDays", "3", "limit", "2").get());
@@ -186,8 +188,10 @@ class PersonalDashboardHttpIntegrationTests {
         expected.sort(Comparator.comparing(UUID::toString));
         assertThat(ids(bounded.path("upcomingMeetings"))).containsExactlyElementsOf(expected);
         assertThat(ids(bounded.path("upcomingMeetings"))).doesNotContain(exclusiveStart);
-        assertThat(ids(bounded.path("recentMeetings"))).containsExactly(endedInside)
-                .doesNotContain(endedExclusive);
+        // The lower end of [from,to) is INCLUDED; the upper end is EXCLUDED.
+        assertThat(ids(bounded.path("recentMeetings")))
+                .containsExactly(endedInside, endedAtInclusiveLowerBound)
+                .doesNotContain(endedAtExclusiveUpperBound);
         assertThat(bounded.path("upcomingWindow").path("toExclusive").asText())
             .isEqualTo("2026-11-13T18:30:00Z");
         assertThat(bounded.path("recentWindow").path("limit").asInt()).isEqualTo(2);
