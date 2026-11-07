@@ -8,9 +8,9 @@ import java.util.UUID;
  * Action Items-owned canonical proposal acceptance contract (MI-10).
  *
  * An implementation MUST be the canonical Action Items module, own its
- * authorization, deduplication and persistence, and never treat AI input as
- * confirmation or a user assignment. No implementation is installed until
- * Action Items ownership/MI-01 G7 has been approved.
+ * source validation boundary, deduplication and persistence, and never treat
+ * AI input as confirmation or a user assignment. The owned sink is installed
+ * by AI-03, but external extraction remains disabled until G2/G7 approval.
  *
  * Invoked within the orchestrator's mandatory PostgreSQL transaction after
  * trusted Media/Transcript provenance validation. Never call a remote service
@@ -20,7 +20,8 @@ public interface ActionItemProposalSink {
 
     /**
      * Deterministic producer identity: processingJobId + stageRunId +
-     * candidateKey. Sink MUST deduplicate replay before inserting, and\n     * reject divergent batchSha256 for the same processingJobId/stageRunId.
+     * candidateKey. Sink MUST deduplicate replay before inserting, and
+     * reject divergent batchSha256 for the same processingJobId/stageRunId.
      */
     record Candidate(
         String candidateKey,

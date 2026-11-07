@@ -12,10 +12,10 @@ processing stage, claim and completion; Transcript owns transcript evidence and
 source eligibility. This migration does **not** install an AI producer, open a
 worker HTTP endpoint, mark a stage successful or enable Action Item handoff.
 
-The legacy `ActionItemProposalPort.propose` is intentionally disabled (503)
-because its single-candidate contract has no authenticated stage-run identity,
-pinned snapshot or durable batch receipt. AI-03 must implement the v1 MI-10
-batch sink instead of reconstructing fake source identities.
+AI-03 removed the obsolete `ActionItemProposalPort.propose` contract
+entirely: single-candidate calls cannot supply the verified stage-run identity,
+pinned snapshot and durable batch receipt required by MI-10. The canonical
+`ActionItemProposalSink` now owns transactional batch acceptance.
 
 ## V29 schema decisions
 

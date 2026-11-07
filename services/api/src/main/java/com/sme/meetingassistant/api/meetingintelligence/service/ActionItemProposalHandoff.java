@@ -21,8 +21,8 @@ import tools.jackson.databind.ObjectMapper;
 /**
  * MI-10: strictly internal handoff to the *Action Items-owned* canonical
  * proposal sink. Does not create Decisions, Action Items tables or HTTP routes.
- * No sink is installed until MI-01 G7; fail closed rather than reporting
- * accepted extraction or completing the Media stage.
+ * The canonical sink may be installed before MI-01 G7 production approval;
+ * feature gating still rejects unapproved extraction before DB mutation.
  */
 @Service
 public class ActionItemProposalHandoff {
