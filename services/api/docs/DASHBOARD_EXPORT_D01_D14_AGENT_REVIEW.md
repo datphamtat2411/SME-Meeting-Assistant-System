@@ -306,3 +306,104 @@ Key source and migration evidence:
 - `services/api/src/main/resources/db/migration/V41__export_intake_source_provenance.sql`
 - `services/api/src/main/resources/db/migration/V42__export_orphan_observation_ledger.sql`
 - `services/api/src/main/resources/db/migration/V43__export_schema_scoped_trigger_guards.sql`
+- `services/api/src/main/resources/db/migration/V44__export_insert_lifecycle_guard.sql`
+
+## 9. Remediation Follow-up (2026-11-08)
+
+This section preserves the historical review and its original findings above. It
+records the autonomous remediation performed from starting SHA
+`1b9a755f5c5f3361f363ce8f1229364cf11aa17e`; it does not represent Product,
+Security or Operations approval.
+
+### Remediation result
+
+**Engineering result:** `REMEDIATION_VERIFIED` for F-01, F-02 and F-03. The
+production switches remain fail-closed and develop merge/release remains a
+separate human and environment gate.
+
+### F-01 - Direct SQL export lifecycle admission
+
+- **Original root cause:** V40 enforced lifecycle transitions only on UPDATE;
+  its shape constraints allowed a privileged SQL writer to insert a complete
+  `READY`, `GENERATING` or `FAILED` row without an initial intent lifecycle.
+- **Correction:** New forward-only V44 adds a `BEFORE INSERT` database trigger
+  requiring `PENDING`, `generation_attempt=0` and `row_version=0`. The existing
+  V40-V43 transition, intake, fencing and artifact-provenance guards remain
+  unchanged.
+- **Files changed:** `V44__export_insert_lifecycle_guard.sql`,
+  `ExportPersistenceIntegrationTests`, `ExportFlywayUpgradeIntegrationTests`,
+  `DashboardExportFullUpgradeIntegrationTests`, and
+  `IntegrationMergeGuardTests`.
+- **Regression evidence:** Direct valid `PENDING` insertion succeeds; direct
+  complete `GENERATING`, `READY` and `FAILED` insertion fails; unstaged PENDING
+  rows are not selected by `claimNextStaged`; authorized admission, staged
+  worker publication, fencing, invalid transitions and receipt provenance pass.
+
+### F-02 - Orphan retry backoff reset
+
+- **Original root cause:** `ExportOrphanRepository.observe()` cleared
+  `next_attempt_at` and the prior error on every unchanged inventory
+  observation, defeating `releaseClaim()` backoff.
+- **Correction:** Unchanged LastModified/ETag/size evidence now preserves the
+  existing retry deadline and error. Changed evidence still resets quarantine,
+  claim state and retry metadata. DB-clock eligibility, leases, conditional
+  ETag deletion, committed-reference protection and default-off purge remain
+  intact.
+- **Files changed:** `ExportOrphanRepository.java` and
+  `ExportOrphanReconciliationIntegrationTests.java`.
+- **Regression evidence:** Storage failure establishes backoff; unchanged
+  observation preserves it and remains ineligible; a DB-time-expired candidate
+  becomes eligible; changed evidence resets quarantine; scan leases, ETag
+  races, committed references and safe storage failure handling pass.
+
+### F-03 - Expired idempotency receipt cleanup
+
+- **Original root cause:** Expiry deletion existed only in the exact retry path;
+  abandoned receipts had no global bounded cleanup despite an expiry index.
+- **Correction:** `ExportIdempotencyRetentionCleanup` runs bounded,
+  database-clock cleanup batches using `FOR UPDATE SKIP LOCKED`, with a
+  default-on scheduler independent of Export admission/worker switches. It
+  uses the existing configurable 1-168 hour receipt window, preserves
+  `meeting_exports` and object references, emits bounded-count metrics, logs
+  only counts/error types, rolls back failures, and retries on the next poll.
+- **Files changed:** `MeetingExportRepository.java`,
+  `ExportIdempotencyRetentionCleanup.java`,
+  `ExportIdempotencyRetentionSchedulingConfiguration.java`,
+  `ExportOperationalMetrics.java`, `application.properties`, and the new
+  idempotency cleanup integration/unit tests.
+- **Retention status:** The 24-hour engineering default remains provisional;
+  D10 Product/API/Security retention approval is still pending. Receipt
+  cleanup is not artifact or source retention and does not authorize orphan
+  purge.
+- **Regression evidence:** Expired unused receipts are removed; active receipts
+  survive; batches are capped at 200; concurrent cleanup is safe; concurrent
+  admission preserves expired-key replacement semantics; historical READY
+  metadata survives; scheduler registration, metrics and failure recovery pass.
+
+### Migration and verification
+
+- V1-V43 were not modified. V44 is the only new migration and supports clean
+  V1-V44 installation, V34/V39 historical upgrades, and V43-to-V44 upgrade with
+  unchanged historical checksums.
+- Focused remediation/migration verification: **35 tests, 0 failures, 0
+  errors, 0 skipped**.
+- Related integration verification: **76 tests, 0 failures, 0 errors, 0
+  skipped**.
+- Clean full API verification (`./mvnw -B -ntp clean verify`): **1,378 tests,
+  0 failures, 0 errors, 19 explicit environment-gated skips**, `BUILD SUCCESS`.
+- Local cross-service gate on this remediation tree:
+  `python3 infra/local/diarization-smoke/run.py --full-stack --full-suites`
+  passed `ai-lint`, `ai-tests`, `ai-build`, `monitoring-rules` and
+  `core-verify` with exit code 0. This local run is supporting evidence; the
+  final acceptance gate still requires CI on the exact pushed commit SHA.
+
+### Remaining limitations
+
+- Human Product/API/Security/Operations decisions for D10/D11/D14 remain
+  pending; this remediation does not approve retention/legal-hold policy,
+  production S3/IAM/HTTPS, performance SLOs or merge protection.
+- Production database Flyway history still requires per-environment read-only
+  inventory and backup-tested migration planning. The tested V43-to-V44 path
+  does not prove an unknown deployed history is compatible.
+- Production switches for public admission, worker, reconciliation and purge
+  remain disabled by default.

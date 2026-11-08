@@ -133,3 +133,18 @@ This separation is intentional: the task exists to prevent "make it work for a d
 Detailed D01-D14 evidence, verdicts, skipped-test reasons and exact source
 locations are recorded in
 `services/api/docs/DASHBOARD_EXPORT_D01_D14_AGENT_REVIEW.md`.
+
+## 10. Post-remediation agent reassessment (2026-11-08)
+
+This reassessment is technical evidence only. It does not fill the pending human
+owner rows in section 7 or grant Product, Security or Operations approval.
+
+| Decision | Agent reassessment | Evidence and conditions |
+| --- | --- | --- |
+| D10 | `AGENT_APPROVED_WITH_CONDITIONS` | F-03 is corrected with authoritative DB-clock, bounded `FOR UPDATE SKIP LOCKED` receipt cleanup; active receipts and historical exports are preserved, and failure metrics/recovery are covered. The 1-168 hour window and 24-hour default remain provisional. Named API/Security approval of the replay/retention window is still required. |
+| D11 | `AGENT_APPROVED_WITH_CONDITIONS` | F-01 and F-02 are corrected: V44 rejects direct non-PENDING inserts, unchanged orphan evidence retains backoff, committed references and conditional ETag deletion remain protected. Retention/legal-hold policy, deployed migration inventory, private S3/IAM/HTTPS evidence and Operations approval remain required. |
+| D14 | `AGENT_APPROVED_WITH_CONDITIONS` | PostgreSQL claim/lease/fencing, staged intake provenance, direct SQL insert admission, bounded retries and orphan backoff pass focused, related and clean full API verification. Worker/reconciliation production switches remain off; Operations capacity/recovery evidence and exact final-SHA cross-service CI remain required. |
+
+The original `CHANGES REQUIRED` entries in section 5 remain historical traceability
+for the pre-remediation review. They are superseded for current engineering status
+only by this conditional reassessment, not by blanket approval or release status.

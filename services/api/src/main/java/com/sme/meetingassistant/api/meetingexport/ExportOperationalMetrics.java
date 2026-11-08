@@ -79,6 +79,15 @@ public final class ExportOperationalMetrics {
                 .register(registry).increment();
     }
 
+    public void idempotencyCleanup(int count) {
+        increment("sme.exports.idempotency.receipts.cleaned", count);
+    }
+
+    public void idempotencyCleanupFailure() {
+        Counter.builder("sme.exports.idempotency.cleanup.failures")
+                .register(registry).increment();
+    }
+
     private void increment(String name, int count) {
         if (count > 0) Counter.builder(name).register(registry).increment(count);
     }

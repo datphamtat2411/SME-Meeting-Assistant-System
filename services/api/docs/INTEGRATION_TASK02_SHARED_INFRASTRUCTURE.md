@@ -50,7 +50,7 @@ The merged Maven graph preserves the existing Spring Boot/AWS SDK dependencies, 
 - `ExportS3StorageIntegrationTests`: actual RustFS private object persistence, verified signed GET, immutability, conditional deletion, and negative media-bypass operations.
 - `WorkerResultStorageTests`: bounded streaming, unchanged 16 MiB Diarization limit, immutable result deletion guard.
 - `StorageConfigurationContractTests`: explicit fail-closed defaults and independent Spring property binding.
-- Existing Media/Diarization/Export integration tests remain active, including PostgreSQL/Flyway V43.
+- Existing Media/Diarization/Export integration tests remain active, including PostgreSQL/Flyway V44.
 
 Task 02 closes only after full API CI, AI CI and Diarization Full-Stack CI are all green on the **same final commit**. No CI test is skipped or relaxed to manufacture a green run.
 

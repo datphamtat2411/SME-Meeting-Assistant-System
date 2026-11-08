@@ -319,7 +319,7 @@ class DiarizationFlywayUpgradeIntegrationTests {
     void freshSchemaInstallsV1ThroughV43AndValidatesWithoutRepairOrRepeat() {
         String schema = schema();
         try {
-            Flyway fresh = flyway(schema, null);
+            Flyway fresh = flyway(schema, "43");
             assertThat(fresh.migrate().migrationsExecuted).isEqualTo(43);
             fresh.validate();
             assertThat(history(schema, 39)).hasSize(39);

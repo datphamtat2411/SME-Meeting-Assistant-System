@@ -20,8 +20,8 @@ import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
  * modified or a privileged production switch is enabled by default.
  *
  * The frozen digests are canonical Git blob object IDs obtained from the
- * reviewed develop V1-V39 plus byte-identical Export V40-V43 SQL. Additional
- * future V44+ migrations are permitted; rewriting V1-V43 is not.
+ * reviewed develop V1-V39 plus byte-identical Export V40-V43 SQL. Forward-only
+ * V44+ migrations are permitted; rewriting V1-V43 is not.
  */
 class IntegrationMergeGuardTests {
     private static final Pattern VERSION = Pattern.compile("^V([1-9][0-9]*)__.+[.]sql$");
@@ -94,6 +94,8 @@ class IntegrationMergeGuardTests {
             assertThat(versions).as("Canonical migration V%s must be available", i)
                     .containsKey(i);
         }
+        assertThat(actual).containsKey("V44__export_insert_lifecycle_guard.sql");
+        assertThat(versions).containsKey(44);
     }
 
     @Test

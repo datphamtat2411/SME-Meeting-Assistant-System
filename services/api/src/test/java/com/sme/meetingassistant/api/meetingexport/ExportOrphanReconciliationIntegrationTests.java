@@ -10,6 +10,7 @@ import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -51,12 +52,13 @@ class ExportOrphanReconciliationIntegrationTests {
         record Entry(String key, Instant modified, String etag, long size) { }
         final Map<String, Entry> objects=new ConcurrentHashMap<>();
         volatile boolean changeOnDelete;
+        volatile boolean throwOnDelete;
 
         void put(String key, Instant modified) {
             objects.put(key,new Entry(key,modified,"etag-"+UUID.randomUUID(),144L));
         }
 
-        void clear() { objects.clear();changeOnDelete=false; }
+        void clear() { objects.clear();changeOnDelete=false;throwOnDelete=false; }
 
         @Override
         public ListedObjects list(String prefix,String continuation,int limit) {
@@ -85,6 +87,7 @@ class ExportOrphanReconciliationIntegrationTests {
         }
 
         @Override public boolean deleteIfEtagMatches(String key,String etag) {
+            if (throwOnDelete) throw new IllegalStateException("storage unavailable");
             if(changeOnDelete) {
                 Entry old=objects.get(key);
                 if(old!=null) objects.put(key,new Entry(key,Instant.now(),
@@ -210,6 +213,47 @@ class ExportOrphanReconciliationIntegrationTests {
         assertThat(jdbc.queryForObject(
                 "SELECT last_error_code FROM meeting_export_orphan_candidates WHERE object_key=?",
                 String.class,key)).isEqualTo("ETAG_CHANGED");
+    }
+
+    @Test
+    void unchangedObservationPreservesDeletionBackoffUntilDeadline() {
+        UUID id=UUID.randomUUID();
+        String key=intakeKey(id);
+        storage.put(key,Instant.now().minus(Duration.ofDays(6)));
+        dryRun.runOnce();
+        jdbc.update("""
+            UPDATE meeting_export_orphan_candidates
+               SET first_observed_at=clock_timestamp()-INTERVAL '30 hours'
+             WHERE object_key=?
+            """,key);
+
+        storage.throwOnDelete=true;
+        assertThat(approvedPurgeFixture().runOnce().deleted()).isZero();
+        OffsetDateTime nextAttempt=jdbc.queryForObject("""
+            SELECT next_attempt_at FROM meeting_export_orphan_candidates
+             WHERE object_key=?
+            """,OffsetDateTime.class,key);
+        assertThat(nextAttempt).isNotNull();
+        assertThat(jdbc.queryForObject("""
+            SELECT last_error_code FROM meeting_export_orphan_candidates
+             WHERE object_key=?
+            """,String.class,key)).isEqualTo("STORAGE_UNAVAILABLE");
+        assertThat(repository.eligible(72,24,10)).isEmpty();
+
+        storage.throwOnDelete=false;
+        assertThat(dryRun.runOnce().orphanObserved()).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+            SELECT next_attempt_at FROM meeting_export_orphan_candidates
+             WHERE object_key=?
+            """,OffsetDateTime.class,key)).isEqualTo(nextAttempt);
+        assertThat(repository.eligible(72,24,10)).isEmpty();
+
+        jdbc.update("""
+            UPDATE meeting_export_orphan_candidates
+               SET next_attempt_at=clock_timestamp()-INTERVAL '1 second'
+             WHERE object_key=?
+            """,key);
+        assertThat(repository.eligible(72,24,10)).hasSize(1);
     }
 
     @Test

@@ -98,6 +98,40 @@ class ExportFlywayUpgradeIntegrationTests {
         }
     }
 
+    @Test
+    void existingV43DatabaseAdvancesOnlyThroughForwardV44InsertGuard() {
+        String schema = "de06_v44_upgrade_" + UUID.randomUUID().toString().replace("-", "");
+        try {
+            Flyway historical = Flyway.configure().dataSource(dataSource).schemas(schema)
+                    .locations("classpath:db/migration")
+                    .target(MigrationVersion.fromVersion("43")).load();
+            historical.migrate();
+            historical.validate();
+            Map<String, Integer> beforeChecksums = checksums(schema);
+            assertThat(beforeChecksums).hasSize(43).containsKey("43");
+
+            Flyway upgraded = Flyway.configure().dataSource(dataSource).schemas(schema)
+                    .locations("classpath:db/migration")
+                    .target(MigrationVersion.fromVersion("44")).load();
+            assertThat(upgraded.migrate().migrationsExecuted).isEqualTo(1);
+            upgraded.validate();
+            Map<String, Integer> afterChecksums = checksums(schema);
+            assertThat(afterChecksums).hasSize(44).containsKey("44");
+            for (var entry : beforeChecksums.entrySet()) {
+                assertThat(afterChecksums.get(entry.getKey()))
+                        .describedAs("Historical Flyway migration checksum V" + entry.getKey())
+                        .isEqualTo(entry.getValue());
+            }
+            assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM information_schema.triggers
+                 WHERE trigger_schema=? AND trigger_name='trg_de06_export_insert_lifecycle'
+                """, Long.class, schema)).isEqualTo(1L);
+            assertThat(upgraded.migrate().migrationsExecuted).isZero();
+        } finally {
+            jdbc.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE");
+        }
+    }
+
     private Map<String, Integer> checksums(String schema) {
         Map<String, Integer> result = new LinkedHashMap<>();
         jdbc.query("""

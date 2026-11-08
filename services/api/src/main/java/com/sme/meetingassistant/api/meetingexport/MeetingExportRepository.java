@@ -93,6 +93,27 @@ public class MeetingExportRepository {
         return require(exportId);
     }
 
+    /** One DB-clock bounded cleanup pass; caller supplies the transaction. */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public int deleteExpiredIdempotencyReceipts(int limit) {
+        if (limit < 1 || limit > 500) {
+            throw new IllegalArgumentException("Invalid idempotency cleanup batch size");
+        }
+        return jdbc.update("""
+            DELETE FROM meeting_export_idempotency target
+             USING (
+                SELECT actor_user_id,meeting_id,key_digest
+                  FROM meeting_export_idempotency
+                 WHERE expires_at<=clock_timestamp()
+                 ORDER BY expires_at,actor_user_id,meeting_id,key_digest
+                 LIMIT ? FOR UPDATE SKIP LOCKED
+             ) expired
+             WHERE target.actor_user_id=expired.actor_user_id
+               AND target.meeting_id=expired.meeting_id
+               AND target.key_digest=expired.key_digest
+            """, limit);
+    }
+
     /** Trusted infrastructure read only; NOT a public authorization boundary. */
     @Transactional(readOnly = true)
     public Optional<ExportRecord> find(UUID id) {

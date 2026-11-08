@@ -280,6 +280,48 @@ class ExportPersistenceIntegrationTests {
     }
 
     @Test
+    void databaseAllowsOnlyInitialPendingOnDirectExportInsert() {
+        UUID actor = user("EMPLOYEE"), meeting = meeting(actor);
+
+        UUID pending = UUID.randomUUID();
+        jdbc.update("""
+            INSERT INTO meeting_exports(id,meeting_id,format,status,requested_by_user_id)
+            VALUES (?,?,'MARKDOWN','PENDING',?)
+            """, pending, meeting, actor);
+        assertThat(exports.require(pending).status()).isEqualTo(ExportStatus.PENDING);
+        assertThat(machine.claimNextStaged(30)).isEmpty();
+
+        UUID generating = UUID.randomUUID();
+        assertInvalid(() -> jdbc.update("""
+            INSERT INTO meeting_exports(
+                id,meeting_id,format,status,requested_by_user_id,
+                generation_attempt,claim_token,lease_expires_at)
+            VALUES (?,?,'MARKDOWN','GENERATING',?,1,?,clock_timestamp()+INTERVAL '1 hour')
+            """, generating, meeting, actor, UUID.randomUUID()));
+
+        UUID failed = UUID.randomUUID();
+        assertInvalid(() -> jdbc.update("""
+            INSERT INTO meeting_exports(
+                id,meeting_id,format,status,requested_by_user_id,
+                generation_attempt,last_error_code)
+            VALUES (?,?,'MARKDOWN','FAILED',?,1,'RENDER_FAILED')
+            """, failed, meeting, actor));
+
+        UUID ready = UUID.randomUUID();
+        String source = "a".repeat(64);
+        String artifact = "b".repeat(64);
+        assertInvalid(() -> jdbc.update("""
+            INSERT INTO meeting_exports(
+                id,meeting_id,format,status,requested_by_user_id,
+                ready_at,generation_attempt,source_fingerprint,snapshot_object_key,
+                renderer_version,object_key,artifact_sha256,artifact_size_bytes)
+            VALUES (?,?, 'MARKDOWN','READY',?,clock_timestamp(),1,?,?,?, ?,?,?)
+            """, ready, meeting, actor, source,
+                "exports/" + ready + "/snapshots/" + source + ".json", "md-v1",
+                "exports/" + ready + "/artifacts/" + artifact + ".md", artifact, 12L));
+    }
+
+    @Test
     void databaseForbidsCommittedUnboundAndCrossMeetingIdempotencyReceipts() {
         UUID actor = user("EMPLOYEE"), other = user("EMPLOYEE");
         UUID target = meeting(actor), foreign = meeting(other);

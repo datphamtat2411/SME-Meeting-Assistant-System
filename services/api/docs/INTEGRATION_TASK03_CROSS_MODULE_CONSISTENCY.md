@@ -1,6 +1,6 @@
 # Integration Task 03 — Speaker Diarization × Dashboard/Minutes/Export consistency
 
-Integration branch: `integration/dashboard-export-into-develop`. Previous gates: Task 01 Flyway V1–V43 and Task 02 private S3 boundary.
+Integration branch: `integration/dashboard-export-into-develop`. Previous gates: Task 01 Flyway V1–V44 and Task 02 private S3 boundary.
 
 ## Canonical ownership and expected behavior
 
@@ -14,7 +14,7 @@ Integration branch: `integration/dashboard-export-into-develop`. Previous gates:
 
 ## Cross-module real-boundary test
 
-`DiarizationDashboardExportConsistencyIntegrationTests` uses V43 PostgreSQL/Flyway, canonical Transcript/Meeting Intelligence/Action Item repositories, a **real worker completion and speaker projection** (including accepted receipt and version increment), MinutesAssembler, SQL dashboard reporting and durable Export worker. Only object-storage bytes and the HTTPS public origin are isolated using an immutable, SHA-256-verifying test double; Task 02's `ExportS3StorageIntegrationTests` independently use real RustFS/AWS SDK.
+`DiarizationDashboardExportConsistencyIntegrationTests` uses V44 PostgreSQL/Flyway, canonical Transcript/Meeting Intelligence/Action Item repositories, a **real worker completion and speaker projection** (including accepted receipt and version increment), MinutesAssembler, SQL dashboard reporting and durable Export worker. Only object-storage bytes and the HTTPS public origin are isolated using an immutable, SHA-256-verifying test double; Task 02's `ExportS3StorageIntegrationTests` independently use real RustFS/AWS SDK.
 
 1. **Accepted projection**: build a complete approved source, render READY PDF and Markdown, check CURRENT; accept real speaker projection, check revision increment, Summary `isStale`, Minutes `NEEDS_REVIEW`, and both exports `STALE` while byte-identical. Verify new admission conflict, authorized historical idempotency replay, corrected transcript revision increment, exact accepted replay idempotency, intact meeting lifecycle, scoped reporting and revocation.
 2. **Optional failure**: emit durable failure receipt and identical retry, verify zero speaker changes, unchanged Minutes source fingerprint and READY export CURRENT, correct `COMPLETED_WITH_WARNINGS` job accounting, same Meeting lifecycle, one receipt.

@@ -7,11 +7,11 @@
 
 ## 1. Scope and independently verifiable evidence
 
-This is a **review package, not a self-issued sign-off**. Prior Tasks 01–03 have successfully combined the history, migrated the Export Flyway versions to V40–V43, protected private object-storage boundaries and tested the actual Diarization/Transcript/Minutes/Export interactions. Task 04 validates those engineering boundaries on the *final PR head* and exposes every remaining human and environment gate.
+This is a **review package, not a self-issued sign-off**. Prior Tasks 01–03 have successfully combined the history, migrated the Export Flyway versions to V40–V44, protected private object-storage boundaries and tested the actual Diarization/Transcript/Minutes/Export interactions. Task 04 validates those engineering boundaries on the *final PR head* and exposes every remaining human and environment gate.
 
 Initial pre-Task-04 GitHub comparison: `develop` was unchanged at the above SHA; integration HEAD `122cfc509d90df2fe52099da699669d1c18297a3` was **66 ahead / 0 behind**, **116 changed paths** (107 additions, 9 modifications), 12,670 additions and 15 deletions. These numbers are a baseline snapshot only; recompare after every integration commit or upstream change.
 
-No existing application migration V1–V39 was modified. The actual Export migration SQL was added under V40–V43 without changing the original module SQL bytes. `IntegrationMergeGuardTests` freezes the **exact Git object bytes for every V1–V43 migration** and rejects duplicate versions or accidental renaming, while permitting *new forward-only V44+ migrations*. Flyway PostgreSQL tests separately validate clean V1→V43, seeded V34→V43, and develop V39→V43 paths.
+No existing application migration V1–V39 was modified. The actual Export migration SQL was added under V40–V44 without changing the original module SQL bytes. `IntegrationMergeGuardTests` freezes the **exact Git object bytes for every V1–V43 migration** and rejects duplicate versions or accidental renaming, while permitting *new forward-only V44+ migrations*. Flyway PostgreSQL tests separately validate clean V1→V44, seeded V34→V44, develop V39→V44 and V43→V44 paths.
 
 ### Existing evidence (before Task 04's final commit)
 
@@ -61,7 +61,7 @@ WHERE version IS NOT NULL
 ORDER BY installed_rank;
 ```
 
-- A clean database, canonical V34, or canonical develop V39 history follows the tested additive V40–V43 path.
+- A clean database, canonical V34, or canonical develop V39 history follows the tested additive V40–V44 path.
 - An environment where old **Export** migrations already occupied V35–V38 is **not** safe for direct upgrade. Require a backup-tested, data-preserving staged cutover with integrity/rollback verification and review approval. No `repair`, checksum rewrite, `outOfOrder`, destructive reset of persistent data or silent migration-history edits.
 - Record environment, schema, applied descriptions/checksums, backup ID, cutover plan and operator approval. Lack of access is **UNKNOWN/BLOCKED**, not `PASS`.
 

@@ -18,6 +18,8 @@ class ExportOperationalMetricsTests {
         metrics.expiredClaims(2);
         metrics.reconciliation(12,4,0);
         metrics.reconciliationFailure();
+        metrics.idempotencyCleanup(3);
+        metrics.idempotencyCleanupFailure();
 
         var ok = registry.find("sme.exports.generation.duration")
                 .tags("format","PDF","outcome","READY").timer();
@@ -29,6 +31,10 @@ class ExportOperationalMetricsTests {
         assertThat(registry.find("sme.exports.retries").counter().count()).isEqualTo(1);
         assertThat(registry.find("sme.exports.expired.claims").counter().count())
                 .isEqualTo(2);
+        assertThat(registry.find("sme.exports.idempotency.receipts.cleaned").counter().count())
+                .isEqualTo(3);
+        assertThat(registry.find("sme.exports.idempotency.cleanup.failures").counter().count())
+                .isEqualTo(1);
         assertThat(registry.find("sme.exports.jobs").tags("state","PENDING").gauge())
                 .isNotNull();
         String ids = registry.getMeters().stream()
