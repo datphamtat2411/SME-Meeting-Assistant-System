@@ -196,8 +196,9 @@ class DiarizationWorkerIntegrationTests extends DiarizationIntegrationFixture {
             jdbc.update("INSERT INTO "+schema+".meetings SELECT * FROM public.meetings WHERE id=?",meeting);
             jdbc.update("INSERT INTO "+schema+".meeting_media SELECT * FROM public.meeting_media WHERE id=?",media);
             jdbc.update("INSERT INTO "+schema+".processing_jobs(id,meeting_id,source_media_id,requested_by_user_id,status) VALUES (?,?,?,?,'PENDING')",job,meeting,media,actor);
+            // Test only the five Diarization migrations (V35-V39).
             var upgraded=org.flywaydb.core.Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema)
-                .locations("classpath:db/migration").load();
+                .locations("classpath:db/migration").target("39").load();
             assertThat(upgraded.migrate().migrationsExecuted).isEqualTo(5);upgraded.validate();
             assertThat(jdbc.queryForObject("SELECT diarization_planned FROM "+schema+".processing_jobs WHERE id=?",Boolean.class,job)).isFalse();
             assertThat(jdbc.queryForObject("SELECT count(*) FROM information_schema.tables WHERE table_schema=? AND table_name LIKE 'diarization_worker_%'",Long.class,schema)).isEqualTo(4);
