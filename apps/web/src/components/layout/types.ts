@@ -6,12 +6,6 @@ type User = {
   avatar: string
 }
 
-type Team = {
-  name: string
-  logo: React.ElementType
-  plan: string
-}
-
 type BaseNavItem = {
   title: string
   badge?: string
@@ -19,12 +13,16 @@ type BaseNavItem = {
 }
 
 type NavLink = BaseNavItem & {
-  url: LinkProps['to'] | (string & {})
+  url: LinkProps['to']
   items?: never
 }
 
+type NavSubItem = BaseNavItem & {
+  url: LinkProps['to']
+}
+
 type NavCollapsible = BaseNavItem & {
-  items: (BaseNavItem & { url: LinkProps['to'] | (string & {}) })[]
+  items: NavSubItem[]
   url?: never
 }
 
@@ -37,8 +35,13 @@ type NavGroup = {
 
 type SidebarData = {
   user: User
-  teams: Team[]
-  navGroups: NavGroup[]
 }
 
-export type { SidebarData, NavGroup, NavItem, NavCollapsible, NavLink }
+export type {
+  SidebarData,
+  NavGroup,
+  NavItem,
+  NavCollapsible,
+  NavLink,
+  NavSubItem,
+}
