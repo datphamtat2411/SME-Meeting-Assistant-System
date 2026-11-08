@@ -1,0 +1,145 @@
+package com.sme.meetingassistant.api.meetingexport;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import javax.sql.DataSource;
+import org.flywaydb.core.Flyway;
+import org.flywaydb.core.api.MigrationVersion;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.ActiveProfiles;
+
+/**
+ * DE-06 forward-only upgrade: a populated develop V39 database advances to V40
+ * with export metadata and strict transition guards. No V1..V39 checksum
+ * rewrite, no reclassification of old meetings and no synthetic export jobs.
+ */
+@ActiveProfiles("test")
+@SpringBootTest
+@Import(PostgresTestConfiguration.class)
+class ExportFlywayUpgradeIntegrationTests {
+    @Autowired DataSource dataSource;
+    @Autowired JdbcTemplate jdbc;
+
+    @Test
+    void existingDevelopV39DatabaseUpgradesToV40WithoutTouchingCanonicalDataOrChecksums() {
+        String schema = "de06_upgrade_" + UUID.randomUUID().toString().replace("-", "");
+        try {
+            Flyway historical = Flyway.configure().dataSource(dataSource).schemas(schema)
+                    .locations("classpath:db/migration")
+                    .target(MigrationVersion.fromVersion("39")).load();
+            historical.migrate();
+            historical.validate();
+
+            UUID organizer = UUID.randomUUID(), meeting = UUID.randomUUID();
+            String email = "de06-upgrade-" + organizer + "@example.invalid";
+            jdbc.update("""
+                INSERT INTO %s.users(id,email,email_normalized,display_name,password_hash,
+                    global_role,account_status)
+                VALUES (?,?,?,'Upgrade fixture','test-only','EMPLOYEE','ACTIVE')
+                """.formatted(schema), organizer, email, email);
+            jdbc.update("""
+                INSERT INTO %s.meetings(id,title,organizer_user_id,created_by_user_id)
+                VALUES (?,'Historical canonical meeting',?,?)
+                """.formatted(schema), meeting, organizer, organizer);
+
+            Map<String, Integer> beforeChecksums = checksums(schema);
+            assertThat(beforeChecksums).hasSize(39).containsKey("39");
+
+            // DE-06 owns the V39 -> V40 forward-upgrade contract. Newer
+            // DE-09+ migrations have their own acceptance suites; do not
+            // accidentally make this historical test assert the final HEAD.
+            Flyway upgraded = Flyway.configure().dataSource(dataSource).schemas(schema)
+                    .locations("classpath:db/migration")
+                    .target(MigrationVersion.fromVersion("40")).load();
+            assertThat(upgraded.migrate().migrationsExecuted).isEqualTo(1);
+            upgraded.validate();
+
+            Map<String, Integer> afterChecksums = checksums(schema);
+            assertThat(afterChecksums).hasSize(40).containsKey("40");
+            for (var entry : beforeChecksums.entrySet()) {
+                assertThat(afterChecksums.get(entry.getKey()))
+                        .describedAs("Historical Flyway migration checksum V" + entry.getKey())
+                        .isEqualTo(entry.getValue());
+            }
+            assertThat(jdbc.queryForObject("""
+                SELECT COUNT(*) FROM %s.meetings
+                 WHERE id=? AND organizer_user_id=? AND title='Historical canonical meeting'
+                """.formatted(schema), Long.class, meeting, organizer)).isEqualTo(1L);
+            assertThat(jdbc.queryForObject("""
+                SELECT COUNT(*) FROM %s.meeting_exports WHERE meeting_id=?
+                """.formatted(schema), Long.class, meeting)).isZero();
+            assertThat(jdbc.queryForObject("""
+                SELECT COUNT(*) FROM information_schema.tables
+                 WHERE table_schema=? AND table_name IN
+                       ('meeting_exports','meeting_export_idempotency')
+                """, Long.class, schema)).isEqualTo(2L);
+
+            assertThat(upgraded.migrate().migrationsExecuted).isZero();
+
+            UUID exportId = UUID.randomUUID();
+            jdbc.update("""
+                INSERT INTO %s.meeting_exports(id,meeting_id,format,requested_by_user_id)
+                VALUES (?,?, 'MARKDOWN',?)
+                """.formatted(schema), exportId, meeting, organizer);
+            assertThat(jdbc.queryForObject("""
+                SELECT status FROM %s.meeting_exports WHERE id=?
+                """.formatted(schema), String.class, exportId)).isEqualTo("PENDING");
+        } finally {
+            jdbc.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE");
+        }
+    }
+
+    @Test
+    void existingV43DatabaseAdvancesOnlyThroughForwardV44InsertGuard() {
+        String schema = "de06_v44_upgrade_" + UUID.randomUUID().toString().replace("-", "");
+        try {
+            Flyway historical = Flyway.configure().dataSource(dataSource).schemas(schema)
+                    .locations("classpath:db/migration")
+                    .target(MigrationVersion.fromVersion("43")).load();
+            historical.migrate();
+            historical.validate();
+            Map<String, Integer> beforeChecksums = checksums(schema);
+            assertThat(beforeChecksums).hasSize(43).containsKey("43");
+
+            Flyway upgraded = Flyway.configure().dataSource(dataSource).schemas(schema)
+                    .locations("classpath:db/migration")
+                    .target(MigrationVersion.fromVersion("44")).load();
+            assertThat(upgraded.migrate().migrationsExecuted).isEqualTo(1);
+            upgraded.validate();
+            Map<String, Integer> afterChecksums = checksums(schema);
+            assertThat(afterChecksums).hasSize(44).containsKey("44");
+            for (var entry : beforeChecksums.entrySet()) {
+                assertThat(afterChecksums.get(entry.getKey()))
+                        .describedAs("Historical Flyway migration checksum V" + entry.getKey())
+                        .isEqualTo(entry.getValue());
+            }
+            assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM information_schema.triggers
+                 WHERE trigger_schema=? AND trigger_name='trg_de06_export_insert_lifecycle'
+                """, Long.class, schema)).isEqualTo(1L);
+            assertThat(upgraded.migrate().migrationsExecuted).isZero();
+        } finally {
+            jdbc.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE");
+        }
+    }
+
+    private Map<String, Integer> checksums(String schema) {
+        Map<String, Integer> result = new LinkedHashMap<>();
+        jdbc.query("""
+            SELECT version,checksum FROM %s.flyway_schema_history
+             WHERE success AND version IS NOT NULL ORDER BY installed_rank
+            """.formatted(schema), rs -> {
+            result.put(rs.getString("version"), rs.getInt("checksum"));
+        });
+        return result;
+    }
+}

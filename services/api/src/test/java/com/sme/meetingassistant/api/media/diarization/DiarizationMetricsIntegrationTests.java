@@ -376,7 +376,8 @@ class DiarizationMetricsIntegrationTests extends DiarizationIntegrationFixture {
             });
             var before=jdbc.queryForList("SELECT * FROM "+schema+".diarization_verified_only_backlog");
             assertThat(before).hasSize(1);
-            var upgrade=org.flywaydb.core.Flyway.configure().dataSource(source).schemas(schema).defaultSchema(schema).locations("classpath:db/migration").load();
+            // Preserve the historical V38 -> V39 Diarization-only upgrade contract.
+            var upgrade=org.flywaydb.core.Flyway.configure().dataSource(source).schemas(schema).defaultSchema(schema).locations("classpath:db/migration").target("39").load();
             assertThat(upgrade.migrate().migrationsExecuted).isEqualTo(1);upgrade.validate();
             assertThat(jdbc.queryForList("SELECT * FROM "+schema+".diarization_verified_only_backlog")).isEqualTo(before);
             assertThat(jdbc.queryForObject("SELECT count(*) FROM "+schema+".diarization_worker_verifications",Long.class)).isEqualTo(1);

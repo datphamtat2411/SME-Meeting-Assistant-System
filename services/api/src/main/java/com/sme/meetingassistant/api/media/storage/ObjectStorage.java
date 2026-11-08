@@ -7,21 +7,57 @@ import java.time.Instant;
 import java.util.List;
 
 public interface ObjectStorage {
+    /** Media-only capability. Never presign private exports through this generic port. */
     String createUploadCapability(String objectKey, String contentType, long contentLength, Duration ttl);
+    /** Media-only capability; exports require verified READY metadata and access checks. */
     String createDownloadCapability(String objectKey, Duration ttl);
+    /**
+     * Export-only presigning with bounded TTL and server-generated download
+     * metadata. S3 implementation signs response headers into the URL.
+     */
+    default String createExportDownloadCapability(String objectKey, Duration ttl,
+            String safeFilename, String contentType) {
+        throw new UnsupportedOperationException("Private export download not installed.");
+    }
     StoredObject head(String objectKey);
     void downloadTo(String objectKey, Path destination) throws IOException;
-    /** Bounded private control-result read. Implementations must enforce the limit during streaming. */
+    /** Bounded private read. Implementations enforce the namespace-specific limit during streaming. */
     default byte[] readBounded(String objectKey, int maximum) throws IOException {
         throw new UnsupportedOperationException("Bounded result storage is not installed.");
     }
-    /** Create an accepted source once. False means an object already exists at this key. */
+    /** Media-only accepted source. False means an object already exists at this key. */
     boolean putAcceptedIfAbsent(String objectKey, Path validatedFile, String sha256);
+    /**
+     * Private server-side immutable byte write. Does not issue client capabilities.
+     * Export-only callers enforce a bounded object size and verify a subsequent GET.
+     */
+    default boolean putImmutableBytesIfAbsent(String objectKey, byte[] bytes,
+            String contentType, String sha256) {
+        throw new UnsupportedOperationException("Immutable private bytes storage is not installed.");
+    }
+    /**
+     * DE-11 orphan-only conditional deletion; never delete current export
+     * references. Providers without atomic ETag preconditions fail closed.
+     */
+    default boolean deleteIfEtagMatches(String objectKey, String expectedEtag) {
+        throw new UnsupportedOperationException("Conditional object deletion is unavailable");
+    }
+    /** Media-only deletion; immutable Diarization results and all exports are forbidden. */
     void delete(String objectKey);
     /** Server-side bounded listing; never expose this namespace to callers. */
     ListedObjects list(String prefix,String continuationToken,int limit);
 
-    record StoredObject(long sizeBytes, String contentType, String eTag) { }
+    /**
+     * LastModified is required for safe orphan age evidence. Legacy media
+     * adapters may use the 3-argument form, but missing time is NEVER
+     * sufficient to authorize a DE-11 purge.
+     */
+    record StoredObject(long sizeBytes, String contentType, String eTag,
+            Instant lastModified) {
+        public StoredObject(long sizeBytes, String contentType, String eTag) {
+            this(sizeBytes, contentType, eTag, null);
+        }
+    }
     record ListedObject(String key,Instant lastModified) { }
     record ListedObjects(List<ListedObject> objects,String nextToken) {
         public ListedObjects {

@@ -38,7 +38,14 @@ public class SecurityHeadersFilter extends OncePerRequestFilter implements Order
 
 	private void applyHeaders(HttpServletRequest request, HttpServletResponse response) {
 		response.setHeader("X-Content-Type-Options", "nosniff");
-		response.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+        // A download-capability response contains a short-lived bearer URL.
+        // Apply a stronger policy on this exact API, even when other filters
+        // reapply global headers after the controller returns.
+        boolean exportAccessUrl = "POST".equals(request.getMethod())
+                && request.getRequestURI().matches(
+                    "^/api/v1/exports/[0-9a-fA-F-]{36}/access-url$");
+        response.setHeader("Referrer-Policy", exportAccessUrl
+                ? "no-referrer" : "strict-origin-when-cross-origin");
 		response.setHeader("X-Frame-Options", "DENY");
 		if (this.hsts.isEnabled() && isExternallySecure(request)) {
 			String value = "max-age=" + this.hsts.getMaxAge().toSeconds();
