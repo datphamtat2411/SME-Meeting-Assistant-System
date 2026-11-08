@@ -61,7 +61,7 @@ class DashboardExportFullUpgradeIntegrationTests {
             upgraded.migrate();
             upgraded.validate();
             Map<String,Integer> current=checksums(schema);
-            assertThat(current).hasSize(37).containsKeys("35","36","37");
+            assertThat(current).hasSize(38).containsKeys("35","36","37","38");
             for(var item:original.entrySet()) {
                 assertThat(current.get(item.getKey())).describedAs(
                     "V" + item.getKey() + " historical checksum")

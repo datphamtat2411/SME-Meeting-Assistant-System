@@ -33,7 +33,7 @@ DE01_DECISION_REGISTER.md; acceptance tests do not silently settle them.
 | History/freshness/orphans | ExportOrphanReconciliationIntegrationTests; ExportAccessHttpIntegrationTests | Stale vs current, quarantine/conditional delete, no referenced-history deletion |
 | Security/observability | ExportCapabilityFailClosedTests; ExportOperationalMetricsTests; DashboardExportHttpMetricsFilterTests | Audit failure fail closed, safe labels, safe error boundaries |
 | DE-13 cross-domain contract | DashboardExportModuleAcceptanceTests | **NEW**: non-mocked canonical Meeting, Transcript, Summary, Decisions and Action Items through real MVC, Dashboard, Minutes, worker, both renderers, authorized status/signed capability; changed action -> stale; participant revoked -> deny |
-| DE-13 forward upgrade | DashboardExportFullUpgradeIntegrationTests | **NEW**: standalone V34 -> V37 schema upgrade, unchanged V1..V34 checksums, existing Meeting preserved, immutable intake guard |
+| DE-13 forward upgrade | DashboardExportFullUpgradeIntegrationTests | **NEW**: standalone V34 -> V38 schema upgrade, unchanged V1..V34 checksums, existing Meeting preserved, immutable intake guard |
 
 No DE-13 test assumes that an external ASR/LLM provider has already
 produced a successful meeting. The canonical PostgreSQL fixtures represent
@@ -63,7 +63,7 @@ A staging environment with approved HTTPS signing ingress is still needed.
 | A14 | Source changes produce STALE without rewriting historical bytes | DE11 + DE13 |
 | A15 | Vietnamese/Unicode, long PDF/Markdown and injection | DE07/08 + DE13 |
 | A16 | Fresh access scope on every request | DE02/03/04/10/13 |
-| DE13-M1 | V34->V37 forward upgrade keeps all historical checksums | DE13 upgrade test |
+| DE13-M1 | V34->V38 forward upgrade keeps all historical checksums | DE13 upgrade test |
 | DE13-M2 | Intake row immutable by PostgreSQL trigger after acceptance | DE13 upgrade test |
 
 The CI gate is the full API Maven verify from a clean GitHub Actions run;
@@ -94,7 +94,11 @@ Outstanding:
 
 Current module feature branch uses V35__meeting_export_persistence_and_fencing,
 V36__export_intake_source_provenance and
-V37__export_orphan_observation_ledger.
+V37__export_orphan_observation_ledger and
+V38__export_schema_scoped_trigger_guards (DE13 forward-only repair).
+V38 leaves previously applied Flyway files/checksums unchanged and ensures
+trigger lookups use the actual trigger table schema, not the session's
+search_path.
 
 Current develop branch independently uses V35..V39 for speaker diarization.
 Version collisions are known and blocking for a direct branch merge.
