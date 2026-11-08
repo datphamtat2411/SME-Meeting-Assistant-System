@@ -72,7 +72,7 @@ public final class ExportJobProcessor {
         AtomicBoolean stillOwner = new AtomicBoolean(true);
         int heartbeatInterval = Math.max(1, leaseSeconds / 3);
         ScheduledFuture<?> renew = heartbeat.scheduleAtFixedRate(() -> {
-            if (!stillOwner.get()) return false;
+            if (!stillOwner.get()) return;
             try {
                 if (!state.renew(claim.id(), claim.claimToken(), leaseSeconds)) {
                     stillOwner.set(false);
