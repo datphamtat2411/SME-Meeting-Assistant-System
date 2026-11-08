@@ -109,7 +109,12 @@ public final class ExportOrphanRepository {
                     ELSE 'OBSERVED' END,
                 claim_token=NULL,
                 lease_expires_at=NULL,
-                purged_at=NULL,
+                purged_at=CASE WHEN
+                    meeting_export_orphan_candidates.object_last_modified = EXCLUDED.object_last_modified
+                    AND meeting_export_orphan_candidates.observed_etag = EXCLUDED.observed_etag
+                    AND meeting_export_orphan_candidates.observed_size_bytes = EXCLUDED.observed_size_bytes
+                    THEN meeting_export_orphan_candidates.purged_at
+                    ELSE NULL END,
                 next_attempt_at=NULL,
                 last_error_code=NULL,
                 object_last_modified=EXCLUDED.object_last_modified,
