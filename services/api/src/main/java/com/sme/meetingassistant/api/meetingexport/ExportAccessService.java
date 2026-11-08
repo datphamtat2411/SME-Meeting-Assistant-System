@@ -29,10 +29,13 @@ public class ExportAccessService {
     private final ExportDownloadStore privateStore;
     private final Clock clock;
     private final Duration ttl;
+    private final ExportSecurityAudit audit;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public ExportAccessService(MeetingExportRepository records, MeetingMediaAccess meeting,
             AuthenticatedUserId user, ExportDownloadStore privateStore, Clock clock,
-            @Value("${app.exports.download.ttl-seconds:60}") int ttlSeconds) {
+            @Value("${app.exports.download.ttl-seconds:60}") int ttlSeconds,
+            ExportSecurityAudit audit) {
         if (ttlSeconds < 30 || ttlSeconds > 300) {
             throw new IllegalArgumentException("Export download TTL must be 30..300 seconds");
         }
@@ -42,6 +45,14 @@ public class ExportAccessService {
         this.privateStore = privateStore;
         this.clock = clock;
         this.ttl = Duration.ofSeconds(ttlSeconds);
+        this.audit = audit;
+    }
+
+    /** Preserve direct-construction TTL validation tests. */
+    public ExportAccessService(MeetingExportRepository records, MeetingMediaAccess meeting,
+            AuthenticatedUserId user, ExportDownloadStore privateStore, Clock clock,
+            int ttlSeconds) {
+        this(records, meeting, user, privateStore, clock, ttlSeconds, null);
     }
 
     public record AccessCapability(UUID exportId, String accessUrl, String filename,
@@ -73,6 +84,8 @@ public class ExportAccessService {
         }
         // Recheck after potentially long HEAD/GET/presign and before response.
         meeting.requireReadable(record.meetingId(), actor);
+        // Audit must commit before returning this sensitive bearer capability.
+        if (audit != null) audit.capabilityIssued(actor, record, ttl);
         return new AccessCapability(exportId, signed,
                 "meeting-minutes-" + record.id() + "." + record.format().extension(),
                 record.format() == ExportFormat.PDF

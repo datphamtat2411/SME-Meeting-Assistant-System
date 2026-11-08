@@ -121,8 +121,14 @@ public final class ExportOrphanReconciler {
             return false;
         }
         var head=storage.head(key);
+        // S3 LIST and HEAD may race with a replacement, even if the
+        // replacement has the same ETag/size. Require age evidence from HEAD.
         if (head.eTag() == null || head.eTag().isBlank()
-                || head.eTag().length() > 256 || head.sizeBytes() < 0) {
+                || head.eTag().length() > 256 || head.sizeBytes() < 0
+                || head.lastModified() == null
+                || !head.lastModified().equals(object.lastModified())
+                || head.lastModified().isAfter(
+                        clock.instant().minus(Duration.ofHours(minAgeHours)))) {
             return false;
         }
         repository.observe(key,exportId,object.lastModified(),head.eTag(),head.sizeBytes());
@@ -138,7 +144,14 @@ public final class ExportOrphanReconciler {
                 return false;
             }
             var head=storage.head(candidate.objectKey());
-            if (!candidate.etag().equals(head.eTag()) || candidate.size()!=head.sizeBytes()) {
+            if (!candidate.etag().equals(head.eTag())
+                    || candidate.size()!=head.sizeBytes()
+                    || head.lastModified()==null
+                    || !candidate.lastModified().toInstant().equals(
+                            head.lastModified().truncatedTo(
+                                java.time.temporal.ChronoUnit.MICROS))
+                    || head.lastModified().isAfter(
+                            clock.instant().minus(Duration.ofHours(minAgeHours)))) {
                 repository.releaseClaim(candidate.objectKey(),token,"EVIDENCE_CHANGED");
                 return false;
             }

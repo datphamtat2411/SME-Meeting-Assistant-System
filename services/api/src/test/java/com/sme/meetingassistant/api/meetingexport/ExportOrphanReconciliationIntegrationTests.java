@@ -81,7 +81,7 @@ class ExportOrphanReconciliationIntegrationTests {
         @Override public StoredObject head(String key) {
             Entry e=objects.get(key);
             if(e==null) throw new IllegalStateException("Object missing");
-            return new StoredObject(e.size(),"application/octet-stream",e.etag());
+            return new StoredObject(e.size(),"application/octet-stream",e.etag(),e.modified());
         }
 
         @Override public boolean deleteIfEtagMatches(String key,String etag) {
@@ -210,6 +210,29 @@ class ExportOrphanReconciliationIntegrationTests {
         assertThat(jdbc.queryForObject(
                 "SELECT last_error_code FROM meeting_export_orphan_candidates WHERE object_key=?",
                 String.class,key)).isEqualTo("ETAG_CHANGED");
+    }
+
+    @Test
+    void replacementWithSameEtagAndSizeButNewLastModifiedIsNotPurged() {
+        UUID id=UUID.randomUUID();
+        String key=intakeKey(id);
+        storage.put(key,Instant.now().minus(Duration.ofDays(7)));
+        dryRun.runOnce();
+        jdbc.update("""
+            UPDATE meeting_export_orphan_candidates
+               SET first_observed_at=clock_timestamp()-INTERVAL '30 hours'
+             WHERE object_key=?
+            """,key);
+        FakeObjectStorage.Entry prior=storage.objects.get(key);
+        // ABA content: ETag and byte-size unchanged. Only LastModified
+        // distinguishes a recently replaced object from old orphan evidence.
+        storage.objects.put(key,new FakeObjectStorage.Entry(key,
+                Instant.now(),prior.etag(),prior.size()));
+        assertThat(approvedPurgeFixture().runOnce().deleted()).isZero();
+        assertThat(storage.objects).containsKey(key);
+        assertThat(jdbc.queryForObject("""
+            SELECT status FROM meeting_export_orphan_candidates WHERE object_key=?
+            """,String.class,key)).isEqualTo("OBSERVED");
     }
 
     @Test

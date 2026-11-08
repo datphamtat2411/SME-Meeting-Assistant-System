@@ -116,6 +116,11 @@ class ExportJobIntegrationTests {
                 ExportFormat.PDF, "pdf-task", source));
         assertThat(md.status()).isEqualTo(ExportStatus.PENDING);
         assertThat(pdf.status()).isEqualTo(ExportStatus.PENDING);
+        // Transactional admission audit exists only for committed new intake.
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM audit_events
+             WHERE action_code='EXPORT_INTENT_ADMITTED' AND entity_id=?
+            """,Long.class,pdf.id())).isEqualTo(1L);
         assertThat(state.claimNextStaged(30)).isPresent();
         // Restore first claim to a safe terminal state and create a new export
         // to prove dispatch only picks currently PENDING, fully staged rows.
@@ -156,6 +161,10 @@ class ExportJobIntegrationTests {
         ExportRecord replay=as(owner, () -> submissions.submit(meeting,
                 ExportFormat.MARKDOWN,"same-retry-key",changed));
         assertThat(replay.id()).isEqualTo(first.id());
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM audit_events
+             WHERE action_code='EXPORT_INTENT_ADMITTED' AND entity_id=?
+            """,Long.class,first.id())).isEqualTo(1L);
         assertThat(worker.processNext()).isTrue();
         ExportRecord ready=records.require(first.id());
         assertThat(ready.sourceFingerprint()).isEqualTo(original.sourceFingerprint())
@@ -223,6 +232,67 @@ class ExportJobIntegrationTests {
         assertThat(failed.lastErrorCode()).isEqualTo("EXPORT_STORAGE_INTEGRITY");
         worker.reconcile();
         assertThat(records.require(pending.id()).status()).isEqualTo(ExportStatus.FAILED);
+    }
+
+    @Test
+    void backlogLimitsDistinctKeysButNotReplayAndRollsBackExceededReceipt() {
+        UUID actor=user(), meeting=meeting(actor);
+        MinutesSnapshot source=snapshot(meeting,actor,"Giới hạn nguồn lực");
+        ExportRecord first=null;
+        for (int i=0;i<5;i++) {
+            final int n=i;
+            ExportRecord created=as(actor,()->submissions.submit(meeting,
+                    ExportFormat.MARKDOWN,"admission-limit-"+n,source));
+            if(i==0) first=created;
+        }
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM meeting_exports
+             WHERE meeting_id=? AND status='PENDING'
+            """,Long.class,meeting)).isEqualTo(5L);
+        assertThatThrownBy(()->as(actor,()->submissions.submit(meeting,
+                ExportFormat.MARKDOWN,"admission-limit-over",source)))
+                .isInstanceOf(org.springframework.web.server.ResponseStatusException.class)
+                .hasMessageContaining("429");
+        UUID original=first.id();
+        ExportRecord replay=as(actor,()->submissions.submit(meeting,
+                ExportFormat.MARKDOWN,"admission-limit-0",source));
+        assertThat(replay.id()).isEqualTo(original);
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM meeting_exports WHERE meeting_id=?",
+                Long.class,meeting)).isEqualTo(5L);
+    }
+
+    @Test
+    void concurrentDistinctIdempotencyKeysCannotRacePastTheDatabaseQuota()
+            throws Exception {
+        UUID actor=user(), meeting=meeting(actor);
+        MinutesSnapshot source=snapshot(meeting,actor,"Tải đồng thời");
+        var pool=java.util.concurrent.Executors.newFixedThreadPool(8);
+        try {
+            java.util.List<java.util.concurrent.Future<Boolean>> results =
+                    new java.util.ArrayList<>();
+            for(int i=0;i<8;i++) {
+                final int n=i;
+                results.add(pool.submit(()->{
+                    try {
+                        as(actor,()->submissions.submit(meeting,
+                                ExportFormat.MARKDOWN,"quota-parallel-"+n,source));
+                        return true;
+                    } catch (org.springframework.web.server.ResponseStatusException ex) {
+                        assertThat(ex.getStatusCode().value()).isEqualTo(429);
+                        return false;
+                    }
+                }));
+            }
+            int successes=0;
+            for(var f:results) if(f.get(60,java.util.concurrent.TimeUnit.SECONDS)) successes++;
+            assertThat(successes).isEqualTo(5);
+            assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM meeting_exports WHERE meeting_id=?
+                """,Long.class,meeting)).isEqualTo(5L);
+        } finally {
+            pool.shutdownNow();
+        }
     }
 
     private MinutesSnapshot snapshot(UUID meetingId, UUID actor, String summaryText) {

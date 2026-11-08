@@ -44,7 +44,17 @@ public interface ObjectStorage {
     /** Server-side bounded listing; never expose this namespace to callers. */
     ListedObjects list(String prefix,String continuationToken,int limit);
 
-    record StoredObject(long sizeBytes, String contentType, String eTag) { }
+    /**
+     * LastModified is required for safe orphan age evidence. Legacy media
+     * adapters may use the 3-argument form, but missing time is NEVER
+     * sufficient to authorize a DE-11 purge.
+     */
+    record StoredObject(long sizeBytes, String contentType, String eTag,
+            Instant lastModified) {
+        public StoredObject(long sizeBytes, String contentType, String eTag) {
+            this(sizeBytes, contentType, eTag, null);
+        }
+    }
     record ListedObject(String key,Instant lastModified) { }
     record ListedObjects(List<ListedObject> objects,String nextToken) {
         public ListedObjects {
