@@ -133,7 +133,7 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
     public StoredObject head(String objectKey) {
         var result = this.client.headObject(HeadObjectRequest.builder().bucket(this.properties.getBucket())
             .key(objectKey).build());
-        return new StoredObject(result.contentLength(), result.contentType(), result.eTag());
+        return new StoredObject(result.contentLength(), result.contentType(), result.eTag(), result.lastModified());
     }
 
     @Override
