@@ -173,4 +173,28 @@ describe('settings navigation and cleanup', () => {
     expect(getCookie('font')).toBe('manrope')
     expect(showSubmittedData).not.toHaveBeenCalled()
   })
+
+  it('keeps theme previews and labels stacked', async () => {
+    const screen = await render(
+      <ThemeProvider>
+        <FontProvider>
+          <AppearanceForm />
+        </FontProvider>
+      </ThemeProvider>
+    )
+
+    for (const label of ['Light', 'Dark', 'System']) {
+      const labelElement = screen
+        .getByText(label, { exact: true })
+        .element()
+        .closest('label')
+
+      expect(labelElement).not.toBeNull()
+      expect(labelElement).toHaveClass('flex-col')
+    }
+
+    expect(
+      document.querySelector('[data-name="icon-theme-system"]')
+    ).not.toBeNull()
+  })
 })

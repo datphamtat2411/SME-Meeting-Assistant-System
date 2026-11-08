@@ -1,8 +1,8 @@
 import { z } from 'zod'
 import { useForm } from 'react-hook-form'
 import { ChevronDownIcon } from '@radix-ui/react-icons'
-import { Monitor } from 'lucide-react'
 import { zodResolver } from '@hookform/resolvers/zod'
+import { IconThemeSystem } from '@/assets/custom/icon-theme-system'
 import { fonts } from '@/config/fonts'
 import { cn } from '@/lib/utils'
 import { useFont } from '@/context/font-provider'
@@ -97,7 +97,7 @@ export function AppearanceForm() {
                  className='grid max-w-2xl grid-cols-1 gap-4 pt-2 sm:grid-cols-3'
               >
                 <FormItem>
-                  <FormLabel className='[&:has([data-state=checked])>div]:border-primary'>
+                  <FormLabel className='flex-col [&:has([data-state=checked])>div]:border-primary'>
                     <FormControl>
                       <RadioGroupItem value='light' className='sr-only' />
                     </FormControl>
@@ -123,7 +123,7 @@ export function AppearanceForm() {
                   </FormLabel>
                 </FormItem>
                 <FormItem>
-                  <FormLabel className='[&:has([data-state=checked])>div]:border-primary'>
+                  <FormLabel className='flex-col [&:has([data-state=checked])>div]:border-primary'>
                     <FormControl>
                       <RadioGroupItem value='dark' className='sr-only' />
                     </FormControl>
@@ -149,13 +149,16 @@ export function AppearanceForm() {
                   </FormLabel>
                 </FormItem>
                 <FormItem>
-                  <FormLabel className='[&:has([data-state=checked])>div]:border-primary'>
+                  <FormLabel className='flex-col [&:has([data-state=checked])>div]:border-primary'>
                     <FormControl>
                       <RadioGroupItem value='system' className='sr-only' />
                     </FormControl>
-                    <div className='flex aspect-[1.45] items-center justify-center rounded-md border-2 border-muted bg-muted/60 p-1 hover:border-accent'>
-                      <div className='flex size-full items-center justify-center rounded-sm border bg-background text-muted-foreground'>
-                        <Monitor className='size-8' />
+                    <div className='flex aspect-[1.14] w-full items-center justify-center rounded-md border-2 border-muted bg-muted/60 p-1 hover:border-accent'>
+                      <div className='size-full overflow-hidden rounded-sm border bg-background'>
+                        <IconThemeSystem
+                          className='size-full'
+                          aria-hidden='true'
+                        />
                       </div>
                     </div>
                     <span className='block w-full p-2 text-center font-normal'>
