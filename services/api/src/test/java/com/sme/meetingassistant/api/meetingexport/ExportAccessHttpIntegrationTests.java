@@ -150,6 +150,15 @@ class ExportAccessHttpIntegrationTests {
                 "artifactSha256","snapshotObjectKey","intakeSha256");
         assertThat(storage.lastRecord.id()).isEqualTo(ready);
         assertThat(storage.lastTtl).isEqualTo(Duration.ofSeconds(45));
+        // Safe, durable security audit: capability URL and object key must
+        // never be written into PostgreSQL audit metadata.
+        String metadata=jdbc.queryForObject("""
+            SELECT metadata::text FROM audit_events
+             WHERE action_code='EXPORT_DOWNLOAD_CAPABILITY_ISSUED'
+               AND actor_user_id=? AND entity_id=?
+            """,String.class,member,ready);
+        assertThat(metadata).contains("PDF","ttlSeconds")
+                .doesNotContain("X-Amz-Signature","https://","objectKey");
 
         // Global administrator role cannot override meeting-content membership.
         mvc.perform(post(endpoint(ready)).principal(principal(admin)))

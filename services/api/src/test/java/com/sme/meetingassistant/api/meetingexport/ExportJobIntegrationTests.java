@@ -116,6 +116,11 @@ class ExportJobIntegrationTests {
                 ExportFormat.PDF, "pdf-task", source));
         assertThat(md.status()).isEqualTo(ExportStatus.PENDING);
         assertThat(pdf.status()).isEqualTo(ExportStatus.PENDING);
+        // Transactional admission audit exists only for committed new intake.
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM audit_events
+             WHERE action_code='EXPORT_INTENT_ADMITTED' AND entity_id=?
+            """,Long.class,pdf.id())).isEqualTo(1L);
         assertThat(state.claimNextStaged(30)).isPresent();
         // Restore first claim to a safe terminal state and create a new export
         // to prove dispatch only picks currently PENDING, fully staged rows.
