@@ -36,6 +36,7 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
     private final MediaProperties.Storage properties;
     private final S3Client client;
     private final S3Presigner presigner;
+    private final S3Presigner exportPresigner;
 
     public S3ObjectStorageAdapter(MediaProperties properties) {
         this.properties = properties.getStorage();
@@ -53,6 +54,25 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
         this.client = builder.build();
         this.presigner = S3Presigner.builder().endpointOverride(endpoint).region(Region.of(this.properties.getRegion()))
             .credentialsProvider(credentialsProvider()).serviceConfiguration(serviceConfig).build();
+        String publicEndpoint = this.properties.getPublicDownloadEndpoint();
+        if (publicEndpoint == null || publicEndpoint.isBlank()) {
+            this.exportPresigner = this.presigner;
+        } else {
+            URI external = URI.create(publicEndpoint);
+            String externalPath = external.getRawPath();
+            if (!"https".equalsIgnoreCase(external.getScheme())
+                    || external.getHost() == null || external.getUserInfo() != null
+                    || external.getRawQuery() != null || external.getRawFragment() != null
+                    || (externalPath != null && !externalPath.isEmpty()
+                            && !"/".equals(externalPath))) {
+                throw new IllegalStateException(
+                        "Public export download endpoint must be a trusted HTTPS origin");
+            }
+            this.exportPresigner = S3Presigner.builder().endpointOverride(external)
+                .region(Region.of(this.properties.getRegion()))
+                .credentialsProvider(credentialsProvider())
+                .serviceConfiguration(serviceConfig).build();
+        }
     }
 
     /** Dedicated SDK trust, preserving Apache's hostname verification. No global JVM truststore changes. */
@@ -87,10 +107,33 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
     }
 
     @Override
+    public String createExportDownloadCapability(String objectKey, Duration ttl,
+            String safeFilename, String contentType) {
+        if (objectKey == null || !objectKey.matches(
+                "^exports/[0-9a-f-]{36}/artifacts/[0-9a-f]{64}[.](pdf|md)$")
+                || safeFilename == null || !safeFilename.matches(
+                "^meeting-minutes-[0-9a-f-]{36}[.](pdf|md)$")
+                || !safeFilename.endsWith(objectKey.endsWith(".pdf") ? ".pdf" : ".md")
+                || ttl == null || ttl.compareTo(Duration.ofSeconds(30)) < 0
+                || ttl.compareTo(Duration.ofMinutes(5)) > 0
+                || !contentType.equals(objectKey.endsWith(".pdf")
+                        ? "application/pdf" : "text/markdown; charset=UTF-8")) {
+            throw new IllegalArgumentException("Invalid private export capability request");
+        }
+        var request = GetObjectRequest.builder().bucket(properties.getBucket())
+            .key(objectKey).responseContentType(contentType)
+            .responseContentDisposition("attachment; filename=\"" + safeFilename + "\"")
+            .responseCacheControl("private, no-store").build();
+        return exportPresigner.presignGetObject(GetObjectPresignRequest.builder()
+            .signatureDuration(ttl).getObjectRequest(request).build())
+            .url().toExternalForm();
+    }
+
+    @Override
     public StoredObject head(String objectKey) {
         var result = this.client.headObject(HeadObjectRequest.builder().bucket(this.properties.getBucket())
             .key(objectKey).build());
-        return new StoredObject(result.contentLength(), result.contentType(), result.eTag());
+        return new StoredObject(result.contentLength(), result.contentType(), result.eTag(), result.lastModified());
     }
 
     @Override
@@ -107,7 +150,7 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
 
     @Override
     public byte[] readBounded(String objectKey, int maximum) throws IOException {
-        if (maximum < 1 || maximum > 16777216) throw new IllegalArgumentException("Invalid result read limit.");
+        if (maximum < 1 || maximum > (objectKey != null && objectKey.startsWith("exports/") ? 33554432 : 16777216)) throw new IllegalArgumentException("Invalid result read limit.");
         try (var input = client.getObject(GetObjectRequest.builder().bucket(properties.getBucket()).key(objectKey).build())) {
             if (input.response().contentLength() == null || input.response().contentLength() > maximum
                     || input.response().contentLength() < 1 || input.response().contentEncoding() != null) {
@@ -140,9 +183,32 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
     }
 
     @Override
+    public boolean putImmutableBytesIfAbsent(String objectKey, byte[] bytes,
+            String contentType, String sha256) {
+        if (objectKey == null || !objectKey.startsWith("exports/")
+                || bytes == null || bytes.length < 1 || bytes.length > 33554432) {
+            throw new IllegalArgumentException("Invalid bounded export object");
+        }
+        var request = PutObjectRequest.builder()
+            .bucket(this.properties.getBucket()).key(objectKey)
+            .ifNoneMatch("*").contentType(contentType)
+            .contentLength((long) bytes.length)
+            .metadata(Map.of("sha256", sha256))
+            .build();
+        try {
+            this.client.putObject(request, RequestBody.fromBytes(bytes));
+            return true;
+        } catch (S3Exception exception) {
+            if (exception.statusCode() == 412) return false;
+            // 409 is not proof of acceptance; outer integrity verifier handles it.
+            throw exception;
+        }
+    }
+
+    @Override
     public ListedObjects list(String prefix,String continuationToken,int limit) {
-        if(prefix==null || !prefix.matches("processing/[0-9a-f-]{36}/intelligence/")
-                || limit<1 || limit>100) {
+        if(prefix==null || !(prefix.matches("processing/[0-9a-f-]{36}/intelligence/")
+                || prefix.equals("exports/")) || limit<1 || limit>100) {
             throw new IllegalArgumentException("Invalid private intelligence object listing scope.");
         }
         var request=ListObjectsV2Request.builder().bucket(properties.getBucket())
@@ -155,6 +221,31 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
     }
 
     @Override
+    public boolean deleteIfEtagMatches(String objectKey, String expectedEtag) {
+        // Only the DE-11 orphan-cleanup flow may use this operation. The key
+        // must be server-derived and strictly inside the export namespace.
+        if (objectKey == null || !objectKey.matches(
+                "^exports/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/"
+                + "(intake/[0-9a-f]{64}[.]json|snapshots/[0-9a-f]{64}[.]json"
+                + "|artifacts/[0-9a-f]{64}[.](md|pdf))$")
+                || expectedEtag == null || expectedEtag.isBlank()
+                || expectedEtag.length() > 256 || expectedEtag.equals("*")) {
+            throw new IllegalArgumentException("Invalid conditional export deletion");
+        }
+        try {
+            client.deleteObject(DeleteObjectRequest.builder()
+                .bucket(properties.getBucket()).key(objectKey)
+                .ifMatch(expectedEtag).build());
+            return true;
+        } catch (S3Exception exception) {
+            if (exception.statusCode() == 412 || exception.statusCode() == 404) {
+                return false;
+            }
+            throw exception;
+        }
+    }
+
+    @Override
     public void delete(String objectKey) {
         if (objectKey != null && objectKey.matches("processing/[^/]+/diarization/results/.*")) {
             throw new IllegalArgumentException("Diarization result objects are immutable.");
@@ -164,6 +255,7 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
 
     @PreDestroy
     void closeClients() {
+        if (this.exportPresigner != this.presigner) this.exportPresigner.close();
         this.presigner.close();
         this.client.close();
     }

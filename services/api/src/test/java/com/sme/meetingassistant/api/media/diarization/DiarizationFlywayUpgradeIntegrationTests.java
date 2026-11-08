@@ -153,7 +153,7 @@ class DiarizationFlywayUpgradeIntegrationTests {
             var historicalChecksums = history(schema, 34);
             assertThat(historicalChecksums).hasSize(34);
 
-            Flyway upgraded = flyway(schema, null);
+            Flyway upgraded = flyway(schema, "39");
             assertThat(upgraded.migrate().migrationsExecuted).isEqualTo(5);
             upgraded.validate();
             assertThat(history(schema, 34)).containsExactlyElementsOf(historicalChecksums);
@@ -301,7 +301,7 @@ class DiarizationFlywayUpgradeIntegrationTests {
                     AND t.tgname='trg_diarization_acceptance_measurement'
                 """, Long.class, schema)).isEqualTo(1);
 
-            Flyway latest = flyway(schema, null);
+            Flyway latest = flyway(schema, "39");
             assertThat(latest.migrate().migrationsExecuted).isEqualTo(2);
             latest.validate();
             assertThat(history(schema, 36)).containsExactlyElementsOf(preservedHistory);
@@ -316,17 +316,18 @@ class DiarizationFlywayUpgradeIntegrationTests {
     }
 
     @Test
-    void freshSchemaInstallsV1ThroughV39AndValidatesWithoutRepairOrRepeat() {
+    void freshSchemaInstallsV1ThroughV43AndValidatesWithoutRepairOrRepeat() {
         String schema = schema();
         try {
             Flyway fresh = flyway(schema, null);
-            assertThat(fresh.migrate().migrationsExecuted).isEqualTo(39);
+            assertThat(fresh.migrate().migrationsExecuted).isEqualTo(43);
             fresh.validate();
             assertThat(history(schema, 39)).hasSize(39);
+            assertThat(history(schema, 43)).hasSize(43);
             assertThat(jdbc.queryForObject("""
                 SELECT version FROM %s.flyway_schema_history WHERE success
                     AND version IS NOT NULL ORDER BY installed_rank DESC LIMIT 1
-                """.formatted(schema), String.class)).isEqualTo("39");
+                """.formatted(schema), String.class)).isEqualTo("43");
             assertThat(fresh.migrate().migrationsExecuted).isZero();
             fresh.validate();
         } finally {
