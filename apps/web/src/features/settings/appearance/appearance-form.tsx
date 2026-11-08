@@ -4,7 +4,6 @@ import { ChevronDownIcon } from '@radix-ui/react-icons'
 import { Monitor } from 'lucide-react'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { fonts } from '@/config/fonts'
-import { showSubmittedData } from '@/lib/show-submitted-data'
 import { cn } from '@/lib/utils'
 import { useFont } from '@/context/font-provider'
 import { useTheme } from '@/context/theme-provider'
@@ -45,8 +44,6 @@ export function AppearanceForm() {
   function onSubmit(data: AppearanceFormValues) {
     if (data.font != font) setFont(data.font)
     if (data.theme != theme) setTheme(data.theme)
-
-    showSubmittedData(data)
   }
 
   return (

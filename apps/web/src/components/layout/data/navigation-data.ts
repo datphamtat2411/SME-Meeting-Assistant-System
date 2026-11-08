@@ -1,5 +1,6 @@
 import {
   BadgeCheck,
+  Bell,
   Bot,
   CalendarDays,
   DoorOpen,
@@ -76,6 +77,11 @@ export const navigationGroups = [
             title: 'Appearance',
             url: '/settings/appearance',
             icon: Palette,
+          },
+          {
+            title: 'Notifications',
+            url: '/settings/notifications',
+            icon: Bell,
           },
         ],
       },

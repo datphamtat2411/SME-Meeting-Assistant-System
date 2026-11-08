@@ -1,4 +1,4 @@
-import { useState, type JSX } from 'react'
+import { useEffect, useState, type JSX } from 'react'
 import { useLocation, useNavigate, Link } from '@tanstack/react-router'
 import { cn } from '@/lib/utils'
 import { buttonVariants } from '@/components/ui/button'
@@ -24,6 +24,10 @@ export function SidebarNav({ className, items, ...props }: SidebarNavProps) {
   const navigate = useNavigate()
   const [val, setVal] = useState(pathname ?? '/settings')
 
+  useEffect(() => {
+    setVal(pathname ?? '/settings')
+  }, [pathname])
+
   const handleSelect = (e: string) => {
     setVal(e)
     navigate({ to: e })
@@ -33,8 +37,11 @@ export function SidebarNav({ className, items, ...props }: SidebarNavProps) {
     <>
       <div className='p-1 md:hidden'>
         <Select value={val} onValueChange={handleSelect}>
-          <SelectTrigger className='h-12 sm:w-48'>
-            <SelectValue placeholder='Theme' />
+          <SelectTrigger
+            className='h-12 sm:w-48'
+            aria-label='Select settings section'
+          >
+            <SelectValue placeholder='Select settings section' />
           </SelectTrigger>
           <SelectContent>
             {items.map((item) => (
