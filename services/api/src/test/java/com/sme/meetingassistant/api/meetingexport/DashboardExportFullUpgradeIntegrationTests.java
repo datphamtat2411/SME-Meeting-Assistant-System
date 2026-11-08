@@ -107,7 +107,9 @@ class DashboardExportFullUpgradeIntegrationTests {
         jdbc.query("""
             SELECT version,checksum FROM %s.flyway_schema_history
              WHERE success AND version IS NOT NULL ORDER BY installed_rank
-            """.formatted(schema),rs -> result.put(rs.getString(1),rs.getInt(2)));
+            """.formatted(schema), (org.springframework.jdbc.core.RowCallbackHandler) rs -> {
+                result.put(rs.getString(1), rs.getInt(2));
+            });
         return result;
     }
 }
