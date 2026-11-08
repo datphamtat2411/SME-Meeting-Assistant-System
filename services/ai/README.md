@@ -93,6 +93,10 @@ using environment variables and no `.env` file. The test prints only the types o
 expected JSON fields and the normalized turn/speaker counts, never speaker labels
 or provider data. It requires at least two detected clusters for this fixture.
 
+For a private, reproducible single-recording report and listening timeline, see
+[Diarization manual smoke evaluation](docs/EVALUATION_T02_DIARIZATION_SMOKE.md).
+Its preflight is offline; its separate live run requires explicit authorization.
+
 **Task 01 live baseline:** the Task 02 specification reports a successful real
 prediction with the pinned model: JSON file output, `segments` list, string
 `speaker`/`start`/`stop`, `speakers` dictionary with integer `count` and list
