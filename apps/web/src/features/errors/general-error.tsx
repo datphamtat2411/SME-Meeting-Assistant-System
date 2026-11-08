@@ -15,11 +15,7 @@ export function GeneralError({
   const router = useRouter()
 
   const retry = () => {
-    if (reset) {
-      reset()
-      return
-    }
-
+    reset?.()
     void router.invalidate()
   }
 
