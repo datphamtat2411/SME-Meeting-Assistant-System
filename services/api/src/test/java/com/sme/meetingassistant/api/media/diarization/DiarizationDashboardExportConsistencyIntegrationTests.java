@@ -394,7 +394,7 @@ class DiarizationDashboardExportConsistencyIntegrationTests
         }
     }
 
-    private JsonNode data(MvcResult result) {
+    private JsonNode data(MvcResult result) throws Exception {
         JsonNode payload = json.readTree(result.getResponse().getContentAsString());
         assertThat(payload.path("success").asBoolean()).isTrue();
         return payload.path("data");
