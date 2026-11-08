@@ -97,6 +97,9 @@ For a private, reproducible single-recording report and listening timeline, see
 [Diarization manual smoke evaluation](docs/EVALUATION_T02_DIARIZATION_SMOKE.md).
 Its preflight is offline; its separate live run requires explicit authorization.
 
+For the consolidated evaluation evidence, verification boundaries, and follow-up
+work, see the [Evaluation Foundation handoff](docs/EVALUATION_FOUNDATION.md).
+
 **Task 01 live baseline:** the Task 02 specification reports a successful real
 prediction with the pinned model: JSON file output, `segments` list, string
 `speaker`/`start`/`stop`, `speakers` dictionary with integer `count` and list
