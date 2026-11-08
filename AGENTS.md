@@ -56,22 +56,29 @@ and the assigned acceptance criteria. Do not run full suites, full builds,
 startup, or unrelated manual checks unless the task or plan explicitly
 justifies them.
 
-For each failing focused test:
+When a focused test command fails, treat its complete failure output as one
+failure batch:
 
-1. Identify the distinct task-related failure by its failing behavior and
+1. Collect and identify ALL distinct task-related failures reported by that
+   test run before making corrections. Track failure identity by behavior and
    underlying cause, not incidental line numbers or changing error text.
-2. Investigate that failure, make one targeted corrective pass, then rerun
-   the same focused test command.
-3. If the same failure persists after that corrective pass, report it as a
-   blocker with the test evidence and stop. Do not repeatedly patch the same
-   unresolved failure.
-4. If that failure is fixed but a different failure is exposed, treat it as
-   a new failure: investigate it, make its own single corrective pass, and
-   rerun the same focused test command. There is no global one-fix or
-   one-rerun limit across distinct failures.
-5. If a previously corrected failure reappears, treat it as the same
-   unresolved failure rather than resetting its corrective-pass allowance.
+2. Make ONE corrective pass addressing every failure in the batch. Do not rerun
+   the focused test after fixing only one of several reported failures.
+3. Rerun the SAME focused test command once after the batch has been addressed.
+4. If ANY previously observed failure persists or reappears in the new run,
+   report it as a blocker with the relevant evidence and stop. Do not start
+   another corrective pass for a previously addressed failure.
+5. If all previously observed failures are gone but NEW distinct failures
+   appear, treat those new failures as a new batch: correct ALL of them in
+   one pass and rerun the same focused test command.
+6. Repeat this batch-based process only while each rerun exposes exclusively
+   new failures. There is no global limit of one corrective pass or one rerun
+   across distinct failure batches.
 
+Example: if the first run reports A, B, C, and D, correct all four before
+rerunning. If the next run is green, continue to completion. If A, B, C, or D
+appears again, stop and report the recurring failure. If only new failures
+E and F appear, correct both before rerunning.
 Do not label an unimplemented requirement or an untested assumption as a
 blocker. Report genuine external or architectural blockers with concrete
 evidence; do not invent an alternative architecture to bypass them.
