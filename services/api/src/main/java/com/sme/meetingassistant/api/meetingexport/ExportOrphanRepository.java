@@ -14,7 +14,7 @@ import org.springframework.stereotype.Repository;
  * database-clock predicates; no cross-database/S3 distributed transaction.
  */
 @Repository
-public final class ExportOrphanRepository {
+public class ExportOrphanRepository {
     private final JdbcTemplate jdbc;
 
     public ExportOrphanRepository(JdbcTemplate jdbc) {
