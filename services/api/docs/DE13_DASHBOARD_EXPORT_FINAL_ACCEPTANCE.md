@@ -1,5 +1,8 @@
 # DE-13 — Dashboard/Export Final API Engineering Acceptance
 
+> **Integration update (2026-11-08):** This document preserves the original **feature-branch DE-13 acceptance record**. Its V34→V38 counts and V35–V39 collision warning describe the **historical** `api/module-dashboard-export` tree, not the current `integration/dashboard-export-into-develop` tree. The integration retains develop V1–V39 byte-for-byte, installs Export SQL as V40–V43 and tests V34→V43 plus V39→V43. See [Task 01](INTEGRATION_TASK01_FLYWAY_RECONCILIATION.md) and [Task 04](INTEGRATION_TASK04_MERGE_ACCEPTANCE.md). No product/security/ops approval or production deployment is claimed.
+
+
 **Target:** api/module-dashboard-export; **base:** DE-12 merge
 98eefdccc9ffdfabc69f53ab0cf3896b6057493a, API CI run #702 SUCCESS.
 **No merge into develop is part of DE-13.** Do not represent acceptance on this

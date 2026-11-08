@@ -1,5 +1,8 @@
 # DE-12 — Security, Observability, Reliability and Performance Hardening
 
+> **Integration update (2026-11-08):** This is the original **feature-branch DE-12 engineering hardening record**, not a staging benchmark or a post-merge approval. For the integrated `develop` candidate, combined-tree regression evidence, frozen Flyway history and the still-open human/operational merge gates are tracked in [Task 04](INTEGRATION_TASK04_MERGE_ACCEPTANCE.md). Feature flags and purge remain OFF by default; no production SLO has been measured or approved.
+
+
 **Branch:** api/module-dashboard-export (implementation branch); **base:** DE11 merge
 4aad009c798e378d1795059d08878f992e30f45d.
 This is engineering evidence, not an approval of DE01 Product/Security/Operations decisions.
