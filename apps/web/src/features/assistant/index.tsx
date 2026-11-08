@@ -17,12 +17,9 @@ import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 import { Textarea } from '@/components/ui/textarea'
-import { ConfigDrawer } from '@/components/config-drawer'
 import { Header } from '@/components/layout/header'
+import { HeaderActions } from '@/components/layout/header-actions'
 import { Main } from '@/components/layout/main'
-import { ProfileDropdown } from '@/components/profile-dropdown'
-import { Search } from '@/components/search'
-import { ThemeSwitch } from '@/components/theme-switch'
 import {
   actionItems,
   assistantConversations,
@@ -132,16 +129,15 @@ export function AssistantPage() {
   return (
     <>
       <Header fixed>
-        <Search className='me-auto' />
-        <ThemeSwitch />
-        <ConfigDrawer />
-        <ProfileDropdown />
+        <HeaderActions />
       </Header>
 
       <Main fixed className='gap-4 sm:gap-6'>
         <div className='flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between'>
           <div>
-            <p className='text-sm font-medium text-primary'>Meeting knowledge</p>
+            <p className='text-sm font-medium text-primary'>
+              Meeting knowledge
+            </p>
             <h1 className='text-2xl font-bold tracking-tight sm:text-3xl'>
               AI Assistant
             </h1>
@@ -205,7 +201,8 @@ export function AssistantPage() {
                       type='button'
                       className={cn(
                         'w-full rounded-lg p-3 text-start transition-colors hover:bg-accent',
-                        selectedConversationId === conversation.id && 'bg-accent'
+                        selectedConversationId === conversation.id &&
+                          'bg-accent'
                       )}
                       onClick={() => selectConversation(conversation.id)}
                     >
@@ -303,7 +300,6 @@ export function AssistantPage() {
               </p>
             </div>
           </div>
-
         </section>
       </Main>
     </>
@@ -320,7 +316,9 @@ function EmptyAssistantState({
       <div className='flex size-14 items-center justify-center rounded-2xl bg-primary/10'>
         <Sparkles className='size-6 text-primary' />
       </div>
-      <h2 className='mt-5 text-xl font-semibold'>Ask about your meeting knowledge</h2>
+      <h2 className='mt-5 text-xl font-semibold'>
+        Ask about your meeting knowledge
+      </h2>
       <p className='mt-2 max-w-xl text-sm leading-6 text-muted-foreground'>
         Find decisions, owners, deadlines, and outcomes across completed
         meetings. Every meaningful answer links back to supporting evidence.
@@ -365,13 +363,19 @@ function MessageBubble({ message }: { message: AssistantMessage }) {
         )}
       >
         <div className='flex items-center justify-between gap-5 text-xs opacity-70'>
-          <span className='font-medium'>{isUser ? 'You' : 'Meeting Assistant'}</span>
+          <span className='font-medium'>
+            {isUser ? 'You' : 'Meeting Assistant'}
+          </span>
           <span>{timeFormatter.format(new Date(message.createdAt))}</span>
         </div>
-        <p className='mt-2 whitespace-pre-line text-sm leading-6'>{message.content}</p>
+        <p className='mt-2 text-sm leading-6 whitespace-pre-line'>
+          {message.content}
+        </p>
         {sources.length > 0 && (
           <div className='mt-4 space-y-2 border-t border-current/10 pt-3'>
-            <p className='text-xs font-semibold opacity-75'>Supporting evidence</p>
+            <p className='text-xs font-semibold opacity-75'>
+              Supporting evidence
+            </p>
             {sources.map((source) => (
               <SourceReference key={source.id} source={source} />
             ))}
@@ -390,12 +394,14 @@ function SourceReference({ source }: { source: RagSource }) {
     <Button
       asChild
       variant='outline'
-      className='h-auto w-full justify-start whitespace-normal bg-background/80 p-3 text-start'
+      className='h-auto w-full justify-start bg-background/80 p-3 text-start whitespace-normal'
     >
       <Link to='/meetings/$meetingId' params={{ meetingId: meeting.id }}>
         <span className='min-w-0 flex-1 space-y-1'>
           <span className='flex flex-wrap items-center gap-2'>
-            <span className='truncate text-xs font-semibold'>{meeting.title}</span>
+            <span className='truncate text-xs font-semibold'>
+              {meeting.title}
+            </span>
             <Badge variant='secondary' className='text-[10px]'>
               {sourceTypeLabels[source.sourceType]}
             </Badge>
@@ -442,8 +448,8 @@ function resolveQuestion(question: string): {
   }
 
   if (normalized.includes('quyet dinh')) {
-    const decisions = keyDecisions.filter((decision) =>
-      getMeetingById(decision.meetingId)?.status === 'completed'
+    const decisions = keyDecisions.filter(
+      (decision) => getMeetingById(decision.meetingId)?.status === 'completed'
     )
     const sourceIds = decisions
       .map((decision) =>
@@ -470,8 +476,7 @@ function resolveQuestion(question: string): {
     (normalized.includes('action item') || normalized.includes('dau viec'))
   ) {
     const openItems = actionItems.filter(
-      (item) =>
-        item.assigneeId === currentDemoUser.id && item.status !== 'done'
+      (item) => item.assigneeId === currentDemoUser.id && item.status !== 'done'
     )
     return {
       content: `${currentDemoUser.name} còn ${openItems.length} đầu việc chưa hoàn thành:\n${openItems

@@ -23,12 +23,10 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
-import { ConfigDrawer } from '@/components/config-drawer'
 import { Header } from '@/components/layout/header'
+import { HeaderActions } from '@/components/layout/header-actions'
 import { Main } from '@/components/layout/main'
-import { ProfileDropdown } from '@/components/profile-dropdown'
-import { Search } from '@/components/search'
-import { ThemeSwitch } from '@/components/theme-switch'
+import { MeetingStatusBadge } from '@/features/meetings/components/meeting-status-badge'
 import {
   actionItems,
   currentDemoUser,
@@ -41,8 +39,6 @@ import {
   type ActionItemPriority,
   type Meeting,
 } from '@/features/meetings/data'
-import { MeetingStatusBadge } from '@/features/meetings/components/meeting-status-badge'
-
 
 const actionPriorityLabels: Record<ActionItemPriority, string> = {
   low: 'Low',
@@ -168,12 +164,7 @@ export function Dashboard() {
   return (
     <>
       <Header>
-        <div className='ms-auto flex items-center gap-2'>
-          <Search />
-          <ThemeSwitch />
-          <ConfigDrawer />
-          <ProfileDropdown />
-        </div>
+        <HeaderActions />
       </Header>
 
       <Main className='space-y-6'>

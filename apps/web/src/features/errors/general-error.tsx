@@ -1,19 +1,26 @@
-import { useNavigate, useRouter } from '@tanstack/react-router'
+import { useRouter } from '@tanstack/react-router'
 import { cn } from '@/lib/utils'
-import { Button } from '@/components/ui/button'
+import { ErrorRecoveryActions } from '@/components/layout/authenticated-route-fallback'
 
 type GeneralErrorProps = React.HTMLAttributes<HTMLDivElement> & {
   minimal?: boolean
+  reset?: () => void
 }
 
 export function GeneralError({
   className,
   minimal = false,
+  reset,
 }: GeneralErrorProps) {
-  const navigate = useNavigate()
-  const { history } = useRouter()
+  const router = useRouter()
+
+  const retry = () => {
+    reset?.()
+    void router.invalidate()
+  }
+
   return (
-    <div className={cn('h-svh w-full', className)}>
+    <div className={cn('flex min-h-svh w-full', className)}>
       <div className='m-auto flex h-full w-full flex-col items-center justify-center gap-2'>
         {!minimal && (
           <h1 className='text-[7rem] leading-tight font-bold'>500</h1>
@@ -22,14 +29,7 @@ export function GeneralError({
         <p className='text-center text-muted-foreground'>
           We apologize for the inconvenience. <br /> Please try again later.
         </p>
-        {!minimal && (
-          <div className='mt-6 flex gap-4'>
-            <Button variant='outline' onClick={() => history.go(-1)}>
-              Go Back
-            </Button>
-            <Button onClick={() => navigate({ to: '/' })}>Back to Home</Button>
-          </div>
-        )}
+        {!minimal && <ErrorRecoveryActions retry={retry} />}
       </div>
     </div>
   )

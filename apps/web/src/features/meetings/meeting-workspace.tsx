@@ -44,12 +44,14 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { ConfigDrawer } from '@/components/config-drawer'
 import { Header } from '@/components/layout/header'
+import { HeaderActions } from '@/components/layout/header-actions'
 import { Main } from '@/components/layout/main'
-import { ProfileDropdown } from '@/components/profile-dropdown'
-import { Search } from '@/components/search'
-import { ThemeSwitch } from '@/components/theme-switch'
+import {
+  MeetingStatusBadge,
+  meetingStatusLabels,
+  meetingStatusStyles,
+} from './components/meeting-status-badge'
 import {
   assistantConversations,
   getActionItemsByMeetingId,
@@ -70,11 +72,6 @@ import {
   type RagSource,
   type TranscriptSegment,
 } from './data'
-import {
-  MeetingStatusBadge,
-  meetingStatusLabels,
-  meetingStatusStyles,
-} from './components/meeting-status-badge'
 
 type WorkspaceTab = 'overview' | 'transcript' | 'action-items' | 'ask-ai'
 
@@ -129,10 +126,7 @@ export function MeetingWorkspacePage({ meetingId }: { meetingId: string }) {
   return (
     <>
       <Header fixed>
-        <Search className='me-auto' />
-        <ThemeSwitch />
-        <ConfigDrawer />
-        <ProfileDropdown />
+        <HeaderActions />
       </Header>
 
       <Main className='flex flex-1 flex-col gap-6'>
@@ -712,9 +706,7 @@ export function TranscriptSegmentRow({
   mappedName?: string
 }) {
   const participantId = segment.participantId
-  const participant = participantId
-    ? getMemberById(participantId)
-    : undefined
+  const participant = participantId ? getMemberById(participantId) : undefined
   const speakerLabel = formatSpeakerLabel(segment.speakerLabel)
 
   return (

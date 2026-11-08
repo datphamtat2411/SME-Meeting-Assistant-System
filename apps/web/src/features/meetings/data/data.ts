@@ -1115,7 +1115,8 @@ export const ragSources: RagSource[] = [
     sourceType: 'transcript',
     segmentId: 'segment-live-06',
     timestampMs: 108500,
-    excerpt: 'Một worker nhận diện người nói đang phản hồi chậm; nguyên nhân chưa được xác nhận.',
+    excerpt:
+      'Một worker nhận diện người nói đang phản hồi chậm; nguyên nhân chưa được xác nhận.',
   },
   {
     id: 'rag-live-update',
@@ -1131,7 +1132,8 @@ export const ragSources: RagSource[] = [
     sourceType: 'transcript',
     segmentId: 'segment-live-09',
     timestampMs: 180500,
-    excerpt: 'Speaker 3 theo dõi worker và chia sẻ kết quả trước khi quyết định xử lý lại.',
+    excerpt:
+      'Speaker 3 theo dõi worker và chia sẻ kết quả trước khi quyết định xử lý lại.',
   },
   {
     id: 'rag-hero-summary',
@@ -1276,7 +1278,8 @@ export const assistantConversations: AssistantConversation[] = [
         id: 'message-live-02',
         conversationId: 'conversation-live-support',
         role: 'assistant',
-        content: 'Có ba bản ghi xử lý lâu hơn bình thường và một worker nhận diện người nói phản hồi chậm. Nhóm đang điều tra; nguyên nhân chưa được xác nhận.',
+        content:
+          'Có ba bản ghi xử lý lâu hơn bình thường và một worker nhận diện người nói phản hồi chậm. Nhóm đang điều tra; nguyên nhân chưa được xác nhận.',
         createdAt: '2026-09-15T14:05:05+07:00',
         sourceIds: ['rag-live-queue', 'rag-live-worker'],
       },
@@ -1291,7 +1294,8 @@ export const assistantConversations: AssistantConversation[] = [
         id: 'message-live-04',
         conversationId: 'conversation-live-support',
         role: 'assistant',
-        content: 'Speaker 2 kiểm tra hàng đợi và log; Speaker 3 theo dõi worker và phối hợp xử lý. Speaker 1 tổng hợp phạm vi ảnh hưởng và cập nhật khách hàng trong ba mươi phút.',
+        content:
+          'Speaker 2 kiểm tra hàng đợi và log; Speaker 3 theo dõi worker và phối hợp xử lý. Speaker 1 tổng hợp phạm vi ảnh hưởng và cập nhật khách hàng trong ba mươi phút.',
         createdAt: '2026-09-15T14:06:05+07:00',
         sourceIds: ['rag-live-queue', 'rag-live-actions', 'rag-live-update'],
       },

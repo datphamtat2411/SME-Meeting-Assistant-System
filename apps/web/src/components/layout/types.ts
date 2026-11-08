@@ -1,15 +1,10 @@
 import { type LinkProps } from '@tanstack/react-router'
 
-type User = {
-  name: string
-  email: string
-  avatar: string
-}
-
-type Team = {
-  name: string
-  logo: React.ElementType
-  plan: string
+type UserPresentation = {
+  displayName: string
+  email?: string
+  avatarUrl?: string
+  initials: string
 }
 
 type BaseNavItem = {
@@ -19,12 +14,16 @@ type BaseNavItem = {
 }
 
 type NavLink = BaseNavItem & {
-  url: LinkProps['to'] | (string & {})
+  url: LinkProps['to']
   items?: never
 }
 
+type NavSubItem = BaseNavItem & {
+  url: LinkProps['to']
+}
+
 type NavCollapsible = BaseNavItem & {
-  items: (BaseNavItem & { url: LinkProps['to'] | (string & {}) })[]
+  items: NavSubItem[]
   url?: never
 }
 
@@ -35,10 +34,11 @@ type NavGroup = {
   items: NavItem[]
 }
 
-type SidebarData = {
-  user: User
-  teams: Team[]
-  navGroups: NavGroup[]
+export type {
+  UserPresentation,
+  NavGroup,
+  NavItem,
+  NavCollapsible,
+  NavLink,
+  NavSubItem,
 }
-
-export type { SidebarData, NavGroup, NavItem, NavCollapsible, NavLink }

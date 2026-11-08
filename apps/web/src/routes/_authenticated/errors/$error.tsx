@@ -1,9 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { ConfigDrawer } from '@/components/config-drawer'
-import { Header } from '@/components/layout/header'
-import { ProfileDropdown } from '@/components/profile-dropdown'
-import { Search } from '@/components/search'
-import { ThemeSwitch } from '@/components/theme-switch'
+import { AuthenticatedRouteFrame } from '@/components/layout/authenticated-route-fallback'
 import { ForbiddenError } from '@/features/errors/forbidden'
 import { GeneralError } from '@/features/errors/general-error'
 import { MaintenanceError } from '@/features/errors/maintenance-error'
@@ -18,7 +14,10 @@ export const Route = createFileRoute('/_authenticated/errors/$error')({
 function RouteComponent() {
   const { error } = Route.useParams()
 
-  const errorMap: Record<string, React.ComponentType> = {
+  const errorMap: Record<
+    string,
+    React.ComponentType<{ className?: string }>
+  > = {
     unauthorized: UnauthorisedError,
     forbidden: ForbiddenError,
     'not-found': NotFoundError,
@@ -28,16 +27,8 @@ function RouteComponent() {
   const ErrorComponent = errorMap[error] || NotFoundError
 
   return (
-    <>
-      <Header fixed className='border-b'>
-        <Search className='me-auto' />
-        <ThemeSwitch />
-        <ConfigDrawer />
-        <ProfileDropdown />
-      </Header>
-      <div className='flex-1 [&>div]:h-full'>
-        <ErrorComponent />
-      </div>
-    </>
+    <AuthenticatedRouteFrame>
+      <ErrorComponent className='min-h-full' />
+    </AuthenticatedRouteFrame>
   )
 }

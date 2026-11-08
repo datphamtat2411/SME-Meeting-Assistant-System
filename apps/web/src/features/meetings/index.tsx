@@ -58,12 +58,10 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
-import { ConfigDrawer } from '@/components/config-drawer'
 import { Header } from '@/components/layout/header'
+import { HeaderActions } from '@/components/layout/header-actions'
 import { Main } from '@/components/layout/main'
-import { ProfileDropdown } from '@/components/profile-dropdown'
-import { Search } from '@/components/search'
-import { ThemeSwitch } from '@/components/theme-switch'
+import { MeetingStatusBadge } from './components/meeting-status-badge'
 import {
   addMeeting,
   currentDemoUser,
@@ -75,7 +73,6 @@ import {
   type Meeting,
   type MeetingStatus,
 } from './data'
-import { MeetingStatusBadge } from './components/meeting-status-badge'
 
 const meetingStatusOptions: { label: string; value: MeetingStatus | 'all' }[] =
   [
@@ -155,10 +152,7 @@ export function MeetingsPage() {
   return (
     <>
       <Header fixed>
-        <Search className='me-auto' />
-        <ThemeSwitch />
-        <ConfigDrawer />
-        <ProfileDropdown />
+        <HeaderActions />
       </Header>
 
       <Main className='flex flex-1 flex-col gap-4 sm:gap-6'>

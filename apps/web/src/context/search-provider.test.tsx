@@ -2,8 +2,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, type RenderResult } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
 import { SearchProvider } from '@/context/search-provider'
+import { Search } from '@/components/search'
 
-const COMMAND_MENU_PLACEHOLDER = 'Type a command or search...'
+const COMMAND_MENU_PLACEHOLDER = 'Navigate to a page or command'
 
 const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
@@ -24,8 +25,8 @@ vi.mock('@/context/theme-provider', () => ({
 
 type ShortcutModifier = 'Control' | 'Meta'
 
-async function renderWithSearchProvider() {
-  return await render(<SearchProvider>{null}</SearchProvider>)
+async function renderWithSearchProvider(children: React.ReactNode = null) {
+  return await render(<SearchProvider>{children}</SearchProvider>)
 }
 
 /**
@@ -69,11 +70,16 @@ describe('SearchProvider and CommandMenu', () => {
     await expect
       .element(getByPlaceholder(COMMAND_MENU_PLACEHOLDER))
       .toBeInTheDocument()
-    await expect.element(getByText('Theme')).toBeInTheDocument()
+    await expect
+      .element(getByText('Appearance', { exact: true }))
+      .toBeInTheDocument()
     await expect.element(getByText('Light')).toBeInTheDocument()
     await expect.element(getByText('Dark')).toBeInTheDocument()
     await expect.element(getByText('System')).toBeInTheDocument()
     await expect.element(getByText('Dashboard')).toBeInTheDocument()
+    await expect
+      .element(getByPlaceholder(COMMAND_MENU_PLACEHOLDER))
+      .toHaveFocus()
   })
 
   it('does not show the dialog content when search is closed', async () => {
@@ -131,6 +137,19 @@ describe('SearchProvider and CommandMenu', () => {
       .not.toBeInTheDocument()
   })
 
+  it('selects a filtered destination with arrow keys and Enter', async () => {
+    const screen = await renderWithSearchProvider()
+
+    await openCommandPalette(screen)
+
+    const input = screen.getByPlaceholder(COMMAND_MENU_PLACEHOLDER)
+    await userEvent.fill(input, 'General Meetings /meetings')
+    await userEvent.keyboard('{ArrowDown}{Enter}')
+
+    expect(mocks.navigate).toHaveBeenCalledWith({ to: '/meetings' })
+    await expect.element(input).not.toBeInTheDocument()
+  })
+
   it('applies theme and closes the palette when a theme command is chosen', async () => {
     const screen = await renderWithSearchProvider()
 
@@ -155,7 +174,24 @@ describe('SearchProvider and CommandMenu', () => {
     )
 
     await expect
-      .element(screen.getByText('No results found.'))
+      .element(screen.getByText('No matching pages or appearance commands.'))
       .toBeInTheDocument()
+  })
+
+  it('closes with Escape and restores focus to the invoking trigger', async () => {
+    const screen = await renderWithSearchProvider(<Search />)
+    const trigger = screen.getByRole('button', { name: 'Open command menu' })
+
+    await userEvent.click(trigger)
+    await expect
+      .element(screen.getByPlaceholder(COMMAND_MENU_PLACEHOLDER))
+      .toHaveFocus()
+
+    await userEvent.keyboard('{Escape}')
+
+    await expect
+      .element(screen.getByPlaceholder(COMMAND_MENU_PLACEHOLDER))
+      .not.toBeInTheDocument()
+    await expect.element(trigger).toHaveFocus()
   })
 })

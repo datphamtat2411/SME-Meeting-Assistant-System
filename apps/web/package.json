@@ -3,6 +3,7 @@
   "private": false,
   "version": "2.2.1",
   "type": "module",
+  "packageManager": "pnpm@11.24.0",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
@@ -16,7 +17,7 @@
     "test:ui": "vitest --ui --browser.headless",
     "test:browser": "vitest",
     "test:coverage": "vitest run --coverage --browser.headless",
-    "test:browser:install": "playwright install chromium --with-deps"
+    "test:browser:install": "npx --yes --package=node@24.18.1 -c 'node ./node_modules/playwright/cli.js install chromium --with-deps'"
   },
   "dependencies": {
     "@clerk/react": "^6.4.3",

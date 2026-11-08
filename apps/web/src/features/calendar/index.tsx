@@ -10,19 +10,16 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { ConfigDrawer } from '@/components/config-drawer'
 import { Header } from '@/components/layout/header'
+import { HeaderActions } from '@/components/layout/header-actions'
 import { Main } from '@/components/layout/main'
-import { ProfileDropdown } from '@/components/profile-dropdown'
-import { Search } from '@/components/search'
-import { ThemeSwitch } from '@/components/theme-switch'
+import { MeetingStatusBadge } from '@/features/meetings/components/meeting-status-badge'
 import {
   getRoomById,
   currentDemoUser,
   meetings,
   type Meeting,
 } from '@/features/meetings/data'
-import { MeetingStatusBadge } from '@/features/meetings/components/meeting-status-badge'
 
 const timeZone = 'Asia/Ho_Chi_Minh'
 const calendarDateFormatter = new Intl.DateTimeFormat('en-US', {
@@ -60,10 +57,7 @@ export function CalendarPage() {
   return (
     <>
       <Header fixed>
-        <Search className='me-auto' />
-        <ThemeSwitch />
-        <ConfigDrawer />
-        <ProfileDropdown />
+        <HeaderActions />
       </Header>
 
       <Main className='flex flex-1 flex-col gap-4 sm:gap-6'>
