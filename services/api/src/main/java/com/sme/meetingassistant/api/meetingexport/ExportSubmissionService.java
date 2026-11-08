@@ -20,13 +20,15 @@ public class ExportSubmissionService {
     private final ExportIntakeRepository intakes;
     private final ExportSnapshotCodec codec;
     private final ExportArtifactStore storage;
+    private final ExportSecurityAudit audit;
 
     public ExportSubmissionService(ExportIntentService intent, ExportIntakeRepository intakes,
-            ExportSnapshotCodec codec, ExportArtifactStore storage) {
+            ExportSnapshotCodec codec, ExportArtifactStore storage, ExportSecurityAudit audit) {
         this.intent = intent;
         this.intakes = intakes;
         this.codec = codec;
         this.storage = storage;
+        this.audit = audit;
     }
 
     @Transactional
@@ -50,6 +52,7 @@ public class ExportSubmissionService {
         String objectKey = "exports/" + record.id() + "/intake/" + digest + ".json";
         storage.putVerified(objectKey, intakeBytes, "application/json", digest);
         intakes.insert(record, snapshot.sourceFingerprint(), digest, objectKey);
+        audit.admitted(record);
         return record;
     }
 }
