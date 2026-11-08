@@ -49,7 +49,7 @@ pnpm run test:browser:install
 pnpm test
 ```
 
-`test:browser:install` installs the project-pinned Playwright Chromium and required Linux browser dependencies. It may require administrator privileges on Linux. `pnpm test` runs the complete headless browser suite and fails if no tests are discovered.
+`test:browser:install` installs the project-pinned Playwright Chromium and required Linux browser dependencies. The installer uses Node.js `24.18.1` because Playwright `1.59.1` does not finish archive extraction under Node.js `26.13.0`; the browser tests themselves still run with the pinned Node.js `26.13.0` runtime. The install may require administrator privileges on Linux. `pnpm test` runs the complete headless browser suite and fails if no tests are discovered.
 
 ### Diagnosing CI Failures
 
