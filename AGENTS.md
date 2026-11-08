@@ -27,7 +27,7 @@ PLAN owns discovery and task-specific decisions.
 Follow the Task Specification's locked scope and contracts.
 Inspect only task-related code, tests, config, migrations, and dependencies.
 
-Always pick the best solution, not just the easiest one to get it done, but avoid over-engineering
+Avoid bare-minimum solutions or lazy shortcuts that only aim to get the task done with the least effort. 
 
 Keep `plan.md` concise. Prefer:
 
@@ -44,6 +44,7 @@ Read `plan.md` and the files directly affected by it before editing.
 Do not repeat PLAN discovery.
 Expand only for necessary dependencies or direct conflicts.
 Write or update focused tests before changing production code.
+Avoid bare-minimum solutions or lazy shortcuts that only aim to get the task done with the least effort. 
 
 After implementation, run only the narrowest relevant tests.
 Do not run full suites, full builds, startup, or manual checks unless the task
