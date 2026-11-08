@@ -234,6 +234,34 @@ class ExportJobIntegrationTests {
         assertThat(records.require(pending.id()).status()).isEqualTo(ExportStatus.FAILED);
     }
 
+    @Test
+    void backlogLimitsDistinctKeysButNotReplayAndRollsBackExceededReceipt() {
+        UUID actor=user(), meeting=meeting(actor);
+        MinutesSnapshot source=snapshot(meeting,actor,"Giới hạn nguồn lực");
+        ExportRecord first=null;
+        for (int i=0;i<5;i++) {
+            final int n=i;
+            ExportRecord created=as(actor,()->submissions.submit(meeting,
+                    ExportFormat.MARKDOWN,"admission-limit-"+n,source));
+            if(i==0) first=created;
+        }
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM meeting_exports
+             WHERE meeting_id=? AND status='PENDING'
+            """,Long.class,meeting)).isEqualTo(5L);
+        assertThatThrownBy(()->as(actor,()->submissions.submit(meeting,
+                ExportFormat.MARKDOWN,"admission-limit-over",source)))
+                .isInstanceOf(org.springframework.web.server.ResponseStatusException.class)
+                .hasMessageContaining("429");
+        UUID original=first.id();
+        ExportRecord replay=as(actor,()->submissions.submit(meeting,
+                ExportFormat.MARKDOWN,"admission-limit-0",source));
+        assertThat(replay.id()).isEqualTo(original);
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM meeting_exports WHERE meeting_id=?",
+                Long.class,meeting)).isEqualTo(5L);
+    }
+
     private MinutesSnapshot snapshot(UUID meetingId, UUID actor, String summaryText) {
         OffsetDateTime now=OffsetDateTime.parse("2026-11-07T12:00:00Z");
         var meeting = new MinutesSnapshot.Meeting(meetingId,"Biên bản thử",null,

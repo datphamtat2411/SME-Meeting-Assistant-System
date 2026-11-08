@@ -21,14 +21,17 @@ public class ExportSubmissionService {
     private final ExportSnapshotCodec codec;
     private final ExportArtifactStore storage;
     private final ExportSecurityAudit audit;
+    private final ExportAdmissionBudget budget;
 
     public ExportSubmissionService(ExportIntentService intent, ExportIntakeRepository intakes,
-            ExportSnapshotCodec codec, ExportArtifactStore storage, ExportSecurityAudit audit) {
+            ExportSnapshotCodec codec, ExportArtifactStore storage, ExportSecurityAudit audit,
+            ExportAdmissionBudget budget) {
         this.intent = intent;
         this.intakes = intakes;
         this.codec = codec;
         this.storage = storage;
         this.audit = audit;
+        this.budget = budget;
     }
 
     @Transactional
@@ -39,6 +42,7 @@ public class ExportSubmissionService {
         // Replays must preserve the original frozen export even if CURRENT
         // source completeness has since changed. Authorization is rechecked.
         if (intakes.find(record.id()).isPresent()) return record;
+        budget.verifyNewIntent(record.requestedByUserId());
         if (snapshot == null || snapshot.meeting() == null
                 || !meetingId.equals(snapshot.meeting().id())
                 || !"COMPLETE".equals(snapshot.completeness())

@@ -31,6 +31,17 @@ This is engineering evidence, not an approval of DE01 Product/Security/Operation
 - Export worker execution outcomes are measured via metrics; they are NOT falsely
   presented as durable worker security-audit rows.
 
+### Cross-node admission anti-abuse budget
+
+- Default active PENDING/GENERATING limits: five per actor, 500 globally,
+  configurable with strict startup validation. HTTP 429 is a safe rejection.
+- PostgreSQL transaction advisory lock serializes checks across API nodes and
+  protects against concurrent check/insert races; rollback also removes the
+  new intent and idempotency receipt when a budget is exceeded.
+- Idempotent replay of an already staged intent bypasses the new-job budget.
+- This is a technical resource cap, NOT a human-approved export entitlement.
+- Backlog rejects increment a constant-label counter; no user identity is tagged.
+
 ### Metrics, cardinality, failure modes
 
 - sme.dashboard_export.http.duration: one of six fixed canonical operations,
