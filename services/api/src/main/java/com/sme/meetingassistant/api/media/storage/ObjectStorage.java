@@ -7,7 +7,9 @@ import java.time.Instant;
 import java.util.List;
 
 public interface ObjectStorage {
+    /** Media-only capability. Never presign private exports through this generic port. */
     String createUploadCapability(String objectKey, String contentType, long contentLength, Duration ttl);
+    /** Media-only capability; exports require verified READY metadata and access checks. */
     String createDownloadCapability(String objectKey, Duration ttl);
     /**
      * Export-only presigning with bounded TTL and server-generated download
@@ -19,11 +21,11 @@ public interface ObjectStorage {
     }
     StoredObject head(String objectKey);
     void downloadTo(String objectKey, Path destination) throws IOException;
-    /** Bounded private control-result read. Implementations must enforce the limit during streaming. */
+    /** Bounded private read. Implementations enforce the namespace-specific limit during streaming. */
     default byte[] readBounded(String objectKey, int maximum) throws IOException {
         throw new UnsupportedOperationException("Bounded result storage is not installed.");
     }
-    /** Create an accepted source once. False means an object already exists at this key. */
+    /** Media-only accepted source. False means an object already exists at this key. */
     boolean putAcceptedIfAbsent(String objectKey, Path validatedFile, String sha256);
     /**
      * Private server-side immutable byte write. Does not issue client capabilities.
@@ -40,6 +42,7 @@ public interface ObjectStorage {
     default boolean deleteIfEtagMatches(String objectKey, String expectedEtag) {
         throw new UnsupportedOperationException("Conditional object deletion is unavailable");
     }
+    /** Media-only deletion; immutable Diarization results and all exports are forbidden. */
     void delete(String objectKey);
     /** Server-side bounded listing; never expose this namespace to callers. */
     ListedObjects list(String prefix,String continuationToken,int limit);

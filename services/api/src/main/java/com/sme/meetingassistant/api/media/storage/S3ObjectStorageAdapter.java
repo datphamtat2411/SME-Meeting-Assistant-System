@@ -41,6 +41,8 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
     public S3ObjectStorageAdapter(MediaProperties properties) {
         this.properties = properties.getStorage();
         var endpoint = URI.create(this.properties.getEndpoint());
+        // Validate the trusted public origin before allocating any SDK clients.
+        URI external = validatedPublicDownloadOrigin(this.properties.getPublicDownloadEndpoint());
         boolean hasAccessKey = this.properties.getAccessKey() != null && !this.properties.getAccessKey().isBlank();
         boolean hasSecretKey = this.properties.getSecretKey() != null && !this.properties.getSecretKey().isBlank();
         if (hasAccessKey != hasSecretKey) throw new IllegalStateException("Both S3 credentials must be configured together.");
@@ -54,24 +56,32 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
         this.client = builder.build();
         this.presigner = S3Presigner.builder().endpointOverride(endpoint).region(Region.of(this.properties.getRegion()))
             .credentialsProvider(credentialsProvider()).serviceConfiguration(serviceConfig).build();
-        String publicEndpoint = this.properties.getPublicDownloadEndpoint();
-        if (publicEndpoint == null || publicEndpoint.isBlank()) {
+        if (external == null) {
             this.exportPresigner = this.presigner;
         } else {
-            URI external = URI.create(publicEndpoint);
-            String externalPath = external.getRawPath();
-            if (!"https".equalsIgnoreCase(external.getScheme())
-                    || external.getHost() == null || external.getUserInfo() != null
-                    || external.getRawQuery() != null || external.getRawFragment() != null
-                    || (externalPath != null && !externalPath.isEmpty()
-                            && !"/".equals(externalPath))) {
-                throw new IllegalStateException(
-                        "Public export download endpoint must be a trusted HTTPS origin");
-            }
             this.exportPresigner = S3Presigner.builder().endpointOverride(external)
                 .region(Region.of(this.properties.getRegion()))
                 .credentialsProvider(credentialsProvider())
                 .serviceConfiguration(serviceConfig).build();
+        }
+    }
+
+    private static URI validatedPublicDownloadOrigin(String configured) {
+        if (configured == null || configured.isBlank()) return null;
+        try {
+            URI uri = URI.create(configured);
+            String path = uri.getRawPath();
+            if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null
+                    || uri.getUserInfo() != null || uri.getRawQuery() != null
+                    || uri.getRawFragment() != null
+                    || (path != null && !path.isEmpty() && !"/".equals(path))) {
+                throw new IllegalArgumentException("Invalid origin");
+            }
+            return uri;
+        } catch (IllegalArgumentException invalid) {
+            // A configuration exception must not echo operator tokens or URL credentials.
+            throw new IllegalStateException(
+                    "Public export download endpoint must be a trusted HTTPS origin");
         }
     }
 
@@ -92,6 +102,7 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
 
     @Override
     public String createUploadCapability(String objectKey, String contentType, long contentLength, Duration ttl) {
+        ExportObjectKeyPolicy.denyGenericMediaOperation(objectKey);
         ensureBucketExists();
         var request = PutObjectRequest.builder().bucket(this.properties.getBucket()).key(objectKey)
             .contentType(contentType).contentLength(contentLength).build();
@@ -101,6 +112,7 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
 
     @Override
     public String createDownloadCapability(String objectKey, Duration ttl) {
+        ExportObjectKeyPolicy.denyGenericMediaOperation(objectKey);
         var request = GetObjectRequest.builder().bucket(this.properties.getBucket()).key(objectKey).build();
         return this.presigner.presignGetObject(GetObjectPresignRequest.builder().signatureDuration(ttl)
             .getObjectRequest(request).build()).url().toExternalForm();
@@ -109,17 +121,7 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
     @Override
     public String createExportDownloadCapability(String objectKey, Duration ttl,
             String safeFilename, String contentType) {
-        if (objectKey == null || !objectKey.matches(
-                "^exports/[0-9a-f-]{36}/artifacts/[0-9a-f]{64}[.](pdf|md)$")
-                || safeFilename == null || !safeFilename.matches(
-                "^meeting-minutes-[0-9a-f-]{36}[.](pdf|md)$")
-                || !safeFilename.endsWith(objectKey.endsWith(".pdf") ? ".pdf" : ".md")
-                || ttl == null || ttl.compareTo(Duration.ofSeconds(30)) < 0
-                || ttl.compareTo(Duration.ofMinutes(5)) > 0
-                || !contentType.equals(objectKey.endsWith(".pdf")
-                        ? "application/pdf" : "text/markdown; charset=UTF-8")) {
-            throw new IllegalArgumentException("Invalid private export capability request");
-        }
+        ExportObjectKeyPolicy.requireDownloadCapability(objectKey, ttl, safeFilename, contentType);
         var request = GetObjectRequest.builder().bucket(properties.getBucket())
             .key(objectKey).responseContentType(contentType)
             .responseContentDisposition("attachment; filename=\"" + safeFilename + "\"")
@@ -138,6 +140,7 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
 
     @Override
     public void downloadTo(String objectKey, Path destination) throws IOException {
+        ExportObjectKeyPolicy.denyGenericMediaOperation(objectKey);
         // Callers reserve a private temporary file before reading storage. The SDK's
         // toFile() transformer refuses to write to an existing path, so stream into
         // the reserved file instead of unlinking it and introducing a TOCTOU window.
@@ -150,7 +153,9 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
 
     @Override
     public byte[] readBounded(String objectKey, int maximum) throws IOException {
-        if (maximum < 1 || maximum > (objectKey != null && objectKey.startsWith("exports/") ? 33554432 : 16777216)) throw new IllegalArgumentException("Invalid result read limit.");
+        if (maximum < 1 || maximum > ExportObjectKeyPolicy.maximumReadBytes(objectKey)) {
+            throw new IllegalArgumentException("Invalid result read limit.");
+        }
         try (var input = client.getObject(GetObjectRequest.builder().bucket(properties.getBucket()).key(objectKey).build())) {
             if (input.response().contentLength() == null || input.response().contentLength() > maximum
                     || input.response().contentLength() < 1 || input.response().contentEncoding() != null) {
@@ -166,6 +171,7 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
 
     @Override
     public boolean putAcceptedIfAbsent(String objectKey, Path validatedFile, String sha256) {
+        ExportObjectKeyPolicy.denyGenericMediaOperation(objectKey);
         var request = PutObjectRequest.builder()
             .bucket(this.properties.getBucket()).key(objectKey)
             .ifNoneMatch("*")
@@ -185,10 +191,7 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
     @Override
     public boolean putImmutableBytesIfAbsent(String objectKey, byte[] bytes,
             String contentType, String sha256) {
-        if (objectKey == null || !objectKey.startsWith("exports/")
-                || bytes == null || bytes.length < 1 || bytes.length > 33554432) {
-            throw new IllegalArgumentException("Invalid bounded export object");
-        }
+        ExportObjectKeyPolicy.requireImmutableWrite(objectKey, bytes, contentType, sha256);
         var request = PutObjectRequest.builder()
             .bucket(this.properties.getBucket()).key(objectKey)
             .ifNoneMatch("*").contentType(contentType)
@@ -224,14 +227,7 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
     public boolean deleteIfEtagMatches(String objectKey, String expectedEtag) {
         // Only the DE-11 orphan-cleanup flow may use this operation. The key
         // must be server-derived and strictly inside the export namespace.
-        if (objectKey == null || !objectKey.matches(
-                "^exports/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/"
-                + "(intake/[0-9a-f]{64}[.]json|snapshots/[0-9a-f]{64}[.]json"
-                + "|artifacts/[0-9a-f]{64}[.](md|pdf))$")
-                || expectedEtag == null || expectedEtag.isBlank()
-                || expectedEtag.length() > 256 || expectedEtag.equals("*")) {
-            throw new IllegalArgumentException("Invalid conditional export deletion");
-        }
+        ExportObjectKeyPolicy.requireConditionalDelete(objectKey, expectedEtag);
         try {
             client.deleteObject(DeleteObjectRequest.builder()
                 .bucket(properties.getBucket()).key(objectKey)
@@ -247,6 +243,7 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
 
     @Override
     public void delete(String objectKey) {
+        ExportObjectKeyPolicy.denyGenericMediaOperation(objectKey);
         if (objectKey != null && objectKey.matches("processing/[^/]+/diarization/results/.*")) {
             throw new IllegalArgumentException("Diarization result objects are immutable.");
         }

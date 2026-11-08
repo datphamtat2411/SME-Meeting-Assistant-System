@@ -172,14 +172,68 @@ class ExportS3StorageIntegrationTests {
         c.setSecretKey(SECRET);
         c.setPathStyleAccess(true);
         S3ObjectStorageAdapter signer=new S3ObjectStorageAdapter(config);
-        String key="exports/"+UUID.randomUUID()+"/artifacts/"+"a".repeat(64)+".pdf";
+        UUID id=UUID.randomUUID();
+        String key="exports/"+id+"/artifacts/"+"a".repeat(64)+".pdf";
         String url=signer.createExportDownloadCapability(key,Duration.ofSeconds(60),
-                "meeting-minutes-"+UUID.randomUUID()+".pdf","application/pdf");
+                "meeting-minutes-"+id+".pdf","application/pdf");
         assertThat(url).startsWith("https://downloads.example.invalid");
         assertThat(url).contains("X-Amz-Signature");
         c.setPublicDownloadEndpoint("http://untrusted.example.invalid");
         assertThatThrownBy(()->new S3ObjectStorageAdapter(config))
                 .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void genericMediaCapabilitiesAndUnconditionalDeleteCannotTouchExports()
+            throws Exception {
+        UUID id = UUID.randomUUID();
+        byte[] bytes = "protected private export".getBytes(StandardCharsets.UTF_8);
+        String sha = ExportSnapshotCodec.sha256(bytes);
+        String key = ExportDigests.artifactKey(id, ExportFormat.PDF, sha);
+        exports.putVerified(key, bytes, "application/pdf", sha);
+        java.nio.file.Path temp = java.nio.file.Files.createTempFile("de10-private-", ".bin");
+        try {
+            assertThatThrownBy(() -> storage.createUploadCapability(
+                    key, "application/pdf", bytes.length, Duration.ofMinutes(1)))
+                    .isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> storage.createDownloadCapability(
+                    key, Duration.ofMinutes(1)))
+                    .isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> storage.putAcceptedIfAbsent(key, temp, sha))
+                    .isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> storage.downloadTo(key, temp))
+                    .isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> storage.delete(key))
+                    .isInstanceOf(IllegalArgumentException.class);
+            assertThat(storage.readBounded(key, 32 * 1024 * 1024)).isEqualTo(bytes);
+            assertThatThrownBy(() -> storage.readBounded(key, 32 * 1024 * 1024 + 1))
+                    .isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> storage.readBounded("exports/bad", 32))
+                    .isInstanceOf(IllegalArgumentException.class);
+            assertThat(exports.createVerifiedCapability(
+                    ready(id, ExportFormat.PDF, sha, bytes.length), Duration.ofSeconds(60)))
+                    .contains("X-Amz-Signature");
+        } finally {
+            java.nio.file.Files.deleteIfExists(temp);
+        }
+    }
+
+    @Test
+    void exportSigningNeverAllowsMismatchedIdOrFormat() {
+        UUID id = UUID.randomUUID();
+        String key = ExportDigests.artifactKey(id, ExportFormat.PDF, "a".repeat(64));
+        assertThatThrownBy(() -> storage.createExportDownloadCapability(
+                key, Duration.ofSeconds(60),
+                "meeting-minutes-" + UUID.randomUUID() + ".pdf", "application/pdf"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> storage.createExportDownloadCapability(
+                key, Duration.ofSeconds(60),
+                "meeting-minutes-" + id + ".pdf", "text/plain"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> storage.createExportDownloadCapability(
+                key, Duration.ofSeconds(60),
+                "meeting-minutes-" + id + ".pdf", null))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
