@@ -147,7 +147,9 @@ public final class ExportOrphanReconciler {
             if (!candidate.etag().equals(head.eTag())
                     || candidate.size()!=head.sizeBytes()
                     || head.lastModified()==null
-                    || !candidate.lastModified().toInstant().equals(head.lastModified())
+                    || !candidate.lastModified().toInstant().equals(
+                            head.lastModified().truncatedTo(
+                                java.time.temporal.ChronoUnit.MICROS))
                     || head.lastModified().isAfter(
                             clock.instant().minus(Duration.ofHours(minAgeHours)))) {
                 repository.releaseClaim(candidate.objectKey(),token,"EVIDENCE_CHANGED");

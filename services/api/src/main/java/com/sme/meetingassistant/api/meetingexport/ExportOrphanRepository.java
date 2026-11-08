@@ -82,7 +82,12 @@ public class ExportOrphanRepository {
 
     public void observe(String key, UUID exportId, Instant lastModified,
             String etag, long size) {
-        OffsetDateTime modifiedAt = OffsetDateTime.ofInstant(lastModified, ZoneOffset.UTC);
+        // PostgreSQL TIMESTAMPTZ stores microseconds; normalize BEFORE both
+        // insert and ON CONFLICT comparisons to avoid resetting a quarantine
+        // solely because the provider/JVM Instant included nanoseconds.
+        OffsetDateTime modifiedAt = OffsetDateTime.ofInstant(
+                lastModified.truncatedTo(java.time.temporal.ChronoUnit.MICROS),
+                ZoneOffset.UTC);
         jdbc.update("""
             INSERT INTO meeting_export_orphan_candidates (
                 object_key,export_id,object_last_modified,observed_etag,
