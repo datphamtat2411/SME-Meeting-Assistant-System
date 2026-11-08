@@ -114,3 +114,22 @@ Record the full review outcome in this file or a reviewed PR before marking DE-0
 Once D01–D14 required approvals have been recorded, DE-02 implements authorized read ports; DE-03 personal API; DE-04 management API; DE-05 Minutes; DE-06 durable schema; DE-07/08 renderers; DE-09 job; DE-10 secure storage; DE-11 version/freshness; DE-12 hardening; DE-13 end-to-end acceptance. Each task must include focused real-boundary tests and update docs for any approved contract changes.
 
 This separation is intentional: the task exists to prevent "make it work for a demo" behavior from becoming accidental, unreviewed product policy.
+
+## 9. Agent implementation review (2026-11-08)
+
+> This section is an independent agent review record. It does **not** approve,
+> revise or reject any human-owned D01-D14 proposal, and it does not replace
+> the pending owner rows in section 7.
+
+| Review item | Result | Evidence / condition |
+| --- | --- | --- |
+| Reviewed target | `integration/dashboard-export-into-develop` at `fdb2fab295ca2a2c89baa408a450c6479e85a54a` | Base `develop` at `1cf2a3b2c54d51f28ef4147c36d2b6f01dc10a95`. |
+| Local API verification | PASS | `./mvnw -B -ntp verify`: 1,368 tests, 0 failures, 0 errors, 19 environment-gated skips. |
+| Exact-HEAD combined CI | PASS | API `42445681100`, AI `42445681165`, Diarization Full-Stack `42445681102`; all succeeded on the reviewed HEAD. |
+| Overall agent technical result | `TECHNICAL_CHANGES_REQUIRED` | F-01 direct SQL can insert valid `READY`; F-02 orphan failure backoff is reset by unchanged inventory; F-03 expired idempotency receipts have no global cleanup. |
+| Human approval state | PENDING | No Product, API, domain, Security or Operations approval is inferred from tests or this review. |
+| Merge / release state | BLOCKED | Resolve technical findings and record B01-B05 evidence from `INTEGRATION_TASK04_MERGE_ACCEPTANCE.md`. |
+
+Detailed D01-D14 evidence, verdicts, skipped-test reasons and exact source
+locations are recorded in
+`services/api/docs/DASHBOARD_EXPORT_D01_D14_AGENT_REVIEW.md`.
