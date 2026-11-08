@@ -76,6 +76,7 @@ function createTestRouter(initialPath: string) {
     route('/settings', 'Profile page'),
     route('/settings/account', 'Account page'),
     route('/settings/appearance', 'Appearance page'),
+    route('/settings/notifications', 'Notifications page'),
     route('/help-center', 'Help Center page'),
   ])
   const history = createMemoryHistory({ initialEntries: [initialPath] })
@@ -201,5 +202,29 @@ describe('AppSidebar navigation', () => {
     await expect.element(main).toHaveAttribute('id', 'content')
     await userEvent.click(screen.getByRole('link', { name: 'Skip to Main' }))
     await expect.poll(() => document.activeElement?.id).toBe('content')
+  })
+
+  it('renders the shared user presentation and account actions', async () => {
+    const { screen } = await renderApp('/calendar')
+
+    await expect.element(screen.getByText('Nguyễn Lan')).toBeInTheDocument()
+    await expect.element(screen.getByText('lan.nguyen@sme.local')).toBeInTheDocument()
+    await expect
+      .element(screen.getByText('NL', { exact: true }))
+      .toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Open user menu' }))
+    const menu = screen.getByRole('menu')
+
+    await expect
+      .element(menu.getByRole('menuitem', { name: 'Profile' }))
+      .toHaveAttribute('href', '/settings')
+    await expect
+      .element(menu.getByRole('menuitem', { name: 'Account' }))
+      .toHaveAttribute('href', '/settings/account')
+    await expect
+      .element(menu.getByRole('menuitem', { name: 'Notifications' }))
+      .toHaveAttribute('href', '/settings/notifications')
+    await expect.element(menu.getByRole('menuitem', { name: 'Sign out' })).toBeInTheDocument()
   })
 })

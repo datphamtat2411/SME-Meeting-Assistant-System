@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { useForm } from 'react-hook-form'
 import { ChevronDownIcon } from '@radix-ui/react-icons'
+import { Monitor } from 'lucide-react'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { fonts } from '@/config/fonts'
 import { showSubmittedData } from '@/lib/show-submitted-data'
@@ -20,7 +21,7 @@ import {
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 
 const appearanceFormSchema = z.object({
-  theme: z.enum(['light', 'dark']),
+  theme: z.enum(['light', 'dark', 'system']),
   font: z.enum(fonts),
 })
 
@@ -32,7 +33,7 @@ export function AppearanceForm() {
 
   // This can come from your database or API.
   const defaultValues: Partial<AppearanceFormValues> = {
-    theme: theme as 'light' | 'dark',
+    theme,
     font,
   }
 
@@ -96,7 +97,7 @@ export function AppearanceForm() {
               <RadioGroup
                 onValueChange={field.onChange}
                 defaultValue={field.value}
-                className='grid max-w-md grid-cols-2 gap-8 pt-2'
+                 className='grid max-w-2xl grid-cols-1 gap-4 pt-2 sm:grid-cols-3'
               >
                 <FormItem>
                   <FormLabel className='[&:has([data-state=checked])>div]:border-primary'>
@@ -147,6 +148,21 @@ export function AppearanceForm() {
                     </div>
                     <span className='block w-full p-2 text-center font-normal'>
                       Dark
+                    </span>
+                  </FormLabel>
+                </FormItem>
+                <FormItem>
+                  <FormLabel className='[&:has([data-state=checked])>div]:border-primary'>
+                    <FormControl>
+                      <RadioGroupItem value='system' className='sr-only' />
+                    </FormControl>
+                    <div className='flex aspect-[1.45] items-center justify-center rounded-md border-2 border-muted bg-muted/60 p-1 hover:border-accent'>
+                      <div className='flex size-full items-center justify-center rounded-sm border bg-background text-muted-foreground'>
+                        <Monitor className='size-8' />
+                      </div>
+                    </div>
+                    <span className='block w-full p-2 text-center font-normal'>
+                      System
                     </span>
                   </FormLabel>
                 </FormItem>

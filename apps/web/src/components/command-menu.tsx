@@ -19,6 +19,14 @@ export function CommandMenu() {
   const navigate = useNavigate()
   const { setTheme } = useTheme()
   const { open, setOpen } = useSearch()
+  const inputRef = React.useRef<HTMLInputElement>(null)
+
+  React.useEffect(() => {
+    if (!open) return
+
+    const frameId = window.requestAnimationFrame(() => inputRef.current?.focus())
+    return () => window.cancelAnimationFrame(frameId)
+  }, [open])
 
   const runCommand = React.useCallback(
     (command: () => unknown) => {
@@ -29,19 +37,28 @@ export function CommandMenu() {
   )
 
   return (
-    <CommandDialog modal open={open} onOpenChange={setOpen}>
-      <CommandInput placeholder='Type a command or search...' />
+    <CommandDialog
+      title='Command menu'
+      description='Navigate to a page or choose an appearance command.'
+      modal
+      open={open}
+      onOpenChange={setOpen}
+    >
+      <CommandInput
+        ref={inputRef}
+        placeholder='Navigate to a page or command'
+      />
       <CommandList>
         <ScrollArea type='hover' className='h-72 pe-1'>
-          <CommandEmpty>No results found.</CommandEmpty>
+          <CommandEmpty>No matching pages or appearance commands.</CommandEmpty>
           {navigationGroups.map((group) => (
             <CommandGroup key={group.title} heading={group.title}>
-              {group.items.map((navItem, i) => {
+              {group.items.map((navItem) => {
                 if (navItem.url)
                   return (
                     <CommandItem
-                      key={`${navItem.url}-${i}`}
-                      value={navItem.title}
+                      key={navItem.url}
+                      value={`${group.title} ${navItem.title} ${navItem.url}`}
                       onSelect={() => {
                         runCommand(() => navigate({ to: navItem.url }))
                       }}
@@ -50,36 +67,46 @@ export function CommandMenu() {
                         <ArrowRight className='size-2 text-muted-foreground/80' />
                       </div>
                       {navItem.title}
-                    </CommandItem>
+                      </CommandItem>
                   )
 
-                return navItem.items?.map((subItem, i) => (
+                return navItem.items?.map((subItem) => (
                   <CommandItem
-                    key={`${navItem.title}-${subItem.url}-${i}`}
-                    value={`${navItem.title}-${subItem.url}`}
+                    key={`${navItem.title}-${subItem.url}`}
+                    value={`${group.title} ${navItem.title} ${subItem.title} ${subItem.url}`}
                     onSelect={() => {
                       runCommand(() => navigate({ to: subItem.url }))
                     }}
                   >
-                    <div className='flex size-4 items-center justify-center'>
-                      <ArrowRight className='size-2 text-muted-foreground/80' />
-                    </div>
-                    {navItem.title} <ChevronRight /> {subItem.title}
-                  </CommandItem>
+                      <div className='flex size-4 items-center justify-center'>
+                        <ArrowRight className='size-2 text-muted-foreground/80' />
+                      </div>
+                      {navItem.title}{' '}
+                      <ChevronRight aria-hidden='true' /> {subItem.title}
+                    </CommandItem>
                 ))
               })}
             </CommandGroup>
           ))}
           <CommandSeparator />
-          <CommandGroup heading='Theme'>
-            <CommandItem onSelect={() => runCommand(() => setTheme('light'))}>
+          <CommandGroup heading='Appearance'>
+            <CommandItem
+              value='Appearance Light theme'
+              onSelect={() => runCommand(() => setTheme('light'))}
+            >
               <Sun /> <span>Light</span>
             </CommandItem>
-            <CommandItem onSelect={() => runCommand(() => setTheme('dark'))}>
+            <CommandItem
+              value='Appearance Dark theme'
+              onSelect={() => runCommand(() => setTheme('dark'))}
+            >
               <Moon className='scale-90' />
               <span>Dark</span>
             </CommandItem>
-            <CommandItem onSelect={() => runCommand(() => setTheme('system'))}>
+            <CommandItem
+              value='Appearance System theme'
+              onSelect={() => runCommand(() => setTheme('system'))}
+            >
               <Laptop />
               <span>System</span>
             </CommandItem>
