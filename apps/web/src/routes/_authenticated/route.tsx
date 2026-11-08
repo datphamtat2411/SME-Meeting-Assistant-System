@@ -1,8 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { AuthenticatedLayout } from '@/components/layout/authenticated-layout'
-import {
-  AuthenticatedRouteFallback,
-} from '@/components/layout/authenticated-route-fallback'
+import { AuthenticatedRouteFallback } from '@/components/layout/authenticated-route-fallback'
 import { GeneralError } from '@/features/errors/general-error'
 import { NotFoundError } from '@/features/errors/not-found-error'
 

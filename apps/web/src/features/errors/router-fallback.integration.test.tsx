@@ -7,16 +7,16 @@ import {
   type AnyRouter,
   RouterProvider,
 } from '@tanstack/react-router'
+import { routeTree } from '@/routeTree.gen'
+import { Route as rootRoute } from '@/routes/__root'
+import { Route as authenticatedRoute } from '@/routes/_authenticated/route'
+import { clearCookies } from '@/test-utils/cookies'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { page, userEvent } from 'vitest/browser'
 import { DirectionProvider } from '@/context/direction-provider'
 import { FontProvider } from '@/context/font-provider'
 import { ThemeProvider } from '@/context/theme-provider'
-import { clearCookies } from '@/test-utils/cookies'
-import { routeTree } from '@/routeTree.gen'
-import { Route as authenticatedRoute } from '@/routes/_authenticated/route'
-import { Route as rootRoute } from '@/routes/__root'
 
 vi.mock('react-top-loading-bar', () => ({
   default: () => null,
@@ -156,7 +156,9 @@ describe('router fallback integration', () => {
     ])
     const screen = await renderRouter(router, queryClient)
 
-    await expect.element(screen.getByText('404', { exact: true })).toBeInTheDocument()
+    await expect
+      .element(screen.getByText('404', { exact: true }))
+      .toBeInTheDocument()
     await expect
       .element(screen.getByText('Page not found', { exact: true }))
       .toBeInTheDocument()
@@ -169,14 +171,20 @@ describe('router fallback integration', () => {
     expect(
       screen.getByRole('link', { name: 'SME Meeting Assistant home' }).all()
     ).toHaveLength(1)
-    expect(screen.getByRole('navigation', { name: 'Primary navigation' }).all()).toHaveLength(1)
+    expect(
+      screen.getByRole('navigation', { name: 'Primary navigation' }).all()
+    ).toHaveLength(1)
     expect(screen.getByRole('main').all()).toHaveLength(1)
-    await expect.element(screen.getByRole('main')).toHaveAttribute('id', 'content')
+    await expect
+      .element(screen.getByRole('main'))
+      .toHaveAttribute('id', 'content')
     await expect
       .element(screen.getByRole('button', { name: 'Go Back' }))
       .toBeDisabled()
 
-    await userEvent.click(screen.getByRole('button', { name: 'Go to Dashboard' }))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Go to Dashboard' })
+    )
     await expect.poll(() => router.history.location.pathname).toBe('/')
     await expect
       .element(screen.getByRole('heading', { name: /Good morning, Nguyễn/ }))
@@ -189,7 +197,9 @@ describe('router fallback integration', () => {
     ])
     const screen = await renderRouter(router, queryClient)
 
-    await expect.element(screen.getByText('404', { exact: true })).toBeInTheDocument()
+    await expect
+      .element(screen.getByText('404', { exact: true }))
+      .toBeInTheDocument()
     await expect
       .element(screen.getByText('/top-level-does-not-exist', { exact: true }))
       .toBeInTheDocument()
@@ -204,7 +214,9 @@ describe('router fallback integration', () => {
       .element(screen.getByRole('button', { name: 'Go Back' }))
       .toBeDisabled()
 
-    await userEvent.click(screen.getByRole('button', { name: 'Go to Dashboard' }))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Go to Dashboard' })
+    )
     await expect.poll(() => router.history.location.pathname).toBe('/')
     await expect
       .element(screen.getByRole('heading', { name: /Good morning, Nguyễn/ }))
@@ -249,27 +261,37 @@ describe('router fallback integration', () => {
     const { queryClient, router } = createAuthenticatedFailureRouter(failure)
     const screen = await renderRouter(router, queryClient)
 
-    await expect.element(screen.getByText('500', { exact: true })).toBeInTheDocument()
+    await expect
+      .element(screen.getByText('500', { exact: true }))
+      .toBeInTheDocument()
     await expect
       .element(screen.getByText(/Oops! Something went wrong/i))
       .toBeInTheDocument()
-    await expect.element(screen.getByText('Page not found')).not.toBeInTheDocument()
-    await expect.element(screen.getByText(failure.message)).not.toBeInTheDocument()
+    await expect
+      .element(screen.getByText('Page not found'))
+      .not.toBeInTheDocument()
+    await expect
+      .element(screen.getByText(failure.message))
+      .not.toBeInTheDocument()
     expect(
       screen.getByRole('link', { name: 'SME Meeting Assistant home' }).all()
     ).toHaveLength(1)
-    expect(screen.getByRole('navigation', { name: 'Primary navigation' }).all()).toHaveLength(1)
+    expect(
+      screen.getByRole('navigation', { name: 'Primary navigation' }).all()
+    ).toHaveLength(1)
     expect(screen.getByRole('main').all()).toHaveLength(1)
-    await expect.element(screen.getByRole('main')).toHaveAttribute('id', 'content')
+    await expect
+      .element(screen.getByRole('main'))
+      .toHaveAttribute('id', 'content')
 
     failure.active = false
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }))
     await expect
       .element(screen.getByText('Recovered authenticated descendant'))
       .toBeInTheDocument()
-    await expect.poll(() => router.history.location.pathname).toBe(
-      '/authenticated-failure'
-    )
+    await expect
+      .poll(() => router.history.location.pathname)
+      .toBe('/authenticated-failure')
   })
 
   it('routes root loader errors through the root error boundary and retries cleanly', async () => {
@@ -280,12 +302,18 @@ describe('router fallback integration', () => {
     const { queryClient, router } = createRootFailureRouter(failure)
     const screen = await renderRouter(router, queryClient)
 
-    await expect.element(screen.getByText('500', { exact: true })).toBeInTheDocument()
+    await expect
+      .element(screen.getByText('500', { exact: true }))
+      .toBeInTheDocument()
     await expect
       .element(screen.getByText(/Oops! Something went wrong/i))
       .toBeInTheDocument()
-    await expect.element(screen.getByText('Page not found')).not.toBeInTheDocument()
-    await expect.element(screen.getByText(failure.message)).not.toBeInTheDocument()
+    await expect
+      .element(screen.getByText('Page not found'))
+      .not.toBeInTheDocument()
+    await expect
+      .element(screen.getByText(failure.message))
+      .not.toBeInTheDocument()
     await expect
       .element(screen.getByRole('link', { name: 'SME Meeting Assistant home' }))
       .not.toBeInTheDocument()
@@ -299,6 +327,8 @@ describe('router fallback integration', () => {
     await expect
       .element(screen.getByText('Recovered root descendant'))
       .toBeInTheDocument()
-    await expect.poll(() => router.history.location.pathname).toBe('/root-failure')
+    await expect
+      .poll(() => router.history.location.pathname)
+      .toBe('/root-failure')
   })
 })

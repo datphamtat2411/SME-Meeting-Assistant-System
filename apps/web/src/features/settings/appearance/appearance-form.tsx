@@ -2,8 +2,8 @@ import { z } from 'zod'
 import { useForm } from 'react-hook-form'
 import { ChevronDownIcon } from '@radix-ui/react-icons'
 import { zodResolver } from '@hookform/resolvers/zod'
-import { IconThemeSystem } from '@/assets/custom/icon-theme-system'
 import { fonts } from '@/config/fonts'
+import { IconThemeSystem } from '@/assets/custom/icon-theme-system'
 import { cn } from '@/lib/utils'
 import { useFont } from '@/context/font-provider'
 import { useTheme } from '@/context/theme-provider'
@@ -94,7 +94,7 @@ export function AppearanceForm() {
               <RadioGroup
                 onValueChange={field.onChange}
                 defaultValue={field.value}
-                 className='grid max-w-2xl grid-cols-1 gap-4 pt-2 sm:grid-cols-3'
+                className='grid max-w-2xl grid-cols-1 gap-4 pt-2 sm:grid-cols-3'
               >
                 <FormItem>
                   <FormLabel className='flex-col [&:has([data-state=checked])>div]:border-primary'>

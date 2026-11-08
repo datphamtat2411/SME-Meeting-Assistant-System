@@ -46,8 +46,12 @@ describe('Help Center', () => {
     const router = createTestRouter()
     const screen = await render(<RouterProvider router={router} />)
 
-    await expect.element(screen.getByRole('main')).toHaveAttribute('id', 'content')
-    await expect.element(screen.getByRole('heading', { name: 'Help Center' })).toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('main'))
+      .toHaveAttribute('id', 'content')
+    await expect
+      .element(screen.getByRole('heading', { name: 'Help Center' }))
+      .toBeInTheDocument()
     await expect
       .element(screen.getByText(/not available in this workspace/i))
       .toBeInTheDocument()
@@ -58,7 +62,9 @@ describe('Help Center', () => {
       .element(screen.getByText('Coming Soon!', { exact: true }))
       .not.toBeInTheDocument()
 
-    await userEvent.click(screen.getByRole('link', { name: 'Return to Dashboard' }))
+    await userEvent.click(
+      screen.getByRole('link', { name: 'Return to Dashboard' })
+    )
     await expect.poll(() => router.history.location.pathname).toBe('/')
   })
 })

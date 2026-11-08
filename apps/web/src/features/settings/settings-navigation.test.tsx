@@ -6,21 +6,22 @@ import {
   isRedirect,
   RouterProvider,
 } from '@tanstack/react-router'
+import { Route as displayRoute } from '@/routes/_authenticated/settings/display'
+import { clearCookies } from '@/test-utils/cookies'
 import { Bell, Palette, UserCog, Wrench } from 'lucide-react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { page, userEvent } from 'vitest/browser'
-import { clearCookies } from '@/test-utils/cookies'
 import { getCookie } from '@/lib/cookies'
-import { navigationGroups } from '@/components/layout/data/navigation-data'
-import { SidebarNav } from './components/sidebar-nav'
-import { AppearanceForm } from './appearance/appearance-form'
-import { AccountForm } from './account/account-form'
-import { NotificationsForm } from './notifications/notifications-form'
-import { ProfileForm } from './profile/profile-form'
 import { FontProvider } from '@/context/font-provider'
 import { ThemeProvider } from '@/context/theme-provider'
-import { Route as displayRoute } from '@/routes/_authenticated/settings/display'
+import { navigationGroups } from '@/components/layout/data/navigation-data'
+import type { NavItem } from '@/components/layout/types'
+import { AccountForm } from './account/account-form'
+import { AppearanceForm } from './appearance/appearance-form'
+import { SidebarNav } from './components/sidebar-nav'
+import { NotificationsForm } from './notifications/notifications-form'
+import { ProfileForm } from './profile/profile-form'
 
 const showSubmittedData = vi.hoisted(() => vi.fn())
 
@@ -74,9 +75,15 @@ describe('settings navigation and cleanup', () => {
   })
 
   it('exposes supported settings destinations without legacy template routes', () => {
-    const settings = navigationGroups
-      .flatMap((group) => group.items)
-      .find((item) => item.title === 'Settings')
+    const allItems = navigationGroups.reduce<NavItem[]>((items, group) => {
+      items.push(...group.items)
+      return items
+    }, [])
+    const settings = allItems.find((item) => item.title === 'Settings')
+    const destinations = allItems.flatMap((item) => {
+      if (item.items) return item.items.map((subItem) => subItem.url)
+      return item.url ? [item.url] : []
+    })
 
     expect(settings?.items?.map((item) => item.title)).toEqual([
       'Account',
@@ -84,12 +91,8 @@ describe('settings navigation and cleanup', () => {
       'Appearance',
       'Notifications',
     ])
-    expect(
-      navigationGroups.flatMap((group) => group.items).map((item) => item.url)
-    ).not.toContain('/apps')
-    expect(
-      navigationGroups.flatMap((group) => group.items).map((item) => item.url)
-    ).not.toContain('/tasks')
+    expect(destinations).not.toContain('/apps')
+    expect(destinations).not.toContain('/tasks')
   })
 
   it('synchronizes the mobile settings selector with direct route changes', async () => {
@@ -99,6 +102,13 @@ describe('settings navigation and cleanup', () => {
     const selector = screen.getByRole('combobox')
 
     await expect.element(selector).toHaveTextContent('Profile')
+    await userEvent.click(selector)
+    await userEvent.click(screen.getByRole('option', { name: 'Account' }))
+    await expect
+      .poll(() => router.history.location.pathname)
+      .toBe('/settings/account')
+    await expect.element(selector).toHaveTextContent('Account')
+
     await router.navigate({ to: '/settings/account' })
     await expect.element(selector).toHaveTextContent('Account')
     await router.navigate({ to: '/settings/notifications' })
@@ -167,7 +177,9 @@ describe('settings navigation and cleanup', () => {
 
     await userEvent.click(screen.getByRole('radio', { name: 'Dark' }))
     await userEvent.selectOptions(screen.getByRole('combobox'), 'manrope')
-    await userEvent.click(screen.getByRole('button', { name: 'Update preferences' }))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Update preferences' })
+    )
 
     expect(getCookie('vite-ui-theme')).toBe('dark')
     expect(getCookie('font')).toBe('manrope')

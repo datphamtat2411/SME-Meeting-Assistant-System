@@ -7,7 +7,7 @@ export function HeaderActions({ className }: { className?: string }) {
   return (
     <div
       className={cn(
-        'ms-auto flex min-w-0 max-w-full items-center gap-1 sm:gap-2',
+        'ms-auto flex max-w-full min-w-0 items-center gap-1 sm:gap-2',
         className
       )}
     >

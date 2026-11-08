@@ -48,6 +48,11 @@ import { Header } from '@/components/layout/header'
 import { HeaderActions } from '@/components/layout/header-actions'
 import { Main } from '@/components/layout/main'
 import {
+  MeetingStatusBadge,
+  meetingStatusLabels,
+  meetingStatusStyles,
+} from './components/meeting-status-badge'
+import {
   assistantConversations,
   getActionItemsByMeetingId,
   getMeetingById,
@@ -67,11 +72,6 @@ import {
   type RagSource,
   type TranscriptSegment,
 } from './data'
-import {
-  MeetingStatusBadge,
-  meetingStatusLabels,
-  meetingStatusStyles,
-} from './components/meeting-status-badge'
 
 type WorkspaceTab = 'overview' | 'transcript' | 'action-items' | 'ask-ai'
 
@@ -706,9 +706,7 @@ export function TranscriptSegmentRow({
   mappedName?: string
 }) {
   const participantId = segment.participantId
-  const participant = participantId
-    ? getMemberById(participantId)
-    : undefined
+  const participant = participantId ? getMemberById(participantId) : undefined
   const speakerLabel = formatSpeakerLabel(segment.speakerLabel)
 
   return (

@@ -24,7 +24,9 @@ export function CommandMenu() {
   React.useEffect(() => {
     if (!open) return
 
-    const frameId = window.requestAnimationFrame(() => inputRef.current?.focus())
+    const frameId = window.requestAnimationFrame(() =>
+      inputRef.current?.focus()
+    )
     return () => window.cancelAnimationFrame(frameId)
   }, [open])
 
@@ -67,7 +69,7 @@ export function CommandMenu() {
                         <ArrowRight className='size-2 text-muted-foreground/80' />
                       </div>
                       {navItem.title}
-                      </CommandItem>
+                    </CommandItem>
                   )
 
                 return navItem.items?.map((subItem) => (
@@ -78,12 +80,12 @@ export function CommandMenu() {
                       runCommand(() => navigate({ to: subItem.url }))
                     }}
                   >
-                      <div className='flex size-4 items-center justify-center'>
-                        <ArrowRight className='size-2 text-muted-foreground/80' />
-                      </div>
-                      {navItem.title}{' '}
-                      <ChevronRight aria-hidden='true' /> {subItem.title}
-                    </CommandItem>
+                    <div className='flex size-4 items-center justify-center'>
+                      <ArrowRight className='size-2 text-muted-foreground/80' />
+                    </div>
+                    {navItem.title} <ChevronRight aria-hidden='true' />{' '}
+                    {subItem.title}
+                  </CommandItem>
                 ))
               })}
             </CommandGroup>

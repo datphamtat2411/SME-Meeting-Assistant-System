@@ -81,21 +81,11 @@ function NavBadge({ children }: { children: ReactNode }) {
   return <Badge className='rounded-full px-1 py-0 text-xs'>{children}</Badge>
 }
 
-function SidebarMenuLink({
-  item,
-  active,
-}: {
-  item: NavLink
-  active: boolean
-}) {
+function SidebarMenuLink({ item, active }: { item: NavLink; active: boolean }) {
   const { setOpenMobile } = useSidebar()
   return (
     <SidebarMenuItem>
-      <SidebarMenuButton
-        asChild
-        isActive={active}
-        tooltip={item.title}
-      >
+      <SidebarMenuButton asChild isActive={active} tooltip={item.title}>
         <Link
           to={item.url}
           activeOptions={{ exact: true }}
@@ -179,10 +169,7 @@ function SidebarMenuCollapsedDropdown({
     <SidebarMenuItem>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <SidebarMenuButton
-            tooltip={item.title}
-            isActive={active}
-          >
+          <SidebarMenuButton tooltip={item.title} isActive={active}>
             {item.icon && <item.icon />}
             <span>{item.title}</span>
             {item.badge && <NavBadge>{item.badge}</NavBadge>}

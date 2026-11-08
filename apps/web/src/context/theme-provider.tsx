@@ -49,12 +49,10 @@ export function ThemeProvider({
   storageKey = THEME_COOKIE_NAME,
   ...props
 }: ThemeProviderProps) {
-  const [theme, _setTheme] = useState<Theme>(
-    () => {
-      const persistedTheme = getCookie(storageKey)
-      return isTheme(persistedTheme) ? persistedTheme : defaultTheme
-    }
-  )
+  const [theme, _setTheme] = useState<Theme>(() => {
+    const persistedTheme = getCookie(storageKey)
+    return isTheme(persistedTheme) ? persistedTheme : defaultTheme
+  })
   const [systemTheme, setSystemTheme] = useState<ResolvedTheme>(getSystemTheme)
   const resolvedTheme = theme === 'system' ? systemTheme : theme
 
@@ -63,8 +61,6 @@ export function ThemeProvider({
     const handleChange = (event: MediaQueryListEvent) => {
       setSystemTheme(event.matches ? 'dark' : 'light')
     }
-
-    setSystemTheme(mediaQuery.matches ? 'dark' : 'light')
 
     mediaQuery.addEventListener('change', handleChange)
 

@@ -49,7 +49,7 @@ function ToggleSidebar({
       variant='ghost'
       size='icon'
       className={cn(
-        'aspect-square size-8 max-md:scale-125 group-data-[collapsible=icon]:size-4',
+        'aspect-square size-8 group-data-[collapsible=icon]:size-4 max-md:scale-125',
         className
       )}
       onClick={(event) => {

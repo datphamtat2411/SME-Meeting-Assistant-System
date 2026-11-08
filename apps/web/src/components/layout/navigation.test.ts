@@ -1,10 +1,7 @@
 import { type LinkProps } from '@tanstack/react-router'
 import { describe, expect, it } from 'vitest'
 import { navigationGroups } from './data/navigation-data'
-import {
-  getActiveNavigationUrl,
-  isNavigationPathActive,
-} from './navigation'
+import { getActiveNavigationUrl, isNavigationPathActive } from './navigation'
 
 const pathMatchCases: Array<[string, LinkProps['to'], boolean]> = [
   ['/', '/', true],
@@ -23,9 +20,12 @@ const pathMatchCases: Array<[string, LinkProps['to'], boolean]> = [
 ]
 
 describe('isNavigationPathActive', () => {
-  it.each(pathMatchCases)('matches %s against %s as %s', (pathname, target, expected) => {
-    expect(isNavigationPathActive(pathname, target)).toBe(expected)
-  })
+  it.each(pathMatchCases)(
+    'matches %s against %s as %s',
+    (pathname, target, expected) => {
+      expect(isNavigationPathActive(pathname, target)).toBe(expected)
+    }
+  )
 })
 
 describe('getActiveNavigationUrl', () => {

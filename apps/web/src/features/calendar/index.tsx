@@ -13,13 +13,13 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Header } from '@/components/layout/header'
 import { HeaderActions } from '@/components/layout/header-actions'
 import { Main } from '@/components/layout/main'
+import { MeetingStatusBadge } from '@/features/meetings/components/meeting-status-badge'
 import {
   getRoomById,
   currentDemoUser,
   meetings,
   type Meeting,
 } from '@/features/meetings/data'
-import { MeetingStatusBadge } from '@/features/meetings/components/meeting-status-badge'
 
 const timeZone = 'Asia/Ho_Chi_Minh'
 const calendarDateFormatter = new Intl.DateTimeFormat('en-US', {

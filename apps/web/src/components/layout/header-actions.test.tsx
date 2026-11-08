@@ -57,7 +57,9 @@ describe('HeaderActions', () => {
       .element(screen.getByRole('button', { name: 'Open user menu' }))
       .toBeInTheDocument()
 
-    await userEvent.click(screen.getByRole('button', { name: 'Open command menu' }))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Open command menu' })
+    )
     await expect
       .element(screen.getByPlaceholder('Navigate to a page or command'))
       .toBeInTheDocument()

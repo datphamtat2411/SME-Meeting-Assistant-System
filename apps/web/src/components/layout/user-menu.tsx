@@ -6,8 +6,8 @@ import {
   LogOut,
   UserRound,
 } from 'lucide-react'
-import useDialogState from '@/hooks/use-dialog-state'
 import { cn } from '@/lib/utils'
+import useDialogState from '@/hooks/use-dialog-state'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import {
@@ -19,13 +19,13 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { SignOutDialog } from '@/components/sign-out-dialog'
 import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
   useSidebar,
 } from '@/components/ui/sidebar'
+import { SignOutDialog } from '@/components/sign-out-dialog'
 import { currentUserPresentation } from './data/user-presentation'
 import { type UserPresentation } from './types'
 

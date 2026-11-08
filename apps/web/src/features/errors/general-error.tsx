@@ -29,9 +29,7 @@ export function GeneralError({
         <p className='text-center text-muted-foreground'>
           We apologize for the inconvenience. <br /> Please try again later.
         </p>
-        {!minimal && (
-          <ErrorRecoveryActions retry={retry} />
-        )}
+        {!minimal && <ErrorRecoveryActions retry={retry} />}
       </div>
     </div>
   )

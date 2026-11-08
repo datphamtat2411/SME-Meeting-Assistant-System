@@ -7,17 +7,17 @@ import {
   Outlet,
   RouterProvider,
 } from '@tanstack/react-router'
+import { clearCookies } from '@/test-utils/cookies'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { page, userEvent } from 'vitest/browser'
 import { LayoutProvider } from '@/context/layout-provider'
-import { clearCookies } from '@/test-utils/cookies'
-import { SkipToMain } from '@/components/skip-to-main'
 import {
   SidebarInset,
   SidebarProvider,
   SidebarTrigger,
 } from '@/components/ui/sidebar'
+import { SkipToMain } from '@/components/skip-to-main'
 import { AppSidebar } from './app-sidebar'
 import { Main } from './main'
 
@@ -100,17 +100,23 @@ describe('AppSidebar navigation', () => {
 
     const meetingsLink = screen.getByRole('link', { name: 'Meetings' })
     await expect.element(meetingsLink).toHaveAttribute('aria-current', 'page')
-    await expect.element(screen.getByText('Live meeting page')).toBeInTheDocument()
+    await expect
+      .element(screen.getByText('Live meeting page'))
+      .toBeInTheDocument()
 
     await userEvent.click(screen.getByRole('link', { name: 'Go to Calendar' }))
     await expect.element(screen.getByText('Calendar page')).toBeInTheDocument()
     await expect
       .element(screen.getByRole('link', { name: 'Calendar' }))
       .toHaveAttribute('aria-current', 'page')
-    await expect.element(meetingsLink).not.toHaveAttribute('aria-current', 'page')
+    await expect
+      .element(meetingsLink)
+      .not.toHaveAttribute('aria-current', 'page')
 
     router.history.back()
-    await expect.element(screen.getByText('Live meeting page')).toBeInTheDocument()
+    await expect
+      .element(screen.getByText('Live meeting page'))
+      .toBeInTheDocument()
     await expect.element(meetingsLink).toHaveAttribute('aria-current', 'page')
 
     router.history.forward()
@@ -137,7 +143,9 @@ describe('AppSidebar navigation', () => {
   it('closes the mobile drawer after navigation and keeps the destination selected', async () => {
     const { screen } = await renderApp('/meetings', true)
 
-    await userEvent.click(screen.getByRole('button', { name: 'Open navigation' }))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Open navigation' })
+    )
     const drawer = screen.getByRole('dialog', { name: 'Sidebar' })
     await expect.element(drawer).toBeInTheDocument()
 
@@ -145,7 +153,9 @@ describe('AppSidebar navigation', () => {
     await expect.element(screen.getByText('Calendar page')).toBeInTheDocument()
     await expect.element(drawer).not.toBeInTheDocument()
 
-    await userEvent.click(screen.getByRole('button', { name: 'Open navigation' }))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Open navigation' })
+    )
     await expect
       .element(screen.getByRole('link', { name: 'Calendar' }))
       .toHaveAttribute('aria-current', 'page')
@@ -156,9 +166,7 @@ describe('AppSidebar navigation', () => {
     const brandLink = screen.getByRole('link', {
       name: 'SME Meeting Assistant home',
     })
-    const sidebarHeader = brandLink
-      .element()
-      .closest('[data-sidebar="header"]')
+    const sidebarHeader = brandLink.element().closest('[data-sidebar="header"]')
     expect(sidebarHeader).not.toBeNull()
     const toggle = page
       .elementLocator(sidebarHeader!)
@@ -183,7 +191,9 @@ describe('AppSidebar navigation', () => {
     const meetingsLink = screen.getByRole('link', { name: 'Meetings' })
     await expect.element(meetingsLink).toBeInTheDocument()
     await userEvent.hover(meetingsLink)
-    await expect.element(screen.getByRole('tooltip')).toHaveTextContent('Meetings')
+    await expect
+      .element(screen.getByRole('tooltip'))
+      .toHaveTextContent('Meetings')
 
     await userEvent.click(toggle)
     await expect
@@ -208,12 +218,16 @@ describe('AppSidebar navigation', () => {
     const { screen } = await renderApp('/calendar')
 
     await expect.element(screen.getByText('Nguyễn Lan')).toBeInTheDocument()
-    await expect.element(screen.getByText('lan.nguyen@sme.local')).toBeInTheDocument()
+    await expect
+      .element(screen.getByText('lan.nguyen@sme.local'))
+      .toBeInTheDocument()
     await expect
       .element(screen.getByText('NL', { exact: true }))
       .toBeInTheDocument()
 
-    await userEvent.click(screen.getByRole('button', { name: 'Open user menu' }))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Open user menu' })
+    )
     const menu = screen.getByRole('menu')
 
     await expect
@@ -225,6 +239,8 @@ describe('AppSidebar navigation', () => {
     await expect
       .element(menu.getByRole('menuitem', { name: 'Notifications' }))
       .toHaveAttribute('href', '/settings/notifications')
-    await expect.element(menu.getByRole('menuitem', { name: 'Sign out' })).toBeInTheDocument()
+    await expect
+      .element(menu.getByRole('menuitem', { name: 'Sign out' }))
+      .toBeInTheDocument()
   })
 })

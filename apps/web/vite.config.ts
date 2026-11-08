@@ -24,6 +24,16 @@ export default defineConfig({
   test: {
     silent: 'passed-only',
     unstubEnvs: true,
+    passWithNoTests: false,
+    ...(process.env.GITHUB_ACTIONS === 'true'
+      ? {
+          reporters: [
+            'default',
+            'github-actions',
+            ['junit', { outputFile: 'test-results/vitest.junit.xml' }],
+          ],
+        }
+      : {}),
     browser: {
       enabled: true,
       provider: playwright(),

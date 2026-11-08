@@ -77,13 +77,17 @@ describe('error pages', () => {
     )
     const screen = await render(<RouterProvider router={router} />)
 
-    await expect.element(screen.getByRole('main')).toHaveAttribute('id', 'content')
+    await expect
+      .element(screen.getByRole('main'))
+      .toHaveAttribute('id', 'content')
     await expect
       .element(screen.getByRole('link', { name: 'SME Meeting Assistant home' }))
       .toBeInTheDocument()
     await expect
       .element(screen.getByRole('button', { name: 'Open command menu' }))
       .toBeInTheDocument()
-    await expect.element(screen.getByText('Fallback content')).toBeInTheDocument()
+    await expect
+      .element(screen.getByText('Fallback content'))
+      .toBeInTheDocument()
   })
 })

@@ -26,6 +26,7 @@ import {
 import { Header } from '@/components/layout/header'
 import { HeaderActions } from '@/components/layout/header-actions'
 import { Main } from '@/components/layout/main'
+import { MeetingStatusBadge } from '@/features/meetings/components/meeting-status-badge'
 import {
   actionItems,
   currentDemoUser,
@@ -38,8 +39,6 @@ import {
   type ActionItemPriority,
   type Meeting,
 } from '@/features/meetings/data'
-import { MeetingStatusBadge } from '@/features/meetings/components/meeting-status-badge'
-
 
 const actionPriorityLabels: Record<ActionItemPriority, string> = {
   low: 'Low',

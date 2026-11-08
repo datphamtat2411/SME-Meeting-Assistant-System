@@ -40,6 +40,16 @@ describe('OtpForm', () => {
     await expect.element(verifyButton).toBeEnabled()
   })
 
+  it('renders entered digits in their matching OTP slots', async () => {
+    await userEvent.fill(otpInput, '123456')
+
+    for (const digit of '123456') {
+      await expect
+        .element(screen.getByText(digit, { exact: true }))
+        .toBeInTheDocument()
+    }
+  })
+
   it('submits the OTP and navigates after timeout', async () => {
     vi.useFakeTimers()
 

@@ -174,9 +174,7 @@ describe('SearchProvider and CommandMenu', () => {
     )
 
     await expect
-      .element(
-        screen.getByText('No matching pages or appearance commands.')
-      )
+      .element(screen.getByText('No matching pages or appearance commands.'))
       .toBeInTheDocument()
   })
 

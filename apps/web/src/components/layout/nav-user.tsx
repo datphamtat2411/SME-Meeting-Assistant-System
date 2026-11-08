@@ -1,6 +1,6 @@
-import { UserMenu } from './user-menu'
 import { currentUserPresentation } from './data/user-presentation'
 import { type UserPresentation } from './types'
+import { UserMenu } from './user-menu'
 
 type NavUserProps = {
   user?: UserPresentation

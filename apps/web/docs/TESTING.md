@@ -19,3 +19,47 @@ Use focused, deterministic frontend verification for the behavior changed by the
 - Exact test cases, fixtures, commands, and acceptance criteria are selected by the Task Specification and `plan.md`. Report what was actually verified, not what the UI appears to demonstrate.
 
 Relevant context: `RE06-FEATURES.md`, `RE02-API.md`, and `RE08-SECURITY.md` in `requirement-docs/`.
+
+## Web CI Merge Gate
+
+The `Web CI` GitHub Actions workflow is the long-term verification gate for Web changes. It runs on pull requests targeting `develop` or `main`, pushes to `develop`, `main`, and `web/**`, and manual dispatch. Pull requests are intentionally not path-filtered: changes outside `apps/web/` still receive both stable checks so required status checks cannot remain pending.
+
+The checks are **Web / static checks** (lint, formatting, and TypeScript/Vite build) and **Web / browser tests** (the full Vitest browser suite in headless Chromium). The browser suite includes router-fallback integration coverage. These checks validate the Web package independently; mock and fixture-based UI tests do not verify backend or AI behavior.
+
+### Supported Toolchain
+
+- Node.js `26.13.0` (LTS), pinned in `.node-version`.
+- pnpm `11.24.0`, pinned by the `packageManager` field in `package.json`.
+- Dependencies are installed only from the committed `pnpm-lock.yaml` with `pnpm install --frozen-lockfile`.
+
+pnpm `11.24.0` is pinned because it accepts the existing lockfile format without rewriting it. pnpm `12.18.0` was tested against the same frozen dependency graph but adds a pnpm package-manager boot document and platform-specific pnpm entries to this lockfile. That migration is not required for Web verification, so CI uses the compatible exact pnpm 11 pin instead.
+
+Use the Node version selected by `.node-version` and the pnpm version selected by `packageManager` locally. Verify the active versions with `node --version` and `pnpm --version` before running the gate. Keep these pins aligned with CI when updating the toolchain; do not regenerate the lockfile as part of CI.
+
+### Run the CI Checks Locally
+
+From `apps/web/`, run:
+
+```bash
+pnpm install --frozen-lockfile
+pnpm run lint
+pnpm run format:check
+pnpm run build
+pnpm run test:browser:install
+pnpm test
+```
+
+`test:browser:install` installs the project-pinned Playwright Chromium and required Linux browser dependencies. It may require administrator privileges on Linux. `pnpm test` runs the complete headless browser suite and fails if no tests are discovered.
+
+### Diagnosing CI Failures
+
+- **Static checks:** open the failed `Web / static checks` job and inspect the lint, formatting, or build step that failed. The build includes TypeScript project checking and Vite bundling.
+- **Browser provisioning:** check the Playwright installation step for browser downloads or missing Linux dependencies.
+- **Browser tests:** inspect the `pnpm test` logs and GitHub annotations. The `web-browser-test-report` JUnit artifact is uploaded when available and retained for 14 days, including when test assertions fail.
+- Workflow runs cancel older runs for the same PR or branch. A cancelled run is not a passing check; use the latest run’s result.
+
+The report contains test results only. CI does not upload browser screenshots, traces, credentials, or sensitive fixtures, and it does not access backend or AI services.
+
+### Required Checks
+
+After both checks pass in an actual hosted run, configure **Web / static checks** and **Web / browser tests** as required status checks for `develop` in repository rulesets or branch protection, if repository permissions and governance allow. This repository-settings step is manual; committing the workflow does not configure merge protection.
