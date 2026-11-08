@@ -161,6 +161,10 @@ class ExportJobIntegrationTests {
         ExportRecord replay=as(owner, () -> submissions.submit(meeting,
                 ExportFormat.MARKDOWN,"same-retry-key",changed));
         assertThat(replay.id()).isEqualTo(first.id());
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM audit_events
+             WHERE action_code='EXPORT_INTENT_ADMITTED' AND entity_id=?
+            """,Long.class,first.id())).isEqualTo(1L);
         assertThat(worker.processNext()).isTrue();
         ExportRecord ready=records.require(first.id());
         assertThat(ready.sourceFingerprint()).isEqualTo(original.sourceFingerprint())
