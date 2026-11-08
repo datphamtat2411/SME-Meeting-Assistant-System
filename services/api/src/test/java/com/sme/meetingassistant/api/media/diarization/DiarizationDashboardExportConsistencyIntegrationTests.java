@@ -17,6 +17,8 @@ import com.sme.meetingassistant.api.meeting.service.MeetingReportingPort;
 import com.sme.meetingassistant.api.dashboard.query.DashboardReportingQueries;
 import com.sme.meetingassistant.api.media.service.ProcessingReportingPort;
 import com.sme.meetingassistant.api.transcript.repository.TranscriptRepository;
+import com.sme.meetingassistant.api.transcript.service.SqlTranscriptMinutesReader;
+import com.sme.meetingassistant.api.transcript.service.TranscriptMinutesSource;
 import java.nio.charset.StandardCharsets;
 import java.security.Principal;
 import java.time.Instant;
@@ -92,8 +94,70 @@ class DiarizationDashboardExportConsistencyIntegrationTests
         void clear() { objects.clear(); }
     }
 
+    /**
+     * Deterministic mid-read barrier: suspend only after Transcript's SQL has
+     * established the Minutes REPEATABLE_READ snapshot; let the real writer
+     * commit on another connection before Summary/Decision SQL executes.
+     */
+    static final class CoordinatedTranscriptReader implements TranscriptMinutesSource {
+        private final SqlTranscriptMinutesReader delegate;
+        private volatile Gate pending;
+
+        record Gate(UUID meetingId, java.util.concurrent.CountDownLatch captured,
+                java.util.concurrent.CountDownLatch resume) {
+            void release() { resume.countDown(); }
+        }
+
+        CoordinatedTranscriptReader(SqlTranscriptMinutesReader delegate) {
+            this.delegate = delegate;
+        }
+
+        Gate arm(UUID meetingId) {
+            Gate gate = new Gate(meetingId,
+                    new java.util.concurrent.CountDownLatch(1),
+                    new java.util.concurrent.CountDownLatch(1));
+            if (pending != null) throw new IllegalStateException("Already armed");
+            pending = gate;
+            return gate;
+        }
+
+        void release() {
+            Gate gate = pending;
+            if (gate != null) {
+                gate.release();
+                pending = null;
+            }
+        }
+
+        @Override
+        public java.util.Optional<Reference> currentReference(UUID meetingId) {
+            var value = delegate.currentReference(meetingId);
+            Gate gate = pending;
+            if (gate != null && gate.meetingId().equals(meetingId)) {
+                gate.captured().countDown();
+                try {
+                    if (!gate.resume().await(20, java.util.concurrent.TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("Timed out coordinating canonical snapshot");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("Canonical snapshot interrupted", interrupted);
+                } finally {
+                    if (pending == gate) pending = null;
+                }
+            }
+            return value;
+        }
+    }
+
     @TestConfiguration(proxyBeanMethods = false)
     static class ExportStoreConfig {
+        @Bean
+        @Primary
+        CoordinatedTranscriptReader task03TranscriptReader(SqlTranscriptMinutesReader delegate) {
+            return new CoordinatedTranscriptReader(delegate);
+        }
+
         @Bean
         @Primary
         VerifiedPrivateStore task03ImmutableStore() {
@@ -129,6 +193,7 @@ class DiarizationDashboardExportConsistencyIntegrationTests
     @Autowired ProcessingReportingPort technicalJobs;
     @Autowired MinutesAssembler assembler;
     @Autowired TranscriptRepository transcriptRepository;
+    @Autowired CoordinatedTranscriptReader interleaver;
     @Autowired TransactionTemplate transaction;
 
     private UUID member;
@@ -299,6 +364,48 @@ class DiarizationDashboardExportConsistencyIntegrationTests
                 .principal(as(member))).andExpect(status().isNotFound());
         mvc.perform(get("/api/v1/meetings/{id}/minutes", meeting)
                 .principal(as(member))).andExpect(status().isNotFound());
+    }
+
+    @Test
+    void concurrentDiarizationCommitCannotMixTranscriptAndSummaryFromDifferentSnapshots()
+            throws Exception {
+        String originalFingerprint = minutes(actor).path("sourceFingerprint").asText();
+        var gate = interleaver.arm(meeting);
+        var pool = java.util.concurrent.Executors.newSingleThreadExecutor();
+        try {
+            // In a real REPEATABLE_READ transaction, the Transcript SELECT
+            // establishes a snapshot before Diarization's writer commits.
+            var pendingMinutes = pool.submit(() ->
+                    withActor(actor, () -> assembler.current(meeting)));
+            assertThat(gate.captured().await(20, java.util.concurrent.TimeUnit.SECONDS))
+                    .describedAs("Transcript SQL must finish before the Diarization writer starts")
+                    .isTrue();
+
+            claim();
+            var completed = upload(artifact());
+            assertThat(completion.complete(job, completed).get("state"))
+                    .isEqualTo("RESULT_ACCEPTED");
+            assertThat(revision()).isEqualTo(1L);
+            gate.release();
+
+            var consistent = pendingMinutes.get(20, java.util.concurrent.TimeUnit.SECONDS);
+            assertThat(consistent.transcript().contentRevision()).isZero();
+            assertThat(consistent.summary().isStale()).isFalse();
+            assertThat(consistent.sourceFingerprint()).isEqualTo(originalFingerprint);
+            assertThat(consistent.completeness()).isEqualTo("COMPLETE");
+
+            // A subsequent request takes a fresh snapshot and observes both
+            // the new canonical transcript revision and stale Summary lineage.
+            var updated = minutes(actor);
+            assertThat(updated.path("transcript").path("contentRevision").asLong()).isEqualTo(1L);
+            assertThat(updated.path("summary").path("isStale").asBoolean()).isTrue();
+            assertThat(updated.path("completeness").asText()).isEqualTo("NEEDS_REVIEW");
+            assertThat(updated.path("sourceFingerprint").asText())
+                    .isNotEqualTo(originalFingerprint);
+        } finally {
+            interleaver.release();
+            pool.shutdownNow();
+        }
     }
 
     @Test

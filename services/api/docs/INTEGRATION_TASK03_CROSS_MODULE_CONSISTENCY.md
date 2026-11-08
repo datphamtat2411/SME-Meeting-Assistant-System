@@ -18,7 +18,8 @@ Integration branch: `integration/dashboard-export-into-develop`. Previous gates:
 
 1. **Accepted projection**: build a complete approved source, render READY PDF and Markdown, check CURRENT; accept real speaker projection, check revision increment, Summary `isStale`, Minutes `NEEDS_REVIEW`, and both exports `STALE` while byte-identical. Verify new admission conflict, authorized historical idempotency replay, corrected transcript revision increment, exact accepted replay idempotency, intact meeting lifecycle, scoped reporting and revocation.
 2. **Optional failure**: emit durable failure receipt and identical retry, verify zero speaker changes, unchanged Minutes source fingerprint and READY export CURRENT, correct `COMPLETED_WITH_WARNINGS` job accounting, same Meeting lifecycle, one receipt.
-3. Earlier suites continue testing parallel write fencing, independently mutable Action Items and Decisions, current membership checks, and export source repeatable reads.
+3. **Concurrent accepted write during Minutes assembly**: install a test-only Transcript reader barrier after real Transcript SQL has established the read-only `REPEATABLE_READ` snapshot; accept and commit real Diarization on another PostgreSQL connection before Summary SQL resumes. Verify the in-flight Minutes returns a coherent *old* transcript/summary/fingerprint (never mixed), while the next request sees new transcript revision and stale Summary. Both writer and reader remain canonical; the barrier is only a deterministic scheduler, not a mocked data source.
+4. Earlier suites continue testing independent Action Items/Decisions modifications, membership checks, worker fencing and retries.
 
 ## Safety constraints
 
