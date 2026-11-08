@@ -46,23 +46,39 @@ Expand only for necessary dependencies or direct conflicts.
 Write or update focused tests before changing production code.
 Avoid bare-minimum solutions or lazy shortcuts that only aim to get the task done with the least effort. 
 
-After implementation, run only the narrowest relevant tests.
-Do not run full suites, full builds, startup, or manual checks unless the task
-or plan explicitly justifies them.
+Implement the complete assigned scope and its acceptance criteria before final
+verification. A passing test for a partial implementation is not permission to
+stop while required work remains, unless the task explicitly defines that
+increment as its deliverable.
 
-If the focused test passes:
+Run only the narrowest focused tests needed to verify the affected behavior
+and the assigned acceptance criteria. Do not run full suites, full builds,
+startup, or unrelated manual checks unless the task or plan explicitly
+justifies them.
 
-* do not run any additional or broader tests;
-* do not perform any other verification;
-* run one final `git status --short`;
-* report and stop.
+For each failing focused test:
 
-If the focused test fails:
+1. Identify the distinct task-related failure by its failing behavior and
+   underlying cause, not incidental line numbers or changing error text.
+2. Investigate that failure, make one targeted corrective pass, then rerun
+   the same focused test command.
+3. If the same failure persists after that corrective pass, report it as a
+   blocker with the test evidence and stop. Do not repeatedly patch the same
+   unresolved failure.
+4. If that failure is fixed but a different failure is exposed, treat it as
+   a new failure: investigate it, make its own single corrective pass, and
+   rerun the same focused test command. There is no global one-fix or
+   one-rerun limit across distinct failures.
+5. If a previously corrected failure reappears, treat it as the same
+   unresolved failure rather than resetting its corrective-pass allowance.
 
-* investigate only the task-related failure;
-* make one corrective pass;
-* rerun the same focused test command once;
-* if it still fails, report the blocker and stop.
+Do not label an unimplemented requirement or an untested assumption as a
+blocker. Report genuine external or architectural blockers with concrete
+evidence; do not invent an alternative architecture to bypass them.
+
+When all focused verification required for the assigned scope passes, do not
+run additional or broader tests. Run one final `git status --short`, report
+the implemented scope, test results, and any remaining gaps, then stop.
 
 ## Git
 
