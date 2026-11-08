@@ -48,11 +48,21 @@ public class MediaProcessingService {
     private final MediaProperties properties;
     private final com.sme.meetingassistant.api.media.worker.TranscriptionWorkerCapability workerCapability;
     private final ProcessingTranscriptEvidence transcriptEvidence;
+    private final com.sme.meetingassistant.api.media.intelligence.IntelligenceWorkerCapability intelligenceCapability;
 
     public MediaProcessingService(MediaRepository repository, ObjectStorage storage, MediaInspector inspector,
             MeetingMediaAccess meetingAccess, AuthenticatedUserId authenticatedUser, MediaProperties properties,
             com.sme.meetingassistant.api.media.worker.TranscriptionWorkerCapability workerCapability,
             ProcessingTranscriptEvidence transcriptEvidence) {
+        this(repository,storage,inspector,meetingAccess,authenticatedUser,properties,workerCapability,transcriptEvidence,null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public MediaProcessingService(MediaRepository repository,ObjectStorage storage,MediaInspector inspector,
+            MeetingMediaAccess meetingAccess,AuthenticatedUserId authenticatedUser,MediaProperties properties,
+            com.sme.meetingassistant.api.media.worker.TranscriptionWorkerCapability workerCapability,
+            ProcessingTranscriptEvidence transcriptEvidence,
+            com.sme.meetingassistant.api.media.intelligence.IntelligenceWorkerCapability intelligenceCapability) {
         this.repository = repository;
         this.storage = storage;
         this.inspector = inspector;
@@ -61,6 +71,7 @@ public class MediaProcessingService {
         this.properties = properties;
         this.workerCapability = workerCapability;
         this.transcriptEvidence = transcriptEvidence;
+        this.intelligenceCapability=intelligenceCapability;
     }
 
     @Transactional
@@ -405,6 +416,10 @@ public class MediaProcessingService {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
                 "Action Item proposal handoff is disabled; required stage cannot be planned.");
         }
+        for(String stage:stages) if(com.sme.meetingassistant.api.media.intelligence.IntelligenceWorkerCapability.ORDER.contains(stage)) {
+            if(intelligenceCapability==null || !intelligenceCapability.canDispatch(stage))
+                throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"Meeting Intelligence worker dispatch is not ready.");
+        }
         var plan = new java.util.ArrayList<String>();
         if (properties.getProcessing().isDiarizationEnabled()) plan.add("DIARIZING");
         plan.addAll(stages);
@@ -466,6 +481,12 @@ public class MediaProcessingService {
         }
         if (stageCode != null && !this.repository.hasRetryableFailedStage(jobId, stageCode)) {
             throw conflict("The requested stage has no retryable failed attempt.");
+        }
+        String resume=stageCode==null?target.currentStage():stageCode;
+        if(resume!=null && com.sme.meetingassistant.api.media.intelligence.IntelligenceWorkerCapability.ORDER.contains(resume)) {
+            if(!intelligenceCapability.canDispatch(resume))
+                throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"Meeting Intelligence worker dispatch is not ready.");
+            transcriptEvidence.lockDiarizationSource(jobId);
         }
         if (!this.repository.retryJobAndOutbox(target, UUID.randomUUID(), stageCode, maxRetries)) {
             throw conflict("The processing job changed or reached its retry limit.");

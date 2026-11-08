@@ -50,7 +50,7 @@ class OutboxPublisherTests {
     }
 
     private void oneClaim() {
-        when(repository.claimPendingOutbox(1, 60, 3))
+        when(repository.claimPendingOutbox(1, 60, 3, false))
             .thenReturn(List.of(event), List.of());
     }
 
@@ -103,7 +103,7 @@ class OutboxPublisherTests {
         event = new Outbox(eventId, "PROCESSING_DIARIZATION_REQUESTED", payload, 1, UUID.randomUUID());
         var retry = new Outbox(event.id(), event.eventType(), payload, 2, UUID.randomUUID());
         var duplicate = new Outbox(event.id(), event.eventType(), payload, 3, UUID.randomUUID());
-        when(repository.claimPendingOutbox(1, 60, 3))
+        when(repository.claimPendingOutbox(1, 60, 3, false))
             .thenReturn(List.of(event), List.of(), List.of(retry), List.of(), List.of(duplicate), List.of());
         when(repository.markPublished(eq(event.id()), any(UUID.class))).thenReturn(true);
         // The initial broker NACK must not replace the stored version on retry.
@@ -201,6 +201,19 @@ class OutboxPublisherTests {
 
         verify(repository).markPublishFailed(event.id(), event.claimToken(), 1, 3, "IllegalStateException");
         verify(repository, never()).markPublished(any(), any());
+    }
+
+    @Test
+    void intelligenceUsesDedicatedRouteAndPersistedVersionWithConfirmFencing() {
+        props.getIntelligence().setEnabled(true);
+        props.getIntelligence().setDispatchEnabled(true);
+        event=new Outbox(UUID.randomUUID(),"PROCESSING_INTELLIGENCE_STAGE_REQUESTED","{\"schemaVersion\":1}",1,UUID.randomUUID());
+        when(repository.claimPendingOutbox(1,60,3,true)).thenReturn(List.of(event),List.of());
+        doAnswer(c->{((CorrelationData)c.getArgument(3)).getFuture().complete(new CorrelationData.Confirm(true,null));return null;})
+            .when(rabbit).send(eq("meeting.processing"),eq("processing.intelligence.requested"),any(Message.class),any(CorrelationData.class));
+        publisher.publishPending();
+        verify(repository).markPublished(event.id(),event.claimToken());
+        verify(rabbit,never()).send(eq("meeting.processing"),eq("processing.job.queued"),any(Message.class),any(CorrelationData.class));
     }
 
     @Test

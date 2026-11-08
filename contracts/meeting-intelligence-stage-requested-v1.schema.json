@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sme:processing:intelligence-stage-requested:1",
+  "title": "PROCESSING_INTELLIGENCE_STAGE_REQUESTED v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["eventId", "schemaVersion", "processingJobId", "executionStageRunId", "executionStageCode", "occurredAt"],
+  "properties": {
+    "eventId": {"type": "string", "format": "uuid"},
+    "schemaVersion": {"const": 1},
+    "processingJobId": {"type": "string", "format": "uuid"},
+    "executionStageRunId": {"type": "string", "format": "uuid"},
+    "executionStageCode": {"enum": ["GENERATING_SUMMARY", "EXTRACTING_DECISIONS", "EXTRACTING_ACTION_ITEMS"]},
+    "occurredAt": {"type": "string", "format": "date-time"},
+    "requestId": {"type": ["string", "null"], "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"}
+  }
+}

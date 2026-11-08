@@ -97,6 +97,14 @@ public final class PrivateConnector {
         } catch (Exception e) { return false; }
     }
 
+    /** Original claim replay is bound to a JSSE-verified certificate, never a caller header. */
+    public static String workerCertificateFingerprint(HttpServletRequest request) {
+        if(!workerAuthorized(request)) throw new SecurityException("Authenticated worker required");
+        var attestation=(Attestation)request.getAttribute(ATTESTATION);
+        try {return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(attestation.leaf().getEncoded()));}
+        catch(Exception invalid) {throw new SecurityException("Authenticated worker required");}
+    }
+
     public static final String METRICS_PATH = "/internal/monitoring/prometheus";
 
     /** No worker permissions, headers, JWTs or browser sessions establish this identity. */

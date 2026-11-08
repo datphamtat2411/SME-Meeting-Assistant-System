@@ -57,6 +57,20 @@ public class IntelligenceSnapshotStore {
         catch (RuntimeException ignored) { /* Retention sweep must clear rare orphan snapshots. */ }
     }
 
+    /** Reverify the same immutable object; redelivery never creates another snapshot. */
+    public void verify(Snapshot snapshot) {
+        try {
+            var head=storage.head(snapshot.key());
+            if(head.sizeBytes()!=snapshot.sizeBytes() || snapshot.sizeBytes()<1 || snapshot.sizeBytes()>8*1024*1024)
+                throw new IllegalStateException();
+            var bytes=storage.readBounded(snapshot.key(),8*1024*1024);
+            if(bytes==null || bytes.length!=snapshot.sizeBytes() || !snapshot.sha256().equals(digest(bytes)))
+                throw new IllegalStateException();
+        } catch(IOException | RuntimeException invalid) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"Immutable transcript snapshot verification failed.");
+        }
+    }
+
     private static void remove(Path path) {
         if (path!=null) try { Files.deleteIfExists(path); } catch (IOException ignored) { }
     }

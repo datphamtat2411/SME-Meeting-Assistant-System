@@ -8,7 +8,9 @@ import java.util.UUID;
  */
 public interface ProcessingJobLifecycle {
     /** One durable stage attempt with an unguessable owner token; never expose to clients. */
-    record StageClaim(UUID stageRunId, UUID claimToken) { }
+    record StageClaim(UUID stageRunId, UUID claimToken) {
+        @Override public String toString() {return "StageClaim[stageRunId="+stageRunId+", token=redacted]";}
+    }
 
     /** Trusted, server-resolved identity for a derived-stage attempt. */
     record DerivedStage(UUID jobId, UUID meetingId, UUID sourceMediaId, String stageCode) { }
@@ -22,6 +24,12 @@ public interface ProcessingJobLifecycle {
     boolean hasAcceptedStageClaim(StageClaim claim);
 
     StageClaim startStage(UUID jobId, String stageCode, String providerName, String modelName);
+
+    /** Exact preplanned attempt; source has already been prepared outside the claim transaction. */
+    StageClaim startIntelligenceWorkerStage(UUID jobId,UUID stageRunId,String stageCode);
+    boolean intelligenceStageEligible(UUID jobId,UUID stageRunId,String stageCode);
+    /** Single progression policy used after upstream milestones and canonical result acceptance. */
+    void advanceJob(UUID jobId);
 
     void renewStageLease(StageClaim claim);
 

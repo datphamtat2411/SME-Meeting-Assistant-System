@@ -46,13 +46,17 @@ class SummaryRegenerationIntegrationTests {
     @Autowired JdbcTemplate jdbc;
     @Autowired ProcessingJobLifecycle lifecycle;
     @Autowired IntelligenceResultIngestion ingestion;
+    @Autowired com.sme.meetingassistant.api.media.intelligence.IntelligenceWorkerService worker;
     @MockitoBean ObjectStorage storage;
+    @MockitoBean com.sme.meetingassistant.api.media.intelligence.IntelligenceWorkerCapability capability;
 
     private final Map<String,byte[]> blobs=new ConcurrentHashMap<>();
     private UUID owner,member,outsider,meeting,media,origin,transcript,segment;
 
     @BeforeEach
     void setUp() throws Exception {
+        when(capability.canDispatch(anyString())).thenReturn(true);
+        when(capability.storageId()).thenReturn("meeting-media");
         blobs.clear();
         when(storage.putAcceptedIfAbsent(anyString(),any(Path.class),anyString()))
             .thenAnswer(invocation -> {
@@ -65,6 +69,7 @@ class SummaryRegenerationIntegrationTests {
             if (bytes==null) throw new IllegalArgumentException("Unknown immutable test object.");
             return new ObjectStorage.StoredObject(bytes.length,"application/json","etag-not-digest");
         });
+        when(storage.readBounded(anyString(),anyInt())).thenAnswer(invocation->blobs.get((String)invocation.getArgument(0)));
         doAnswer(invocation -> {
             byte[] bytes=blobs.get((String)invocation.getArgument(0));
             if (bytes==null) throw new IllegalArgumentException("Unknown immutable test object.");
@@ -89,10 +94,10 @@ class SummaryRegenerationIntegrationTests {
             """,UUID.randomUUID(),meeting,member,owner);
         jdbc.update("""
             INSERT INTO meeting_media(id,meeting_id,source_type,status,object_key,pending_object_key,
-                content_type,expected_size_bytes,size_bytes,duration_ms,uploaded_by_user_id,available_at)
-            VALUES (?,?,'UPLOAD','AVAILABLE',?,?,'audio/wav',100,100,10000,?,CURRENT_TIMESTAMP)
+                content_type,expected_size_bytes,size_bytes,duration_ms,uploaded_by_user_id,available_at,sha256)
+            VALUES (?,?,'UPLOAD','AVAILABLE',?,?,'audio/wav',100,100,10000,?,CURRENT_TIMESTAMP,?)
             """,media,meeting,"meetings/"+meeting+"/sources/"+media,
-            "meetings/"+meeting+"/pending/"+media,owner);
+            "meetings/"+meeting+"/pending/"+media,owner,"a".repeat(64));
         jdbc.update("""
             INSERT INTO processing_jobs(id,meeting_id,source_media_id,requested_by_user_id,status)
             VALUES (?,?,?,?,'COMPLETED')
@@ -278,7 +283,7 @@ class SummaryRegenerationIntegrationTests {
             """,Integer.class,id)).isZero();
         assertThat(jdbc.queryForObject("""
             SELECT count(*) FROM outbox_events WHERE aggregate_id=?
-                AND event_type='PROCESSING_JOB_QUEUED'
+                AND event_type='PROCESSING_INTELLIGENCE_STAGE_REQUESTED'
             """,Integer.class,id)).isEqualTo(1);
         String key=jdbc.queryForObject("""
             SELECT object_key FROM meeting_intelligence_source_snapshots
@@ -329,7 +334,7 @@ class SummaryRegenerationIntegrationTests {
         assertThat(blobs).hasSize(1);
         assertThat(jdbc.queryForObject("""
             SELECT COUNT(*) FROM outbox_events WHERE aggregate_id=?
-                AND event_type='PROCESSING_JOB_QUEUED'
+                AND event_type='PROCESSING_INTELLIGENCE_STAGE_REQUESTED'
             """,Integer.class,job(request(owner,"parallel-same-key")))).isEqualTo(1);
         assertThat(jdbc.queryForObject("""
             SELECT COUNT(*) FROM audit_events WHERE meeting_id=?
@@ -377,6 +382,22 @@ class SummaryRegenerationIntegrationTests {
     }
 
     @Test
+    void dedicatedWorkerUsesPinnedRegenerationSnapshotAndFinalAcceptanceCompletesWithoutAsr() throws Exception {
+        UUID id=job(request(owner,"dedicated-worker"));
+        var dispatch=jdbc.queryForMap("SELECT * FROM processing_intelligence_dispatches WHERE processing_job_id=?",id);
+        jdbc.update("UPDATE transcripts SET content_revision=3 WHERE id=?",transcript);
+        var command=new com.sme.meetingassistant.api.media.intelligence.IntelligenceCommands.Claim(
+            (UUID)dispatch.get("event_id"),"PROCESSING_INTELLIGENCE_STAGE_REQUESTED",1,(UUID)dispatch.get("stage_run_id"),"GENERATING_SUMMARY",UUID.randomUUID());
+        var response=worker.claim(id,command,"a".repeat(64));
+        assertThat(response.get("source").toString()).contains("contentRevision=2");
+        var stage=new ProcessingJobLifecycle.StageClaim(command.executionStageRunId(),(UUID)response.get("claimToken"));
+        submitDerivedSummary(id,stage,"Pinned regeneration summary");
+        assertThat(jdbc.queryForObject("SELECT status FROM processing_jobs WHERE id=?",String.class,id)).isEqualTo("COMPLETED");
+        assertThat(worker.status(id,command.eventId())).containsEntry("acknowledge",true);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM outbox_events WHERE aggregate_id=? AND event_type='PROCESSING_JOB_QUEUED'",Integer.class,id)).isZero();
+    }
+
+    @Test
     void derivedJobHasIndependentCompletionPolicyAndFeedsMi07WithoutAsr() throws Exception {
         UUID id=job(request(owner,"run-to-completion"));
         assertThatThrownBy(()->lifecycle.startStage(id,"TRANSCRIPTION","bad","bad"))
@@ -407,7 +428,6 @@ class SummaryRegenerationIntegrationTests {
         var accepted=ingestion.ingest(claim,sha(bytes));
         assertThat(accepted.writtenRows()).isEqualTo(1);
         assertThat(accepted.replay()).isFalse();
-        lifecycle.completeJob(id);
         assertThat(jdbc.queryForObject("SELECT status FROM processing_jobs WHERE id=?",
             String.class,id)).isEqualTo("COMPLETED");
         assertThat(jdbc.queryForObject("""

@@ -62,10 +62,6 @@ public class TranscriptFinalizationService {
             ? "SUCCEEDED_WITH_WARNING" : "SUCCEEDED";
         lifecycle.completeStage(claim, stageOutcome, null, null);
         lifecycle.dispatchPlannedDiarization(result.processingJobId());
-        // The transcript milestone is not the completion of a full meeting pipeline.
-        // Preplanned downstream stages continue under the same processing job.
-        if (!lifecycle.hasPendingPipelineStages(result.processingJobId())) {
-            lifecycle.completeJob(result.processingJobId());
-        }
+        lifecycle.advanceJob(result.processingJobId());
     }
 }

@@ -25,8 +25,16 @@ import org.springframework.web.server.ResponseStatusException;
 public class DerivedSummaryJobAdmission {
     private final MediaRepository repository;
     private final MediaProperties properties;
-    public DerivedSummaryJobAdmission(MediaRepository repository,MediaProperties properties) {
+    private final com.sme.meetingassistant.api.media.intelligence.IntelligenceWorkerCapability capability;
+    public DerivedSummaryJobAdmission(MediaRepository repository,MediaProperties properties,
+            com.sme.meetingassistant.api.media.intelligence.IntelligenceWorkerCapability capability) {
         this.repository=repository;this.properties=properties;
+        this.capability=capability;
+    }
+
+    public void requireWorkerReady() {
+        if(!capability.canDispatch("GENERATING_SUMMARY"))
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"Summary worker dispatch is not ready.");
     }
 
     public Optional<UUID> existing(UUID actor,UUID meetingId,String key) {
@@ -44,6 +52,7 @@ public class DerivedSummaryJobAdmission {
     @Transactional(propagation=Propagation.MANDATORY)
     public Result admit(UUID actor,UUID meetingId,UUID mediaId,UUID originJobId,
             UUID proposedId,String idempotencyKey) {
+        requireWorkerReady();
         try {
             var claim=repository.claimIdempotencyWithStatus(
                 actor,operation(meetingId),idempotencyKey,fingerprint(meetingId),proposedId);

@@ -160,7 +160,6 @@ public class DiarizationWorkerService {
         repository.measureAcceptance(d,receipt,result.speakerLabels().size(),
             result.diagnostics().unknownAssignmentCount(),result.assignments().size());
         lifecycle.completeStage(new StageClaim(d.stage(),cmd.owner().claimToken()),"SUCCEEDED",null,null);
-        if(!lifecycle.hasPendingPipelineStages(job)) lifecycle.completeJob(job);
         return status(d);
     }
     @Transactional
