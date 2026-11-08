@@ -2,13 +2,18 @@ package com.sme.meetingassistant.api.meetingexport;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
+import com.sme.meetingassistant.api.meetingminutes.MinutesAssembler;
+import com.sme.meetingassistant.api.meetingminutes.MinutesSnapshot;
 import java.security.Principal;
 import java.time.Clock;
 import java.time.Duration;
+import java.time.OffsetDateTime;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
@@ -25,6 +30,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.web.context.request.RequestAttributes;
@@ -97,6 +103,7 @@ class ExportAccessHttpIntegrationTests {
     }
 
     @Autowired MockMvc mvc;
+    @MockitoBean MinutesAssembler minutes;
     @Autowired JdbcTemplate jdbc;
     @Autowired ObjectMapper json;
     @Autowired MeetingExportRepository records;
@@ -237,6 +244,41 @@ class ExportAccessHttpIntegrationTests {
         assertThatThrownBy(()->new ExportAccessService(
                 records,null,null,storage,Clock.systemUTC(),301))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void sourceRevisionChangeMakesHistoricalReadyExportStaleWithoutMutation()
+            throws Exception {
+        UUID owner=user("EMPLOYEE"),meetingId=meeting(owner);
+        UUID exported=ready(owner,meetingId,ExportFormat.PDF);
+        OffsetDateTime time=OffsetDateTime.parse("2026-11-08T00:00:00Z");
+        MinutesSnapshot sourceAtExport=new MinutesSnapshot(1,time,
+                "a".repeat(64),"COMPLETE",null,null,
+                java.util.List.of(),java.util.List.of(),null,java.util.List.of(),false);
+        MinutesSnapshot editedSource=new MinutesSnapshot(1,time.plusMinutes(1),
+                "c".repeat(64),"COMPLETE",null,null,
+                java.util.List.of(),java.util.List.of(),null,java.util.List.of(),false);
+        when(minutes.current(meetingId)).thenReturn(sourceAtExport,editedSource);
+
+        MvcResult current=mvc.perform(get("/api/v1/exports/{id}",exported)
+                .principal(principal(owner))).andExpect(status().isOk()).andReturn();
+        assertThat(json.readTree(current.getResponse().getContentAsString())
+                .path("data").path("freshness").asText()).isEqualTo("CURRENT");
+
+        MvcResult stale=mvc.perform(get("/api/v1/exports/{id}",exported)
+                .principal(principal(owner))).andExpect(status().isOk()).andReturn();
+        JsonNode data=json.readTree(stale.getResponse().getContentAsString()).path("data");
+        assertThat(data.path("freshness").asText()).isEqualTo("STALE");
+        assertThat(data.path("freshnessCheckedAt").asText()).isNotBlank();
+
+        MvcResult historical=mvc.perform(post(endpoint(exported))
+                .principal(principal(owner))).andExpect(status().isOk()).andReturn();
+        JsonNode issued=json.readTree(historical.getResponse().getContentAsString())
+                .path("data");
+        assertThat(issued.path("freshness").asText()).isEqualTo("STALE");
+        assertThat(issued.path("accessUrl").asText()).startsWith("https://");
+        assertThat(records.require(exported).status()).isEqualTo(ExportStatus.READY);
+        assertThat(records.require(exported).sourceFingerprint()).isEqualTo("a".repeat(64));
     }
 
     private UUID ready(UUID owner,UUID meetingId,ExportFormat format) {

@@ -33,6 +33,13 @@ public interface ObjectStorage {
             String contentType, String sha256) {
         throw new UnsupportedOperationException("Immutable private bytes storage is not installed.");
     }
+    /**
+     * DE-11 orphan-only conditional deletion; never delete current export
+     * references. Providers without atomic ETag preconditions fail closed.
+     */
+    default boolean deleteIfEtagMatches(String objectKey, String expectedEtag) {
+        throw new UnsupportedOperationException("Conditional object deletion is unavailable");
+    }
     void delete(String objectKey);
     /** Server-side bounded listing; never expose this namespace to callers. */
     ListedObjects list(String prefix,String continuationToken,int limit);

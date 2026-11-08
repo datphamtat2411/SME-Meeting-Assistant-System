@@ -182,6 +182,20 @@ class ExportS3StorageIntegrationTests {
                 .isInstanceOf(IllegalStateException.class);
     }
 
+    @Test
+    void conditionalOrphanDeleteNeverRemovesObjectAfterEtagChanges() {
+        UUID id=UUID.randomUUID();
+        byte[] content="orphan-candidate".getBytes(StandardCharsets.UTF_8);
+        String sha=ExportSnapshotCodec.sha256(content);
+        String key=ExportDigests.artifactKey(id,ExportFormat.PDF,sha);
+        exports.putVerified(key,content,"application/pdf",sha);
+        String expected=storage.head(key).eTag();
+        assertThat(storage.deleteIfEtagMatches(key,"wrong-etag")).isFalse();
+        assertThat(storage.head(key).eTag()).isEqualTo(expected);
+        assertThat(storage.deleteIfEtagMatches(key,expected)).isTrue();
+        assertThatThrownBy(()->storage.head(key)).isInstanceOf(RuntimeException.class);
+    }
+
     private static ExportRecord ready(UUID id,ExportFormat fmt,String sha,long size) {
         OffsetDateTime now=OffsetDateTime.now(ZoneOffset.UTC);
         return new ExportRecord(id,UUID.randomUUID(),fmt,ExportStatus.READY,

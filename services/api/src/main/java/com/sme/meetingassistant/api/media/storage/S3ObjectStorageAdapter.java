@@ -207,8 +207,8 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
 
     @Override
     public ListedObjects list(String prefix,String continuationToken,int limit) {
-        if(prefix==null || !prefix.matches("processing/[0-9a-f-]{36}/intelligence/")
-                || limit<1 || limit>100) {
+        if(prefix==null || !(prefix.matches("processing/[0-9a-f-]{36}/intelligence/")
+                || prefix.equals("exports/")) || limit<1 || limit>100) {
             throw new IllegalArgumentException("Invalid private intelligence object listing scope.");
         }
         var request=ListObjectsV2Request.builder().bucket(properties.getBucket())
@@ -218,6 +218,31 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
         return new ListedObjects(page.contents().stream()
             .map(x->new ListedObject(x.key(),x.lastModified())).toList(),
             Boolean.TRUE.equals(page.isTruncated())?page.nextContinuationToken():null);
+    }
+
+    @Override
+    public boolean deleteIfEtagMatches(String objectKey, String expectedEtag) {
+        // Only the DE-11 orphan-cleanup flow may use this operation. The key
+        // must be server-derived and strictly inside the export namespace.
+        if (objectKey == null || !objectKey.matches(
+                "^exports/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/"
+                + "(intake/[0-9a-f]{64}[.]json|snapshots/[0-9a-f]{64}[.]json"
+                + "|artifacts/[0-9a-f]{64}[.](md|pdf))$")
+                || expectedEtag == null || expectedEtag.isBlank()
+                || expectedEtag.length() > 256 || expectedEtag.equals("*")) {
+            throw new IllegalArgumentException("Invalid conditional export deletion");
+        }
+        try {
+            client.deleteObject(DeleteObjectRequest.builder()
+                .bucket(properties.getBucket()).key(objectKey)
+                .ifMatch(expectedEtag).build());
+            return true;
+        } catch (S3Exception exception) {
+            if (exception.statusCode() == 412 || exception.statusCode() == 404) {
+                return false;
+            }
+            throw exception;
+        }
     }
 
     @Override

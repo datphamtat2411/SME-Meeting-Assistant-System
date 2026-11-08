@@ -24,28 +24,34 @@ public class ExportStatusController {
     private final MeetingMediaAccess access;
     private final AuthenticatedUserId actor;
     private final ApiResponseFactory responses;
+    private final ExportFreshnessService freshness;
 
     public ExportStatusController(MeetingExportRepository records,
             MeetingMediaAccess access, AuthenticatedUserId actor,
-            ApiResponseFactory responses) {
+            ApiResponseFactory responses, ExportFreshnessService freshness) {
         this.records = records;
         this.access = access;
         this.actor = actor;
         this.responses = responses;
+        this.freshness = freshness;
     }
 
     public record StatusView(UUID exportId, UUID meetingId, ExportFormat format,
             ExportStatus status, int attemptCount, OffsetDateTime createdAt,
-            OffsetDateTime readyAt, String safeErrorCode) { }
+            OffsetDateTime readyAt, String safeErrorCode,
+            ExportFreshnessService.Freshness freshness,
+            OffsetDateTime freshnessCheckedAt) { }
 
     @Operation(summary="Read current authorized status of a durable export")
     @GetMapping("/{exportId}")
     public ResponseEntity<ApiResponse<StatusView>> get(@PathVariable UUID exportId) {
         ExportRecord record = records.require(exportId);
         access.requireReadable(record.meetingId(), actor.requireUserId());
+        var evidence = freshness.evaluate(record);
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
                 .body(responses.success(new StatusView(record.id(),record.meetingId(),
                         record.format(),record.status(),record.generationAttempt(),
-                        record.createdAt(),record.readyAt(),record.lastErrorCode())));
+                        record.createdAt(),record.readyAt(),record.lastErrorCode(),
+                        evidence.freshness(),evidence.checkedAt())));
     }
 }
