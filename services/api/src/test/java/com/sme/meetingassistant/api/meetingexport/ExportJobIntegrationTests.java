@@ -262,6 +262,39 @@ class ExportJobIntegrationTests {
                 Long.class,meeting)).isEqualTo(5L);
     }
 
+    @Test
+    void concurrentDistinctIdempotencyKeysCannotRacePastTheDatabaseQuota()
+            throws Exception {
+        UUID actor=user(), meeting=meeting(actor);
+        MinutesSnapshot source=snapshot(meeting,actor,"Tải đồng thời");
+        var pool=java.util.concurrent.Executors.newFixedThreadPool(8);
+        try {
+            java.util.List<java.util.concurrent.Future<Boolean>> results =
+                    new java.util.ArrayList<>();
+            for(int i=0;i<8;i++) {
+                final int n=i;
+                results.add(pool.submit(()->{
+                    try {
+                        as(actor,()->submissions.submit(meeting,
+                                ExportFormat.MARKDOWN,"quota-parallel-"+n,source));
+                        return true;
+                    } catch (org.springframework.web.server.ResponseStatusException ex) {
+                        assertThat(ex.getStatusCode().value()).isEqualTo(429);
+                        return false;
+                    }
+                }));
+            }
+            int successes=0;
+            for(var f:results) if(f.get(60,java.util.concurrent.TimeUnit.SECONDS)) successes++;
+            assertThat(successes).isEqualTo(5);
+            assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM meeting_exports WHERE meeting_id=?
+                """,Long.class,meeting)).isEqualTo(5L);
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
     private MinutesSnapshot snapshot(UUID meetingId, UUID actor, String summaryText) {
         OffsetDateTime now=OffsetDateTime.parse("2026-11-07T12:00:00Z");
         var meeting = new MinutesSnapshot.Meeting(meetingId,"Biên bản thử",null,
