@@ -17,7 +17,7 @@ import org.springframework.web.server.ResponseStatusException;
  * Must run in the same transaction as the pending intent and intake receipt.
  */
 @Service
-public final class ExportAdmissionBudget {
+public class ExportAdmissionBudget {
     private static final long LOCK_KEY = 871296420123L;
     private final JdbcTemplate jdbc;
     private final MeterRegistry metrics;
