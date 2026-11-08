@@ -46,9 +46,9 @@ class IntelligenceResultMultilineContractTests {
 
     @SuppressWarnings("unchecked")
     private Map<String,Object> contract() throws Exception {
-        // Maven runs from services/api; load the exact file delivered to AI team.
+        // Maven runs from services/api; resolve the shared contract at repository root.
         return json.readValue(Files.readAllBytes(Path.of(
-            "docs/contracts/meeting-intelligence-result-v1.schema.json")),Map.class);
+            "../../contracts/meeting-intelligence-result-v1.schema.json")),Map.class);
     }
 
     @SuppressWarnings("unchecked")
