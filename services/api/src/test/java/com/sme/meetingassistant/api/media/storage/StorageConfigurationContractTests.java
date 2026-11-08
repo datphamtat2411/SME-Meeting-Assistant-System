@@ -48,7 +48,7 @@ class StorageConfigurationContractTests {
                 "app.media.processing.diarization-enabled", "true",
                 "app.media.outbox.diarization-routing-key", "processing.diarization.requested"));
         MediaProperties properties = new Binder(source)
-                .bind("app.media", Bindable.of(MediaProperties.class)).orElseThrow();
+                .bind("app.media", Bindable.of(MediaProperties.class)).get();
         assertThat(properties.getStorage().getPublicDownloadEndpoint())
                 .isEqualTo("https://downloads.example.invalid");
         assertThat(properties.getProcessing().isDiarizationEnabled()).isTrue();
