@@ -21,6 +21,7 @@ from sme_meeting_ai.integrations.intelligence import (
 )
 from sme_meeting_ai.integrations.messaging import MessageError, RabbitConsumer
 from sme_meeting_ai.integrations.object_storage import ObjectStorage, StorageError
+from sme_meeting_ai.meeting_intelligence.decision import build_decision_processor
 from sme_meeting_ai.meeting_intelligence.errors import IntelligenceError
 from sme_meeting_ai.meeting_intelligence.processor import StageContext
 from sme_meeting_ai.meeting_intelligence.result import ResultError, serialize_result
@@ -125,11 +126,14 @@ def _worker_category(category):
 def production_processors(settings, adapter=None):
     """Return only explicitly enabled production capability processors."""
     if not (settings.meeting_intelligence_worker_enabled
-            and settings.meeting_intelligence_inference_enabled
-            and settings.meeting_intelligence_summary_enabled
-            and adapter is not None):
+            and settings.meeting_intelligence_inference_enabled and adapter is not None):
         return {}
-    return {"GENERATING_SUMMARY": build_summary_processor(settings, adapter)}
+    processors = {}
+    if settings.meeting_intelligence_summary_enabled:
+        processors["GENERATING_SUMMARY"] = build_summary_processor(settings, adapter)
+    if settings.meeting_intelligence_decision_enabled:
+        processors["EXTRACTING_DECISIONS"] = build_decision_processor(settings, adapter)
+    return processors
 
 
 class IntelligenceWorker:
@@ -361,8 +365,8 @@ class IntelligenceExecution:
                  core_api_client_key_file=s.meeting_intelligence_core_api_client_key_file))
             core = IntelligenceCoreClient(isolated, acceptance_token=s.meeting_intelligence_acceptance_token)
             self.async_resources.push_async_callback(core.aclose)
-            if not self._injected_processors and s.meeting_intelligence_summary_enabled \
-                    and s.meeting_intelligence_inference_enabled:
+            if (not self._injected_processors and s.meeting_intelligence_inference_enabled
+                    and (s.meeting_intelligence_summary_enabled or s.meeting_intelligence_decision_enabled)):
                 from sme_meeting_ai.providers.openrouter_intelligence import (
                     OpenRouterIntelligenceAdapter,
                 )
