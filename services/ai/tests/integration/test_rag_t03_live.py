@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -165,6 +166,11 @@ def test_real_t03_authorized_hybrid_and_reranking():
             expiresAt="2026-11-09T13:00:00Z",
             allowedMeetingIds=(first_meeting,),
         )
+        fixed_now = datetime(2026, 11, 9, 12, 0, tzinfo=timezone.utc)
+
+        def fixed_clock() -> datetime:
+            return fixed_now
+
         retrieval = RetrievalEngine(
             embedding=embedding,
             store=store,
@@ -172,6 +178,7 @@ def test_real_t03_authorized_hybrid_and_reranking():
             authorization_provider=StaticAuthorizationProvider([authorized_scope]),
             source_provider=source_provider,
             config=RetrievalConfig(reranker_score_cutoff=0.0),
+            clock=fixed_clock,
         )
         result = retrieval.retrieve(
             RetrievalRequest(
@@ -194,6 +201,7 @@ def test_real_t03_authorized_hybrid_and_reranking():
             authorization_provider=StaticAuthorizationProvider([cross_scope]),
             source_provider=source_provider,
             config=RetrievalConfig(reranker_score_cutoff=0.0),
+            clock=fixed_clock,
         )
         cross_result = cross_retrieval.retrieve(
             RetrievalRequest(
