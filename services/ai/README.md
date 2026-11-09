@@ -42,6 +42,42 @@ uv run sme-ai-http
 uv run sme-ai-worker
 ```
 
+## Meeting Intelligence worker
+
+`AI_MEETING_INTELLIGENCE_WORKER_ENABLED` defaults to `false`. When enabled,
+the worker consumes the pre-provisioned `meeting.processing.intelligence` queue
+with manual acknowledgments and bounded prefetch. Configure
+`AI_MEETING_INTELLIGENCE_WORKER_CONCURRENCY` (default 1, maximum 4) and
+`AI_MEETING_INTELLIGENCE_WORKER_EXECUTION_TIMEOUT_SECONDS` (default 900,
+maximum 7200). The existing worker shutdown budget applies.
+
+The capability uses the shared private Core API endpoint and server CA, S3
+endpoint/bucket/storage ID, and RabbitMQ endpoint/CA settings. Supply separately:
+
+* `AI_MEETING_INTELLIGENCE_CORE_API_CLIENT_CERT_FILE` and
+  `AI_MEETING_INTELLIGENCE_CORE_API_CLIENT_KEY_FILE`: the `mi-worker` mTLS identity.
+* `AI_MEETING_INTELLIGENCE_ACCEPTANCE_TOKEN`: the separate machine bearer
+  credential for canonical result acceptance.
+* `AI_MEETING_INTELLIGENCE_S3_ACCESS_KEY_ID` and
+  `AI_MEETING_INTELLIGENCE_S3_SECRET_ACCESS_KEY`: private snapshot read and
+  create-only result access.
+* `AI_MEETING_INTELLIGENCE_RABBITMQ_USERNAME` and
+  `AI_MEETING_INTELLIGENCE_RABBITMQ_PASSWORD`: dedicated queue credentials.
+
+Core API remains authoritative for eligibility, lease ownership, failure, and
+acceptance. The worker verifies source bytes and identities, renews leases while
+processing, and leaves unresolved deliveries unacknowledged for broker recovery.
+Immutable artifact conflicts do not overwrite existing content. Shutdown stops
+intake and fences outstanding work when the worker grace period expires.
+Credentials and transcript contents must not be logged.
+
+Processors are injected as a stage-code keyed registry into
+`IntelligenceExecution` or `IntelligenceWorker`. Each synchronous processor
+receives a `StageContext` with a verified snapshot, source provenance, monotonic
+deadline and cancellation signal, and returns a structured candidate. No
+production Summary or Decision processor is registered in AIMI-T02; an unavailable
+processor fails closed. Action Item canonical acceptance is not available here.
+
 ## Standalone speaker diarization
 
 The standalone engine uploads a readable local audio file to Replicate for external

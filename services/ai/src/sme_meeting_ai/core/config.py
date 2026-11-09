@@ -167,6 +167,16 @@ class Settings(BaseSettings):
     diarization_worker_projection_ready: bool = False
     diarization_worker_s3_access_key_id: SecretStr | None = Field(default=None, repr=False)
     diarization_worker_s3_secret_access_key: SecretStr | None = Field(default=None, repr=False)
+    meeting_intelligence_worker_enabled: bool = False
+    meeting_intelligence_worker_concurrency: int = Field(default=1, ge=1, le=4)
+    meeting_intelligence_worker_execution_timeout_seconds: float = Field(default=900, gt=0, le=7200, allow_inf_nan=False)
+    meeting_intelligence_acceptance_token: SecretStr | None = Field(default=None, repr=False)
+    meeting_intelligence_s3_access_key_id: SecretStr | None = Field(default=None, repr=False)
+    meeting_intelligence_s3_secret_access_key: SecretStr | None = Field(default=None, repr=False)
+    meeting_intelligence_rabbitmq_username: SecretStr | None = Field(default=None, repr=False)
+    meeting_intelligence_rabbitmq_password: SecretStr | None = Field(default=None, repr=False)
+    meeting_intelligence_core_api_client_cert_file: Path | None = None
+    meeting_intelligence_core_api_client_key_file: Path | None = Field(default=None, repr=False)
     diarization_model: str = Field(
         default="konieshadow/speaker-diarization:c58b6b038f6de30f93eaccd6aecb59d1b9a48ac13b22be000bcffe853efb2c20",
         pattern=r"^konieshadow/speaker-diarization:[a-f0-9]{64}$",

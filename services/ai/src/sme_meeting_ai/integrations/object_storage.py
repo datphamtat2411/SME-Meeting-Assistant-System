@@ -51,7 +51,7 @@ class ObjectStorage:
                  namespace="sme-transcription-worker"):
         self.settings = settings
         self.result_max_bytes = result_max_bytes
-        if namespace not in ("sme-transcription-worker", "sme-diarization-worker"):
+        if namespace not in ("sme-transcription-worker", "sme-diarization-worker", "sme-intelligence-worker"):
             raise StorageError("CONFIGURATION")
         self.namespace = namespace
         self.client = client
@@ -247,6 +247,14 @@ class ObjectStorage:
     def get_result(self, storage_id, key, fence=None):
         with self._operation():
             raw, _ = self._read(storage_id, key, self.result_max_bytes, fence=fence)
+            return raw
+
+    def get_intelligence_snapshot(self, source, fence=None):
+        with self._operation():
+            raw, digest = self._read(source.storageId, source.objectKey, 8 * 1024 * 1024,
+                                     expected_size=source.sizeBytes, fence=fence)
+            if digest != source.sha256:
+                raise StorageError("INTEGRITY")
             return raw
 
     def put_result(self, storage_id, key, raw, fence=None):
