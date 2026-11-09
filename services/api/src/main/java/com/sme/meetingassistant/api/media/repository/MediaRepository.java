@@ -494,6 +494,11 @@ public class MediaRepository {
             if (!liveClaim(claim)) {
                 throw new ProcessingLifecycleConflictException("Finalization worker lease has expired.");
             }
+            if (!hasSuccessfulTranscription(jobId)
+                    || hasCorrectionPlan(jobId) && !hasSuccessfulContextualCorrection(jobId)) {
+                throw new ProcessingLifecycleConflictException(
+                    "Finalization requires successful transcription and contextual correction.");
+            }
             return false;
         }
         if (List.of("COMPLETED", "COMPLETED_WITH_WARNINGS").contains(state.jobStatus())

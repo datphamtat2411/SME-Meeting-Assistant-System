@@ -44,6 +44,21 @@ jobs:
             services/api/pom.xml
             services/api/.mvn/wrapper/maven-wrapper.properties
 
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version-file: services/ai/.python-version
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: services/ai/uv.lock
+
+      - name: Synchronize locked AI dependencies
+        run: uv sync --locked
+        working-directory: services/ai
+
       - name: Verify Docker
         run: docker info
 

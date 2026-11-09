@@ -111,9 +111,13 @@ class ActionItemWorkerAcceptanceIntegrationTests {
             PKI.resolve("ca.crt"),PKI.resolve("ca.crt"),"urn:sme:service:"+identity)).build();
     }
     HttpResponse<String> post(HttpClient client,String path,String body,String token) throws Exception {
+        return post(client,path,body,token,false);
+    }
+    HttpResponse<String> post(HttpClient client,String path,String body,String token,boolean expectContinue) throws Exception {
         var builder=HttpRequest.newBuilder(URI.create("https://localhost:"+PORT+path)).header("Content-Type","application/json")
             .header("X-Request-Id","t06-test").timeout(java.time.Duration.ofSeconds(15));
         if(token!=null) builder.header("Authorization","Bearer "+token);
+        if(expectContinue) builder.expectContinue(true);
         return client.send(builder.POST(HttpRequest.BodyPublishers.ofString(body)).build(),HttpResponse.BodyHandlers.ofString());
     }
     String control() {return "/internal/v1/worker/processing-jobs/"+job+"/intelligence/";}
@@ -198,8 +202,8 @@ class ActionItemWorkerAcceptanceIntegrationTests {
     @Test void dedicatedBatchLimitDoesNotWidenSmallControlLimits() throws Exception {
         try(var mi=client("mi","mi-worker")) {
             var input=batch(claim(mi),false);
-            assertThat(post(mi,acceptPath()," ".repeat(4194305),TOKEN).statusCode()).isEqualTo(413);
-            assertThat(post(mi,control()+"renew"," ".repeat(17000),null).statusCode()).isEqualTo(413);
+            assertThat(post(mi,acceptPath()," ".repeat(4194305),TOKEN,true).statusCode()).isEqualTo(413);
+            assertThat(post(mi,control()+"renew"," ".repeat(17000),null,true).statusCode()).isEqualTo(413);
             var duplicate=input.toString().replace("\"contractVersion\":\"1.0\"","\"contractVersion\":\"1.0\",\"contractVersion\":\"1.0\"");
             assertThat(post(mi,acceptPath(),duplicate,TOKEN).statusCode()).isEqualTo(422);
             ((ObjectNode)input.get("candidates").get(0)).put("details","ệ".repeat(8000));
