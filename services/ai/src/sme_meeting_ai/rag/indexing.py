@@ -177,12 +177,9 @@ class KnowledgeIndexingEngine:
             raise IndexingError("INDEX_GENERATION_MISMATCH")
         if generation_id != compatibility.index_generation_id:
             raise IndexingError("EMBEDDING_GENERATION_MISMATCH")
-        if (
-            compatibility.index_configuration_sha256 is not None
-            and any(
-                chunk.index_generation.configuration_sha256 != compatibility.index_configuration_sha256
-                for chunk in chunks
-            )
+        if any(
+            chunk.index_generation.configuration_sha256 != compatibility.index_configuration_sha256
+            for chunk in chunks
         ):
             raise IndexingError("INDEX_CONFIGURATION_MISMATCH")
         if any(chunk.index_generation.tokenizer_id != compatibility.tokenizer_id for chunk in chunks):
@@ -293,6 +290,8 @@ class KnowledgeIndexingEngine:
                 for chunk, embedding in zip(batch, embeddings, strict=True):
                     if not isinstance(embedding, ChunkEmbedding) or embedding.chunk_id != chunk.chunk_id:
                         raise EmbeddingError("EMBEDDING_CHUNK_ORDER_INVALID")
+                    if embedding.compatibility != self.embedding.compatibility:
+                        raise EmbeddingError("EMBEDDING_COMPATIBILITY_MISMATCH")
                     if embedding.compatibility.index_generation_id != generation_id:
                         raise EmbeddingError("EMBEDDING_GENERATION_MISMATCH")
                     point_ids.append(str(UUID(chunk.chunk_id)))

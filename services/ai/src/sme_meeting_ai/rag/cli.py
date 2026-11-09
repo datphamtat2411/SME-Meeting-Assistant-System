@@ -19,7 +19,7 @@ from .processing import process_snapshot
 from .provisioning import BgeM3Provisioner, ModelProvisioningError, load_bge_m3_manifest
 from .qdrant import QdrantConfig, QdrantVectorStore
 from .synthetic import synthetic_vietnamese_snapshot
-from .tokenizer import BgeM3Tokenizer, bge_m3_chunking_config
+from .tokenizer import BgeM3Tokenizer, bge_m3_chunking_config, bge_m3_index_generation
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -62,11 +62,19 @@ def _add_qdrant_options(parser: argparse.ArgumentParser) -> None:
 
 def _compatibility(generation_id: str) -> EmbeddingCompatibility:
     manifest = load_bge_m3_manifest()
+    generation = bge_m3_index_generation(
+        generation_id=generation_id,
+        configuration_version=os.getenv("AI_RAG_INDEX_CONFIGURATION_VERSION", "rag-t02-bge-m3-v1"),
+        max_tokens=int(os.getenv("AI_RAG_EMBEDDING_MAX_INPUT_TOKENS", "512")),
+        target_tokens=int(os.getenv("AI_RAG_CHUNK_TARGET_TOKENS", "384")),
+        manifest=manifest,
+    )
     return EmbeddingCompatibility(
         model_id=manifest.model_id,
         model_revision=manifest.revision,
         tokenizer_id=manifest.tokenizer_id,
         index_generation_id=generation_id,
+        index_configuration_sha256=generation.configuration_sha256,
     )
 
 
@@ -103,8 +111,9 @@ def _run(args: argparse.Namespace) -> dict[str, object]:
         chunking = bge_m3_chunking_config(
             tokenizer,
             generation_id=args.generation_id,
-            max_tokens=512,
+            max_tokens=int(os.getenv("AI_RAG_EMBEDDING_MAX_INPUT_TOKENS", "512")),
             target_tokens=int(os.getenv("AI_RAG_CHUNK_TARGET_TOKENS", "384")),
+            configuration_version=os.getenv("AI_RAG_INDEX_CONFIGURATION_VERSION", "rag-t02-bge-m3-v1"),
         )
         processing = process_snapshot(
             synthetic_vietnamese_snapshot(), token_counter=tokenizer, config=chunking
@@ -116,6 +125,10 @@ def _run(args: argparse.Namespace) -> dict[str, object]:
             device=args.device,
             precision=args.precision,
             index_generation_id=args.generation_id,
+            index_configuration_version=chunking.index_generation.configuration_version,
+            index_target_tokens=chunking.target_tokens or chunking.max_tokens,
+            index_max_temporal_gap_ms=chunking.max_temporal_gap_ms,
+            index_max_units_per_chunk=chunking.max_units_per_chunk,
             index_configuration_sha256=chunking.index_generation.configuration_sha256,
         )
         adapter = BgeM3EmbeddingAdapter(config, tokenizer=tokenizer, manifest=manifest)

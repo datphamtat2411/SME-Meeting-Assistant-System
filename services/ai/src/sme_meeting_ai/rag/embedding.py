@@ -18,7 +18,7 @@ from sme_meeting_ai.core.config import Settings
 
 from .contracts import KnowledgeChunk
 from .provisioning import BgeM3Provisioner, ModelManifest, load_bge_m3_manifest
-from .tokenizer import BgeM3Tokenizer, TokenizerError
+from .tokenizer import BgeM3Tokenizer, TokenizerError, bge_m3_index_generation
 
 DENSE_DIMENSIONS = 1024
 SPARSE_INDEX_MAX = 2**32 - 1
@@ -71,7 +71,7 @@ class EmbeddingCompatibility(BaseModel):
     model_revision: str = Field(pattern=r"^[a-f0-9]{40}$")
     tokenizer_id: str = Field(min_length=1)
     index_generation_id: str = Field(min_length=1)
-    index_configuration_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    index_configuration_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     representation_version: str = REPRESENTATION_VERSION
     dense_dimensions: int = Field(default=DENSE_DIMENSIONS, strict=True)
 
@@ -119,10 +119,23 @@ class BgeM3EmbeddingConfig:
     init_timeout_seconds: float = 900
     execution_timeout_seconds: float = 900
     index_generation_id: str = "rag-t02-bge-m3-v1"
+    index_configuration_version: str = "rag-t02-bge-m3-v1"
+    index_target_tokens: int = 384
+    index_max_temporal_gap_ms: int = 5_000
+    index_max_units_per_chunk: int = 8
     index_configuration_sha256: str | None = None
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "BgeM3EmbeddingConfig":
+        generation = bge_m3_index_generation(
+            generation_id=settings.rag_index_generation_id,
+            configuration_version=settings.rag_index_configuration_version,
+            max_tokens=settings.rag_embedding_max_input_tokens,
+            target_tokens=settings.rag_chunk_target_tokens,
+        )
+        configuration_sha256 = settings.rag_index_configuration_sha256 or generation.configuration_sha256
+        if configuration_sha256 != generation.configuration_sha256:
+            raise ValueError("Index configuration fingerprint does not match the approved generation")
         return cls(
             model_path=settings.rag_model_path,
             model_id=settings.rag_model_id,
@@ -135,7 +148,9 @@ class BgeM3EmbeddingConfig:
             init_timeout_seconds=settings.rag_model_init_timeout_seconds,
             execution_timeout_seconds=settings.rag_embedding_timeout_seconds,
             index_generation_id=settings.rag_index_generation_id,
-            index_configuration_sha256=settings.rag_index_configuration_sha256,
+            index_configuration_version=settings.rag_index_configuration_version,
+            index_target_tokens=settings.rag_chunk_target_tokens,
+            index_configuration_sha256=configuration_sha256,
         )
 
     def __post_init__(self) -> None:
@@ -155,6 +170,16 @@ class BgeM3EmbeddingConfig:
             raise ValueError("BGE-M3 concurrency is outside the supported bound")
         if self.init_timeout_seconds <= 0 or self.execution_timeout_seconds <= 0:
             raise ValueError("BGE-M3 timeouts must be positive")
+        if (
+            self.index_configuration_sha256 is None
+            or len(self.index_configuration_sha256) != 64
+            or any(char not in "0123456789abcdef" for char in self.index_configuration_sha256)
+        ):
+            raise ValueError("BGE-M3 indexing requires a deterministic configuration fingerprint")
+        if self.index_target_tokens < 1 or self.index_target_tokens > self.max_input_tokens:
+            raise ValueError("BGE-M3 index target token budget is invalid")
+        if self.index_max_temporal_gap_ms < 0 or self.index_max_units_per_chunk < 1:
+            raise ValueError("BGE-M3 index chunking limits are invalid")
 
 
 def _to_numpy(value: Any) -> np.ndarray:
@@ -312,6 +337,17 @@ class BgeM3EmbeddingAdapter:
         self.manifest = manifest or load_bge_m3_manifest()
         if config.model_id != self.manifest.model_id or config.model_revision != self.manifest.revision:
             raise EmbeddingError("MODEL_MANIFEST_MISMATCH")
+        generation = bge_m3_index_generation(
+            generation_id=config.index_generation_id,
+            configuration_version=config.index_configuration_version,
+            max_tokens=config.max_input_tokens,
+            target_tokens=config.index_target_tokens,
+            max_temporal_gap_ms=config.index_max_temporal_gap_ms,
+            max_units_per_chunk=config.index_max_units_per_chunk,
+            manifest=self.manifest,
+        )
+        if config.index_configuration_sha256 != generation.configuration_sha256:
+            raise EmbeddingError("INDEX_CONFIGURATION_MISMATCH")
         if config.max_input_tokens > self.manifest.tokenizer_max_model_tokens:
             raise EmbeddingError("MODEL_INPUT_BUDGET_INVALID")
         if tokenizer is None:

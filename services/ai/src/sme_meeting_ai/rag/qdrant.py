@@ -191,16 +191,14 @@ class QdrantVectorStore:
 
     def _collection_metadata(self) -> dict[str, str]:
         compatibility = self.spec.compatibility
-        metadata = {
+        return {
             "index_generation_id": compatibility.index_generation_id,
             "embedding_model_id": compatibility.model_id,
             "embedding_model_revision": compatibility.model_revision,
             "tokenizer_id": compatibility.tokenizer_id,
             "representation_version": compatibility.representation_version,
+            "index_configuration_sha256": compatibility.index_configuration_sha256,
         }
-        if compatibility.index_configuration_sha256 is not None:
-            metadata["index_configuration_sha256"] = compatibility.index_configuration_sha256
-        return metadata
 
     def _validate_vectors(self, info: Any) -> None:
         params = getattr(getattr(info, "config", None), "params", None)
@@ -239,45 +237,60 @@ class QdrantVectorStore:
             if _enum_name(actual_type) != _enum_name(expected_type):
                 raise QdrantSchemaError("Qdrant payload index has an incompatible type")
 
-    def _validate_existing_generation(self) -> None:
+    def _scroll_existing_records(self) -> tuple[Any, ...]:
         try:
-            records, _ = self.client.scroll(
-                collection_name=self.spec.collection_name,
-                limit=1,
-                with_payload=True,
-                with_vectors=False,
-            )
+            records: list[Any] = []
+            offset = None
+            while True:
+                kwargs = {
+                    "collection_name": self.spec.collection_name,
+                    "limit": 256,
+                    "with_payload": True,
+                    "with_vectors": False,
+                }
+                if offset is not None:
+                    kwargs["offset"] = offset
+                page, next_offset = self.client.scroll(**kwargs)
+                records.extend(page)
+                if next_offset is None:
+                    break
+                if next_offset == offset:
+                    raise QdrantError("SCHEMA_READ_FAILED")
+                offset = next_offset
         except Exception as error:
+            if isinstance(error, QdrantError):
+                raise
             if _is_transient(error):
                 raise QdrantError("QDRANT_UNAVAILABLE") from error
             raise QdrantError("SCHEMA_READ_FAILED") from error
-        if not records:
-            return
-        payload = getattr(records[0], "payload", None) or {}
+        return tuple(records)
+
+    def _validate_existing_generation(self, records: Sequence[Any] | None = None) -> None:
+        records = self._scroll_existing_records() if records is None else records
         expected = {
             "index_generation_id": self.spec.compatibility.index_generation_id,
             "embedding_model_id": self.spec.compatibility.model_id,
             "embedding_model_revision": self.spec.compatibility.model_revision,
-            "tokenizer_id": self.spec.compatibility.tokenizer_id,
+            "embedding_tokenizer_id": self.spec.compatibility.tokenizer_id,
             "embedding_representation_version": self.spec.compatibility.representation_version,
+            "embedding_index_configuration_sha256": self.spec.compatibility.index_configuration_sha256,
         }
-        if self.spec.compatibility.index_configuration_sha256 is not None:
-            expected["index_configuration_sha256"] = self.spec.compatibility.index_configuration_sha256
-        if any(payload.get(field) != value for field, value in expected.items()):
-            raise QdrantSchemaError("Existing Qdrant points belong to another embedding generation")
+        for record in records:
+            payload = getattr(record, "payload", None) or {}
+            if any(payload.get(field) != value for field, value in expected.items()):
+                raise QdrantSchemaError("Existing Qdrant points belong to another embedding generation")
 
-    def _validate_collection_metadata(self, info: Any) -> None:
+    def _validate_collection_metadata(self, info: Any, *, populated: bool) -> None:
         expected = self._collection_metadata()
         metadata = getattr(getattr(info, "config", None), "metadata", None)
-        if metadata:
-            if any(metadata.get(field) != value for field, value in expected.items()):
-                raise QdrantSchemaError("Qdrant collection belongs to another embedding generation")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        if any(field in metadata and metadata[field] != value for field, value in expected.items()):
+            raise QdrantSchemaError("Qdrant collection belongs to another embedding generation")
+        if populated and any(field not in metadata for field in expected):
+            raise QdrantSchemaError("Populated Qdrant collection has unverifiable generation metadata")
+        if all(field in metadata for field in expected):
             return
 
-        # A pre-T02 empty collection can be adopted safely; a populated legacy
-        # collection must first prove its point payload is from this generation.
-        if getattr(info, "points_count", 0):
-            self._validate_existing_generation()
         try:
             self.client.update_collection(
                 collection_name=self.spec.collection_name,
@@ -297,8 +310,12 @@ class QdrantVectorStore:
                 raise QdrantError("SCHEMA_CREATE_UNVERIFIED")
         self._validate_vectors(info)
         self._validate_payload_indexes(info)
-        self._validate_collection_metadata(info)
-        self._validate_existing_generation()
+        records = self._scroll_existing_records()
+        populated = bool(records) or bool(getattr(info, "points_count", 0))
+        self._validate_collection_metadata(info, populated=populated)
+        if populated and not records:
+            raise QdrantSchemaError("Existing Qdrant points cannot be verified")
+        self._validate_existing_generation(records)
 
     def upsert(self, points: Sequence[VectorPoint]) -> int:
         if not points:
