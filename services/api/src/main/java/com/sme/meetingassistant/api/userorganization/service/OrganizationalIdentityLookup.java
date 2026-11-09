@@ -2,6 +2,9 @@ package com.sme.meetingassistant.api.userorganization.service;
 
 import com.sme.meetingassistant.api.userorganization.entity.AccountStatus;
 import com.sme.meetingassistant.api.userorganization.repository.UserRepository;
+import java.util.Collection;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
@@ -40,5 +43,14 @@ public class OrganizationalIdentityLookup {
                 && user.getEmail().equalsIgnoreCase(email))
             .map(user -> new Recipient(user.getId(), user.getEmail()));
     }
+
+    /** Resolve only the requested identities, including inactive historical accounts. */
+    public Map<UUID, String> displayNamesFor(Collection<UUID> ids) {
+        if (ids == null || ids.isEmpty()) return Map.of();
+        Map<UUID, String> displayNames = new LinkedHashMap<>();
+        users.findAllById(ids).forEach(user -> displayNames.put(user.getId(), user.getDisplayName()));
+        return Map.copyOf(displayNames);
+    }
+
     public record Recipient(UUID id, String email) { }
 }

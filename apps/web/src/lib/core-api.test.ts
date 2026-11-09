@@ -88,6 +88,32 @@ describe('core API transport', () => {
     expect(headers?.get('X-Auth-Transport')).toBeUndefined()
   })
 
+  it('returns response metadata without changing data-only callers', async () => {
+    const pagination = {
+      page: 0,
+      size: 10,
+      totalElements: 21,
+      totalPages: 3,
+      hasNext: true,
+      hasPrevious: false,
+    }
+    coreApiAxios.defaults.adapter = async (config) =>
+      makeResponse(config, {
+        ...successEnvelope([{ id: 'meeting-1' }]),
+        meta: { pagination },
+      })
+
+    await expect(
+      coreApi.getWithMeta<{ id: string }[]>('/meetings')
+    ).resolves.toEqual({
+      data: [{ id: 'meeting-1' }],
+      meta: { pagination },
+    })
+    await expect(coreApi.get<{ id: string }[]>('/meetings')).resolves.toEqual([
+      { id: 'meeting-1' },
+    ])
+  })
+
   it('does not add CSRF headers to bootstrap GET requests', async () => {
     setCsrfToken('csrf-before-login')
     let requestConfig: Parameters<AxiosAdapter>[0] | undefined

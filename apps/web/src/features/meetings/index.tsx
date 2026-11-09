@@ -1,19 +1,20 @@
-import { useEffect, useState } from 'react'
-import { z } from 'zod'
-import { useForm } from 'react-hook-form'
-import { zodResolver } from '@hookform/resolvers/zod'
-import { Link } from '@tanstack/react-router'
+import { useEffect } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { getRouteApi, Link } from '@tanstack/react-router'
 import {
   ArrowUpRight,
   CalendarDays,
-  Clock3,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
   MapPin,
-  Plus,
   Radio,
+  RefreshCw,
   Search as SearchIcon,
   Users,
 } from 'lucide-react'
-import { toast } from 'sonner'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
   Card,
@@ -22,25 +23,6 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
-import { Checkbox } from '@/components/ui/checkbox'
-import {
-  Dialog,
-  DialogClose,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from '@/components/ui/dialog'
-import {
-  Form,
-  FormControl,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormMessage,
-} from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
 import {
   Select,
@@ -49,6 +31,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Skeleton } from '@/components/ui/skeleton'
 import {
   Table,
   TableBody,
@@ -57,97 +40,129 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { Textarea } from '@/components/ui/textarea'
 import { Header } from '@/components/layout/header'
 import { HeaderActions } from '@/components/layout/header-actions'
 import { Main } from '@/components/layout/main'
+import { normalizeCoreApiError } from '@/lib/core-api'
+import { getPageNumbers } from '@/lib/utils'
 import { MeetingStatusBadge } from './components/meeting-status-badge'
 import {
-  addMeeting,
-  currentDemoUser,
-  getMemberById,
-  getRoomById,
-  meetingRooms,
-  meetings,
-  members,
-  type Meeting,
-  type MeetingStatus,
-} from './data'
+  defaultMeetingPage,
+  defaultMeetingPageSize,
+  defaultMeetingSort,
+  getMeetingDisplay,
+  meetingListQueryOptions,
+  roomFilterQueryOptions,
+  type MeetingDisplay,
+  type MeetingListItem,
+  type MeetingListSearch,
+  type MeetingPagination,
+  type MeetingRelationship,
+  type MeetingSort,
+} from './data/list-api'
 
-const meetingStatusOptions: { label: string; value: MeetingStatus | 'all' }[] =
-  [
-    { label: 'All', value: 'all' },
-    { label: 'Upcoming', value: 'scheduled' },
-    { label: 'Live', value: 'in_progress' },
-    { label: 'Processing', value: 'processing' },
-    { label: 'Completed', value: 'completed' },
-    { label: 'Cancelled', value: 'cancelled' },
-  ]
+const route = getRouteApi('/_authenticated/meetings/')
 
-const timeZone = 'Asia/Ho_Chi_Minh'
+const presentationTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
 const meetingDateFormatter = new Intl.DateTimeFormat('en-US', {
   month: 'short',
   day: 'numeric',
   year: 'numeric',
-  timeZone,
+  timeZone: presentationTimeZone,
 })
 const meetingTimeFormatter = new Intl.DateTimeFormat('en-US', {
   hour: 'numeric',
   minute: '2-digit',
-  timeZone,
+  timeZone: presentationTimeZone,
 })
 
-const meetingFormSchema = z
-  .object({
-    title: z.string().trim().min(1, 'Title is required.'),
-    description: z
-      .string()
-      .max(500, 'Description must be 500 characters or fewer.'),
-    date: z.string().min(1, 'Date is required.'),
-    startTime: z.string().min(1, 'Start time is required.'),
-    endTime: z.string().min(1, 'End time is required.'),
-    roomId: z.string().min(1, 'Meeting room is required.'),
-    participantIds: z
-      .array(z.string())
-      .min(1, 'Select at least one participant.'),
-  })
-  .refine(
-    (values) =>
-      !values.startTime || !values.endTime || values.endTime > values.startTime,
-    {
-      message: 'End time must be after start time.',
-      path: ['endTime'],
-    }
-  )
+const statusOptions = [
+  { label: 'Draft', value: 'DRAFT' },
+  { label: 'Upcoming', value: 'SCHEDULED' },
+  { label: 'Live', value: 'IN_PROGRESS' },
+  { label: 'Completed', value: 'ENDED' },
+  { label: 'Cancelled', value: 'CANCELLED' },
+] as const
 
-type MeetingFormValues = z.infer<typeof meetingFormSchema>
-type MeetingStatusFilter = MeetingStatus | 'all'
+const relationshipOptions = [
+  { label: 'Organizer or participant', value: 'all' },
+  { label: 'Organizer', value: 'ORGANIZER' },
+  { label: 'Participant', value: 'PARTICIPANT' },
+] as const
+
+const sortOptions = [
+  { label: 'Newest created', value: 'createdAt,desc' },
+  { label: 'Oldest created', value: 'createdAt,asc' },
+  { label: 'Soonest scheduled', value: 'scheduledStartAt,asc' },
+  { label: 'Latest scheduled', value: 'scheduledStartAt,desc' },
+  { label: 'Title A-Z', value: 'title,asc' },
+  { label: 'Title Z-A', value: 'title,desc' },
+  { label: 'Status A-Z', value: 'status,asc' },
+  { label: 'Status Z-A', value: 'status,desc' },
+] as const
 
 export function MeetingsPage() {
-  const [meetingList, setMeetingList] = useState<Meeting[]>(() => [...meetings])
-  const [search, setSearch] = useState('')
-  const [statusFilter, setStatusFilter] = useState<MeetingStatusFilter>('all')
-  const [isCreateOpen, setIsCreateOpen] = useState(false)
+  const search = route.useSearch()
+  const navigate = route.useNavigate()
+  const meetingsQuery = useQuery(meetingListQueryOptions(search))
+  const roomsQuery = useQuery(roomFilterQueryOptions())
 
-  const normalizedSearch = search.trim().toLocaleLowerCase()
-  const filteredMeetings = meetingList.filter((meeting) => {
-    const matchesSearch = meeting.title
-      .toLocaleLowerCase()
-      .includes(normalizedSearch)
-    const matchesStatus =
-      statusFilter === 'all' || meeting.status === statusFilter
-
-    return matchesSearch && matchesStatus
-  })
-
-  const handleCreateMeeting = (meeting: Meeting) => {
-    addMeeting(meeting)
-    setMeetingList((currentMeetings) => [meeting, ...currentMeetings])
-    setIsCreateOpen(false)
-    toast.success('Meeting created', {
-      description: `${meeting.title} is scheduled.`,
+  const updateSearch = (patch: Partial<MeetingListSearch>) => {
+    navigate({
+      search: (previous) => ({
+        ...previous,
+        ...patch,
+        page: undefined,
+      }),
     })
   }
+
+  const goToPage = (page: number) => {
+    navigate({
+      search: (previous) => ({
+        ...previous,
+        page: page === defaultMeetingPage ? undefined : page,
+      }),
+    })
+  }
+
+  const changePageSize = (pageSize: number) => {
+    navigate({
+      search: (previous) => ({
+        ...previous,
+        page: undefined,
+        pageSize: pageSize === defaultMeetingPageSize ? undefined : pageSize,
+      }),
+    })
+  }
+
+  const resetSearch = () => {
+    navigate({ search: {} })
+  }
+
+  const setDateFilter = (key: 'from' | 'to', value: string) => {
+    updateSearch({
+      [key]: value ? dateInputToOffsetDateTime(value, key === 'to') : undefined,
+    })
+  }
+
+  useEffect(() => {
+    const pagination = meetingsQuery.data?.pagination
+    if (!pagination) return
+
+    const currentPage = search.page ?? defaultMeetingPage
+    const lastValidPage = Math.max(defaultMeetingPage, pagination.totalPages)
+    if (currentPage <= lastValidPage) return
+
+    navigate({
+      replace: true,
+      search: (previous) => ({ ...previous, page: undefined }),
+    })
+  }, [meetingsQuery.data?.pagination, navigate, search.page])
+
+  const hasActiveFilters = hasMeetingFilters(search)
+  const totalMeetings = meetingsQuery.data?.pagination.totalElements ?? 0
+  const isRefreshing = meetingsQuery.isFetching && !meetingsQuery.isPending
 
   return (
     <>
@@ -156,31 +171,15 @@ export function MeetingsPage() {
       </Header>
 
       <Main className='flex flex-1 flex-col gap-4 sm:gap-6'>
-        <div className='flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between'>
-          <div>
-            <p className='text-sm font-medium text-primary'>
-              Meeting management
-            </p>
-            <h1 className='mt-1 text-2xl font-bold tracking-tight sm:text-3xl'>
-              Meetings
-            </h1>
-            <p className='mt-2 max-w-2xl text-muted-foreground'>
-              Find a meeting, review its schedule, or create the next one for
-              your team.
-            </p>
-          </div>
-          <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
-            <DialogTrigger asChild>
-              <Button>
-                <Plus />
-                New Meeting
-              </Button>
-            </DialogTrigger>
-            <NewMeetingDialogContent
-              open={isCreateOpen}
-              onCreate={handleCreateMeeting}
-            />
-          </Dialog>
+        <div>
+          <p className='text-sm font-medium text-primary'>Meeting management</p>
+          <h1 className='mt-1 text-2xl font-bold tracking-tight sm:text-3xl'>
+            Meetings
+          </h1>
+          <p className='mt-2 max-w-2xl text-muted-foreground'>
+            Find a meeting and review its schedule, participants, and current
+            lifecycle.
+          </p>
         </div>
 
         <Card className='overflow-hidden'>
@@ -189,53 +188,80 @@ export function MeetingsPage() {
               <div>
                 <CardTitle>All meetings</CardTitle>
                 <CardDescription>
-                  {meetingList.length} meeting
-                  {meetingList.length === 1 ? '' : 's'} in the shared workspace.
+                  {meetingsQuery.isPending
+                    ? 'Loading accessible meetings.'
+                    : `${totalMeetings} meeting${totalMeetings === 1 ? '' : 's'} in your accessible workspace.`}
                 </CardDescription>
               </div>
-              <p className='text-sm text-muted-foreground'>
-                Showing {filteredMeetings.length} of {meetingList.length}
-              </p>
+              <div className='flex items-center gap-2 text-sm text-muted-foreground'>
+                {isRefreshing && (
+                  <span role='status' className='flex items-center gap-1.5'>
+                    <RefreshCw className='size-3.5 animate-spin' />
+                    Refreshing
+                  </span>
+                )}
+                {meetingsQuery.data && (
+                  <p>
+                    Showing {formatMeetingRange(meetingsQuery.data.pagination)}
+                  </p>
+                )}
+              </div>
             </div>
           </CardHeader>
           <CardContent className='p-0'>
-            <div className='flex flex-col gap-3 border-b p-4 sm:flex-row'>
-              <div className='relative flex-1'>
-                <SearchIcon className='absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground' />
-                <Input
-                  value={search}
-                  onChange={(event) => setSearch(event.target.value)}
-                  placeholder='Search meeting titles...'
-                  aria-label='Search meeting titles'
-                  className='pl-9'
-                />
-              </div>
-              <Select
-                value={statusFilter}
-                onValueChange={(value) =>
-                  setStatusFilter(value as MeetingStatusFilter)
-                }
-              >
-                <SelectTrigger
-                  className='w-full sm:w-44'
-                  aria-label='Filter meetings by status'
-                >
-                  <SelectValue placeholder='Filter by status' />
-                </SelectTrigger>
-                <SelectContent>
-                  {meetingStatusOptions.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {option.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <MeetingsTable
-              meetings={filteredMeetings}
-              totalMeetings={meetingList.length}
+            <MeetingFilters
+              search={search}
+              rooms={roomsQuery.data ?? []}
+              roomsUnavailable={roomsQuery.isError}
+              onSearchChange={(value) =>
+                updateSearch({ q: value || undefined })
+              }
+              onStatusChange={(value) =>
+                updateSearch({ status: value === 'all' ? undefined : value })
+              }
+              onRelationshipChange={(value) =>
+                updateSearch({
+                  relationship: value === 'all' ? undefined : value,
+                })
+              }
+              onFromChange={(value) => setDateFilter('from', value)}
+              onToChange={(value) => setDateFilter('to', value)}
+              onRoomChange={(value) =>
+                updateSearch({ roomId: value === 'all' ? undefined : value })
+              }
+              onSortChange={(value) =>
+                updateSearch({
+                  sort: value === defaultMeetingSort ? undefined : value,
+                })
+              }
+              onReset={resetSearch}
             />
+
+            {meetingsQuery.isPending ? (
+              <MeetingsTableSkeleton />
+            ) : meetingsQuery.isError ? (
+              <MeetingListError
+                error={meetingsQuery.error}
+                onRetry={() => void meetingsQuery.refetch()}
+              />
+            ) : (
+              <>
+                <MeetingsTable
+                  meetings={meetingsQuery.data.meetings}
+                  totalMeetings={totalMeetings}
+                  hasActiveFilters={hasActiveFilters}
+                />
+                {meetingsQuery.data.pagination.totalElements > 0 && (
+                  <MeetingsPagination
+                    pagination={meetingsQuery.data.pagination}
+                    page={search.page ?? defaultMeetingPage}
+                    pageSize={search.pageSize ?? defaultMeetingPageSize}
+                    onPageChange={goToPage}
+                    onPageSizeChange={changePageSize}
+                  />
+                )}
+              </>
+            )}
           </CardContent>
         </Card>
       </Main>
@@ -243,18 +269,180 @@ export function MeetingsPage() {
   )
 }
 
+function MeetingFilters({
+  search,
+  rooms,
+  roomsUnavailable,
+  onSearchChange,
+  onStatusChange,
+  onRelationshipChange,
+  onFromChange,
+  onToChange,
+  onRoomChange,
+  onSortChange,
+  onReset,
+}: {
+  search: MeetingListSearch
+  rooms: Array<{ id: string; name: string; location?: string | null }>
+  roomsUnavailable: boolean
+  onSearchChange: (value: string) => void
+  onStatusChange: (value: MeetingListSearch['status'] | 'all') => void
+  onRelationshipChange: (value: MeetingRelationship | 'all') => void
+  onFromChange: (value: string) => void
+  onToChange: (value: string) => void
+  onRoomChange: (value: string) => void
+  onSortChange: (value: MeetingSort) => void
+  onReset: () => void
+}) {
+  return (
+    <div className='flex flex-col gap-3 border-b p-4'>
+      <div className='flex flex-col gap-3 lg:flex-row'>
+        <div className='relative min-w-0 flex-1'>
+          <SearchIcon className='absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground' />
+          <Input
+            value={search.q ?? ''}
+            onChange={(event) => onSearchChange(event.target.value.trim())}
+            placeholder='Search meeting titles...'
+            aria-label='Search meeting titles'
+            className='pl-9'
+          />
+        </div>
+        <Select
+          value={search.status ?? 'all'}
+          onValueChange={(value) =>
+            onStatusChange(value as MeetingListSearch['status'] | 'all')
+          }
+        >
+          <SelectTrigger
+            className='w-full lg:w-44'
+            aria-label='Filter meetings by status'
+          >
+            <SelectValue placeholder='All statuses' />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value='all'>All statuses</SelectItem>
+            {statusOptions.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select
+          value={search.relationship ?? 'all'}
+          onValueChange={(value) =>
+            onRelationshipChange(value as MeetingRelationship | 'all')
+          }
+        >
+          <SelectTrigger
+            className='w-full lg:w-52'
+            aria-label='Filter meetings by relationship'
+          >
+            <SelectValue placeholder='All relationships' />
+          </SelectTrigger>
+          <SelectContent>
+            {relationshipOptions.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      <div className='grid gap-3 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_1fr_1fr_auto]'>
+        <label className='grid gap-1.5 text-sm font-medium'>
+          From
+          <Input
+            type='date'
+            value={dateInputValue(search.from)}
+            onChange={(event) => onFromChange(event.target.value)}
+            aria-label='Filter meetings from date'
+          />
+        </label>
+        <label className='grid gap-1.5 text-sm font-medium'>
+          To
+          <Input
+            type='date'
+            value={dateInputValue(search.to, true)}
+            onChange={(event) => onToChange(event.target.value)}
+            aria-label='Filter meetings to date'
+          />
+        </label>
+        <Select
+          value={search.roomId ?? 'all'}
+          onValueChange={onRoomChange}
+        >
+          <SelectTrigger
+            className='mt-auto w-full'
+            aria-label='Filter meetings by room'
+          >
+            <SelectValue placeholder='All rooms' />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value='all'>All rooms</SelectItem>
+            {rooms.map((room) => (
+              <SelectItem key={room.id} value={room.id}>
+                {room.name}
+                {room.location ? ` - ${room.location}` : ''}
+              </SelectItem>
+            ))}
+            {roomsUnavailable && (
+              <SelectItem value='rooms-unavailable' disabled>
+                Room options unavailable
+              </SelectItem>
+            )}
+          </SelectContent>
+        </Select>
+        <Select
+          value={search.sort ?? defaultMeetingSort}
+          onValueChange={(value) => onSortChange(value as MeetingSort)}
+        >
+          <SelectTrigger
+            className='mt-auto w-full'
+            aria-label='Sort meetings'
+          >
+            <SelectValue placeholder='Sort meetings' />
+          </SelectTrigger>
+          <SelectContent>
+            {sortOptions.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Button
+          type='button'
+          variant='outline'
+          className='mt-auto'
+          onClick={onReset}
+        >
+          Reset filters
+        </Button>
+      </div>
+    </div>
+  )
+}
+
 function MeetingsTable({
   meetings: meetingRows,
   totalMeetings,
+  hasActiveFilters,
 }: {
-  meetings: Meeting[]
+  meetings: MeetingListItem[]
   totalMeetings: number
+  hasActiveFilters: boolean
 }) {
   if (!totalMeetings) {
     return (
       <EmptyState
-        title='No meetings yet.'
-        description='Create your first meeting.'
+        title={hasActiveFilters ? 'No meetings found.' : 'No accessible meetings.'}
+        description={
+          hasActiveFilters
+            ? 'Try adjusting your search or filters.'
+            : 'Meetings you can access will appear here.'
+        }
       />
     )
   }
@@ -263,35 +451,37 @@ function MeetingsTable({
     return (
       <EmptyState
         title='No meetings found.'
-        description='Try adjusting your search or status filter.'
+        description='This page has no rows. Try returning to the first page.'
       />
     )
   }
 
   return (
-    <Table className='min-w-[760px]'>
-      <TableHeader>
-        <TableRow>
-          <TableHead className='w-[30%]'>Meeting</TableHead>
-          <TableHead>Schedule</TableHead>
-          <TableHead>Room</TableHead>
-          <TableHead>Participants</TableHead>
-          <TableHead>Status</TableHead>
-          <TableHead className='text-end'>Actions</TableHead>
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {meetingRows.map((meeting) => (
-          <MeetingRow key={meeting.id} meeting={meeting} />
-        ))}
-      </TableBody>
-    </Table>
+    <div className='overflow-x-auto'>
+      <Table className='min-w-[980px]'>
+        <TableHeader>
+          <TableRow>
+            <TableHead className='w-[25%]'>Meeting</TableHead>
+            <TableHead>Schedule</TableHead>
+            <TableHead>Room</TableHead>
+            <TableHead>Participants</TableHead>
+            <TableHead>Status</TableHead>
+            <TableHead className='text-end'>Actions</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {meetingRows.map((meeting) => (
+            <MeetingRow key={meeting.id} meeting={meeting} />
+          ))}
+        </TableBody>
+      </Table>
+    </div>
   )
 }
 
-function MeetingRow({ meeting }: { meeting: Meeting }) {
-  const organizer = getMemberById(meeting.organizerId)
-  const room = getRoomById(meeting.roomId)
+function MeetingRow({ meeting }: { meeting: MeetingListItem }) {
+  const display = getMeetingDisplay(meeting)
+  const room = getRoomDisplay(meeting, display)
 
   return (
     <TableRow>
@@ -305,7 +495,7 @@ function MeetingRow({ meeting }: { meeting: Meeting }) {
             {meeting.title}
           </Link>
           <p className='text-xs text-muted-foreground'>
-            Organized by {organizer?.name ?? 'Unknown organizer'}
+            Organized by {display.organizerName || 'Unknown organizer'}
           </p>
         </div>
       </TableCell>
@@ -315,16 +505,26 @@ function MeetingRow({ meeting }: { meeting: Meeting }) {
           <span>{formatMeetingSchedule(meeting)}</span>
         </div>
       </TableCell>
-      <TableCell>
+      <TableCell className='whitespace-normal'>
         <div className='flex items-start gap-2'>
           <MapPin className='mt-0.5 size-4 shrink-0 text-muted-foreground' />
-          <span>{room?.name ?? 'Room TBD'}</span>
+          <span className='grid gap-0.5'>
+            <span>{room.name}</span>
+            <span className='text-xs text-muted-foreground'>
+              {room.location}
+            </span>
+          </span>
         </div>
       </TableCell>
       <TableCell className='max-w-56 whitespace-normal'>
         <div className='flex items-start gap-2'>
           <Users className='mt-0.5 size-4 shrink-0 text-muted-foreground' />
-          <span>{formatParticipantNames(meeting)}</span>
+          <span className='grid gap-0.5'>
+            <span>{formatParticipantCount(display)}</span>
+            <span className='text-xs text-muted-foreground'>
+              {formatParticipantPreview(display)}
+            </span>
+          </span>
         </div>
       </TableCell>
       <TableCell>
@@ -332,7 +532,7 @@ function MeetingRow({ meeting }: { meeting: Meeting }) {
       </TableCell>
       <TableCell className='text-end'>
         <div className='flex justify-end gap-1'>
-          {meeting.status === 'in_progress' && (
+          {meeting.status === 'IN_PROGRESS' && (
             <Button asChild variant='outline' size='sm'>
               <Link
                 to='/meetings/$meetingId/live'
@@ -359,6 +559,177 @@ function MeetingRow({ meeting }: { meeting: Meeting }) {
   )
 }
 
+function MeetingsPagination({
+  pagination,
+  page,
+  pageSize,
+  onPageChange,
+  onPageSizeChange,
+}: {
+  pagination: MeetingPagination
+  page: number
+  pageSize: number
+  onPageChange: (page: number) => void
+  onPageSizeChange: (pageSize: number) => void
+}) {
+  const totalPages = pagination.totalPages
+  const currentPage = Math.min(Math.max(page, 1), Math.max(totalPages, 1))
+  const pageNumbers = getPageNumbers(currentPage, totalPages)
+
+  return (
+    <div className='flex flex-col gap-3 border-t p-4 sm:flex-row sm:items-center sm:justify-between'>
+      <div className='flex items-center gap-2 text-sm font-medium'>
+        <span>
+          Page {currentPage} of {Math.max(totalPages, 1)}
+        </span>
+        <span className='text-muted-foreground'>
+          ({pagination.totalElements} total)
+        </span>
+      </div>
+      <div className='flex flex-wrap items-center justify-end gap-2'>
+        <Select
+          value={String(pageSize)}
+          onValueChange={(value) => onPageSizeChange(Number(value))}
+        >
+          <SelectTrigger className='h-8 w-20' aria-label='Meetings per page'>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent side='top'>
+            {[10, 20, 50, 100].map((size) => (
+              <SelectItem key={size} value={String(size)}>
+                {size} / page
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Button
+          type='button'
+          variant='outline'
+          size='icon'
+          aria-label='Go to first page'
+          onClick={() => onPageChange(1)}
+          disabled={currentPage <= 1}
+        >
+          <ChevronsLeft />
+        </Button>
+        <Button
+          type='button'
+          variant='outline'
+          size='icon'
+          aria-label='Go to previous page'
+          onClick={() => onPageChange(currentPage - 1)}
+          disabled={currentPage <= 1}
+        >
+          <ChevronLeft />
+        </Button>
+        {pageNumbers.map((pageNumber, index) =>
+          pageNumber === '...' ? (
+            <span
+              key={`ellipsis-${index}`}
+              className='px-1 text-sm text-muted-foreground'
+            >
+              ...
+            </span>
+          ) : (
+            <Button
+              key={pageNumber}
+              type='button'
+              variant={currentPage === pageNumber ? 'default' : 'outline'}
+              size='icon'
+              aria-label={`Go to page ${pageNumber}`}
+              onClick={() => onPageChange(pageNumber)}
+            >
+              {pageNumber}
+            </Button>
+          )
+        )}
+        <Button
+          type='button'
+          variant='outline'
+          size='icon'
+          aria-label='Go to next page'
+          onClick={() => onPageChange(currentPage + 1)}
+          disabled={currentPage >= totalPages}
+        >
+          <ChevronRight />
+        </Button>
+        <Button
+          type='button'
+          variant='outline'
+          size='icon'
+          aria-label='Go to last page'
+          onClick={() => onPageChange(totalPages)}
+          disabled={currentPage >= totalPages}
+        >
+          <ChevronsRight />
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+function MeetingsTableSkeleton() {
+  return (
+    <div className='overflow-x-auto' aria-label='Loading meetings'>
+      <Table className='min-w-[980px]'>
+        <TableHeader>
+          <TableRow>
+            {['Meeting', 'Schedule', 'Room', 'Participants', 'Status', 'Actions'].map(
+              (heading) => (
+                <TableHead key={heading}>{heading}</TableHead>
+              )
+            )}
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {Array.from({ length: 5 }, (_, index) => (
+            <TableRow key={index}>
+              {Array.from({ length: 6 }, (_, cellIndex) => (
+                <TableCell key={cellIndex}>
+                  <Skeleton className='h-5 w-full max-w-40' />
+                </TableCell>
+              ))}
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </div>
+  )
+}
+
+function MeetingListError({
+  error,
+  onRetry,
+}: {
+  error: unknown
+  onRetry: () => void
+}) {
+  const apiError = normalizeCoreApiError(error)
+  const accessDenied = apiError.status === 403
+
+  return (
+    <Alert variant='destructive' className='m-4'>
+      <AlertTitle>
+        {accessDenied ? 'Meeting access denied' : 'Meetings could not be loaded'}
+      </AlertTitle>
+      <AlertDescription>
+        <p>
+          {accessDenied
+            ? 'Your account is not authorized to view the meeting list.'
+            : apiError.isNetworkError
+              ? 'The Core API could not be reached. Check the connection and try again.'
+              : 'The meeting list request failed. No local or mock data was used.'}
+        </p>
+        {!accessDenied && (
+          <Button type='button' variant='outline' size='sm' onClick={onRetry}>
+            Try again
+          </Button>
+        )}
+      </AlertDescription>
+    </Alert>
+  )
+}
+
 function EmptyState({
   title,
   description,
@@ -374,274 +745,111 @@ function EmptyState({
   )
 }
 
-type NewMeetingDialogContentProps = {
-  open: boolean
-  onCreate: (meeting: Meeting) => void
-}
-
-function NewMeetingDialogContent({
-  open,
-  onCreate,
-}: NewMeetingDialogContentProps) {
-  const form = useForm<MeetingFormValues>({
-    resolver: zodResolver(meetingFormSchema),
-    defaultValues: getDefaultMeetingFormValues(),
-  })
-
-  useEffect(() => {
-    if (!open) {
-      form.reset(getDefaultMeetingFormValues())
-    }
-  }, [form, open])
-
-  const onSubmit = (values: MeetingFormValues) => {
-    const newMeeting: Meeting = {
-      id: createMeetingId(values),
-      title: values.title,
-      description: values.description.trim(),
-      status: 'scheduled',
-      startsAt: `${values.date}T${values.startTime}:00+07:00`,
-      endsAt: `${values.date}T${values.endTime}:00+07:00`,
-      organizerId: currentDemoUser.id,
-      participantIds: values.participantIds,
-      roomId: values.roomId,
-    }
-
-    onCreate(newMeeting)
-    form.reset(getDefaultMeetingFormValues())
-  }
-
-  return (
-    <DialogContent className='max-h-[90vh] overflow-y-auto sm:max-w-2xl'>
-      <DialogHeader>
-        <DialogTitle>New Meeting</DialogTitle>
-        <DialogDescription>
-          Schedule a meeting with your team using the shared members and rooms.
-        </DialogDescription>
-      </DialogHeader>
-
-      <Form {...form}>
-        <form
-          id='new-meeting-form'
-          onSubmit={form.handleSubmit(onSubmit)}
-          className='space-y-4'
-        >
-          <FormField
-            control={form.control}
-            name='title'
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>Title</FormLabel>
-                <FormControl>
-                  <Input {...field} placeholder='e.g. Weekly product sync' />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-
-          <FormField
-            control={form.control}
-            name='description'
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>Description</FormLabel>
-                <FormControl>
-                  <Textarea
-                    {...field}
-                    placeholder='What should the team accomplish?'
-                    rows={3}
-                  />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-
-          <div className='grid gap-4 sm:grid-cols-3'>
-            <FormField
-              control={form.control}
-              name='date'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Date</FormLabel>
-                  <FormControl>
-                    <Input {...field} type='date' />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name='startTime'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Start time</FormLabel>
-                  <FormControl>
-                    <Input {...field} type='time' />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name='endTime'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>End time</FormLabel>
-                  <FormControl>
-                    <Input {...field} type='time' />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-          </div>
-
-          <FormField
-            control={form.control}
-            name='roomId'
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>Meeting room</FormLabel>
-                <Select value={field.value} onValueChange={field.onChange}>
-                  <FormControl>
-                    <SelectTrigger>
-                      <SelectValue placeholder='Select a meeting room' />
-                    </SelectTrigger>
-                  </FormControl>
-                  <SelectContent>
-                    {meetingRooms.map((room) => (
-                      <SelectItem key={room.id} value={room.id}>
-                        {room.name} · {room.location}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-
-          <FormField
-            control={form.control}
-            name='participantIds'
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>Participants</FormLabel>
-                <FormControl>
-                  <div
-                    role='group'
-                    aria-label='Participants'
-                    className='grid max-h-48 gap-2 overflow-y-auto rounded-md border p-3 sm:grid-cols-2'
-                  >
-                    {members.map((member) => {
-                      const checked = field.value.includes(member.id)
-
-                      return (
-                        <label
-                          key={member.id}
-                          className='flex cursor-pointer items-start gap-3 rounded-md p-2 hover:bg-muted/60'
-                        >
-                          <Checkbox
-                            checked={checked}
-                            onCheckedChange={(value) => {
-                              const participantIds =
-                                value === true
-                                  ? Array.from(
-                                      new Set([...field.value, member.id])
-                                    )
-                                  : field.value.filter((id) => id !== member.id)
-                              field.onChange(participantIds)
-                            }}
-                          />
-                          <span className='min-w-0'>
-                            <span className='block text-sm font-medium'>
-                              {member.name}
-                            </span>
-                            <span className='block truncate text-xs text-muted-foreground'>
-                              {member.department}
-                            </span>
-                          </span>
-                        </label>
-                      )
-                    })}
-                  </div>
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-
-          <p className='flex items-center gap-2 text-sm text-muted-foreground'>
-            <Clock3 className='size-4' />
-            Organizer:{' '}
-            <span className='font-medium text-foreground'>
-              {currentDemoUser.name}
-            </span>
-          </p>
-        </form>
-      </Form>
-
-      <DialogFooter>
-        <DialogClose asChild>
-          <Button type='button' variant='outline'>
-            Cancel
-          </Button>
-        </DialogClose>
-        <Button type='submit' form='new-meeting-form'>
-          Create Meeting
-        </Button>
-      </DialogFooter>
-    </DialogContent>
+function hasMeetingFilters(search: MeetingListSearch) {
+  return Boolean(
+    search.q?.trim() ||
+      search.status ||
+      search.relationship ||
+      search.from ||
+      search.to ||
+      search.roomId ||
+      search.organizerId
   )
 }
 
-function getDefaultMeetingFormValues(): MeetingFormValues {
-  const defaultRoom =
-    meetingRooms.find((room) => room.status === 'available') ?? meetingRooms[0]
+function formatMeetingRange(pagination: MeetingPagination) {
+  if (!pagination.totalElements) return '0 of 0'
+  const first = pagination.page * pagination.size + 1
+  const last = Math.min(
+    pagination.totalElements,
+    first + pagination.size - 1
+  )
+  return `${first}-${last} of ${pagination.totalElements}`
+}
 
-  return {
-    title: '',
-    description: '',
-    date: '',
-    startTime: '',
-    endTime: '',
-    roomId: defaultRoom.id,
-    participantIds: [currentDemoUser.id],
+function formatMeetingSchedule(meeting: MeetingListItem) {
+  if (!meeting.scheduledStartAt || !meeting.scheduledEndAt) {
+    return 'Unscheduled'
   }
-}
 
-function createMeetingId(values: MeetingFormValues) {
-  const titleSlug = values.title
-    .trim()
-    .toLocaleLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '')
-
-  return `meeting-${values.date}-${values.startTime.replace(':', '')}-${titleSlug || 'new'}`
-}
-
-function formatMeetingSchedule(meeting: Meeting) {
-  const startsAt = new Date(meeting.startsAt)
-  const endsAt = new Date(meeting.endsAt)
+  const startsAt = new Date(meeting.scheduledStartAt)
+  const endsAt = new Date(meeting.scheduledEndAt)
+  if (!Number.isFinite(startsAt.getTime()) || !Number.isFinite(endsAt.getTime())) {
+    return 'Unscheduled'
+  }
 
   return `${meetingDateFormatter.format(startsAt)} · ${meetingTimeFormatter.format(startsAt)} - ${meetingTimeFormatter.format(endsAt)}`
 }
 
-function formatParticipantNames(meeting: Meeting) {
-  const names = meeting.participantIds
-    .map((memberId) => getMemberById(memberId)?.name)
-    .filter((name): name is string => Boolean(name))
+function formatParticipantCount(display: MeetingDisplay) {
+  return `${display.participantCount} participant${
+    display.participantCount === 1 ? '' : 's'
+  }`
+}
 
-  if (!names.length) {
-    return 'No participants listed'
+function formatParticipantPreview(display: MeetingDisplay) {
+  if (!display.participantPreview.length) {
+    return display.participantCount === 0
+      ? 'No participants'
+      : 'Participant preview unavailable'
   }
 
-  const visibleNames = names.slice(0, 2).join(', ')
-  return names.length > 2
-    ? `${visibleNames} +${names.length - 2} more`
-    : visibleNames
+  const names = display.participantPreview
+    .slice(0, 2)
+    .map((participant) => participant.displayName || 'Unknown participant')
+  const remaining = Math.max(display.participantCount - names.length, 0)
+
+  return remaining ? `${names.join(', ')} +${remaining} more` : names.join(', ')
+}
+
+function getRoomDisplay(meeting: MeetingListItem, display: MeetingDisplay) {
+  if (!meeting.roomId) {
+    return { name: 'Room unassigned', location: 'No room location' }
+  }
+
+  return {
+    name: display.roomName || 'Room unavailable',
+    location: display.roomLocation || 'Location unavailable',
+  }
+}
+
+function dateInputValue(value: string | undefined, exclusiveEnd = false) {
+  if (!value) return ''
+  const date = new Date(value)
+  if (!Number.isFinite(date.getTime())) return ''
+  if (exclusiveEnd) date.setDate(date.getDate() - 1)
+
+  return [date.getFullYear(), date.getMonth() + 1, date.getDate()]
+    .map((part, index) => (index === 0 ? String(part) : String(part).padStart(2, '0')))
+    .join('-')
+}
+
+function dateInputToOffsetDateTime(value: string, exclusiveEnd: boolean) {
+  const [year, month, day] = value.split('-').map(Number)
+  if (![year, month, day].every(Number.isInteger)) return undefined
+
+  const date = new Date(year, month - 1, day + (exclusiveEnd ? 1 : 0))
+  if (
+    !Number.isFinite(date.getTime()) ||
+    date.getFullYear() !== year ||
+    date.getMonth() !== month - 1 ||
+    date.getDate() !== day + (exclusiveEnd ? 1 : 0)
+  ) {
+    return undefined
+  }
+
+  const offsetMinutes = -date.getTimezoneOffset()
+  const sign = offsetMinutes >= 0 ? '+' : '-'
+  const absoluteOffset = Math.abs(offsetMinutes)
+  const offsetHours = String(Math.floor(absoluteOffset / 60)).padStart(2, '0')
+  const offsetRemainder = String(absoluteOffset % 60).padStart(2, '0')
+  const dateValue = [
+    date.getFullYear(),
+    date.getMonth() + 1,
+    date.getDate(),
+  ]
+    .map((part) => String(part).padStart(2, '0'))
+    .join('-')
+
+  return `${dateValue}T00:00:00${sign}${offsetHours}:${offsetRemainder}`
 }
