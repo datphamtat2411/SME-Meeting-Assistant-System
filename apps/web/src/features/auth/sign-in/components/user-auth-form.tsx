@@ -1,13 +1,17 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { z } from 'zod'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { Loader2, LogIn } from 'lucide-react'
-import { toast } from 'sonner'
-import { IconFacebook, IconGithub } from '@/assets/brand-icons'
-import { useAuthStore } from '@/stores/auth-store'
-import { sleep, cn } from '@/lib/utils'
+import {
+  normalizeCoreApiError,
+  type CoreApiError,
+} from '@/lib/core-api'
+import { getSafeRedirect } from '@/lib/safe-redirect'
+import { signIn } from '../sign-in-api'
+import { cn } from '@/lib/utils'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
   Form,
@@ -26,8 +30,7 @@ const formSchema = z.object({
   }),
   password: z
     .string()
-    .min(1, 'Please enter your password.')
-    .min(7, 'Password must be at least 7 characters long.'),
+    .min(1, 'Please enter your password.'),
 })
 
 interface UserAuthFormProps extends React.HTMLAttributes<HTMLFormElement> {
@@ -40,8 +43,9 @@ export function UserAuthForm({
   ...props
 }: UserAuthFormProps) {
   const [isLoading, setIsLoading] = useState(false)
+  const [submitError, setSubmitError] = useState<string | null>(null)
+  const isSubmitting = useRef(false)
   const navigate = useNavigate()
-  const { auth } = useAuthStore()
 
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
@@ -51,34 +55,61 @@ export function UserAuthForm({
     },
   })
 
-  function onSubmit(data: z.infer<typeof formSchema>) {
+  async function onSubmit(data: z.infer<typeof formSchema>) {
+    if (isSubmitting.current) return
+
+    isSubmitting.current = true
     setIsLoading(true)
+    setSubmitError(null)
+    form.clearErrors()
 
-    toast.promise(sleep(2000), {
-      loading: 'Signing in...',
-      success: () => {
-        setIsLoading(false)
+    try {
+      await signIn(data)
+      navigate({ to: getSafeRedirect(redirectTo), replace: true })
+    } catch (error) {
+      const apiError: CoreApiError = normalizeCoreApiError(error)
 
-        // Mock successful authentication with expiry computed at success time
-        const mockUser = {
-          accountNo: 'ACC001',
-          email: data.email,
-          role: ['user'],
-          exp: Date.now() + 24 * 60 * 60 * 1000, // 24 hours from now
+      if (apiError.status === 422) {
+        let mappedFieldError = false
+        for (const [field, messages] of Object.entries(apiError.fieldErrors)) {
+          if (
+            (field === 'email' || field === 'password') &&
+            messages.length > 0
+          ) {
+            form.setError(field, {
+              type: 'server',
+              message: messages.join(' '),
+            })
+            mappedFieldError = true
+          }
         }
 
-        // Set user and access token
-        auth.setUser(mockUser)
-        auth.setAccessToken('mock-access-token')
-
-        // Redirect to the stored location or default to dashboard
-        const targetPath = redirectTo || '/'
-        navigate({ to: targetPath, replace: true })
-
-        return `Welcome back, ${data.email}!`
-      },
-      error: 'Error',
-    })
+        if (!mappedFieldError) {
+          setSubmitError('Please correct the highlighted fields.')
+        }
+      } else if (apiError.status === 401) {
+        setSubmitError('Invalid email or password.')
+      } else if (apiError.status === 403) {
+        setSubmitError('Sign-in was blocked. Refresh the page and try again.')
+      } else if (apiError.status === 429) {
+        setSubmitError(
+          'Too many sign-in attempts. Please wait a moment and try again.'
+        )
+      } else if (apiError.isNetworkError) {
+        setSubmitError(
+          'Unable to connect to the service. Check your connection and try again.'
+        )
+      } else if (apiError.isServerError) {
+        setSubmitError(
+          'The service is temporarily unavailable. Please try again later.'
+        )
+      } else {
+        setSubmitError('Unable to sign in right now. Please try again.')
+      }
+    } finally {
+      isSubmitting.current = false
+      setIsLoading(false)
+    }
   }
 
   return (
@@ -88,6 +119,11 @@ export function UserAuthForm({
         className={cn('grid gap-3', className)}
         {...props}
       >
+        {submitError ? (
+          <Alert variant='destructive'>
+            <AlertDescription>{submitError}</AlertDescription>
+          </Alert>
+        ) : null}
         <FormField
           control={form.control}
           name='email'
@@ -95,7 +131,11 @@ export function UserAuthForm({
             <FormItem>
               <FormLabel>Email</FormLabel>
               <FormControl>
-                <Input placeholder='name@example.com' {...field} />
+                <Input
+                  placeholder='name@example.com'
+                  disabled={isLoading}
+                  {...field}
+                />
               </FormControl>
               <FormMessage />
             </FormItem>
@@ -108,7 +148,11 @@ export function UserAuthForm({
             <FormItem className='relative'>
               <FormLabel>Password</FormLabel>
               <FormControl>
-                <PasswordInput placeholder='********' {...field} />
+                <PasswordInput
+                  placeholder='********'
+                  disabled={isLoading}
+                  {...field}
+                />
               </FormControl>
               <FormMessage />
               <Link
@@ -120,30 +164,10 @@ export function UserAuthForm({
             </FormItem>
           )}
         />
-        <Button className='mt-2' disabled={isLoading}>
+        <Button type='submit' className='mt-2' disabled={isLoading}>
           {isLoading ? <Loader2 className='animate-spin' /> : <LogIn />}
           Sign in
         </Button>
-
-        <div className='relative my-2'>
-          <div className='absolute inset-0 flex items-center'>
-            <span className='w-full border-t' />
-          </div>
-          <div className='relative flex justify-center text-xs uppercase'>
-            <span className='bg-background px-2 text-muted-foreground'>
-              Or continue with
-            </span>
-          </div>
-        </div>
-
-        <div className='grid grid-cols-2 gap-2'>
-          <Button variant='outline' type='button' disabled={isLoading}>
-            <IconGithub className='h-4 w-4' /> GitHub
-          </Button>
-          <Button variant='outline' type='button' disabled={isLoading}>
-            <IconFacebook className='h-4 w-4' /> Facebook
-          </Button>
-        </div>
       </form>
     </Form>
   )
