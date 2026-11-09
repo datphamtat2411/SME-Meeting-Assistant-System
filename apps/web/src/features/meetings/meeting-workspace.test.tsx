@@ -178,4 +178,75 @@ describe('MeetingWorkspacePage', () => {
       .toBeInTheDocument()
     expect(participantSpy).not.toHaveBeenCalled()
   })
+
+  it('shows the edit action only when the current user is the organizer of an editable meeting', async () => {
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+      data: {
+        ...detail,
+        organizerUserId: 'current-user',
+        createdByUserId: 'current-user',
+        roomId: null,
+        status: 'DRAFT',
+      },
+      meta: {},
+      etag: 'draft-etag',
+    })
+    vi.spyOn(coreApi, 'getWithMeta').mockResolvedValue({
+      data: [],
+      meta: {},
+    })
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    queryClient.setQueryData(currentUserQueryKey, {
+      userId: 'current-user',
+      displayName: 'Current User',
+    })
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <MeetingWorkspacePage meetingId='meeting-1' />
+      </QueryClientProvider>
+    )
+
+    await expect
+      .element(screen.getByRole('button', { name: 'Edit meeting' }))
+      .toBeInTheDocument()
+  })
+
+  it('does not show edit actions to a non-organizer even for a DRAFT meeting', async () => {
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+      data: {
+        ...detail,
+        organizerUserId: 'organizer-1',
+        roomId: null,
+        status: 'DRAFT',
+      },
+      meta: {},
+      etag: 'draft-etag',
+    })
+    vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url) => {
+      if (url === '/meetings/meeting-1/participants') {
+        return { data: [], meta: {} }
+      }
+      return { data: { id: 'organizer-1', name: 'Organizer' }, meta: {} }
+    })
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    queryClient.setQueryData(currentUserQueryKey, {
+      userId: 'current-user',
+      displayName: 'Current User',
+    })
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <MeetingWorkspacePage meetingId='meeting-1' />
+      </QueryClientProvider>
+    )
+
+    await expect
+      .element(screen.getByRole('button', { name: 'Edit meeting' }))
+      .not.toBeInTheDocument()
+  })
 })

@@ -473,6 +473,13 @@ export const coreApi = {
   patch<T>(url: string, data?: unknown, config?: AxiosRequestConfig) {
     return request<T>({ ...config, method: 'PATCH', url, data })
   },
+  patchWithMetaAndEtag<T>(
+    url: string,
+    data?: unknown,
+    config?: AxiosRequestConfig
+  ) {
+    return requestWithMetaAndEtag<T>({ ...config, method: 'PATCH', url, data })
+  },
   delete<T>(url: string, config?: AxiosRequestConfig) {
     return request<T>({ ...config, method: 'DELETE', url })
   },

@@ -176,6 +176,37 @@ describe('core API transport', () => {
     expect(requests[0]?.headers.get('X-CSRF-Token')).toBe('csrf-for-meeting')
   })
 
+  it('sends an opaque If-Match value for PATCH and returns the refreshed ETag', async () => {
+    const requests: Array<Parameters<AxiosAdapter>[0]> = []
+    const etag = 'opaque-next-etag;revision=8'
+    setCsrfToken('csrf-for-patch')
+    coreApiAxios.defaults.adapter = async (config) => {
+      requests.push(config)
+      const response = makeResponse(
+        config,
+        successEnvelope({ id: 'meeting-1', status: 'DRAFT' })
+      )
+      response.headers = new AxiosHeaders({ ETag: etag })
+      return response
+    }
+
+    await expect(
+      coreApi.patchWithMetaAndEtag(
+        '/meetings/meeting-1',
+        { title: 'Updated title' },
+        { headers: { 'If-Match': 'opaque-current-etag' } }
+      )
+    ).resolves.toEqual({
+      data: { id: 'meeting-1', status: 'DRAFT' },
+      meta: {},
+      etag,
+    })
+
+    expect(requests).toHaveLength(1)
+    expect(requests[0]?.headers.get('If-Match')).toBe('opaque-current-etag')
+    expect(requests[0]?.headers.get('X-CSRF-Token')).toBe('csrf-for-patch')
+  })
+
   it('does not add CSRF headers to bootstrap GET requests', async () => {
     setCsrfToken('csrf-before-login')
     let requestConfig: Parameters<AxiosAdapter>[0] | undefined

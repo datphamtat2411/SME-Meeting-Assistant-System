@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import {
@@ -29,6 +29,10 @@ import {
   currentUserQueryKey,
   type AuthContext,
 } from '@/features/auth/session/current-user'
+import {
+  MeetingEditDialog,
+  type EditableMeetingView,
+} from './components/meeting-edit-dialog'
 import { MeetingStatusBadge } from './components/meeting-status-badge'
 import {
   classifyParticipantMemberships,
@@ -81,7 +85,8 @@ type ParticipantState = {
 export function MeetingWorkspacePage({ meetingId }: { meetingId: string }) {
   const queryClient = useQueryClient()
   const detailQuery = useQuery(meetingDetailQueryOptions(meetingId))
-  const meeting = detailQuery.isSuccess ? detailQuery.data.meeting : undefined
+  const detail = detailQuery.isSuccess ? detailQuery.data : undefined
+  const meeting = detail?.meeting
   const currentUser = queryClient.getQueryData<AuthContext>(currentUserQueryKey)
 
   const participantsQuery = useQuery(
@@ -166,6 +171,7 @@ export function MeetingWorkspacePage({ meetingId }: { meetingId: string }) {
         ) : meeting ? (
           <MeetingWorkspace
             meeting={meeting}
+            etag={detail.etag}
             currentUser={currentUser}
             participants={{
               data: participantsQuery.isError
@@ -210,17 +216,27 @@ export function MeetingWorkspacePage({ meetingId }: { meetingId: string }) {
 
 function MeetingWorkspace({
   meeting,
+  etag,
   currentUser,
   participants,
   room,
   organizer,
 }: {
   meeting: MeetingView
+  etag: string
   currentUser?: AuthContext
   participants: ParticipantState
   room: LookupState<RoomFilterOption>
   organizer: LookupState<OrganizerFilterOption>
 }) {
+  const [editOpen, setEditOpen] = useState(false)
+  const canEdit =
+    currentUser?.userId === meeting.organizerUserId &&
+    (meeting.status === 'DRAFT' || meeting.status === 'SCHEDULED')
+  const participantCount = participants.data
+    ? classifyParticipantMemberships(participants.data).active.length + 1
+    : undefined
+
   return (
     <>
       <MeetingHeader
@@ -228,7 +244,18 @@ function MeetingWorkspace({
         participants={participants}
         room={room}
         organizer={organizer}
+        canEdit={canEdit}
+        onEdit={() => setEditOpen(true)}
       />
+      {canEdit && (
+        <MeetingEditDialog
+          open={editOpen}
+          onOpenChange={setEditOpen}
+          meeting={meeting as EditableMeetingView}
+          etag={etag}
+          participantCount={participantCount}
+        />
+      )}
       <OperationalOverview
         meeting={meeting}
         currentUser={currentUser}
@@ -245,11 +272,15 @@ function MeetingHeader({
   participants,
   room,
   organizer,
+  canEdit,
+  onEdit,
 }: {
   meeting: MeetingView
   participants: ParticipantState
   room: LookupState<RoomFilterOption>
   organizer: LookupState<OrganizerFilterOption>
+  canEdit: boolean
+  onEdit: () => void
 }) {
   return (
     <section className='space-y-5'>
@@ -257,14 +288,21 @@ function MeetingHeader({
         <div className='flex flex-wrap items-center gap-2'>
           <MeetingStatusBadge status={meeting.status} />
         </div>
-        <div>
-          <h1 className='text-2xl font-bold tracking-tight sm:text-3xl'>
-            {meeting.title}
-          </h1>
-          {meeting.description && (
-            <p className='mt-2 max-w-3xl text-muted-foreground'>
-              {meeting.description}
-            </p>
+        <div className='flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between'>
+          <div>
+            <h1 className='text-2xl font-bold tracking-tight sm:text-3xl'>
+              {meeting.title}
+            </h1>
+            {meeting.description && (
+              <p className='mt-2 max-w-3xl text-muted-foreground'>
+                {meeting.description}
+              </p>
+            )}
+          </div>
+          {canEdit && (
+            <Button type='button' variant='outline' onClick={onEdit}>
+              Edit meeting
+            </Button>
           )}
         </div>
         <div className='flex flex-wrap gap-x-4 gap-y-2 text-sm text-muted-foreground'>
