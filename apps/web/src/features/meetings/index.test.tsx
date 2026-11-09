@@ -1,8 +1,18 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
 import { coreApi } from '@/lib/core-api'
+import { dateInputToOffsetDateTime, dateInputValue } from './data/date-filters'
+import { MeetingsPage } from './index'
+
+type RouterSearchMock = {
+  page: number
+  pageSize: number
+  q: string
+  sort: string
+  organizerId?: string
+}
 
 const routerMock = vi.hoisted(() => ({
   search: {
@@ -10,7 +20,7 @@ const routerMock = vi.hoisted(() => ({
     pageSize: 10,
     q: 'roadmap',
     sort: 'createdAt,desc',
-  },
+  } as RouterSearchMock,
   navigate: vi.fn(),
 }))
 
@@ -34,9 +44,7 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
     }) => (
       <a
         href={
-          params?.meetingId
-            ? to.replace('$meetingId', params.meetingId)
-            : to
+          params?.meetingId ? to.replace('$meetingId', params.meetingId) : to
         }
         {...rest}
       >
@@ -60,9 +68,17 @@ vi.mock('@/components/layout/main', () => ({
   ),
 }))
 
-import { MeetingsPage } from './index'
-
 describe('MeetingsPage', () => {
+  beforeEach(() => {
+    routerMock.search = {
+      page: 1,
+      pageSize: 10,
+      q: '',
+      sort: 'createdAt,desc',
+    }
+    routerMock.navigate.mockReset()
+  })
+
   it('renders API projection fields, unscheduled drafts, canonical status, and links', async () => {
     vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url) => {
       if (url === '/rooms') {
@@ -178,7 +194,9 @@ describe('MeetingsPage', () => {
     await expect
       .element(screen.getByText('Unscheduled', { exact: true }).first())
       .toBeInTheDocument()
-    await expect.element(screen.getByText('Unknown organizer')).toBeInTheDocument()
+    await expect
+      .element(screen.getByText('Unknown organizer'))
+      .toBeInTheDocument()
     await expect
       .element(screen.getByText('Room unassigned', { exact: true }))
       .toBeInTheDocument()
@@ -191,14 +209,12 @@ describe('MeetingsPage', () => {
     await expect
       .element(screen.getByText('Location unavailable', { exact: true }))
       .toBeInTheDocument()
-    await expect.element(screen.getByRole('link', { name: 'Live' })).toHaveAttribute(
-      'href',
-      '/meetings/meeting-1/live'
-    )
-    await expect.element(screen.getByRole('link', { name: 'View Roadmap' })).toHaveAttribute(
-      'href',
-      '/meetings/meeting-1'
-    )
+    await expect
+      .element(screen.getByRole('link', { name: 'Live' }))
+      .toHaveAttribute('href', '/meetings/meeting-1/live')
+    await expect
+      .element(screen.getByRole('link', { name: 'View Roadmap' }))
+      .toHaveAttribute('href', '/meetings/meeting-1')
     await expect
       .element(screen.getByRole('link', { name: 'View Unscheduled draft' }))
       .toHaveAttribute('href', '/meetings/meeting-2')
@@ -232,5 +248,230 @@ describe('MeetingsPage', () => {
     expect(routerMock.navigate).toHaveBeenCalledWith(
       expect.objectContaining({ search: {} })
     )
+  })
+
+  it('keeps inclusive date inputs across month and year boundaries', () => {
+    const januaryEnd = dateInputToOffsetDateTime('2026-01-31', true)
+    const decemberEnd = dateInputToOffsetDateTime('2026-12-31', true)
+
+    expect(januaryEnd).toContain('2026-02-01T00:00:00')
+    expect(decemberEnd).toContain('2027-01-01T00:00:00')
+    expect(dateInputValue(januaryEnd, true)).toBe('2026-01-31')
+    expect(dateInputValue(decemberEnd, true)).toBe('2026-12-31')
+  })
+
+  it('searches organizers through the paginated API and binds selection to URL state', async () => {
+    const requests: Array<{ url: string; params?: Record<string, string> }> = []
+    vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url, config) => {
+      requests.push({
+        url,
+        params: config?.params as Record<string, string> | undefined,
+      })
+      if (url === '/meeting-organizers') {
+        return {
+          data: [{ id: 'organizer-1', name: 'Lan Nguyen' }],
+          meta: {
+            pagination: {
+              page: 0,
+              size: 20,
+              totalElements: 1,
+              totalPages: 1,
+              hasNext: false,
+              hasPrevious: false,
+            },
+          },
+        }
+      }
+      return {
+        data: [],
+        meta: {
+          pagination: {
+            page: 0,
+            size: 10,
+            totalElements: 0,
+            totalPages: 0,
+            hasNext: false,
+            hasPrevious: false,
+          },
+        },
+      }
+    })
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <MeetingsPage />
+      </QueryClientProvider>
+    )
+
+    await userEvent.click(
+      screen.getByRole('combobox', {
+        name: 'Filter meetings by organizer',
+      })
+    )
+    await expect.element(screen.getByText('Lan Nguyen')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('option', { name: 'Lan Nguyen' }))
+
+    const navigation = routerMock.navigate.mock.calls[
+      routerMock.navigate.mock.calls.length - 1
+    ]?.[0] as {
+      search: (previous: typeof routerMock.search) => typeof routerMock.search
+    }
+    expect(navigation.search(routerMock.search)).toMatchObject({
+      organizerId: 'organizer-1',
+      page: undefined,
+    })
+    expect(requests).toContainEqual({
+      url: '/meeting-organizers',
+      params: { page: '0', size: '20' },
+    })
+    expect(requests.some(({ url }) => url.includes('/users'))).toBe(false)
+  })
+
+  it('loads room filter options through bounded server pagination', async () => {
+    const requests: Array<{ url: string; params?: Record<string, string> }> = []
+    vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url, config) => {
+      requests.push({
+        url,
+        params: config?.params as Record<string, string> | undefined,
+      })
+      if (url === '/rooms') {
+        return {
+          data: [{ id: 'room-1', name: 'Boardroom', location: 'HQ' }],
+          meta: {
+            pagination: {
+              page: 0,
+              size: 20,
+              totalElements: 101,
+              totalPages: 6,
+              hasNext: true,
+              hasPrevious: false,
+            },
+          },
+        }
+      }
+      return {
+        data: [],
+        meta: {
+          pagination: {
+            page: 0,
+            size: 10,
+            totalElements: 0,
+            totalPages: 0,
+            hasNext: false,
+            hasPrevious: false,
+          },
+        },
+      }
+    })
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <MeetingsPage />
+      </QueryClientProvider>
+    )
+
+    await userEvent.click(
+      screen.getByRole('combobox', { name: 'Filter meetings by room' })
+    )
+    await expect.element(screen.getByText('Boardroom - HQ')).toBeInTheDocument()
+    expect(requests).toContainEqual({
+      url: '/rooms',
+      params: { page: '0', size: '20', sort: 'name,asc' },
+    })
+  })
+
+  it('restores a deep-linked organizer label through the authorized ID lookup', async () => {
+    routerMock.search = {
+      page: 1,
+      pageSize: 10,
+      q: '',
+      sort: 'createdAt,desc',
+      organizerId: 'organizer-deep-link',
+    }
+    const requests: string[] = []
+    vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url) => {
+      requests.push(url)
+      if (url === '/meeting-organizers/organizer-deep-link') {
+        return {
+          data: { id: 'organizer-deep-link', name: 'Historical Organizer' },
+          meta: {},
+        }
+      }
+      return {
+        data: [],
+        meta: {
+          pagination: {
+            page: 0,
+            size: 10,
+            totalElements: 0,
+            totalPages: 0,
+            hasNext: false,
+            hasPrevious: false,
+          },
+        },
+      }
+    })
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <MeetingsPage />
+      </QueryClientProvider>
+    )
+
+    await expect
+      .element(screen.getByText('Historical Organizer'))
+      .toBeInTheDocument()
+    expect(requests).toContain('/meeting-organizers/organizer-deep-link')
+  })
+
+  it('shows a retryable failure for organizer lookup options', async () => {
+    vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url) => {
+      if (url === '/meeting-organizers') {
+        throw new Error('organizer lookup failed')
+      }
+      return {
+        data: [],
+        meta: {
+          pagination: {
+            page: 0,
+            size: 10,
+            totalElements: 0,
+            totalPages: 0,
+            hasNext: false,
+            hasPrevious: false,
+          },
+        },
+      }
+    })
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <MeetingsPage />
+      </QueryClientProvider>
+    )
+
+    await userEvent.click(
+      screen.getByRole('combobox', {
+        name: 'Filter meetings by organizer',
+      })
+    )
+    await expect
+      .element(screen.getByText('Could not load organizer options.'))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: 'Try again' }))
+      .toBeInTheDocument()
   })
 })

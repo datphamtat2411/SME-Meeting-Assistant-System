@@ -1,9 +1,10 @@
-import { useEffect } from 'react'
+import { useDeferredValue, useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { getRouteApi, Link } from '@tanstack/react-router'
 import {
   ArrowUpRight,
   CalendarDays,
+  Check,
   ChevronLeft,
   ChevronRight,
   ChevronsLeft,
@@ -14,6 +15,8 @@ import {
   Search as SearchIcon,
   Users,
 } from 'lucide-react'
+import { normalizeCoreApiError } from '@/lib/core-api'
+import { getPageNumbers } from '@/lib/utils'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
@@ -23,7 +26,21 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+  CommandSeparator,
+} from '@/components/ui/command'
 import { Input } from '@/components/ui/input'
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover'
 import {
   Select,
   SelectContent,
@@ -43,15 +60,17 @@ import {
 import { Header } from '@/components/layout/header'
 import { HeaderActions } from '@/components/layout/header-actions'
 import { Main } from '@/components/layout/main'
-import { normalizeCoreApiError } from '@/lib/core-api'
-import { getPageNumbers } from '@/lib/utils'
 import { MeetingStatusBadge } from './components/meeting-status-badge'
+import { dateInputToOffsetDateTime, dateInputValue } from './data/date-filters'
 import {
   defaultMeetingPage,
   defaultMeetingPageSize,
   defaultMeetingSort,
   getMeetingDisplay,
   meetingListQueryOptions,
+  organizerFilterOptionByIdQueryOptions,
+  organizerFilterQueryOptions,
+  roomFilterOptionByIdQueryOptions,
   roomFilterQueryOptions,
   type MeetingDisplay,
   type MeetingListItem,
@@ -105,7 +124,6 @@ export function MeetingsPage() {
   const search = route.useSearch()
   const navigate = route.useNavigate()
   const meetingsQuery = useQuery(meetingListQueryOptions(search))
-  const roomsQuery = useQuery(roomFilterQueryOptions())
 
   const updateSearch = (patch: Partial<MeetingListSearch>) => {
     navigate({
@@ -211,8 +229,6 @@ export function MeetingsPage() {
           <CardContent className='p-0'>
             <MeetingFilters
               search={search}
-              rooms={roomsQuery.data ?? []}
-              roomsUnavailable={roomsQuery.isError}
               onSearchChange={(value) =>
                 updateSearch({ q: value || undefined })
               }
@@ -228,6 +244,11 @@ export function MeetingsPage() {
               onToChange={(value) => setDateFilter('to', value)}
               onRoomChange={(value) =>
                 updateSearch({ roomId: value === 'all' ? undefined : value })
+              }
+              onOrganizerChange={(value) =>
+                updateSearch({
+                  organizerId: value === 'all' ? undefined : value,
+                })
               }
               onSortChange={(value) =>
                 updateSearch({
@@ -271,29 +292,64 @@ export function MeetingsPage() {
 
 function MeetingFilters({
   search,
-  rooms,
-  roomsUnavailable,
   onSearchChange,
   onStatusChange,
   onRelationshipChange,
   onFromChange,
   onToChange,
   onRoomChange,
+  onOrganizerChange,
   onSortChange,
   onReset,
 }: {
   search: MeetingListSearch
-  rooms: Array<{ id: string; name: string; location?: string | null }>
-  roomsUnavailable: boolean
   onSearchChange: (value: string) => void
   onStatusChange: (value: MeetingListSearch['status'] | 'all') => void
   onRelationshipChange: (value: MeetingRelationship | 'all') => void
   onFromChange: (value: string) => void
   onToChange: (value: string) => void
   onRoomChange: (value: string) => void
+  onOrganizerChange: (value: string) => void
   onSortChange: (value: MeetingSort) => void
   onReset: () => void
 }) {
+  const [roomLookupOpen, setRoomLookupOpen] = useState(false)
+  const [organizerLookupOpen, setOrganizerLookupOpen] = useState(false)
+  const [roomLookupSearch, setRoomLookupSearch] = useState('')
+  const [organizerLookupSearch, setOrganizerLookupSearch] = useState('')
+  const [roomLookupPage, setRoomLookupPage] = useState(1)
+  const [organizerLookupPage, setOrganizerLookupPage] = useState(1)
+  const deferredRoomLookupSearch = useDeferredValue(roomLookupSearch)
+  const deferredOrganizerLookupSearch = useDeferredValue(organizerLookupSearch)
+  const roomsQuery = useQuery({
+    ...roomFilterQueryOptions({
+      q: deferredRoomLookupSearch,
+      page: roomLookupPage,
+    }),
+    enabled: roomLookupOpen,
+  })
+  const selectedRoomQuery = useQuery(
+    roomFilterOptionByIdQueryOptions(search.roomId)
+  )
+  const organizersQuery = useQuery({
+    ...organizerFilterQueryOptions({
+      q: deferredOrganizerLookupSearch,
+      page: organizerLookupPage,
+    }),
+    enabled: organizerLookupOpen,
+  })
+  const selectedOrganizerQuery = useQuery(
+    organizerFilterOptionByIdQueryOptions(search.organizerId)
+  )
+  const selectedRoom =
+    selectedRoomQuery.data ??
+    roomsQuery.data?.options.find((room) => room.id === search.roomId)
+  const selectedOrganizer =
+    selectedOrganizerQuery.data ??
+    organizersQuery.data?.options.find(
+      (organizer) => organizer.id === search.organizerId
+    )
+
   return (
     <div className='flex flex-col gap-3 border-b p-4'>
       <div className='flex flex-col gap-3 lg:flex-row'>
@@ -350,7 +406,7 @@ function MeetingFilters({
         </Select>
       </div>
 
-      <div className='grid gap-3 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_1fr_1fr_auto]'>
+      <div className='grid gap-3 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_1fr_1fr_1fr_auto]'>
         <label className='grid gap-1.5 text-sm font-medium'>
           From
           <Input
@@ -369,39 +425,76 @@ function MeetingFilters({
             aria-label='Filter meetings to date'
           />
         </label>
-        <Select
-          value={search.roomId ?? 'all'}
-          onValueChange={onRoomChange}
-        >
-          <SelectTrigger
-            className='mt-auto w-full'
-            aria-label='Filter meetings by room'
-          >
-            <SelectValue placeholder='All rooms' />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value='all'>All rooms</SelectItem>
-            {rooms.map((room) => (
-              <SelectItem key={room.id} value={room.id}>
-                {room.name}
-                {room.location ? ` - ${room.location}` : ''}
-              </SelectItem>
-            ))}
-            {roomsUnavailable && (
-              <SelectItem value='rooms-unavailable' disabled>
-                Room options unavailable
-              </SelectItem>
-            )}
-          </SelectContent>
-        </Select>
+        <MeetingFilterLookup
+          label='Room'
+          placeholder='All rooms'
+          searchPlaceholder='Search rooms...'
+          open={roomLookupOpen}
+          onOpenChange={setRoomLookupOpen}
+          searchValue={roomLookupSearch}
+          onSearchChange={(value) => {
+            setRoomLookupSearch(value)
+            setRoomLookupPage(1)
+          }}
+          options={roomsQuery.data?.options ?? []}
+          selectedOption={selectedRoom}
+          selectedId={search.roomId}
+          pagination={roomsQuery.data?.pagination}
+          page={roomLookupPage}
+          isLoading={roomLookupOpen && roomsQuery.isPending}
+          isFetching={roomLookupOpen && roomsQuery.isFetching}
+          isError={roomsQuery.isError}
+          onRetry={() => void roomsQuery.refetch()}
+          onPageChange={setRoomLookupPage}
+          onChange={onRoomChange}
+          formatOption={(room) =>
+            room.location ? `${room.name} - ${room.location}` : room.name
+          }
+          selectedLoading={Boolean(
+            search.roomId && !selectedRoom && selectedRoomQuery.isPending
+          )}
+          selectedUnavailable={Boolean(
+            search.roomId && !selectedRoom && selectedRoomQuery.isError
+          )}
+        />
+        <MeetingFilterLookup
+          label='Organizer'
+          placeholder='All organizers'
+          searchPlaceholder='Search organizers...'
+          open={organizerLookupOpen}
+          onOpenChange={setOrganizerLookupOpen}
+          searchValue={organizerLookupSearch}
+          onSearchChange={(value) => {
+            setOrganizerLookupSearch(value)
+            setOrganizerLookupPage(1)
+          }}
+          options={organizersQuery.data?.options ?? []}
+          selectedOption={selectedOrganizer}
+          selectedId={search.organizerId}
+          pagination={organizersQuery.data?.pagination}
+          page={organizerLookupPage}
+          isLoading={organizerLookupOpen && organizersQuery.isPending}
+          isFetching={organizerLookupOpen && organizersQuery.isFetching}
+          isError={organizersQuery.isError}
+          onRetry={() => void organizersQuery.refetch()}
+          onPageChange={setOrganizerLookupPage}
+          onChange={onOrganizerChange}
+          selectedLoading={Boolean(
+            search.organizerId &&
+            !selectedOrganizer &&
+            selectedOrganizerQuery.isPending
+          )}
+          selectedUnavailable={Boolean(
+            search.organizerId &&
+            !selectedOrganizer &&
+            selectedOrganizerQuery.isError
+          )}
+        />
         <Select
           value={search.sort ?? defaultMeetingSort}
           onValueChange={(value) => onSortChange(value as MeetingSort)}
         >
-          <SelectTrigger
-            className='mt-auto w-full'
-            aria-label='Sort meetings'
-          >
+          <SelectTrigger className='mt-auto w-full' aria-label='Sort meetings'>
             <SelectValue placeholder='Sort meetings' />
           </SelectTrigger>
           <SelectContent>
@@ -425,6 +518,192 @@ function MeetingFilters({
   )
 }
 
+function MeetingFilterLookup({
+  label,
+  placeholder,
+  searchPlaceholder,
+  open,
+  onOpenChange,
+  searchValue,
+  onSearchChange,
+  options,
+  selectedOption,
+  selectedId,
+  pagination,
+  page,
+  isLoading,
+  isFetching,
+  isError,
+  onRetry,
+  onPageChange,
+  onChange,
+  formatOption = (option) => option.name,
+  selectedLoading,
+  selectedUnavailable,
+}: {
+  label: string
+  placeholder: string
+  searchPlaceholder: string
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  searchValue: string
+  onSearchChange: (value: string) => void
+  options: Array<{ id: string; name: string; location?: string | null }>
+  selectedOption?: { id: string; name: string; location?: string | null }
+  selectedId?: string
+  pagination?: MeetingPagination
+  page: number
+  isLoading: boolean
+  isFetching: boolean
+  isError: boolean
+  onRetry: () => void
+  onPageChange: (page: number) => void
+  onChange: (value: string) => void
+  formatOption?: (option: {
+    id: string
+    name: string
+    location?: string | null
+  }) => string
+  selectedLoading: boolean
+  selectedUnavailable: boolean
+}) {
+  const currentPage = pagination ? pagination.page + 1 : page
+  const totalPages = Math.max(pagination?.totalPages ?? 0, 1)
+
+  return (
+    <Popover open={open} onOpenChange={onOpenChange}>
+      <PopoverTrigger asChild>
+        <Button
+          type='button'
+          variant='outline'
+          role='combobox'
+          aria-expanded={open}
+          aria-label={`Filter meetings by ${label.toLowerCase()}`}
+          className='mt-auto w-full justify-between font-normal'
+        >
+          <span className='truncate'>
+            {selectedOption
+              ? formatOption(selectedOption)
+              : selectedLoading
+                ? `Loading ${label.toLowerCase()}...`
+                : selectedUnavailable
+                  ? `${label} unavailable`
+                  : placeholder}
+          </span>
+          <ChevronRight className='size-4 rotate-90 opacity-50' />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className='w-72 p-0' align='start'>
+        <Command shouldFilter={false}>
+          <CommandInput
+            value={searchValue}
+            onValueChange={onSearchChange}
+            placeholder={searchPlaceholder}
+          />
+          <CommandList>
+            {isLoading ? (
+              <div role='status' className='px-3 py-6 text-center text-sm'>
+                Loading {label.toLowerCase()} options...
+              </div>
+            ) : isError ? (
+              <div className='grid gap-2 px-3 py-6 text-center text-sm'>
+                <span>Could not load {label.toLowerCase()} options.</span>
+                <Button
+                  type='button'
+                  variant='outline'
+                  size='sm'
+                  onClick={onRetry}
+                  className='mx-auto'
+                >
+                  Try again
+                </Button>
+              </div>
+            ) : options.length === 0 ? (
+              <CommandEmpty>
+                No {label.toLowerCase()} options found.
+              </CommandEmpty>
+            ) : (
+              <CommandGroup>
+                {options.map((option) => (
+                  <CommandItem
+                    key={option.id}
+                    value={option.id}
+                    onSelect={() => {
+                      onChange(option.id)
+                      onOpenChange(false)
+                    }}
+                  >
+                    <Check
+                      className={`size-4 ${
+                        option.id === selectedId ? 'opacity-100' : 'opacity-0'
+                      }`}
+                    />
+                    <span className='truncate'>{formatOption(option)}</span>
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            )}
+            {selectedId && (
+              <>
+                <CommandSeparator />
+                <CommandGroup>
+                  <CommandItem
+                    onSelect={() => {
+                      onChange('all')
+                      onOpenChange(false)
+                    }}
+                    className='justify-center text-center'
+                  >
+                    Clear {label.toLowerCase()} filter
+                  </CommandItem>
+                </CommandGroup>
+              </>
+            )}
+          </CommandList>
+          {isFetching && !isLoading && (
+            <p
+              role='status'
+              className='border-t px-3 py-2 text-xs text-muted-foreground'
+            >
+              Updating options...
+            </p>
+          )}
+          {!isLoading &&
+            !isError &&
+            pagination &&
+            pagination.totalPages > 1 && (
+              <div className='flex items-center justify-between border-t p-2'>
+                <Button
+                  type='button'
+                  variant='ghost'
+                  size='sm'
+                  aria-label={`Previous ${label.toLowerCase()} options page`}
+                  onClick={() => onPageChange(page - 1)}
+                  disabled={!pagination.hasPrevious}
+                >
+                  <ChevronLeft />
+                </Button>
+                <span className='text-xs text-muted-foreground'>
+                  Page {currentPage} of {totalPages}
+                </span>
+                <Button
+                  type='button'
+                  variant='ghost'
+                  size='sm'
+                  aria-label={`Next ${label.toLowerCase()} options page`}
+                  onClick={() => onPageChange(page + 1)}
+                  disabled={!pagination.hasNext}
+                >
+                  <ChevronRight />
+                </Button>
+              </div>
+            )}
+        </Command>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 function MeetingsTable({
   meetings: meetingRows,
   totalMeetings,
@@ -437,7 +716,9 @@ function MeetingsTable({
   if (!totalMeetings) {
     return (
       <EmptyState
-        title={hasActiveFilters ? 'No meetings found.' : 'No accessible meetings.'}
+        title={
+          hasActiveFilters ? 'No meetings found.' : 'No accessible meetings.'
+        }
         description={
           hasActiveFilters
             ? 'Try adjusting your search or filters.'
@@ -623,7 +904,7 @@ function MeetingsPagination({
           <ChevronLeft />
         </Button>
         {pageNumbers.map((pageNumber, index) =>
-          pageNumber === '...' ? (
+          typeof pageNumber !== 'number' ? (
             <span
               key={`ellipsis-${index}`}
               className='px-1 text-sm text-muted-foreground'
@@ -674,11 +955,16 @@ function MeetingsTableSkeleton() {
       <Table className='min-w-[980px]'>
         <TableHeader>
           <TableRow>
-            {['Meeting', 'Schedule', 'Room', 'Participants', 'Status', 'Actions'].map(
-              (heading) => (
-                <TableHead key={heading}>{heading}</TableHead>
-              )
-            )}
+            {[
+              'Meeting',
+              'Schedule',
+              'Room',
+              'Participants',
+              'Status',
+              'Actions',
+            ].map((heading) => (
+              <TableHead key={heading}>{heading}</TableHead>
+            ))}
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -710,7 +996,9 @@ function MeetingListError({
   return (
     <Alert variant='destructive' className='m-4'>
       <AlertTitle>
-        {accessDenied ? 'Meeting access denied' : 'Meetings could not be loaded'}
+        {accessDenied
+          ? 'Meeting access denied'
+          : 'Meetings could not be loaded'}
       </AlertTitle>
       <AlertDescription>
         <p>
@@ -748,22 +1036,19 @@ function EmptyState({
 function hasMeetingFilters(search: MeetingListSearch) {
   return Boolean(
     search.q?.trim() ||
-      search.status ||
-      search.relationship ||
-      search.from ||
-      search.to ||
-      search.roomId ||
-      search.organizerId
+    search.status ||
+    search.relationship ||
+    search.from ||
+    search.to ||
+    search.roomId ||
+    search.organizerId
   )
 }
 
 function formatMeetingRange(pagination: MeetingPagination) {
   if (!pagination.totalElements) return '0 of 0'
   const first = pagination.page * pagination.size + 1
-  const last = Math.min(
-    pagination.totalElements,
-    first + pagination.size - 1
-  )
+  const last = Math.min(pagination.totalElements, first + pagination.size - 1)
   return `${first}-${last} of ${pagination.totalElements}`
 }
 
@@ -774,7 +1059,10 @@ function formatMeetingSchedule(meeting: MeetingListItem) {
 
   const startsAt = new Date(meeting.scheduledStartAt)
   const endsAt = new Date(meeting.scheduledEndAt)
-  if (!Number.isFinite(startsAt.getTime()) || !Number.isFinite(endsAt.getTime())) {
+  if (
+    !Number.isFinite(startsAt.getTime()) ||
+    !Number.isFinite(endsAt.getTime())
+  ) {
     return 'Unscheduled'
   }
 
@@ -811,45 +1099,4 @@ function getRoomDisplay(meeting: MeetingListItem, display: MeetingDisplay) {
     name: display.roomName || 'Room unavailable',
     location: display.roomLocation || 'Location unavailable',
   }
-}
-
-function dateInputValue(value: string | undefined, exclusiveEnd = false) {
-  if (!value) return ''
-  const date = new Date(value)
-  if (!Number.isFinite(date.getTime())) return ''
-  if (exclusiveEnd) date.setDate(date.getDate() - 1)
-
-  return [date.getFullYear(), date.getMonth() + 1, date.getDate()]
-    .map((part, index) => (index === 0 ? String(part) : String(part).padStart(2, '0')))
-    .join('-')
-}
-
-function dateInputToOffsetDateTime(value: string, exclusiveEnd: boolean) {
-  const [year, month, day] = value.split('-').map(Number)
-  if (![year, month, day].every(Number.isInteger)) return undefined
-
-  const date = new Date(year, month - 1, day + (exclusiveEnd ? 1 : 0))
-  if (
-    !Number.isFinite(date.getTime()) ||
-    date.getFullYear() !== year ||
-    date.getMonth() !== month - 1 ||
-    date.getDate() !== day + (exclusiveEnd ? 1 : 0)
-  ) {
-    return undefined
-  }
-
-  const offsetMinutes = -date.getTimezoneOffset()
-  const sign = offsetMinutes >= 0 ? '+' : '-'
-  const absoluteOffset = Math.abs(offsetMinutes)
-  const offsetHours = String(Math.floor(absoluteOffset / 60)).padStart(2, '0')
-  const offsetRemainder = String(absoluteOffset % 60).padStart(2, '0')
-  const dateValue = [
-    date.getFullYear(),
-    date.getMonth() + 1,
-    date.getDate(),
-  ]
-    .map((part) => String(part).padStart(2, '0'))
-    .join('-')
-
-  return `${dateValue}T00:00:00${sign}${offsetHours}:${offsetRemainder}`
 }

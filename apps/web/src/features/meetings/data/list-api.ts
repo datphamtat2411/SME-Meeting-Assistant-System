@@ -1,10 +1,6 @@
-import { queryOptions } from '@tanstack/react-query'
 import { z } from 'zod'
-import {
-  CoreApiError,
-  coreApi,
-  type ApiResponseData,
-} from '@/lib/core-api'
+import { queryOptions } from '@tanstack/react-query'
+import { CoreApiError, coreApi, type ApiResponseData } from '@/lib/core-api'
 
 export const meetingLifecycleStatuses = [
   'DRAFT',
@@ -54,14 +50,13 @@ const participantPreviewSchema = z.object({
   displayName: z.string().nullable(),
 })
 
-const meetingDisplaySchema = z
-  .object({
-    organizerName: z.string().nullable(),
-    roomName: z.string().nullable(),
-    roomLocation: z.string().nullable(),
-    participantCount: z.number().int().nonnegative(),
-    participantPreview: z.array(participantPreviewSchema),
-  })
+const meetingDisplaySchema = z.object({
+  organizerName: z.string().nullable(),
+  roomName: z.string().nullable(),
+  roomLocation: z.string().nullable(),
+  participantCount: z.number().int().nonnegative(),
+  participantPreview: z.array(participantPreviewSchema),
+})
 
 const meetingListItemSchema = z.object({
   id: z.string().min(1),
@@ -100,6 +95,17 @@ export type MeetingPagination = z.infer<typeof paginationSchema>
 
 export interface MeetingListResponse {
   meetings: MeetingListItem[]
+  pagination: MeetingPagination
+}
+
+export interface FilterOptionsSearch {
+  q?: string
+  page?: number
+  pageSize?: number
+}
+
+export interface FilterOptionsResponse<T> {
+  options: T[]
   pagination: MeetingPagination
 }
 
@@ -172,9 +178,7 @@ export function serializeMeetingListQuery(
 
   params.page = String(page - 1)
   params.size = String(pageSize)
-  params.sort = isMeetingSort(search.sort)
-    ? search.sort
-    : defaultMeetingSort
+  params.sort = isMeetingSort(search.sort) ? search.sort : defaultMeetingSort
 
   return params
 }
@@ -199,8 +203,15 @@ export async function fetchMeetingList(
   search: MeetingListSearch,
   signal?: AbortSignal
 ): Promise<MeetingListResponse> {
+  return fetchMeetingListByParams(serializeMeetingListQuery(search), signal)
+}
+
+async function fetchMeetingListByParams(
+  params: Record<string, string>,
+  signal?: AbortSignal
+): Promise<MeetingListResponse> {
   const response = await coreApi.getWithMeta<unknown>('/meetings', {
-    params: serializeMeetingListQuery(search),
+    params,
     signal,
   })
   return parseMeetingListResponse(response)
@@ -212,7 +223,7 @@ export function meetingListQueryOptions(search: MeetingListSearch) {
   return queryOptions({
     queryKey: ['meetings', 'list', params] as const,
     queryFn: ({ signal }: { signal: AbortSignal }) =>
-      fetchMeetingList(search, signal),
+      fetchMeetingListByParams(params, signal),
     retry: false,
   })
 }
@@ -224,26 +235,193 @@ const roomFilterOptionSchema = z.object({
 })
 
 export type RoomFilterOption = z.infer<typeof roomFilterOptionSchema>
+const organizerFilterOptionSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+})
+
+export type OrganizerFilterOption = z.infer<typeof organizerFilterOptionSchema>
+
+const defaultFilterOptionsPage = 1
+const defaultFilterOptionsPageSize = 20
+
+function validFilterOptionsPage(value: unknown) {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1
+    ? value
+    : defaultFilterOptionsPage
+}
+
+function validFilterOptionsPageSize(value: unknown) {
+  return typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= 1 &&
+    value <= 100
+    ? value
+    : defaultFilterOptionsPageSize
+}
+
+export function serializeFilterOptionsQuery(
+  search: FilterOptionsSearch
+): Record<string, string> {
+  const params: Record<string, string> = {}
+  addOptionalString(params, 'q', search.q)
+  params.page = String(validFilterOptionsPage(search.page) - 1)
+  params.size = String(validFilterOptionsPageSize(search.pageSize))
+  return params
+}
+
+function malformedFilterOptionsResponse(error: z.ZodError): CoreApiError {
+  return new CoreApiError({
+    message: 'Core API returned a malformed filter option response.',
+    code: 'MALFORMED_RESPONSE',
+    kind: 'malformed',
+    cause: error,
+  })
+}
+
+const roomFilterOptionsResponseSchema = z.object({
+  data: z.array(roomFilterOptionSchema),
+  meta: z.object({ pagination: paginationSchema }),
+})
+const organizerFilterOptionsResponseSchema = z.object({
+  data: z.array(organizerFilterOptionSchema),
+  meta: z.object({ pagination: paginationSchema }),
+})
+
+function parseFilterOptionsResponse<T>(
+  response: unknown,
+  schema: z.ZodType<{ data: T[]; meta: { pagination: MeetingPagination } }>
+): FilterOptionsResponse<T> {
+  const parsed = schema.safeParse(response)
+  if (!parsed.success) throw malformedFilterOptionsResponse(parsed.error)
+  return {
+    options: parsed.data.data,
+    pagination: parsed.data.meta.pagination,
+  }
+}
+
+export function parseRoomFilterOptionsResponse(
+  response: unknown
+): FilterOptionsResponse<RoomFilterOption> {
+  return parseFilterOptionsResponse(response, roomFilterOptionsResponseSchema)
+}
+
+export function parseOrganizerFilterOptionsResponse(
+  response: unknown
+): FilterOptionsResponse<OrganizerFilterOption> {
+  return parseFilterOptionsResponse(
+    response,
+    organizerFilterOptionsResponseSchema
+  )
+}
 
 export async function fetchRoomFilterOptions(
+  search: FilterOptionsSearch = {},
   signal?: AbortSignal
-): Promise<RoomFilterOption[]> {
+): Promise<FilterOptionsResponse<RoomFilterOption>> {
+  return fetchRoomFilterOptionsByParams(
+    serializeFilterOptionsQuery(search),
+    signal
+  )
+}
+
+async function fetchRoomFilterOptionsByParams(
+  params: Record<string, string>,
+  signal?: AbortSignal
+): Promise<FilterOptionsResponse<RoomFilterOption>> {
   const response = await coreApi.getWithMeta<unknown>('/rooms', {
-    params: { page: '0', size: '100', sort: 'name,asc' },
+    params: { ...params, sort: 'name,asc' },
     signal,
   })
-  const parsed = z.array(roomFilterOptionSchema).safeParse(response.data)
-  if (!parsed.success) {
-    throw malformedListResponse(parsed.error)
-  }
+  return parseRoomFilterOptionsResponse(response)
+}
+
+export function roomFilterQueryOptions(search: FilterOptionsSearch = {}) {
+  const params = serializeFilterOptionsQuery(search)
+  return queryOptions({
+    queryKey: ['rooms', 'meeting-filter-options', params] as const,
+    queryFn: ({ signal }: { signal: AbortSignal }) =>
+      fetchRoomFilterOptionsByParams(params, signal),
+    retry: false,
+    staleTime: 60_000,
+  })
+}
+
+export async function fetchRoomFilterOptionById(
+  roomId: string,
+  signal?: AbortSignal
+): Promise<RoomFilterOption> {
+  const response = await coreApi.getWithMeta<unknown>(
+    `/rooms/${encodeURIComponent(roomId)}`,
+    { signal }
+  )
+  const parsed = roomFilterOptionSchema.safeParse(response.data)
+  if (!parsed.success) throw malformedFilterOptionsResponse(parsed.error)
   return parsed.data
 }
 
-export function roomFilterQueryOptions() {
+export function roomFilterOptionByIdQueryOptions(roomId?: string) {
   return queryOptions({
-    queryKey: ['rooms', 'meeting-filter-options'] as const,
+    queryKey: ['rooms', 'meeting-filter-option', roomId] as const,
     queryFn: ({ signal }: { signal: AbortSignal }) =>
-      fetchRoomFilterOptions(signal),
+      fetchRoomFilterOptionById(roomId as string, signal),
+    enabled: Boolean(roomId),
+    retry: false,
+    staleTime: 60_000,
+  })
+}
+
+export async function fetchOrganizerFilterOptions(
+  search: FilterOptionsSearch = {},
+  signal?: AbortSignal
+): Promise<FilterOptionsResponse<OrganizerFilterOption>> {
+  return fetchOrganizerFilterOptionsByParams(
+    serializeFilterOptionsQuery(search),
+    signal
+  )
+}
+
+async function fetchOrganizerFilterOptionsByParams(
+  params: Record<string, string>,
+  signal?: AbortSignal
+): Promise<FilterOptionsResponse<OrganizerFilterOption>> {
+  const response = await coreApi.getWithMeta<unknown>('/meeting-organizers', {
+    params,
+    signal,
+  })
+  return parseOrganizerFilterOptionsResponse(response)
+}
+
+export function organizerFilterQueryOptions(search: FilterOptionsSearch = {}) {
+  const params = serializeFilterOptionsQuery(search)
+  return queryOptions({
+    queryKey: ['meeting-organizers', 'filter-options', params] as const,
+    queryFn: ({ signal }: { signal: AbortSignal }) =>
+      fetchOrganizerFilterOptionsByParams(params, signal),
+    retry: false,
+    staleTime: 60_000,
+  })
+}
+
+export async function fetchOrganizerFilterOptionById(
+  organizerId: string,
+  signal?: AbortSignal
+): Promise<OrganizerFilterOption> {
+  const response = await coreApi.getWithMeta<unknown>(
+    `/meeting-organizers/${encodeURIComponent(organizerId)}`,
+    { signal }
+  )
+  const parsed = organizerFilterOptionSchema.safeParse(response.data)
+  if (!parsed.success) throw malformedFilterOptionsResponse(parsed.error)
+  return parsed.data
+}
+
+export function organizerFilterOptionByIdQueryOptions(organizerId?: string) {
+  return queryOptions({
+    queryKey: ['meeting-organizers', 'filter-option', organizerId] as const,
+    queryFn: ({ signal }: { signal: AbortSignal }) =>
+      fetchOrganizerFilterOptionById(organizerId as string, signal),
+    enabled: Boolean(organizerId),
     retry: false,
     staleTime: 60_000,
   })

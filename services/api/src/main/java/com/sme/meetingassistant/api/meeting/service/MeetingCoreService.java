@@ -161,6 +161,34 @@ public class MeetingCoreService implements MeetingMediaAccess, MeetingIntelligen
         return result.map(meeting -> projections.get(meeting.getId()));
     }
 
+    @Transactional(readOnly = true)
+    public Page<MeetingOrganizerView> listOrganizers(String query, Pageable pageable) {
+        UUID actor = authorization.requireActiveActor().getId();
+        return meetings.findAccessibleOrganizers(actor, organizerSearchPattern(query), pageable)
+            .map(MeetingCoreService::organizerView);
+    }
+
+    @Transactional(readOnly = true)
+    public MeetingOrganizerView organizer(UUID organizerId) {
+        UUID actor = authorization.requireActiveActor().getId();
+        return meetings.findAccessibleOrganizer(actor, organizerId)
+            .map(MeetingCoreService::organizerView)
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+    }
+
+    private static MeetingOrganizerView organizerView(
+            MeetingRepository.MeetingOrganizerProjection organizer) {
+        return new MeetingOrganizerView(organizer.getId(), organizer.getName());
+    }
+
+    private static String organizerSearchPattern(String query) {
+        if (query == null || query.isBlank()) return null;
+        return "%" + query.trim().toLowerCase(Locale.ROOT)
+            .replace("\\", "\\\\")
+            .replace("%", "\\%")
+            .replace("_", "\\_") + "%";
+    }
+
     private Map<UUID, MeetingListView> projectPage(List<MeetingEntity> page) {
         if (page.isEmpty()) return Map.of();
 

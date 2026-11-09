@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest'
 import {
   getMeetingDisplay,
   meetingLifecycleStatuses,
+  parseOrganizerFilterOptionsResponse,
+  parseRoomFilterOptionsResponse,
   parseMeetingListResponse,
+  serializeFilterOptionsQuery,
   serializeMeetingListQuery,
 } from './list-api'
 
@@ -109,6 +112,52 @@ describe('meeting list API adapter', () => {
             hasPrevious: false,
           },
         },
+      })
+    ).toThrowError(/malformed/i)
+  })
+
+  it('serializes bounded server-side lookup pagination and search', () => {
+    expect(
+      serializeFilterOptionsQuery({ q: '  room  ', page: 3, pageSize: 20 })
+    ).toEqual({ q: 'room', page: '2', size: '20' })
+  })
+
+  it('parses paginated room and organizer lookup responses', () => {
+    const meta = {
+      pagination: {
+        page: 0,
+        size: 20,
+        totalElements: 1,
+        totalPages: 1,
+        hasNext: false,
+        hasPrevious: false,
+      },
+    }
+
+    expect(
+      parseRoomFilterOptionsResponse({
+        data: [{ id: 'room-1', name: 'Boardroom', location: 'HQ' }],
+        meta,
+      })
+    ).toEqual({
+      options: [{ id: 'room-1', name: 'Boardroom', location: 'HQ' }],
+      pagination: meta.pagination,
+    })
+    expect(
+      parseOrganizerFilterOptionsResponse({
+        data: [{ id: 'organizer-1', name: 'Lan Nguyen' }],
+        meta,
+      })
+    ).toEqual({
+      options: [{ id: 'organizer-1', name: 'Lan Nguyen' }],
+      pagination: meta.pagination,
+    })
+  })
+
+  it('rejects unpaginated filter option responses', () => {
+    expect(() =>
+      parseRoomFilterOptionsResponse({
+        data: [{ id: 'room-1', name: 'Boardroom' }],
       })
     ).toThrowError(/malformed/i)
   })
