@@ -317,6 +317,17 @@ def _wait_for_log_record(log_path, prefix, predicate, *, timeout=15, interval=0.
         time.sleep(min(interval, remaining))
 
 
+def _wait_for_log_event(log, event, *, timeout=30):
+    path = Path(log.name)
+    deadline = time.monotonic() + timeout
+    marker = '"event":"' + event + '"'
+    while time.monotonic() < deadline:
+        if marker in path.read_text(encoding="utf-8", errors="replace"):
+            return
+        time.sleep(0.1)
+    raise AssertionError(f"worker log event timed out: {event}")
+
+
 def _assert_r01_evidence(evidence):
     if any((evidence.get("claimCount") != 1,
             evidence.get("acceptedReceiptCount") != 1,
@@ -357,11 +368,12 @@ def postgres(tmp_path):
         subprocess.run(["docker", "stop", "--time", "5", name], capture_output=True, timeout=20)
 
 
-def _application_credentials(settings, pki):
-    users = {role: "e2e04-" + role + "-" + uuid.uuid4().hex[:8]
-             for role in ("publisher", "worker", "reconciler")}
+def _application_credentials(settings, pki, *, intelligence=False):
+    broker_roles = ("publisher", "worker", "reconciler", "intelligence") if intelligence else (
+        "publisher", "worker", "reconciler")
+    users = {role: "e2e04-" + role + "-" + uuid.uuid4().hex[:8] for role in broker_roles}
     passwords = {role: secrets.token_urlsafe(24) for role in users}
-    definitions = broker.definitions("sme-integration", users)
+    definitions = broker.definitions("sme-integration", users, intelligence=intelligence)
     salt = secrets.token_bytes(4)
     definitions["users"] = []
     for role, user in users.items():
@@ -371,12 +383,13 @@ def _application_credentials(settings, pki):
     encoded = base64.b64encode(json.dumps(definitions).encode()).decode()
     if broker.cli(settings["names"][0], "eval", f'rabbit_definitions:import_raw(base64:decode(<<"{encoded}">>)).').strip() != "ok":
         raise RuntimeError("isolated RabbitMQ application account provisioning failed")
-    broker.verify(broker.inspect(settings["names"][0], "sme-integration"))
+    broker.verify(broker.inspect(settings["names"][0], "sme-integration"), intelligence=intelligence)
 
-    storage_passwords = {role: secrets.token_urlsafe(24) for role in ("core", "worker")}
+    storage_roles = ("core", "worker", "intelligence") if intelligence else ("core", "worker")
+    storage_passwords = {role: secrets.token_urlsafe(24) for role in storage_roles}
     admin = storage_admin.Admin(settings["endpoint"], pki / "ca.crt", "fixture", settings["root_secret"])
     storage_users = {}
-    for role in ("core", "worker"):
+    for role in storage_roles:
         user = "e2e04-" + role + "-" + uuid.uuid4().hex[:8]
         admin.provision(settings["bucket"], role, user, storage_passwords[role])
         storage_users[role] = user
@@ -386,6 +399,9 @@ def _application_credentials(settings, pki):
         reconciler_user=users["reconciler"], reconciler_password=passwords["reconciler"],
         storage_core_user=storage_users["core"], storage_core_password=storage_passwords["core"],
         storage_worker_user=storage_users["worker"], storage_worker_password=storage_passwords["worker"],
+        intelligence_user=users.get("intelligence"), intelligence_password=passwords.get("intelligence"),
+        storage_intelligence_user=storage_users.get("intelligence"),
+        storage_intelligence_password=storage_passwords.get("intelligence"),
     )
 
 
@@ -398,6 +414,29 @@ def _make_jwt_keys(directory):
     private.chmod(0o600)
     public.chmod(0o644)
     return private, public
+
+
+def _make_mi_certificate(pki):
+    """Create only the fixture-owned mi-worker leaf; never touches an external CA."""
+    key = pki / "mi-worker.key"
+    csr = pki / "mi-worker.csr"
+    cert = pki / "mi-worker.crt"
+    extension = pki / "mi-worker.ext"
+    extension.write_text(
+        "basicConstraints=critical,CA:FALSE\n"
+        "extendedKeyUsage=clientAuth\n"
+        "subjectAltName=URI:urn:sme:service:mi-worker\n"
+    )
+    subprocess.run(["openssl", "req", "-new", "-newkey", "rsa:2048", "-nodes",
+                    "-subj", "/CN=mi-worker", "-keyout", str(key), "-out", str(csr)],
+                   check=True, capture_output=True, timeout=60)
+    subprocess.run(["openssl", "x509", "-req", "-in", str(csr), "-CA", str(pki / "ca.crt"),
+                    "-CAkey", str(pki / "ca.key"), "-CAcreateserial", "-days", "1",
+                    "-extfile", str(extension), "-out", str(cert)],
+                   check=True, capture_output=True, timeout=60)
+    key.chmod(0o600)
+    cert.chmod(0o644)
+    return cert, key
 
 
 def _clean_core_environment():
@@ -465,7 +504,8 @@ def _ai_process(tmp_path, pki):
 
 
 @contextmanager
-def _core_process(tmp_path, database, transport_settings, credentials, pki, ai_url):
+def _core_process(tmp_path, database, transport_settings, credentials, pki, ai_url,
+                  *, extra_environment=None):
     public_port = _free_port()
     private_port = _free_port()
     jwt_private, jwt_public = _make_jwt_keys(tmp_path)
@@ -544,6 +584,8 @@ def _core_process(tmp_path, database, transport_settings, credentials, pki, ai_u
         "APP_AUTH_ABUSE_HASHING_KEY": abuse_key,
         "SPRING_MAIL_HOST": "127.0.0.1",
     })
+    if extra_environment:
+        env.update(extra_environment)
     log_path = tmp_path / "core.log"
     process = None
     with log_path.open("w", encoding="utf-8") as log:
@@ -610,8 +652,9 @@ def _seed_user(database, core):
 
 
 def _worker_environment(tmp_path, database, transport_settings, credentials, core, pki,
-                        *, control_environment=None, worker_concurrency=1):
-    worker_temp = tmp_path / "worker-temp"
+                        *, control_environment=None, worker_concurrency=1,
+                        intelligence=None):
+    worker_temp = tmp_path / ("worker-temp-" + uuid.uuid4().hex[:10])
     worker_temp.mkdir(mode=0o700)
     env = dict(os.environ)
     for name in tuple(env):
@@ -643,6 +686,19 @@ def _worker_environment(tmp_path, database, transport_settings, credentials, cor
         env["AI_WORKER_CONCURRENCY"] = str(worker_concurrency)
     if control_environment:
         env.update(control_environment)
+    if intelligence:
+        env.update({
+            "AI_MEETING_INTELLIGENCE_WORKER_ENABLED": "true",
+            "AI_MEETING_INTELLIGENCE_WORKER_CONCURRENCY": "1",
+            "AI_MEETING_INTELLIGENCE_WORKER_EXECUTION_TIMEOUT_SECONDS": "120",
+            "AI_MEETING_INTELLIGENCE_ACCEPTANCE_TOKEN": intelligence["acceptance_token"],
+            "AI_MEETING_INTELLIGENCE_S3_ACCESS_KEY_ID": credentials.storage_intelligence_user,
+            "AI_MEETING_INTELLIGENCE_S3_SECRET_ACCESS_KEY": credentials.storage_intelligence_password,
+            "AI_MEETING_INTELLIGENCE_RABBITMQ_USERNAME": credentials.intelligence_user,
+            "AI_MEETING_INTELLIGENCE_RABBITMQ_PASSWORD": credentials.intelligence_password,
+            "AI_MEETING_INTELLIGENCE_CORE_API_CLIENT_CERT_FILE": str(intelligence["certificate"]),
+            "AI_MEETING_INTELLIGENCE_CORE_API_CLIENT_KEY_FILE": str(intelligence["key"]),
+        })
     return env
 
 
@@ -672,6 +728,33 @@ def _start_worker(tmp_path, database, transport_settings, credentials, core, pki
         raise
 
 
+def _start_intelligence_worker(tmp_path, database, transport_settings, credentials, core, pki,
+                               intelligence, *, delay_seconds=0, control_environment=None):
+    log_path = tmp_path / "intelligence-worker.log"
+    log = log_path.open("w", encoding="utf-8")
+    env = _worker_environment(tmp_path, database, transport_settings, credentials, core, pki,
+                              intelligence=intelligence, control_environment=control_environment)
+    env["AI_MI_TEST_PROCESSOR_DELAY_SECONDS"] = str(delay_seconds)
+    process = subprocess.Popen([sys.executable, "tests/integration/intelligence_worker_process.py"],
+                               cwd=AI_ROOT, env=env, stdout=log, stderr=subprocess.STDOUT,
+                               start_new_session=True)
+    try:
+        for _ in range(120):
+            if process.poll() is not None:
+                raise RuntimeError("isolated intelligence worker stopped before consuming")
+            text = log_path.read_text(encoding="utf-8", errors="replace")
+            if "worker.intelligence.consuming" in text and "worker.transcription.consuming" in text:
+                return process, log
+            time.sleep(0.5)
+        raise RuntimeError("isolated intelligence worker did not reach consuming state")
+    except Exception:
+        log.close()
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGTERM)
+            process.wait(timeout=20)
+        raise
+
+
 def _stop_worker(process, log):
     try:
         if process.poll() is None:
@@ -681,6 +764,220 @@ def _stop_worker(process, log):
             raise AssertionError("Worker process failed during isolated acceptance")
     finally:
         log.close()
+
+
+def _kill_worker(process, log):
+    try:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=20)
+    finally:
+        log.close()
+
+
+def _request_worker_shutdown(process, log):
+    try:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGTERM)
+            process.wait(timeout=20)
+        return process.returncode
+    finally:
+        log.close()
+
+
+def _intelligence_wire(database, job_id):
+    raw = _psql(database, database["password"], f"""
+        SELECT json_build_object('eventId',id,'eventType',event_type,'payload',payload::text,'status',status)
+        FROM outbox_events
+        WHERE aggregate_id='{job_id}'::uuid AND event_type='PROCESSING_INTELLIGENCE_STAGE_REQUESTED'
+        ORDER BY occurred_at,id LIMIT 1
+    """)
+    if not raw:
+        raise AssertionError("authoritative intelligence outbox event was not found")
+    row = json.loads(raw)
+    if row["status"] != "PUBLISHED":
+        raise AssertionError("intelligence outbox event was not published")
+    payload = json.loads(row["payload"])
+    if payload.get("eventId") != row["eventId"] or payload.get("processingJobId") != str(job_id):
+        raise AssertionError("intelligence outbox identity is inconsistent")
+    return row["eventId"], row["eventType"], row["payload"].encode()
+
+
+async def _publish_intelligence_duplicate(settings, credentials, event_id, event_type, body):
+    context = ssl.create_default_context(cafile=str(settings["pki"] / "ca.crt"))
+    connection = await aio_pika.connect(host="localhost", port=settings["broker_port"], ssl=True,
+        ssl_context=context, login=credentials.publisher_user, password=credentials.publisher_password,
+        virtualhost="sme-integration")
+    try:
+        channel = await connection.channel(publisher_confirms=True, on_return_raises=True)
+        exchange = await channel.get_exchange(broker.EXCHANGE, ensure=False)
+        message = aio_pika.Message(body, message_id=event_id,
+            headers={"eventId": event_id, "eventType": event_type, "eventSchemaVersion": 1},
+            content_type="application/json", delivery_mode=aio_pika.DeliveryMode.PERSISTENT)
+        confirmation = await exchange.publish(message, broker.INTELLIGENCE_ROUTE, mandatory=True)
+        if confirmation is None:
+            raise AssertionError("duplicate intelligence publication was not confirmed")
+    finally:
+        await connection.close()
+
+
+def _assert_intelligence_settled(container, *, timeout=30):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        queues = broker.inspect(container, "sme-integration")
+        work = next(q for q in queues if q["name"] == broker.INTELLIGENCE_WORK)
+        dead = next(q for q in queues if q["name"] == broker.INTELLIGENCE_DEAD)
+        if all(work[field] == 0 for field in ("messages", "messages_ready", "messages_unacknowledged")) \
+                and dead["messages"] == 0:
+            return
+        time.sleep(0.25)
+    raise AssertionError("intelligence broker delivery did not settle")
+
+
+def _intelligence_evidence(database, job_id):
+    raw = _psql(database, database["password"], f"""
+        SELECT json_build_object(
+            'dispatchCount',(SELECT count(*) FROM processing_intelligence_dispatches WHERE processing_job_id='{job_id}'::uuid),
+            'claimCount',(SELECT count(*) FROM processing_intelligence_claims WHERE processing_job_id='{job_id}'::uuid),
+            'receiptCount',(SELECT count(*) FROM meeting_intelligence_result_receipts WHERE processing_job_id='{job_id}'::uuid),
+            'acceptedCount',(SELECT count(*) FROM meeting_intelligence_result_receipts WHERE processing_job_id='{job_id}'::uuid),
+            'stageRunId',(SELECT id FROM processing_stage_runs WHERE processing_job_id='{job_id}'::uuid AND stage_code='GENERATING_SUMMARY' ORDER BY attempt_number DESC LIMIT 1),
+            'resultSha256',(SELECT artifact_sha256 FROM meeting_intelligence_result_receipts WHERE processing_job_id='{job_id}'::uuid LIMIT 1),
+            'sourceSha256',(SELECT sha256 FROM meeting_intelligence_source_snapshots WHERE processing_job_id='{job_id}'::uuid LIMIT 1),
+            'sourceObjectKey',(SELECT object_key FROM meeting_intelligence_source_snapshots WHERE processing_job_id='{job_id}'::uuid LIMIT 1),
+            'outboxStatus',(SELECT status FROM outbox_events WHERE aggregate_id='{job_id}'::uuid AND event_type='PROCESSING_INTELLIGENCE_STAGE_REQUESTED' LIMIT 1),
+            'stageStatus',(SELECT status FROM processing_stage_runs WHERE processing_job_id='{job_id}'::uuid AND stage_code='GENERATING_SUMMARY' ORDER BY attempt_number DESC LIMIT 1)
+        )
+    """)
+    if not raw:
+        raise AssertionError("Core intelligence evidence was not found")
+    return json.loads(raw)
+
+
+def _wait_for_sql(database, sql, expected, *, timeout=90):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        value = _psql(database, database["password"], sql)
+        if expected(value):
+            return value
+        time.sleep(0.25)
+    raise AssertionError("isolated Core SQL condition timed out")
+
+
+def _wait_for_intelligence_dispatch(database, job_id, *, timeout=90):
+    raw = _wait_for_sql(database, f"""
+        SELECT json_build_object('eventId',event_id,'stageRunId',stage_run_id)
+        FROM processing_intelligence_dispatches
+        WHERE processing_job_id='{job_id}'::uuid
+        ORDER BY created_at, event_id LIMIT 1
+    """, bool, timeout=timeout)
+    return json.loads(raw)
+
+
+def _wait_for_intelligence_broker(container, predicate, *, timeout=30):
+    deadline = time.monotonic() + timeout
+    last = None
+    while time.monotonic() < deadline:
+        queues = broker.inspect(container, "sme-integration")
+        work = next(q for q in queues if q["name"] == broker.INTELLIGENCE_WORK)
+        dead = next(q for q in queues if q["name"] == broker.INTELLIGENCE_DEAD)
+        last = {field: work[field] for field in
+                ("messages", "messages_ready", "messages_unacknowledged", "consumers")}
+        last["dead_messages"] = dead["messages"]
+        if predicate(work, dead):
+            return work, dead
+        time.sleep(0.25)
+    raise AssertionError(f"intelligence broker condition timed out: {last}")
+
+
+def _admit_intelligence_job(core, pki, email, password):
+    async def admit():
+        admission = CoreAdmission(SimpleNamespace(s3_ca_file=pki / "ca.crt"),
+                                  public_url=core.public_url, email=email, password=password)
+        try:
+            return await admission.admit(synthetic_wav())
+        finally:
+            await admission.close()
+
+    return asyncio.run(admit())
+
+
+def _workload_storage(settings, user, password):
+    return boto3.client(
+        "s3", endpoint_url=settings["endpoint"], verify=str(settings["pki"] / "ca.crt"),
+        aws_access_key_id=user, aws_secret_access_key=password, region_name="us-east-1",
+        config=Config(s3={"addressing_style": "path"}, retries={"total_max_attempts": 1}),
+    )
+
+
+def _assert_intelligence_artifact(settings, credentials, evidence, job_id):
+    key = f"processing/{job_id}/intelligence/results/{evidence['stageRunId']}.json"
+    client = _workload_storage(settings, credentials.storage_intelligence_user,
+                               credentials.storage_intelligence_password)
+    try:
+        source = client.get_object(Bucket=settings["bucket"], Key=evidence["sourceObjectKey"])
+        source_raw = source["Body"].read()
+        assert hashlib.sha256(source_raw).hexdigest() == evidence["sourceSha256"]
+        response = client.get_object(Bucket=settings["bucket"], Key=key)
+        raw = response["Body"].read()
+        assert hashlib.sha256(raw).hexdigest() == evidence["resultSha256"]
+        payload = json.loads(raw)
+        assert payload["processingJobId"] == str(job_id)
+        assert payload["stageRunId"] == evidence["stageRunId"]
+        assert payload["resultType"] == "SUMMARY"
+        assert payload["source"]["sha256"] == evidence["sourceSha256"]
+    finally:
+        client.close()
+
+
+def _assert_intelligence_result_missing(settings, credentials, job_id, stage_run_id):
+    key = f"processing/{job_id}/intelligence/results/{stage_run_id}.json"
+    client = _workload_storage(settings, credentials.storage_intelligence_user,
+                               credentials.storage_intelligence_password)
+    try:
+        with pytest.raises(ClientError) as error:
+            client.get_object(Bucket=settings["bucket"], Key=key)
+        assert error.value.response["ResponseMetadata"]["HTTPStatusCode"] == 404
+    finally:
+        client.close()
+
+
+@contextmanager
+def _real_intelligence_context(services_fixture, storage_fixture, postgres, tmp_path, *, extra=None):
+    service_settings, pki, names = services_fixture
+    boundary_settings, boundary_pki, topology = storage_fixture
+    assert pki == boundary_pki and topology["backend"]
+    transport_settings = {
+        "broker_port": _docker_port(names[0], "5671/tcp"),
+        "endpoint": boundary_settings.s3_endpoint_url,
+        "bucket": boundary_settings.s3_bucket,
+        "names": names,
+        "root_secret": service_settings.s3_secret_access_key.get_secret_value(),
+        "pki": pki,
+    }
+    credentials = _application_credentials(transport_settings, pki, intelligence=True)
+    mi_certificate, mi_key = _make_mi_certificate(pki)
+    acceptance_token = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode().rstrip("=")
+    intelligence = {"certificate": mi_certificate, "key": mi_key, "acceptance_token": acceptance_token}
+    core_environment = {
+        "APP_MEDIA_INTELLIGENCE_ENABLED": "true",
+        "APP_MEDIA_INTELLIGENCE_DISPATCH_ENABLED": "true",
+        "APP_MEDIA_INTELLIGENCE_INFRASTRUCTURE_VERIFIED": "true",
+        "APP_MEDIA_INTELLIGENCE_STORAGE_ID": "private",
+        "APP_MEDIA_INTELLIGENCE_ENABLED_STAGES": "GENERATING_SUMMARY",
+        "APP_MEDIA_PROCESSING_REQUIRED_DOWNSTREAM_STAGES": "GENERATING_SUMMARY",
+        "APP_MI_INTERNAL_RESULT_ENABLED": "true",
+        "APP_MI_INTERNAL_RESULT_TOKEN": acceptance_token,
+    }
+    if extra:
+        core_environment.update(extra)
+    with _ai_process(tmp_path, pki) as ai_url, _core_process(
+            tmp_path, postgres, transport_settings, credentials, pki, ai_url,
+            extra_environment=core_environment) as core:
+        yield SimpleNamespace(
+            core=core, pki=pki, names=names, transport=transport_settings,
+            credentials=credentials, intelligence=intelligence,
+        )
 
 
 def _evidence(database, job_id):
@@ -934,3 +1231,332 @@ def test_real_core_to_worker_level_a_acceptance(services, storage_boundary, post
         finally:
             if worker.poll() is None:
                 _stop_worker(worker, worker_log)
+
+
+def test_real_core_to_intelligence_acceptance_duplicate_and_restart(services, storage_boundary, postgres, tmp_path):
+    """Real MI result acceptance, response-loss reconciliation, duplicate and restart recovery."""
+    with _real_intelligence_context(services, storage_boundary, postgres, tmp_path) as fixture:
+        core, pki, names = fixture.core, fixture.pki, fixture.names
+        transport_settings = fixture.transport
+        credentials = fixture.credentials
+        intelligence = fixture.intelligence
+        email, password = _seed_user(postgres, core)
+        worker, worker_log = _start_intelligence_worker(
+            tmp_path, postgres, transport_settings, credentials, core, pki, intelligence,
+            control_environment={"AI_MI_TEST_LOSE_ACCEPTANCE_RESPONSE": "1"})
+        duplicate_body = None
+        event_id = None
+        try:
+            async def admit_and_wait():
+                admission = CoreAdmission(SimpleNamespace(s3_ca_file=pki / "ca.crt"),
+                    public_url=core.public_url, email=email, password=password)
+                try:
+                    meeting_id, media_id, job_id = await admission.admit(synthetic_wav())
+                    job, transcript = await admission.wait_for_acceptance(
+                        meeting_id, job_id, worker_alive=lambda: worker.poll() is None)
+                    return meeting_id, media_id, job_id, job, transcript
+                finally:
+                    await admission.close()
+
+            meeting_id, media_id, job_id, job, transcript = asyncio.run(admit_and_wait())
+            assert job["status"] in ("COMPLETED", "COMPLETED_WITH_WARNINGS")
+            evidence = _intelligence_evidence(postgres, job_id)
+            assert evidence == {
+                **evidence,
+                "dispatchCount": 1,
+                "claimCount": 1,
+                "receiptCount": 1,
+                "acceptedCount": 1,
+                "outboxStatus": "PUBLISHED",
+                "stageStatus": "SUCCEEDED",
+            }
+            _assert_intelligence_artifact(transport_settings, credentials, evidence, job_id)
+            event_id, event_type, duplicate_body = _intelligence_wire(postgres, job_id)
+            asyncio.run(_publish_intelligence_duplicate(transport_settings, credentials,
+                                                        event_id, event_type, duplicate_body))
+            _assert_intelligence_settled(names[0])
+            evidence_after_duplicate = _intelligence_evidence(postgres, job_id)
+            assert evidence_after_duplicate["receiptCount"] == 1
+            _stop_worker(worker, worker_log)
+            worker = None
+
+            # A duplicate left on the durable queue survives process restart and
+            # is acknowledged from Core's authoritative RESULT_ACCEPTED status.
+            asyncio.run(_publish_intelligence_duplicate(transport_settings, credentials,
+                                                        event_id, event_type, duplicate_body))
+            restarted, restarted_log = _start_intelligence_worker(
+                tmp_path, postgres, transport_settings, credentials, core, pki, intelligence)
+            try:
+                _assert_intelligence_settled(names[0])
+                assert _intelligence_evidence(postgres, job_id)["receiptCount"] == 1
+            finally:
+                _stop_worker(restarted, restarted_log)
+                print("E2E04_MI_EVIDENCE " + " ".join((
+                    f"job_id={job_id}", f"event_id={event_id}",
+                    f"receipt_count={evidence_after_duplicate['receiptCount']}",
+                    f"stage_status={evidence_after_duplicate['stageStatus']}",
+                    "canonical_acceptance=true response_loss_reconciled=true duplicate_idempotent=true "
+                    "restart_recovered=true broker_settled=true")))
+        finally:
+            if worker is not None and worker.poll() is None:
+                _stop_worker(worker, worker_log)
+
+
+def test_real_core_to_intelligence_artifact_conflict_is_durable_failure(
+        services, storage_boundary, postgres, tmp_path):
+    """A pre-existing conflicting result is never overwritten or accepted."""
+    with _real_intelligence_context(services, storage_boundary, postgres, tmp_path) as fixture:
+        core, pki, names = fixture.core, fixture.pki, fixture.names
+        transport_settings = fixture.transport
+        credentials = fixture.credentials
+        intelligence = fixture.intelligence
+        email, password = _seed_user(postgres, core)
+        transcription = transcription_log = worker = worker_log = None
+        try:
+            transcription, transcription_log = _start_worker(
+                tmp_path, postgres, transport_settings, credentials, core, pki)
+            _, _, job_id = _admit_intelligence_job(core, pki, email, password)
+            dispatch = _wait_for_intelligence_dispatch(postgres, job_id)
+            _stop_worker(transcription, transcription_log)
+            transcription = transcription_log = None
+
+            key = f"processing/{job_id}/intelligence/results/{dispatch['stageRunId']}.json"
+            storage = _workload_storage(transport_settings, credentials.storage_intelligence_user,
+                                        credentials.storage_intelligence_password)
+            try:
+                storage.put_object(Bucket=transport_settings["bucket"], Key=key,
+                                   Body=b"{}", IfNoneMatch="*")
+            finally:
+                storage.close()
+
+            worker, worker_log = _start_intelligence_worker(
+                tmp_path, postgres, transport_settings, credentials, core, pki, intelligence)
+            _wait_for_sql(postgres, f"""
+                SELECT error_code FROM processing_stage_runs
+                WHERE id='{dispatch['stageRunId']}'::uuid
+                  AND status='FAILED' AND error_code='INTELLIGENCE_INTEGRITY'
+            """, bool)
+            _assert_intelligence_settled(names[0])
+            evidence = _intelligence_evidence(postgres, job_id)
+            assert evidence["claimCount"] == 1
+            assert evidence["receiptCount"] == 0
+            assert evidence["stageStatus"] == "FAILED"
+            storage = _workload_storage(transport_settings, credentials.storage_intelligence_user,
+                                        credentials.storage_intelligence_password)
+            try:
+                assert storage.get_object(Bucket=transport_settings["bucket"], Key=key)["Body"].read() == b"{}"
+            finally:
+                storage.close()
+            print("E2E04_MI_CONFLICT_EVIDENCE " + " ".join((
+                f"job_id={job_id}", f"stage_run_id={dispatch['stageRunId']}",
+                "artifact_conflict_rejected=true canonical_receipt_count=0 broker_settled=true")))
+        finally:
+            if worker is not None and worker.poll() is None:
+                _stop_worker(worker, worker_log)
+            if transcription is not None and transcription.poll() is None:
+                _stop_worker(transcription, transcription_log)
+
+
+def test_real_core_to_intelligence_lease_expiry_fences_without_publication(
+        services, storage_boundary, postgres, tmp_path):
+    """Lease expiry fences the active worker and durable failure settles without a result."""
+    with _real_intelligence_context(
+            services, storage_boundary, postgres, tmp_path,
+            extra={"APP_MEDIA_PROCESSING_STAGE_LEASE_SECONDS": "30",
+                   "APP_MEDIA_PROCESSING_STAGE_LEASE_SWEEP_MS": "1000"}) as fixture:
+        core, pki, names = fixture.core, fixture.pki, fixture.names
+        transport_settings = fixture.transport
+        credentials = fixture.credentials
+        intelligence = fixture.intelligence
+        email, password = _seed_user(postgres, core)
+        transcription = transcription_log = worker = worker_log = restarted = restarted_log = None
+        try:
+            transcription, transcription_log = _start_worker(
+                tmp_path, postgres, transport_settings, credentials, core, pki)
+            _, _, job_id = _admit_intelligence_job(core, pki, email, password)
+            dispatch = _wait_for_intelligence_dispatch(postgres, job_id)
+            _stop_worker(transcription, transcription_log)
+            transcription = transcription_log = None
+            worker, worker_log = _start_intelligence_worker(
+                tmp_path, postgres, transport_settings, credentials, core, pki, intelligence,
+                delay_seconds=45)
+            _wait_for_sql(postgres, f"""
+                SELECT stage_run_id FROM processing_intelligence_claims
+                WHERE processing_job_id='{job_id}'::uuid
+            """, bool)
+            _psql(postgres, postgres["password"], f"""
+                UPDATE processing_stage_runs
+                SET lease_expires_at=clock_timestamp()-INTERVAL '1 second'
+                WHERE id='{dispatch['stageRunId']}'::uuid AND status='RUNNING'
+            """)
+            _wait_for_sql(postgres, f"""
+                SELECT error_code FROM processing_stage_runs
+                WHERE id='{dispatch['stageRunId']}'::uuid
+                  AND status='FAILED' AND error_code='STAGE_LEASE_EXPIRED'
+            """, bool, timeout=45)
+            _wait_for_intelligence_broker(
+                names[0], lambda work, dead: work["messages"] == 0
+                    and dead["messages"] == 0, timeout=30)
+            _stop_worker(worker, worker_log)
+            worker = worker_log = None
+            _assert_intelligence_result_missing(transport_settings, credentials, job_id,
+                                                dispatch["stageRunId"])
+            restarted, restarted_log = _start_intelligence_worker(
+                tmp_path, postgres, transport_settings, credentials, core, pki, intelligence)
+            _assert_intelligence_settled(names[0])
+            evidence = _intelligence_evidence(postgres, job_id)
+            assert evidence["claimCount"] == 1
+            assert evidence["receiptCount"] == 0
+            assert evidence["stageStatus"] == "FAILED"
+            print("E2E04_MI_LEASE_EVIDENCE " + " ".join((
+                f"job_id={job_id}", f"stage_run_id={dispatch['stageRunId']}",
+                "lease_expired=true stale_publication_blocked=true durable_failure_acknowledged=true "
+                "result_receipt_count=0 broker_settled=true")))
+        finally:
+            if restarted is not None and restarted.poll() is None:
+                _stop_worker(restarted, restarted_log)
+            if worker is not None and worker.poll() is None:
+                _stop_worker(worker, worker_log)
+            if transcription is not None and transcription.poll() is None:
+                _stop_worker(transcription, transcription_log)
+
+
+def test_real_core_to_intelligence_crash_requeues_unresolved_delivery(
+        services, storage_boundary, postgres, tmp_path):
+    """A killed in-flight worker leaves delivery unresolved until durable failure is observable."""
+    with _real_intelligence_context(
+            services, storage_boundary, postgres, tmp_path,
+            extra={"APP_MEDIA_PROCESSING_STAGE_LEASE_SECONDS": "60",
+                   "APP_MEDIA_PROCESSING_STAGE_LEASE_SWEEP_MS": "1000"}) as fixture:
+        core, pki, names = fixture.core, fixture.pki, fixture.names
+        transport_settings = fixture.transport
+        credentials = fixture.credentials
+        intelligence = fixture.intelligence
+        email, password = _seed_user(postgres, core)
+        transcription = transcription_log = original = original_log = None
+        unresolved = unresolved_log = final = final_log = None
+        try:
+            transcription, transcription_log = _start_worker(
+                tmp_path, postgres, transport_settings, credentials, core, pki)
+            _, _, job_id = _admit_intelligence_job(core, pki, email, password)
+            dispatch = _wait_for_intelligence_dispatch(postgres, job_id)
+            _stop_worker(transcription, transcription_log)
+            transcription = transcription_log = None
+
+            original, original_log = _start_intelligence_worker(
+                tmp_path, postgres, transport_settings, credentials, core, pki, intelligence,
+                delay_seconds=45)
+            _wait_for_sql(postgres, f"""
+                SELECT stage_run_id FROM processing_intelligence_claims
+                WHERE processing_job_id='{job_id}'::uuid
+            """, bool)
+            _kill_worker(original, original_log)
+            original = original_log = None
+            _wait_for_intelligence_broker(
+                names[0], lambda work, dead: work["messages_ready"] == 1
+                    and work["messages_unacknowledged"] == 0 and dead["messages"] == 0, timeout=30)
+            _assert_intelligence_result_missing(transport_settings, credentials, job_id,
+                                                dispatch["stageRunId"])
+
+            unresolved, unresolved_log = _start_intelligence_worker(
+                tmp_path, postgres, transport_settings, credentials, core, pki, intelligence)
+            _wait_for_log_event(unresolved_log, "worker.intelligence.delivery.unresolved")
+            _wait_for_intelligence_broker(
+                names[0], lambda work, dead: work["messages_ready"] == 1
+                    and work["messages_unacknowledged"] == 0 and work["consumers"] == 0
+                    and dead["messages"] == 0, timeout=30)
+            _wait_for_sql(postgres, f"""
+                SELECT error_code FROM processing_stage_runs
+                WHERE id='{dispatch['stageRunId']}'::uuid
+                  AND status='FAILED' AND error_code='STAGE_LEASE_EXPIRED'
+            """, bool, timeout=90)
+            _stop_worker(unresolved, unresolved_log)
+            unresolved = unresolved_log = None
+            _wait_for_intelligence_broker(
+                names[0], lambda work, dead: work["messages_ready"] == 1
+                    and work["messages_unacknowledged"] == 0 and dead["messages"] == 0, timeout=30)
+
+            final, final_log = _start_intelligence_worker(
+                tmp_path, postgres, transport_settings, credentials, core, pki, intelligence)
+            _assert_intelligence_settled(names[0])
+            evidence = _intelligence_evidence(postgres, job_id)
+            assert evidence["claimCount"] == 1
+            assert evidence["receiptCount"] == 0
+            assert evidence["stageStatus"] == "FAILED"
+            _assert_intelligence_result_missing(transport_settings, credentials, job_id,
+                                                dispatch["stageRunId"])
+            print("E2E04_MI_CRASH_EVIDENCE " + " ".join((
+                f"job_id={job_id}", f"stage_run_id={dispatch['stageRunId']}",
+                "shutdown_unresolved=true redelivery_observed=true stale_owner_not_reexecuted=true "
+                "durable_failure_acknowledged=true result_receipt_count=0 broker_settled=true")))
+        finally:
+            if final is not None and final.poll() is None:
+                _stop_worker(final, final_log)
+            if unresolved is not None and unresolved.poll() is None:
+                _stop_worker(unresolved, unresolved_log)
+            if original is not None and original.poll() is None:
+                _kill_worker(original, original_log)
+            if transcription is not None and transcription.poll() is None:
+                _stop_worker(transcription, transcription_log)
+
+
+def test_real_core_to_intelligence_graceful_shutdown_requeues_unresolved_delivery(
+        services, storage_boundary, postgres, tmp_path):
+    """Bounded graceful shutdown fences in-flight work and preserves the delivery for recovery."""
+    with _real_intelligence_context(
+            services, storage_boundary, postgres, tmp_path,
+            extra={"APP_MEDIA_PROCESSING_STAGE_LEASE_SECONDS": "60",
+                   "APP_MEDIA_PROCESSING_STAGE_LEASE_SWEEP_MS": "1000"}) as fixture:
+        core, pki, names = fixture.core, fixture.pki, fixture.names
+        transport_settings = fixture.transport
+        credentials = fixture.credentials
+        intelligence = fixture.intelligence
+        email, password = _seed_user(postgres, core)
+        transcription = transcription_log = worker = worker_log = final = final_log = None
+        try:
+            transcription, transcription_log = _start_worker(
+                tmp_path, postgres, transport_settings, credentials, core, pki)
+            _, _, job_id = _admit_intelligence_job(core, pki, email, password)
+            dispatch = _wait_for_intelligence_dispatch(postgres, job_id)
+            _stop_worker(transcription, transcription_log)
+            transcription = transcription_log = None
+
+            worker, worker_log = _start_intelligence_worker(
+                tmp_path, postgres, transport_settings, credentials, core, pki, intelligence,
+                delay_seconds=45)
+            _wait_for_sql(postgres, f"""
+                SELECT stage_run_id FROM processing_intelligence_claims
+                WHERE processing_job_id='{job_id}'::uuid
+            """, bool)
+            exit_code = _request_worker_shutdown(worker, worker_log)
+            worker = worker_log = None
+            _wait_for_intelligence_broker(
+                names[0], lambda work, dead: work["messages_ready"] == 1
+                    and work["messages_unacknowledged"] == 0 and work["consumers"] == 0
+                    and dead["messages"] == 0, timeout=30)
+            _wait_for_sql(postgres, f"""
+                SELECT error_code FROM processing_stage_runs
+                WHERE id='{dispatch['stageRunId']}'::uuid
+                  AND status='FAILED' AND error_code='STAGE_LEASE_EXPIRED'
+            """, bool, timeout=90)
+            _assert_intelligence_result_missing(transport_settings, credentials, job_id,
+                                                dispatch["stageRunId"])
+            final, final_log = _start_intelligence_worker(
+                tmp_path, postgres, transport_settings, credentials, core, pki, intelligence)
+            _assert_intelligence_settled(names[0])
+            evidence = _intelligence_evidence(postgres, job_id)
+            assert evidence["claimCount"] == 1
+            assert evidence["receiptCount"] == 0
+            assert evidence["stageStatus"] == "FAILED"
+            print("E2E04_MI_SHUTDOWN_EVIDENCE " + " ".join((
+                f"job_id={job_id}", f"stage_run_id={dispatch['stageRunId']}",
+                f"graceful_shutdown_requested=true exit_code={exit_code}",
+                "unresolved_delivery_requeued=true stale_publication_blocked=true "
+                "durable_failure_acknowledged=true result_receipt_count=0 broker_settled=true")))
+        finally:
+            if final is not None and final.poll() is None:
+                _stop_worker(final, final_log)
+            if worker is not None and worker.poll() is None:
+                _request_worker_shutdown(worker, worker_log)
+            if transcription is not None and transcription.poll() is None:
+                _stop_worker(transcription, transcription_log)

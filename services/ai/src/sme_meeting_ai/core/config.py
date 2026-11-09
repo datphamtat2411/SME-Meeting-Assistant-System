@@ -167,6 +167,48 @@ class Settings(BaseSettings):
     diarization_worker_projection_ready: bool = False
     diarization_worker_s3_access_key_id: SecretStr | None = Field(default=None, repr=False)
     diarization_worker_s3_secret_access_key: SecretStr | None = Field(default=None, repr=False)
+    meeting_intelligence_worker_enabled: bool = False
+    meeting_intelligence_worker_concurrency: int = Field(default=1, ge=1, le=4)
+    meeting_intelligence_worker_execution_timeout_seconds: float = Field(default=1800, gt=0, le=7200, allow_inf_nan=False)
+    meeting_intelligence_inference_enabled: bool = False
+    meeting_intelligence_summary_enabled: bool = False
+    meeting_intelligence_decision_enabled: bool = False
+    meeting_intelligence_action_item_enabled: bool = False
+    meeting_intelligence_model: str = Field(default="openai/gpt-6-luna", pattern=r"^[A-Za-z0-9][A-Za-z0-9_./:-]{0,159}$")
+    meeting_intelligence_reasoning_effort: ReasoningEffort = "high"
+    meeting_intelligence_context_window_tokens: int = Field(default=131072, ge=1, le=400000, strict=True)
+    meeting_intelligence_max_input_tokens: int = Field(default=98304, ge=1, le=272000, strict=True)
+    meeting_intelligence_max_output_tokens: int = Field(default=32768, ge=1, le=128000, strict=True)
+    meeting_intelligence_overlap_units: int = Field(default=1, ge=0, le=8, strict=True)
+    meeting_intelligence_max_windows: int = Field(default=64, ge=1, le=1024, strict=True)
+    meeting_intelligence_max_total_context_tokens: int = Field(default=1000000, ge=1, le=8000000, strict=True)
+    meeting_intelligence_max_total_inference_tokens: int = Field(default=2000000, ge=1, le=16000000, strict=True)
+    meeting_intelligence_max_source_bytes: int = Field(default=8388608, ge=1, le=8388608, strict=True)
+    meeting_intelligence_max_evidence_units: int = Field(default=16384, ge=1, le=65536, strict=True)
+    meeting_intelligence_provider_timeout_seconds: float = Field(default=120, gt=0, le=600, allow_inf_nan=False)
+    meeting_intelligence_max_attempts: int = Field(default=2, ge=1, le=2, strict=True)
+    meeting_intelligence_max_response_bytes: int = Field(default=1048576, ge=1, le=16777216, strict=True)
+    meeting_intelligence_max_concurrent_requests: int = Field(default=1, ge=1, le=4, strict=True)
+    meeting_intelligence_summary_target_chars: int = Field(default=8000, ge=1000, le=20000, strict=True)
+    meeting_intelligence_summary_max_records: int = Field(default=2048, ge=1, le=16384, strict=True)
+    meeting_intelligence_summary_max_synthesis_depth: int = Field(default=3, ge=1, le=8, strict=True)
+    meeting_intelligence_summary_max_model_calls: int = Field(default=128, ge=1, le=512, strict=True)
+    meeting_intelligence_decision_max_signals: int = Field(default=2048, ge=1, le=16384, strict=True)
+    meeting_intelligence_decision_max_candidates: int = Field(default=128, ge=1, le=500, strict=True)
+    meeting_intelligence_decision_max_synthesis_depth: int = Field(default=3, ge=1, le=8, strict=True)
+    meeting_intelligence_decision_max_model_calls: int = Field(default=128, ge=1, le=512, strict=True)
+    meeting_intelligence_decision_max_evidence_references: int = Field(default=8192, ge=1, le=65536, strict=True)
+    meeting_intelligence_action_item_max_signals: int = Field(default=256, ge=1, le=256, strict=True)
+    meeting_intelligence_action_item_max_candidates: int = Field(default=128, ge=1, le=200, strict=True)
+    meeting_intelligence_action_item_max_model_calls: int = Field(default=128, ge=1, le=512, strict=True)
+    meeting_intelligence_action_item_max_evidence_references: int = Field(default=2048, ge=1, le=8192, strict=True)
+    meeting_intelligence_acceptance_token: SecretStr | None = Field(default=None, repr=False)
+    meeting_intelligence_s3_access_key_id: SecretStr | None = Field(default=None, repr=False)
+    meeting_intelligence_s3_secret_access_key: SecretStr | None = Field(default=None, repr=False)
+    meeting_intelligence_rabbitmq_username: SecretStr | None = Field(default=None, repr=False)
+    meeting_intelligence_rabbitmq_password: SecretStr | None = Field(default=None, repr=False)
+    meeting_intelligence_core_api_client_cert_file: Path | None = None
+    meeting_intelligence_core_api_client_key_file: Path | None = Field(default=None, repr=False)
     diarization_model: str = Field(
         default="konieshadow/speaker-diarization:c58b6b038f6de30f93eaccd6aecb59d1b9a48ac13b22be000bcffe853efb2c20",
         pattern=r"^konieshadow/speaker-diarization:[a-f0-9]{64}$",
@@ -365,6 +407,40 @@ class Settings(BaseSettings):
         if (self.transcript_correction_max_input_tokens + self.transcript_correction_max_output_tokens
                 > self.transcript_correction_context_window_tokens):
             raise ValueError("Correction input and output allowances must fit the context window")
+        return self
+
+    @field_validator(
+        "meeting_intelligence_context_window_tokens", "meeting_intelligence_max_input_tokens",
+        "meeting_intelligence_max_output_tokens", "meeting_intelligence_overlap_units",
+        "meeting_intelligence_max_windows", "meeting_intelligence_max_total_context_tokens",
+        "meeting_intelligence_max_total_inference_tokens",
+        "meeting_intelligence_max_source_bytes", "meeting_intelligence_max_evidence_units",
+        "meeting_intelligence_max_attempts", "meeting_intelligence_max_response_bytes",
+        "meeting_intelligence_max_concurrent_requests", "meeting_intelligence_summary_target_chars",
+        "meeting_intelligence_summary_max_records", "meeting_intelligence_summary_max_synthesis_depth",
+        "meeting_intelligence_summary_max_model_calls", "meeting_intelligence_decision_max_signals",
+        "meeting_intelligence_decision_max_candidates", "meeting_intelligence_decision_max_synthesis_depth",
+        "meeting_intelligence_decision_max_model_calls", "meeting_intelligence_decision_max_evidence_references",
+        "meeting_intelligence_action_item_max_signals", "meeting_intelligence_action_item_max_candidates",
+        "meeting_intelligence_action_item_max_model_calls", "meeting_intelligence_action_item_max_evidence_references",
+        mode="before",
+    )
+    @classmethod
+    def parse_intelligence_integers(cls, value: object) -> object:
+        return cls.parse_asr_chunk_integers(value)
+
+    @field_validator("meeting_intelligence_provider_timeout_seconds", mode="before")
+    @classmethod
+    def reject_boolean_intelligence_timeout(cls, value: object) -> object:
+        if isinstance(value, bool):
+            raise ValueError("Intelligence timeout must be numeric")
+        return value
+
+    @model_validator(mode="after")
+    def valid_intelligence_context(self) -> Self:
+        if (self.meeting_intelligence_max_input_tokens + self.meeting_intelligence_max_output_tokens
+                > self.meeting_intelligence_context_window_tokens):
+            raise ValueError("Intelligence input and output allowances must fit the context window")
         return self
 
     @field_validator(

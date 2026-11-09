@@ -49,3 +49,26 @@ def test_diarization_opt_in_has_dedicated_durable_route_and_bounded_recovery():
     assert re.fullmatch(worker["read"], broker.WORK)
     assert re.fullmatch(worker["read"], broker.DIARIZATION_WORK)
     assert worker["configure"] == worker["write"] == "^$"
+
+
+def test_intelligence_opt_in_has_dedicated_route_and_identity_without_dlq_replay():
+    definitions = broker.definitions("fixture", {
+        "publisher": "core", "worker": "ai", "reconciler": "dlq", "intelligence": "mi",
+    }, intelligence=True)
+    queues = {q["name"]: q for q in definitions["queues"]}
+    assert set(queues) == {broker.WORK, broker.DEAD, broker.INTELLIGENCE_WORK, broker.INTELLIGENCE_DEAD}
+    work = queues[broker.INTELLIGENCE_WORK]["arguments"]
+    dead = queues[broker.INTELLIGENCE_DEAD]["arguments"]
+    assert work["x-queue-type"] == "quorum"
+    assert work["x-delivery-limit"] == 5
+    assert work["x-dead-letter-routing-key"] == broker.INTELLIGENCE_DEAD
+    assert dead["x-queue-type"] == "quorum"
+    assert "x-dead-letter-exchange" not in dead
+    assert any(binding["destination"] == broker.INTELLIGENCE_WORK
+               and binding["routing_key"] == broker.INTELLIGENCE_ROUTE
+               for binding in definitions["bindings"])
+    permissions = {permission["user"]: permission for permission in definitions["permissions"]}
+    assert permissions["mi"]["read"] == r"^meeting\.processing\.intelligence$"
+    assert permissions["mi"]["write"] == permissions["mi"]["configure"] == "^$"
+    assert permissions["ai"]["read"] == r"^meeting\.processing\.jobs$"
+    assert permissions["dlq"]["read"] == r"^(?:meeting\.processing\.jobs\.dead|meeting\.processing\.intelligence\.dead)$"

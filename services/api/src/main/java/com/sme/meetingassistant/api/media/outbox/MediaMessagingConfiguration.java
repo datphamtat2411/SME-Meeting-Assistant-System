@@ -18,6 +18,27 @@ public class MediaMessagingConfiguration {
     public static final String QUEUE = "meeting.processing.jobs";
     public static final String DEAD_LETTER_EXCHANGE = "meeting.processing.dlx";
     public static final String DEAD_LETTER_QUEUE = "meeting.processing.jobs.dead";
+    public static final String INTELLIGENCE_QUEUE="meeting.processing.intelligence";
+    public static final String INTELLIGENCE_DEAD_LETTER_QUEUE=INTELLIGENCE_QUEUE+".dead";
+
+    @Bean
+    @ConditionalOnProperty(name="app.media.intelligence.dispatch-enabled",havingValue="true")
+    Declarables intelligenceTopology(MediaProperties properties,@Value("${app.media.messaging.topology:legacy}") String topology) {
+        if("external-quorum".equals(topology)) return new Declarables();
+        if(!"quorum".equals(topology)) throw new IllegalStateException("Intelligence workers require a quorum topology");
+        if(!"processing.intelligence.requested".equals(properties.getOutbox().getIntelligenceRoutingKey())
+            || properties.getOutbox().getIntelligenceRoutingKey().equals(properties.getOutbox().getRoutingKey()))
+            throw new IllegalStateException("Intelligence requires an isolated notification route");
+        var exchange=new DirectExchange(properties.getOutbox().getExchange(),true,false);
+        var dlx=new DirectExchange(DEAD_LETTER_EXCHANGE,true,false);
+        var work=QueueBuilder.durable(INTELLIGENCE_QUEUE).quorum().withArgument("x-delivery-limit",5)
+            .withArgument("x-overflow","reject-publish").withArgument("x-dead-letter-strategy","at-least-once")
+            .deadLetterExchange(DEAD_LETTER_EXCHANGE).deadLetterRoutingKey(INTELLIGENCE_DEAD_LETTER_QUEUE).build();
+        var dead=QueueBuilder.durable(INTELLIGENCE_DEAD_LETTER_QUEUE).quorum().withArgument("x-delivery-limit",-1).build();
+        return new Declarables(exchange,dlx,work,dead,
+            BindingBuilder.bind(work).to(exchange).with(properties.getOutbox().getIntelligenceRoutingKey()),
+            BindingBuilder.bind(dead).to(dlx).with(INTELLIGENCE_DEAD_LETTER_QUEUE));
+    }
 
     @Bean
     Declarables mediaProcessingTopology(MediaProperties properties,

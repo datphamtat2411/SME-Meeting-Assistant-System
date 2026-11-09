@@ -41,7 +41,7 @@ def main() -> int:
         return 1
     configure_logging(settings)
     try:
-        if settings.diarization_worker_enabled:
+        if settings.diarization_worker_enabled or settings.meeting_intelligence_worker_enabled:
             from .execution import AiWorkerExecution
             execution = AiWorkerExecution(settings)
         else:

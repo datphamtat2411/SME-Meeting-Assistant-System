@@ -35,11 +35,15 @@ class ActionItemHandoffFeatureGateTests {
         var props=new MediaProperties();
         props.getProcessing().setRequiredDownstreamStages(
             List.of("GENERATING_SUMMARY","EXTRACTING_ACTION_ITEMS"));
+        var capability=mock(com.sme.meetingassistant.api.media.intelligence.IntelligenceWorkerCapability.class);
         var service=new MediaProcessingService(mock(MediaRepository.class),null,null,null,null,props,
-            mock(com.sme.meetingassistant.api.media.worker.TranscriptionWorkerCapability.class), null);
+            mock(com.sme.meetingassistant.api.media.worker.TranscriptionWorkerCapability.class), null,capability);
         assertThatThrownBy(()->ReflectionTestUtils.invokeMethod(service,"plannedDownstreamStages"))
             .satisfies(ActionItemHandoffFeatureGateTests::is503);
         props.getProcessing().setRequiredDownstreamStages(List.of("GENERATING_SUMMARY"));
+        assertThatThrownBy(()->ReflectionTestUtils.invokeMethod(service,"plannedDownstreamStages"))
+            .satisfies(ActionItemHandoffFeatureGateTests::is503);
+        when(capability.canDispatch(anyString())).thenReturn(true);
         assertThat(((List<?>)ReflectionTestUtils.invokeMethod(
             service,"plannedDownstreamStages")).stream().map(Object::toString).toList())
             .containsExactly("GENERATING_SUMMARY");

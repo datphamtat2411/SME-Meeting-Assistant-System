@@ -62,6 +62,13 @@ class JsonFormatter(logging.Formatter):
         upload_bytes = getattr(record, "_sme_upload_bytes", None)
         if type(upload_bytes) is int and 0 < upload_bytes <= 100000000:
             data["upload_bytes"] = upload_bytes
+        for field in ("input_tokens", "output_tokens", "total_tokens", "reasoning_tokens", "reserved_tokens"):
+            value = getattr(record, "_sme_" + field, None)
+            if type(value) is int and 0 <= value <= 2**63 - 1:
+                data[field] = value
+        attempts = getattr(record, "_sme_attempts", None)
+        if type(attempts) is int and 0 <= attempts <= 100:
+            data["attempts"] = attempts
         context = get_correlation_context()
         if context is not None:
             for field in (
@@ -92,7 +99,10 @@ def configure_logging(settings: Settings | None = None) -> None:
 
 
 def log_event(logger: logging.Logger, level: int, event: str, *, duration_ms: int | None = None,
-              upload_bytes: int | None = None) -> None:
+              upload_bytes: int | None = None, input_tokens: int | None = None,
+              output_tokens: int | None = None, total_tokens: int | None = None,
+              reasoning_tokens: int | None = None, reserved_tokens: int | None = None,
+              attempts: int | None = None) -> None:
     """Log a bounded stable event name, with no free-text payload API."""
     if not _valid_event(event):
         raise ValueError("Invalid event name")
@@ -101,4 +111,11 @@ def log_event(logger: logging.Logger, level: int, event: str, *, duration_ms: in
         extra["_sme_duration_ms"] = duration_ms
     if type(upload_bytes) is int and 0 < upload_bytes <= 100000000:
         extra["_sme_upload_bytes"] = upload_bytes
+    for field, value in (("input_tokens", input_tokens), ("output_tokens", output_tokens),
+                         ("total_tokens", total_tokens), ("reasoning_tokens", reasoning_tokens),
+                         ("reserved_tokens", reserved_tokens)):
+        if type(value) is int and 0 <= value <= 2**63 - 1:
+            extra["_sme_" + field] = value
+    if type(attempts) is int and 0 <= attempts <= 100:
+        extra["_sme_attempts"] = attempts
     logger.log(level, "", extra=extra)

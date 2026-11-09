@@ -20,7 +20,7 @@ import org.springframework.test.context.ActiveProfiles;
 
 /**
  * DE-13: V34 historical canonical DB must advance through develop V35-V39
- * and Dashboard/Export V40-V44 without checksum rewrite, meeting loss or
+ * and Dashboard/Export V40-V45 without checksum rewrite, meeting loss or
  * silently mutable pinned export intake.
  */
 @ActiveProfiles("test")
@@ -31,7 +31,7 @@ class DashboardExportFullUpgradeIntegrationTests {
     @Autowired JdbcTemplate jdbc;
 
     @Test
-    void v34ToV44PreservesAllHistoricalChecksumsAndCanonicalRows() {
+    void v34ToV45PreservesAllHistoricalChecksumsAndCanonicalRows() {
         String schema = "de13_upgrade_" + UUID.randomUUID().toString().replace("-", "");
         try {
             Flyway older = Flyway.configure().dataSource(dataSource).schemas(schema)
@@ -56,11 +56,11 @@ class DashboardExportFullUpgradeIntegrationTests {
             assertThat(original).hasSize(34).containsKey("34");
             Flyway upgraded=Flyway.configure().dataSource(dataSource).schemas(schema)
                     .locations("classpath:db/migration").load();
-            assertThat(upgraded.migrate().migrationsExecuted).isEqualTo(10);
+            assertThat(upgraded.migrate().migrationsExecuted).isEqualTo(11);
             upgraded.validate();
             Map<String,Integer> current=checksums(schema);
-            assertThat(current).hasSize(44).containsKeys(
-                    "35","36","37","38","39","40","41","42","43","44");
+            assertThat(current).hasSize(45).containsKeys(
+                    "35","36","37","38","39","40","41","42","43","44","45");
             for(var item:original.entrySet()) {
                 assertThat(current.get(item.getKey())).describedAs(
                     "V" + item.getKey() + " historical checksum")
@@ -103,7 +103,7 @@ class DashboardExportFullUpgradeIntegrationTests {
 
 
     @Test
-    void populatedDevelopV39UpgradesThroughV44WithUnchangedHistoricalChecksums() {
+    void populatedDevelopV39UpgradesThroughV45WithUnchangedHistoricalChecksums() {
         String schema = "de13_develop_upgrade_" + UUID.randomUUID().toString().replace("-", "");
         try {
             Flyway developHistory = Flyway.configure().dataSource(dataSource).schemas(schema)
@@ -128,10 +128,10 @@ class DashboardExportFullUpgradeIntegrationTests {
             assertThat(before).hasSize(39).containsKeys("35", "36", "37", "38", "39");
             Flyway integrated = Flyway.configure().dataSource(dataSource).schemas(schema)
                     .locations("classpath:db/migration").load();
-            assertThat(integrated.migrate().migrationsExecuted).isEqualTo(5);
+            assertThat(integrated.migrate().migrationsExecuted).isEqualTo(6);
             integrated.validate();
             Map<String, Integer> after = checksums(schema);
-            assertThat(after).hasSize(44).containsKeys("40", "41", "42", "43", "44");
+            assertThat(after).hasSize(45).containsKeys("40", "41", "42", "43", "44", "45");
             for (var migration : before.entrySet()) {
                 assertThat(after.get(migration.getKey()))
                         .describedAs("Historical develop checksum V" + migration.getKey())

@@ -12,12 +12,35 @@ public class MediaProperties {
     private final Outbox outbox = new Outbox();
     private final Admission admission = new Admission();
     private final Processing processing = new Processing();
+    private final Intelligence intelligence = new Intelligence();
 
     public Storage getStorage() { return storage; }
     public Upload getUpload() { return upload; }
     public Outbox getOutbox() { return outbox; }
     public Admission getAdmission() { return admission; }
     public Processing getProcessing() { return processing; }
+    public Intelligence getIntelligence() { return intelligence; }
+
+    public static class Intelligence {
+        private boolean enabled;
+        private boolean dispatchEnabled;
+        private boolean infrastructureVerified;
+        private int dispatchClaimTimeoutSeconds = 1800;
+        private String storageId = "";
+        private List<String> enabledStages = new ArrayList<>();
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean value) { enabled=value; }
+        public boolean isDispatchEnabled() { return dispatchEnabled; }
+        public void setDispatchEnabled(boolean value) { dispatchEnabled=value; }
+        public boolean isInfrastructureVerified() { return infrastructureVerified; }
+        public void setInfrastructureVerified(boolean value) { infrastructureVerified=value; }
+        public int getDispatchClaimTimeoutSeconds() { return dispatchClaimTimeoutSeconds; }
+        public void setDispatchClaimTimeoutSeconds(int value) { dispatchClaimTimeoutSeconds=value; }
+        public String getStorageId() { return storageId; }
+        public void setStorageId(String value) { storageId=value; }
+        public List<String> getEnabledStages() { return enabledStages; }
+        public void setEnabledStages(List<String> value) { enabledStages=value; }
+    }
 
     public static class Storage {
         private String endpoint;
@@ -102,6 +125,7 @@ public class MediaProperties {
         private String exchange;
         private String routingKey;
         private String diarizationRoutingKey = "processing.diarization.requested";
+        private String intelligenceRoutingKey = "processing.intelligence.requested";
         private long pollDelayMs = 2000;
         private int maxAttempts = 12;
         private int leaseSeconds = 60;
@@ -112,6 +136,8 @@ public class MediaProperties {
         public void setRoutingKey(String value) { routingKey = value; }
         public String getDiarizationRoutingKey() { return diarizationRoutingKey; }
         public void setDiarizationRoutingKey(String value) { diarizationRoutingKey = value; }
+        public String getIntelligenceRoutingKey() { return intelligenceRoutingKey; }
+        public void setIntelligenceRoutingKey(String value) { intelligenceRoutingKey=value; }
         public long getPollDelayMs() { return pollDelayMs; }
         public void setPollDelayMs(long value) { pollDelayMs = value; }
         public int getMaxAttempts() { return maxAttempts; }

@@ -4,8 +4,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 /** Ephemeral isolated PKI. Never used for shared development enrollment. */
-final class TestPki {
-    static void create(Path dir) throws Exception {
+public final class TestPki {
+    public static void create(Path dir) throws Exception {
         run(dir, "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2",
             "-subj", "/CN=Isolated test CA", "-keyout", "ca.key", "-out", "ca.crt");
         run(dir, "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2",
@@ -24,7 +24,7 @@ final class TestPki {
         issue(dir, "expired-server", "DNS:localhost", "serverAuth", "ca", true);
     }
 
-    static void issue(Path dir, String name, String san, String eku, String ca, boolean expired) throws Exception {
+    public static void issue(Path dir, String name, String san, String eku, String ca, boolean expired) throws Exception {
         run(dir, "openssl", "req", "-new", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=Test leaf",
             "-keyout", name + ".key", "-out", name + ".csr");
         Files.writeString(dir.resolve(name + ".ext"), "basicConstraints=critical,CA:FALSE\n"

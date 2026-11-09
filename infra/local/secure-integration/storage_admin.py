@@ -25,21 +25,30 @@ def policy(bucket, role):
     source = prefix + "meetings/*/sources/*"
     result = prefix + "processing/*/transcription/results/*.json"
     diarization = prefix + "processing/*/diarization/results/*.json"
+    intelligence_source = prefix + "processing/*/intelligence/source/*.json"
+    intelligence_result = prefix + "processing/*/intelligence/results/*.json"
+    initial_resources = [intelligence_source] if role == "intelligence" else [source,
+        diarization if role == "diarization-worker" else result]
     statements = [
-        {"Effect": "Allow", "Action": ["s3:GetObject"], "Resource": [source,
-            diarization if role == "diarization-worker" else result]},
+        {"Effect": "Allow", "Action": ["s3:GetObject"], "Resource": initial_resources},
     ]
     if role == "worker":
         statements.append({"Effect": "Allow", "Action": ["s3:PutObject"], "Resource": [result]})
     elif role == "diarization-worker":
         statements.append({"Effect": "Allow", "Action": ["s3:PutObject"], "Resource": [diarization]})
+    elif role == "intelligence":
+        statements.append({"Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject"],
+                           "Resource": [intelligence_result]})
     elif role == "core":
         pending = prefix + "meetings/*/pending/*"
-        intelligence = prefix + "processing/*/intelligence/*"
+        intelligence_source = prefix + "processing/*/intelligence/source/*.json"
         statements.extend([
-            {"Effect": "Allow", "Action": ["s3:GetObject"], "Resource": [diarization]},
-            {"Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject"], "Resource": [pending, source, intelligence]},
-            {"Effect": "Allow", "Action": ["s3:DeleteObject"], "Resource": [pending, intelligence]},
+            {"Effect": "Allow", "Action": ["s3:GetObject"],
+             "Resource": [diarization, intelligence_result]},
+            {"Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject"],
+             "Resource": [pending, source, intelligence_source]},
+            {"Effect": "Allow", "Action": ["s3:DeleteObject"],
+             "Resource": [pending, intelligence_source]},
             {"Effect": "Allow", "Action": ["s3:ListBucket"], "Resource": [prefix[:-1]],
              "Condition": {"StringLike": {"s3:prefix": ["processing/*/intelligence/"]}}},
         ])
@@ -91,7 +100,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("policy", "provision"))
     parser.add_argument("--bucket", required=True)
-    parser.add_argument("--role", choices=("worker", "diarization-worker", "core"), required=True)
+    parser.add_argument("--role", choices=("worker", "diarization-worker", "intelligence", "core"), required=True)
     args = parser.parse_args()
     if args.action == "policy":
         print(json.dumps(policy(args.bucket, args.role), indent=2))

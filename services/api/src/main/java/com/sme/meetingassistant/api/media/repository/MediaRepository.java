@@ -5,6 +5,8 @@ import com.sme.meetingassistant.api.media.dto.ProcessingStageResponse;
 import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle.StageClaim;
 import com.sme.meetingassistant.api.media.service.ProcessingTranscriptEvidence.Evidence;
 import com.sme.meetingassistant.api.media.service.ProcessingTranscriptEvidence.DiarizationSource;
+import com.sme.meetingassistant.api.media.intelligence.IntelligenceWorkerCapability;
+import com.sme.meetingassistant.api.media.intelligence.IntelligenceOperationLog;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.OffsetDateTime;
@@ -243,7 +245,7 @@ public class MediaRepository {
 
     /**
      * MI-08 derived-only admission: exactly one summary stage, no transcription
-     * or correction plan. Uses the same outbox envelope/relay as ordinary jobs.
+     * or correction plan. Uses the dedicated intelligence notification/ordinary relay.
      * The caller must persist the immutable source snapshot in this transaction
      * before commit makes the event visible to the publisher.
      */
@@ -258,23 +260,12 @@ public class MediaRepository {
             ON CONFLICT DO NOTHING
             """,jobId,meetingId,mediaId,actorId,parentJobId);
         if(count!=1) throw new JobAdmissionConflictException();
+        UUID stageRunId=UUID.randomUUID();
         jdbc.update("""
             INSERT INTO processing_stage_runs(id,processing_job_id,stage_code,attempt_number,status)
             VALUES (?,?,'GENERATING_SUMMARY',1,'PENDING')
-            """,UUID.randomUUID(),jobId);
-        String payload;
-        try {
-            payload=this.mapper.writeValueAsString(new JobQueuedEvent(
-                eventId,jobId,meetingId,mediaId,actorId,
-                RequestIdContext.currentRequestId(),1,OffsetDateTime.now()));
-        } catch(JacksonException failure) {
-            throw new IllegalStateException("Cannot encode derived processing notification.",failure);
-        }
-        jdbc.update("""
-            INSERT INTO outbox_events(
-                id,aggregate_type,aggregate_id,event_type,payload,occurred_at)
-            VALUES (?,'PROCESSING_JOB',?,'PROCESSING_JOB_QUEUED',CAST(? AS jsonb),CURRENT_TIMESTAMP)
-            """,eventId,jobId,payload);
+            """,stageRunId,jobId);
+        dispatchIntelligenceStage(jobId,stageRunId,"GENERATING_SUMMARY",eventId);
     }
 
     public Optional<Job> findJob(UUID id) {
@@ -326,6 +317,8 @@ public class MediaRepository {
         }
 
         List<StageAttempt> latest = latestAttempt(jobId, stageCode);
+        if (IntelligenceWorkerCapability.ORDER.contains(stageCode) && latest.isEmpty())
+            throw new ProcessingLifecycleConflictException("Intelligence execution requires an admitted stage plan.");
         if ("DIARIZING".equals(stageCode)) {
             if (!isDiarizationPlanned(jobId) || latest.isEmpty() || !hasSuccessfulFinalization(jobId)) {
                 throw new ProcessingLifecycleConflictException("Diarization requires an admitted plan and successful finalization.");
@@ -501,6 +494,11 @@ public class MediaRepository {
             if (!liveClaim(claim)) {
                 throw new ProcessingLifecycleConflictException("Finalization worker lease has expired.");
             }
+            if (!hasSuccessfulTranscription(jobId)
+                    || hasCorrectionPlan(jobId) && !hasSuccessfulContextualCorrection(jobId)) {
+                throw new ProcessingLifecycleConflictException(
+                    "Finalization requires successful transcription and contextual correction.");
+            }
             return false;
         }
         if (List.of("COMPLETED", "COMPLETED_WITH_WARNINGS").contains(state.jobStatus())
@@ -589,8 +587,10 @@ public class MediaRepository {
      */
     public boolean hasPendingPipelineStages(UUID jobId) {
         return Boolean.TRUE.equals(this.jdbc.queryForObject("""
-            SELECT EXISTS (SELECT 1 FROM processing_stage_runs
+            SELECT EXISTS (SELECT 1 FROM processing_stage_runs s
               WHERE processing_job_id=? AND status IN ('PENDING','RUNNING')
+                AND attempt_number=(SELECT MAX(x.attempt_number) FROM processing_stage_runs x
+                  WHERE x.processing_job_id=s.processing_job_id AND x.stage_code=s.stage_code)
                 AND stage_code IN ('DIARIZING', 'GENERATING_SUMMARY', 'EXTRACTING_DECISIONS',
                                    'EXTRACTING_ACTION_ITEMS', 'INDEXING'))
             """, Boolean.class, jobId));
@@ -917,13 +917,135 @@ public class MediaRepository {
               AND s.attempt_number=(
                 SELECT MAX(x.attempt_number)
                 FROM processing_stage_runs x
-                WHERE x.processing_job_id=s.processing_job_id AND x.stage_code=s.stage_code)
+                  WHERE x.processing_job_id=s.processing_job_id AND x.stage_code=s.stage_code)
+            ORDER BY CASE stage_code WHEN 'GENERATING_SUMMARY' THEN 1
+                WHEN 'EXTRACTING_DECISIONS' THEN 2 WHEN 'EXTRACTING_ACTION_ITEMS' THEN 3 END
             """,(rs,n)->new IntelligenceStageCompletion(
                 rs.getObject("id",UUID.class),rs.getString("stage_code"),
                 rs.getString("status")),jobId);
     }
 
     public record IntelligenceStageCompletion(UUID stageRunId,String stageCode,String status) {}
+
+    public boolean hasRunningStage(UUID jobId) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM processing_stage_runs WHERE processing_job_id=? AND status='RUNNING')",Boolean.class,jobId));
+    }
+
+    public boolean intelligenceUpstreamReady(UUID jobId) {
+        var job=findJob(jobId).orElseThrow();
+        if(!List.of("PENDING","QUEUED","RUNNING").contains(job.status()) || hasRunningStage(jobId)
+            || findMedia(job.sourceMediaId()).filter(m->"AVAILABLE".equals(m.status())).isEmpty()) return false;
+        if(isDerivedSummaryJob(jobId)) {
+            var stages=latestIntelligenceStages(jobId);
+            return stages.size()==1 && "GENERATING_SUMMARY".equals(stages.getFirst().stageCode());
+        }
+        return hasSuccessfulTranscription(jobId) && hasSuccessfulFinalization(jobId)
+            && (!hasCorrectionPlan(jobId) || hasSuccessfulContextualCorrection(jobId))
+            && (!isDiarizationPlanned(jobId) || latestAttempt(jobId,"DIARIZING").stream()
+                .anyMatch(s->isSuccessful(s.status()) || "FAILED".equals(s.status())));
+    }
+
+    public boolean hasUnfinishedRequiredStages(UUID jobId) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+            SELECT EXISTS(SELECT 1 FROM processing_stage_runs s JOIN processing_jobs j ON j.id=s.processing_job_id
+              WHERE j.id=? AND s.attempt_number=(SELECT MAX(x.attempt_number) FROM processing_stage_runs x
+                WHERE x.processing_job_id=s.processing_job_id AND x.stage_code=s.stage_code)
+              AND s.status NOT IN ('SUCCEEDED','SUCCEEDED_WITH_WARNING')
+              AND NOT (j.diarization_planned AND s.stage_code='DIARIZING' AND s.status='FAILED'))
+            """,Boolean.class,jobId));
+    }
+
+    /** Caller owns the Job lock; intent and immutable envelope commit together. */
+    public void dispatchIntelligenceStage(UUID jobId,UUID stageRunId,String code,UUID eventId) {
+        String status=lockJobStatus(jobId);
+        if(!List.of("PENDING","QUEUED","RUNNING").contains(status) || !IntelligenceWorkerCapability.ORDER.contains(code)
+            || latestAttempt(jobId,code).stream().noneMatch(a->a.id().equals(stageRunId) && "PENDING".equals(a.status())))
+            throw new ProcessingLifecycleConflictException("Intelligence dispatch requires its latest pending planned attempt.");
+        var existing=jdbc.query("SELECT event_id FROM processing_intelligence_dispatches WHERE stage_run_id=?",(r,n)->r.getObject(1,UUID.class),stageRunId);
+        if(!existing.isEmpty()) return;
+        var now=jdbc.queryForObject("SELECT clock_timestamp()",OffsetDateTime.class);
+        String request=RequestIdContext.currentRequestId();
+        if(request!=null && !request.matches("[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")) request=null;
+        String payload=mapper.writeValueAsString(new IntelligenceRequestedEvent(eventId,1,jobId,stageRunId,code,now,request));
+        jdbc.update("""
+            INSERT INTO outbox_events(id,aggregate_type,aggregate_id,event_type,payload,occurred_at)
+            VALUES (?,'PROCESSING_JOB',?,'PROCESSING_INTELLIGENCE_STAGE_REQUESTED',CAST(? AS jsonb),?)
+            """,eventId,jobId,payload,now);
+        jdbc.update("""
+            INSERT INTO processing_intelligence_dispatches(stage_run_id,processing_job_id,stage_code,event_id,schema_version,created_at)
+            VALUES (?,?,?,?,1,?)
+            """,stageRunId,jobId,code,eventId,now);
+        IntelligenceOperationLog.record("DISPATCHED",jobId,stageRunId,eventId);
+    }
+
+    public Optional<UUID> intelligenceEvent(UUID stageRunId) {
+        return jdbc.query("SELECT event_id FROM processing_intelligence_dispatches WHERE stage_run_id=?",(r,n)->r.getObject(1,UUID.class),stageRunId).stream().findFirst();
+    }
+
+    /** No automatic execution retry: publication exhaustion becomes an authorized-retry failure. */
+    @Transactional
+    public void reconcileIntelligencePublicationFailures(int limit,int pendingTimeoutSeconds) {
+        if(limit<1 || pendingTimeoutSeconds<30) throw new IllegalArgumentException("Invalid intelligence recovery limits");
+        var jobs=jdbc.query("""
+            SELECT j.id FROM processing_jobs j WHERE j.status IN ('PENDING','QUEUED','RUNNING')
+              AND EXISTS(SELECT 1 FROM processing_intelligence_dispatches d
+                JOIN outbox_events e ON e.id=d.event_id AND (e.status='FAILED'
+                  OR e.status='PUBLISHED' AND e.published_at<clock_timestamp()-(? * interval '1 second'))
+                JOIN processing_stage_runs s ON s.id=d.stage_run_id AND s.status='PENDING'
+                WHERE d.processing_job_id=j.id AND s.attempt_number=(SELECT MAX(x.attempt_number)
+                  FROM processing_stage_runs x WHERE x.processing_job_id=j.id AND x.stage_code=s.stage_code))
+            ORDER BY j.updated_at,j.id LIMIT ? FOR UPDATE OF j SKIP LOCKED
+            """,(r,n)->r.getObject(1,UUID.class),pendingTimeoutSeconds,limit);
+        for(var job:jobs) {
+            if(hasRunningStage(job)) continue;
+            var failed=jdbc.query("""
+                UPDATE processing_stage_runs s SET status='FAILED',retryable=TRUE,error_code='INTELLIGENCE_DISPATCH_FAILED',
+                  error_summary='Meeting Intelligence dispatch was not confirmed.',completed_at=CURRENT_TIMESTAMP
+                FROM processing_intelligence_dispatches d JOIN outbox_events e ON e.id=d.event_id AND (e.status='FAILED'
+                  OR e.status='PUBLISHED' AND e.published_at<clock_timestamp()-(? * interval '1 second'))
+                WHERE d.processing_job_id=? AND s.id=d.stage_run_id AND s.status='PENDING'
+                  AND s.attempt_number=(SELECT MAX(x.attempt_number) FROM processing_stage_runs x
+                    WHERE x.processing_job_id=s.processing_job_id AND x.stage_code=s.stage_code)
+                RETURNING s.id,s.stage_code,d.event_id
+                """,(r,n)->new Object[]{r.getObject("id",UUID.class),r.getString("stage_code"),r.getObject("event_id",UUID.class)},pendingTimeoutSeconds,job);
+            if(failed.isEmpty()) continue;
+            jdbc.update("""
+                UPDATE processing_jobs SET status='FAILED',current_stage=?,retryable=TRUE,error_code='INTELLIGENCE_DISPATCH_FAILED',
+                  error_summary='Meeting Intelligence dispatch was not confirmed.',completed_at=CURRENT_TIMESTAMP,
+                  updated_at=CURRENT_TIMESTAMP,version=version+1 WHERE id=?
+                """,failed.getFirst()[1],job);
+            for(var f:failed) IntelligenceOperationLog.record("DISPATCH_FAILED",job,(UUID)f[0],(UUID)f[2]);
+        }
+    }
+
+    /** Bounded repair candidates; excludes running, failed and already-dispatched work. */
+    public List<UUID> intelligenceRecoveryCandidates(int limit,List<String> enabledStages) {
+        return jdbc.query("""
+            SELECT j.id FROM processing_jobs j WHERE j.status IN ('PENDING','QUEUED','RUNNING')
+              AND NOT EXISTS(SELECT 1 FROM processing_stage_runs s WHERE s.processing_job_id=j.id AND s.status='RUNNING')
+              AND NOT EXISTS(SELECT 1 FROM processing_stage_runs s WHERE s.processing_job_id=j.id
+                AND s.attempt_number=(SELECT MAX(x.attempt_number) FROM processing_stage_runs x
+                  WHERE x.processing_job_id=j.id AND x.stage_code=s.stage_code)
+                AND (s.status='FAILED' AND NOT(j.diarization_planned AND s.stage_code='DIARIZING')
+                  OR s.stage_code='DIARIZING' AND s.status='PENDING'))
+              AND (j.job_type='DERIVED_STAGE_PROCESSING' OR EXISTS(SELECT 1 FROM processing_stage_runs f
+                WHERE f.processing_job_id=j.id AND f.stage_code='FINALIZING_TRANSCRIPT' AND f.status IN ('SUCCEEDED','SUCCEEDED_WITH_WARNING')))
+              AND (EXISTS(SELECT 1 FROM processing_stage_runs s WHERE s.processing_job_id=j.id
+                AND s.stage_code IN ('GENERATING_SUMMARY','EXTRACTING_DECISIONS','EXTRACTING_ACTION_ITEMS') AND s.status='PENDING'
+                AND s.stage_code=ANY(CAST(? AS text[]))
+                AND s.attempt_number=(SELECT MAX(x.attempt_number) FROM processing_stage_runs x
+                  WHERE x.processing_job_id=j.id AND x.stage_code=s.stage_code)
+                AND NOT EXISTS(SELECT 1 FROM processing_intelligence_dispatches d WHERE d.stage_run_id=s.id)
+                AND NOT EXISTS(SELECT 1 FROM processing_stage_runs p WHERE p.processing_job_id=j.id
+                  AND p.attempt_number=(SELECT MAX(x.attempt_number) FROM processing_stage_runs x
+                    WHERE x.processing_job_id=j.id AND x.stage_code=p.stage_code)
+                  AND p.status NOT IN ('SUCCEEDED','SUCCEEDED_WITH_WARNING')
+                  AND array_position(ARRAY['GENERATING_SUMMARY','EXTRACTING_DECISIONS','EXTRACTING_ACTION_ITEMS'],p.stage_code::text)
+                    <array_position(ARRAY['GENERATING_SUMMARY','EXTRACTING_DECISIONS','EXTRACTING_ACTION_ITEMS'],s.stage_code::text)))
+                OR NOT EXISTS(SELECT 1 FROM processing_stage_runs s WHERE s.processing_job_id=j.id AND s.status IN ('PENDING','RUNNING')))
+            ORDER BY j.updated_at,j.id LIMIT ?
+            """,(r,n)->r.getObject(1,UUID.class),"{"+String.join(",",enabledStages)+"}",limit);
+    }
 
     public StageIdentity stageIdentity(UUID stageRunId) {
         return this.jdbc.query("""
@@ -1038,6 +1160,8 @@ public class MediaRepository {
                 FOR UPDATE
                 """, (rs, row) -> rs.getObject("id", UUID.class), jobId);
             if (expired.isEmpty()) continue;
+            for(UUID stage:expired) if(IntelligenceWorkerCapability.ORDER.contains(stageIdentity(stage).stageCode()))
+                IntelligenceOperationLog.record("LEASE_EXPIRED",jobId,stage,intelligenceEvent(stage).orElse(null));
             this.jdbc.update("""
                 UPDATE processing_stage_runs SET status = 'FAILED', retryable = NOT EXISTS (
                     SELECT 1 FROM transcription_worker_claims c JOIN transcription_worker_deliveries d ON d.event_id=c.event_id
@@ -1113,6 +1237,10 @@ public class MediaRepository {
             stageCode != null, stageCode != null, stageCode);
         if (updated != 1) return false;
         if (resumeStage != null) {
+            if(IntelligenceWorkerCapability.ORDER.contains(resumeStage)) {
+                var old=latestAttempt(job.id(),resumeStage).getFirst();
+                IntelligenceOperationLog.record("SUPERSEDED",job.id(),old.id(),intelligenceEvent(old.id()).orElse(null));
+            }
             int inserted = this.jdbc.update("""
                 INSERT INTO processing_stage_runs (id, processing_job_id, stage_code, attempt_number,
                   status, retryable, created_at)
@@ -1120,6 +1248,11 @@ public class MediaRepository {
                 FROM processing_stage_runs WHERE processing_job_id = ? AND stage_code = ?
                 """, UUID.randomUUID(), job.id(), resumeStage, job.id(), resumeStage);
             if (inserted != 1) throw new IllegalStateException("Could not create the retry stage attempt.");
+        }
+        if (resumeStage!=null && IntelligenceWorkerCapability.ORDER.contains(resumeStage)) {
+            var pending=latestAttempt(job.id(),resumeStage).getFirst();
+            dispatchIntelligenceStage(job.id(),pending.id(),resumeStage,eventId);
+            return true;
         }
         String payload;
         try {
@@ -1142,6 +1275,10 @@ public class MediaRepository {
      * No database transaction is held while awaiting a RabbitMQ confirm.
      */
     public List<Outbox> claimPendingOutbox(int limit, int leaseSeconds, int maxAttempts) {
+        return claimPendingOutbox(limit,leaseSeconds,maxAttempts,true);
+    }
+
+    public List<Outbox> claimPendingOutbox(int limit, int leaseSeconds, int maxAttempts,boolean intelligenceEnabled) {
         if (limit < 1 || leaseSeconds < 1 || maxAttempts < 1) {
             throw new IllegalArgumentException("Invalid outbox claim limits");
         }
@@ -1153,7 +1290,7 @@ public class MediaRepository {
                 claim_token = NULL, claim_expires_at = NULL,
                 last_error = COALESCE(last_error, 'OUTBOX_CONFIRM_NOT_OBSERVED')
               WHERE status = 'PENDING' AND aggregate_type = 'PROCESSING_JOB'
-                AND event_type IN ('PROCESSING_JOB_QUEUED', 'PROCESSING_JOB_RETRY_REQUESTED', 'PROCESSING_DIARIZATION_REQUESTED')
+                AND event_type IN ('PROCESSING_JOB_QUEUED', 'PROCESSING_JOB_RETRY_REQUESTED', 'PROCESSING_DIARIZATION_REQUESTED', 'PROCESSING_INTELLIGENCE_STAGE_REQUESTED')
                 AND attempt_count >= ?
                 AND (claim_expires_at IS NULL OR claim_expires_at <= CURRENT_TIMESTAMP)
               RETURNING aggregate_id, aggregate_type, event_type, payload
@@ -1178,7 +1315,11 @@ public class MediaRepository {
             WITH candidates AS (
               SELECT id FROM outbox_events
               WHERE status = 'PENDING' AND aggregate_type = 'PROCESSING_JOB'
-                AND event_type IN ('PROCESSING_JOB_QUEUED', 'PROCESSING_JOB_RETRY_REQUESTED', 'PROCESSING_DIARIZATION_REQUESTED')
+                AND event_type IN ('PROCESSING_JOB_QUEUED', 'PROCESSING_JOB_RETRY_REQUESTED', 'PROCESSING_DIARIZATION_REQUESTED', 'PROCESSING_INTELLIGENCE_STAGE_REQUESTED')
+                AND (event_type<>'PROCESSING_INTELLIGENCE_STAGE_REQUESTED' OR ?)
+                AND NOT (event_type IN ('PROCESSING_JOB_QUEUED','PROCESSING_JOB_RETRY_REQUESTED') AND (
+                  EXISTS(SELECT 1 FROM processing_jobs j WHERE j.id=aggregate_id AND j.job_type='DERIVED_STAGE_PROCESSING')
+                  OR COALESCE(payload->>'retryFromStage','') IN ('GENERATING_SUMMARY','EXTRACTING_DECISIONS','EXTRACTING_ACTION_ITEMS')))
                 AND attempt_count < ?
                 AND next_attempt_at <= CURRENT_TIMESTAMP
                 AND (claim_expires_at IS NULL OR claim_expires_at <= CURRENT_TIMESTAMP)
@@ -1195,7 +1336,7 @@ public class MediaRepository {
             """, (rs, row) -> new Outbox(rs.getObject("id", UUID.class),
                     rs.getString("event_type"), rs.getString("payload"),
                     rs.getInt("attempt_count"), rs.getObject("claim_token", UUID.class)),
-            maxAttempts, limit, leaseSeconds);
+            intelligenceEnabled,maxAttempts, limit, leaseSeconds);
     }
 
     /**
@@ -1222,11 +1363,16 @@ public class MediaRepository {
                   (e.event_type = 'PROCESSING_JOB_QUEUED' AND p.retry_count = 0)
                   OR (e.event_type = 'PROCESSING_JOB_RETRY_REQUESTED'
                     AND e.payload->>'attemptNumber' = p.retry_count::text)
+                  OR (e.event_type='PROCESSING_INTELLIGENCE_STAGE_REQUESTED' AND EXISTS(
+                    SELECT 1 FROM processing_intelligence_dispatches d JOIN processing_stage_runs s ON s.id=d.stage_run_id
+                    WHERE d.event_id=? AND d.processing_job_id=p.id AND s.status='PENDING'
+                      AND s.attempt_number=(SELECT MAX(x.attempt_number) FROM processing_stage_runs x
+                        WHERE x.processing_job_id=p.id AND x.stage_code=s.stage_code)))
                 )
                 AND p.id = e.aggregate_id AND p.status = 'PENDING'
               RETURNING p.id
             ) SELECT count(*) FROM published
-            """, Long.class, eventId, claimToken);
+            """, Long.class, eventId, claimToken,eventId);
         return updated == 1;
     }
 
@@ -1339,6 +1485,8 @@ public class MediaRepository {
     public record DiarizationRequestedEvent(UUID eventId, UUID processingJobId, UUID meetingId,
             UUID sourceMediaId, String sourceRevision, UUID transcriptId, long transcriptRevision,
             UUID stageRunId, int schemaVersion, OffsetDateTime occurredAt) { }
+    public record IntelligenceRequestedEvent(UUID eventId,int schemaVersion,UUID processingJobId,
+            UUID executionStageRunId,String executionStageCode,OffsetDateTime occurredAt,String requestId) {}
 
     /** Domain-level lifecycle conflict, distinct from an invalid JDBC operation. */
     public static class ProcessingLifecycleConflictException extends RuntimeException {

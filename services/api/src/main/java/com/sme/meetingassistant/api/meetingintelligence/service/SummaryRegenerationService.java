@@ -67,6 +67,7 @@ public class SummaryRegenerationService {
         // This read-only fast path prevents needless object writes on retries.
         var old=media.existing(actor,meetingId,idempotencyKey);
         if(old.isPresent()) return response(meetingId,old.get());
+        media.requireWorkerReady();
 
         var source=capture.capture(meetingId);
         UUID jobId=UUID.randomUUID(),snapshotId=UUID.randomUUID();

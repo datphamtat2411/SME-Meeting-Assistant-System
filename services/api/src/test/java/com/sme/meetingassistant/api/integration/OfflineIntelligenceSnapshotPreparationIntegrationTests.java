@@ -36,6 +36,7 @@ class OfflineIntelligenceSnapshotPreparationIntegrationTests {
     @Autowired JdbcTemplate jdbc;
     @Autowired ProcessingJobLifecycle media;
     @Autowired OfflineIntelligenceSnapshotPreparation preparation;
+    @Autowired com.sme.meetingassistant.api.meetingintelligence.service.IntelligenceResultIngestion ingestion;
     @MockitoBean ObjectStorage objects;
 
     private final Map<String,byte[]> blobs=new ConcurrentHashMap<>();
@@ -99,6 +100,9 @@ class OfflineIntelligenceSnapshotPreparationIntegrationTests {
                 current_text,quality_status)
             VALUES (?,?,0,0,1200,'Biên bản cuộc họp đã được xác nhận','ACCEPTED')
             """,UUID.randomUUID(),transcript);
+        for(String stage:java.util.List.of("GENERATING_SUMMARY","EXTRACTING_DECISIONS"))
+            jdbc.update("INSERT INTO processing_stage_runs(id,processing_job_id,stage_code,attempt_number,status) VALUES (?,?,?,1,'PENDING')",UUID.randomUUID(),job,stage);
+        jdbc.update("INSERT INTO processing_stage_runs(id,processing_job_id,stage_code,attempt_number,status) VALUES (?,?,'TRANSCRIPTION',1,'SUCCEEDED')",UUID.randomUUID(),job);
     }
 
     private int sourceCount() {
@@ -138,12 +142,13 @@ class OfflineIntelligenceSnapshotPreparationIntegrationTests {
             WHERE processing_job_id=?
             """,Long.class,job)).isEqualTo(2L);
 
-        // Simulate completion only for the next-stage preparation assertion:
-        // no AI receipt is forged, and the next stage reuses the same source.
-        jdbc.update("""
-            UPDATE processing_stage_runs SET status='SUCCEEDED', completed_at=CURRENT_TIMESTAMP
-            WHERE id=?
-            """,summary.stageRunId());
+        UUID snapshot=jdbc.queryForObject("SELECT id FROM meeting_intelligence_source_snapshots WHERE processing_job_id=?",UUID.class,job);
+        byte[] result=new tools.jackson.databind.ObjectMapper().writeValueAsBytes(Map.of(
+            "schemaVersion","1.0","resultType","SUMMARY","processingJobId",job,"stageRunId",summary.stageRunId(),
+            "source",Map.of("transcriptId",transcript,"contentRevision",2,"inputSnapshotId",snapshot,"sha256",digest),
+            "producer",Map.of("model","test","promptVersion","v1"),"result",Map.of("content","Biên bản đã được xác nhận.","warnings",java.util.List.of())));
+        blobs.put("processing/"+job+"/intelligence/results/"+summary.stageRunId()+".json",result);
+        ingestion.ingest(summary,HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(result)));
         var decision=media.startStage(job,"EXTRACTING_DECISIONS","provider","model");
         assertThat(stageStatus(decision.stageRunId())).isEqualTo("RUNNING");
         assertThat(sourceCount()).isEqualTo(1);

@@ -1,9 +1,9 @@
 """Deterministic IAM/map checks; no live storage or worker process required."""
 import ast
 import fnmatch
-from pathlib import Path
 import re
 import unittest
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -33,6 +33,23 @@ class DiarizationStoragePolicyTests(unittest.TestCase):
         self.assertFalse(self.allowed("worker", "s3:PutObject", result))
         self.assertFalse(self.allowed("diarization-worker", "s3:PutObject", "processing/job/transcription/results/stage.json"))
         self.assertFalse(self.allowed("diarization-worker", "s3:GetObject", "meetings/meeting/pending/media"))
+
+    def test_intelligence_capability_has_only_snapshot_and_result_access(self):
+        source = "processing/job/intelligence/source/snapshot.json"
+        result = "processing/job/intelligence/results/stage.json"
+        self.assertTrue(self.allowed("intelligence", "s3:GetObject", source))
+        self.assertTrue(self.allowed("intelligence", "s3:GetObject", result))
+        self.assertTrue(self.allowed("intelligence", "s3:PutObject", result))
+        self.assertFalse(self.allowed("intelligence", "s3:PutObject", source))
+        self.assertFalse(self.allowed("intelligence", "s3:GetObject", "meetings/meeting/sources/media"))
+        self.assertFalse(self.allowed("intelligence", "s3:DeleteObject", result))
+
+    def test_core_cannot_write_or_replace_intelligence_results(self):
+        source = "processing/job/intelligence/source/snapshot.json"
+        result = "processing/job/intelligence/results/stage.json"
+        self.assertTrue(self.allowed("core", "s3:PutObject", source))
+        self.assertFalse(self.allowed("core", "s3:PutObject", result))
+        self.assertTrue(self.allowed("core", "s3:GetObject", result))
 
     def map_value(self, name, value):
         text = (ROOT / "storage-boundary.conf").read_text()

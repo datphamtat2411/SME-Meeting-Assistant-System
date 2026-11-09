@@ -446,7 +446,7 @@ def test_real_separate_storage_identities_and_permission_negatives(storage_bound
         assert core.get_object(Bucket=settings.s3_bucket, Key=result)["Body"].read() == b"immutable"
         # Preserve Core's existing upload/intelligence capabilities without broad grants.
         pending = "meetings/fixture/pending/upload"
-        intelligence = "processing/fixture/intelligence/synthetic.json"
+        intelligence = "processing/fixture/intelligence/source/synthetic.json"
         core.put_object(Bucket=settings.s3_bucket, Key=pending, Body=b"pending upload")
         core.put_object(Bucket=settings.s3_bucket, Key=intelligence, Body=b"synthetic derived evidence")
         assert core.list_objects_v2(Bucket=settings.s3_bucket, Prefix="processing/fixture/intelligence/")["KeyCount"] == 1

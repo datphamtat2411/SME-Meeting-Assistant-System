@@ -1,0 +1,135 @@
+{
+  "schema_version": 1,
+  "evaluation_version": "meeting-intelligence-1",
+  "dataset_id": "meeting-intelligence-vietnamese",
+  "dataset_version": "2026.11.1",
+  "language": "vi",
+  "dataset_kind": "synthetic-non-sensitive",
+  "privacy_approved": true,
+  "legal_approved": true,
+  "approval_version": "synthetic-approval-1",
+  "annotation_guideline_version": "vi-guidelines-1",
+  "scoring_policy_version": "meeting-intelligence-scoring-1",
+  "required_categories": [
+    "short-routine", "long-multi-topic", "vietnamese-english-technical", "multiple-speakers",
+    "anonymous-speakers", "explicit-decision", "proposal-no-agreement", "rejected-proposal",
+    "revised-decision", "explicit-assignment", "self-commitment", "cancelled-task",
+    "reassigned-task", "missing-assignee", "relative-deadline", "contradiction",
+    "historical-reference", "empty-extraction", "incomplete-coverage", "unresolved-speech",
+    "cross-window-correction", "prompt-injection"
+  ],
+  "cases": [
+    {
+      "fixture_id": "ordinary-routine",
+      "dataset_version": "2026.11.1",
+      "source": {
+        "schema_version": 1,
+        "path": "sources/ordinary-routine.json",
+        "sha256": "03845c9b780328db4208f343a97e6d192089e624bdd1a0eb1a21ad6b66a5a3ef",
+        "snapshot_id": "00000000-0000-0000-0000-000000000600",
+        "transcript_id": "00000000-0000-0000-0000-000000000601",
+        "meeting_id": "00000000-0000-0000-0000-000000000602",
+        "source_media_id": "00000000-0000-0000-0000-000000000603",
+        "content_revision": 1,
+        "language": "vi",
+        "size_bytes": 1856
+      },
+      "reference": {
+        "schema_version": 1,
+        "path": "references/ordinary-routine.json",
+        "sha256": "d89ab686f9cec7122621ffde3ceddaa90d7171dc6ab92ecbf292167a1084cff4",
+        "reference_version": "reference-1",
+        "annotation_version": "annotation-1",
+        "origin": "synthetic-independent"
+      },
+      "annotation_version": "annotation-1",
+      "categories": ["short-routine", "multiple-speakers", "anonymous-speakers", "explicit-decision", "explicit-assignment", "self-commitment", "relative-deadline"],
+      "features": ["summary", "decision", "action"],
+      "eligibility": "DETERMINISTIC_REGRESSION"
+    },
+    {
+      "fixture_id": "long-ambiguous",
+      "dataset_version": "2026.11.1",
+      "source": {
+        "schema_version": 1,
+        "path": "sources/long-ambiguous.json",
+        "sha256": "f9003c3efad1d92d331755bd800e598183dc5b128c766ea0b0b862513955b0ab",
+        "snapshot_id": "00000000-0000-0000-0000-000000000700",
+        "transcript_id": "00000000-0000-0000-0000-000000000701",
+        "meeting_id": "00000000-0000-0000-0000-000000000702",
+        "source_media_id": "00000000-0000-0000-0000-000000000703",
+        "content_revision": 2,
+        "language": "vi",
+        "size_bytes": 3176
+      },
+      "reference": {
+        "schema_version": 1,
+        "path": "references/long-ambiguous.json",
+        "sha256": "dde235317d0b2a1f5c81619a7c2aa1f91a8d66c06b9122e19114cad99eaab496",
+        "reference_version": "reference-1",
+        "annotation_version": "annotation-1",
+        "origin": "synthetic-independent"
+      },
+      "annotation_version": "annotation-1",
+      "categories": ["long-multi-topic", "vietnamese-english-technical", "multiple-speakers", "historical-reference", "proposal-no-agreement", "rejected-proposal", "revised-decision", "contradiction", "incomplete-coverage", "unresolved-speech", "cross-window-correction", "prompt-injection"],
+      "features": ["summary", "decision", "action"],
+      "eligibility": "DETERMINISTIC_REGRESSION"
+    },
+    {
+      "fixture_id": "empty-followup",
+      "dataset_version": "2026.11.1",
+      "source": {
+        "schema_version": 1,
+        "path": "sources/empty-followup.json",
+        "sha256": "62bdbec6dd8f2f873254b3ea3ab83edc894692e453f5d807a33f78617ae70b43",
+        "snapshot_id": "00000000-0000-0000-0000-000000000800",
+        "transcript_id": "00000000-0000-0000-0000-000000000801",
+        "meeting_id": "00000000-0000-0000-0000-000000000802",
+        "source_media_id": "00000000-0000-0000-0000-000000000803",
+        "content_revision": 1,
+        "language": "vi",
+        "size_bytes": 1546
+      },
+      "reference": {
+        "schema_version": 1,
+        "path": "references/empty-followup.json",
+        "sha256": "5b46a015d2c4beaea62b79a146f2f5201ae923836c15997eb5d6f896e578241c",
+        "reference_version": "reference-1",
+        "annotation_version": "annotation-1",
+        "origin": "synthetic-independent"
+      },
+      "annotation_version": "annotation-1",
+      "categories": ["empty-extraction", "historical-reference", "proposal-no-agreement"],
+      "features": ["summary", "decision", "action"],
+      "eligibility": "DETERMINISTIC_REGRESSION"
+    },
+    {
+      "fixture_id": "edge-cases",
+      "dataset_version": "2026.11.1",
+      "source": {
+        "schema_version": 1,
+        "path": "sources/edge-cases.json",
+        "sha256": "9b1e89fdd3f3183153f797377a2300baa51d8813c45d639f1c0d648333d1afb4",
+        "snapshot_id": "00000000-0000-0000-0000-000000000900",
+        "transcript_id": "00000000-0000-0000-0000-000000000901",
+        "meeting_id": "00000000-0000-0000-0000-000000000902",
+        "source_media_id": "00000000-0000-0000-0000-000000000903",
+        "content_revision": 1,
+        "language": "vi",
+        "size_bytes": 1887
+      },
+      "reference": {
+        "schema_version": 1,
+        "path": "references/edge-cases.json",
+        "sha256": "d1f4ae7f5f0a849186057a6da33f17c297481082d11cafa670b529b9f639c6f9",
+        "reference_version": "reference-1",
+        "annotation_version": "annotation-1",
+        "origin": "synthetic-independent"
+      },
+      "annotation_version": "annotation-1",
+      "categories": ["explicit-assignment", "missing-assignee", "cancelled-task", "reassigned-task"],
+      "features": ["summary", "decision", "action"],
+      "eligibility": "DETERMINISTIC_REGRESSION"
+    }
+  ]
+}

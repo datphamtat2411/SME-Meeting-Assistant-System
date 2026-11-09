@@ -34,6 +34,7 @@ public class SecureTransportConfiguration {
         return factory -> {
             if (!enabled && (env.getProperty("app.mi.internal-result.enabled", Boolean.class, false)
                     || env.getProperty("app.worker.transcription.enabled", Boolean.class, false)
+                    || env.getProperty("app.media.intelligence.enabled", Boolean.class, false)
                     || env.getProperty("app.worker.diarization.enabled", Boolean.class, false))) {
                 throw new IllegalStateException("Internal receivers require the private mTLS connector");
             }

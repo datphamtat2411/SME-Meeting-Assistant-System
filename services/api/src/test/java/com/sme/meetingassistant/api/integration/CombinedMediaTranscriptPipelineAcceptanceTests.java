@@ -135,7 +135,7 @@ class CombinedMediaTranscriptPipelineAcceptanceTests {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM transcripts WHERE processing_job_id=?",
             Integer.class, jobId)).isEqualTo(1);
 
-        // A durable, transactional stage-only retry preserves completed upstream work.
+        // A durable, transactional intelligence-stage retry preserves completed upstream work.
         Job snapshot = media.findJob(jobId).orElseThrow();
         transactions.executeWithoutResult(tx ->
             assertThat(media.retryJobAndOutbox(snapshot, UUID.randomUUID(),
@@ -165,7 +165,11 @@ class CombinedMediaTranscriptPipelineAcceptanceTests {
             """, Integer.class, jobId)).isEqualTo(1);
         assertThat(jdbc.queryForObject("""
             SELECT count(*) FROM outbox_events WHERE aggregate_id=?
-              AND event_type='PROCESSING_JOB_RETRY_REQUESTED'
+              AND event_type='PROCESSING_INTELLIGENCE_STAGE_REQUESTED'
+            """, Integer.class, jobId)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM processing_intelligence_dispatches
+            WHERE processing_job_id=? AND stage_code='GENERATING_SUMMARY'
             """, Integer.class, jobId)).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT retry_count FROM processing_jobs WHERE id=?",
             Integer.class, jobId)).isEqualTo(1);

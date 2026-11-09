@@ -27,6 +27,7 @@ class ProcessingLifecycleInvariantsIntegrationTests {
     @Autowired ProcessingJobLifecycle lifecycle;
     @MockitoBean ObjectStorage snapshotStorage;
     @Autowired JdbcTemplate jdbc;
+    @Autowired com.sme.meetingassistant.api.meetingintelligence.service.IntelligenceResultIngestion ingestion;
     private UUID meetingId;
     private UUID mediaId;
     private UUID jobId;
@@ -156,7 +157,8 @@ class ProcessingLifecycleInvariantsIntegrationTests {
     }
 
     @Test
-    void activeOptionalStagePreventsPrematureCompletion() {
+    void activePlannedStagePreventsPrematureCompletion() {
+        plan("GENERATING_SUMMARY");
         completedTranscriptStages("SUCCEEDED", "READY", "ACCEPTED");
         StageClaim downstream = lifecycle.startStage(jobId, "GENERATING_SUMMARY", "llm", "summary");
         assertThatThrownBy(() -> lifecycle.completeJob(jobId))
@@ -174,6 +176,7 @@ class ProcessingLifecycleInvariantsIntegrationTests {
 
     @Test
     void finalJobGuardRejectsForgedOfflineSummarySuccessWithoutCanonicalRow() {
+        plan("GENERATING_SUMMARY");
         completedTranscriptStages("SUCCEEDED", "READY", "ACCEPTED");
         StageClaim generated=lifecycle.startStage(jobId,"GENERATING_SUMMARY",null,null);
         jdbc.update("""
@@ -188,6 +191,7 @@ class ProcessingLifecycleInvariantsIntegrationTests {
 
     @Test
     void normalOfflineDecisionSuccessRequiresReceiptEvenForZeroCandidates() {
+        plan("EXTRACTING_DECISIONS");
         completedTranscriptStages("SUCCEEDED", "READY", "ACCEPTED");
         StageClaim decisions=lifecycle.startStage(jobId,"EXTRACTING_DECISIONS",null,null);
         assertThatThrownBy(() -> lifecycle.completeStage(decisions,"SUCCEEDED",null,null))
@@ -213,34 +217,13 @@ class ProcessingLifecycleInvariantsIntegrationTests {
 
     /** Test completion policy with actual PostgreSQL lineage/receipt records. */
     @Test
-    void fullOfflineJobWithAcceptedSummaryAndEmptyDecisionBatchCompletes() {
+    void fullOfflineJobWithAcceptedSummaryAndEmptyDecisionBatchCompletes() throws Exception {
+        plan("GENERATING_SUMMARY","EXTRACTING_DECISIONS");
         completedTranscriptStages("SUCCEEDED","READY","ACCEPTED");
-        UUID transcript=jdbc.queryForObject(
-            "SELECT id FROM transcripts WHERE processing_job_id=?",UUID.class,jobId);
-        UUID snapshot=UUID.randomUUID();
-        jdbc.update("""
-            INSERT INTO meeting_intelligence_source_snapshots(
-              id,meeting_id,source_media_id,processing_job_id,transcript_id,
-              content_revision,sha256,object_key,size_bytes)
-            VALUES (?,?,?,?,?,0,?,?,100)
-            """,snapshot,meetingId,mediaId,jobId,transcript,"a".repeat(64),
-            "processing/"+jobId+"/intelligence/source/"+snapshot+".json");
-
         StageClaim summary=lifecycle.startStage(jobId,"GENERATING_SUMMARY",null,null);
-        UUID summaryReceipt=insertIntelligenceReceipt(
-            summary.stageRunId(),snapshot,transcript,"SUMMARY");
-        jdbc.update("""
-            INSERT INTO meeting_summary_versions(
-              id,meeting_id,version_number,content,source_type,processing_job_id,
-              result_receipt_id,transcript_id,content_revision,quality_status,is_current)
-            VALUES (?,?,1,'Persisted summary','AI_GENERATED',?,?,?,0,'READY',TRUE)
-            """,UUID.randomUUID(),meetingId,jobId,summaryReceipt,transcript);
-        lifecycle.completeStage(summary,"SUCCEEDED",null,null);
-
+        acceptArtifact(summary,"SUMMARY",java.util.Map.of("content","Persisted summary","warnings",java.util.List.of()));
         StageClaim decisions=lifecycle.startStage(jobId,"EXTRACTING_DECISIONS",null,null);
-        insertIntelligenceReceipt(decisions.stageRunId(),snapshot,transcript,
-            "DECISION_EXTRACTION");
-        lifecycle.completeStage(decisions,"SUCCEEDED",null,null);
+        acceptArtifact(decisions,"DECISION_EXTRACTION",java.util.Map.of("candidates",java.util.List.of(),"warnings",java.util.List.of()));
         assertThat(jdbc.queryForObject(
             "SELECT count(*) FROM meeting_decisions WHERE meeting_id=?",
             Integer.class,meetingId)).isZero();
@@ -252,18 +235,22 @@ class ProcessingLifecycleInvariantsIntegrationTests {
             Integer.class,jobId)).isEqualTo(2);
     }
 
-    private UUID insertIntelligenceReceipt(UUID stageId,UUID snapshot,UUID transcript,
-            String type) {
-        UUID receipt=UUID.randomUUID();
-        jdbc.update("""
-            INSERT INTO meeting_intelligence_result_receipts(
-              id,meeting_id,processing_job_id,stage_run_id,result_type,
-              source_snapshot_id,transcript_id,content_revision,artifact_sha256,
-              artifact_object_key,artifact_size_bytes)
-            VALUES (?,?,?,?,?,?,?,0,?,?,100)
-            """,receipt,meetingId,jobId,stageId,type,snapshot,transcript,
-            "b".repeat(64),"processing/"+jobId+"/intelligence/results/"+stageId+".json");
-        return receipt;
+    private void plan(String... stages) {
+        for(String stage:stages) jdbc.update("INSERT INTO processing_stage_runs(id,processing_job_id,stage_code,attempt_number,status) VALUES (?,?,?,1,'PENDING')",UUID.randomUUID(),jobId,stage);
+    }
+
+    private void acceptArtifact(StageClaim claim,String type,java.util.Map<String,Object> result) throws Exception {
+        var source=jdbc.queryForMap("SELECT * FROM meeting_intelligence_source_snapshots WHERE processing_job_id=?",jobId);
+        byte[] bytes=new tools.jackson.databind.ObjectMapper().writeValueAsBytes(java.util.Map.of(
+            "schemaVersion","1.0","resultType",type,"processingJobId",jobId,"stageRunId",claim.stageRunId(),
+            "source",java.util.Map.of("transcriptId",source.get("transcript_id"),"contentRevision",source.get("content_revision"),
+                "inputSnapshotId",source.get("id"),"sha256",source.get("sha256")),
+            "producer",java.util.Map.of("model","test","promptVersion","v1"),"result",result));
+        String key="processing/"+jobId+"/intelligence/results/"+claim.stageRunId()+".json";
+        org.mockito.Mockito.doReturn(new ObjectStorage.StoredObject(bytes.length,"application/json",null)).when(snapshotStorage).head(key);
+        org.mockito.Mockito.doAnswer(c->{java.nio.file.Files.write(c.getArgument(1),bytes);return null;}).when(snapshotStorage)
+            .downloadTo(org.mockito.ArgumentMatchers.eq(key),org.mockito.ArgumentMatchers.any(java.nio.file.Path.class));
+        ingestion.ingest(claim,com.sme.meetingassistant.api.media.worker.WorkerJson.sha256(bytes));
     }
 
     @Test
