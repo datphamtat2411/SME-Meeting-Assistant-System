@@ -345,6 +345,77 @@ def test_qdrant_schema_is_named_compatible_and_non_destructive():
         legacy_store.ensure_schema()
 
 
+def test_qdrant_normal_schema_reuse_and_repeated_indexing_do_not_scroll_points():
+    tokenizer, processing = tokenizer_and_processing()
+    model = adapter(tokenizer)
+    client = QdrantClient(location=":memory:")
+    store = QdrantVectorStore(
+        QdrantConfig(url="http://127.0.0.1:6333", collection_name="rag-t02-no-scroll"),
+        compatibility=model.compatibility,
+        client=client,
+    )
+    try:
+        store.ensure_schema()
+
+        def unexpected_scroll(*args, **kwargs):
+            del args, kwargs
+            raise AssertionError("normal schema validation must not scroll existing points")
+
+        client.scroll = unexpected_scroll
+        engine = KnowledgeIndexingEngine(
+            model,
+            store,
+            token_counter=tokenizer,
+            batch_size=1,
+            expected_generation_id=model.compatibility.index_generation_id,
+        )
+
+        first = engine.index(processing)
+        repeated = engine.index(processing)
+
+        assert first.status is IndexingStatus.INDEXED
+        assert repeated.status is IndexingStatus.INDEXED
+        assert repeated.point_ids == first.point_ids
+    finally:
+        store.close()
+
+
+def test_qdrant_upsert_rejects_incompatible_incoming_payload_before_client_write():
+    tokenizer, processing = tokenizer_and_processing()
+    model = adapter(tokenizer)
+    chunk = processing.chunks[0]
+    embedding = model.embed_documents((chunk,))[0]
+    client = QdrantClient(location=":memory:")
+    store = QdrantVectorStore(
+        QdrantConfig(url="http://127.0.0.1:6333", collection_name="rag-t02-write-validation"),
+        compatibility=model.compatibility,
+        client=client,
+    )
+    store.ensure_schema()
+    payload = build_qdrant_payload(chunk, embedding)
+    payload["embedding_model_revision"] = "0" * 40
+    point = VectorPoint(
+        point_id=chunk.chunk_id,
+        dense=embedding.dense,
+        sparse=embedding.sparse,
+        payload=payload,
+    )
+    writes = []
+
+    def unexpected_write(*args, **kwargs):
+        writes.append((args, kwargs))
+        raise AssertionError("incompatible points must be rejected before upsert")
+
+    client.upsert = unexpected_write
+    try:
+        with pytest.raises(QdrantSchemaError):
+            store.upsert((point,))
+    finally:
+        store.close()
+
+    assert writes == []
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -432,8 +503,9 @@ def test_qdrant_rejects_incompatible_persisted_point_compatibility(field):
         wait=True,
     )
 
+    store.ensure_schema()
     with pytest.raises(QdrantSchemaError):
-        store.ensure_schema()
+        store.audit_existing_generation()
 
     incompatible = QdrantClient(location=":memory:")
     incompatible.create_collection(

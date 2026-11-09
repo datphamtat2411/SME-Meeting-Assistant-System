@@ -639,9 +639,8 @@ class AssistantOrchestrator:
         except Exception:
             return _failure(request.request_id, AssistantFailureCategory.SOURCE_VERIFICATION_UNAVAILABLE, retryable=True)
 
+        # Only citation-validated answer units may contribute user-visible text.
         answer_text = "\n\n".join(claim.text for claim in claims)
-        if generated.answer.uncertainties:
-            answer_text += "\n\nLưu ý: " + " ".join(generated.answer.uncertainties)
         if len(answer_text) > self.config.max_answer_characters:
             return _failure(request.request_id, AssistantFailureCategory.INVALID_GENERATED_RESPONSE)
         return AssistantAnswer(

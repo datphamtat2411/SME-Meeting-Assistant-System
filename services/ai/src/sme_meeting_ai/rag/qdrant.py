@@ -342,6 +342,20 @@ class QdrantVectorStore:
                 raise QdrantError("QDRANT_UNAVAILABLE") from error
             raise QdrantSchemaError("Qdrant collection generation metadata cannot be established") from error
 
+    @staticmethod
+    def _collection_is_populated(info: Any) -> bool:
+        """Use collection metadata without reading individual points."""
+
+        points_count = getattr(info, "points_count", None)
+        if isinstance(points_count, bool) or points_count is None:
+            # An unknown count cannot safely authorize adopting missing metadata.
+            return True
+        try:
+            normalized_count = int(points_count)
+        except (TypeError, ValueError, OverflowError):
+            return True
+        return normalized_count < 0 or normalized_count > 0
+
     def ensure_schema(self) -> None:
         info = self._get_collection()
         if info is None:
@@ -350,13 +364,21 @@ class QdrantVectorStore:
             if info is None:
                 raise QdrantError("SCHEMA_CREATE_UNVERIFIED")
         self._validate_vectors(info)
-        self._validate_payload_indexes(info)
-        records = self._scroll_existing_records()
-        populated = bool(records) or bool(getattr(info, "points_count", 0))
+        populated = self._collection_is_populated(info)
         self._validate_collection_metadata(info, populated=populated)
-        if populated and not records:
-            raise QdrantSchemaError("Existing Qdrant points cannot be verified")
-        self._validate_existing_generation(records)
+        self._validate_payload_indexes(info)
+
+    def audit_existing_generation(self) -> None:
+        """Explicitly scan persisted payloads for diagnosis or reconciliation."""
+
+        info = self._get_collection()
+        if info is None:
+            raise QdrantSchemaError("Qdrant collection does not exist")
+        self._validate_vectors(info)
+        populated = self._collection_is_populated(info)
+        self._validate_collection_metadata(info, populated=populated)
+        self._validate_payload_indexes(info, create_missing=False, require_all=True)
+        self._validate_existing_generation()
 
     def validate_retrieval_schema(self) -> None:
         """Validate the active query schema without scanning or mutating points."""
@@ -459,8 +481,45 @@ class QdrantVectorStore:
         return tuple(sorted(result, key=lambda item: (-item.score, item.point_id)))
 
     def upsert(self, points: Sequence[VectorPoint]) -> int:
-        if not points:
+        point_tuple = tuple(points)
+        if not point_tuple:
             return 0
+        seen_ids: set[str] = set()
+        expected = {
+            "index_generation_id": self.spec.compatibility.index_generation_id,
+            "embedding_model_id": self.spec.compatibility.model_id,
+            "embedding_model_revision": self.spec.compatibility.model_revision,
+            "embedding_tokenizer_id": self.spec.compatibility.tokenizer_id,
+            "embedding_representation_version": self.spec.compatibility.representation_version,
+            "embedding_index_configuration_sha256": self.spec.compatibility.index_configuration_sha256,
+        }
+        for point in point_tuple:
+            if not isinstance(point, VectorPoint) or not isinstance(point.payload, dict):
+                raise QdrantSchemaError("Incoming Qdrant point is invalid")
+            if point.point_id in seen_ids or point.payload.get("chunk_id") != point.point_id:
+                raise QdrantSchemaError("Incoming Qdrant point identity is invalid")
+            seen_ids.add(point.point_id)
+            if len(point.dense) != self.spec.dense_dimensions:
+                raise QdrantSchemaError("Incoming dense vector has an incompatible dimension")
+            try:
+                if any(not math.isfinite(float(value)) for value in point.dense):
+                    raise QdrantSchemaError("Incoming dense vector contains a non-finite value")
+            except (TypeError, ValueError, OverflowError) as error:
+                raise QdrantSchemaError("Incoming dense vector is invalid") from error
+            if not isinstance(point.sparse, SparseEmbedding):
+                raise QdrantSchemaError("Incoming sparse vector is invalid")
+            if any(point.payload.get(field) != value for field, value in expected.items()):
+                raise QdrantSchemaError("Incoming point belongs to another embedding generation")
+            generation = point.payload.get("index_generation")
+            if not isinstance(generation, dict) or any(
+                generation.get(field) != value
+                for field, value in {
+                    "generationId": self.spec.compatibility.index_generation_id,
+                    "configurationSha256": self.spec.compatibility.index_configuration_sha256,
+                    "tokenizerId": self.spec.compatibility.tokenizer_id,
+                }.items()
+            ):
+                raise QdrantSchemaError("Incoming point generation metadata is incompatible")
         qdrant_points = [
             models.PointStruct(
                 id=point.point_id,
@@ -472,7 +531,7 @@ class QdrantVectorStore:
                 },
                 payload=point.payload,
             )
-            for point in points
+            for point in point_tuple
         ]
         try:
             response = self.client.upsert(
@@ -500,10 +559,10 @@ class QdrantVectorStore:
                 raise QdrantPersistenceError("QDRANT_UNAVAILABLE") from error
             raise QdrantPersistenceError("PERSISTENCE_VERIFY_FAILED") from error
         persisted_ids = {str(getattr(record, "id", "")) for record in persisted}
-        expected_ids = {point.point_id for point in points}
+        expected_ids = {point.point_id for point in point_tuple}
         if persisted_ids != expected_ids:
             raise QdrantPersistenceError("PERSISTENCE_VERIFY_FAILED")
-        return len(points)
+        return len(point_tuple)
 
     def get_point(self, point_id: str) -> Any | None:
         try:

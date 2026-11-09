@@ -252,6 +252,29 @@ def test_grounded_answer_maps_backend_handles_to_verified_citations():
     assert result.citations[0].retrieval_chunk_id == evidence.chunk_id
 
 
+def test_uncertainty_metadata_cannot_append_ungrounded_user_visible_facts():
+    evidence = _evidence("Kế hoạch phát hành vào thứ Sáu.")
+    scope = _scope(evidence.provenance.meeting_id)
+    retrieval = FakeRetrieval(_retrieval_result(scope, (evidence,)), scope, (evidence,))
+    generated = _generation().model_copy(
+        update={
+            "answer": _generation().answer.model_copy(
+                update={
+                    "uncertainties": (
+                        "Ban lãnh đạo đã phê duyệt ngân sách mới vào ngày mai.",
+                    )
+                }
+            )
+        }
+    )
+
+    result = asyncio.run(_orchestrator(retrieval, FakeGenerator(generated)).answer(_request(scope)))
+
+    assert result.status is AssistantAnswerStatus.GROUNDED
+    assert result.answer == result.claims[0].text
+    assert "Ban lãnh đạo đã phê duyệt ngân sách mới" not in result.answer
+
+
 def test_insufficient_retrieval_never_invokes_generation():
     scope = _scope(str(uuid4()))
     retrieval = FakeRetrieval(_retrieval_result(scope), scope)
@@ -261,6 +284,25 @@ def test_insufficient_retrieval_never_invokes_generation():
 
     assert result.status is AssistantAnswerStatus.INSUFFICIENT_EVIDENCE
     assert generator.calls == []
+    assert result.citations == ()
+
+
+def test_generation_failure_returns_failed_response_without_answer_content():
+    evidence = _evidence("Kế hoạch phát hành vào thứ Sáu.")
+    scope = _scope(evidence.provenance.meeting_id)
+    retrieval = FakeRetrieval(_retrieval_result(scope, (evidence,)), scope, (evidence,))
+
+    class FailedGenerator(FakeGenerator):
+        async def generate(self, context, *, deadline):
+            del context, deadline
+            raise AssistantProviderError("INFERENCE_FAILED")
+
+    result = asyncio.run(_orchestrator(retrieval, FailedGenerator(_generation())).answer(_request(scope)))
+
+    assert result.status is AssistantAnswerStatus.FAILED
+    assert result.failures[0].category is AssistantFailureCategory.PROVIDER_UNAVAILABLE
+    assert result.answer is None
+    assert result.claims == ()
     assert result.citations == ()
 
 
