@@ -15,6 +15,7 @@ import {
 import {
   RECOVERY_DISABLED_MARKER,
   RECOVERY_REPLAY_SAFE_MARKER,
+  beginRequestRecoveryLogout,
   resetRequestRecoveryState,
 } from './request-recovery'
 
@@ -260,5 +261,26 @@ describe('core API transport', () => {
       recoveryOutcome: 'not-replayed',
     })
     expect(urls.filter((url) => url === '/mutate')).toHaveLength(1)
+  })
+
+  it('rejects a protected response that completes after logout begins', async () => {
+    let resolveRequest: (response: AxiosResponse<unknown>) => void = () => undefined
+    let requestStarted = false
+    coreApiAxios.defaults.adapter = (config) =>
+      new Promise((resolve) => {
+        requestStarted = true
+        resolveRequest = (response) => resolve({ ...response, config })
+      })
+
+    const request = coreApi.get('/protected')
+    await expect.poll(() => requestStarted).toBe(true)
+    beginRequestRecoveryLogout()
+    resolveRequest(
+      makeResponse({} as Parameters<AxiosAdapter>[0], { data: { secret: true } })
+    )
+
+    await expect(request).rejects.toMatchObject({
+      code: 'AUTH_LIFECYCLE_STALE_RESPONSE',
+    })
   })
 })

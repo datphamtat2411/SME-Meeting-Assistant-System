@@ -1,6 +1,7 @@
 import { useNavigate, useLocation } from '@tanstack/react-router'
-import { useAuthStore } from '@/stores/auth-store'
 import { ConfirmDialog } from '@/components/confirm-dialog'
+import { beginAuthLifecycleLogout } from '@/features/auth/session/auth-lifecycle'
+import { useAuthLifecycleState } from '@/features/auth/session/logout-status'
 
 interface SignOutDialogProps {
   open: boolean
@@ -10,16 +11,22 @@ interface SignOutDialogProps {
 export function SignOutDialog({ open, onOpenChange }: SignOutDialogProps) {
   const navigate = useNavigate()
   const location = useLocation()
-  const { auth } = useAuthStore()
+  const lifecycleState = useAuthLifecycleState()
+  const isPending = lifecycleState === 'pending'
 
   const handleSignOut = () => {
-    auth.reset()
-    // Preserve current location for redirect after sign-in
     const currentPath = location.href
-    navigate({
-      to: '/sign-in',
-      search: { redirect: currentPath },
-      replace: true,
+    if (isPending) return
+
+    void beginAuthLifecycleLogout({
+      redirect: currentPath,
+      navigate: (redirect) => {
+        navigate({
+          to: '/sign-in',
+          search: { redirect },
+          replace: true,
+        })
+      },
     })
   }
 
@@ -29,9 +36,10 @@ export function SignOutDialog({ open, onOpenChange }: SignOutDialogProps) {
       onOpenChange={onOpenChange}
       title='Sign out'
       desc='Are you sure you want to sign out? You will need to sign in again to access your account.'
-      confirmText='Sign out'
-      destructive
-      handleConfirm={handleSignOut}
+       confirmText={isPending ? 'Signing out...' : 'Sign out'}
+       destructive
+       isLoading={isPending}
+       handleConfirm={handleSignOut}
       className='sm:max-w-sm'
     />
   )

@@ -4,14 +4,19 @@ import { userEvent } from 'vitest/browser'
 import { SignOutDialog } from './sign-out-dialog'
 
 const navigate = vi.fn()
-const reset = vi.fn()
+const lifecycle = vi.hoisted(() => ({
+  state: 'idle' as 'idle' | 'pending' | 'uncertain' | 'confirmed',
+  begin: vi.fn(),
+}))
 
 const MOCK_HREF = 'https://app.test/dashboard?tab=1'
 
-vi.mock('@/stores/auth-store', () => ({
-  useAuthStore: () => ({
-    auth: { reset },
-  }),
+vi.mock('@/features/auth/session/logout-status', () => ({
+  useAuthLifecycleState: () => lifecycle.state,
+}))
+
+vi.mock('@/features/auth/session/auth-lifecycle', () => ({
+  beginAuthLifecycleLogout: lifecycle.begin,
 }))
 
 vi.mock('@tanstack/react-router', async (importOriginal) => {
@@ -26,16 +31,32 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
 describe('SignOutDialog', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    lifecycle.state = 'idle'
+    lifecycle.begin.mockImplementation(
+      ({
+        redirect,
+        navigate: navigateAway,
+      }: {
+        redirect?: string
+        navigate?: (redirect?: string) => void
+      }) => {
+        navigateAway?.(redirect)
+        return Promise.resolve({ state: 'confirmed' })
+      }
+    )
   })
 
-  it('calls auth.reset and navigates to sign-in with current location as redirect', async () => {
+  it('starts one lifecycle operation and navigates into containment', async () => {
     const { getByRole } = await render(
       <SignOutDialog open onOpenChange={vi.fn()} />
     )
 
     await userEvent.click(getByRole('button', { name: /^Sign out$/i }))
 
-    expect(reset).toHaveBeenCalledOnce()
+    expect(lifecycle.begin).toHaveBeenCalledOnce()
+    expect(lifecycle.begin).toHaveBeenCalledWith(
+      expect.objectContaining({ redirect: MOCK_HREF, navigate: expect.any(Function) })
+    )
     expect(navigate).toHaveBeenCalledWith({
       to: '/sign-in',
       search: { redirect: MOCK_HREF },
@@ -50,7 +71,20 @@ describe('SignOutDialog', () => {
 
     await userEvent.click(getByRole('button', { name: /^Cancel$/i }))
 
-    expect(reset).not.toHaveBeenCalled()
+    expect(lifecycle.begin).not.toHaveBeenCalled()
     expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('disables confirmation while logout is pending', async () => {
+    lifecycle.state = 'pending'
+
+    const { getByRole } = await render(
+      <SignOutDialog open onOpenChange={vi.fn()} />
+    )
+
+    await expect
+      .element(getByRole('button', { name: /^Signing out/i }))
+      .toBeDisabled()
+    expect(lifecycle.begin).not.toHaveBeenCalled()
   })
 })

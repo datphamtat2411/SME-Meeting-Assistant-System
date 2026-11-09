@@ -8,7 +8,11 @@ import {
 import { RouterProvider, createRouter } from '@tanstack/react-router'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
-import { clearCurrentUserCache } from '@/features/auth/session/current-user'
+import {
+  clearCurrentUserCache,
+  getSafeSessionRedirect,
+} from '@/features/auth/session/current-user'
+import { configureAuthLifecycle } from '@/features/auth/session/auth-lifecycle'
 import { handleServerError } from '@/lib/handle-server-error'
 import { setRequestRecoverySessionLossHandler } from '@/lib/request-recovery'
 import { DirectionProvider } from './context/direction-provider'
@@ -75,8 +79,29 @@ const router = createRouter({
   defaultPreloadStaleTime: 0,
 })
 
-setRequestRecoverySessionLossHandler(() => {
+function containProtectedState(): void {
+  void queryClient.cancelQueries()
+  queryClient.removeQueries()
+  queryClient.getMutationCache().clear()
   clearCurrentUserCache(queryClient)
+}
+
+configureAuthLifecycle({
+  onContainment: () => {
+    containProtectedState()
+    void router.invalidate()
+  },
+  onNavigate: (redirect) => {
+    void router.navigate({
+      to: '/sign-in',
+      search: { redirect: getSafeSessionRedirect(redirect) },
+      replace: true,
+    })
+  },
+})
+
+setRequestRecoverySessionLossHandler(() => {
+  containProtectedState()
   void router.invalidate()
 })
 

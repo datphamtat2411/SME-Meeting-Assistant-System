@@ -4,11 +4,11 @@ import {
   coreApi,
   setCsrfToken,
 } from '@/lib/core-api'
-import { resetRequestRecoveryState } from '@/lib/request-recovery'
-
-const csrfResponseSchema = z.object({
-  csrfToken: z.string().min(1),
-})
+import {
+  assertAuthLifecycleAllowsSignIn,
+  resetAuthLifecycleAfterSignIn,
+} from '../session/auth-lifecycle'
+import { bootstrapCsrf } from '../session/csrf'
 
 const signInResponseSchema = z.object({
   sessionStatus: z.literal('ACTIVE'),
@@ -33,13 +33,11 @@ function malformedResponse(): CoreApiError {
 export async function signIn(
   credentials: SignInCredentials
 ): Promise<SignInResponse> {
+  assertAuthLifecycleAllowsSignIn()
   setCsrfToken(null)
 
   try {
-    const csrfResponse = await coreApi.get<unknown>('/auth/csrf')
-    const csrfResult = csrfResponseSchema.safeParse(csrfResponse)
-    if (!csrfResult.success) throw malformedResponse()
-    setCsrfToken(csrfResult.data.csrfToken)
+    await bootstrapCsrf()
 
     const loginResponse = await coreApi.post<unknown>(
       '/auth/login',
@@ -49,7 +47,7 @@ export async function signIn(
     if (!loginResult.success) throw malformedResponse()
 
     setCsrfToken(loginResult.data.csrfToken)
-    resetRequestRecoveryState()
+    resetAuthLifecycleAfterSignIn()
     return loginResult.data
   } catch (error) {
     setCsrfToken(null)

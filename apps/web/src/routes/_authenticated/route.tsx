@@ -12,12 +12,25 @@ import {
   currentUserQueryKey,
   type AuthContext,
 } from '@/features/auth/session/current-user'
+import {
+  getAuthLifecycleState,
+  isAuthLifecycleBlocking,
+} from '@/features/auth/session/auth-lifecycle'
+import { useAuthLifecycleState } from '@/features/auth/session/logout-status'
 import { SessionGate } from '@/features/auth/session/session-gate'
 import { toUserPresentation } from '@/components/layout/data/user-presentation'
 import { prepareRequestRecoveryRetry } from '@/lib/request-recovery'
 
 export const Route = createFileRoute('/_authenticated')({
   beforeLoad: async ({ context, location }) => {
+    if (isAuthLifecycleBlocking()) {
+      throw redirect({
+        to: '/sign-in',
+        search: { redirect: getSafeSessionRedirect(location.href) },
+        replace: true,
+      })
+    }
+
     try {
       const currentUser = await loadCurrentUser(context.queryClient)
       return { currentUser }
@@ -45,6 +58,19 @@ export const Route = createFileRoute('/_authenticated')({
 
 function AuthenticatedRoute() {
   const { currentUser } = Route.useRouteContext()
+  const lifecycleState = useAuthLifecycleState()
+
+  if (lifecycleState !== 'idle') {
+    return (
+      <SessionGate
+        state={
+          lifecycleState === 'uncertain'
+            ? 'logout-uncertain'
+            : 'logout-pending'
+        }
+      />
+    )
+  }
 
   return <AuthenticatedLayout user={toUserPresentation(currentUser)} />
 }
@@ -52,6 +78,19 @@ function AuthenticatedRoute() {
 // eslint-disable-next-line react-refresh/only-export-components
 function AuthenticatedError({ error }: { error: unknown }) {
   const router = useRouter()
+  const lifecycleState = useAuthLifecycleState()
+
+  if (lifecycleState !== 'idle') {
+    return (
+      <SessionGate
+        state={
+          lifecycleState === 'uncertain'
+            ? 'logout-uncertain'
+            : 'logout-pending'
+        }
+      />
+    )
+  }
 
   if (error instanceof SessionGuardError) {
     return (
@@ -70,7 +109,20 @@ function AuthenticatedError({ error }: { error: unknown }) {
 
 function AuthenticatedErrorContent() {
   const queryClient = useQueryClient()
+  const lifecycleState = getAuthLifecycleState()
   const currentUser = queryClient.getQueryData<AuthContext>(currentUserQueryKey)
+
+  if (lifecycleState !== 'idle') {
+    return (
+      <SessionGate
+        state={
+          lifecycleState === 'uncertain'
+            ? 'logout-uncertain'
+            : 'logout-pending'
+        }
+      />
+    )
+  }
 
   if (!currentUser) return <SessionGate state='unavailable' />
 
@@ -84,7 +136,20 @@ function AuthenticatedErrorContent() {
 // eslint-disable-next-line react-refresh/only-export-components
 function AuthenticatedNotFound() {
   const queryClient = useQueryClient()
+  const lifecycleState = getAuthLifecycleState()
   const currentUser = queryClient.getQueryData<AuthContext>(currentUserQueryKey)
+
+  if (lifecycleState !== 'idle') {
+    return (
+      <SessionGate
+        state={
+          lifecycleState === 'uncertain'
+            ? 'logout-uncertain'
+            : 'logout-pending'
+        }
+      />
+    )
+  }
 
   if (!currentUser) return <SessionGate state='unavailable' />
 

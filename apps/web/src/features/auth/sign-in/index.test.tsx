@@ -5,7 +5,6 @@ import { SignIn } from './index'
 import { SignIn2 } from './sign-in-2'
 
 const navigate = vi.fn()
-
 vi.mock('@tanstack/react-router', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@tanstack/react-router')>()
   return {
@@ -49,4 +48,5 @@ describe('sign-in variants', () => {
       .element(screen.getByText(/Don't have an account/i))
       .not.toBeInTheDocument()
   })
+
 })

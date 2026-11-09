@@ -11,6 +11,7 @@ import {
   coreApiAxios,
   resetCsrfToken,
 } from '@/lib/core-api'
+import { resetAuthLifecycleAfterSignIn } from '../session/auth-lifecycle'
 import { signIn } from './sign-in-api'
 
 function makeResponse(
@@ -30,6 +31,7 @@ function makeResponse(
 describe('signIn', () => {
   beforeEach(() => {
     resetCsrfToken()
+    resetAuthLifecycleAfterSignIn()
     coreApiAxios.defaults.adapter = undefined
   })
 

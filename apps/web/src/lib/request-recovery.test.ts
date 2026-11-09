@@ -1,13 +1,15 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   createRequestRecoveryCoordinator,
   RECOVERY_DISABLED_MARKER,
+  RECOVERY_CHANNEL_NAME,
   RECOVERY_MARKER,
   RECOVERY_REPLAY_SAFE_MARKER,
   type RecoveryLockManager,
   type RecoveryRequestConfig,
   type RecoveryResponse,
 } from './request-recovery'
+import { AUTH_LIFECYCLE_CHANNEL_NAME } from '@/features/auth/session/auth-lifecycle'
 
 type TestError = {
   config: RecoveryRequestConfig
@@ -288,5 +290,66 @@ describe('request recovery coordinator', () => {
     expect(confirmedLoss.count).toBe(1)
     expect(getCsrf()).toBeNull()
     expect(coordinator.isSessionLossConfirmed()).toBe(true)
+  })
+
+  it('waits for an in-flight refresh and refuses its late replay after logout begins', async () => {
+    let resolveRefresh: (value: RecoveryResponse) => void = () => undefined
+    const refreshResponse = new Promise<RecoveryResponse>((resolve) => {
+      resolveRefresh = resolve
+    })
+    const { coordinator, getCsrf } = coordinatorFor(async (config) => {
+      if (config[RECOVERY_DISABLED_MARKER] && config.url === '/auth/me') {
+        throw unauthorized(config)
+      }
+      if (config.url === '/auth/refresh') return refreshResponse
+      throw new Error('unexpected request')
+    })
+
+    const recovery = coordinator.recover(
+      unauthorized({ method: 'GET', url: '/items' })
+    )
+    await Promise.resolve()
+
+    const barrier = coordinator.beginAuthLifecycleLogout()
+    let barrierFinished = false
+    void barrier.waitForRecovery().then(() => {
+      barrierFinished = true
+    })
+    await Promise.resolve()
+    expect(barrierFinished).toBe(false)
+
+    resolveRefresh(
+      response({ data: { sessionStatus: 'ACTIVE', csrfToken: 'should-not-rotate' } })
+    )
+
+    await expect(recovery).resolves.toMatchObject({
+      type: 'failure',
+      failure: { code: 'AUTH_LIFECYCLE_BLOCKED' },
+    })
+    await expect(barrier.waitForRecovery()).resolves.toBeUndefined()
+    expect(getCsrf()).toBe('csrf-current')
+  })
+
+  it('uses the existing refresh lock for logout coordination and reports unavailable locks', async () => {
+    const request = vi.fn(async () => response({ data: null }))
+    const coordinator = createRequestRecoveryCoordinator(
+      {
+        request,
+        normalizeError: () => ({ message: 'failed', kind: 'network' }),
+        getCsrfToken: () => 'csrf',
+        setCsrfToken: () => undefined,
+        resetCsrfToken: () => undefined,
+      },
+      { locks: null, broadcast: null, storage: null, storageEventTarget: null }
+    )
+
+    await expect(coordinator.withRecoveryLock(() => 'logout')).rejects.toMatchObject({
+      code: 'RECOVERY_UNAVAILABLE',
+    })
+    expect(request).not.toHaveBeenCalled()
+  })
+
+  it('keeps the refresh coordination channel independent from logout lifecycle messages', () => {
+    expect(RECOVERY_CHANNEL_NAME).not.toBe(AUTH_LIFECYCLE_CHANNEL_NAME)
   })
 })

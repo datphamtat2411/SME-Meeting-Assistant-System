@@ -9,6 +9,10 @@ import { render } from 'vitest-browser-react'
 import { page } from 'vitest/browser'
 import { routeTree } from '@/routeTree.gen'
 import { CoreApiError, coreApi } from '@/lib/core-api'
+import {
+  AUTH_LIFECYCLE_STORAGE_KEY,
+  resetAuthLifecycleAfterSignIn,
+} from '@/features/auth/session/auth-lifecycle'
 import { DirectionProvider } from '@/context/direction-provider'
 import { FontProvider } from '@/context/font-provider'
 import { ThemeProvider } from '@/context/theme-provider'
@@ -79,6 +83,7 @@ async function renderRoute(initialPath: string) {
 describe('session restoration and protected routing', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
+    resetAuthLifecycleAfterSignIn()
     getCurrentUser = vi.spyOn(coreApi, 'get')
     getCurrentUser.mockResolvedValue(identity as never)
   })
@@ -205,5 +210,24 @@ describe('session restoration and protected routing', () => {
     await expect.poll(() => router.state.location.pathname).toBe('/settings/account')
     await expect.element(screen.getByText('Canonical User')).toBeInTheDocument()
     expect(router.state.location.search).toEqual({})
+  })
+
+  it('does not probe cached identity while a confirmed logout barrier is active', async () => {
+    window.dispatchEvent(
+      new StorageEvent('storage', {
+        key: AUTH_LIFECYCLE_STORAGE_KEY,
+        newValue: JSON.stringify({
+          sourceId: 'other-tab',
+          operationId: 'logout-1',
+          generation: 100,
+          status: 'logout-confirmed',
+        }),
+      })
+    )
+
+    const { screen } = await renderRoute('/sign-in')
+
+    await expect.element(screen.getByRole('button', { name: 'Sign in' })).toBeInTheDocument()
+    expect(getCurrentUser).not.toHaveBeenCalled()
   })
 })

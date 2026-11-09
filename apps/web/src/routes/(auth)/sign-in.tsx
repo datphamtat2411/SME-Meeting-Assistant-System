@@ -9,6 +9,11 @@ import {
 } from '@/features/auth/session/current-user'
 import { SessionGate } from '@/features/auth/session/session-gate'
 import {
+  getAuthLifecycleState,
+  isAuthLifecycleBlocking,
+} from '@/features/auth/session/auth-lifecycle'
+import { LogoutStatus } from '@/features/auth/session/logout-status'
+import {
   isSessionLossConfirmed,
   prepareRequestRecoveryRetry,
 } from '@/lib/request-recovery'
@@ -19,6 +24,8 @@ const searchSchema = z.object({
 
 export const Route = createFileRoute('/(auth)/sign-in')({
   beforeLoad: async ({ context, search }) => {
+    if (isAuthLifecycleBlocking()) return
+
     let currentUser
 
     try {
@@ -50,6 +57,11 @@ export const Route = createFileRoute('/(auth)/sign-in')({
 
 function SignInSessionError({ error }: { error: unknown }) {
   const router = useRouter()
+  const lifecycleState = getAuthLifecycleState()
+
+  if (lifecycleState === 'pending' || lifecycleState === 'uncertain') {
+    return <LogoutStatus state={lifecycleState} />
+  }
 
   if (error instanceof SessionGuardError) {
     return (

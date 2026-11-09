@@ -6,12 +6,24 @@ import axios, {
 } from 'axios'
 import { getCookie } from './cookies'
 import {
+  AUTH_LIFECYCLE_GENERATION_MARKER,
+  AuthLifecycleBlockedError,
+  AuthLifecycleStaleResponseError,
   createRequestRecoveryCoordinator,
+  getRequestRecoveryGeneration,
+  isAuthLifecycleExemptRequest,
+  isRequestRecoveryBlocked,
+  isStaleAuthLifecycleResponse,
   registerRequestRecoveryCoordinator,
   type RecoveryFailure,
   type RecoveryOutcome,
   type RecoveryRequestConfig,
   type RecoveryTransportError,
+} from './request-recovery'
+
+export {
+  AuthLifecycleBlockedError,
+  AuthLifecycleStaleResponseError,
 } from './request-recovery'
 
 export interface ApiResponse<T> {
@@ -85,7 +97,7 @@ export function resetCsrfToken(): void {
 }
 
 export function getCsrfToken(): string | undefined {
-  return getCookie('__Host-sme-csrf') ?? csrfToken ?? undefined
+  return csrfToken ?? getCookie('__Host-sme-csrf') ?? undefined
 }
 
 const coreApiBaseUrl = import.meta.env.VITE_CORE_API_BASE_URL || '/api/v1'
@@ -99,6 +111,22 @@ function applyRequestSecurity(config: InternalAxiosRequestConfig) {
   const headers = config.headers
   const mutableHeaders = headers as unknown as Record<string, unknown>
   const currentCsrfToken = getCsrfToken()
+  const recoveryConfig = config as RecoveryRequestConfig
+
+  if (!isAuthLifecycleExemptRequest(recoveryConfig)) {
+    const requestGeneration = recoveryConfig[AUTH_LIFECYCLE_GENERATION_MARKER]
+    if (isRequestRecoveryBlocked()) {
+      throw new AuthLifecycleBlockedError()
+    }
+    if (
+      typeof requestGeneration === 'number' &&
+      requestGeneration < getRequestRecoveryGeneration()
+    ) {
+      throw new AuthLifecycleStaleResponseError()
+    }
+    recoveryConfig[AUTH_LIFECYCLE_GENERATION_MARKER] =
+      requestGeneration ?? getRequestRecoveryGeneration()
+  }
 
   for (const headerName of [
     'Authorization',
@@ -234,6 +262,28 @@ function normalizeBackendError(error: AxiosError): CoreApiError {
 export function normalizeCoreApiError(error: unknown): CoreApiError {
   if (error instanceof CoreApiError) return error
 
+  if (error instanceof AuthLifecycleBlockedError) {
+    return new CoreApiError({
+      message: error.message,
+      code: error.code,
+      kind: 'http',
+      recoveryOutcome: 'uncertain',
+      retryable: false,
+      cause: error,
+    })
+  }
+
+  if (error instanceof AuthLifecycleStaleResponseError) {
+    return new CoreApiError({
+      message: error.message,
+      code: error.code,
+      kind: 'http',
+      recoveryOutcome: 'uncertain',
+      retryable: false,
+      cause: error,
+    })
+  }
+
   if (axios.isAxiosError(error)) {
     return normalizeBackendError(error)
   }
@@ -283,10 +333,11 @@ registerRequestRecoveryCoordinator(requestRecoveryCoordinator)
 
 coreApiAxios.interceptors.response.use(
   (response) => {
-    requestRecoveryCoordinator.noteSuccessfulResponse(
-      response.config as RecoveryRequestConfig,
-      response
-    )
+    const config = response.config as RecoveryRequestConfig
+    if (isStaleAuthLifecycleResponse(config)) {
+      throw new AuthLifecycleStaleResponseError()
+    }
+    requestRecoveryCoordinator.noteSuccessfulResponse(config, response)
     return response
   },
   async (error: unknown) => {

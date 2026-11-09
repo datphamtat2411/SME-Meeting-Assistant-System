@@ -1,7 +1,13 @@
 import { Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { LogoutStatus } from './logout-status'
 
-export type SessionGateState = 'pending' | 'denied' | 'unavailable'
+export type SessionGateState =
+  | 'pending'
+  | 'denied'
+  | 'unavailable'
+  | 'logout-pending'
+  | 'logout-uncertain'
 
 type SessionGateProps = {
   state: SessionGateState
@@ -20,6 +26,17 @@ const gateCopy = {
 } as const
 
 export function SessionGate({ state, onRetry }: SessionGateProps) {
+  if (state === 'logout-pending' || state === 'logout-uncertain') {
+    return (
+      <div className='flex min-h-svh w-full items-center justify-center p-6'>
+        <LogoutStatus
+          state={state === 'logout-pending' ? 'pending' : 'uncertain'}
+          onRetry={onRetry}
+        />
+      </div>
+    )
+  }
+
   if (state === 'pending') {
     return (
       <div

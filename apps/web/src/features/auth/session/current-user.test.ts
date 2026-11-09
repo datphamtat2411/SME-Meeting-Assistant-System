@@ -78,6 +78,20 @@ describe('current user session query', () => {
     expect(authContextSchema.safeParse(identity).success).toBe(true)
   })
 
+  it('passes the query cancellation signal through to /auth/me', async () => {
+    const controller = new AbortController()
+    let requestConfig: Parameters<AxiosAdapter>[0] | undefined
+    coreApiAxios.defaults.adapter = async (config) => {
+      requestConfig = config
+      return makeResponse(config, { data: identity })
+    }
+
+    await expect(fetchCurrentUser({ signal: controller.signal })).resolves.toEqual(
+      identity
+    )
+    expect(requestConfig?.signal).toBe(controller.signal)
+  })
+
   it('rejects malformed identity DTOs instead of creating a partial identity', async () => {
     coreApiAxios.defaults.adapter = async (config) =>
       makeResponse(config, {

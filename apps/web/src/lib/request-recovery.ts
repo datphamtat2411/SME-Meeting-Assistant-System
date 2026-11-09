@@ -7,6 +7,9 @@ export const RECOVERY_STORAGE_KEY = 'sme-session-recovery-status'
 export const RECOVERY_MARKER = '__smeSessionRecovered'
 export const RECOVERY_DISABLED_MARKER = '__smeRecoveryDisabled'
 export const RECOVERY_REPLAY_SAFE_MARKER = '__smeReplaySafe'
+export const AUTH_LIFECYCLE_GENERATION_MARKER = '__smeAuthLifecycleGeneration'
+export const AUTH_LIFECYCLE_BLOCKED_CODE = 'AUTH_LIFECYCLE_BLOCKED'
+export const AUTH_LIFECYCLE_STALE_RESPONSE_CODE = 'AUTH_LIFECYCLE_STALE_RESPONSE'
 
 export type RecoveryErrorKind = 'http' | 'network' | 'server' | 'malformed'
 
@@ -22,6 +25,7 @@ export interface RecoveryRequestFlags {
   [RECOVERY_MARKER]?: boolean
   [RECOVERY_DISABLED_MARKER]?: boolean
   [RECOVERY_REPLAY_SAFE_MARKER]?: boolean
+  [AUTH_LIFECYCLE_GENERATION_MARKER]?: number
 }
 
 export type RecoveryRequestConfig = AxiosRequestConfig & RecoveryRequestFlags
@@ -60,6 +64,29 @@ export interface RecoveryLockManager {
     options: { mode: 'exclusive' },
     callback: (lock: unknown) => Promise<T> | T
   ): Promise<T>
+}
+
+export interface AuthLifecycleLockBarrier {
+  generation: number
+  waitForRecovery: () => Promise<void>
+}
+
+export class AuthLifecycleBlockedError extends Error {
+  readonly code = AUTH_LIFECYCLE_BLOCKED_CODE
+
+  constructor(message = 'Protected work is blocked while sign-out is in progress.') {
+    super(message)
+    this.name = 'AuthLifecycleBlockedError'
+  }
+}
+
+export class AuthLifecycleStaleResponseError extends Error {
+  readonly code = AUTH_LIFECYCLE_STALE_RESPONSE_CODE
+
+  constructor() {
+    super('A protected response completed after sign-out began.')
+    this.name = 'AuthLifecycleStaleResponseError'
+  }
 }
 
 export interface RecoveryBroadcast {
@@ -113,6 +140,11 @@ export interface RequestRecoveryCoordinator {
   noteFailedResponse(error: unknown): void
   prepareForRetry(): void
   resetAfterSignIn(): void
+  beginAuthLifecycleLogout(): AuthLifecycleLockBarrier
+  isAuthLifecycleBlocked(): boolean
+  getAuthLifecycleGeneration(): number
+  isStaleAuthLifecycleResponse(config: RecoveryRequestConfig): boolean
+  withRecoveryLock<T>(callback: () => Promise<T> | T): Promise<T>
   setSessionLossHandler(handler: (() => void) | undefined): void
   isSessionLossConfirmed(): boolean
   dispose(): void
@@ -147,7 +179,8 @@ interface RenewalFailure {
 type RenewalResult = RenewalSuccess | RenewalFailure
 
 const SAFE_METHODS = new Set(['get', 'head', 'options'])
-const EXCLUDED_PATHS = ['/auth/csrf', '/auth/login', '/auth/refresh']
+const EXCLUDED_PATHS = ['/auth/csrf', '/auth/login', '/auth/refresh', '/auth/logout']
+const AUTH_LIFECYCLE_EXEMPT_PATHS = ['/auth/csrf', '/auth/logout']
 
 let defaultCoordinator: RequestRecoveryCoordinator | undefined
 
@@ -219,6 +252,13 @@ function isExcludedRequest(config: RecoveryRequestConfig): boolean {
   )
 }
 
+export function isAuthLifecycleExemptRequest(
+  config: RecoveryRequestConfig
+): boolean {
+  const path = getRequestPath(config)
+  return AUTH_LIFECYCLE_EXEMPT_PATHS.some((exemptPath) => path.endsWith(exemptPath))
+}
+
 export function isRecoveryDisabled(config: RecoveryRequestConfig): boolean {
   return config[RECOVERY_DISABLED_MARKER] === true
 }
@@ -282,6 +322,20 @@ function createFailure(
   }
 }
 
+function authLifecycleBlockedFailure(
+  error: RecoveryTransportError = {
+    message: 'Protected work is blocked while sign-out is in progress.',
+    code: AUTH_LIFECYCLE_BLOCKED_CODE,
+    kind: 'http',
+  }
+): RecoveryFailure {
+  return createFailure('uncertain', {
+    ...error,
+    code: AUTH_LIFECYCLE_BLOCKED_CODE,
+    message: 'Protected work is blocked while sign-out is in progress.',
+  }, { retryable: false })
+}
+
 function validRefreshResponse(response: RecoveryResponse): string | undefined {
   if (!isRecord(response.data) || !isRecord(response.data.data)) return undefined
 
@@ -341,6 +395,8 @@ export function createRequestRecoveryCoordinator(
   let circuit: 'ready' | 'uncertain' | 'lost' = 'ready'
   let probeOnly = false
   let renewalPromise: Promise<RenewalResult> | undefined
+  let authLifecycleGeneration = 0
+  let authLifecycleBarrier: AuthLifecycleLockBarrier | undefined
   let sessionLossHandler = dependencies.onConfirmedSessionLoss
 
   const onCoordinationMessage = (event: { data: unknown }) => {
@@ -467,6 +523,7 @@ export function createRequestRecoveryCoordinator(
   }
 
   async function performRenewal(operationId: string): Promise<RenewalResult> {
+    const startingLifecycleGeneration = authLifecycleGeneration
     publish('started', operationId)
 
     let probeResponse: RecoveryResponse | undefined
@@ -478,6 +535,9 @@ export function createRequestRecoveryCoordinator(
         [RECOVERY_DISABLED_MARKER]: true,
       })
     } catch (error) {
+      if (authLifecycleGeneration !== startingLifecycleGeneration) {
+        return { type: 'failed', failure: authLifecycleBlockedFailure() }
+      }
       const normalized = asTransportError(dependencies, error)
       if (normalized.status !== 401) {
         const outcome =
@@ -509,6 +569,10 @@ export function createRequestRecoveryCoordinator(
           }),
         }
       }
+    }
+
+    if (authLifecycleGeneration !== startingLifecycleGeneration) {
+      return { type: 'failed', failure: authLifecycleBlockedFailure() }
     }
 
     if (probeResponse && probeResponse.status >= 200 && probeResponse.status < 300) {
@@ -573,6 +637,10 @@ export function createRequestRecoveryCoordinator(
         return failureFromRenewalError(malformed, refreshResponse)
       }
 
+      if (authLifecycleGeneration !== startingLifecycleGeneration) {
+        return { type: 'failed', failure: authLifecycleBlockedFailure() }
+      }
+
       dependencies.setCsrfToken(rotatedCsrfToken)
       generation += 1
       circuit = 'ready'
@@ -590,6 +658,13 @@ export function createRequestRecoveryCoordinator(
 
   function startRenewal(): Promise<RenewalResult> {
     if (renewalPromise) return renewalPromise
+
+    if (authLifecycleBarrier) {
+      return Promise.resolve({
+        type: 'failed',
+        failure: authLifecycleBlockedFailure(),
+      })
+    }
 
     const activeLocks = getLocks()
     if (!activeLocks) {
@@ -660,12 +735,49 @@ export function createRequestRecoveryCoordinator(
     return currentRenewal
   }
 
+  function beginAuthLifecycleLogout(): AuthLifecycleLockBarrier {
+    if (authLifecycleBarrier) return authLifecycleBarrier
+
+    authLifecycleGeneration += 1
+    const activeRenewal = renewalPromise
+    const barrier: AuthLifecycleLockBarrier = {
+      generation: authLifecycleGeneration,
+      waitForRecovery: async () => {
+        await activeRenewal
+      },
+    }
+    authLifecycleBarrier = barrier
+    return barrier
+  }
+
+  function withRecoveryLock<T>(callback: () => Promise<T> | T): Promise<T> {
+    const activeLocks = getLocks()
+    if (!activeLocks) {
+      return Promise.reject(
+        Object.assign(
+          new Error('Session recovery coordination is unavailable.'),
+          { code: 'RECOVERY_UNAVAILABLE' }
+        )
+      )
+    }
+
+    return activeLocks.request(
+      RECOVERY_LOCK_NAME,
+      { mode: 'exclusive' },
+      callback
+    )
+  }
+
   const coordinator: RequestRecoveryCoordinator = {
     async recover(error: unknown): Promise<RecoveryAction> {
       const config = getRequestConfig(error)
       const normalized = asTransportError(dependencies, error)
 
       if (!config || normalized.status !== 401) return { type: 'pass' }
+
+      if (authLifecycleBarrier && !isAuthLifecycleExemptRequest(config)) {
+        return { type: 'failure', failure: authLifecycleBlockedFailure(normalized) }
+      }
 
       if (isRecoveredRequest(config)) {
         confirmSessionLoss()
@@ -706,6 +818,10 @@ export function createRequestRecoveryCoordinator(
         return { type: 'failure', failure: renewal.failure }
       }
 
+      if (authLifecycleBarrier) {
+        return { type: 'failure', failure: authLifecycleBlockedFailure() }
+      }
+
       if (!isSafeReplay(config)) {
         return {
           type: 'failure',
@@ -726,6 +842,7 @@ export function createRequestRecoveryCoordinator(
     },
 
     noteSuccessfulResponse(config, _response) {
+      if (isStaleAuthLifecycleResponse(config)) return
       if (probeOnly && getRequestPath(config) === '/auth/me') {
         probeOnly = false
         circuit = 'ready'
@@ -741,6 +858,7 @@ export function createRequestRecoveryCoordinator(
     },
 
     prepareForRetry() {
+      if (authLifecycleBarrier) return
       if (circuit === 'lost') return
       if (circuit === 'uncertain') {
         probeOnly = true
@@ -750,10 +868,34 @@ export function createRequestRecoveryCoordinator(
     },
 
     resetAfterSignIn() {
+      authLifecycleBarrier = undefined
+      authLifecycleGeneration += 1
       circuit = 'ready'
       probeOnly = false
       generation += 1
     },
+
+    beginAuthLifecycleLogout,
+
+    isAuthLifecycleBlocked() {
+      return authLifecycleBarrier !== undefined
+    },
+
+    getAuthLifecycleGeneration() {
+      return authLifecycleGeneration
+    },
+
+    isStaleAuthLifecycleResponse(config) {
+      if (isAuthLifecycleExemptRequest(config)) return false
+      const requestGeneration = config[AUTH_LIFECYCLE_GENERATION_MARKER]
+      return (
+        authLifecycleBarrier !== undefined ||
+        (typeof requestGeneration === 'number' &&
+          requestGeneration < authLifecycleGeneration)
+      )
+    },
+
+    withRecoveryLock,
 
     setSessionLossHandler(handler) {
       sessionLossHandler = handler
@@ -781,6 +923,43 @@ export function registerRequestRecoveryCoordinator(
 
 export function resetRequestRecoveryState(): void {
   defaultCoordinator?.resetAfterSignIn()
+}
+
+export function beginRequestRecoveryLogout(): AuthLifecycleLockBarrier {
+  if (!defaultCoordinator) {
+    return {
+      generation: 0,
+      waitForRecovery: async () => undefined,
+    }
+  }
+  return defaultCoordinator.beginAuthLifecycleLogout()
+}
+
+export function isRequestRecoveryBlocked(): boolean {
+  return defaultCoordinator?.isAuthLifecycleBlocked() ?? false
+}
+
+export function getRequestRecoveryGeneration(): number {
+  return defaultCoordinator?.getAuthLifecycleGeneration() ?? 0
+}
+
+export function isStaleAuthLifecycleResponse(
+  config: RecoveryRequestConfig
+): boolean {
+  return defaultCoordinator?.isStaleAuthLifecycleResponse(config) ?? false
+}
+
+export function withRequestRecoveryLock<T>(
+  callback: () => Promise<T> | T
+): Promise<T> {
+  if (!defaultCoordinator) {
+    return Promise.reject(
+      Object.assign(new Error('Session recovery coordination is unavailable.'), {
+        code: 'RECOVERY_UNAVAILABLE',
+      })
+    )
+  }
+  return defaultCoordinator.withRecoveryLock(callback)
 }
 
 export function prepareRequestRecoveryRetry(): void {

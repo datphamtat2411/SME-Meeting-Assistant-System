@@ -9,6 +9,10 @@ import {
   normalizeCoreApiError,
 } from '@/lib/core-api'
 import {
+  AuthLifecycleBlockedError,
+  isAuthLifecycleBlocking,
+} from './auth-lifecycle'
+import {
   isSessionLossConfirmed,
   type RecoveryRequestConfig,
   RECOVERY_DISABLED_MARKER,
@@ -54,6 +58,7 @@ export type SessionFailure =
 
 export interface CurrentUserRequestOptions {
   recoveryDisabled?: boolean
+  signal?: AbortSignal
 }
 
 export class SessionGuardError extends Error {
@@ -87,14 +92,17 @@ function malformedIdentity(error: z.ZodError): CoreApiError {
 export async function fetchCurrentUser(
   options: CurrentUserRequestOptions = {}
 ): Promise<AuthContext> {
+  if (isAuthLifecycleBlocking()) throw new AuthLifecycleBlockedError()
   const config: RecoveryRequestConfig = {
     withCredentials: true,
+    signal: options.signal,
   }
   if (options.recoveryDisabled) config[RECOVERY_DISABLED_MARKER] = true
 
   const response = await coreApi.get<unknown>('/auth/me', {
     ...config,
   })
+  if (isAuthLifecycleBlocking()) throw new AuthLifecycleBlockedError()
   const result = authContextSchema.safeParse(response)
 
   if (!result.success) throw malformedIdentity(result.error)
@@ -107,7 +115,7 @@ export const currentUserQueryOptions = (
 ) =>
   queryOptions({
     queryKey: currentUserQueryKey,
-    queryFn: () => fetchCurrentUser(options),
+    queryFn: ({ signal }) => fetchCurrentUser({ ...options, signal }),
     staleTime: 0,
     retry: false,
   })
@@ -128,7 +136,9 @@ export async function loadCurrentUser(
       apiError.recoveryOutcome === 'session-lost' ||
       (apiError.status === 401 && apiError.recoveryOutcome === undefined) ||
       isSessionLossConfirmed()
-    if (confirmedLoss) clearCurrentUserCache(queryClient)
+    if (confirmedLoss || isAuthLifecycleBlocking()) {
+      clearCurrentUserCache(queryClient)
+    }
     throw error
   }
 }
@@ -136,6 +146,8 @@ export async function loadCurrentUser(
 export function classifySessionFailure(error: unknown): SessionFailure {
   const apiError = normalizeCoreApiError(error)
 
+  if (apiError.code === 'AUTH_LIFECYCLE_BLOCKED') return 'unauthenticated'
+  if (apiError.code === 'AUTH_LIFECYCLE_STALE_RESPONSE') return 'unauthenticated'
   if (apiError.recoveryOutcome === 'session-lost') return 'unauthenticated'
   if (apiError.recoveryOutcome === 'forbidden') return 'denied'
   if (apiError.recoveryOutcome) return 'unavailable'
