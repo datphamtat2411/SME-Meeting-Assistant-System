@@ -7,7 +7,10 @@ import pytest
 
 from sme_meeting_ai.core.config import Settings
 from sme_meeting_ai.integrations.core_api import CoreError
-from sme_meeting_ai.integrations.intelligence import IntelligenceCoreClient, IntelligenceEvent
+from sme_meeting_ai.integrations.intelligence import (
+    IntelligenceCoreClient,
+    IntelligenceEvent,
+)
 from sme_meeting_ai.workers.intelligence import IntelligenceExecution
 
 

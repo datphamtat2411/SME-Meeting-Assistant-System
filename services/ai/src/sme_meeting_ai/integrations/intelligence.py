@@ -10,8 +10,15 @@ import httpx
 from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
 
 from .core_api import (
-    CoreApiClient, CoreError, Count, Digest, Timestamp, Uuid, WireModel,
-    strict_json, uuid_string,
+    CoreApiClient,
+    CoreError,
+    Count,
+    Digest,
+    Timestamp,
+    Uuid,
+    WireModel,
+    strict_json,
+    uuid_string,
 )
 from .messaging import MessageError
 

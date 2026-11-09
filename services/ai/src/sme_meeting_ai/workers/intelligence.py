@@ -12,14 +12,21 @@ from uuid import uuid4
 
 from sme_meeting_ai.integrations.core_api import CoreError, strict_json
 from sme_meeting_ai.integrations.intelligence import (
-    QUEUE, IntelligenceClaim, IntelligenceCoreClient, IntelligenceStatus,
-    decode_notification, owner_fields,
+    QUEUE,
+    IntelligenceClaim,
+    IntelligenceCoreClient,
+    IntelligenceStatus,
+    decode_notification,
+    owner_fields,
 )
 from sme_meeting_ai.integrations.messaging import MessageError, RabbitConsumer
 from sme_meeting_ai.integrations.object_storage import ObjectStorage, StorageError
 from sme_meeting_ai.meeting_intelligence.processor import StageContext
 from sme_meeting_ai.meeting_intelligence.result import ResultError, serialize_result
-from sme_meeting_ai.meeting_intelligence.source import SourceIntegrityError, verify_snapshot
+from sme_meeting_ai.meeting_intelligence.source import (
+    SourceIntegrityError,
+    verify_snapshot,
+)
 from sme_meeting_ai.observability.logging import log_event
 
 logger = logging.getLogger(__name__)

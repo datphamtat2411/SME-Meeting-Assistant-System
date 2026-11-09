@@ -5,13 +5,13 @@ import os
 import time
 from contextlib import AsyncExitStack
 
+from test_worker_live_acceptance import controlled_pipeline
+
 from sme_meeting_ai.core.config import ConfigurationError, Environment, load_settings
 from sme_meeting_ai.observability.logging import configure_logging
 from sme_meeting_ai.workers.__main__ import run_worker
 from sme_meeting_ai.workers.intelligence import IntelligenceExecution
 from sme_meeting_ai.workers.transcription import TranscriptionExecution
-
-from test_worker_live_acceptance import controlled_pipeline
 
 
 def install_acceptance_response_loss():
