@@ -3,6 +3,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
 import { coreApi } from '@/lib/core-api'
+import {
+  currentUserQueryKey,
+  type AuthContext,
+} from '@/features/auth/session/current-user'
 import { dateInputToOffsetDateTime, dateInputValue } from './data/date-filters'
 import { MeetingsPage } from './index'
 
@@ -248,6 +252,102 @@ describe('MeetingsPage', () => {
     expect(routerMock.navigate).toHaveBeenCalledWith(
       expect.objectContaining({ search: {} })
     )
+  })
+
+  it('restores the New Meeting entry point and invalidates the API list after a committed draft', async () => {
+    vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url) => {
+      if (url === '/rooms') {
+        return {
+          data: [],
+          meta: {
+            pagination: {
+              page: 0,
+              size: 20,
+              totalElements: 0,
+              totalPages: 0,
+              hasNext: false,
+              hasPrevious: false,
+            },
+          },
+        }
+      }
+      return {
+        data: [],
+        meta: {
+          pagination: {
+            page: 0,
+            size: 10,
+            totalElements: 0,
+            totalPages: 0,
+            hasNext: false,
+            hasPrevious: false,
+          },
+        },
+      }
+    })
+    vi.spyOn(coreApi, 'postWithMetaAndEtag').mockResolvedValue({
+      data: {
+        id: 'meeting-draft',
+        title: 'New draft',
+        description: null,
+        organizerUserId: 'organizer-1',
+        roomId: null,
+        scheduledStartAt: null,
+        scheduledEndAt: null,
+        status: 'DRAFT',
+        startedAt: null,
+        endedAt: null,
+        cancelledAt: null,
+        cancellationReason: null,
+        createdByUserId: 'organizer-1',
+        createdAt: '2026-09-01T00:00:00Z',
+        updatedAt: '2026-09-01T00:00:00Z',
+      },
+      meta: {},
+      etag: 'draft-etag',
+    })
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    queryClient.setQueryData(currentUserQueryKey, {
+      userId: 'organizer-1',
+      email: 'organizer@example.com',
+      displayName: 'Authorized Organizer',
+      globalRole: 'EMPLOYEE',
+      accountStatus: 'ACTIVE',
+      primaryOrgUnitId: null,
+      directoryManagementScope: { allUnits: false, unitIds: [] },
+      session: {
+        id: 'session-1',
+        clientType: 'WEB',
+        createdAt: '2026-09-01T00:00:00Z',
+        lastSeenAt: null,
+        absoluteExpiresAt: '2026-09-02T00:00:00Z',
+      },
+    } as AuthContext)
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <MeetingsPage />
+      </QueryClientProvider>
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: 'New Meeting' }))
+    await expect
+      .element(screen.getByRole('heading', { name: 'New Meeting' }))
+      .toBeInTheDocument()
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Title' }),
+      'New draft'
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Save Draft' }))
+
+    await expect
+      .element(screen.getByRole('button', { name: 'New Meeting' }))
+      .toBeInTheDocument()
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: ['meetings', 'list'],
+    })
   })
 
   it('keeps inclusive date inputs across month and year boundaries', () => {

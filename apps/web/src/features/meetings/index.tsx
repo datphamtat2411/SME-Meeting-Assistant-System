@@ -1,5 +1,5 @@
 import { useDeferredValue, useEffect, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, Link } from '@tanstack/react-router'
 import {
   ArrowUpRight,
@@ -10,6 +10,7 @@ import {
   ChevronsLeft,
   ChevronsRight,
   MapPin,
+  Plus,
   Radio,
   RefreshCw,
   Search as SearchIcon,
@@ -60,6 +61,7 @@ import {
 import { Header } from '@/components/layout/header'
 import { HeaderActions } from '@/components/layout/header-actions'
 import { Main } from '@/components/layout/main'
+import { MeetingCreationDialog } from './components/meeting-creation-dialog'
 import { MeetingStatusBadge } from './components/meeting-status-badge'
 import { dateInputToOffsetDateTime, dateInputValue } from './data/date-filters'
 import {
@@ -123,7 +125,22 @@ const sortOptions = [
 export function MeetingsPage() {
   const search = route.useSearch()
   const navigate = route.useNavigate()
+  const queryClient = useQueryClient()
   const meetingsQuery = useQuery(meetingListQueryOptions(search))
+  const [isCreateOpen, setIsCreateOpen] = useState(false)
+
+  const handleMeetingCommitted = ({
+    status,
+  }: {
+    status: 'DRAFT' | 'SCHEDULED'
+  }) => {
+    void queryClient.invalidateQueries({ queryKey: ['meetings', 'list'] })
+    if (status === 'SCHEDULED') {
+      void queryClient.invalidateQueries({
+        queryKey: ['rooms', 'availability'],
+      })
+    }
+  }
 
   const updateSearch = (patch: Partial<MeetingListSearch>) => {
     navigate({
@@ -189,16 +206,30 @@ export function MeetingsPage() {
       </Header>
 
       <Main className='flex flex-1 flex-col gap-4 sm:gap-6'>
-        <div>
-          <p className='text-sm font-medium text-primary'>Meeting management</p>
-          <h1 className='mt-1 text-2xl font-bold tracking-tight sm:text-3xl'>
-            Meetings
-          </h1>
-          <p className='mt-2 max-w-2xl text-muted-foreground'>
-            Find a meeting and review its schedule, participants, and current
-            lifecycle.
-          </p>
+        <div className='flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between'>
+          <div>
+            <p className='text-sm font-medium text-primary'>
+              Meeting management
+            </p>
+            <h1 className='mt-1 text-2xl font-bold tracking-tight sm:text-3xl'>
+              Meetings
+            </h1>
+            <p className='mt-2 max-w-2xl text-muted-foreground'>
+              Find a meeting and review its schedule, participants, and current
+              lifecycle.
+            </p>
+          </div>
+          <Button type='button' onClick={() => setIsCreateOpen(true)}>
+            <Plus />
+            New Meeting
+          </Button>
         </div>
+
+        <MeetingCreationDialog
+          open={isCreateOpen}
+          onOpenChange={setIsCreateOpen}
+          onCommitted={handleMeetingCommitted}
+        />
 
         <Card className='overflow-hidden'>
           <CardHeader className='border-b'>

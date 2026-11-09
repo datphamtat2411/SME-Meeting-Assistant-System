@@ -93,6 +93,35 @@ class MeetingCoreIntegrationTests {
         assertThat(meetings.findById(id).orElseThrow().getCreatedByUserId()).isEqualTo(organizer.getId());
     }
 
+    @Test void activeDirectoryCandidatesAreAcceptedByCreateAndParticipantAddition() throws Exception {
+        JsonNode candidates=body(mvc.perform(get("/api/v1/users/meeting-candidates")
+            .principal(principal(organizer)).param("q","test"))
+            .andExpect(status().isOk()).andReturn()).path("data");
+        java.util.List<String> candidateIds = new java.util.ArrayList<>();
+        candidates.forEach(candidate -> candidateIds.add(candidate.path("id").asText()));
+        assertThat(candidateIds)
+            .contains(member.getId().toString(), other.getId().toString())
+            .doesNotContain(organizer.getId().toString());
+
+        mvc.perform(post("/api/v1/meetings").principal(principal(organizer))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(json.writeValueAsString(Map.of("title","Directory candidate create",
+                "participantUserIds",java.util.List.of(member.getId())))))
+            .andExpect(status().isCreated());
+
+        MvcResult emptyMeeting=mvc.perform(post("/api/v1/meetings").principal(principal(organizer))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("{\"title\":\"Directory candidate addition\"}"))
+            .andExpect(status().isCreated()).andReturn();
+        UUID meetingId=UUID.fromString(body(emptyMeeting).path("data").path("id").asText());
+        mvc.perform(post("/api/v1/meetings/"+meetingId+"/participants")
+            .principal(principal(organizer))
+            .header(HttpHeaders.IF_MATCH,emptyMeeting.getResponse().getHeader(HttpHeaders.ETAG))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(json.writeValueAsString(Map.of("userId",other.getId()))))
+            .andExpect(status().isCreated());
+    }
+
     @Test void organizerAndCurrentParticipantCanReadButOutsiderAndAdminCannot() throws Exception {
         String id=body(create()).path("data").path("id").asText();
         for(var actor:java.util.List.of(organizer,member)) {

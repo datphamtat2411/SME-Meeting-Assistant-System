@@ -460,6 +460,13 @@ export const coreApi = {
   post<T>(url: string, data?: unknown, config?: AxiosRequestConfig) {
     return request<T>({ ...config, method: 'POST', url, data })
   },
+  postWithMetaAndEtag<T>(
+    url: string,
+    data?: unknown,
+    config?: AxiosRequestConfig
+  ) {
+    return requestWithMetaAndEtag<T>({ ...config, method: 'POST', url, data })
+  },
   put<T>(url: string, data?: unknown, config?: AxiosRequestConfig) {
     return request<T>({ ...config, method: 'PUT', url, data })
   },

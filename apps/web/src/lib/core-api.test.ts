@@ -138,6 +138,44 @@ describe('core API transport', () => {
     ).resolves.toEqual({ data: { id: 'meeting-1' }, meta: {} })
   })
 
+  it('preserves mutation ETags and sends idempotency and precondition headers', async () => {
+    const requests: Array<Parameters<AxiosAdapter>[0]> = []
+    const etag = 'opaque-etag;v=7'
+    setCsrfToken('csrf-for-meeting')
+    coreApiAxios.defaults.adapter = async (config) => {
+      requests.push(config)
+      const response = makeResponse(
+        config,
+        successEnvelope({ id: 'meeting-1', status: 'DRAFT' }),
+        201
+      )
+      response.headers = new AxiosHeaders({ ETag: etag })
+      return response
+    }
+
+    await expect(
+      coreApi.postWithMetaAndEtag(
+        '/meetings',
+        { title: 'Draft' },
+        {
+          headers: {
+            'Idempotency-Key': 'meeting-intent-1',
+            'If-Match': '"previous"',
+          },
+        }
+      )
+    ).resolves.toEqual({
+      data: { id: 'meeting-1', status: 'DRAFT' },
+      meta: {},
+      etag,
+    })
+
+    expect(requests).toHaveLength(1)
+    expect(requests[0]?.headers.get('Idempotency-Key')).toBe('meeting-intent-1')
+    expect(requests[0]?.headers.get('If-Match')).toBe('"previous"')
+    expect(requests[0]?.headers.get('X-CSRF-Token')).toBe('csrf-for-meeting')
+  })
+
   it('does not add CSRF headers to bootstrap GET requests', async () => {
     setCsrfToken('csrf-before-login')
     let requestConfig: Parameters<AxiosAdapter>[0] | undefined
