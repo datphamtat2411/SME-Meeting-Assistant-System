@@ -71,6 +71,32 @@ class Settings(BaseSettings):
         default=30, gt=0, le=300, allow_inf_nan=False,
     )
     worker_execution_timeout_seconds: float = Field(default=14400, gt=0, le=86400, allow_inf_nan=False)
+    rag_model_id: Literal["BAAI/bge-m3"] = "BAAI/bge-m3"
+    rag_model_revision: str = Field(
+        default="5617a9f61b028005a4858fdac845db406aefb181",
+        pattern=r"^[a-f0-9]{40}$",
+    )
+    rag_model_path: Path | None = None
+    rag_model_cache_dir: Path = Path("/var/lib/sme-meeting-ai/models")
+    rag_inference_device: str = Field(default="cpu", pattern=r"^(cpu|cuda(?::[0-9]+)?)$")
+    rag_inference_precision: Literal["fp32", "fp16"] = "fp32"
+    rag_embedding_batch_size: int = Field(default=8, gt=0, le=256, strict=True)
+    rag_embedding_max_input_tokens: int = Field(default=512, gt=0, le=8192, strict=True)
+    rag_chunk_target_tokens: int = Field(default=384, gt=0, le=8192, strict=True)
+    rag_embedding_max_concurrent: int = Field(default=1, gt=0, le=4, strict=True)
+    rag_model_init_timeout_seconds: float = Field(default=900, gt=0, le=7200, allow_inf_nan=False)
+    rag_embedding_timeout_seconds: float = Field(default=900, gt=0, le=7200, allow_inf_nan=False)
+    rag_index_generation_id: str = Field(default="rag-t02-bge-m3-v1", pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$")
+    rag_index_configuration_version: str = Field(default="rag-t02-bge-m3-v1", pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$")
+    rag_index_configuration_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    rag_qdrant_url: str = "http://127.0.0.1:6333"
+    rag_qdrant_api_key: SecretStr | None = Field(default=None, repr=False)
+    rag_qdrant_collection: str = Field(
+        default="sme_meeting_knowledge_bge_m3",
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,126}$",
+    )
+    rag_qdrant_timeout_seconds: float = Field(default=10, gt=0, le=120, allow_inf_nan=False)
+    rag_qdrant_upsert_batch_size: int = Field(default=64, gt=0, le=256, strict=True)
     rabbitmq_url: str | None = Field(default=None, repr=False)
     rabbitmq_username: SecretStr | None = Field(default=None, repr=False)
     rabbitmq_password: SecretStr | None = Field(default=None, repr=False)
@@ -340,7 +366,42 @@ class Settings(BaseSettings):
         _ = parts.port
         return value.rstrip("/") if scheme == "https" else value
 
-    @field_validator("rabbitmq_delivery_limit", "core_api_max_attempts", mode="before")
+    @field_validator("rag_qdrant_url")
+    @classmethod
+    def qdrant_endpoint(cls, value: str) -> str:
+        parts = urlsplit(value)
+        if (
+            parts.scheme not in {"http", "https"}
+            or not parts.hostname
+            or parts.username
+            or parts.password
+            or parts.query
+            or parts.fragment
+            or any(ord(c) <= 32 for c in value)
+            or (parts.scheme == "http" and parts.hostname.lower() not in {"127.0.0.1", "localhost", "::1"})
+        ):
+            raise ValueError("Invalid Qdrant endpoint")
+        _ = parts.port
+        return value.rstrip("/")
+
+    @model_validator(mode="after")
+    def valid_rag_runtime(self) -> Self:
+        if self.rag_chunk_target_tokens > self.rag_embedding_max_input_tokens:
+            raise ValueError("RAG chunk target exceeds embedding input budget")
+        if self.rag_inference_precision == "fp16" and self.rag_inference_device == "cpu":
+            raise ValueError("RAG fp16 requires a CUDA device")
+        return self
+
+    @field_validator(
+        "rabbitmq_delivery_limit",
+        "core_api_max_attempts",
+        "rag_embedding_batch_size",
+        "rag_embedding_max_input_tokens",
+        "rag_chunk_target_tokens",
+        "rag_embedding_max_concurrent",
+        "rag_qdrant_upsert_batch_size",
+        mode="before",
+    )
     @classmethod
     def parse_worker_integers(cls, value: object) -> object:
         return cls.parse_asr_chunk_integers(value)

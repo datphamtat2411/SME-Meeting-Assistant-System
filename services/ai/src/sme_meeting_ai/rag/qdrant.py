@@ -1,0 +1,367 @@
+"""Qdrant collection/schema adapter for one dense+sparse knowledge point."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Protocol, Sequence
+
+from qdrant_client import QdrantClient, models
+
+from sme_meeting_ai.core.config import Settings
+
+from .embedding import DENSE_DIMENSIONS, EmbeddingCompatibility, SparseEmbedding
+
+
+class QdrantError(RuntimeError):
+    """A sanitized Qdrant operation failure."""
+
+    def __init__(self, category: str, message: str | None = None):
+        self.category = category
+        super().__init__(message or category)
+
+
+class QdrantSchemaError(QdrantError):
+    def __init__(self, message: str = "Qdrant collection schema is incompatible"):
+        super().__init__("SCHEMA_INCOMPATIBLE", message)
+
+
+class QdrantPersistenceError(QdrantError):
+    def __init__(self, category: str = "PERSISTENCE_FAILED", message: str | None = None):
+        super().__init__(category, message)
+
+
+@dataclass(frozen=True)
+class QdrantConfig:
+    url: str
+    collection_name: str
+    api_key: str | None = None
+    timeout_seconds: float = 10
+    prefer_grpc: bool = False
+    upsert_batch_size: int = 64
+
+    @classmethod
+    def from_settings(cls, settings: Settings) -> "QdrantConfig":
+        return cls(
+            url=settings.rag_qdrant_url,
+            collection_name=settings.rag_qdrant_collection,
+            api_key=settings.rag_qdrant_api_key.get_secret_value()
+            if settings.rag_qdrant_api_key is not None
+            else None,
+            timeout_seconds=settings.rag_qdrant_timeout_seconds,
+            upsert_batch_size=settings.rag_qdrant_upsert_batch_size,
+        )
+
+    def __post_init__(self) -> None:
+        if not self.url.startswith(("http://", "https://")):
+            raise ValueError("Qdrant URL must use HTTP or HTTPS")
+        if not self.collection_name or len(self.collection_name) > 127:
+            raise ValueError("Qdrant collection name is invalid")
+        if self.timeout_seconds <= 0 or self.upsert_batch_size < 1:
+            raise ValueError("Qdrant limits must be positive")
+
+
+@dataclass(frozen=True)
+class QdrantCollectionSpec:
+    collection_name: str
+    compatibility: EmbeddingCompatibility
+    dense_name: str = "dense"
+    sparse_name: str = "sparse"
+    dense_dimensions: int = DENSE_DIMENSIONS
+    dense_distance: str = "Cosine"
+
+    @property
+    def payload_indexes(self) -> dict[str, models.PayloadSchemaType]:
+        return {
+            "meeting_id": models.PayloadSchemaType.KEYWORD,
+            "source_type": models.PayloadSchemaType.KEYWORD,
+            "canonical_source_id": models.PayloadSchemaType.KEYWORD,
+            "canonical_source_revision": models.PayloadSchemaType.INTEGER,
+            "index_generation_id": models.PayloadSchemaType.KEYWORD,
+            "embedding_model_id": models.PayloadSchemaType.KEYWORD,
+            "embedding_model_revision": models.PayloadSchemaType.KEYWORD,
+            "authority_class": models.PayloadSchemaType.KEYWORD,
+            "quality_class": models.PayloadSchemaType.KEYWORD,
+            "source_status": models.PayloadSchemaType.KEYWORD,
+            "source_current": models.PayloadSchemaType.BOOL,
+        }
+
+
+@dataclass(frozen=True)
+class VectorPoint:
+    point_id: str
+    dense: tuple[float, ...]
+    sparse: SparseEmbedding
+    payload: dict[str, Any]
+
+
+class VectorStore(Protocol):
+    def ensure_schema(self) -> None: ...
+
+    def upsert(self, points: Sequence[VectorPoint]) -> int: ...
+
+
+def bge_m3_collection_spec(
+    collection_name: str, compatibility: EmbeddingCompatibility
+) -> QdrantCollectionSpec:
+    return QdrantCollectionSpec(collection_name=collection_name, compatibility=compatibility)
+
+
+def _is_not_found(error: Exception) -> bool:
+    status_code = getattr(error, "status_code", None)
+    if status_code == 404:
+        return True
+    response = getattr(error, "response", None)
+    if getattr(response, "status_code", None) == 404:
+        return True
+    return isinstance(error, ValueError) and "not found" in str(error).lower()
+
+
+def _is_transient(error: Exception) -> bool:
+    status_code = getattr(error, "status_code", None)
+    if status_code is None:
+        response = getattr(error, "response", None)
+        status_code = getattr(response, "status_code", None)
+    return status_code is not None and status_code >= 500
+
+
+def _enum_name(value: Any) -> str:
+    value = getattr(value, "value", value)
+    return str(value).split(".")[-1].lower()
+
+
+def _mapping_value(value: Any, name: str) -> Any:
+    if isinstance(value, dict):
+        return value.get(name)
+    return getattr(value, name, None)
+
+
+class QdrantVectorStore:
+    """Non-destructive Qdrant adapter with schema and write verification."""
+
+    def __init__(
+        self,
+        config: QdrantConfig,
+        *,
+        compatibility: EmbeddingCompatibility,
+        client: QdrantClient | Any | None = None,
+    ):
+        self.config = config
+        self.spec = bge_m3_collection_spec(config.collection_name, compatibility)
+        self.client = client or QdrantClient(
+            url=config.url,
+            api_key=config.api_key,
+            timeout=config.timeout_seconds,
+            prefer_grpc=config.prefer_grpc,
+        )
+
+    @classmethod
+    def from_settings(cls, settings: Settings, compatibility: EmbeddingCompatibility) -> "QdrantVectorStore":
+        return cls(QdrantConfig.from_settings(settings), compatibility=compatibility)
+
+    def _get_collection(self) -> Any | None:
+        try:
+            return self.client.get_collection(collection_name=self.spec.collection_name)
+        except Exception as error:
+            if _is_not_found(error):
+                return None
+            category = "QDRANT_UNAVAILABLE" if _is_transient(error) else "SCHEMA_READ_FAILED"
+            raise QdrantError(category) from error
+
+    def _create_collection(self) -> None:
+        try:
+            self.client.create_collection(
+                collection_name=self.spec.collection_name,
+                vectors_config={
+                    self.spec.dense_name: models.VectorParams(
+                        size=self.spec.dense_dimensions,
+                        distance=models.Distance.COSINE,
+                    )
+                },
+                sparse_vectors_config={
+                    self.spec.sparse_name: models.SparseVectorParams(),
+                },
+                metadata=self._collection_metadata(),
+            )
+        except Exception as error:
+            if _is_transient(error):
+                raise QdrantError("QDRANT_UNAVAILABLE") from error
+            # A concurrent creator is safe; schema validation below remains authoritative.
+            if self._get_collection() is None:
+                raise QdrantError("SCHEMA_CREATE_FAILED") from error
+
+    def _collection_metadata(self) -> dict[str, str]:
+        compatibility = self.spec.compatibility
+        metadata = {
+            "index_generation_id": compatibility.index_generation_id,
+            "embedding_model_id": compatibility.model_id,
+            "embedding_model_revision": compatibility.model_revision,
+            "tokenizer_id": compatibility.tokenizer_id,
+            "representation_version": compatibility.representation_version,
+        }
+        if compatibility.index_configuration_sha256 is not None:
+            metadata["index_configuration_sha256"] = compatibility.index_configuration_sha256
+        return metadata
+
+    def _validate_vectors(self, info: Any) -> None:
+        params = getattr(getattr(info, "config", None), "params", None)
+        vectors = getattr(params, "vectors", None)
+        dense = _mapping_value(vectors, self.spec.dense_name)
+        if dense is None or _mapping_value(vectors, "size") is not None:
+            raise QdrantSchemaError()
+        size = getattr(dense, "size", None)
+        distance = getattr(dense, "distance", None)
+        if size != self.spec.dense_dimensions or _enum_name(distance) != self.spec.dense_distance.lower():
+            raise QdrantSchemaError()
+
+        sparse_vectors = getattr(params, "sparse_vectors", None)
+        sparse = _mapping_value(sparse_vectors, self.spec.sparse_name)
+        if sparse is None or _mapping_value(sparse_vectors, "index") is not None:
+            raise QdrantSchemaError()
+
+    def _validate_payload_indexes(self, info: Any) -> None:
+        payload_schema = getattr(info, "payload_schema", None) or {}
+        for field_name, expected_type in self.spec.payload_indexes.items():
+            existing = payload_schema.get(field_name)
+            if existing is None:
+                try:
+                    self.client.create_payload_index(
+                        collection_name=self.spec.collection_name,
+                        field_name=field_name,
+                        field_schema=expected_type,
+                        wait=True,
+                    )
+                except Exception as error:
+                    if _is_transient(error):
+                        raise QdrantError("QDRANT_UNAVAILABLE") from error
+                    raise QdrantSchemaError("Required Qdrant payload index cannot be created") from error
+                continue
+            actual_type = getattr(existing, "data_type", existing)
+            if _enum_name(actual_type) != _enum_name(expected_type):
+                raise QdrantSchemaError("Qdrant payload index has an incompatible type")
+
+    def _validate_existing_generation(self) -> None:
+        try:
+            records, _ = self.client.scroll(
+                collection_name=self.spec.collection_name,
+                limit=1,
+                with_payload=True,
+                with_vectors=False,
+            )
+        except Exception as error:
+            if _is_transient(error):
+                raise QdrantError("QDRANT_UNAVAILABLE") from error
+            raise QdrantError("SCHEMA_READ_FAILED") from error
+        if not records:
+            return
+        payload = getattr(records[0], "payload", None) or {}
+        expected = {
+            "index_generation_id": self.spec.compatibility.index_generation_id,
+            "embedding_model_id": self.spec.compatibility.model_id,
+            "embedding_model_revision": self.spec.compatibility.model_revision,
+            "tokenizer_id": self.spec.compatibility.tokenizer_id,
+            "embedding_representation_version": self.spec.compatibility.representation_version,
+        }
+        if self.spec.compatibility.index_configuration_sha256 is not None:
+            expected["index_configuration_sha256"] = self.spec.compatibility.index_configuration_sha256
+        if any(payload.get(field) != value for field, value in expected.items()):
+            raise QdrantSchemaError("Existing Qdrant points belong to another embedding generation")
+
+    def _validate_collection_metadata(self, info: Any) -> None:
+        expected = self._collection_metadata()
+        metadata = getattr(getattr(info, "config", None), "metadata", None)
+        if metadata:
+            if any(metadata.get(field) != value for field, value in expected.items()):
+                raise QdrantSchemaError("Qdrant collection belongs to another embedding generation")
+            return
+
+        # A pre-T02 empty collection can be adopted safely; a populated legacy
+        # collection must first prove its point payload is from this generation.
+        if getattr(info, "points_count", 0):
+            self._validate_existing_generation()
+        try:
+            self.client.update_collection(
+                collection_name=self.spec.collection_name,
+                metadata=expected,
+            )
+        except Exception as error:
+            if _is_transient(error):
+                raise QdrantError("QDRANT_UNAVAILABLE") from error
+            raise QdrantSchemaError("Qdrant collection generation metadata cannot be established") from error
+
+    def ensure_schema(self) -> None:
+        info = self._get_collection()
+        if info is None:
+            self._create_collection()
+            info = self._get_collection()
+            if info is None:
+                raise QdrantError("SCHEMA_CREATE_UNVERIFIED")
+        self._validate_vectors(info)
+        self._validate_payload_indexes(info)
+        self._validate_collection_metadata(info)
+        self._validate_existing_generation()
+
+    def upsert(self, points: Sequence[VectorPoint]) -> int:
+        if not points:
+            return 0
+        qdrant_points = [
+            models.PointStruct(
+                id=point.point_id,
+                vector={
+                    self.spec.dense_name: list(point.dense),
+                    self.spec.sparse_name: models.SparseVector(
+                        indices=list(point.sparse.indices), values=list(point.sparse.values)
+                    ),
+                },
+                payload=point.payload,
+            )
+            for point in points
+        ]
+        try:
+            response = self.client.upsert(
+                collection_name=self.spec.collection_name,
+                points=qdrant_points,
+                wait=True,
+            )
+        except Exception as error:
+            if _is_transient(error):
+                raise QdrantPersistenceError("QDRANT_UNAVAILABLE") from error
+            raise QdrantPersistenceError() from error
+        status = getattr(response, "status", None)
+        if status is not None and _enum_name(status) not in {"completed", "ok"}:
+            raise QdrantPersistenceError("PERSISTENCE_NOT_COMPLETED")
+
+        try:
+            persisted = self.client.retrieve(
+                collection_name=self.spec.collection_name,
+                ids=[point.point_id for point in points],
+                with_payload=False,
+                with_vectors=False,
+            )
+        except Exception as error:
+            if _is_transient(error):
+                raise QdrantPersistenceError("QDRANT_UNAVAILABLE") from error
+            raise QdrantPersistenceError("PERSISTENCE_VERIFY_FAILED") from error
+        persisted_ids = {str(getattr(record, "id", "")) for record in persisted}
+        expected_ids = {point.point_id for point in points}
+        if persisted_ids != expected_ids:
+            raise QdrantPersistenceError("PERSISTENCE_VERIFY_FAILED")
+        return len(points)
+
+    def get_point(self, point_id: str) -> Any | None:
+        try:
+            records = self.client.retrieve(
+                collection_name=self.spec.collection_name,
+                ids=[point_id],
+                with_payload=True,
+                with_vectors=True,
+            )
+        except Exception as error:
+            if _is_transient(error):
+                raise QdrantError("QDRANT_UNAVAILABLE") from error
+            raise QdrantError("POINT_READ_FAILED") from error
+        return records[0] if records else None
+
+    def close(self) -> None:
+        close = getattr(self.client, "close", None)
+        if close is not None:
+            close()

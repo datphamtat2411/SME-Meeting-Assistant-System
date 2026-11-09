@@ -42,6 +42,25 @@ from .contracts import (
     TranscriptSnapshot,
     TranscriptSpeaker,
 )
+from .embedding import (
+    BgeM3EmbeddingAdapter,
+    BgeM3EmbeddingConfig,
+    ChunkEmbedding,
+    EmbeddingCompatibility,
+    EmbeddingError,
+    EmbeddingVectors,
+    QueryEmbedding,
+    SparseEmbedding,
+    normalize_bge_m3_output,
+)
+from .indexing import (
+    IndexingError,
+    IndexingIssue,
+    IndexingResult,
+    IndexingStatus,
+    KnowledgeIndexingEngine,
+    build_qdrant_payload,
+)
 from .processing import (
     KnowledgeContractError,
     KnowledgeProcessingError,
@@ -52,6 +71,29 @@ from .processing import (
     process_snapshot,
     validate_snapshot,
     verify_snapshot_bytes,
+)
+from .provisioning import (
+    BgeM3Provisioner,
+    ModelManifest,
+    ModelProvisioningError,
+    ModelSnapshot,
+    load_bge_m3_manifest,
+)
+from .qdrant import (
+    QdrantCollectionSpec,
+    QdrantConfig,
+    QdrantError,
+    QdrantPersistenceError,
+    QdrantSchemaError,
+    QdrantVectorStore,
+    VectorPoint,
+    bge_m3_collection_spec,
+)
+from .tokenizer import (
+    BgeM3Tokenizer,
+    TokenizerError,
+    bge_m3_chunking_config,
+    bge_m3_index_generation,
 )
 
 __all__ = [
@@ -104,4 +146,36 @@ __all__ = [
     "process_snapshot",
     "validate_snapshot",
     "verify_snapshot_bytes",
+    "BgeM3EmbeddingAdapter",
+    "BgeM3EmbeddingConfig",
+    "BgeM3Provisioner",
+    "BgeM3Tokenizer",
+    "ChunkEmbedding",
+    "EmbeddingCompatibility",
+    "EmbeddingError",
+    "EmbeddingVectors",
+    "IndexingError",
+    "IndexingIssue",
+    "IndexingResult",
+    "IndexingStatus",
+    "KnowledgeIndexingEngine",
+    "ModelManifest",
+    "ModelProvisioningError",
+    "ModelSnapshot",
+    "QdrantCollectionSpec",
+    "QdrantConfig",
+    "QdrantError",
+    "QdrantPersistenceError",
+    "QdrantSchemaError",
+    "QdrantVectorStore",
+    "QueryEmbedding",
+    "SparseEmbedding",
+    "TokenizerError",
+    "VectorPoint",
+    "bge_m3_chunking_config",
+    "bge_m3_collection_spec",
+    "bge_m3_index_generation",
+    "build_qdrant_payload",
+    "load_bge_m3_manifest",
+    "normalize_bge_m3_output",
 ]

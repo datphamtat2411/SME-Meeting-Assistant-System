@@ -17,4 +17,5 @@ def test_independent_console_scripts_are_installed():
     assert scripts == {
         "sme-ai-http": "sme_meeting_ai.api.__main__:main",
         "sme-ai-worker": "sme_meeting_ai.workers.__main__:main",
+        "sme-ai-rag": "sme_meeting_ai.rag.cli:main",
     }
