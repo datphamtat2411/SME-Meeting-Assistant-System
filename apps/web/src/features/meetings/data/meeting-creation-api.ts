@@ -65,6 +65,29 @@ export interface ScheduleMeetingInput {
   scheduledEndAt?: string
 }
 
+export type MeetingCreationFlow = 'draft' | 'schedule'
+
+export type MeetingCreationSchedule = Readonly<{
+  start: string
+  end: string
+  scheduledStartAt: string
+  scheduledEndAt: string
+}>
+
+export type MeetingCreationIntent = Readonly<{
+  payload: CreateMeetingInput
+  serializedPayload: string
+  idempotencyKey: string
+  flow: MeetingCreationFlow
+  actorUserId?: string
+  participantUserIds: readonly string[]
+  schedule?: MeetingCreationSchedule
+  createdAt: number
+  expiresAt: number
+}>
+
+export const meetingCreationIdempotencyRetentionMs = 24 * 60 * 60 * 1000
+
 export type ScheduleCheckResult = z.infer<typeof scheduleCheckResponseSchema>
 export type MeetingMutationResult<
   Status extends MeetingView['status'] = MeetingView['status'],
@@ -77,6 +100,7 @@ export type MeetingMutationErrorKind =
   | 'unauthenticated'
   | 'forbidden'
   | 'conflict'
+  | 'idempotency_conflict'
   | 'precondition'
   | 'validation'
   | 'network'
@@ -95,18 +119,21 @@ function malformedMeetingMutationResponse(error: unknown): CoreApiError {
 
 function readMeetingMutationResponse(
   response: ApiResponseDataWithEtag<unknown>,
-  expectedStatus: MeetingView['status']
+  expectedStatus: MeetingView['status'] | readonly MeetingView['status'][]
 ): MeetingMutationResult {
   const parsed = meetingViewSchema.safeParse(response.data)
+  const expectedStatuses = Array.isArray(expectedStatus)
+    ? expectedStatus
+    : [expectedStatus]
   if (
     !parsed.success ||
-    parsed.data.status !== expectedStatus ||
+    !expectedStatuses.includes(parsed.data.status) ||
     typeof response.etag !== 'string' ||
     response.etag.length === 0
   ) {
     throw malformedMeetingMutationResponse(
       parsed.success
-        ? `Expected ${expectedStatus} and an opaque ETag.`
+        ? `Expected ${expectedStatuses.join(' or ')} and an opaque ETag.`
         : parsed.error
     )
   }
@@ -134,6 +161,14 @@ export function parseCreateMeetingResponse(
     response,
     'DRAFT'
   ) as MeetingMutationResult<'DRAFT'>
+}
+
+export function parseCreateMeetingReplayResponse(
+  response: ApiResponseDataWithEtag<unknown>
+): MeetingMutationResult<'DRAFT' | 'SCHEDULED'> {
+  return readMeetingMutationResponse(response, ['DRAFT', 'SCHEDULED']) as
+    | MeetingMutationResult<'DRAFT'>
+    | MeetingMutationResult<'SCHEDULED'>
 }
 
 export function parseScheduleMeetingResponse(
@@ -219,11 +254,48 @@ export function buildScheduleMeetingPayload(
   return payload
 }
 
-export async function createMeeting(
+function freezeCreateMeetingPayload(
+  payload: CreateMeetingInput
+): CreateMeetingInput {
+  const participantUserIds = payload.participantUserIds
+    ? Object.freeze([...payload.participantUserIds])
+    : undefined
+  return Object.freeze({
+    ...payload,
+    ...(participantUserIds ? { participantUserIds } : {}),
+  }) as CreateMeetingInput
+}
+
+export function createMeetingIntent(
   input: CreateMeetingInput,
   idempotencyKey: string,
-  signal?: AbortSignal
-): Promise<MeetingMutationResult<'DRAFT'>> {
+  flow: MeetingCreationFlow,
+  schedule?: MeetingCreationSchedule,
+  actorUserId?: string
+): MeetingCreationIntent {
+  const payload = freezeCreateMeetingPayload(buildCreateMeetingPayload(input))
+  const createdAt = Date.now()
+  return Object.freeze({
+    payload,
+    serializedPayload: JSON.stringify(payload),
+    idempotencyKey,
+    flow,
+    actorUserId,
+    participantUserIds: Object.freeze([...(payload.participantUserIds ?? [])]),
+    schedule: schedule ? Object.freeze({ ...schedule }) : undefined,
+    createdAt,
+    expiresAt: createdAt + meetingCreationIdempotencyRetentionMs,
+  })
+}
+
+export function isMeetingCreationIntentReplaySafe(
+  intent: MeetingCreationIntent,
+  now = Date.now()
+) {
+  return now < intent.expiresAt
+}
+
+function requireIdempotencyKey(idempotencyKey: string) {
   if (!idempotencyKey.trim()) {
     throw new CoreApiError({
       message: 'A stable meeting idempotency key is required.',
@@ -231,13 +303,48 @@ export async function createMeeting(
       kind: 'malformed',
     })
   }
+}
 
+async function postMeetingCreation(
+  payload: CreateMeetingInput,
+  idempotencyKey: string,
+  allowScheduledReplay: boolean,
+  signal?: AbortSignal
+): Promise<MeetingMutationResult<'DRAFT' | 'SCHEDULED'>> {
+  requireIdempotencyKey(idempotencyKey)
   const response = await coreApi.postWithMetaAndEtag<unknown>(
     '/meetings',
-    buildCreateMeetingPayload(input),
+    payload,
     withHeaders('Idempotency-Key', idempotencyKey, signal)
   )
-  return parseCreateMeetingResponse(response)
+  return allowScheduledReplay
+    ? parseCreateMeetingReplayResponse(response)
+    : parseCreateMeetingResponse(response)
+}
+
+export async function createMeeting(
+  input: CreateMeetingInput,
+  idempotencyKey: string,
+  signal?: AbortSignal
+): Promise<MeetingMutationResult<'DRAFT'>> {
+  return postMeetingCreation(
+    buildCreateMeetingPayload(input),
+    idempotencyKey,
+    false,
+    signal
+  ) as Promise<MeetingMutationResult<'DRAFT'>>
+}
+
+export async function createMeetingFromIntent(
+  intent: MeetingCreationIntent,
+  signal?: AbortSignal
+): Promise<MeetingMutationResult<'DRAFT' | 'SCHEDULED'>> {
+  return postMeetingCreation(
+    JSON.parse(intent.serializedPayload) as CreateMeetingInput,
+    intent.idempotencyKey,
+    true,
+    signal
+  )
 }
 
 export async function checkMeetingSchedule(
@@ -350,6 +457,13 @@ export function classifyMeetingMutationError(
   const normalized = normalizeCoreApiError(error)
   if (normalized.status === 401) return 'unauthenticated'
   if (normalized.status === 403) return 'forbidden'
+  if (
+    normalized.status === 409 &&
+    (normalized.code?.toLowerCase().includes('idempotency') ||
+      normalized.message.toLowerCase().includes('idempotency-key'))
+  ) {
+    return 'idempotency_conflict'
+  }
   if (normalized.status === 409) return 'conflict'
   if (normalized.status === 412 || normalized.status === 428)
     return 'precondition'

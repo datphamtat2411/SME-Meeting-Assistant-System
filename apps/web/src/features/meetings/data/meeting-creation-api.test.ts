@@ -8,8 +8,12 @@ import {
   checkMeetingSchedule,
   classifyMeetingMutationError,
   createMeeting,
+  createMeetingFromIntent,
+  createMeetingIntent,
+  isMeetingCreationIntentReplaySafe,
   mapMeetingFieldErrors,
   parseCreateMeetingResponse,
+  parseCreateMeetingReplayResponse,
   parseScheduleCheckResponse,
   parseScheduleMeetingResponse,
   scheduleMeeting,
@@ -109,6 +113,13 @@ describe('meeting creation API adapter', () => {
         etag: 'W/"m-7"',
       })
     ).toThrowError(/malformed/i)
+    expect(
+      parseCreateMeetingReplayResponse({
+        data: scheduledMeeting,
+        meta: {},
+        etag: 'scheduled-etag',
+      })
+    ).toEqual({ meeting: scheduledMeeting, etag: 'scheduled-etag' })
     expect(() =>
       parseScheduleMeetingResponse({ data: scheduledMeeting, meta: {} })
     ).toThrowError(CoreApiError)
@@ -214,6 +225,16 @@ describe('meeting creation API adapter', () => {
       )
     ).toBe('precondition')
     expect(
+      classifyMeetingMutationError(
+        new CoreApiError({
+          status: 409,
+          code: 'IDEMPOTENCY_CONFLICT',
+          message: 'Idempotency-Key is already bound.',
+          kind: 'http',
+        })
+      )
+    ).toBe('idempotency_conflict')
+    expect(
       mapMeetingFieldErrors({
         scheduledStartAt: ['Start is invalid'],
         scheduledEndAt: ['End is invalid'],
@@ -226,5 +247,58 @@ describe('meeting creation API adapter', () => {
       roomId: ['Room is unavailable'],
       participantIds: ['Select active participants'],
     })
+  })
+
+  it('replays an immutable creation intent with the same payload and key', async () => {
+    vi.clearAllMocks()
+    const mutationSpy = vi
+      .spyOn(coreApi, 'postWithMetaAndEtag')
+      .mockResolvedValue({ data: meeting, meta: {}, etag: 'create-etag' })
+    const intent = createMeetingIntent(
+      {
+        title: '  Frozen  ',
+        description: ' Details ',
+        participantUserIds: ['user-1', 'user-2'],
+      },
+      'intent-immutable',
+      'schedule'
+    )
+
+    await createMeetingFromIntent(intent)
+    await createMeetingFromIntent(intent)
+
+    expect(mutationSpy).toHaveBeenCalledTimes(2)
+    expect(mutationSpy.mock.calls[0]).toEqual(mutationSpy.mock.calls[1])
+    expect(mutationSpy.mock.calls[0]).toEqual([
+      '/meetings',
+      {
+        title: 'Frozen',
+        description: 'Details',
+        participantUserIds: ['user-1', 'user-2'],
+      },
+      { headers: { 'Idempotency-Key': 'intent-immutable' } },
+    ])
+    expect(intent.serializedPayload).toBe(
+      JSON.stringify({
+        title: 'Frozen',
+        description: 'Details',
+        participantUserIds: ['user-1', 'user-2'],
+      })
+    )
+  })
+
+  it('does not treat an expired intent as duplicate-safe', () => {
+    const intent = createMeetingIntent(
+      { title: 'Expired' },
+      'intent-expired',
+      'draft'
+    )
+
+    expect(
+      isMeetingCreationIntentReplaySafe(intent, intent.expiresAt - 1)
+    ).toBe(true)
+    expect(isMeetingCreationIntentReplaySafe(intent, intent.expiresAt)).toBe(
+      false
+    )
   })
 })

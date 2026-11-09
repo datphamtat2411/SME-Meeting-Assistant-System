@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
-import { coreApi } from '@/lib/core-api'
+import { CoreApiError, coreApi } from '@/lib/core-api'
 import {
   currentUserQueryKey,
   type AuthContext,
@@ -26,6 +26,14 @@ const routerMock = vi.hoisted(() => ({
     sort: 'createdAt,desc',
   } as RouterSearchMock,
   navigate: vi.fn(),
+}))
+
+const toastSuccess = vi.hoisted(() => vi.fn())
+
+vi.mock('sonner', () => ({
+  toast: {
+    success: toastSuccess,
+  },
 }))
 
 vi.mock('@tanstack/react-router', async (importOriginal) => {
@@ -81,6 +89,7 @@ describe('MeetingsPage', () => {
       sort: 'createdAt,desc',
     }
     routerMock.navigate.mockReset()
+    toastSuccess.mockReset()
   })
 
   it('renders API projection fields, unscheduled drafts, canonical status, and links', async () => {
@@ -309,6 +318,7 @@ describe('MeetingsPage', () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     })
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
     queryClient.setQueryData(currentUserQueryKey, {
       userId: 'organizer-1',
       email: 'organizer@example.com',
@@ -325,7 +335,6 @@ describe('MeetingsPage', () => {
         absoluteExpiresAt: '2026-09-02T00:00:00Z',
       },
     } as AuthContext)
-    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
     const screen = await render(
       <QueryClientProvider client={queryClient}>
         <MeetingsPage />
@@ -348,6 +357,276 @@ describe('MeetingsPage', () => {
     expect(invalidateSpy).toHaveBeenCalledWith({
       queryKey: ['meetings', 'list'],
     })
+    expect(toastSuccess).toHaveBeenCalledWith(
+      'Meeting saved as draft',
+      expect.objectContaining({
+        description:
+          'The meeting was saved as DRAFT and has not been scheduled.',
+      })
+    )
+  })
+
+  it('shows durable scheduled success after the creation dialog closes', async () => {
+    vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url) => {
+      if (url === '/rooms/availability') {
+        return {
+          data: [],
+          meta: {
+            pagination: {
+              page: 0,
+              size: 20,
+              totalElements: 0,
+              totalPages: 0,
+              hasNext: false,
+              hasPrevious: false,
+            },
+          },
+        }
+      }
+      return {
+        data: [],
+        meta: {
+          pagination: {
+            page: 0,
+            size: 10,
+            totalElements: 0,
+            totalPages: 0,
+            hasNext: false,
+            hasPrevious: false,
+          },
+        },
+      }
+    })
+    vi.spyOn(coreApi, 'post').mockResolvedValue({
+      previewOnly: true,
+      canSchedule: true,
+      roomConflict: false,
+      room: null,
+      warnings: [],
+    })
+    const postSpy = vi.spyOn(coreApi, 'postWithMetaAndEtag')
+    postSpy
+      .mockResolvedValueOnce({
+        data: {
+          id: 'meeting-scheduled',
+          title: 'Scheduled from page',
+          description: null,
+          organizerUserId: 'organizer-1',
+          roomId: null,
+          scheduledStartAt: '2026-09-01T09:00:00.000Z',
+          scheduledEndAt: '2026-09-01T10:00:00.000Z',
+          status: 'DRAFT',
+          startedAt: null,
+          endedAt: null,
+          cancelledAt: null,
+          cancellationReason: null,
+          createdByUserId: 'organizer-1',
+          createdAt: '2026-09-01T00:00:00Z',
+          updatedAt: '2026-09-01T00:00:00Z',
+        },
+        meta: {},
+        etag: 'draft-etag',
+      })
+      .mockResolvedValueOnce({
+        data: {
+          id: 'meeting-scheduled',
+          title: 'Scheduled from page',
+          description: null,
+          organizerUserId: 'organizer-1',
+          roomId: null,
+          scheduledStartAt: '2026-09-01T09:00:00.000Z',
+          scheduledEndAt: '2026-09-01T10:00:00.000Z',
+          status: 'SCHEDULED',
+          startedAt: null,
+          endedAt: null,
+          cancelledAt: null,
+          cancellationReason: null,
+          createdByUserId: 'organizer-1',
+          createdAt: '2026-09-01T00:00:00Z',
+          updatedAt: '2026-09-01T00:00:00Z',
+        },
+        meta: {},
+        etag: 'scheduled-etag',
+      })
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+    queryClient.setQueryData(currentUserQueryKey, {
+      userId: 'organizer-1',
+      email: 'organizer@example.com',
+      displayName: 'Authorized Organizer',
+      globalRole: 'EMPLOYEE',
+      accountStatus: 'ACTIVE',
+      primaryOrgUnitId: null,
+      directoryManagementScope: { allUnits: false, unitIds: [] },
+      session: {
+        id: 'session-1',
+        clientType: 'WEB',
+        createdAt: '2026-09-01T00:00:00Z',
+        lastSeenAt: null,
+        absoluteExpiresAt: '2026-09-02T00:00:00Z',
+      },
+    } as AuthContext)
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <MeetingsPage />
+      </QueryClientProvider>
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: 'New Meeting' }))
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Title' }),
+      'Scheduled from page'
+    )
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Date', exact: true }),
+      '2026-09-01'
+    )
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Start time', exact: true }),
+      '09:00'
+    )
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'End time', exact: true }),
+      '10:00'
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Create & Schedule' })
+    )
+
+    await expect
+      .element(screen.getByRole('button', { name: 'New Meeting' }))
+      .toBeInTheDocument()
+    expect(toastSuccess).toHaveBeenCalledWith(
+      'Meeting scheduled',
+      expect.objectContaining({
+        description: 'The meeting was successfully scheduled.',
+      })
+    )
+    expect(toastSuccess).toHaveBeenCalledTimes(1)
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: ['rooms', 'availability'],
+    })
+  })
+
+  it('does not show scheduled success when page scheduling fails after draft creation', async () => {
+    vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url) => {
+      if (url === '/rooms/availability') {
+        return {
+          data: [],
+          meta: {
+            pagination: {
+              page: 0,
+              size: 20,
+              totalElements: 0,
+              totalPages: 0,
+              hasNext: false,
+              hasPrevious: false,
+            },
+          },
+        }
+      }
+      return {
+        data: [],
+        meta: {
+          pagination: {
+            page: 0,
+            size: 10,
+            totalElements: 0,
+            totalPages: 0,
+            hasNext: false,
+            hasPrevious: false,
+          },
+        },
+      }
+    })
+    vi.spyOn(coreApi, 'post').mockResolvedValue({
+      previewOnly: true,
+      canSchedule: true,
+      roomConflict: false,
+      room: null,
+      warnings: [],
+    })
+    vi.spyOn(coreApi, 'postWithMetaAndEtag')
+      .mockResolvedValueOnce({
+        data: {
+          id: 'meeting-partial',
+          title: 'Partial page meeting',
+          description: null,
+          organizerUserId: 'organizer-1',
+          roomId: null,
+          scheduledStartAt: '2026-09-01T09:00:00.000Z',
+          scheduledEndAt: '2026-09-01T10:00:00.000Z',
+          status: 'DRAFT',
+          startedAt: null,
+          endedAt: null,
+          cancelledAt: null,
+          createdByUserId: 'organizer-1',
+          createdAt: '2026-09-01T00:00:00Z',
+          updatedAt: '2026-09-01T00:00:00Z',
+        },
+        meta: {},
+        etag: 'draft-etag',
+      })
+      .mockRejectedValueOnce(
+        new CoreApiError({
+          status: 409,
+          code: 'ROOM_CONFLICT',
+          message: 'The room became unavailable while scheduling.',
+          kind: 'http',
+        })
+      )
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    queryClient.setQueryData(currentUserQueryKey, {
+      userId: 'organizer-1',
+      email: 'organizer@example.com',
+      displayName: 'Authorized Organizer',
+      globalRole: 'EMPLOYEE',
+      accountStatus: 'ACTIVE',
+      primaryOrgUnitId: null,
+      directoryManagementScope: { allUnits: false, unitIds: [] },
+      session: {
+        id: 'session-1',
+        clientType: 'WEB',
+        createdAt: '2026-09-01T00:00:00Z',
+        lastSeenAt: null,
+        absoluteExpiresAt: '2026-09-02T00:00:00Z',
+      },
+    } as AuthContext)
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <MeetingsPage />
+      </QueryClientProvider>
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: 'New Meeting' }))
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Title' }),
+      'Partial page meeting'
+    )
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Date', exact: true }),
+      '2026-09-01'
+    )
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Start time', exact: true }),
+      '09:00'
+    )
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'End time', exact: true }),
+      '10:00'
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Create & Schedule' })
+    )
+
+    await expect
+      .element(screen.getByText('Meeting operation did not complete'))
+      .toBeInTheDocument()
+    expect(toastSuccess).not.toHaveBeenCalled()
   })
 
   it('keeps inclusive date inputs across month and year boundaries', () => {

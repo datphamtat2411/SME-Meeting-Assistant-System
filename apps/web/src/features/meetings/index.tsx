@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useState } from 'react'
+import { useDeferredValue, useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, Link } from '@tanstack/react-router'
 import {
@@ -16,6 +16,7 @@ import {
   Search as SearchIcon,
   Users,
 } from 'lucide-react'
+import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
 import { getPageNumbers } from '@/lib/utils'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -128,18 +129,31 @@ export function MeetingsPage() {
   const queryClient = useQueryClient()
   const meetingsQuery = useQuery(meetingListQueryOptions(search))
   const [isCreateOpen, setIsCreateOpen] = useState(false)
+  const notifiedCommitTransitions = useRef(new Set<string>())
 
   const handleMeetingCommitted = ({
+    meetingId,
     status,
   }: {
+    meetingId: string
     status: 'DRAFT' | 'SCHEDULED'
   }) => {
+    const transition = `${meetingId}:${status}`
+    if (notifiedCommitTransitions.current.has(transition)) return
+    notifiedCommitTransitions.current.add(transition)
     void queryClient.invalidateQueries({ queryKey: ['meetings', 'list'] })
     if (status === 'SCHEDULED') {
       void queryClient.invalidateQueries({
         queryKey: ['rooms', 'availability'],
       })
+      toast.success('Meeting scheduled', {
+        description: 'The meeting was successfully scheduled.',
+      })
+      return
     }
+    toast.success('Meeting saved as draft', {
+      description: 'The meeting was saved as DRAFT and has not been scheduled.',
+    })
   }
 
   const updateSearch = (patch: Partial<MeetingListSearch>) => {

@@ -81,10 +81,14 @@ import {
   canonicalizeLocalDateTime,
   checkMeetingSchedule,
   classifyMeetingMutationError,
-  createMeeting,
+  createMeetingFromIntent,
+  createMeetingIntent,
+  isMeetingCreationIntentReplaySafe,
   mapMeetingFieldErrors,
   scheduleMeeting,
+  type MeetingCreationIntent,
   type MeetingMutationErrorKind,
+  type MeetingMutationResult,
   type ScheduleCheckResult,
 } from '../data/meeting-creation-api'
 import {
@@ -164,9 +168,15 @@ type SubmissionFlow = 'draft' | 'schedule'
 type SubmissionPhase =
   | 'idle'
   | 'checking'
+  | 'awaiting_warning_review'
   | 'creating'
+  | 'creation_uncertain'
+  | 'draft_confirmed'
   | 'scheduling'
+  | 'schedule_uncertain'
   | 'reconciling'
+  | 'scheduled_confirmed'
+  | 'failed_definitively'
 type RecoveryStatus = 'draft' | 'uncertain'
 
 type ScheduleValues = {
@@ -188,6 +198,12 @@ type CommittedMeeting = {
   status: 'DRAFT' | 'SCHEDULED'
   roomId?: string | null
 }
+
+type SchedulingCandidate = Readonly<{
+  fingerprint: string
+  payload: ReturnType<typeof buildCreateMeetingPayload>
+  schedule: ScheduleValues
+}>
 
 export type MeetingCreationDialogProps = {
   open: boolean
@@ -221,9 +237,20 @@ export function MeetingCreationDialog({
   const [outcome, setOutcome] = useState<'draft' | 'scheduled' | null>(null)
   const [scheduleCheck, setScheduleCheck] =
     useState<ScheduleCheckResult | null>(null)
+  const [scheduleCheckFingerprint, setScheduleCheckFingerprint] = useState<
+    string | null
+  >(null)
+  const [pendingScheduleCandidate, setPendingScheduleCandidate] =
+    useState<SchedulingCandidate | null>(null)
+  const [showWarningDetails, setShowWarningDetails] = useState(false)
   const [draftRecovery, setDraftRecovery] = useState<DraftRecovery | null>(null)
-  const idempotencyKey = useRef(createIdempotencyKey())
+  const [creationIntent, setCreationIntent] =
+    useState<MeetingCreationIntent | null>(null)
+  const idempotencyKey = useRef<string | null>(null)
   const wasOpen = useRef(open)
+  const operationInFlight = useRef(false)
+  const resetOnClose = useRef(false)
+  const notifiedTransitions = useRef(new Set<string>())
 
   const cachedCurrentUser =
     queryClient.getQueryData<AuthContext>(currentUserQueryKey)
@@ -233,6 +260,8 @@ export function MeetingCreationDialog({
   })
   const currentUser = cachedCurrentUser ?? currentUserQuery.data
 
+  const title = useWatch({ control: form.control, name: 'title' })
+  const description = useWatch({ control: form.control, name: 'description' })
   const date = useWatch({ control: form.control, name: 'date' })
   const startTime = useWatch({ control: form.control, name: 'startTime' })
   const endTime = useWatch({ control: form.control, name: 'endTime' })
@@ -242,6 +271,15 @@ export function MeetingCreationDialog({
     name: 'participantIds',
   })
   const schedule = getScheduleValues({ date, startTime, endTime })
+  const currentScheduleFingerprint = getSchedulingFingerprint({
+    title,
+    description,
+    date,
+    startTime,
+    endTime,
+    roomId,
+    participantIds,
+  })
   const participantCount = 1 + (participantIds?.length ?? 0)
   const availabilityQuery = useQuery({
     ...roomAvailabilityQueryOptions({
@@ -302,32 +340,68 @@ export function MeetingCreationDialog({
   const roomSignal = availabilityQuery.data?.rooms.find(
     (room) => room.id === roomId
   )
-  const busy = phase !== 'idle'
+  const busy = isBusyPhase(phase)
+  const workflowLocked = Boolean(creationIntent || draftRecovery) || busy
   const organizerUnavailable = open && !currentUser
   const roomUnavailable = Boolean(
     roomId && selectedRoomQuery.isError && !selectedRoom
   )
+  const schedulePreviewStale = Boolean(
+    scheduleCheck &&
+    scheduleCheckFingerprint &&
+    scheduleCheckFingerprint !== currentScheduleFingerprint
+  )
+  const visibleScheduleCheck = schedulePreviewStale ? null : scheduleCheck
+  const warningReviewPending =
+    phase === 'awaiting_warning_review' && !schedulePreviewStale
+  const retainWorkflowOnClose = Boolean(
+    creationIntent ||
+    draftRecovery ||
+    (pendingScheduleCandidate && !schedulePreviewStale) ||
+    phase === 'creation_uncertain' ||
+    phase === 'schedule_uncertain' ||
+    phase === 'awaiting_warning_review'
+  )
 
   useEffect(() => {
     if (!open && wasOpen.current) {
-      form.reset(initialFormValues)
-      setPhase('idle')
-      setFlow(null)
-      setErrorMessage(null)
-      setOutcome(null)
-      setScheduleCheck(null)
-      setDraftRecovery(null)
-      idempotencyKey.current = createIdempotencyKey()
-      setRoomLookupOpen(false)
-      setRoomLookupSearch('')
-      setRoomLookupPage(1)
-      setParticipantLookupOpen(false)
-      setParticipantLookupSearch('')
-      setParticipantLookupPage(1)
-      setSelectedCandidatesById({})
+      if (resetOnClose.current || !retainWorkflowOnClose) {
+        form.reset(initialFormValues)
+        setPhase('idle')
+        setFlow(null)
+        setErrorMessage(null)
+        setOutcome(null)
+        setScheduleCheck(null)
+        setScheduleCheckFingerprint(null)
+        setPendingScheduleCandidate(null)
+        setShowWarningDetails(false)
+        setDraftRecovery(null)
+        setCreationIntent(null)
+        idempotencyKey.current = null
+        operationInFlight.current = false
+        setRoomLookupOpen(false)
+        setRoomLookupSearch('')
+        setRoomLookupPage(1)
+        setParticipantLookupOpen(false)
+        setParticipantLookupSearch('')
+        setParticipantLookupPage(1)
+        setSelectedCandidatesById({})
+        resetOnClose.current = false
+      }
     }
     wasOpen.current = open
-  }, [form, open])
+  }, [form, open, retainWorkflowOnClose])
+
+  useEffect(() => {
+    if (!isUnresolvedPhase(phase) && !creationIntent) return
+
+    const preventDiscard = (event: BeforeUnloadEvent) => {
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', preventDiscard)
+    return () => window.removeEventListener('beforeunload', preventDiscard)
+  }, [creationIntent, phase])
 
   const handleOpenChange = (nextOpen: boolean) => {
     if (!nextOpen && busy) return
@@ -356,6 +430,9 @@ export function MeetingCreationDialog({
   }
 
   const notifyCommitted = (meeting: CommittedMeeting) => {
+    const transition = `${meeting.meetingId}:${meeting.status}`
+    if (notifiedTransitions.current.has(transition)) return
+    notifiedTransitions.current.add(transition)
     onCommitted?.(meeting)
   }
 
@@ -408,9 +485,12 @@ export function MeetingCreationDialog({
     })
   }
 
+  const recordDraftCreated = () => {
+    void queryClient.invalidateQueries({ queryKey: ['meetings', 'list'] })
+  }
+
   const commitDraft = (meeting: {
     meeting: { id: string; status: 'DRAFT'; roomId: string | null }
-    etag: string
   }) => {
     notifyCommitted({
       meetingId: meeting.meeting.id,
@@ -436,8 +516,10 @@ export function MeetingCreationDialog({
     commitDraft(result)
     setOutcome('draft')
     setErrorMessage(null)
-    setPhase('idle')
+    setPhase('draft_confirmed')
     setFlow(null)
+    operationInFlight.current = false
+    resetOnClose.current = true
     handleOpenChange(false)
   }
 
@@ -449,13 +531,31 @@ export function MeetingCreationDialog({
     setOutcome('scheduled')
     setErrorMessage(null)
     setDraftRecovery(null)
-    setPhase('idle')
+    setPhase('scheduled_confirmed')
     setFlow(null)
+    operationInFlight.current = false
+    resetOnClose.current = true
     handleOpenChange(false)
   }
 
-  const reconcileDraft = async (recovery: DraftRecovery, reason: unknown) => {
-    setPhase('reconciling')
+  const intentActorMatchesCurrentSession = (intent: MeetingCreationIntent) =>
+    queryClient.getQueryData<AuthContext>(currentUserQueryKey)?.userId ===
+    intent.actorUserId
+
+  const reconcileDraft = async (
+    recovery: DraftRecovery,
+    reason: unknown,
+    intent?: MeetingCreationIntent
+  ) => {
+    if (intent && !intentActorMatchesCurrentSession(intent)) {
+      setDraftRecovery({ ...recovery, status: 'uncertain' })
+      setErrorMessage(formatSessionChangedMessage())
+      setPhase('schedule_uncertain')
+      setFlow('schedule')
+      operationInFlight.current = false
+      return
+    }
+    setPhase('schedule_uncertain')
     try {
       const detail = await fetchMeetingDetail(recovery.meetingId)
       if (detail.meeting.status === 'SCHEDULED') {
@@ -468,15 +568,23 @@ export function MeetingCreationDialog({
           etag: detail.etag,
           status: 'draft',
         })
-        setFailure(reason, 'Scheduling')
-        setPhase('idle')
+        if (isDraftStatusRefresh(reason)) {
+          setErrorMessage(
+            'The existing meeting is still DRAFT. Its current opaque ETag is ready for a safe schedule retry.'
+          )
+        } else {
+          setFailure(reason, 'Scheduling')
+        }
+        setPhase('draft_confirmed')
+        setFlow('schedule')
         return
       }
       setDraftRecovery({ ...recovery, status: 'uncertain' })
       setErrorMessage(
         'The draft status could not be confirmed as schedulable. Review the meeting before retrying.'
       )
-      setPhase('idle')
+      setPhase('schedule_uncertain')
+      setFlow('schedule')
     } catch (detailError) {
       setDraftRecovery({ ...recovery, status: 'uncertain' })
       const detailApiError = normalizeCoreApiError(detailError)
@@ -487,7 +595,10 @@ export function MeetingCreationDialog({
             ? 'You are no longer authorized to verify this draft. No new meeting was created.'
             : 'The schedule result and current draft version could not be confirmed. The draft is preserved; refresh its status before retrying.'
       )
-      setPhase('idle')
+      setPhase('schedule_uncertain')
+      setFlow('schedule')
+    } finally {
+      operationInFlight.current = false
     }
   }
 
@@ -502,29 +613,53 @@ export function MeetingCreationDialog({
     setOutcome('scheduled')
     setErrorMessage(null)
     setDraftRecovery(null)
-    setPhase('idle')
+    setPhase('scheduled_confirmed')
     setFlow(null)
+    operationInFlight.current = false
+    resetOnClose.current = true
     handleOpenChange(false)
   }
 
   const handleScheduleFailure = async (
     error: unknown,
-    recovery: DraftRecovery
+    recovery: DraftRecovery,
+    intent?: MeetingCreationIntent
   ) => {
     const kind = classifyMeetingMutationError(error)
-    if (kind === 'network' || kind === 'temporary' || kind === 'precondition') {
-      await reconcileDraft(recovery, error)
+    if (
+      kind === 'network' ||
+      kind === 'temporary' ||
+      kind === 'malformed' ||
+      kind === 'precondition' ||
+      normalizeCoreApiError(error).recoveryOutcome === 'uncertain'
+    ) {
+      await reconcileDraft(recovery, error, intent)
       return
     }
 
     setDraftRecovery({ ...recovery, status: 'draft' })
     setFailure(error, 'Scheduling')
-    setPhase('idle')
-    setFlow(null)
+    setPhase('draft_confirmed')
+    setFlow('schedule')
+    operationInFlight.current = false
   }
 
   const scheduleExistingDraft = async () => {
-    if (!draftRecovery || draftRecovery.status !== 'draft' || busy) return
+    if (
+      !draftRecovery ||
+      draftRecovery.status !== 'draft' ||
+      busy ||
+      operationInFlight.current
+    )
+      return
+    if (creationIntent && !intentActorMatchesCurrentSession(creationIntent)) {
+      setDraftRecovery({ ...draftRecovery, status: 'uncertain' })
+      setErrorMessage(formatSessionChangedMessage())
+      setPhase('schedule_uncertain')
+      setFlow('schedule')
+      return
+    }
+    operationInFlight.current = true
     setErrorMessage(null)
     setFlow('schedule')
     setPhase('scheduling')
@@ -536,48 +671,244 @@ export function MeetingCreationDialog({
       )
       finishScheduled(result)
     } catch (error) {
-      await handleScheduleFailure(error, draftRecovery)
+      await handleScheduleFailure(
+        error,
+        draftRecovery,
+        creationIntent ?? undefined
+      )
     }
   }
 
   const refreshDraftStatus = async () => {
-    if (!draftRecovery || busy) return
-    await reconcileDraft(draftRecovery, new Error('Draft status refresh'))
+    if (!draftRecovery || busy || operationInFlight.current) return
+    if (creationIntent && !intentActorMatchesCurrentSession(creationIntent)) {
+      setDraftRecovery({ ...draftRecovery, status: 'uncertain' })
+      setErrorMessage(formatSessionChangedMessage())
+      setPhase('schedule_uncertain')
+      setFlow('schedule')
+      return
+    }
+    operationInFlight.current = true
+    await reconcileDraft(
+      draftRecovery,
+      new Error('Draft status refresh'),
+      creationIntent ?? undefined
+    )
+  }
+
+  const handleCreationFailure = (error: unknown, operation: string) => {
+    const kind = classifyMeetingMutationError(error)
+    const normalized = normalizeCoreApiError(error)
+    if (
+      kind === 'network' ||
+      kind === 'temporary' ||
+      kind === 'malformed' ||
+      normalized.recoveryOutcome === 'uncertain'
+    ) {
+      setErrorMessage(formatCreationUncertainMessage())
+      setPhase('creation_uncertain')
+      operationInFlight.current = false
+      return
+    }
+
+    setFailure(error, operation)
+    setCreationIntent(null)
+    idempotencyKey.current = null
+    setPhase('failed_definitively')
+    setFlow(null)
+    operationInFlight.current = false
+  }
+
+  const createIntentFor = (
+    input: ReturnType<typeof buildCreateMeetingPayload>,
+    nextFlow: SubmissionFlow,
+    scheduleValues?: ScheduleValues
+  ) => {
+    const key = idempotencyKey.current ?? createIdempotencyKey()
+    idempotencyKey.current = key
+    const intent = createMeetingIntent(
+      input,
+      key,
+      nextFlow,
+      scheduleValues,
+      currentUser?.userId
+    )
+    setCreationIntent(intent)
+    return intent
+  }
+
+  const scheduleCreatedDraft = async (
+    created: {
+      meeting: { id: string; status: 'DRAFT'; roomId: string | null }
+      etag: string
+    },
+    scheduleValues: ScheduleValues,
+    intent: MeetingCreationIntent
+  ) => {
+    recordDraftCreated()
+    const recovery: DraftRecovery = {
+      meetingId: created.meeting.id,
+      etag: created.etag,
+      schedule: scheduleValues,
+      status: 'draft',
+    }
+    setDraftRecovery(recovery)
+    if (!intentActorMatchesCurrentSession(intent)) {
+      setErrorMessage(formatSessionChangedMessage())
+      setPhase('draft_confirmed')
+      setFlow('schedule')
+      operationInFlight.current = false
+      return
+    }
+    setPhase('scheduling')
+    try {
+      const scheduled = await scheduleMeeting(
+        created.meeting.id,
+        created.etag,
+        scheduleValues
+      )
+      finishScheduled(scheduled)
+    } catch (error) {
+      await handleScheduleFailure(error, recovery, intent)
+    }
+  }
+
+  const submitScheduleCreation = async (candidate: SchedulingCandidate) => {
+    const intent = createIntentFor(
+      candidate.payload,
+      'schedule',
+      candidate.schedule
+    )
+    setScheduleCheck(null)
+    setScheduleCheckFingerprint(null)
+    setPendingScheduleCandidate(null)
+    setShowWarningDetails(false)
+    setPhase('creating')
+    try {
+      const created = await createMeetingFromIntent(intent)
+      if (isScheduledMutationResult(created)) {
+        finishScheduled(created)
+        return
+      }
+      if (!isDraftMutationResult(created)) {
+        throw new Error('The Core API returned an unsupported meeting status.')
+      }
+      await scheduleCreatedDraft(created, candidate.schedule, intent)
+    } catch (error) {
+      handleCreationFailure(error, 'Creating the meeting')
+    }
+  }
+
+  const retryCreation = async () => {
+    if (
+      !creationIntent ||
+      phase !== 'creation_uncertain' ||
+      operationInFlight.current
+    )
+      return
+    if (!intentActorMatchesCurrentSession(creationIntent)) {
+      setErrorMessage(formatSessionChangedMessage())
+      return
+    }
+    if (!isMeetingCreationIntentReplaySafe(creationIntent)) {
+      setErrorMessage(formatCreationExpiredMessage())
+      return
+    }
+
+    operationInFlight.current = true
+    setErrorMessage(null)
+    setPhase('creating')
+    try {
+      const result = await createMeetingFromIntent(creationIntent)
+      if (isScheduledMutationResult(result)) {
+        finishScheduled(result)
+        return
+      }
+      if (creationIntent.flow === 'draft') {
+        if (!isDraftMutationResult(result)) {
+          throw new Error(
+            'The Core API returned an unsupported meeting status.'
+          )
+        }
+        finishDraftSave(result)
+        return
+      }
+      if (!creationIntent.schedule) {
+        throw new Error('The frozen scheduling intent is incomplete.')
+      }
+      if (!isDraftMutationResult(result)) {
+        throw new Error('The Core API returned an unsupported meeting status.')
+      }
+      await scheduleCreatedDraft(
+        result,
+        creationIntent.schedule,
+        creationIntent
+      )
+    } catch (error) {
+      handleCreationFailure(error, 'Retrying the meeting creation')
+    }
   }
 
   const saveDraft = async (values: MeetingFormValues) => {
-    if (busy || draftRecovery || organizerUnavailable || roomUnavailable) return
+    if (
+      busy ||
+      draftRecovery ||
+      creationIntent ||
+      organizerUnavailable ||
+      roomUnavailable ||
+      operationInFlight.current
+    )
+      return
+    operationInFlight.current = true
     setErrorMessage(null)
     setOutcome(null)
     setScheduleCheck(null)
+    setScheduleCheckFingerprint(null)
+    setPendingScheduleCandidate(null)
     setFlow('draft')
+    const intent = createIntentFor(toCreateMeetingInput(values), 'draft')
     setPhase('creating')
     try {
-      const result = await createMeeting(
-        toCreateMeetingInput(values),
-        idempotencyKey.current
-      )
-      finishDraftSave(result)
+      const result = await createMeetingFromIntent(intent)
+      if (isScheduledMutationResult(result)) {
+        finishScheduled(result)
+      } else if (isDraftMutationResult(result)) {
+        finishDraftSave(result)
+      } else {
+        throw new Error('The Core API returned an unsupported meeting status.')
+      }
     } catch (error) {
-      setFailure(error, 'Saving the draft')
-      setPhase('idle')
-      setFlow(null)
+      handleCreationFailure(error, 'Saving the draft')
     }
   }
 
   const createAndSchedule = async (values: MeetingFormValues) => {
-    if (busy || draftRecovery || organizerUnavailable || roomUnavailable) return
+    if (
+      busy ||
+      draftRecovery ||
+      creationIntent ||
+      organizerUnavailable ||
+      roomUnavailable ||
+      operationInFlight.current
+    )
+      return
     const scheduleValues = getScheduleValues(values)
     if (!scheduleValues) {
       setScheduleRequiredErrors()
       return
     }
 
+    operationInFlight.current = true
     setErrorMessage(null)
     setOutcome(null)
     setScheduleCheck(null)
+    setScheduleCheckFingerprint(null)
+    setShowWarningDetails(false)
     setFlow('schedule')
     setPhase('checking')
+    const candidate = createSchedulingCandidate(values, scheduleValues)
+    setPendingScheduleCandidate(candidate)
+    setScheduleCheckFingerprint(candidate.fingerprint)
     try {
       const preview = await checkMeetingSchedule(
         buildScheduleCheckPayload({
@@ -594,6 +925,9 @@ export function MeetingCreationDialog({
         )
         setPhase('idle')
         setFlow(null)
+        setPendingScheduleCandidate(null)
+        setScheduleCheckFingerprint(null)
+        operationInFlight.current = false
         return
       }
       if (!preview.canSchedule || preview.roomConflict) {
@@ -604,38 +938,41 @@ export function MeetingCreationDialog({
         )
         setPhase('idle')
         setFlow(null)
+        setPendingScheduleCandidate(null)
+        setScheduleCheckFingerprint(null)
+        operationInFlight.current = false
         return
       }
 
-      setPhase('creating')
-      const created = await createMeeting(
-        toCreateMeetingInput(values, scheduleValues),
-        idempotencyKey.current
-      )
-      commitDraft(created)
-      const recovery: DraftRecovery = {
-        meetingId: created.meeting.id,
-        etag: created.etag,
-        schedule: scheduleValues,
-        status: 'draft',
+      setScheduleCheck(preview)
+      if (preview.warnings.length > 0) {
+        setPhase('awaiting_warning_review')
+        operationInFlight.current = false
+        return
       }
-      setDraftRecovery(recovery)
-      setPhase('scheduling')
-      try {
-        const scheduled = await scheduleMeeting(
-          created.meeting.id,
-          created.etag,
-          scheduleValues
-        )
-        finishScheduled(scheduled)
-      } catch (error) {
-        await handleScheduleFailure(error, recovery)
-      }
+
+      await submitScheduleCreation(candidate)
     } catch (error) {
-      setFailure(error, 'Checking or creating the meeting')
+      setFailure(error, 'Checking the meeting schedule')
       setPhase('idle')
       setFlow(null)
+      setPendingScheduleCandidate(null)
+      setScheduleCheckFingerprint(null)
+      operationInFlight.current = false
     }
+  }
+
+  const confirmScheduleWarnings = () => {
+    if (
+      phase !== 'awaiting_warning_review' ||
+      !pendingScheduleCandidate ||
+      !scheduleCheck ||
+      currentScheduleFingerprint !== pendingScheduleCandidate.fingerprint ||
+      operationInFlight.current
+    )
+      return
+    operationInFlight.current = true
+    void submitScheduleCreation(pendingScheduleCandidate)
   }
 
   const handleSaveDraftClick = () => {
@@ -862,7 +1199,22 @@ export function MeetingCreationDialog({
               />
             )}
 
-            {scheduleCheck && <SchedulePreviewNotice result={scheduleCheck} />}
+            {visibleScheduleCheck && (
+              <SchedulePreviewNotice
+                result={visibleScheduleCheck}
+                reviewOpen={showWarningDetails}
+                onReviewDetails={() => setShowWarningDetails(true)}
+                onScheduleAnyway={confirmScheduleWarnings}
+              />
+            )}
+
+            {creationIntent && phase === 'creation_uncertain' && (
+              <CreationRecoveryNotice
+                intent={creationIntent}
+                busy={busy}
+                onRetry={() => void retryCreation()}
+              />
+            )}
 
             {errorMessage && (
               <Alert variant='destructive'>
@@ -914,8 +1266,8 @@ export function MeetingCreationDialog({
             variant='secondary'
             onClick={handleSaveDraftClick}
             disabled={
-              busy ||
-              Boolean(draftRecovery) ||
+              workflowLocked ||
+              warningReviewPending ||
               organizerUnavailable ||
               roomUnavailable
             }
@@ -929,8 +1281,8 @@ export function MeetingCreationDialog({
             type='button'
             onClick={handleCreateAndScheduleClick}
             disabled={
-              busy ||
-              Boolean(draftRecovery) ||
+              workflowLocked ||
+              warningReviewPending ||
               organizerUnavailable ||
               roomUnavailable
             }
@@ -1401,28 +1753,107 @@ function RoomAvailabilityNotice({
   return null
 }
 
-function SchedulePreviewNotice({ result }: { result: ScheduleCheckResult }) {
+function SchedulePreviewNotice({
+  result,
+  reviewOpen,
+  onReviewDetails,
+  onScheduleAnyway,
+}: {
+  result: ScheduleCheckResult
+  reviewOpen: boolean
+  onReviewDetails: () => void
+  onScheduleAnyway: () => void
+}) {
   const warnings = result.warnings
+  const blocked =
+    !result.previewOnly || !result.canSchedule || result.roomConflict
   return (
-    <Alert variant={result.canSchedule ? 'default' : 'destructive'}>
-      {result.canSchedule ? <Check /> : <AlertCircle />}
+    <Alert variant={blocked ? 'destructive' : 'default'}>
+      {blocked ? <AlertCircle /> : <Check />}
       <AlertTitle>
-        {result.canSchedule
-          ? 'Schedule preview passed'
-          : 'Schedule preview blocked'}
+        {!blocked ? 'Schedule preview passed' : 'Schedule preview blocked'}
       </AlertTitle>
       <AlertDescription>
         <p>
           Preview only. Core API rechecks the room when the draft is scheduled.
         </p>
         {warnings.length > 0 && (
-          <ul className='list-disc ps-5'>
-            {warnings.map((warning, index) => (
-              <li key={`${warning.code}-${warning.userId ?? 'all'}-${index}`}>
-                {formatWarning(warning.code)}
-              </li>
-            ))}
-          </ul>
+          <>
+            <p>
+              Review these advisory warnings before choosing whether to schedule
+              anyway.
+            </p>
+            <ul aria-label='Schedule warnings' className='list-disc ps-5'>
+              {warnings.map((warning, index) => (
+                <li key={`${warning.code}-${warning.userId ?? 'all'}-${index}`}>
+                  {formatWarning(warning.code)}
+                </li>
+              ))}
+            </ul>
+            {reviewOpen && (
+              <p>
+                Review the selected time, room, and participants before
+                confirming this exact scheduling intent.
+              </p>
+            )}
+            {!blocked && (
+              <div className='flex flex-wrap gap-2'>
+                <Button type='button' size='sm' onClick={onScheduleAnyway}>
+                  Schedule anyway
+                </Button>
+                <Button
+                  type='button'
+                  variant='outline'
+                  size='sm'
+                  onClick={onReviewDetails}
+                >
+                  Review details
+                </Button>
+              </div>
+            )}
+          </>
+        )}
+      </AlertDescription>
+    </Alert>
+  )
+}
+
+function CreationRecoveryNotice({
+  intent,
+  busy,
+  onRetry,
+}: {
+  intent: MeetingCreationIntent
+  busy: boolean
+  onRetry: () => void
+}) {
+  const replaySafe = isMeetingCreationIntentReplaySafe(intent)
+  return (
+    <Alert variant='destructive'>
+      <AlertCircle />
+      <AlertTitle>Creation outcome unknown</AlertTitle>
+      <AlertDescription>
+        <p>
+          Core API may have committed this meeting, but its creation response
+          was not authoritative. The original request and Idempotency-Key are
+          frozen; form changes cannot change the recovery request.
+        </p>
+        {replaySafe ? (
+          <Button
+            type='button'
+            variant='outline'
+            size='sm'
+            onClick={onRetry}
+            disabled={busy}
+          >
+            Retry creation
+          </Button>
+        ) : (
+          <p>
+            Core API&apos;s duplicate-protection window may have expired. This
+            intent cannot be replayed safely from this session. Verify the
+            meeting list or existing meeting before starting another meeting.
+          </p>
         )}
       </AlertDescription>
     </Alert>
@@ -1443,12 +1874,19 @@ function DraftRecoveryNotice({
   return (
     <Alert variant='destructive'>
       <AlertCircle />
-      <AlertTitle>Draft created, not scheduled</AlertTitle>
+      <AlertTitle>
+        {recovery.status === 'draft'
+          ? 'Draft created, not scheduled'
+          : 'Schedule result unknown'}
+      </AlertTitle>
       <AlertDescription>
         <p>
-          Draft <span className='font-mono text-xs'>{recovery.meetingId}</span>{' '}
-          is preserved. Retrying uses its current opaque ETag and will not
-          create another meeting.
+          Existing meeting{' '}
+          <span className='font-mono text-xs'>{recovery.meetingId}</span> is
+          preserved.{' '}
+          {recovery.status === 'draft'
+            ? 'Retrying uses its current opaque ETag and will not create another meeting.'
+            : 'Its current lifecycle and ETag could not be verified; do not assume it was scheduled.'}
         </p>
         <div className='flex flex-wrap gap-2'>
           {recovery.status === 'draft' ? (
@@ -1505,6 +1943,9 @@ function formatMutationError(
   if (kind === 'forbidden') {
     return `You are not authorized to ${operation.toLowerCase()}. No local success was recorded.`
   }
+  if (kind === 'idempotency_conflict') {
+    return 'The Idempotency-Key is already bound to a different meeting creation intent. It was not replaced or retried as a room conflict.'
+  }
   if (kind === 'conflict') {
     return (
       error.message ||
@@ -1543,6 +1984,95 @@ function toCreateMeetingInput(
     roomId: values.roomId || undefined,
     participantUserIds: values.participantIds,
   })
+}
+
+function createSchedulingCandidate(
+  values: MeetingFormValues,
+  schedule: ScheduleValues
+): SchedulingCandidate {
+  const payload = toCreateMeetingInput(values, schedule)
+  const participantUserIds = payload.participantUserIds
+    ? Object.freeze([...payload.participantUserIds])
+    : undefined
+  const frozenPayload = Object.freeze({
+    ...payload,
+    ...(participantUserIds ? { participantUserIds } : {}),
+  }) as ReturnType<typeof buildCreateMeetingPayload>
+  return Object.freeze({
+    fingerprint: getSchedulingFingerprint(values),
+    payload: frozenPayload,
+    schedule: Object.freeze({ ...schedule }),
+  })
+}
+
+function getSchedulingFingerprint(values: {
+  title?: string
+  description?: string
+  date?: string
+  startTime?: string
+  endTime?: string
+  roomId?: string
+  participantIds?: string[]
+}) {
+  return JSON.stringify({
+    title: values.title ?? '',
+    description: values.description ?? '',
+    date: values.date ?? '',
+    startTime: values.startTime ?? '',
+    endTime: values.endTime ?? '',
+    roomId: values.roomId ?? '',
+    participantIds: [...(values.participantIds ?? [])],
+  })
+}
+
+function isScheduledMutationResult(
+  result: MeetingMutationResult<'DRAFT' | 'SCHEDULED'>
+): result is MeetingMutationResult<'SCHEDULED'> {
+  return result.meeting.status === 'SCHEDULED'
+}
+
+function isDraftMutationResult(
+  result: MeetingMutationResult<'DRAFT' | 'SCHEDULED'>
+): result is MeetingMutationResult<'DRAFT'> {
+  return result.meeting.status === 'DRAFT'
+}
+
+function isBusyPhase(phase: SubmissionPhase) {
+  return (
+    phase === 'checking' ||
+    phase === 'creating' ||
+    phase === 'scheduling' ||
+    phase === 'reconciling'
+  )
+}
+
+function isUnresolvedPhase(phase: SubmissionPhase) {
+  return (
+    phase === 'checking' ||
+    phase === 'creating' ||
+    phase === 'creation_uncertain' ||
+    phase === 'awaiting_warning_review' ||
+    phase === 'draft_confirmed' ||
+    phase === 'scheduling' ||
+    phase === 'schedule_uncertain' ||
+    phase === 'reconciling'
+  )
+}
+
+function formatCreationUncertainMessage() {
+  return 'The creation outcome is unknown. The meeting may already exist. Retry creation to replay the exact same request and Idempotency-Key; do not start a different meeting.'
+}
+
+function formatCreationExpiredMessage() {
+  return 'The Core API idempotency retention window may have expired. The original creation cannot be replayed safely from this session, so no second request was sent.'
+}
+
+function formatSessionChangedMessage() {
+  return 'The authenticated account changed while this meeting operation was unresolved. No recovery request was sent under the new account; sign back in as the original organizer to continue safely.'
+}
+
+function isDraftStatusRefresh(reason: unknown): reason is Error {
+  return reason instanceof Error && reason.message === 'Draft status refresh'
 }
 
 function getScheduleValues(values: {
