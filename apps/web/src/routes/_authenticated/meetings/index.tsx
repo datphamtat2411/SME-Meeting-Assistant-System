@@ -13,16 +13,8 @@ const meetingSearchSchema = z.object({
   q: z.string().optional().catch(''),
   status: z.enum(meetingLifecycleStatuses).optional().catch(undefined),
   relationship: z.enum(meetingRelationships).optional().catch(undefined),
-  from: z
-    .string()
-    .refine(isValidOffsetDateTime)
-    .optional()
-    .catch(undefined),
-  to: z
-    .string()
-    .refine(isValidOffsetDateTime)
-    .optional()
-    .catch(undefined),
+  from: z.string().refine(isValidOffsetDateTime).optional().catch(undefined),
+  to: z.string().refine(isValidOffsetDateTime).optional().catch(undefined),
   roomId: z.string().optional().catch(undefined),
   organizerId: z.string().optional().catch(undefined),
   sort: z.enum(meetingSortValues).optional().catch(defaultMeetingSort),
