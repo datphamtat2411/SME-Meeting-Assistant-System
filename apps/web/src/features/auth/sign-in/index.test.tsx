@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { SignIn } from './index'
 import { SignIn2 } from './sign-in-2'
 
@@ -28,11 +29,14 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
 
 describe('sign-in variants', () => {
   it('remove self-registration affordances while keeping the sign-in forms', async () => {
+    const queryClient = new QueryClient()
     const screen = await render(
-      <>
-        <SignIn />
-        <SignIn2 />
-      </>
+      <QueryClientProvider client={queryClient}>
+        <>
+          <SignIn />
+          <SignIn2 />
+        </>
+      </QueryClientProvider>
     )
 
     await expect

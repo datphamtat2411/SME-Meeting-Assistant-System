@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, type RenderResult } from 'vitest-browser-react'
 import { type Locator, userEvent } from 'vitest/browser'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { CoreApiError } from '@/lib/core-api'
+import { currentUserQueryKey } from '@/features/auth/session/current-user'
 import { UserAuthForm } from './user-auth-form'
 
 const FORM_MESSAGES = {
@@ -38,6 +40,7 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
 
 describe('UserAuthForm', () => {
   let screen: RenderResult
+  let queryClient: QueryClient
   let emailInput: Locator
   let passwordInput: Locator
   let signInButton: Locator
@@ -45,11 +48,16 @@ describe('UserAuthForm', () => {
 
   beforeEach(async () => {
     vi.clearAllMocks()
+    queryClient = new QueryClient()
     signInMock.mockResolvedValue({
       sessionStatus: 'ACTIVE',
       csrfToken: 'rotated-csrf-token',
     })
-    screen = await render(<UserAuthForm />)
+    screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <UserAuthForm />
+      </QueryClientProvider>
+    )
     emailInput = screen.getByRole('textbox', { name: /^Email$/i })
     passwordInput = screen.getByLabelText(/^Password$/i)
     signInButton = screen.getByRole('button', { name: /^Sign in$/i })
@@ -103,8 +111,25 @@ describe('UserAuthForm', () => {
     expect(navigate).toHaveBeenCalledWith({ to: '/', replace: true })
   })
 
+  it('removes the cached identity before navigating after sign-in', async () => {
+    queryClient.setQueryData(currentUserQueryKey, {
+      displayName: 'Stale identity',
+    })
+
+    await userEvent.fill(emailInput, 'a@b.com')
+    await userEvent.fill(passwordInput, 'x')
+    await userEvent.click(signInButton)
+
+    await vi.waitFor(() => expect(navigate).toHaveBeenCalledOnce())
+    expect(queryClient.getQueryData(currentUserQueryKey)).toBeUndefined()
+  })
+
   it('navigates to a safe redirect after an active session', async () => {
-    const redirectScreen = await render(<UserAuthForm redirectTo='/settings' />)
+    const redirectScreen = await render(
+      <QueryClientProvider client={queryClient}>
+        <UserAuthForm redirectTo='/settings' />
+      </QueryClientProvider>
+    )
 
     await userEvent.fill(
       redirectScreen.getByRole('textbox', { name: /Email/i }).last(),
@@ -128,7 +153,9 @@ describe('UserAuthForm', () => {
 
   it('falls back to the home route for an unsafe redirect', async () => {
     const redirectScreen = await render(
-      <UserAuthForm redirectTo='https://external.example/path' />
+      <QueryClientProvider client={queryClient}>
+        <UserAuthForm redirectTo='https://external.example/path' />
+      </QueryClientProvider>
     )
 
     await userEvent.fill(

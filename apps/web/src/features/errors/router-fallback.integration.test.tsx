@@ -17,6 +17,26 @@ import { page, userEvent } from 'vitest/browser'
 import { DirectionProvider } from '@/context/direction-provider'
 import { FontProvider } from '@/context/font-provider'
 import { ThemeProvider } from '@/context/theme-provider'
+import { coreApi } from '@/lib/core-api'
+import { AuthenticatedLayout } from '@/components/layout/authenticated-layout'
+import { toUserPresentation } from '@/components/layout/data/user-presentation'
+
+const identity = {
+  userId: '11111111-1111-4111-8111-111111111111',
+  email: 'fallback@example.test',
+  displayName: 'Fallback User',
+  globalRole: 'EMPLOYEE' as const,
+  accountStatus: 'ACTIVE' as const,
+  primaryOrgUnitId: null,
+  directoryManagementScope: { allUnits: false, unitIds: [] },
+  session: {
+    id: '22222222-2222-4222-8222-222222222222',
+    clientType: 'WEB' as const,
+    createdAt: '2026-01-01T00:00:00Z',
+    lastSeenAt: null,
+    absoluteExpiresAt: '2027-01-01T00:00:00Z',
+  },
+}
 
 vi.mock('react-top-loading-bar', () => ({
   default: () => null,
@@ -98,7 +118,12 @@ function createAuthenticatedFailureRouter(failure: FailureFixture) {
   const testAuthenticatedRoute = createRoute({
     getParentRoute: () => testRootRoute,
     id: '/_authenticated',
-    component: authenticatedRoute.options.component,
+    beforeLoad: authenticatedRoute.options.beforeLoad,
+    pendingComponent: authenticatedRoute.options.pendingComponent,
+    shouldReload: authenticatedRoute.options.shouldReload,
+    component: () => (
+      <AuthenticatedLayout user={toUserPresentation(identity)} />
+    ),
     errorComponent: authenticatedRoute.options.errorComponent,
     notFoundComponent: authenticatedRoute.options.notFoundComponent,
   })
@@ -148,6 +173,8 @@ function createRootFailureRouter(failure: FailureFixture) {
 describe('router fallback integration', () => {
   beforeEach(() => {
     clearCookies()
+    vi.restoreAllMocks()
+    vi.spyOn(coreApi, 'get').mockResolvedValue(identity as never)
   })
 
   it('uses the authenticated not-found boundary for nested deep links', async () => {

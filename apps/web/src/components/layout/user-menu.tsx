@@ -26,7 +26,7 @@ import {
   useSidebar,
 } from '@/components/ui/sidebar'
 import { SignOutDialog } from '@/components/sign-out-dialog'
-import { currentUserPresentation } from './data/user-presentation'
+import { useUserPresentation } from './data/user-presentation'
 import { type UserPresentation } from './types'
 
 type UserMenuProps = {
@@ -35,14 +35,19 @@ type UserMenuProps = {
 }
 
 export function UserMenu({
-  user = currentUserPresentation,
+  user,
   variant = 'header',
 }: UserMenuProps) {
+  const contextUser = useUserPresentation()
+  const resolvedUser = user ?? contextUser
+
+  if (!resolvedUser) return null
+
   if (variant === 'sidebar') {
-    return <SidebarUserMenu user={user} />
+    return <SidebarUserMenu user={resolvedUser} />
   }
 
-  return <HeaderUserMenu user={user} />
+  return <HeaderUserMenu user={resolvedUser} />
 }
 
 function HeaderUserMenu({ user }: { user: UserPresentation }) {

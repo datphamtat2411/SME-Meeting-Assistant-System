@@ -2,13 +2,17 @@ import { useRef, useState } from 'react'
 import { z } from 'zod'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
+import { useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { Loader2, LogIn } from 'lucide-react'
 import {
   normalizeCoreApiError,
   type CoreApiError,
 } from '@/lib/core-api'
-import { getSafeRedirect } from '@/lib/safe-redirect'
+import {
+  clearCurrentUserCache,
+  getSafeSessionRedirect,
+} from '@/features/auth/session/current-user'
 import { signIn } from '../sign-in-api'
 import { cn } from '@/lib/utils'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -46,6 +50,7 @@ export function UserAuthForm({
   const [submitError, setSubmitError] = useState<string | null>(null)
   const isSubmitting = useRef(false)
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
 
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
@@ -65,7 +70,8 @@ export function UserAuthForm({
 
     try {
       await signIn(data)
-      navigate({ to: getSafeRedirect(redirectTo), replace: true })
+      clearCurrentUserCache(queryClient)
+      navigate({ to: getSafeSessionRedirect(redirectTo), replace: true })
     } catch (error) {
       const apiError: CoreApiError = normalizeCoreApiError(error)
 

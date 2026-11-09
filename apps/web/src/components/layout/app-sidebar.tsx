@@ -10,8 +10,9 @@ import { AppTitle } from './app-title'
 import { navigationGroups } from './data/navigation-data'
 import { NavGroup } from './nav-group'
 import { NavUser } from './nav-user'
+import { type UserPresentation } from './types'
 
-export function AppSidebar() {
+export function AppSidebar({ user }: { user?: UserPresentation }) {
   const { collapsible, variant } = useLayout()
   return (
     <Sidebar collapsible={collapsible} variant={variant}>
@@ -26,7 +27,7 @@ export function AppSidebar() {
         </nav>
       </SidebarContent>
       <SidebarFooter>
-        <NavUser />
+        {user && <NavUser user={user} />}
       </SidebarFooter>
       <SidebarRail />
     </Sidebar>

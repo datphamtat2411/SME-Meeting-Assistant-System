@@ -16,6 +16,7 @@ export default defineConfig(({ mode }) => {
       tanstackRouter({
         target: 'react',
         autoCodeSplitting: true,
+        routeFileIgnorePattern: 'auth-session\\.integration\\.test\\.tsx$',
       }),
       react(),
       tailwindcss(),
