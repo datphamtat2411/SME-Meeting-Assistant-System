@@ -1,23 +1,20 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import {
+  AlertCircle,
   ArrowLeft,
   CalendarDays,
-  ChevronDown,
   Clock3,
-  Download,
   FileText,
-  ListChecks,
   MapPin,
-  MessageSquare,
-  Send,
-  Sparkles,
+  RefreshCw,
   UserRound,
   Users,
 } from 'lucide-react'
-import { toast } from 'sonner'
-import { cn } from '@/lib/utils'
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
+import { normalizeCoreApiError } from '@/lib/core-api'
+import { currentUserQueryKey, type AuthContext } from '@/features/auth/session/current-user'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -27,101 +24,122 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
-import { Input } from '@/components/ui/input'
-import { ScrollArea } from '@/components/ui/scroll-area'
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Skeleton } from '@/components/ui/skeleton'
 import { Header } from '@/components/layout/header'
 import { HeaderActions } from '@/components/layout/header-actions'
 import { Main } from '@/components/layout/main'
+import { MeetingStatusBadge } from './components/meeting-status-badge'
 import {
-  MeetingStatusBadge,
-  meetingStatusLabels,
-  meetingStatusStyles,
-} from './components/meeting-status-badge'
+  classifyParticipantMemberships,
+  meetingDetailQueryOptions,
+  meetingParticipantsQueryOptions,
+  type MeetingView,
+  type ParticipantView,
+} from './data/detail-api'
 import {
-  assistantConversations,
-  getActionItemsByMeetingId,
-  getMeetingById,
-  getMemberById,
-  getRoomById,
-  getTranscriptByMeetingId,
-  keyDecisions,
-  meetingSummaries,
-  ragSources,
-  type ActionItem,
-  type AssistantMessage,
-  type KeyDecision,
-  type Meeting,
-  type MeetingStatus,
-  type MeetingRoom,
-  type Member,
-  type RagSource,
-  type TranscriptSegment,
-} from './data'
+  organizerFilterOptionByIdQueryOptions,
+  roomFilterOptionByIdQueryOptions,
+  type MeetingListResponse,
+  type OrganizerFilterOption,
+  type RoomFilterOption,
+} from './data/list-api'
 
-type WorkspaceTab = 'overview' | 'transcript' | 'action-items' | 'ask-ai'
-
-const timeZone = 'Asia/Ho_Chi_Minh'
-const dateFormatter = new Intl.DateTimeFormat('en-US', {
+const presentationTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
+const meetingDateFormatter = new Intl.DateTimeFormat('en-US', {
   month: 'short',
   day: 'numeric',
   year: 'numeric',
-  timeZone,
+  timeZone: presentationTimeZone,
 })
-const timeFormatter = new Intl.DateTimeFormat('en-US', {
+const meetingTimeFormatter = new Intl.DateTimeFormat('en-US', {
   hour: 'numeric',
   minute: '2-digit',
-  timeZone,
+  timeZone: presentationTimeZone,
+})
+const meetingDateTimeFormatter = new Intl.DateTimeFormat('en-US', {
+  dateStyle: 'medium',
+  timeStyle: 'short',
+  timeZone: presentationTimeZone,
 })
 
-const sourceTypeLabels: Record<RagSource['sourceType'], string> = {
-  transcript: 'Transcript',
-  summary: 'Summary',
-  decision: 'Decision',
-  action_item: 'Action item',
+type LookupState<T> = {
+  hasId: boolean
+  data?: T
+  isPending: boolean
+  isError: boolean
+  onRetry: () => void
 }
 
-const actionStatusLabels: Record<ActionItem['status'], string> = {
-  todo: 'To do',
-  in_progress: 'In progress',
-  done: 'Done',
-}
-
-const actionStatusStyles: Record<ActionItem['status'], string> = {
-  todo: 'border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300',
-  in_progress:
-    'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300',
-  done: 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300',
-}
-
-const priorityLabels: Record<ActionItem['priority'], string> = {
-  low: 'Low',
-  medium: 'Medium',
-  high: 'High',
-}
-
-const priorityStyles: Record<ActionItem['priority'], string> = {
-  low: 'border-slate-200 text-slate-600 dark:border-slate-800 dark:text-slate-400',
-  medium: 'border-sky-200 text-sky-700 dark:border-sky-900 dark:text-sky-300',
-  high: 'border-red-200 text-red-700 dark:border-red-900 dark:text-red-300',
+type ParticipantState = {
+  data?: ParticipantView[]
+  isPending: boolean
+  isError: boolean
+  onRetry: () => void
 }
 
 export function MeetingWorkspacePage({ meetingId }: { meetingId: string }) {
-  const meeting = getMeetingById(meetingId)
+  const queryClient = useQueryClient()
+  const detailQuery = useQuery(meetingDetailQueryOptions(meetingId))
+  const meeting = detailQuery.isSuccess ? detailQuery.data.meeting : undefined
+  const currentUser = queryClient.getQueryData<AuthContext>(currentUserQueryKey)
+
+  const participantsQuery = useQuery(
+    meetingParticipantsQueryOptions(meetingId, Boolean(meeting))
+  )
+  const roomQuery = useQuery({
+    ...roomFilterOptionByIdQueryOptions(meeting?.roomId),
+    enabled: Boolean(meeting?.roomId),
+  })
+  const organizerQuery = useQuery({
+    ...organizerFilterOptionByIdQueryOptions(meeting?.organizerUserId),
+    enabled: Boolean(
+      meeting?.organizerUserId &&
+        meeting.organizerUserId !== currentUser?.userId
+    ),
+  })
+
+  useEffect(() => {
+    if (!meeting) return
+
+    queryClient.setQueriesData<MeetingListResponse>(
+      { queryKey: ['meetings', 'list'] },
+      (cachedList) => {
+        if (!cachedList) return cachedList
+
+        return {
+          ...cachedList,
+          meetings: cachedList.meetings.map((listMeeting) =>
+            listMeeting.id === meeting.id
+              ? {
+                  ...listMeeting,
+                  title: meeting.title,
+                  description: meeting.description,
+                  organizerUserId: meeting.organizerUserId,
+                  roomId: meeting.roomId,
+                  scheduledStartAt: meeting.scheduledStartAt,
+                  scheduledEndAt: meeting.scheduledEndAt,
+                  status: meeting.status,
+                  startedAt: meeting.startedAt,
+                  endedAt: meeting.endedAt,
+                  cancelledAt: meeting.cancelledAt,
+                  createdAt: meeting.createdAt,
+                  updatedAt: meeting.updatedAt,
+                }
+              : listMeeting
+          ),
+        }
+      }
+    )
+  }, [meeting, queryClient])
+
+  useEffect(() => {
+    if (!detailQuery.error) return
+
+    const status = normalizeCoreApiError(detailQuery.error).status
+    if (status === 404 || status === 403) {
+      void queryClient.invalidateQueries({ queryKey: ['meetings', 'list'] })
+    }
+  }, [detailQuery.error, queryClient])
 
   return (
     <>
@@ -137,319 +155,151 @@ export function MeetingWorkspacePage({ meetingId }: { meetingId: string }) {
           </Link>
         </Button>
 
-        {meeting ? <MeetingWorkspace meeting={meeting} /> : <MeetingNotFound />}
+        {detailQuery.isPending ? (
+          <MeetingWorkspaceSkeleton />
+        ) : detailQuery.isError ? (
+          <MeetingDetailError
+            error={detailQuery.error}
+            onRetry={() => detailQuery.refetch()}
+          />
+        ) : meeting ? (
+          <MeetingWorkspace
+            meeting={meeting}
+            currentUser={currentUser}
+            participants={{
+              data: participantsQuery.isError
+                ? undefined
+                : participantsQuery.data,
+              isPending: participantsQuery.isPending,
+              isError: participantsQuery.isError,
+              onRetry: () => void participantsQuery.refetch(),
+            }}
+            room={{
+              hasId: Boolean(meeting.roomId),
+              data: roomQuery.isError ? undefined : roomQuery.data,
+              isPending: Boolean(meeting.roomId) && roomQuery.isPending,
+              isError: roomQuery.isError,
+              onRetry: () => void roomQuery.refetch(),
+            }}
+            organizer={{
+              hasId: Boolean(meeting.organizerUserId),
+              data:
+                meeting.organizerUserId === currentUser?.userId && currentUser
+                  ? {
+                      id: currentUser.userId,
+                      name: currentUser.displayName,
+                    }
+                  : organizerQuery.isError
+                    ? undefined
+                    : organizerQuery.data,
+              isPending:
+                meeting.organizerUserId !== currentUser?.userId &&
+                organizerQuery.isPending,
+              isError:
+                meeting.organizerUserId !== currentUser?.userId &&
+                organizerQuery.isError,
+              onRetry: () => void organizerQuery.refetch(),
+            }}
+          />
+        ) : null}
       </Main>
     </>
   )
 }
 
-function MeetingWorkspace({ meeting }: { meeting: Meeting }) {
-  const participants = meeting.participantIds
-    .map((memberId) => getMemberById(memberId))
-    .filter((member): member is Member => Boolean(member))
-  const organizer = getMemberById(meeting.organizerId)
-  const room = getRoomById(meeting.roomId)
-  const summary = meetingSummaries.find(
-    (meetingSummary) => meetingSummary.meetingId === meeting.id
-  )
-  const decisions = keyDecisions.filter(
-    (decision) => decision.meetingId === meeting.id
-  )
-  const transcript = getTranscriptByMeetingId(meeting.id)
-  const meetingActionItems = getActionItemsByMeetingId(meeting.id)
-  const conversation = assistantConversations.find(
-    (assistantConversation) => assistantConversation.meetingId === meeting.id
-  )
-  const meetingSources = ragSources.filter(
-    (source) => source.meetingId === meeting.id
-  )
-  const speakerMappings = getSpeakerMappings(transcript)
-
-  const isLiveDemo =
-    meeting.id === 'meeting-07-live-support-triage' &&
-    meeting.status === 'in_progress'
-  const [activeTab, setActiveTab] = useState<WorkspaceTab>(
-    isLiveDemo ? 'transcript' : 'overview'
-  )
-  const [highlightedSegmentId, setHighlightedSegmentId] = useState<
-    string | null
-  >(null)
-  const [manualSpeakerMappings, setManualSpeakerMappings] = useState<
-    Record<string, string>
-  >({})
-  const [assistantMessages, setAssistantMessages] = useState<
-    AssistantMessage[]
-  >(() => conversation?.messages ?? [])
-
-  useEffect(() => {
-    if (activeTab !== 'transcript' || !highlightedSegmentId) {
-      return
-    }
-
-    const timeoutId = window.setTimeout(() => {
-      document
-        .getElementById(`transcript-${highlightedSegmentId}`)
-        ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-    }, 0)
-    const clearHighlightId = window.setTimeout(
-      () => setHighlightedSegmentId(null),
-      2200
-    )
-
-    return () => {
-      window.clearTimeout(timeoutId)
-      window.clearTimeout(clearHighlightId)
-    }
-  }, [activeTab, highlightedSegmentId])
-
-  const viewTranscriptSegment = (segmentId: string) => {
-    setHighlightedSegmentId(segmentId)
-    setActiveTab('transcript')
-  }
-
-  const askQuestion = (question: string) => {
-    const normalizedQuestion = question.trim().toLocaleLowerCase()
-    if (!normalizedQuestion) {
-      return
-    }
-
-    if (!conversation) {
-      toast.info('No saved demo answer is available for this meeting yet.')
-      return
-    }
-
-    const questionIndex = conversation.messages.findIndex(
-      (message) =>
-        message.role === 'user' &&
-        message.content.trim().toLocaleLowerCase() === normalizedQuestion
-    )
-    const savedQuestion =
-      questionIndex >= 0 ? conversation.messages[questionIndex] : undefined
-    const savedAnswer =
-      savedQuestion &&
-      conversation.messages[questionIndex + 1]?.role === 'assistant'
-        ? conversation.messages[questionIndex + 1]
-        : undefined
-
-    if (!savedQuestion || !savedAnswer) {
-      toast.error('Choose one of the supported questions for this meeting.')
-      return
-    }
-
-    const requestId = `${Date.now()}`
-    const createdAt = new Date().toISOString()
-    setAssistantMessages((messages) => [
-      ...messages,
-      {
-        ...savedQuestion,
-        id: `${conversation.id}-question-${requestId}`,
-        createdAt,
-      },
-      {
-        ...savedAnswer,
-        id: `${conversation.id}-answer-${requestId}`,
-        createdAt: new Date(Date.now() + 1000).toISOString(),
-      },
-    ])
-  }
-
-  if (meeting.status !== 'completed' && !isLiveDemo) {
-    return (
-      <>
-        <MeetingHeader
-          meeting={meeting}
-          organizer={organizer}
-          participants={participants}
-          room={room}
-        />
-        <LifecycleState meeting={meeting} />
-      </>
-    )
-  }
-
+function MeetingWorkspace({
+  meeting,
+  currentUser,
+  participants,
+  room,
+  organizer,
+}: {
+  meeting: MeetingView
+  currentUser?: AuthContext
+  participants: ParticipantState
+  room: LookupState<RoomFilterOption>
+  organizer: LookupState<OrganizerFilterOption>
+}) {
   return (
     <>
       <MeetingHeader
         meeting={meeting}
-        organizer={organizer}
         participants={participants}
         room={room}
-        summary={summary}
-        decisions={decisions}
-        meetingActionItems={meetingActionItems}
+        organizer={organizer}
       />
-
-      <Tabs
-        value={activeTab}
-        onValueChange={(value) => setActiveTab(value as WorkspaceTab)}
-        className='gap-6'
-      >
-        <TabsList className='h-auto w-full justify-start gap-1 overflow-x-auto rounded-none border-b bg-transparent p-0'>
-          {!isLiveDemo && (
-            <TabsTrigger
-              value='overview'
-              className='min-w-28 rounded-none border-b-2 border-transparent py-3 data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none'
-            >
-              <Sparkles />
-              Overview
-            </TabsTrigger>
-          )}
-          <TabsTrigger
-            value='transcript'
-            className='min-w-28 rounded-none border-b-2 border-transparent py-3 data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none'
-          >
-            <MessageSquare />
-            Transcript
-          </TabsTrigger>
-          {!isLiveDemo && (
-            <TabsTrigger
-              value='action-items'
-              className='min-w-28 rounded-none border-b-2 border-transparent py-3 data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none'
-            >
-              <ListChecks />
-              Action Items
-            </TabsTrigger>
-          )}
-          <TabsTrigger
-            value='ask-ai'
-            className='min-w-28 rounded-none border-b-2 border-transparent py-3 data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none'
-          >
-            <Sparkles />
-            Ask AI
-          </TabsTrigger>
-        </TabsList>
-
-        <TabsContent value='overview'>
-          <OverviewTab
-            meeting={meeting}
-            organizer={organizer}
-            participants={participants}
-            room={room}
-            summary={summary}
-            decisions={decisions}
-            onViewSource={viewTranscriptSegment}
-          />
-        </TabsContent>
-        <TabsContent value='transcript'>
-          <TranscriptTab
-            segments={transcript}
-            speakerMappings={speakerMappings}
-            highlightedSegmentId={highlightedSegmentId}
-            allowManualMapping={isLiveDemo}
-            manualSpeakerMappings={manualSpeakerMappings}
-            onMapSpeaker={(label, name) =>
-              setManualSpeakerMappings((mappings) => ({
-                ...mappings,
-                [label]: name,
-              }))
-            }
-          />
-        </TabsContent>
-        <TabsContent value='action-items'>
-          <ActionItemsTab
-            actionItems={meetingActionItems}
-            onViewSource={viewTranscriptSegment}
-          />
-        </TabsContent>
-        <TabsContent value='ask-ai'>
-          <AskAiTab
-            meeting={meeting}
-            conversation={conversation}
-            messages={assistantMessages}
-            sources={meetingSources}
-            onAskQuestion={askQuestion}
-            onViewSource={viewTranscriptSegment}
-          />
-        </TabsContent>
-      </Tabs>
+      <OperationalOverview
+        meeting={meeting}
+        currentUser={currentUser}
+        participants={participants}
+        room={room}
+        organizer={organizer}
+      />
     </>
   )
 }
 
 function MeetingHeader({
   meeting,
-  organizer,
   participants,
   room,
-  summary,
-  decisions,
-  meetingActionItems,
+  organizer,
 }: {
-  meeting: Meeting
-  organizer?: Member
-  participants: Member[]
-  room?: MeetingRoom
-  summary?: (typeof meetingSummaries)[number]
-  decisions?: KeyDecision[]
-  meetingActionItems?: ActionItem[]
+  meeting: MeetingView
+  participants: ParticipantState
+  room: LookupState<RoomFilterOption>
+  organizer: LookupState<OrganizerFilterOption>
 }) {
   return (
     <section className='space-y-5'>
-      <div className='flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between'>
-        <div className='min-w-0 space-y-3'>
-          <div className='flex flex-wrap items-center gap-2'>
-            <MeetingStatusBadge status={meeting.status} />
-            {meeting.status === 'completed' && (
-              <Badge variant='outline' className='gap-1 text-muted-foreground'>
-                <Sparkles />
-                Intelligence ready
-              </Badge>
-            )}
-          </div>
-          <div>
-            <h1 className='text-2xl font-bold tracking-tight sm:text-3xl'>
-              {meeting.title}
-            </h1>
+      <div className='min-w-0 space-y-3'>
+        <div className='flex flex-wrap items-center gap-2'>
+          <MeetingStatusBadge status={meeting.status} />
+        </div>
+        <div>
+          <h1 className='text-2xl font-bold tracking-tight sm:text-3xl'>
+            {meeting.title}
+          </h1>
+          {meeting.description && (
             <p className='mt-2 max-w-3xl text-muted-foreground'>
               {meeting.description}
             </p>
-          </div>
-          <div className='flex flex-wrap gap-x-4 gap-y-2 text-sm text-muted-foreground'>
-            <span className='inline-flex items-center gap-1.5'>
-              <CalendarDays className='size-4' />
-              {formatMeetingDate(meeting)}
-            </span>
-            <span className='inline-flex items-center gap-1.5'>
-              <Clock3 className='size-4' />
-              {formatMeetingTimeRange(meeting)}
-            </span>
-            <span className='inline-flex items-center gap-1.5'>
-              <MapPin className='size-4' />
-              {room?.name ?? 'Room not assigned'}
-            </span>
-          </div>
+          )}
         </div>
-
-        {meeting.status === 'completed' && (
-          <ExportMinutesMenu
-            meeting={meeting}
-            organizer={organizer}
-            participants={participants}
-            room={room}
-            summary={summary}
-            decisions={decisions ?? []}
-            meetingActionItems={meetingActionItems ?? []}
-          />
-        )}
+        <div className='flex flex-wrap gap-x-4 gap-y-2 text-sm text-muted-foreground'>
+          <span className='inline-flex items-center gap-1.5'>
+            <CalendarDays className='size-4' />
+            {formatMeetingDate(meeting)}
+          </span>
+          <span className='inline-flex items-center gap-1.5'>
+            <Clock3 className='size-4' />
+            {formatMeetingTimeRange(meeting)}
+          </span>
+          <span className='inline-flex items-center gap-1.5'>
+            <MapPin className='size-4' />
+            {formatRoomLabel(room)}
+          </span>
+        </div>
       </div>
 
       <div className='flex flex-col gap-3 rounded-xl border bg-card p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between'>
         <div className='flex min-w-0 items-center gap-3'>
-          <ParticipantAvatarStack members={participants} />
+          <div className='flex size-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary'>
+            <Users className='size-5' />
+          </div>
           <div className='min-w-0'>
-            <p className='font-medium'>
-              {participants.length} participant
-              {participants.length === 1 ? '' : 's'}
-            </p>
+            <p className='font-medium'>{formatParticipantSummary(participants)}</p>
             <p className='truncate text-sm text-muted-foreground'>
-              {formatParticipantNames(participants)}
+              {participants.isError
+                ? 'Participant memberships could not be loaded.'
+                : 'Names are shown only when projected by Core API.'}
             </p>
           </div>
         </div>
         <div className='text-sm text-muted-foreground sm:text-end'>
           Organized by{' '}
           <span className='font-medium text-foreground'>
-            {organizer?.name ?? 'Unknown organizer'}
+            {formatOrganizerLabel(organizer)}
           </span>
         </div>
       </div>
@@ -457,22 +307,18 @@ function MeetingHeader({
   )
 }
 
-function OverviewTab({
+function OperationalOverview({
   meeting,
-  organizer,
+  currentUser,
   participants,
   room,
-  summary,
-  decisions,
-  onViewSource,
+  organizer,
 }: {
-  meeting: Meeting
-  organizer?: Member
-  participants: Member[]
-  room?: MeetingRoom
-  summary?: (typeof meetingSummaries)[number]
-  decisions: KeyDecision[]
-  onViewSource: (segmentId: string) => void
+  meeting: MeetingView
+  currentUser?: AuthContext
+  participants: ParticipantState
+  room: LookupState<RoomFilterOption>
+  organizer: LookupState<OrganizerFilterOption>
 }) {
   return (
     <div className='grid gap-6 xl:grid-cols-[minmax(0,1.35fr)_minmax(280px,0.8fr)]'>
@@ -480,89 +326,40 @@ function OverviewTab({
         <Card>
           <CardHeader className='border-b'>
             <CardTitle className='flex items-center gap-2'>
-              <Sparkles className='size-4 text-primary' />
-              AI Summary
+              <FileText className='size-4 text-primary' />
+              Operational Overview
             </CardTitle>
             <CardDescription>
-              A structured view of what happened in this meeting.
+              Authoritative meeting details from the Core API.
             </CardDescription>
           </CardHeader>
           <CardContent className='space-y-5 pt-6'>
-            {summary ? (
-              <>
-                <p className='text-base leading-7'>{summary.overview}</p>
-                <div className='space-y-3'>
-                  <p className='text-sm font-semibold'>Highlights</p>
-                  <ul className='grid gap-3 sm:grid-cols-2'>
-                    {summary.highlights.map((highlight) => (
-                      <li
-                        key={highlight}
-                        className='flex gap-2 text-sm leading-6 text-muted-foreground'
-                      >
-                        <span className='mt-2 size-1.5 shrink-0 rounded-full bg-primary' />
-                        <span>{highlight}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              </>
-            ) : (
-              <EmptyInlineState text='No summary is available for this meeting.' />
-            )}
+            <p className='text-base leading-7'>
+              {meeting.description ?? 'No description is available for this meeting.'}
+            </p>
+            <div className='grid gap-3 sm:grid-cols-2'>
+              <InfoRow label='Scheduled date' value={formatMeetingDate(meeting)} />
+              <InfoRow label='Scheduled time' value={formatMeetingTimeRange(meeting)} />
+              <InfoRow label='Status' value={<MeetingStatusBadge status={meeting.status} />} />
+              <InfoRow
+                label='Meeting ID'
+                value={<span className='break-all font-mono text-xs'>{meeting.id}</span>}
+              />
+            </div>
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader className='border-b'>
-            <CardTitle className='flex items-center gap-2'>
-              <ListChecks className='size-4 text-primary' />
-              Key Decisions
-            </CardTitle>
-            <CardDescription>
-              Decisions remain linked to the transcript evidence that supports
-              them.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className='pt-6'>
-            {decisions.length ? (
-              <div className='space-y-4'>
-                {decisions.map((decision, index) => (
-                  <div key={decision.id} className='flex gap-3'>
-                    <span className='flex size-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-sm font-semibold text-primary'>
-                      {index + 1}
-                    </span>
-                    <div className='min-w-0 space-y-2'>
-                      <p className='leading-6'>{decision.text}</p>
-                      {decision.sourceSegmentId && (
-                        <Button
-                          variant='link'
-                          size='sm'
-                          className='h-auto px-0 text-xs'
-                          onClick={() =>
-                            onViewSource(decision.sourceSegmentId!)
-                          }
-                        >
-                          View in transcript
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <EmptyInlineState text='No key decisions are available for this meeting.' />
-            )}
-          </CardContent>
-        </Card>
+        <LifecycleCard meeting={meeting} />
       </div>
 
       <div className='space-y-6'>
         <MeetingInformationCard
           meeting={meeting}
-          organizer={organizer}
           room={room}
+          organizer={organizer}
+          currentUser={currentUser}
         />
-        <ParticipantsCard participants={participants} />
+        <ParticipantsCard state={participants} />
       </div>
     </div>
   )
@@ -570,12 +367,14 @@ function OverviewTab({
 
 function MeetingInformationCard({
   meeting,
-  organizer,
   room,
+  organizer,
+  currentUser,
 }: {
-  meeting: Meeting
-  organizer?: Member
-  room?: MeetingRoom
+  meeting: MeetingView
+  room: LookupState<RoomFilterOption>
+  organizer: LookupState<OrganizerFilterOption>
+  currentUser?: AuthContext
 }) {
   return (
     <Card>
@@ -588,21 +387,36 @@ function MeetingInformationCard({
       <CardContent className='space-y-4 pt-6'>
         <InfoRow label='Date' value={formatMeetingDate(meeting)} />
         <InfoRow label='Time' value={formatMeetingTimeRange(meeting)} />
-        <InfoRow
-          label='Room'
-          value={room ? `${room.name} · ${room.location}` : 'Not assigned'}
-        />
-        <InfoRow label='Organizer' value={organizer?.name ?? 'Unknown'} />
+        <InfoRow label='Room' value={formatRoomInfo(room)} />
+        <InfoRow label='Organizer' value={formatOrganizerInfo(organizer, currentUser)} />
         <div className='flex items-center justify-between gap-4 text-sm'>
           <span className='text-muted-foreground'>Status</span>
           <MeetingStatusBadge status={meeting.status} />
         </div>
+        {(room.isError || organizer.isError) && (
+          <div className='space-y-2 border-t pt-4'>
+            {room.isError && (
+              <LookupFailure
+                label='Room details are unavailable.'
+                buttonLabel='Retry room details'
+                onRetry={room.onRetry}
+              />
+            )}
+            {organizer.isError && (
+              <LookupFailure
+                label='Organizer details are unavailable.'
+                buttonLabel='Retry organizer details'
+                onRetry={organizer.onRetry}
+              />
+            )}
+          </div>
+        )}
       </CardContent>
     </Card>
   )
 }
 
-function ParticipantsCard({ participants }: { participants: Member[] }) {
+function ParticipantsCard({ state }: { state: ParticipantState }) {
   return (
     <Card>
       <CardHeader className='border-b'>
@@ -611,819 +425,310 @@ function ParticipantsCard({ participants }: { participants: Member[] }) {
           Participants
         </CardTitle>
         <CardDescription>
-          {participants.length} people in this meeting.
+          {state.isPending
+            ? 'Loading participant memberships.'
+            : state.isError
+              ? 'Participant memberships are unavailable.'
+              : formatParticipantCount(state.data ?? [])}
         </CardDescription>
       </CardHeader>
       <CardContent className='pt-5'>
-        <div className='space-y-4'>
-          {participants.length ? (
-            participants.map((participant) => (
-              <div key={participant.id} className='flex items-center gap-3'>
-                <ParticipantAvatar member={participant} />
-                <div className='min-w-0'>
-                  <p className='truncate text-sm font-medium'>
-                    {participant.name}
-                  </p>
-                  <p className='truncate text-xs text-muted-foreground'>
-                    {participant.department}
-                  </p>
-                </div>
-              </div>
-            ))
-          ) : (
-            <EmptyInlineState text='No participants are listed.' />
-          )}
-        </div>
-      </CardContent>
-    </Card>
-  )
-}
-
-function TranscriptTab({
-  segments,
-  speakerMappings,
-  highlightedSegmentId,
-  allowManualMapping,
-  manualSpeakerMappings,
-  onMapSpeaker,
-}: {
-  segments: TranscriptSegment[]
-  speakerMappings: SpeakerMapping[]
-  highlightedSegmentId: string | null
-  allowManualMapping: boolean
-  manualSpeakerMappings: Record<string, string>
-  onMapSpeaker: (label: string, name: string) => void
-}) {
-  return (
-    <div className='grid gap-6 xl:grid-cols-[minmax(0,1fr)_280px]'>
-      <Card className='min-w-0'>
-        <CardHeader className='border-b'>
-          <CardTitle className='flex items-center gap-2'>
-            <MessageSquare className='size-4 text-primary' />
-            Vietnamese Transcript
-          </CardTitle>
-          <CardDescription>
-            Speaker-aware transcript segments from this meeting.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className='pt-6'>
-          {segments.length ? (
-            <ScrollArea className='h-[560px] max-h-[65vh] pe-3'>
-              <div className='space-y-2'>
-                {segments.map((segment) => (
-                  <TranscriptSegmentRow
-                    key={segment.id}
-                    segment={segment}
-                    highlighted={highlightedSegmentId === segment.id}
-                    mappedName={manualSpeakerMappings[segment.speakerLabel]}
-                  />
-                ))}
-              </div>
-            </ScrollArea>
-          ) : (
-            <EmptyInlineState text='No transcript segments are available for this meeting.' />
-          )}
-        </CardContent>
-      </Card>
-
-      <SpeakerMappingCard
-        mappings={speakerMappings}
-        allowManualMapping={allowManualMapping}
-        manualSpeakerMappings={manualSpeakerMappings}
-        onMapSpeaker={onMapSpeaker}
-      />
-    </div>
-  )
-}
-
-export function TranscriptSegmentRow({
-  segment,
-  highlighted,
-  mappedName,
-}: {
-  segment: TranscriptSegment
-  highlighted: boolean
-  mappedName?: string
-}) {
-  const participantId = segment.participantId
-  const participant = participantId ? getMemberById(participantId) : undefined
-  const speakerLabel = formatSpeakerLabel(segment.speakerLabel)
-
-  return (
-    <div
-      id={`transcript-${segment.id}`}
-      className={cn(
-        'rounded-lg border p-4 transition-colors',
-        highlighted && 'border-primary bg-primary/5 ring-2 ring-primary/30'
-      )}
-    >
-      <div className='flex flex-wrap items-start justify-between gap-3'>
-        <div className='flex min-w-0 items-center gap-3'>
-          {participant ? (
-            <ParticipantAvatar member={participant} />
-          ) : (
-            <Avatar className='size-9'>
-              <AvatarFallback className='bg-muted text-xs'>
-                {speakerLabel.slice(0, 2)}
-              </AvatarFallback>
-            </Avatar>
-          )}
-          <div className='min-w-0'>
-            <p className='truncate font-medium'>
-              {mappedName?.trim() || participant?.name || speakerLabel}
-            </p>
-            <p className='text-xs text-muted-foreground'>
-              {participant || mappedName?.trim()
-                ? speakerLabel
-                : 'Participant not mapped'}
-            </p>
+        {state.isPending ? (
+          <div role='status' aria-label='Loading participants' className='space-y-4'>
+            <Skeleton className='h-12 w-full' />
+            <Skeleton className='h-12 w-full' />
           </div>
-        </div>
-        <div className='flex items-center gap-2'>
-          <Badge variant='outline' className='font-mono text-[11px]'>
-            {formatTranscriptTimestamp(segment.startMs)}
-          </Badge>
-          {!segment.isFinal && (
-            <Badge
-              variant='outline'
-              className='text-amber-700 dark:text-amber-300'
-            >
-              Draft
-            </Badge>
-          )}
-        </div>
-      </div>
-      <p className='mt-4 leading-7 text-foreground/90'>{segment.text}</p>
-    </div>
-  )
-}
-
-type SpeakerMapping = {
-  detectedLabel: string
-  member?: Member
-}
-
-function SpeakerMappingCard({
-  mappings,
-  allowManualMapping,
-  manualSpeakerMappings,
-  onMapSpeaker,
-}: {
-  mappings: SpeakerMapping[]
-  allowManualMapping: boolean
-  manualSpeakerMappings: Record<string, string>
-  onMapSpeaker: (label: string, name: string) => void
-}) {
-  return (
-    <Card className='h-fit'>
-      <CardHeader className='border-b'>
-        <CardTitle className='flex items-center gap-2'>
-          <UserRound className='size-4 text-primary' />
-          Speaker Mapping
-        </CardTitle>
-        <CardDescription>
-          {allowManualMapping
-            ? 'Enter a name for each detected speaker.'
-            : 'Detected speaker labels linked to meeting participants.'}
-        </CardDescription>
-      </CardHeader>
-      <CardContent className='pt-5'>
-        {mappings.length ? (
-          <div className='space-y-3'>
-            {mappings.map((mapping) => (
-              <div
-                key={mapping.detectedLabel}
-                className='flex items-center gap-2 text-sm'
-              >
-                <Badge variant='outline' className='font-mono text-[11px]'>
-                  {formatSpeakerLabel(mapping.detectedLabel)}
-                </Badge>
-                <span className='text-muted-foreground'>→</span>
-                {allowManualMapping ? (
-                  <Input
-                    aria-label={`Name for ${formatSpeakerLabel(mapping.detectedLabel)}`}
-                    className='min-w-0 flex-1'
-                    placeholder='Enter name'
-                    value={manualSpeakerMappings[mapping.detectedLabel] ?? ''}
-                    onChange={(event) =>
-                      onMapSpeaker(mapping.detectedLabel, event.target.value)
-                    }
-                  />
-                ) : (
-                  <span className='min-w-0 truncate font-medium'>
-                    {mapping.member?.name ?? 'Not mapped'}
-                  </span>
-                )}
-              </div>
-            ))}
-          </div>
+        ) : state.isError ? (
+          <LookupFailure
+            label='The participant request failed, so no participant list is shown.'
+            buttonLabel='Retry participants'
+            onRetry={state.onRetry}
+          />
         ) : (
-          <EmptyInlineState text='No detected speakers are available.' />
+          <ParticipantMemberships participants={state.data ?? []} />
         )}
       </CardContent>
     </Card>
   )
 }
 
-function ActionItemsTab({
-  actionItems,
-  onViewSource,
-}: {
-  actionItems: ActionItem[]
-  onViewSource: (segmentId: string) => void
-}) {
-  return (
-    <Card>
-      <CardHeader className='border-b'>
-        <CardTitle className='flex items-center gap-2'>
-          <ListChecks className='size-4 text-primary' />
-          Action Items
-        </CardTitle>
-        <CardDescription>
-          Only action items extracted from this meeting are shown here.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className='p-0'>
-        {actionItems.length ? (
-          <Table className='min-w-[850px]'>
-            <TableHeader>
-              <TableRow>
-                <TableHead className='w-[34%]'>Task</TableHead>
-                <TableHead>Assignee</TableHead>
-                <TableHead>Due date</TableHead>
-                <TableHead>Priority</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className='text-end'>Source</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {actionItems.map((actionItem) => {
-                const assignee = getMemberById(actionItem.assigneeId)
-
-                return (
-                  <TableRow key={actionItem.id}>
-                    <TableCell className='whitespace-normal'>
-                      <div className='min-w-56 space-y-1'>
-                        <p className='font-medium'>{actionItem.title}</p>
-                        <p className='text-xs leading-5 text-muted-foreground'>
-                          {actionItem.description}
-                        </p>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      {assignee ? (
-                        <div className='flex items-center gap-2'>
-                          <ParticipantAvatar
-                            member={assignee}
-                            className='size-7'
-                          />
-                          <span>{assignee.name}</span>
-                        </div>
-                      ) : (
-                        'Unassigned'
-                      )}
-                    </TableCell>
-                    <TableCell>{formatDateOnly(actionItem.dueDate)}</TableCell>
-                    <TableCell>
-                      <Badge
-                        variant='outline'
-                        className={priorityStyles[actionItem.priority]}
-                      >
-                        {priorityLabels[actionItem.priority]}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
-                      <Badge
-                        variant='outline'
-                        className={actionStatusStyles[actionItem.status]}
-                      >
-                        {actionStatusLabels[actionItem.status]}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className='text-end'>
-                      {actionItem.sourceSegmentId && (
-                        <Button
-                          variant='link'
-                          size='sm'
-                          className='h-auto px-0'
-                          onClick={() =>
-                            onViewSource(actionItem.sourceSegmentId!)
-                          }
-                        >
-                          View source
-                        </Button>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                )
-              })}
-            </TableBody>
-          </Table>
-        ) : (
-          <div className='p-6'>
-            <EmptyInlineState text='No action items are available for this meeting.' />
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  )
-}
-
-function AskAiTab({
-  meeting,
-  conversation,
-  messages,
-  sources,
-  onAskQuestion,
-  onViewSource,
-}: {
-  meeting: Meeting
-  conversation?: (typeof assistantConversations)[number]
-  messages: AssistantMessage[]
-  sources: RagSource[]
-  onAskQuestion: (question: string) => void
-  onViewSource: (segmentId: string) => void
-}) {
-  const [question, setQuestion] = useState('')
-  const suggestedQuestions = conversation?.messages.filter(
-    (message) => message.role === 'user'
-  )
-  const sourceById = new Map(sources.map((source) => [source.id, source]))
-
-  const submitQuestion = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    onAskQuestion(question)
-    setQuestion('')
-  }
-
-  return (
-    <Card>
-      <CardHeader className='border-b'>
-        <CardTitle className='flex items-center gap-2'>
-          <Sparkles className='size-4 text-primary' />
-          Ask about this meeting
-        </CardTitle>
-        <CardDescription>
-          Ask a supported question about {meeting.title}. Answers stay scoped to
-          this meeting.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className='space-y-6 pt-6'>
-        {conversation ? (
-          <>
-            <div className='space-y-4'>
-              {messages.map((message) => (
-                <AssistantMessageBubble
-                  key={message.id}
-                  message={message}
-                  sourceById={sourceById}
-                  onViewSource={onViewSource}
-                />
-              ))}
-            </div>
-
-            <div className='space-y-3 border-t pt-5'>
-              <p className='text-sm font-medium'>Suggested questions</p>
-              <div className='flex flex-wrap gap-2'>
-                {suggestedQuestions?.map((suggestedQuestion) => (
-                  <Button
-                    key={suggestedQuestion.id}
-                    type='button'
-                    variant='outline'
-                    size='sm'
-                    className='h-auto text-start whitespace-normal'
-                    onClick={() => onAskQuestion(suggestedQuestion.content)}
-                  >
-                    {suggestedQuestion.content}
-                  </Button>
-                ))}
-              </div>
-            </div>
-
-            <form onSubmit={submitQuestion} className='flex gap-2'>
-              <Input
-                value={question}
-                onChange={(event) => setQuestion(event.target.value)}
-                placeholder='Enter a supported question...'
-                aria-label='Ask a question about this meeting'
-              />
-              <Button type='submit' disabled={!question.trim()}>
-                <Send />
-                Ask
-              </Button>
-            </form>
-          </>
-        ) : (
-          <div className='rounded-lg border border-dashed p-8 text-center'>
-            <MessageSquare className='mx-auto size-8 text-muted-foreground' />
-            <p className='mt-3 font-medium'>No saved demo questions yet</p>
-            <p className='mt-1 text-sm text-muted-foreground'>
-              Meeting-scoped AI examples will appear here when shared assistant
-              knowledge is available.
-            </p>
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  )
-}
-
-function AssistantMessageBubble({
-  message,
-  sourceById,
-  onViewSource,
-}: {
-  message: AssistantMessage
-  sourceById: Map<string, RagSource>
-  onViewSource: (segmentId: string) => void
-}) {
-  const isUser = message.role === 'user'
-  const sources = (message.sourceIds ?? [])
-    .map((sourceId) => sourceById.get(sourceId))
-    .filter((source): source is RagSource => Boolean(source))
-
-  return (
-    <div className={cn('flex', isUser ? 'justify-end' : 'justify-start')}>
-      <div
-        className={cn(
-          'max-w-3xl rounded-xl border px-4 py-3',
-          isUser
-            ? 'border-primary bg-primary text-primary-foreground'
-            : 'bg-muted/30'
-        )}
-      >
-        <div className='flex items-center justify-between gap-4'>
-          <p className='text-xs font-medium opacity-75'>
-            {isUser ? 'You' : 'Meeting Assistant'}
-          </p>
-          <p className='text-[11px] opacity-60'>
-            {formatMessageTime(message.createdAt)}
-          </p>
-        </div>
-        <p className='mt-2 text-sm leading-6'>{message.content}</p>
-        {sources.length > 0 && (
-          <div className='mt-4 space-y-2 border-t border-current/10 pt-3'>
-            <p className='text-xs font-medium opacity-75'>
-              Supporting evidence
-            </p>
-            {sources.map((source) => (
-              <SourceReference
-                key={source.id}
-                source={source}
-                onViewSource={onViewSource}
-              />
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function SourceReference({
-  source,
-  onViewSource,
-}: {
-  source: RagSource
-  onViewSource: (segmentId: string) => void
-}) {
-  return (
-    <button
-      type='button'
-      className='flex w-full flex-col gap-1 rounded-md border bg-background/70 p-3 text-start transition-colors hover:bg-accent'
-      onClick={() => onViewSource(source.segmentId)}
-    >
-      <span className='flex flex-wrap items-center gap-2 text-xs font-medium'>
-        <Badge variant='outline'>{sourceTypeLabels[source.sourceType]}</Badge>
-        <span className='text-muted-foreground'>
-          Transcript · {formatTranscriptTimestamp(source.timestampMs)}
-        </span>
-      </span>
-      <span className='text-sm leading-5 text-muted-foreground'>
-        {source.excerpt}
-      </span>
-    </button>
-  )
-}
-
-function LifecycleState({ meeting }: { meeting: Meeting }) {
-  if (meeting.status === 'completed') {
-    return null
-  }
-
-  const stateCopy: Record<Exclude<MeetingStatus, 'completed'>, string> = {
-    scheduled:
-      'This meeting has not started yet. Transcript and meeting intelligence will appear after it is completed.',
-    in_progress:
-      'This meeting is currently live. Meeting intelligence will be available after it ends.',
-    processing:
-      'Meeting intelligence is being generated. The completed workspace will be available when processing finishes.',
-    cancelled:
-      'This meeting was cancelled. Completed-meeting intelligence is not available.',
-  }
-
-  return (
-    <Card className='border-dashed'>
-      <CardContent className='flex flex-col items-center justify-center px-6 py-16 text-center'>
-        <div className='flex size-12 items-center justify-center rounded-full bg-muted'>
-          {meeting.status === 'processing' ? (
-            <Sparkles className='size-5 text-amber-600 dark:text-amber-400' />
-          ) : meeting.status === 'in_progress' ? (
-            <MessageSquare className='size-5 text-emerald-600 dark:text-emerald-400' />
-          ) : (
-            <Clock3 className='size-5 text-muted-foreground' />
-          )}
-        </div>
-        <Badge
-          variant='outline'
-          className={cn('mt-4', meetingStatusStyles[meeting.status])}
-        >
-          {meetingStatusLabels[meeting.status]}
-        </Badge>
-        <h2 className='mt-4 text-lg font-semibold'>
-          {meeting.status === 'scheduled'
-            ? 'Meeting not started'
-            : meeting.status === 'in_progress'
-              ? 'Meeting is live'
-              : meeting.status === 'processing'
-                ? 'Preparing meeting intelligence'
-                : 'Meeting cancelled'}
-        </h2>
-        <p className='mt-2 max-w-lg text-sm leading-6 text-muted-foreground'>
-          {stateCopy[meeting.status]}
-        </p>
-        {meeting.status === 'processing' && meeting.processingStage && (
-          <p className='mt-4 text-xs text-muted-foreground'>
-            Current stage: {formatProcessingStage(meeting.processingStage)}
-          </p>
-        )}
-      </CardContent>
-    </Card>
-  )
-}
-
-function ExportMinutesMenu({
-  meeting,
-  organizer,
+function ParticipantMemberships({
   participants,
-  room,
-  summary,
-  decisions,
-  meetingActionItems,
 }: {
-  meeting: Meeting
-  organizer?: Member
-  participants: Member[]
-  room?: MeetingRoom
-  summary?: (typeof meetingSummaries)[number]
-  decisions: KeyDecision[]
-  meetingActionItems: ActionItem[]
+  participants: ParticipantView[]
 }) {
-  const exportMarkdown = () => {
-    const markdown = buildMinutesMarkdown({
-      meeting,
-      organizer,
-      participants,
-      room,
-      summary,
-      decisions,
-      meetingActionItems,
-    })
-    const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const anchor = document.createElement('a')
-    anchor.href = url
-    anchor.download = `${meeting.id}-minutes.md`
-    document.body.appendChild(anchor)
-    anchor.click()
-    anchor.remove()
-    window.setTimeout(() => URL.revokeObjectURL(url), 0)
-    toast.success('Markdown meeting minutes exported.')
-  }
+  const { active, removed } = classifyParticipantMemberships(participants)
 
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button>
-          <Download />
-          Export Minutes
-          <ChevronDown />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align='end'>
-        <DropdownMenuItem onSelect={exportMarkdown}>
-          <FileText />
-          Export Markdown
-        </DropdownMenuItem>
-        <DropdownMenuItem
-          onSelect={() =>
-            toast.info(
-              'PDF meeting minutes are represented as a prototype action.'
-            )
-          }
-        >
-          <Download />
-          Export PDF
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
-  )
-}
+    <div className='space-y-6'>
+      <div className='space-y-4'>
+        <p className='text-sm font-semibold'>Active participants</p>
+        {active.length ? (
+          active.map((participant) => (
+            <ParticipantMembership key={participant.id} participant={participant} />
+          ))
+        ) : (
+          <p className='text-sm text-muted-foreground'>
+            No active participants are listed.
+          </p>
+        )}
+      </div>
 
-export function ParticipantAvatar({
-  member,
-  className,
-}: {
-  member: Member
-  className?: string
-}) {
-  return (
-    <Avatar className={cn('size-9', className)}>
-      {member.avatar && <AvatarImage src={member.avatar} alt={member.name} />}
-      <AvatarFallback className='bg-primary/10 text-xs font-medium text-primary'>
-        {getInitials(member.name)}
-      </AvatarFallback>
-    </Avatar>
-  )
-}
-
-function ParticipantAvatarStack({ members }: { members: Member[] }) {
-  return (
-    <div className='flex shrink-0 items-center ps-1'>
-      {members.slice(0, 5).map((member, index) => (
-        <ParticipantAvatar
-          key={member.id}
-          member={member}
-          className={cn('border-2 border-card', index > 0 && '-ms-2')}
-        />
-      ))}
-      {members.length > 5 && (
-        <span className='-ms-2 flex size-9 items-center justify-center rounded-full border-2 border-card bg-muted text-xs font-medium'>
-          +{members.length - 5}
-        </span>
+      {removed.length > 0 && (
+        <div className='space-y-4 border-t pt-5'>
+          <div>
+            <p className='text-sm font-semibold'>Removed membership history</p>
+            <p className='mt-1 text-xs text-muted-foreground'>
+              Historical memberships remain visible with their removal metadata.
+            </p>
+          </div>
+          {removed.map((participant) => (
+            <ParticipantMembership
+              key={participant.id}
+              participant={participant}
+              historical
+            />
+          ))}
+        </div>
       )}
     </div>
   )
 }
 
-function InfoRow({ label, value }: { label: string; value: string }) {
+function ParticipantMembership({
+  participant,
+  historical = false,
+}: {
+  participant: ParticipantView
+  historical?: boolean
+}) {
+  const displayName = participant.displayName?.trim()
+
+  return (
+    <div className='flex items-start gap-3'>
+      <div className='flex size-9 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground'>
+        <UserRound className='size-4' />
+      </div>
+      <div className='min-w-0 space-y-1'>
+        <p className='break-all text-sm font-medium'>
+          {displayName || participant.userId}
+        </p>
+        <p className='text-xs text-muted-foreground'>
+          {displayName ? 'Name provided by Core API' : 'Name unavailable'}
+        </p>
+        <p className='text-xs text-muted-foreground'>
+          Added {formatDateTime(participant.addedAt)}
+        </p>
+        {historical && participant.removedAt && (
+          <p className='text-xs text-muted-foreground'>
+            Removed {formatDateTime(participant.removedAt)}
+            {participant.removedByUserId
+              ? ` by user ID ${participant.removedByUserId}`
+              : ''}
+          </p>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function LifecycleCard({ meeting }: { meeting: MeetingView }) {
+  const timestamps = [
+    ['Created', meeting.createdAt],
+    ['Updated', meeting.updatedAt],
+    ['Started', meeting.startedAt],
+    ['Ended', meeting.endedAt],
+    ['Cancelled', meeting.cancelledAt],
+  ] as const
+  const visibleTimestamps = timestamps.filter(
+    (timestamp): timestamp is [string, string] => Boolean(timestamp[1])
+  )
+
+  return (
+    <Card>
+      <CardHeader className='border-b'>
+        <CardTitle className='flex items-center gap-2'>
+          <Clock3 className='size-4 text-primary' />
+          Lifecycle
+        </CardTitle>
+        <CardDescription>
+          Timestamps reflect the meeting lifecycle recorded by Core API.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className='space-y-4 pt-6'>
+        {visibleTimestamps.map(([label, value]) => (
+          <InfoRow key={label} label={label} value={formatDateTime(value)} />
+        ))}
+        {meeting.cancellationReason && (
+          <InfoRow label='Cancellation reason' value={meeting.cancellationReason} />
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function LookupFailure({
+  label,
+  buttonLabel,
+  onRetry,
+}: {
+  label: string
+  buttonLabel: string
+  onRetry: () => void
+}) {
+  return (
+    <div className='flex flex-col items-start gap-2 rounded-lg border border-dashed p-3'>
+      <p className='text-sm text-muted-foreground'>{label}</p>
+      <Button variant='outline' size='sm' onClick={onRetry}>
+        <RefreshCw />
+        {buttonLabel}
+      </Button>
+    </div>
+  )
+}
+
+function MeetingDetailError({
+  error,
+  onRetry,
+}: {
+  error: unknown
+  onRetry: () => Promise<unknown>
+}) {
+  const apiError = normalizeCoreApiError(error)
+  const isNotFound = apiError.status === 404
+  const isForbidden = apiError.status === 403
+  const title = isNotFound
+    ? 'Meeting not found or unavailable'
+    : isForbidden
+      ? 'Access denied'
+      : 'Unable to load meeting details'
+  const description = isNotFound
+    ? 'This meeting was not found or is unavailable to your session.'
+    : isForbidden
+      ? 'Your session does not have access to this meeting.'
+      : apiError.isNetworkError
+        ? 'The Core API could not be reached. Check the connection and try again.'
+        : apiError.isServerError
+          ? 'The Core API failed while loading this meeting. Try again.'
+          : 'The meeting details could not be verified. Try again.'
+
+  return (
+    <Card>
+      <CardContent className='flex flex-col items-center justify-center px-6 py-16 text-center'>
+        {isForbidden ? (
+          <AlertCircle className='size-10 text-destructive' />
+        ) : (
+          <FileText className='size-10 text-muted-foreground' />
+        )}
+        <h1 className='mt-4 text-xl font-semibold'>{title}</h1>
+        <p className='mt-2 max-w-lg text-sm text-muted-foreground'>{description}</p>
+        <Button className='mt-6' onClick={() => void onRetry()}>
+          <RefreshCw />
+          Retry
+        </Button>
+      </CardContent>
+    </Card>
+  )
+}
+
+function MeetingWorkspaceSkeleton() {
+  return (
+    <div role='status' aria-label='Loading meeting details' className='space-y-6'>
+      <section className='space-y-5'>
+        <Skeleton className='h-5 w-24' />
+        <Skeleton className='h-10 w-3/4 max-w-2xl' />
+        <div className='flex flex-wrap gap-4'>
+          <Skeleton className='h-5 w-36' />
+          <Skeleton className='h-5 w-32' />
+          <Skeleton className='h-5 w-40' />
+        </div>
+        <Skeleton className='h-20 w-full rounded-xl' />
+      </section>
+      <div className='grid gap-6 xl:grid-cols-[minmax(0,1.35fr)_minmax(280px,0.8fr)]'>
+        <div className='space-y-6'>
+          <Skeleton className='h-64 w-full rounded-xl' />
+          <Skeleton className='h-56 w-full rounded-xl' />
+        </div>
+        <div className='space-y-6'>
+          <Skeleton className='h-72 w-full rounded-xl' />
+          <Skeleton className='h-64 w-full rounded-xl' />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function formatRoomLabel(room: LookupState<RoomFilterOption>) {
+  if (!room.hasId) return 'Room not assigned'
+  if (room.isError) return 'Room unavailable'
+  if (room.isPending) return 'Loading room'
+  return room.data?.name ?? 'Room unavailable'
+}
+
+function formatRoomInfo(room: LookupState<RoomFilterOption>) {
+  if (!room.hasId) return 'Not assigned'
+  if (room.isError) return 'Room unavailable'
+  if (room.isPending) return 'Loading room details'
+  if (!room.data) return 'Room unavailable'
+  return `${room.data.name} · ${room.data.location ?? 'Location unavailable'}`
+}
+
+function formatOrganizerLabel(organizer: LookupState<OrganizerFilterOption>) {
+  if (organizer.isError) return 'Organizer unavailable'
+  if (organizer.isPending) return 'Loading organizer'
+  return organizer.data?.name ?? 'Organizer unavailable'
+}
+
+function formatOrganizerInfo(
+  organizer: LookupState<OrganizerFilterOption>,
+  currentUser?: AuthContext
+) {
+  if (organizer.data?.id === currentUser?.userId) {
+    return currentUser.displayName
+  }
+  return formatOrganizerLabel(organizer)
+}
+
+function formatParticipantSummary(state: ParticipantState) {
+  if (state.isPending) return 'Loading participants'
+  if (state.isError) return 'Participants unavailable'
+  const activeCount = classifyParticipantMemberships(state.data ?? []).active.length
+  return `${activeCount} active participant${activeCount === 1 ? '' : 's'}`
+}
+
+function formatParticipantCount(participants: ParticipantView[]) {
+  const { active, removed } = classifyParticipantMemberships(participants)
+  const activeLabel = `${active.length} active participant${active.length === 1 ? '' : 's'}`
+  return removed.length
+    ? `${activeLabel}; ${removed.length} historical membership${removed.length === 1 ? '' : 's'}`
+    : activeLabel
+}
+
+function formatMeetingDate(meeting: MeetingView) {
+  if (!meeting.scheduledStartAt || !meeting.scheduledEndAt) return 'Unscheduled'
+  return meetingDateFormatter.format(new Date(meeting.scheduledStartAt))
+}
+
+function formatMeetingTimeRange(meeting: MeetingView) {
+  if (!meeting.scheduledStartAt || !meeting.scheduledEndAt) return 'Unscheduled'
+  return `${meetingTimeFormatter.format(new Date(meeting.scheduledStartAt))} - ${meetingTimeFormatter.format(new Date(meeting.scheduledEndAt))}`
+}
+
+function formatDateTime(value: string) {
+  return meetingDateTimeFormatter.format(new Date(value))
+}
+
+function InfoRow({
+  label,
+  value,
+}: {
+  label: string
+  value: React.ReactNode
+}) {
   return (
     <div className='flex items-start justify-between gap-4 text-sm'>
       <span className='text-muted-foreground'>{label}</span>
       <span className='max-w-[65%] text-end font-medium'>{value}</span>
     </div>
   )
-}
-
-function EmptyInlineState({ text }: { text: string }) {
-  return <p className='text-sm text-muted-foreground'>{text}</p>
-}
-
-function MeetingNotFound() {
-  return (
-    <Card>
-      <CardContent className='flex flex-col items-center justify-center px-6 py-16 text-center'>
-        <FileText className='size-10 text-muted-foreground' />
-        <h1 className='mt-4 text-xl font-semibold'>Meeting not found</h1>
-        <p className='mt-2 text-sm text-muted-foreground'>
-          The meeting ID does not match a meeting in the shared workspace.
-        </p>
-        <Button asChild className='mt-6'>
-          <Link to='/meetings'>Back to Meetings</Link>
-        </Button>
-      </CardContent>
-    </Card>
-  )
-}
-
-function getSpeakerMappings(segments: TranscriptSegment[]): SpeakerMapping[] {
-  const labels = Array.from(
-    new Set(segments.map((segment) => segment.speakerLabel))
-  )
-
-  return labels.map((detectedLabel) => {
-    const mappedSegment = segments.find(
-      (segment) =>
-        segment.speakerLabel === detectedLabel && segment.participantId
-    )
-
-    return {
-      detectedLabel,
-      member: mappedSegment?.participantId
-        ? getMemberById(mappedSegment.participantId)
-        : undefined,
-    }
-  })
-}
-
-function formatMeetingDate(meeting: Meeting) {
-  return dateFormatter.format(new Date(meeting.startsAt))
-}
-
-function formatMeetingTimeRange(meeting: Meeting) {
-  return `${timeFormatter.format(new Date(meeting.startsAt))} - ${timeFormatter.format(new Date(meeting.endsAt))}`
-}
-
-function formatDateOnly(date: string) {
-  return dateFormatter.format(new Date(`${date}T12:00:00+07:00`))
-}
-
-function formatTranscriptTimestamp(milliseconds: number) {
-  const totalSeconds = Math.floor(milliseconds / 1000)
-  const minutes = Math.floor(totalSeconds / 60)
-  const seconds = totalSeconds % 60
-
-  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
-}
-
-function formatMessageTime(date: string) {
-  return timeFormatter.format(new Date(date))
-}
-
-function formatSpeakerLabel(label: string) {
-  const match = /^SPEAKER_(\d+)$/i.exec(label)
-  return match ? `Speaker ${Number(match[1])}` : label
-}
-
-function formatProcessingStage(stage: NonNullable<Meeting['processingStage']>) {
-  const labels: Record<NonNullable<Meeting['processingStage']>, string> = {
-    uploaded: 'Uploaded',
-    transcribing: 'Transcribing',
-    diarizing: 'Identifying speakers',
-    summarizing: 'Summarizing',
-    extracting: 'Extracting decisions and action items',
-    indexing: 'Indexing meeting knowledge',
-    ready: 'Ready',
-  }
-
-  return labels[stage]
-}
-
-function getInitials(name: string) {
-  const parts = name.trim().split(/\s+/)
-  if (parts.length === 1) {
-    return parts[0].slice(0, 2).toLocaleUpperCase()
-  }
-
-  return `${parts[0][0]}${parts[parts.length - 1][0]}`.toLocaleUpperCase()
-}
-
-function formatParticipantNames(participants: Member[]) {
-  const names = participants.map((participant) => participant.name)
-  if (!names.length) {
-    return 'No participants listed'
-  }
-
-  const visibleNames = names.slice(0, 3).join(', ')
-  return names.length > 3
-    ? `${visibleNames} +${names.length - 3} more`
-    : visibleNames
-}
-
-function buildMinutesMarkdown({
-  meeting,
-  organizer,
-  participants,
-  room,
-  summary,
-  decisions,
-  meetingActionItems,
-}: {
-  meeting: Meeting
-  organizer?: Member
-  participants: Member[]
-  room?: MeetingRoom
-  summary?: (typeof meetingSummaries)[number]
-  decisions: KeyDecision[]
-  meetingActionItems: ActionItem[]
-}) {
-  const lines = [
-    `# ${meeting.title}`,
-    '',
-    '## Meeting Information',
-    `- Date: ${formatMeetingDate(meeting)}`,
-    `- Time: ${formatMeetingTimeRange(meeting)}`,
-    `- Room: ${room?.name ?? 'Not assigned'}`,
-    `- Organizer: ${organizer?.name ?? 'Unknown'}`,
-    `- Participants: ${formatParticipantNames(participants)}`,
-    '',
-    '## Summary',
-    summary?.overview ?? 'No summary is available for this meeting.',
-    '',
-    '## Key Decisions',
-    ...(decisions.length
-      ? decisions.map((decision) => `- ${decision.text}`)
-      : ['- No key decisions are available.']),
-    '',
-    '## Action Items',
-    ...(meetingActionItems.length
-      ? meetingActionItems.map(
-          (actionItem) =>
-            `- ${actionItem.title} — ${getMemberById(actionItem.assigneeId)?.name ?? 'Unassigned'} — due ${formatDateOnly(actionItem.dueDate)} — ${actionStatusLabels[actionItem.status]}`
-        )
-      : ['- No action items are available.']),
-    '',
-  ]
-
-  return lines.join('\n')
 }

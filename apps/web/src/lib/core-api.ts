@@ -41,6 +41,10 @@ export interface ApiResponseData<T> {
   meta: Record<string, unknown>
 }
 
+export interface ApiResponseDataWithEtag<T> extends ApiResponseData<T> {
+  etag?: string
+}
+
 export type FieldErrors = Record<string, string[]>
 
 export type CoreApiErrorKind = 'http' | 'network' | 'server' | 'malformed'
@@ -390,6 +394,24 @@ function unwrapResponse<T>(response: AxiosResponse<unknown>): T {
   return unwrapResponseWithMeta<T>(response).data
 }
 
+function readResponseEtag(response: AxiosResponse<unknown>): string | undefined {
+  const value =
+    typeof response.headers.get === 'function'
+      ? response.headers.get('etag')
+      : response.headers['etag'] ?? response.headers['ETag']
+
+  return typeof value === 'string' ? value : undefined
+}
+
+function unwrapResponseWithMetaAndEtag<T>(
+  response: AxiosResponse<unknown>
+): ApiResponseDataWithEtag<T> {
+  return {
+    ...unwrapResponseWithMeta<T>(response),
+    etag: readResponseEtag(response),
+  }
+}
+
 async function request<T>(config: AxiosRequestConfig): Promise<T> {
   try {
     const response = await coreApiAxios.request<ApiResponse<T>>(config)
@@ -410,6 +432,17 @@ async function requestWithMeta<T>(
   }
 }
 
+async function requestWithMetaAndEtag<T>(
+  config: AxiosRequestConfig
+): Promise<ApiResponseDataWithEtag<T>> {
+  try {
+    const response = await coreApiAxios.request<ApiResponse<T>>(config)
+    return unwrapResponseWithMetaAndEtag<T>(response)
+  } catch (error) {
+    throw normalizeCoreApiError(error)
+  }
+}
+
 export const coreApi = {
   request,
   requestWithMeta,
@@ -418,6 +451,9 @@ export const coreApi = {
   },
   getWithMeta<T>(url: string, config?: AxiosRequestConfig) {
     return requestWithMeta<T>({ ...config, method: 'GET', url })
+  },
+  getWithMetaAndEtag<T>(url: string, config?: AxiosRequestConfig) {
+    return requestWithMetaAndEtag<T>({ ...config, method: 'GET', url })
   },
   post<T>(url: string, data?: unknown, config?: AxiosRequestConfig) {
     return request<T>({ ...config, method: 'POST', url, data })
