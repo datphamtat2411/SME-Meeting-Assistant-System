@@ -4,18 +4,18 @@ import {
   createRouter,
   RouterProvider,
 } from '@tanstack/react-router'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { routeTree } from '@/routeTree.gen'
+import { beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { page } from 'vitest/browser'
-import { routeTree } from '@/routeTree.gen'
 import { CoreApiError, coreApi } from '@/lib/core-api'
+import { DirectionProvider } from '@/context/direction-provider'
+import { FontProvider } from '@/context/font-provider'
+import { ThemeProvider } from '@/context/theme-provider'
 import {
   AUTH_LIFECYCLE_STORAGE_KEY,
   resetAuthLifecycleAfterSignIn,
 } from '@/features/auth/session/auth-lifecycle'
-import { DirectionProvider } from '@/context/direction-provider'
-import { FontProvider } from '@/context/font-provider'
-import { ThemeProvider } from '@/context/theme-provider'
 
 vi.mock('react-top-loading-bar', () => ({
   default: () => null,
@@ -46,7 +46,7 @@ const apiError = (status: number, kind: 'http' | 'network' | 'server') =>
     kind,
   })
 
-let getCurrentUser: ReturnType<typeof vi.spyOn<typeof coreApi, 'get'>>
+let getCurrentUser: MockInstance
 
 function createQueryClient() {
   return new QueryClient({
@@ -112,10 +112,10 @@ describe('session restoration and protected routing', () => {
 
     const { screen } = await renderRoute('/calendar')
 
-    await expect.element(screen.getByText('Checking your session')).toBeInTheDocument()
     await expect
-      .element(screen.getByText('Calendar'))
-      .not.toBeInTheDocument()
+      .element(screen.getByText('Checking your session'))
+      .toBeInTheDocument()
+    await expect.element(screen.getByText('Calendar')).not.toBeInTheDocument()
     await expect
       .element(screen.getByRole('navigation', { name: 'Primary navigation' }))
       .not.toBeInTheDocument()
@@ -137,7 +137,9 @@ describe('session restoration and protected routing', () => {
     await expect
       .element(screen.getByRole('button', { name: 'Sign in' }))
       .toBeInTheDocument()
-    await expect.element(screen.getByText('Canonical User')).not.toBeInTheDocument()
+    await expect
+      .element(screen.getByText('Canonical User'))
+      .not.toBeInTheDocument()
     expect(getCurrentUser).toHaveBeenCalledTimes(2)
   })
 
@@ -159,19 +161,22 @@ describe('session restoration and protected routing', () => {
   it.each([
     ['network', apiError(0, 'network')],
     ['server', apiError(503, 'server')],
-  ] as const)('renders retryable unavailable for %s identity failures', async (_, error) => {
-    getCurrentUser.mockRejectedValue(error)
+  ] as const)(
+    'renders retryable unavailable for %s identity failures',
+    async (_, error) => {
+      getCurrentUser.mockRejectedValue(error)
 
-    const { router, screen } = await renderRoute('/calendar')
+      const { router, screen } = await renderRoute('/calendar')
 
-    await expect
-      .element(screen.getByText('Session temporarily unavailable'))
-      .toBeInTheDocument()
-    expect(router.state.location.pathname).toBe('/calendar')
-    await expect
-      .element(screen.getByRole('heading', { name: 'Sign in' }))
-      .not.toBeInTheDocument()
-  })
+      await expect
+        .element(screen.getByText('Session temporarily unavailable'))
+        .toBeInTheDocument()
+      expect(router.state.location.pathname).toBe('/calendar')
+      await expect
+        .element(screen.getByRole('heading', { name: 'Sign in' }))
+        .not.toBeInTheDocument()
+    }
+  )
 
   it('resets retryable recovery state before revalidating an unavailable session', async () => {
     getCurrentUser
@@ -207,7 +212,9 @@ describe('session restoration and protected routing', () => {
       '/sign-in?redirect=%2Fsettings%2Faccount'
     )
 
-    await expect.poll(() => router.state.location.pathname).toBe('/settings/account')
+    await expect
+      .poll(() => router.state.location.pathname)
+      .toBe('/settings/account')
     await expect.element(screen.getByText('Canonical User')).toBeInTheDocument()
     expect(router.state.location.search).toEqual({})
   })
@@ -227,7 +234,9 @@ describe('session restoration and protected routing', () => {
 
     const { screen } = await renderRoute('/sign-in')
 
-    await expect.element(screen.getByRole('button', { name: 'Sign in' })).toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: 'Sign in' }))
+      .toBeInTheDocument()
     expect(getCurrentUser).not.toHaveBeenCalled()
   })
 })

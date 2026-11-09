@@ -7,7 +7,9 @@ describe('SessionGate', () => {
   it('renders a neutral pending state without authenticated shell content', async () => {
     const screen = await render(<SessionGate state='pending' />)
 
-    await expect.element(screen.getByText('Checking your session')).toBeInTheDocument()
+    await expect
+      .element(screen.getByText('Checking your session'))
+      .toBeInTheDocument()
     await expect
       .element(screen.getByRole('navigation', { name: 'Primary navigation' }))
       .not.toBeInTheDocument()

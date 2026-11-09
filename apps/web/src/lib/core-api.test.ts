@@ -9,6 +9,7 @@ import {
   CoreApiError,
   coreApi,
   coreApiAxios,
+  getCsrfToken,
   resetCsrfToken,
   setCsrfToken,
 } from './core-api'
@@ -17,6 +18,7 @@ import {
   RECOVERY_REPLAY_SAFE_MARKER,
   beginRequestRecoveryLogout,
   resetRequestRecoveryState,
+  type RecoveryRequestConfig,
 } from './request-recovery'
 
 function makeResponse(
@@ -30,6 +32,16 @@ function makeResponse(
     statusText: status === 200 ? 'OK' : 'Error',
     headers: new AxiosHeaders(),
     config,
+  }
+}
+
+function successEnvelope<T>(data: T) {
+  return {
+    success: true,
+    code: 'SUCCESS',
+    message: 'Request completed successfully.',
+    data,
+    meta: {},
   }
 }
 
@@ -53,7 +65,7 @@ describe('core API transport', () => {
 
     const adapter: AxiosAdapter = async (config) => {
       requestConfig = config
-      return makeResponse(config, { data: { ok: true } })
+      return makeResponse(config, successEnvelope({ ok: true }))
     }
     coreApiAxios.defaults.adapter = adapter
 
@@ -82,7 +94,7 @@ describe('core API transport', () => {
 
     coreApiAxios.defaults.adapter = async (config) => {
       requestConfig = config
-      return makeResponse(config, { data: { csrfToken: 'csrf' } })
+      return makeResponse(config, successEnvelope({ csrfToken: 'csrf' }))
     }
 
     await coreApi.get('/auth/csrf')
@@ -164,6 +176,32 @@ describe('core API transport', () => {
     })
   })
 
+  it('rejects a non-success envelope even when the HTTP response is successful', async () => {
+    coreApiAxios.defaults.adapter = async (config) =>
+      makeResponse(config, {
+        success: false,
+        code: 'AUTHZ_FORBIDDEN',
+        message: 'Forbidden',
+        data: { ok: true },
+        meta: {},
+      })
+
+    await expect(coreApi.get('/protected')).rejects.toMatchObject({
+      code: 'MALFORMED_RESPONSE',
+      kind: 'malformed',
+      status: 200,
+    })
+  })
+
+  it('uses the rotated CSRF cookie instead of stale tab-local proof', () => {
+    vi.spyOn(document, 'cookie', 'get').mockReturnValue(
+      '__Host-sme-csrf=csrf-rotated-in-another-tab'
+    )
+    setCsrfToken('csrf-stale-in-this-tab')
+
+    expect(getCsrfToken()).toBe('csrf-rotated-in-another-tab')
+  })
+
   it('renews a credentialed safe request once and applies the rotated CSRF token on replay', async () => {
     setCsrfToken('csrf-before-refresh')
     const requests: Array<Parameters<AxiosAdapter>[0]> = []
@@ -193,7 +231,10 @@ describe('core API transport', () => {
         expect(config.data).toBeUndefined()
         expect(config.headers.get('Authorization')).toBeUndefined()
         return makeResponse(config, {
-          data: { sessionStatus: 'ACTIVE', csrfToken: 'csrf-rotated' },
+          ...successEnvelope({
+            sessionStatus: 'ACTIVE',
+            csrfToken: 'csrf-rotated',
+          }),
         })
       }
       protectedCalls += 1
@@ -206,17 +247,26 @@ describe('core API transport', () => {
           makeResponse(config, { code: 'AUTH_REQUIRED' }, 401)
         )
       }
-      return makeResponse(config, { data: { ok: true } })
+      return makeResponse(config, successEnvelope({ ok: true }))
     }
 
     await expect(
-      coreApi.post('/protected', { value: 1 }, { [RECOVERY_REPLAY_SAFE_MARKER]: true })
+      coreApi.post('/protected', { value: 1 }, {
+        [RECOVERY_REPLAY_SAFE_MARKER]: true,
+      } as RecoveryRequestConfig)
     ).resolves.toEqual({ ok: true })
 
     expect(protectedCalls).toBe(2)
-    expect(requests.filter(({ url }) => url === '/auth/refresh')).toHaveLength(1)
-    expect(requests.at(-1)?.headers.get('X-CSRF-Token')).toBe('csrf-rotated')
-    expect(requests.at(-1)?.[RECOVERY_DISABLED_MARKER]).toBeUndefined()
+    expect(requests.filter(({ url }) => url === '/auth/refresh')).toHaveLength(
+      1
+    )
+    const lastRequest = requests[requests.length - 1]
+    expect(lastRequest?.headers.get('X-CSRF-Token')).toBe('csrf-rotated')
+    expect(
+      (lastRequest as RecoveryRequestConfig | undefined)?.[
+        RECOVERY_DISABLED_MARKER
+      ]
+    ).toBeUndefined()
   })
 
   it('does not replay a state-changing request after renewal by default', async () => {
@@ -244,7 +294,10 @@ describe('core API transport', () => {
       }
       if (config.url === '/auth/refresh') {
         return makeResponse(config, {
-          data: { sessionStatus: 'ACTIVE', csrfToken: 'csrf-rotated' },
+          ...successEnvelope({
+            sessionStatus: 'ACTIVE',
+            csrfToken: 'csrf-rotated',
+          }),
         })
       }
       throw new AxiosError(
@@ -264,7 +317,8 @@ describe('core API transport', () => {
   })
 
   it('rejects a protected response that completes after logout begins', async () => {
-    let resolveRequest: (response: AxiosResponse<unknown>) => void = () => undefined
+    let resolveRequest: (response: AxiosResponse<unknown>) => void = () =>
+      undefined
     let requestStarted = false
     coreApiAxios.defaults.adapter = (config) =>
       new Promise((resolve) => {
@@ -276,7 +330,9 @@ describe('core API transport', () => {
     await expect.poll(() => requestStarted).toBe(true)
     beginRequestRecoveryLogout()
     resolveRequest(
-      makeResponse({} as Parameters<AxiosAdapter>[0], { data: { secret: true } })
+      makeResponse({} as Parameters<AxiosAdapter>[0], {
+        data: { secret: true },
+      })
     )
 
     await expect(request).rejects.toMatchObject({

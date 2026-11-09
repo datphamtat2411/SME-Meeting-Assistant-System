@@ -1,7 +1,8 @@
 import axios, {
-  AxiosError,
+  type AxiosError,
   type AxiosInstance,
   type AxiosRequestConfig,
+  type AxiosResponse,
   type InternalAxiosRequestConfig,
 } from 'axios'
 import { getCookie } from './cookies'
@@ -12,6 +13,7 @@ import {
   createRequestRecoveryCoordinator,
   getRequestRecoveryGeneration,
   isAuthLifecycleExemptRequest,
+  isSuccessfulApiEnvelope,
   isRequestRecoveryBlocked,
   isStaleAuthLifecycleResponse,
   registerRequestRecoveryCoordinator,
@@ -27,7 +29,11 @@ export {
 } from './request-recovery'
 
 export interface ApiResponse<T> {
+  success: true
+  code: string
+  message: string
   data: T
+  meta: Record<string, unknown>
 }
 
 export type FieldErrors = Record<string, string[]>
@@ -97,7 +103,7 @@ export function resetCsrfToken(): void {
 }
 
 export function getCsrfToken(): string | undefined {
-  return csrfToken ?? getCookie('__Host-sme-csrf') ?? undefined
+  return getCookie('__Host-sme-csrf') ?? csrfToken ?? undefined
 }
 
 const coreApiBaseUrl = import.meta.env.VITE_CORE_API_BASE_URL || '/api/v1'
@@ -230,6 +236,10 @@ function getErrorPayloadValue(
 function normalizeBackendError(error: AxiosError): CoreApiError {
   const status = error.response?.status
   const payload = error.response?.data
+  const retryAfter =
+    typeof error.response?.headers?.get === 'function'
+      ? error.response.headers.get('retry-after')
+      : undefined
   const kind: CoreApiErrorKind =
     status !== undefined && status >= 500
       ? 'server'
@@ -250,10 +260,7 @@ function normalizeBackendError(error: AxiosError): CoreApiError {
       readString(getErrorPayloadValue(payload, 'code')) ??
       readString(getErrorPayloadValue(payload, 'errorCode')),
     fieldErrors,
-    retryAfter:
-      typeof error.response?.headers?.get === 'function'
-        ? (error.response.headers.get('retry-after') ?? undefined)
-        : undefined,
+    retryAfter: typeof retryAfter === 'string' ? retryAfter : undefined,
     kind,
     cause: error,
   })
@@ -356,10 +363,8 @@ coreApiAxios.interceptors.response.use(
   }
 )
 
-function unwrapResponse<T>(
-  response: Awaited<ReturnType<AxiosInstance['request']>>
-): T {
-  if (!isRecord(response.data) || !('data' in response.data)) {
+function unwrapResponse<T>(response: AxiosResponse<unknown>): T {
+  if (!isSuccessfulApiEnvelope(response.data)) {
     throw new CoreApiError({
       message: 'Core API returned a malformed response.',
       status: response.status,

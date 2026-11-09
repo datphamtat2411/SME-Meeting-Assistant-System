@@ -8,13 +8,13 @@ import {
 import { RouterProvider, createRouter } from '@tanstack/react-router'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import { handleServerError } from '@/lib/handle-server-error'
+import { setRequestRecoverySessionLossHandler } from '@/lib/request-recovery'
+import { configureAuthLifecycle } from '@/features/auth/session/auth-lifecycle'
 import {
   clearCurrentUserCache,
   getSafeSessionRedirect,
 } from '@/features/auth/session/current-user'
-import { configureAuthLifecycle } from '@/features/auth/session/auth-lifecycle'
-import { handleServerError } from '@/lib/handle-server-error'
-import { setRequestRecoverySessionLossHandler } from '@/lib/request-recovery'
 import { DirectionProvider } from './context/direction-provider'
 import { FontProvider } from './context/font-provider'
 import { ThemeProvider } from './context/theme-provider'
@@ -43,7 +43,10 @@ const queryClient = new QueryClient({
     mutations: {
       onError: (error) => {
         const apiError = normalizeCoreApiError(error)
-        if (apiError.recoveryOutcome || [401, 403, 429].includes(apiError.status ?? 0)) {
+        if (
+          apiError.recoveryOutcome ||
+          [401, 403, 429].includes(apiError.status ?? 0)
+        ) {
           return
         }
 

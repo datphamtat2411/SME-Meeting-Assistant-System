@@ -55,7 +55,10 @@ describe('SignOutDialog', () => {
 
     expect(lifecycle.begin).toHaveBeenCalledOnce()
     expect(lifecycle.begin).toHaveBeenCalledWith(
-      expect.objectContaining({ redirect: MOCK_HREF, navigate: expect.any(Function) })
+      expect.objectContaining({
+        redirect: MOCK_HREF,
+        navigate: expect.any(Function),
+      })
     )
     expect(navigate).toHaveBeenCalledWith({
       to: '/sign-in',

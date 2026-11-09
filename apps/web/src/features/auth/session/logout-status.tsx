@@ -1,7 +1,13 @@
 import { useSyncExternalStore } from 'react'
 import { Loader2, RotateCcw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card'
 import {
   getAuthLifecycleState,
   retryAuthLifecycleLogout,
@@ -44,6 +50,7 @@ export function LogoutStatus({ state, onRetry }: LogoutStatusProps) {
         <Button
           type='button'
           variant={isPending ? 'outline' : 'default'}
+          disabled={isPending}
           onClick={onRetry ?? (() => void retryAuthLifecycleLogout())}
         >
           {isPending ? <Loader2 className='animate-spin' /> : <RotateCcw />}

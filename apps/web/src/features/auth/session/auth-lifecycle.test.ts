@@ -150,10 +150,17 @@ describe('auth lifecycle coordinator', () => {
         beginRecoveryBarrier: () => immediateBarrier(),
         withRecoveryLock: async (callback) => callback(),
       },
-      { sourceId: 'tab-a', broadcast: firstChannel, storage: null, storageEventTarget: null }
+      {
+        sourceId: 'tab-a',
+        broadcast: firstChannel,
+        storage: null,
+        storageEventTarget: null,
+      }
     )
 
-    await expect(first.startLogout()).resolves.toMatchObject({ state: 'confirmed' })
+    await expect(first.startLogout()).resolves.toMatchObject({
+      state: 'confirmed',
+    })
     expect(secondContain).toHaveBeenCalledOnce()
     expect(firstLogout).toHaveBeenCalledOnce()
     expect(secondLogout).not.toHaveBeenCalled()
@@ -177,7 +184,12 @@ describe('auth lifecycle coordinator', () => {
         beginRecoveryBarrier: () => immediateBarrier(9),
         withRecoveryLock: async (callback) => callback(),
       },
-      { sourceId: 'tab-new', broadcast: null, storage, storageEventTarget: null }
+      {
+        sourceId: 'tab-new',
+        broadcast: null,
+        storage,
+        storageEventTarget: null,
+      }
     )
 
     expect(coordinator.getState()).toBe('uncertain')
@@ -192,6 +204,92 @@ describe('auth lifecycle coordinator', () => {
     coordinator.dispose()
   })
 
+  it('replays initial containment after lifecycle callbacks are configured', () => {
+    const storage = memoryStorage(
+      JSON.stringify({
+        sourceId: 'old-tab',
+        operationId: 'operation-10',
+        generation: 10,
+        status: 'logout-started',
+      })
+    )
+    const contain = vi.fn()
+    const navigate = vi.fn()
+    const coordinator = createAuthLifecycleCoordinator(
+      {
+        logout: vi.fn(async () => undefined),
+        beginRecoveryBarrier: () => immediateBarrier(10),
+        withRecoveryLock: async (callback) => callback(),
+      },
+      {
+        sourceId: 'new-tab',
+        broadcast: null,
+        storage,
+        storageEventTarget: null,
+      }
+    )
+
+    coordinator.configure({ onContainment: contain, onNavigate: navigate })
+
+    expect(contain).toHaveBeenCalledOnce()
+    expect(navigate).toHaveBeenCalledWith(undefined)
+    coordinator.dispose()
+  })
+
+  it('does not retry logout while another tab still owns a pending operation', async () => {
+    const firstChannel = new TestBroadcast()
+    const secondChannel = new TestBroadcast([firstChannel])
+    firstChannel['peers'].push(secondChannel)
+    let resolveLogout: () => void = () => undefined
+    const firstLogout = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveLogout = resolve
+        })
+    )
+    const secondLogout = vi.fn(async () => undefined)
+    const first = createAuthLifecycleCoordinator(
+      {
+        logout: firstLogout,
+        beginRecoveryBarrier: () => immediateBarrier(),
+        withRecoveryLock: async (callback) => callback(),
+      },
+      {
+        sourceId: 'tab-a',
+        broadcast: firstChannel,
+        storage: null,
+        storageEventTarget: null,
+      }
+    )
+    const second = createAuthLifecycleCoordinator(
+      {
+        logout: secondLogout,
+        beginRecoveryBarrier: () => immediateBarrier(),
+        withRecoveryLock: async (callback) => callback(),
+      },
+      {
+        sourceId: 'tab-b',
+        broadcast: secondChannel,
+        storage: null,
+        storageEventTarget: null,
+      }
+    )
+
+    const firstAttempt = first.startLogout()
+    await vi.waitFor(() => expect(firstLogout).toHaveBeenCalledOnce())
+    expect(second.getState()).toBe('pending')
+
+    const retryAttempt = second.retryLogout()
+    expect(secondLogout).not.toHaveBeenCalled()
+
+    resolveLogout()
+    await expect(firstAttempt).resolves.toMatchObject({ state: 'confirmed' })
+    await expect(retryAttempt).resolves.toMatchObject({ state: 'confirmed' })
+    expect(secondLogout).not.toHaveBeenCalled()
+    second.dispose()
+    first.dispose()
+  })
+
   it('does not report success when shared lock coordination is unavailable', async () => {
     const logout = vi.fn(async () => undefined)
     const coordinator = createAuthLifecycleCoordinator(
@@ -199,13 +297,22 @@ describe('auth lifecycle coordinator', () => {
         logout,
         beginRecoveryBarrier: () => immediateBarrier(),
         withRecoveryLock: async () => {
-          throw Object.assign(new Error('unavailable'), { code: 'RECOVERY_UNAVAILABLE' })
+          throw Object.assign(new Error('unavailable'), {
+            code: 'RECOVERY_UNAVAILABLE',
+          })
         },
       },
-      { sourceId: 'tab-a', broadcast: null, storage: null, storageEventTarget: null }
+      {
+        sourceId: 'tab-a',
+        broadcast: null,
+        storage: null,
+        storageEventTarget: null,
+      }
     )
 
-    await expect(coordinator.startLogout()).resolves.toMatchObject({ state: 'uncertain' })
+    await expect(coordinator.startLogout()).resolves.toMatchObject({
+      state: 'uncertain',
+    })
     expect(logout).not.toHaveBeenCalled()
     coordinator.dispose()
   })

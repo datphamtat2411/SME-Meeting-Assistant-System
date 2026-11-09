@@ -28,6 +28,16 @@ function makeResponse(
   }
 }
 
+function successEnvelope<T>(data: T) {
+  return {
+    success: true,
+    code: 'SUCCESS',
+    message: 'Request completed successfully.',
+    data,
+    meta: {},
+  }
+}
+
 describe('signIn', () => {
   beforeEach(() => {
     resetCsrfToken()
@@ -42,11 +52,18 @@ describe('signIn', () => {
     coreApiAxios.defaults.adapter = async (config) => {
       requestConfigs.push(config)
       if (requestConfigs.length === 1) {
-        return makeResponse(config, { data: { csrfToken: 'pre-login-csrf' } })
+        return makeResponse(
+          config,
+          successEnvelope({ csrfToken: 'pre-login-csrf' })
+        )
       }
-      return makeResponse(config, {
-        data: { sessionStatus: 'ACTIVE', csrfToken: 'post-login-csrf' },
-      })
+      return makeResponse(
+        config,
+        successEnvelope({
+          sessionStatus: 'ACTIVE',
+          csrfToken: 'post-login-csrf',
+        })
+      )
     }
 
     await expect(signIn(credentials)).resolves.toEqual({
@@ -64,10 +81,12 @@ describe('signIn', () => {
 
     coreApiAxios.defaults.adapter = async (config) => {
       requestConfigs.push(config)
-      return makeResponse(config, { data: { ok: true } })
+      return makeResponse(config, successEnvelope({ ok: true }))
     }
     await coreApi.post('/auth/session-check', {})
-    expect(requestConfigs[2]?.headers.get('X-CSRF-Token')).toBe('post-login-csrf')
+    expect(requestConfigs[2]?.headers.get('X-CSRF-Token')).toBe(
+      'post-login-csrf'
+    )
   })
 
   it('does not submit credentials when CSRF bootstrap fails', async () => {
@@ -84,13 +103,61 @@ describe('signIn', () => {
     expect(requestCount).toBe(1)
   })
 
+  it('forces a fresh pre-login CSRF proof after session loss', async () => {
+    let cookie = '__Host-sme-csrf=stale-session-proof'
+    const originalCookie = Object.getOwnPropertyDescriptor(document, 'cookie')
+    Object.defineProperty(document, 'cookie', {
+      configurable: true,
+      get: () => cookie,
+    })
+
+    const requestConfigs: Array<Parameters<AxiosAdapter>[0]> = []
+    coreApiAxios.defaults.adapter = async (config) => {
+      requestConfigs.push(config)
+      if (config.url === '/auth/csrf') {
+        cookie = '__Host-sme-csrf=fresh-pre-login-proof'
+        return makeResponse(
+          config,
+          successEnvelope({ csrfToken: 'fresh-pre-login-proof' })
+        )
+      }
+      return makeResponse(
+        config,
+        successEnvelope({
+          sessionStatus: 'ACTIVE',
+          csrfToken: 'post-login-csrf',
+        })
+      )
+    }
+
+    try {
+      await expect(
+        signIn({ email: 'user@example.com', password: 'password' })
+      ).resolves.toMatchObject({ sessionStatus: 'ACTIVE' })
+    } finally {
+      if (originalCookie) {
+        Object.defineProperty(document, 'cookie', originalCookie)
+      } else {
+        delete (document as Partial<Document> & { cookie?: string }).cookie
+      }
+    }
+
+    expect(requestConfigs.map(({ url }) => url)).toEqual([
+      '/auth/csrf',
+      '/auth/login',
+    ])
+    expect(requestConfigs[1]?.headers.get('X-CSRF-Token')).toBe(
+      'fresh-pre-login-proof'
+    )
+  })
+
   it('rejects a login response that is not an active session with a rotated CSRF token', async () => {
     let requestCount = 0
     coreApiAxios.defaults.adapter = async (config) => {
       requestCount += 1
       return requestCount === 1
-        ? makeResponse(config, { data: { csrfToken: 'pre-login-csrf' } })
-        : makeResponse(config, { data: { sessionStatus: 'ACTIVE' } })
+        ? makeResponse(config, successEnvelope({ csrfToken: 'pre-login-csrf' }))
+        : makeResponse(config, successEnvelope({ sessionStatus: 'ACTIVE' }))
     }
 
     await expect(

@@ -1,25 +1,59 @@
 import { describe, expect, it, vi } from 'vitest'
+import { AUTH_LIFECYCLE_CHANNEL_NAME } from '@/features/auth/session/auth-lifecycle'
 import {
   createRequestRecoveryCoordinator,
+  AUTH_LIFECYCLE_GENERATION_MARKER,
+  AUTH_LIFECYCLE_STALE_RESPONSE_CODE,
   RECOVERY_DISABLED_MARKER,
   RECOVERY_CHANNEL_NAME,
   RECOVERY_MARKER,
   RECOVERY_REPLAY_SAFE_MARKER,
+  type RecoveryBroadcast,
   type RecoveryLockManager,
   type RecoveryRequestConfig,
   type RecoveryResponse,
 } from './request-recovery'
-import { AUTH_LIFECYCLE_CHANNEL_NAME } from '@/features/auth/session/auth-lifecycle'
 
 type TestError = {
-  config: RecoveryRequestConfig
+  config?: RecoveryRequestConfig
   status?: number
   kind?: 'http' | 'network' | 'server' | 'malformed'
   message?: string
 }
 
 function response(data: unknown, status = 200): RecoveryResponse {
-  return { data, status, headers: {} }
+  return {
+    data: {
+      success: true,
+      code: 'SUCCESS',
+      message: 'Request completed successfully.',
+      data,
+      meta: {},
+    },
+    status,
+    headers: {},
+  }
+}
+
+class TestBroadcast implements RecoveryBroadcast {
+  private listener?: (event: { data: unknown }) => void
+
+  addEventListener(
+    _type: 'message',
+    listener: (event: { data: unknown }) => void
+  ): void {
+    this.listener = listener
+  }
+
+  removeEventListener(): void {
+    this.listener = undefined
+  }
+
+  postMessage(): void {}
+
+  receive(data: unknown): void {
+    this.listener?.({ data })
+  }
 }
 
 function unauthorized(config: RecoveryRequestConfig): TestError {
@@ -34,7 +68,10 @@ function immediateLocks(): RecoveryLockManager {
 
 function coordinatorFor(
   request: (config: RecoveryRequestConfig) => Promise<RecoveryResponse>,
-  options: { locks?: RecoveryLockManager | null } = {}
+  options: {
+    locks?: RecoveryLockManager | null
+    broadcast?: RecoveryBroadcast | null
+  } = {}
 ) {
   let csrfToken: string | null = 'csrf-current'
   const confirmedLoss = { count: 0 }
@@ -65,7 +102,7 @@ function coordinatorFor(
     },
     {
       locks: options.locks === undefined ? immediateLocks() : options.locks,
-      broadcast: null,
+      broadcast: options.broadcast === undefined ? null : options.broadcast,
       storage: null,
       storageEventTarget: null,
     }
@@ -102,7 +139,7 @@ describe('request recovery coordinator', () => {
     await Promise.resolve()
     expect(refreshCalls).toBe(1)
     resolveRefresh(
-      response({ data: { sessionStatus: 'ACTIVE', csrfToken: 'csrf-rotated' } })
+      response({ sessionStatus: 'ACTIVE', csrfToken: 'csrf-rotated' })
     )
 
     await expect(first).resolves.toMatchObject({ type: 'retry' })
@@ -115,7 +152,9 @@ describe('request recovery coordinator', () => {
       expect(firstAction.config[RECOVERY_MARKER]).toBe(true)
       expect(secondAction.config[RECOVERY_MARKER]).toBe(true)
     }
-    expect(requests.filter(({ url }) => url === '/auth/refresh')).toHaveLength(1)
+    expect(requests.filter(({ url }) => url === '/auth/refresh')).toHaveLength(
+      1
+    )
   })
 
   it('refreshes a mutation but does not replay it without an explicit replay-safe marker', async () => {
@@ -126,7 +165,7 @@ describe('request recovery coordinator', () => {
         throw unauthorized(config)
       }
       if (config.url === '/auth/refresh') {
-        return response({ data: { sessionStatus: 'ACTIVE', csrfToken: 'csrf-2' } })
+        return response({ sessionStatus: 'ACTIVE', csrfToken: 'csrf-2' })
       }
       throw new Error('unexpected request')
     })
@@ -147,7 +186,7 @@ describe('request recovery coordinator', () => {
         throw unauthorized(config)
       }
       if (config.url === '/auth/refresh') {
-        return response({ data: { sessionStatus: 'ACTIVE', csrfToken: 'csrf-2' } })
+        return response({ sessionStatus: 'ACTIVE', csrfToken: 'csrf-2' })
       }
       throw new Error('unexpected request')
     })
@@ -186,13 +225,13 @@ describe('request recovery coordinator', () => {
     const request = async (config: RecoveryRequestConfig) => {
       if (config[RECOVERY_DISABLED_MARKER] && config.url === '/auth/me') {
         probeCalls += 1
-        if (renewed) return response({ data: { userId: 'existing' } })
+        if (renewed) return response({ userId: 'existing' })
         throw unauthorized(config)
       }
       if (config.url === '/auth/refresh') {
         refreshCalls += 1
         renewed = true
-        return response({ data: { sessionStatus: 'ACTIVE', csrfToken: 'csrf-2' } })
+        return response({ sessionStatus: 'ACTIVE', csrfToken: 'csrf-2' })
       }
       throw new Error('unexpected request')
     }
@@ -215,30 +254,37 @@ describe('request recovery coordinator', () => {
     ['throttled', { status: 429, kind: 'http' as const }, 'throttled'],
     ['network', { kind: 'network' as const }, 'uncertain'],
     ['server', { status: 503, kind: 'server' as const }, 'uncertain'],
-  ] as const)('keeps %s renewal outcomes distinct', async (_, refreshError, outcome) => {
-    let refreshCalls = 0
-    const { coordinator } = coordinatorFor(async (config) => {
-      if (config[RECOVERY_DISABLED_MARKER] && config.url === '/auth/me') {
-        throw unauthorized(config)
-      }
-      if (config.url === '/auth/refresh') {
-        refreshCalls += 1
-        throw { ...refreshError, message: 'refresh failed' } satisfies TestError
-      }
-      throw new Error('unexpected request')
-    })
+  ] as const)(
+    'keeps %s renewal outcomes distinct',
+    async (_, refreshError, outcome) => {
+      let refreshCalls = 0
+      const { coordinator } = coordinatorFor(async (config) => {
+        if (config[RECOVERY_DISABLED_MARKER] && config.url === '/auth/me') {
+          throw unauthorized(config)
+        }
+        if (config.url === '/auth/refresh') {
+          refreshCalls += 1
+          throw {
+            ...refreshError,
+            message: 'refresh failed',
+          } satisfies TestError
+        }
+        throw new Error('unexpected request')
+      })
 
-    const first = await coordinator.recover(
-      unauthorized({ method: 'GET', url: '/items' })
-    )
-    const second = await coordinator.recover(
-      unauthorized({ method: 'GET', url: '/items-2' })
-    )
+      const first = await coordinator.recover(
+        unauthorized({ method: 'GET', url: '/items' })
+      )
+      const second = await coordinator.recover(
+        unauthorized({ method: 'GET', url: '/items-2' })
+      )
 
-    expect(first).toMatchObject({ type: 'failure', failure: { outcome } })
-    if (outcome === 'uncertain') expect(second).toMatchObject({ type: 'failure', failure: { outcome } })
-    expect(refreshCalls).toBe(outcome === 'uncertain' ? 1 : 2)
-  })
+      expect(first).toMatchObject({ type: 'failure', failure: { outcome } })
+      if (outcome === 'uncertain')
+        expect(second).toMatchObject({ type: 'failure', failure: { outcome } })
+      expect(refreshCalls).toBe(outcome === 'uncertain' ? 1 : 2)
+    }
+  )
 
   it('returns recovery-unavailable when lock coordination is not available', async () => {
     let refreshCalls = 0
@@ -268,7 +314,7 @@ describe('request recovery coordinator', () => {
           throw unauthorized(config)
         }
         if (config.url === '/auth/refresh') {
-          return response({ data: { sessionStatus: 'ACTIVE', csrfToken: 'csrf-2' } })
+          return response({ sessionStatus: 'ACTIVE', csrfToken: 'csrf-2' })
         }
         throw new Error('unexpected request')
       }
@@ -319,7 +365,7 @@ describe('request recovery coordinator', () => {
     expect(barrierFinished).toBe(false)
 
     resolveRefresh(
-      response({ data: { sessionStatus: 'ACTIVE', csrfToken: 'should-not-rotate' } })
+      response({ sessionStatus: 'ACTIVE', csrfToken: 'should-not-rotate' })
     )
 
     await expect(recovery).resolves.toMatchObject({
@@ -330,8 +376,229 @@ describe('request recovery coordinator', () => {
     expect(getCsrf()).toBe('csrf-current')
   })
 
+  it('does not classify a refresh failure after logout begins as session uncertainty', async () => {
+    let refreshStarted = false
+    let rejectRefresh: (error: unknown) => void = () => undefined
+    const refreshResponse = new Promise<RecoveryResponse>(
+      (_resolve, reject) => {
+        rejectRefresh = reject
+      }
+    )
+    const { coordinator, confirmedLoss, getCsrf } = coordinatorFor(
+      async (config) => {
+        if (config[RECOVERY_DISABLED_MARKER] && config.url === '/auth/me') {
+          throw unauthorized(config)
+        }
+        if (config.url === '/auth/refresh') {
+          refreshStarted = true
+          return refreshResponse
+        }
+        throw new Error('unexpected request')
+      }
+    )
+
+    const recovery = coordinator.recover(
+      unauthorized({ method: 'GET', url: '/items' })
+    )
+    await vi.waitFor(() => expect(refreshStarted).toBe(true))
+
+    coordinator.beginAuthLifecycleLogout()
+    rejectRefresh({
+      status: 503,
+      kind: 'server',
+      message: 'late refresh failure',
+    })
+
+    await expect(recovery).resolves.toMatchObject({
+      type: 'failure',
+      failure: { code: 'AUTH_LIFECYCLE_BLOCKED' },
+    })
+    expect(confirmedLoss.count).toBe(0)
+    expect(getCsrf()).toBe('csrf-current')
+  })
+
+  it('does not accept a malformed refresh response after logout begins', async () => {
+    let resolveRefresh: (value: RecoveryResponse) => void = () => undefined
+    const refreshResponse = new Promise<RecoveryResponse>((resolve) => {
+      resolveRefresh = resolve
+    })
+    const { coordinator, getCsrf } = coordinatorFor(async (config) => {
+      if (config[RECOVERY_DISABLED_MARKER] && config.url === '/auth/me') {
+        throw unauthorized(config)
+      }
+      if (config.url === '/auth/refresh') return refreshResponse
+      throw new Error('unexpected request')
+    })
+
+    const recovery = coordinator.recover(
+      unauthorized({ method: 'GET', url: '/items' })
+    )
+    await Promise.resolve()
+    coordinator.beginAuthLifecycleLogout()
+    resolveRefresh(response({ sessionStatus: 'ACTIVE' }))
+
+    await expect(recovery).resolves.toMatchObject({
+      type: 'failure',
+      failure: { code: 'AUTH_LIFECYCLE_BLOCKED' },
+    })
+    expect(getCsrf()).toBe('csrf-current')
+  })
+
+  it('does not renew from a malformed session probe response', async () => {
+    let refreshCalls = 0
+    const { coordinator } = coordinatorFor(async (config) => {
+      if (config[RECOVERY_DISABLED_MARKER] && config.url === '/auth/me') {
+        return {
+          status: 200,
+          data: {
+            success: true,
+            code: 'SUCCESS',
+            message: 'Request completed successfully.',
+            data: null,
+            meta: {},
+          },
+        }
+      }
+      if (config.url === '/auth/refresh') {
+        refreshCalls += 1
+        return response({ sessionStatus: 'ACTIVE', csrfToken: 'csrf-2' })
+      }
+      throw new Error('unexpected request')
+    })
+
+    const action = await coordinator.recover(
+      unauthorized({ method: 'GET', url: '/items' })
+    )
+
+    expect(action).toMatchObject({
+      type: 'failure',
+      failure: {
+        outcome: 'uncertain',
+        code: 'MALFORMED_SESSION_PROBE_RESPONSE',
+      },
+    })
+    expect(refreshCalls).toBe(0)
+  })
+
+  it('rejects a false refresh success envelope without rotating recovery state', async () => {
+    const { coordinator, getCsrf } = coordinatorFor(async (config) => {
+      if (config[RECOVERY_DISABLED_MARKER] && config.url === '/auth/me') {
+        throw unauthorized(config)
+      }
+      if (config.url === '/auth/refresh') {
+        return {
+          status: 200,
+          data: {
+            success: false,
+            code: 'AUTH_REQUIRED',
+            message: 'Session is not active.',
+            data: { sessionStatus: 'ACTIVE', csrfToken: 'csrf-forged' },
+            meta: {},
+          },
+        }
+      }
+      throw new Error('unexpected request')
+    })
+
+    const action = await coordinator.recover(
+      unauthorized({ method: 'GET', url: '/items' })
+    )
+
+    expect(action).toMatchObject({
+      type: 'failure',
+      failure: { outcome: 'uncertain', code: 'MALFORMED_REFRESH_RESPONSE' },
+    })
+    expect(getCsrf()).toBe('csrf-current')
+  })
+
+  it('does not let an old recovered 401 clear a session after sign-in', async () => {
+    const { coordinator, confirmedLoss, getCsrf } = coordinatorFor(async () => {
+      throw new Error('stale request must not be replayed')
+    })
+    const staleConfig: RecoveryRequestConfig = {
+      method: 'GET',
+      url: '/items',
+      [RECOVERY_MARKER]: true,
+      [AUTH_LIFECYCLE_GENERATION_MARKER]: 0,
+    }
+
+    coordinator.resetAfterSignIn()
+    expect(coordinator.getAuthLifecycleGeneration()).toBe(1)
+    expect(coordinator.isStaleAuthLifecycleResponse(staleConfig)).toBe(true)
+
+    await expect(
+      coordinator.recover(unauthorized(staleConfig))
+    ).resolves.toMatchObject({
+      type: 'failure',
+      failure: {
+        code: AUTH_LIFECYCLE_STALE_RESPONSE_CODE,
+        retryable: false,
+      },
+    })
+    coordinator.noteFailedResponse(unauthorized(staleConfig))
+
+    expect(confirmedLoss.count).toBe(0)
+    expect(getCsrf()).toBe('csrf-current')
+  })
+
+  it('ignores lower-generation recovery coordination messages', async () => {
+    const broadcast = new TestBroadcast()
+    let refreshCalls = 0
+    const { coordinator } = coordinatorFor(
+      async (config) => {
+        if (config[RECOVERY_DISABLED_MARKER] && config.url === '/auth/me') {
+          throw unauthorized(config)
+        }
+        if (config.url === '/auth/refresh') {
+          refreshCalls += 1
+          return response({ sessionStatus: 'ACTIVE', csrfToken: 'csrf-2' })
+        }
+        throw new Error('unexpected request')
+      },
+      { broadcast }
+    )
+
+    broadcast.receive({
+      sourceId: 'other-tab',
+      operationId: 'renewal-5',
+      generation: 5,
+      status: 'succeeded',
+    })
+    broadcast.receive({
+      sourceId: 'other-tab',
+      operationId: 'renewal-4',
+      generation: 4,
+      status: 'uncertain',
+    })
+
+    await expect(
+      coordinator.recover(unauthorized({ method: 'GET', url: '/items' }))
+    ).resolves.toMatchObject({ type: 'retry' })
+    expect(refreshCalls).toBe(1)
+
+    broadcast.receive({
+      sourceId: 'other-tab',
+      operationId: 'renewal-7',
+      generation: 7,
+      status: 'uncertain',
+    })
+    broadcast.receive({
+      sourceId: 'other-tab',
+      operationId: 'renewal-6',
+      generation: 6,
+      status: 'succeeded',
+    })
+
+    await expect(
+      coordinator.recover(unauthorized({ method: 'GET', url: '/items-2' }))
+    ).resolves.toMatchObject({
+      type: 'failure',
+      failure: { outcome: 'uncertain' },
+    })
+  })
+
   it('uses the existing refresh lock for logout coordination and reports unavailable locks', async () => {
-    const request = vi.fn(async () => response({ data: null }))
+    const request = vi.fn(async () => response(null))
     const coordinator = createRequestRecoveryCoordinator(
       {
         request,
@@ -343,7 +610,9 @@ describe('request recovery coordinator', () => {
       { locks: null, broadcast: null, storage: null, storageEventTarget: null }
     )
 
-    await expect(coordinator.withRecoveryLock(() => 'logout')).rejects.toMatchObject({
+    await expect(
+      coordinator.withRecoveryLock(() => 'logout')
+    ).rejects.toMatchObject({
       code: 'RECOVERY_UNAVAILABLE',
     })
     expect(request).not.toHaveBeenCalled()

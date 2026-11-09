@@ -26,9 +26,7 @@ export function AppSidebar({ user }: { user?: UserPresentation }) {
           ))}
         </nav>
       </SidebarContent>
-      <SidebarFooter>
-        {user && <NavUser user={user} />}
-      </SidebarFooter>
+      <SidebarFooter>{user && <NavUser user={user} />}</SidebarFooter>
       <SidebarRail />
     </Sidebar>
   )

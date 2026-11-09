@@ -1,22 +1,22 @@
 import { z } from 'zod'
 import { createFileRoute, redirect, useRouter } from '@tanstack/react-router'
-import { SignIn } from '@/features/auth/sign-in'
+import {
+  isSessionLossConfirmed,
+  prepareRequestRecoveryRetry,
+} from '@/lib/request-recovery'
+import {
+  getAuthLifecycleState,
+  isAuthLifecycleBlocking,
+} from '@/features/auth/session/auth-lifecycle'
 import {
   classifySessionFailure,
   getSafeSessionRedirect,
   loadCurrentUser,
   SessionGuardError,
 } from '@/features/auth/session/current-user'
-import { SessionGate } from '@/features/auth/session/session-gate'
-import {
-  getAuthLifecycleState,
-  isAuthLifecycleBlocking,
-} from '@/features/auth/session/auth-lifecycle'
 import { LogoutStatus } from '@/features/auth/session/logout-status'
-import {
-  isSessionLossConfirmed,
-  prepareRequestRecoveryRetry,
-} from '@/lib/request-recovery'
+import { SessionGate } from '@/features/auth/session/session-gate'
+import { SignIn } from '@/features/auth/sign-in'
 
 const searchSchema = z.object({
   redirect: z.string().optional(),

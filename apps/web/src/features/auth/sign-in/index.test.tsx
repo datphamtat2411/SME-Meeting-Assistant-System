@@ -1,6 +1,6 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { SignIn } from './index'
 import { SignIn2 } from './sign-in-2'
 
@@ -41,12 +41,9 @@ describe('sign-in variants', () => {
     await expect
       .element(screen.getByRole('button', { name: /^Sign in$/i }).first())
       .toBeInTheDocument()
-    await expect
-      .element(screen.getByText(/^Sign Up$/i))
-      .not.toBeInTheDocument()
+    await expect.element(screen.getByText(/^Sign Up$/i)).not.toBeInTheDocument()
     await expect
       .element(screen.getByText(/Don't have an account/i))
       .not.toBeInTheDocument()
   })
-
 })

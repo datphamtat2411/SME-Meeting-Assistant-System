@@ -8,13 +8,8 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { AuthLayout } from '../auth-layout'
-import {
-  retryAuthLifecycleLogout,
-} from '../session/auth-lifecycle'
-import {
-  LogoutStatus,
-  useAuthLifecycleState,
-} from '../session/logout-status'
+import { retryAuthLifecycleLogout } from '../session/auth-lifecycle'
+import { LogoutStatus, useAuthLifecycleState } from '../session/logout-status'
 import { UserAuthForm } from './components/user-auth-form'
 
 export function SignIn() {

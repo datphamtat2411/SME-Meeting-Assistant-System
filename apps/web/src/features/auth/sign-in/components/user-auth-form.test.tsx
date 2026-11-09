@@ -1,7 +1,7 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, type RenderResult } from 'vitest-browser-react'
 import { type Locator, userEvent } from 'vitest/browser'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { CoreApiError } from '@/lib/core-api'
 import { currentUserQueryKey } from '@/features/auth/session/current-user'
 import { UserAuthForm } from './user-auth-form'
@@ -106,7 +106,10 @@ describe('UserAuthForm', () => {
     await userEvent.click(signInButton)
 
     await vi.waitFor(() =>
-      expect(signInMock).toHaveBeenCalledWith({ email: 'a@b.com', password: 'x' })
+      expect(signInMock).toHaveBeenCalledWith({
+        email: 'a@b.com',
+        password: 'x',
+      })
     )
     expect(navigate).toHaveBeenCalledWith({ to: '/', replace: true })
   })
@@ -230,23 +233,26 @@ describe('UserAuthForm', () => {
     [403, 'Sign-in was blocked. Refresh the page and try again.'],
     [429, 'Too many sign-in attempts. Please wait a moment and try again.'],
     [503, 'The service is temporarily unavailable. Please try again later.'],
-  ] as const)('renders a truthful %s error message', async (status, message) => {
-    signInMock.mockRejectedValue(
-      new CoreApiError({
-        message: 'backend message must not drive this UI',
-        status,
-        code: 'BACKEND_CODE',
-        kind: status >= 500 ? 'server' : 'http',
-      })
-    )
+  ] as const)(
+    'renders a truthful %s error message',
+    async (status, message) => {
+      signInMock.mockRejectedValue(
+        new CoreApiError({
+          message: 'backend message must not drive this UI',
+          status,
+          code: 'BACKEND_CODE',
+          kind: status >= 500 ? 'server' : 'http',
+        })
+      )
 
-    await userEvent.fill(emailInput, 'a@b.com')
-    await userEvent.fill(passwordInput, 'password')
-    await userEvent.click(signInButton)
+      await userEvent.fill(emailInput, 'a@b.com')
+      await userEvent.fill(passwordInput, 'password')
+      await userEvent.click(signInButton)
 
-    await expect.element(screen.getByText(message)).toBeInTheDocument()
-    expect(navigate).not.toHaveBeenCalled()
-  })
+      await expect.element(screen.getByText(message)).toBeInTheDocument()
+      expect(navigate).not.toHaveBeenCalled()
+    }
+  )
 
   it('renders connectivity errors without navigating', async () => {
     signInMock.mockRejectedValue(
@@ -285,7 +291,9 @@ describe('UserAuthForm', () => {
     await userEvent.click(signInButton)
 
     await expect
-      .element(screen.getByText('Unable to sign in right now. Please try again.'))
+      .element(
+        screen.getByText('Unable to sign in right now. Please try again.')
+      )
       .toBeInTheDocument()
     expect(navigate).not.toHaveBeenCalled()
   })

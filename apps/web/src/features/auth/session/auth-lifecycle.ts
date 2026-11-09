@@ -12,11 +12,7 @@ export { AuthLifecycleBlockedError } from '@/lib/request-recovery'
 export const AUTH_LIFECYCLE_CHANNEL_NAME = 'sme-auth-lifecycle'
 export const AUTH_LIFECYCLE_STORAGE_KEY = 'sme-auth-lifecycle-status'
 
-export type AuthLifecycleState =
-  | 'idle'
-  | 'pending'
-  | 'uncertain'
-  | 'confirmed'
+export type AuthLifecycleState = 'idle' | 'pending' | 'uncertain' | 'confirmed'
 
 export type AuthLifecycleMessageStatus =
   | 'logout-started'
@@ -108,7 +104,9 @@ export interface AuthLifecycleCoordinator {
   startLogout(options?: AuthLifecycleStartOptions): Promise<AuthLifecycleResult>
   retryLogout(options?: AuthLifecycleStartOptions): Promise<AuthLifecycleResult>
   receiveMessage(message: unknown): void
-  configure(options: Pick<AuthLifecycleOptions, 'onContainment' | 'onNavigate'>): void
+  configure(
+    options: Pick<AuthLifecycleOptions, 'onContainment' | 'onNavigate'>
+  ): void
   resetAfterSignIn(): void
   dispose(): void
 }
@@ -176,7 +174,9 @@ function getDefaultStorage(): AuthLifecycleStorage | undefined {
   }
 }
 
-function getDefaultStorageEventTarget(): AuthLifecycleStorageEventTarget | undefined {
+function getDefaultStorageEventTarget():
+  | AuthLifecycleStorageEventTarget
+  | undefined {
   if (typeof window === 'undefined') return undefined
   return window
 }
@@ -188,7 +188,8 @@ export function createAuthLifecycleCoordinator(
   const sourceId = options.sourceId ?? createOpaqueId('tab')
   const broadcast =
     options.broadcast === undefined ? getDefaultBroadcast() : options.broadcast
-  const storage = options.storage === undefined ? getDefaultStorage() : options.storage
+  const storage =
+    options.storage === undefined ? getDefaultStorage() : options.storage
   const storageEventTarget =
     options.storageEventTarget === undefined
       ? getDefaultStorageEventTarget()
@@ -203,6 +204,15 @@ export function createAuthLifecycleCoordinator(
   let activePromise: Promise<AuthLifecycleResult> | undefined
   let barrier: AuthLifecycleLockBarrier | undefined
   let containmentKey: string | undefined
+  let navigationKey: string | undefined
+  let remoteOperationId: string | undefined
+  let remoteResult:
+    | {
+        operationId: string
+        promise: Promise<AuthLifecycleResult>
+        resolve: (result: AuthLifecycleResult) => void
+      }
+    | undefined
 
   const persistedMessage = (() => {
     if (!storage) return undefined
@@ -231,6 +241,23 @@ export function createAuthLifecycleCoordinator(
 
   function getSnapshot(): AuthLifecycleSnapshot {
     return { state, operationId, generation }
+  }
+
+  function waitForRemoteOperation(
+    operation: string
+  ): Promise<AuthLifecycleResult> {
+    if (remoteResult?.operationId === operation) return remoteResult.promise
+
+    let resolveResult: (result: AuthLifecycleResult) => void = () => undefined
+    const promise = new Promise<AuthLifecycleResult>((resolve) => {
+      resolveResult = resolve
+    })
+    remoteResult = {
+      operationId: operation,
+      promise,
+      resolve: resolveResult,
+    }
+    return promise
   }
 
   function persist(message: AuthLifecycleMessage): void {
@@ -286,8 +313,6 @@ export function createAuthLifecycleCoordinator(
   ): void {
     if (!operationId) return
     const key = `${operationId}:${generation}`
-    if (containmentKey === key) return
-    containmentKey = key
     const context: AuthLifecycleContainmentContext = {
       source,
       state,
@@ -296,16 +321,23 @@ export function createAuthLifecycleCoordinator(
       redirect,
     }
 
-    try {
-      onContainment?.(context)
-    } catch {
-      // A cleanup callback must not prevent server confirmation or retry.
+    if (onContainment && containmentKey !== key) {
+      containmentKey = key
+      try {
+        onContainment(context)
+      } catch {
+        // A cleanup callback must not prevent server confirmation or retry.
+      }
     }
 
-    try {
-      ;(navigateOverride ?? onNavigate)?.(redirect)
-    } catch {
-      // Navigation can be retried by the lifecycle status screen.
+    const navigate = navigateOverride ?? onNavigate
+    if (navigate && navigationKey !== key) {
+      navigationKey = key
+      try {
+        navigate(redirect)
+      } catch {
+        // Navigation can be retried by the lifecycle status screen.
+      }
     }
   }
 
@@ -324,12 +356,18 @@ export function createAuthLifecycleCoordinator(
   ): Promise<AuthLifecycleResult> {
     if (state === 'confirmed') return { state: 'confirmed' }
     if (activePromise) return activePromise
+    if (state === 'pending' && remoteOperationId) {
+      return waitForRemoteOperation(remoteOperationId)
+    }
 
     const recoveryBarrier = ensureBarrier()
     operationId = createOpaqueId('logout')
     generation = Math.max(generation + 1, recoveryBarrier.generation)
     state = 'pending'
     containmentKey = undefined
+    navigationKey = undefined
+    remoteOperationId = undefined
+    remoteResult = undefined
     publish('logout-started')
     notify()
     contain('local', startOptions.redirect, startOptions.navigate)
@@ -380,6 +418,8 @@ export function createAuthLifecycleCoordinator(
     generation = message.generation
     ensureBarrier()
     if (message.status === 'logout-started') {
+      remoteOperationId = message.operationId
+      waitForRemoteOperation(message.operationId)
       state = 'pending'
       notify()
       contain('remote', undefined)
@@ -388,6 +428,12 @@ export function createAuthLifecycleCoordinator(
     }
 
     state = message.status === 'logout-confirmed' ? 'confirmed' : 'uncertain'
+    const remoteResultValue: AuthLifecycleResult = { state }
+    if (remoteOperationId === message.operationId) {
+      remoteOperationId = undefined
+      remoteResult?.resolve(remoteResultValue)
+      remoteResult = undefined
+    }
     if (wasIdle || state === 'uncertain') contain('remote', undefined)
     notify()
     if (state === 'confirmed') clearPersistedMarker()
@@ -450,6 +496,10 @@ export function createAuthLifecycleCoordinator(
       operationId = undefined
       generation += 1
       containmentKey = undefined
+      navigationKey = undefined
+      remoteOperationId = undefined
+      remoteResult?.resolve({ state: 'uncertain' })
+      remoteResult = undefined
       clearPersistedMarker()
       notify()
     },

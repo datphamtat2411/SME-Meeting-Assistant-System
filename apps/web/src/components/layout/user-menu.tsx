@@ -34,10 +34,7 @@ type UserMenuProps = {
   variant?: 'header' | 'sidebar'
 }
 
-export function UserMenu({
-  user,
-  variant = 'header',
-}: UserMenuProps) {
+export function UserMenu({ user, variant = 'header' }: UserMenuProps) {
   const contextUser = useUserPresentation()
   const resolvedUser = user ?? contextUser
 

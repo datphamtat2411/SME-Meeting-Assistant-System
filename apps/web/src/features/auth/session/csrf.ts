@@ -10,6 +10,7 @@ import {
 import {
   getRequestRecoveryGeneration,
   RECOVERY_DISABLED_MARKER,
+  type RecoveryRequestConfig,
 } from '@/lib/request-recovery'
 
 const csrfResponseSchema = z.object({
@@ -34,7 +35,7 @@ export async function bootstrapCsrf(
   const requestGeneration = getRequestRecoveryGeneration()
   const response = await coreApi.get<unknown>('/auth/csrf', {
     [RECOVERY_DISABLED_MARKER]: true,
-  })
+  } as RecoveryRequestConfig)
   if (
     !options.allowDuringLogout &&
     getRequestRecoveryGeneration() !== requestGeneration

@@ -16,7 +16,9 @@ describe('LogoutStatus', () => {
     await expect
       .element(screen.getByText(/server sign-out could not be confirmed/i))
       .toBeInTheDocument()
-    await userEvent.click(screen.getByRole('button', { name: /retry sign out/i }))
+    await userEvent.click(
+      screen.getByRole('button', { name: /retry sign out/i })
+    )
     expect(retry).toHaveBeenCalledOnce()
   })
 
@@ -30,7 +32,7 @@ describe('LogoutStatus', () => {
       .toBeInTheDocument()
     await expect
       .element(screen.getByRole('button', { name: /retry sign out/i }))
-      .toBeInTheDocument()
+      .toBeDisabled()
     await expect
       .element(screen.getByRole('button', { name: /^sign in$/i }))
       .not.toBeInTheDocument()

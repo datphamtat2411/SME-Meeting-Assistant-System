@@ -1,23 +1,16 @@
-import {
-  QueryClient,
-  queryOptions,
-} from '@tanstack/react-query'
 import { z } from 'zod'
-import {
-  CoreApiError,
-  coreApi,
-  normalizeCoreApiError,
-} from '@/lib/core-api'
-import {
-  AuthLifecycleBlockedError,
-  isAuthLifecycleBlocking,
-} from './auth-lifecycle'
+import { queryOptions, type QueryClient } from '@tanstack/react-query'
+import { CoreApiError, coreApi, normalizeCoreApiError } from '@/lib/core-api'
 import {
   isSessionLossConfirmed,
   type RecoveryRequestConfig,
   RECOVERY_DISABLED_MARKER,
 } from '@/lib/request-recovery'
 import { getSafeRedirect } from '@/lib/safe-redirect'
+import {
+  AuthLifecycleBlockedError,
+  isAuthLifecycleBlocking,
+} from './auth-lifecycle'
 
 const directoryManagementScopeSchema = z.object({
   allUnits: z.boolean(),
@@ -36,11 +29,7 @@ export const authContextSchema = z.object({
   userId: z.string().uuid(),
   email: z.email(),
   displayName: z.string().min(1),
-  globalRole: z.enum([
-    'EMPLOYEE',
-    'DEPARTMENT_MANAGER',
-    'ADMINISTRATOR',
-  ]),
+  globalRole: z.enum(['EMPLOYEE', 'DEPARTMENT_MANAGER', 'ADMINISTRATOR']),
   accountStatus: z.literal('ACTIVE'),
   primaryOrgUnitId: z.string().uuid().nullable(),
   directoryManagementScope: directoryManagementScopeSchema,
@@ -51,10 +40,7 @@ export type AuthContext = z.infer<typeof authContextSchema>
 
 export const currentUserQueryKey = ['auth', 'me'] as const
 
-export type SessionFailure =
-  | 'unauthenticated'
-  | 'denied'
-  | 'unavailable'
+export type SessionFailure = 'unauthenticated' | 'denied' | 'unavailable'
 
 export interface CurrentUserRequestOptions {
   recoveryDisabled?: boolean
@@ -110,12 +96,17 @@ export async function fetchCurrentUser(
   return result.data
 }
 
+function createCurrentUserQueryFn(options: CurrentUserRequestOptions) {
+  return ({ signal }: { signal: AbortSignal }) =>
+    fetchCurrentUser({ ...options, signal })
+}
+
 export const currentUserQueryOptions = (
   options: CurrentUserRequestOptions = {}
 ) =>
   queryOptions({
     queryKey: currentUserQueryKey,
-    queryFn: ({ signal }) => fetchCurrentUser({ ...options, signal }),
+    queryFn: createCurrentUserQueryFn(options),
     staleTime: 0,
     retry: false,
   })
@@ -147,7 +138,8 @@ export function classifySessionFailure(error: unknown): SessionFailure {
   const apiError = normalizeCoreApiError(error)
 
   if (apiError.code === 'AUTH_LIFECYCLE_BLOCKED') return 'unauthenticated'
-  if (apiError.code === 'AUTH_LIFECYCLE_STALE_RESPONSE') return 'unauthenticated'
+  if (apiError.code === 'AUTH_LIFECYCLE_STALE_RESPONSE')
+    return 'unauthenticated'
   if (apiError.recoveryOutcome === 'session-lost') return 'unauthenticated'
   if (apiError.recoveryOutcome === 'forbidden') return 'denied'
   if (apiError.recoveryOutcome) return 'unavailable'

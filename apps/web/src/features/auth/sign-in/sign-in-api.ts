@@ -1,9 +1,5 @@
 import { z } from 'zod'
-import {
-  CoreApiError,
-  coreApi,
-  setCsrfToken,
-} from '@/lib/core-api'
+import { CoreApiError, coreApi, setCsrfToken } from '@/lib/core-api'
 import {
   assertAuthLifecycleAllowsSignIn,
   resetAuthLifecycleAfterSignIn,
@@ -37,7 +33,7 @@ export async function signIn(
   setCsrfToken(null)
 
   try {
-    await bootstrapCsrf()
+    await bootstrapCsrf({ force: true })
 
     const loginResponse = await coreApi.post<unknown>(
       '/auth/login',

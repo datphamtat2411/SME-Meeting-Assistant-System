@@ -5,12 +5,12 @@ import {
   type AxiosResponse,
 } from 'axios'
 import { beforeEach, describe, expect, it } from 'vitest'
+import { coreApiAxios, resetCsrfToken, setCsrfToken } from '@/lib/core-api'
 import {
-  coreApiAxios,
-  resetCsrfToken,
-  setCsrfToken,
-} from '@/lib/core-api'
-import { RECOVERY_DISABLED_MARKER, resetRequestRecoveryState } from '@/lib/request-recovery'
+  RECOVERY_DISABLED_MARKER,
+  resetRequestRecoveryState,
+  type RecoveryRequestConfig,
+} from '@/lib/request-recovery'
 import { logout } from './logout-api'
 
 function makeResponse(
@@ -24,6 +24,16 @@ function makeResponse(
     statusText: status === 200 ? 'OK' : 'Error',
     headers: new AxiosHeaders(),
     config,
+  }
+}
+
+function successEnvelope<T>(data: T) {
+  return {
+    success: true,
+    code: 'SUCCESS',
+    message: 'Request completed successfully.',
+    data,
+    meta: {},
   }
 }
 
@@ -49,7 +59,7 @@ describe('logout transport', () => {
     let requestConfig: Parameters<AxiosAdapter>[0] | undefined
     coreApiAxios.defaults.adapter = async (config) => {
       requestConfig = config
-      return makeResponse(config, { data: null })
+      return makeResponse(config, successEnvelope(null))
     }
 
     await expect(logout()).resolves.toBeUndefined()
@@ -57,7 +67,11 @@ describe('logout transport', () => {
     expect(requestConfig?.method?.toUpperCase()).toBe('POST')
     expect(requestConfig?.withCredentials).toBe(true)
     expect(requestConfig?.headers.get('X-CSRF-Token')).toBe('csrf-logout')
-    expect(requestConfig?.[RECOVERY_DISABLED_MARKER]).toBe(true)
+    expect(
+      (requestConfig as RecoveryRequestConfig | undefined)?.[
+        RECOVERY_DISABLED_MARKER
+      ]
+    ).toBe(true)
   })
 
   it('bootstraps CSRF when proof is absent and never invokes refresh recovery', async () => {
@@ -65,11 +79,14 @@ describe('logout transport', () => {
     coreApiAxios.defaults.adapter = async (config) => {
       urls.push(config.url ?? '')
       if (config.url === '/auth/csrf') {
-        return makeResponse(config, { data: { csrfToken: 'csrf-bootstrapped' } })
+        return makeResponse(
+          config,
+          successEnvelope({ csrfToken: 'csrf-bootstrapped' })
+        )
       }
       if (config.url === '/auth/logout') {
         expect(config.headers.get('X-CSRF-Token')).toBe('csrf-bootstrapped')
-        return makeResponse(config, { data: null })
+        return makeResponse(config, successEnvelope(null))
       }
       throw new Error(`unexpected ${config.url}`)
     }
@@ -88,11 +105,14 @@ describe('logout transport', () => {
         throw forbidden(config)
       }
       if (config.url === '/auth/csrf') {
-        return makeResponse(config, { data: { csrfToken: 'csrf-fresh' } })
+        return makeResponse(
+          config,
+          successEnvelope({ csrfToken: 'csrf-fresh' })
+        )
       }
       if (config.url === '/auth/logout') {
         expect(config.headers.get('X-CSRF-Token')).toBe('csrf-fresh')
-        return makeResponse(config, { data: null })
+        return makeResponse(config, successEnvelope(null))
       }
       throw new Error(`unexpected ${config.url}`)
     }
@@ -114,7 +134,10 @@ describe('logout transport', () => {
         throw forbidden(config)
       }
       if (config.url === '/auth/csrf') {
-        return makeResponse(config, { data: { csrfToken: 'csrf-still-invalid' } })
+        return makeResponse(
+          config,
+          successEnvelope({ csrfToken: 'csrf-still-invalid' })
+        )
       }
       throw new Error(`unexpected ${config.url}`)
     }
@@ -129,7 +152,24 @@ describe('logout transport', () => {
   it('rejects a successful-looking response with a non-null logout payload', async () => {
     setCsrfToken('csrf-logout')
     coreApiAxios.defaults.adapter = async (config) =>
-      makeResponse(config, { data: { revoked: true } })
+      makeResponse(config, successEnvelope({ revoked: true }))
+
+    await expect(logout()).rejects.toMatchObject({
+      code: 'MALFORMED_RESPONSE',
+      kind: 'malformed',
+    })
+  })
+
+  it('does not treat a false success envelope as server logout confirmation', async () => {
+    setCsrfToken('csrf-logout')
+    coreApiAxios.defaults.adapter = async (config) =>
+      makeResponse(config, {
+        success: false,
+        code: 'AUTHZ_FORBIDDEN',
+        message: 'Logout was not accepted.',
+        data: null,
+        meta: {},
+      })
 
     await expect(logout()).rejects.toMatchObject({
       code: 'MALFORMED_RESPONSE',

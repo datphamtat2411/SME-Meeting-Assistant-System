@@ -4,6 +4,7 @@ import {
   type AxiosAdapter,
   type AxiosResponse,
 } from 'axios'
+import { QueryClient } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   CoreApiError,
@@ -11,7 +12,11 @@ import {
   coreApiAxios,
   resetCsrfToken,
 } from '@/lib/core-api'
-import { RECOVERY_DISABLED_MARKER, resetRequestRecoveryState } from '@/lib/request-recovery'
+import {
+  RECOVERY_DISABLED_MARKER,
+  resetRequestRecoveryState,
+  type RecoveryRequestConfig,
+} from '@/lib/request-recovery'
 import {
   authContextSchema,
   classifySessionFailure,
@@ -20,7 +25,6 @@ import {
   fetchCurrentUser,
   loadCurrentUser,
 } from './current-user'
-import { QueryClient } from '@tanstack/react-query'
 
 const identity = {
   userId: '11111111-1111-4111-8111-111111111111',
@@ -56,6 +60,16 @@ function makeResponse(
   }
 }
 
+function successEnvelope<T>(data: T) {
+  return {
+    success: true,
+    code: 'SUCCESS',
+    message: 'Request completed successfully.',
+    data,
+    meta: {},
+  }
+}
+
 describe('current user session query', () => {
   beforeEach(() => {
     vi.unstubAllGlobals()
@@ -68,7 +82,7 @@ describe('current user session query', () => {
     let requestConfig: Parameters<AxiosAdapter>[0] | undefined
     coreApiAxios.defaults.adapter = async (config) => {
       requestConfig = config
-      return makeResponse(config, { data: identity })
+      return makeResponse(config, successEnvelope(identity))
     }
 
     await expect(fetchCurrentUser()).resolves.toEqual(identity)
@@ -83,12 +97,12 @@ describe('current user session query', () => {
     let requestConfig: Parameters<AxiosAdapter>[0] | undefined
     coreApiAxios.defaults.adapter = async (config) => {
       requestConfig = config
-      return makeResponse(config, { data: identity })
+      return makeResponse(config, successEnvelope(identity))
     }
 
-    await expect(fetchCurrentUser({ signal: controller.signal })).resolves.toEqual(
-      identity
-    )
+    await expect(
+      fetchCurrentUser({ signal: controller.signal })
+    ).resolves.toEqual(identity)
     expect(requestConfig?.signal).toBe(controller.signal)
   })
 
@@ -117,13 +131,17 @@ describe('current user session query', () => {
     let requestConfig: Parameters<AxiosAdapter>[0] | undefined
     coreApiAxios.defaults.adapter = async (config) => {
       requestConfig = config
-      return makeResponse(config, { data: identity })
+      return makeResponse(config, successEnvelope(identity))
     }
 
     await expect(fetchCurrentUser({ recoveryDisabled: true })).resolves.toEqual(
       identity
     )
-    expect(requestConfig?.[RECOVERY_DISABLED_MARKER]).toBe(true)
+    expect(
+      (requestConfig as RecoveryRequestConfig | undefined)?.[
+        RECOVERY_DISABLED_MARKER
+      ]
+    ).toBe(true)
   })
 
   it('only removes cached identity after confirmed session loss', async () => {
@@ -165,27 +183,53 @@ describe('current user session query', () => {
   it.each([
     [
       'unauthenticated',
-      new CoreApiError({ status: 401, code: 'AUTH_REQUIRED', kind: 'http', message: '401' }),
+      new CoreApiError({
+        status: 401,
+        code: 'AUTH_REQUIRED',
+        kind: 'http',
+        message: '401',
+      }),
     ],
     [
       'denied',
-      new CoreApiError({ status: 403, code: 'AUTHZ_FORBIDDEN', kind: 'http', message: '403' }),
+      new CoreApiError({
+        status: 403,
+        code: 'AUTHZ_FORBIDDEN',
+        kind: 'http',
+        message: '403',
+      }),
     ],
     [
       'unavailable',
-      new CoreApiError({ code: 'NETWORK_ERROR', kind: 'network', message: 'network' }),
+      new CoreApiError({
+        code: 'NETWORK_ERROR',
+        kind: 'network',
+        message: 'network',
+      }),
     ],
     [
       'unavailable',
-      new CoreApiError({ status: 503, code: 'TEMPORARY_FAILURE', kind: 'server', message: '503' }),
+      new CoreApiError({
+        status: 503,
+        code: 'TEMPORARY_FAILURE',
+        kind: 'server',
+        message: '503',
+      }),
     ],
     [
       'unavailable',
-      new CoreApiError({ code: 'MALFORMED_RESPONSE', kind: 'malformed', message: 'malformed' }),
+      new CoreApiError({
+        code: 'MALFORMED_RESPONSE',
+        kind: 'malformed',
+        message: 'malformed',
+      }),
     ],
-  ] as const)('classifies %s without converting it to another outcome', (expected, error) => {
-    expect(classifySessionFailure(error)).toBe(expected)
-  })
+  ] as const)(
+    'classifies %s without converting it to another outcome',
+    (expected, error) => {
+      expect(classifySessionFailure(error)).toBe(expected)
+    }
+  )
 
   it('normalizes non-Core API failures as unavailable', () => {
     expect(classifySessionFailure(new Error('temporary failure'))).toBe(

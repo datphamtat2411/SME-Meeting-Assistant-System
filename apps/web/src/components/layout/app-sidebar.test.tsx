@@ -226,9 +226,7 @@ describe('AppSidebar navigation', () => {
     await expect
       .element(screen.getByText(testUser.displayName))
       .toBeInTheDocument()
-    await expect
-      .element(screen.getByText(testUser.email))
-      .toBeInTheDocument()
+    await expect.element(screen.getByText(testUser.email)).toBeInTheDocument()
     await expect
       .element(screen.getByText(testUser.initials, { exact: true }))
       .toBeInTheDocument()

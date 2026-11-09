@@ -5,15 +5,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { Loader2, LogIn } from 'lucide-react'
-import {
-  normalizeCoreApiError,
-  type CoreApiError,
-} from '@/lib/core-api'
-import {
-  clearCurrentUserCache,
-  getSafeSessionRedirect,
-} from '@/features/auth/session/current-user'
-import { signIn } from '../sign-in-api'
+import { normalizeCoreApiError, type CoreApiError } from '@/lib/core-api'
 import { cn } from '@/lib/utils'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -27,14 +19,17 @@ import {
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
 import { PasswordInput } from '@/components/password-input'
+import {
+  clearCurrentUserCache,
+  getSafeSessionRedirect,
+} from '@/features/auth/session/current-user'
+import { signIn } from '../sign-in-api'
 
 const formSchema = z.object({
   email: z.email({
     error: (iss) => (iss.input === '' ? 'Please enter your email.' : undefined),
   }),
-  password: z
-    .string()
-    .min(1, 'Please enter your password.'),
+  password: z.string().min(1, 'Please enter your password.'),
 })
 
 interface UserAuthFormProps extends React.HTMLAttributes<HTMLFormElement> {
@@ -118,10 +113,14 @@ export function UserAuthForm({
     }
   }
 
+  function handleFormSubmit(event: React.FormEvent<HTMLFormElement>) {
+    void form.handleSubmit(onSubmit)(event)
+  }
+
   return (
     <Form {...form}>
       <form
-        onSubmit={form.handleSubmit(onSubmit)}
+        onSubmit={handleFormSubmit}
         className={cn('grid gap-3', className)}
         {...props}
       >

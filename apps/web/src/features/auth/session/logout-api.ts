@@ -7,13 +7,10 @@ import {
 } from '@/lib/core-api'
 import {
   RECOVERY_DISABLED_MARKER,
+  isSuccessfulApiEnvelope,
   type RecoveryRequestConfig,
 } from '@/lib/request-recovery'
 import { bootstrapCsrf } from './csrf'
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null
-}
 
 function malformedLogoutResponse(status?: number): CoreApiError {
   return new CoreApiError({
@@ -41,8 +38,8 @@ async function requestLogout(csrfToken: string): Promise<void> {
 
   if (
     response.status !== 200 ||
-    !isRecord(response.data) ||
-    !('data' in response.data) ||
+    !isSuccessfulApiEnvelope(response.data) ||
+    response.data.code !== 'SUCCESS' ||
     response.data.data !== null
   ) {
     throw malformedLogoutResponse(response.status)

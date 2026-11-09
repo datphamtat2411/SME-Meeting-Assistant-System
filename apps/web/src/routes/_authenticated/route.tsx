@@ -1,9 +1,13 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { createFileRoute, redirect, useRouter } from '@tanstack/react-router'
+import { prepareRequestRecoveryRetry } from '@/lib/request-recovery'
 import { AuthenticatedLayout } from '@/components/layout/authenticated-layout'
 import { AuthenticatedRouteFallback } from '@/components/layout/authenticated-route-fallback'
-import { GeneralError } from '@/features/errors/general-error'
-import { NotFoundError } from '@/features/errors/not-found-error'
+import { toUserPresentation } from '@/components/layout/data/user-presentation'
+import {
+  getAuthLifecycleState,
+  isAuthLifecycleBlocking,
+} from '@/features/auth/session/auth-lifecycle'
 import {
   classifySessionFailure,
   getSafeSessionRedirect,
@@ -12,14 +16,10 @@ import {
   currentUserQueryKey,
   type AuthContext,
 } from '@/features/auth/session/current-user'
-import {
-  getAuthLifecycleState,
-  isAuthLifecycleBlocking,
-} from '@/features/auth/session/auth-lifecycle'
 import { useAuthLifecycleState } from '@/features/auth/session/logout-status'
 import { SessionGate } from '@/features/auth/session/session-gate'
-import { toUserPresentation } from '@/components/layout/data/user-presentation'
-import { prepareRequestRecoveryRetry } from '@/lib/request-recovery'
+import { GeneralError } from '@/features/errors/general-error'
+import { NotFoundError } from '@/features/errors/not-found-error'
 
 export const Route = createFileRoute('/_authenticated')({
   beforeLoad: async ({ context, location }) => {
@@ -64,9 +64,7 @@ function AuthenticatedRoute() {
     return (
       <SessionGate
         state={
-          lifecycleState === 'uncertain'
-            ? 'logout-uncertain'
-            : 'logout-pending'
+          lifecycleState === 'uncertain' ? 'logout-uncertain' : 'logout-pending'
         }
       />
     )
@@ -84,9 +82,7 @@ function AuthenticatedError({ error }: { error: unknown }) {
     return (
       <SessionGate
         state={
-          lifecycleState === 'uncertain'
-            ? 'logout-uncertain'
-            : 'logout-pending'
+          lifecycleState === 'uncertain' ? 'logout-uncertain' : 'logout-pending'
         }
       />
     )
@@ -116,9 +112,7 @@ function AuthenticatedErrorContent() {
     return (
       <SessionGate
         state={
-          lifecycleState === 'uncertain'
-            ? 'logout-uncertain'
-            : 'logout-pending'
+          lifecycleState === 'uncertain' ? 'logout-uncertain' : 'logout-pending'
         }
       />
     )
@@ -143,9 +137,7 @@ function AuthenticatedNotFound() {
     return (
       <SessionGate
         state={
-          lifecycleState === 'uncertain'
-            ? 'logout-uncertain'
-            : 'logout-pending'
+          lifecycleState === 'uncertain' ? 'logout-uncertain' : 'logout-pending'
         }
       />
     )
