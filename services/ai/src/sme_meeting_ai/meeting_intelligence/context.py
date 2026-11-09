@@ -27,6 +27,7 @@ class ContextLimits:
     overlap_units: int
     max_windows: int
     max_total_context_tokens: int
+    max_total_inference_tokens: int
     max_source_bytes: int
     max_evidence_units: int
 
@@ -66,6 +67,7 @@ class ContextPlan:
     configuration_sha256: str
     task_sha256: str
     model: str
+    reasoning_effort: str
     complete: bool
     total_estimated_input_tokens: int
 
@@ -73,7 +75,8 @@ class ContextPlan:
         """Sensitive local plan/provenance; never an observability log payload."""
         return canonical_json({**self.source.provenance(), "planning_version": self.planning_version,
             "configuration_sha256": self.configuration_sha256, "task_sha256": self.task_sha256,
-            "model": self.model, "complete_source_coverage": self.complete,
+            "model": self.model, "reasoning_effort": self.reasoning_effort,
+            "complete_source_coverage": self.complete,
             "total_estimated_input_tokens": self.total_estimated_input_tokens,
             "windows": [{"window_id": w.window_id, "index": w.index,
                 "contains_entire_source": w.contains_entire_source, "references": w.references(),
@@ -81,10 +84,12 @@ class ContextPlan:
 
 
 class _Planner:
-    def __init__(self, source, task, limits, model, deadline, cancelled):
-        self.source, self.task, self.limits, self.model = source, task, limits, model
+    def __init__(self, source, task, limits, model, reasoning_effort, deadline, cancelled):
+        self.source, self.task, self.limits = source, task, limits
+        self.model, self.reasoning_effort = model, reasoning_effort
         self.deadline, self.cancelled = deadline, cancelled
         self.configuration_sha256 = digest({"limits": asdict(limits), "model": model,
+                                            "reasoning_effort": reasoning_effort,
                                             "planning_version": PLANNING_VERSION})
         header = json.loads(source.metadata_json)
         self.header = {k: header.get(k) for k in ("languageCode", "status", "durationMs")}
@@ -122,7 +127,8 @@ class _Planner:
             "speakers": speakers, "evidence": [u.to_dict() for u in units],
             "offset_convention": "half-open Unicode code points; timing belongs to original segment",
         })
-        estimated = estimate_input_tokens(payload_for(self.model, self.task, content, self.limits.max_output_tokens))
+        estimated = estimate_input_tokens(payload_for(self.model, self.reasoning_effort, self.task, content,
+                                                       self.limits.max_output_tokens))
         return ContextWindow(window_id, index, self.source.identity, PLANNING_VERSION,
             self.task.sha256, self.configuration_sha256, tuple(units), tuple(dict.fromkeys(u.segment_id for u in units)),
             estimated, complete, content)
@@ -188,15 +194,15 @@ class _Planner:
             emit()
         self.check()
         return ContextPlan(self.source, tuple(windows), PLANNING_VERSION, self.configuration_sha256,
-                           self.task.sha256, self.model, True, total)
+                           self.task.sha256, self.model, self.reasoning_effort, True, total)
 
 
 def plan_context(source: EvidenceSource, task: TaskSpec, limits: ContextLimits, model: str,
-                 deadline: float, cancelled: Event) -> ContextPlan:
+                 reasoning_effort: str, deadline: float, cancelled: Event) -> ContextPlan:
     category = "CONFIGURATION"
     try:
         require(limits.max_input_tokens + limits.max_output_tokens <= limits.context_window_tokens, "CONFIGURATION")
-        return _Planner(source, task, limits, model, deadline, cancelled).plan()
+        return _Planner(source, task, limits, model, reasoning_effort, deadline, cancelled).plan()
     except IntelligenceError as error:
         category = error.category
     except (ValueError, TypeError, KeyError, AttributeError, RecursionError, OverflowError):

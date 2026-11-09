@@ -222,6 +222,7 @@ class TaskSpec:
 @dataclass(frozen=True)
 class ModelRequest:
     model: str
+    reasoning_effort: str
     task: TaskSpec = field(repr=False)
     window: "ContextWindow" = field(repr=False)
     input_budget: int
@@ -230,9 +231,10 @@ class ModelRequest:
     cancelled: Event = field(repr=False)
 
 
-def payload_for(model: str, task: TaskSpec, evidence_json: str, output_budget: int) -> dict:
+def payload_for(model: str, reasoning_effort: str, task: TaskSpec, evidence_json: str, output_budget: int) -> dict:
     return {
         "model": model, "stream": False, "max_tokens": output_budget,
+        "reasoning": {"effort": reasoning_effort},
         "provider": {"require_parameters": True, "allow_fallbacks": False},
         "response_format": {"type": "json_schema", "json_schema": {
             "name": task.schema.name, "strict": True, "schema": task.schema.to_dict()}},
@@ -242,7 +244,8 @@ def payload_for(model: str, task: TaskSpec, evidence_json: str, output_budget: i
 
 
 def request_payload(request: ModelRequest) -> dict:
-    return payload_for(request.model, request.task, request.window.evidence_json, request.output_budget)
+    return payload_for(request.model, request.reasoning_effort, request.task,
+                       request.window.evidence_json, request.output_budget)
 
 
 def estimate_input_tokens(payload: dict) -> int:
@@ -269,6 +272,7 @@ class ModelUsage:
 class ModelResult:
     output: dict = field(repr=False)
     requested_model: str
+    reasoning_effort: str
     reported_model: str | None
     provider: str
     reported_provider: str | None

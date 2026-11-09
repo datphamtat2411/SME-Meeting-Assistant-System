@@ -169,21 +169,23 @@ class Settings(BaseSettings):
     diarization_worker_s3_secret_access_key: SecretStr | None = Field(default=None, repr=False)
     meeting_intelligence_worker_enabled: bool = False
     meeting_intelligence_worker_concurrency: int = Field(default=1, ge=1, le=4)
-    meeting_intelligence_worker_execution_timeout_seconds: float = Field(default=900, gt=0, le=7200, allow_inf_nan=False)
+    meeting_intelligence_worker_execution_timeout_seconds: float = Field(default=1800, gt=0, le=7200, allow_inf_nan=False)
     meeting_intelligence_inference_enabled: bool = False
     meeting_intelligence_summary_enabled: bool = False
     meeting_intelligence_decision_enabled: bool = False
     meeting_intelligence_action_item_enabled: bool = False
-    meeting_intelligence_model: str = Field(default="openai/gpt-5-mini", pattern=r"^[A-Za-z0-9][A-Za-z0-9_./:-]{0,159}$")
-    meeting_intelligence_context_window_tokens: int = Field(default=32768, ge=1, le=400000, strict=True)
-    meeting_intelligence_max_input_tokens: int = Field(default=24000, ge=1, le=272000, strict=True)
-    meeting_intelligence_max_output_tokens: int = Field(default=4096, ge=1, le=128000, strict=True)
+    meeting_intelligence_model: str = Field(default="openai/gpt-6-luna", pattern=r"^[A-Za-z0-9][A-Za-z0-9_./:-]{0,159}$")
+    meeting_intelligence_reasoning_effort: ReasoningEffort = "high"
+    meeting_intelligence_context_window_tokens: int = Field(default=131072, ge=1, le=400000, strict=True)
+    meeting_intelligence_max_input_tokens: int = Field(default=98304, ge=1, le=272000, strict=True)
+    meeting_intelligence_max_output_tokens: int = Field(default=32768, ge=1, le=128000, strict=True)
     meeting_intelligence_overlap_units: int = Field(default=1, ge=0, le=8, strict=True)
     meeting_intelligence_max_windows: int = Field(default=64, ge=1, le=1024, strict=True)
     meeting_intelligence_max_total_context_tokens: int = Field(default=1000000, ge=1, le=8000000, strict=True)
+    meeting_intelligence_max_total_inference_tokens: int = Field(default=2000000, ge=1, le=16000000, strict=True)
     meeting_intelligence_max_source_bytes: int = Field(default=8388608, ge=1, le=8388608, strict=True)
     meeting_intelligence_max_evidence_units: int = Field(default=16384, ge=1, le=65536, strict=True)
-    meeting_intelligence_provider_timeout_seconds: float = Field(default=60, gt=0, le=600, allow_inf_nan=False)
+    meeting_intelligence_provider_timeout_seconds: float = Field(default=120, gt=0, le=600, allow_inf_nan=False)
     meeting_intelligence_max_attempts: int = Field(default=2, ge=1, le=2, strict=True)
     meeting_intelligence_max_response_bytes: int = Field(default=1048576, ge=1, le=16777216, strict=True)
     meeting_intelligence_max_concurrent_requests: int = Field(default=1, ge=1, le=4, strict=True)
@@ -411,6 +413,7 @@ class Settings(BaseSettings):
         "meeting_intelligence_context_window_tokens", "meeting_intelligence_max_input_tokens",
         "meeting_intelligence_max_output_tokens", "meeting_intelligence_overlap_units",
         "meeting_intelligence_max_windows", "meeting_intelligence_max_total_context_tokens",
+        "meeting_intelligence_max_total_inference_tokens",
         "meeting_intelligence_max_source_bytes", "meeting_intelligence_max_evidence_units",
         "meeting_intelligence_max_attempts", "meeting_intelligence_max_response_bytes",
         "meeting_intelligence_max_concurrent_requests", "meeting_intelligence_summary_target_chars",

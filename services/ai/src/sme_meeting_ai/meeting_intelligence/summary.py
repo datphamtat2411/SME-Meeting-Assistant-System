@@ -270,6 +270,7 @@ def _validate_model_result(result: ModelResult, request, source: EvidenceSource)
             and result.schema_version == request.task.schema.version
             and result.schema_sha256 == request.task.schema.sha256
             and result.requested_model == request.model
+            and result.reasoning_effort == request.reasoning_effort
             and isinstance(result.provider, str) and bool(result.provider.strip()), "INTEGRITY")
     request.task.schema.parse(canonical_json(result.output))
 
@@ -417,7 +418,7 @@ def _derived_payload(source: EvidenceSource, records: tuple[EvidenceRecord, ...]
 
 def _input_fits(prepared: PreparedContext, task: TaskSpec, evidence_json: str) -> bool:
     check_authority(prepared.deadline, prepared.cancelled)
-    return estimate_input_tokens(payload_for(prepared.model, task, evidence_json,
+    return estimate_input_tokens(payload_for(prepared.model, prepared.reasoning_effort, task, evidence_json,
                                              prepared.limits.max_output_tokens)) <= prepared.limits.max_input_tokens
 
 
@@ -482,7 +483,8 @@ def _reduce_records(prepared: PreparedContext, adapter: ModelAdapter, source: Ev
                                            settings.meeting_intelligence_summary_max_model_calls)
             require(producer == Producer(result.requested_model, result.provider), "INTEGRITY")
             output = _validate_record_output(result, type("Request", (), {
-                "model": prepared.model, "task": reduction, "window": window,
+                "model": prepared.model, "reasoning_effort": prepared.reasoning_effort,
+                "task": reduction, "window": window,
             })(), source, allowed=tuple(reference for record in batch for reference in record.evidence))
             require(output, "GROUNDING_FAILURE")
             _ensure_reduction_coverage(batch, output)
@@ -724,7 +726,9 @@ class SummaryProcessor:
         result, window = _call_derived(prepared, self.adapter, synthesis, evidence_json, "synthesis-final",
                                        calls, self.settings.meeting_intelligence_summary_max_model_calls)
         require(producer == Producer(result.requested_model, result.provider), "INTEGRITY")
-        request = type("Request", (), {"model": prepared.model, "task": synthesis, "window": window})()
+        request = type("Request", (), {"model": prepared.model,
+                                       "reasoning_effort": prepared.reasoning_effort,
+                                       "task": synthesis, "window": window})()
         output = synthesis.schema.parse(canonical_json(result.output))
         _validate_model_result(result, request, source)
         _validate_synthesis(output, source, synthesis_records)

@@ -4,6 +4,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from pydantic import SecretStr
 
 from sme_meeting_ai.core.config import Settings
 from sme_meeting_ai.integrations.core_api import CoreError
@@ -11,7 +12,10 @@ from sme_meeting_ai.integrations.intelligence import (
     IntelligenceCoreClient,
     IntelligenceEvent,
 )
-from sme_meeting_ai.workers.intelligence import IntelligenceExecution
+from sme_meeting_ai.workers.intelligence import (
+    IntelligenceExecution,
+    validate_provider_credentials,
+)
 
 
 def event():
@@ -93,3 +97,15 @@ def test_enabled_capability_requires_credentials_before_consumption():
             await execution.__aenter__()
         assert execution.broker is None
     asyncio.run(run())
+
+
+def test_enabled_inference_requires_provider_credentials_before_startup():
+    settings = config().model_copy(update=dict(
+        meeting_intelligence_worker_enabled=True,
+        meeting_intelligence_inference_enabled=True,
+    ))
+    with pytest.raises(ValueError):
+        validate_provider_credentials(settings)
+
+    settings = settings.model_copy(update=dict(openrouter_api_key=SecretStr("synthetic-provider-key")))
+    validate_provider_credentials(settings)

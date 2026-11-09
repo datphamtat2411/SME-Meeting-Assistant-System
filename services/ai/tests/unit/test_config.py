@@ -923,6 +923,46 @@ def test_correction_reasoning_environment_overrides_dotenv(monkeypatch, tmp_path
     assert config.transcript_correction_reasoning_effort == "low"
 
 
+def test_meeting_intelligence_defaults_match_gpt6_high_reasoning_rollout():
+    env_file = Path(__file__).resolve().parents[2] / ".env.example"
+    expected = {
+        "meeting_intelligence_model": "openai/gpt-6-luna",
+        "meeting_intelligence_reasoning_effort": "high",
+        "meeting_intelligence_context_window_tokens": 131072,
+        "meeting_intelligence_max_input_tokens": 98304,
+        "meeting_intelligence_max_output_tokens": 32768,
+        "meeting_intelligence_max_total_inference_tokens": 2000000,
+        "meeting_intelligence_provider_timeout_seconds": 120,
+        "meeting_intelligence_worker_execution_timeout_seconds": 1800,
+    }
+    defaults = Settings(service_name="test-ai", service_identity="ai-core", _env_file=None)
+    example = load_settings(env_file)
+    for field, value in expected.items():
+        assert getattr(defaults, field) == value
+        assert getattr(example, field) == value
+    lines = set(env_file.read_text(encoding="utf-8").splitlines())
+    assert "AI_MEETING_INTELLIGENCE_MODEL=openai/gpt-6-luna" in lines
+    assert "AI_MEETING_INTELLIGENCE_REASONING_EFFORT=high" in lines
+
+
+@pytest.mark.parametrize("field,value", [
+    ("meeting_intelligence_reasoning_effort", "invalid"),
+    ("meeting_intelligence_context_window_tokens", 131071),
+    ("meeting_intelligence_max_total_inference_tokens", 0),
+    ("meeting_intelligence_max_total_inference_tokens", 16000001),
+])
+def test_meeting_intelligence_rollout_settings_fail_closed(field, value):
+    with pytest.raises(ValueError):
+        Settings(service_name="test-ai", service_identity="ai-core", _env_file=None,
+                 **{field: value})
+
+
+def test_meeting_intelligence_reasoning_effort_is_one_shared_setting(monkeypatch):
+    monkeypatch.setenv("AI_MEETING_INTELLIGENCE_REASONING_EFFORT", "medium")
+    config = Settings(service_name="test-ai", service_identity="ai-core", _env_file=None)
+    assert config.meeting_intelligence_reasoning_effort == "medium"
+
+
 @pytest.mark.parametrize("field,invalid", [
     ("transcript_correction_context_window_tokens", [0, 2000001, True, 131072.0]),
     ("transcript_correction_max_input_tokens", [0, 2000001, True, 100.0]),

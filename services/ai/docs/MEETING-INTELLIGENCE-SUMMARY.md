@@ -29,7 +29,7 @@ The final candidate is the existing T02 Summary shape:
 ```json
 {
   "producer": {
-    "model": "openai/gpt-5-mini",
+    "model": "openai/gpt-6-luna",
     "promptVersion": "summary-v1",
     "provider": "openrouter"
   },
@@ -40,7 +40,9 @@ The final candidate is the existing T02 Summary shape:
 `producer` values come from the executed adapter request. Content is rejected if
 it exceeds 20,000 characters; it is never silently truncated. The mapping from
 content to evidence is feature-local and is not persisted as a new canonical
-field.
+field. Every Summary window and derived request uses the shared
+`reasoning.effort=high` policy, which is included in the configuration
+fingerprint; no feature-specific reasoning override or provider fallback exists.
 
 ## Activation
 

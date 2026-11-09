@@ -48,8 +48,15 @@ uv run sme-ai-worker
 the worker consumes the pre-provisioned `meeting.processing.intelligence` queue
 with manual acknowledgments and bounded prefetch. Configure
 `AI_MEETING_INTELLIGENCE_WORKER_CONCURRENCY` (default 1, maximum 4) and
-`AI_MEETING_INTELLIGENCE_WORKER_EXECUTION_TIMEOUT_SECONDS` (default 900,
+`AI_MEETING_INTELLIGENCE_WORKER_EXECUTION_TIMEOUT_SECONDS` (default 1800,
 maximum 7200). The existing worker shutdown budget applies.
+
+Meeting Intelligence uses `openai/gpt-6-luna` with one shared
+`AI_MEETING_INTELLIGENCE_REASONING_EFFORT=high` setting. Defaults reserve bounded
+context/input/output ceilings of `131072` / `98304` / `32768` tokens and a
+stage-wide estimated input plus reserved-completion ceiling of `2000000` tokens.
+Provider fallback is disabled. Missing provider credentials fail an enabled real
+worker at startup; injected deterministic tests do not require provider access.
 
 The capability uses the shared private Core API endpoint and server CA, S3
 endpoint/bucket/storage ID, and RabbitMQ endpoint/CA settings. Supply separately:

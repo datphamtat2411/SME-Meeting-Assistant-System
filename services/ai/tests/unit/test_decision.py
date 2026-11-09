@@ -46,6 +46,7 @@ def _result(request, output):
         duration_seconds=0,
         attempts=1,
         failed_attempt_categories=(),
+        reasoning_effort=request.reasoning_effort,
     )
 
 

@@ -80,7 +80,7 @@ The processor returns the existing T02 shape:
 ```json
 {
   "producer": {
-    "model": "openai/gpt-5-mini",
+    "model": "openai/gpt-6-luna",
     "promptVersion": "decision-v1",
     "provider": "openrouter"
   },
@@ -122,7 +122,9 @@ Shared model, provider, token, response, timeout, concurrency, cancellation,
 lease, and T02 execution-deadline settings remain authoritative. Provider,
 transport, schema, source, budget, cancellation, and lease failures follow the
 existing T02 worker failure and acknowledgement protocol. A Decision failure
-does not invalidate an accepted Summary artifact.
+does not invalidate an accepted Summary artifact. Decision requests use the same
+shared `reasoning.effort=high` setting and configuration fingerprint as Summary;
+there is no adaptive reasoning or automatic provider fallback.
 
 ## Verification and Limits
 

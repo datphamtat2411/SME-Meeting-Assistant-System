@@ -175,8 +175,11 @@ Use the existing operator `infra/local/secure-integration/broker.py` with
 `--intelligence --intelligence-user <dedicated-account>` for accounts/provision/
 verify. Supply `BROKER_INTELLIGENCE_PASSWORD` externally for account creation.
 The new consumer account reads only its own queue; existing ASR credentials are
-not widened. Scope worker storage access separately to immutable source reads and
-create-only stage results; never grant canonical business-database access.
+not widened. Scope MI worker storage access separately to immutable source reads
+and create-only stage results; never grant canonical business-database access.
+Core may create/read the approved source snapshot and read accepted MI results,
+but must not write or delete objects under
+`processing/*/intelligence/results/`.
 
 The existing stage-lease sweep now also repairs missing eligible intents and
 reconciles exhausted outbox publications. Published deliveries that remain

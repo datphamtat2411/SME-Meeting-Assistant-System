@@ -41,11 +41,14 @@ def policy(bucket, role):
                            "Resource": [intelligence_result]})
     elif role == "core":
         pending = prefix + "meetings/*/pending/*"
-        intelligence = prefix + "processing/*/intelligence/*"
+        intelligence_source = prefix + "processing/*/intelligence/source/*.json"
         statements.extend([
-            {"Effect": "Allow", "Action": ["s3:GetObject"], "Resource": [diarization]},
-            {"Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject"], "Resource": [pending, source, intelligence]},
-            {"Effect": "Allow", "Action": ["s3:DeleteObject"], "Resource": [pending, intelligence]},
+            {"Effect": "Allow", "Action": ["s3:GetObject"],
+             "Resource": [diarization, intelligence_result]},
+            {"Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject"],
+             "Resource": [pending, source, intelligence_source]},
+            {"Effect": "Allow", "Action": ["s3:DeleteObject"],
+             "Resource": [pending, intelligence_source]},
             {"Effect": "Allow", "Action": ["s3:ListBucket"], "Resource": [prefix[:-1]],
              "Condition": {"StringLike": {"s3:prefix": ["processing/*/intelligence/"]}}},
         ])

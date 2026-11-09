@@ -136,7 +136,8 @@ def _validated_output(result, request, source):
         and result.configuration_sha256 == request.window.configuration_sha256
         and result.task_sha256 == request.task.sha256 and result.prompt_version == request.task.prompt_version
         and result.schema_version == request.task.schema.version and result.schema_sha256 == request.task.schema.sha256
-        and result.requested_model == request.model and valid_text(result.provider, 160), "INTEGRITY")
+        and result.requested_model == request.model and result.reasoning_effort == request.reasoning_effort
+        and valid_text(result.provider, 160), "INTEGRITY")
     output = request.task.schema.parse(canonical_json(result.output))
     require(output["source_snapshot_id"] == source.identity.snapshot_id
         and output["transcript_id"] == source.identity.transcript_id

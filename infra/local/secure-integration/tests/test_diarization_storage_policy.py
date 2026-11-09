@@ -1,9 +1,9 @@
 """Deterministic IAM/map checks; no live storage or worker process required."""
 import ast
 import fnmatch
-from pathlib import Path
 import re
 import unittest
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -43,6 +43,13 @@ class DiarizationStoragePolicyTests(unittest.TestCase):
         self.assertFalse(self.allowed("intelligence", "s3:PutObject", source))
         self.assertFalse(self.allowed("intelligence", "s3:GetObject", "meetings/meeting/sources/media"))
         self.assertFalse(self.allowed("intelligence", "s3:DeleteObject", result))
+
+    def test_core_cannot_write_or_replace_intelligence_results(self):
+        source = "processing/job/intelligence/source/snapshot.json"
+        result = "processing/job/intelligence/results/stage.json"
+        self.assertTrue(self.allowed("core", "s3:PutObject", source))
+        self.assertFalse(self.allowed("core", "s3:PutObject", result))
+        self.assertTrue(self.allowed("core", "s3:GetObject", result))
 
     def map_value(self, name, value):
         text = (ROOT / "storage-boundary.conf").read_text()

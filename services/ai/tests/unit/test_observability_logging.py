@@ -68,6 +68,21 @@ def test_no_context_and_no_optional_ids_are_valid(capsys):
     assert second.keys() == first.keys() | {"trace_id", "span_id", "trace_flags"}
 
 
+def test_provider_telemetry_is_numeric_and_allowlisted(capsys):
+    configure_logging(settings())
+    log_event(logging.getLogger("sme_meeting_ai"), logging.INFO, "provider.completed", duration_ms=12,
+              input_tokens=100, output_tokens=30, total_tokens=130,
+              reasoning_tokens=10, reserved_tokens=4096, attempts=2,
+              upload_bytes=0)
+    data = json.loads(capsys.readouterr().out)
+    assert data["input_tokens"] == 100
+    assert data["output_tokens"] == 30
+    assert data["total_tokens"] == 130
+    assert data["reasoning_tokens"] == 10
+    assert data["reserved_tokens"] == 4096
+    assert data["attempts"] == 2
+
+
 def test_repeated_configuration_emits_once_updates_settings_and_preserves_other_handlers(capsys):
     logger = logging.getLogger("sme_meeting_ai")
     unrelated = logging.NullHandler()

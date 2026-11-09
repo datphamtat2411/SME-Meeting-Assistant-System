@@ -34,6 +34,10 @@ from sme_meeting_ai.meeting_intelligence.source import (
     verify_snapshot,
 )
 from sme_meeting_ai.meeting_intelligence.summary import build_summary_processor
+from sme_meeting_ai.observability.context import (
+    correlation_scope,
+    new_correlation_context,
+)
 from sme_meeting_ai.observability.logging import log_event
 
 logger = logging.getLogger(__name__)
@@ -110,6 +114,16 @@ class WorkFailure(Exception):
         super().__init__("INTELLIGENCE_WORK_FAILED")
 
 
+def validate_provider_credentials(settings):
+    """Reject an enabled real inference worker before it starts consuming work."""
+    if not (settings.meeting_intelligence_worker_enabled and settings.meeting_intelligence_inference_enabled):
+        return
+    secret = settings.openrouter_api_key
+    key = "" if secret is None else secret.get_secret_value()
+    if not key or any(ord(char) < 33 or ord(char) > 126 for char in key):
+        raise ValueError("Meeting Intelligence provider credential is required")
+
+
 def _worker_category(category):
     """Map feature-local failures to the existing Intelligence worker contract."""
     if category in {"VALIDATION", "RESOURCE", "TIMEOUT", "PROVIDER", "TRANSPORT", "RATE_LIMIT",
@@ -152,6 +166,11 @@ class IntelligenceWorker:
         self.closed = False
 
     def prepare(self, claim, guard, deadline):
+        with correlation_scope(new_correlation_context(request_id=claim.eventId,
+                                                       job_id=claim.processingJobId)):
+            return self._prepare(claim, guard, deadline)
+
+    def _prepare(self, claim, guard, deadline):
         phase = "SOURCE_DOWNLOAD"
         try:
             raw = self.storage.get_intelligence_snapshot(claim.source, guard.fence)
@@ -389,6 +408,8 @@ class IntelligenceExecution:
         if not s.meeting_intelligence_worker_enabled:
             return self
         try:
+            if not self._injected_processors:
+                validate_provider_credentials(s)
             if not all((s.meeting_intelligence_acceptance_token, s.meeting_intelligence_s3_access_key_id,
                         s.meeting_intelligence_s3_secret_access_key, s.meeting_intelligence_core_api_client_cert_file,
                         s.meeting_intelligence_core_api_client_key_file, s.meeting_intelligence_rabbitmq_username,

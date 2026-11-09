@@ -129,7 +129,8 @@ variants. No public proxy may target the private connector. Core's engine Valve
 independently checks the actual connector object, never Host/forwarding headers,
 and guards servlet forward/include/error dispatches.
 
-Copy `compose.env.example`, `core.env.example`, `worker.env.example` outside Git,
+Copy `compose.env.example`, `core.env.example`, `worker.env.example`, and
+`intelligence-worker.env.example` outside Git,
 mode 0600. Edit literal absolute paths. Docker env files and application process
 environments are distinct. Supply bootstrap files:
 
@@ -142,6 +143,11 @@ environments are distinct. Supply bootstrap files:
   example; the smoke CLI disables implicit `.env` loading and reads its process
   environment. These settings name the process; mTLS identity still comes only
   from the verified certificate URI SAN.
+- `intelligence-worker.env`: dedicated MI worker example with
+  `AI_SERVICE_IDENTITY=mi-worker`, separate MI broker/storage/Core acceptance
+  credentials, and all MI/model gates disabled. Never reuse the transcription
+  worker certificate or account. Provider credentials remain external and are
+  required only for an approved enabled inference run.
 - Core's normal DB/JWT/SMTP settings plus `core.env.example` and separate publisher
   `RABBITMQ_USERNAME/PASSWORD`, storage `APP_MEDIA_STORAGE_ACCESS_KEY/SECRET_KEY`.
 
@@ -357,6 +363,37 @@ review; do not retry with deletion. Application grants in this vhost:
 | AI worker | none | none | exact work queue | none |
 | Core reconciler | none | none | exact DLQ | none |
 | External operator | approved administration | administration | administration | operator-managed |
+
+### Meeting Intelligence route
+
+The optional MI route adds durable quorum queues
+`meeting.processing.intelligence` and `meeting.processing.intelligence.dead`,
+bound only to `processing.intelligence.requested`. The `mi-worker` account reads
+only the MI work queue; the existing transcription worker account is not widened.
+The MI dead queue is not consumed by the transcription DLQ reconciler. Core's
+durable dispatch/lease reconciliation remains the owner of unclaimed or failed
+work; operators must inspect and authorize any retry rather than fabricate a
+replay from the dead queue.
+
+Provision and verify it only as an explicit operator action:
+
+```sh
+python3 infra/local/secure-integration/broker.py accounts \
+  --container "$BROKER_CONTAINER" --vhost "$BROKER_VHOST" --intelligence \
+  --publisher-user core-publisher --worker-user ai-transcription \
+  --reconciler-user core-reconciler --intelligence-user mi-worker
+python3 infra/local/secure-integration/broker.py provision \
+  --container "$BROKER_CONTAINER" --vhost "$BROKER_VHOST" --intelligence \
+  --publisher-user core-publisher --worker-user ai-transcription \
+  --reconciler-user core-reconciler --intelligence-user mi-worker
+python3 infra/local/secure-integration/broker.py verify \
+  --container "$BROKER_CONTAINER" --vhost "$BROKER_VHOST" --intelligence
+```
+
+Use a separate externally supplied `BROKER_INTELLIGENCE_PASSWORD`; the operator
+tool refuses existing users and never rotates credentials. Keep the MI Core
+storage grant limited to source snapshots and accepted-result reads. It must not
+write or delete `processing/*/intelligence/results/*`.
 
 Secure Core sets `spring.rabbitmq.dynamic=false` and
 `app.media.messaging.topology=external-quorum`; its publisher cannot administer

@@ -45,6 +45,7 @@ def _result(request, output):
         duration_seconds=0,
         attempts=1,
         failed_attempt_categories=(),
+        reasoning_effort=request.reasoning_effort,
     )
 
 
@@ -148,7 +149,7 @@ def test_short_summary_is_vietnamese_grounded_and_warns_without_inventing_identi
 
     assert len(adapter.requests) == 1
     assert candidate["producer"] == {
-        "model": "openai/gpt-5-mini",
+        "model": "openai/gpt-6-luna",
         "promptVersion": "summary-v1",
         "provider": "test-provider",
     }

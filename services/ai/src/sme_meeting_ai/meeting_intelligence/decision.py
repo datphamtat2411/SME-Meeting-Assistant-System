@@ -299,6 +299,7 @@ def _validate_model_result(result: ModelResult, request, source: EvidenceSource)
             and result.schema_version == request.task.schema.version
             and result.schema_sha256 == request.task.schema.sha256
             and result.requested_model == request.model
+            and result.reasoning_effort == request.reasoning_effort
             and isinstance(result.provider, str) and bool(result.provider.strip()), "INTEGRITY")
     request.task.schema.parse(canonical_json(result.output))
 
@@ -485,7 +486,7 @@ def _derived_payload(source: EvidenceSource, records: tuple[DecisionSignal, ...]
 
 def _input_fits(prepared: PreparedContext, task: TaskSpec, evidence_json: str) -> bool:
     check_authority(prepared.deadline, prepared.cancelled)
-    return estimate_input_tokens(payload_for(prepared.model, task, evidence_json,
+    return estimate_input_tokens(payload_for(prepared.model, prepared.reasoning_effort, task, evidence_json,
                                              prepared.limits.max_output_tokens)) <= prepared.limits.max_input_tokens
 
 

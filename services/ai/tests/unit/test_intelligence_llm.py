@@ -56,12 +56,13 @@ def test_strict_request_separation_provenance_usage_and_safe_reprs(caplog):
         body = json.loads(r.content)
         assert str(r.url) == "https://openrouter.ai/api/v1/chat/completions"
         assert r.headers["authorization"] == f"Bearer {KEY}"
-        assert body["model"] == "openai/gpt-5-mini" and body["stream"] is False
+        assert body["model"] == "openai/gpt-6-luna" and body["stream"] is False
+        assert body["reasoning"] == {"effort": "high"}
         assert body["response_format"]["type"] == "json_schema"
         assert body["response_format"]["json_schema"]["strict"] is True
         assert body["provider"] == {"require_parameters": True, "allow_fallbacks": False}
         assert "models" not in body and "tools" not in body and "plugins" not in body
-        assert body["max_tokens"] == 4096
+        assert body["max_tokens"] == 32768
         system, user = body["messages"]
         assert system["role"] == "system" and "untrusted" in system["content"].lower()
         assert "Chúng ta" not in system["content"]
@@ -74,8 +75,9 @@ def test_strict_request_separation_provenance_usage_and_safe_reprs(caplog):
     with OpenRouterIntelligenceAdapter(config(), transport=httpx.MockTransport(handle)) as adapter:
         completion = adapter.complete(request())
     assert completion.output == {"segment_ids": [uid(100), uid(101)]}
-    assert completion.requested_model == "openai/gpt-5-mini"
-    assert completion.reported_model == "openai/gpt-5-mini-2025-08-07"
+    assert completion.requested_model == "openai/gpt-6-luna"
+    assert completion.reported_model == "openai/gpt-6-luna"
+    assert completion.reasoning_effort == "high"
     assert completion.provider == "openrouter" and completion.reported_provider == "OpenAI"
     assert completion.prompt_version == "probe-v1" and completion.schema_version == "probe-schema-v1"
     assert completion.schema_sha256 == task().schema.sha256
@@ -321,6 +323,14 @@ def test_changed_task_requires_new_plan():
     req = replace(request(), task=replace(task(), instructions="Different approved task"))
     with OpenRouterIntelligenceAdapter(config(), transport=httpx.MockTransport(
             lambda r: pytest.fail("Changed task must not issue HTTP"))) as adapter:
+        with pytest.raises(IntelligenceError, match="CONFIGURATION"):
+            adapter.complete(req)
+
+
+def test_reasoning_mismatch_is_rejected_before_provider_call():
+    req = replace(request(), reasoning_effort="low")
+    with OpenRouterIntelligenceAdapter(config(), transport=httpx.MockTransport(
+            lambda r: pytest.fail("Reasoning mismatch must not issue HTTP"))) as adapter:
         with pytest.raises(IntelligenceError, match="CONFIGURATION"):
             adapter.complete(req)
 

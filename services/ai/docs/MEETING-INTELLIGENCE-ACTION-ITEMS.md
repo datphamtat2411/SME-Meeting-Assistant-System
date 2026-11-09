@@ -74,8 +74,10 @@ AI_MEETING_INTELLIGENCE_INFERENCE_ENABLED=true
 AI_MEETING_INTELLIGENCE_ACTION_ITEM_ENABLED=true
 ```
 
-The configured model remains `openai/gpt-5-mini`, using the shared OpenRouter adapter
-and existing adapter lifecycle. Action-only activation creates that same adapter.
+The configured model is `openai/gpt-6-luna`, using the shared OpenRouter adapter
+and existing adapter lifecycle with `reasoning.effort=high`. Action-only
+activation creates that same adapter; it does not introduce a model or reasoning
+override.
 Core must separately enable its existing approved Action Item handoff capability and
 all T01 private transport, storage, broker and deployment prerequisites. Deploying
 this code does not activate those gates.

@@ -1,5 +1,6 @@
 import json
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -47,6 +48,7 @@ def _adapter(callback):
                 duration_seconds=0,
                 attempts=1,
                 failed_attempt_categories=(),
+                reasoning_effort=request.reasoning_effort,
             )
 
     return Adapter()
@@ -59,6 +61,18 @@ def _identity(request):
         "transcript_id": identity.transcript_id,
         "content_revision": identity.content_revision,
     }
+
+
+def test_t08_model_configuration_manifest_is_versioned_and_fail_closed():
+    manifest = json.loads((Path(__file__).parent / "fixtures" /
+                           "meeting-intelligence-model-config-v1.json").read_text())
+    candidate = manifest["candidate"]
+    assert manifest["schema_version"] == 1
+    assert candidate["model"] == "openai/gpt-6-luna"
+    assert candidate["reasoning_effort"] == "high"
+    assert candidate["fallbacks_allowed"] is False
+    assert candidate["quality_status"] == "UNESTABLISHED"
+    assert manifest["historical_baseline"]["artifacts_immutable"] is True
 
 
 def test_controlled_runner_invokes_actual_processor_and_preserves_empty_success():
@@ -80,6 +94,7 @@ def test_controlled_runner_invokes_actual_processor_and_preserves_empty_success(
     assert result["empty_result"] is True
     assert result["failure_category"] is None
     assert result["provenance"]["provider"] == "controlled"
+    assert result["provenance"]["reasoning_effort"] == "high"
     assert result["telemetry"]["call_count"] == 1
     assert result["quality_status"] == "UNESTABLISHED"
     assert result["fixture_id"] == "fixture-1"

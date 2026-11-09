@@ -26,18 +26,23 @@ class PreparedContext:
     plan: ContextPlan = field(repr=False)
     task: TaskSpec = field(repr=False)
     model: str
+    reasoning_effort: str
     limits: ContextLimits
     deadline: float
     cancelled: Event = field(repr=False)
+    budget: "InferenceBudget" = field(repr=False)
 
     def request(self, window_index: int) -> ModelRequest:
         check_authority(self.deadline, self.cancelled)
         require(type(window_index) is int and 0 <= window_index < len(self.plan.windows), "INVALID_REFERENCE")
-        return ModelRequest(self.model, self.task, self.plan.windows[window_index], self.limits.max_input_tokens,
-                            self.limits.max_output_tokens, self.deadline, self.cancelled)
+        return ModelRequest(self.model, self.reasoning_effort, self.task, self.plan.windows[window_index],
+                            self.limits.max_input_tokens, self.limits.max_output_tokens,
+                            self.deadline, self.cancelled)
 
     def execute(self, adapter: ModelAdapter, window_index: int) -> ModelResult:
-        result = adapter.complete(self.request(window_index))
+        request = self.request(window_index)
+        self.budget.reserve(request)
+        result = adapter.complete(request)
         check_authority(self.deadline, self.cancelled)
         return result
 
@@ -52,7 +57,7 @@ class PreparedContext:
         require(isinstance(task, TaskSpec) and isinstance(evidence_json, str)
                 and identifier(level), "CONFIGURATION")
         estimated = estimate_input_tokens(
-            payload_for(self.model, task, evidence_json, self.limits.max_output_tokens)
+            payload_for(self.model, self.reasoning_effort, task, evidence_json, self.limits.max_output_tokens)
         )
         require(estimated <= self.limits.max_input_tokens, "CONTEXT_BUDGET")
         derived = DerivedEvidenceContext(
@@ -64,12 +69,14 @@ class PreparedContext:
             estimated_input_tokens=estimated,
             evidence_json=evidence_json,
         )
-        return ModelRequest(self.model, task, derived, self.limits.max_input_tokens,
+        return ModelRequest(self.model, self.reasoning_effort, task, derived, self.limits.max_input_tokens,
                             self.limits.max_output_tokens, self.deadline, self.cancelled)
 
     def execute_derived(self, adapter: ModelAdapter, task: TaskSpec,
                         evidence_json: str, level: str) -> ModelResult:
-        result = adapter.complete(self.derived_request(task, evidence_json, level))
+        request = self.derived_request(task, evidence_json, level)
+        self.budget.reserve(request)
+        result = adapter.complete(request)
         check_authority(self.deadline, self.cancelled)
         return result
 
@@ -90,8 +97,28 @@ class DerivedEvidenceContext:
     contains_entire_source: bool = False
 
 
+@dataclass
+class InferenceBudget:
+    """Reserve estimated input plus the full visible/reasoning completion ceiling."""
+
+    maximum_tokens: int
+    reserved_tokens: int = 0
+
+    def reserve(self, request: ModelRequest) -> int:
+        reserved = request.window.estimated_input_tokens + request.output_budget
+        require(type(reserved) is int and reserved > 0
+                and self.reserved_tokens + reserved <= self.maximum_tokens, "CONTEXT_BUDGET")
+        self.reserved_tokens += reserved
+        return reserved
+
+
 def prepare_context(context: StageContext, task: TaskSpec, settings: Settings) -> PreparedContext:
     limits = ContextLimits.from_settings(settings)
     source = normalize_evidence(context, limits)
-    plan = plan_context(source, task, limits, settings.meeting_intelligence_model, context.deadline, context.cancelled)
-    return PreparedContext(plan, task, settings.meeting_intelligence_model, limits, context.deadline, context.cancelled)
+    plan = plan_context(source, task, limits, settings.meeting_intelligence_model,
+                        settings.meeting_intelligence_reasoning_effort,
+                        context.deadline, context.cancelled)
+    return PreparedContext(plan, task, settings.meeting_intelligence_model,
+                           settings.meeting_intelligence_reasoning_effort, limits,
+                           context.deadline, context.cancelled,
+                           InferenceBudget(limits.max_total_inference_tokens))

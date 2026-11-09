@@ -185,9 +185,10 @@ not become perfect scores. Reports contain both per-case and aggregate data.
 `run_processor_case()` calls the actual production processor through an
 injected adapter and validates the resulting candidate through
 `serialize_result()` or `prepare_action_item_request()`. It records processor,
-model, prompt, provider, source, configuration, timing, and provider-reported
-usage/cost only when present. Failed processing retains a failure status and is
-never converted to an empty result.
+model, shared reasoning effort, prompt, provider, source, configuration, timing,
+reserved-token ceiling, and provider-reported usage/cost only when present.
+Failed processing retains a failure status and is never converted to an empty
+result. Raw prompts, outputs, and reasoning traces are never part of telemetry.
 
 The normal deterministic command is:
 
@@ -257,6 +258,7 @@ according to the owning privacy/retention approval.
 
 T08 must add release and deployment controls, provider/privacy approval for any
 external data, restricted artifact lifecycle, operational monitoring, rollback,
-and production-readiness sign-off. T07 supplies the report identity, scoring
+and production-readiness sign-off. See
+`MEETING-INTELLIGENCE-T08-ROLLOUT.md`. T07 supplies the report identity, scoring
 policy, review status, critical-failure inventory, and explicit evidence gap; it
 does not authorize rollout or infer quality from deterministic tests.

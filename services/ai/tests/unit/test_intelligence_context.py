@@ -181,6 +181,27 @@ def test_estimator_counts_utf8_format_schema_instructions_and_margin():
         prepare_context(stage(), larger_task, exact)
 
 
+def test_reasoning_policy_is_bound_to_request_and_configuration_fingerprint():
+    high = prepare()
+    medium = prepare(meeting_intelligence_reasoning_effort="medium")
+    assert high.request(0).reasoning_effort == "high"
+    assert medium.request(0).reasoning_effort == "medium"
+    assert high.plan.configuration_sha256 != medium.plan.configuration_sha256
+
+
+def test_stage_budget_reserves_input_and_completion_for_every_request():
+    prepared = prepare(meeting_intelligence_max_total_inference_tokens=1)
+    request = prepared.request(0)
+    with pytest.raises(IntelligenceError, match="CONTEXT_BUDGET"):
+        prepared.budget.reserve(request)
+
+    prepared = prepare()
+    request = prepared.request(0)
+    reserved = request.window.estimated_input_tokens + request.output_budget
+    assert prepared.budget.reserve(request) == reserved
+    assert prepared.budget.reserved_tokens == reserved
+
+
 @pytest.mark.parametrize("options", [
     {"meeting_intelligence_max_windows": 1, "meeting_intelligence_max_input_tokens": 4000},
     {"meeting_intelligence_max_total_context_tokens": 5000},

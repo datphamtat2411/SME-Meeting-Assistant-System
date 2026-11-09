@@ -1,6 +1,7 @@
 """Scoped cancellable OpenRouter Chat Completions for Meeting Intelligence only."""
 
 import asyncio
+import logging
 import time
 from dataclasses import asdict, replace
 from decimal import Decimal
@@ -27,10 +28,12 @@ from sme_meeting_ai.meeting_intelligence.errors import (
     check_authority,
     require,
 )
+from sme_meeting_ai.observability.logging import log_event
 
 _ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 _POLL_SECONDS = 0.02
 _TRANSIENT_STATUS = {408, 429, 500, 502, 503, 504, 524}
+logger = logging.getLogger(__name__)
 
 
 class _AttemptError(IntelligenceError):
@@ -98,7 +101,7 @@ def _normalize(raw, request):
     reported_model, reported_provider = data.get("model"), data.get("provider")
     require(reported_model is None or identifier(reported_model, MODEL_PATTERN), "MALFORMED_OUTPUT")
     require(reported_provider is None or identifier(reported_provider, MODEL_PATTERN), "MALFORMED_OUTPUT")
-    return ModelResult(output, request.model, reported_model, "openrouter", reported_provider,
+    return ModelResult(output, request.model, request.reasoning_effort, reported_model, "openrouter", reported_provider,
         request.task.prompt_version, request.task.schema.version, request.task.schema.sha256,
         request.window.source, request.window.window_id, request.window.planning_version,
         request.window.configuration_sha256, request.task.sha256,
@@ -138,14 +141,16 @@ class OpenRouterIntelligenceAdapter:
         s = self._settings
         self._check(request)
         require(s.meeting_intelligence_inference_enabled, "INFERENCE_DISABLED")
-        require(request.model == s.meeting_intelligence_model, "CONFIGURATION")
+        require(request.model == s.meeting_intelligence_model
+                and request.reasoning_effort == s.meeting_intelligence_reasoning_effort, "CONFIGURATION")
         require(type(request.input_budget) is int and 0 < request.input_budget <= s.meeting_intelligence_max_input_tokens
                 and type(request.output_budget) is int and 0 < request.output_budget <= s.meeting_intelligence_max_output_tokens
                 and request.input_budget + request.output_budget <= s.meeting_intelligence_context_window_tokens,
                 "CONTEXT_BUDGET")
         require(request.task.sha256 == request.window.task_sha256, "CONFIGURATION")
         expected_configuration = digest({"limits": asdict(ContextLimits.from_settings(s)),
-            "model": request.model, "planning_version": PLANNING_VERSION})
+            "model": request.model, "reasoning_effort": request.reasoning_effort,
+            "planning_version": PLANNING_VERSION})
         require(request.window.planning_version == PLANNING_VERSION
                 and request.window.configuration_sha256 == expected_configuration, "CONFIGURATION")
         payload = request_payload(request)
@@ -159,6 +164,7 @@ class OpenRouterIntelligenceAdapter:
     def complete(self, request: ModelRequest) -> ModelResult:
         """Only sanitized errors escape; never retain HTTP/parser exception chains."""
         category, acquired = "CONFIGURATION", False
+        result = None
         try:
             payload, key = self._preflight(request)
             # Called by the established synchronous T02 processor, never its event loop.
@@ -172,7 +178,16 @@ class OpenRouterIntelligenceAdapter:
                 self._check(request)
                 acquired = self._slots.acquire(timeout=min(_POLL_SECONDS, max(0, request.deadline - time.monotonic())))
             self._check(request)
-            return asyncio.run(self._run(request, payload, key))
+            result = asyncio.run(self._run(request, payload, key))
+            usage = result.usage
+            duration_ms = int(max(0, min(86400000, result.duration_seconds * 1000)))
+            log_event(logger, logging.INFO, "worker.intelligence.provider.completed",
+                      duration_ms=duration_ms, input_tokens=usage.input_tokens,
+                      output_tokens=usage.output_tokens, total_tokens=usage.total_tokens,
+                      reasoning_tokens=usage.reasoning_tokens,
+                      reserved_tokens=request.window.estimated_input_tokens + request.output_budget,
+                      attempts=result.attempts)
+            return result
         except IntelligenceError as error:
             category = error.category
         except (ValueError, TypeError, KeyError, AttributeError, RecursionError, OverflowError):
@@ -184,6 +199,11 @@ class OpenRouterIntelligenceAdapter:
         finally:
             if acquired:
                 self._slots.release()
+            if result is None:
+                log_event(logger, logging.WARNING, "worker.intelligence.provider.failed",
+                          reserved_tokens=(request.window.estimated_input_tokens + request.output_budget
+                                           if hasattr(request, "window") and hasattr(request, "output_budget")
+                                           else None))
         raise IntelligenceError(category)
 
     async def _run(self, request, payload, key):

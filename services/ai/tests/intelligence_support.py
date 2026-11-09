@@ -65,6 +65,6 @@ def task():
 def envelope(content=None, **overrides):
     return dict(choices=[dict(message=dict(role="assistant", content=content or json.dumps(
         {"segment_ids": [uid(100), uid(101)]})), finish_reason="stop")],
-        model="openai/gpt-5-mini-2025-08-07", provider="OpenAI",
+        model="openai/gpt-6-luna", provider="OpenAI",
         usage=dict(prompt_tokens=100, completion_tokens=30, total_tokens=130,
                    completion_tokens_details=dict(reasoning_tokens=10), cost=0.0001), **overrides)
