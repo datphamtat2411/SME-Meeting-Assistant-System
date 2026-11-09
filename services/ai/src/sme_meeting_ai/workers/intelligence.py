@@ -21,12 +21,14 @@ from sme_meeting_ai.integrations.intelligence import (
 )
 from sme_meeting_ai.integrations.messaging import MessageError, RabbitConsumer
 from sme_meeting_ai.integrations.object_storage import ObjectStorage, StorageError
+from sme_meeting_ai.meeting_intelligence.errors import IntelligenceError
 from sme_meeting_ai.meeting_intelligence.processor import StageContext
 from sme_meeting_ai.meeting_intelligence.result import ResultError, serialize_result
 from sme_meeting_ai.meeting_intelligence.source import (
     SourceIntegrityError,
     verify_snapshot,
 )
+from sme_meeting_ai.meeting_intelligence.summary import build_summary_processor
 from sme_meeting_ai.observability.logging import log_event
 
 logger = logging.getLogger(__name__)
@@ -103,6 +105,33 @@ class WorkFailure(Exception):
         super().__init__("INTELLIGENCE_WORK_FAILED")
 
 
+def _worker_category(category):
+    """Map feature-local failures to the existing Intelligence worker contract."""
+    if category in {"VALIDATION", "RESOURCE", "TIMEOUT", "PROVIDER", "TRANSPORT", "RATE_LIMIT",
+                    "AUTHENTICATION", "CONFIGURATION", "MALFORMED_OUTPUT", "INTEGRITY",
+                    "NOT_FOUND", "EMPTY_OUTPUT", "CANCELLED"}:
+        return category
+    if category in {"INVALID_SOURCE", "INVALID_REFERENCE", "GROUNDING_FAILURE"}:
+        return "VALIDATION"
+    if category in {"CONTEXT_BUDGET", "DEADLINE"}:
+        return "TIMEOUT" if category == "DEADLINE" else "RESOURCE"
+    if category in {"UNSUPPORTED_SCHEMA", "UNSUPPORTED_PARAMETERS", "INFERENCE_DISABLED"}:
+        return "CONFIGURATION"
+    if category in {"SCHEMA_MISMATCH", "INCOMPLETE_OUTPUT", "REFUSAL"}:
+        return "MALFORMED_OUTPUT"
+    return "RESOURCE"
+
+
+def production_processors(settings, adapter=None):
+    """Return only explicitly enabled production capability processors."""
+    if not (settings.meeting_intelligence_worker_enabled
+            and settings.meeting_intelligence_inference_enabled
+            and settings.meeting_intelligence_summary_enabled
+            and adapter is not None):
+        return {}
+    return {"GENERATING_SUMMARY": build_summary_processor(settings, adapter)}
+
+
 class IntelligenceWorker:
     def __init__(self, settings, core, storage, processors):
         self.settings, self.core, self.storage, self.processors = settings, core, storage, dict(processors)
@@ -158,6 +187,8 @@ class IntelligenceWorker:
             raise
         except SourceIntegrityError:
             raise WorkFailure("SOURCE_DOWNLOAD", "INTEGRITY") from None
+        except IntelligenceError as error:
+            raise WorkFailure(phase, _worker_category(error.category)) from None
         except ResultError:
             raise WorkFailure("RESULT_VALIDATION", "MALFORMED_OUTPUT") from None
         except StorageError as error:
@@ -305,7 +336,9 @@ class IntelligenceWorker:
 
 class IntelligenceExecution:
     def __init__(self, settings, processors=None):
-        self.settings, self.processors = settings, processors or {}
+        self.settings = settings
+        self._injected_processors = processors is not None
+        self.processors = dict(processors or {})
         self.async_resources, self.sync_resources = AsyncExitStack(), ExitStack()
         self.worker = self.broker = None
 
@@ -325,9 +358,16 @@ class IntelligenceExecution:
                 rabbitmq_username=s.meeting_intelligence_rabbitmq_username,
                 rabbitmq_password=s.meeting_intelligence_rabbitmq_password,
                 core_api_client_cert_file=s.meeting_intelligence_core_api_client_cert_file,
-                core_api_client_key_file=s.meeting_intelligence_core_api_client_key_file))
+                 core_api_client_key_file=s.meeting_intelligence_core_api_client_key_file))
             core = IntelligenceCoreClient(isolated, acceptance_token=s.meeting_intelligence_acceptance_token)
             self.async_resources.push_async_callback(core.aclose)
+            if not self._injected_processors and s.meeting_intelligence_summary_enabled \
+                    and s.meeting_intelligence_inference_enabled:
+                from sme_meeting_ai.providers.openrouter_intelligence import (
+                    OpenRouterIntelligenceAdapter,
+                )
+                adapter = self.sync_resources.enter_context(OpenRouterIntelligenceAdapter(s))
+                self.processors = production_processors(s, adapter)
             storage = self.sync_resources.enter_context(ObjectStorage(isolated, result_max_bytes=4194304,
                                                                        namespace="sme-intelligence-worker"))
             self.worker = IntelligenceWorker(s, core, storage, self.processors)

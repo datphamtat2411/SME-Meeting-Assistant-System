@@ -71,12 +71,16 @@ Immutable artifact conflicts do not overwrite existing content. Shutdown stops
 intake and fences outstanding work when the worker grace period expires.
 Credentials and transcript contents must not be logged.
 
-Processors are injected as a stage-code keyed registry into
-`IntelligenceExecution` or `IntelligenceWorker`. Each synchronous processor
-receives a `StageContext` with a verified snapshot, source provenance, monotonic
-deadline and cancellation signal, and returns a structured candidate. No
-production Summary or Decision processor is registered in AIMI-T02; an unavailable
-processor fails closed. Action Item canonical acceptance is not available here.
+Processors are composed as a stage-code keyed registry by
+`IntelligenceExecution` or injected into `IntelligenceWorker`. Each synchronous
+processor receives a `StageContext` with a verified snapshot, source provenance,
+monotonic deadline and cancellation signal, and returns a structured candidate.
+The production Summary processor is registered only when the worker, inference,
+and `AI_MEETING_INTELLIGENCE_SUMMARY_ENABLED` flags are all true; it remains
+disabled by default. Only `GENERATING_SUMMARY` is registered. An unavailable
+processor fails closed. Decision and Action Item extraction remain separate
+capabilities. See `docs/MEETING-INTELLIGENCE-SUMMARY.md` for grounding,
+long-meeting reduction, warning, activation, and qualification boundaries.
 
 ## Standalone speaker diarization
 
