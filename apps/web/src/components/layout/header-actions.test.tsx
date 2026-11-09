@@ -10,14 +10,23 @@ import { render } from 'vitest-browser-react'
 import { page, userEvent } from 'vitest/browser'
 import { SearchProvider } from '@/context/search-provider'
 import { ThemeProvider } from '@/context/theme-provider'
+import { UserPresentationProvider } from './data/user-presentation'
 import { HeaderActions } from './header-actions'
+
+const canonicalUser = {
+  displayName: 'Canonical User',
+  email: 'canonical@example.test',
+  initials: 'CU',
+}
 
 function createTestRouter() {
   const rootRoute = createRootRoute({
     component: () => (
       <ThemeProvider>
         <SearchProvider>
-          <HeaderActions />
+          <UserPresentationProvider user={canonicalUser}>
+            <HeaderActions />
+          </UserPresentationProvider>
         </SearchProvider>
       </ThemeProvider>
     ),

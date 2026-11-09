@@ -82,4 +82,13 @@ describe('UserMenu', () => {
       .element(screen.getByRole('alertdialog', { name: 'Sign out' }))
       .toBeInTheDocument()
   })
+
+  it('does not invent a fixture identity when no canonical user is supplied', async () => {
+    const screen = await render(<UserMenu />)
+
+    await expect.element(screen.getByText('Nguyễn Lan')).not.toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: 'Open user menu' }))
+      .not.toBeInTheDocument()
+  })
 })

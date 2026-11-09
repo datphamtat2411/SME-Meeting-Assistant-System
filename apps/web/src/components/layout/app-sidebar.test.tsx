@@ -21,13 +21,19 @@ import { SkipToMain } from '@/components/skip-to-main'
 import { AppSidebar } from './app-sidebar'
 import { Main } from './main'
 
+const testUser = {
+  displayName: 'Canonical Sidebar User',
+  email: 'sidebar@example.test',
+  initials: 'CS',
+}
+
 function TestShell() {
   return (
     <LayoutProvider>
       <SidebarProvider defaultOpen>
         <SkipToMain />
         <SidebarTrigger aria-label='Open navigation' />
-        <AppSidebar />
+        <AppSidebar user={testUser} />
         <SidebarInset>
           <Main>
             <Outlet />
@@ -214,15 +220,15 @@ describe('AppSidebar navigation', () => {
     await expect.poll(() => document.activeElement?.id).toBe('content')
   })
 
-  it('renders the shared user presentation and account actions', async () => {
+  it('renders the canonical user presentation and account actions', async () => {
     const { screen } = await renderApp('/calendar')
 
-    await expect.element(screen.getByText('Nguyễn Lan')).toBeInTheDocument()
     await expect
-      .element(screen.getByText('lan.nguyen@sme.local'))
+      .element(screen.getByText(testUser.displayName))
       .toBeInTheDocument()
+    await expect.element(screen.getByText(testUser.email)).toBeInTheDocument()
     await expect
-      .element(screen.getByText('NL', { exact: true }))
+      .element(screen.getByText(testUser.initials, { exact: true }))
       .toBeInTheDocument()
 
     await userEvent.click(

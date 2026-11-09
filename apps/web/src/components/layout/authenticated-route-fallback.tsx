@@ -5,9 +5,11 @@ import { AuthenticatedLayout } from './authenticated-layout'
 import { Header } from './header'
 import { HeaderActions } from './header-actions'
 import { Main } from './main'
+import { type UserPresentation } from './types'
 
 type AuthenticatedRouteFrameProps = {
   children: React.ReactNode
+  user?: UserPresentation
 }
 
 export function AuthenticatedRouteFrame({
@@ -27,9 +29,10 @@ export function AuthenticatedRouteFrame({
 
 export function AuthenticatedRouteFallback({
   children,
+  user,
 }: AuthenticatedRouteFrameProps) {
   return (
-    <AuthenticatedLayout>
+    <AuthenticatedLayout user={user}>
       <AuthenticatedRouteFrame>{children}</AuthenticatedRouteFrame>
     </AuthenticatedLayout>
   )
