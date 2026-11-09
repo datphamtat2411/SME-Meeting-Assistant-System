@@ -16,7 +16,12 @@ from .embedding import (
 )
 from .indexing import KnowledgeIndexingEngine
 from .processing import process_snapshot
-from .provisioning import BgeM3Provisioner, ModelProvisioningError, load_bge_m3_manifest
+from .provisioning import (
+    BgeM3Provisioner,
+    BgeRerankerProvisioner,
+    ModelProvisioningError,
+    load_bge_m3_manifest,
+)
 from .qdrant import QdrantConfig, QdrantVectorStore
 from .synthetic import synthetic_vietnamese_snapshot
 from .tokenizer import BgeM3Tokenizer, bge_m3_chunking_config, bge_m3_index_generation
@@ -30,8 +35,21 @@ def _parser() -> argparse.ArgumentParser:
     provision.add_argument("--cache-dir", type=Path, default=Path(os.getenv("AI_RAG_MODEL_CACHE_DIR", "/var/lib/sme-meeting-ai/models")))
     provision.add_argument("--offline", action="store_true", help="verify the local Hugging Face cache without network access")
 
+    provision_reranker = commands.add_parser(
+        "provision-reranker", help="download or verify the pinned BGE reranker snapshot"
+    )
+    provision_reranker.add_argument(
+        "--cache-dir", type=Path, default=Path(os.getenv("AI_RAG_MODEL_CACHE_DIR", "/var/lib/sme-meeting-ai/models"))
+    )
+    provision_reranker.add_argument(
+        "--offline", action="store_true", help="verify the local Hugging Face cache without network access"
+    )
+
     verify = commands.add_parser("verify-model", help="verify an already mounted BGE-M3 snapshot")
     verify.add_argument("--model-path", type=Path, required=True)
+
+    verify_reranker = commands.add_parser("verify-reranker", help="verify an already mounted BGE reranker snapshot")
+    verify_reranker.add_argument("--model-path", type=Path, required=True)
 
     schema = commands.add_parser("init-schema", help="create or validate the named dense/sparse Qdrant collection")
     _add_qdrant_options(schema)
@@ -93,8 +111,14 @@ def _run(args: argparse.Namespace) -> dict[str, object]:
     if args.command == "provision-model":
         snapshot = BgeM3Provisioner(args.cache_dir).provision(offline=args.offline)
         return {"status": "verified", "path": str(snapshot.path), "revision": snapshot.manifest.revision, "offline": args.offline}
+    if args.command == "provision-reranker":
+        snapshot = BgeRerankerProvisioner(args.cache_dir).provision(offline=args.offline)
+        return {"status": "verified", "path": str(snapshot.path), "revision": snapshot.manifest.revision, "offline": args.offline}
     if args.command == "verify-model":
         snapshot = BgeM3Provisioner(args.model_path).verify(args.model_path)
+        return {"status": "verified", "path": str(snapshot.path), "revision": snapshot.manifest.revision, "offline": True}
+    if args.command == "verify-reranker":
+        snapshot = BgeRerankerProvisioner(args.model_path).verify(args.model_path)
         return {"status": "verified", "path": str(snapshot.path), "revision": snapshot.manifest.revision, "offline": True}
     if args.command == "init-schema":
         store = _qdrant_store(args.qdrant_url, args.collection, args.generation_id)

@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
+from math import ceil
 from typing import Any, Protocol, Sequence
 
 from qdrant_client import QdrantClient, models
 
 from sme_meeting_ai.core.config import Settings
 
-from .embedding import DENSE_DIMENSIONS, EmbeddingCompatibility, SparseEmbedding
+from .embedding import (
+    DENSE_DIMENSIONS,
+    EmbeddingCompatibility,
+    QueryEmbedding,
+    SparseEmbedding,
+)
 
 
 class QdrantError(RuntimeError):
@@ -79,6 +86,9 @@ class QdrantCollectionSpec:
             "index_generation_id": models.PayloadSchemaType.KEYWORD,
             "embedding_model_id": models.PayloadSchemaType.KEYWORD,
             "embedding_model_revision": models.PayloadSchemaType.KEYWORD,
+            "embedding_tokenizer_id": models.PayloadSchemaType.KEYWORD,
+            "embedding_representation_version": models.PayloadSchemaType.KEYWORD,
+            "embedding_index_configuration_sha256": models.PayloadSchemaType.KEYWORD,
             "authority_class": models.PayloadSchemaType.KEYWORD,
             "quality_class": models.PayloadSchemaType.KEYWORD,
             "source_status": models.PayloadSchemaType.KEYWORD,
@@ -94,10 +104,31 @@ class VectorPoint:
     payload: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class QdrantRetrievedPoint:
+    """Provider-neutral scored point returned by the native hybrid query."""
+
+    point_id: str
+    score: float
+    payload: dict[str, Any]
+
+
 class VectorStore(Protocol):
     def ensure_schema(self) -> None: ...
 
     def upsert(self, points: Sequence[VectorPoint]) -> int: ...
+
+
+class HybridVectorStore(Protocol):
+    def query_hybrid(
+        self,
+        query_embedding: QueryEmbedding,
+        query_filter: models.Filter,
+        *,
+        dense_limit: int,
+        sparse_limit: int,
+        fusion_limit: int,
+    ) -> tuple[QdrantRetrievedPoint, ...]: ...
 
 
 def bge_m3_collection_spec(
@@ -216,11 +247,21 @@ class QdrantVectorStore:
         if sparse is None or _mapping_value(sparse_vectors, "index") is not None:
             raise QdrantSchemaError()
 
-    def _validate_payload_indexes(self, info: Any) -> None:
+    def _validate_payload_indexes(
+        self,
+        info: Any,
+        *,
+        create_missing: bool = True,
+        require_all: bool = True,
+    ) -> None:
         payload_schema = getattr(info, "payload_schema", None) or {}
         for field_name, expected_type in self.spec.payload_indexes.items():
             existing = payload_schema.get(field_name)
             if existing is None:
+                if not create_missing:
+                    if require_all:
+                        raise QdrantSchemaError("Required Qdrant payload index is missing")
+                    continue
                 try:
                     self.client.create_payload_index(
                         collection_name=self.spec.collection_name,
@@ -316,6 +357,106 @@ class QdrantVectorStore:
         if populated and not records:
             raise QdrantSchemaError("Existing Qdrant points cannot be verified")
         self._validate_existing_generation(records)
+
+    def validate_retrieval_schema(self) -> None:
+        """Validate the active query schema without scanning or mutating points."""
+
+        info = self._get_collection()
+        if info is None:
+            raise QdrantSchemaError("Qdrant retrieval collection does not exist")
+        self._validate_vectors(info)
+        # Payload indexes are created by the explicit schema command.  Missing
+        # indexes do not weaken the filter, and local Qdrant does not report
+        # them after creation, so query preflight validates existing types but
+        # never mutates or scans the collection.
+        self._validate_payload_indexes(info, create_missing=False, require_all=False)
+        metadata = getattr(getattr(info, "config", None), "metadata", None)
+        metadata = metadata if isinstance(metadata, dict) else {}
+        expected = self._collection_metadata()
+        if any(metadata.get(field) != value for field, value in expected.items()):
+            raise QdrantSchemaError("Qdrant retrieval collection generation metadata is incompatible")
+
+    def query_hybrid(
+        self,
+        query_embedding: QueryEmbedding,
+        query_filter: models.Filter,
+        *,
+        dense_limit: int,
+        sparse_limit: int,
+        fusion_limit: int,
+    ) -> tuple[QdrantRetrievedPoint, ...]:
+        """Run bounded dense+sparse prefetches fused by Qdrant's native RRF."""
+
+        if query_embedding.compatibility != self.spec.compatibility:
+            raise QdrantSchemaError("Query embedding compatibility does not match the active collection")
+        for name, limit in (
+            ("dense", dense_limit),
+            ("sparse", sparse_limit),
+            ("fusion", fusion_limit),
+        ):
+            if limit < 1 or limit > 256:
+                raise ValueError(f"Qdrant {name} retrieval limit is outside the supported bound")
+        filter_conditions = getattr(query_filter, "must", None) or []
+        filter_keys = {getattr(condition, "key", None) for condition in filter_conditions}
+        if not {
+            "meeting_id",
+            "source_current",
+            "index_generation_id",
+            "embedding_model_revision",
+        }.issubset(filter_keys):
+            raise QdrantSchemaError("Authorized retrieval filter is incomplete")
+        self.validate_retrieval_schema()
+        try:
+            response = self.client.query_points(
+                collection_name=self.spec.collection_name,
+                prefetch=[
+                    models.Prefetch(
+                        query=list(query_embedding.dense),
+                        using=self.spec.dense_name,
+                        filter=query_filter,
+                        limit=dense_limit,
+                    ),
+                    models.Prefetch(
+                        query=models.SparseVector(
+                            indices=list(query_embedding.sparse.indices),
+                            values=list(query_embedding.sparse.values),
+                        ),
+                        using=self.spec.sparse_name,
+                        filter=query_filter,
+                        limit=sparse_limit,
+                    ),
+                ],
+                query=models.FusionQuery(fusion=models.Fusion.RRF),
+                limit=fusion_limit,
+                with_payload=True,
+                with_vectors=False,
+                timeout=max(1, ceil(self.config.timeout_seconds)),
+            )
+        except Exception as error:
+            if _is_transient(error):
+                raise QdrantError("QDRANT_UNAVAILABLE") from error
+            raise QdrantError("QUERY_FAILED") from error
+
+        raw_points = getattr(response, "points", None)
+        if not isinstance(raw_points, (list, tuple)):
+            raise QdrantError("QUERY_RESPONSE_INVALID")
+        result: list[QdrantRetrievedPoint] = []
+        for point in raw_points:
+            point_id = getattr(point, "id", None)
+            score = getattr(point, "score", None)
+            payload = getattr(point, "payload", None)
+            if point_id is None or not isinstance(payload, dict):
+                raise QdrantError("QUERY_RESPONSE_INVALID")
+            try:
+                normalized_score = float(score)
+            except (TypeError, ValueError, OverflowError) as error:
+                raise QdrantError("QUERY_RESPONSE_INVALID") from error
+            if not math.isfinite(normalized_score):
+                raise QdrantError("QUERY_RESPONSE_INVALID")
+            result.append(
+                QdrantRetrievedPoint(point_id=str(point_id), score=normalized_score, payload=payload)
+            )
+        return tuple(sorted(result, key=lambda item: (-item.score, item.point_id)))
 
     def upsert(self, points: Sequence[VectorPoint]) -> int:
         if not points:

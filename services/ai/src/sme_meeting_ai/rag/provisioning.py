@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
@@ -209,3 +210,180 @@ class BgeM3Provisioner:
         ):
             raise ModelProvisioningError("MODEL_CONFIGURATION_INCOMPATIBLE", "BGE-M3 model configuration is incompatible")
         return ModelSnapshot(path=path, manifest=self.manifest, offline=True)
+
+
+@dataclass(frozen=True)
+class RerankerManifest:
+    """Approved immutable metadata for the local cross-encoder snapshot."""
+
+    schema_version: str
+    model_id: str
+    revision: str
+    revision_type: str
+    required_files: tuple[str, ...]
+    inference_package: str
+    inference_class: str
+    tokenizer_id: str
+    tokenizer_max_model_tokens: int
+    default_query_max_tokens: int
+    default_passage_max_tokens: int
+    default_pair_max_tokens: int
+    cpu_precision: str
+    cuda_precision: str
+
+    @classmethod
+    def from_mapping(cls, value: dict[str, Any]) -> "RerankerManifest":
+        try:
+            inference = value["inference_implementation"]
+            tokenizer = value["tokenizer"]
+            runtime = value["runtime"]
+            manifest = cls(
+                schema_version=value["schema_version"],
+                model_id=value["model_id"],
+                revision=value["revision"],
+                revision_type=value["revision_type"],
+                required_files=tuple(value["required_files"]),
+                inference_package=inference["package"],
+                inference_class=inference["class"],
+                tokenizer_id=tokenizer["tokenizer_id"],
+                tokenizer_max_model_tokens=tokenizer["max_model_tokens"],
+                default_query_max_tokens=runtime["default_query_max_tokens"],
+                default_passage_max_tokens=runtime["default_passage_max_tokens"],
+                default_pair_max_tokens=runtime["default_pair_max_tokens"],
+                cpu_precision=runtime["cpu_precision"],
+                cuda_precision=runtime["cuda_precision"],
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise ModelProvisioningError("MANIFEST_INVALID", "BGE reranker manifest is invalid") from error
+        if (
+            manifest.model_id != "BAAI/bge-reranker-v2-m3"
+            or manifest.revision_type != "commit"
+            or re.fullmatch(r"[a-f0-9]{40}", manifest.revision) is None
+            or manifest.inference_package != "FlagEmbedding"
+            or manifest.inference_class != "FlagReranker"
+            or manifest.tokenizer_max_model_tokens < manifest.default_pair_max_tokens
+            or manifest.default_query_max_tokens < 1
+            or manifest.default_passage_max_tokens < 1
+            or manifest.default_pair_max_tokens < 1
+        ):
+            raise ModelProvisioningError("MANIFEST_UNAPPROVED", "BGE reranker manifest is not approved")
+        return manifest
+
+
+def load_bge_reranker_manifest(path: Path | None = None) -> RerankerManifest:
+    """Load the pinned reranker manifest without contacting Hugging Face."""
+
+    if path is None:
+        path = Path(resources.files("sme_meeting_ai.rag").joinpath("bge_reranker_manifest.json"))
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError) as error:
+        raise ModelProvisioningError("MANIFEST_UNAVAILABLE", "BGE reranker manifest cannot be read") from error
+    if not isinstance(value, dict):
+        raise ModelProvisioningError("MANIFEST_INVALID", "BGE reranker manifest is not an object")
+    return RerankerManifest.from_mapping(value)
+
+
+@dataclass(frozen=True)
+class RerankerModelSnapshot:
+    path: Path
+    manifest: RerankerManifest
+    offline: bool
+
+
+_RERANKER_MARKER_NAME = ".sme-bge-reranker-v2-m3-snapshot.json"
+
+
+class BgeRerankerProvisioner:
+    """Provision and verify only the approved local reranker revision."""
+
+    def __init__(self, cache_dir: Path, manifest: RerankerManifest | None = None):
+        self.cache_dir = Path(cache_dir).expanduser()
+        self.manifest = manifest or load_bge_reranker_manifest()
+
+    def provision(self, *, offline: bool = False) -> RerankerModelSnapshot:
+        try:
+            from huggingface_hub import snapshot_download
+        except ImportError as error:
+            raise ModelProvisioningError(
+                "DEPENDENCY_UNAVAILABLE", "huggingface_hub is required for BGE reranker provisioning"
+            ) from error
+        try:
+            snapshot_path = Path(
+                snapshot_download(
+                    repo_id=self.manifest.model_id,
+                    revision=self.manifest.revision,
+                    cache_dir=str(self.cache_dir),
+                    allow_patterns=list(self.manifest.required_files),
+                    local_files_only=offline,
+                )
+            )
+        except Exception as error:
+            category = "MODEL_CACHE_MISS" if offline else "MODEL_DOWNLOAD_FAILED"
+            raise ModelProvisioningError(category, "Approved BGE reranker snapshot is unavailable") from error
+        self.verify(snapshot_path)
+        marker = snapshot_path / _RERANKER_MARKER_NAME
+        if snapshot_path.name == self.manifest.revision or marker.is_file():
+            return RerankerModelSnapshot(path=snapshot_path, manifest=self.manifest, offline=offline)
+        try:
+            marker.write_text(
+                json.dumps(
+                    {
+                        "model_id": self.manifest.model_id,
+                        "revision": self.manifest.revision,
+                        "required_files": list(self.manifest.required_files),
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+        except OSError as error:
+            raise ModelProvisioningError(
+                "MODEL_CACHE_NOT_WRITABLE", "BGE reranker snapshot marker cannot be written"
+            ) from error
+        return RerankerModelSnapshot(path=snapshot_path, manifest=self.manifest, offline=offline)
+
+    def verify(self, snapshot_path: Path) -> RerankerModelSnapshot:
+        """Validate a mounted snapshot without making a network request."""
+
+        path = Path(snapshot_path).expanduser()
+        if not path.is_dir():
+            raise ModelProvisioningError("MODEL_NOT_FOUND", "BGE reranker model path is not a directory")
+        if path.name != self.manifest.revision:
+            try:
+                marker = json.loads((path / _RERANKER_MARKER_NAME).read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError, TypeError) as error:
+                raise ModelProvisioningError(
+                    "MODEL_REVISION_UNVERIFIED", "BGE reranker model revision cannot be verified"
+                ) from error
+            if marker.get("model_id") != self.manifest.model_id or marker.get("revision") != self.manifest.revision:
+                raise ModelProvisioningError(
+                    "MODEL_REVISION_MISMATCH", "BGE reranker model revision does not match the manifest"
+                )
+        for required_file in self.manifest.required_files:
+            candidate = path / required_file
+            if not candidate.is_file() or candidate.stat().st_size <= 0:
+                raise ModelProvisioningError("MODEL_ARTIFACT_INCOMPLETE", "BGE reranker artifacts are incomplete")
+        try:
+            config = json.loads((path / "config.json").read_text(encoding="utf-8"))
+            tokenizer_config = json.loads((path / "tokenizer_config.json").read_text(encoding="utf-8"))
+            special_tokens = json.loads((path / "special_tokens_map.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError) as error:
+            raise ModelProvisioningError(
+                "MODEL_CONFIGURATION_INVALID", "BGE reranker model configuration is invalid"
+            ) from error
+        architectures = config.get("architectures")
+        if (
+            config.get("model_type") != "xlm-roberta"
+            or not isinstance(architectures, list)
+            or "XLMRobertaForSequenceClassification" not in architectures
+            or config.get("max_position_embeddings", 0) < self.manifest.tokenizer_max_model_tokens
+            or tokenizer_config.get("model_type") not in {None, "xlm-roberta"}
+            or not isinstance(special_tokens, dict)
+        ):
+            raise ModelProvisioningError(
+                "MODEL_CONFIGURATION_INCOMPATIBLE", "BGE reranker model configuration is incompatible"
+            )
+        return RerankerModelSnapshot(path=path, manifest=self.manifest, offline=True)

@@ -86,6 +86,18 @@ class Settings(BaseSettings):
     rag_embedding_max_concurrent: int = Field(default=1, gt=0, le=4, strict=True)
     rag_model_init_timeout_seconds: float = Field(default=900, gt=0, le=7200, allow_inf_nan=False)
     rag_embedding_timeout_seconds: float = Field(default=900, gt=0, le=7200, allow_inf_nan=False)
+    rag_reranker_model_id: Literal["BAAI/bge-reranker-v2-m3"] = "BAAI/bge-reranker-v2-m3"
+    rag_reranker_model_revision: str = Field(
+        default="953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
+        pattern=r"^[a-f0-9]{40}$",
+    )
+    rag_reranker_model_path: Path | None = None
+    rag_reranker_batch_size: int = Field(default=8, gt=0, le=64, strict=True)
+    rag_reranker_query_max_tokens: int = Field(default=256, gt=0, le=512, strict=True)
+    rag_reranker_passage_max_tokens: int = Field(default=512, gt=0, le=2048, strict=True)
+    rag_reranker_pair_max_tokens: int = Field(default=768, gt=0, le=4096, strict=True)
+    rag_reranker_max_concurrent: int = Field(default=1, gt=0, le=4, strict=True)
+    rag_reranker_timeout_seconds: float = Field(default=900, gt=0, le=7200, allow_inf_nan=False)
     rag_index_generation_id: str = Field(default="rag-t02-bge-m3-v1", pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$")
     rag_index_configuration_version: str = Field(default="rag-t02-bge-m3-v1", pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$")
     rag_index_configuration_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
@@ -97,6 +109,12 @@ class Settings(BaseSettings):
     )
     rag_qdrant_timeout_seconds: float = Field(default=10, gt=0, le=120, allow_inf_nan=False)
     rag_qdrant_upsert_batch_size: int = Field(default=64, gt=0, le=256, strict=True)
+    rag_retrieval_dense_prefetch_limit: int = Field(default=40, gt=0, le=256, strict=True)
+    rag_retrieval_sparse_prefetch_limit: int = Field(default=40, gt=0, le=256, strict=True)
+    rag_retrieval_fusion_limit: int = Field(default=40, gt=0, le=256, strict=True)
+    rag_retrieval_rerank_limit: int = Field(default=40, gt=0, le=256, strict=True)
+    rag_retrieval_final_evidence_limit: int = Field(default=8, gt=0, le=8, strict=True)
+    rag_retrieval_score_cutoff: float = Field(default=0.0, allow_inf_nan=False)
     rabbitmq_url: str | None = Field(default=None, repr=False)
     rabbitmq_username: SecretStr | None = Field(default=None, repr=False)
     rabbitmq_password: SecretStr | None = Field(default=None, repr=False)
@@ -390,6 +408,12 @@ class Settings(BaseSettings):
             raise ValueError("RAG chunk target exceeds embedding input budget")
         if self.rag_inference_precision == "fp16" and self.rag_inference_device == "cpu":
             raise ValueError("RAG fp16 requires a CUDA device")
+        if self.rag_reranker_pair_max_tokens < self.rag_reranker_query_max_tokens:
+            raise ValueError("RAG reranker pair budget is smaller than its query budget")
+        if self.rag_retrieval_rerank_limit > self.rag_retrieval_fusion_limit:
+            raise ValueError("RAG rerank limit cannot exceed the fused candidate limit")
+        if self.rag_retrieval_final_evidence_limit > self.rag_retrieval_rerank_limit:
+            raise ValueError("RAG final evidence limit cannot exceed the rerank limit")
         return self
 
     @field_validator(
@@ -400,6 +424,16 @@ class Settings(BaseSettings):
         "rag_chunk_target_tokens",
         "rag_embedding_max_concurrent",
         "rag_qdrant_upsert_batch_size",
+        "rag_reranker_batch_size",
+        "rag_reranker_query_max_tokens",
+        "rag_reranker_passage_max_tokens",
+        "rag_reranker_pair_max_tokens",
+        "rag_reranker_max_concurrent",
+        "rag_retrieval_dense_prefetch_limit",
+        "rag_retrieval_sparse_prefetch_limit",
+        "rag_retrieval_fusion_limit",
+        "rag_retrieval_rerank_limit",
+        "rag_retrieval_final_evidence_limit",
         mode="before",
     )
     @classmethod
