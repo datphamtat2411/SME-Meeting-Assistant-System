@@ -15,6 +15,7 @@ import {
   type AuthLifecycleState,
 } from './auth-lifecycle'
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function useAuthLifecycleState(): AuthLifecycleState {
   return useSyncExternalStore(
     subscribeAuthLifecycle,

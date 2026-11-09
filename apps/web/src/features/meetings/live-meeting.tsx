@@ -59,8 +59,7 @@ import { Main } from '@/components/layout/main'
 import {
   meetingStatusLabels,
   meetingStatusStyles,
-} from './components/meeting-status-badge'
-import { ParticipantAvatar, TranscriptSegmentRow } from './meeting-demo-components'
+} from './components/meeting-status-badge-config'
 import {
   getMeetingById,
   getMemberById,
@@ -72,6 +71,10 @@ import {
   type ProcessingStage,
   updateMeetingProcessingState,
 } from './data'
+import {
+  ParticipantAvatar,
+  TranscriptSegmentRow,
+} from './meeting-demo-components'
 
 type ProcessingSource = 'live' | 'upload'
 type LiveFlow =

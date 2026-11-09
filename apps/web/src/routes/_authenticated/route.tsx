@@ -56,6 +56,7 @@ export const Route = createFileRoute('/_authenticated')({
   notFoundComponent: AuthenticatedNotFound,
 })
 
+// eslint-disable-next-line react-refresh/only-export-components
 function AuthenticatedRoute() {
   const { currentUser } = Route.useRouteContext()
   const lifecycleState = useAuthLifecycleState()
@@ -103,6 +104,7 @@ function AuthenticatedError({ error }: { error: unknown }) {
   return <AuthenticatedErrorContent />
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 function AuthenticatedErrorContent() {
   const queryClient = useQueryClient()
   const lifecycleState = getAuthLifecycleState()

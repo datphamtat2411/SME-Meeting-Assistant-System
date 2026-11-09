@@ -13,9 +13,6 @@ import {
   Users,
 } from 'lucide-react'
 import { normalizeCoreApiError } from '@/lib/core-api'
-import { currentUserQueryKey, type AuthContext } from '@/features/auth/session/current-user'
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
   Card,
@@ -28,6 +25,10 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Header } from '@/components/layout/header'
 import { HeaderActions } from '@/components/layout/header-actions'
 import { Main } from '@/components/layout/main'
+import {
+  currentUserQueryKey,
+  type AuthContext,
+} from '@/features/auth/session/current-user'
 import { MeetingStatusBadge } from './components/meeting-status-badge'
 import {
   classifyParticipantMemberships,
@@ -87,14 +88,14 @@ export function MeetingWorkspacePage({ meetingId }: { meetingId: string }) {
     meetingParticipantsQueryOptions(meetingId, Boolean(meeting))
   )
   const roomQuery = useQuery({
-    ...roomFilterOptionByIdQueryOptions(meeting?.roomId),
+    ...roomFilterOptionByIdQueryOptions(meeting?.roomId ?? undefined),
     enabled: Boolean(meeting?.roomId),
   })
   const organizerQuery = useQuery({
     ...organizerFilterOptionByIdQueryOptions(meeting?.organizerUserId),
     enabled: Boolean(
       meeting?.organizerUserId &&
-        meeting.organizerUserId !== currentUser?.userId
+      meeting.organizerUserId !== currentUser?.userId
     ),
   })
 
@@ -288,7 +289,9 @@ function MeetingHeader({
             <Users className='size-5' />
           </div>
           <div className='min-w-0'>
-            <p className='font-medium'>{formatParticipantSummary(participants)}</p>
+            <p className='font-medium'>
+              {formatParticipantSummary(participants)}
+            </p>
             <p className='truncate text-sm text-muted-foreground'>
               {participants.isError
                 ? 'Participant memberships could not be loaded.'
@@ -335,15 +338,29 @@ function OperationalOverview({
           </CardHeader>
           <CardContent className='space-y-5 pt-6'>
             <p className='text-base leading-7'>
-              {meeting.description ?? 'No description is available for this meeting.'}
+              {meeting.description ??
+                'No description is available for this meeting.'}
             </p>
             <div className='grid gap-3 sm:grid-cols-2'>
-              <InfoRow label='Scheduled date' value={formatMeetingDate(meeting)} />
-              <InfoRow label='Scheduled time' value={formatMeetingTimeRange(meeting)} />
-              <InfoRow label='Status' value={<MeetingStatusBadge status={meeting.status} />} />
+              <InfoRow
+                label='Scheduled date'
+                value={formatMeetingDate(meeting)}
+              />
+              <InfoRow
+                label='Scheduled time'
+                value={formatMeetingTimeRange(meeting)}
+              />
+              <InfoRow
+                label='Status'
+                value={<MeetingStatusBadge status={meeting.status} />}
+              />
               <InfoRow
                 label='Meeting ID'
-                value={<span className='break-all font-mono text-xs'>{meeting.id}</span>}
+                value={
+                  <span className='font-mono text-xs break-all'>
+                    {meeting.id}
+                  </span>
+                }
               />
             </div>
           </CardContent>
@@ -388,7 +405,10 @@ function MeetingInformationCard({
         <InfoRow label='Date' value={formatMeetingDate(meeting)} />
         <InfoRow label='Time' value={formatMeetingTimeRange(meeting)} />
         <InfoRow label='Room' value={formatRoomInfo(room)} />
-        <InfoRow label='Organizer' value={formatOrganizerInfo(organizer, currentUser)} />
+        <InfoRow
+          label='Organizer'
+          value={formatOrganizerInfo(organizer, currentUser)}
+        />
         <div className='flex items-center justify-between gap-4 text-sm'>
           <span className='text-muted-foreground'>Status</span>
           <MeetingStatusBadge status={meeting.status} />
@@ -434,7 +454,11 @@ function ParticipantsCard({ state }: { state: ParticipantState }) {
       </CardHeader>
       <CardContent className='pt-5'>
         {state.isPending ? (
-          <div role='status' aria-label='Loading participants' className='space-y-4'>
+          <div
+            role='status'
+            aria-label='Loading participants'
+            className='space-y-4'
+          >
             <Skeleton className='h-12 w-full' />
             <Skeleton className='h-12 w-full' />
           </div>
@@ -465,7 +489,10 @@ function ParticipantMemberships({
         <p className='text-sm font-semibold'>Active participants</p>
         {active.length ? (
           active.map((participant) => (
-            <ParticipantMembership key={participant.id} participant={participant} />
+            <ParticipantMembership
+              key={participant.id}
+              participant={participant}
+            />
           ))
         ) : (
           <p className='text-sm text-muted-foreground'>
@@ -510,7 +537,7 @@ function ParticipantMembership({
         <UserRound className='size-4' />
       </div>
       <div className='min-w-0 space-y-1'>
-        <p className='break-all text-sm font-medium'>
+        <p className='text-sm font-medium break-all'>
           {displayName || participant.userId}
         </p>
         <p className='text-xs text-muted-foreground'>
@@ -533,7 +560,7 @@ function ParticipantMembership({
 }
 
 function LifecycleCard({ meeting }: { meeting: MeetingView }) {
-  const timestamps = [
+  const timestamps: Array<[string, string | null]> = [
     ['Created', meeting.createdAt],
     ['Updated', meeting.updatedAt],
     ['Started', meeting.startedAt],
@@ -560,7 +587,10 @@ function LifecycleCard({ meeting }: { meeting: MeetingView }) {
           <InfoRow key={label} label={label} value={formatDateTime(value)} />
         ))}
         {meeting.cancellationReason && (
-          <InfoRow label='Cancellation reason' value={meeting.cancellationReason} />
+          <InfoRow
+            label='Cancellation reason'
+            value={meeting.cancellationReason}
+          />
         )}
       </CardContent>
     </Card>
@@ -621,7 +651,9 @@ function MeetingDetailError({
           <FileText className='size-10 text-muted-foreground' />
         )}
         <h1 className='mt-4 text-xl font-semibold'>{title}</h1>
-        <p className='mt-2 max-w-lg text-sm text-muted-foreground'>{description}</p>
+        <p className='mt-2 max-w-lg text-sm text-muted-foreground'>
+          {description}
+        </p>
         <Button className='mt-6' onClick={() => void onRetry()}>
           <RefreshCw />
           Retry
@@ -633,7 +665,11 @@ function MeetingDetailError({
 
 function MeetingWorkspaceSkeleton() {
   return (
-    <div role='status' aria-label='Loading meeting details' className='space-y-6'>
+    <div
+      role='status'
+      aria-label='Loading meeting details'
+      className='space-y-6'
+    >
       <section className='space-y-5'>
         <Skeleton className='h-5 w-24' />
         <Skeleton className='h-10 w-3/4 max-w-2xl' />
@@ -683,7 +719,7 @@ function formatOrganizerInfo(
   organizer: LookupState<OrganizerFilterOption>,
   currentUser?: AuthContext
 ) {
-  if (organizer.data?.id === currentUser?.userId) {
+  if (currentUser && organizer.data?.id === currentUser.userId) {
     return currentUser.displayName
   }
   return formatOrganizerLabel(organizer)
@@ -692,7 +728,8 @@ function formatOrganizerInfo(
 function formatParticipantSummary(state: ParticipantState) {
   if (state.isPending) return 'Loading participants'
   if (state.isError) return 'Participants unavailable'
-  const activeCount = classifyParticipantMemberships(state.data ?? []).active.length
+  const activeCount = classifyParticipantMemberships(state.data ?? []).active
+    .length
   return `${activeCount} active participant${activeCount === 1 ? '' : 's'}`
 }
 
@@ -718,13 +755,7 @@ function formatDateTime(value: string) {
   return meetingDateTimeFormatter.format(new Date(value))
 }
 
-function InfoRow({
-  label,
-  value,
-}: {
-  label: string
-  value: React.ReactNode
-}) {
+function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className='flex items-start justify-between gap-4 text-sm'>
       <span className='text-muted-foreground'>{label}</span>

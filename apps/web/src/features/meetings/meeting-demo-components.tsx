@@ -1,6 +1,6 @@
+import { cn } from '@/lib/utils'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
-import { cn } from '@/lib/utils'
 import { getMemberById, type Member, type TranscriptSegment } from './data'
 
 export function ParticipantAvatar({

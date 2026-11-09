@@ -55,6 +55,7 @@ export const Route = createFileRoute('/(auth)/sign-in')({
   validateSearch: searchSchema,
 })
 
+// eslint-disable-next-line react-refresh/only-export-components
 function SignInSessionError({ error }: { error: unknown }) {
   const router = useRouter()
   const lifecycleState = getAuthLifecycleState()

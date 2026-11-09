@@ -117,7 +117,10 @@ describe('core API transport', () => {
   it('preserves the exact response ETag for headers-aware callers', async () => {
     const etag = 'W/"meeting-1-version-7"'
     coreApiAxios.defaults.adapter = async (config) => {
-      const response = makeResponse(config, successEnvelope({ id: 'meeting-1' }))
+      const response = makeResponse(
+        config,
+        successEnvelope({ id: 'meeting-1' })
+      )
       response.headers = new AxiosHeaders({ ETag: etag })
       return response
     }
@@ -130,8 +133,9 @@ describe('core API transport', () => {
       etag,
     })
 
-    await expect(coreApi.getWithMeta<{ id: string }>('/meetings/meeting-1'))
-      .resolves.toEqual({ data: { id: 'meeting-1' }, meta: {} })
+    await expect(
+      coreApi.getWithMeta<{ id: string }>('/meetings/meeting-1')
+    ).resolves.toEqual({ data: { id: 'meeting-1' }, meta: {} })
   })
 
   it('does not add CSRF headers to bootstrap GET requests', async () => {

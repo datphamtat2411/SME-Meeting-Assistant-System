@@ -1,3 +1,4 @@
+import { QueryClient } from '@tanstack/react-query'
 import { describe, expect, it, vi } from 'vitest'
 import { CoreApiError, coreApi } from '@/lib/core-api'
 import {
@@ -66,7 +67,10 @@ describe('meeting detail API adapter', () => {
   })
 
   it('validates participant membership history and separates removed rows', () => {
-    const result = parseMeetingParticipantsResponse({ data: participants, meta: {} })
+    const result = parseMeetingParticipantsResponse({
+      data: participants,
+      meta: {},
+    })
 
     expect(result).toEqual(participants)
     expect(classifyParticipantMemberships(result)).toEqual({
@@ -84,7 +88,10 @@ describe('meeting detail API adapter', () => {
       .mockResolvedValue({ data: participants, meta: {} })
 
     const detailOptions = meetingDetailQueryOptions('meeting/1')
-    const participantOptions = meetingParticipantsQueryOptions('meeting/1', false)
+    const participantOptions = meetingParticipantsQueryOptions(
+      'meeting/1',
+      false
+    )
 
     expect(detailOptions.queryKey).toEqual(['meetings', 'detail', 'meeting/1'])
     expect(detailOptions.retry).toBe(false)
@@ -96,9 +103,22 @@ describe('meeting detail API adapter', () => {
     expect(participantOptions.enabled).toBe(false)
     expect(participantOptions.retry).toBe(false)
 
-    await detailOptions.queryFn({ signal: new AbortController().signal })
-    await meetingParticipantsQueryOptions('meeting/1', true).queryFn({
+    const queryClient = new QueryClient()
+    await detailOptions.queryFn?.({
+      client: queryClient,
+      queryKey: detailOptions.queryKey,
       signal: new AbortController().signal,
+      meta: undefined,
+    })
+    const enabledParticipantOptions = meetingParticipantsQueryOptions(
+      'meeting/1',
+      true
+    )
+    await enabledParticipantOptions.queryFn?.({
+      client: queryClient,
+      queryKey: enabledParticipantOptions.queryKey,
+      signal: new AbortController().signal,
+      meta: undefined,
     })
 
     expect(detailSpy).toHaveBeenCalledWith('/meetings/meeting%2F1', {
@@ -112,7 +132,10 @@ describe('meeting detail API adapter', () => {
 
   it('turns malformed participant responses into a Core API malformed error', () => {
     expect(() =>
-      parseMeetingParticipantsResponse({ data: [{ userId: 'missing-fields' }], meta: {} })
+      parseMeetingParticipantsResponse({
+        data: [{ userId: 'missing-fields' }],
+        meta: {},
+      })
     ).toThrowError(CoreApiError)
   })
 })

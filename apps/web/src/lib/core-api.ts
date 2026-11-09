@@ -394,11 +394,13 @@ function unwrapResponse<T>(response: AxiosResponse<unknown>): T {
   return unwrapResponseWithMeta<T>(response).data
 }
 
-function readResponseEtag(response: AxiosResponse<unknown>): string | undefined {
+function readResponseEtag(
+  response: AxiosResponse<unknown>
+): string | undefined {
   const value =
     typeof response.headers.get === 'function'
       ? response.headers.get('etag')
-      : response.headers['etag'] ?? response.headers['ETag']
+      : (response.headers['etag'] ?? response.headers['ETag'])
 
   return typeof value === 'string' ? value : undefined
 }

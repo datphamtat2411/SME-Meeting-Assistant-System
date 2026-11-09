@@ -32,9 +32,13 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
 })
 
 vi.mock('@/components/layout/header', () => ({
-  Header: ({ children }: { children?: React.ReactNode }) => <header>{children}</header>,
+  Header: ({ children }: { children?: React.ReactNode }) => (
+    <header>{children}</header>
+  ),
 }))
-vi.mock('@/components/layout/header-actions', () => ({ HeaderActions: () => null }))
+vi.mock('@/components/layout/header-actions', () => ({
+  HeaderActions: () => null,
+}))
 vi.mock('@/components/layout/main', () => ({
   Main: ({ children, ...props }: React.ComponentProps<'main'>) => (
     <main {...props}>{children}</main>
@@ -96,7 +100,10 @@ describe('MeetingWorkspacePage', () => {
         return { data: participants, meta: {} }
       }
       if (url === '/rooms/room-1') {
-        return { data: { id: 'room-1', name: 'Boardroom', location: 'HQ' }, meta: {} }
+        return {
+          data: { id: 'room-1', name: 'Boardroom', location: 'HQ' },
+          meta: {},
+        }
       }
       return { data: { id: 'organizer-1', name: 'Lan Nguyen' }, meta: {} }
     })
@@ -115,7 +122,9 @@ describe('MeetingWorkspacePage', () => {
     )
 
     await expect
-      .element(screen.getByRole('heading', { name: 'Authorized roadmap review' }))
+      .element(
+        screen.getByRole('heading', { name: 'Authorized roadmap review' })
+      )
       .toBeInTheDocument()
     await expect
       .element(screen.getByText('Boardroom', { exact: true }))
@@ -130,10 +139,16 @@ describe('MeetingWorkspacePage', () => {
     await expect
       .element(screen.getByText('Name unavailable').first())
       .toBeInTheDocument()
-    await expect.element(screen.getByText('Removed membership history')).toBeInTheDocument()
+    await expect
+      .element(screen.getByText('Removed membership history'))
+      .toBeInTheDocument()
     await expect.element(screen.getByText('user-2')).toBeInTheDocument()
     await expect
-      .element(screen.getByText(/AI Summary|Ask AI|Export Minutes|Vietnamese Transcript/))
+      .element(
+        screen.getByText(
+          /AI Summary|Ask AI|Export Minutes|Vietnamese Transcript/
+        )
+      )
       .not.toBeInTheDocument()
   })
 
@@ -158,7 +173,9 @@ describe('MeetingWorkspacePage', () => {
     await expect
       .element(screen.getByText('Meeting not found or unavailable'))
       .toBeInTheDocument()
-    await expect.element(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: 'Retry' }))
+      .toBeInTheDocument()
     expect(participantSpy).not.toHaveBeenCalled()
   })
 })

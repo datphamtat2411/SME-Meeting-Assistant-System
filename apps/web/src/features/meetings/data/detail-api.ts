@@ -1,5 +1,5 @@
-import { queryOptions } from '@tanstack/react-query'
 import { z } from 'zod'
+import { queryOptions } from '@tanstack/react-query'
 import {
   CoreApiError,
   coreApi,
@@ -72,7 +72,9 @@ export function parseMeetingDetailResponse(
 ): MeetingDetailResponse {
   const parsed = meetingViewSchema.safeParse(response.data)
   if (!parsed.success || typeof response.etag !== 'string' || !response.etag) {
-    throw malformedDetailResponse(parsed.success ? 'Missing ETag.' : parsed.error)
+    throw malformedDetailResponse(
+      parsed.success ? 'Missing ETag.' : parsed.error
+    )
   }
 
   return { meeting: parsed.data, etag: response.etag }
@@ -86,10 +88,16 @@ export function parseMeetingParticipantsResponse(
   return parsed.data
 }
 
-export function classifyParticipantMemberships(participants: ParticipantView[]) {
+export function classifyParticipantMemberships(
+  participants: ParticipantView[]
+) {
   return {
-    active: participants.filter((participant) => participant.removedAt === null),
-    removed: participants.filter((participant) => participant.removedAt !== null),
+    active: participants.filter(
+      (participant) => participant.removedAt === null
+    ),
+    removed: participants.filter(
+      (participant) => participant.removedAt !== null
+    ),
   }
 }
 
