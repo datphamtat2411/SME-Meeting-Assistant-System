@@ -168,6 +168,22 @@ describe('session restoration and protected routing', () => {
       .not.toBeInTheDocument()
   })
 
+  it('resets retryable recovery state before revalidating an unavailable session', async () => {
+    getCurrentUser
+      .mockRejectedValueOnce(apiError(0, 'network'))
+      .mockResolvedValue(identity as never)
+
+    const { screen } = await renderRoute('/calendar')
+
+    await expect
+      .element(screen.getByText('Session temporarily unavailable'))
+      .toBeInTheDocument()
+    await screen.getByRole('button', { name: 'Retry' }).click()
+
+    await expect.element(screen.getByText('Canonical User')).toBeInTheDocument()
+    expect(getCurrentUser).toHaveBeenCalledTimes(2)
+  })
+
   it('revalidates identity when navigating between protected routes', async () => {
     const { router, screen } = await renderRoute('/')
     await expect.element(screen.getByText('Canonical User')).toBeInTheDocument()

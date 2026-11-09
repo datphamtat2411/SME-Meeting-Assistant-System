@@ -12,6 +12,11 @@ import {
   resetCsrfToken,
   setCsrfToken,
 } from './core-api'
+import {
+  RECOVERY_DISABLED_MARKER,
+  RECOVERY_REPLAY_SAFE_MARKER,
+  resetRequestRecoveryState,
+} from './request-recovery'
 
 function makeResponse(
   config: Parameters<AxiosAdapter>[0],
@@ -30,7 +35,9 @@ function makeResponse(
 describe('core API transport', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
+    vi.unstubAllGlobals()
     resetCsrfToken()
+    resetRequestRecoveryState()
     coreApiAxios.defaults.adapter = undefined
   })
 
@@ -154,5 +161,104 @@ describe('core API transport', () => {
       kind: 'malformed',
       status: 200,
     })
+  })
+
+  it('renews a credentialed safe request once and applies the rotated CSRF token on replay', async () => {
+    setCsrfToken('csrf-before-refresh')
+    const requests: Array<Parameters<AxiosAdapter>[0]> = []
+    let protectedCalls = 0
+    const locks = {
+      request: async (
+        _name: string,
+        _options: { mode: 'exclusive' },
+        callback: (lock: unknown) => Promise<unknown>
+      ) => callback({}),
+    }
+    vi.stubGlobal('navigator', { locks })
+
+    coreApiAxios.defaults.adapter = async (config) => {
+      requests.push(config)
+      if (config.url === '/auth/me') {
+        throw new AxiosError(
+          'Unauthorized',
+          'ERR_BAD_REQUEST',
+          config,
+          undefined,
+          makeResponse(config, { code: 'AUTH_REQUIRED' }, 401)
+        )
+      }
+      if (config.url === '/auth/refresh') {
+        expect(config.withCredentials).toBe(true)
+        expect(config.data).toBeUndefined()
+        expect(config.headers.get('Authorization')).toBeUndefined()
+        return makeResponse(config, {
+          data: { sessionStatus: 'ACTIVE', csrfToken: 'csrf-rotated' },
+        })
+      }
+      protectedCalls += 1
+      if (protectedCalls === 1) {
+        throw new AxiosError(
+          'Unauthorized',
+          'ERR_BAD_REQUEST',
+          config,
+          undefined,
+          makeResponse(config, { code: 'AUTH_REQUIRED' }, 401)
+        )
+      }
+      return makeResponse(config, { data: { ok: true } })
+    }
+
+    await expect(
+      coreApi.post('/protected', { value: 1 }, { [RECOVERY_REPLAY_SAFE_MARKER]: true })
+    ).resolves.toEqual({ ok: true })
+
+    expect(protectedCalls).toBe(2)
+    expect(requests.filter(({ url }) => url === '/auth/refresh')).toHaveLength(1)
+    expect(requests.at(-1)?.headers.get('X-CSRF-Token')).toBe('csrf-rotated')
+    expect(requests.at(-1)?.[RECOVERY_DISABLED_MARKER]).toBeUndefined()
+  })
+
+  it('does not replay a state-changing request after renewal by default', async () => {
+    setCsrfToken('csrf-before-refresh')
+    const urls: string[] = []
+    const locks = {
+      request: async (
+        _name: string,
+        _options: { mode: 'exclusive' },
+        callback: (lock: unknown) => Promise<unknown>
+      ) => callback({}),
+    }
+    vi.stubGlobal('navigator', { locks })
+
+    coreApiAxios.defaults.adapter = async (config) => {
+      urls.push(config.url ?? '')
+      if (config.url === '/auth/me') {
+        throw new AxiosError(
+          'Unauthorized',
+          'ERR_BAD_REQUEST',
+          config,
+          undefined,
+          makeResponse(config, { code: 'AUTH_REQUIRED' }, 401)
+        )
+      }
+      if (config.url === '/auth/refresh') {
+        return makeResponse(config, {
+          data: { sessionStatus: 'ACTIVE', csrfToken: 'csrf-rotated' },
+        })
+      }
+      throw new AxiosError(
+        'Unauthorized',
+        'ERR_BAD_REQUEST',
+        config,
+        undefined,
+        makeResponse(config, { code: 'AUTH_REQUIRED' }, 401)
+      )
+    }
+
+    await expect(coreApi.post('/mutate', { value: 1 })).rejects.toMatchObject({
+      code: 'REQUEST_NOT_REPLAYED_AFTER_RENEWAL',
+      recoveryOutcome: 'not-replayed',
+    })
+    expect(urls.filter((url) => url === '/mutate')).toHaveLength(1)
   })
 })

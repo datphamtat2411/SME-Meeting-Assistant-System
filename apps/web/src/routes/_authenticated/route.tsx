@@ -14,6 +14,7 @@ import {
 } from '@/features/auth/session/current-user'
 import { SessionGate } from '@/features/auth/session/session-gate'
 import { toUserPresentation } from '@/components/layout/data/user-presentation'
+import { prepareRequestRecoveryRetry } from '@/lib/request-recovery'
 
 export const Route = createFileRoute('/_authenticated')({
   beforeLoad: async ({ context, location }) => {
@@ -56,7 +57,10 @@ function AuthenticatedError({ error }: { error: unknown }) {
     return (
       <SessionGate
         state={error.state}
-        onRetry={() => void router.invalidate()}
+        onRetry={() => {
+          prepareRequestRecoveryRetry()
+          void router.invalidate()
+        }}
       />
     )
   }

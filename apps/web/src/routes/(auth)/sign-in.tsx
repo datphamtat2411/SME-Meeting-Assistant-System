@@ -8,6 +8,10 @@ import {
   SessionGuardError,
 } from '@/features/auth/session/current-user'
 import { SessionGate } from '@/features/auth/session/session-gate'
+import {
+  isSessionLossConfirmed,
+  prepareRequestRecoveryRetry,
+} from '@/lib/request-recovery'
 
 const searchSchema = z.object({
   redirect: z.string().optional(),
@@ -18,7 +22,9 @@ export const Route = createFileRoute('/(auth)/sign-in')({
     let currentUser
 
     try {
-      currentUser = await loadCurrentUser(context.queryClient)
+      currentUser = await loadCurrentUser(context.queryClient, {
+        recoveryDisabled: isSessionLossConfirmed(),
+      })
     } catch (error) {
       const failure = classifySessionFailure(error)
 
@@ -49,10 +55,21 @@ function SignInSessionError({ error }: { error: unknown }) {
     return (
       <SessionGate
         state={error.state}
-        onRetry={() => void router.invalidate()}
+        onRetry={() => {
+          prepareRequestRecoveryRetry()
+          void router.invalidate()
+        }}
       />
     )
   }
 
-  return <SessionGate state='unavailable' onRetry={() => void router.invalidate()} />
+  return (
+    <SessionGate
+      state='unavailable'
+      onRetry={() => {
+        prepareRequestRecoveryRetry()
+        void router.invalidate()
+      }}
+    />
+  )
 }

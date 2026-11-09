@@ -4,20 +4,23 @@ import {
   type AxiosAdapter,
   type AxiosResponse,
 } from 'axios'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   CoreApiError,
   coreApi,
   coreApiAxios,
   resetCsrfToken,
 } from '@/lib/core-api'
+import { RECOVERY_DISABLED_MARKER, resetRequestRecoveryState } from '@/lib/request-recovery'
 import {
   authContextSchema,
   classifySessionFailure,
   currentUserQueryKey,
   currentUserQueryOptions,
   fetchCurrentUser,
+  loadCurrentUser,
 } from './current-user'
+import { QueryClient } from '@tanstack/react-query'
 
 const identity = {
   userId: '11111111-1111-4111-8111-111111111111',
@@ -55,7 +58,9 @@ function makeResponse(
 
 describe('current user session query', () => {
   beforeEach(() => {
+    vi.unstubAllGlobals()
     resetCsrfToken()
+    resetRequestRecoveryState()
     coreApiAxios.defaults.adapter = undefined
   })
 
@@ -92,6 +97,55 @@ describe('current user session query', () => {
       staleTime: 0,
       retry: false,
     })
+  })
+
+  it('can run the sign-in identity probe with recovery disabled', async () => {
+    let requestConfig: Parameters<AxiosAdapter>[0] | undefined
+    coreApiAxios.defaults.adapter = async (config) => {
+      requestConfig = config
+      return makeResponse(config, { data: identity })
+    }
+
+    await expect(fetchCurrentUser({ recoveryDisabled: true })).resolves.toEqual(
+      identity
+    )
+    expect(requestConfig?.[RECOVERY_DISABLED_MARKER]).toBe(true)
+  })
+
+  it('only removes cached identity after confirmed session loss', async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    queryClient.setQueryData(currentUserQueryKey, identity)
+
+    const getCurrentUser = vi.spyOn(coreApi, 'get')
+    getCurrentUser.mockRejectedValueOnce(
+      new CoreApiError({
+        message: 'Forbidden',
+        status: 403,
+        code: 'AUTHZ_FORBIDDEN',
+        kind: 'http',
+      })
+    )
+
+    await expect(loadCurrentUser(queryClient)).rejects.toMatchObject({
+      status: 403,
+    })
+    expect(queryClient.getQueryData(currentUserQueryKey)).toEqual(identity)
+
+    getCurrentUser.mockRejectedValueOnce(
+      new CoreApiError({
+        message: 'Unauthorized',
+        status: 401,
+        code: 'AUTH_REQUIRED',
+        kind: 'http',
+      })
+    )
+
+    await expect(loadCurrentUser(queryClient)).rejects.toMatchObject({
+      status: 401,
+    })
+    expect(queryClient.getQueryData(currentUserQueryKey)).toBeUndefined()
   })
 
   it.each([

@@ -8,6 +8,11 @@ import {
   coreApi,
   normalizeCoreApiError,
 } from '@/lib/core-api'
+import {
+  isSessionLossConfirmed,
+  type RecoveryRequestConfig,
+  RECOVERY_DISABLED_MARKER,
+} from '@/lib/request-recovery'
 import { getSafeRedirect } from '@/lib/safe-redirect'
 
 const directoryManagementScopeSchema = z.object({
@@ -47,6 +52,10 @@ export type SessionFailure =
   | 'denied'
   | 'unavailable'
 
+export interface CurrentUserRequestOptions {
+  recoveryDisabled?: boolean
+}
+
 export class SessionGuardError extends Error {
   readonly state: Exclude<SessionFailure, 'unauthenticated'>
   readonly cause: unknown
@@ -75,9 +84,16 @@ function malformedIdentity(error: z.ZodError): CoreApiError {
   })
 }
 
-export async function fetchCurrentUser(): Promise<AuthContext> {
-  const response = await coreApi.get<unknown>('/auth/me', {
+export async function fetchCurrentUser(
+  options: CurrentUserRequestOptions = {}
+): Promise<AuthContext> {
+  const config: RecoveryRequestConfig = {
     withCredentials: true,
+  }
+  if (options.recoveryDisabled) config[RECOVERY_DISABLED_MARKER] = true
+
+  const response = await coreApi.get<unknown>('/auth/me', {
+    ...config,
   })
   const result = authContextSchema.safeParse(response)
 
@@ -86,10 +102,12 @@ export async function fetchCurrentUser(): Promise<AuthContext> {
   return result.data
 }
 
-export const currentUserQueryOptions = () =>
+export const currentUserQueryOptions = (
+  options: CurrentUserRequestOptions = {}
+) =>
   queryOptions({
     queryKey: currentUserQueryKey,
-    queryFn: fetchCurrentUser,
+    queryFn: () => fetchCurrentUser(options),
     staleTime: 0,
     retry: false,
   })
@@ -99,12 +117,18 @@ export function clearCurrentUserCache(queryClient: QueryClient): void {
 }
 
 export async function loadCurrentUser(
-  queryClient: QueryClient
+  queryClient: QueryClient,
+  options: CurrentUserRequestOptions = {}
 ): Promise<AuthContext> {
   try {
-    return await queryClient.fetchQuery(currentUserQueryOptions())
+    return await queryClient.fetchQuery(currentUserQueryOptions(options))
   } catch (error) {
-    clearCurrentUserCache(queryClient)
+    const apiError = normalizeCoreApiError(error)
+    const confirmedLoss =
+      apiError.recoveryOutcome === 'session-lost' ||
+      (apiError.status === 401 && apiError.recoveryOutcome === undefined) ||
+      isSessionLossConfirmed()
+    if (confirmedLoss) clearCurrentUserCache(queryClient)
     throw error
   }
 }
@@ -112,6 +136,9 @@ export async function loadCurrentUser(
 export function classifySessionFailure(error: unknown): SessionFailure {
   const apiError = normalizeCoreApiError(error)
 
+  if (apiError.recoveryOutcome === 'session-lost') return 'unauthenticated'
+  if (apiError.recoveryOutcome === 'forbidden') return 'denied'
+  if (apiError.recoveryOutcome) return 'unavailable'
   if (apiError.status === 401) return 'unauthenticated'
   if (apiError.status === 403) return 'denied'
   return 'unavailable'

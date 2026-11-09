@@ -4,6 +4,7 @@ import {
   coreApi,
   setCsrfToken,
 } from '@/lib/core-api'
+import { resetRequestRecoveryState } from '@/lib/request-recovery'
 
 const csrfResponseSchema = z.object({
   csrfToken: z.string().min(1),
@@ -48,6 +49,7 @@ export async function signIn(
     if (!loginResult.success) throw malformedResponse()
 
     setCsrfToken(loginResult.data.csrfToken)
+    resetRequestRecoveryState()
     return loginResult.data
   } catch (error) {
     setCsrfToken(null)

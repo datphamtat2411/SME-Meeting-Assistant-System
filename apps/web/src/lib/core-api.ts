@@ -4,6 +4,15 @@ import axios, {
   type AxiosRequestConfig,
   type InternalAxiosRequestConfig,
 } from 'axios'
+import { getCookie } from './cookies'
+import {
+  createRequestRecoveryCoordinator,
+  registerRequestRecoveryCoordinator,
+  type RecoveryFailure,
+  type RecoveryOutcome,
+  type RecoveryRequestConfig,
+  type RecoveryTransportError,
+} from './request-recovery'
 
 export interface ApiResponse<T> {
   data: T
@@ -19,6 +28,9 @@ interface CoreApiErrorOptions {
   code?: string
   fieldErrors?: FieldErrors
   kind: CoreApiErrorKind
+  retryAfter?: string
+  recoveryOutcome?: RecoveryOutcome
+  retryable?: boolean
   cause?: unknown
 }
 
@@ -29,6 +41,9 @@ export class CoreApiError extends Error {
   readonly kind: CoreApiErrorKind
   readonly isNetworkError: boolean
   readonly isServerError: boolean
+  readonly retryAfter?: string
+  readonly recoveryOutcome?: RecoveryOutcome
+  readonly retryable: boolean
   readonly cause?: unknown
 
   constructor({
@@ -37,6 +52,9 @@ export class CoreApiError extends Error {
     code,
     fieldErrors = {},
     kind,
+    retryAfter,
+    recoveryOutcome,
+    retryable = false,
     cause,
   }: CoreApiErrorOptions) {
     super(message)
@@ -47,6 +65,9 @@ export class CoreApiError extends Error {
     this.kind = kind
     this.isNetworkError = kind === 'network'
     this.isServerError = kind === 'server' || (status ?? 0) >= 500
+    this.retryAfter = retryAfter
+    this.recoveryOutcome = recoveryOutcome
+    this.retryable = retryable
     this.cause = cause
   }
 }
@@ -63,6 +84,10 @@ export function resetCsrfToken(): void {
   csrfToken = null
 }
 
+export function getCsrfToken(): string | undefined {
+  return getCookie('__Host-sme-csrf') ?? csrfToken ?? undefined
+}
+
 const coreApiBaseUrl = import.meta.env.VITE_CORE_API_BASE_URL || '/api/v1'
 
 export const coreApiAxios: AxiosInstance = axios.create({
@@ -73,6 +98,7 @@ export const coreApiAxios: AxiosInstance = axios.create({
 function applyRequestSecurity(config: InternalAxiosRequestConfig) {
   const headers = config.headers
   const mutableHeaders = headers as unknown as Record<string, unknown>
+  const currentCsrfToken = getCsrfToken()
 
   for (const headerName of [
     'Authorization',
@@ -88,13 +114,13 @@ function applyRequestSecurity(config: InternalAxiosRequestConfig) {
   }
 
   if (
-    csrfToken &&
+    currentCsrfToken &&
     STATE_CHANGING_METHODS.has((config.method ?? 'get').toLowerCase())
   ) {
     if (typeof headers.set === 'function') {
-      headers.set('X-CSRF-Token', csrfToken)
+      headers.set('X-CSRF-Token', currentCsrfToken)
     } else {
-      mutableHeaders['X-CSRF-Token'] = csrfToken
+      mutableHeaders['X-CSRF-Token'] = currentCsrfToken
     }
   }
 
@@ -196,6 +222,10 @@ function normalizeBackendError(error: AxiosError): CoreApiError {
       readString(getErrorPayloadValue(payload, 'code')) ??
       readString(getErrorPayloadValue(payload, 'errorCode')),
     fieldErrors,
+    retryAfter:
+      typeof error.response?.headers?.get === 'function'
+        ? (error.response.headers.get('retry-after') ?? undefined)
+        : undefined,
     kind,
     cause: error,
   })
@@ -215,6 +245,65 @@ export function normalizeCoreApiError(error: unknown): CoreApiError {
     cause: error,
   })
 }
+
+function toRecoveryTransportError(error: unknown): RecoveryTransportError {
+  const normalized = normalizeCoreApiError(error)
+  return {
+    message: normalized.message,
+    status: normalized.status,
+    code: normalized.code,
+    kind: normalized.kind,
+    retryAfter: normalized.retryAfter,
+    cause: normalized.cause,
+  }
+}
+
+function recoveryFailureError(failure: RecoveryFailure): CoreApiError {
+  return new CoreApiError({
+    message: failure.message,
+    status: failure.status,
+    code: failure.code,
+    kind: failure.kind,
+    retryAfter: failure.retryAfter,
+    recoveryOutcome: failure.outcome,
+    retryable: failure.retryable,
+    cause: failure.cause,
+  })
+}
+
+const requestRecoveryCoordinator = createRequestRecoveryCoordinator({
+  request: (config) => coreApiAxios.request(config),
+  normalizeError: toRecoveryTransportError,
+  getCsrfToken,
+  setCsrfToken,
+  resetCsrfToken,
+})
+
+registerRequestRecoveryCoordinator(requestRecoveryCoordinator)
+
+coreApiAxios.interceptors.response.use(
+  (response) => {
+    requestRecoveryCoordinator.noteSuccessfulResponse(
+      response.config as RecoveryRequestConfig,
+      response
+    )
+    return response
+  },
+  async (error: unknown) => {
+    const action = await requestRecoveryCoordinator.recover(error)
+
+    if (action.type === 'retry') {
+      return coreApiAxios.request(action.config)
+    }
+
+    if (action.type === 'failure') {
+      throw recoveryFailureError(action.failure)
+    }
+
+    requestRecoveryCoordinator.noteFailedResponse(error)
+    throw error
+  }
+)
 
 function unwrapResponse<T>(
   response: Awaited<ReturnType<AxiosInstance['request']>>
