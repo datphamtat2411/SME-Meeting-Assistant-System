@@ -20,6 +20,8 @@ public class MediaMessagingConfiguration {
     public static final String DEAD_LETTER_QUEUE = "meeting.processing.jobs.dead";
     public static final String INTELLIGENCE_QUEUE="meeting.processing.intelligence";
     public static final String INTELLIGENCE_DEAD_LETTER_QUEUE=INTELLIGENCE_QUEUE+".dead";
+    public static final String KNOWLEDGE_QUEUE="meeting.knowledge.indexing";
+    public static final String KNOWLEDGE_DEAD_LETTER_QUEUE=KNOWLEDGE_QUEUE+".dead";
 
     @Bean
     @ConditionalOnProperty(name="app.media.intelligence.dispatch-enabled",havingValue="true")
@@ -38,6 +40,35 @@ public class MediaMessagingConfiguration {
         return new Declarables(exchange,dlx,work,dead,
             BindingBuilder.bind(work).to(exchange).with(properties.getOutbox().getIntelligenceRoutingKey()),
             BindingBuilder.bind(dead).to(dlx).with(INTELLIGENCE_DEAD_LETTER_QUEUE));
+    }
+
+    @Bean
+    @ConditionalOnProperty(name="app.media.knowledge-indexing.enabled",havingValue="true")
+    Declarables knowledgeTopology(MediaProperties properties,
+            @Value("${app.media.messaging.topology:legacy}") String topology) {
+        if ("external-quorum".equals(topology)) return new Declarables();
+        if (!"quorum".equals(topology)) throw new IllegalStateException(
+            "Knowledge indexing requires a quorum topology");
+         String route = properties.getOutbox().getKnowledgeRoutingKey();
+        if (!"knowledge.indexing.requested".equals(route)
+                || route.equals(properties.getOutbox().getRoutingKey())
+                || route.equals(properties.getOutbox().getDiarizationRoutingKey())
+                || route.equals(properties.getOutbox().getIntelligenceRoutingKey())) {
+            throw new IllegalStateException("Knowledge indexing requires an isolated notification route");
+        }
+        var exchange = new DirectExchange(properties.getOutbox().getExchange(), true, false);
+        var dlx = new DirectExchange(DEAD_LETTER_EXCHANGE, true, false);
+        var work = QueueBuilder.durable(KNOWLEDGE_QUEUE).quorum()
+            .withArgument("x-delivery-limit", 5)
+            .withArgument("x-overflow", "reject-publish")
+            .withArgument("x-dead-letter-strategy", "at-least-once")
+            .deadLetterExchange(DEAD_LETTER_EXCHANGE)
+            .deadLetterRoutingKey(KNOWLEDGE_DEAD_LETTER_QUEUE).build();
+        var dead = QueueBuilder.durable(KNOWLEDGE_DEAD_LETTER_QUEUE).quorum()
+            .withArgument("x-delivery-limit", -1).build();
+        return new Declarables(exchange, dlx, work, dead,
+            BindingBuilder.bind(work).to(exchange).with(route),
+            BindingBuilder.bind(dead).to(dlx).with(KNOWLEDGE_DEAD_LETTER_QUEUE));
     }
 
     @Bean

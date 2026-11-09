@@ -8,6 +8,7 @@ import com.sme.meetingassistant.api.transcript.dto.TranscriptViews.CoverageView;
 import com.sme.meetingassistant.api.transcript.dto.TranscriptViews.SpeakerView;
 import com.sme.meetingassistant.api.transcript.dto.TranscriptViews.TranscriptView;
 import com.sme.meetingassistant.api.transcript.repository.TranscriptRepository;
+import com.sme.meetingassistant.api.knowledge.KnowledgeIndexingProducer;
 import com.sme.meetingassistant.api.transcript.repository.TranscriptRepository.SpeakerMapResult;
 import com.sme.meetingassistant.api.userorganization.service.AuthenticatedUserId;
 import java.util.List;
@@ -22,18 +23,21 @@ public class TranscriptReviewService implements TranscriptIngestion {
     private final TranscriptRepository repository;
     private final MeetingMediaAccess meetingAccess;
     private final AuthenticatedUserId authenticatedUser;
+    private final KnowledgeIndexingProducer knowledge;
 
     public TranscriptReviewService(TranscriptRepository repository, MeetingMediaAccess meetingAccess,
-            AuthenticatedUserId authenticatedUser) {
+            AuthenticatedUserId authenticatedUser, KnowledgeIndexingProducer knowledge) {
         this.repository = repository;
         this.meetingAccess = meetingAccess;
         this.authenticatedUser = authenticatedUser;
+        this.knowledge = knowledge;
     }
 
     @Override
     @Transactional
     public void publish(TranscriptResult result) {
         this.repository.publish(result);
+        this.knowledge.request("TRANSCRIPT", repository.publicationId(result.processingJobId()), result.meetingId());
     }
 
     @Transactional(readOnly = true)
@@ -67,7 +71,10 @@ public class TranscriptReviewService implements TranscriptIngestion {
         if (request == null || request.text() == null || request.text().isBlank()) {
             throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY);
         }
-        return this.repository.correct(meetingId, segmentId, actor, request.text().trim(), request.reason(), version);
+        var corrected = this.repository.correct(meetingId, segmentId, actor, request.text().trim(), request.reason(), version);
+        this.repository.current(meetingId).ifPresent(current ->
+            this.knowledge.request("TRANSCRIPT", current.id(), meetingId));
+        return corrected;
     }
 
     @Transactional
@@ -80,8 +87,10 @@ public class TranscriptReviewService implements TranscriptIngestion {
             this.meetingAccess.requireTranscriptSpeakerMember(meetingId, request.userId());
         }
         TranscriptTag tag = transcriptTag(ifMatch);
-        return this.repository.mapSpeaker(meetingId, clusterId,
+        var mapped = this.repository.mapSpeaker(meetingId, clusterId,
             request == null ? null : request.userId(), actor, tag.transcriptId(), tag.revision());
+        this.knowledge.request("TRANSCRIPT", mapped.transcriptId(), meetingId);
+        return mapped;
     }
 
     /** ETag binds the current transcript identity to its content revision. */

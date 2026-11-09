@@ -6,6 +6,7 @@ import com.sme.meetingassistant.api.meetingintelligence.dto.SummaryView;
 import com.sme.meetingassistant.api.meetingintelligence.dto.SummaryVersionView;
 import org.springframework.data.domain.Page;
 import com.sme.meetingassistant.api.meetingintelligence.repository.SummaryRepository;
+import com.sme.meetingassistant.api.knowledge.KnowledgeIndexingProducer;
 import com.sme.meetingassistant.api.userorganization.service.AuthenticatedUserId;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
@@ -19,13 +20,16 @@ public class SummaryService {
     private final MeetingIntelligenceAccess access;
     private final AuthenticatedUserId identity;
     private final MeetingIntelligenceAudit audit;
+    private final KnowledgeIndexingProducer knowledge;
 
     public SummaryService(SummaryRepository repository, MeetingIntelligenceAccess access,
-            AuthenticatedUserId identity, MeetingIntelligenceAudit audit) {
+            AuthenticatedUserId identity, MeetingIntelligenceAudit audit,
+            KnowledgeIndexingProducer knowledge) {
         this.repository = repository;
         this.access = access;
         this.identity = identity;
         this.audit = audit;
+        this.knowledge = knowledge;
     }
 
     @Transactional(readOnly = true)
@@ -62,6 +66,7 @@ public class SummaryService {
 
         repository.activate(meetingId,current.id(),candidate.id());
         var selected=repository.current(meetingId).orElseThrow(SummaryService::missing);
+        knowledge.request("SUMMARY", selected.id(), meetingId);
         audit.summaryActivated(actor,meetingId,current.id(),candidate.id(),
             candidate.versionNumber(),candidate.contentRevision());
         return selected;
@@ -91,6 +96,7 @@ public class SummaryService {
         repository.replaceCurrentWithHumanEdit(meetingId, previous, UUID.randomUUID(),
             actor, request.content());
         var updated = repository.current(meetingId).orElseThrow(SummaryService::missing);
+        knowledge.request("SUMMARY", updated.id(), meetingId);
         audit.summaryEdited(actor, meetingId, previous.id(), updated.id(),
             previous.versionNumber(), updated.versionNumber(), updated.isStale());
         return updated;
