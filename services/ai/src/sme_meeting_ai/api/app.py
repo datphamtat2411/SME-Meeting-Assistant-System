@@ -17,6 +17,8 @@ from sme_meeting_ai.core.config import (
 from sme_meeting_ai.core.runtime import RuntimeState
 from sme_meeting_ai.observability import configure_logging
 
+from .assistant import AssistantRequestSizeMiddleware
+from .assistant import router as assistant_router
 from .errors import (
     http_exception_handler,
     unexpected_exception_handler,
@@ -37,11 +39,17 @@ def create_app(
     *,
     identity_source: TrustedIdentitySource | None = None,
     operation_policy: OperationPolicy | None = None,
+    assistant_service=None,
 ) -> FastAPI:
     """Construct the runtime without initializing logging or external services."""
     if settings is None:
         settings = get_settings()
     runtime = RuntimeState()
+    effective_assistant_service = assistant_service
+    if settings.environment in {Environment.STAGING, Environment.PRODUCTION} and not getattr(
+        assistant_service, "production_ready", False
+    ):
+        effective_assistant_service = None
     demo_jobs = None
 
     @asynccontextmanager
@@ -86,6 +94,12 @@ def create_app(
             runtime.initialized = False
             if demo_jobs is not None:
                 await demo_jobs.aclose()
+            if effective_assistant_service is not None:
+                close = getattr(effective_assistant_service, "aclose", None)
+                if callable(close):
+                    result = close()
+                    if asyncio.iscoroutine(result):
+                        await result
 
     app = FastAPI(
         debug=False,
@@ -103,8 +117,11 @@ def create_app(
     app.state.runtime = runtime
     app.state.identity_source = identity_source
     app.state.operation_policy = snapshot_policy(operation_policy)
+    app.state.assistant_service = effective_assistant_service
     app.add_middleware(RequestMiddleware)
     app.include_router(router)
+    app.include_router(assistant_router)
+    app.add_middleware(AssistantRequestSizeMiddleware, limit=settings.assistant_max_request_bytes)
     if settings.demo_available:
         from .demo import DemoRequestMiddleware
         from .demo import router as demo_router

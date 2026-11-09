@@ -18,6 +18,7 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
         403: ("service_access_denied", "Service access denied"),
         404: ("not_found", "Resource not found"),
         405: ("method_not_allowed", "Method not allowed"),
+        413: ("payload_too_large", "Request is too large"),
         503: ("service_security_unavailable", "Service security unavailable"),
     }.get(exc.status_code, ("http_error", "Request failed"))
     response = error_response(exc.status_code, code, message)

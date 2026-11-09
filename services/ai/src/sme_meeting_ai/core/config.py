@@ -253,6 +253,29 @@ class Settings(BaseSettings):
     meeting_intelligence_rabbitmq_password: SecretStr | None = Field(default=None, repr=False)
     meeting_intelligence_core_api_client_cert_file: Path | None = None
     meeting_intelligence_core_api_client_key_file: Path | None = Field(default=None, repr=False)
+    # RAG-T04: Assistant inference is independently enabled and remains fail-closed
+    # until a trusted T03 runtime, Core authorization, and source verification are wired.
+    assistant_enabled: bool = False
+    assistant_inference_enabled: bool = False
+    assistant_model: str = Field(
+        default="openai/gpt-6-luna", max_length=160,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_./:-]{0,159}$",
+    )
+    assistant_reasoning_effort: ReasoningEffort = "high"
+    assistant_context_window_tokens: int = Field(default=16384, ge=1, le=400000, strict=True)
+    assistant_max_input_tokens: int = Field(default=12000, ge=1, le=12000, strict=True)
+    assistant_max_output_tokens: int = Field(default=2000, ge=1, le=2000, strict=True)
+    assistant_conversation_context_token_budget: int = Field(default=1200, ge=1, le=1200, strict=True)
+    assistant_request_timeout_seconds: float = Field(default=60, gt=0, le=300, allow_inf_nan=False)
+    assistant_provider_timeout_seconds: float = Field(default=45, gt=0, le=120, allow_inf_nan=False)
+    assistant_max_attempts: int = Field(default=2, ge=1, le=2, strict=True)
+    assistant_max_response_bytes: int = Field(default=1048576, ge=1, le=16777216, strict=True)
+    assistant_max_concurrent_requests: int = Field(default=1, ge=1, le=4, strict=True)
+    assistant_max_request_bytes: int = Field(default=262144, ge=1, le=1048576, strict=True)
+    assistant_max_question_characters: int = Field(default=4096, ge=1, le=4096, strict=True)
+    assistant_max_answer_characters: int = Field(default=20000, ge=1, le=20000, strict=True)
+    assistant_max_selected_evidence: int = Field(default=8, ge=1, le=8, strict=True)
+    assistant_provider_overhead_tokens: int = Field(default=512, ge=0, le=4096, strict=True)
     diarization_model: str = Field(
         default="konieshadow/speaker-diarization:c58b6b038f6de30f93eaccd6aecb59d1b9a48ac13b22be000bcffe853efb2c20",
         pattern=r"^konieshadow/speaker-diarization:[a-f0-9]{64}$",
@@ -518,6 +541,10 @@ class Settings(BaseSettings):
         "meeting_intelligence_decision_max_model_calls", "meeting_intelligence_decision_max_evidence_references",
         "meeting_intelligence_action_item_max_signals", "meeting_intelligence_action_item_max_candidates",
         "meeting_intelligence_action_item_max_model_calls", "meeting_intelligence_action_item_max_evidence_references",
+        "assistant_context_window_tokens", "assistant_max_input_tokens", "assistant_max_output_tokens",
+        "assistant_conversation_context_token_budget", "assistant_max_attempts", "assistant_max_response_bytes",
+        "assistant_max_concurrent_requests", "assistant_max_request_bytes", "assistant_max_question_characters",
+        "assistant_max_answer_characters", "assistant_max_selected_evidence", "assistant_provider_overhead_tokens",
         mode="before",
     )
     @classmethod
@@ -531,11 +558,26 @@ class Settings(BaseSettings):
             raise ValueError("Intelligence timeout must be numeric")
         return value
 
+    @field_validator("assistant_request_timeout_seconds", "assistant_provider_timeout_seconds", mode="before")
+    @classmethod
+    def reject_boolean_assistant_timeout(cls, value: object) -> object:
+        if isinstance(value, bool):
+            raise ValueError("Assistant timeout must be numeric")
+        return value
+
     @model_validator(mode="after")
     def valid_intelligence_context(self) -> Self:
         if (self.meeting_intelligence_max_input_tokens + self.meeting_intelligence_max_output_tokens
                 > self.meeting_intelligence_context_window_tokens):
             raise ValueError("Intelligence input and output allowances must fit the context window")
+        return self
+
+    @model_validator(mode="after")
+    def valid_assistant_context(self) -> Self:
+        if self.assistant_max_input_tokens + self.assistant_max_output_tokens > self.assistant_context_window_tokens:
+            raise ValueError("Assistant input and output allowances must fit the context window")
+        if self.assistant_provider_timeout_seconds > self.assistant_request_timeout_seconds:
+            raise ValueError("Assistant provider timeout cannot exceed request timeout")
         return self
 
     @field_validator(
