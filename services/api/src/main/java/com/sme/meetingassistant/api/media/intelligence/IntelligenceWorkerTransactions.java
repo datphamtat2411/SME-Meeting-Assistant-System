@@ -107,6 +107,17 @@ public class IntelligenceWorkerTransactions {
     }
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
     public Map<String,Object> status(UUID job,UUID event) {return status(repository.delivery(job,event));}
+
+    /** The canonical adapter's surrounding transaction retains these owner locks through handoff. */
+    @Transactional(propagation=Propagation.MANDATORY)
+    public void requireActionItemOwner(UUID event,StageClaim claim,UUID snapshot,String peer) {
+        var stage=lifecycle.derivedStage(claim.stageRunId());
+        var d=lock(stage.jobId(),event);
+        capability.requireStage(d.code());
+        if(!"EXTRACTING_ACTION_ITEMS".equals(d.code())) throw WorkerException.conflict("WORKER_IDENTITY_CONFLICT");
+        var c=owner(d,new IntelligenceCommands.Owner(event,claim.stageRunId(),claim.claimToken()),peer,true);
+        if(!c.snapshot().equals(snapshot)) throw WorkerException.conflict("WORKER_IDENTITY_CONFLICT");
+    }
     private LinkedHashMap<String,Object> base(Delivery d) {
         var data=new LinkedHashMap<String,Object>();data.put("contractVersion","1.0");data.put("processingJobId",d.job());data.put("eventId",d.event());
         data.put("executionStageRunId",d.stage());data.put("executionStageCode",d.code());return data;

@@ -162,6 +162,15 @@ class AcceptedResult(WireModel):
     writtenRows: int = Field(ge=0)
 
 
+class AcceptedActionItems(WireModel):
+    contractVersion: Literal["1.0"]
+    eventId: Uuid
+    stageRunId: Uuid
+    sourceSnapshotId: Uuid
+    replay: bool
+    newProposals: int = Field(ge=0, le=200)
+
+
 def owner_fields(claim):
     return dict(contractVersion="1.0", eventId=claim.eventId,
                 executionStageRunId=claim.executionStageRunId,
@@ -240,6 +249,56 @@ class IntelligenceCoreClient(CoreApiClient):
                             or "no-store" not in response.headers.get("cache-control", "").lower().split(", ")):
                         raise CoreError(0, "WORKER_RESPONSE_INVALID")
                     return AcceptedResult.model_validate(envelope["data"])
+        except CoreError:
+            raise
+        except (httpx.HTTPError, TimeoutError, ValueError, KeyError, TypeError, ValidationError):
+            raise CoreError() from None
+
+    async def accept_action_items(self, event, claim, prepared: bytes, *, deadline=None):
+        """One bounded submission; the coordinator owns retry/status reconciliation."""
+        try:
+            body = strict_json(prepared, 4194304)
+            if (claim.executionStageCode != "EXTRACTING_ACTION_ITEMS" or claim.resultSlot is not None
+                    or event.executionStageRunId != claim.executionStageRunId
+                    or event.processingJobId != claim.processingJobId or event.eventId != claim.eventId
+                    or event.executionStageCode != claim.executionStageCode
+                    or body["contractVersion"] != "1.0" or body["eventId"] != claim.eventId
+                    or body["stageRunId"] != claim.executionStageRunId
+                    or body["claimToken"] != claim.claimToken.get_secret_value()
+                    or body["source"] != dict(snapshotId=claim.source.snapshotId,
+                        transcriptId=claim.source.transcriptId, contentRevision=claim.source.contentRevision,
+                        sha256=claim.source.sha256)):
+                raise CoreError(409, "WORKER_IDENTITY_CONFLICT")
+            duration = self.settings.core_api_timeout_seconds
+            if deadline is not None:
+                duration = min(duration, deadline - asyncio.get_running_loop().time())
+            if duration <= 0:
+                raise CoreError(409, "WORKER_LEASE_LOST")
+            async with asyncio.timeout(duration):
+                async with self.http.stream("POST", self.settings.core_api_base_url
+                    + "/internal/api/v1/meeting-intelligence/action-items/accept", content=prepared,
+                    headers={"Authorization": "Bearer " + self._acceptance_token,
+                        "X-Request-Id": event.correlation_id, "Content-Type": "application/json"},
+                    follow_redirects=False, timeout=httpx.Timeout(duration,
+                        connect=min(duration, self.settings.core_api_connect_timeout_seconds))) as response:
+                    if response.status_code != 200:
+                        raise CoreError(response.status_code)
+                    raw = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        if len(raw) + len(chunk) > 65536:
+                            raise CoreError(0, "WORKER_RESPONSE_INVALID")
+                        raw.extend(chunk)
+                    envelope = strict_json(bytes(raw), 65536)
+                    if (not isinstance(envelope, dict) or envelope.get("success") is not True
+                            or set(envelope) - {"success", "code", "message", "data", "meta", "errors"}
+                            or "no-store" not in response.headers.get("cache-control", "").lower().split(", ")):
+                        raise CoreError(0, "WORKER_RESPONSE_INVALID")
+                    receipt = AcceptedActionItems.model_validate(envelope["data"])
+                    if (receipt.eventId != event.eventId or receipt.stageRunId != claim.executionStageRunId
+                            or receipt.sourceSnapshotId != claim.source.snapshotId
+                            or receipt.newProposals != (0 if receipt.replay else len(body["candidates"]))):
+                        raise CoreError(0, "WORKER_RESPONSE_INVALID")
+                    return receipt
         except CoreError:
             raise
         except (httpx.HTTPError, TimeoutError, ValueError, KeyError, TypeError, ValidationError):

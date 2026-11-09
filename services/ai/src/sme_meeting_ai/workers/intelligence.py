@@ -21,6 +21,10 @@ from sme_meeting_ai.integrations.intelligence import (
 )
 from sme_meeting_ai.integrations.messaging import MessageError, RabbitConsumer
 from sme_meeting_ai.integrations.object_storage import ObjectStorage, StorageError
+from sme_meeting_ai.meeting_intelligence.action_item_contract import (
+    prepare_action_item_request,
+)
+from sme_meeting_ai.meeting_intelligence.action_items import build_action_item_processor
 from sme_meeting_ai.meeting_intelligence.decision import build_decision_processor
 from sme_meeting_ai.meeting_intelligence.errors import IntelligenceError
 from sme_meeting_ai.meeting_intelligence.processor import StageContext
@@ -133,6 +137,8 @@ def production_processors(settings, adapter=None):
         processors["GENERATING_SUMMARY"] = build_summary_processor(settings, adapter)
     if settings.meeting_intelligence_decision_enabled:
         processors["EXTRACTING_DECISIONS"] = build_decision_processor(settings, adapter)
+    if settings.meeting_intelligence_action_item_enabled:
+        processors["EXTRACTING_ACTION_ITEMS"] = build_action_item_processor(settings, adapter)
     return processors
 
 
@@ -152,6 +158,19 @@ class IntelligenceWorker:
             snapshot = verify_snapshot(raw, claim)
             if guard.fence.is_set():
                 raise WorkFailure("INTERRUPTED", "CANCELLED")
+            if claim.executionStageCode == "EXTRACTING_ACTION_ITEMS":
+                phase = "INFERENCE"
+                processor = self.processors.get(claim.executionStageCode)
+                if processor is None:
+                    raise WorkFailure(phase, "CONFIGURATION")
+                context = StageContext(claim.processingJobId, claim.executionStageRunId, claim.executionStageCode,
+                    claim.meetingId, claim.source.snapshotId, claim.source.sha256, claim.source.transcriptId,
+                    claim.source.contentRevision, snapshot, deadline, guard.fence)
+                candidate = processor(context)
+                if guard.fence.is_set() or time.monotonic() >= deadline:
+                    raise WorkFailure("INTERRUPTED", "CANCELLED")
+                phase = "RESULT_VALIDATION"
+                return prepare_action_item_request(candidate, claim, snapshot)
             if claim.resultSlot is None:
                 raise WorkFailure("INFERENCE", "CONFIGURATION")
             phase = "RESULT_STORAGE"
@@ -232,6 +251,23 @@ class IntelligenceWorker:
             return await self.reconcile(event)
         return None
 
+    async def accept_action_items(self, event, claim, guard, prepared):
+        # Keep these exact prepared bytes across response-loss retries. Submission
+        # uncertainty never causes another model call or contradictory failure.
+        for _ in range(self.settings.core_api_max_attempts):
+            if not guard.live():
+                return await self.reconcile(event)
+            try:
+                await guard.protect(self.core.accept_action_items(event, claim, prepared, deadline=guard.deadline))
+            except CoreError as error:
+                status = await self.reconcile(event)
+                if (status is None or status.durable or not guard.live()
+                        or error.status in (400, 401, 403, 404, 409, 413, 415, 422)):
+                    return status
+                continue
+            return await self.reconcile(event)
+        return None
+
     async def disposition(self, delivery, status):
         if isinstance(status, IntelligenceStatus) and status.durable:
             await delivery.ack()
@@ -279,7 +315,9 @@ class IntelligenceWorker:
                     else:
                         status = await self.failure(event, claim, guard, error)
                 else:
-                    status = await self.accept(event, claim, guard, digest)
+                    status = (await self.accept_action_items(event, claim, guard, digest)
+                        if claim.executionStageCode == "EXTRACTING_ACTION_ITEMS"
+                        else await self.accept(event, claim, guard, digest))
                 await self.disposition(delivery, status)
         except MessageError:
             await delivery.reject(requeue=False)
@@ -366,7 +404,8 @@ class IntelligenceExecution:
             core = IntelligenceCoreClient(isolated, acceptance_token=s.meeting_intelligence_acceptance_token)
             self.async_resources.push_async_callback(core.aclose)
             if (not self._injected_processors and s.meeting_intelligence_inference_enabled
-                    and (s.meeting_intelligence_summary_enabled or s.meeting_intelligence_decision_enabled)):
+                    and (s.meeting_intelligence_summary_enabled or s.meeting_intelligence_decision_enabled
+                         or s.meeting_intelligence_action_item_enabled)):
                 from sme_meeting_ai.providers.openrouter_intelligence import (
                     OpenRouterIntelligenceAdapter,
                 )

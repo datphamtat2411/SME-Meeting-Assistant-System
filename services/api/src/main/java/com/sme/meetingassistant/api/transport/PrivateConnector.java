@@ -105,6 +105,23 @@ public final class PrivateConnector {
         catch(Exception invalid) {throw new SecurityException("Authenticated worker required");}
     }
 
+    /** Canonical Action Item ingress uses the independently bearer-protected MI route. */
+    public static String actionItemWorkerCertificateFingerprint(HttpServletRequest request) {
+        if (!(request.getAttribute(ATTESTATION) instanceof Attestation attestation)
+                || !"POST".equals(request.getMethod())
+                || !"/internal/api/v1/meeting-intelligence/action-items/accept".equals(request.getServletPath())) {
+            throw new SecurityException("Authenticated worker required");
+        }
+        try {
+            if (!"urn:sme:service:mi-worker".equals(attestation.principal())
+                    || !attestation.principal().equals(ServiceIdentity.from(attestation.leaf()))) {
+                throw new SecurityException();
+            }
+            return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                .digest(attestation.leaf().getEncoded()));
+        } catch (Exception invalid) {throw new SecurityException("Authenticated worker required");}
+    }
+
     public static final String METRICS_PATH = "/internal/monitoring/prometheus";
 
     /** No worker permissions, headers, JWTs or browser sessions establish this identity. */

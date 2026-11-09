@@ -23,4 +23,8 @@ public class IntelligenceWorkerService {
     public Map<String,Object> renew(UUID job,IntelligenceCommands.Owner command,String peer) {return commands.renew(job,command,peer);}
     public Map<String,Object> fail(UUID job,IntelligenceCommands.Fail command,String peer) {return commands.fail(job,command,peer);}
     public Map<String,Object> status(UUID job,UUID event) {return commands.status(job,event);}
+    public void requireActionItemOwner(UUID event,
+            com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle.StageClaim claim,UUID snapshot,String peer) {
+        commands.requireActionItemOwner(event,claim,snapshot,peer);
+    }
 }

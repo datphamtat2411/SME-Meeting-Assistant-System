@@ -77,10 +77,15 @@ processor receives a `StageContext` with a verified snapshot, source provenance,
 monotonic deadline and cancellation signal, and returns a structured candidate.
 The production Summary processor is registered only when the worker, inference,
 and `AI_MEETING_INTELLIGENCE_SUMMARY_ENABLED` flags are all true; it remains
-disabled by default. Only `GENERATING_SUMMARY` is registered. An unavailable
-processor fails closed. Decision and Action Item extraction remain separate
-capabilities. See `docs/MEETING-INTELLIGENCE-SUMMARY.md` for grounding,
-long-meeting reduction, warning, activation, and qualification boundaries.
+disabled by default. Decision and Action Item processors register independently
+with `AI_MEETING_INTELLIGENCE_DECISION_ENABLED` and
+`AI_MEETING_INTELLIGENCE_ACTION_ITEM_ENABLED`; all enabled processors share one
+OpenRouter adapter. An unavailable processor fails closed. Summary/Decision retain
+their immutable artifact path; Action Items use a claim-bound direct canonical
+handoff and durable proposal receipt. See [Summary](docs/MEETING-INTELLIGENCE-SUMMARY.md),
+[Decisions](docs/MEETING-INTELLIGENCE-DECISIONS.md), and
+[Action Items](docs/MEETING-INTELLIGENCE-ACTION-ITEMS.md) for contracts, activation,
+grounding, bounded synthesis, and qualification boundaries.
 
 ## Standalone speaker diarization
 

@@ -173,6 +173,7 @@ class Settings(BaseSettings):
     meeting_intelligence_inference_enabled: bool = False
     meeting_intelligence_summary_enabled: bool = False
     meeting_intelligence_decision_enabled: bool = False
+    meeting_intelligence_action_item_enabled: bool = False
     meeting_intelligence_model: str = Field(default="openai/gpt-5-mini", pattern=r"^[A-Za-z0-9][A-Za-z0-9_./:-]{0,159}$")
     meeting_intelligence_context_window_tokens: int = Field(default=32768, ge=1, le=400000, strict=True)
     meeting_intelligence_max_input_tokens: int = Field(default=24000, ge=1, le=272000, strict=True)
@@ -195,6 +196,10 @@ class Settings(BaseSettings):
     meeting_intelligence_decision_max_synthesis_depth: int = Field(default=3, ge=1, le=8, strict=True)
     meeting_intelligence_decision_max_model_calls: int = Field(default=128, ge=1, le=512, strict=True)
     meeting_intelligence_decision_max_evidence_references: int = Field(default=8192, ge=1, le=65536, strict=True)
+    meeting_intelligence_action_item_max_signals: int = Field(default=256, ge=1, le=256, strict=True)
+    meeting_intelligence_action_item_max_candidates: int = Field(default=128, ge=1, le=200, strict=True)
+    meeting_intelligence_action_item_max_model_calls: int = Field(default=128, ge=1, le=512, strict=True)
+    meeting_intelligence_action_item_max_evidence_references: int = Field(default=2048, ge=1, le=8192, strict=True)
     meeting_intelligence_acceptance_token: SecretStr | None = Field(default=None, repr=False)
     meeting_intelligence_s3_access_key_id: SecretStr | None = Field(default=None, repr=False)
     meeting_intelligence_s3_secret_access_key: SecretStr | None = Field(default=None, repr=False)
@@ -413,6 +418,8 @@ class Settings(BaseSettings):
         "meeting_intelligence_summary_max_model_calls", "meeting_intelligence_decision_max_signals",
         "meeting_intelligence_decision_max_candidates", "meeting_intelligence_decision_max_synthesis_depth",
         "meeting_intelligence_decision_max_model_calls", "meeting_intelligence_decision_max_evidence_references",
+        "meeting_intelligence_action_item_max_signals", "meeting_intelligence_action_item_max_candidates",
+        "meeting_intelligence_action_item_max_model_calls", "meeting_intelligence_action_item_max_evidence_references",
         mode="before",
     )
     @classmethod

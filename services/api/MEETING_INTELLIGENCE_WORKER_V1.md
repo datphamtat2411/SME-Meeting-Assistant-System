@@ -150,9 +150,14 @@ Canonical acceptance and the next dispatch intent commit atomically. Completion
 requires every latest required stage and its acceptance evidence, including any
 pending non-intelligence/indexing obligation.
 
-Action Item control/ownership uses the same stage contract, but has no resultSlot
-or result-ingestion adapter in T01. It cannot succeed without its feature-owned
-canonical proposal receipt. Keep this stage disabled until AIMI-T06 integration.
+Action Item control/ownership uses the same stage contract and intentionally has no
+`resultSlot`. AIMI-T06 adds the separate private bounded direct handoff at
+`POST /internal/api/v1/meeting-intelligence/action-items/accept`; see
+[Action Item acceptance v1](ACTION_ITEM_ACCEPTANCE_V1.md). Its authenticated adapter
+binds the original T01 owner and invokes the existing canonical proposal handoff.
+Success requires an Action Items-owned durable batch receipt, including empty batches.
+Summary/Decision artifact contracts remain unchanged. Activation still requires all
+existing approved handoff and infrastructure gates.
 
 ## Deployment gates and recovery
 
@@ -188,4 +193,4 @@ the bounded recovery path binds their existing pending attempts to the new route
 Existing jobs and stage plans are unchanged. Structured operational events contain identity metadata and
 safe classifications, never tokens, transcript/generated text or raw errors.
 AIMI-T02 supplies the real worker consumer/executor and its operational deployment;
-AIMI-T06 supplies Action Item result ingestion/canonical handoff.
+AIMI-T06 supplies the Action Item direct canonical handoff described above.
