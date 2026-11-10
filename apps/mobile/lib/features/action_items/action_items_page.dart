@@ -34,7 +34,13 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
 
   Future<void> changeStatus(ActionItem item, String action) async {
     try {
-      await widget.api.post('/action-items/' + item.id + '/' + action, {});
+      final current = await widget.api.get('/action-items/' + item.id);
+      final etag = current.etag;
+      if (etag == null) {
+        throw const ApiFailure(0, 'MISSING_ETAG', 'Action-item version is not available.');
+      }
+      await widget.api.post('/action-items/' + item.id + '/' + action, {},
+        headers: {'If-Match': etag});
       if (mounted) { showSuccess(context, 'Đã cập nhật công việc.'); reload(); }
     } catch (error) {
       if (mounted) showFailure(context, error);

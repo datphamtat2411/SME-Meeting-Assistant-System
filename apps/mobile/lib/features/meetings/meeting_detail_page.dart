@@ -34,8 +34,14 @@ class _MeetingDetailPageState extends State<MeetingDetailPage> {
   Future<void> command(String action) async {
     setState(() => busy = true);
     try {
+      final fresh = await widget.api.get('/meetings/' + widget.meetingId);
+      final etag = fresh.etag;
+      if (etag == null) {
+        throw const ApiFailure(0, 'MISSING_ETAG', 'Meeting version is not available.');
+      }
       await widget.api.post('/meetings/' + widget.meetingId + '/' + action,
-        action == 'cancel' ? {'reason': 'Cancelled from mobile'} : {});
+        action == 'cancel' ? {'reason': 'Cancelled from mobile'} : {},
+        headers: {'If-Match': etag});
       if (mounted) {
         showSuccess(context, 'Đã cập nhật cuộc họp.');
         reload();

@@ -20,9 +20,13 @@ class _ResultsPanelState extends State<ResultsPanel> {
   Future<ApiResult> load(String end) =>
       widget.api.get('/meetings/' + widget.meetingId + '/' + end);
 
-  Future<void> action(String path, {Map<String, dynamic> payload = const {}}) async {
+  Future<void> action(String path, {String? ifMatch}) async {
     try {
-      await widget.api.post('/meetings/' + widget.meetingId + '/' + path, payload);
+      if (ifMatch == null) {
+        throw const ApiFailure(0, 'MISSING_VERSION', 'Decision version is not available.');
+      }
+      await widget.api.post('/meetings/' + widget.meetingId + '/' + path, {},
+        headers: {'If-Match': ifMatch});
       if (mounted) {
         showSuccess(context, 'Đã cập nhật kết quả.');
         setState(() => refreshKey++);
@@ -32,7 +36,7 @@ class _ResultsPanelState extends State<ResultsPanel> {
     }
   }
 
-  Widget dataArea(String name, Widget Function(dynamic) build) {
+  Widget dataArea(String name, Widget Function(ApiResult) build) {
     return FutureBuilder<ApiResult>(
       key: ValueKey(name + refreshKey.toString()), future: load(name),
       builder: (context, snap) {
@@ -49,7 +53,7 @@ class _ResultsPanelState extends State<ResultsPanel> {
             description: error.toString(),
             onRetry: () => setState(() => refreshKey++));
         }
-        return build(snap.data!.data);
+        return build(snap.data!);
       },
     );
   }
@@ -67,8 +71,8 @@ class _ResultsPanelState extends State<ResultsPanel> {
           onSelected: (_) => setState(() => selected = 2)),
       ])),
     Expanded(child: ListView(padding: const EdgeInsets.all(18), children: [
-      if (selected == 0) dataArea('summary', (raw) {
-        final data = objectOf(raw);
+      if (selected == 0) dataArea('summary', (response) {
+        final data = objectOf(response.data);
         final content = textValue(data['content']);
         if (content.isEmpty) return const MessagePanel(title: 'Chưa có bản tóm tắt');
         return Column(children: [
@@ -93,12 +97,12 @@ class _ResultsPanelState extends State<ResultsPanel> {
               ],
             ])),
           OutlinedButton.icon(
-            onPressed: () => editSummary(content),
+            onPressed: () => editSummary(content, response.etag),
             icon: const Icon(Icons.edit_note), label: const Text('Chỉnh sửa bản tóm tắt')),
         ]);
       }),
-      if (selected == 1) dataArea('transcript', (raw) {
-        final data = objectOf(raw);
+      if (selected == 1) dataArea('transcript', (response) {
+        final data = objectOf(response.data);
         final segments = objectsOf(data['segments']);
         return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
           SectionHeading('Dòng thời gian phát biểu',
@@ -123,8 +127,8 @@ class _ResultsPanelState extends State<ResultsPanel> {
             ]))),
         ]);
       }),
-      if (selected == 2) dataArea('decisions', (raw) {
-        final decisions = objectsOf(raw);
+      if (selected == 2) dataArea('decisions', (response) {
+        final decisions = objectsOf(response.data);
         return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
           const SectionHeading('Quyết định chính',
             subtitle: 'Đề xuất AI cần được người có quyền xác nhận.'),
@@ -132,15 +136,18 @@ class _ResultsPanelState extends State<ResultsPanel> {
           ...decisions.map((decision) {
             final id = textValue(decision['id']);
             final status = textValue(decision['status']);
+            final version = (decision['version'] as num?)?.toInt();
+            final etag = version == null ? null :
+                '"dec-$id-$version${decision['isStale'] == true ? '-stale' : ''}"';
             return ContentCard(child: Column(
               crossAxisAlignment: CrossAxisAlignment.start, children: [
                 StatePill(status),
                 const SizedBox(height: 8),
                 Text(textValue(decision['content'])),
                 if (status == 'PROPOSED') Row(children: [
-                  TextButton(onPressed: () => action('decisions/' + id + '/confirm'),
+                  TextButton(onPressed: () => action('decisions/' + id + '/confirm', ifMatch: etag),
                     child: const Text('Xác nhận')),
-                  TextButton(onPressed: () => action('decisions/' + id + '/reject'),
+                  TextButton(onPressed: () => action('decisions/' + id + '/reject', ifMatch: etag),
                     child: const Text('Từ chối')),
                 ]),
               ]));
@@ -150,7 +157,7 @@ class _ResultsPanelState extends State<ResultsPanel> {
     ])),
   ]);
 
-  Future<void> editSummary(String previous) async {
+  Future<void> editSummary(String previous, String? ifMatch) async {
     final controller = TextEditingController(text: previous);
     final updated = await showDialog<String>(context: context,
       builder: (ctx) => AlertDialog(title: const Text('Chỉnh sửa tóm tắt'),
@@ -165,8 +172,11 @@ class _ResultsPanelState extends State<ResultsPanel> {
     controller.dispose();
     if (updated == null || updated.trim().isEmpty || !mounted) return;
     try {
+      if (ifMatch == null) {
+        throw const ApiFailure(0, 'MISSING_ETAG', 'Summary version is not available.');
+      }
       await widget.api.patch('/meetings/' + widget.meetingId + '/summary',
-          {'content': updated.trim()});
+          {'content': updated.trim()}, headers: {'If-Match': ifMatch});
       if (mounted) setState(() => refreshKey++);
     } catch (error) {
       if (mounted) showFailure(context, error);
