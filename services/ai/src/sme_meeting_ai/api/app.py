@@ -26,6 +26,7 @@ from .errors import (
 )
 from .health import router
 from .middleware import RequestMiddleware
+from .reconciliation import router as reconciliation_router
 from .security import (
     OperationPolicy,
     TrustedIdentitySource,
@@ -40,6 +41,7 @@ def create_app(
     identity_source: TrustedIdentitySource | None = None,
     operation_policy: OperationPolicy | None = None,
     assistant_service=None,
+    knowledge_vector_store=None,
 ) -> FastAPI:
     """Construct the runtime without initializing logging or external services."""
     if settings is None:
@@ -118,9 +120,11 @@ def create_app(
     app.state.identity_source = identity_source
     app.state.operation_policy = snapshot_policy(operation_policy)
     app.state.assistant_service = effective_assistant_service
+    app.state.knowledge_vector_store = knowledge_vector_store
     app.add_middleware(RequestMiddleware)
     app.include_router(router)
     app.include_router(assistant_router)
+    app.include_router(reconciliation_router)
     app.add_middleware(AssistantRequestSizeMiddleware, limit=settings.assistant_max_request_bytes)
     if settings.demo_available:
         from .demo import DemoRequestMiddleware

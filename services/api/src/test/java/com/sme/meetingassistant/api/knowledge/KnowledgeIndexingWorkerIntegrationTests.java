@@ -16,7 +16,10 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.annotation.Transactional;
+
+import static org.mockito.Mockito.when;
 
 @ActiveProfiles("test")
 @SpringBootTest
@@ -28,6 +31,7 @@ class KnowledgeIndexingWorkerIntegrationTests {
     @Autowired KnowledgeIndexingAdminService admin;
     @Autowired MediaProperties properties;
     @Autowired MediaRepository outbox;
+    @MockitoBean KnowledgeVectorAudit vectorAudit;
 
     @Test
     @Transactional
@@ -183,7 +187,8 @@ class KnowledgeIndexingWorkerIntegrationTests {
             assertThat(admin.prepare(newGeneration, newVersion, newSha, newTokenizer, newCollection))
                 .containsEntry("state", "PREPARING");
             assertThat(admin.refresh(newGeneration))
-                .containsEntry("state", "READY").containsEntry("targetCount", 0L);
+                .containsEntry("state", "PREPARING").containsEntry("targetCount", 1L)
+                .containsEntry("indexedCount", 0L);
 
             var event = producer.requestReindex("ACTION_ITEM", itemId, meetingId, newGeneration, userId)
                 .orElseThrow();
@@ -226,6 +231,34 @@ class KnowledgeIndexingWorkerIntegrationTests {
             config.setTokenizerId(oldTokenizer);
             config.setCollectionName(oldCollection);
         }
+    }
+
+    @Test
+    @Transactional
+    void reconciliationFindsIndexedWorkWithMissingQdrantPoints() {
+        var fixture = publishedAction();
+        String certificate = "c".repeat(64);
+        UUID claimToken = (UUID) worker.claim(fixture.event().eventId(),
+            claimCommand(fixture, UUID.randomUUID()), certificate).get("claimToken");
+        worker.result(fixture.event().eventId(),
+            indexedResult(fixture.event().eventId(), claimToken, UUID.randomUUID()), certificate);
+
+        var source = new KnowledgeVectorAudit.SourceKey("ACTION_ITEM", fixture.itemId(), fixture.meetingId(),
+            fixture.event().sourceRevision());
+        when(vectorAudit.countPoints(fixture.event().indexGenerationId(), java.util.List.of(source)))
+            .thenReturn(Map.of(source, 0L));
+
+        Map<String, Object> result = admin.startReconciliation(
+            fixture.event().indexGenerationId(), 10, true, fixture.userId());
+
+        assertThat(result).containsEntry("state", "COMPLETED")
+            .containsEntry("findingCount", 1L);
+        assertThat(jdbc.queryForObject(
+            "SELECT finding_type FROM knowledge_reconciliation_findings WHERE run_id=?",
+            String.class, result.get("id"))).isEqualTo("MISSING_POINTS");
+        assertThat(jdbc.queryForObject(
+            "SELECT action FROM knowledge_reconciliation_findings WHERE run_id=?",
+            String.class, result.get("id"))).isEqualTo("REINDEX");
     }
 
     @Test

@@ -6,6 +6,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -19,13 +20,16 @@ public class KnowledgeIndexingAdminService {
     private final KnowledgeIndexingProducer producer;
     private final KnowledgeIndexingWorkerService worker;
     private final MediaProperties properties;
+    private final ObjectProvider<KnowledgeVectorAudit> vectorAudits;
 
     public KnowledgeIndexingAdminService(JdbcTemplate jdbc, KnowledgeIndexingProducer producer,
-            KnowledgeIndexingWorkerService worker, MediaProperties properties) {
+            KnowledgeIndexingWorkerService worker, MediaProperties properties,
+            ObjectProvider<KnowledgeVectorAudit> vectorAudits) {
         this.jdbc = jdbc;
         this.producer = producer;
         this.worker = worker;
         this.properties = properties;
+        this.vectorAudits = vectorAudits;
     }
 
     @Transactional
@@ -204,20 +208,67 @@ public class KnowledgeIndexingAdminService {
         if (!"RUNNING".equals(run.state())) return runData(runId);
 
         List<WorkRow> rows = workRows(run);
+        if (!rows.isEmpty()) {
+            KnowledgeVectorAudit vectorAudit = vectorAudits.getIfAvailable();
+            if (vectorAudit == null) {
+                jdbc.update("""
+                    UPDATE knowledge_reconciliation_runs SET state='FAILED',last_error_code=?,
+                        last_error_summary=?,updated_at=CURRENT_TIMESTAMP WHERE id=?
+                    """, "VECTOR_AUDIT_UNAVAILABLE",
+                    "AI vector audit is required before reconciliation can complete.", runId);
+                return runData(runId);
+            }
+            List<KnowledgeVectorAudit.SourceKey> sources = rows.stream().map(work ->
+                new KnowledgeVectorAudit.SourceKey(work.sourceType(), work.sourceId(), work.meetingId(),
+                    work.sourceRevision())).toList();
+            Map<KnowledgeVectorAudit.SourceKey, Long> pointCounts;
+            try {
+                pointCounts = vectorAudit.countPoints(run.generationId(), sources);
+            } catch (RuntimeException error) {
+                jdbc.update("""
+                    UPDATE knowledge_reconciliation_runs SET state='FAILED',last_error_code=?,
+                        last_error_summary=?,updated_at=CURRENT_TIMESTAMP WHERE id=?
+                    """, "VECTOR_AUDIT_UNAVAILABLE",
+                    "AI vector audit could not be completed.", runId);
+                return runData(runId);
+            }
+            if (pointCounts == null || pointCounts.size() != sources.size()
+                    || sources.stream().anyMatch(source -> !pointCounts.containsKey(source))) {
+                jdbc.update("""
+                    UPDATE knowledge_reconciliation_runs SET state='FAILED',last_error_code=?,
+                        last_error_summary=?,updated_at=CURRENT_TIMESTAMP WHERE id=?
+                    """, "VECTOR_AUDIT_INVALID",
+                    "AI vector audit returned an incomplete source report.", runId);
+                return runData(runId);
+            }
+            return reconcileRows(run, rows, pointCounts, requestedByUserId, runId);
+        }
+        return completeReconciliation(run, rows, run.repairedCount(), run.findingCount(), runId);
+    }
+
+    private Map<String, Object> reconcileRows(ReconciliationRun run, List<WorkRow> rows,
+            Map<KnowledgeVectorAudit.SourceKey, Long> pointCounts, UUID requestedByUserId, UUID runId) {
         long repaired = run.repairedCount();
         long findings = run.findingCount();
         for (WorkRow work : rows) {
+            long pointCount = pointCounts.get(new KnowledgeVectorAudit.SourceKey(work.sourceType(), work.sourceId(),
+                work.meetingId(), work.sourceRevision()));
             var verification = worker.verifySources(List.of(new KnowledgeIndexingWorkerService.SourceVerificationRequest(
                 work.sourceType(), work.sourceId(), work.meetingId(), work.sourceRevision()))).getFirst();
             String status = (String) verification.get("status");
-            if ("CURRENT".equals(status) && !Set.of("RETRYABLE_FAILURE", "TERMINAL_FAILURE")
-                    .contains(work.state())) {
-                continue;
-            }
 
             String findingType;
             String action;
-            if ("DELETED".equals(status)) {
+            Integer expectedPointCount = work.indexedChunkCount();
+            if ("CURRENT".equals(status) && !Set.of("RETRYABLE_FAILURE", "TERMINAL_FAILURE")
+                    .contains(work.state())) {
+                if (!Set.of("INDEXED", "NO_ELIGIBLE_CONTENT").contains(work.state())
+                        || expectedPointCount != null && pointCount == expectedPointCount) {
+                    continue;
+                }
+                findingType = pointCount == 0 ? "MISSING_POINTS" : "INCOMPLETE_POINTS";
+                action = "REINDEX";
+            } else if ("DELETED".equals(status)) {
                 findingType = "DELETED_SOURCE_POINTS";
                 action = "DELETE";
             } else if (!"CURRENT".equals(status)) {
@@ -234,7 +285,9 @@ public class KnowledgeIndexingAdminService {
                 VALUES (?,?,?,?,?,?,?,?,?,CAST(? AS jsonb)) ON CONFLICT DO NOTHING
                 """, UUID.randomUUID(), runId, findingType, action, work.sourceType(), work.sourceId(),
                 work.meetingId(), work.sourceRevision(), work.generationId(),
-                "{\"status\":\"" + status + "\",\"state\":\"" + work.state() + "\"}");
+                "{\"status\":\"" + status + "\",\"state\":\"" + work.state()
+                    + "\",\"pointCount\":" + pointCount
+                    + (expectedPointCount == null ? "" : ",\"expectedPointCount\":" + expectedPointCount) + "}");
             findings++;
             if (!run.dryRun()) {
                 var event = switch (action) {
@@ -250,10 +303,7 @@ public class KnowledgeIndexingAdminService {
 
         long scanned = run.scannedCount() + rows.size();
         if (rows.isEmpty() || rows.size() < run.batchSize()) {
-            jdbc.update("""
-                UPDATE knowledge_reconciliation_runs SET state='COMPLETED',scanned_count=?,repaired_count=?,
-                    finding_count=?,completed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?
-                """, scanned, repaired, findings, runId);
+            return completeReconciliation(run, rows, repaired, findings, runId, scanned);
         } else {
             WorkRow checkpoint = rows.getLast();
             jdbc.update("""
@@ -263,6 +313,31 @@ public class KnowledgeIndexingAdminService {
                 """, checkpoint.sourceType(), checkpoint.sourceId(), checkpoint.sourceRevision(), scanned,
                 repaired, findings, runId);
         }
+        return runData(runId);
+    }
+
+    private Map<String, Object> completeReconciliation(ReconciliationRun run, List<WorkRow> rows,
+            long repaired, long findings, UUID runId) {
+        return completeReconciliation(run, rows, repaired, findings, runId,
+            run.scannedCount() + rows.size());
+    }
+
+    private Map<String, Object> completeReconciliation(ReconciliationRun run, List<WorkRow> rows,
+            long repaired, long findings, UUID runId, long scanned) {
+        if (rows.isEmpty() || rows.size() < run.batchSize()) {
+            jdbc.update("""
+                UPDATE knowledge_reconciliation_runs SET state='COMPLETED',scanned_count=?,repaired_count=?,
+                    finding_count=?,completed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?
+                """, scanned, repaired, findings, runId);
+            return runData(runId);
+        }
+        WorkRow checkpoint = rows.getLast();
+        jdbc.update("""
+            UPDATE knowledge_reconciliation_runs SET checkpoint_source_type=?,checkpoint_source_id=?,
+                checkpoint_source_revision=?,scanned_count=?,repaired_count=?,finding_count=?,
+                updated_at=CURRENT_TIMESTAMP WHERE id=?
+            """, checkpoint.sourceType(), checkpoint.sourceId(), checkpoint.sourceRevision(), scanned,
+            repaired, findings, runId);
         return runData(runId);
     }
 
@@ -277,17 +352,68 @@ public class KnowledgeIndexingAdminService {
         if (!Set.of("PREPARING", "READY").contains(generation.state())) return;
 
         GenerationProgress progress = jdbc.queryForObject("""
-            WITH latest AS (
-                SELECT DISTINCT ON (source_type,source_id,source_revision)
-                       operation,state
+            WITH eligible_sources AS (
+                SELECT 'TRANSCRIPT' AS source_type,t.id AS source_id,t.meeting_id,
+                       t.content_revision AS source_revision
+                  FROM transcripts t
+                 WHERE t.is_current
+                   AND t.status IN ('READY','READY_WITH_WARNINGS')
+                   AND t.finalized_at IS NOT NULL
+                   AND EXISTS (SELECT 1 FROM transcript_segments s WHERE s.transcript_id=t.id)
+                UNION ALL
+                SELECT 'SUMMARY',s.id,s.meeting_id,s.version_number
+                  FROM meeting_summary_versions s
+                  JOIN transcripts current_source
+                    ON current_source.meeting_id=s.meeting_id AND current_source.is_current
+                   AND current_source.id=s.transcript_id
+                   AND current_source.content_revision=s.content_revision
+                 WHERE s.is_current
+                   AND s.quality_status IN ('READY','READY_WITH_WARNINGS')
+                   AND current_source.status IN ('READY','READY_WITH_WARNINGS')
+                UNION ALL
+                SELECT 'DECISION',d.id,d.meeting_id,d.version
+                  FROM meeting_decisions d
+                  LEFT JOIN transcripts current_source
+                    ON current_source.meeting_id=d.meeting_id AND current_source.is_current
+                 WHERE d.status='CONFIRMED'
+                   AND (d.transcript_id IS NULL OR
+                        (current_source.id=d.transcript_id
+                         AND current_source.content_revision=d.content_revision
+                         AND current_source.status IN ('READY','READY_WITH_WARNINGS')))
+                UNION ALL
+                SELECT 'ACTION_ITEM',a.id,a.meeting_id,a.version
+                  FROM action_items a
+                 WHERE (a.source_type='MANUAL' OR a.confirmed_by_user_id IS NOT NULL)
+                   AND a.status<>'PROPOSED'
+            ), latest_work AS (
+                SELECT DISTINCT ON (source_type,source_id,meeting_id,source_revision)
+                       source_type,source_id,meeting_id,source_revision,operation,state
                   FROM knowledge_indexing_work
                  WHERE index_generation_id=?
-                 ORDER BY source_type,source_id,source_revision,created_at DESC,intent_sequence DESC,event_id DESC
+                 ORDER BY source_type,source_id,meeting_id,source_revision,
+                          created_at DESC,intent_sequence DESC,event_id DESC
+            ), targets AS (
+                SELECT e.source_type,e.source_id,e.meeting_id,e.source_revision,
+                       w.operation,w.state,TRUE AS eligible
+                  FROM eligible_sources e
+                  LEFT JOIN latest_work w
+                    ON w.source_type=e.source_type AND w.source_id=e.source_id
+                   AND w.meeting_id=e.meeting_id AND w.source_revision=e.source_revision
+                UNION ALL
+                SELECT w.source_type,w.source_id,w.meeting_id,w.source_revision,
+                       w.operation,w.state,FALSE AS eligible
+                  FROM latest_work w
+                 WHERE NOT EXISTS (
+                     SELECT 1 FROM eligible_sources e
+                      WHERE e.source_type=w.source_type AND e.source_id=w.source_id
+                        AND e.meeting_id=w.meeting_id AND e.source_revision=w.source_revision)
             )
             SELECT count(*) AS target_count,
-                   count(*) FILTER (WHERE state IN
-                       ('INDEXED','NO_ELIGIBLE_CONTENT','INVALIDATED','DELETED','SUPERSEDED')) AS indexed_count
-              FROM latest
+                   count(*) FILTER (WHERE
+                       (eligible AND operation='UPSERT' AND state IN ('INDEXED','NO_ELIGIBLE_CONTENT'))
+                       OR (NOT eligible AND state IN
+                           ('INDEXED','NO_ELIGIBLE_CONTENT','INVALIDATED','DELETED','SUPERSEDED'))) AS indexed_count
+              FROM targets
             """, (rs, row) -> new GenerationProgress(rs.getLong("target_count"),
                 rs.getLong("indexed_count")), generationId);
         boolean ready = progress.indexedCount() == progress.targetCount();
@@ -312,13 +438,14 @@ public class KnowledgeIndexingAdminService {
         if (run.checkpointSourceType() == null) {
             return jdbc.query("""
                 SELECT source_type,source_id,meeting_id,source_revision,index_generation_id,state
+                       ,indexed_chunk_count
                   FROM knowledge_indexing_work
                  WHERE index_generation_id=? AND operation='UPSERT'
                  ORDER BY source_type,source_id,source_revision,event_id LIMIT ?
                 """, this::workRow, run.generationId(), run.batchSize());
         }
         return jdbc.query("""
-            SELECT source_type,source_id,meeting_id,source_revision,index_generation_id,state
+              SELECT source_type,source_id,meeting_id,source_revision,index_generation_id,state,indexed_chunk_count
               FROM knowledge_indexing_work
              WHERE index_generation_id=? AND operation='UPSERT'
                AND (source_type>? OR (source_type=? AND source_id>?)
@@ -332,7 +459,8 @@ public class KnowledgeIndexingAdminService {
     private WorkRow workRow(java.sql.ResultSet rs, int row) throws java.sql.SQLException {
         return new WorkRow(rs.getString("source_type"), rs.getObject("source_id", UUID.class),
             rs.getObject("meeting_id", UUID.class), rs.getLong("source_revision"),
-            rs.getString("index_generation_id"), rs.getString("state"));
+            rs.getString("index_generation_id"), rs.getString("state"),
+            (Integer) rs.getObject("indexed_chunk_count"));
     }
 
     private Map<String, Object> runData(UUID runId) {
@@ -388,5 +516,5 @@ public class KnowledgeIndexingAdminService {
             String state, String checkpointSourceType, UUID checkpointSourceId,
             Long checkpointSourceRevision, long scannedCount, long repairedCount, long findingCount) { }
     private record WorkRow(String sourceType, UUID sourceId, UUID meetingId, long sourceRevision,
-            String generationId, String state) { }
+            String generationId, String state, Integer indexedChunkCount) { }
 }

@@ -390,6 +390,17 @@ class QdrantVectorStore:
         self._validate_payload_indexes(info, create_missing=False, require_all=True)
         self._validate_existing_generation()
 
+    def count_source_points(
+        self, meeting_id: str, source_type: str, source_id: str, source_revision: int, generation_id: str,
+    ) -> int:
+        """Count only the exact persisted source revision in the requested generation."""
+
+        if generation_id != self.spec.compatibility.index_generation_id:
+            raise QdrantSchemaError("Qdrant source audit generation is incompatible")
+        return len(self._scroll_filter(
+            self._source_filter(meeting_id, source_type, source_id, source_revision, generation_id)
+        ))
+
     def validate_retrieval_schema(self) -> None:
         """Validate the active query schema without scanning or mutating points."""
 

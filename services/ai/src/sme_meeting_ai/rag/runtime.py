@@ -10,7 +10,8 @@ from sme_meeting_ai.integrations.source_verification import (
     CoreSourceVerificationProvider,
 )
 
-from .embedding import BgeM3EmbeddingAdapter
+from .embedding import BgeM3EmbeddingAdapter, EmbeddingCompatibility
+from .provisioning import load_bge_m3_manifest
 from .qdrant import QdrantVectorStore
 from .reranking import BgeRerankerAdapter
 from .retrieval import (
@@ -20,6 +21,7 @@ from .retrieval import (
     RetrievalEngine,
     SourceVerificationProvider,
 )
+from .tokenizer import bge_m3_index_generation
 
 
 @dataclass
@@ -119,4 +121,39 @@ def build_retrieval_runtime(
         raise
 
 
-__all__ = ["CoreApprovedAuthorizationProvider", "RetrievalRuntime", "build_retrieval_runtime"]
+def build_qdrant_audit_store(settings: Settings) -> QdrantVectorStore:
+    """Build the read-only Qdrant adapter without loading inference artifacts."""
+
+    manifest = load_bge_m3_manifest()
+    generation = bge_m3_index_generation(
+        generation_id=settings.rag_index_generation_id,
+        configuration_version=settings.rag_index_configuration_version,
+        max_tokens=settings.rag_embedding_max_input_tokens,
+        target_tokens=settings.rag_chunk_target_tokens,
+        manifest=manifest,
+    )
+    configuration_sha256 = settings.rag_index_configuration_sha256 or generation.configuration_sha256
+    if configuration_sha256 != generation.configuration_sha256:
+        raise ConfigurationError("Index configuration fingerprint does not match the approved generation")
+    compatibility = EmbeddingCompatibility(
+        model_id=manifest.model_id,
+        model_revision=manifest.revision,
+        tokenizer_id=manifest.tokenizer_id,
+        index_generation_id=generation.generation_id,
+        index_configuration_sha256=configuration_sha256,
+    )
+    store = QdrantVectorStore.from_settings(settings, compatibility)
+    try:
+        store.validate_retrieval_schema()
+    except Exception:
+        store.close()
+        raise
+    return store
+
+
+__all__ = [
+    "CoreApprovedAuthorizationProvider",
+    "RetrievalRuntime",
+    "build_qdrant_audit_store",
+    "build_retrieval_runtime",
+]

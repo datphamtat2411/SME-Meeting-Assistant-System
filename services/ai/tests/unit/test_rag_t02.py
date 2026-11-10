@@ -381,6 +381,47 @@ def test_qdrant_lifecycle_operations_target_exact_source_revision():
     assert store.get_point(point.point_id) is None
 
 
+def test_qdrant_source_audit_counts_only_the_exact_source_and_generation():
+    tokenizer, processing = tokenizer_and_processing()
+    model = adapter(tokenizer)
+    client = QdrantClient(location=":memory:")
+    store = QdrantVectorStore(
+        QdrantConfig(url="http://127.0.0.1:6333", collection_name="rag-t02-audit"),
+        compatibility=model.compatibility,
+        client=client,
+    )
+    store.ensure_schema()
+    chunk = processing.chunks[0]
+    embedding = model.embed_documents((chunk,))[0]
+    point = VectorPoint(
+        point_id=chunk.chunk_id,
+        dense=embedding.dense,
+        sparse=embedding.sparse,
+        payload=build_qdrant_payload(chunk, embedding),
+    )
+    assert store.upsert((point,)) == 1
+
+    payload = point.payload
+    assert store.count_source_points(
+        payload["meeting_id"], payload["source_type"], payload["canonical_source_id"],
+        payload["canonical_source_revision"], payload["index_generation_id"],
+    ) == 1
+    assert store.count_source_points(
+        payload["meeting_id"], payload["source_type"], payload["canonical_source_id"],
+        payload["canonical_source_revision"] + 1, payload["index_generation_id"],
+    ) == 0
+    assert store.count_source_points(
+        "00000000-0000-0000-0000-000000000000", payload["source_type"],
+        payload["canonical_source_id"], payload["canonical_source_revision"],
+        payload["index_generation_id"],
+    ) == 0
+    with pytest.raises(QdrantSchemaError):
+        store.count_source_points(
+            payload["meeting_id"], payload["source_type"], payload["canonical_source_id"],
+            payload["canonical_source_revision"], "rag-t02-other",
+        )
+
+
 def test_qdrant_normal_schema_reuse_and_repeated_indexing_do_not_scroll_points():
     tokenizer, processing = tokenizer_and_processing()
     model = adapter(tokenizer)

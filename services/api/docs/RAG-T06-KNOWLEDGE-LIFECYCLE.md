@@ -16,6 +16,10 @@ The implementation includes:
   guard against deleting the active generation.
 - Lease-fenced worker claims/results, exact source-scoped Qdrant lifecycle
   operations, resumable reconciliation, and bounded retries.
+- Reconciliation obtains bounded source/revision/generation point counts through
+  an authenticated Core-to-AI mTLS endpoint. AI returns counts only; if the audit
+  is unavailable or incomplete, Core fails the run instead of reporting it
+  complete.
 
 Real cross-process acceptance remains `NOT RUN` until an isolated Core, AI
 worker, RabbitMQ, Qdrant, PostgreSQL, mTLS, and approved model environment is
@@ -47,6 +51,7 @@ AI_CORE_API_BASE_URL
 AI_CORE_API_SERVER_CA_FILE
 AI_CORE_API_CLIENT_CERT_FILE
 AI_CORE_API_CLIENT_KEY_FILE
+AI_KNOWLEDGE_INDEXING_RECONCILIATION_ENABLED
 ```
 
 The approved baseline is:
@@ -178,8 +183,10 @@ Deterministic verification:
 ```bash
 cd services/ai
 uv run pytest \
+  tests/unit/test_rag_t02.py \
   tests/unit/test_rag_runtime.py \
   tests/unit/test_rag_t03.py \
+  tests/unit/test_knowledge_reconciliation_api.py \
   tests/unit/test_knowledge_worker_contract.py \
   tests/unit/test_knowledge_worker_resilience.py \
   tests/unit/test_http_entrypoint.py \
