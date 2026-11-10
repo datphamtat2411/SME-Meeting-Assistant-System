@@ -140,16 +140,45 @@ material paths.
 
 ```text
 cd services/api
-./mvnw -q -Dtest=KnowledgeIndexingEventContractTests,KnowledgeIndexingWorkerCommandsTests,OutboxPublisherTests,SecureTransportTests test
-./mvnw -q -Dtest=KnowledgeIndexingFlywayIntegrationTests,KnowledgeIndexingWorkerIntegrationTests test
+./mvnw -q -Dtest=KnowledgeIndexingEventContractTests,KnowledgeIndexingGenerationContractTests,KnowledgeIndexingWorkerCommandsTests,OutboxPublisherTests,SecureTransportTests test
+./mvnw -Dtest=KnowledgeIndexingFlywayIntegrationTests,KnowledgeIndexingWorkerIntegrationTests,OutboxLeaseIntegrationTests test
 ```
 
-The preserved AI decoder remains verified by:
+The AI contract, worker, and RAG processing checks are verified by:
 
 ```text
 cd services/ai
-.venv/bin/python -m pytest -q tests/unit/test_knowledge_indexing_dispatch.py
+.venv/bin/python -m pytest -q tests/unit/test_knowledge_indexing_dispatch.py tests/unit/test_knowledge_worker_contract.py tests/unit/test_rag_knowledge.py tests/unit/test_rag_t02.py tests/unit/test_knowledge_worker_resilience.py
+.venv/bin/python -m pytest -q ../../infra/local/secure-integration/tests/test_broker_configuration.py ../../infra/local/secure-integration/tests/test_pki.py
 ```
+
+## T05 Acceptance Record
+
+Recorded 2026-11-10. Automated integration tests use disposable Testcontainers
+PostgreSQL instances. The verification below did not publish to a shared broker,
+modify shared Qdrant collections, or alter the preserved live ACTION_ITEM.
+
+| Area | Evidence | Result |
+| --- | --- | --- |
+| Core event, generation, worker-command, outbox, and transport contracts | 33 focused Java unit tests | PASS |
+| Flyway schema, Core claim/lease/snapshot/result fencing, replay, retry backoff, source supersession, and outbox lease behavior | 14 disposable-Postgres integration tests | PASS |
+| AI notification decoding, snapshot/receipt contracts, bounded delivery handling, duplicate recovery, cancellation recovery, lease loss, Qdrant classification, Core retry budget, and T01/T02 processing | 109 focused Python tests | PASS; one existing local-Qdrant warning |
+| Isolated broker topology, knowledge queue permissions, and workload certificate role contracts | 18 secure-integration unit tests | PASS; no broker was provisioned |
+| Source transition wiring | `TRANSCRIPT`, `SUMMARY`, `DECISION`, and `ACTION_ITEM` producer call paths exist in Core services | PARTIAL: this executable producer/worker integration record exercises `ACTION_ITEM`; the other source types remain code-path/contract evidence, not live-result evidence |
+| Preserved live ACTION_ITEM indexing | User-supplied evidence for source `a01e3428-0680-4739-bf95-06db1b75e825`, meeting `2ec3219c-7f90-408d-9917-061263a13d12`, event `efa929fa-f374-4a0d-80ad-4784e7c4262e` | PASS; not repeated or modified |
+| Shared RabbitMQ outage, restart, delivery-limit, and DLQ settlement | No safe isolated live broker run was performed in this pass | NOT RUN; no acceptance claim |
+| Shared Qdrant outage/restart and physical cleanup | No disruptive live run was performed in this pass | NOT RUN; T06 cleanup/reconciliation remains deferred |
+
+The new resilience checks are intentionally bounded: a durable Core result is
+acknowledged on duplicate delivery, a result written before acknowledgment is
+recovered by lookup after cancellation, lease loss prevents protected work from
+submitting a late result, broker delivery counts reject at the configured limit,
+and temporary Core/Qdrant failures remain retryable without claiming a durable
+result.
+
+The live broker and Qdrant rows must remain `NOT RUN` unless an operator supplies
+an isolated, approved environment and records queue/runtime, DLQ, worker restart,
+and vector-store evidence separately. A skipped test is not a PASS.
 
 ## T05-B Handoff
 
