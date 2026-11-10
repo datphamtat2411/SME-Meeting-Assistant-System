@@ -1,0 +1,426 @@
+{
+  "schema_version": 1,
+  "audit_id": "PI-01",
+  "snapshot_branch": "api/module-product-integration",
+  "snapshot_commit": "4b9656705053781f36aa09b4321483f21d59375d",
+  "meaning": {
+    "implementation": "PRESENT = concrete source code exists; PARTIAL = only part of required capability; MISSING = no implementation",
+    "integration": "LINKED = source-level boundary is represented; NOT_LINKED = required boundary absent; UNVERIFIED = wiring cannot be confirmed from this audit",
+    "verification": "REPORTED_DETERMINISTIC = named prior documented deterministic run (not re-executed); UNVERIFIED = no scoped executed evidence; VERIFIED_LIVE = fresh run URL required"
+  },
+  "capabilities": [
+    {
+      "id": "AUTH",
+      "owner": "Core API",
+      "implementation": "PRESENT",
+      "integration": "LINKED",
+      "verification": "UNVERIFIED",
+      "requirement_ids": [
+        "API-EP-AUTH-001",
+        "BR-ID-003"
+      ],
+      "evidence_paths": [
+        "services/api/src/main/java/com/sme/meetingassistant/api/authentication/transport/AuthHttpController.java",
+        "services/api/src/main/java/com/sme/meetingassistant/api/authentication/security/AccessSecurityConfiguration.java",
+        "services/api/src/test/java/com/sme/meetingassistant/api/authentication/AuthTransportHttpIntegrationTests.java"
+      ],
+      "finding_ids": [
+        "G-007"
+      ]
+    },
+    {
+      "id": "USER_ORG",
+      "owner": "Core API",
+      "implementation": "PRESENT",
+      "integration": "LINKED",
+      "verification": "UNVERIFIED",
+      "requirement_ids": [
+        "API-EP-USER-001",
+        "BR-ROLE-004"
+      ],
+      "evidence_paths": [
+        "services/api/src/main/java/com/sme/meetingassistant/api/userorganization",
+        "services/api/src/test/java/com/sme/meetingassistant/api/authentication/AuthIdentityBoundaryIntegrationTests.java"
+      ],
+      "finding_ids": [
+        "G-007"
+      ]
+    },
+    {
+      "id": "MEETING",
+      "owner": "Core API",
+      "implementation": "PRESENT",
+      "integration": "LINKED",
+      "verification": "UNVERIFIED",
+      "requirement_ids": [
+        "API-EP-MTG-001",
+        "BR-MTG-006"
+      ],
+      "evidence_paths": [
+        "services/api/src/main/java/com/sme/meetingassistant/api/meeting/controller/MeetingController.java",
+        "services/api/src/test/java/com/sme/meetingassistant/api/meeting/MeetingCoreIntegrationTests.java"
+      ],
+      "finding_ids": [
+        "G-007",
+        "G-011"
+      ]
+    },
+    {
+      "id": "ROOM_SCHEDULING",
+      "owner": "Core API",
+      "implementation": "PRESENT",
+      "integration": "LINKED",
+      "verification": "UNVERIFIED",
+      "requirement_ids": [
+        "API-EP-ROOM-006",
+        "BR-SCH-002"
+      ],
+      "evidence_paths": [
+        "services/api/src/main/java/com/sme/meetingassistant/api/room",
+        "services/api/src/test/java/com/sme/meetingassistant/api/room/reservation/RoomReservationIntegrityIntegrationTests.java"
+      ],
+      "finding_ids": [
+        "G-007"
+      ]
+    },
+    {
+      "id": "MEDIA_PROCESSING",
+      "owner": "Core API + AI Core",
+      "implementation": "PRESENT",
+      "integration": "LINKED",
+      "verification": "UNVERIFIED",
+      "requirement_ids": [
+        "API-EP-MEDIA-002",
+        "BR-MEDIA-003"
+      ],
+      "evidence_paths": [
+        "services/api/src/main/java/com/sme/meetingassistant/api/media/controller/MeetingMediaController.java",
+        "services/api/src/main/java/com/sme/meetingassistant/api/media/outbox/OutboxPublisher.java",
+        "services/api/src/test/java/com/sme/meetingassistant/api/media/OutboxLeaseIntegrationTests.java",
+        "services/ai/src/sme_meeting_ai/workers/transcription.py"
+      ],
+      "finding_ids": [
+        "G-007"
+      ]
+    },
+    {
+      "id": "TRANSCRIPT_REVIEW",
+      "owner": "Core API",
+      "implementation": "PRESENT",
+      "integration": "LINKED",
+      "verification": "UNVERIFIED",
+      "requirement_ids": [
+        "API-EP-TRN-003",
+        "AI-AUTHORITY-002"
+      ],
+      "evidence_paths": [
+        "services/api/src/main/java/com/sme/meetingassistant/api/transcript/controller/TranscriptReviewController.java",
+        "services/api/src/test/java/com/sme/meetingassistant/api/transcript/TranscriptReviewRevisionGuardIntegrationTests.java"
+      ],
+      "finding_ids": [
+        "G-007",
+        "G-011"
+      ]
+    },
+    {
+      "id": "SPEAKER_DIARIZATION",
+      "owner": "Core API + AI Core",
+      "implementation": "PRESENT",
+      "integration": "LINKED",
+      "verification": "UNVERIFIED",
+      "requirement_ids": [
+        "API-EP-TRN-004",
+        "AI-MODEL-002"
+      ],
+      "evidence_paths": [
+        "services/api/src/main/java/com/sme/meetingassistant/api/media/diarization/DiarizationWorkerController.java",
+        "services/ai/src/sme_meeting_ai/workers/diarization.py",
+        "services/ai/tests/integration/test_diarization_worker.py"
+      ],
+      "finding_ids": [
+        "G-007"
+      ]
+    },
+    {
+      "id": "MEETING_INTELLIGENCE",
+      "owner": "Core API + AI Core",
+      "implementation": "PRESENT",
+      "integration": "LINKED",
+      "verification": "UNVERIFIED",
+      "requirement_ids": [
+        "BR-AI-001",
+        "AI-BASE-003"
+      ],
+      "evidence_paths": [
+        "services/api/src/main/java/com/sme/meetingassistant/api/meetingintelligence/controller/SummaryController.java",
+        "services/ai/src/sme_meeting_ai/workers/intelligence.py",
+        "services/api/src/test/java/com/sme/meetingassistant/api/meetingintelligence/IntelligenceResultIngestionIntegrationTests.java"
+      ],
+      "finding_ids": [
+        "G-007",
+        "G-011"
+      ]
+    },
+    {
+      "id": "ACTION_ITEMS",
+      "owner": "Core API",
+      "implementation": "PRESENT",
+      "integration": "LINKED",
+      "verification": "UNVERIFIED",
+      "requirement_ids": [
+        "API-EP-ACT-005",
+        "BR-AI-002"
+      ],
+      "evidence_paths": [
+        "services/api/src/main/java/com/sme/meetingassistant/api/actionitems/ActionItemController.java",
+        "services/api/src/test/java/com/sme/meetingassistant/api/actionitems/ActionItemProposalSinkIntegrationTests.java"
+      ],
+      "finding_ids": [
+        "G-007"
+      ]
+    },
+    {
+      "id": "NOTIFICATIONS",
+      "owner": "Core API",
+      "implementation": "PRESENT",
+      "integration": "LINKED",
+      "verification": "UNVERIFIED",
+      "requirement_ids": [
+        "BR-NOTIF-003",
+        "BR-NOTIF-008"
+      ],
+      "evidence_paths": [
+        "services/api/src/main/java/com/sme/meetingassistant/api/notification",
+        "services/api/src/test/java/com/sme/meetingassistant/api/notification/NotificationRecoveryIntegrationTests.java"
+      ],
+      "finding_ids": [
+        "G-007"
+      ]
+    },
+    {
+      "id": "KNOWLEDGE_RAG",
+      "owner": "Core API + AI Core",
+      "implementation": "PRESENT",
+      "integration": "LINKED",
+      "verification": "REPORTED_DETERMINISTIC",
+      "requirement_ids": [
+        "AI-AUTHORITY-004",
+        "DB-OWN-004"
+      ],
+      "evidence_paths": [
+        "services/api/src/main/java/com/sme/meetingassistant/api/knowledge/KnowledgeIndexingWorkerService.java",
+        "services/api/src/main/java/com/sme/meetingassistant/api/knowledge/KnowledgeSourceVerificationController.java",
+        "services/ai/src/sme_meeting_ai/rag/retrieval.py",
+        "services/ai/tests/integration/test_rag_t06_live.py",
+        "services/api/docs/RAG-T06-ACCEPTANCE.md"
+      ],
+      "finding_ids": [
+        "G-004",
+        "G-005",
+        "G-007"
+      ]
+    },
+    {
+      "id": "ASSISTANT",
+      "owner": "Core API + AI Core",
+      "implementation": "PARTIAL",
+      "integration": "NOT_LINKED",
+      "verification": "UNVERIFIED",
+      "requirement_ids": [
+        "API-EP-AST-001",
+        "API-EP-AST-004",
+        "DB-AST-001",
+        "AI-AST-008"
+      ],
+      "evidence_paths": [
+        "services/ai/src/sme_meeting_ai/api/assistant.py",
+        "services/ai/src/sme_meeting_ai/assistant/contracts.py",
+        "services/ai/tests/unit/test_assistant.py",
+        "requirement-docs/RE05-DATABASE.md"
+      ],
+      "finding_ids": [
+        "G-001",
+        "G-002",
+        "G-003",
+        "G-010",
+        "G-011"
+      ]
+    },
+    {
+      "id": "DASHBOARD",
+      "owner": "Core API",
+      "implementation": "PRESENT",
+      "integration": "LINKED",
+      "verification": "UNVERIFIED",
+      "requirement_ids": [
+        "API-EP-DASH-001",
+        "API-EP-DASH-002"
+      ],
+      "evidence_paths": [
+        "services/api/src/main/java/com/sme/meetingassistant/api/dashboard/controller/PersonalDashboardController.java",
+        "services/api/src/main/java/com/sme/meetingassistant/api/dashboard/controller/ManagementDashboardController.java",
+        "services/api/src/test/java/com/sme/meetingassistant/api/dashboard/PersonalDashboardHttpIntegrationTests.java"
+      ],
+      "finding_ids": [
+        "G-007"
+      ]
+    },
+    {
+      "id": "EXPORT",
+      "owner": "Core API",
+      "implementation": "PRESENT",
+      "integration": "LINKED",
+      "verification": "UNVERIFIED",
+      "requirement_ids": [
+        "API-EP-EXP-002",
+        "BR-MTG-009"
+      ],
+      "evidence_paths": [
+        "services/api/src/main/java/com/sme/meetingassistant/api/meetingexport/ExportFreshnessService.java",
+        "services/api/src/test/java/com/sme/meetingassistant/api/meetingexport/ExportAccessHttpIntegrationTests.java",
+        "services/api/src/main/resources/db/migration/V40__meeting_export_persistence_and_fencing.sql"
+      ],
+      "finding_ids": [
+        "G-007",
+        "G-011"
+      ]
+    },
+    {
+      "id": "INFRA_OPERATIONS",
+      "owner": "Core API + AI Core + infra",
+      "implementation": "PRESENT",
+      "integration": "UNVERIFIED",
+      "verification": "UNVERIFIED",
+      "requirement_ids": [
+        "ARCH-GEN-010",
+        "SEC-ZONE-004"
+      ],
+      "evidence_paths": [
+        "infra/local/secure-integration/compose.yaml",
+        "infra/local/secure-integration/README.md",
+        ".github/workflows/api-ci.yml",
+        ".github/workflows/ai-ci.yml"
+      ],
+      "finding_ids": [
+        "G-005",
+        "G-007",
+        "G-008"
+      ]
+    }
+  ],
+  "findings": [
+    {
+      "id": "G-001",
+      "severity": "CRITICAL",
+      "state": "OPEN",
+      "owner": "PI-02",
+      "summary": "Core public Assistant is missing; AI internal endpoint alone does not implement API-EP-AST-001..004."
+    },
+    {
+      "id": "G-002",
+      "severity": "HIGH",
+      "state": "OPEN",
+      "owner": "PI-02",
+      "summary": "AI AssistantAnswerStatus includes PARTIAL; DATABASE.md answer_status list omits it. Resolve with canonical owner before migration."
+    },
+    {
+      "id": "G-003",
+      "severity": "HIGH",
+      "state": "OPEN",
+      "owner": "PI-02",
+      "summary": "assistant_message_sources baseline has no source revision/claim-level fields; finalize citation-provenance contract with schema owner."
+    },
+    {
+      "id": "G-004",
+      "severity": "HIGH",
+      "state": "OPEN",
+      "owner": "PI-04",
+      "summary": "RAG-T06 cannot demonstrate full missing-work and orphan-Qdrant-point inventory coverage."
+    },
+    {
+      "id": "G-005",
+      "severity": "HIGH",
+      "state": "OPEN",
+      "owner": "PI-04/PI-05",
+      "summary": "Five RAG-T06 live scenarios remain NOT RUN; deterministic evidence cannot close the live gate."
+    },
+    {
+      "id": "G-006",
+      "severity": "MEDIUM",
+      "state": "RESOLVED_IN_PI01",
+      "owner": "PI-01",
+      "summary": "AI CI push trigger previously excluded api/**; include it for relevant services/api and contract changes."
+    },
+    {
+      "id": "G-007",
+      "severity": "HIGH",
+      "state": "OPEN",
+      "owner": "PI-05",
+      "summary": "No branch-specific real full-system E2E evidence established by this source audit; individual existing tests are not a substitute."
+    },
+    {
+      "id": "G-008",
+      "severity": "HIGH",
+      "state": "OPEN",
+      "owner": "PI-06",
+      "summary": "Integration feature-gate/configuration and recoverability are not proven as an approved deployable profile."
+    },
+    {
+      "id": "G-009",
+      "severity": "LOW",
+      "state": "RESOLVED_IN_PI01",
+      "owner": "PI-01",
+      "summary": "Root plan.md previously documented RAG-T06 rather than current PI-01 audit."
+    },
+    {
+      "id": "G-010",
+      "severity": "HIGH",
+      "state": "OPEN",
+      "owner": "PI-02",
+      "summary": "Conversation idempotency, concurrent turn order, post-revocation history access and error persistence require feature contract decisions/tests."
+    },
+    {
+      "id": "G-011",
+      "severity": "HIGH",
+      "state": "OPEN",
+      "owner": "PI-03",
+      "summary": "Cross-module current-revision and revoked-access acceptance is unverified for transcript → intelligence → RAG/Assistant/export."
+    }
+  ],
+  "source_assertions": [
+    {
+      "path": "services/ai/src/sme_meeting_ai/assistant/contracts.py",
+      "contains": [
+        "PARTIAL = \"PARTIAL\"",
+        "INSUFFICIENT_EVIDENCE = \"INSUFFICIENT_EVIDENCE\""
+      ]
+    },
+    {
+      "path": "services/ai/src/sme_meeting_ai/api/assistant.py",
+      "contains": [
+        "ASSISTANT_PATH = \"/internal/v1/assistant/answers\""
+      ]
+    },
+    {
+      "path": "requirement-docs/RE02-API.md",
+      "contains": [
+        "/api/v1/assistant/conversations/{conversationId}/messages"
+      ]
+    },
+    {
+      "path": "requirement-docs/RE05-DATABASE.md",
+      "contains": [
+        "`GROUNDED`, `INSUFFICIENT_EVIDENCE`, `FAILED`"
+      ]
+    },
+    {
+      "path": ".github/workflows/ai-ci.yml",
+      "contains": [
+        "- 'api/**'"
+      ]
+    }
+  ],
+  "missing_paths": [
+    "services/api/src/main/java/com/sme/meetingassistant/api/assistant"
+  ]
+}
