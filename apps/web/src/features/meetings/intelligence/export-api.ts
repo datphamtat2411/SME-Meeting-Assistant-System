@@ -17,7 +17,8 @@ export const exportStatusSchema = z.object({
 export type ExportStatus = z.infer<typeof exportStatusSchema>
 export function createMinutesExport(
   meetingId: string,
-  format: ExportStatus['format']
+  format: ExportStatus['format'],
+  idempotencyKey = crypto.randomUUID()
 ) {
   return z
     .object({ exportId: z.string().uuid() })
@@ -25,7 +26,7 @@ export function createMinutesExport(
       coreApi.post<unknown>(
         '/meetings/' + encodeURIComponent(meetingId) + '/exports',
         { format },
-        { headers: { 'Idempotency-Key': crypto.randomUUID() } }
+        { headers: { 'Idempotency-Key': idempotencyKey } }
       )
     )
 }
