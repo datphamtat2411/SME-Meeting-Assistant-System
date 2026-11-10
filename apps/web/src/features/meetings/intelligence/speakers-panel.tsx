@@ -10,8 +10,8 @@ import {
   RequestLoading,
 } from '@/components/request-state'
 import { meetingParticipantCandidateQueryOptions } from '@/features/meetings/data/meeting-candidates-api'
-import { mapSpeaker, speakerClustersQuery } from './transcript-api'
 import { invalidateMeetingArtifacts } from './query-invalidation'
+import { mapSpeaker, speakerClustersQuery } from './transcript-api'
 
 export function SpeakersPanel({ meetingId }: { meetingId: string }) {
   const qc = useQueryClient()

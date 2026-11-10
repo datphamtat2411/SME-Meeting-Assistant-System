@@ -18,7 +18,10 @@ import { minutesQuery } from './minutes-api'
 export function ExportPanel({ meetingId }: { meetingId: string }) {
   const [exportId, setExportId] = useState('')
   const [unavailable, setUnavailable] = useState(false)
-  const idempotencyKeys = useRef<Record<'PDF' | 'MARKDOWN', string>>({ PDF: crypto.randomUUID(), MARKDOWN: crypto.randomUUID() })
+  const idempotencyKeys = useRef<Record<'PDF' | 'MARKDOWN', string>>({
+    PDF: crypto.randomUUID(),
+    MARKDOWN: crypto.randomUUID(),
+  })
   const minutes = useQuery(minutesQuery(meetingId))
   const status = useQuery({
     ...exportStatusQuery(exportId),
@@ -43,10 +46,16 @@ export function ExportPanel({ meetingId }: { meetingId: string }) {
     onError: (e) => {
       const failure = normalizeCoreApiError(e)
       if (failure.status === 404) setUnavailable(true)
-      if (failure.status === 422 || failure.status === 409) void minutes.refetch()
-      toast.error(failure.status === 422 || failure.status === 409 ? 'Minutes are not eligible for export. Review the latest meeting minutes.' : 'Export request unavailable', {
-        description: e instanceof Error ? e.message : undefined,
-      })
+      if (failure.status === 422 || failure.status === 409)
+        void minutes.refetch()
+      toast.error(
+        failure.status === 422 || failure.status === 409
+          ? 'Minutes are not eligible for export. Review the latest meeting minutes.'
+          : 'Export request unavailable',
+        {
+          description: e instanceof Error ? e.message : undefined,
+        }
+      )
     },
   })
   const download = useMutation({
@@ -84,7 +93,9 @@ export function ExportPanel({ meetingId }: { meetingId: string }) {
       <CardContent className='space-y-3'>
         {unavailable ? (
           <p className='text-sm text-muted-foreground'>
-            Export creation is not available for this meeting or this deployment. Your administrator can confirm whether public export admission and its worker are enabled.
+            Export creation is not available for this meeting or this
+            deployment. Your administrator can confirm whether public export
+            admission and its worker are enabled.
           </p>
         ) : (
           <div className='flex flex-wrap gap-2'>
@@ -109,7 +120,18 @@ export function ExportPanel({ meetingId }: { meetingId: string }) {
             </Button>
           </div>
         )}
-        {unavailable && <Button size='sm' variant='outline' onClick={() => { setUnavailable(false); void minutes.refetch() }}>Retry export availability</Button>}
+        {unavailable && (
+          <Button
+            size='sm'
+            variant='outline'
+            onClick={() => {
+              setUnavailable(false)
+              void minutes.refetch()
+            }}
+          >
+            Retry export availability
+          </Button>
+        )}
         {minutes.data && minutes.data.completeness !== 'COMPLETE' && (
           <p className='text-sm text-amber-700'>
             Minutes are {minutes.data.completeness}. Review missing or stale
@@ -133,7 +155,13 @@ export function ExportPanel({ meetingId }: { meetingId: string }) {
             <span>Export {status.data.format}</span>
             <Badge variant='outline'>{status.data.status}</Badge>
             <Badge variant='outline'>{status.data.freshness}</Badge>
-            {status.data.status === 'READY' && status.data.freshness !== 'CURRENT' && <p className='text-xs text-amber-600'>This export no longer matches current meeting minutes. Generate a new version.</p>}
+            {status.data.status === 'READY' &&
+              status.data.freshness !== 'CURRENT' && (
+                <p className='text-xs text-amber-600'>
+                  This export no longer matches current meeting minutes.
+                  Generate a new version.
+                </p>
+              )}
             {status.data.safeErrorCode && (
               <span className='text-destructive'>
                 {status.data.safeErrorCode}

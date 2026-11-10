@@ -21,8 +21,8 @@ import {
   meetingParticipantCandidateQueryOptions,
   isValidMeetingParticipantCandidateQuery,
 } from '@/features/meetings/data/meeting-candidates-api'
-import { createAction, patchAction, type ActionItem } from './action-api'
 import { invalidateMeetingArtifacts } from '@/features/meetings/intelligence/query-invalidation'
+import { createAction, patchAction, type ActionItem } from './action-api'
 
 export function ActionForm({
   open,
@@ -88,7 +88,9 @@ export function ActionForm({
     onSuccess: () => {
       toast.success('Action item saved')
       onOpenChange(false)
-      invalidateMeetingArtifacts(qc, item?.meetingId ?? meeting, { actions: true })
+      invalidateMeetingArtifacts(qc, item?.meetingId ?? meeting, {
+        actions: true,
+      })
     },
     onError: (error) =>
       toast.error('Unable to save action item', {

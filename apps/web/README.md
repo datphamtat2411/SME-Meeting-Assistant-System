@@ -48,12 +48,12 @@ reintroducing fake behavior. Code changes in this branch are restricted to
 
 **Frontend routes already implemented:**
 
-| Purpose | Frontend callback path | Core API |
-| --- | --- | --- |
-| Organization-issued account invitation | `/sign-up#token=<one-time-capability>` | `POST /api/v1/auth/account-setup` |
-| Request reset instructions | `/forgot-password` | `POST /api/v1/auth/password-recovery` |
-| One-time password reset | `/otp#token=<one-time-capability>` | `POST /api/v1/auth/password-reset` |
-| Sign in after account activation/reset | `/sign-in` | `POST /api/v1/auth/login` |
+| Purpose                                | Frontend callback path                 | Core API                              |
+| -------------------------------------- | -------------------------------------- | ------------------------------------- |
+| Organization-issued account invitation | `/sign-up#token=<one-time-capability>` | `POST /api/v1/auth/account-setup`     |
+| Request reset instructions             | `/forgot-password`                     | `POST /api/v1/auth/password-recovery` |
+| One-time password reset                | `/otp#token=<one-time-capability>`     | `POST /api/v1/auth/password-reset`    |
+| Sign in after account activation/reset | `/sign-in`                             | `POST /api/v1/auth/login`             |
 
 The backend **constructs and sends** invitation/reset links using its own
 configuration. For a deployed Web origin such as `https://meet.example.com`,
@@ -77,7 +77,7 @@ Password reset can be disabled by default (`APP_AUTH_RECOVERY_ENABLED=false`);
 the Web UI reports an unavailable endpoint instead of promising an email was
 sent. The recovery request must not reveal whether a user exists. Both account
 setup and reset share the server's stricter password policy; the 15–128
-character frontend length check is *not* a replacement for server validation.
+character frontend length check is _not_ a replacement for server validation.
 
 ## Meeting recordings and AI
 
@@ -109,7 +109,7 @@ APP_EXPORTS_PUBLIC_ADMISSION_ENABLED=false
 APP_EXPORTS_WORKER_ENABLED=false
 ```
 
-Enable the two on the backend *only* after the corresponding product/security
+Enable the two on the backend _only_ after the corresponding product/security
 policy approval and working export worker/storage configuration. The Web app
 cannot enable them. A missing public endpoint may appear as HTTP 404 and
 does not prove the meeting is authorized or export is enabled. Web reports

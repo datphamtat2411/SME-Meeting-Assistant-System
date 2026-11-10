@@ -16,8 +16,8 @@ import {
   RequestError,
   RequestLoading,
 } from '@/components/request-state'
-import { meetingMediaQuery } from './media-api'
 import { invalidateMeetingArtifacts } from '../intelligence/query-invalidation'
+import { meetingMediaQuery } from './media-api'
 import {
   processingJobsQuery,
   requestProcessing,
@@ -35,9 +35,17 @@ export function ProcessingPanel({ meetingId }: { meetingId: string }) {
   const completed = useRef(new Set<string>())
   useEffect(() => {
     for (const job of jobs.data ?? []) {
-      if (['COMPLETED', 'SUCCEEDED', 'FAILED', 'PARTIAL_SUCCESS'].includes(job.status) && !completed.current.has(job.id)) {
+      if (
+        ['COMPLETED', 'SUCCEEDED', 'FAILED', 'PARTIAL_SUCCESS'].includes(
+          job.status
+        ) &&
+        !completed.current.has(job.id)
+      ) {
         completed.current.add(job.id)
-        invalidateMeetingArtifacts(qc, meetingId, { transcript: true, actions: true })
+        invalidateMeetingArtifacts(qc, meetingId, {
+          transcript: true,
+          actions: true,
+        })
       }
     }
   }, [jobs.data, qc, meetingId])

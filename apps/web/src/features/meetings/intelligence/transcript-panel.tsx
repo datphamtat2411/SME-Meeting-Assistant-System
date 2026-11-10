@@ -2,7 +2,6 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
-import { invalidateMeetingArtifacts } from './query-invalidation'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -14,6 +13,7 @@ import {
   RequestError,
   RequestLoading,
 } from '@/components/request-state'
+import { invalidateMeetingArtifacts } from './query-invalidation'
 import {
   correctTranscriptSegment,
   timecode,

@@ -24,9 +24,14 @@ export function ForgotPasswordForm({
     } catch (error) {
       const failure = normalizeCoreApiError(error)
       if (failure.status === 404) setUnavailable(true)
-      toast.error(failure.status === 404 ? 'Password recovery is not enabled on this server.' : 'Request could not be sent', {
-        description: error instanceof Error ? error.message : undefined,
-      })
+      toast.error(
+        failure.status === 404
+          ? 'Password recovery is not enabled on this server.'
+          : 'Request could not be sent',
+        {
+          description: error instanceof Error ? error.message : undefined,
+        }
+      )
     } finally {
       setBusy(false)
     }
@@ -52,7 +57,12 @@ export function ForgotPasswordForm({
           placeholder='name@company.com'
         />
       </div>
-      {unavailable && <p role='alert' className='text-sm text-destructive'>The recovery endpoint is unavailable on the current deployment. Contact your administrator.</p>}
+      {unavailable && (
+        <p role='alert' className='text-sm text-destructive'>
+          The recovery endpoint is unavailable on the current deployment.
+          Contact your administrator.
+        </p>
+      )}
       <Button disabled={busy || unavailable || !email.trim()}>
         {busy ? 'Requesting…' : 'Send recovery link'}
       </Button>

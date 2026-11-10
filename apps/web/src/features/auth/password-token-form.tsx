@@ -3,7 +3,6 @@ import { Link } from '@tanstack/react-router'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { PasswordInput } from '@/components/password-input'
 import {
@@ -60,13 +59,14 @@ export function PasswordTokenForm({ kind }: { kind: 'setup' | 'reset' }) {
       )
     } catch (error) {
       const failure = normalizeCoreApiError(error)
-      const message = failure.status === 404
-        ? 'This account flow is unavailable on the current server.'
-        : failure.status === 422
-          ? 'The link may have expired or the password did not meet organization policy. Review the password and request a new link if necessary.'
-          : failure.status === 429
-            ? 'Too many attempts. Try again later.'
-            : 'Unable to complete account verification. Try again.'
+      const message =
+        failure.status === 404
+          ? 'This account flow is unavailable on the current server.'
+          : failure.status === 422
+            ? 'The link may have expired or the password did not meet organization policy. Review the password and request a new link if necessary.'
+            : failure.status === 429
+              ? 'Too many attempts. Try again later.'
+              : 'Unable to complete account verification. Try again.'
       setSubmitError(message)
       toast.error(message)
     } finally {
@@ -129,7 +129,11 @@ export function PasswordTokenForm({ kind }: { kind: 'setup' | 'reset' }) {
           onChange={(e) => setConfirmation(e.target.value)}
         />
       </div>
-      {submitError && <p role='alert' className='text-sm text-destructive'>{submitError}</p>}
+      {submitError && (
+        <p role='alert' className='text-sm text-destructive'>
+          {submitError}
+        </p>
+      )}
       <Button
         disabled={
           busy || !validNewPassword(password) || password !== confirmation

@@ -1,8 +1,8 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
-import { actionCommand, type ActionItem } from './action-api'
 import { invalidateMeetingArtifacts } from '@/features/meetings/intelligence/query-invalidation'
+import { actionCommand, type ActionItem } from './action-api'
 
 const allowed: Record<
   ActionItem['status'],
