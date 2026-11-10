@@ -11,6 +11,7 @@ import {
 } from '@/components/request-state'
 import { meetingParticipantCandidateQueryOptions } from '@/features/meetings/data/meeting-candidates-api'
 import { mapSpeaker, speakerClustersQuery } from './transcript-api'
+import { invalidateMeetingArtifacts } from './query-invalidation'
 
 export function SpeakersPanel({ meetingId }: { meetingId: string }) {
   const qc = useQueryClient()
@@ -31,7 +32,7 @@ export function SpeakersPanel({ meetingId }: { meetingId: string }) {
     onSuccess: () => {
       toast.success('Speaker identity updated')
       setSelected(null)
-      void qc.invalidateQueries({ queryKey: ['transcript', meetingId] })
+      invalidateMeetingArtifacts(qc, meetingId, { transcript: true })
     },
     onError: (e) =>
       toast.error('Unable to map speaker', {
