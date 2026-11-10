@@ -5,6 +5,7 @@ import '../../core/app_theme.dart';
 import '../../core/models.dart';
 import '../../core/widgets.dart';
 import '../recording/recording_page.dart';
+import '../recording/processing_timeline_panel.dart';
 import '../results/results_panel.dart';
 import 'meeting_participants.dart';
 import 'meeting_edit_sheet.dart';
@@ -138,6 +139,7 @@ class _MeetingDetailPageState extends State<MeetingDetailPage> {
               ButtonSegment(value: 1, label: Text('Biên bản AI')),
               ButtonSegment(value: 2, label: Text('Ghi âm')),
               ButtonSegment(value: 3, label: Text('Thành viên')),
+              ButtonSegment(value: 4, label: Text('Xử lý')),
             ],
             selected: {tab}, onSelectionChanged: (v) => setState(() => tab = v.first),
           )),
@@ -146,7 +148,8 @@ class _MeetingDetailPageState extends State<MeetingDetailPage> {
           1 => ResultsPanel(api: widget.api, meetingId: widget.meetingId),
           2 => RecordingPage(api: widget.api, meetingId: widget.meetingId,
             enabled: m.status != 'CANCELLED'),
-          _ => MeetingParticipants(api: widget.api, meeting: m),
+          3 => MeetingParticipants(api: widget.api, meeting: m),
+          _ => ProcessingTimelinePanel(api: widget.api, meetingId: m.id),
         }),
       ])),
   );
