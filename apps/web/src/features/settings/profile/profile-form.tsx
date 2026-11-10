@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { RequestError, RequestLoading } from '@/components/request-state'
@@ -11,10 +11,10 @@ import { myProfileQuery, updateMyProfile } from './profile-api'
 export function ProfileForm() {
   const qc = useQueryClient()
   const query = useQuery(myProfileQuery())
-  const [name, setName] = useState('')
-  useEffect(() => { if (query.data) setName(query.data.displayName) }, [query.data])
+  const [name, setName] = useState<string | null>(null)
+  const displayName = name ?? query.data?.displayName ?? ''
   const mutation = useMutation({
-    mutationFn: () => updateMyProfile(name.trim()),
+    mutationFn: () => updateMyProfile(displayName.trim()),
     onSuccess: () => {
       toast.success('Profile updated')
       void qc.invalidateQueries({ queryKey: ['me', 'profile'] })
@@ -27,8 +27,8 @@ export function ProfileForm() {
   function submit(e: FormEvent) { e.preventDefault(); if (name.trim()) mutation.mutate() }
   return <form className='max-w-xl space-y-5' onSubmit={submit}>
     <div className='space-y-1'><Label htmlFor='profile-email'>Organization email</Label><Input id='profile-email' value={query.data.email} disabled /><p className='text-xs text-muted-foreground'>Managed by the organization; not editable here.</p></div>
-    <div className='space-y-1'><Label htmlFor='profile-name'>Display name</Label><Input id='profile-name' maxLength={200} required value={name} onChange={e => setName(e.target.value)} /></div>
+    <div className='space-y-1'><Label htmlFor='profile-name'>Display name</Label><Input id='profile-name' maxLength={200} required value={displayName} onChange={e => setName(e.target.value)} /></div>
     <div className='space-y-1'><Label htmlFor='profile-role'>System role</Label><Input id='profile-role' value={query.data.globalRole.replaceAll('_', ' ')} disabled /></div>
-    <Button disabled={mutation.isPending || !name.trim() || name.trim() === query.data.displayName}>Save profile</Button>
+    <Button disabled={mutation.isPending || !displayName.trim() || displayName.trim() === query.data.displayName}>Save profile</Button>
   </form>
 }
