@@ -28,6 +28,7 @@ class _RecordingPageState extends State<RecordingPage> {
   bool capturing = false;
   bool busy = false;
   File? file;
+  String? selectedName;
   String sourceType = 'UPLOAD';
   int elapsed = 0;
   Timer? timer;
@@ -68,7 +69,8 @@ class _RecordingPageState extends State<RecordingPage> {
         if (mounted) setState(() => elapsed++);
       });
       if (mounted) setState(() {
-        capturing = true; elapsed = 0; file = null; job = null; sourceType = 'RECORDING';
+        capturing = true; elapsed = 0; file = null; selectedName = null;
+        job = null; sourceType = 'RECORDING';
       });
     } catch (error) {
       if (mounted) showFailure(context, error);
@@ -82,6 +84,7 @@ class _RecordingPageState extends State<RecordingPage> {
       if (mounted) setState(() {
         capturing = false;
         file = path == null ? null : File(path);
+        selectedName = path == null ? null : File(path).uri.pathSegments.last;
         sourceType = 'RECORDING';
       });
     } catch (error) {
@@ -94,9 +97,34 @@ class _RecordingPageState extends State<RecordingPage> {
       final result = await FilePicker.pickFile(
         type: FileType.custom,
         allowedExtensions: ['mp3', 'wav', 'm4a']);
-      final path = result?.path;
-      if (path != null && mounted) {
-        setState(() { file = File(path); sourceType = 'UPLOAD'; job = null; });
+      if (result == null) return;
+      File selected;
+      if (result.path != null) {
+        selected = File(result.path!);
+      } else {
+        // SAF/cloud documents may not expose a local path. Stream into the
+        // app sandbox without buffering potentially large meeting audio.
+        final folder = await getTemporaryDirectory();
+        final safeName = result.name.replaceAll(RegExp(r'[^A-Za-z0-9_.-]'), '_');
+        selected = File(folder.path +
+          '/sme-import-${DateTime.now().microsecondsSinceEpoch}-$safeName');
+        final sink = selected.openWrite();
+        try {
+          await sink.addStream(result.readAsByteStream());
+        } catch (_) {
+          await sink.close();
+          if (await selected.exists()) await selected.delete();
+          rethrow;
+        }
+        await sink.close();
+      }
+      if (mounted) {
+        setState(() {
+          file = selected;
+          selectedName = result.name;
+          sourceType = 'UPLOAD';
+          job = null;
+        });
       }
     } catch (error) {
       if (mounted) showFailure(context, error);
@@ -104,7 +132,7 @@ class _RecordingPageState extends State<RecordingPage> {
   }
 
   String contentType(File selected) {
-    final name = selected.path.toLowerCase();
+    final name = (selectedName ?? selected.path).toLowerCase();
     if (name.endsWith('.mp3')) return 'audio/mpeg';
     if (name.endsWith('.m4a')) return 'audio/mp4';
     return 'audio/wav';
@@ -128,7 +156,7 @@ class _RecordingPageState extends State<RecordingPage> {
         path + '/media/uploads',
         {
           'sourceType': sourceType,
-          'originalFilename': selected.uri.pathSegments.last,
+          'originalFilename': selectedName ?? selected.uri.pathSegments.last,
           'contentType': mime,
           'expectedSizeBytes': size,
         },
@@ -209,7 +237,7 @@ class _RecordingPageState extends State<RecordingPage> {
       ])),
       if (file != null) ContentCard(child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-          Text(file!.uri.pathSegments.last, maxLines: 2,
+          Text(selectedName ?? file!.uri.pathSegments.last, maxLines: 2,
             style: const TextStyle(fontWeight: FontWeight.w700)),
           const SizedBox(height: 12),
           FilledButton.icon(
