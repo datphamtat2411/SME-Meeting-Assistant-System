@@ -50,7 +50,7 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
     finally { if (mounted) setState(() => busy = false); }
   }
 
-  Future<void> activate(String id) async {
+  Future<void> activateVersion(String id) async {
     setState(() => busy = true);
     try {
       final fresh = await widget.api.get('/meetings/' + widget.meetingId + '/summary');
@@ -138,7 +138,7 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
             trailing: item['isCurrent'] == true
               ? const StatePill('CONFIRMED', label: 'Hiện tại')
               : TextButton(onPressed: busy ? null :
-                  () => activate(textValue(item['id'])),
+                  () => activateVersion(textValue(item['id'])),
                   child: const Text('Kích hoạt')),
           ))),
         ])),
