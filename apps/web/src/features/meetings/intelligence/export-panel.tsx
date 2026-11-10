@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Download, FileDown } from 'lucide-react'
 import { toast } from 'sonner'
@@ -18,6 +18,7 @@ import { minutesQuery } from './minutes-api'
 export function ExportPanel({ meetingId }: { meetingId: string }) {
   const [exportId, setExportId] = useState('')
   const [unavailable, setUnavailable] = useState(false)
+  const idempotencyKeys = useRef<Record<'PDF' | 'MARKDOWN', string>>({ PDF: crypto.randomUUID(), MARKDOWN: crypto.randomUUID() })
   const minutes = useQuery(minutesQuery(meetingId))
   const status = useQuery({
     ...exportStatusQuery(exportId),
@@ -33,14 +34,17 @@ export function ExportPanel({ meetingId }: { meetingId: string }) {
   })
   const create = useMutation({
     mutationFn: (format: 'PDF' | 'MARKDOWN') =>
-      createMinutesExport(meetingId, format),
-    onSuccess: (data) => {
+      createMinutesExport(meetingId, format, idempotencyKeys.current[format]),
+    onSuccess: (data, format) => {
+      idempotencyKeys.current[format] = crypto.randomUUID()
       setExportId(data.exportId)
       toast.success('Export queued')
     },
     onError: (e) => {
-      if (normalizeCoreApiError(e).status === 404) setUnavailable(true)
-      toast.error('Export request unavailable', {
+      const failure = normalizeCoreApiError(e)
+      if (failure.status === 404) setUnavailable(true)
+      if (failure.status === 422 || failure.status === 409) void minutes.refetch()
+      toast.error(failure.status === 422 || failure.status === 409 ? 'Minutes are not eligible for export. Review the latest meeting minutes.' : 'Export request unavailable', {
         description: e instanceof Error ? e.message : undefined,
       })
     },
@@ -53,7 +57,12 @@ export function ExportPanel({ meetingId }: { meetingId: string }) {
       const url = new URL(result.accessUrl)
       if (url.protocol !== 'https:' && url.hostname !== 'localhost')
         throw new Error('Refusing unsafe download URL')
-      window.open(result.accessUrl, '_blank', 'noopener,noreferrer')
+      const link = document.createElement('a')
+      link.href = result.accessUrl
+      link.target = '_blank'
+      link.rel = 'noopener noreferrer'
+      link.download = result.filename
+      link.click()
     },
     onError: (e) =>
       toast.error('Download unavailable', {
@@ -75,7 +84,7 @@ export function ExportPanel({ meetingId }: { meetingId: string }) {
       <CardContent className='space-y-3'>
         {unavailable ? (
           <p className='text-sm text-muted-foreground'>
-            Durable exports are not enabled on this backend deployment.
+            Export creation is not available for this meeting or this deployment. Your administrator can confirm whether public export admission and its worker are enabled.
           </p>
         ) : (
           <div className='flex flex-wrap gap-2'>
@@ -100,6 +109,7 @@ export function ExportPanel({ meetingId }: { meetingId: string }) {
             </Button>
           </div>
         )}
+        {unavailable && <Button size='sm' variant='outline' onClick={() => { setUnavailable(false); void minutes.refetch() }}>Retry export availability</Button>}
         {minutes.data && minutes.data.completeness !== 'COMPLETE' && (
           <p className='text-sm text-amber-700'>
             Minutes are {minutes.data.completeness}. Review missing or stale
@@ -123,6 +133,7 @@ export function ExportPanel({ meetingId }: { meetingId: string }) {
             <span>Export {status.data.format}</span>
             <Badge variant='outline'>{status.data.status}</Badge>
             <Badge variant='outline'>{status.data.freshness}</Badge>
+            {status.data.status === 'READY' && status.data.freshness !== 'CURRENT' && <p className='text-xs text-amber-600'>This export no longer matches current meeting minutes. Generate a new version.</p>}
             {status.data.safeErrorCode && (
               <span className='text-destructive'>
                 {status.data.safeErrorCode}
