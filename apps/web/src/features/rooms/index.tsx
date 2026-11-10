@@ -1,443 +1,106 @@
-import { useEffect, useState } from 'react'
-import { z } from 'zod'
-import { useForm } from 'react-hook-form'
-import { zodResolver } from '@hookform/resolvers/zod'
-import { DoorOpen, MapPin, Pencil, Plus, Users } from 'lucide-react'
+import { useEffect, useState, type FormEvent } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { DoorOpen, Pencil, Plus, Search, ShieldAlert } from 'lucide-react'
 import { toast } from 'sonner'
-import { Badge } from '@/components/ui/badge'
+import { RequestEmpty, RequestError, RequestLoading } from '@/components/request-state'
 import { Button } from '@/components/ui/button'
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card'
-import {
-  Dialog,
-  DialogClose,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
-import {
-  Form,
-  FormControl,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormMessage,
-} from '@/components/ui/form'
+import { Badge } from '@/components/ui/badge'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
+import { Label } from '@/components/ui/label'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Header } from '@/components/layout/header'
 import { HeaderActions } from '@/components/layout/header-actions'
 import { Main } from '@/components/layout/main'
-import {
-  meetingRooms,
-  type MeetingRoom,
-  type MeetingRoomStatus,
-} from '@/features/meetings/data'
+import { currentUserQueryOptions } from '@/features/auth/session/current-user'
+import { createRoom, deactivateRoom, roomDetail, roomsQuery, updateRoom, type Room } from './room-api'
 
-const roomStatusLabels: Record<MeetingRoomStatus, string> = {
-  available: 'Available',
-  occupied: 'Occupied',
-  maintenance: 'Maintenance',
+type Draft = { code: string; name: string; location: string; capacity: string; notes: string }
+const blank: Draft = { code: '', name: '', location: '', capacity: '', notes: '' }
+function toDraft(room: Room | null): Draft {
+  return room ? { code: room.code, name: room.name, location: room.location ?? '',
+    capacity: room.capacity == null ? '' : String(room.capacity), notes: room.notes ?? '' } : { ...blank }
 }
-
-const roomStatusStyles: Record<MeetingRoomStatus, string> = {
-  available:
-    'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300',
-  occupied:
-    'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300',
-  maintenance:
-    'border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300',
-}
-
-const roomStatusOptions: { label: string; value: MeetingRoomStatus }[] = [
-  { label: 'Available', value: 'available' },
-  { label: 'Occupied', value: 'occupied' },
-  { label: 'Maintenance', value: 'maintenance' },
-]
-
-const roomFormSchema = z.object({
-  name: z.string().trim().min(1, 'Name is required.'),
-  location: z.string().trim().min(1, 'Location is required.'),
-  capacity: z
-    .string()
-    .trim()
-    .min(1, 'Capacity is required.')
-    .regex(/^\d+$/, 'Capacity must be a whole number.')
-    .refine(
-      (value) => Number(value) > 0,
-      'Capacity must be greater than zero.'
-    ),
-  status: z.enum(['available', 'occupied', 'maintenance']),
-  equipment: z.string().max(300, 'Equipment must be 300 characters or fewer.'),
-})
-
-type RoomFormValues = z.infer<typeof roomFormSchema>
 
 export function RoomsPage() {
-  const [roomList, setRoomList] = useState<MeetingRoom[]>(() => [
-    ...meetingRooms,
-  ])
-  const [isDialogOpen, setIsDialogOpen] = useState(false)
-  const [editingRoom, setEditingRoom] = useState<MeetingRoom | null>(null)
-
-  const openAddDialog = () => {
-    setEditingRoom(null)
-    setIsDialogOpen(true)
-  }
-
-  const openEditDialog = (room: MeetingRoom) => {
-    setEditingRoom(room)
-    setIsDialogOpen(true)
-  }
-
-  const saveRoom = (room: MeetingRoom) => {
-    const isEditing = roomList.some((currentRoom) => currentRoom.id === room.id)
-
-    setRoomList((currentRooms) => {
-      if (isEditing) {
-        return currentRooms.map((currentRoom) =>
-          currentRoom.id === room.id ? room : currentRoom
-        )
-      }
-
-      return [...currentRooms, room]
-    })
-    setIsDialogOpen(false)
-    toast.success(isEditing ? 'Room updated' : 'Room added', {
-      description: `${room.name} is ready in the room list.`,
-    })
-  }
-
-  return (
-    <>
-      <Header fixed>
-        <HeaderActions />
-      </Header>
-
-      <Main className='flex flex-1 flex-col gap-4 sm:gap-6'>
-        <div className='flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between'>
-          <div>
-            <p className='text-sm font-medium text-primary'>
-              Meeting operations
-            </p>
-            <h1 className='mt-1 text-2xl font-bold tracking-tight sm:text-3xl'>
-              Meeting Rooms
-            </h1>
-            <p className='mt-2 max-w-2xl text-muted-foreground'>
-              Keep the shared spaces used by your meetings easy to find.
-            </p>
-          </div>
-          <Button onClick={openAddDialog}>
-            <Plus />
-            Add Room
-          </Button>
-        </div>
-
-        <Card className='overflow-hidden'>
-          <CardHeader className='border-b'>
-            <CardTitle>Room directory</CardTitle>
-            <CardDescription>
-              {roomList.length} meeting room
-              {roomList.length === 1 ? '' : 's'} in the shared workspace.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className='p-0'>
-            {roomList.length ? (
-              <div className='overflow-x-auto'>
-                <Table className='min-w-[820px]'>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className='w-[25%]'>Name</TableHead>
-                      <TableHead>Location</TableHead>
-                      <TableHead>Capacity</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead className='w-[28%]'>Equipment</TableHead>
-                      <TableHead className='text-end'>Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {roomList.map((room) => (
-                      <TableRow key={room.id}>
-                        <TableCell className='whitespace-normal'>
-                          <div className='flex min-w-44 items-center gap-3'>
-                            <div className='flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary'>
-                              <DoorOpen className='size-4' />
-                            </div>
-                            <span className='font-medium'>{room.name}</span>
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          <div className='flex items-start gap-2 whitespace-normal'>
-                            <MapPin className='mt-0.5 size-4 shrink-0 text-muted-foreground' />
-                            <span>{room.location}</span>
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          <div className='flex items-center gap-2 whitespace-nowrap'>
-                            <Users className='size-4 text-muted-foreground' />
-                            {room.capacity} people
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          <Badge
-                            variant='outline'
-                            className={roomStatusStyles[room.status]}
-                          >
-                            {roomStatusLabels[room.status]}
-                          </Badge>
-                        </TableCell>
-                        <TableCell className='whitespace-normal'>
-                          {room.equipment.length ? (
-                            <div className='flex max-w-64 flex-wrap gap-1.5'>
-                              {room.equipment.map((item) => (
-                                <Badge key={item} variant='secondary'>
-                                  {item}
-                                </Badge>
-                              ))}
-                            </div>
-                          ) : (
-                            <span className='text-sm text-muted-foreground'>
-                              No equipment listed
-                            </span>
-                          )}
-                        </TableCell>
-                        <TableCell className='text-end'>
-                          <Button
-                            variant='ghost'
-                            size='sm'
-                            onClick={() => openEditDialog(room)}
-                            aria-label={`Edit ${room.name}`}
-                          >
-                            <Pencil />
-                            Edit
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            ) : (
-              <EmptyState />
-            )}
-          </CardContent>
-        </Card>
-      </Main>
-
-      <RoomDialog
-        open={isDialogOpen}
-        room={editingRoom}
-        onOpenChange={setIsDialogOpen}
-        onSave={saveRoom}
-      />
-    </>
-  )
-}
-
-function RoomDialog({
-  open,
-  room,
-  onOpenChange,
-  onSave,
-}: {
-  open: boolean
-  room: MeetingRoom | null
-  onOpenChange: (open: boolean) => void
-  onSave: (room: MeetingRoom) => void
-}) {
-  const form = useForm<RoomFormValues>({
-    resolver: zodResolver(roomFormSchema),
-    defaultValues: getRoomFormValues(),
+  const qc = useQueryClient()
+  const identity = useQuery(currentUserQueryOptions())
+  const canManage = identity.data?.globalRole === 'ADMINISTRATOR'
+  const [q, setQ] = useState('')
+  const [search, setSearch] = useState('')
+  const [page, setPage] = useState(0)
+  const query = useQuery(roomsQuery(page, search))
+  const [open, setOpen] = useState(false)
+  const [selected, setSelected] = useState<Room | null>(null)
+  const [draft, setDraft] = useState<Draft>(blank)
+  const [busy, setBusy] = useState(false)
+  const mutation = useMutation({
+    mutationFn: async (data: Draft) => {
+      const payload = { code: data.code.trim(), name: data.name.trim(), location: data.location.trim() || null,
+        capacity: data.capacity ? Number(data.capacity) : null, notes: data.notes.trim() || null }
+      if (!selected) return createRoom(payload)
+      const fresh = await roomDetail(selected.id)
+      return updateRoom(selected.id, { name: payload.name, location: payload.location, capacity: payload.capacity, notes: payload.notes }, fresh.etag)
+    },
+    onSuccess: () => { toast.success('Room saved'); setOpen(false); void qc.invalidateQueries({ queryKey: ['rooms'] }) },
+    onError: (error) => toast.error('Room could not be saved', { description: error instanceof Error ? error.message : undefined }),
   })
-
-  useEffect(() => {
-    if (open) {
-      form.reset(getRoomFormValues(room))
+  useEffect(() => { if (!open) setDraft(blank) }, [open])
+  function edit(room: Room | null) { setSelected(room); setDraft(toDraft(room)); setOpen(true) }
+  async function deactivate(room: Room) {
+    if (!window.confirm('Deactivate this room? Historical meeting references will remain.')) return
+    setBusy(true)
+    try {
+      const fresh = await roomDetail(room.id)
+      await deactivateRoom(room.id, fresh.etag)
+      toast.success('Room deactivated')
+      await qc.invalidateQueries({ queryKey: ['rooms'] })
+    } catch (error) { toast.error('Unable to deactivate room', { description: error instanceof Error ? error.message : undefined }) }
+    finally { setBusy(false) }
+  }
+  function submit(event: FormEvent) {
+    event.preventDefault()
+    if (!draft.name.trim() || (!selected && !draft.code.trim())) return
+    if (draft.capacity && (!Number.isInteger(Number(draft.capacity)) || Number(draft.capacity) <= 0)) {
+      toast.error('Capacity must be a positive integer'); return
     }
-  }, [form, open, room])
-
-  const onSubmit = (values: RoomFormValues) => {
-    onSave({
-      id: room?.id ?? createRoomId(values.name),
-      name: values.name.trim(),
-      location: values.location.trim(),
-      capacity: Number(values.capacity),
-      status: values.status,
-      equipment: values.equipment
-        .split(',')
-        .map((item) => item.trim())
-        .filter(Boolean),
-    })
+    mutation.mutate(draft)
   }
-
-  const isEditing = Boolean(room)
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className='max-h-[90vh] overflow-y-auto'>
-        <DialogHeader>
-          <DialogTitle>{isEditing ? 'Edit Room' : 'Add Room'}</DialogTitle>
-          <DialogDescription>
-            {isEditing
-              ? 'Update the room details used by your meeting schedule.'
-              : 'Add a shared meeting space to the room directory.'}
-          </DialogDescription>
-        </DialogHeader>
-
-        <Form {...form}>
-          <form
-            id='room-form'
-            onSubmit={form.handleSubmit(onSubmit)}
-            className='space-y-4'
-          >
-            <FormField
-              control={form.control}
-              name='name'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Name</FormLabel>
-                  <FormControl>
-                    <Input {...field} placeholder='e.g. Phòng Hoa Sen' />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name='location'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Location</FormLabel>
-                  <FormControl>
-                    <Input {...field} placeholder='e.g. Tầng 4, Tòa nhà A' />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <div className='grid gap-4 sm:grid-cols-2'>
-              <FormField
-                control={form.control}
-                name='capacity'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Capacity</FormLabel>
-                    <FormControl>
-                      <Input {...field} type='number' min='1' />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name='status'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Status</FormLabel>
-                    <Select value={field.value} onValueChange={field.onChange}>
-                      <FormControl>
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        {roomStatusOptions.map((option) => (
-                          <SelectItem key={option.value} value={option.value}>
-                            {option.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-            </div>
-            <FormField
-              control={form.control}
-              name='equipment'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Equipment</FormLabel>
-                  <FormControl>
-                    <Input
-                      {...field}
-                      placeholder='Separate items with commas'
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-          </form>
-        </Form>
-
-        <DialogFooter>
-          <DialogClose asChild>
-            <Button type='button' variant='outline'>
-              Cancel
-            </Button>
-          </DialogClose>
-          <Button type='submit' form='room-form'>
-            {isEditing ? 'Save Changes' : 'Add Room'}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
-function EmptyState() {
-  return (
-    <div className='flex min-h-56 flex-col items-center justify-center gap-1 px-4 text-center'>
-      <DoorOpen className='size-8 text-muted-foreground' />
-      <p className='mt-2 font-medium'>No meeting rooms found.</p>
-      <p className='text-sm text-muted-foreground'>
-        Add a room to start the directory.
-      </p>
-    </div>
-  )
-}
-
-function getRoomFormValues(room?: MeetingRoom | null): RoomFormValues {
-  return {
-    name: room?.name ?? '',
-    location: room?.location ?? '',
-    capacity: String(room?.capacity ?? 8),
-    status: room?.status ?? 'available',
-    equipment: room?.equipment.join(', ') ?? '',
-  }
-}
-
-function createRoomId(name: string) {
-  const slug = name
-    .trim()
-    .toLocaleLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '')
-
-  return `room-${slug || 'new'}-${Date.now()}`
+  return <>
+    <Header fixed><HeaderActions /></Header>
+    <Main className='space-y-6'>
+      <div className='flex flex-wrap items-end justify-between gap-4'>
+        <div><p className='text-sm font-medium text-primary'>Meeting operations</p><h1 className='text-3xl font-bold'>Meeting Rooms</h1><p className='text-muted-foreground'>Rooms and their current administrative availability.</p></div>
+        {canManage && <Button onClick={() => edit(null)}><Plus className='size-4' /> Add room</Button>}
+      </div>
+      {!canManage && <p className='flex items-center gap-2 text-sm text-muted-foreground'><ShieldAlert className='size-4' /> Room changes require administrator permission.</p>}
+      <Card>
+        <CardHeader><CardTitle>Room directory</CardTitle><form className='flex gap-2' onSubmit={event => { event.preventDefault(); setPage(0); setSearch(q.trim()) }}>
+          <Input value={q} onChange={e => setQ(e.target.value)} placeholder='Search room name or code' aria-label='Search rooms' />
+          <Button type='submit' variant='secondary'><Search className='size-4' /> Search</Button>
+        </form></CardHeader>
+        <CardContent className='space-y-4'>
+          {query.isPending ? <RequestLoading /> : query.isError ? <RequestError error={query.error} retry={() => void query.refetch()} /> :
+            query.data.items.length === 0 ? <RequestEmpty title='No rooms match this search' /> :
+            <div className='overflow-x-auto'><Table><TableHeader><TableRow><TableHead>Code</TableHead><TableHead>Room</TableHead><TableHead>Location</TableHead><TableHead>Capacity</TableHead><TableHead>Status</TableHead><TableHead>Notes</TableHead>{canManage && <TableHead>Actions</TableHead>}</TableRow></TableHeader>
+              <TableBody>{query.data.items.map(room => <TableRow key={room.id}><TableCell className='font-mono text-xs'>{room.code}</TableCell><TableCell className='font-medium'>{room.name}</TableCell><TableCell>{room.location || '—'}</TableCell><TableCell>{room.capacity ?? '—'}</TableCell>
+                <TableCell><Badge variant={room.status === 'ACTIVE' ? 'secondary' : 'outline'}>{room.status}</Badge></TableCell><TableCell className='max-w-60 truncate'>{room.notes ?? '—'}</TableCell>
+                {canManage && <TableCell><div className='flex gap-1'><Button variant='outline' size='sm' onClick={() => edit(room)}><Pencil className='size-3' /> Edit</Button>
+                {room.status === 'ACTIVE' && <Button disabled={busy} variant='ghost' size='sm' onClick={() => void deactivate(room)}>Deactivate</Button>}</div></TableCell>}</TableRow>)}</TableBody></Table></div>}
+          {query.data && <div className='flex items-center justify-between text-sm text-muted-foreground'><span>{query.data.page.totalElements} room(s)</span><div className='flex gap-2'><Button size='sm' variant='outline' disabled={!query.data.page.hasPrevious} onClick={() => setPage(p => p - 1)}>Previous</Button><span className='py-2'>Page {page + 1}</span><Button size='sm' variant='outline' disabled={!query.data.page.hasNext} onClick={() => setPage(p => p + 1)}>Next</Button></div></div>}
+        </CardContent>
+      </Card>
+      <Dialog open={open} onOpenChange={setOpen}><DialogContent><DialogHeader><DialogTitle>{selected ? 'Edit room' : 'Add room'}</DialogTitle><DialogDescription>Changes are persisted to the Core API. Room codes cannot be edited after creation.</DialogDescription></DialogHeader>
+        <form onSubmit={submit} className='space-y-4'>
+          <div className='space-y-1'><Label htmlFor='room-code'>Room code</Label><Input id='room-code' maxLength={64} required disabled={Boolean(selected)} value={draft.code} onChange={e => setDraft(d => ({ ...d, code: e.target.value }))} /></div>
+          <div className='space-y-1'><Label htmlFor='room-name'>Name</Label><Input id='room-name' maxLength={160} required value={draft.name} onChange={e => setDraft(d => ({ ...d, name: e.target.value }))} /></div>
+          <div className='space-y-1'><Label htmlFor='room-location'>Location</Label><Input id='room-location' maxLength={255} value={draft.location} onChange={e => setDraft(d => ({ ...d, location: e.target.value }))} /></div>
+          <div className='space-y-1'><Label htmlFor='room-capacity'>Capacity</Label><Input id='room-capacity' type='number' min={1} step={1} value={draft.capacity} onChange={e => setDraft(d => ({ ...d, capacity: e.target.value }))} /></div>
+          <div className='space-y-1'><Label htmlFor='room-notes'>Notes</Label><Input id='room-notes' value={draft.notes} onChange={e => setDraft(d => ({ ...d, notes: e.target.value }))} /></div>
+          <DialogFooter><Button type='button' variant='outline' onClick={() => setOpen(false)}>Cancel</Button><Button type='submit' disabled={mutation.isPending}>Save room</Button></DialogFooter>
+        </form>
+      </DialogContent></Dialog>
+    </Main>
+  </>
 }
