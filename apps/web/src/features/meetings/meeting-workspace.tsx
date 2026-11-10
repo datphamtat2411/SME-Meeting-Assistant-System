@@ -37,6 +37,7 @@ import {
 import { MeetingLifecycleActions } from './components/meeting-lifecycle-actions'
 import { MeetingParticipantManagement } from './components/meeting-participant-management'
 import { MeetingStatusBadge } from './components/meeting-status-badge'
+import { MeetingTools } from './meeting-tools'
 import {
   classifyParticipantMemberships,
   meetingDetailQueryOptions,
@@ -305,6 +306,10 @@ function MeetingWorkspace({
         etag={etag}
         onParticipantReconciled={onParticipantReconciled}
       />
+      {(currentUser?.userId === meeting.organizerUserId ||
+        participants.data?.some(participant =>
+          participant.userId === currentUser?.userId && participant.removedAt == null
+        )) && <MeetingTools meetingId={meeting.id} />}
     </>
   )
 }
