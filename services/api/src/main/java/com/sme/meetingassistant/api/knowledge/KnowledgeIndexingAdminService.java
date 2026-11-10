@@ -80,33 +80,80 @@ public class KnowledgeIndexingAdminService {
     }
 
     @Transactional
+    public Map<String, Object> prepare(String generationId, String configurationVersion,
+            String configurationSha256, String tokenizerId, String collectionName) {
+        requireEnabled();
+        List<GenerationRow> existing = jdbc.query("""
+            SELECT generation_id,configuration_version,configuration_sha256,tokenizer_id,collection_name,
+                   state,target_count,indexed_count
+              FROM knowledge_index_generations WHERE generation_id=? FOR UPDATE
+            """, this::generationRow, generationId);
+        if (!existing.isEmpty()) {
+            GenerationRow row = existing.getFirst();
+            if (!row.configurationVersion().equals(configurationVersion)
+                    || !row.configurationSha256().equals(configurationSha256)
+                    || !row.tokenizerId().equals(tokenizerId)
+                    || !row.collectionName().equals(collectionName)) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Knowledge generation identity is immutable.");
+            }
+            return generation(generationId);
+        }
+        jdbc.update("""
+            INSERT INTO knowledge_index_generations(
+                generation_id,configuration_version,configuration_sha256,tokenizer_id,collection_name)
+            VALUES (?,?,?,?,?)
+            """, generationId, configurationVersion, configurationSha256, tokenizerId, collectionName);
+        return generation(generationId);
+    }
+
+    @Transactional
+    public Map<String, Object> refresh(String generationId) {
+        requireEnabled();
+        refreshLocked(generationId);
+        return generation(generationId);
+    }
+
+    @Transactional
     public Map<String, Object> activate(String generationId) {
         requireEnabled();
         var rows = jdbc.query("""
-            SELECT generation_id,configuration_sha256,state,target_count,indexed_count
+            SELECT generation_id,configuration_version,configuration_sha256,tokenizer_id,collection_name,
+                   state,target_count,indexed_count
               FROM knowledge_index_generations WHERE generation_id=? FOR UPDATE
-            """, (rs, row) -> new GenerationRow(rs.getString("generation_id"),
-                rs.getString("configuration_sha256"), rs.getString("state"),
-                rs.getLong("target_count"), rs.getLong("indexed_count")), generationId);
+            """, this::generationRow, generationId);
         if (rows.isEmpty()) throw new ResponseStatusException(HttpStatus.NOT_FOUND);
         GenerationRow generation = rows.getFirst();
-        if (!"READY".equals(generation.state()) || generation.indexedCount() != generation.targetCount()) {
+        if ("ACTIVE".equals(generation.state())) return generation(generationId);
+        if ("PREPARING".equals(generation.state()) || "READY".equals(generation.state())) {
+            refreshLocked(generationId);
+            generation = jdbc.query("""
+                SELECT generation_id,configuration_version,configuration_sha256,tokenizer_id,collection_name,
+                       state,target_count,indexed_count
+                  FROM knowledge_index_generations WHERE generation_id=? FOR UPDATE
+                """, this::generationRow, generationId).getFirst();
+        }
+        if (!("READY".equals(generation.state()) || "RETIRED".equals(generation.state()))
+                || generation.indexedCount() != generation.targetCount()) {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                 "Knowledge generation is not ready for activation.");
         }
         var configured = properties.getKnowledgeIndexing();
         if (!generation.id().equals(configured.getGenerationId())
-                || !generation.configurationSha256().equals(configured.getConfigurationSha256())) {
+                || !generation.configurationVersion().equals(configured.getConfigurationVersion())
+                || !generation.configurationSha256().equals(configured.getConfigurationSha256())
+                || !generation.tokenizerId().equals(configured.getTokenizerId())
+                || !generation.collectionName().equals(configured.getCollectionName())) {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                 "Runtime knowledge generation does not match the requested generation.");
         }
         jdbc.update("""
             UPDATE knowledge_index_generations SET state='RETIRED',retired_at=CURRENT_TIMESTAMP,
-                   updated_at=CURRENT_TIMESTAMP WHERE state='ACTIVE'
-            """);
+                   updated_at=CURRENT_TIMESTAMP WHERE state='ACTIVE' AND generation_id<>?
+            """, generationId);
         jdbc.update("""
             UPDATE knowledge_index_generations SET state='ACTIVE',activated_at=CURRENT_TIMESTAMP,
-                   updated_at=CURRENT_TIMESTAMP WHERE generation_id=?
+                   retired_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE generation_id=?
             """, generationId);
         return generation(generationId);
     }
@@ -219,6 +266,48 @@ public class KnowledgeIndexingAdminService {
         return runData(runId);
     }
 
+    private void refreshLocked(String generationId) {
+        GenerationRow generation = jdbc.query("""
+            SELECT generation_id,configuration_version,configuration_sha256,tokenizer_id,collection_name,
+                   state,target_count,indexed_count
+              FROM knowledge_index_generations WHERE generation_id=? FOR UPDATE
+            """, this::generationRow, generationId).stream().findFirst().orElseThrow(() ->
+                new ResponseStatusException(HttpStatus.NOT_FOUND,
+                    "Knowledge generation was not found."));
+        if (!Set.of("PREPARING", "READY").contains(generation.state())) return;
+
+        GenerationProgress progress = jdbc.queryForObject("""
+            WITH latest AS (
+                SELECT DISTINCT ON (source_type,source_id,source_revision)
+                       operation,state
+                  FROM knowledge_indexing_work
+                 WHERE index_generation_id=?
+                 ORDER BY source_type,source_id,source_revision,created_at DESC,intent_sequence DESC,event_id DESC
+            )
+            SELECT count(*) AS target_count,
+                   count(*) FILTER (WHERE state IN
+                       ('INDEXED','NO_ELIGIBLE_CONTENT','INVALIDATED','DELETED','SUPERSEDED')) AS indexed_count
+              FROM latest
+            """, (rs, row) -> new GenerationProgress(rs.getLong("target_count"),
+                rs.getLong("indexed_count")), generationId);
+        boolean ready = progress.indexedCount() == progress.targetCount();
+        jdbc.update("""
+            UPDATE knowledge_index_generations
+               SET state=?,target_count=?,indexed_count=?,
+                   ready_at=CASE WHEN ? THEN COALESCE(ready_at,CURRENT_TIMESTAMP) ELSE NULL END,
+                   updated_at=CURRENT_TIMESTAMP
+             WHERE generation_id=? AND state IN ('PREPARING','READY')
+            """, ready ? "READY" : "PREPARING", progress.targetCount(), progress.indexedCount(), ready,
+            generationId);
+    }
+
+    private GenerationRow generationRow(java.sql.ResultSet rs, int row) throws java.sql.SQLException {
+        return new GenerationRow(rs.getString("generation_id"), rs.getString("configuration_version"),
+            rs.getString("configuration_sha256"), rs.getString("tokenizer_id"),
+            rs.getString("collection_name"), rs.getString("state"), rs.getLong("target_count"),
+            rs.getLong("indexed_count"));
+    }
+
     private List<WorkRow> workRows(ReconciliationRun run) {
         if (run.checkpointSourceType() == null) {
             return jdbc.query("""
@@ -292,8 +381,9 @@ public class KnowledgeIndexingAdminService {
             "sourceRevision", event.sourceRevision(), "indexGenerationId", event.indexGenerationId());
     }
 
-    private record GenerationRow(String id, String configurationSha256, String state,
-            long targetCount, long indexedCount) { }
+    private record GenerationRow(String id, String configurationVersion, String configurationSha256,
+            String tokenizerId, String collectionName, String state, long targetCount, long indexedCount) { }
+    private record GenerationProgress(long targetCount, long indexedCount) { }
     private record ReconciliationRun(UUID id, String generationId, int batchSize, boolean dryRun,
             String state, String checkpointSourceType, UUID checkpointSourceId,
             Long checkpointSourceRevision, long scannedCount, long repairedCount, long findingCount) { }

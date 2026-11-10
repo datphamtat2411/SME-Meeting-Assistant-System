@@ -55,6 +55,7 @@ public class MediaProperties {
             "b09c19a082d96d3a3fe66bbdfde4c7f50cde139bd539d456da3f41691ab3f4b1";
         private String tokenizerId =
             "BAAI/bge-m3-tokenizer:5617a9f61b028005a4858fdac845db406aefb181";
+        private String collectionName = "sme_meeting_knowledge_bge_m3";
 
         public boolean isEnabled() { return enabled; }
         public void setEnabled(boolean value) { enabled = value; }
@@ -70,6 +71,8 @@ public class MediaProperties {
         public void setConfigurationSha256(String value) { configurationSha256 = value; }
         public String getTokenizerId() { return tokenizerId; }
         public void setTokenizerId(String value) { tokenizerId = value; }
+        public String getCollectionName() { return collectionName; }
+        public void setCollectionName(String value) { collectionName = value; }
     }
 
     public static class Storage {

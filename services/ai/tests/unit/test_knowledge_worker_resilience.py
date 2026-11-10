@@ -21,7 +21,9 @@ from sme_meeting_ai.integrations.core_api import (
 from sme_meeting_ai.integrations.knowledge_indexing import decode_notification
 from sme_meeting_ai.rag.contracts import ProcessingStatus
 from sme_meeting_ai.rag.indexing import IndexingIssue, IndexingResult, IndexingStatus
+from sme_meeting_ai.workers import knowledge_indexing as knowledge_worker_module
 from sme_meeting_ai.workers.knowledge_indexing import (
+    KnowledgeIndexingExecution,
     KnowledgeIndexingWorker,
     KnowledgeLeaseGuard,
     KnowledgeLeaseLost,
@@ -354,6 +356,86 @@ def test_qdrant_unavailability_is_retryable_but_schema_rejection_is_terminal():
         assert terminal.error_code == "SCHEMA_INCOMPATIBLE"
     finally:
         worker_module_processing.process_snapshot = original
+
+
+def test_knowledge_worker_validates_its_generation_collection_before_consuming(monkeypatch, tmp_path):
+    order = []
+    settings_value = Settings(
+        service_name="test-ai",
+        service_identity="ai-worker",
+        _env_file=None,
+        knowledge_indexing_worker_enabled=True,
+        rag_model_path=tmp_path,
+    )
+    generation = SimpleNamespace(
+        generation_id=settings_value.rag_index_generation_id,
+        configuration_sha256="c" * 64,
+    )
+
+    class FakeTokenizer:
+        def __init__(self, _path):
+            self.manifest = SimpleNamespace()
+
+    class FakeChunking:
+        index_generation = generation
+
+    class FakeEmbedding:
+        compatibility = SimpleNamespace(index_generation_id=generation.generation_id)
+
+        @classmethod
+        def from_settings(cls, _settings, *, tokenizer):
+            del tokenizer
+            return cls()
+
+        def close(self):
+            order.append("embedding-close")
+
+    class FakeStore:
+        @classmethod
+        def from_settings(cls, _settings, _compatibility):
+            return cls()
+
+        def ensure_schema(self):
+            order.append("schema")
+
+        def close(self):
+            order.append("store-close")
+
+    class FakeCore:
+        def __init__(self, _settings):
+            pass
+
+        async def aclose(self):
+            order.append("core-close")
+
+    class FakeBroker:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            assert order == ["schema"]
+            order.append("broker-enter")
+            return self
+
+        async def __aexit__(self, *_args):
+            order.append("broker-exit")
+
+    monkeypatch.setattr(knowledge_worker_module, "BgeM3Tokenizer", FakeTokenizer)
+    monkeypatch.setattr(knowledge_worker_module, "bge_m3_chunking_config", lambda *_args, **_kwargs: FakeChunking())
+    monkeypatch.setattr("sme_meeting_ai.rag.embedding.BgeM3EmbeddingAdapter", FakeEmbedding)
+    monkeypatch.setattr("sme_meeting_ai.rag.qdrant.QdrantVectorStore", FakeStore)
+    monkeypatch.setattr(knowledge_worker_module, "KnowledgeCoreApiClient", FakeCore)
+    monkeypatch.setattr(knowledge_worker_module, "RabbitConsumer", FakeBroker)
+
+    async def run():
+        execution = KnowledgeIndexingExecution(settings_value)
+        await execution.__aenter__()
+        try:
+            assert order[:2] == ["schema", "broker-enter"]
+        finally:
+            await execution.__aexit__(None, None, None)
+
+    asyncio.run(run())
 
 
 def test_lifecycle_operations_use_exact_qdrant_source_scope():

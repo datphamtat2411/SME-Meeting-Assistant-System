@@ -58,6 +58,20 @@ public class KnowledgeIndexingAdminController {
         return ok(service.generation(generationId));
     }
 
+    @PostMapping("/generations/prepare")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> prepare(
+            @Valid @RequestBody GenerationPrepareRequest request) {
+        authorization.requireAdministrator();
+        return ok(service.prepare(request.generationId(), request.configurationVersion(),
+            request.configurationSha256(), request.tokenizerId(), request.collectionName()));
+    }
+
+    @PostMapping("/generations/{generationId}/refresh")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> refresh(@PathVariable String generationId) {
+        authorization.requireAdministrator();
+        return ok(service.refresh(generationId));
+    }
+
     @PostMapping("/generations/{generationId}/activate")
     public ResponseEntity<ApiResponse<Map<String, Object>>> activate(@PathVariable String generationId) {
         authorization.requireAdministrator();
@@ -92,6 +106,13 @@ public class KnowledgeIndexingAdminController {
             @NotBlank @Pattern(regexp = "TRANSCRIPT|SUMMARY|DECISION|ACTION_ITEM") String sourceType,
             @NotNull UUID sourceId, @NotNull UUID meetingId,
             @NotBlank @Pattern(regexp = "[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}") String generationId) { }
+
+    public record GenerationPrepareRequest(
+            @NotBlank @Pattern(regexp = "[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}") String generationId,
+            @NotBlank @Pattern(regexp = "[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}") String configurationVersion,
+            @NotBlank @Pattern(regexp = "[a-f0-9]{64}") String configurationSha256,
+            @NotBlank @Pattern(regexp = "[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}") String tokenizerId,
+            @NotBlank @Pattern(regexp = "[A-Za-z0-9][A-Za-z0-9_.-]{0,126}") String collectionName) { }
 
     public record DeleteRequest(
             @NotBlank @Pattern(regexp = "TRANSCRIPT|SUMMARY|DECISION|ACTION_ITEM") String sourceType,

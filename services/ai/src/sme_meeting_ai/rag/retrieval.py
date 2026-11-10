@@ -243,6 +243,39 @@ class StaticAuthorizationProvider:
         )
 
 
+class CoreApprovedAuthorizationProvider:
+    """Validate a scope delivered through the authenticated Core boundary.
+
+    The HTTP boundary authenticates the Core caller with mTLS and an exact
+    operation grant. This provider performs the request-local scope checks
+    again so retrieval never treats a Core-shaped payload as authorization by
+    itself.
+    """
+
+    provider_id = "core-mtls-scope"
+
+    def verify(self, scope: AuthorizedRetrievalScope, *, now: datetime) -> TrustedAuthorizationContext:
+        if scope.authority != "CORE_APPROVED":
+            raise AuthorizationVerificationError("SCOPE_UNVERIFIABLE")
+        try:
+            issued = _parse_timestamp(scope.issued_at)
+            expires = _parse_timestamp(scope.expires_at)
+            current = now.astimezone(timezone.utc)
+        except (TypeError, ValueError, OverflowError):
+            raise AuthorizationVerificationError("SCOPE_UNVERIFIABLE") from None
+        if current < issued:
+            raise AuthorizationVerificationError("SCOPE_NOT_YET_VALID")
+        if current >= expires:
+            raise AuthorizationVerificationError("SCOPE_EXPIRED")
+        return TrustedAuthorizationContext(
+            scope=scope,
+            providerId=self.provider_id,
+            verificationReference=scope.scope_id,
+            verifiedAt=_utc_string(current),
+            scopeDigest=_scope_digest(scope),
+        )
+
+
 class StaticSourceVerificationProvider:
     """Controlled source-current fixture; Core integration owns production truth."""
 

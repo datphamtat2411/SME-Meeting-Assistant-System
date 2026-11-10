@@ -5,7 +5,9 @@ import sys
 
 import uvicorn
 
+from sme_meeting_ai.assistant.runtime import build_assistant_service
 from sme_meeting_ai.core.config import ConfigurationError, load_settings
+from sme_meeting_ai.rag.runtime import RetrievalRuntime, build_retrieval_runtime
 
 from .app import create_app
 from .tls import MTLSIdentitySource, MTLSProtocol, load_tls_context
@@ -19,11 +21,24 @@ def main() -> int:
         return 1
 
     previous = {}
+    retrieval_runtime: RetrievalRuntime | None = None
     try:
         tls_context = load_tls_context(settings)
         identity_source = MTLSIdentitySource() if tls_context is not None else None
+        assistant_service = None
+        if settings.assistant_enabled:
+            retrieval_runtime = build_retrieval_runtime(settings)
+            assistant_service = build_assistant_service(
+                settings,
+                retrieval_engine=retrieval_runtime.engine,
+                trusted_runtime=True,
+            )
         server = uvicorn.Server(uvicorn.Config(
-            create_app(settings, identity_source=identity_source),
+            create_app(
+                settings,
+                identity_source=identity_source,
+                assistant_service=assistant_service,
+            ),
             host=settings.http_host,
             port=settings.http_port,
             workers=1,
@@ -49,6 +64,8 @@ def main() -> int:
     except (Exception, SystemExit):
         pass
     finally:
+        if retrieval_runtime is not None:
+            retrieval_runtime.close()
         for signum, handler in previous.items():
             signal.signal(signum, handler)
 

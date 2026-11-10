@@ -406,6 +406,46 @@ def test_stale_source_is_removed_before_reranking():
     assert result.diagnostics.source_verification_rejected_count == 1
 
 
+@pytest.mark.parametrize("status", ["DELETED", "INELIGIBLE", "REVOKED"])
+def test_non_current_source_states_never_become_evidence(status):
+    compatibility = _compatibility()
+    candidate = _candidate(compatibility, text="kế hoạch phát hành")
+    scope = _scope(candidate.provenance.meeting_id)
+    source_provider = StaticSourceVerificationProvider([_source_verification(candidate, status=status)])
+    reranker = FakeReranker()
+    engine, _, _ = _engine(
+        candidate,
+        scope=scope,
+        reranker=reranker,
+        source_provider=source_provider,
+    )
+
+    result = engine.retrieve(
+        RetrievalRequest(contractVersion="1.0", query="Kế hoạch phát hành là gì?", authorizedScope=scope)
+    )
+
+    assert result.status is RetrievalStatus.INSUFFICIENT_EVIDENCE
+    assert result.evidence == ()
+    assert reranker.calls == []
+
+
+def test_missing_source_verification_provider_fails_closed_before_qdrant():
+    compatibility = _compatibility()
+    candidate = _candidate(compatibility, text="kế hoạch phát hành")
+    scope = _scope(candidate.provenance.meeting_id)
+    engine, embedding, store = _engine(candidate, scope=scope)
+    engine.source_provider = None
+
+    result = engine.retrieve(
+        RetrievalRequest(contractVersion="1.0", query="Kế hoạch phát hành là gì?", authorizedScope=scope)
+    )
+
+    assert result.status is RetrievalStatus.SOURCE_VERIFICATION_UNAVAILABLE
+    assert result.evidence == ()
+    assert embedding.queries == []
+    assert store.calls == 0
+
+
 def test_reranker_failure_is_not_silently_downgraded_to_rrf():
     compatibility = _compatibility()
     candidate = _candidate(compatibility, text="kế hoạch phát hành")

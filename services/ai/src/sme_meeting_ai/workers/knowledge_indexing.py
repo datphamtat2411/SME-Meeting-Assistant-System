@@ -545,6 +545,9 @@ class KnowledgeIndexingExecution:
 
             self.adapter = BgeM3EmbeddingAdapter.from_settings(self.settings, tokenizer=self.tokenizer)
             self.store = QdrantVectorStore.from_settings(self.settings, self.adapter.compatibility)
+            # Validate or create only this configured generation's collection
+            # before opening the broker and accepting durable work.
+            self.store.ensure_schema()
             self.core = KnowledgeCoreApiClient(self.settings)
             self.resources.push_async_callback(self.core.aclose)
             self.broker = await self.resources.enter_async_context(RabbitConsumer(

@@ -106,6 +106,7 @@ from .retrieval import (
     AuthorizationVerificationError,
     CandidateIntegrityError,
     CandidateValidationError,
+    CoreApprovedAuthorizationProvider,
     QueryPreparationError,
     RerankerValidationPolicy,
     RetrievalConfig,
@@ -136,6 +137,7 @@ from .retrieval_contracts import (
     SufficiencyPolicy,
     TrustedAuthorizationContext,
 )
+from .runtime import RetrievalRuntime, build_retrieval_runtime
 from .tokenizer import (
     BgeM3Tokenizer,
     TokenizerError,
@@ -155,6 +157,7 @@ __all__ = [
     "CanonicalSourceReference",
     "CandidateIntegrityError",
     "CandidateValidationError",
+    "CoreApprovedAuthorizationProvider",
     "ChunkProvenance",
     "ChunkingConfig",
     "DecisionProjection",
@@ -242,6 +245,7 @@ __all__ = [
     "RetrievalFailure",
     "RetrievalRequest",
     "RetrievalResult",
+    "RetrievalRuntime",
     "RetrievalStatus",
     "SparseEmbedding",
     "SourceVerification",
@@ -258,6 +262,7 @@ __all__ = [
     "bge_m3_collection_spec",
     "bge_m3_index_generation",
     "build_authorization_filter",
+    "build_retrieval_runtime",
     "build_effective_scope",
     "build_qdrant_payload",
     "load_bge_reranker_manifest",

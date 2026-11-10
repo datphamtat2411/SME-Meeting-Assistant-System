@@ -25,6 +25,7 @@ class KnowledgeIndexingWorkerIntegrationTests {
     @Autowired JdbcTemplate jdbc;
     @Autowired KnowledgeIndexingWorkerService worker;
     @Autowired KnowledgeIndexingProducer producer;
+    @Autowired KnowledgeIndexingAdminService admin;
     @Autowired MediaProperties properties;
     @Autowired MediaRepository outbox;
 
@@ -156,6 +157,75 @@ class KnowledgeIndexingWorkerIntegrationTests {
 
         assertThat(worker.result(invalidation.eventId(), result, certificate))
             .containsEntry("state", "DELETED").containsEntry("acknowledge", true);
+    }
+
+    @Test
+    @Transactional
+    void generationActivationRequiresCompleteWorkAndRetainsRollbackGeneration() {
+        UUID userId = UUID.randomUUID();
+        UUID meetingId = UUID.randomUUID();
+        UUID itemId = UUID.randomUUID();
+        insertManualAction(userId, meetingId, itemId);
+        enableKnowledgeIndexing();
+
+        var config = properties.getKnowledgeIndexing();
+        String oldGeneration = config.getGenerationId();
+        String oldVersion = config.getConfigurationVersion();
+        String oldSha = config.getConfigurationSha256();
+        String oldTokenizer = config.getTokenizerId();
+        String oldCollection = config.getCollectionName();
+        String newGeneration = "rag-t02-bge-m3-v2";
+        String newVersion = "rag-t02-bge-m3-v2";
+        String newSha = "c".repeat(64);
+        String newTokenizer = "BAAI/bge-m3-tokenizer:v2";
+        String newCollection = "sme_meeting_knowledge_bge_m3_v2";
+        try {
+            assertThat(admin.prepare(newGeneration, newVersion, newSha, newTokenizer, newCollection))
+                .containsEntry("state", "PREPARING");
+            assertThat(admin.refresh(newGeneration))
+                .containsEntry("state", "READY").containsEntry("targetCount", 0L);
+
+            var event = producer.requestReindex("ACTION_ITEM", itemId, meetingId, newGeneration, userId)
+                .orElseThrow();
+            byte[] payload = jdbc.queryForObject("SELECT payload FROM knowledge_source_snapshots WHERE id=?",
+                byte[].class, event.snapshotId());
+            publish(event.eventId());
+            var claim = new KnowledgeIndexingWorkerCommands.Claim("1.0", 1, event.eventId(),
+                KnowledgeIndexingProducer.EVENT_TYPE, meetingId, "ACTION_ITEM", itemId,
+                event.sourceRevision(), event.snapshotId(), event.snapshotSha256(), payload.length,
+                newGeneration, newVersion, newSha, newTokenizer, "UPSERT", "REINDEX_REQUESTED", UUID.randomUUID());
+            UUID claimToken = (UUID) worker.claim(event.eventId(), claim, "c".repeat(64)).get("claimToken");
+            assertThat(admin.refresh(newGeneration)).containsEntry("state", "PREPARING")
+                .containsEntry("targetCount", 1L).containsEntry("indexedCount", 0L);
+
+            var result = new KnowledgeIndexingWorkerCommands.Result("1.0", event.eventId(), claimToken,
+                UUID.randomUUID(), "INDEXED", newGeneration, 1, "d".repeat(64), "NONE");
+            worker.result(event.eventId(), result, "c".repeat(64));
+            assertThat(admin.refresh(newGeneration)).containsEntry("state", "READY")
+                .containsEntry("targetCount", 1L).containsEntry("indexedCount", 1L);
+
+            config.setGenerationId(newGeneration);
+            config.setConfigurationVersion(newVersion);
+            config.setConfigurationSha256(newSha);
+            config.setTokenizerId(newTokenizer);
+            config.setCollectionName(newCollection);
+            assertThat(admin.activate(newGeneration)).containsEntry("state", "ACTIVE");
+
+            config.setGenerationId(oldGeneration);
+            config.setConfigurationVersion(oldVersion);
+            config.setConfigurationSha256(oldSha);
+            config.setTokenizerId(oldTokenizer);
+            config.setCollectionName(oldCollection);
+            assertThat(admin.activate(oldGeneration)).containsEntry("state", "ACTIVE");
+            assertThat(jdbc.queryForObject("SELECT state FROM knowledge_index_generations WHERE generation_id=?",
+                String.class, newGeneration)).isEqualTo("RETIRED");
+        } finally {
+            config.setGenerationId(oldGeneration);
+            config.setConfigurationVersion(oldVersion);
+            config.setConfigurationSha256(oldSha);
+            config.setTokenizerId(oldTokenizer);
+            config.setCollectionName(oldCollection);
+        }
     }
 
     @Test

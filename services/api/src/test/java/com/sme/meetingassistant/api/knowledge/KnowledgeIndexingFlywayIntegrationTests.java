@@ -32,8 +32,12 @@ class KnowledgeIndexingFlywayIntegrationTests {
 
             assertThat(jdbc.queryForObject("""
                 SELECT count(*) FROM information_schema.tables
-                WHERE table_schema=? AND table_name IN ('knowledge_source_snapshots','knowledge_indexing_work')
-                """, Integer.class, schema)).isEqualTo(2);
+                WHERE table_schema=? AND table_name IN ('knowledge_source_snapshots','knowledge_indexing_work',
+                    'knowledge_index_generations','knowledge_reconciliation_runs','knowledge_reconciliation_findings')
+                """, Integer.class, schema)).isEqualTo(5);
+            assertThat(jdbc.queryForObject("SELECT state FROM " + schema
+                + ".knowledge_index_generations WHERE generation_id='rag-t02-bge-m3-v1'", String.class))
+                .isEqualTo("ACTIVE");
 
             UUID userId = UUID.randomUUID();
             UUID meetingId = UUID.randomUUID();
@@ -64,9 +68,18 @@ class KnowledgeIndexingFlywayIntegrationTests {
                     event_id,meeting_id,source_type,source_id,source_revision,snapshot_id,
                     snapshot_sha256,snapshot_size_bytes,index_generation_id,configuration_version,
                     configuration_sha256,tokenizer_id)
-                VALUES (?,?,'SUMMARY',?,7,?,?,?,'rag-t01-v1','chunking-v1',?,'bge-m3')
+                VALUES (?,?,'SUMMARY',?,7,?,?,?,'rag-t02-bge-m3-v1','rag-t02-bge-m3-v1',?,'bge-m3')
                 """.formatted(schema), eventId, meetingId, sourceId, snapshotId, sha, payload.length,
                 "b".repeat(64));
+
+            assertThatThrownBy(() -> jdbc.update("""
+                INSERT INTO %s.knowledge_index_generations(
+                    generation_id,configuration_version,configuration_sha256,tokenizer_id,collection_name)
+                VALUES ('rag-t02-bge-m3-v2','rag-t02-bge-m3-v2',?,'tokenizer-v2','sme_meeting_knowledge_bge_m3')
+                """.formatted(schema), "c".repeat(64))).isInstanceOf(RuntimeException.class);
+            assertThatThrownBy(() -> jdbc.update("DELETE FROM " + schema
+                + ".knowledge_index_generations WHERE generation_id='rag-t02-bge-m3-v1'"))
+                .isInstanceOf(RuntimeException.class);
 
             assertThatThrownBy(() -> jdbc.update("UPDATE " + schema
                 + ".knowledge_source_snapshots SET payload=? WHERE id=?", "changed".getBytes(), snapshotId))
