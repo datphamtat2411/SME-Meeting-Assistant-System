@@ -37,7 +37,6 @@ import {
 import { MeetingLifecycleActions } from './components/meeting-lifecycle-actions'
 import { MeetingParticipantManagement } from './components/meeting-participant-management'
 import { MeetingStatusBadge } from './components/meeting-status-badge'
-import { MeetingTools } from './meeting-tools'
 import {
   classifyParticipantMemberships,
   meetingDetailQueryOptions,
@@ -54,6 +53,7 @@ import {
 } from './data/list-api'
 import { formatMeetingSchedule as formatSchedule } from './data/meeting-schedule-format'
 import type { MeetingParticipantRefresh } from './data/participant-management-api'
+import { MeetingTools } from './meeting-tools'
 
 const presentationTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
 const meetingDateTimeFormatter = new Intl.DateTimeFormat('en-US', {
@@ -307,8 +307,10 @@ function MeetingWorkspace({
         onParticipantReconciled={onParticipantReconciled}
       />
       {(currentUser?.userId === meeting.organizerUserId ||
-        participants.data?.some(participant =>
-          participant.userId === currentUser?.userId && participant.removedAt == null
+        participants.data?.some(
+          (participant) =>
+            participant.userId === currentUser?.userId &&
+            participant.removedAt == null
         )) && <MeetingTools meetingId={meeting.id} />}
     </>
   )
