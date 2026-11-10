@@ -83,7 +83,7 @@ class _SpeakerMappingPanelState extends State<SpeakerMappingPanel> {
           leading: const CircleAvatar(child: Icon(Icons.record_voice_over_outlined)),
           title: Text(textValue(entry['label'], 'Speaker')),
           subtitle: Text(textValue(entry['displayName'], 'Chưa gán nhân viên')),
-          trailing: Wrap(mainAxisSize: MainAxisSize.min, children: [
+          trailing: Row(mainAxisSize: MainAxisSize.min, children: [
             IconButton(onPressed: busy ? null : () => choose(textValue(entry['id'])),
               icon: const Icon(Icons.person_add_outlined), tooltip: 'Gán người nói'),
             if (entry['userId'] != null)
