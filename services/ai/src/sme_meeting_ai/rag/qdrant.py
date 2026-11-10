@@ -118,6 +118,16 @@ class VectorStore(Protocol):
 
     def upsert(self, points: Sequence[VectorPoint]) -> int: ...
 
+    def invalidate_source(
+        self, meeting_id: str, source_type: str, source_id: str, source_revision: int,
+        generation_id: str,
+    ) -> int: ...
+
+    def delete_source(
+        self, meeting_id: str, source_type: str, source_id: str, source_revision: int,
+        generation_id: str,
+    ) -> int: ...
+
 
 class HybridVectorStore(Protocol):
     def query_hybrid(
@@ -479,6 +489,111 @@ class QdrantVectorStore:
                 QdrantRetrievedPoint(point_id=str(point_id), score=normalized_score, payload=payload)
             )
         return tuple(sorted(result, key=lambda item: (-item.score, item.point_id)))
+
+    @staticmethod
+    def _source_filter(
+        meeting_id: str, source_type: str, source_id: str, source_revision: int, generation_id: str,
+    ) -> models.Filter:
+        if not all(isinstance(value, str) and value for value in
+                   (meeting_id, source_type, source_id, generation_id)):
+            raise ValueError("Qdrant lifecycle identity is invalid")
+        if not isinstance(source_revision, int) or isinstance(source_revision, bool) or source_revision < 0:
+            raise ValueError("Qdrant lifecycle revision is invalid")
+        return models.Filter(must=[
+            models.FieldCondition(key="meeting_id", match=models.MatchValue(value=meeting_id)),
+            models.FieldCondition(key="source_type", match=models.MatchValue(value=source_type)),
+            models.FieldCondition(key="canonical_source_id", match=models.MatchValue(value=source_id)),
+            models.FieldCondition(
+                key="canonical_source_revision", match=models.MatchValue(value=source_revision),
+            ),
+            models.FieldCondition(key="index_generation_id", match=models.MatchValue(value=generation_id)),
+        ])
+
+    def _scroll_filter(self, query_filter: models.Filter) -> tuple[Any, ...]:
+        try:
+            records: list[Any] = []
+            offset = None
+            while True:
+                page, next_offset = self.client.scroll(
+                    collection_name=self.spec.collection_name,
+                    scroll_filter=query_filter,
+                    limit=256,
+                    offset=offset,
+                    with_payload=True,
+                    with_vectors=False,
+                )
+                records.extend(page)
+                if next_offset is None:
+                    return tuple(records)
+                if next_offset == offset:
+                    raise QdrantError("PERSISTENCE_VERIFY_FAILED")
+                offset = next_offset
+        except QdrantError:
+            raise
+        except Exception as error:
+            if _is_transient(error):
+                raise QdrantError("QDRANT_UNAVAILABLE") from error
+            raise QdrantError("PERSISTENCE_VERIFY_FAILED") from error
+
+    @staticmethod
+    def _write_completed(response: Any) -> bool:
+        status = getattr(response, "status", None)
+        return status is None or _enum_name(status) in {"completed", "ok"}
+
+    def invalidate_source(
+        self, meeting_id: str, source_type: str, source_id: str, source_revision: int,
+        generation_id: str,
+    ) -> int:
+        """Mark only the exact source revision non-authoritative and verify it."""
+
+        query_filter = self._source_filter(meeting_id, source_type, source_id, source_revision, generation_id)
+        before = self._scroll_filter(query_filter)
+        try:
+            response = self.client.set_payload(
+                collection_name=self.spec.collection_name,
+                payload={"source_current": False, "source_status": "INVALIDATED"},
+                points=query_filter,
+                wait=True,
+            )
+        except Exception as error:
+            if _is_transient(error):
+                raise QdrantPersistenceError("QDRANT_UNAVAILABLE") from error
+            raise QdrantPersistenceError("PERSISTENCE_FAILED") from error
+        if not self._write_completed(response):
+            raise QdrantPersistenceError("PERSISTENCE_NOT_COMPLETED")
+        after = self._scroll_filter(query_filter)
+        if len(after) != len(before) or any(
+            not isinstance(getattr(record, "payload", None), dict)
+            or record.payload.get("source_current") is not False
+            or record.payload.get("source_status") != "INVALIDATED"
+            for record in after
+        ):
+            raise QdrantPersistenceError("PERSISTENCE_VERIFY_FAILED")
+        return len(after)
+
+    def delete_source(
+        self, meeting_id: str, source_type: str, source_id: str, source_revision: int,
+        generation_id: str,
+    ) -> int:
+        """Physically delete only the exact source revision and verify absence."""
+
+        query_filter = self._source_filter(meeting_id, source_type, source_id, source_revision, generation_id)
+        before = self._scroll_filter(query_filter)
+        try:
+            response = self.client.delete(
+                collection_name=self.spec.collection_name,
+                points_selector=query_filter,
+                wait=True,
+            )
+        except Exception as error:
+            if _is_transient(error):
+                raise QdrantPersistenceError("QDRANT_UNAVAILABLE") from error
+            raise QdrantPersistenceError("PERSISTENCE_FAILED") from error
+        if not self._write_completed(response):
+            raise QdrantPersistenceError("PERSISTENCE_NOT_COMPLETED")
+        if self._scroll_filter(query_filter):
+            raise QdrantPersistenceError("PERSISTENCE_VERIFY_FAILED")
+        return len(before)
 
     def upsert(self, points: Sequence[VectorPoint]) -> int:
         point_tuple = tuple(points)

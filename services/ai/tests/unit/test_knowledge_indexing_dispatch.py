@@ -45,9 +45,22 @@ def test_valid_notification_reuses_lifecycle_contract():
     assert event.request_id == "request-1"
 
 
+def test_valid_invalidation_notification_has_no_snapshot():
+    body, delivery = notification()
+    body.pop("snapshot")
+    body.update(operation="INVALIDATE", reason="ELIGIBILITY_CHANGED")
+    delivery.body = json.dumps(body).encode()
+
+    event = decode_notification(delivery)
+
+    assert event.operation == "INVALIDATE"
+    assert event.snapshot is None
+    assert event.reason == "ELIGIBILITY_CHANGED"
+
+
 @pytest.mark.parametrize("change", [
     {"schemaVersion": True}, {"schemaVersion": 2}, {"contractVersion": "2.0"},
-    {"operation": "DELETE"}, {"operation": "INVALIDATE"}, {"operation": "OTHER"},
+    {"operation": "OTHER"},
     {"requestId": "unsafe\nvalue"}, {"requestId": ""},
     {"sourceRevision": None}, {"sourceRevision": {"number": True}},
     {"sourceIdentity": {"sourceType": "RAW_ASR", "sourceId": str(uuid4()), "meetingId": str(uuid4())}},

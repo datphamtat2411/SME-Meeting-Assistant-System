@@ -72,6 +72,28 @@ def event():
     return decode_notification(delivery)
 
 
+def lifecycle_event(operation="INVALIDATE", reason="ELIGIBILITY_CHANGED"):
+    item = event()
+    body = item.model_dump(mode="json", by_alias=True)
+    body.pop("snapshot")
+    body.update(operation=operation, reason=reason)
+    return decode_notification(SimpleNamespace(
+        body=json.dumps(body).encode(),
+        content_type="application/json",
+        delivery_mode=2,
+        routing_key="knowledge.indexing.requested",
+        exchange="meeting.processing",
+        message_id=item.event_id,
+        redelivered=False,
+        headers={
+            "eventId": item.event_id,
+            "eventType": "KNOWLEDGE_INDEXING_REQUESTED",
+            "eventSchemaVersion": 1,
+            "x-delivery-count": 0,
+        },
+    ))
+
+
 def settings(**overrides):
     return SimpleNamespace(
         knowledge_indexing_worker_concurrency=1,
@@ -332,6 +354,33 @@ def test_qdrant_unavailability_is_retryable_but_schema_rejection_is_terminal():
         assert terminal.error_code == "SCHEMA_INCOMPATIBLE"
     finally:
         worker_module_processing.process_snapshot = original
+
+
+def test_lifecycle_operations_use_exact_qdrant_source_scope():
+    item = lifecycle_event()
+    calls = []
+
+    class Store:
+        def invalidate_source(self, *args):
+            calls.append(("invalidate", args))
+            return 2
+
+        def delete_source(self, *args):
+            calls.append(("delete", args))
+            return 2
+
+    worker = worker_for(item, FakeCore(item))
+    worker.engine = SimpleNamespace(store=Store())
+
+    outcome = worker._process_lifecycle(item)
+
+    assert outcome.state == "INVALIDATED"
+    assert outcome.chunk_count == 0
+    assert calls == [(
+        "invalidate",
+        (item.meeting_id, item.source_identity.source_type, item.source_identity.source_id,
+         item.source_revision.number, item.index_generation.generation_id),
+    )]
 
 
 def test_core_knowledge_api_retries_temporary_unavailability_with_a_bounded_budget():

@@ -8,6 +8,8 @@ import java.time.OffsetDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -28,6 +30,51 @@ public class KnowledgeIndexingWorkerService {
     public Map<String, Object> status(UUID eventId) {
         Work work = find(eventId).orElseThrow(() -> new WorkerException(404, "WORKER_DELIVERY_UNKNOWN"));
         return statusData(work, false);
+    }
+
+    @Transactional(readOnly = true)
+    public List<Map<String, Object>> verifySources(List<SourceVerificationRequest> requests) {
+        OffsetDateTime verifiedAt = OffsetDateTime.now(java.time.ZoneOffset.UTC);
+        return requests.stream().map(request -> verifySource(request, verifiedAt)).toList();
+    }
+
+    private Map<String, Object> verifySource(SourceVerificationRequest request, OffsetDateTime verifiedAt) {
+        boolean visible = !jdbc.query("SELECT id FROM meetings WHERE id=?",
+            (rs, row) -> rs.getObject(1, UUID.class), request.meetingId()).isEmpty();
+        boolean exists = sourceExists(request);
+        Work probe = new Work(UUID.randomUUID(), request.meetingId(), request.sourceType(), request.sourceId(),
+            request.sourceRevision(), null, null, 0, "verification", "verification", "0".repeat(64),
+            "verification", "UPSERT", "NEW_REVISION", "PENDING", 0, null, null, null, null, null,
+            null, null, null, null, null, null, null, null);
+        SourceState source = source(probe);
+        boolean current = exists && source.sameIdentity() && source.currentRevision() == request.sourceRevision();
+        String status = !visible ? "NOT_VISIBLE" : !exists ? "DELETED"
+            : !current ? "SUPERSEDED" : source.eligible() ? "CURRENT" : "INELIGIBLE";
+        Map<String, Object> identity = Map.of("sourceType", request.sourceType(),
+            "sourceId", request.sourceId().toString(), "meetingId", request.meetingId().toString());
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("sourceIdentity", identity);
+        result.put("sourceRevision", Map.of("number", request.sourceRevision()));
+        if (source.currentRevision() >= 0) result.put("currentRevision",
+            Map.of("number", source.currentRevision()));
+        result.put("status", status);
+        result.put("eligible", "CURRENT".equals(status));
+        result.put("available", exists);
+        result.put("visible", visible);
+        result.put("verifiedAt", verifiedAt.toString());
+        return result;
+    }
+
+    private boolean sourceExists(SourceVerificationRequest request) {
+        String table = switch (request.sourceType()) {
+            case "TRANSCRIPT" -> "transcripts";
+            case "SUMMARY" -> "meeting_summary_versions";
+            case "DECISION" -> "meeting_decisions";
+            case "ACTION_ITEM" -> "action_items";
+            default -> throw new IllegalArgumentException("Unsupported knowledge source type.");
+        };
+        return !jdbc.query("SELECT id FROM " + table + " WHERE meeting_id=? AND id=?",
+            (rs, row) -> rs.getObject(1, UUID.class), request.meetingId(), request.sourceId()).isEmpty();
     }
 
     @Transactional
@@ -76,11 +123,13 @@ public class KnowledgeIndexingWorkerService {
                 && work.nextAttemptAt().isAfter(jdbc.queryForObject("SELECT CURRENT_TIMESTAMP", OffsetDateTime.class))) {
             throw WorkerException.conflict("WORKER_RETRY_BACKOFF");
         }
-        SourceState source = source(work);
-        if (!source.eligible() || source.currentRevision() != work.sourceRevision()
-                || !source.sameIdentity()) {
-            supersede(eventId);
-            throw WorkerException.conflict("WORKER_SOURCE_SUPERSEDED");
+        if ("UPSERT".equals(work.operation())) {
+            SourceState source = source(work);
+            if (!source.eligible() || source.currentRevision() != work.sourceRevision()
+                    || !source.sameIdentity()) {
+                supersede(eventId);
+                throw WorkerException.conflict("WORKER_SOURCE_SUPERSEDED");
+            }
         }
 
         UUID token = UUID.randomUUID();
@@ -131,6 +180,9 @@ public class KnowledgeIndexingWorkerService {
         lockMeeting(initial.meetingId());
         Work work = lock(eventId);
         requireOwner(work, command, certificateFingerprint, true);
+        if (!"UPSERT".equals(work.operation())) {
+            throw WorkerException.conflict("WORKER_SNAPSHOT_INTEGRITY_UNAVAILABLE");
+        }
         SnapshotRow snapshot = jdbc.queryForObject("""
             SELECT id,sha256,size_bytes,payload FROM knowledge_source_snapshots
             WHERE id=? AND source_type=? AND source_id=? AND source_revision=?
@@ -162,13 +214,20 @@ public class KnowledgeIndexingWorkerService {
         if (!work.indexGenerationId().equals(command.indexGenerationId())) {
             throw WorkerException.conflict("WORKER_GENERATION_CONFLICT");
         }
-        SourceState source = source(work);
-        if (!source.eligible() || source.currentRevision() != work.sourceRevision()
-                || !source.sameIdentity()) {
-            supersede(eventId);
-            throw WorkerException.conflict("WORKER_SOURCE_SUPERSEDED");
+        if ("UPSERT".equals(work.operation())) {
+            SourceState source = source(work);
+            if (!source.eligible() || source.currentRevision() != work.sourceRevision()
+                    || !source.sameIdentity()) {
+                supersede(eventId);
+                throw WorkerException.conflict("WORKER_SOURCE_SUPERSEDED");
+            }
         }
         String state = command.state();
+        if ("INVALIDATE".equals(work.operation()) && !"INVALIDATED".equals(state)
+                || "DELETE".equals(work.operation()) && !"DELETED".equals(state)
+                || "UPSERT".equals(work.operation()) && Set.of("INVALIDATED", "DELETED").contains(state)) {
+            throw WorkerException.conflict("WORKER_RESULT_CONFLICT");
+        }
         String errorCode = "NONE".equals(command.errorCode()) ? null : command.errorCode();
         jdbc.update("""
             UPDATE knowledge_indexing_work
@@ -191,12 +250,19 @@ public class KnowledgeIndexingWorkerService {
     private void validateCommand(Work work, KnowledgeIndexingWorkerCommands.Claim command) {
         if (!work.meetingId().equals(command.meetingId()) || !work.sourceType().equals(command.sourceType())
                 || !work.sourceId().equals(command.sourceId()) || work.sourceRevision() != command.sourceRevision()
-                || !work.snapshotId().equals(command.snapshotId()) || !work.snapshotSha256().equals(command.snapshotSha256())
-                || work.snapshotSizeBytes() != command.snapshotSizeBytes()
+                || !work.operation().equals(command.operation()) || !work.reason().equals(command.reason())
                 || !work.indexGenerationId().equals(command.indexGenerationId())
                 || !work.configurationVersion().equals(command.configurationVersion())
                 || !work.configurationSha256().equals(command.configurationSha256())
                 || !work.tokenizerId().equals(command.tokenizerId())) {
+            throw WorkerException.conflict("WORKER_IDENTITY_CONFLICT");
+        }
+        if ("UPSERT".equals(work.operation())
+                ? !Objects.equals(work.snapshotId(), command.snapshotId())
+                    || !Objects.equals(work.snapshotSha256(), command.snapshotSha256())
+                    || work.snapshotSizeBytes() != command.snapshotSizeBytes()
+                : command.snapshotId() != null || command.snapshotSha256() != null
+                    || command.snapshotSizeBytes() != 0) {
             throw WorkerException.conflict("WORKER_IDENTITY_CONFLICT");
         }
     }
@@ -230,8 +296,12 @@ public class KnowledgeIndexingWorkerService {
         data.put("sourceIdentity", Map.of("sourceType", work.sourceType(),
             "sourceId", work.sourceId(), "meetingId", work.meetingId()));
         data.put("sourceRevision", Map.of("number", work.sourceRevision()));
-        data.put("snapshot", Map.of("snapshotId", work.snapshotId(), "sha256", work.snapshotSha256(),
-            "sizeBytes", work.snapshotSizeBytes()));
+        data.put("operation", work.operation());
+        data.put("reason", work.reason());
+        if ("UPSERT".equals(work.operation())) {
+            data.put("snapshot", Map.of("snapshotId", work.snapshotId(), "sha256", work.snapshotSha256(),
+                "sizeBytes", work.snapshotSizeBytes()));
+        }
         data.put("indexGeneration", Map.of("generationId", work.indexGenerationId(),
             "configurationVersion", work.configurationVersion(),
             "configurationSha256", work.configurationSha256(), "tokenizerId", work.tokenizerId()));
@@ -258,6 +328,8 @@ public class KnowledgeIndexingWorkerService {
         data.put("sourceType", work.sourceType());
         data.put("sourceId", work.sourceId());
         data.put("sourceRevision", work.sourceRevision());
+        data.put("operation", work.operation());
+        data.put("reason", work.reason());
         data.put("indexGenerationId", work.indexGenerationId());
         data.put("state", work.state());
         data.put("acknowledge", terminal(work));
@@ -273,7 +345,7 @@ public class KnowledgeIndexingWorkerService {
     }
 
     private boolean terminal(Work work) {
-        return List.of("INDEXED", "NO_ELIGIBLE_CONTENT", "TERMINAL_FAILURE", "SUPERSEDED")
+        return List.of("INDEXED", "NO_ELIGIBLE_CONTENT", "INVALIDATED", "DELETED", "TERMINAL_FAILURE", "SUPERSEDED")
             .contains(work.state());
     }
 
@@ -415,7 +487,8 @@ public class KnowledgeIndexingWorkerService {
             rs.getObject("snapshot_id", UUID.class), rs.getString("snapshot_sha256"),
             rs.getLong("snapshot_size_bytes"), rs.getString("index_generation_id"),
             rs.getString("configuration_version"), rs.getString("configuration_sha256"),
-            rs.getString("tokenizer_id"), rs.getString("state"), rs.getInt("attempt_count"),
+            rs.getString("tokenizer_id"), rs.getString("operation"), rs.getString("reason"),
+            rs.getString("state"), rs.getInt("attempt_count"),
             rs.getObject("claim_token", UUID.class), rs.getObject("claim_request_id", UUID.class),
             rs.getString("claim_fingerprint"), rs.getString("owner_certificate_sha256"),
             rs.getObject("claim_expires_at", OffsetDateTime.class),
@@ -444,12 +517,16 @@ public class KnowledgeIndexingWorkerService {
         @Override public byte[] bytes() { return bytes.clone(); }
     }
 
+    public record SourceVerificationRequest(String sourceType, UUID sourceId, UUID meetingId,
+            long sourceRevision) { }
+
     private record SnapshotRow(UUID id, String sha256, long sizeBytes, byte[] payload) { }
     private record SourceState(long currentRevision, boolean eligible, boolean sameIdentity) { }
     private record Work(UUID eventId, UUID meetingId, String sourceType, UUID sourceId,
             long sourceRevision, UUID snapshotId, String snapshotSha256, long snapshotSizeBytes,
             String indexGenerationId, String configurationVersion, String configurationSha256,
-            String tokenizerId, String state, int attemptCount, UUID claimToken, UUID claimRequestId,
+            String tokenizerId, String operation, String reason, String state, int attemptCount,
+            UUID claimToken, UUID claimRequestId,
             String claimFingerprint, String ownerCertificateSha256, OffsetDateTime claimExpiresAt,
             OffsetDateTime nextAttemptAt, UUID acceptedResultId, String acceptedOutcome,
             String acceptedReceiptSha256, String acceptedClaimTokenSha256, Integer indexedChunkCount,

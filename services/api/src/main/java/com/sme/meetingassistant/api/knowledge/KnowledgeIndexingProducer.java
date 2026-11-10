@@ -13,6 +13,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -66,78 +67,189 @@ public class KnowledgeIndexingProducer {
             case "ACTION_ITEM" -> actionItem(sourceId, meetingId);
             default -> throw new IllegalArgumentException("Unsupported knowledge source type.");
         };
-        if (candidate == null) return Optional.empty();
-
-        var config = properties.getKnowledgeIndexing();
-        String generation = config.getGenerationId();
-        if (generation == null || generation.isBlank() || config.getConfigurationVersion() == null
-                || config.getConfigurationVersion().isBlank()
-                || config.getConfigurationSha256() == null
-                || !config.getConfigurationSha256().matches("[a-f0-9]{64}")
-                || config.getTokenizerId() == null || config.getTokenizerId().isBlank()) {
-            throw new IllegalStateException("Knowledge indexing generation is not configured.");
+        if (candidate == null) {
+            return requestLifecycleForSource(sourceType, sourceId, meetingId, null,
+                "INVALIDATE", "ELIGIBILITY_CHANGED", null);
         }
 
-        boolean existing = Boolean.TRUE.equals(jdbc.queryForObject("""
+        GenerationSpec generation = configuredGeneration();
+        Optional<KnowledgeIndexingEvent> event = createUpsert(candidate, generation,
+            "NEW_REVISION", 0, null, false);
+        retireObsoleteSources(candidate);
+        return event;
+    }
+
+    /** Create a same-revision repair intent without changing canonical source state. */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public Optional<KnowledgeIndexingEvent> requestReindex(String sourceType, UUID sourceId,
+            UUID meetingId, String generationId, UUID requestedByUserId) {
+        if (!properties.getKnowledgeIndexing().isEnabled()) return Optional.empty();
+        if (sourceType == null || sourceId == null || meetingId == null) {
+            throw new IllegalArgumentException("Knowledge source identity is required.");
+        }
+        Candidate candidate = switch (sourceType) {
+            case "TRANSCRIPT" -> transcript(sourceId, meetingId);
+            case "SUMMARY" -> summary(sourceId, meetingId);
+            case "DECISION" -> decision(sourceId, meetingId);
+            case "ACTION_ITEM" -> actionItem(sourceId, meetingId);
+            default -> throw new IllegalArgumentException("Unsupported knowledge source type.");
+        };
+        if (candidate == null) return Optional.empty();
+        GenerationSpec generation = generation(generationId);
+        long sequence = jdbc.queryForObject("""
+            SELECT COALESCE(MAX(intent_sequence), -1) + 1
+              FROM knowledge_indexing_work
+             WHERE source_type=? AND source_id=? AND source_revision=?
+               AND index_generation_id=? AND operation='UPSERT'
+            """, Long.class, sourceType, sourceId, candidate.revision(), generation.id());
+        return createUpsert(candidate, generation, "REINDEX_REQUESTED", sequence,
+            requestedByUserId, true);
+    }
+
+    /** Explicit Core-authorized lifecycle request used by deletion/retention controls. */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public Optional<KnowledgeIndexingEvent> requestDelete(String sourceType, UUID sourceId,
+            UUID meetingId, UUID requestedByUserId) {
+        return requestLifecycleForSource(sourceType, sourceId, meetingId, null,
+            "DELETE", "SOURCE_DELETED", requestedByUserId);
+    }
+
+    private Optional<KnowledgeIndexingEvent> createUpsert(Candidate candidate, GenerationSpec generation,
+            String reason, long intentSequence, UUID requestedByUserId, boolean repair) {
+        if (!repair && Boolean.TRUE.equals(jdbc.queryForObject("""
             SELECT EXISTS(
                 SELECT 1 FROM knowledge_indexing_work
-                WHERE source_type=? AND source_id=? AND source_revision=? AND index_generation_id=?
+                 WHERE source_type=? AND source_id=? AND source_revision=?
+                   AND index_generation_id=? AND operation='UPSERT' AND intent_sequence=0
             )
-            """, Boolean.class, candidate.sourceType(), candidate.sourceId(), candidate.revision(), generation));
-        if (existing) return Optional.empty();
+            """, Boolean.class, candidate.sourceType(), candidate.sourceId(), candidate.revision(), generation.id()))) {
+            return Optional.empty();
+        }
 
-        // A newer revision fences every older execution, including an already
-        // indexed historical result. T06 may later reconcile its physical points.
-        jdbc.update("""
-            UPDATE knowledge_indexing_work
-               SET state='SUPERSEDED', claim_token=NULL, claim_request_id=NULL,
-                   claim_fingerprint=NULL, owner_certificate_sha256=NULL,
-                   claim_expires_at=NULL, updated_at=CURRENT_TIMESTAMP
-             WHERE source_type=? AND source_id=? AND source_revision<?
-               AND state NOT IN ('SUPERSEDED','TERMINAL_FAILURE')
-            """, candidate.sourceType(), candidate.sourceId(), candidate.revision());
+        if (!repair) {
+            // A newer canonical revision fences every older execution before its
+            // replacement is published. Cleanup is a separate immutable intent.
+            jdbc.update("""
+                UPDATE knowledge_indexing_work
+                   SET state='SUPERSEDED', claim_token=NULL, claim_request_id=NULL,
+                       claim_fingerprint=NULL, owner_certificate_sha256=NULL,
+                       claim_expires_at=NULL, updated_at=CURRENT_TIMESTAMP
+                 WHERE source_type=? AND source_id=? AND source_revision<?
+                   AND operation='UPSERT' AND state NOT IN ('SUPERSEDED','TERMINAL_FAILURE')
+                """, candidate.sourceType(), candidate.sourceId(), candidate.revision());
+        }
 
-        String snapshotSha = digest(candidate.snapshotBytes());
-        long snapshotSize = candidate.snapshotBytes().length;
-        List<Snapshot> existingSnapshots = jdbc.query("""
+        Snapshot stored = snapshot(candidate);
+        KnowledgeIndexingEvent event = event(candidate, stored, generation, "UPSERT", reason);
+        insertEventAndWork(event, intentSequence, requestedByUserId);
+        return Optional.of(event);
+    }
+
+    private Optional<KnowledgeIndexingEvent> requestLifecycleForSource(String sourceType, UUID sourceId,
+            UUID meetingId, Long revision, String operation, String reason, UUID requestedByUserId) {
+        if (!properties.getKnowledgeIndexing().isEnabled()) return Optional.empty();
+        if (sourceType == null || sourceId == null || meetingId == null
+                || !Set.of("INVALIDATE", "DELETE").contains(operation)) {
+            throw new IllegalArgumentException("Invalid knowledge lifecycle identity.");
+        }
+        List<WorkTarget> targets = jdbc.query("""
+            SELECT DISTINCT ON (source_revision,index_generation_id)
+                   source_revision,index_generation_id,configuration_version,
+                   configuration_sha256,tokenizer_id
+              FROM knowledge_indexing_work
+             WHERE meeting_id=? AND source_type=? AND source_id=? AND operation='UPSERT'
+               AND (CAST(? AS BIGINT) IS NULL OR source_revision=CAST(? AS BIGINT))
+             ORDER BY source_revision,index_generation_id,intent_sequence DESC
+            """, (rs, row) -> new WorkTarget(rs.getLong("source_revision"),
+                rs.getString("index_generation_id"), rs.getString("configuration_version"),
+                rs.getString("configuration_sha256"), rs.getString("tokenizer_id")),
+            meetingId, sourceType, sourceId, revision, revision);
+        if (targets.isEmpty()) return Optional.empty();
+        KnowledgeIndexingEvent first = null;
+        for (WorkTarget target : targets) {
+            if (Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT EXISTS(
+                    SELECT 1 FROM knowledge_indexing_work
+                     WHERE source_type=? AND source_id=? AND source_revision=?
+                       AND index_generation_id=? AND operation=?
+                )
+                """, Boolean.class, sourceType, sourceId, target.revision(),
+                target.generationId(), operation))) continue;
+
+            GenerationSpec generation = new GenerationSpec(target.generationId(),
+                target.configurationVersion(), target.configurationSha256(), target.tokenizerId());
+            KnowledgeIndexingEvent event = event(new Candidate(sourceType, sourceId, meetingId,
+                target.revision(), new byte[0]), null, generation, operation, reason);
+            insertEventAndWork(event, 0, requestedByUserId);
+            if (first == null) first = event;
+        }
+        return Optional.ofNullable(first);
+    }
+
+    private void retireObsoleteSources(Candidate candidate) {
+        if (!Set.of("TRANSCRIPT", "SUMMARY").contains(candidate.sourceType())) return;
+        List<RetiredSource> retired = jdbc.query("""
+            SELECT DISTINCT source_id FROM knowledge_indexing_work
+             WHERE meeting_id=? AND source_type=? AND source_id<>? AND operation='UPSERT'
+            """, (rs, row) -> new RetiredSource(rs.getObject("source_id", UUID.class)),
+            candidate.meetingId(), candidate.sourceType(), candidate.sourceId());
+        for (RetiredSource source : retired) {
+            requestLifecycleForSource(candidate.sourceType(), source.sourceId(), candidate.meetingId(),
+                null, "INVALIDATE", "SOURCE_SUPERSEDED", null);
+        }
+        requestLifecycleForSource(candidate.sourceType(), candidate.sourceId(), candidate.meetingId(),
+            candidate.revision() - 1, "INVALIDATE", "SOURCE_SUPERSEDED", null);
+    }
+
+    private Snapshot snapshot(Candidate candidate) {
+        byte[] bytes = candidate.snapshotBytes();
+        String snapshotSha = digest(bytes);
+        long snapshotSize = bytes.length;
+        List<Snapshot> existing = jdbc.query("""
             SELECT id,sha256,size_bytes FROM knowledge_source_snapshots
-            WHERE source_type=? AND source_id=? AND source_revision=?
+             WHERE source_type=? AND source_id=? AND source_revision=?
             """, (rs, row) -> new Snapshot(rs.getObject("id", UUID.class),
                 rs.getString("sha256"), rs.getLong("size_bytes")),
             candidate.sourceType(), candidate.sourceId(), candidate.revision());
-        Snapshot stored;
-        if (existingSnapshots.isEmpty()) {
-            UUID snapshotId = snapshotId(candidate.snapshotBytes());
-            jdbc.update("""
-                INSERT INTO knowledge_source_snapshots(
-                    id,meeting_id,source_type,source_id,source_revision,payload,sha256,size_bytes)
-                VALUES (?,?,?,?,?,?,?,?)
-                ON CONFLICT (source_type,source_id,source_revision) DO NOTHING
-                """, snapshotId, candidate.meetingId(), candidate.sourceType(), candidate.sourceId(),
-                candidate.revision(), candidate.snapshotBytes(), snapshotSha, snapshotSize);
-            stored = jdbc.queryForObject("""
-                SELECT id,sha256,size_bytes FROM knowledge_source_snapshots
-                WHERE source_type=? AND source_id=? AND source_revision=?
-                """, (rs, row) -> new Snapshot(rs.getObject("id", UUID.class),
-                    rs.getString("sha256"), rs.getLong("size_bytes")),
-                candidate.sourceType(), candidate.sourceId(), candidate.revision());
+        if (!existing.isEmpty()) {
+            Snapshot stored = existing.getFirst();
             if (!snapshotSha.equals(stored.sha256()) || snapshotSize != stored.sizeBytes()) {
                 throw new IllegalStateException("Canonical knowledge revision has conflicting snapshot bytes.");
             }
-        } else {
-            // A source revision has one immutable canonical projection. Reuse it
-            // when another generation is deployed instead of serializing a new
-            // random snapshot identity for the same revision.
-            stored = existingSnapshots.getFirst();
+            return stored;
         }
+        UUID snapshotId = snapshotId(bytes);
+        jdbc.update("""
+            INSERT INTO knowledge_source_snapshots(
+                id,meeting_id,source_type,source_id,source_revision,payload,sha256,size_bytes)
+            VALUES (?,?,?,?,?,?,?,?)
+            ON CONFLICT (source_type,source_id,source_revision) DO NOTHING
+            """, snapshotId, candidate.meetingId(), candidate.sourceType(), candidate.sourceId(),
+            candidate.revision(), bytes, snapshotSha, snapshotSize);
+        Snapshot stored = jdbc.queryForObject("""
+            SELECT id,sha256,size_bytes FROM knowledge_source_snapshots
+             WHERE source_type=? AND source_id=? AND source_revision=?
+            """, (rs, row) -> new Snapshot(rs.getObject("id", UUID.class),
+                rs.getString("sha256"), rs.getLong("size_bytes")),
+            candidate.sourceType(), candidate.sourceId(), candidate.revision());
+        if (!snapshotSha.equals(stored.sha256()) || snapshotSize != stored.sizeBytes()) {
+            throw new IllegalStateException("Canonical knowledge revision has conflicting snapshot bytes.");
+        }
+        return stored;
+    }
 
+    private KnowledgeIndexingEvent event(Candidate candidate, Snapshot snapshot,
+            GenerationSpec generation, String operation, String reason) {
         UUID eventId = UUID.randomUUID();
-        String requestId = requestId(eventId);
-        KnowledgeIndexingEvent event = new KnowledgeIndexingEvent(eventId,
-            OffsetDateTime.now(ZoneOffset.UTC), requestId, candidate.meetingId(),
-            candidate.sourceType(), candidate.sourceId(), candidate.revision(), stored.id(),
-            stored.sha256(), stored.sizeBytes(), generation, config.getConfigurationVersion(),
-            config.getConfigurationSha256(), config.getTokenizerId());
+        return new KnowledgeIndexingEvent(eventId, OffsetDateTime.now(ZoneOffset.UTC), requestId(eventId),
+            candidate.meetingId(), candidate.sourceType(), candidate.sourceId(), candidate.revision(),
+            snapshot == null ? null : snapshot.id(), snapshot == null ? null : snapshot.sha256(),
+            snapshot == null ? 0 : snapshot.sizeBytes(), generation.id(), generation.configurationVersion(),
+            generation.configurationSha256(), generation.tokenizerId(), operation, reason);
+    }
+
+    private void insertEventAndWork(KnowledgeIndexingEvent event, long intentSequence,
+            UUID requestedByUserId) {
         String payload;
         try {
             payload = json.writeValueAsString(event.payload());
@@ -145,8 +257,7 @@ public class KnowledgeIndexingProducer {
             throw new IllegalStateException("Knowledge indexing event serialization failed.", failure);
         }
         jdbc.update("""
-            INSERT INTO outbox_events(
-                id,aggregate_type,aggregate_id,event_type,payload,occurred_at)
+            INSERT INTO outbox_events(id,aggregate_type,aggregate_id,event_type,payload,occurred_at)
             VALUES (?,?,?,?,CAST(? AS jsonb),?)
             """, event.eventId(), AGGREGATE_TYPE, event.sourceId(), EVENT_TYPE, payload,
             event.occurredAt());
@@ -154,13 +265,31 @@ public class KnowledgeIndexingProducer {
             INSERT INTO knowledge_indexing_work(
                 event_id,meeting_id,source_type,source_id,source_revision,snapshot_id,
                 snapshot_sha256,snapshot_size_bytes,index_generation_id,configuration_version,
-                configuration_sha256,tokenizer_id)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                configuration_sha256,tokenizer_id,operation,reason,intent_sequence,requested_by_user_id)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, event.eventId(), event.meetingId(), event.sourceType(), event.sourceId(),
-            event.sourceRevision(), event.snapshotId(), event.snapshotSha256(), event.snapshotSizeBytes(),
-            event.indexGenerationId(), event.configurationVersion(), event.configurationSha256(),
-            event.tokenizerId());
-        return Optional.of(event);
+            event.sourceRevision(), event.snapshotId(), event.snapshotSha256(),
+            event.snapshotSizeBytes() == 0 ? null : event.snapshotSizeBytes(), event.indexGenerationId(),
+            event.configurationVersion(), event.configurationSha256(), event.tokenizerId(),
+            event.operation(), event.reason(), intentSequence, requestedByUserId);
+    }
+
+    private GenerationSpec configuredGeneration() {
+        var config = properties.getKnowledgeIndexing();
+        return new GenerationSpec(config.getGenerationId(), config.getConfigurationVersion(),
+            config.getConfigurationSha256(), config.getTokenizerId());
+    }
+
+    private GenerationSpec generation(String generationId) {
+        if (generationId == null || generationId.isBlank()) return configuredGeneration();
+        return jdbc.query("""
+            SELECT generation_id,configuration_version,configuration_sha256,tokenizer_id
+              FROM knowledge_index_generations
+             WHERE generation_id=? AND state IN ('PREPARING','READY','ACTIVE')
+            """, (rs, row) -> new GenerationSpec(rs.getString("generation_id"),
+                rs.getString("configuration_version"), rs.getString("configuration_sha256"),
+                rs.getString("tokenizer_id")), generationId).stream().findFirst()
+            .orElseThrow(() -> new IllegalArgumentException("Knowledge index generation is not ready."));
     }
 
     private Candidate transcript(UUID sourceId, UUID meetingId) {
@@ -435,6 +564,20 @@ public class KnowledgeIndexingProducer {
     }
 
     private record Snapshot(UUID id, String sha256, long sizeBytes) { }
+    private record GenerationSpec(String id, String configurationVersion,
+            String configurationSha256, String tokenizerId) {
+        private GenerationSpec {
+            if (id == null || id.isBlank() || configurationVersion == null
+                    || configurationVersion.isBlank() || configurationSha256 == null
+                    || !configurationSha256.matches("[a-f0-9]{64}")
+                    || tokenizerId == null || tokenizerId.isBlank()) {
+                throw new IllegalStateException("Knowledge indexing generation is not configured.");
+            }
+        }
+    }
+    private record WorkTarget(long revision, String generationId, String configurationVersion,
+            String configurationSha256, String tokenizerId) { }
+    private record RetiredSource(UUID sourceId) { }
     private record SummaryRow(UUID id, UUID meetingId, int versionNumber, String content,
             String sourceType, String qualityStatus, boolean isCurrent, UUID processingJobId,
             UUID transcriptId, Long contentRevision, long selectionEpoch, String aiWarningCodes,

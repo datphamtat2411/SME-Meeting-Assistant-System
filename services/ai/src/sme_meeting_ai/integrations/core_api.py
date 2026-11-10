@@ -222,7 +222,12 @@ class KnowledgeClaim(KnowledgeLease):
     meetingId: Uuid
     sourceIdentity: KnowledgeSourceIdentity
     sourceRevision: KnowledgeSourceRevision
-    snapshot: KnowledgeSnapshotReference
+    operation: Literal["UPSERT", "INVALIDATE", "DELETE"] = "UPSERT"
+    reason: Literal[
+        "NEW_REVISION", "ELIGIBILITY_CHANGED", "SOURCE_SUPERSEDED", "SOURCE_DELETED",
+        "REINDEX_REQUESTED", "RECONCILIATION_REQUESTED",
+    ] = "NEW_REVISION"
+    snapshot: KnowledgeSnapshotReference | None = None
     indexGeneration: KnowledgeIndexGeneration
     claimToken: SecretStr = Field(repr=False)
     leaseSeconds: int = Field(gt=5, le=7200)
@@ -233,6 +238,20 @@ class KnowledgeClaim(KnowledgeLease):
         uuid_string(self.claimToken.get_secret_value())
         if self.meetingId != self.sourceIdentity.meetingId:
             raise ValueError("Invalid knowledge claim identity")
+        if self.operation == "UPSERT" and self.snapshot is None:
+            raise ValueError("Knowledge upsert claim requires a snapshot")
+        if self.operation != "UPSERT" and self.snapshot is not None:
+            raise ValueError("Knowledge lifecycle claim cannot carry a snapshot")
+        if self.operation == "UPSERT" and self.reason not in {
+            "NEW_REVISION", "REINDEX_REQUESTED", "RECONCILIATION_REQUESTED",
+        }:
+            raise ValueError("Knowledge upsert claim reason is incompatible")
+        if self.operation == "INVALIDATE" and self.reason not in {
+            "ELIGIBILITY_CHANGED", "SOURCE_SUPERSEDED", "SOURCE_DELETED", "RECONCILIATION_REQUESTED",
+        }:
+            raise ValueError("Knowledge invalidation claim reason is incompatible")
+        if self.operation == "DELETE" and self.reason != "SOURCE_DELETED":
+            raise ValueError("Knowledge delete claim requires source deletion reason")
         return self
 
 
@@ -246,8 +265,13 @@ class KnowledgeDeliveryStatus(WireModel):
     indexGenerationId: str = Field(min_length=1, max_length=128)
     state: Literal[
         "PENDING", "CLAIMED", "INDEXED", "RETRYABLE_FAILURE", "TERMINAL_FAILURE",
-        "SUPERSEDED", "NO_ELIGIBLE_CONTENT",
+        "INVALIDATED", "DELETED", "SUPERSEDED", "NO_ELIGIBLE_CONTENT",
     ]
+    operation: Literal["UPSERT", "INVALIDATE", "DELETE"] = "UPSERT"
+    reason: Literal[
+        "NEW_REVISION", "ELIGIBILITY_CHANGED", "SOURCE_SUPERSEDED", "SOURCE_DELETED",
+        "REINDEX_REQUESTED", "RECONCILIATION_REQUESTED",
+    ] = "NEW_REVISION"
     acknowledge: bool
     attemptCount: Count
     replay: bool
@@ -258,7 +282,9 @@ class KnowledgeDeliveryStatus(WireModel):
 
     @property
     def durable(self) -> bool:
-        return self.state in {"INDEXED", "NO_ELIGIBLE_CONTENT", "TERMINAL_FAILURE", "SUPERSEDED"}
+        return self.state in {
+            "INDEXED", "INVALIDATED", "DELETED", "NO_ELIGIBLE_CONTENT", "TERMINAL_FAILURE", "SUPERSEDED",
+        }
 
 
 @dataclass(frozen=True)
@@ -569,13 +595,19 @@ class KnowledgeCoreApiClient(CoreApiClient):
                 or result.sourceIdentity.sourceId != event.source_identity.source_id
                 or result.sourceIdentity.meetingId != event.meeting_id
                 or result.sourceRevision.number != event.source_revision.number
-                or result.snapshot.snapshotId != event.snapshot.snapshot_id
-                or result.snapshot.sha256 != event.snapshot.sha256
-                or result.snapshot.sizeBytes != event.snapshot.size_bytes
+                or result.operation != event.operation
+                or result.reason != event.reason
                 or result.indexGeneration.generationId != event.index_generation.generation_id
                 or result.indexGeneration.configurationVersion != event.index_generation.configuration_version
                 or result.indexGeneration.configurationSha256 != event.index_generation.configuration_sha256
                 or result.indexGeneration.tokenizerId != event.index_generation.tokenizer_id
+                or event.operation == "UPSERT" and (
+                    result.snapshot is None
+                    or result.snapshot.snapshotId != event.snapshot.snapshot_id
+                    or result.snapshot.sha256 != event.snapshot.sha256
+                    or result.snapshot.sizeBytes != event.snapshot.size_bytes
+                )
+                or event.operation != "UPSERT" and result.snapshot is not None
             ):
                 raise CoreError(409, "WORKER_IDENTITY_CONFLICT")
             return result
@@ -587,6 +619,8 @@ class KnowledgeCoreApiClient(CoreApiClient):
             or result.sourceType != event.source_identity.source_type
             or result.sourceRevision != event.source_revision.number
             or result.indexGenerationId != event.index_generation.generation_id
+            or result.operation != event.operation
+            or result.reason != event.reason
         ):
             raise CoreError(409, "WORKER_IDENTITY_CONFLICT")
         return result
@@ -609,10 +643,13 @@ class KnowledgeCoreApiClient(CoreApiClient):
                 mode="json", by_alias=True, exclude_none=True,
             ),
             "operation": event.operation,
-            "snapshot": event.snapshot.model_dump(mode="json", by_alias=True),
             "indexGeneration": event.index_generation.model_dump(mode="json", by_alias=True),
             "claimRequestId": str(request_id),
         }
+        if event.operation == "UPSERT":
+            body["snapshot"] = event.snapshot.model_dump(mode="json", by_alias=True)
+        else:
+            body["reason"] = event.reason
         return await self.request_knowledge(event, "claim", body)
 
     async def renew(self, event, claim, **options):

@@ -282,7 +282,7 @@ public class ActionItemService {
             history(id, "DUE_DATE", string(old.dueDate()), string(dueDate), actorId);
         }
         ActionItemView updatedItem = byId(id);
-        if (isOfficial(updatedItem)) knowledge.request("ACTION_ITEM", id, updatedItem.meetingId());
+        knowledge.request("ACTION_ITEM", id, updatedItem.meetingId());
         return visibleForActor(updatedItem, actorId);
     }
 
@@ -348,7 +348,7 @@ public class ActionItemService {
             assignmentEvents.invalidate(id, old.version() + 1, statusHistory, target.name());
         }
         ActionItemView updatedItem = byId(id);
-        if (isOfficial(updatedItem)) knowledge.request("ACTION_ITEM", id, updatedItem.meetingId());
+        knowledge.request("ACTION_ITEM", id, updatedItem.meetingId());
         return visibleForActor(updatedItem, actor);
     }
 

@@ -22,7 +22,8 @@ public final class WorkerOperations {
     private static final Pattern KNOWLEDGE_DELIVERY=Pattern.compile(
         "/internal/v1/worker/knowledge-indexing/deliveries/" + UUID);
     private static final Set<String> KNOWLEDGE_GRANTS=Set.of("knowledge.claim","knowledge.renew",
-        "knowledge.snapshot","knowledge.result","knowledge.read-delivery");
+        "knowledge.snapshot","knowledge.result","knowledge.read-delivery",
+        "knowledge.source-verification");
     private static final Set<String> GRANTS = Set.of("transcription.claim", "transcription.read-delivery",
         "transcription.renew", "transcription.complete", "transcription.fail",
         "diarization.claim", "diarization.snapshot", "diarization.renew", "diarization.complete", "diarization.fail", "diarization.read-delivery");
@@ -40,6 +41,10 @@ public final class WorkerOperations {
         var knowledge=KNOWLEDGE_COMMAND.matcher(path);
         if("POST".equals(method) && knowledge.matches()) return "knowledge." + knowledge.group(1);
         if("GET".equals(method) && KNOWLEDGE_DELIVERY.matcher(path).matches()) return "knowledge.read-delivery";
+        if("POST".equals(method)
+                && "/internal/v1/worker/knowledge-indexing/source-verification".equals(path)) {
+            return "knowledge.source-verification";
+        }
         return null;
     }
 

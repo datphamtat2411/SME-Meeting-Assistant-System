@@ -345,6 +345,42 @@ def test_qdrant_schema_is_named_compatible_and_non_destructive():
         legacy_store.ensure_schema()
 
 
+def test_qdrant_lifecycle_operations_target_exact_source_revision():
+    tokenizer, processing = tokenizer_and_processing()
+    model = adapter(tokenizer)
+    client = QdrantClient(location=":memory:")
+    store = QdrantVectorStore(
+        QdrantConfig(url="http://127.0.0.1:6333", collection_name="rag-t02-lifecycle"),
+        compatibility=model.compatibility,
+        client=client,
+    )
+    store.ensure_schema()
+    chunk = processing.chunks[0]
+    embedding = model.embed_documents((chunk,))[0]
+    point = VectorPoint(
+        point_id=chunk.chunk_id,
+        dense=embedding.dense,
+        sparse=embedding.sparse,
+        payload=build_qdrant_payload(chunk, embedding),
+    )
+    assert store.upsert((point,)) == 1
+    payload = point.payload
+
+    assert store.invalidate_source(
+        payload["meeting_id"], payload["source_type"], payload["canonical_source_id"],
+        payload["canonical_source_revision"], payload["index_generation_id"],
+    ) == 1
+    invalidated = store.get_point(point.point_id)
+    assert invalidated.payload["source_current"] is False
+    assert invalidated.payload["source_status"] == "INVALIDATED"
+
+    assert store.delete_source(
+        payload["meeting_id"], payload["source_type"], payload["canonical_source_id"],
+        payload["canonical_source_revision"], payload["index_generation_id"],
+    ) == 1
+    assert store.get_point(point.point_id) is None
+
+
 def test_qdrant_normal_schema_reuse_and_repeated_indexing_do_not_scroll_points():
     tokenizer, processing = tokenizer_and_processing()
     model = adapter(tokenizer)

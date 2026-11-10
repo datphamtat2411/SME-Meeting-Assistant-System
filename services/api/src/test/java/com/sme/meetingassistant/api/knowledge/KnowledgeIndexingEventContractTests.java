@@ -34,4 +34,18 @@ class KnowledgeIndexingEventContractTests {
             java.util.Map.of("snapshotId", snapshotId.toString(), "sha256", "a".repeat(64),
                 "sizeBytes", 512L));
     }
+
+    @Test
+    void lifecycleEventCarriesIdentityAndGenerationButNoSnapshot() {
+        UUID meetingId = UUID.randomUUID();
+        var event = new KnowledgeIndexingEvent(UUID.randomUUID(),
+            OffsetDateTime.of(2026, 11, 10, 12, 0, 0, 0, ZoneOffset.UTC),
+            "trace-2", meetingId, "SUMMARY", UUID.randomUUID(), 7, null,
+            null, 0, "rag-t01-v1", "chunking-v1", "b".repeat(64),
+            "bge-m3", "INVALIDATE", "ELIGIBILITY_CHANGED");
+
+        assertThat(event.payload()).doesNotContainKey("snapshot")
+            .containsEntry("operation", "INVALIDATE")
+            .containsEntry("reason", "ELIGIBILITY_CHANGED");
+    }
 }

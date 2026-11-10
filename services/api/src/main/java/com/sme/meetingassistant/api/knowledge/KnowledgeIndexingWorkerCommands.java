@@ -5,6 +5,7 @@ import com.sme.meetingassistant.api.media.worker.WorkerJson;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.HexFormat;
+import java.util.Set;
 import java.util.UUID;
 import tools.jackson.databind.JsonNode;
 
@@ -16,22 +17,44 @@ public final class KnowledgeIndexingWorkerCommands {
             UUID meetingId, String sourceType, UUID sourceId, long sourceRevision, UUID snapshotId,
             String snapshotSha256, long snapshotSizeBytes, String indexGenerationId,
             String configurationVersion, String configurationSha256, String tokenizerId,
-            UUID claimRequestId) { }
+            String operation, String reason, UUID claimRequestId) {
+        /** T05 source-compatible command constructor. */
+        public Claim(String contractVersion, int eventSchemaVersion, UUID eventId, String eventType,
+                UUID meetingId, String sourceType, UUID sourceId, long sourceRevision, UUID snapshotId,
+                String snapshotSha256, long snapshotSizeBytes, String indexGenerationId,
+                String configurationVersion, String configurationSha256, String tokenizerId,
+                UUID claimRequestId) {
+            this(contractVersion, eventSchemaVersion, eventId, eventType, meetingId, sourceType,
+                sourceId, sourceRevision, snapshotId, snapshotSha256, snapshotSizeBytes,
+                indexGenerationId, configurationVersion, configurationSha256, tokenizerId,
+                "UPSERT", "NEW_REVISION", claimRequestId);
+        }
+    }
     public record Owner(String contractVersion, UUID eventId, UUID claimToken) { }
     public record Result(String contractVersion, UUID eventId, UUID claimToken, UUID resultId,
             String state, String indexGenerationId, int chunkCount, String receiptSha256,
             String errorCode) { }
 
     public static Claim claim(JsonNode input) {
-        WorkerJson.fields(input, "contractVersion", "eventId", "eventType", "eventSchemaVersion",
-            "meetingId", "sourceIdentity", "sourceRevision", "operation", "snapshot",
-            "indexGeneration", "claimRequestId");
+        WorkerJson.require(input != null && input.isObject());
+        WorkerJson.require(input.has("operation"));
+        String operation = WorkerJson.choice(input, "operation", "UPSERT", "INVALIDATE", "DELETE");
+        boolean hasReason = input.has("reason");
+        if ("UPSERT".equals(operation)) {
+            WorkerJson.require(!hasReason);
+            WorkerJson.fields(input, "contractVersion", "eventId", "eventType", "eventSchemaVersion",
+                "meetingId", "sourceIdentity", "sourceRevision", "operation", "snapshot",
+                "indexGeneration", "claimRequestId");
+        } else {
+            WorkerJson.fields(input, "contractVersion", "eventId", "eventType", "eventSchemaVersion",
+                "meetingId", "sourceIdentity", "sourceRevision", "operation", "reason",
+                "indexGeneration", "claimRequestId");
+        }
         WorkerJson.require("1.0".equals(WorkerJson.string(input, "contractVersion", 8)));
         int schema = (int) WorkerJson.number(input, "eventSchemaVersion", 1, 1);
         UUID eventId = WorkerJson.uuid(input, "eventId");
         WorkerJson.require(KnowledgeIndexingProducer.EVENT_TYPE.equals(
             WorkerJson.string(input, "eventType", 64)));
-        WorkerJson.require("UPSERT".equals(WorkerJson.string(input, "operation", 16)));
         UUID meetingId = WorkerJson.uuid(input, "meetingId");
 
         JsonNode identity = input.get("sourceIdentity");
@@ -45,11 +68,16 @@ public final class KnowledgeIndexingWorkerCommands {
         WorkerJson.fields(revision, "number");
         long sourceRevision = WorkerJson.number(revision, "number", 0, Long.MAX_VALUE);
 
-        JsonNode snapshot = input.get("snapshot");
-        WorkerJson.fields(snapshot, "snapshotId", "sha256", "sizeBytes");
-        UUID snapshotId = WorkerJson.uuid(snapshot, "snapshotId");
-        String snapshotSha = WorkerJson.digest(snapshot, "sha256");
-        long snapshotSize = WorkerJson.number(snapshot, "sizeBytes", 1, 8 * 1024 * 1024);
+        UUID snapshotId = null;
+        String snapshotSha = null;
+        long snapshotSize = 0;
+        if ("UPSERT".equals(operation)) {
+            JsonNode snapshot = input.get("snapshot");
+            WorkerJson.fields(snapshot, "snapshotId", "sha256", "sizeBytes");
+            snapshotId = WorkerJson.uuid(snapshot, "snapshotId");
+            snapshotSha = WorkerJson.digest(snapshot, "sha256");
+            snapshotSize = WorkerJson.number(snapshot, "sizeBytes", 1, 8 * 1024 * 1024);
+        }
 
         JsonNode generation = input.get("indexGeneration");
         WorkerJson.fields(generation, "generationId", "configurationVersion",
@@ -58,10 +86,18 @@ public final class KnowledgeIndexingWorkerCommands {
         String configurationVersion = WorkerJson.token(generation, "configurationVersion", 128);
         String configurationSha = WorkerJson.digest(generation, "configurationSha256");
         String tokenizerId = WorkerJson.token(generation, "tokenizerId", 128);
+        String reason = hasReason ? WorkerJson.choice(input, "reason", "NEW_REVISION",
+            "ELIGIBILITY_CHANGED", "SOURCE_SUPERSEDED", "SOURCE_DELETED", "REINDEX_REQUESTED",
+            "RECONCILIATION_REQUESTED") : "NEW_REVISION";
+        if ("UPSERT".equals(operation) && !Set.of("NEW_REVISION", "REINDEX_REQUESTED",
+                "RECONCILIATION_REQUESTED").contains(reason)) WorkerJson.require(false);
+        if ("INVALIDATE".equals(operation) && !Set.of("ELIGIBILITY_CHANGED", "SOURCE_SUPERSEDED",
+                "SOURCE_DELETED", "RECONCILIATION_REQUESTED").contains(reason)) WorkerJson.require(false);
+        if ("DELETE".equals(operation)) WorkerJson.require("SOURCE_DELETED".equals(reason));
         UUID requestId = WorkerJson.uuid(input, "claimRequestId");
         return new Claim("1.0", schema, eventId, KnowledgeIndexingProducer.EVENT_TYPE, meetingId,
             sourceType, sourceId, sourceRevision, snapshotId, snapshotSha, snapshotSize,
-            generationId, configurationVersion, configurationSha, tokenizerId, requestId);
+            generationId, configurationVersion, configurationSha, tokenizerId, operation, reason, requestId);
     }
 
     public static Owner owner(JsonNode input) {
@@ -75,10 +111,11 @@ public final class KnowledgeIndexingWorkerCommands {
             "state", "indexGenerationId", "chunkCount", "receiptSha256", "errorCode");
         WorkerJson.require("1.0".equals(WorkerJson.string(input, "contractVersion", 8)));
         String state = WorkerJson.choice(input, "state", "INDEXED", "NO_ELIGIBLE_CONTENT",
-            "RETRYABLE_FAILURE", "TERMINAL_FAILURE");
+            "INVALIDATED", "DELETED", "RETRYABLE_FAILURE", "TERMINAL_FAILURE");
         String error = WorkerJson.string(input, "errorCode", 80);
         WorkerJson.require("NONE".equals(error) || error.matches("[A-Z][A-Z0-9_]{0,79}"));
-        WorkerJson.require(("INDEXED".equals(state) || "NO_ELIGIBLE_CONTENT".equals(state))
+        WorkerJson.require(("INDEXED".equals(state) || "NO_ELIGIBLE_CONTENT".equals(state)
+            || "INVALIDATED".equals(state) || "DELETED".equals(state))
             ? "NONE".equals(error) : !"NONE".equals(error));
         int chunks = (int) WorkerJson.number(input, "chunkCount", 0, 100_000);
         WorkerJson.require("INDEXED".equals(state) ? chunks > 0 : chunks == 0);

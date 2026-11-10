@@ -128,6 +128,38 @@ class KnowledgeIndexingWorkerIntegrationTests {
 
     @Test
     @Transactional
+    void deletedSourceCanClaimAndCompleteLifecycleWorkWithoutSnapshot() {
+        UUID userId = UUID.randomUUID();
+        UUID meetingId = UUID.randomUUID();
+        UUID itemId = UUID.randomUUID();
+        insertManualAction(userId, meetingId, itemId);
+        enableKnowledgeIndexing();
+        var upsert = producer.request("ACTION_ITEM", itemId, meetingId).orElseThrow();
+
+        var invalidation = producer.requestDelete("ACTION_ITEM", itemId, meetingId, userId).orElseThrow();
+        assertThat(invalidation.operation()).isEqualTo("DELETE");
+        assertThat(invalidation.snapshotId()).isNull();
+        assertThat(jdbc.queryForObject("SELECT operation FROM knowledge_indexing_work WHERE event_id=?",
+            String.class, invalidation.eventId())).isEqualTo("DELETE");
+
+        publish(invalidation.eventId());
+        var claim = new KnowledgeIndexingWorkerCommands.Claim("1.0", 1, invalidation.eventId(),
+            KnowledgeIndexingProducer.EVENT_TYPE, meetingId, "ACTION_ITEM", itemId,
+            upsert.sourceRevision(), null, null, 0, "rag-t02-bge-m3-v1", "rag-t02-bge-m3-v1",
+            properties.getKnowledgeIndexing().getConfigurationSha256(),
+            "BAAI/bge-m3-tokenizer:5617a9f61b028005a4858fdac845db406aefb181",
+            "DELETE", "SOURCE_DELETED", UUID.randomUUID());
+        String certificate = "c".repeat(64);
+        UUID token = (UUID) worker.claim(invalidation.eventId(), claim, certificate).get("claimToken");
+        var result = new KnowledgeIndexingWorkerCommands.Result("1.0", invalidation.eventId(), token,
+            UUID.randomUUID(), "DELETED", "rag-t02-bge-m3-v1", 0, "d".repeat(64), "NONE");
+
+        assertThat(worker.result(invalidation.eventId(), result, certificate))
+            .containsEntry("state", "DELETED").containsEntry("acknowledge", true);
+    }
+
+    @Test
+    @Transactional
     void expiredClaimIsReplacedAndThePreviousTokenCannotSubmitAResult() {
         var fixture = publishedAction();
         String firstCertificate = "c".repeat(64);
@@ -361,11 +393,15 @@ class KnowledgeIndexingWorkerIntegrationTests {
         var event = producer.request("ACTION_ITEM", itemId, meetingId).orElseThrow();
         byte[] payload = jdbc.queryForObject("SELECT payload FROM knowledge_source_snapshots WHERE id=?",
             byte[].class, event.snapshotId());
-        jdbc.update("UPDATE outbox_events SET status='PUBLISHED', published_at=CURRENT_TIMESTAMP WHERE id=?",
-            event.eventId());
-        jdbc.update("UPDATE knowledge_indexing_work SET published_at=CURRENT_TIMESTAMP WHERE event_id=?",
-            event.eventId());
+        publish(event.eventId());
         return new PublishedAction(userId, meetingId, itemId, event, payload);
+    }
+
+    private void publish(UUID eventId) {
+        jdbc.update("UPDATE outbox_events SET status='PUBLISHED', published_at=CURRENT_TIMESTAMP WHERE id=?",
+            eventId);
+        jdbc.update("UPDATE knowledge_indexing_work SET published_at=CURRENT_TIMESTAMP WHERE event_id=?",
+            eventId);
     }
 
     private KnowledgeIndexingWorkerCommands.Claim claimCommand(PublishedAction fixture, UUID requestId) {

@@ -39,6 +39,21 @@ class KnowledgeIndexingWorkerCommandsTests {
             .isInstanceOf(WorkerException.class);
     }
 
+    @Test
+    void claimAcceptsLifecycleWithoutSnapshot() {
+        JsonBuilder body = new JsonBuilder(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());
+        body.node().remove("snapshot");
+        body.node().put("operation", "INVALIDATE");
+        body.node().put("reason", "ELIGIBILITY_CHANGED");
+
+        var command = KnowledgeIndexingWorkerCommands.claim(body.node());
+
+        assertThat(command.operation()).isEqualTo("INVALIDATE");
+        assertThat(command.reason()).isEqualTo("ELIGIBILITY_CHANGED");
+        assertThat(command.snapshotId()).isNull();
+        assertThat(command.snapshotSizeBytes()).isZero();
+    }
+
     private static final class JsonBuilder {
         private final tools.jackson.databind.node.ObjectNode node;
 

@@ -28,7 +28,7 @@ class KnowledgeIndexingEvent(IndexLifecycleEvent):
 
 
 def decode_notification(delivery) -> KnowledgeIndexingEvent:
-    """Decode one persistent, explicitly routed UPSERT without exposing input."""
+    """Decode one persistent, explicitly routed lifecycle notification."""
 
     try:
         if (delivery.content_type != "application/json" or delivery.delivery_mode != 2
@@ -40,7 +40,7 @@ def decode_notification(delivery) -> KnowledgeIndexingEvent:
         event = KnowledgeIndexingEvent.model_validate(data)
         headers = delivery.headers
         version, count = headers.get("eventSchemaVersion"), headers.get("x-delivery-count", 0)
-        if (event.operation != "UPSERT" or type(version) is not int or version != event.schema_version
+        if (type(version) is not int or version != event.schema_version
                 or headers.get("eventId") != event.event_id or delivery.message_id != event.event_id
                 or headers.get("eventType") != EVENT_TYPE or type(count) is not int or count < 0
                 or delivery.redelivered and "x-delivery-count" not in headers):

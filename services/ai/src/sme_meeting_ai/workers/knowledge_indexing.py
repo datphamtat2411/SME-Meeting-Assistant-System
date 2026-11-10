@@ -48,6 +48,7 @@ from sme_meeting_ai.rag.processing import (
     process_snapshot,
     validate_snapshot,
 )
+from sme_meeting_ai.rag.qdrant import QdrantError
 from sme_meeting_ai.rag.tokenizer import BgeM3Tokenizer, bge_m3_chunking_config
 
 logger = logging.getLogger(__name__)
@@ -313,17 +314,47 @@ class KnowledgeIndexingWorker:
             return _IndexOutcome("TERMINAL_FAILURE", 0, result.point_ids, issue)
         return _IndexOutcome("RETRYABLE_FAILURE", 0, result.point_ids, issue)
 
+    def _process_lifecycle(self, event) -> _IndexOutcome:
+        identity = event.source_identity
+        generation = event.index_generation.generation_id
+        try:
+            if event.operation == "INVALIDATE":
+                self.engine.store.invalidate_source(
+                    event.meeting_id,
+                    identity.source_type,
+                    identity.source_id,
+                    event.source_revision.number,
+                    generation,
+                )
+                return _IndexOutcome("INVALIDATED", 0)
+            if event.operation == "DELETE":
+                self.engine.store.delete_source(
+                    event.meeting_id,
+                    identity.source_type,
+                    identity.source_id,
+                    event.source_revision.number,
+                    generation,
+                )
+                return _IndexOutcome("DELETED", 0)
+        except QdrantError as error:
+            retryable = error.category in {"QDRANT_UNAVAILABLE", "PERSISTENCE_FAILED", "PERSISTENCE_VERIFY_FAILED"}
+            raise KnowledgeWorkerFailure(error.category, retryable=retryable) from error
+        raise KnowledgeWorkerFailure("LIFECYCLE_OPERATION_INVALID", retryable=False)
+
     async def _submit(self, event, claim, snapshot, outcome, guard):
         error_code = outcome.error_code
+        snapshot_id = event.snapshot.snapshot_id if event.snapshot is not None else None
+        snapshot_sha256 = event.snapshot.sha256 if event.snapshot is not None else None
+        snapshot_size_bytes = event.snapshot.size_bytes if event.snapshot is not None else 0
         receipt = indexing_receipt(
             event_id=event.event_id,
             meeting_id=event.meeting_id,
             source_type=event.source_identity.source_type,
             source_id=event.source_identity.source_id,
             source_revision=event.source_revision.number,
-            snapshot_id=event.snapshot.snapshot_id,
-            snapshot_sha256=event.snapshot.sha256,
-            snapshot_size_bytes=event.snapshot.size_bytes,
+            snapshot_id=snapshot_id,
+            snapshot_sha256=snapshot_sha256,
+            snapshot_size_bytes=snapshot_size_bytes,
             generation_id=event.index_generation.generation_id,
             configuration_version=event.index_generation.configuration_version,
             configuration_sha256=event.index_generation.configuration_sha256,
@@ -382,8 +413,12 @@ class KnowledgeIndexingWorker:
             if not guard.live():
                 raise KnowledgeLeaseLost()
             try:
-                snapshot = await self._snapshot(event, claim, guard)
-                outcome = await guard.protect(asyncio.to_thread(self._process, snapshot))
+                snapshot = None
+                if event.operation == "UPSERT":
+                    snapshot = await self._snapshot(event, claim, guard)
+                    outcome = await guard.protect(asyncio.to_thread(self._process, snapshot))
+                else:
+                    outcome = await guard.protect(asyncio.to_thread(self._process_lifecycle, event))
             except KnowledgeWorkerFailure as failure:
                 outcome = _IndexOutcome("RETRYABLE_FAILURE" if failure.retryable else "TERMINAL_FAILURE", 0,
                                         error_code=failure.code)

@@ -804,14 +804,29 @@ class IndexLifecycleEvent(StrictModel):
     operation: Literal["UPSERT", "INVALIDATE", "DELETE"]
     snapshot: ImmutableSnapshotReference | None = None
     index_generation: IndexGeneration | None = Field(default=None, alias="indexGeneration")
-    reason: Literal["NEW_REVISION", "ELIGIBILITY_CHANGED", "SOURCE_DELETED", "REINDEX_REQUESTED"] = "NEW_REVISION"
+    reason: Literal[
+        "NEW_REVISION", "ELIGIBILITY_CHANGED", "SOURCE_SUPERSEDED", "SOURCE_DELETED",
+        "REINDEX_REQUESTED", "RECONCILIATION_REQUESTED",
+    ] = "NEW_REVISION"
 
     @model_validator(mode="after")
     def validate_event(self):
         if self.meeting_id != self.source_identity.meeting_id:
             raise ValueError("Lifecycle event meeting identity mismatch")
-        if self.operation == "UPSERT" and (self.snapshot is None or self.index_generation is None):
-            raise ValueError("UPSERT requires snapshot and index generation")
+        if self.index_generation is None:
+            raise ValueError("Lifecycle event requires index generation")
+        if self.operation == "UPSERT" and self.snapshot is None:
+            raise ValueError("UPSERT requires snapshot")
+        if self.operation != "UPSERT" and self.snapshot is not None:
+            raise ValueError("Lifecycle cleanup cannot carry a snapshot")
+        if self.operation == "UPSERT" and self.reason not in {
+            "NEW_REVISION", "REINDEX_REQUESTED", "RECONCILIATION_REQUESTED",
+        }:
+            raise ValueError("UPSERT reason is incompatible with the lifecycle operation")
+        if self.operation == "INVALIDATE" and self.reason not in {
+            "ELIGIBILITY_CHANGED", "SOURCE_SUPERSEDED", "SOURCE_DELETED", "RECONCILIATION_REQUESTED",
+        }:
+            raise ValueError("INVALIDATE reason is incompatible with the lifecycle operation")
         if self.operation == "DELETE" and self.reason != "SOURCE_DELETED":
             raise ValueError("DELETE requires source deletion reason")
         return self
