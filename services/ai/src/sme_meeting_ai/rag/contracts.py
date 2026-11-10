@@ -820,6 +820,8 @@ class IndexLifecycleEvent(StrictModel):
 def parse_knowledge_snapshot(value: object) -> KnowledgeSnapshot:
     """Validate a snapshot without exposing provider/Pydantic input details."""
 
+    if isinstance(value, bytes):
+        return _KNOWLEDGE_SNAPSHOT_ADAPTER.validate_json(value)
     return _KNOWLEDGE_SNAPSHOT_ADAPTER.validate_python(value)
 
 

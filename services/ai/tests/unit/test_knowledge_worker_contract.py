@@ -8,12 +8,209 @@ from uuid import uuid4
 
 import pytest
 
-from sme_meeting_ai.integrations.core_api import CoreError, KnowledgeCoreApiClient
+from sme_meeting_ai.integrations.core_api import (
+    CoreError,
+    KnowledgeCoreApiClient,
+    KnowledgeSnapshotResponse,
+)
 from sme_meeting_ai.integrations.knowledge_indexing import decode_notification
+from sme_meeting_ai.rag import (
+    ActionItemProjection,
+    ActionItemSnapshot,
+    CanonicalSourceIdentity,
+    SnapshotMetadata,
+    SourceRevision,
+    validate_snapshot,
+)
 from sme_meeting_ai.rag.tokenizer import bge_m3_index_generation
-from sme_meeting_ai.workers.knowledge_indexing import indexing_receipt
+from sme_meeting_ai.workers import knowledge_indexing as knowledge_worker_module
+from sme_meeting_ai.workers.knowledge_indexing import (
+    KnowledgeIndexingWorker,
+    KnowledgeWorkerFailure,
+    indexing_receipt,
+)
 
 ROOT = Path(__file__).resolve().parents[4]
+
+
+def serialized_action_item_snapshot():
+    meeting_id, source_id, snapshot_id, assignee_id = (str(uuid4()) for _ in range(4))
+    snapshot = ActionItemSnapshot(
+        contract_version="1.0",
+        snapshot_type="ACTION_ITEM",
+        metadata=SnapshotMetadata(
+            snapshot_id=snapshot_id,
+            meeting_id=meeting_id,
+            source_identity=CanonicalSourceIdentity(
+                source_type="ACTION_ITEM", source_id=source_id, meeting_id=meeting_id,
+            ),
+            source_revision=SourceRevision(number=9),
+        ),
+        content=ActionItemProjection(
+            id=source_id,
+            meeting_id=meeting_id,
+            title="Gửi bảng phân tích chi phí",
+            details="Đính kèm các giả định và phương án thay thế.",
+            status="OPEN",
+            source_type="MANUAL",
+            is_official=True,
+            assignee_user_id=assignee_id,
+            due_date="2026-11-20",
+            version=9,
+            evidence_segment_ids=(),
+        ),
+    )
+    return snapshot, snapshot.model_dump_json(by_alias=True).encode()
+
+
+def snapshot_event(snapshot, raw):
+    return SimpleNamespace(
+        meeting_id=snapshot.metadata.meeting_id,
+        source_identity=snapshot.metadata.source_identity,
+        source_revision=snapshot.metadata.source_revision,
+        snapshot=SimpleNamespace(
+            snapshot_id=snapshot.metadata.snapshot_id,
+            sha256=hashlib.sha256(raw).hexdigest(),
+            size_bytes=len(raw),
+        ),
+    )
+
+
+class ImmediateGuard:
+    deadline = 0.0
+
+    async def protect(self, awaitable):
+        return await awaitable
+
+
+class SnapshotCore:
+    def __init__(self, raw, event):
+        self.response = KnowledgeSnapshotResponse(
+            event.snapshot.snapshot_id,
+            event.snapshot.sha256,
+            event.snapshot.size_bytes,
+            raw,
+        )
+
+    async def snapshot(self, _event, _claim, *, deadline):
+        assert deadline == 0.0
+        return self.response
+
+
+def run_worker_snapshot(snapshot, raw):
+    event = snapshot_event(snapshot, raw)
+    worker = KnowledgeIndexingWorker(
+        SimpleNamespace(knowledge_indexing_worker_concurrency=1),
+        SnapshotCore(raw, event),
+        None,
+        None,
+        None,
+    )
+    return event, asyncio.run(worker._snapshot(event, None, ImmediateGuard()))
+
+
+def mutate_snapshot(raw, mutation):
+    if mutation == "duplicate-key":
+        text = raw.decode()
+        needle = '"evidenceSegmentIds":[]'
+        assert needle in text
+        return text.replace(needle, needle + ',"evidenceSegmentIds":[]', 1).encode()
+
+    payload = json.loads(raw)
+    if mutation == "unknown-field":
+        payload["unexpected"] = "sensitive snapshot content"
+    elif mutation == "contract-version":
+        payload["contractVersion"] = "2.0"
+    elif mutation == "field-type":
+        payload["content"]["evidenceSegmentIds"] = "not-an-array"
+    elif mutation == "identity":
+        payload["content"]["id"] = str(uuid4())
+    elif mutation == "malformed-value":
+        payload["content"]["dueDate"] = "not-a-date"
+    return json.dumps(payload, separators=(",", ":")).encode()
+
+
+def test_serialized_action_item_with_empty_evidence_array_uses_json_validation(monkeypatch):
+    snapshot, raw = serialized_action_item_snapshot()
+    seen = []
+    original = knowledge_worker_module.validate_snapshot
+
+    def capture(value):
+        seen.append(value)
+        return original(value)
+
+    monkeypatch.setattr(knowledge_worker_module, "validate_snapshot", capture)
+    assert validate_snapshot(raw).content.evidence_segment_ids == ()
+    _, parsed = run_worker_snapshot(snapshot, raw)
+
+    assert seen == [raw]
+    assert parsed.content.evidence_segment_ids == ()
+    assert isinstance(parsed.content.evidence_segment_ids, tuple)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["duplicate-key", "unknown-field", "contract-version", "field-type", "identity", "malformed-value"],
+)
+def test_worker_boundary_rejects_invalid_snapshot_contracts_without_raw_details(mutation):
+    snapshot, valid_raw = serialized_action_item_snapshot()
+    raw = mutate_snapshot(valid_raw, mutation)
+
+    with pytest.raises(KnowledgeWorkerFailure) as caught:
+        run_worker_snapshot(snapshot, raw)
+
+    assert caught.value.code == "SNAPSHOT_CONTRACT_INVALID"
+    assert str(caught.value) == "SNAPSHOT_CONTRACT_INVALID"
+    assert "sensitive snapshot content" not in str(caught.value)
+
+
+def test_duplicate_keys_are_rejected_before_pydantic_json_validation(monkeypatch):
+    snapshot, valid_raw = serialized_action_item_snapshot()
+    raw = mutate_snapshot(valid_raw, "duplicate-key")
+    calls = []
+
+    def bypass(_value):
+        calls.append(True)
+        return snapshot
+
+    monkeypatch.setattr(knowledge_worker_module, "validate_snapshot", bypass)
+    with pytest.raises(KnowledgeWorkerFailure) as caught:
+        run_worker_snapshot(snapshot, raw)
+
+    assert caught.value.code == "SNAPSHOT_CONTRACT_INVALID"
+    assert calls == []
+
+
+@pytest.mark.parametrize("raw", [b"{", b"\xff"])
+def test_worker_boundary_rejects_malformed_or_invalidly_encoded_json(raw):
+    snapshot, _ = serialized_action_item_snapshot()
+
+    with pytest.raises(KnowledgeWorkerFailure) as caught:
+        run_worker_snapshot(snapshot, raw)
+
+    assert caught.value.code == "SNAPSHOT_CONTRACT_INVALID"
+
+
+def test_worker_boundary_rejects_oversized_snapshot():
+    snapshot, _ = serialized_action_item_snapshot()
+    raw = b"{" + b" " * (8 * 1024 * 1024) + b"}"
+
+    with pytest.raises(KnowledgeWorkerFailure) as caught:
+        run_worker_snapshot(snapshot, raw)
+
+    assert caught.value.code == "SNAPSHOT_CONTRACT_INVALID"
+
+
+def test_worker_boundary_rejects_snapshot_integrity_metadata_mismatch():
+    snapshot, valid_raw = serialized_action_item_snapshot()
+    payload = json.loads(valid_raw)
+    payload["metadata"]["integrity"] = {"sha256": "0" * 64, "sizeBytes": 1}
+    raw = json.dumps(payload, separators=(",", ":")).encode()
+
+    with pytest.raises(KnowledgeWorkerFailure) as caught:
+        run_worker_snapshot(snapshot, raw)
+
+    assert caught.value.code == "SNAPSHOT_INTEGRITY_MISMATCH"
 
 
 def knowledge_event():

@@ -7,6 +7,8 @@ import com.sme.meetingassistant.api.media.MediaProperties;
 import com.sme.meetingassistant.api.media.repository.MediaRepository;
 import com.sme.meetingassistant.api.media.worker.WorkerException;
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
+import java.time.OffsetDateTime;
+import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -100,6 +102,88 @@ class KnowledgeIndexingWorkerIntegrationTests {
 
     @Test
     @Transactional
+    void knowledgePublisherConfirmationUpdatesOnlyThePublishedWork() {
+        UUID userId = UUID.randomUUID();
+        UUID meetingId = UUID.randomUUID();
+        UUID publishedItemId = UUID.randomUUID();
+        UUID unrelatedItemId = UUID.randomUUID();
+        insertManualAction(userId, meetingId, publishedItemId);
+        insertActionItem(unrelatedItemId, meetingId, userId, "Unrelated worker task");
+        enableKnowledgeIndexing();
+
+        UUID publishedEventId = producer.request("ACTION_ITEM", publishedItemId, meetingId).orElseThrow().eventId();
+        UUID unrelatedEventId = producer.request("ACTION_ITEM", unrelatedItemId, meetingId).orElseThrow().eventId();
+        Map<String, Object> unrelatedBefore = knowledgeWork(unrelatedEventId);
+        UUID claimToken = preparePublisherClaim(publishedEventId, 1);
+
+        assertThat(outbox.markPublished(publishedEventId, claimToken)).isTrue();
+        assertThat(jdbc.queryForObject("SELECT status FROM outbox_events WHERE id=?", String.class, publishedEventId))
+            .isEqualTo("PUBLISHED");
+
+        OffsetDateTime outboxPublishedAt = jdbc.queryForObject(
+            "SELECT published_at FROM outbox_events WHERE id=?", OffsetDateTime.class, publishedEventId);
+        OffsetDateTime workPublishedAt = jdbc.queryForObject(
+            "SELECT published_at FROM knowledge_indexing_work WHERE event_id=?", OffsetDateTime.class,
+            publishedEventId);
+        assertThat(outboxPublishedAt).isNotNull();
+        assertThat(workPublishedAt).isEqualTo(outboxPublishedAt);
+
+        Map<String, Object> unrelatedAfter = knowledgeWork(unrelatedEventId);
+        assertThat(unrelatedAfter.get("state")).isEqualTo("PENDING");
+        assertThat(unrelatedAfter.get("published_at")).isNull();
+        assertThat(unrelatedAfter.get("updated_at")).isEqualTo(unrelatedBefore.get("updated_at"));
+    }
+
+    @Test
+    @Transactional
+    void knowledgePublisherFailuresPersistRetryMetadataAndTerminalWorkState() {
+        UUID userId = UUID.randomUUID();
+        UUID meetingId = UUID.randomUUID();
+        UUID itemId = UUID.randomUUID();
+        insertManualAction(userId, meetingId, itemId);
+        enableKnowledgeIndexing();
+        UUID eventId = producer.request("ACTION_ITEM", itemId, meetingId).orElseThrow().eventId();
+
+        UUID firstClaim = preparePublisherClaim(eventId, 1);
+        assertThat(outbox.markPublishFailed(eventId, firstClaim, 1, 3, "broker-nack-1")).isTrue();
+        assertThat(jdbc.queryForObject("SELECT status FROM outbox_events WHERE id=?", String.class, eventId))
+            .isEqualTo("PENDING");
+        assertThat(jdbc.queryForObject("SELECT attempt_count FROM outbox_events WHERE id=?", Integer.class, eventId))
+            .isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT last_error FROM outbox_events WHERE id=?", String.class, eventId))
+            .isEqualTo("broker-nack-1");
+        assertThat(jdbc.queryForObject("SELECT next_attempt_at > CURRENT_TIMESTAMP FROM outbox_events WHERE id=?",
+            Boolean.class, eventId)).isTrue();
+        assertThat(jdbc.queryForObject("SELECT state FROM knowledge_indexing_work WHERE event_id=?",
+            String.class, eventId)).isEqualTo("PENDING");
+
+        UUID secondClaim = preparePublisherClaim(eventId, 2);
+        assertThat(outbox.markPublishFailed(eventId, secondClaim, 2, 3, "broker-nack-2")).isTrue();
+        assertThat(jdbc.queryForObject("SELECT status FROM outbox_events WHERE id=?", String.class, eventId))
+            .isEqualTo("PENDING");
+        assertThat(jdbc.queryForObject("SELECT attempt_count FROM outbox_events WHERE id=?", Integer.class, eventId))
+            .isEqualTo(2);
+
+        UUID finalClaim = preparePublisherClaim(eventId, 3);
+        assertThat(outbox.markPublishFailed(eventId, finalClaim, 3, 3, "broker-nack-final")).isTrue();
+        assertThat(jdbc.queryForObject("SELECT status FROM outbox_events WHERE id=?", String.class, eventId))
+            .isEqualTo("FAILED");
+        assertThat(jdbc.queryForObject("SELECT attempt_count FROM outbox_events WHERE id=?", Integer.class, eventId))
+            .isEqualTo(3);
+        assertThat(jdbc.queryForObject("SELECT last_error FROM outbox_events WHERE id=?", String.class, eventId))
+            .isEqualTo("broker-nack-final");
+        assertThat(jdbc.queryForObject("SELECT state FROM knowledge_indexing_work WHERE event_id=?",
+            String.class, eventId)).isEqualTo("TERMINAL_FAILURE");
+        assertThat(jdbc.queryForObject("SELECT last_error_code FROM knowledge_indexing_work WHERE event_id=?",
+            String.class, eventId)).isEqualTo("OUTBOX_CONFIRM_NOT_OBSERVED");
+        assertThat(jdbc.queryForObject("SELECT last_error_summary FROM knowledge_indexing_work WHERE event_id=?",
+            String.class, eventId)).isEqualTo("Knowledge indexing notification publication was not confirmed.");
+        assertThat(jdbc.queryForObject("SELECT published_at FROM knowledge_indexing_work WHERE event_id=?",
+            OffsetDateTime.class, eventId)).isNull();
+    }
+
+    @Test
+    @Transactional
     void expiredFinalPublisherClaimMakesKnowledgeWorkTerminal() {
         UUID userId = UUID.randomUUID();
         UUID meetingId = UUID.randomUUID();
@@ -131,9 +215,36 @@ class KnowledgeIndexingWorkerIntegrationTests {
             INSERT INTO meetings(id,title,organizer_user_id,created_by_user_id)
             VALUES (?,'Knowledge worker test meeting',?,?)
             """, meetingId, userId, userId);
+        insertActionItem(itemId, meetingId, userId, "Official worker task");
+    }
+
+    private void insertActionItem(UUID itemId, UUID meetingId, UUID userId, String title) {
         jdbc.update("""
             INSERT INTO action_items(id,meeting_id,title,status,assignee_user_id,source_type,created_by_user_id)
-            VALUES (? ,?,'Official worker task','OPEN',?,'MANUAL',?)
-            """, itemId, meetingId, userId, userId);
+            VALUES (?, ?, ?, 'OPEN', ?, 'MANUAL', ?)
+            """, itemId, meetingId, title, userId, userId);
+    }
+
+    private void enableKnowledgeIndexing() {
+        properties.getKnowledgeIndexing().setEnabled(true);
+        properties.getKnowledgeIndexing().setConfigurationSha256(
+            "b09c19a082d96d3a3fe66bbdfde4c7f50cde139bd539d456da3f41691ab3f4b1");
+    }
+
+    private UUID preparePublisherClaim(UUID eventId, int attemptCount) {
+        UUID claimToken = UUID.randomUUID();
+        jdbc.update("""
+            UPDATE outbox_events SET status='PENDING', attempt_count=?, claim_token=?,
+                claim_expires_at=CURRENT_TIMESTAMP + INTERVAL '60 seconds',
+                published_at=NULL, next_attempt_at=CURRENT_TIMESTAMP
+            WHERE id=?
+            """, attemptCount, claimToken, eventId);
+        return claimToken;
+    }
+
+    private Map<String, Object> knowledgeWork(UUID eventId) {
+        return jdbc.queryForMap("""
+            SELECT state, published_at, updated_at FROM knowledge_indexing_work WHERE event_id=?
+            """, eventId);
     }
 }

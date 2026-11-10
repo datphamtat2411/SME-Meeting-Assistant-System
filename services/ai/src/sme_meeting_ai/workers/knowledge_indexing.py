@@ -279,8 +279,8 @@ class KnowledgeIndexingWorker:
         ):
             raise KnowledgeWorkerFailure("SNAPSHOT_INTEGRITY_INVALID", retryable=False)
         try:
-            value = strict_json(response.bytes, 8 * 1024 * 1024)
-            snapshot = validate_snapshot(value)
+            strict_json(response.bytes, 8 * 1024 * 1024)
+            snapshot = validate_snapshot(response.bytes)
         except (UnicodeDecodeError, ValueError, TypeError, RecursionError, ValidationError, KnowledgeContractError):
             raise KnowledgeWorkerFailure("SNAPSHOT_CONTRACT_INVALID", retryable=False) from None
         metadata = snapshot.metadata

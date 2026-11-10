@@ -482,3 +482,26 @@ def test_snapshot_union_accepts_existing_camel_case_transcript_projection():
 
     assert isinstance(parsed, TranscriptSnapshot)
     assert parsed.payload.transcript.status == "READY"
+
+
+def test_serialized_supported_snapshots_use_json_mode_for_array_fields():
+    summary = SummarySnapshot(
+        contract_version="1.0",
+        snapshot_type="SUMMARY",
+        metadata=metadata("SUMMARY", SUMMARY, 7),
+        content=SummaryProjection(
+            id=SUMMARY,
+            meeting_id=MEETING,
+            version_number=7,
+            content="Tóm tắt cuộc họp.",
+            source_type="HUMAN_EDIT",
+            quality_status="READY",
+            is_current=True,
+            is_approved=True,
+            is_stale=False,
+        ),
+    )
+
+    for snapshot in (transcript_snapshot(), decision_snapshot(), summary):
+        parsed = validate_snapshot(snapshot.model_dump_json(by_alias=True).encode())
+        assert type(parsed) is type(snapshot)

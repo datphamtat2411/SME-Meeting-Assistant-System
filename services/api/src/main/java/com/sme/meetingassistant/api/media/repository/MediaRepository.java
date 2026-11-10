@@ -1371,7 +1371,7 @@ public class MediaRepository {
                 claim_token = NULL, claim_expires_at = NULL
               WHERE id = ? AND claim_token = ? AND status = 'PENDING'
                 AND claim_expires_at > CURRENT_TIMESTAMP
-              RETURNING aggregate_id, aggregate_type, event_type, payload
+              RETURNING id, aggregate_id, aggregate_type, event_type, payload
             ), queued_jobs AS (
               UPDATE processing_jobs p SET status = 'QUEUED',
                 queued_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP,
@@ -1422,7 +1422,7 @@ public class MediaRepository {
                 claim_token = NULL, claim_expires_at = NULL
               WHERE id = ? AND claim_token = ? AND status = 'PENDING'
                 AND attempt_count = ? AND claim_expires_at > CURRENT_TIMESTAMP
-              RETURNING aggregate_id, aggregate_type, event_type, status, payload
+              RETURNING id, aggregate_id, aggregate_type, event_type, status, payload
             ), failed_jobs AS (
               UPDATE processing_jobs p SET status = 'FAILED', retryable = TRUE,
                 error_code = 'JOB_DISPATCH_FAILED',
