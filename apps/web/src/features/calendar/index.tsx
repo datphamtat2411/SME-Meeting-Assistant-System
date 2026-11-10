@@ -121,7 +121,7 @@ export function CalendarPage() {
                         <div className='flex items-center justify-between gap-3'>
                           <h3 className='font-semibold'>{meeting.title}</h3>
                           <Badge variant='outline'>
-                            {meeting.status.replaceAll('_', ' ')}
+                            {meeting.status.replace(/_/g, ' ')}
                           </Badge>
                         </div>
                         <div className='mt-3 flex flex-wrap gap-3 text-sm text-muted-foreground'>
