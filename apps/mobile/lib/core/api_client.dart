@@ -248,7 +248,8 @@ class ApiClient extends ChangeNotifier {
 
   /// A signed upload capability is not an API bearer endpoint. Never attach
   /// session tokens, cookies or extra headers to object-storage requests.
-  Future<void> uploadSigned(String signedUrl, File file, String contentType) async {
+  Future<void> uploadSigned(String signedUrl, File file, String contentType,
+      {void Function(int sent, int total)? onProgress}) async {
     final uri = Uri.parse(signedUrl);
     if (uri.scheme != 'https' && !(kDebugMode && uri.scheme == 'http')) {
       throw const ApiFailure(0, 'INSECURE_UPLOAD', 'Upload URL must use HTTPS.');
@@ -260,7 +261,12 @@ class ApiClient extends ChangeNotifier {
       ..headers['Content-Type'] = contentType;
     try {
       final future = _http.send(request);
-      await request.sink.addStream(file.openRead());
+      var sent = 0;
+      await request.sink.addStream(file.openRead().map((chunk) {
+        sent += chunk.length;
+        onProgress?.call(sent, length);
+        return chunk;
+      }));
       await request.sink.close();
       final response = await future.timeout(const Duration(minutes: 10));
       if (response.statusCode < 200 || response.statusCode >= 300) {
