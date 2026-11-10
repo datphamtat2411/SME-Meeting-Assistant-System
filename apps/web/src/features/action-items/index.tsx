@@ -42,7 +42,7 @@ export function ActionItemsPage() {
         <TableBody>{query.data.items.map(item => <TableRow key={item.id}><TableCell className='min-w-56'><div className='font-medium'>{item.title}</div><p className='max-w-80 truncate text-xs text-muted-foreground'>{item.details || item.sourceType}</p></TableCell><TableCell><Button asChild variant='link' size='sm'><Link to='/meetings/$meetingId' params={{ meetingId: item.meetingId }}>Open meeting</Link></Button></TableCell><TableCell>{item.dueDate ?? '—'}{item.overdue && <Badge variant='destructive' className='ms-2'>Overdue</Badge>}</TableCell><TableCell><Badge variant='outline'>{item.status}</Badge></TableCell><TableCell><ActionCommands item={item} /></TableCell><TableCell><Button size='sm' variant='ghost' onClick={() => { setSelected(item); setOpen(true) }}>Edit</Button></TableCell></TableRow>)}</TableBody></Table></div>}
         {query.data && <div className='flex items-center justify-between text-sm text-muted-foreground'><span>{query.data.page.totalElements} action(s)</span><div className='flex items-center gap-2'><Button variant='outline' size='sm' disabled={!query.data.page.hasPrevious} onClick={() => setFilter(f => ({ ...f, page: f.page - 1 }))}>Previous</Button>Page {filter.page + 1}<Button variant='outline' size='sm' disabled={!query.data.page.hasNext} onClick={() => setFilter(f => ({ ...f, page: f.page + 1 }))}>Next</Button></div></div>}
       </CardContent></Card>
-      <ActionForm open={open} onOpenChange={setOpen} item={selected} />
+      <ActionForm key={open ? selected?.id ?? 'new' : 'closed'} open={open} onOpenChange={setOpen} item={selected} />
     </Main>
   </>
 }
