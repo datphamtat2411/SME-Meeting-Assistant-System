@@ -1,6 +1,6 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { DoorOpen, Pencil, Plus, Search, ShieldAlert } from 'lucide-react'
+import { Pencil, Plus, Search, ShieldAlert } from 'lucide-react'
 import { toast } from 'sonner'
 import { RequestEmpty, RequestError, RequestLoading } from '@/components/request-state'
 import { Button } from '@/components/ui/button'
@@ -46,7 +46,6 @@ export function RoomsPage() {
     onSuccess: () => { toast.success('Room saved'); setOpen(false); void qc.invalidateQueries({ queryKey: ['rooms'] }) },
     onError: (error) => toast.error('Room could not be saved', { description: error instanceof Error ? error.message : undefined }),
   })
-  useEffect(() => { if (!open) setDraft(blank) }, [open])
   function edit(room: Room | null) { setSelected(room); setDraft(toDraft(room)); setOpen(true) }
   async function deactivate(room: Room) {
     if (!window.confirm('Deactivate this room? Historical meeting references will remain.')) return
