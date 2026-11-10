@@ -25,7 +25,7 @@ export function DecisionsPanel({ meetingId }: { meetingId: string }) {
   const [content, setContent] = useState('')
   const [creating, setCreating] = useState(false)
   function refresh() {
-    void qc.invalidateQueries({ queryKey: ['meeting-intelligence', meetingId] })
+    invalidateMeetingArtifacts(qc, meetingId)
   }
   const mutation = useMutation({
     mutationFn: () =>
