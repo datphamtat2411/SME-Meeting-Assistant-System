@@ -134,7 +134,7 @@ export function ActionItemsPage() {
                     'CANCELLED',
                   ].map((v) => (
                     <SelectItem key={v} value={v}>
-                      {v.replaceAll('_', ' ')}
+                      {v.replace(/_/g, ' ')}
                     </SelectItem>
                   ))}
                 </SelectContent>
