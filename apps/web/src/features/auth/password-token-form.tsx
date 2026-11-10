@@ -8,19 +8,18 @@ import { PasswordInput } from '@/components/password-input'
 import { completeAccountSetup, resetAccountPassword, validNewPassword } from './account-flows-api'
 
 export function PasswordTokenForm({ kind }: { kind: 'setup' | 'reset' }) {
-  const [token, setToken] = useState('')
-  const [ready, setReady] = useState(false)
+  const [token, setToken] = useState(() => {
+    const fragment = new URLSearchParams(window.location.hash.replace(/^#/, ''))
+    const value = fragment.get('token')
+    return value && value.length <= 4096 ? value : ''
+  })
   const [password, setPassword] = useState('')
   const [confirmation, setConfirmation] = useState('')
   const [busy, setBusy] = useState(false)
   const [complete, setComplete] = useState(false)
   useEffect(() => {
-    const fragment = new URLSearchParams(window.location.hash.replace(/^#/, ''))
-    const value = fragment.get('token')
-    if (value && value.length <= 4096) setToken(value)
     // Immediately remove single-use bearer capability from the browser address bar/history.
     if (window.location.hash) window.history.replaceState(null, '', window.location.pathname + window.location.search)
-    setReady(true)
   }, [])
   async function submit(event: FormEvent) {
     event.preventDefault()
@@ -36,7 +35,6 @@ export function PasswordTokenForm({ kind }: { kind: 'setup' | 'reset' }) {
     } catch (error) { toast.error('Unable to complete account verification', { description: error instanceof Error ? error.message : undefined }) }
     finally { setBusy(false) }
   }
-  if (!ready) return <p className='text-sm text-muted-foreground'>Checking authorization link…</p>
   if (complete) return <div className='space-y-4'><p role='status' className='text-sm'>Your password was set successfully. You can sign in with your organizational email.</p><Button asChild><Link to='/sign-in'>Sign in</Link></Button></div>
   if (!token) return <div className='space-y-3'><p role='alert' className='text-sm text-destructive'>This page requires a valid single-use authorization link from your organization. Request a new email if it expired.</p><Button asChild variant='outline'><Link to={kind === 'reset' ? '/forgot-password' : '/sign-in'}>{kind === 'reset' ? 'Request recovery' : 'Back to sign in'}</Link></Button></div>
   return <form className='space-y-4' onSubmit={submit}>
