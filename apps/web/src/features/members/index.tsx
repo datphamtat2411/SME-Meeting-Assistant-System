@@ -138,7 +138,7 @@ export function MembersPage() {
     if (
       !window.confirm(
         'Apply ' +
-          action.replaceAll('/', ' ') +
+          action.replace(/\//g, ' ') +
           ' to ' +
           member.displayName +
           '?'
@@ -247,7 +247,7 @@ export function MembersPage() {
                           </TableCell>
                           <TableCell>
                             <Badge variant='secondary'>
-                              {member.globalRole.replaceAll('_', ' ')}
+                              {member.globalRole.replace(/_/g, ' ')}
                             </Badge>
                           </TableCell>
                           <TableCell>
