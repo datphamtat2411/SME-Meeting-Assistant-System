@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useState, type FormEvent } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
@@ -12,12 +12,11 @@ export function ActionForm({ open, onOpenChange, item, meetingId }: {
   open: boolean; onOpenChange: (value: boolean) => void; item?: ActionItem | null; meetingId?: string
 }) {
   const qc = useQueryClient()
-  const [title, setTitle] = useState('')
-  const [details, setDetails] = useState('')
-  const [assignee, setAssignee] = useState('')
-  const [meeting, setMeeting] = useState('')
-  const [dueDate, setDueDate] = useState('')
-  useEffect(() => { if (open) { setTitle(item?.title ?? ''); setDetails(item?.details ?? ''); setAssignee(item?.assigneeUserId ?? ''); setMeeting(item?.meetingId ?? meetingId ?? ''); setDueDate(item?.dueDate ?? '') } }, [item, meetingId, open])
+  const [title, setTitle] = useState(item?.title ?? '')
+  const [details, setDetails] = useState(item?.details ?? '')
+  const [assignee, setAssignee] = useState(item?.assigneeUserId ?? '')
+  const [meeting, setMeeting] = useState(item?.meetingId ?? meetingId ?? '')
+  const [dueDate, setDueDate] = useState(item?.dueDate ?? '')
   const mutation = useMutation({
     mutationFn: () => item ? patchAction(item.id, { title: title.trim(), details: details.trim() || null, dueDate: dueDate || null, ...(assignee ? { assigneeUserId: assignee } : {}) }) :
       createAction({ title: title.trim(), details: details.trim() || null, meetingId: meeting, assigneeUserId: assignee, dueDate: dueDate || null }),
