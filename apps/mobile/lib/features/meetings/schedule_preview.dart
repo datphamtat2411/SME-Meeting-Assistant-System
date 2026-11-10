@@ -88,6 +88,6 @@ class _SchedulePreviewState extends State<SchedulePreview> {
             style: TextStyle(color: Palette.muted, fontSize: 12)),
         ],
       ]),
-    ));
+    );
   }
 }
