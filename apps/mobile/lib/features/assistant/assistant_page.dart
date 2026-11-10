@@ -131,7 +131,7 @@ class _AssistantPageState extends State<AssistantPage> {
                 ]))),
             ],
           ]),
-        )),
+        ),
       ),
     );
   }
