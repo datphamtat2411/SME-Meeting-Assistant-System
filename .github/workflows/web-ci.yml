@@ -50,6 +50,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Print canonical settings test formatting (temporary diagnostic)
+        run: |
+          echo PRETTIER_OUTPUT_BEGIN
+          pnpm exec prettier src/features/settings/settings-navigation.test.tsx
+          echo PRETTIER_OUTPUT_END
+
       - name: Lint Web
         run: pnpm run lint
 
