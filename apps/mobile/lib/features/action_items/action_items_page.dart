@@ -153,6 +153,6 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
             label: const Text('Tải thêm công việc')),
         ]),
       )),
-    )),
+    ),
   ]);
 }
