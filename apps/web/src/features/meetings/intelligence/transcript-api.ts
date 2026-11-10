@@ -73,13 +73,11 @@ export function speakerClustersQuery(meetingId: string) {
   return queryOptions({
     queryKey: ['transcript', meetingId, 'speakers'],
     queryFn: async ({ signal }) =>
-      speakerSchema
-        .array()
-        .parse(
-          await coreApi.get<unknown>(route(meetingId) + '/speaker-clusters', {
-            signal,
-          })
-        ),
+      speakerSchema.array().parse(
+        await coreApi.get<unknown>(route(meetingId) + '/speaker-clusters', {
+          signal,
+        })
+      ),
     retry: false,
   })
 }
