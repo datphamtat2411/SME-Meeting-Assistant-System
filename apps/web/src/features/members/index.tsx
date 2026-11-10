@@ -39,6 +39,7 @@ import {
   RequestLoading,
 } from '@/components/request-state'
 import { currentUserQueryOptions } from '@/features/auth/session/current-user'
+import { ManagerScopePicker } from './manager-scope-picker'
 import {
   changeMemberStatus,
   createMember,
@@ -48,7 +49,6 @@ import {
   type Member,
 } from './member-api'
 import { organizationalUnitsQuery } from './organization-api'
-import { ManagerScopePicker } from './manager-scope-picker'
 
 type Draft = {
   email: string
@@ -93,7 +93,8 @@ export function MembersPage() {
         displayName: data.displayName.trim(),
         primaryOrgUnitId: data.primaryOrgUnitId || null,
       }
-      const managerScopeUnitIds = data.globalRole === 'DEPARTMENT_MANAGER' ? data.managerScopeUnitIds : []
+      const managerScopeUnitIds =
+        data.globalRole === 'DEPARTMENT_MANAGER' ? data.managerScopeUnitIds : []
       if (!selected)
         return createMember({
           ...input,
@@ -104,7 +105,12 @@ export function MembersPage() {
       const fresh = await memberDetail(selected.id)
       return updateMember(
         selected.id,
-        { ...input, ...(isAdmin ? { globalRole: data.globalRole, managerScopeUnitIds } : {}) },
+        {
+          ...input,
+          ...(isAdmin
+            ? { globalRole: data.globalRole, managerScopeUnitIds }
+            : {}),
+        },
         fresh.etag
       )
     },
@@ -435,7 +441,15 @@ export function MembersPage() {
                   </Select>
                 </div>
               )}
-              {isAdmin && draft.globalRole === 'DEPARTMENT_MANAGER' && <ManagerScopePicker units={units.data ?? []} selected={draft.managerScopeUnitIds} onChange={managerScopeUnitIds => setDraft(current => ({ ...current, managerScopeUnitIds }))} />}
+              {isAdmin && draft.globalRole === 'DEPARTMENT_MANAGER' && (
+                <ManagerScopePicker
+                  units={units.data ?? []}
+                  selected={draft.managerScopeUnitIds}
+                  onChange={(managerScopeUnitIds) =>
+                    setDraft((current) => ({ ...current, managerScopeUnitIds }))
+                  }
+                />
+              )}
               <DialogFooter>
                 <Button
                   variant='outline'
