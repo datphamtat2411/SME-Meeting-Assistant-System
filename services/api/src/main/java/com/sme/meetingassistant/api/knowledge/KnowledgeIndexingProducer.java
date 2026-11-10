@@ -99,22 +99,36 @@ public class KnowledgeIndexingProducer {
 
         String snapshotSha = digest(candidate.snapshotBytes());
         long snapshotSize = candidate.snapshotBytes().length;
-        UUID snapshotId = snapshotId(candidate.snapshotBytes());
-        jdbc.update("""
-            INSERT INTO knowledge_source_snapshots(
-                id,meeting_id,source_type,source_id,source_revision,payload,sha256,size_bytes)
-            VALUES (?,?,?,?,?,?,?,?)
-            ON CONFLICT (source_type,source_id,source_revision) DO NOTHING
-            """, snapshotId, candidate.meetingId(), candidate.sourceType(), candidate.sourceId(),
-            candidate.revision(), candidate.snapshotBytes(), snapshotSha, snapshotSize);
-        Snapshot stored = jdbc.queryForObject("""
+        List<Snapshot> existingSnapshots = jdbc.query("""
             SELECT id,sha256,size_bytes FROM knowledge_source_snapshots
             WHERE source_type=? AND source_id=? AND source_revision=?
             """, (rs, row) -> new Snapshot(rs.getObject("id", UUID.class),
                 rs.getString("sha256"), rs.getLong("size_bytes")),
             candidate.sourceType(), candidate.sourceId(), candidate.revision());
-        if (!snapshotSha.equals(stored.sha256()) || snapshotSize != stored.sizeBytes()) {
-            throw new IllegalStateException("Canonical knowledge revision has conflicting snapshot bytes.");
+        Snapshot stored;
+        if (existingSnapshots.isEmpty()) {
+            UUID snapshotId = snapshotId(candidate.snapshotBytes());
+            jdbc.update("""
+                INSERT INTO knowledge_source_snapshots(
+                    id,meeting_id,source_type,source_id,source_revision,payload,sha256,size_bytes)
+                VALUES (?,?,?,?,?,?,?,?)
+                ON CONFLICT (source_type,source_id,source_revision) DO NOTHING
+                """, snapshotId, candidate.meetingId(), candidate.sourceType(), candidate.sourceId(),
+                candidate.revision(), candidate.snapshotBytes(), snapshotSha, snapshotSize);
+            stored = jdbc.queryForObject("""
+                SELECT id,sha256,size_bytes FROM knowledge_source_snapshots
+                WHERE source_type=? AND source_id=? AND source_revision=?
+                """, (rs, row) -> new Snapshot(rs.getObject("id", UUID.class),
+                    rs.getString("sha256"), rs.getLong("size_bytes")),
+                candidate.sourceType(), candidate.sourceId(), candidate.revision());
+            if (!snapshotSha.equals(stored.sha256()) || snapshotSize != stored.sizeBytes()) {
+                throw new IllegalStateException("Canonical knowledge revision has conflicting snapshot bytes.");
+            }
+        } else {
+            // A source revision has one immutable canonical projection. Reuse it
+            // when another generation is deployed instead of serializing a new
+            // random snapshot identity for the same revision.
+            stored = existingSnapshots.getFirst();
         }
 
         UUID eventId = UUID.randomUUID();
@@ -305,7 +319,8 @@ public class KnowledgeIndexingProducer {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("contractVersion", "1.0");
         result.put("snapshotType", type);
-        result.put("metadata", metadata(UUID.randomUUID(), meetingId, type, sourceId, revision));
+        result.put("metadata", metadata(stableSnapshotId(type, sourceId, revision), meetingId,
+            type, sourceId, revision));
         result.put("content", content);
         return result;
     }
@@ -315,7 +330,8 @@ public class KnowledgeIndexingProducer {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("contractVersion", "1.0");
         result.put("snapshotType", type);
-        result.put("metadata", metadata(UUID.randomUUID(), meetingId, type, sourceId, revision));
+        result.put("metadata", metadata(stableSnapshotId(type, sourceId, revision), meetingId,
+            type, sourceId, revision));
         result.put("current", current);
         result.put("representation", representation);
         try {
@@ -333,6 +349,11 @@ public class KnowledgeIndexingProducer {
         } catch (Exception invalid) {
             throw new IllegalStateException("Knowledge snapshot identity is invalid.", invalid);
         }
+    }
+
+    private static UUID stableSnapshotId(String sourceType, UUID sourceId, long revision) {
+        String key = "sme-knowledge-snapshot-v1:" + sourceType + ":" + sourceId + ":" + revision;
+        return UUID.nameUUIDFromBytes(key.getBytes(StandardCharsets.UTF_8));
     }
 
     private Map<String, Object> metadata(UUID snapshotId, UUID meetingId, String type,

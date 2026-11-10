@@ -115,6 +115,17 @@ class Settings(BaseSettings):
     rag_retrieval_rerank_limit: int = Field(default=40, gt=0, le=256, strict=True)
     rag_retrieval_final_evidence_limit: int = Field(default=8, gt=0, le=8, strict=True)
     rag_retrieval_score_cutoff: float = Field(default=0.0, allow_inf_nan=False)
+    knowledge_indexing_worker_enabled: bool = False
+    knowledge_indexing_worker_concurrency: int = Field(default=1, gt=0, le=16, strict=True)
+    knowledge_indexing_worker_execution_timeout_seconds: float = Field(
+        default=1800, gt=0, le=7200, allow_inf_nan=False,
+    )
+    knowledge_indexing_retry_delay_seconds: float = Field(
+        default=5, gt=0, le=30, allow_inf_nan=False,
+    )
+    knowledge_indexing_exchange: Literal["meeting.processing"] = "meeting.processing"
+    knowledge_indexing_routing_key: Literal["knowledge.indexing.requested"] = "knowledge.indexing.requested"
+    knowledge_indexing_queue: Literal["meeting.knowledge.indexing"] = "meeting.knowledge.indexing"
     rabbitmq_url: str | None = Field(default=None, repr=False)
     rabbitmq_username: SecretStr | None = Field(default=None, repr=False)
     rabbitmq_password: SecretStr | None = Field(default=None, repr=False)
@@ -445,8 +456,9 @@ class Settings(BaseSettings):
         "rag_embedding_batch_size",
         "rag_embedding_max_input_tokens",
         "rag_chunk_target_tokens",
-        "rag_embedding_max_concurrent",
-        "rag_qdrant_upsert_batch_size",
+         "rag_embedding_max_concurrent",
+         "rag_qdrant_upsert_batch_size",
+         "knowledge_indexing_worker_concurrency",
         "rag_reranker_batch_size",
         "rag_reranker_query_max_tokens",
         "rag_reranker_passage_max_tokens",

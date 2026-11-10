@@ -120,11 +120,16 @@ public class KnowledgeIndexingWorkerService {
         return leaseData(renewed);
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public SnapshotResponse snapshot(UUID eventId, KnowledgeIndexingWorkerCommands.Owner command,
             String certificateFingerprint) {
         KnowledgeIndexingWorkerCommands.requireEvent(eventId, command.eventId());
-        Work work = find(eventId).orElseThrow(() -> new WorkerException(404, "WORKER_DELIVERY_UNKNOWN"));
+        Work initial = find(eventId).orElseThrow(() -> new WorkerException(404, "WORKER_DELIVERY_UNKNOWN"));
+        // Keep the meeting/work locks until the bytes have been read. A read-only
+        // owner check followed by an unlocked snapshot read lets a replacement
+        // claim race the response and defeats lease fencing.
+        lockMeeting(initial.meetingId());
+        Work work = lock(eventId);
         requireOwner(work, command, certificateFingerprint, true);
         SnapshotRow snapshot = jdbc.queryForObject("""
             SELECT id,sha256,size_bytes,payload FROM knowledge_source_snapshots
@@ -133,7 +138,9 @@ public class KnowledgeIndexingWorkerService {
                 rs.getString("sha256"), rs.getLong("size_bytes"), rs.getBytes("payload")),
             work.snapshotId(), work.sourceType(), work.sourceId(), work.sourceRevision());
         if (snapshot.payload() == null || snapshot.payload().length != snapshot.sizeBytes()
-                || !snapshot.sha256().equals(sha256(snapshot.payload()))) {
+                || !snapshot.sha256().equals(sha256(snapshot.payload()))
+                || !work.snapshotSha256().equals(snapshot.sha256())
+                || work.snapshotSizeBytes() != snapshot.sizeBytes()) {
             throw new WorkerException(503, "WORKER_SNAPSHOT_INTEGRITY_UNAVAILABLE");
         }
         return new SnapshotResponse(snapshot.id(), snapshot.sha256(), snapshot.sizeBytes(), snapshot.payload());
@@ -204,8 +211,12 @@ public class KnowledgeIndexingWorkerService {
     }
 
     private boolean sameResult(Work work, KnowledgeIndexingWorkerCommands.Result result) {
+        String errorCode = "NONE".equals(result.errorCode()) ? null : result.errorCode();
         return result.resultId().equals(work.acceptedResultId())
             && result.state().equals(work.acceptedOutcome())
+            && result.indexGenerationId().equals(work.indexGenerationId())
+            && result.chunkCount() == work.indexedChunkCount()
+            && java.util.Objects.equals(errorCode, work.lastErrorCode())
             && result.receiptSha256().equals(work.acceptedReceiptSha256())
             && KnowledgeIndexingWorkerCommands.tokenHash(result.claimToken())
                 .equals(work.acceptedClaimTokenSha256());

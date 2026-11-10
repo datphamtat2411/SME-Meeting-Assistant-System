@@ -33,7 +33,7 @@ class KnowledgeIndexingWorkerIntegrationTests {
         UUID meetingId = UUID.randomUUID();
         UUID itemId = UUID.randomUUID();
         String certificate = "c".repeat(64);
-        String configurationSha = "b".repeat(64);
+        String configurationSha = "b09c19a082d96d3a3fe66bbdfde4c7f50cde139bd539d456da3f41691ab3f4b1";
         jdbc.update("""
                 INSERT INTO users(id,email,email_normalized,display_name,password_hash,global_role,account_status)
                 VALUES (?,? ,?,'Knowledge worker test user','test-only','EMPLOYEE','ACTIVE')
@@ -63,16 +63,18 @@ class KnowledgeIndexingWorkerIntegrationTests {
 
         var claim = new KnowledgeIndexingWorkerCommands.Claim("1.0", 1, eventId,
             KnowledgeIndexingProducer.EVENT_TYPE, meetingId, "ACTION_ITEM", itemId, event.sourceRevision(),
-            snapshotId, snapshotSha, payload.length, "rag-t01-v1", "chunking-v1",
-            configurationSha, "bge-m3", UUID.randomUUID());
+            snapshotId, snapshotSha, payload.length, "rag-t02-bge-m3-v1", "rag-t02-bge-m3-v1",
+            configurationSha,
+            "BAAI/bge-m3-tokenizer:5617a9f61b028005a4858fdac845db406aefb181", UUID.randomUUID());
         var claimed = worker.claim(eventId, claim, certificate);
         UUID token = (UUID) claimed.get("claimToken");
         assertThat(token).isNotNull();
 
         var conflictingClaim = new KnowledgeIndexingWorkerCommands.Claim("1.0", 1, eventId,
             KnowledgeIndexingProducer.EVENT_TYPE, meetingId, "ACTION_ITEM", itemId, 0,
-            snapshotId, snapshotSha, payload.length, "rag-t01-v1", "chunking-v1",
-            configurationSha, "bge-m3", UUID.randomUUID());
+            snapshotId, snapshotSha, payload.length, "rag-t02-bge-m3-v1", "rag-t02-bge-m3-v1",
+            configurationSha,
+            "BAAI/bge-m3-tokenizer:5617a9f61b028005a4858fdac845db406aefb181", UUID.randomUUID());
         assertThatThrownBy(() -> worker.claim(eventId, conflictingClaim, "d".repeat(64)))
             .isInstanceOf(WorkerException.class)
             .hasMessage("WORKER_ATTEMPT_BUSY");
@@ -85,12 +87,12 @@ class KnowledgeIndexingWorkerIntegrationTests {
         assertThat(snapshot.sha256()).isEqualTo(snapshotSha);
 
         var result = new KnowledgeIndexingWorkerCommands.Result("1.0", eventId, token,
-            UUID.randomUUID(), "INDEXED", "rag-t01-v1", 1, "d".repeat(64), "NONE");
+            UUID.randomUUID(), "INDEXED", "rag-t02-bge-m3-v1", 1, "d".repeat(64), "NONE");
         var accepted = worker.result(eventId, result, certificate);
         assertThat(accepted).containsEntry("state", "INDEXED").containsEntry("acknowledge", true);
 
         var staleResult = new KnowledgeIndexingWorkerCommands.Result("1.0", eventId, token,
-            UUID.randomUUID(), "INDEXED", "rag-t01-v1", 1, "e".repeat(64), "NONE");
+            UUID.randomUUID(), "INDEXED", "rag-t02-bge-m3-v1", 1, "e".repeat(64), "NONE");
         assertThatThrownBy(() -> worker.result(eventId, staleResult, certificate))
             .isInstanceOf(WorkerException.class)
             .hasMessage("WORKER_RESULT_CONFLICT");
@@ -104,7 +106,8 @@ class KnowledgeIndexingWorkerIntegrationTests {
         UUID itemId = UUID.randomUUID();
         insertManualAction(userId, meetingId, itemId);
         properties.getKnowledgeIndexing().setEnabled(true);
-        properties.getKnowledgeIndexing().setConfigurationSha256("b".repeat(64));
+        properties.getKnowledgeIndexing().setConfigurationSha256(
+            "b09c19a082d96d3a3fe66bbdfde4c7f50cde139bd539d456da3f41691ab3f4b1");
         UUID eventId = producer.request("ACTION_ITEM", itemId, meetingId).orElseThrow().eventId();
         jdbc.update("""
             UPDATE outbox_events SET attempt_count=12, claim_token=gen_random_uuid(),

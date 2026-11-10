@@ -48,10 +48,13 @@ public class MediaProperties {
         private boolean enabled;
         private int leaseSeconds = 1800;
         private int maxAttempts = 5;
-        private String generationId = "rag-t01-v1";
-        private String configurationVersion = "chunking-v1";
-        private String configurationSha256 = "";
-        private String tokenizerId = "bge-m3";
+        // Keep these defaults aligned with contracts/RAG_T05_BGE_M3_INDEX_GENERATION_V1.json.
+        private String generationId = "rag-t02-bge-m3-v1";
+        private String configurationVersion = "rag-t02-bge-m3-v1";
+        private String configurationSha256 =
+            "b09c19a082d96d3a3fe66bbdfde4c7f50cde139bd539d456da3f41691ab3f4b1";
+        private String tokenizerId =
+            "BAAI/bge-m3-tokenizer:5617a9f61b028005a4858fdac845db406aefb181";
 
         public boolean isEnabled() { return enabled; }
         public void setEnabled(boolean value) { enabled = value; }
