@@ -30,6 +30,7 @@ class _RecordingPageState extends State<RecordingPage> {
   List<RecordingDraft> savedRecordings = [];
   bool capturing = false;
   bool busy = false;
+  double? uploadProgress;
   File? file;
   String? selectedName;
   String sourceType = 'UPLOAD';
@@ -170,7 +171,7 @@ class _RecordingPageState extends State<RecordingPage> {
   Future<void> upload() async {
     final selected = file;
     if (selected == null || busy) return;
-    setState(() => busy = true);
+    setState(() { busy = true; uploadProgress = 0; });
     try {
       final size = await selected.length();
       if (size == 0) throw const ApiFailure(422, 'EMPTY_AUDIO', 'File ghi âm trống.');
@@ -192,7 +193,15 @@ class _RecordingPageState extends State<RecordingPage> {
         throw const ApiFailure(0, 'INVALID_UPLOAD', 'Server did not provide upload capability.');
       }
       await widget.api.uploadSigned(signedUrl, selected,
-        textValue(intent['requiredContentType'], mime));
+        textValue(intent['requiredContentType'], mime),
+        onProgress: (sent, total) {
+          if (!mounted || total == 0) return;
+          final ratio = sent / total;
+          if (uploadProgress == null ||
+              (uploadProgress! - ratio).abs() >= 0.01 || ratio == 1) {
+            setState(() => uploadProgress = ratio);
+          }
+        });
       final finalized = objectOf(
         (await widget.api.post(path + '/media/' + mediaId + '/finalize', {})).data);
       if (textValue(finalized['status']) != 'AVAILABLE') {
@@ -286,6 +295,12 @@ class _RecordingPageState extends State<RecordingPage> {
             onPressed: busy ? null : upload,
             icon: const Icon(Icons.cloud_upload_outlined),
             label: Text(busy ? 'Đang tải lên...' : 'Tải lên và xử lý AI')),
+          if (busy && uploadProgress != null) ...[
+            const SizedBox(height: 8),
+            LinearProgressIndicator(value: uploadProgress),
+            const SizedBox(height: 4),
+            Text((uploadProgress! * 100).toStringAsFixed(0) + '% tải lên'),
+          ],
           const SizedBox(height: 6),
           const Text('File nguồn vẫn giữ lại trên thiết bị khi upload lỗi.',
             style: TextStyle(color: Palette.muted, fontSize: 12)),
