@@ -138,7 +138,7 @@ class _MeetingFormState extends State<MeetingForm> {
             builder: (context, snap) {
               if (!snap.hasData) return const Text('Đang tải phòng họp...');
               return DropdownButtonFormField<String>(
-                value: roomId ?? '',
+                initialValue: roomId ?? '',
                 decoration: const InputDecoration(labelText: 'Phòng họp (tùy chọn)'),
                 items: [
                   const DropdownMenuItem(value: '', child: Text('Không chọn phòng')),

@@ -128,7 +128,7 @@ class _AssistantPageState extends State<AssistantPage> {
                     textValue(source['meetingTitle'],
                       textValue(source['excerpt'], 'Meeting source')),
                     style: const TextStyle(fontSize: 12, color: Palette.muted))),
-                ])),
+                ]))),
             ],
           ]),
         )),

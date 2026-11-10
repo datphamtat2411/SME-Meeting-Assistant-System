@@ -88,7 +88,7 @@ class _MeetingsPageState extends State<MeetingsPage> {
         const SizedBox(height: 8),
         Row(children: [
           Expanded(child: DropdownButtonFormField<String>(
-            value: status ?? '',
+            initialValue: status ?? '',
             decoration: const InputDecoration(isDense: true, labelText: 'Trạng thái'),
             items: [
               const DropdownMenuItem(value: '', child: Text('Tất cả')),

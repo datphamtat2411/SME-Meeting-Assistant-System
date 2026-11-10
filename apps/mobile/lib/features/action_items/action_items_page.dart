@@ -70,7 +70,7 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
               const SectionHeading('Thêm công việc',
                 subtitle: 'Công việc thủ công được tạo theo cuộc họp.'),
               DropdownButtonFormField<String>(
-                value: meetingId,
+                initialValue: meetingId,
                 decoration: const InputDecoration(labelText: 'Cuộc họp *'),
                 items: meetings.map((m) => DropdownMenuItem(
                   value: m.id, child: Text(m.title, overflow: TextOverflow.ellipsis))).toList(),
@@ -116,7 +116,7 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
                 }
               }, child: const Text('Tạo công việc')),
             ]))),
-        ))));
+        )));
     title.dispose();
     details.dispose();
     if (saved == true && mounted) reload();
@@ -146,7 +146,7 @@ class _ActionItemsPageState extends State<ActionItemsPage> {
           trailing: IconButton(onPressed: add, icon: const Icon(Icons.add_circle_outline))),
         Row(children: [
           Expanded(child: DropdownButtonFormField<String>(
-            value: filter ?? '',
+            initialValue: filter ?? '',
             decoration: const InputDecoration(labelText: 'Trạng thái', isDense: true),
             items: [
               const DropdownMenuItem(value: '', child: Text('Tất cả')),
