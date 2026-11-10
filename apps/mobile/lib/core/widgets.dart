@@ -43,10 +43,16 @@ class StatePill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final good = ['DONE', 'COMPLETED', 'ENDED', 'CONFIRMED', 'READY'].contains(status);
-    final active = ['IN_PROGRESS', 'PROCESSING', 'SCHEDULED'].contains(status);
-    final warn = ['PROPOSED', 'QUEUED', 'COMPLETED_WITH_WARNINGS', 'DRAFT'].contains(status);
-    final tone = good ? Palette.green : active ? Palette.blue : warn ? Palette.amber : Palette.red;
+    final good = ['DONE', 'COMPLETED', 'COMPLETE', 'SUCCEEDED',
+      'ENDED', 'CONFIRMED', 'READY', 'AVAILABLE'].contains(status);
+    final active = ['IN_PROGRESS', 'PROCESSING', 'RUNNING',
+      'SCHEDULED', 'UPLOADING'].contains(status);
+    final warn = ['PROPOSED', 'QUEUED', 'PENDING', 'PARTIAL',
+      'COMPLETED_WITH_WARNINGS', 'NEEDS_REVIEW', 'DRAFT'].contains(status);
+    final bad = ['FAILED', 'CANCELLED', 'REJECTED', 'BLOCKED',
+      'EXPIRED'].contains(status);
+    final tone = good ? Palette.green : active ? Palette.blue :
+      warn ? Palette.amber : bad ? Palette.red : Palette.muted;
     return DecoratedBox(
       decoration: BoxDecoration(
         color: tone.withValues(alpha: 0.09),
