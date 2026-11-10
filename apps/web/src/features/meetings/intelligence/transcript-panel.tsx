@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import { invalidateMeetingArtifacts } from './query-invalidation'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -47,10 +48,7 @@ export function TranscriptPanel({ meetingId }: { meetingId: string }) {
       toast.success('Correction saved')
       setEditing(null)
       setReason('')
-      void qc.invalidateQueries({ queryKey: ['transcript', meetingId] })
-      void qc.invalidateQueries({
-        queryKey: ['meeting-intelligence', meetingId],
-      })
+      invalidateMeetingArtifacts(qc, meetingId, { transcript: true })
     },
     onError: (error) => {
       toast.error('Unable to correct transcript', {
