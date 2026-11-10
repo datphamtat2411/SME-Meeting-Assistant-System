@@ -82,21 +82,9 @@ import {
   type MeetingRelationship,
   type MeetingSort,
 } from './data/list-api'
+import { formatMeetingSchedule as formatSchedule } from './data/meeting-schedule-format'
 
 const route = getRouteApi('/_authenticated/meetings/')
-
-const presentationTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
-const meetingDateFormatter = new Intl.DateTimeFormat('en-US', {
-  month: 'short',
-  day: 'numeric',
-  year: 'numeric',
-  timeZone: presentationTimeZone,
-})
-const meetingTimeFormatter = new Intl.DateTimeFormat('en-US', {
-  hour: 'numeric',
-  minute: '2-digit',
-  timeZone: presentationTimeZone,
-})
 
 const statusOptions = [
   { label: 'Draft', value: 'DRAFT' },
@@ -1098,20 +1086,7 @@ function formatMeetingRange(pagination: MeetingPagination) {
 }
 
 function formatMeetingSchedule(meeting: MeetingListItem) {
-  if (!meeting.scheduledStartAt || !meeting.scheduledEndAt) {
-    return 'Unscheduled'
-  }
-
-  const startsAt = new Date(meeting.scheduledStartAt)
-  const endsAt = new Date(meeting.scheduledEndAt)
-  if (
-    !Number.isFinite(startsAt.getTime()) ||
-    !Number.isFinite(endsAt.getTime())
-  ) {
-    return 'Unscheduled'
-  }
-
-  return `${meetingDateFormatter.format(startsAt)} · ${meetingTimeFormatter.format(startsAt)} - ${meetingTimeFormatter.format(endsAt)}`
+  return formatSchedule(meeting.scheduledStartAt, meeting.scheduledEndAt)
 }
 
 function formatParticipantCount(display: MeetingDisplay) {

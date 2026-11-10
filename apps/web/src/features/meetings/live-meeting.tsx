@@ -31,19 +31,9 @@ import {
 import { MeetingLifecycleActions } from './components/meeting-lifecycle-actions'
 import { MeetingStatusBadge } from './components/meeting-status-badge'
 import { meetingDetailQueryOptions, type MeetingView } from './data/detail-api'
+import { formatMeetingSchedule as formatSchedule } from './data/meeting-schedule-format'
 
 const presentationTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
-const meetingDateFormatter = new Intl.DateTimeFormat('en-US', {
-  month: 'short',
-  day: 'numeric',
-  year: 'numeric',
-  timeZone: presentationTimeZone,
-})
-const meetingTimeFormatter = new Intl.DateTimeFormat('en-US', {
-  hour: 'numeric',
-  minute: '2-digit',
-  timeZone: presentationTimeZone,
-})
 const meetingDateTimeFormatter = new Intl.DateTimeFormat('en-US', {
   dateStyle: 'medium',
   timeStyle: 'short',
@@ -141,11 +131,7 @@ function LiveMeetingDetail({
         <div className='flex flex-wrap gap-x-4 gap-y-2 text-sm text-muted-foreground'>
           <span className='inline-flex items-center gap-1.5'>
             <CalendarDays className='size-4' />
-            {formatMeetingDate(meeting)}
-          </span>
-          <span className='inline-flex items-center gap-1.5'>
-            <Clock3 className='size-4' />
-            {formatMeetingTimeRange(meeting)}
+            {formatMeetingScheduleValue(meeting)}
           </span>
           <span className='inline-flex items-center gap-1.5'>
             <MapPin className='size-4' />
@@ -268,14 +254,8 @@ function lifecycleDetail(meeting: MeetingView) {
   return 'Return to the meeting workspace to review this draft.'
 }
 
-function formatMeetingDate(meeting: MeetingView) {
-  if (!meeting.scheduledStartAt) return 'Unscheduled'
-  return meetingDateFormatter.format(new Date(meeting.scheduledStartAt))
-}
-
-function formatMeetingTimeRange(meeting: MeetingView) {
-  if (!meeting.scheduledStartAt || !meeting.scheduledEndAt) return 'Unscheduled'
-  return `${meetingTimeFormatter.format(new Date(meeting.scheduledStartAt))} - ${meetingTimeFormatter.format(new Date(meeting.scheduledEndAt))}`
+function formatMeetingScheduleValue(meeting: MeetingView) {
+  return formatSchedule(meeting.scheduledStartAt, meeting.scheduledEndAt)
 }
 
 function formatDateTime(value: string) {

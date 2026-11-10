@@ -837,9 +837,155 @@ describe('MeetingCreationDialog', () => {
       screen.getByRole('button', { name: 'Create & Schedule' })
     )
 
+    await expect.element(screen.getByText(/now scheduled/i)).toBeInTheDocument()
+    expect(postSpy).toHaveBeenCalledTimes(2)
+    expect(postSpy.mock.calls[0]?.[0]).toBe('/meetings')
+    expect(postSpy.mock.calls[1]?.[0]).toBe('/meetings/meeting-1/schedule')
+  })
+
+  it('keeps an observed scheduled result neutral and does not notify confirmed success', async () => {
+    mockRoomQueries()
+    const postSpy = vi.spyOn(coreApi, 'postWithMetaAndEtag')
+    postSpy
+      .mockResolvedValueOnce({
+        data: scheduledDraft,
+        meta: {},
+        etag: 'draft-etag',
+      })
+      .mockRejectedValueOnce(new Error('schedule response lost'))
+    vi.spyOn(coreApi, 'post').mockResolvedValue({
+      previewOnly: true,
+      canSchedule: true,
+      roomConflict: false,
+      room: null,
+      warnings: [],
+    })
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+      data: scheduledMeeting,
+      meta: {},
+      etag: 'scheduled-etag',
+    })
+    const onCommitted = vi.fn()
+    const queryClient = createQueryClient()
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+    queryClient.setQueryData(['meetings', 'list', { page: 1 }], {
+      meetings: [
+        {
+          ...scheduledDraft,
+          display: {
+            organizerName: 'Organizer',
+            roomName: 'Boardroom',
+            roomLocation: 'HQ',
+            participantCount: 0,
+            participantPreview: [],
+          },
+        },
+      ],
+      pagination,
+    })
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <MeetingCreationDialog
+          open
+          onOpenChange={vi.fn()}
+          onCommitted={onCommitted}
+        />
+      </QueryClientProvider>
+    )
+
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Title' }),
+      'Observed schedule'
+    )
+    await userEvent.fill(
+      screen.getByLabelText('Date', { exact: true }),
+      '2026-09-01'
+    )
+    await userEvent.fill(screen.getByLabelText('Start time'), '09:00')
+    await userEvent.fill(screen.getByLabelText('End time'), '10:00')
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Create & Schedule' })
+    )
+
+    await expect.element(screen.getByText(/now scheduled/i)).toBeInTheDocument()
     await expect
       .element(screen.getByText('Meeting scheduled'))
+      .not.toBeInTheDocument()
+    expect(onCommitted).not.toHaveBeenCalled()
+    expect(
+      postSpy.mock.calls.filter(([url]) => url === '/meetings')
+    ).toHaveLength(1)
+    expect(
+      postSpy.mock.calls.filter(
+        ([url]) => url === '/meetings/meeting-1/schedule'
+      )
+    ).toHaveLength(1)
+    expect(
+      queryClient.getQueryData(['meetings', 'detail', 'meeting-1'])
+    ).toEqual({ meeting: scheduledMeeting, etag: 'scheduled-etag' })
+    expect(
+      queryClient.getQueryData<{ meetings: Array<{ status: string }> }>([
+        'meetings',
+        'list',
+        { page: 1 },
+      ])?.meetings[0]?.status
+    ).toBe('SCHEDULED')
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: ['rooms', 'availability'],
+    })
+  })
+
+  it('preserves the created draft when ambiguous schedule reconciliation fails', async () => {
+    mockRoomQueries()
+    const postSpy = vi.spyOn(coreApi, 'postWithMetaAndEtag')
+    postSpy
+      .mockResolvedValueOnce({
+        data: scheduledDraft,
+        meta: {},
+        etag: 'draft-etag',
+      })
+      .mockRejectedValueOnce(new Error('schedule response lost'))
+    vi.spyOn(coreApi, 'post').mockResolvedValue({
+      previewOnly: true,
+      canSchedule: true,
+      roomConflict: false,
+      room: null,
+      warnings: [],
+    })
+    const detailSpy = vi
+      .spyOn(coreApi, 'getWithMetaAndEtag')
+      .mockRejectedValue(new Error('detail unavailable'))
+    const screen = await render(
+      <QueryClientProvider client={createQueryClient()}>
+        <MeetingCreationDialog open onOpenChange={vi.fn()} />
+      </QueryClientProvider>
+    )
+
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Title' }),
+      'Uncertain schedule'
+    )
+    await userEvent.fill(
+      screen.getByLabelText('Date', { exact: true }),
+      '2026-09-01'
+    )
+    await userEvent.fill(screen.getByLabelText('Start time'), '09:00')
+    await userEvent.fill(screen.getByLabelText('End time'), '10:00')
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Create & Schedule' })
+    )
+
+    await expect
+      .element(screen.getByText('Schedule result unknown'))
       .toBeInTheDocument()
-    expect(postSpy).toHaveBeenCalledTimes(2)
+    expect(detailSpy).toHaveBeenCalledTimes(1)
+    expect(
+      postSpy.mock.calls.filter(([url]) => url === '/meetings')
+    ).toHaveLength(1)
+    expect(
+      postSpy.mock.calls.filter(
+        ([url]) => url === '/meetings/meeting-1/schedule'
+      )
+    ).toHaveLength(1)
   })
 })

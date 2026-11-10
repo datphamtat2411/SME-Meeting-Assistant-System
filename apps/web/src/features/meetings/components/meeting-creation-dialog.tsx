@@ -40,6 +40,10 @@ import {
   roomFilterOptionByIdQueryOptions,
   roomFilterQueryOptions,
 } from '../data/list-api'
+import {
+  meetingDetailQueryKey,
+  synchronizeMeetingCaches,
+} from '../data/meeting-cache'
 import { type MeetingParticipantCandidate } from '../data/meeting-candidates-api'
 import {
   buildCreateMeetingPayload,
@@ -153,6 +157,7 @@ type SubmissionPhase =
   | 'schedule_uncertain'
   | 'reconciling'
   | 'scheduled_confirmed'
+  | 'scheduled_observed'
   | 'failed_definitively'
 type RecoveryStatus = 'draft' | 'uncertain'
 
@@ -160,7 +165,7 @@ type DraftRecovery = {
   meetingId: string
   etag: string
   schedule: ScheduleValues
-  status: RecoveryStatus
+  status: RecoveryStatus | 'scheduled'
 }
 
 type CommittedMeeting = {
@@ -355,6 +360,9 @@ export function MeetingCreationDialog({
 
   const handleOpenChange = (nextOpen: boolean) => {
     if (!nextOpen && busy) return
+    if (!nextOpen && phase === 'scheduled_observed') {
+      resetOnClose.current = true
+    }
     onOpenChange(nextOpen)
   }
 
@@ -435,8 +443,21 @@ export function MeetingCreationDialog({
     })
   }
 
-  const recordDraftCreated = () => {
-    void queryClient.invalidateQueries({ queryKey: ['meetings', 'list'] })
+  const synchronizeCreatedMeeting = (result: {
+    meeting: MeetingMutationResult['meeting']
+    etag: string
+  }) => {
+    const previousMeeting = queryClient.getQueryData<MeetingDetailResponse>(
+      meetingDetailQueryKey(result.meeting.id)
+    )?.meeting
+    synchronizeMeetingCaches(
+      queryClient,
+      { meeting: result.meeting, etag: result.etag },
+      previousMeeting,
+      {
+        invalidateRoomAvailability: result.meeting.status === 'SCHEDULED',
+      }
+    )
   }
 
   const commitDraft = (meeting: {
@@ -459,10 +480,8 @@ export function MeetingCreationDialog({
     })
   }
 
-  const finishDraftSave = (result: {
-    meeting: { id: string; status: 'DRAFT'; roomId: string | null }
-    etag: string
-  }) => {
+  const finishDraftSave = (result: MeetingMutationResult<'DRAFT'>) => {
+    synchronizeCreatedMeeting(result)
     commitDraft(result)
     setOutcome('draft')
     setErrorMessage(null)
@@ -473,10 +492,8 @@ export function MeetingCreationDialog({
     handleOpenChange(false)
   }
 
-  const finishScheduled = (result: {
-    meeting: { id: string; status: 'SCHEDULED'; roomId: string | null }
-    etag: string
-  }) => {
+  const finishScheduled = (result: MeetingMutationResult<'SCHEDULED'>) => {
+    synchronizeCreatedMeeting(result)
     commitScheduled(result)
     setOutcome('scheduled')
     setErrorMessage(null)
@@ -509,10 +526,14 @@ export function MeetingCreationDialog({
     try {
       const detail = await fetchMeetingDetail(recovery.meetingId)
       if (detail.meeting.status === 'SCHEDULED') {
-        finishScheduledFromDetail(detail)
+        finishScheduledFromDetail(detail, recovery)
         return
       }
       if (detail.meeting.status === 'DRAFT') {
+        const previousMeeting = queryClient.getQueryData<MeetingDetailResponse>(
+          meetingDetailQueryKey(detail.meeting.id)
+        )?.meeting
+        synchronizeMeetingCaches(queryClient, detail, previousMeeting)
         setDraftRecovery({
           ...recovery,
           etag: detail.etag,
@@ -552,22 +573,26 @@ export function MeetingCreationDialog({
     }
   }
 
-  const finishScheduledFromDetail = (detail: MeetingDetailResponse) => {
-    commitScheduled({
-      meeting: {
-        id: detail.meeting.id,
-        status: 'SCHEDULED',
-        roomId: detail.meeting.roomId,
-      },
+  const finishScheduledFromDetail = (
+    detail: MeetingDetailResponse,
+    recovery: DraftRecovery
+  ) => {
+    const previousMeeting = queryClient.getQueryData<MeetingDetailResponse>(
+      meetingDetailQueryKey(detail.meeting.id)
+    )?.meeting
+    synchronizeMeetingCaches(queryClient, detail, previousMeeting, {
+      invalidateRoomAvailability: true,
     })
-    setOutcome('scheduled')
+    setDraftRecovery({
+      ...recovery,
+      etag: detail.etag,
+      status: 'scheduled',
+    })
+    setOutcome(null)
     setErrorMessage(null)
-    setDraftRecovery(null)
-    setPhase('scheduled_confirmed')
-    setFlow(null)
+    setPhase('scheduled_observed')
+    setFlow('schedule')
     operationInFlight.current = false
-    resetOnClose.current = true
-    handleOpenChange(false)
   }
 
   const handleScheduleFailure = async (
@@ -688,14 +713,11 @@ export function MeetingCreationDialog({
   }
 
   const scheduleCreatedDraft = async (
-    created: {
-      meeting: { id: string; status: 'DRAFT'; roomId: string | null }
-      etag: string
-    },
+    created: MeetingMutationResult<'DRAFT'>,
     scheduleValues: ScheduleValues,
     intent: MeetingCreationIntent
   ) => {
-    recordDraftCreated()
+    synchronizeCreatedMeeting(created)
     const recovery: DraftRecovery = {
       meetingId: created.meeting.id,
       etag: created.etag,
@@ -1242,12 +1264,16 @@ function DraftRecoveryNotice({
   onRefresh: () => void
 }) {
   return (
-    <Alert variant='destructive'>
-      <AlertCircle />
+    <Alert
+      variant={recovery.status === 'scheduled' ? 'default' : 'destructive'}
+    >
+      {recovery.status === 'scheduled' ? <Check /> : <AlertCircle />}
       <AlertTitle>
         {recovery.status === 'draft'
           ? 'Draft created, not scheduled'
-          : 'Schedule result unknown'}
+          : recovery.status === 'scheduled'
+            ? 'Meeting is now scheduled'
+            : 'Schedule result unknown'}
       </AlertTitle>
       <AlertDescription>
         <p>
@@ -1256,7 +1282,9 @@ function DraftRecoveryNotice({
           preserved.{' '}
           {recovery.status === 'draft'
             ? 'Retrying uses its current opaque ETag and will not create another meeting.'
-            : 'Its current lifecycle and ETag could not be verified; do not assume it was scheduled.'}
+            : recovery.status === 'scheduled'
+              ? 'The latest GET reports SCHEDULED, but the original schedule request outcome could not be independently confirmed.'
+              : 'Its current lifecycle and ETag could not be verified; do not assume it was scheduled.'}
         </p>
         <div className='flex flex-wrap gap-2'>
           {recovery.status === 'draft' ? (
@@ -1269,7 +1297,7 @@ function DraftRecoveryNotice({
             >
               Retry schedule
             </Button>
-          ) : (
+          ) : recovery.status === 'uncertain' ? (
             <Button
               type='button'
               variant='outline'
@@ -1279,10 +1307,10 @@ function DraftRecoveryNotice({
             >
               Refresh draft status
             </Button>
-          )}
+          ) : null}
           <Button asChild type='button' variant='ghost' size='sm'>
             <a href={`/meetings/${encodeURIComponent(recovery.meetingId)}`}>
-              View draft
+              View {recovery.status === 'scheduled' ? 'meeting' : 'draft'}
             </a>
           </Button>
         </div>

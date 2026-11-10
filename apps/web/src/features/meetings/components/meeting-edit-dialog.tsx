@@ -53,6 +53,10 @@ import {
   roomFilterQueryOptions,
 } from '../data/list-api'
 import {
+  meetingDetailQueryKey,
+  synchronizeMeetingCaches,
+} from '../data/meeting-cache'
+import {
   buildScheduleCheckPayload,
   checkMeetingSchedule,
   classifyMeetingMutationError,
@@ -153,6 +157,7 @@ type EditPhase =
   | 'scheduling'
   | 'awaiting_warning_review'
   | 'reconciling'
+  | 'version_unverified'
   | 'confirmed'
 
 type EditAction = 'save' | 'schedule'
@@ -198,6 +203,7 @@ export type MeetingEditDialogProps = {
   onOpenChange: (open: boolean) => void
   meeting: EditableMeetingView
   etag: string
+  currentUserId?: string
   participantCount?: number
   onCommitted?: (commit: MeetingEditCommit) => void
 }
@@ -207,6 +213,7 @@ export function MeetingEditDialog({
   onOpenChange,
   meeting,
   etag,
+  currentUserId,
   participantCount,
   onCommitted,
 }: MeetingEditDialogProps) {
@@ -226,11 +233,17 @@ export function MeetingEditDialog({
   const [pendingSchedule, setPendingSchedule] =
     useState<PendingSchedule | null>(null)
   const [showWarningDetails, setShowWarningDetails] = useState(false)
-  const [workingMeeting, setWorkingMeeting] = useState(meeting)
+  const [workingMeeting, setWorkingMeeting] = useState<MeetingView>(meeting)
   const [currentEtag, setCurrentEtag] = useState(etag)
   const [latestDetail, setLatestDetail] =
     useState<MeetingDetailResponse | null>(null)
   const [reloadConfirmationOpen, setReloadConfirmationOpen] = useState(false)
+  const [editingBlocked, setEditingBlocked] = useState(false)
+  const [reconciliationIntent, setReconciliationIntent] =
+    useState<ReconciliationIntent | null>(null)
+  const [reconciliationMode, setReconciliationMode] = useState<
+    'precondition' | 'uncertain' | null
+  >(null)
   const operationInFlight = useRef(false)
   const openedMeetingId = useRef<string | null>(null)
   const resetOnNextOpen = useRef(true)
@@ -247,9 +260,8 @@ export function MeetingEditDialog({
   const endTime = useWatch({ control: form.control, name: 'endTime' })
   const roomId = useWatch({ control: form.control, name: 'roomId' })
   const scheduleFormValues = { date, endDate, startTime, endTime }
-  const scheduleFieldsChanged = hasScheduleFormChanges(
-    scheduleFormValues,
-    originalSchedule.form
+  const scheduleFieldsChanged = hasDirtyScheduleFields(
+    form.formState.dirtyFields
   )
   const schedule = scheduleFieldsChanged
     ? getScheduleValues(scheduleFormValues)
@@ -307,16 +319,27 @@ export function MeetingEditDialog({
     phase === 'scheduling' ||
     phase === 'reconciling'
 
+  const mutationLocked =
+    busy ||
+    phase === 'version_unverified' ||
+    editingBlocked ||
+    phase === 'confirmed'
+
   useEffect(() => {
     if (!open) {
       return
     }
     if (resetOnNextOpen.current || openedMeetingId.current !== meeting.id) {
-      const formValues = toMeetingEditFormValues(meeting)
+      const cachedDetail = queryClient.getQueryData<MeetingDetailResponse>(
+        meetingDetailQueryKey(meeting.id)
+      )
+      const canonicalMeeting = cachedDetail?.meeting ?? meeting
+      const canonicalEtag = cachedDetail?.etag ?? etag
+      const formValues = toMeetingEditFormValues(canonicalMeeting)
       form.reset(formValues)
-      setOriginalSchedule(createOriginalSchedule(meeting))
-      setWorkingMeeting(meeting)
-      setCurrentEtag(etag)
+      setOriginalSchedule(createOriginalSchedule(canonicalMeeting))
+      setWorkingMeeting(canonicalMeeting)
+      setCurrentEtag(canonicalEtag)
       setPhase('idle')
       setErrorMessage(null)
       setOutcome(null)
@@ -326,11 +349,14 @@ export function MeetingEditDialog({
       setShowWarningDetails(false)
       setLatestDetail(null)
       setReloadConfirmationOpen(false)
+      setEditingBlocked(false)
+      setReconciliationIntent(null)
+      setReconciliationMode(null)
       operationInFlight.current = false
       openedMeetingId.current = meeting.id
       resetOnNextOpen.current = false
     }
-  }, [etag, form, meeting, open])
+  }, [etag, form, meeting, open, queryClient])
 
   useEffect(() => {
     if (!form.formState.isDirty && !busy) return
@@ -371,15 +397,6 @@ export function MeetingEditDialog({
     }
   }
 
-  const invalidateConfirmedQueries = (scheduleChanged: boolean) => {
-    void queryClient.invalidateQueries({ queryKey: ['meetings', 'list'] })
-    if (scheduleChanged) {
-      void queryClient.invalidateQueries({
-        queryKey: ['rooms', 'availability'],
-      })
-    }
-  }
-
   const recordConfirmedMutation = (
     result: ConfirmedMutation,
     scheduleChanged: boolean
@@ -388,14 +405,18 @@ export function MeetingEditDialog({
       meeting: result.meeting,
       etag: result.etag,
     }
+    const previousMeeting = queryClient.getQueryData<MeetingDetailResponse>(
+      meetingDetailQueryKey(result.meeting.id)
+    )?.meeting
     setWorkingMeeting(result.meeting)
     setCurrentEtag(result.etag)
     setLatestDetail(null)
-    queryClient.setQueryData(['meetings', 'detail', result.meeting.id], detail)
-    void queryClient.invalidateQueries({
-      queryKey: ['meetings', 'detail', result.meeting.id],
+    synchronizeMeetingCaches(queryClient, detail, previousMeeting, {
+      invalidateDetail: true,
+      invalidateRoomAvailability: scheduleChanged,
     })
-    invalidateConfirmedQueries(scheduleChanged)
+    setReconciliationIntent(null)
+    setReconciliationMode(null)
   }
 
   const finishSuccess = (
@@ -430,6 +451,9 @@ export function MeetingEditDialog({
         classifyMeetingMutationError(error)
       )
     )
+    if ([401, 403, 404].includes(normalized.status ?? 0)) {
+      setEditingBlocked(true)
+    }
     setPhase('idle')
     operationInFlight.current = false
   }
@@ -474,64 +498,82 @@ export function MeetingEditDialog({
     return true
   }
 
-  const reconcileUncertainMutation = async (intent: ReconciliationIntent) => {
-    setPhase('reconciling')
-    try {
-      const latest = await fetchMeetingDetail(workingMeeting.id)
-      setLatestDetail(latest)
-      if (intentMatchesMeeting(latest.meeting, intent)) {
-        recordConfirmedMutation(
-          {
-            meeting: latest.meeting as EditableMeetingView,
-            etag: latest.etag,
-          },
-          intent.scheduleChanged
-        )
-        finishSuccess(
-          {
-            meeting: latest.meeting as EditableMeetingView,
-            etag: latest.etag,
-          },
-          intent.outcome
-        )
-        return
-      }
-      setErrorMessage(
-        'The operation outcome could not be confirmed. The latest meeting data is available for review; your local edits were preserved.'
-      )
-      setPhase('idle')
-      operationInFlight.current = false
-    } catch (detailError) {
-      const detailApiError = normalizeCoreApiError(detailError)
-      setErrorMessage(
-        detailApiError.status === 401
-          ? 'Your session could not be confirmed. The mutation outcome is unknown; sign in again before retrying.'
-          : detailApiError.status === 403
-            ? 'You are no longer authorized to verify this meeting. The mutation outcome is unknown; no retry was sent.'
-            : 'The mutation outcome is unknown and the current meeting version could not be verified. Your edits were preserved; refresh before retrying.'
-      )
-      setPhase('idle')
-      operationInFlight.current = false
+  const synchronizeAuthoritativeDetail = (
+    latest: MeetingDetailResponse,
+    intent: ReconciliationIntent
+  ) => {
+    const previousMeeting =
+      queryClient.getQueryData<MeetingDetailResponse>(
+        meetingDetailQueryKey(latest.meeting.id)
+      )?.meeting ?? workingMeeting
+    synchronizeMeetingCaches(queryClient, latest, previousMeeting, {
+      invalidateRoomAvailability: intent.scheduleChanged,
+    })
+    setLatestDetail(latest)
+    setWorkingMeeting(latest.meeting)
+    setCurrentEtag(latest.etag)
+    setOriginalSchedule(createOriginalSchedule(latest.meeting))
+
+    const lifecycleEditable =
+      latest.meeting.status === 'DRAFT' || latest.meeting.status === 'SCHEDULED'
+    const ownsMeeting =
+      !currentUserId || latest.meeting.organizerUserId === currentUserId
+    if (!lifecycleEditable || !ownsMeeting) {
+      setEditingBlocked(true)
     }
+    return { lifecycleEditable, ownsMeeting }
   }
 
-  const reconcilePrecondition = async () => {
+  const reconcileMutation = async (
+    intent: ReconciliationIntent,
+    mode: 'precondition' | 'uncertain'
+  ) => {
+    setReconciliationIntent(intent)
+    setReconciliationMode(mode)
     setPhase('reconciling')
     try {
       const latest = await fetchMeetingDetail(workingMeeting.id)
-      setLatestDetail(latest)
-      setErrorMessage('The meeting changed on the server.')
+      const { lifecycleEditable, ownsMeeting } = synchronizeAuthoritativeDetail(
+        latest,
+        intent
+      )
+      if (!lifecycleEditable) {
+        setErrorMessage(
+          `The meeting is now ${latest.meeting.status}. Editing is disabled; your local changes were preserved.`
+        )
+      } else if (!ownsMeeting) {
+        setErrorMessage(
+          'You are no longer the organizer of this meeting. Editing is disabled; your local changes were preserved.'
+        )
+      } else if (mode === 'precondition') {
+        setErrorMessage('The meeting changed on the server.')
+      } else if (intentMatchesMeeting(latest.meeting, intent)) {
+        setErrorMessage(
+          'The latest server state matches your requested changes, but the original request outcome could not be independently confirmed. Review the meeting before making another change.'
+        )
+      } else {
+        setErrorMessage(
+          'The operation outcome could not be confirmed. The latest meeting data is available for review; your local edits were preserved.'
+        )
+      }
+      setReconciliationIntent(null)
+      setReconciliationMode(null)
       setPhase('idle')
     } catch (detailError) {
       const detailApiError = normalizeCoreApiError(detailError)
+      if ([401, 403, 404].includes(detailApiError.status ?? 0)) {
+        setEditingBlocked(true)
+      }
       setErrorMessage(
         detailApiError.status === 401
           ? 'Your session could not be confirmed while refreshing the meeting version.'
           : detailApiError.status === 403
             ? 'You are no longer authorized to refresh this meeting version.'
-            : 'The meeting changed on the server, but its latest version could not be loaded. Your edits were preserved.'
+            : detailApiError.status === 404
+              ? 'This meeting is no longer available. Its latest version could not be verified.'
+              : 'The mutation outcome is unknown and the current meeting version could not be verified. Your edits were preserved; retry refresh before retrying the mutation.'
       )
-      setPhase('idle')
+      setPhase('version_unverified')
     } finally {
       operationInFlight.current = false
     }
@@ -544,7 +586,7 @@ export function MeetingEditDialog({
     const normalized = normalizeCoreApiError(error)
     const kind = classifyMeetingMutationError(error)
     if (kind === 'precondition') {
-      await reconcilePrecondition()
+      await reconcileMutation(intent, 'precondition')
       return
     }
     if (
@@ -553,25 +595,42 @@ export function MeetingEditDialog({
       kind === 'malformed' ||
       normalized.recoveryOutcome === 'uncertain'
     ) {
-      await reconcileUncertainMutation(intent)
+      await reconcileMutation(intent, 'uncertain')
       return
     }
     setFailure(error, intent.operation)
   }
 
+  const getVerifiedSnapshot = (): MeetingDetailResponse => {
+    return (
+      queryClient.getQueryData<MeetingDetailResponse>(
+        meetingDetailQueryKey(meeting.id)
+      ) ?? { meeting: workingMeeting, etag: currentEtag }
+    )
+  }
+
   const buildValuesForMutation = (
-    values: MeetingEditFormValues
+    values: MeetingEditFormValues,
+    baseMeeting: MeetingView = workingMeeting
   ): { editValues: MeetingEditValues; schedule?: ScheduleValues } => {
-    const nextSchedule = hasScheduleFormChanges(values, originalSchedule.form)
+    const dirtyFields = form.formState.dirtyFields
+    const authoritativeSchedule = createOriginalSchedule(baseMeeting).schedule
+    const nextSchedule = hasDirtyScheduleFields(dirtyFields)
       ? getScheduleValues(values)
-      : originalSchedule.schedule
+      : authoritativeSchedule
     return {
       editValues: {
-        title: values.title,
-        description: values.description,
-        scheduledStartAt: nextSchedule?.scheduledStartAt ?? null,
-        scheduledEndAt: nextSchedule?.scheduledEndAt ?? null,
-        roomId: values.roomId || null,
+        title: dirtyFields.title ? values.title : baseMeeting.title,
+        description: dirtyFields.description
+          ? values.description
+          : (baseMeeting.description ?? ''),
+        scheduledStartAt: hasDirtyScheduleFields(dirtyFields)
+          ? (nextSchedule?.scheduledStartAt ?? null)
+          : baseMeeting.scheduledStartAt,
+        scheduledEndAt: hasDirtyScheduleFields(dirtyFields)
+          ? (nextSchedule?.scheduledEndAt ?? null)
+          : baseMeeting.scheduledEndAt,
+        roomId: dirtyFields.roomId ? values.roomId || null : baseMeeting.roomId,
       },
       schedule: nextSchedule,
     }
@@ -579,11 +638,12 @@ export function MeetingEditDialog({
 
   const savePatch = async (
     payload: MeetingEditPayload,
-    scheduleChanged: boolean
+    scheduleChanged: boolean,
+    base: MeetingDetailResponse
   ) => {
     const intent: ReconciliationIntent = {
       operation: 'Saving meeting changes',
-      expectedStatus: workingMeeting.status,
+      expectedStatus: base.meeting.status as 'DRAFT' | 'SCHEDULED',
       payload,
       scheduleChanged,
       outcome: 'saved',
@@ -591,10 +651,10 @@ export function MeetingEditDialog({
     setPhase('saving')
     try {
       const result = await updateMeeting(
-        workingMeeting.id,
-        currentEtag,
+        base.meeting.id,
+        base.etag,
         payload,
-        workingMeeting.status
+        base.meeting.status as 'DRAFT' | 'SCHEDULED'
       )
       recordConfirmedMutation(result, scheduleChanged)
       finishSuccess(result, 'saved')
@@ -608,7 +668,8 @@ export function MeetingEditDialog({
     operationInFlight.current = true
     setErrorMessage(null)
     setShowWarningDetails(false)
-    let mutationEtag = currentEtag
+    const base = getVerifiedSnapshot()
+    let mutationEtag = base.etag
     let patchedResult: ConfirmedMutation | undefined
     let scheduleIntent: ReconciliationIntent = {
       operation:
@@ -616,7 +677,9 @@ export function MeetingEditDialog({
           ? 'Scheduling the meeting'
           : 'Saving meeting changes',
       expectedStatus:
-        candidate.action === 'schedule' ? 'SCHEDULED' : workingMeeting.status,
+        candidate.action === 'schedule'
+          ? 'SCHEDULED'
+          : (base.meeting.status as 'DRAFT' | 'SCHEDULED'),
       payload: candidate.payload,
       schedule: candidate.schedule,
       scheduleChanged: candidate.scheduleChanged,
@@ -631,10 +694,10 @@ export function MeetingEditDialog({
       if (hasMeetingEditChanges(candidate.payload)) {
         setPhase('saving')
         const patched = await updateMeeting(
-          workingMeeting.id,
+          base.meeting.id,
           mutationEtag,
           candidate.payload,
-          workingMeeting.status
+          base.meeting.status as 'DRAFT' | 'SCHEDULED'
         )
         recordConfirmedMutation(patched, candidate.scheduleChanged)
         patchedResult = patched
@@ -661,7 +724,7 @@ export function MeetingEditDialog({
       }
 
       setPhase('scheduling')
-      const scheduled = await scheduleMeeting(workingMeeting.id, mutationEtag, {
+      const scheduled = await scheduleMeeting(base.meeting.id, mutationEtag, {
         scheduledStartAt: candidate.schedule.scheduledStartAt,
         scheduledEndAt: candidate.schedule.scheduledEndAt,
       })
@@ -694,10 +757,10 @@ export function MeetingEditDialog({
     try {
       const preview = await checkMeetingSchedule(
         buildScheduleCheckPayload({
-          meetingId: workingMeeting.id,
+          meetingId: getVerifiedSnapshot().meeting.id,
           start: scheduleValues.start,
           end: scheduleValues.end,
-          roomId: values.roomId || undefined,
+          roomId: payload.roomId ?? undefined,
         })
       )
       setScheduleCheck(preview)
@@ -730,20 +793,30 @@ export function MeetingEditDialog({
   }
 
   const saveChanges = async (values: MeetingEditFormValues) => {
-    if (busy || operationInFlight.current || roomUnavailable) return
-    const { editValues, schedule: scheduleValues } =
-      buildValuesForMutation(values)
-    if (workingMeeting.status === 'SCHEDULED' && !scheduleValues) {
+    if (mutationLocked || operationInFlight.current || roomUnavailable) return
+    const base = getVerifiedSnapshot()
+    if (!isEditableMeeting(base.meeting)) {
+      setEditingBlocked(true)
+      setErrorMessage(
+        `The meeting is now ${base.meeting.status}. Editing is disabled.`
+      )
+      return
+    }
+    const { editValues, schedule: scheduleValues } = buildValuesForMutation(
+      values,
+      base.meeting
+    )
+    if (base.meeting.status === 'SCHEDULED' && !scheduleValues) {
       setScheduleRequiredErrors(form)
       return
     }
-    const payload = buildMeetingEditPayload(workingMeeting, editValues)
+    const payload = buildMeetingEditPayload(base.meeting, editValues)
     if (!hasMeetingEditChanges(payload)) {
       setErrorMessage('No changes to save.')
       return
     }
     const scheduleChanged = hasScheduleChange(payload)
-    if (workingMeeting.status === 'SCHEDULED' && scheduleChanged) {
+    if (base.meeting.status === 'SCHEDULED' && scheduleChanged) {
       operationInFlight.current = true
       clearPreview()
       setErrorMessage(null)
@@ -759,18 +832,28 @@ export function MeetingEditDialog({
     operationInFlight.current = true
     clearPreview()
     setErrorMessage(null)
-    await savePatch(payload, scheduleChanged)
+    await savePatch(payload, scheduleChanged, base)
   }
 
   const saveAndSchedule = async (values: MeetingEditFormValues) => {
-    if (busy || operationInFlight.current || roomUnavailable) return
-    const { editValues, schedule: scheduleValues } =
-      buildValuesForMutation(values)
+    if (mutationLocked || operationInFlight.current || roomUnavailable) return
+    const base = getVerifiedSnapshot()
+    if (!isEditableMeeting(base.meeting) || base.meeting.status !== 'DRAFT') {
+      setEditingBlocked(true)
+      setErrorMessage(
+        `The meeting is now ${base.meeting.status}. Scheduling is disabled.`
+      )
+      return
+    }
+    const { editValues, schedule: scheduleValues } = buildValuesForMutation(
+      values,
+      base.meeting
+    )
     if (!scheduleValues) {
       setScheduleRequiredErrors(form)
       return
     }
-    const payload = buildMeetingEditPayload(workingMeeting, editValues)
+    const payload = buildMeetingEditPayload(base.meeting, editValues)
     operationInFlight.current = true
     clearPreview()
     setErrorMessage(null)
@@ -791,6 +874,20 @@ export function MeetingEditDialog({
     void commitSchedule(pendingSchedule)
   }
 
+  const retryRefresh = () => {
+    if (
+      !reconciliationIntent ||
+      !reconciliationMode ||
+      operationInFlight.current ||
+      phase !== 'version_unverified' ||
+      editingBlocked
+    ) {
+      return
+    }
+    operationInFlight.current = true
+    void reconcileMutation(reconciliationIntent, reconciliationMode)
+  }
+
   const reloadLatestMeeting = () => {
     if (!latestDetail) return
     if (
@@ -809,8 +906,18 @@ export function MeetingEditDialog({
     setWorkingMeeting(latestDetail.meeting as EditableMeetingView)
     setCurrentEtag(latestDetail.etag)
     setLatestDetail(null)
+    setReconciliationIntent(null)
+    setReconciliationMode(null)
+    const ownsMeeting =
+      !currentUserId || latestDetail.meeting.organizerUserId === currentUserId
+    setEditingBlocked(!ownsMeeting)
     setReloadConfirmationOpen(false)
     setErrorMessage(null)
+    if (!ownsMeeting) {
+      setErrorMessage(
+        'You are no longer the organizer of this meeting. Editing is disabled.'
+      )
+    }
     setOutcome(null)
     clearPreview()
     setPhase('idle')
@@ -971,8 +1078,28 @@ export function MeetingEditDialog({
               {errorMessage && (
                 <Alert variant='destructive'>
                   <AlertCircle />
-                  <AlertTitle>Meeting operation did not complete</AlertTitle>
-                  <AlertDescription>{errorMessage}</AlertDescription>
+                  <AlertTitle>
+                    {phase === 'version_unverified'
+                      ? 'Meeting version needs verification'
+                      : 'Meeting operation did not complete'}
+                  </AlertTitle>
+                  <AlertDescription>
+                    <p>{errorMessage}</p>
+                    {phase === 'version_unverified' &&
+                      reconciliationIntent &&
+                      !editingBlocked && (
+                        <Button
+                          type='button'
+                          variant='outline'
+                          size='sm'
+                          onClick={retryRefresh}
+                          disabled={busy}
+                        >
+                          <RefreshCw />
+                          Retry refresh
+                        </Button>
+                      )}
+                  </AlertDescription>
                 </Alert>
               )}
 
@@ -1009,10 +1136,7 @@ export function MeetingEditDialog({
               variant='secondary'
               onClick={handleSaveChangesClick}
               disabled={
-                busy ||
-                warningReviewPending ||
-                roomUnavailable ||
-                phase === 'confirmed'
+                mutationLocked || warningReviewPending || roomUnavailable
               }
             >
               {phase === 'saving' ? (
@@ -1025,10 +1149,7 @@ export function MeetingEditDialog({
                 type='button'
                 onClick={handleSaveAndScheduleClick}
                 disabled={
-                  busy ||
-                  warningReviewPending ||
-                  roomUnavailable ||
-                  phase === 'confirmed'
+                  mutationLocked || warningReviewPending || roomUnavailable
                 }
               >
                 {phase === 'checking' || phase === 'scheduling' ? (
@@ -1121,16 +1242,21 @@ function createOriginalSchedule(meeting: MeetingView): OriginalSchedule {
   }
 }
 
-function hasScheduleFormChanges(
-  values: Partial<ScheduleFormSnapshot>,
-  original: ScheduleFormSnapshot
+function hasDirtyScheduleFields(
+  dirtyFields: Partial<Record<keyof ScheduleFormSnapshot, boolean>>
 ) {
-  return (
-    (values.date ?? '') !== original.date ||
-    (values.endDate ?? '') !== original.endDate ||
-    (values.startTime ?? '') !== original.startTime ||
-    (values.endTime ?? '') !== original.endTime
+  return Boolean(
+    dirtyFields.date ||
+    dirtyFields.endDate ||
+    dirtyFields.startTime ||
+    dirtyFields.endTime
   )
+}
+
+function isEditableMeeting(
+  meeting: MeetingView
+): meeting is EditableMeetingView {
+  return meeting.status === 'DRAFT' || meeting.status === 'SCHEDULED'
 }
 
 function hasScheduleChange(payload: MeetingEditPayload) {

@@ -770,7 +770,7 @@ describe('MeetingWorkspacePage', () => {
     expect(toastSuccess).not.toHaveBeenCalled()
   })
 
-  it('notifies once for confirmed reconciliation and ignores repeated invalidation', async () => {
+  it('does not report confirmed success for an ambiguous reconciliation', async () => {
     const reconciledMeeting = { ...editableMeeting, title: 'Reconciled title' }
     vi.spyOn(coreApi, 'patchWithMetaAndEtag').mockRejectedValueOnce(
       new CoreApiError({ message: 'Connection lost', kind: 'network' })
@@ -792,14 +792,12 @@ describe('MeetingWorkspacePage', () => {
     )
     await userEvent.click(screen.getByRole('button', { name: 'Save changes' }))
 
-    await expect.poll(() => toastSuccess.mock.calls.length).toBe(1)
+    await expect
+      .element(screen.getByText(/matches your requested changes/i))
+      .toBeInTheDocument()
     await queryClient.invalidateQueries({ queryKey: ['meetings', 'detail'] })
     await queryClient.invalidateQueries({ queryKey: ['meetings', 'list'] })
-    expect(toastSuccess).toHaveBeenCalledTimes(1)
-    expect(toastSuccess).toHaveBeenCalledWith(
-      'Meeting changes saved',
-      expect.anything()
-    )
+    expect(toastSuccess).not.toHaveBeenCalled()
   })
 
   it('synchronizes authoritative participant, ETag, count, and dependent caches after add', async () => {

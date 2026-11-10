@@ -51,20 +51,10 @@ import {
   type OrganizerFilterOption,
   type RoomFilterOption,
 } from './data/list-api'
+import { formatMeetingSchedule as formatSchedule } from './data/meeting-schedule-format'
 import type { MeetingParticipantRefresh } from './data/participant-management-api'
 
 const presentationTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
-const meetingDateFormatter = new Intl.DateTimeFormat('en-US', {
-  month: 'short',
-  day: 'numeric',
-  year: 'numeric',
-  timeZone: presentationTimeZone,
-})
-const meetingTimeFormatter = new Intl.DateTimeFormat('en-US', {
-  hour: 'numeric',
-  minute: '2-digit',
-  timeZone: presentationTimeZone,
-})
 const meetingDateTimeFormatter = new Intl.DateTimeFormat('en-US', {
   dateStyle: 'medium',
   timeStyle: 'short',
@@ -301,6 +291,7 @@ function MeetingWorkspace({
           onOpenChange={setEditOpen}
           meeting={meeting as EditableMeetingView}
           etag={etag}
+          currentUserId={currentUser?.userId}
           participantCount={participantCount}
           onCommitted={handleMeetingEdited}
         />
@@ -370,11 +361,7 @@ function MeetingHeader({
         <div className='flex flex-wrap gap-x-4 gap-y-2 text-sm text-muted-foreground'>
           <span className='inline-flex items-center gap-1.5'>
             <CalendarDays className='size-4' />
-            {formatMeetingDate(meeting)}
-          </span>
-          <span className='inline-flex items-center gap-1.5'>
-            <Clock3 className='size-4' />
-            {formatMeetingTimeRange(meeting)}
+            {formatMeetingScheduleValue(meeting)}
           </span>
           <span className='inline-flex items-center gap-1.5'>
             <MapPin className='size-4' />
@@ -450,12 +437,8 @@ function OperationalOverview({
             </p>
             <div className='grid gap-3 sm:grid-cols-2'>
               <InfoRow
-                label='Scheduled date'
-                value={formatMeetingDate(meeting)}
-              />
-              <InfoRow
-                label='Scheduled time'
-                value={formatMeetingTimeRange(meeting)}
+                label='Schedule'
+                value={formatMeetingScheduleValue(meeting)}
               />
               <InfoRow
                 label='Status'
@@ -515,8 +498,7 @@ function MeetingInformationCard({
         </CardTitle>
       </CardHeader>
       <CardContent className='space-y-4 pt-6'>
-        <InfoRow label='Date' value={formatMeetingDate(meeting)} />
-        <InfoRow label='Time' value={formatMeetingTimeRange(meeting)} />
+        <InfoRow label='Schedule' value={formatMeetingScheduleValue(meeting)} />
         <InfoRow label='Room' value={formatRoomInfo(room)} />
         <InfoRow
           label='Organizer'
@@ -792,14 +774,8 @@ function formatParticipantCount(participants: ParticipantView[]) {
     : activeLabel
 }
 
-function formatMeetingDate(meeting: MeetingView) {
-  if (!meeting.scheduledStartAt || !meeting.scheduledEndAt) return 'Unscheduled'
-  return meetingDateFormatter.format(new Date(meeting.scheduledStartAt))
-}
-
-function formatMeetingTimeRange(meeting: MeetingView) {
-  if (!meeting.scheduledStartAt || !meeting.scheduledEndAt) return 'Unscheduled'
-  return `${meetingTimeFormatter.format(new Date(meeting.scheduledStartAt))} - ${meetingTimeFormatter.format(new Date(meeting.scheduledEndAt))}`
+function formatMeetingScheduleValue(meeting: MeetingView) {
+  return formatSchedule(meeting.scheduledStartAt, meeting.scheduledEndAt)
 }
 
 function formatDateTime(value: string) {

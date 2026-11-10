@@ -5,6 +5,7 @@ import { userEvent } from 'vitest/browser'
 import { CoreApiError, coreApi } from '@/lib/core-api'
 import type { MeetingView } from '../data/detail-api'
 import type { MeetingListResponse } from '../data/list-api'
+import { affectsRoomAvailability } from '../data/meeting-cache'
 import {
   MeetingLifecycleActions,
   getMeetingLifecycleActions,
@@ -103,6 +104,35 @@ describe('MeetingLifecycleActions', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
     toastSuccess.mockReset()
+  })
+
+  it('invalidates room availability for reservation changes without a status change', () => {
+    const scheduled = createMeeting('SCHEDULED')
+    expect(
+      affectsRoomAvailability(scheduled, {
+        ...scheduled,
+        roomId: 'room-2',
+      })
+    ).toBe(true)
+    expect(
+      affectsRoomAvailability(scheduled, {
+        ...scheduled,
+        scheduledEndAt: '2026-09-01T04:00:00.000Z',
+      })
+    ).toBe(true)
+    expect(
+      affectsRoomAvailability(scheduled, {
+        ...scheduled,
+        title: 'Metadata only',
+      })
+    ).toBe(false)
+    expect(
+      affectsRoomAvailability(scheduled, {
+        ...scheduled,
+        scheduledStartAt: '2026-09-01T09:00:00+07:00',
+        scheduledEndAt: '2026-09-01T10:00:00+07:00',
+      })
+    ).toBe(false)
   })
 
   it('gates every lifecycle transition by canonical status and organizer ownership', async () => {

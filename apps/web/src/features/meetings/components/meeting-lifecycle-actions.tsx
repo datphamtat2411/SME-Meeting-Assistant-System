@@ -13,6 +13,7 @@ import {
   type MeetingView,
 } from '../data/detail-api'
 import type { MeetingListResponse } from '../data/list-api'
+import { affectsRoomAvailability as compareReservation } from '../data/meeting-cache'
 import {
   cancelMeeting,
   classifyMeetingLifecycleError,
@@ -71,24 +72,10 @@ function meetingDetailQueryKey(meetingId: string) {
   return ['meetings', 'detail', meetingId] as const
 }
 
-function affectsRoomAvailability(
-  previousStatus: MeetingView['status'] | undefined,
-  nextStatus: MeetingView['status']
-) {
-  if (!previousStatus || previousStatus === nextStatus) return false
-
-  const hadActiveReservation =
-    previousStatus === 'SCHEDULED' || previousStatus === 'IN_PROGRESS'
-  const hasActiveReservation =
-    nextStatus === 'SCHEDULED' || nextStatus === 'IN_PROGRESS'
-
-  return hadActiveReservation !== hasActiveReservation
-}
-
 function synchronizeLifecycleCaches(
   queryClient: QueryClient,
   detail: MeetingDetailResponse,
-  previousStatus: MeetingView['status'] | undefined,
+  previousMeeting: MeetingView | undefined,
   invalidateDetail: boolean
 ) {
   queryClient.setQueryData(meetingDetailQueryKey(detail.meeting.id), detail)
@@ -130,7 +117,7 @@ function synchronizeLifecycleCaches(
     })
   }
   void queryClient.invalidateQueries({ queryKey: meetingListQueryKey })
-  if (affectsRoomAvailability(previousStatus, detail.meeting.status)) {
+  if (compareReservation(previousMeeting, detail.meeting)) {
     void queryClient.invalidateQueries({ queryKey: roomAvailabilityQueryKey })
   }
 }
@@ -245,7 +232,7 @@ export function MeetingLifecycleActions({
       meeting: result.meeting,
       etag: result.etag,
     }
-    synchronizeLifecycleCaches(queryClient, detail, intent.expectedStatus, true)
+    synchronizeLifecycleCaches(queryClient, detail, workingMeeting, true)
     onCommitted?.({
       action: intent.action,
       meeting: result.meeting,
@@ -266,12 +253,7 @@ export function MeetingLifecycleActions({
     setPhase('reconciling')
     try {
       const latest = await fetchMeetingDetail(workingMeeting.id)
-      synchronizeLifecycleCaches(
-        queryClient,
-        latest,
-        intent.expectedStatus,
-        false
-      )
+      synchronizeLifecycleCaches(queryClient, latest, workingMeeting, false)
       const reconciledIntent = {
         ...intent,
         expectedStatus: latest.meeting.status,
