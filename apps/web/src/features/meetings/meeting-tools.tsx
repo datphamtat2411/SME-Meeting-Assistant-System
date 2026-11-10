@@ -28,7 +28,7 @@ export function MeetingTools({ meetingId }: { meetingId: string }) {
           <TabsTrigger value='speakers'>Speakers</TabsTrigger>
           <TabsTrigger value='summary'>Summary</TabsTrigger>
           <TabsTrigger value='decisions'>Decisions</TabsTrigger>
-        <TabsTrigger value='actions'>Action items</TabsTrigger>
+          <TabsTrigger value='actions'>Action items</TabsTrigger>
           <TabsTrigger value='minutes'>Minutes</TabsTrigger>
           <TabsTrigger value='export'>Export</TabsTrigger>
         </TabsList>
@@ -51,8 +51,10 @@ export function MeetingTools({ meetingId }: { meetingId: string }) {
         <TabsContent value='decisions' className='mt-4'>
           <DecisionsPanel meetingId={meetingId} />
         </TabsContent>
-        <TabsContent value='actions' className='mt-4'><MeetingActionsPanel meetingId={meetingId} /></TabsContent>
-      <TabsContent value='minutes' className='mt-4'>
+        <TabsContent value='actions' className='mt-4'>
+          <MeetingActionsPanel meetingId={meetingId} />
+        </TabsContent>
+        <TabsContent value='minutes' className='mt-4'>
           <MinutesPanel meetingId={meetingId} />
         </TabsContent>
         <TabsContent value='export' className='mt-4'>

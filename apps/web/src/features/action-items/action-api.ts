@@ -67,7 +67,10 @@ export interface ActionDraft {
   assigneeUserId: string
   dueDate: string | null
 }
-export function createAction(data: ActionDraft, idempotencyKey = crypto.randomUUID()) {
+export function createAction(
+  data: ActionDraft,
+  idempotencyKey = crypto.randomUUID()
+) {
   return coreApi.post<ActionItem>('/action-items', data, {
     headers: { 'Idempotency-Key': idempotencyKey },
   })
