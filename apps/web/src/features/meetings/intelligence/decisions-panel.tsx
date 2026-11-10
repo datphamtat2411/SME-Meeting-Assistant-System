@@ -17,6 +17,7 @@ import {
   reviewDecision,
   type Decision,
 } from './decision-api'
+import { invalidateMeetingArtifacts } from './query-invalidation'
 
 export function DecisionsPanel({ meetingId }: { meetingId: string }) {
   const qc = useQueryClient()
