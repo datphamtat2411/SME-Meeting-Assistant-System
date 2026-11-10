@@ -55,7 +55,7 @@ class DashboardExportFullUpgradeIntegrationTests {
             Map<String,Integer> original=checksums(schema);
             assertThat(original).hasSize(34).containsKey("34");
             Flyway upgraded=Flyway.configure().dataSource(dataSource).schemas(schema)
-                    .locations("classpath:db/migration").load();
+                    .locations("classpath:db/migration").target(MigrationVersion.fromVersion("45")).load();
             assertThat(upgraded.migrate().migrationsExecuted).isEqualTo(11);
             upgraded.validate();
             Map<String,Integer> current=checksums(schema);
@@ -127,7 +127,7 @@ class DashboardExportFullUpgradeIntegrationTests {
             Map<String, Integer> before = checksums(schema);
             assertThat(before).hasSize(39).containsKeys("35", "36", "37", "38", "39");
             Flyway integrated = Flyway.configure().dataSource(dataSource).schemas(schema)
-                    .locations("classpath:db/migration").load();
+                    .locations("classpath:db/migration").target(MigrationVersion.fromVersion("45")).load();
             assertThat(integrated.migrate().migrationsExecuted).isEqualTo(6);
             integrated.validate();
             Map<String, Integer> after = checksums(schema);
