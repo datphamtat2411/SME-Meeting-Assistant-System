@@ -1,6 +1,6 @@
 // Temporary CI formatting snapshot. Removed after sources are normalized.
 import fs from 'node:fs/promises'
-import prettier from 'prettier'
+import { execFileSync } from 'node:child_process'
 
 const files = [
   "src/components/request-state.tsx",
@@ -50,16 +50,13 @@ const files = [
   "src/lib/list-pagination.ts"
 ]
 const formatted = {}
+try {
+  execFileSync('node_modules/.bin/prettier', ['--write', ...files], { encoding: 'utf8', maxBuffer: 1024 * 1024 })
+} catch (error) {
+  console.log('SME_FORMAT_CLI_ERROR', String(error?.stderr ?? error?.message ?? error).slice(0, 2000))
+}
 for (const file of files) {
-  try {
-    const source = await fs.readFile(file, 'utf8')
-    const config = await prettier.resolveConfig(file)
-    const output = await prettier.format(source, { ...config, filepath: file })
-    await fs.writeFile(file, output, 'utf8')
-    formatted[file] = output
-  } catch (error) {
-    console.log('SME_FORMAT_ERROR', file, String(error?.message ?? error).slice(0, 500))
-  }
+  formatted[file] = await fs.readFile(file, 'utf8')
 }
 const encoded = Buffer.from(JSON.stringify(formatted), 'utf8').toString('base64')
 console.log('SME_FORMAT_BEGIN', files.length, encoded.length)
