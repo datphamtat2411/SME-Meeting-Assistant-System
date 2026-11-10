@@ -133,7 +133,11 @@ def validate_inventory(root: Path, inventory: dict) -> None:
         for fid in cap.get("finding_ids", []):
             _record(errors, fid in fids, f"{cid}: references missing finding {fid}")
             all_used.add(str(fid))
-    _record(errors, set(fids).issubset(all_used), f"unlinked findings: {sorted(set(fids) - all_used)}")
+    # A resolved repository-level CI/plan finding need not belong to a runtime capability.
+    # Every OPEN finding still requires a linked capability and explicit owner.
+    unlinked_open = {f["id"] for f in findings if isinstance(f, dict)
+                     and f.get("state") == "OPEN" and f.get("id") not in all_used}
+    _record(errors, not unlinked_open, f"unlinked OPEN findings: {sorted(unlinked_open)}")
 
     for i, assertion in enumerate(inventory.get("source_assertions", [])):
         raw = assertion.get("path", "")
