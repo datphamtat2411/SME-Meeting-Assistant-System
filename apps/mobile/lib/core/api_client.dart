@@ -18,6 +18,7 @@ class ApiFailure implements Exception {
   bool get unauthorized => status == 401;
   bool get missing => status == 404;
   bool get conflict => status == 409 || status == 412;
+  bool get permissionDenied => status == 403;
 
   @override
   String toString() => message;
@@ -200,10 +201,12 @@ class ApiClient extends ChangeNotifier {
     http.Response response;
     try {
       final request = http.Request(method, uri)
+        ..followRedirects = false
         ..headers.addAll(requestHeaders);
       if (body != null) request.body = jsonEncode(body);
       final streamed = await _http.send(request).timeout(const Duration(seconds: 25));
-      response = await http.Response.fromStream(streamed);
+      response = await http.Response.fromStream(streamed)
+          .timeout(const Duration(seconds: 45));
     } on TimeoutException {
       throw const ApiFailure(0, 'NETWORK_TIMEOUT', 'Request timed out. Try again.');
     } on SocketException {
@@ -215,6 +218,15 @@ class ApiClient extends ChangeNotifier {
       await _refreshOnce();
       return _request(method, path, query: query, body: body, headers: headers,
           allowRetry: false);
+    }
+    if (response.statusCode >= 300 && response.statusCode < 400) {
+      throw const ApiFailure(0, 'UNEXPECTED_REDIRECT',
+          'API attempted an unexpected redirect.');
+    }
+    if (auth && response.statusCode == 401 && !allowRetry) {
+      await _forget();
+      throw const ApiFailure(401, 'AUTH_SESSION_EXPIRED',
+          'Phiên đăng nhập đã hết hạn. Hãy đăng nhập lại.');
     }
     dynamic envelope;
     try {
@@ -243,6 +255,7 @@ class ApiClient extends ChangeNotifier {
     }
     final length = await file.length();
     final request = http.StreamedRequest('PUT', uri)
+      ..followRedirects = false
       ..contentLength = length
       ..headers['Content-Type'] = contentType;
     try {
