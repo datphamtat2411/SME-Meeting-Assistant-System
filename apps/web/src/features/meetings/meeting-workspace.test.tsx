@@ -868,4 +868,91 @@ describe('MeetingWorkspacePage', () => {
       queryKey: ['rooms', 'availability'],
     })
   })
+
+  it('starts a scheduled meeting from the workspace and renders authoritative lifecycle timestamps', async () => {
+    const startedMeeting = {
+      ...scheduledEditableMeeting,
+      status: 'IN_PROGRESS' as const,
+      startedAt: '2026-09-01T09:01:00+07:00',
+      updatedAt: '2026-09-01T09:01:00+07:00',
+    }
+    const startSpy = vi
+      .spyOn(coreApi, 'postWithMetaAndEtag')
+      .mockResolvedValue({
+        data: startedMeeting,
+        meta: {},
+        etag: 'etag-started',
+      })
+    const { queryClient, screen } = await renderEditableWorkspace(
+      scheduledEditableMeeting,
+      activeOrganizerAndParticipants,
+      undefined,
+      [
+        { data: scheduledEditableMeeting, etag: 'etag-current' },
+        { data: startedMeeting, etag: 'etag-started' },
+      ]
+    )
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+
+    await userEvent.click(screen.getByRole('button', { name: 'Start meeting' }))
+
+    await expect
+      .element(screen.getByText('Meeting started', { exact: true }))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('Live', { exact: true }).first())
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('Started', { exact: true }))
+      .toBeInTheDocument()
+    expect(startSpy).toHaveBeenCalledTimes(1)
+    expect(
+      queryClient.getQueryData(['meetings', 'detail', 'meeting-1'])
+    ).toEqual({ meeting: startedMeeting, etag: 'etag-started' })
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: ['meetings', 'list'],
+    })
+    expect(invalidateSpy).not.toHaveBeenCalledWith({
+      queryKey: ['rooms', 'availability'],
+    })
+  })
+
+  it('ends a live meeting in the workspace and invalidates room availability after confirmation', async () => {
+    const liveMeeting = {
+      ...scheduledEditableMeeting,
+      status: 'IN_PROGRESS' as const,
+      startedAt: '2026-09-01T09:01:00+07:00',
+    }
+    const endedMeeting = {
+      ...liveMeeting,
+      status: 'ENDED' as const,
+      endedAt: '2026-09-01T10:01:00+07:00',
+    }
+    const endSpy = vi.spyOn(coreApi, 'postWithMetaAndEtag').mockResolvedValue({
+      data: endedMeeting,
+      meta: {},
+      etag: 'etag-ended',
+    })
+    const { queryClient, screen } = await renderEditableWorkspace(liveMeeting)
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+
+    await userEvent.click(screen.getByRole('button', { name: 'End meeting' }))
+    await userEvent.click(
+      screen.getByRole('alertdialog').getByRole('button', {
+        name: 'End meeting',
+      })
+    )
+
+    await expect.poll(() => endSpy.mock.calls.length).toBe(1)
+    await expect
+      .element(screen.getByText('Meeting ended', { exact: true }))
+      .toBeInTheDocument()
+    await expect.element(screen.getByText('Ended')).toBeInTheDocument()
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: ['meetings', 'list'],
+    })
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: ['rooms', 'availability'],
+    })
+  })
 })

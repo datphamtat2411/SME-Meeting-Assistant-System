@@ -226,6 +226,9 @@ describe('MeetingsPage', () => {
       .element(screen.getByRole('link', { name: 'Live' }))
       .toHaveAttribute('href', '/meetings/meeting-1/live')
     await expect
+      .element(screen.getByRole('button', { name: /Start|End|Cancel meeting/ }))
+      .not.toBeInTheDocument()
+    await expect
       .element(screen.getByRole('link', { name: 'View Roadmap' }))
       .toHaveAttribute('href', '/meetings/meeting-1')
     await expect

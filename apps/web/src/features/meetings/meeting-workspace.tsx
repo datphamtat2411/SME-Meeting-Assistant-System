@@ -34,6 +34,7 @@ import {
   type MeetingEditCommit,
   type EditableMeetingView,
 } from './components/meeting-edit-dialog'
+import { MeetingLifecycleActions } from './components/meeting-lifecycle-actions'
 import { MeetingParticipantManagement } from './components/meeting-participant-management'
 import { MeetingStatusBadge } from './components/meeting-status-badge'
 import {
@@ -286,6 +287,8 @@ function MeetingWorkspace({
     <>
       <MeetingHeader
         meeting={meeting}
+        etag={etag}
+        currentUser={currentUser}
         participants={participants}
         room={room}
         organizer={organizer}
@@ -317,6 +320,8 @@ function MeetingWorkspace({
 
 function MeetingHeader({
   meeting,
+  etag,
+  currentUser,
   participants,
   room,
   organizer,
@@ -324,6 +329,8 @@ function MeetingHeader({
   onEdit,
 }: {
   meeting: MeetingView
+  etag: string
+  currentUser?: AuthContext
   participants: ParticipantState
   room: LookupState<RoomFilterOption>
   organizer: LookupState<OrganizerFilterOption>
@@ -347,11 +354,18 @@ function MeetingHeader({
               </p>
             )}
           </div>
-          {canEdit && (
-            <Button type='button' variant='outline' onClick={onEdit}>
-              Edit meeting
-            </Button>
-          )}
+          <div className='flex flex-wrap justify-end gap-2'>
+            <MeetingLifecycleActions
+              meeting={meeting}
+              etag={etag}
+              currentUserId={currentUser?.userId}
+            />
+            {canEdit && (
+              <Button type='button' variant='outline' onClick={onEdit}>
+                Edit meeting
+              </Button>
+            )}
+          </div>
         </div>
         <div className='flex flex-wrap gap-x-4 gap-y-2 text-sm text-muted-foreground'>
           <span className='inline-flex items-center gap-1.5'>
