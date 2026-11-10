@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { toast } from 'sonner'
+import { normalizeCoreApiError } from '@/lib/core-api'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -13,6 +14,7 @@ export function ForgotPasswordForm({
   const [email, setEmail] = useState('')
   const [busy, setBusy] = useState(false)
   const [submitted, setSubmitted] = useState(false)
+  const [unavailable, setUnavailable] = useState(false)
   async function submit(e: FormEvent) {
     e.preventDefault()
     setBusy(true)
@@ -20,7 +22,9 @@ export function ForgotPasswordForm({
       await requestPasswordRecovery(email)
       setSubmitted(true)
     } catch (error) {
-      toast.error('Request could not be sent', {
+      const failure = normalizeCoreApiError(error)
+      if (failure.status === 404) setUnavailable(true)
+      toast.error(failure.status === 404 ? 'Password recovery is not enabled on this server.' : 'Request could not be sent', {
         description: error instanceof Error ? error.message : undefined,
       })
     } finally {
@@ -48,7 +52,8 @@ export function ForgotPasswordForm({
           placeholder='name@company.com'
         />
       </div>
-      <Button disabled={busy || !email.trim()}>
+      {unavailable && <p role='alert' className='text-sm text-destructive'>The recovery endpoint is unavailable on the current deployment. Contact your administrator.</p>}
+      <Button disabled={busy || unavailable || !email.trim()}>
         {busy ? 'Requesting…' : 'Send recovery link'}
       </Button>
     </form>
