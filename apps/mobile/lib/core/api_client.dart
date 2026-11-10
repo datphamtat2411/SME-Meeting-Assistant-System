@@ -55,7 +55,11 @@ class ApiClient extends ChangeNotifier {
   DateTime? _accessExpiry;
   Future<void>? _refreshFuture;
   bool ready = false;
+  String? sessionRestoreError;
   Map<String, dynamic>? identity;
+
+  bool get hasRecoverableSession =>
+      _refreshToken != null && identity == null && sessionRestoreError != null;
 
   bool get signedIn => _accessToken != null && identity != null;
   String get userId => (identity?['userId'] ?? '').toString();
@@ -69,12 +73,50 @@ class ApiClient extends ChangeNotifier {
         await _renew();
         await loadIdentity();
       }
+      sessionRestoreError = null;
+    } on ApiFailure catch (failure) {
+      if (_isTemporary(failure)) {
+        sessionRestoreError = failure.message;
+      } else {
+        await _forget();
+      }
     } catch (_) {
       await _forget();
     } finally {
       ready = true;
       notifyListeners();
     }
+  }
+
+  bool _isTemporary(ApiFailure failure) =>
+      failure.status == 0 || failure.status >= 500;
+
+  Future<void> retrySessionRestore() async {
+    if (_refreshToken == null) return;
+    ready = false;
+    sessionRestoreError = null;
+    notifyListeners();
+    try {
+      await _renew();
+      await loadIdentity();
+    } on ApiFailure catch (failure) {
+      if (_isTemporary(failure)) {
+        sessionRestoreError = failure.message;
+      } else {
+        await _forget();
+      }
+    } catch (_) {
+      await _forget();
+    } finally {
+      ready = true;
+      notifyListeners();
+    }
+  }
+
+  Future<void> discardLocalSession() async {
+    await _forget();
+    sessionRestoreError = null;
+    notifyListeners();
   }
 
   Future<void> signIn(String email, String password) async {
@@ -84,6 +126,7 @@ class ApiClient extends ChangeNotifier {
       auth: false,
     );
     await _adoptTokens(result.data);
+    sessionRestoreError = null;
     try {
       await loadIdentity();
     } catch (_) {
@@ -142,6 +185,11 @@ class ApiClient extends ChangeNotifier {
         auth: false, authorization: 'Bearer ' + token,
       );
       await _adoptTokens(result.data);
+    } on ApiFailure catch (failure) {
+      // Preserve refresh credentials when transport temporarily disappears.
+      // Rejected or replayed credentials must still fail closed.
+      if (!_isTemporary(failure)) await _forget();
+      rethrow;
     } catch (_) {
       await _forget();
       rethrow;
