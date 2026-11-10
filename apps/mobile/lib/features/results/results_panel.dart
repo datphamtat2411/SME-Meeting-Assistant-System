@@ -4,6 +4,7 @@ import 'transcript_review_panel.dart';
 import 'speaker_mapping_panel.dart';
 import 'summary_history_panel.dart';
 import 'decisions_review_panel.dart';
+import 'minutes_panel.dart';
 
 class ResultsPanel extends StatefulWidget {
   const ResultsPanel({super.key, required this.api, required this.meetingId});
@@ -23,12 +24,14 @@ class _ResultsPanelState extends State<ResultsPanel> {
       ('Transcript', Icons.notes_outlined),
       ('Quyết định', Icons.fact_check_outlined),
       ('Người nói', Icons.record_voice_over_outlined),
+      ('Biên bản', Icons.article_outlined),
     ];
     final pages = <Widget>[
       SummaryHistoryPanel(api: widget.api, meetingId: widget.meetingId),
       TranscriptReviewPanel(api: widget.api, meetingId: widget.meetingId),
       DecisionsReviewPanel(api: widget.api, meetingId: widget.meetingId),
       SpeakerMappingPanel(api: widget.api, meetingId: widget.meetingId),
+      MinutesPanel(api: widget.api, meetingId: widget.meetingId),
     ];
     return Column(children: [
       SingleChildScrollView(scrollDirection: Axis.horizontal,
