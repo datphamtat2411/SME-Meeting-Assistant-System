@@ -9,7 +9,7 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "format:check": "node scripts/temp-format-once.mjs && prettier --check .",
+    "format:check": "prettier --check .",
     "format": "prettier --write .",
     "knip": "knip",
     "test": "vitest run --browser.headless",
