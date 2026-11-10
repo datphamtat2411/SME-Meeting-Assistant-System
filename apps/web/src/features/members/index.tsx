@@ -48,18 +48,21 @@ import {
   type Member,
 } from './member-api'
 import { organizationalUnitsQuery } from './organization-api'
+import { ManagerScopePicker } from './manager-scope-picker'
 
 type Draft = {
   email: string
   displayName: string
   globalRole: Member['globalRole']
   primaryOrgUnitId: string
+  managerScopeUnitIds: string[]
 }
 const blank: Draft = {
   email: '',
   displayName: '',
   globalRole: 'EMPLOYEE',
   primaryOrgUnitId: '',
+  managerScopeUnitIds: [],
 }
 
 export function MembersPage() {
@@ -90,16 +93,18 @@ export function MembersPage() {
         displayName: data.displayName.trim(),
         primaryOrgUnitId: data.primaryOrgUnitId || null,
       }
+      const managerScopeUnitIds = data.globalRole === 'DEPARTMENT_MANAGER' ? data.managerScopeUnitIds : []
       if (!selected)
         return createMember({
           ...input,
           email: data.email.trim(),
           globalRole: isAdmin ? data.globalRole : 'EMPLOYEE',
+          managerScopeUnitIds: isAdmin ? managerScopeUnitIds : [],
         })
       const fresh = await memberDetail(selected.id)
       return updateMember(
         selected.id,
-        { ...input, ...(isAdmin ? { globalRole: data.globalRole } : {}) },
+        { ...input, ...(isAdmin ? { globalRole: data.globalRole, managerScopeUnitIds } : {}) },
         fresh.etag
       )
     },
@@ -126,6 +131,7 @@ export function MembersPage() {
             displayName: member.displayName,
             globalRole: member.globalRole,
             primaryOrgUnitId: member.primaryOrgUnitId ?? '',
+            managerScopeUnitIds: Array.from(member.managerScopeUnitIds ?? []),
           }
         : { ...blank }
     )
@@ -429,6 +435,7 @@ export function MembersPage() {
                   </Select>
                 </div>
               )}
+              {isAdmin && draft.globalRole === 'DEPARTMENT_MANAGER' && <ManagerScopePicker units={units.data ?? []} selected={draft.managerScopeUnitIds} onChange={managerScopeUnitIds => setDraft(current => ({ ...current, managerScopeUnitIds }))} />}
               <DialogFooter>
                 <Button
                   variant='outline'
