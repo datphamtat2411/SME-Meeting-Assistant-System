@@ -36,7 +36,8 @@ class _AssistantPageState extends State<AssistantPage> {
       return objectsOf(response.data);
     }).catchError((Object error) {
       if (error is ApiFailure && error.missing) {
-        unsupported = 'Core API hiện chưa triển khai Assistant conversations.';
+        unsupported = 'Core API chưa cung cấp endpoint Assistant conversations.';
+        return <Map<String, dynamic>>[];
       }
       throw error;
     });
@@ -145,7 +146,21 @@ class _AssistantPageState extends State<AssistantPage> {
           icon: const Icon(Icons.refresh)))),
     Expanded(child: AsyncContent<List<Map<String, dynamic>>>(
       future: future, retry: loadConversations,
-      builder: (conversations) => Column(children: [
+      builder: (conversations) {
+        if (unsupported != null) {
+          return Center(child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: MessagePanel(
+              title: 'Assistant chưa sẵn sàng',
+              icon: Icons.cloud_off_outlined,
+              description: 'Giao diện hội thoại đã có, nhưng backend hiện không '
+                'trả về endpoint được định nghĩa trong API contract. '
+                'Ứng dụng không thể tạo câu trả lời AI giả.',
+              onRetry: loadConversations,
+            ),
+          ));
+        }
+        return Column(children: [
         Padding(padding: const EdgeInsets.symmetric(horizontal: 18),
           child: Row(children: [
             Expanded(child: Text(conversationId == null
@@ -189,7 +204,8 @@ class _AssistantPageState extends State<AssistantPage> {
                   : const Icon(Icons.arrow_upward)),
             ])),
         ],
-      ]),
+      ]);
+      },
     )),
   ]);
 }
