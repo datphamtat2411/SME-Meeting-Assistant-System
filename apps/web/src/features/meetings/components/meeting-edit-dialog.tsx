@@ -755,12 +755,19 @@ export function MeetingEditDialog({
     setScheduleCheckFingerprint(fingerprint)
     setPhase('checking')
     try {
+      const base = getVerifiedSnapshot()
+      const effectiveRoomId = Object.prototype.hasOwnProperty.call(
+        payload,
+        'roomId'
+      )
+        ? (payload.roomId ?? undefined)
+        : (base.meeting.roomId ?? undefined)
       const preview = await checkMeetingSchedule(
         buildScheduleCheckPayload({
-          meetingId: getVerifiedSnapshot().meeting.id,
+          meetingId: base.meeting.id,
           start: scheduleValues.start,
           end: scheduleValues.end,
-          roomId: payload.roomId ?? undefined,
+          roomId: effectiveRoomId,
         })
       )
       setScheduleCheck(preview)

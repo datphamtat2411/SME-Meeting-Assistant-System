@@ -522,6 +522,240 @@ describe('MeetingEditDialog', () => {
     )
   })
 
+  it('includes the authoritative room when rescheduling without changing rooms', async () => {
+    await setBrowserTimeZone(utcTimeZone)
+    mockRoomQueries()
+    const start = canonicalizeLocalDateTime('2026-09-02', '09:00')
+    const end = canonicalizeLocalDateTime('2026-09-02', '10:00')
+    const updatedMeeting = {
+      ...scheduledMeeting,
+      scheduledStartAt: start,
+      scheduledEndAt: end,
+    }
+    const patchSpy = vi
+      .spyOn(coreApi, 'patchWithMetaAndEtag')
+      .mockResolvedValue({ data: updatedMeeting, meta: {}, etag: 'etag-next' })
+    const previewSpy = vi.spyOn(coreApi, 'post').mockResolvedValue({
+      previewOnly: true,
+      canSchedule: true,
+      roomConflict: false,
+      room: null,
+      warnings: [],
+    })
+    const queryClient = createQueryClient()
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <MeetingEditDialog
+          open
+          onOpenChange={vi.fn()}
+          meeting={scheduledMeeting}
+          etag='etag-current'
+        />
+      </QueryClientProvider>
+    )
+
+    await userEvent.fill(
+      screen.getByLabelText('Date', { exact: true }),
+      '2026-09-02'
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    await expect
+      .element(screen.getByText('Meeting changes saved'))
+      .toBeInTheDocument()
+    expect(previewSpy).toHaveBeenCalledWith(
+      '/meeting-schedule-checks',
+      {
+        meetingId: 'meeting-1',
+        start,
+        end,
+        roomId: 'room-1',
+      },
+      undefined
+    )
+    expect(patchSpy).toHaveBeenCalledWith(
+      '/meetings/meeting-1',
+      { scheduledStartAt: start, scheduledEndAt: end },
+      { headers: { 'If-Match': 'etag-current' } }
+    )
+    expect(patchSpy.mock.calls[0]?.[1]).not.toHaveProperty('roomId')
+    expect(
+      queryClient.getQueryData<{ meeting: typeof updatedMeeting }>([
+        'meetings',
+        'detail',
+        'meeting-1',
+      ])?.meeting.roomId
+    ).toBe('room-1')
+  })
+
+  it('uses the newly selected room for the scheduling preview and PATCH', async () => {
+    await setBrowserTimeZone(utcTimeZone)
+    mockRoomQueries()
+    const start = canonicalizeLocalDateTime('2026-09-02', '09:00')
+    const end = canonicalizeLocalDateTime('2026-09-02', '10:00')
+    const updatedMeeting = {
+      ...scheduledMeeting,
+      roomId: 'room-2',
+      scheduledStartAt: start,
+      scheduledEndAt: end,
+    }
+    const patchSpy = vi
+      .spyOn(coreApi, 'patchWithMetaAndEtag')
+      .mockResolvedValue({ data: updatedMeeting, meta: {}, etag: 'etag-next' })
+    const previewSpy = vi.spyOn(coreApi, 'post').mockResolvedValue({
+      previewOnly: true,
+      canSchedule: true,
+      roomConflict: false,
+      room: null,
+      warnings: [],
+    })
+    const screen = await render(
+      <QueryClientProvider client={createQueryClient()}>
+        <MeetingEditDialog
+          open
+          onOpenChange={vi.fn()}
+          meeting={scheduledMeeting}
+          etag='etag-current'
+        />
+      </QueryClientProvider>
+    )
+
+    await userEvent.click(
+      screen.getByRole('combobox', { name: 'Meeting room' })
+    )
+    await userEvent.click(screen.getByRole('option', { name: /Studio/ }))
+    await userEvent.fill(
+      screen.getByLabelText('Date', { exact: true }),
+      '2026-09-02'
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    await expect
+      .element(screen.getByText('Meeting changes saved'))
+      .toBeInTheDocument()
+    expect(previewSpy).toHaveBeenCalledWith(
+      '/meeting-schedule-checks',
+      {
+        meetingId: 'meeting-1',
+        start,
+        end,
+        roomId: 'room-2',
+      },
+      undefined
+    )
+    expect(previewSpy.mock.calls[0]?.[1]).not.toHaveProperty('roomId', 'room-1')
+    expect(patchSpy).toHaveBeenCalledWith(
+      '/meetings/meeting-1',
+      { scheduledStartAt: start, scheduledEndAt: end, roomId: 'room-2' },
+      { headers: { 'If-Match': 'etag-current' } }
+    )
+  })
+
+  it('omits the room from preview when the organizer explicitly clears it', async () => {
+    await setBrowserTimeZone(utcTimeZone)
+    mockRoomQueries()
+    const start = canonicalizeLocalDateTime('2026-09-02', '09:00')
+    const end = canonicalizeLocalDateTime('2026-09-02', '10:00')
+    const updatedMeeting = {
+      ...scheduledMeeting,
+      roomId: null,
+      scheduledStartAt: start,
+      scheduledEndAt: end,
+    }
+    const patchSpy = vi
+      .spyOn(coreApi, 'patchWithMetaAndEtag')
+      .mockResolvedValue({ data: updatedMeeting, meta: {}, etag: 'etag-next' })
+    const previewSpy = vi.spyOn(coreApi, 'post').mockResolvedValue({
+      previewOnly: true,
+      canSchedule: true,
+      roomConflict: false,
+      room: null,
+      warnings: [],
+    })
+    const screen = await render(
+      <QueryClientProvider client={createQueryClient()}>
+        <MeetingEditDialog
+          open
+          onOpenChange={vi.fn()}
+          meeting={scheduledMeeting}
+          etag='etag-current'
+        />
+      </QueryClientProvider>
+    )
+
+    await userEvent.click(
+      screen.getByRole('combobox', { name: 'Meeting room' })
+    )
+    await userEvent.click(
+      screen.getByRole('option', { name: 'Clear room selection' })
+    )
+    await userEvent.fill(
+      screen.getByLabelText('Date', { exact: true }),
+      '2026-09-02'
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    await expect
+      .element(screen.getByText('Meeting changes saved'))
+      .toBeInTheDocument()
+    expect(previewSpy.mock.calls[0]?.[1]).not.toHaveProperty('roomId')
+    expect(patchSpy).toHaveBeenCalledWith(
+      '/meetings/meeting-1',
+      { scheduledStartAt: start, scheduledEndAt: end, roomId: null },
+      { headers: { 'If-Match': 'etag-current' } }
+    )
+  })
+
+  it('does not invent a room when a roomless meeting is rescheduled', async () => {
+    await setBrowserTimeZone(utcTimeZone)
+    mockRoomQueries()
+    const roomlessMeeting = { ...scheduledMeeting, roomId: null }
+    const start = canonicalizeLocalDateTime('2026-09-02', '09:00')
+    const end = canonicalizeLocalDateTime('2026-09-02', '10:00')
+    const updatedMeeting = {
+      ...roomlessMeeting,
+      scheduledStartAt: start,
+      scheduledEndAt: end,
+    }
+    const patchSpy = vi
+      .spyOn(coreApi, 'patchWithMetaAndEtag')
+      .mockResolvedValue({ data: updatedMeeting, meta: {}, etag: 'etag-next' })
+    const previewSpy = vi.spyOn(coreApi, 'post').mockResolvedValue({
+      previewOnly: true,
+      canSchedule: true,
+      roomConflict: false,
+      room: null,
+      warnings: [],
+    })
+    const screen = await render(
+      <QueryClientProvider client={createQueryClient()}>
+        <MeetingEditDialog
+          open
+          onOpenChange={vi.fn()}
+          meeting={roomlessMeeting}
+          etag='etag-current'
+        />
+      </QueryClientProvider>
+    )
+
+    await userEvent.fill(
+      screen.getByLabelText('Date', { exact: true }),
+      '2026-09-02'
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    await expect
+      .element(screen.getByText('Meeting changes saved'))
+      .toBeInTheDocument()
+    expect(previewSpy.mock.calls[0]?.[1]).not.toHaveProperty('roomId')
+    expect(patchSpy).toHaveBeenCalledWith(
+      '/meetings/meeting-1',
+      { scheduledStartAt: start, scheduledEndAt: end },
+      { headers: { 'If-Match': 'etag-current' } }
+    )
+    expect(patchSpy.mock.calls[0]?.[1]).not.toHaveProperty('roomId')
+  })
+
   it('requires explicit warning confirmation before a scheduling mutation', async () => {
     mockRoomQueries()
     const patchSpy = vi
@@ -728,9 +962,11 @@ describe('MeetingEditDialog', () => {
   })
 
   it('blocks an authoritative room conflict before PATCH or scheduling', async () => {
+    await setBrowserTimeZone(utcTimeZone)
     mockRoomQueries()
     const patchSpy = vi.spyOn(coreApi, 'patchWithMetaAndEtag')
-    vi.spyOn(coreApi, 'post').mockResolvedValue({
+    const scheduleSpy = vi.spyOn(coreApi, 'postWithMetaAndEtag')
+    const previewSpy = vi.spyOn(coreApi, 'post').mockResolvedValue({
       previewOnly: true,
       canSchedule: false,
       roomConflict: true,
@@ -742,7 +978,7 @@ describe('MeetingEditDialog', () => {
         <MeetingEditDialog
           open
           onOpenChange={vi.fn()}
-          meeting={draftMeeting}
+          meeting={scheduledMeeting}
           etag='etag-current'
         />
       </QueryClientProvider>
@@ -750,13 +986,9 @@ describe('MeetingEditDialog', () => {
 
     await userEvent.fill(
       screen.getByLabelText('Date', { exact: true }),
-      '2026-09-01'
+      '2026-09-02'
     )
-    await userEvent.fill(screen.getByLabelText('Start time'), '09:00')
-    await userEvent.fill(screen.getByLabelText('End time'), '10:00')
-    await userEvent.click(
-      screen.getByRole('button', { name: 'Save & Schedule' })
-    )
+    await userEvent.click(screen.getByRole('button', { name: 'Save changes' }))
 
     await expect
       .element(
@@ -765,7 +997,127 @@ describe('MeetingEditDialog', () => {
         )
       )
       .toBeInTheDocument()
+    expect(previewSpy).toHaveBeenCalledWith(
+      '/meeting-schedule-checks',
+      expect.objectContaining({ meetingId: 'meeting-1', roomId: 'room-1' }),
+      undefined
+    )
     expect(patchSpy).not.toHaveBeenCalled()
+    expect(scheduleSpy).not.toHaveBeenCalled()
+  })
+
+  it('uses the refreshed room and ETag after reconciliation before rescheduling', async () => {
+    await setBrowserTimeZone(utcTimeZone)
+    mockRoomQueries()
+    const firstStart = canonicalizeLocalDateTime('2026-09-02', '09:00')
+    const firstEnd = canonicalizeLocalDateTime('2026-09-02', '10:00')
+    const secondStart = canonicalizeLocalDateTime('2026-09-03', '09:00')
+    const secondEnd = canonicalizeLocalDateTime('2026-09-03', '10:00')
+    const latestMeeting = {
+      ...scheduledMeeting,
+      roomId: 'room-2',
+    }
+    const updatedMeeting = {
+      ...latestMeeting,
+      scheduledStartAt: secondStart,
+      scheduledEndAt: secondEnd,
+    }
+    const patchSpy = vi
+      .spyOn(coreApi, 'patchWithMetaAndEtag')
+      .mockRejectedValueOnce(
+        new CoreApiError({
+          status: 412,
+          code: 'ETAG_MISMATCH',
+          message: 'The meeting changed.',
+          kind: 'http',
+        })
+      )
+      .mockResolvedValueOnce({
+        data: updatedMeeting,
+        meta: {},
+        etag: 'etag-refreshed-mutation',
+      })
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+      data: latestMeeting,
+      meta: {},
+      etag: 'etag-server',
+    })
+    const previewSpy = vi.spyOn(coreApi, 'post').mockResolvedValue({
+      previewOnly: true,
+      canSchedule: true,
+      roomConflict: false,
+      room: null,
+      warnings: [],
+    })
+    const scheduleSpy = vi.spyOn(coreApi, 'postWithMetaAndEtag')
+    const screen = await render(
+      <QueryClientProvider client={createQueryClient()}>
+        <MeetingEditDialog
+          open
+          onOpenChange={vi.fn()}
+          meeting={scheduledMeeting}
+          etag='etag-current'
+        />
+      </QueryClientProvider>
+    )
+
+    await userEvent.fill(
+      screen.getByLabelText('Date', { exact: true }),
+      '2026-09-02'
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    await expect
+      .element(screen.getByText('The meeting changed on the server.'))
+      .toBeInTheDocument()
+    expect(previewSpy.mock.calls[0]?.[1]).toMatchObject({
+      meetingId: 'meeting-1',
+      start: firstStart,
+      end: firstEnd,
+      roomId: 'room-1',
+    })
+    expect(patchSpy).toHaveBeenNthCalledWith(
+      1,
+      '/meetings/meeting-1',
+      { scheduledStartAt: firstStart, scheduledEndAt: firstEnd },
+      { headers: { 'If-Match': 'etag-current' } }
+    )
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Reload latest data' }).first()
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Reload latest data' }).last()
+    )
+    await expect
+      .element(screen.getByRole('combobox', { name: 'Meeting room' }))
+      .toHaveTextContent('Studio')
+
+    await userEvent.fill(
+      screen.getByLabelText('Date', { exact: true }),
+      '2026-09-03'
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    await expect
+      .element(screen.getByText('Meeting changes saved'))
+      .toBeInTheDocument()
+    expect(previewSpy).toHaveBeenCalledTimes(2)
+    expect(previewSpy.mock.calls[1]?.[1]).toMatchObject({
+      meetingId: 'meeting-1',
+      start: secondStart,
+      end: secondEnd,
+      roomId: 'room-2',
+    })
+    expect(previewSpy.mock.calls[1]?.[1]).not.toHaveProperty('roomId', 'room-1')
+    expect(patchSpy).toHaveBeenNthCalledWith(
+      2,
+      '/meetings/meeting-1',
+      { scheduledStartAt: secondStart, scheduledEndAt: secondEnd },
+      { headers: { 'If-Match': 'etag-server' } }
+    )
+    expect(patchSpy.mock.calls[1]?.[1]).not.toHaveProperty('roomId', 'room-1')
+    expect(scheduleSpy).not.toHaveBeenCalled()
   })
 
   it('reconciles a network failure without retrying and preserves local values', async () => {
