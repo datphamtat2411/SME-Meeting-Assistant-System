@@ -216,9 +216,8 @@ describe('settings navigation and cleanup', () => {
 
   it('saves profile changes through the API and invalidates identity data', async () => {
     mockSettingsReads()
-    const patch = vi
-      .spyOn(coreApi, 'patch')
-      .mockImplementation((url, value) => {
+    const patch = vi.spyOn(coreApi, 'patch')
+    patch.mockImplementation((url, value) => {
       if (url === '/me/profile') {
         return Promise.resolve({
           ...profile,
@@ -253,9 +252,8 @@ describe('settings navigation and cleanup', () => {
 
   it('persists account preferences and notification switches through the API', async () => {
     mockSettingsReads()
-    const patch = vi
-      .spyOn(coreApi, 'patch')
-      .mockImplementation((url, value) => {
+    const patch = vi.spyOn(coreApi, 'patch')
+    patch.mockImplementation((url, value) => {
       if (url === '/me/preferences') {
         return Promise.resolve({
           ...preferences,
