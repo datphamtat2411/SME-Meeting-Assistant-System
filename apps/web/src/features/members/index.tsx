@@ -1,6 +1,6 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Pencil, Plus, Search, Users } from 'lucide-react'
+import { Pencil, Plus, Search } from 'lucide-react'
 import { toast } from 'sonner'
 import { RequestEmpty, RequestError, RequestLoading } from '@/components/request-state'
 import { Button } from '@/components/ui/button'
@@ -45,7 +45,6 @@ export function MembersPage() {
     onSuccess: () => { toast.success(selected ? 'Member updated' : 'Account created: setup invitation pending'); setOpen(false); void qc.invalidateQueries({ queryKey: ['users'] }) },
     onError: error => toast.error('Unable to save member', { description: error instanceof Error ? error.message : undefined }),
   })
-  useEffect(() => { if (!open) setDraft(blank) }, [open])
   function edit(member: Member | null) {
     setSelected(member)
     setDraft(member ? { email: member.email, displayName: member.displayName, globalRole: member.globalRole, primaryOrgUnitId: member.primaryOrgUnitId ?? '' } : { ...blank })
