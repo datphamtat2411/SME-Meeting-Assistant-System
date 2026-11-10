@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "lint": "eslint .",
+    "lint": "node scripts/format-scope.mjs && eslint .",
     "preview": "vite preview",
     "format:check": "prettier --check .",
     "format": "prettier --write .",
