@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { Link } from '@tanstack/react-router'
 import { toast } from 'sonner'
+import { normalizeCoreApiError } from '@/lib/core-api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -21,6 +22,7 @@ export function PasswordTokenForm({ kind }: { kind: 'setup' | 'reset' }) {
   const [confirmation, setConfirmation] = useState('')
   const [busy, setBusy] = useState(false)
   const [complete, setComplete] = useState(false)
+  const [submitError, setSubmitError] = useState('')
   useEffect(() => {
     // Immediately remove single-use bearer capability from the browser address bar/history.
     if (window.location.hash)
@@ -45,6 +47,7 @@ export function PasswordTokenForm({ kind }: { kind: 'setup' | 'reset' }) {
       return
     }
     setBusy(true)
+    setSubmitError('')
     try {
       if (kind === 'setup') await completeAccountSetup(token, password)
       else await resetAccountPassword(token, password)
@@ -56,9 +59,16 @@ export function PasswordTokenForm({ kind }: { kind: 'setup' | 'reset' }) {
         kind === 'setup' ? 'Account setup complete' : 'Password reset complete'
       )
     } catch (error) {
-      toast.error('Unable to complete account verification', {
-        description: error instanceof Error ? error.message : undefined,
-      })
+      const failure = normalizeCoreApiError(error)
+      const message = failure.status === 404
+        ? 'This account flow is unavailable on the current server.'
+        : failure.status === 422
+          ? 'The link may have expired or the password did not meet organization policy. Review the password and request a new link if necessary.'
+          : failure.status === 429
+            ? 'Too many attempts. Try again later.'
+            : 'Unable to complete account verification. Try again.'
+      setSubmitError(message)
+      toast.error(message)
     } finally {
       setBusy(false)
     }
@@ -119,13 +129,7 @@ export function PasswordTokenForm({ kind }: { kind: 'setup' | 'reset' }) {
           onChange={(e) => setConfirmation(e.target.value)}
         />
       </div>
-      <Input
-        type='hidden'
-        value={token}
-        readOnly
-        aria-hidden='true'
-        tabIndex={-1}
-      />
+      {submitError && <p role='alert' className='text-sm text-destructive'>{submitError}</p>}
       <Button
         disabled={
           busy || !validNewPassword(password) || password !== confirmation
