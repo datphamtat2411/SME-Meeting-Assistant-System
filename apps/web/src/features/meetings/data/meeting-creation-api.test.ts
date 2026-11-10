@@ -70,6 +70,15 @@ describe('meeting creation API adapter', () => {
     })
   })
 
+  it('accepts descriptions longer than 500 characters supported by Core API TEXT', () => {
+    const description = 'x'.repeat(501)
+
+    expect(buildCreateMeetingPayload({ title: 'Draft', description })).toEqual({
+      title: 'Draft',
+      description,
+    })
+  })
+
   it('builds schedule-check and schedule payloads without inventing optional values', () => {
     expect(
       buildScheduleCheckPayload({

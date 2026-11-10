@@ -68,31 +68,32 @@ import {
   type MeetingEditPayload,
   type MeetingEditValues,
 } from '../data/meeting-editing-api'
+import {
+  getScheduleValues,
+  getSchedulingFingerprint,
+  type ScheduleValues,
+} from '../data/meeting-scheduling-utils'
 import { roomAvailabilityQueryOptions } from '../data/room-availability-api'
 import {
   MeetingRoomLookup,
   MeetingScheduleFields,
   RoomAvailabilityNotice,
   SchedulePreviewNotice,
-  getScheduleValues,
-  getSchedulingFingerprint,
-  type ScheduleValues,
 } from './meeting-scheduling-controls'
 
 const meetingEditFormSchema = z
   .object({
     title: z.string().trim().min(1, 'Title is required.').max(255),
-    description: z
-      .string()
-      .max(500, 'Description must be 500 characters or fewer.'),
+    description: z.string(),
     date: z.string(),
+    endDate: z.string(),
     startTime: z.string(),
     endTime: z.string(),
     roomId: z.string(),
   })
   .superRefine((values, context) => {
     const hasScheduleInput = Boolean(
-      values.date || values.startTime || values.endTime
+      values.date || values.endDate || values.startTime || values.endTime
     )
     if (!hasScheduleInput) return
 
@@ -101,6 +102,13 @@ const meetingEditFormSchema = z
         code: 'custom',
         path: ['date'],
         message: 'Date is required when scheduling details are entered.',
+      })
+    }
+    if (!values.endDate) {
+      context.addIssue({
+        code: 'custom',
+        path: ['endDate'],
+        message: 'End date is required when scheduling details are entered.',
       })
     }
     if (!values.startTime) {
@@ -130,6 +138,14 @@ const meetingEditFormSchema = z
   })
 
 type MeetingEditFormValues = z.infer<typeof meetingEditFormSchema>
+type ScheduleFormSnapshot = Pick<
+  MeetingEditFormValues,
+  'date' | 'endDate' | 'startTime' | 'endTime'
+>
+type OriginalSchedule = {
+  form: ScheduleFormSnapshot
+  schedule?: ScheduleValues
+}
 type EditPhase =
   | 'idle'
   | 'checking'
@@ -156,11 +172,21 @@ type ReconciliationIntent = {
   payload: MeetingEditPayload
   schedule?: ScheduleValues
   scheduleChanged: boolean
+  outcome: MeetingEditOutcome
 }
 
 type ConfirmedMutation = {
   meeting: EditableMeetingView
   etag: string
+}
+
+export type MeetingEditOutcome = 'saved' | 'scheduled' | 'rescheduled'
+
+export type MeetingEditCommit = {
+  meetingId: string
+  status: 'DRAFT' | 'SCHEDULED'
+  etag: string
+  outcome: MeetingEditOutcome
 }
 
 export type EditableMeetingView = Omit<MeetingView, 'status'> & {
@@ -173,6 +199,7 @@ export type MeetingEditDialogProps = {
   meeting: EditableMeetingView
   etag: string
   participantCount?: number
+  onCommitted?: (commit: MeetingEditCommit) => void
 }
 
 export function MeetingEditDialog({
@@ -181,6 +208,7 @@ export function MeetingEditDialog({
   meeting,
   etag,
   participantCount,
+  onCommitted,
 }: MeetingEditDialogProps) {
   const queryClient = useQueryClient()
   const form = useForm<MeetingEditFormValues>({
@@ -206,18 +234,31 @@ export function MeetingEditDialog({
   const operationInFlight = useRef(false)
   const openedMeetingId = useRef<string | null>(null)
   const resetOnNextOpen = useRef(true)
+  const [originalSchedule, setOriginalSchedule] = useState<OriginalSchedule>(
+    () => createOriginalSchedule(meeting)
+  )
+  const reportedCommitKeys = useRef(new Set<string>())
 
   const title = useWatch({ control: form.control, name: 'title' })
   const description = useWatch({ control: form.control, name: 'description' })
   const date = useWatch({ control: form.control, name: 'date' })
+  const endDate = useWatch({ control: form.control, name: 'endDate' })
   const startTime = useWatch({ control: form.control, name: 'startTime' })
   const endTime = useWatch({ control: form.control, name: 'endTime' })
   const roomId = useWatch({ control: form.control, name: 'roomId' })
-  const schedule = getScheduleValues({ date, startTime, endTime })
+  const scheduleFormValues = { date, endDate, startTime, endTime }
+  const scheduleFieldsChanged = hasScheduleFormChanges(
+    scheduleFormValues,
+    originalSchedule.form
+  )
+  const schedule = scheduleFieldsChanged
+    ? getScheduleValues(scheduleFormValues)
+    : originalSchedule.schedule
   const currentScheduleFingerprint = getSchedulingFingerprint({
     title,
     description,
     date,
+    endDate,
     startTime,
     endTime,
     roomId,
@@ -271,7 +312,9 @@ export function MeetingEditDialog({
       return
     }
     if (resetOnNextOpen.current || openedMeetingId.current !== meeting.id) {
-      form.reset(toMeetingEditFormValues(meeting))
+      const formValues = toMeetingEditFormValues(meeting)
+      form.reset(formValues)
+      setOriginalSchedule(createOriginalSchedule(meeting))
       setWorkingMeeting(meeting)
       setCurrentEtag(etag)
       setPhase('idle')
@@ -314,6 +357,7 @@ export function MeetingEditDialog({
       'title',
       'description',
       'date',
+      'endDate',
       'startTime',
       'endTime',
       'roomId',
@@ -355,18 +399,25 @@ export function MeetingEditDialog({
   }
 
   const finishSuccess = (
-    status: 'DRAFT' | 'SCHEDULED',
-    confirmedOutcome: 'saved' | 'scheduled' = status === 'SCHEDULED'
-      ? 'scheduled'
-      : 'saved'
+    result: ConfirmedMutation,
+    confirmedOutcome: MeetingEditOutcome
   ) => {
-    setOutcome(confirmedOutcome)
+    setOutcome(confirmedOutcome === 'scheduled' ? 'scheduled' : 'saved')
     setErrorMessage(null)
     setPhase('confirmed')
     setPendingSchedule(null)
     operationInFlight.current = false
     resetOnNextOpen.current = true
     onOpenChange(false)
+    const commitKey = `${result.meeting.id}:${result.etag}:${confirmedOutcome}`
+    if (reportedCommitKeys.current.has(commitKey)) return
+    reportedCommitKeys.current.add(commitKey)
+    onCommitted?.({
+      meetingId: result.meeting.id,
+      status: result.meeting.status,
+      etag: result.etag,
+      outcome: confirmedOutcome,
+    })
   }
 
   const setFailure = (error: unknown, operation: string) => {
@@ -437,8 +488,11 @@ export function MeetingEditDialog({
           intent.scheduleChanged
         )
         finishSuccess(
-          intent.expectedStatus,
-          intent.operation === 'Scheduling the meeting' ? 'scheduled' : 'saved'
+          {
+            meeting: latest.meeting as EditableMeetingView,
+            etag: latest.etag,
+          },
+          intent.outcome
         )
         return
       }
@@ -508,7 +562,9 @@ export function MeetingEditDialog({
   const buildValuesForMutation = (
     values: MeetingEditFormValues
   ): { editValues: MeetingEditValues; schedule?: ScheduleValues } => {
-    const nextSchedule = getScheduleValues(values)
+    const nextSchedule = hasScheduleFormChanges(values, originalSchedule.form)
+      ? getScheduleValues(values)
+      : originalSchedule.schedule
     return {
       editValues: {
         title: values.title,
@@ -530,6 +586,7 @@ export function MeetingEditDialog({
       expectedStatus: workingMeeting.status,
       payload,
       scheduleChanged,
+      outcome: 'saved',
     }
     setPhase('saving')
     try {
@@ -540,7 +597,7 @@ export function MeetingEditDialog({
         workingMeeting.status
       )
       recordConfirmedMutation(result, scheduleChanged)
-      finishSuccess(result.meeting.status, 'saved')
+      finishSuccess(result, 'saved')
     } catch (error) {
       await handleMutationFailure(error, intent)
     }
@@ -563,6 +620,12 @@ export function MeetingEditDialog({
       payload: candidate.payload,
       schedule: candidate.schedule,
       scheduleChanged: candidate.scheduleChanged,
+      outcome:
+        candidate.action === 'schedule'
+          ? 'scheduled'
+          : candidate.scheduleChanged
+            ? 'rescheduled'
+            : 'saved',
     }
     try {
       if (hasMeetingEditChanges(candidate.payload)) {
@@ -590,7 +653,10 @@ export function MeetingEditDialog({
         if (!patchedResult) {
           throw new Error('The scheduled meeting change was empty.')
         }
-        finishSuccess(patchedResult.meeting.status, 'saved')
+        finishSuccess(
+          patchedResult,
+          candidate.scheduleChanged ? 'rescheduled' : 'saved'
+        )
         return
       }
 
@@ -600,7 +666,7 @@ export function MeetingEditDialog({
         scheduledEndAt: candidate.schedule.scheduledEndAt,
       })
       recordConfirmedMutation(scheduled, true)
-      finishSuccess('SCHEDULED')
+      finishSuccess(scheduled, 'scheduled')
     } catch (error) {
       await handleMutationFailure(error, scheduleIntent)
     }
@@ -737,7 +803,9 @@ export function MeetingEditDialog({
       setReloadConfirmationOpen(false)
       return
     }
-    form.reset(toMeetingEditFormValues(latestDetail.meeting))
+    const formValues = toMeetingEditFormValues(latestDetail.meeting)
+    form.reset(formValues)
+    setOriginalSchedule(createOriginalSchedule(latestDetail.meeting))
     setWorkingMeeting(latestDetail.meeting as EditableMeetingView)
     setCurrentEtag(latestDetail.etag)
     setLatestDetail(null)
@@ -1014,6 +1082,7 @@ function toMeetingEditFormValues(meeting: MeetingView): MeetingEditFormValues {
     title: meeting.title,
     description: meeting.description ?? '',
     date: hasCompleteSchedule && start ? start.date : '',
+    endDate: hasCompleteSchedule && end ? end.date : '',
     startTime: hasCompleteSchedule && start ? start.time : '',
     endTime: hasCompleteSchedule && end ? end.time : '',
     roomId: meeting.roomId ?? '',
@@ -1028,6 +1097,40 @@ function toLocalDateTimeValues(value: string) {
     date: `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
     time: `${pad(date.getHours())}:${pad(date.getMinutes())}`,
   }
+}
+
+function createOriginalSchedule(meeting: MeetingView): OriginalSchedule {
+  const formValues = toMeetingEditFormValues(meeting)
+  const schedule =
+    meeting.scheduledStartAt && meeting.scheduledEndAt
+      ? {
+          start: meeting.scheduledStartAt,
+          end: meeting.scheduledEndAt,
+          scheduledStartAt: meeting.scheduledStartAt,
+          scheduledEndAt: meeting.scheduledEndAt,
+        }
+      : undefined
+  return {
+    form: {
+      date: formValues.date,
+      endDate: formValues.endDate,
+      startTime: formValues.startTime,
+      endTime: formValues.endTime,
+    },
+    schedule,
+  }
+}
+
+function hasScheduleFormChanges(
+  values: Partial<ScheduleFormSnapshot>,
+  original: ScheduleFormSnapshot
+) {
+  return (
+    (values.date ?? '') !== original.date ||
+    (values.endDate ?? '') !== original.endDate ||
+    (values.startTime ?? '') !== original.startTime ||
+    (values.endTime ?? '') !== original.endTime
+  )
 }
 
 function hasScheduleChange(payload: MeetingEditPayload) {
@@ -1059,6 +1162,10 @@ function setScheduleRequiredErrors(
   form?.setError('date', {
     type: 'manual',
     message: 'A complete date and time interval is required.',
+  })
+  form?.setError('endDate', {
+    type: 'manual',
+    message: 'End date is required.',
   })
   form?.setError('startTime', {
     type: 'manual',

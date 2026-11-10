@@ -35,82 +35,51 @@ import {
 } from '@/components/ui/popover'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { MeetingPagination, RoomFilterOption } from '../data/list-api'
-import {
-  canonicalizeLocalDateTime,
-  type ScheduleCheckResult,
-} from '../data/meeting-creation-api'
+import type { ScheduleCheckResult } from '../data/meeting-creation-api'
+import { type MeetingScheduleFormValues } from '../data/meeting-scheduling-utils'
 import type { RoomAvailability } from '../data/room-availability-api'
 
-export type ScheduleValues = {
-  start: string
-  end: string
-  scheduledStartAt: string
-  scheduledEndAt: string
-}
-
-export type MeetingScheduleFormValues = {
-  date: string
-  startTime: string
-  endTime: string
-}
-
-// Shared by the creation and editing forms; the module also owns their controls.
-// eslint-disable-next-line react-refresh/only-export-components
-export function getScheduleValues(
-  values: Partial<MeetingScheduleFormValues>
-): ScheduleValues | undefined {
-  const date = values.date ?? ''
-  const startTime = values.startTime ?? ''
-  const endTime = values.endTime ?? ''
-  if (!date && !startTime && !endTime) return undefined
-  if (!date || !startTime || !endTime) return undefined
-
-  const start = canonicalizeLocalDateTime(date, startTime)
-  const end = canonicalizeLocalDateTime(date, endTime)
-  if (!start || !end || new Date(start).getTime() >= new Date(end).getTime()) {
-    return undefined
-  }
-  return {
-    start,
-    end,
-    scheduledStartAt: start,
-    scheduledEndAt: end,
-  }
-}
-
-// eslint-disable-next-line react-refresh/only-export-components
-export function getSchedulingFingerprint(values: {
-  title?: string
-  description?: string
-  date?: string
-  startTime?: string
-  endTime?: string
-  roomId?: string
-  participantIds?: readonly string[]
-}) {
-  return JSON.stringify({
-    title: values.title ?? '',
-    description: values.description ?? '',
-    date: values.date ?? '',
-    startTime: values.startTime ?? '',
-    endTime: values.endTime ?? '',
-    roomId: values.roomId ?? '',
-    participantIds: [...(values.participantIds ?? [])],
-  })
-}
-
 export function MeetingScheduleFields() {
-  const { control } = useFormContext<MeetingScheduleFormValues>()
+  const { control, getValues, setValue } =
+    useFormContext<MeetingScheduleFormValues>()
 
   return (
     <>
-      <div className='grid gap-4 sm:grid-cols-3'>
+      <div className='grid gap-4 sm:grid-cols-2 lg:grid-cols-4'>
         <FormField
           control={control}
           name='date'
           render={({ field }) => (
             <FormItem>
               <FormLabel>Date</FormLabel>
+              <FormControl>
+                <Input
+                  {...field}
+                  type='date'
+                  onChange={(event) => {
+                    const previousDate = getValues('date')
+                    const currentEndDate = getValues('endDate')
+                    field.onChange(event)
+                    if (!currentEndDate || currentEndDate === previousDate) {
+                      setValue('endDate', event.target.value, {
+                        shouldDirty: true,
+                        shouldTouch: true,
+                        shouldValidate: true,
+                      })
+                    }
+                  }}
+                />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+        <FormField
+          control={control}
+          name='endDate'
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>End date</FormLabel>
               <FormControl>
                 <Input {...field} type='date' />
               </FormControl>

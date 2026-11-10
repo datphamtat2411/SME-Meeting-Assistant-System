@@ -84,24 +84,25 @@ import {
   type MeetingMutationResult,
   type ScheduleCheckResult,
 } from '../data/meeting-creation-api'
+import {
+  getScheduleValues,
+  getSchedulingFingerprint,
+  type ScheduleValues,
+} from '../data/meeting-scheduling-utils'
 import { roomAvailabilityQueryOptions } from '../data/room-availability-api'
 import {
   MeetingRoomLookup,
   MeetingScheduleFields,
   RoomAvailabilityNotice,
   SchedulePreviewNotice,
-  getScheduleValues,
-  getSchedulingFingerprint,
-  type ScheduleValues,
 } from './meeting-scheduling-controls'
 
 const meetingFormSchema = z
   .object({
     title: z.string().trim().min(1, 'Title is required.').max(255),
-    description: z
-      .string()
-      .max(500, 'Description must be 500 characters or fewer.'),
+    description: z.string(),
     date: z.string(),
+    endDate: z.string(),
     startTime: z.string(),
     endTime: z.string(),
     roomId: z.string(),
@@ -109,7 +110,7 @@ const meetingFormSchema = z
   })
   .superRefine((values, context) => {
     const hasScheduleInput = Boolean(
-      values.date || values.startTime || values.endTime
+      values.date || values.endDate || values.startTime || values.endTime
     )
     if (!hasScheduleInput) return
 
@@ -137,7 +138,10 @@ const meetingFormSchema = z
     if (!values.date || !values.startTime || !values.endTime) return
 
     const start = canonicalizeLocalDateTime(values.date, values.startTime)
-    const end = canonicalizeLocalDateTime(values.date, values.endTime)
+    const end = canonicalizeLocalDateTime(
+      values.endDate || values.date,
+      values.endTime
+    )
     if (!start) {
       context.addIssue({
         code: 'custom',
@@ -207,6 +211,7 @@ const initialFormValues: MeetingFormValues = {
   title: '',
   description: '',
   date: '',
+  endDate: '',
   startTime: '',
   endTime: '',
   roomId: '',
@@ -255,6 +260,7 @@ export function MeetingCreationDialog({
   const title = useWatch({ control: form.control, name: 'title' })
   const description = useWatch({ control: form.control, name: 'description' })
   const date = useWatch({ control: form.control, name: 'date' })
+  const endDate = useWatch({ control: form.control, name: 'endDate' })
   const startTime = useWatch({ control: form.control, name: 'startTime' })
   const endTime = useWatch({ control: form.control, name: 'endTime' })
   const roomId = useWatch({ control: form.control, name: 'roomId' })
@@ -262,11 +268,12 @@ export function MeetingCreationDialog({
     control: form.control,
     name: 'participantIds',
   })
-  const schedule = getScheduleValues({ date, startTime, endTime })
+  const schedule = getScheduleValues({ date, endDate, startTime, endTime })
   const currentScheduleFingerprint = getSchedulingFingerprint({
     title,
     description,
     date,
+    endDate,
     startTime,
     endTime,
     roomId,

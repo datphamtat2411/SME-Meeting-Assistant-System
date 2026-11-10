@@ -253,7 +253,10 @@ describe('MeetingCreationDialog', () => {
       screen.getByRole('textbox', { name: 'Title' }),
       'Scheduled meeting'
     )
-    await userEvent.fill(screen.getByLabelText('Date'), '2026-09-01')
+    await userEvent.fill(
+      screen.getByLabelText('Date', { exact: true }),
+      '2026-09-01'
+    )
     await userEvent.fill(screen.getByLabelText('Start time'), '09:00')
     await userEvent.fill(screen.getByLabelText('End time'), '10:00')
     await userEvent.click(
@@ -318,7 +321,10 @@ describe('MeetingCreationDialog', () => {
       screen.getByRole('textbox', { name: 'Title' }),
       'Scheduled meeting'
     )
-    await userEvent.fill(screen.getByLabelText('Date'), '2026-09-01')
+    await userEvent.fill(
+      screen.getByLabelText('Date', { exact: true }),
+      '2026-09-01'
+    )
     await userEvent.fill(screen.getByLabelText('Start time'), '09:00')
     await userEvent.fill(screen.getByLabelText('End time'), '10:00')
     await userEvent.click(
@@ -453,7 +459,10 @@ describe('MeetingCreationDialog', () => {
       screen.getByRole('textbox', { name: 'Title' }),
       'Warning meeting'
     )
-    await userEvent.fill(screen.getByLabelText('Date'), '2026-09-01')
+    await userEvent.fill(
+      screen.getByLabelText('Date', { exact: true }),
+      '2026-09-01'
+    )
     await userEvent.fill(screen.getByLabelText('Start time'), '09:00')
     await userEvent.fill(screen.getByLabelText('End time'), '10:00')
     await userEvent.click(
@@ -567,7 +576,10 @@ describe('MeetingCreationDialog', () => {
       screen.getByRole('textbox', { name: 'Title' }),
       'Room conflict'
     )
-    await userEvent.fill(screen.getByLabelText('Date'), '2026-09-01')
+    await userEvent.fill(
+      screen.getByLabelText('Date', { exact: true }),
+      '2026-09-01'
+    )
     await userEvent.fill(screen.getByLabelText('Start time'), '09:00')
     await userEvent.fill(screen.getByLabelText('End time'), '10:00')
     await userEvent.click(
@@ -599,7 +611,10 @@ describe('MeetingCreationDialog', () => {
       screen.getByRole('textbox', { name: 'Title' }),
       'Preview failure'
     )
-    await userEvent.fill(screen.getByLabelText('Date'), '2026-09-01')
+    await userEvent.fill(
+      screen.getByLabelText('Date', { exact: true }),
+      '2026-09-01'
+    )
     await userEvent.fill(screen.getByLabelText('Start time'), '09:00')
     await userEvent.fill(screen.getByLabelText('End time'), '10:00')
     await userEvent.click(
@@ -685,7 +700,10 @@ describe('MeetingCreationDialog', () => {
       screen.getByRole('textbox', { name: 'Title' }),
       'Changed schedule'
     )
-    await userEvent.fill(screen.getByLabelText('Date'), '2026-09-01')
+    await userEvent.fill(
+      screen.getByLabelText('Date', { exact: true }),
+      '2026-09-01'
+    )
     await userEvent.fill(screen.getByLabelText('Start time'), '09:00')
     await userEvent.fill(screen.getByLabelText('End time'), '10:00')
     await userEvent.click(
@@ -695,7 +713,10 @@ describe('MeetingCreationDialog', () => {
       .element(screen.getByText('Participant schedule overlap warning.'))
       .toBeInTheDocument()
 
-    await userEvent.fill(screen.getByLabelText('Date'), '2026-09-02')
+    await userEvent.fill(
+      screen.getByLabelText('Date', { exact: true }),
+      '2026-09-02'
+    )
     await expect
       .element(screen.getByText('Participant schedule overlap warning.'))
       .not.toBeInTheDocument()
@@ -744,7 +765,10 @@ describe('MeetingCreationDialog', () => {
       screen.getByRole('textbox', { name: 'Title' }),
       'ETag recovery'
     )
-    await userEvent.fill(screen.getByLabelText('Date'), '2026-09-01')
+    await userEvent.fill(
+      screen.getByLabelText('Date', { exact: true }),
+      '2026-09-01'
+    )
     await userEvent.fill(screen.getByLabelText('Start time'), '09:00')
     await userEvent.fill(screen.getByLabelText('End time'), '10:00')
     await userEvent.click(
@@ -803,7 +827,10 @@ describe('MeetingCreationDialog', () => {
       screen.getByRole('textbox', { name: 'Title' }),
       'Already scheduled'
     )
-    await userEvent.fill(screen.getByLabelText('Date'), '2026-09-01')
+    await userEvent.fill(
+      screen.getByLabelText('Date', { exact: true }),
+      '2026-09-01'
+    )
     await userEvent.fill(screen.getByLabelText('Start time'), '09:00')
     await userEvent.fill(screen.getByLabelText('End time'), '10:00')
     await userEvent.click(

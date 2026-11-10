@@ -57,6 +57,20 @@ describe('meeting editing API adapter', () => {
     })
   })
 
+  it('accepts descriptions longer than 500 characters because Core API stores TEXT', () => {
+    const description = 'x'.repeat(501)
+
+    expect(
+      buildMeetingEditPayload(draftMeeting, {
+        title: draftMeeting.title,
+        description,
+        scheduledStartAt: draftMeeting.scheduledStartAt,
+        scheduledEndAt: draftMeeting.scheduledEndAt,
+        roomId: draftMeeting.roomId,
+      })
+    ).toEqual({ description })
+  })
+
   it('does not mark an equivalent offset interval dirty', () => {
     expect(
       buildMeetingEditPayload(

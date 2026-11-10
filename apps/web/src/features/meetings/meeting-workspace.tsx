@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import {
@@ -12,6 +12,7 @@ import {
   UserRound,
   Users,
 } from 'lucide-react'
+import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
 import { Button } from '@/components/ui/button'
 import {
@@ -31,6 +32,7 @@ import {
 } from '@/features/auth/session/current-user'
 import {
   MeetingEditDialog,
+  type MeetingEditCommit,
   type EditableMeetingView,
 } from './components/meeting-edit-dialog'
 import { MeetingStatusBadge } from './components/meeting-status-badge'
@@ -230,12 +232,34 @@ function MeetingWorkspace({
   organizer: LookupState<OrganizerFilterOption>
 }) {
   const [editOpen, setEditOpen] = useState(false)
+  const notifiedEditCommits = useRef(new Set<string>())
   const canEdit =
     currentUser?.userId === meeting.organizerUserId &&
     (meeting.status === 'DRAFT' || meeting.status === 'SCHEDULED')
   const participantCount = participants.data
-    ? classifyParticipantMemberships(participants.data).active.length + 1
+    ? classifyParticipantMemberships(participants.data).active.length
     : undefined
+
+  const handleMeetingEdited = (commit: MeetingEditCommit) => {
+    const key = `${commit.meetingId}:${commit.etag}:${commit.outcome}`
+    if (notifiedEditCommits.current.has(key)) return
+    notifiedEditCommits.current.add(key)
+    if (commit.outcome === 'scheduled') {
+      toast.success('Meeting scheduled', {
+        description: 'The meeting was successfully scheduled.',
+      })
+      return
+    }
+    if (commit.outcome === 'rescheduled') {
+      toast.success('Meeting rescheduled', {
+        description: 'The meeting schedule was updated.',
+      })
+      return
+    }
+    toast.success('Meeting changes saved', {
+      description: 'The meeting changes were saved.',
+    })
+  }
 
   return (
     <>
@@ -254,6 +278,7 @@ function MeetingWorkspace({
           meeting={meeting as EditableMeetingView}
           etag={etag}
           participantCount={participantCount}
+          onCommitted={handleMeetingEdited}
         />
       )}
       <OperationalOverview

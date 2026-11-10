@@ -9,7 +9,7 @@ import { meetingViewSchema, type MeetingView } from './detail-api'
 const editableStatusSchema = z.enum(['DRAFT', 'SCHEDULED'])
 const meetingEditPayloadSchema = z.object({
   title: z.string().trim().min(1).max(255).optional(),
-  description: z.string().trim().min(1).max(500).nullable().optional(),
+  description: z.string().trim().min(1).nullable().optional(),
   scheduledStartAt: z.string().min(1).nullable().optional(),
   scheduledEndAt: z.string().min(1).nullable().optional(),
   roomId: z.string().min(1).nullable().optional(),
