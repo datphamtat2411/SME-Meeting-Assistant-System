@@ -28,6 +28,7 @@ export type ActionFilter = {
   status: string
   assignee: 'me' | 'all'
   overdue: boolean
+  meetingId?: string
 }
 export function actionItemsQuery(filter: ActionFilter) {
   return queryOptions({
@@ -36,6 +37,7 @@ export function actionItemsQuery(filter: ActionFilter) {
       const response = await coreApi.getWithMeta<unknown>('/action-items', {
         params: {
           ...paginationParams(filter.page),
+          meetingId: filter.meetingId || undefined,
           q: filter.q || undefined,
           status: filter.status === 'all' ? undefined : filter.status,
           assignee: filter.assignee === 'me' ? 'me' : undefined,
@@ -65,9 +67,9 @@ export interface ActionDraft {
   assigneeUserId: string
   dueDate: string | null
 }
-export function createAction(data: ActionDraft) {
+export function createAction(data: ActionDraft, idempotencyKey = crypto.randomUUID()) {
   return coreApi.post<ActionItem>('/action-items', data, {
-    headers: { 'Idempotency-Key': crypto.randomUUID() },
+    headers: { 'Idempotency-Key': idempotencyKey },
   })
 }
 export async function patchAction(
