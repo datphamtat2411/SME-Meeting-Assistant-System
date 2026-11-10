@@ -36,6 +36,15 @@ export interface ApiResponse<T> {
   meta: Record<string, unknown>
 }
 
+export interface ApiResponseData<T> {
+  data: T
+  meta: Record<string, unknown>
+}
+
+export interface ApiResponseDataWithEtag<T> extends ApiResponseData<T> {
+  etag?: string
+}
+
 export type FieldErrors = Record<string, string[]>
 
 export type CoreApiErrorKind = 'http' | 'network' | 'server' | 'malformed'
@@ -363,7 +372,9 @@ coreApiAxios.interceptors.response.use(
   }
 )
 
-function unwrapResponse<T>(response: AxiosResponse<unknown>): T {
+function unwrapResponseWithMeta<T>(
+  response: AxiosResponse<unknown>
+): ApiResponseData<T> {
   if (!isSuccessfulApiEnvelope(response.data)) {
     throw new CoreApiError({
       message: 'Core API returned a malformed response.',
@@ -373,7 +384,34 @@ function unwrapResponse<T>(response: AxiosResponse<unknown>): T {
     })
   }
 
-  return response.data.data as T
+  return {
+    data: response.data.data as T,
+    meta: response.data.meta,
+  }
+}
+
+function unwrapResponse<T>(response: AxiosResponse<unknown>): T {
+  return unwrapResponseWithMeta<T>(response).data
+}
+
+function readResponseEtag(
+  response: AxiosResponse<unknown>
+): string | undefined {
+  const value =
+    typeof response.headers.get === 'function'
+      ? response.headers.get('etag')
+      : (response.headers['etag'] ?? response.headers['ETag'])
+
+  return typeof value === 'string' ? value : undefined
+}
+
+function unwrapResponseWithMetaAndEtag<T>(
+  response: AxiosResponse<unknown>
+): ApiResponseDataWithEtag<T> {
+  return {
+    ...unwrapResponseWithMeta<T>(response),
+    etag: readResponseEtag(response),
+  }
 }
 
 async function request<T>(config: AxiosRequestConfig): Promise<T> {
@@ -385,13 +423,49 @@ async function request<T>(config: AxiosRequestConfig): Promise<T> {
   }
 }
 
+async function requestWithMeta<T>(
+  config: AxiosRequestConfig
+): Promise<ApiResponseData<T>> {
+  try {
+    const response = await coreApiAxios.request<ApiResponse<T>>(config)
+    return unwrapResponseWithMeta<T>(response)
+  } catch (error) {
+    throw normalizeCoreApiError(error)
+  }
+}
+
+async function requestWithMetaAndEtag<T>(
+  config: AxiosRequestConfig
+): Promise<ApiResponseDataWithEtag<T>> {
+  try {
+    const response = await coreApiAxios.request<ApiResponse<T>>(config)
+    return unwrapResponseWithMetaAndEtag<T>(response)
+  } catch (error) {
+    throw normalizeCoreApiError(error)
+  }
+}
+
 export const coreApi = {
   request,
+  requestWithMeta,
   get<T>(url: string, config?: AxiosRequestConfig) {
     return request<T>({ ...config, method: 'GET', url })
   },
+  getWithMeta<T>(url: string, config?: AxiosRequestConfig) {
+    return requestWithMeta<T>({ ...config, method: 'GET', url })
+  },
+  getWithMetaAndEtag<T>(url: string, config?: AxiosRequestConfig) {
+    return requestWithMetaAndEtag<T>({ ...config, method: 'GET', url })
+  },
   post<T>(url: string, data?: unknown, config?: AxiosRequestConfig) {
     return request<T>({ ...config, method: 'POST', url, data })
+  },
+  postWithMetaAndEtag<T>(
+    url: string,
+    data?: unknown,
+    config?: AxiosRequestConfig
+  ) {
+    return requestWithMetaAndEtag<T>({ ...config, method: 'POST', url, data })
   },
   put<T>(url: string, data?: unknown, config?: AxiosRequestConfig) {
     return request<T>({ ...config, method: 'PUT', url, data })
@@ -399,7 +473,17 @@ export const coreApi = {
   patch<T>(url: string, data?: unknown, config?: AxiosRequestConfig) {
     return request<T>({ ...config, method: 'PATCH', url, data })
   },
+  patchWithMetaAndEtag<T>(
+    url: string,
+    data?: unknown,
+    config?: AxiosRequestConfig
+  ) {
+    return requestWithMetaAndEtag<T>({ ...config, method: 'PATCH', url, data })
+  },
   delete<T>(url: string, config?: AxiosRequestConfig) {
     return request<T>({ ...config, method: 'DELETE', url })
+  },
+  deleteWithMetaAndEtag<T>(url: string, config?: AxiosRequestConfig) {
+    return requestWithMetaAndEtag<T>({ ...config, method: 'DELETE', url })
   },
 }

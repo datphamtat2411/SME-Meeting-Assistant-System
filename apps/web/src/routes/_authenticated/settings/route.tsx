@@ -7,6 +7,7 @@ export const Route = createFileRoute('/_authenticated/settings')({
   notFoundComponent: SettingsNotFound,
 })
 
+// eslint-disable-next-line react-refresh/only-export-components
 function SettingsNotFound() {
   return <NotFoundError className='min-h-full' />
 }

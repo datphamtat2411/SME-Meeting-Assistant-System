@@ -5,11 +5,13 @@ import com.sme.meetingassistant.api.common.ApiResponseFactory;
 import com.sme.meetingassistant.api.userorganization.dto.UserDtos;
 import com.sme.meetingassistant.api.userorganization.entity.AccountStatus;
 import com.sme.meetingassistant.api.userorganization.entity.GlobalRole;
+import com.sme.meetingassistant.api.userorganization.service.MeetingParticipantCandidateService;
 import com.sme.meetingassistant.api.userorganization.service.UserManagementService;
 import com.sme.meetingassistant.api.userorganization.service.UserVersionTags;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import java.net.URI;
 import java.util.List;
@@ -27,10 +29,13 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/api/v1/users")
 public class UserController {
     private final UserManagementService users;
+    private final MeetingParticipantCandidateService meetingCandidates;
     private final ApiResponseFactory responses;
 
-    public UserController(UserManagementService users, ApiResponseFactory responses) {
+    public UserController(UserManagementService users, MeetingParticipantCandidateService meetingCandidates,
+            ApiResponseFactory responses) {
         this.users = users;
+        this.meetingCandidates = meetingCandidates;
         this.responses = responses;
     }
 
@@ -43,6 +48,14 @@ public class UserController {
             @RequestParam(defaultValue = "0") @Min(0) int page,
             @RequestParam(defaultValue = "20") @Min(1) @Max(100) int size) {
         return responses.successPage(users.list(q, role, status, orgUnitId, page, size));
+    }
+
+    @GetMapping("/meeting-candidates")
+    public ApiResponse<List<UserDtos.MeetingParticipantCandidateView>> meetingCandidates(
+            @RequestParam @NotBlank @Size(max = 200) String q,
+            @RequestParam(defaultValue = "0") @Min(0) int page,
+            @RequestParam(defaultValue = "20") @Min(1) @Max(20) int size) {
+        return responses.successPage(meetingCandidates.list(q, page, size));
     }
 
     @PostMapping

@@ -109,6 +109,16 @@ public class RoomCatalogService {
         return find(id);
     }
 
+    @Transactional(readOnly = true)
+    public Map<UUID, RoomDisplay> displayByIds(Collection<UUID> ids) {
+        authorization.requireActiveActor();
+        if (ids == null || ids.isEmpty()) return Map.of();
+        Map<UUID, RoomDisplay> displays = new java.util.LinkedHashMap<>();
+        rooms.findAllById(ids).forEach(room -> displays.put(room.getId(),
+            new RoomDisplay(room.getName(), room.getLocation())));
+        return Map.copyOf(displays);
+    }
+
     public RoomEntity update(UUID id, String ifMatch, Map<String, Object> patch) {
         authorization.requireAdministrator();
         RoomEntity room = find(id);
@@ -202,4 +212,6 @@ public class RoomCatalogService {
         return new RoomView(r.getId(), r.getCode(), r.getName(), r.getLocation(),
             r.getCapacity(), r.getStatus(), r.getNotes(), r.getCreatedAt(), r.getUpdatedAt());
     }
+
+    public record RoomDisplay(String name, String location) { }
 }

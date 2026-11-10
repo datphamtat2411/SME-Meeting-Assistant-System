@@ -43,6 +43,9 @@ public final class UserDtos {
         }
     }
 
+    public record MeetingParticipantCandidateView(UUID id, String displayName, String email,
+        String organizationalUnitName) { }
+
     public record MyProfile(UUID id, String email, String displayName,
         GlobalRole globalRole, AccountStatus accountStatus, UUID primaryOrgUnitId) {
         public static MyProfile of(UserEntity user) {

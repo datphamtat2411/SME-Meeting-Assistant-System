@@ -120,7 +120,7 @@ public class MeetingCoreService implements MeetingMediaAccess, MeetingIntelligen
     }
 
     @Transactional(readOnly = true)
-    public Page<MeetingView> list(MeetingStatus status, String q, UUID organizerId, UUID roomId,
+    public Page<MeetingListView> list(MeetingStatus status, String q, UUID organizerId, UUID roomId,
             OffsetDateTime from, OffsetDateTime to, MeetingRelationshipFilter relationship,
             Pageable pageable) {
         UUID actor = authorization.requireActiveActor().getId();
@@ -156,7 +156,82 @@ public class MeetingCoreService implements MeetingMediaAccess, MeetingIntelligen
                 .replace("\\","\\\\").replace("%","\\%").replace("_","\\_") + "%";
             spec = spec.and((r,qry,cb)->cb.like(cb.lower(r.get("title")), pattern, '\\'));
         }
-        return meetings.findAll(spec, pageable).map(MeetingView::from);
+        Page<MeetingEntity> result = meetings.findAll(spec, pageable);
+        Map<UUID, MeetingListView> projections = projectPage(result.getContent());
+        return result.map(meeting -> projections.get(meeting.getId()));
+    }
+
+    @Transactional(readOnly = true)
+    public Page<MeetingOrganizerView> listOrganizers(String query, Pageable pageable) {
+        UUID actor = authorization.requireActiveActor().getId();
+        return meetings.findAccessibleOrganizers(actor, organizerSearchPattern(query), pageable)
+            .map(MeetingCoreService::organizerView);
+    }
+
+    @Transactional(readOnly = true)
+    public MeetingOrganizerView organizer(UUID organizerId) {
+        UUID actor = authorization.requireActiveActor().getId();
+        return meetings.findAccessibleOrganizer(actor, organizerId)
+            .map(MeetingCoreService::organizerView)
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+    }
+
+    private static MeetingOrganizerView organizerView(
+            MeetingRepository.MeetingOrganizerProjection organizer) {
+        return new MeetingOrganizerView(organizer.getId(), organizer.getName());
+    }
+
+    private static String organizerSearchPattern(String query) {
+        if (query == null || query.isBlank()) return null;
+        return "%" + query.trim().toLowerCase(Locale.ROOT)
+            .replace("\\", "\\\\")
+            .replace("%", "\\%")
+            .replace("_", "\\_") + "%";
+    }
+
+    private Map<UUID, MeetingListView> projectPage(List<MeetingEntity> page) {
+        if (page.isEmpty()) return Map.of();
+
+        Set<UUID> meetingIds = new LinkedHashSet<>();
+        Set<UUID> identityIds = new LinkedHashSet<>();
+        Set<UUID> roomIds = new LinkedHashSet<>();
+        for (MeetingEntity meeting : page) {
+            meetingIds.add(meeting.getId());
+            identityIds.add(meeting.getOrganizerUserId());
+            if (meeting.getRoomId() != null) roomIds.add(meeting.getRoomId());
+        }
+
+        Map<UUID, Integer> participantCounts = new HashMap<>();
+        Map<UUID, List<UUID>> previewUserIds = new HashMap<>();
+        for (MeetingParticipantRepository.ActiveParticipantPreview row
+                : participants.findActivePreviewByMeetingIdIn(meetingIds)) {
+            participantCounts.put(row.getMeetingId(), Math.toIntExact(row.getParticipantCount()));
+            previewUserIds.computeIfAbsent(row.getMeetingId(), ignored -> new ArrayList<>())
+                .add(row.getUserId());
+            identityIds.add(row.getUserId());
+        }
+
+        Map<UUID, String> displayNames = users.displayNamesFor(identityIds);
+        Map<UUID, RoomCatalogService.RoomDisplay> roomDisplays = roomIds.isEmpty()
+            ? Map.of() : rooms.displayByIds(roomIds);
+
+        Map<UUID, MeetingListView> projections = new LinkedHashMap<>();
+        for (MeetingEntity meeting : page) {
+            RoomCatalogService.RoomDisplay room = meeting.getRoomId() == null
+                ? null : roomDisplays.get(meeting.getRoomId());
+            List<MeetingListView.ParticipantPreview> preview = previewUserIds
+                .getOrDefault(meeting.getId(), List.of()).stream()
+                .map(userId -> new MeetingListView.ParticipantPreview(userId, displayNames.get(userId)))
+                .toList();
+            MeetingListView.Display display = new MeetingListView.Display(
+                displayNames.get(meeting.getOrganizerUserId()),
+                room == null ? null : room.name(),
+                room == null ? null : room.location(),
+                participantCounts.getOrDefault(meeting.getId(), 0),
+                preview);
+            projections.put(meeting.getId(), MeetingListView.from(meeting, display));
+        }
+        return Map.copyOf(projections);
     }
 
     public MeetingEntity update(UUID id, String ifMatch, Map<String, Object> patch) {
@@ -286,7 +361,8 @@ public class MeetingCoreService implements MeetingMediaAccess, MeetingIntelligen
         MeetingEntity committed = flush(meeting);
         notifications.participantAdded(committed, record);
         audit.participantAdded(committed, record);
-        return ParticipantView.from(record);
+        return ParticipantView.from(record,
+            users.displayNamesFor(List.of(record.getUserId())).get(record.getUserId()));
     }
 
     public void removeParticipant(UUID meetingId, UUID userId, String ifMatch) {
@@ -309,8 +385,12 @@ public class MeetingCoreService implements MeetingMediaAccess, MeetingIntelligen
     public List<ParticipantView> listParticipants(UUID meetingId) {
         MeetingEntity meeting = lookup(meetingId);
         requireAccess(meeting, authorization.requireActiveActor().getId());
-        return participants.findByMeetingIdOrderByAddedAtAsc(meetingId).stream()
-            .map(ParticipantView::from).toList();
+        List<MeetingParticipantEntity> records = participants.findByMeetingIdOrderByAddedAtAsc(meetingId);
+        Map<UUID, String> displayNames = users.displayNamesFor(records.stream()
+            .map(MeetingParticipantEntity::getUserId).toList());
+        return records.stream()
+            .map(record -> ParticipantView.from(record, displayNames.get(record.getUserId())))
+            .toList();
     }
 
     private MeetingEntity owned(UUID id) {

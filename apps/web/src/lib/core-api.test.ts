@@ -88,6 +88,125 @@ describe('core API transport', () => {
     expect(headers?.get('X-Auth-Transport')).toBeUndefined()
   })
 
+  it('returns response metadata without changing data-only callers', async () => {
+    const pagination = {
+      page: 0,
+      size: 10,
+      totalElements: 21,
+      totalPages: 3,
+      hasNext: true,
+      hasPrevious: false,
+    }
+    coreApiAxios.defaults.adapter = async (config) =>
+      makeResponse(config, {
+        ...successEnvelope([{ id: 'meeting-1' }]),
+        meta: { pagination },
+      })
+
+    await expect(
+      coreApi.getWithMeta<{ id: string }[]>('/meetings')
+    ).resolves.toEqual({
+      data: [{ id: 'meeting-1' }],
+      meta: { pagination },
+    })
+    await expect(coreApi.get<{ id: string }[]>('/meetings')).resolves.toEqual([
+      { id: 'meeting-1' },
+    ])
+  })
+
+  it('preserves the exact response ETag for headers-aware callers', async () => {
+    const etag = 'W/"meeting-1-version-7"'
+    coreApiAxios.defaults.adapter = async (config) => {
+      const response = makeResponse(
+        config,
+        successEnvelope({ id: 'meeting-1' })
+      )
+      response.headers = new AxiosHeaders({ ETag: etag })
+      return response
+    }
+
+    await expect(
+      coreApi.getWithMetaAndEtag<{ id: string }>('/meetings/meeting-1')
+    ).resolves.toEqual({
+      data: { id: 'meeting-1' },
+      meta: {},
+      etag,
+    })
+
+    await expect(
+      coreApi.getWithMeta<{ id: string }>('/meetings/meeting-1')
+    ).resolves.toEqual({ data: { id: 'meeting-1' }, meta: {} })
+  })
+
+  it('preserves mutation ETags and sends idempotency and precondition headers', async () => {
+    const requests: Array<Parameters<AxiosAdapter>[0]> = []
+    const etag = 'opaque-etag;v=7'
+    setCsrfToken('csrf-for-meeting')
+    coreApiAxios.defaults.adapter = async (config) => {
+      requests.push(config)
+      const response = makeResponse(
+        config,
+        successEnvelope({ id: 'meeting-1', status: 'DRAFT' }),
+        201
+      )
+      response.headers = new AxiosHeaders({ ETag: etag })
+      return response
+    }
+
+    await expect(
+      coreApi.postWithMetaAndEtag(
+        '/meetings',
+        { title: 'Draft' },
+        {
+          headers: {
+            'Idempotency-Key': 'meeting-intent-1',
+            'If-Match': '"previous"',
+          },
+        }
+      )
+    ).resolves.toEqual({
+      data: { id: 'meeting-1', status: 'DRAFT' },
+      meta: {},
+      etag,
+    })
+
+    expect(requests).toHaveLength(1)
+    expect(requests[0]?.headers.get('Idempotency-Key')).toBe('meeting-intent-1')
+    expect(requests[0]?.headers.get('If-Match')).toBe('"previous"')
+    expect(requests[0]?.headers.get('X-CSRF-Token')).toBe('csrf-for-meeting')
+  })
+
+  it('sends an opaque If-Match value for PATCH and returns the refreshed ETag', async () => {
+    const requests: Array<Parameters<AxiosAdapter>[0]> = []
+    const etag = 'opaque-next-etag;revision=8'
+    setCsrfToken('csrf-for-patch')
+    coreApiAxios.defaults.adapter = async (config) => {
+      requests.push(config)
+      const response = makeResponse(
+        config,
+        successEnvelope({ id: 'meeting-1', status: 'DRAFT' })
+      )
+      response.headers = new AxiosHeaders({ ETag: etag })
+      return response
+    }
+
+    await expect(
+      coreApi.patchWithMetaAndEtag(
+        '/meetings/meeting-1',
+        { title: 'Updated title' },
+        { headers: { 'If-Match': 'opaque-current-etag' } }
+      )
+    ).resolves.toEqual({
+      data: { id: 'meeting-1', status: 'DRAFT' },
+      meta: {},
+      etag,
+    })
+
+    expect(requests).toHaveLength(1)
+    expect(requests[0]?.headers.get('If-Match')).toBe('opaque-current-etag')
+    expect(requests[0]?.headers.get('X-CSRF-Token')).toBe('csrf-for-patch')
+  })
+
   it('does not add CSRF headers to bootstrap GET requests', async () => {
     setCsrfToken('csrf-before-login')
     let requestConfig: Parameters<AxiosAdapter>[0] | undefined
