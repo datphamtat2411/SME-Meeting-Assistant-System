@@ -181,6 +181,14 @@ export function MeetingParticipantManagement({
       setPhase('ready')
 
       if (outcome === 'confirmed') {
+        const desiredStateObserved =
+          operation.type === 'add' ? activeAfterRefresh : !activeAfterRefresh
+        if (!desiredStateObserved) {
+          setNeutralFeedback(
+            formatConfirmedStateMismatch(operation, activeAfterRefresh)
+          )
+          return true
+        }
         setFeedback(null)
         clearOperationIntent(operation)
         if (operation.type === 'add') {
@@ -250,6 +258,12 @@ export function MeetingParticipantManagement({
       updateAuthoritativeState(refresh, false)
       setPendingReconciliation(null)
       setPhase('ready')
+      if (refresh.detail.meeting.organizerUserId !== currentUserId) {
+        setAuthorizationBlocked(true)
+        setFailure(formatMutationFailure(operation, 'forbidden'))
+        return
+      }
+      setAuthorizationBlocked(false)
       setFailure(
         formatConflictFailure(
           operation,
@@ -306,6 +320,10 @@ export function MeetingParticipantManagement({
     if (!isCurrentSession(generation)) return
     const normalized = normalizeCoreApiError(error)
     const kind = classifyParticipantMutationError(error)
+    if (kind === 'not_found' && operation.type === 'remove') {
+      await refreshAfterConflict(operation, kind, generation)
+      return
+    }
     if (
       kind === 'unauthenticated' ||
       kind === 'forbidden' ||
@@ -632,7 +650,19 @@ function formatConflictFailure(
   if (operation.type === 'remove' && !active) {
     return formatMutationFailure(operation, 'not_found')
   }
+  if (operation.type === 'remove' && kind === 'not_found') {
+    return `The removal request could not find the membership, but the refreshed participant list still shows ${operation.displayName} as active. No mutation was retried.`
+  }
   return formatMutationFailure(operation, kind)
+}
+
+function formatConfirmedStateMismatch(
+  operation: PendingParticipantOperation,
+  active: boolean
+) {
+  const operationLabel = operation.type === 'add' ? 'add' : 'remove'
+  const currentState = active ? 'currently active' : 'no longer active'
+  return `The original ${operationLabel} request succeeded, but a subsequent membership change means ${operation.displayName} is ${currentState}. The latest participant state is authoritative; no follow-up mutation was sent.`
 }
 
 function formatAmbiguousObserved(operation: PendingParticipantOperation) {

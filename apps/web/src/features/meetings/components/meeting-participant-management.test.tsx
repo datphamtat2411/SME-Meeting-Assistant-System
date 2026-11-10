@@ -54,6 +54,17 @@ const activeParticipant: ParticipantView = {
   displayName: 'Active participant',
 }
 
+const otherActiveParticipant: ParticipantView = {
+  id: 'membership-other-active',
+  meetingId: 'meeting-1',
+  userId: 'user-5',
+  addedByUserId: 'organizer-1',
+  addedAt: '2026-09-01T00:01:30Z',
+  removedAt: null,
+  removedByUserId: null,
+  displayName: 'Other active participant',
+}
+
 const historicalParticipant: ParticipantView = {
   id: 'membership-history',
   meetingId: 'meeting-1',
@@ -154,16 +165,22 @@ async function renderManagement(
 
 function SynchronizedManagement({
   onReconciled = vi.fn(),
+  initialMeeting = meeting,
+  initialParticipants = [organizer, activeParticipant, historicalParticipant],
+  initialEtag = 'etag-current',
 }: {
   onReconciled?: (
     refresh: MeetingParticipantRefresh,
     confirmed: boolean
   ) => void
+  initialMeeting?: MeetingView
+  initialParticipants?: ParticipantView[]
+  initialEtag?: string
 }) {
   const [state, setState] = useState({
-    meeting,
-    participants: [organizer, activeParticipant, historicalParticipant],
-    etag: 'etag-current',
+    meeting: initialMeeting,
+    participants: initialParticipants,
+    etag: initialEtag,
   })
 
   return (
@@ -359,6 +376,303 @@ describe('MeetingParticipantManagement', () => {
     )
   })
 
+  it('reconciles a 404 delete as an already-removed membership without blocking the organizer', async () => {
+    mockCandidates()
+    const deleteSpy = vi
+      .spyOn(coreApi, 'deleteWithMetaAndEtag')
+      .mockRejectedValue(
+        new CoreApiError({
+          status: 404,
+          message: 'membership missing',
+          kind: 'http',
+        })
+      )
+    const detailSpy = vi
+      .spyOn(coreApi, 'getWithMetaAndEtag')
+      .mockResolvedValue({ data: meeting, meta: {}, etag: 'etag-after-404' })
+    const participantsSpy = vi
+      .spyOn(coreApi, 'getWithMeta')
+      .mockImplementation(async (url) => {
+        if (url === '/users/meeting-candidates') {
+          return { data: [candidate], meta: { pagination } }
+        }
+        return { data: [organizer, historicalParticipant], meta: {} }
+      })
+
+    const screen = await render(
+      <QueryClientProvider client={createQueryClient()}>
+        <SynchronizedManagement />
+      </QueryClientProvider>
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Remove Active participant' })
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Remove participant' })
+    )
+
+    await expect.poll(() => deleteSpy.mock.calls.length).toBe(1)
+    await expect.poll(() => detailSpy.mock.calls.length).toBe(1)
+    await expect
+      .poll(
+        () =>
+          participantsSpy.mock.calls.filter(
+            ([url]) => url === '/meetings/meeting-1/participants'
+          ).length
+      )
+      .toBe(1)
+    await expect
+      .element(screen.getByText(/no longer has an active membership/i))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: 'Add participant' }))
+      .toBeInTheDocument()
+    await expect
+      .element(
+        screen.getByRole('button', { name: 'Remove Active participant' })
+      )
+      .not.toBeInTheDocument()
+    expect(deleteSpy).toHaveBeenCalledTimes(1)
+    expect(toastSuccess).not.toHaveBeenCalled()
+  })
+
+  it('keeps other organizer controls available after a 404 delete refresh', async () => {
+    mockCandidates()
+    const deleteSpy = vi
+      .spyOn(coreApi, 'deleteWithMetaAndEtag')
+      .mockRejectedValue(
+        new CoreApiError({
+          status: 404,
+          message: 'membership missing',
+          kind: 'http',
+        })
+      )
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+      data: meeting,
+      meta: {},
+      etag: 'etag-after-404',
+    })
+    vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url) => {
+      if (url === '/users/meeting-candidates') {
+        return { data: [candidate, secondCandidate], meta: { pagination } }
+      }
+      return {
+        data: [organizer, otherActiveParticipant, historicalParticipant],
+        meta: {},
+      }
+    })
+
+    const screen = await render(
+      <QueryClientProvider client={createQueryClient()}>
+        <SynchronizedManagement
+          initialParticipants={[
+            organizer,
+            activeParticipant,
+            otherActiveParticipant,
+            historicalParticipant,
+          ]}
+        />
+      </QueryClientProvider>
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Remove Active participant' })
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Remove participant' })
+    )
+
+    await expect.poll(() => deleteSpy.mock.calls.length).toBe(1)
+    await expect
+      .element(
+        screen.getByRole('button', { name: 'Remove Other active participant' })
+      )
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: 'Add participant' }))
+      .toBeInTheDocument()
+    expect(deleteSpy).toHaveBeenCalledTimes(1)
+    expect(toastSuccess).not.toHaveBeenCalled()
+  })
+
+  it('blocks membership controls when a 404 delete refresh confirms the meeting is inaccessible', async () => {
+    mockCandidates()
+    const deleteSpy = vi
+      .spyOn(coreApi, 'deleteWithMetaAndEtag')
+      .mockRejectedValue(
+        new CoreApiError({
+          status: 404,
+          message: 'membership missing',
+          kind: 'http',
+        })
+      )
+    const detailSpy = vi.spyOn(coreApi, 'getWithMetaAndEtag').mockRejectedValue(
+      new CoreApiError({
+        status: 404,
+        message: 'meeting missing',
+        kind: 'http',
+      })
+    )
+    vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url) => {
+      if (url === '/users/meeting-candidates') {
+        return { data: [candidate], meta: { pagination } }
+      }
+      return { data: [organizer, activeParticipant], meta: {} }
+    })
+
+    const { screen } = await renderManagement()
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Remove Active participant' })
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Remove participant' })
+    )
+
+    await expect.poll(() => detailSpy.mock.calls.length).toBe(1)
+    await expect
+      .element(
+        screen.getByText(/latest meeting version could not be verified/i)
+      )
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: 'Add participant' }))
+      .not.toBeInTheDocument()
+    await expect
+      .element(
+        screen.getByRole('button', { name: 'Remove Active participant' })
+      )
+      .not.toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: 'Retry refresh' }))
+      .not.toBeInTheDocument()
+    expect(deleteSpy).toHaveBeenCalledTimes(1)
+    expect(toastSuccess).not.toHaveBeenCalled()
+  })
+
+  it('disables membership controls when a 404 delete refresh confirms a terminal meeting', async () => {
+    mockCandidates()
+    const deleteSpy = vi
+      .spyOn(coreApi, 'deleteWithMetaAndEtag')
+      .mockRejectedValue(
+        new CoreApiError({
+          status: 404,
+          message: 'membership missing',
+          kind: 'http',
+        })
+      )
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+      data: { ...meeting, status: 'ENDED' },
+      meta: {},
+      etag: 'etag-ended',
+    })
+    vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url) => {
+      if (url === '/users/meeting-candidates') {
+        return { data: [candidate], meta: { pagination } }
+      }
+      return { data: [organizer, historicalParticipant], meta: {} }
+    })
+
+    const screen = await render(
+      <QueryClientProvider client={createQueryClient()}>
+        <SynchronizedManagement />
+      </QueryClientProvider>
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Remove Active participant' })
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Remove participant' })
+    )
+
+    await expect
+      .element(
+        screen.getByText(/no longer allowed for this meeting lifecycle/i)
+      )
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: 'Add participant' }))
+      .not.toBeInTheDocument()
+    await expect
+      .element(
+        screen.getByRole('button', { name: 'Remove Active participant' })
+      )
+      .not.toBeInTheDocument()
+    expect(deleteSpy).toHaveBeenCalledTimes(1)
+    expect(toastSuccess).not.toHaveBeenCalled()
+  })
+
+  it('locks mutations after a 404 delete refresh failure and retries only the refresh', async () => {
+    mockCandidates()
+    const deleteSpy = vi
+      .spyOn(coreApi, 'deleteWithMetaAndEtag')
+      .mockRejectedValue(
+        new CoreApiError({
+          status: 404,
+          message: 'membership missing',
+          kind: 'http',
+        })
+      )
+    const detailSpy = vi
+      .spyOn(coreApi, 'getWithMetaAndEtag')
+      .mockRejectedValueOnce(
+        new CoreApiError({ message: 'Connection lost', kind: 'network' })
+      )
+      .mockResolvedValue({ data: meeting, meta: {}, etag: 'etag-after-404' })
+    let participantRefreshCount = 0
+    const participantsSpy = vi
+      .spyOn(coreApi, 'getWithMeta')
+      .mockImplementation(async (url) => {
+        if (url === '/users/meeting-candidates') {
+          return { data: [candidate], meta: { pagination } }
+        }
+        participantRefreshCount += 1
+        if (participantRefreshCount === 1) {
+          throw new CoreApiError({
+            message: 'Connection lost',
+            kind: 'network',
+          })
+        }
+        return { data: [organizer, historicalParticipant], meta: {} }
+      })
+
+    const screen = await render(
+      <QueryClientProvider client={createQueryClient()}>
+        <SynchronizedManagement />
+      </QueryClientProvider>
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Remove Active participant' })
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Remove participant' })
+    )
+
+    await expect
+      .element(screen.getByRole('button', { name: 'Retry refresh' }))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: 'Add participant' }))
+      .toBeDisabled()
+    await expect
+      .element(
+        screen.getByRole('button', { name: 'Remove Active participant' })
+      )
+      .toBeDisabled()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Retry refresh' }))
+    await expect.poll(() => detailSpy.mock.calls.length).toBe(2)
+    await expect.poll(() => participantRefreshCount).toBe(2)
+    await expect
+      .element(screen.getByRole('button', { name: 'Add participant' }))
+      .toBeInTheDocument()
+    expect(
+      participantsSpy.mock.calls.filter(
+        ([url]) => url === '/meetings/meeting-1/participants'
+      )
+    ).toHaveLength(2)
+    expect(deleteSpy).toHaveBeenCalledTimes(1)
+    expect(toastSuccess).not.toHaveBeenCalled()
+  })
+
   it('requires confirmation before remove and preserves intent after a real stale-version recovery', async () => {
     mockCandidates()
     const deleteSpy = vi
@@ -539,7 +853,23 @@ describe('MeetingParticipantManagement', () => {
         if (url === '/users/meeting-candidates') {
           return { data: [candidate], meta: { pagination } }
         }
-        return { data: [organizer, activeParticipant], meta: {} }
+        return {
+          data: [
+            organizer,
+            activeParticipant,
+            {
+              id: 'membership-new',
+              meetingId: meeting.id,
+              userId: candidate.id,
+              addedByUserId: meeting.organizerUserId,
+              addedAt: '2026-09-01T00:04:00Z',
+              removedAt: null,
+              removedByUserId: null,
+              displayName: candidate.displayName,
+            },
+          ],
+          meta: {},
+        }
       })
 
     const { screen } = await renderManagement()
@@ -612,7 +942,23 @@ describe('MeetingParticipantManagement', () => {
             kind: 'network',
           })
         }
-        return { data: [organizer, activeParticipant], meta: {} }
+        return {
+          data: [
+            organizer,
+            activeParticipant,
+            {
+              id: 'membership-new',
+              meetingId: meeting.id,
+              userId: candidate.id,
+              addedByUserId: meeting.organizerUserId,
+              addedAt: '2026-09-01T00:04:00Z',
+              removedAt: null,
+              removedByUserId: null,
+              displayName: candidate.displayName,
+            },
+          ],
+          meta: {},
+        }
       })
 
     const { screen } = await renderManagement()
@@ -727,6 +1073,120 @@ describe('MeetingParticipantManagement', () => {
       'Participant removed',
       expect.anything()
     )
+  })
+
+  it('does not claim a confirmed add is currently active when refresh observes a later removal', async () => {
+    mockCandidates()
+    const addSpy = vi.spyOn(coreApi, 'postWithMetaAndEtag').mockResolvedValue({
+      data: {
+        id: 'membership-new',
+        meetingId: meeting.id,
+        userId: candidate.id,
+        addedByUserId: meeting.organizerUserId,
+        addedAt: '2026-09-01T00:04:00Z',
+        removedAt: null,
+        removedByUserId: null,
+        displayName: candidate.displayName,
+      },
+      meta: {},
+      etag: 'ignored-add-etag',
+    })
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+      data: meeting,
+      meta: {},
+      etag: 'etag-after-add',
+    })
+    vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url) => {
+      if (url === '/users/meeting-candidates') {
+        return { data: [candidate], meta: { pagination } }
+      }
+      return {
+        data: [organizer, activeParticipant, historicalParticipant],
+        meta: {},
+      }
+    })
+
+    const screen = await render(
+      <QueryClientProvider client={createQueryClient()}>
+        <SynchronizedManagement />
+      </QueryClientProvider>
+    )
+    await userEvent.click(
+      screen.getByRole('combobox', { name: 'Participants' })
+    )
+    await userEvent.fill(
+      screen.getByPlaceholder('Search active participants...'),
+      'new'
+    )
+    await userEvent.click(screen.getByRole('option', { name: /New candidate/ }))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Add participant' })
+    )
+
+    await expect.poll(() => addSpy.mock.calls.length).toBe(1)
+    await expect
+      .element(
+        screen.getByText(/original add request succeeded.*no longer active/i)
+      )
+      .toBeInTheDocument()
+    expect(addSpy).toHaveBeenCalledTimes(1)
+    expect(toastSuccess).not.toHaveBeenCalled()
+  })
+
+  it('does not claim a confirmed delete is currently removed when refresh observes a later re-add', async () => {
+    mockCandidates()
+    const deleteSpy = vi
+      .spyOn(coreApi, 'deleteWithMetaAndEtag')
+      .mockResolvedValue({
+        data: meeting,
+        meta: {},
+        etag: 'ignored-delete-etag',
+      })
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+      data: meeting,
+      meta: {},
+      etag: 'etag-after-delete',
+    })
+    const readdedParticipant = {
+      ...activeParticipant,
+      id: 'membership-readded',
+      addedAt: '2026-09-01T00:05:00Z',
+    }
+    vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url) => {
+      if (url === '/users/meeting-candidates') {
+        return { data: [candidate], meta: { pagination } }
+      }
+      return {
+        data: [organizer, readdedParticipant, historicalParticipant],
+        meta: {},
+      }
+    })
+
+    const screen = await render(
+      <QueryClientProvider client={createQueryClient()}>
+        <SynchronizedManagement />
+      </QueryClientProvider>
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Remove Active participant' })
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Remove participant' })
+    )
+
+    await expect.poll(() => deleteSpy.mock.calls.length).toBe(1)
+    await expect
+      .element(
+        screen.getByText(/original remove request succeeded.*currently active/i)
+      )
+      .toBeInTheDocument()
+    await expect
+      .element(
+        screen.getByRole('button', { name: 'Remove Active participant' })
+      )
+      .toBeInTheDocument()
+    expect(deleteSpy).toHaveBeenCalledTimes(1)
+    expect(toastSuccess).not.toHaveBeenCalled()
   })
 
   it('locks after a successful delete when participant reconciliation fails', async () => {
