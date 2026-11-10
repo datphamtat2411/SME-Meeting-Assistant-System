@@ -69,6 +69,30 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
       builder: (_, __) {
         if (!api.ready) return const Scaffold(
           body: Center(child: CircularProgressIndicator()));
+        if (api.hasRecoverableSession) {
+          return Scaffold(body: SafeArea(child: Center(
+            child: Padding(padding: const EdgeInsets.all(24),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 420),
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  const Icon(Icons.wifi_off_outlined, size: 46),
+                  const SizedBox(height: 16),
+                  const Text('Không thể khôi phục phiên đăng nhập',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 19, fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 9),
+                  Text(api.sessionRestoreError ?? 'Không kết nối được với máy chủ.',
+                    textAlign: TextAlign.center),
+                  const SizedBox(height: 16),
+                  FilledButton.icon(onPressed: api.retrySessionRestore,
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('Thử kết nối lại')),
+                  TextButton(onPressed: api.discardLocalSession,
+                    child: const Text('Sử dụng tài khoản khác')),
+                ]),
+              )),
+          )));
+        }
         if (!api.signedIn) return AuthPage(api: api);
         return AppShell(api: api, themeMode: mode, onThemeChanged: changeTheme);
       },
