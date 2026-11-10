@@ -1,7 +1,8 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import type { CDPSession } from '@vitest/browser-playwright'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
-import { userEvent } from 'vitest/browser'
+import { cdp, userEvent } from 'vitest/browser'
 import { CoreApiError, coreApi } from '@/lib/core-api'
 import { canonicalizeLocalDateTime } from '../data/meeting-creation-api'
 import { MeetingEditDialog } from './meeting-edit-dialog'
@@ -45,6 +46,35 @@ const overnightMeeting = {
   ...scheduledMeeting,
   scheduledStartAt: '2026-11-10T16:00:37.123Z',
   scheduledEndAt: '2026-11-10T18:00:42.456Z',
+}
+
+const utcOvernightMeeting = {
+  ...scheduledMeeting,
+  scheduledStartAt: '2026-11-10T23:00:00Z',
+  scheduledEndAt: '2026-11-11T01:00:00Z',
+}
+
+const utcTimeZone = 'UTC'
+const vietnamTimeZone = 'Asia/Ho_Chi_Minh'
+
+async function setBrowserTimeZone(timeZone: string) {
+  await (cdp() as unknown as CDPSession).send('Emulation.setTimezoneOverride', {
+    timezoneId: timeZone,
+  })
+}
+
+function localDateInTimeZone(timeZone: string, value: string) {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    })
+      .formatToParts(new Date(value))
+      .map(({ type, value: part }) => [type, part])
+  )
+  return `${parts.year}-${parts.month}-${parts.day}`
 }
 
 function createQueryClient() {
@@ -138,6 +168,7 @@ describe('MeetingEditDialog', () => {
   })
 
   it('prefills an overnight meeting with different local dates', async () => {
+    await setBrowserTimeZone(vietnamTimeZone)
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
         <MeetingEditDialog
@@ -151,10 +182,39 @@ describe('MeetingEditDialog', () => {
 
     await expect
       .element(screen.getByLabelText('Date', { exact: true }))
-      .toHaveValue('2026-11-10')
+      .toHaveValue(
+        localDateInTimeZone(vietnamTimeZone, overnightMeeting.scheduledStartAt)
+      )
     await expect
       .element(screen.getByLabelText('End date'))
-      .toHaveValue('2026-11-11')
+      .toHaveValue(
+        localDateInTimeZone(vietnamTimeZone, overnightMeeting.scheduledEndAt)
+      )
+  })
+
+  it('prefills an overnight meeting with different UTC dates', async () => {
+    await setBrowserTimeZone(utcTimeZone)
+    const screen = await render(
+      <QueryClientProvider client={createQueryClient()}>
+        <MeetingEditDialog
+          open
+          onOpenChange={vi.fn()}
+          meeting={utcOvernightMeeting}
+          etag='etag-current'
+        />
+      </QueryClientProvider>
+    )
+
+    await expect
+      .element(screen.getByLabelText('Date', { exact: true }))
+      .toHaveValue(
+        localDateInTimeZone(utcTimeZone, utcOvernightMeeting.scheduledStartAt)
+      )
+    await expect
+      .element(screen.getByLabelText('End date'))
+      .toHaveValue(
+        localDateInTimeZone(utcTimeZone, utcOvernightMeeting.scheduledEndAt)
+      )
   })
 
   it('prefills a multi-day meeting with its authoritative end date', async () => {
@@ -182,6 +242,7 @@ describe('MeetingEditDialog', () => {
   })
 
   it('preserves an overnight schedule and its timestamp precision for metadata-only PATCH', async () => {
+    await setBrowserTimeZone(vietnamTimeZone)
     mockRoomQueries()
     const patchSpy = vi
       .spyOn(coreApi, 'patchWithMetaAndEtag')
@@ -190,8 +251,9 @@ describe('MeetingEditDialog', () => {
         meta: {},
         etag: 'etag-next',
       })
+    const queryClient = createQueryClient()
     const screen = await render(
-      <QueryClientProvider client={createQueryClient()}>
+      <QueryClientProvider client={queryClient}>
         <MeetingEditDialog
           open
           onOpenChange={vi.fn()}
@@ -217,6 +279,14 @@ describe('MeetingEditDialog', () => {
     )
     expect(patchSpy.mock.calls[0]?.[1]).not.toHaveProperty('scheduledStartAt')
     expect(patchSpy.mock.calls[0]?.[1]).not.toHaveProperty('scheduledEndAt')
+    const detail = queryClient.getQueryData<{
+      meeting: typeof overnightMeeting
+      etag: string
+    }>(['meetings', 'detail', 'meeting-1'])
+    expect(detail?.meeting.scheduledStartAt).toBe(
+      overnightMeeting.scheduledStartAt
+    )
+    expect(detail?.meeting.scheduledEndAt).toBe(overnightMeeting.scheduledEndAt)
   })
 
   it('serializes an explicitly entered overnight interval as two absolute timestamps', async () => {
@@ -550,10 +620,11 @@ describe('MeetingEditDialog', () => {
   })
 
   it('preserves an overnight form across 412 recovery until explicit reload', async () => {
+    await setBrowserTimeZone(vietnamTimeZone)
     mockRoomQueries()
     const patchSpy = vi
       .spyOn(coreApi, 'patchWithMetaAndEtag')
-      .mockRejectedValue(
+      .mockRejectedValueOnce(
         new CoreApiError({
           status: 412,
           code: 'ETAG_MISMATCH',
@@ -561,6 +632,11 @@ describe('MeetingEditDialog', () => {
           kind: 'http',
         })
       )
+      .mockResolvedValueOnce({
+        data: { ...overnightMeeting, title: 'Reloaded overnight title' },
+        meta: {},
+        etag: 'etag-after-reload',
+      })
     vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
       data: { ...overnightMeeting, title: 'Server overnight title' },
       meta: {},
@@ -588,10 +664,14 @@ describe('MeetingEditDialog', () => {
       .toBeInTheDocument()
     await expect
       .element(screen.getByLabelText('Date', { exact: true }))
-      .toHaveValue('2026-11-10')
+      .toHaveValue(
+        localDateInTimeZone(vietnamTimeZone, overnightMeeting.scheduledStartAt)
+      )
     await expect
       .element(screen.getByLabelText('End date'))
-      .toHaveValue('2026-11-11')
+      .toHaveValue(
+        localDateInTimeZone(vietnamTimeZone, overnightMeeting.scheduledEndAt)
+      )
     expect(patchSpy).toHaveBeenCalledTimes(1)
 
     await userEvent.click(
@@ -605,8 +685,31 @@ describe('MeetingEditDialog', () => {
       .element(screen.getByRole('textbox', { name: 'Title' }))
       .toHaveValue('Server overnight title')
     await expect
+      .element(screen.getByLabelText('Date', { exact: true }))
+      .toHaveValue(
+        localDateInTimeZone(vietnamTimeZone, overnightMeeting.scheduledStartAt)
+      )
+    await expect
       .element(screen.getByLabelText('End date'))
-      .toHaveValue('2026-11-11')
+      .toHaveValue(
+        localDateInTimeZone(vietnamTimeZone, overnightMeeting.scheduledEndAt)
+      )
+
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Title' }),
+      'Reloaded overnight title'
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    await expect
+      .element(screen.getByText('Meeting changes saved'))
+      .toBeInTheDocument()
+    expect(patchSpy).toHaveBeenNthCalledWith(
+      2,
+      '/meetings/meeting-1',
+      { title: 'Reloaded overnight title' },
+      { headers: { 'If-Match': 'etag-server' } }
+    )
   })
 
   it('blocks an authoritative room conflict before PATCH or scheduling', async () => {
