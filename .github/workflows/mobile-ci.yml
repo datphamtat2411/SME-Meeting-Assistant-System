@@ -1,0 +1,26 @@
+name: Mobile Flutter build
+on:
+  push:
+    branches: ["mobile/**"]
+    paths: ["apps/mobile/**", ".github/workflows/mobile-ci.yml"]
+  pull_request:
+    paths: ["apps/mobile/**", ".github/workflows/mobile-ci.yml"]
+
+jobs:
+  flutter:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Generate native platform runners
+        run: bash tool/bootstrap.sh
+      - name: Analyze production code
+        run: flutter analyze lib
+      - name: Compile Android debug APK
+        run: flutter build apk --debug --dart-define=API_BASE_URL=https://example.invalid/api/v1
