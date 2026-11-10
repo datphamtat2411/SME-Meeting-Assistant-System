@@ -6,7 +6,7 @@
   "meaning": {
     "implementation": "PRESENT = concrete source code exists; PARTIAL = only part of required capability; MISSING = no implementation",
     "integration": "LINKED = source-level boundary is represented; NOT_LINKED = required boundary absent; UNVERIFIED = wiring cannot be confirmed from this audit",
-    "verification": "REPORTED_DETERMINISTIC = named prior documented deterministic run (not re-executed); UNVERIFIED = no scoped executed evidence; VERIFIED_LIVE = fresh run URL required"
+    "verification": "REPORTED_DETERMINISTIC = named prior documented deterministic run (not re-executed); UNVERIFIED = no scoped executed evidence; VERIFIED_LIVE = fresh run URL required; Assistant implementation updated in PI-02; CI evidence documented separately."
   },
   "capabilities": [
     {
@@ -223,8 +223,8 @@
     {
       "id": "ASSISTANT",
       "owner": "Core API + AI Core",
-      "implementation": "PARTIAL",
-      "integration": "NOT_LINKED",
+      "implementation": "PRESENT",
+      "integration": "LINKED",
       "verification": "UNVERIFIED",
       "requirement_ids": [
         "API-EP-AST-001",
@@ -236,7 +236,11 @@
         "services/ai/src/sme_meeting_ai/api/assistant.py",
         "services/ai/src/sme_meeting_ai/assistant/contracts.py",
         "services/ai/tests/unit/test_assistant.py",
-        "requirement-docs/RE05-DATABASE.md"
+        "requirement-docs/RE05-DATABASE.md",
+        "services/api/src/main/java/com/sme/meetingassistant/api/assistant/AssistantController.java",
+        "services/api/src/main/java/com/sme/meetingassistant/api/assistant/AssistantService.java",
+        "services/api/src/main/resources/db/migration/V50__assistant_conversations_and_turns.sql",
+        "services/api/src/test/java/com/sme/meetingassistant/api/assistant/AssistantHttpIntegrationTests.java"
       ],
       "finding_ids": [
         "G-001",
@@ -312,23 +316,23 @@
     {
       "id": "G-001",
       "severity": "CRITICAL",
-      "state": "OPEN",
+      "state": "RESOLVED_IN_PI02",
       "owner": "PI-02",
-      "summary": "Core public Assistant is missing; AI internal endpoint alone does not implement API-EP-AST-001..004."
+      "summary": "Core public Assistant is missing; AI internal endpoint alone does not implement API-EP-AST-001..004. PI-02 implementation and canonical contract alignment; see PI02-ACCEPTANCE.md."
     },
     {
       "id": "G-002",
       "severity": "HIGH",
-      "state": "OPEN",
+      "state": "RESOLVED_IN_PI02",
       "owner": "PI-02",
-      "summary": "AI AssistantAnswerStatus includes PARTIAL; DATABASE.md answer_status list omits it. Resolve with canonical owner before migration."
+      "summary": "AI AssistantAnswerStatus includes PARTIAL; DATABASE.md answer_status list omits it. Resolve with canonical owner before migration. PI-02 implementation and canonical contract alignment; see PI02-ACCEPTANCE.md."
     },
     {
       "id": "G-003",
       "severity": "HIGH",
-      "state": "OPEN",
+      "state": "RESOLVED_IN_PI02",
       "owner": "PI-02",
-      "summary": "assistant_message_sources baseline has no source revision/claim-level fields; finalize citation-provenance contract with schema owner."
+      "summary": "assistant_message_sources baseline has no source revision/claim-level fields; finalize citation-provenance contract with schema owner. PI-02 implementation and canonical contract alignment; see PI02-ACCEPTANCE.md."
     },
     {
       "id": "G-004",
@@ -375,9 +379,9 @@
     {
       "id": "G-010",
       "severity": "HIGH",
-      "state": "OPEN",
+      "state": "RESOLVED_IN_PI02",
       "owner": "PI-02",
-      "summary": "Conversation idempotency, concurrent turn order, post-revocation history access and error persistence require feature contract decisions/tests."
+      "summary": "Conversation idempotency, concurrent turn order, post-revocation history access and error persistence require feature contract decisions/tests. PI-02 implementation and canonical contract alignment; see PI02-ACCEPTANCE.md."
     },
     {
       "id": "G-011",
@@ -410,7 +414,7 @@
     {
       "path": "requirement-docs/RE05-DATABASE.md",
       "contains": [
-        "`GROUNDED`, `INSUFFICIENT_EVIDENCE`, `FAILED`"
+        "`GROUNDED`, `PARTIAL`, `INSUFFICIENT_EVIDENCE`, `FAILED`"
       ]
     },
     {
@@ -420,7 +424,5 @@
       ]
     }
   ],
-  "missing_paths": [
-    "services/api/src/main/java/com/sme/meetingassistant/api/assistant"
-  ]
+  "missing_paths": []
 }

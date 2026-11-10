@@ -105,3 +105,8 @@ The root `plan.md` still described old RAG-T06 work before this audit. PI-01 upd
 - This checker does **not** execute live services and is not a claim that the unresolved gaps are fixed. Task completion remains **audit-complete; integration-not-accepted**.
 
 **Next actionable unit:** PI-02 Core Assistant vertical slice, after resolving G-002/G-003 contractual decisions. PI-04/PI-05 already have concrete T06 coverage and live-scenario blockers to drive further implementation.
+
+
+## Addendum — PI-02 source evolution
+
+The PI-01 narrative above is an immutable historical audit snapshot. PI-02 adds Core Assistant, Flyway V50 and fenced, reauthorized citation acceptance. `PI01-INVENTORY.json` is updated for current code presence and G-001/G-002/G-003/G-010 are recorded `RESOLVED_IN_PI02`. This does not retroactively convert PI-01 evidence into live product acceptance; refer to `PI02-ACCEPTANCE.md`.

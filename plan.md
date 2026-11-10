@@ -1,25 +1,23 @@
-# PI-01 Audit Plan (executed on api/module-product-integration)
+# PI-02 Core Assistant Integration — Build Plan
 
 ## Repository Findings
-- The Core API is a feature-first modular monolith; AI has a private Assistant answer endpoint, but Core lacks a public Assistant module.
-- RE05-DATABASE.md omits the PARTIAL status present in the AI result contract; citation source revision/claim traceability requires explicit contract alignment.
-- RAG-T06 reports deterministic test coverage but leaves five live acceptance scenarios NOT RUN and incomplete inventory coverage.
-- API CI runs on api/** pushes; AI CI previously did not, despite Core–AI changes in the API package.
+- PI-01 G-001/G-002/G-003/G-010 identify missing public Core Assistant, answer-status and provenance gaps.
+- AI Core already provides private mTLS Assistant answer endpoint and Core-owned source verification.
+- Reuse MeetingMediaAccess, OrganizationalAuthorizationService, KnowledgeIndexingWorkerService, AiCoreTransport, ApiResponseFactory and Flyway.
 
 ## Affected Files
-- services/api/docs/PI01-INTEGRATION-AUDIT.md and PI01-INVENTORY.json
-- services/api/scripts/verify_pi01_inventory.py and test_verify_pi01_inventory.py
-- .github/workflows/api-ci.yml and ai-ci.yml
-- plan.md
+- Core assistant feature package; bounded AiCoreTransport overload; Flyway V50; PostgreSQL-backed tests.
+- Canonical RE05 database contract; PI-01 inventory and checker; PI-02 acceptance evidence.
 
 ## Proposed Changes
-- Record a requirement-ID-linked, source-path-backed inventory with distinct implementation/integration/verification states, explicit risk owners and no invented live-pass claims.
-- Add a dependency-free verification script with negative tests, integrated into existing API CI.
-- Close the AI CI api-branch trigger gap, keeping all existing checks.
-- Do not change canonical global requirements or build new Assistant/RAG features as part of an audit.
+- Four required public routes with explicit SINGLE_MEETING mode; no silent global access.
+- Distinct GROUNDED, PARTIAL, INSUFFICIENT_EVIDENCE and FAILED persistence.
+- Durable idempotent turns, one in-flight turn/conversation, lease/claim fencing and short DB transactions.
+- mTLS Core-to-AI; validate claims/citations and Core-authoritative source revision before commit.
+- Reauthorize after inference and on every history read; redact entire answer on stale evidence.
+- Never convert dialogue or AI-proposed content into official meeting truth.
 
 ## Focused Verification
-- python3 scripts/verify_pi01_inventory.py
-- python3 -m unittest discover -s scripts -p 'test_verify_pi01_inventory.py'
-- Existing API CI Maven verify and AI CI full suite on GitHub for this branch.
-- Check that every required workflow concludes success; report any external/environment blocker, never convert skipped tests into success evidence.
+- API CI PostgreSQL/Flyway V50 and AssistantHttpIntegrationTests, followed by existing Maven verify.
+- AI CI lint/pytest/build/runtime smoke; PI-01 drift guard.
+- RAG-T06 real-infrastructure acceptance and PI-03 business-wide consistency remain separate unverified gates.
