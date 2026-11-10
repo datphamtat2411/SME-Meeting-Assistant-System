@@ -32,7 +32,7 @@ export function ProfileForm() {
     )
   function submit(e: FormEvent) {
     e.preventDefault()
-    if (name.trim()) mutation.mutate()
+    if (displayName.trim()) mutation.mutate()
   }
   return (
     <form className='max-w-xl space-y-5' onSubmit={submit}>
@@ -57,7 +57,7 @@ export function ProfileForm() {
         <Label htmlFor='profile-role'>System role</Label>
         <Input
           id='profile-role'
-          value={query.data.globalRole.replaceAll('_', ' ')}
+          value={query.data.globalRole.replace(/_/g, ' ')}
           disabled
         />
       </div>
