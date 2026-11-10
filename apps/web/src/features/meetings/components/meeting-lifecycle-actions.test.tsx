@@ -4,6 +4,7 @@ import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
 import { CoreApiError, coreApi } from '@/lib/core-api'
 import type { MeetingView } from '../data/detail-api'
+import type { MeetingListResponse } from '../data/list-api'
 import {
   MeetingLifecycleActions,
   getMeetingLifecycleActions,
@@ -39,6 +40,43 @@ function createMeeting(
     createdAt: '2026-09-01T00:00:00Z',
     updatedAt: '2026-09-01T03:01:00Z',
     ...overrides,
+  }
+}
+
+function createMeetingListResponse(meeting: MeetingView): MeetingListResponse {
+  return {
+    meetings: [
+      {
+        id: meeting.id,
+        title: meeting.title,
+        description: meeting.description,
+        organizerUserId: meeting.organizerUserId,
+        roomId: meeting.roomId,
+        scheduledStartAt: meeting.scheduledStartAt,
+        scheduledEndAt: meeting.scheduledEndAt,
+        status: meeting.status,
+        startedAt: meeting.startedAt,
+        endedAt: meeting.endedAt,
+        cancelledAt: meeting.cancelledAt,
+        createdAt: meeting.createdAt,
+        updatedAt: meeting.updatedAt,
+        display: {
+          organizerName: 'Organizer',
+          roomName: 'Room',
+          roomLocation: 'HQ',
+          participantCount: 0,
+          participantPreview: [],
+        },
+      },
+    ],
+    pagination: {
+      page: 0,
+      size: 10,
+      totalElements: 1,
+      totalPages: 1,
+      hasNext: false,
+      hasPrevious: false,
+    },
   }
 }
 
@@ -100,6 +138,10 @@ describe('MeetingLifecycleActions', () => {
     const { queryClient, screen } = await renderActions(
       createMeeting('SCHEDULED')
     )
+    queryClient.setQueryData(
+      ['meetings', 'list', { page: 1 }],
+      createMeetingListResponse(createMeeting('SCHEDULED'))
+    )
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
 
     await userEvent.click(screen.getByRole('button', { name: 'Start meeting' }))
@@ -115,8 +157,16 @@ describe('MeetingLifecycleActions', () => {
     expect(
       queryClient.getQueryData(['meetings', 'detail', 'meeting-1'])
     ).toEqual({ meeting: started, etag: 'etag-started' })
+    expect(
+      queryClient.getQueryData<MeetingListResponse>([
+        'meetings',
+        'list',
+        { page: 1 },
+      ])?.meetings[0]?.status
+    ).toBe('IN_PROGRESS')
     expect(invalidateSpy).toHaveBeenCalledWith({
       queryKey: ['meetings', 'detail', 'meeting-1'],
+      refetchType: 'none',
     })
     expect(invalidateSpy).toHaveBeenCalledWith({
       queryKey: ['meetings', 'list'],
@@ -162,27 +212,35 @@ describe('MeetingLifecycleActions', () => {
     })
   })
 
-  it('retains a cancellation reason through stale recovery and uses the refreshed ETag only after explicit retry', async () => {
+  it('rebuilds a cancelled retry from a refreshed DRAFT to SCHEDULED snapshot', async () => {
+    const draftMeeting = createMeeting('DRAFT')
+    const scheduledMeeting = createMeeting('SCHEDULED')
+    const cancelledMeeting = createMeeting('CANCELLED', {
+      cancellationReason: 'Room unavailable',
+    })
     const cancelSpy = vi
       .spyOn(coreApi, 'postWithMetaAndEtag')
       .mockRejectedValueOnce(
         new CoreApiError({ status: 412, message: 'stale', kind: 'http' })
       )
       .mockResolvedValueOnce({
-        data: createMeeting('CANCELLED', {
-          cancellationReason: 'Room unavailable',
-        }),
+        data: cancelledMeeting,
         meta: {},
         etag: 'etag-cancelled',
       })
     const detailSpy = vi
       .spyOn(coreApi, 'getWithMetaAndEtag')
       .mockResolvedValue({
-        data: createMeeting('SCHEDULED'),
+        data: scheduledMeeting,
         meta: {},
         etag: 'etag-refreshed',
       })
-    const { screen } = await renderActions(createMeeting('SCHEDULED'))
+    const { queryClient, screen } = await renderActions(draftMeeting)
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+    queryClient.setQueryData(
+      ['meetings', 'list', { page: 1 }],
+      createMeetingListResponse(draftMeeting)
+    )
 
     await userEvent.click(
       screen.getByRole('button', { name: 'Cancel meeting' })
@@ -223,9 +281,154 @@ describe('MeetingLifecycleActions', () => {
       { reason: 'Room unavailable' },
       { headers: { 'If-Match': 'etag-refreshed' } }
     )
+    expect(
+      queryClient.getQueryData(['meetings', 'detail', 'meeting-1'])
+    ).toEqual({ meeting: cancelledMeeting, etag: 'etag-cancelled' })
+    expect(
+      queryClient.getQueryData<MeetingListResponse>([
+        'meetings',
+        'list',
+        { page: 1 },
+      ])?.meetings[0]?.status
+    ).toBe('CANCELLED')
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: ['rooms', 'availability'],
+    })
     await expect
       .element(screen.getByText('Meeting cancelled', { exact: true }))
       .toBeInTheDocument()
+  })
+
+  it('synchronizes an ambiguous Start recovery without claiming confirmation', async () => {
+    const scheduledMeeting = createMeeting('SCHEDULED')
+    const startedMeeting = createMeeting('IN_PROGRESS', {
+      startedAt: '2026-09-01T02:02:00.000Z',
+      updatedAt: '2026-09-01T02:02:00.000Z',
+    })
+    const mutationSpy = vi
+      .spyOn(coreApi, 'postWithMetaAndEtag')
+      .mockRejectedValue(
+        new CoreApiError({ message: 'Connection lost', kind: 'network' })
+      )
+    const detailSpy = vi
+      .spyOn(coreApi, 'getWithMetaAndEtag')
+      .mockResolvedValue({ data: startedMeeting, meta: {}, etag: 'etag-v2' })
+    const { queryClient, screen } = await renderActions(scheduledMeeting)
+    queryClient.setQueryData(
+      ['meetings', 'list', { page: 1 }],
+      createMeetingListResponse(scheduledMeeting)
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: 'Start meeting' }))
+
+    await expect
+      .element(screen.getByText(/no longer available/i))
+      .toBeInTheDocument()
+    expect(mutationSpy).toHaveBeenCalledTimes(1)
+    expect(detailSpy).toHaveBeenCalledTimes(1)
+    expect(toastSuccess).not.toHaveBeenCalled()
+    expect(
+      queryClient.getQueryData(['meetings', 'detail', 'meeting-1'])
+    ).toEqual({ meeting: startedMeeting, etag: 'etag-v2' })
+    expect(
+      queryClient.getQueryData<MeetingListResponse>([
+        'meetings',
+        'list',
+        { page: 1 },
+      ])?.meetings[0]?.status
+    ).toBe('IN_PROGRESS')
+  })
+
+  it('synchronizes an ambiguous End recovery and invalidates room availability', async () => {
+    const inProgressMeeting = createMeeting('IN_PROGRESS')
+    const endedMeeting = createMeeting('ENDED')
+    const mutationSpy = vi
+      .spyOn(coreApi, 'postWithMetaAndEtag')
+      .mockRejectedValue(
+        new CoreApiError({ message: 'Connection lost', kind: 'network' })
+      )
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+      data: endedMeeting,
+      meta: {},
+      etag: 'etag-ended',
+    })
+    const { queryClient, screen } = await renderActions(inProgressMeeting)
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+    queryClient.setQueryData(
+      ['meetings', 'list', { page: 1 }],
+      createMeetingListResponse(inProgressMeeting)
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: 'End meeting' }))
+    await userEvent.click(
+      screen.getByRole('alertdialog').getByRole('button', {
+        name: 'End meeting',
+      })
+    )
+
+    await expect
+      .element(screen.getByText(/no longer available/i))
+      .toBeInTheDocument()
+    expect(mutationSpy).toHaveBeenCalledTimes(1)
+    expect(
+      queryClient.getQueryData<MeetingListResponse>([
+        'meetings',
+        'list',
+        { page: 1 },
+      ])?.meetings[0]?.status
+    ).toBe('ENDED')
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: ['rooms', 'availability'],
+    })
+    expect(toastSuccess).not.toHaveBeenCalled()
+  })
+
+  it('synchronizes an ambiguous Cancel recovery and preserves neutral feedback', async () => {
+    const scheduledMeeting = createMeeting('SCHEDULED')
+    const cancelledMeeting = createMeeting('CANCELLED', {
+      cancellationReason: 'Room unavailable',
+    })
+    const mutationSpy = vi
+      .spyOn(coreApi, 'postWithMetaAndEtag')
+      .mockRejectedValue(
+        new CoreApiError({ message: 'Connection lost', kind: 'network' })
+      )
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+      data: cancelledMeeting,
+      meta: {},
+      etag: 'etag-cancelled',
+    })
+    const { queryClient, screen } = await renderActions(scheduledMeeting)
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+    queryClient.setQueryData(
+      ['meetings', 'list', { page: 1 }],
+      createMeetingListResponse(scheduledMeeting)
+    )
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Cancel meeting' })
+    )
+    await userEvent.click(
+      screen.getByRole('alertdialog').getByRole('button', {
+        name: 'Cancel meeting',
+      })
+    )
+
+    await expect
+      .element(screen.getByText(/no longer available/i))
+      .toBeInTheDocument()
+    expect(mutationSpy).toHaveBeenCalledTimes(1)
+    expect(
+      queryClient.getQueryData<MeetingListResponse>([
+        'meetings',
+        'list',
+        { page: 1 },
+      ])?.meetings[0]?.status
+    ).toBe('CANCELLED')
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: ['rooms', 'availability'],
+    })
+    expect(toastSuccess).not.toHaveBeenCalled()
   })
 
   it('reconciles uncertain network failures without claiming success or replaying the mutation', async () => {
@@ -289,9 +492,133 @@ describe('MeetingLifecycleActions', () => {
     await expect
       .element(screen.getByRole('button', { name: 'Retry refresh' }))
       .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: 'End meeting' }))
+      .toBeDisabled()
 
     await userEvent.click(screen.getByRole('button', { name: 'Retry refresh' }))
     await expect.poll(() => detailSpy.mock.calls.length).toBe(2)
+    expect(mutationSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ['ENDED', 'IN_PROGRESS', 'End meeting', 'end'] as const,
+    ['CANCELLED', 'SCHEDULED', 'Cancel meeting', 'cancel'] as const,
+  ])(
+    'does not offer a retry after reconciliation reaches terminal %s state',
+    async (status, initialStatus, actionLabel, action) => {
+      const mutationSpy = vi
+        .spyOn(coreApi, 'postWithMetaAndEtag')
+        .mockRejectedValueOnce(
+          new CoreApiError({ status: 412, message: 'stale', kind: 'http' })
+        )
+      vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+        data: createMeeting(status),
+        meta: {},
+        etag: 'etag-terminal',
+      })
+      const { screen } = await renderActions(createMeeting(initialStatus))
+
+      await userEvent.click(screen.getByRole('button', { name: actionLabel }))
+      await userEvent.click(
+        screen.getByRole('alertdialog').getByRole('button', {
+          name: actionLabel,
+        })
+      )
+
+      await expect
+        .element(screen.getByText(/no longer available/i))
+        .toBeInTheDocument()
+      await expect
+        .element(
+          screen.getByRole('button', { name: `Retry ${action} meeting` })
+        )
+        .not.toBeInTheDocument()
+      expect(mutationSpy).toHaveBeenCalledTimes(1)
+    }
+  )
+
+  it('removes retry access when reconciliation reports a different organizer', async () => {
+    const mutationSpy = vi
+      .spyOn(coreApi, 'postWithMetaAndEtag')
+      .mockRejectedValueOnce(
+        new CoreApiError({ status: 412, message: 'stale', kind: 'http' })
+      )
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+      data: createMeeting('SCHEDULED', { organizerUserId: 'other-user' }),
+      meta: {},
+      etag: 'etag-other-owner',
+    })
+    const { screen } = await renderActions(createMeeting('SCHEDULED'))
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Cancel meeting' })
+    )
+    await userEvent.click(
+      screen.getByRole('alertdialog').getByRole('button', {
+        name: 'Cancel meeting',
+      })
+    )
+
+    await expect
+      .element(screen.getByText(/no longer the organizer/i))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: 'Retry cancel meeting' }))
+      .not.toBeInTheDocument()
+    expect(mutationSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not retry a stale Start intent after the meeting is already live', async () => {
+    const mutationSpy = vi
+      .spyOn(coreApi, 'postWithMetaAndEtag')
+      .mockRejectedValueOnce(
+        new CoreApiError({ status: 412, message: 'stale', kind: 'http' })
+      )
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+      data: createMeeting('IN_PROGRESS'),
+      meta: {},
+      etag: 'etag-live',
+    })
+    const { screen } = await renderActions(createMeeting('SCHEDULED'))
+
+    await userEvent.click(screen.getByRole('button', { name: 'Start meeting' }))
+
+    await expect
+      .element(screen.getByText(/no longer available/i))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: 'Retry start meeting' }))
+      .not.toBeInTheDocument()
+    expect(mutationSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not retry a stale End intent after the meeting is already ended', async () => {
+    const mutationSpy = vi
+      .spyOn(coreApi, 'postWithMetaAndEtag')
+      .mockRejectedValueOnce(
+        new CoreApiError({ status: 412, message: 'stale', kind: 'http' })
+      )
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+      data: createMeeting('ENDED'),
+      meta: {},
+      etag: 'etag-ended',
+    })
+    const { screen } = await renderActions(createMeeting('IN_PROGRESS'))
+
+    await userEvent.click(screen.getByRole('button', { name: 'End meeting' }))
+    await userEvent.click(
+      screen.getByRole('alertdialog').getByRole('button', {
+        name: 'End meeting',
+      })
+    )
+
+    await expect
+      .element(screen.getByText(/no longer available/i))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: 'Retry end meeting' }))
+      .not.toBeInTheDocument()
     expect(mutationSpy).toHaveBeenCalledTimes(1)
   })
 

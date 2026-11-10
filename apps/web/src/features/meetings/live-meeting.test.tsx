@@ -5,6 +5,7 @@ import { userEvent } from 'vitest/browser'
 import { CoreApiError, coreApi } from '@/lib/core-api'
 import { currentUserQueryKey } from '@/features/auth/session/current-user'
 import type { MeetingView } from './data/detail-api'
+import type { MeetingListResponse } from './data/list-api'
 import { LiveMeetingPage } from './live-meeting'
 
 const toastSuccess = vi.hoisted(() => vi.fn())
@@ -69,6 +70,43 @@ const inProgressMeeting = {
   createdByUserId: 'organizer-1',
   createdAt: '2026-09-01T00:00:00Z',
   updatedAt: '2026-09-01T09:01:00Z',
+}
+
+function createMeetingListResponse(meeting: MeetingView): MeetingListResponse {
+  return {
+    meetings: [
+      {
+        id: meeting.id,
+        title: meeting.title,
+        description: meeting.description,
+        organizerUserId: meeting.organizerUserId,
+        roomId: meeting.roomId,
+        scheduledStartAt: meeting.scheduledStartAt,
+        scheduledEndAt: meeting.scheduledEndAt,
+        status: meeting.status,
+        startedAt: meeting.startedAt,
+        endedAt: meeting.endedAt,
+        cancelledAt: meeting.cancelledAt,
+        createdAt: meeting.createdAt,
+        updatedAt: meeting.updatedAt,
+        display: {
+          organizerName: 'Organizer',
+          roomName: 'Room',
+          roomLocation: 'HQ',
+          participantCount: 0,
+          participantPreview: [],
+        },
+      },
+    ],
+    pagination: {
+      page: 0,
+      size: 10,
+      totalElements: 1,
+      totalPages: 1,
+      hasNext: false,
+      hasPrevious: false,
+    },
+  }
 }
 
 function createQueryClient() {
@@ -151,10 +189,14 @@ describe('LiveMeetingPage', () => {
       meta: {},
       etag: 'etag-ended',
     })
-    const { screen } = await renderLive(
+    const { queryClient, screen } = await renderLive(
       inProgressMeeting,
       'etag-current',
       endedMeeting
+    )
+    queryClient.setQueryData(
+      ['meetings', 'list', { page: 1 }],
+      createMeetingListResponse(inProgressMeeting)
     )
 
     await userEvent.click(screen.getByRole('button', { name: 'End meeting' }))
@@ -174,6 +216,13 @@ describe('LiveMeetingPage', () => {
     await expect
       .element(screen.getByRole('button', { name: 'End meeting' }))
       .not.toBeInTheDocument()
+    expect(
+      queryClient.getQueryData<MeetingListResponse>([
+        'meetings',
+        'list',
+        { page: 1 },
+      ])?.meetings[0]?.status
+    ).toBe('ENDED')
     expect(endSpy).toHaveBeenCalledWith('/meetings/meeting-1/end', undefined, {
       headers: { 'If-Match': 'etag-current' },
     })

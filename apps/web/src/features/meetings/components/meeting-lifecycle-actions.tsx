@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { AlertCircle, Check, LoaderCircle, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
@@ -12,6 +12,7 @@ import {
   type MeetingDetailResponse,
   type MeetingView,
 } from '../data/detail-api'
+import type { MeetingListResponse } from '../data/list-api'
 import {
   cancelMeeting,
   classifyMeetingLifecycleError,
@@ -63,6 +64,77 @@ type LifecycleIntent = {
   reason?: string
 }
 
+const meetingListQueryKey = ['meetings', 'list'] as const
+const roomAvailabilityQueryKey = ['rooms', 'availability'] as const
+
+function meetingDetailQueryKey(meetingId: string) {
+  return ['meetings', 'detail', meetingId] as const
+}
+
+function affectsRoomAvailability(
+  previousStatus: MeetingView['status'] | undefined,
+  nextStatus: MeetingView['status']
+) {
+  if (!previousStatus || previousStatus === nextStatus) return false
+
+  const hadActiveReservation =
+    previousStatus === 'SCHEDULED' || previousStatus === 'IN_PROGRESS'
+  const hasActiveReservation =
+    nextStatus === 'SCHEDULED' || nextStatus === 'IN_PROGRESS'
+
+  return hadActiveReservation !== hasActiveReservation
+}
+
+function synchronizeLifecycleCaches(
+  queryClient: QueryClient,
+  detail: MeetingDetailResponse,
+  previousStatus: MeetingView['status'] | undefined,
+  invalidateDetail: boolean
+) {
+  queryClient.setQueryData(meetingDetailQueryKey(detail.meeting.id), detail)
+  queryClient.setQueriesData<MeetingListResponse>(
+    { queryKey: meetingListQueryKey },
+    (cachedList) => {
+      if (!cachedList) return cachedList
+
+      let changed = false
+      const meetings = cachedList.meetings.map((listMeeting) => {
+        if (listMeeting.id !== detail.meeting.id) return listMeeting
+
+        changed = true
+        return {
+          ...listMeeting,
+          title: detail.meeting.title,
+          description: detail.meeting.description,
+          organizerUserId: detail.meeting.organizerUserId,
+          roomId: detail.meeting.roomId,
+          scheduledStartAt: detail.meeting.scheduledStartAt,
+          scheduledEndAt: detail.meeting.scheduledEndAt,
+          status: detail.meeting.status,
+          startedAt: detail.meeting.startedAt,
+          endedAt: detail.meeting.endedAt,
+          cancelledAt: detail.meeting.cancelledAt,
+          createdAt: detail.meeting.createdAt,
+          updatedAt: detail.meeting.updatedAt,
+        }
+      })
+
+      return changed ? { ...cachedList, meetings } : cachedList
+    }
+  )
+
+  if (invalidateDetail) {
+    void queryClient.invalidateQueries({
+      queryKey: meetingDetailQueryKey(detail.meeting.id),
+      refetchType: 'none',
+    })
+  }
+  void queryClient.invalidateQueries({ queryKey: meetingListQueryKey })
+  if (affectsRoomAvailability(previousStatus, detail.meeting.status)) {
+    void queryClient.invalidateQueries({ queryKey: roomAvailabilityQueryKey })
+  }
+}
+
 type LifecycleFeedback = {
   message: string
   variant: 'default' | 'destructive'
@@ -111,11 +183,9 @@ export function MeetingLifecycleActions({
   const [authorizationBlocked, setAuthorizationBlocked] = useState(false)
   const operationInFlight = useRef(false)
 
-  const cachedDetail = queryClient.getQueryData<MeetingDetailResponse>([
-    'meetings',
-    'detail',
-    meeting.id,
-  ])
+  const cachedDetail = queryClient.getQueryData<MeetingDetailResponse>(
+    meetingDetailQueryKey(meeting.id)
+  )
   const workingMeeting = cachedDetail?.meeting ?? meeting
   const currentEtag = cachedDetail?.etag ?? etag
 
@@ -128,8 +198,43 @@ export function MeetingLifecycleActions({
   const pending = phase !== 'ready' || authorizationBlocked
   const activeIntentAction = pendingIntent?.action
 
-  const setAuthoritativeDetail = (detail: MeetingDetailResponse) => {
-    queryClient.setQueryData(['meetings', 'detail', detail.meeting.id], detail)
+  const getLatestVerifiedDetail = (): MeetingDetailResponse => {
+    return (
+      queryClient.getQueryData<MeetingDetailResponse>(
+        meetingDetailQueryKey(meeting.id)
+      ) ?? { meeting: workingMeeting, etag: currentEtag }
+    )
+  }
+
+  const buildIntentFromLatestSnapshot = (intent: LifecycleIntent) => {
+    const latest = getLatestVerifiedDetail()
+    const latestActions = getMeetingLifecycleActions(
+      latest.meeting.status
+    ).filter((action) => allowedActions?.includes(action) ?? true)
+
+    if (latest.meeting.organizerUserId !== currentUserId) {
+      setAuthorizationBlocked(true)
+      setFeedback({
+        variant: 'destructive',
+        message:
+          'You are no longer the organizer of this meeting. The lifecycle intent was preserved and was not retried.',
+      })
+      return null
+    }
+
+    if (!latestActions.includes(intent.action)) {
+      setPendingIntent({ ...intent, expectedStatus: latest.meeting.status })
+      setFeedback({
+        variant: 'default',
+        message: formatUnavailableAction(intent.action, latest.meeting.status),
+      })
+      return null
+    }
+
+    return {
+      detail: latest,
+      intent: { ...intent, expectedStatus: latest.meeting.status },
+    }
   }
 
   const recordConfirmedMutation = (
@@ -140,19 +245,7 @@ export function MeetingLifecycleActions({
       meeting: result.meeting,
       etag: result.etag,
     }
-    setAuthoritativeDetail(detail)
-    void queryClient.invalidateQueries({
-      queryKey: ['meetings', 'detail', result.meeting.id],
-    })
-    void queryClient.invalidateQueries({ queryKey: ['meetings', 'list'] })
-    if (
-      intent.action === 'end' ||
-      (intent.action === 'cancel' && intent.expectedStatus === 'SCHEDULED')
-    ) {
-      void queryClient.invalidateQueries({
-        queryKey: ['rooms', 'availability'],
-      })
-    }
+    synchronizeLifecycleCaches(queryClient, detail, intent.expectedStatus, true)
     onCommitted?.({
       action: intent.action,
       meeting: result.meeting,
@@ -173,11 +266,32 @@ export function MeetingLifecycleActions({
     setPhase('reconciling')
     try {
       const latest = await fetchMeetingDetail(workingMeeting.id)
-      setAuthoritativeDetail(latest)
+      synchronizeLifecycleCaches(
+        queryClient,
+        latest,
+        intent.expectedStatus,
+        false
+      )
+      const reconciledIntent = {
+        ...intent,
+        expectedStatus: latest.meeting.status,
+      }
+      setPendingIntent(reconciledIntent)
+      const ownsMeeting = latest.meeting.organizerUserId === currentUserId
+      const actionAvailable = getMeetingLifecycleActions(latest.meeting.status)
+        .filter((action) => allowedActions?.includes(action) ?? true)
+        .includes(intent.action)
+      if (!ownsMeeting) {
+        setAuthorizationBlocked(true)
+      }
       setPhase('ready')
       setFeedback({
-        variant: 'default',
-        message: formatReconciledFailure(kind, intent),
+        variant: ownsMeeting ? 'default' : 'destructive',
+        message: !ownsMeeting
+          ? 'You are no longer the organizer of this meeting. The latest meeting state is available for review; no mutation was retried.'
+          : !actionAvailable
+            ? formatUnavailableAction(intent.action, latest.meeting.status)
+            : formatReconciledFailure(kind, intent),
       })
     } catch (error) {
       const normalized = normalizeCoreApiError(error)
@@ -225,30 +339,37 @@ export function MeetingLifecycleActions({
   }
 
   const runMutation = async (intent: LifecycleIntent) => {
-    if (
-      !canManage ||
-      !availableActions.includes(intent.action) ||
-      operationInFlight.current
-    ) {
+    if (!canManage || phase !== 'ready' || operationInFlight.current) {
       return
     }
 
+    const verified = buildIntentFromLatestSnapshot(intent)
+    if (!verified) {
+      setConfirmationOpen(false)
+      return
+    }
+
+    const { detail, intent: verifiedIntent } = verified
     operationInFlight.current = true
-    setPendingIntent(intent)
+    setPendingIntent(verifiedIntent)
     setFeedback(null)
     setSuccessAction(null)
     setPhase('mutating')
 
     try {
       const result =
-        intent.action === 'start'
-          ? await startMeeting(workingMeeting.id, currentEtag)
-          : intent.action === 'end'
-            ? await endMeeting(workingMeeting.id, currentEtag)
-            : await cancelMeeting(workingMeeting.id, currentEtag, intent.reason)
-      recordConfirmedMutation(intent, result)
+        verifiedIntent.action === 'start'
+          ? await startMeeting(detail.meeting.id, detail.etag)
+          : verifiedIntent.action === 'end'
+            ? await endMeeting(detail.meeting.id, detail.etag)
+            : await cancelMeeting(
+                detail.meeting.id,
+                detail.etag,
+                verifiedIntent.reason
+              )
+      recordConfirmedMutation(verifiedIntent, result)
     } catch (error) {
-      await handleMutationFailure(error, intent)
+      await handleMutationFailure(error, verifiedIntent)
     } finally {
       operationInFlight.current = false
       setPhase((current) => (current === 'mutating' ? 'ready' : current))
@@ -282,12 +403,22 @@ export function MeetingLifecycleActions({
 
   const retryMutation = () => {
     if (!pendingIntent || pending || !canManage) return
-    if (pendingIntent.action === 'cancel' || pendingIntent.action === 'end') {
-      setConfirmationAction(pendingIntent.action)
+    const verified = buildIntentFromLatestSnapshot({
+      ...pendingIntent,
+      ...(pendingIntent.action === 'cancel' ? { reason: cancelReason } : {}),
+    })
+    if (!verified) return
+
+    setPendingIntent(verified.intent)
+    if (
+      verified.intent.action === 'cancel' ||
+      verified.intent.action === 'end'
+    ) {
+      setConfirmationAction(verified.intent.action)
       setConfirmationOpen(true)
       return
     }
-    void runMutation(pendingIntent)
+    void runMutation(verified.intent)
   }
 
   const retryRefresh = () => {
@@ -298,7 +429,10 @@ export function MeetingLifecycleActions({
     ) {
       return
     }
-    void reconcileMutation(pendingIntent, 'unknown')
+    operationInFlight.current = true
+    void reconcileMutation(pendingIntent, 'unknown').finally(() => {
+      operationInFlight.current = false
+    })
   }
 
   if (!canManage && !feedback && !successAction) return null
@@ -463,6 +597,13 @@ function formatReconciledFailure(
     return `The request to ${intent.action} this meeting conflicted with current Core API state. The latest meeting version is ready for review; no mutation was retried.`
   }
   return 'The operation outcome could not be confirmed. The latest meeting data is available for review; no mutation was retried.'
+}
+
+function formatUnavailableAction(
+  action: MeetingLifecycleAction,
+  status: MeetingView['status']
+) {
+  return `The meeting is now ${status}. ${actionLabels[action]} is no longer available; no mutation was retried.`
 }
 
 function formatRefreshFailure(error: unknown, intent: LifecycleIntent) {

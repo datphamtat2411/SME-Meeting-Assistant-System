@@ -5,6 +5,7 @@ import { userEvent } from 'vitest/browser'
 import { CoreApiError, coreApi } from '@/lib/core-api'
 import { currentUserQueryKey } from '@/features/auth/session/current-user'
 import type { MeetingView } from './data/detail-api'
+import type { MeetingListResponse } from './data/list-api'
 import { MeetingWorkspacePage } from './meeting-workspace'
 
 const toastSuccess = vi.hoisted(() => vi.fn())
@@ -142,6 +143,43 @@ const unscheduledDraftMeeting = {
   roomId: null,
   scheduledStartAt: null,
   scheduledEndAt: null,
+}
+
+function createMeetingListResponse(meeting: MeetingView): MeetingListResponse {
+  return {
+    meetings: [
+      {
+        id: meeting.id,
+        title: meeting.title,
+        description: meeting.description,
+        organizerUserId: meeting.organizerUserId,
+        roomId: meeting.roomId,
+        scheduledStartAt: meeting.scheduledStartAt,
+        scheduledEndAt: meeting.scheduledEndAt,
+        status: meeting.status,
+        startedAt: meeting.startedAt,
+        endedAt: meeting.endedAt,
+        cancelledAt: meeting.cancelledAt,
+        createdAt: meeting.createdAt,
+        updatedAt: meeting.updatedAt,
+        display: {
+          organizerName: 'Current User',
+          roomName: 'Boardroom',
+          roomLocation: 'HQ',
+          participantCount: 0,
+          participantPreview: [],
+        },
+      },
+    ],
+    pagination: {
+      page: 0,
+      size: 10,
+      totalElements: 1,
+      totalPages: 1,
+      hasNext: false,
+      hasPrevious: false,
+    },
+  }
 }
 
 async function renderEditableWorkspace(
@@ -892,6 +930,10 @@ describe('MeetingWorkspacePage', () => {
         { data: startedMeeting, etag: 'etag-started' },
       ]
     )
+    queryClient.setQueryData(
+      ['meetings', 'list', { page: 1 }],
+      createMeetingListResponse(scheduledEditableMeeting)
+    )
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
 
     await userEvent.click(screen.getByRole('button', { name: 'Start meeting' }))
@@ -909,6 +951,13 @@ describe('MeetingWorkspacePage', () => {
     expect(
       queryClient.getQueryData(['meetings', 'detail', 'meeting-1'])
     ).toEqual({ meeting: startedMeeting, etag: 'etag-started' })
+    expect(
+      queryClient.getQueryData<MeetingListResponse>([
+        'meetings',
+        'list',
+        { page: 1 },
+      ])?.meetings[0]?.status
+    ).toBe('IN_PROGRESS')
     expect(invalidateSpy).toHaveBeenCalledWith({
       queryKey: ['meetings', 'list'],
     })
@@ -934,6 +983,10 @@ describe('MeetingWorkspacePage', () => {
       etag: 'etag-ended',
     })
     const { queryClient, screen } = await renderEditableWorkspace(liveMeeting)
+    queryClient.setQueryData(
+      ['meetings', 'list', { page: 1 }],
+      createMeetingListResponse(liveMeeting)
+    )
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
 
     await userEvent.click(screen.getByRole('button', { name: 'End meeting' }))
@@ -947,7 +1000,16 @@ describe('MeetingWorkspacePage', () => {
     await expect
       .element(screen.getByText('Meeting ended', { exact: true }))
       .toBeInTheDocument()
-    await expect.element(screen.getByText('Ended')).toBeInTheDocument()
+    await expect
+      .element(screen.getByText('Ended', { exact: true }))
+      .toBeInTheDocument()
+    expect(
+      queryClient.getQueryData<MeetingListResponse>([
+        'meetings',
+        'list',
+        { page: 1 },
+      ])?.meetings[0]?.status
+    ).toBe('ENDED')
     expect(invalidateSpy).toHaveBeenCalledWith({
       queryKey: ['meetings', 'list'],
     })
