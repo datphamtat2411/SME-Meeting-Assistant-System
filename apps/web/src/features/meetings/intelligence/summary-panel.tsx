@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import { invalidateMeetingArtifacts } from './query-invalidation'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -29,7 +30,7 @@ export function SummaryPanel({ meetingId }: { meetingId: string }) {
   const [editing, setEditing] = useState(false)
   const [content, setContent] = useState('')
   function refresh() {
-    void qc.invalidateQueries({ queryKey: ['meeting-intelligence', meetingId] })
+    invalidateMeetingArtifacts(qc, meetingId)
   }
   const save = useMutation({
     mutationFn: () => editSummary(meetingId, content.trim()),
