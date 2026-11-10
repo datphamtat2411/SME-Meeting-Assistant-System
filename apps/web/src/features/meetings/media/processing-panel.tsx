@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
@@ -17,6 +17,7 @@ import {
   RequestLoading,
 } from '@/components/request-state'
 import { meetingMediaQuery } from './media-api'
+import { invalidateMeetingArtifacts } from '../intelligence/query-invalidation'
 import {
   processingJobsQuery,
   requestProcessing,
@@ -31,10 +32,18 @@ export function ProcessingPanel({ meetingId }: { meetingId: string }) {
     refetchInterval: 7000,
   })
   const [mediaId, setMediaId] = useState('')
+  const completed = useRef(new Set<string>())
+  useEffect(() => {
+    for (const job of jobs.data ?? []) {
+      if (['COMPLETED', 'SUCCEEDED', 'FAILED', 'PARTIAL_SUCCESS'].includes(job.status) && !completed.current.has(job.id)) {
+        completed.current.add(job.id)
+        invalidateMeetingArtifacts(qc, meetingId, { transcript: true, actions: true })
+      }
+    }
+  }, [jobs.data, qc, meetingId])
   function refresh() {
     void qc.invalidateQueries({ queryKey: ['processing-jobs', meetingId] })
-    void qc.invalidateQueries({ queryKey: ['transcript', meetingId] })
-    void qc.invalidateQueries({ queryKey: ['meeting-intelligence', meetingId] })
+    invalidateMeetingArtifacts(qc, meetingId, { transcript: true })
   }
   const create = useMutation({
     mutationFn: () => requestProcessing(meetingId, mediaId),
