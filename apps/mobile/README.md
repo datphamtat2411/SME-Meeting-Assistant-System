@@ -4,7 +4,7 @@ The production-facing mobile client of the SME Meeting Assistant monorepo, built
 
 ## Prerequisites and first-time platform bootstrap
 
-Flutter >= 3.29, Dart >= 3.5, Android SDK (or Xcode for iOS), a physical device or emulator, and an accessible Spring Boot Core API. No backend secrets belong in the app.
+Flutter >= 3.47, Dart >= 3.10, Android SDK (or Xcode for iOS), a physical device or emulator, and an accessible Spring Boot Core API. No backend secrets belong in the app.
 
 This package started as a README-only directory. **Native Android/iOS runner files are generated locally**, not committed, so that platform templates match the installed Flutter SDK. Bootstrap once:
 

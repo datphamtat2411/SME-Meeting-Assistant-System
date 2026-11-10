@@ -91,11 +91,10 @@ class _RecordingPageState extends State<RecordingPage> {
 
   Future<void> pick() async {
     try {
-      final result = await FilePicker.pickFiles(
+      final result = await FilePicker.pickFile(
         type: FileType.custom,
-        allowedExtensions: ['mp3', 'wav', 'm4a'],
-        withData: false);
-      final path = result?.files.single.path;
+        allowedExtensions: ['mp3', 'wav', 'm4a']);
+      final path = result?.path;
       if (path != null && mounted) {
         setState(() { file = File(path); sourceType = 'UPLOAD'; job = null; });
       }
