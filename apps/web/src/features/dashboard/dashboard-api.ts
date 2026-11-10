@@ -27,7 +27,7 @@ export const personalDashboardQuery = () => queryOptions({
 export function managementDashboardQuery(days = 30) {
   const to = new Date(), from = new Date(to.getTime() - days * 86400000)
   return queryOptions({
-    queryKey: ['dashboard', 'management', days],
+    queryKey: ['dashboard', 'management', days, from.toISOString(), to.toISOString()],
     queryFn: async ({ signal }) => managementDashboardSchema.parse(await coreApi.get<unknown>('/dashboard/management', { params: { from: from.toISOString(), to: to.toISOString() }, signal })),
     retry: false,
   })
