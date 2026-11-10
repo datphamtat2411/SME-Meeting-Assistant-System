@@ -6,6 +6,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
+import 'recording_drafts.dart';
 
 import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
@@ -25,6 +26,8 @@ class RecordingPage extends StatefulWidget {
 
 class _RecordingPageState extends State<RecordingPage> {
   final AudioRecorder recorder = AudioRecorder();
+  final RecordingDrafts draftStore = RecordingDrafts();
+  List<RecordingDraft> savedRecordings = [];
   bool capturing = false;
   bool busy = false;
   File? file;
@@ -39,6 +42,16 @@ class _RecordingPageState extends State<RecordingPage> {
   void initState() {
     super.initState();
     reloadJobs();
+    loadDrafts();
+  }
+
+  Future<void> loadDrafts() async {
+    try {
+      final drafts = await draftStore.list(widget.meetingId);
+      if (mounted) setState(() => savedRecordings = drafts);
+    } catch (error) {
+      if (mounted) showFailure(context, error);
+    }
   }
 
   void reloadJobs() => setState(() {
@@ -49,8 +62,15 @@ class _RecordingPageState extends State<RecordingPage> {
   @override
   void dispose() {
     timer?.cancel();
-    if (capturing) unawaited(recorder.stop());
-    unawaited(recorder.dispose());
+    if (capturing) {
+      unawaited(recorder.stop().then((path) async {
+        if (path != null) {
+          await draftStore.remember(widget.meetingId, File(path));
+        }
+      }).whenComplete(() => recorder.dispose()));
+    } else {
+      unawaited(recorder.dispose());
+    }
     super.dispose();
   }
 
@@ -81,6 +101,10 @@ class _RecordingPageState extends State<RecordingPage> {
     timer?.cancel();
     try {
       final path = await recorder.stop();
+      if (path != null) {
+        await draftStore.remember(widget.meetingId, File(path));
+        await loadDrafts();
+      }
       if (mounted) setState(() {
         capturing = false;
         file = path == null ? null : File(path);
@@ -235,6 +259,24 @@ class _RecordingPageState extends State<RecordingPage> {
         OutlinedButton.icon(onPressed: capturing || busy || !widget.enabled ? null : pick,
           icon: const Icon(Icons.upload_file), label: const Text('Chọn file MP3 / WAV / M4A')),
       ])),
+      if (savedRecordings.isNotEmpty) ...[
+        const SectionHeading('Bản ghi đã lưu trên thiết bị',
+          subtitle: 'Bản ghi chưa bị xóa khi rời màn hình hoặc khi upload lỗi.'),
+        ...savedRecordings.map((draft) => ContentCard(child: ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: const Icon(Icons.audio_file_outlined),
+          title: Text(draft.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+          subtitle: Text(draft.createdAt.toLocal().toString().split('.').first),
+          trailing: OutlinedButton(onPressed: busy || capturing ? null : () {
+            setState(() {
+              file = File(draft.path);
+              selectedName = draft.name;
+              sourceType = 'RECORDING';
+              job = null;
+            });
+          }, child: const Text('Chọn')),
+        ))),
+      ],
       if (file != null) ContentCard(child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch, children: [
           Text(selectedName ?? file!.uri.pathSegments.last, maxLines: 2,
