@@ -16,9 +16,9 @@ import { render } from 'vitest-browser-react'
 import { page, userEvent } from 'vitest/browser'
 import { CoreApiError, coreApi } from '@/lib/core-api'
 import { getCookie } from '@/lib/cookies'
-import { currentUserQueryKey } from '@/features/auth/session/current-user'
 import { FontProvider } from '@/context/font-provider'
 import { ThemeProvider } from '@/context/theme-provider'
+import { currentUserQueryKey } from '@/features/auth/session/current-user'
 import { navigationGroups } from '@/components/layout/data/navigation-data'
 import type { NavItem } from '@/components/layout/types'
 import { AccountForm } from './account/account-form'
@@ -72,7 +72,6 @@ function createSettingsRouter(initialPath: string) {
   })
 }
 
-
 const profile = {
   id: '11111111-1111-4111-8111-111111111111',
   email: 'employee@example.com',
@@ -105,9 +104,7 @@ async function renderApiSettings(children: ReactNode) {
     },
   })
   const screen = await render(
-    <QueryClientProvider client={queryClient}>
-      {children}
-    </QueryClientProvider>
+    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
   )
   return { screen, queryClient }
 }
@@ -209,13 +206,19 @@ describe('settings navigation and cleanup', () => {
     expect(get.mock.calls.map(([url]) => url)).toContain('/me/profile')
     expect(get.mock.calls.map(([url]) => url)).toContain('/me/preferences')
     await expect.element(screen.getByText('Username')).not.toBeInTheDocument()
-    await expect.element(screen.getByText('Date of birth')).not.toBeInTheDocument()
-    await expect.element(screen.getByText('Marketing emails')).not.toBeInTheDocument()
+    await expect
+      .element(screen.getByText('Date of birth'))
+      .not.toBeInTheDocument()
+    await expect
+      .element(screen.getByText('Marketing emails'))
+      .not.toBeInTheDocument()
   })
 
   it('saves profile changes through the API and invalidates identity data', async () => {
     mockSettingsReads()
-    const patch = vi.spyOn(coreApi, 'patch').mockImplementation((url, value) => {
+    const patch = vi
+      .spyOn(coreApi, 'patch')
+      .mockImplementation((url, value) => {
       if (url === '/me/profile') {
         return Promise.resolve({
           ...profile,
@@ -250,9 +253,14 @@ describe('settings navigation and cleanup', () => {
 
   it('persists account preferences and notification switches through the API', async () => {
     mockSettingsReads()
-    const patch = vi.spyOn(coreApi, 'patch').mockImplementation((url, value) => {
+    const patch = vi
+      .spyOn(coreApi, 'patch')
+      .mockImplementation((url, value) => {
       if (url === '/me/preferences') {
-        return Promise.resolve({ ...preferences, ...(value as object) }) as never
+        return Promise.resolve({
+          ...preferences,
+          ...(value as object),
+        }) as never
       }
       return Promise.reject(new Error('Unexpected PATCH: ' + url)) as never
     })
@@ -291,9 +299,7 @@ describe('settings navigation and cleanup', () => {
         actionItemEmailEnabled: true,
       })
     )
-    await expect
-      .element(actionEmails)
-      .toHaveAttribute('aria-checked', 'true')
+    await expect.element(actionEmails).toHaveAttribute('aria-checked', 'true')
     expect(showSubmittedData).not.toHaveBeenCalled()
   })
 

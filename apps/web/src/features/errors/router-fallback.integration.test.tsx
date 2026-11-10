@@ -204,7 +204,9 @@ describe('router fallback integration', () => {
     })
     vi.spyOn(coreApi, 'getWithMeta').mockImplementation((url) => {
       if (url === '/meetings') return Promise.resolve(emptyMeetingList) as never
-      return Promise.reject(new Error('Unexpected GET with meta: ' + url)) as never
+      return Promise.reject(
+        new Error('Unexpected GET with meta: ' + url)
+      ) as never
     })
   })
 
