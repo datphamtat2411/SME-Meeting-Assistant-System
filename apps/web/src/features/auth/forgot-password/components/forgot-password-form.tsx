@@ -1,80 +1,21 @@
-import { useState } from 'react'
-import { z } from 'zod'
-import { useForm } from 'react-hook-form'
-import { zodResolver } from '@hookform/resolvers/zod'
-import { useNavigate } from '@tanstack/react-router'
-import { ArrowRight, Loader2 } from 'lucide-react'
+import { useState, type FormEvent } from 'react'
 import { toast } from 'sonner'
-import { sleep, cn } from '@/lib/utils'
+import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
-import {
-  Form,
-  FormControl,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormMessage,
-} from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { requestPasswordRecovery } from '../../account-flows-api'
 
-const formSchema = z.object({
-  email: z.email({
-    error: (iss) => (iss.input === '' ? 'Please enter your email.' : undefined),
-  }),
-})
-
-export function ForgotPasswordForm({
-  className,
-  ...props
-}: React.HTMLAttributes<HTMLFormElement>) {
-  const navigate = useNavigate()
-  const [isLoading, setIsLoading] = useState(false)
-
-  const form = useForm<z.infer<typeof formSchema>>({
-    resolver: zodResolver(formSchema),
-    defaultValues: { email: '' },
-  })
-
-  function onSubmit(data: z.infer<typeof formSchema>) {
-    setIsLoading(true)
-
-    toast.promise(sleep(2000), {
-      loading: 'Sending email...',
-      success: () => {
-        setIsLoading(false)
-        form.reset()
-        navigate({ to: '/otp' })
-        return `Email sent to ${data.email}`
-      },
-      error: 'Error',
-    })
+export function ForgotPasswordForm({ className, ...props }: React.ComponentProps<'form'>) {
+  const [email, setEmail] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [submitted, setSubmitted] = useState(false)
+  async function submit(e: FormEvent) {
+    e.preventDefault(); setBusy(true)
+    try { await requestPasswordRecovery(email); setSubmitted(true) }
+    catch (error) { toast.error('Request could not be sent', { description: error instanceof Error ? error.message : undefined }) }
+    finally { setBusy(false) }
   }
-
-  return (
-    <Form {...form}>
-      <form
-        onSubmit={form.handleSubmit(onSubmit)}
-        className={cn('grid gap-2', className)}
-        {...props}
-      >
-        <FormField
-          control={form.control}
-          name='email'
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>Email</FormLabel>
-              <FormControl>
-                <Input placeholder='name@example.com' {...field} />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-        <Button className='mt-2' disabled={isLoading}>
-          Continue
-          {isLoading ? <Loader2 className='animate-spin' /> : <ArrowRight />}
-        </Button>
-      </form>
-    </Form>
-  )
+  if (submitted) return <p role='status' className='rounded-lg border p-4 text-sm'>If an eligible account exists for that email, password reset instructions will be sent. Check your inbox.</p>
+  return <form onSubmit={submit} className={cn('space-y-4', className)} {...props}><div className='space-y-1'><Label htmlFor='recover-email'>Organization email</Label><Input id='recover-email' type='email' required autoComplete='email' value={email} onChange={e => setEmail(e.target.value)} placeholder='name@company.com' /></div><Button disabled={busy || !email.trim()}>{busy ? 'Requesting…' : 'Send recovery link'}</Button></form>
 }
