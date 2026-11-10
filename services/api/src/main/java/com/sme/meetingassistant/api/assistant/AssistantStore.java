@@ -17,7 +17,7 @@ import tools.jackson.databind.ObjectMapper;
 
 /** PostgreSQL is the sole authority for conversation ownership, durable requests and results. */
 @Repository
-final class AssistantStore {
+class AssistantStore {
     record Conversation(UUID id,UUID userId,UUID meetingId,String title,String status,
                         OffsetDateTime createdAt,OffsetDateTime updatedAt) {
         ConversationView view(){return new ConversationView(id,meetingId,title,status,createdAt,updatedAt);}
