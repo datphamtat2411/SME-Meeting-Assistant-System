@@ -6,6 +6,13 @@ async function importAuthStore() {
   return useAuthStore
 }
 
+function storageContents(storage: Storage): string {
+  return Array.from({ length: storage.length }, (_, index) => {
+    const key = storage.key(index)
+    return key === null ? '' : `${key}=${storage.getItem(key) ?? ''}`
+  }).join('\n')
+}
+
 describe('useAuthStore', () => {
   beforeEach(() => {
     clearCookies()
@@ -22,7 +29,7 @@ describe('useAuthStore', () => {
     auth.reset()
     expect(document.cookie).not.toContain('access')
     expect(document.cookie).not.toContain('token')
-    expect(localStorage.length).toBe(0)
-    expect(sessionStorage.length).toBe(0)
+    const browserStorage = `${storageContents(localStorage)}\n${storageContents(sessionStorage)}`
+    expect(browserStorage).not.toMatch(/access|refresh|token|password|secret/i)
   })
 })

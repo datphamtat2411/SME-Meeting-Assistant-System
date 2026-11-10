@@ -97,14 +97,13 @@ export function MeetingWorkspacePage({ meetingId }: { meetingId: string }) {
   )
   const handleParticipantReconciled = (
     refresh: MeetingParticipantRefresh,
-    confirmed: boolean
+    _confirmed: boolean
   ) => {
     queryClient.setQueryData(['meetings', 'detail', meetingId], refresh.detail)
     queryClient.setQueryData(
       ['meetings', 'participants', meetingId],
       refresh.participants
     )
-    if (!confirmed) return
     void queryClient.invalidateQueries({ queryKey: ['meetings', 'list'] })
     void queryClient.invalidateQueries({
       queryKey: ['rooms', 'availability'],

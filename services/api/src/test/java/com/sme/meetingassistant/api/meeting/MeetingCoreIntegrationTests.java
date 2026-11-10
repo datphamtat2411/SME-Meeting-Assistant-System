@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.sme.meetingassistant.api.meeting.dto.ParticipantView;
+import com.sme.meetingassistant.api.meeting.entity.MeetingParticipantEntity;
 import com.sme.meetingassistant.api.meeting.entity.MeetingStatus;
 import com.sme.meetingassistant.api.meeting.repository.MeetingRepository;
 import com.sme.meetingassistant.api.room.entity.RoomEntity;
@@ -96,8 +98,13 @@ class MeetingCoreIntegrationTests {
     }
 
     @Test void activeDirectoryCandidatesAreAcceptedByCreateAndParticipantAddition() throws Exception {
+        String candidateQuery = "candidate-" + UUID.randomUUID().toString().substring(0, 8);
+        member.renameDisplayName(candidateQuery + " member");
+        other.renameDisplayName(candidateQuery + " other");
+        users.saveAndFlush(member);
+        users.saveAndFlush(other);
         JsonNode candidates=body(mvc.perform(get("/api/v1/users/meeting-candidates")
-            .principal(principal(organizer)).param("q","test"))
+            .principal(principal(organizer)).param("q",candidateQuery))
             .andExpect(status().isOk()).andReturn()).path("data");
         java.util.List<String> candidateIds = new java.util.ArrayList<>();
         candidates.forEach(candidate -> candidateIds.add(candidate.path("id").asText()));
@@ -273,6 +280,10 @@ class MeetingCoreIntegrationTests {
             .principal(principal(organizer))).andExpect(status().isOk()).andReturn()).path("data");
         assertThat(initial.get(0).path("displayName").asText()).isEqualTo("Meeting Organizer");
         assertThat(initial.get(1).path("displayName").asText()).isEqualTo("Historical Member");
+        JsonNode memberProjection=body(mvc.perform(get("/api/v1/meetings/"+id+"/participants")
+            .principal(principal(member))).andExpect(status().isOk()).andReturn()).path("data");
+        assertThat(memberProjection.get(1).path("displayName").asText())
+            .isEqualTo("Historical Member");
 
         MvcResult removed=mvc.perform(delete("/api/v1/meetings/"+id+"/participants/"+member.getId())
             .principal(principal(organizer)).header(HttpHeaders.IF_MATCH,
@@ -294,6 +305,12 @@ class MeetingCoreIntegrationTests {
         mvc.perform(get("/api/v1/meetings/"+id+"/participants")
             .principal(principal(other))).andExpect(status().isNotFound());
         assertThat(removed.getResponse().getHeader(HttpHeaders.ETAG)).isNotBlank();
+    }
+
+    @Test void missingIdentityProjectionRemainsNullableWithoutFabricatingAName() {
+        MeetingParticipantEntity record = new MeetingParticipantEntity(
+            UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());
+        assertThat(ParticipantView.from(record, null).displayName()).isNull();
     }
 
     @Test void cancellationIsTerminalAndEmitsIntentWithoutDeletingMeeting() throws Exception {

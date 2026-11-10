@@ -763,4 +763,109 @@ describe('MeetingWorkspacePage', () => {
       expect.anything()
     )
   })
+
+  it('synchronizes authoritative participant, ETag, count, and dependent caches after add', async () => {
+    const candidate = {
+      id: 'user-9',
+      displayName: 'New participant',
+      email: 'new@example.com',
+      organizationalUnitName: 'Product',
+    }
+    const addedParticipant = {
+      ...activeOrganizerAndParticipants[0],
+      id: 'membership-new',
+      userId: candidate.id,
+      displayName: candidate.displayName,
+    }
+    const refreshedParticipants = [
+      ...activeOrganizerAndParticipants,
+      addedParticipant,
+    ]
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    queryClient.setQueryData(currentUserQueryKey, {
+      userId: 'current-user',
+      displayName: 'Current User',
+    })
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+    let detailCall = 0
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockImplementation(async () => {
+      detailCall += 1
+      return {
+        data: editableMeeting,
+        meta: {},
+        etag: detailCall === 1 ? 'etag-v1' : 'etag-v2',
+      }
+    })
+    let participantCall = 0
+    vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url) => {
+      if (url === '/users/meeting-candidates') {
+        return {
+          data: [candidate],
+          meta: { pagination: availabilityPagination },
+        }
+      }
+      if (url === '/meetings/meeting-1/participants') {
+        participantCall += 1
+        return {
+          data:
+            participantCall === 1
+              ? activeOrganizerAndParticipants
+              : refreshedParticipants,
+          meta: {},
+        }
+      }
+      if (url === '/rooms/room-1') {
+        return {
+          data: { id: 'room-1', name: 'Boardroom', location: 'HQ' },
+          meta: {},
+        }
+      }
+      return { data: [], meta: { pagination: availabilityPagination } }
+    })
+    const addSpy = vi.spyOn(coreApi, 'postWithMetaAndEtag').mockResolvedValue({
+      data: addedParticipant,
+      meta: {},
+      etag: 'ignored-add-etag',
+    })
+
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <MeetingWorkspacePage meetingId='meeting-1' />
+      </QueryClientProvider>
+    )
+    await userEvent.click(
+      screen.getByRole('combobox', { name: 'Participants' })
+    )
+    await userEvent.fill(
+      screen.getByPlaceholder('Search active participants...'),
+      'new'
+    )
+    await userEvent.click(
+      screen.getByRole('option', { name: /New participant/ })
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Add participant' })
+    )
+
+    await expect.poll(() => addSpy.mock.calls.length).toBe(1)
+    await expect.poll(() => detailCall).toBe(2)
+    await expect.poll(() => participantCall).toBe(2)
+    await expect
+      .element(screen.getByText('4 active participants', { exact: true }))
+      .toBeInTheDocument()
+    expect(
+      queryClient.getQueryData(['meetings', 'detail', 'meeting-1'])
+    ).toEqual({ meeting: editableMeeting, etag: 'etag-v2' })
+    expect(
+      queryClient.getQueryData(['meetings', 'participants', 'meeting-1'])
+    ).toEqual(refreshedParticipants)
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: ['meetings', 'list'],
+    })
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: ['rooms', 'availability'],
+    })
+  })
 })

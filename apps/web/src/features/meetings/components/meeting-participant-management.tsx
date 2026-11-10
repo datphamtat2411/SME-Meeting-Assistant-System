@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { LoaderCircle, UserRound } from 'lucide-react'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
@@ -34,7 +34,13 @@ const meetingDateTimeFormatter = new Intl.DateTimeFormat('en-US', {
   timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
 })
 
-type ParticipantManagementPhase = 'idle' | 'mutating' | 'refreshing'
+type ParticipantManagementPhase =
+  | 'ready'
+  | 'mutating'
+  | 'reconciling'
+  | 'version_unverified'
+
+type ReconciliationOutcome = 'confirmed' | 'ambiguous' | 'review'
 
 type PendingParticipantOperation =
   | {
@@ -47,6 +53,17 @@ type PendingParticipantOperation =
       userId: string
       displayName: string
     }
+
+type PendingReconciliation = {
+  operation: PendingParticipantOperation
+  outcome: ReconciliationOutcome
+  reviewMessage?: string
+}
+
+type ParticipantFeedback = {
+  message: string
+  variant: 'default' | 'destructive'
+}
 
 export type MeetingParticipantManagementProps = {
   meeting: MeetingView
@@ -75,25 +92,57 @@ export function MeetingParticipantManagement({
   onReconciled,
 }: MeetingParticipantManagementProps) {
   const { active, removed } = classifyParticipantMemberships(participants)
-  const canManage = canManageMeetingParticipants(meeting, currentUserId)
+  const canManageSnapshot = canManageMeetingParticipants(meeting, currentUserId)
   const activeUserIds = active.map((participant) => participant.userId)
   const organizerUserId = meeting.organizerUserId
   const [selectedCandidate, setSelectedCandidate] =
     useState<MeetingParticipantCandidate | null>(null)
   const [removeTarget, setRemoveTarget] = useState<ParticipantView | null>(null)
   const [confirmationOpen, setConfirmationOpen] = useState(false)
-  const [phase, setPhase] = useState<ParticipantManagementPhase>('idle')
-  const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const [phase, setPhase] = useState<ParticipantManagementPhase>('ready')
+  const [feedback, setFeedback] = useState<ParticipantFeedback | null>(null)
+  const [pendingReconciliation, setPendingReconciliation] =
+    useState<PendingReconciliation | null>(null)
+  const [authorizationBlocked, setAuthorizationBlocked] = useState(false)
+  const [operationActive, setOperationActive] = useState(false)
   const operationInFlight = useRef(false)
+  const activeOperationGeneration = useRef<number | null>(null)
+  const sessionGeneration = useRef(0)
+  const sessionKey = `${meeting.id}:${currentUserId ?? ''}`
+  const sessionKeyRef = useRef(sessionKey)
 
-  const pending = phase !== 'idle'
+  const canManage = canManageSnapshot && !authorizationBlocked
+  const pending = phase !== 'ready' || operationActive || authorizationBlocked
+
+  useEffect(() => {
+    if (sessionKeyRef.current === sessionKey) return
+    sessionKeyRef.current = sessionKey
+    sessionGeneration.current += 1
+    setSelectedCandidate(null)
+    setRemoveTarget(null)
+    setConfirmationOpen(false)
+    setFeedback(null)
+    setPendingReconciliation(null)
+    setAuthorizationBlocked(false)
+    setPhase('ready')
+  }, [sessionKey])
+
+  const isCurrentSession = (generation: number) =>
+    generation === sessionGeneration.current &&
+    sessionKeyRef.current === sessionKey
+
+  const setFailure = (message: string) =>
+    setFeedback({ message, variant: 'destructive' })
+
+  const setNeutralFeedback = (message: string) =>
+    setFeedback({ message, variant: 'default' })
 
   const handleCandidateToggle = (candidate: MeetingParticipantCandidate) => {
-    if (pending || activeUserIds.includes(candidate.id)) return
+    if (!canManage || pending || activeUserIds.includes(candidate.id)) return
     setSelectedCandidate((current) =>
       current?.id === candidate.id ? null : candidate
     )
-    setErrorMessage(null)
+    setFeedback(null)
   }
 
   const updateAuthoritativeState = (
@@ -103,74 +152,105 @@ export function MeetingParticipantManagement({
     onReconciled(refresh, confirmed)
   }
 
-  const reconcileConfirmedOperation = async (
-    operation: PendingParticipantOperation
+  const clearOperationIntent = (operation: PendingParticipantOperation) => {
+    if (operation.type === 'add') {
+      setSelectedCandidate(null)
+    } else {
+      setRemoveTarget(null)
+      setConfirmationOpen(false)
+    }
+  }
+
+  const reconcileOperation = async (
+    operation: PendingParticipantOperation,
+    outcome: ReconciliationOutcome,
+    generation: number,
+    reviewMessage?: string
   ) => {
-    setPhase('refreshing')
+    if (!isCurrentSession(generation)) return false
+    setPhase('reconciling')
     try {
       const refresh = await refreshMeetingParticipantState(meeting.id)
+      if (!isCurrentSession(generation)) return false
       const activeAfterRefresh = hasActiveMeetingParticipant(
         refresh.participants,
         operation.userId
       )
-      const confirmed =
-        operation.type === 'add' ? activeAfterRefresh : !activeAfterRefresh
-      updateAuthoritativeState(refresh, confirmed)
+      updateAuthoritativeState(refresh, outcome === 'confirmed')
+      setPendingReconciliation(null)
+      setPhase('ready')
 
-      if (!confirmed) {
-        setErrorMessage(
-          `The ${operation.type === 'add' ? 'addition' : 'removal'} could not be confirmed. Your selection was preserved; review the latest participant list before retrying.`
-        )
-        return false
+      if (outcome === 'confirmed') {
+        setFeedback(null)
+        clearOperationIntent(operation)
+        if (operation.type === 'add') {
+          toast.success('Participant added', {
+            description: `${operation.displayName} is now an active meeting participant.`,
+          })
+        } else {
+          toast.success('Participant removed', {
+            description: `${operation.displayName} is no longer an active meeting participant.`,
+          })
+        }
+        return true
       }
 
-      setErrorMessage(null)
-      if (operation.type === 'add') {
-        setSelectedCandidate(null)
-        toast.success('Participant added', {
-          description: `${operation.displayName} is now an active meeting participant.`,
-        })
+      if (outcome === 'review') {
+        setFailure(
+          reviewMessage ??
+            'Review the latest participant state before retrying.'
+        )
+        return true
+      }
+
+      const desiredStateObserved =
+        operation.type === 'add' ? activeAfterRefresh : !activeAfterRefresh
+      if (desiredStateObserved) {
+        clearOperationIntent(operation)
+        setNeutralFeedback(formatAmbiguousObserved(operation))
       } else {
-        setRemoveTarget(null)
-        setConfirmationOpen(false)
-        toast.success('Participant removed', {
-          description: `${operation.displayName} is no longer an active meeting participant.`,
-        })
+        setNeutralFeedback(formatAmbiguousNotObserved(operation))
       }
       return true
     } catch (error) {
-      setErrorMessage(formatRefreshFailure(error, operation))
+      if (!isCurrentSession(generation)) return false
+      const normalized = normalizeCoreApiError(error)
+      if ([401, 403, 404].includes(normalized.status ?? 0)) {
+        setAuthorizationBlocked(true)
+      }
+      setPendingReconciliation({ operation, outcome, reviewMessage })
+      setPhase('version_unverified')
+      setFailure(formatRefreshFailure(error, operation))
       return false
     }
   }
 
   const refreshForReview = async (
     operation: PendingParticipantOperation,
-    message: string
+    message: string,
+    generation: number
   ) => {
-    setPhase('refreshing')
-    try {
-      const refresh = await refreshMeetingParticipantState(meeting.id)
-      updateAuthoritativeState(refresh, false)
-      setErrorMessage(message)
-    } catch (error) {
-      setErrorMessage(formatRefreshFailure(error, operation))
-    }
+    await reconcileOperation(operation, 'review', generation, message)
   }
 
   const refreshAfterConflict = async (
     operation: PendingParticipantOperation,
-    kind: ParticipantMutationErrorKind
+    kind: ParticipantMutationErrorKind,
+    generation: number
   ) => {
-    setPhase('refreshing')
+    if (!isCurrentSession(generation)) return
+    setPhase('reconciling')
     try {
       const refresh = await refreshMeetingParticipantState(meeting.id)
-      updateAuthoritativeState(refresh, false)
+      if (!isCurrentSession(generation)) return
       const activeAfterRefresh = hasActiveMeetingParticipant(
         refresh.participants,
         operation.userId
       )
-      setErrorMessage(
+      updateAuthoritativeState(refresh, false)
+      setPendingReconciliation(null)
+      setPhase('ready')
+      setFailure(
         formatConflictFailure(
           operation,
           kind,
@@ -179,20 +259,68 @@ export function MeetingParticipantManagement({
         )
       )
     } catch (error) {
-      setErrorMessage(formatRefreshFailure(error, operation))
+      if (!isCurrentSession(generation)) return
+      const normalized = normalizeCoreApiError(error)
+      if ([401, 403, 404].includes(normalized.status ?? 0)) {
+        setAuthorizationBlocked(true)
+      }
+      setPendingReconciliation({ operation, outcome: 'review' })
+      setPhase('version_unverified')
+      setFailure(formatRefreshFailure(error, operation))
     }
+  }
+
+  const retryRefresh = () => {
+    if (
+      !pendingReconciliation ||
+      operationInFlight.current ||
+      phase !== 'version_unverified' ||
+      authorizationBlocked
+    ) {
+      return
+    }
+
+    const generation = sessionGeneration.current
+    const reconciliation = pendingReconciliation
+    operationInFlight.current = true
+    activeOperationGeneration.current = generation
+    setOperationActive(true)
+    void reconcileOperation(
+      reconciliation.operation,
+      reconciliation.outcome,
+      generation,
+      reconciliation.reviewMessage
+    ).finally(() => {
+      if (activeOperationGeneration.current !== generation) return
+      operationInFlight.current = false
+      activeOperationGeneration.current = null
+      setOperationActive(false)
+    })
   }
 
   const handleMutationFailure = async (
     error: unknown,
-    operation: PendingParticipantOperation
+    operation: PendingParticipantOperation,
+    generation: number
   ) => {
+    if (!isCurrentSession(generation)) return
     const normalized = normalizeCoreApiError(error)
     const kind = classifyParticipantMutationError(error)
+    if (
+      kind === 'unauthenticated' ||
+      kind === 'forbidden' ||
+      kind === 'not_found'
+    ) {
+      setAuthorizationBlocked(true)
+      setPhase('ready')
+      setFailure(formatMutationFailure(operation, kind))
+      return
+    }
     if (kind === 'precondition') {
       await refreshForReview(
         operation,
-        'The meeting changed on the server. The latest participant list and ETag are ready for review; no mutation was retried.'
+        'The meeting changed on the server. The latest participant list and ETag are ready for review; no mutation was retried.',
+        generation
       )
       return
     }
@@ -202,38 +330,52 @@ export function MeetingParticipantManagement({
       kind === 'malformed' ||
       normalized.recoveryOutcome === 'uncertain'
     ) {
-      await reconcileConfirmedOperation(operation)
+      await reconcileOperation(operation, 'ambiguous', generation)
       return
     }
     if (kind === 'conflict') {
-      await refreshAfterConflict(operation, kind)
+      await refreshAfterConflict(operation, kind, generation)
       return
     }
-    setErrorMessage(formatMutationFailure(operation, kind))
+    setPhase('ready')
+    setFailure(formatMutationFailure(operation, kind))
   }
 
   const runOperation = async (operation: PendingParticipantOperation) => {
-    if (!canManage || operationInFlight.current) return
+    if (!canManage || phase !== 'ready' || operationInFlight.current || !etag) {
+      return
+    }
+    const generation = sessionGeneration.current
     operationInFlight.current = true
+    activeOperationGeneration.current = generation
+    setOperationActive(true)
     setPhase('mutating')
-    setErrorMessage(null)
+    setFeedback(null)
+    setPendingReconciliation(null)
     try {
       if (operation.type === 'add') {
         await addMeetingParticipant(meeting.id, etag, operation.userId)
       } else {
         await removeMeetingParticipant(meeting.id, operation.userId, etag)
       }
-      await reconcileConfirmedOperation(operation)
+      await reconcileOperation(operation, 'confirmed', generation)
     } catch (error) {
-      await handleMutationFailure(error, operation)
+      await handleMutationFailure(error, operation, generation)
     } finally {
-      operationInFlight.current = false
-      setPhase('idle')
+      if (activeOperationGeneration.current === generation) {
+        operationInFlight.current = false
+        activeOperationGeneration.current = null
+        setOperationActive(false)
+        if (isCurrentSession(generation)) {
+          setPhase((current) => (current === 'mutating' ? 'ready' : current))
+        }
+      }
     }
   }
 
   const addSelectedParticipant = () => {
-    if (!selectedCandidate) return
+    if (!selectedCandidate || activeUserIds.includes(selectedCandidate.id))
+      return
     void runOperation({
       type: 'add',
       userId: selectedCandidate.id,
@@ -279,18 +421,48 @@ export function MeetingParticipantManagement({
           <Button
             type='button'
             onClick={addSelectedParticipant}
-            disabled={!selectedCandidate || pending}
+            disabled={
+              !selectedCandidate ||
+              activeUserIds.includes(selectedCandidate.id) ||
+              pending
+            }
           >
-            {phase === 'mutating' && <LoaderCircle className='animate-spin' />}
-            {phase === 'mutating' ? 'Adding participant...' : 'Add participant'}
+            {(phase === 'mutating' || phase === 'reconciling') && (
+              <LoaderCircle className='animate-spin' />
+            )}
+            {phase === 'mutating'
+              ? 'Adding participant...'
+              : phase === 'reconciling'
+                ? 'Refreshing participant state...'
+                : 'Add participant'}
           </Button>
         </div>
       )}
 
-      {errorMessage && (
-        <Alert variant='destructive'>
-          <AlertTitle>Participant operation did not complete</AlertTitle>
-          <AlertDescription>{errorMessage}</AlertDescription>
+      {feedback && (
+        <Alert variant={feedback.variant}>
+          <AlertTitle>
+            {phase === 'version_unverified'
+              ? 'Participant version needs verification'
+              : feedback.variant === 'default'
+                ? 'Participant state refreshed'
+                : 'Participant operation did not complete'}
+          </AlertTitle>
+          <AlertDescription>
+            {feedback.message}
+            {phase === 'version_unverified' &&
+              pendingReconciliation &&
+              !authorizationBlocked && (
+                <Button
+                  type='button'
+                  variant='outline'
+                  size='sm'
+                  onClick={retryRefresh}
+                >
+                  Retry refresh
+                </Button>
+              )}
+          </AlertDescription>
         </Alert>
       )}
 
@@ -332,7 +504,7 @@ export function MeetingParticipantManagement({
       )}
 
       <ConfirmDialog
-        open={confirmationOpen}
+        open={confirmationOpen && canManage}
         onOpenChange={setConfirmationOpen}
         title='Remove participant?'
         desc={
@@ -463,19 +635,29 @@ function formatConflictFailure(
   return formatMutationFailure(operation, kind)
 }
 
+function formatAmbiguousObserved(operation: PendingParticipantOperation) {
+  const state = operation.type === 'add' ? 'active' : 'removed'
+  return `Latest participant state has been refreshed. The requested membership state is now ${state}, but the original request outcome could not be confirmed.`
+}
+
+function formatAmbiguousNotObserved(operation: PendingParticipantOperation) {
+  const state = operation.type === 'add' ? 'active' : 'removed'
+  return `The requested membership state was not found in the refreshed participant list; the participant is not ${state}. The original request outcome could not be confirmed; review the latest state before taking a new action.`
+}
+
 function formatRefreshFailure(
   error: unknown,
   operation: PendingParticipantOperation
 ) {
   const normalized = normalizeCoreApiError(error)
   if (normalized.status === 401) {
-    return 'Your session could not be confirmed while refreshing participant state. No mutation was retried.'
+    return 'Your session could not be confirmed while refreshing participant state. The latest meeting version could not be verified and no mutation was retried.'
   }
   if (normalized.status === 403) {
-    return 'You are no longer authorized to refresh this meeting. The mutation outcome is unknown; no retry was sent.'
+    return 'You are no longer authorized to refresh this meeting. The latest meeting version could not be verified; no mutation was retried.'
   }
   if (normalized.isNetworkError || normalized.isServerError) {
-    return `The participant operation outcome is unknown and the latest membership list could not be loaded. The ${operation.type === 'add' ? 'selection' : 'removal intent'} was preserved.`
+    return `The latest meeting version could not be verified because participant state could not be loaded. The ${operation.type === 'add' ? 'selection' : 'removal intent'} was preserved; retry refresh without repeating the mutation.`
   }
-  return `The participant operation could not be confirmed and the latest membership list was unavailable. The ${operation.type === 'add' ? 'selection' : 'removal intent'} was preserved.`
+  return `The latest meeting version could not be verified and participant state was unavailable. The ${operation.type === 'add' ? 'selection' : 'removal intent'} was preserved; retry refresh without repeating the mutation.`
 }

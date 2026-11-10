@@ -63,6 +63,12 @@ describe('participant management API adapter', () => {
     expect(() =>
       parseRemoveParticipantResponse({ data: meeting, meta: {} })
     ).toThrowError(CoreApiError)
+    expect(
+      parseAddParticipantResponse({
+        data: { ...participant, displayName: null },
+        meta: {},
+      })
+    ).toEqual({ ...participant, displayName: null })
   })
 
   it('serializes encoded routes, current If-Match headers, and one-user add payloads', async () => {
@@ -142,5 +148,25 @@ describe('participant management API adapter', () => {
         new CoreApiError({ status: 500, message: 'x', kind: 'server' })
       )
     ).toBe('temporary')
+    expect(
+      classifyParticipantMutationError(
+        new CoreApiError({
+          status: 409,
+          code: 'ALREADY_ACTIVE',
+          message: 'x',
+          kind: 'http',
+        })
+      )
+    ).toBe('duplicate')
+    expect(
+      classifyParticipantMutationError(
+        new CoreApiError({
+          status: 409,
+          code: 'LIFECYCLE_TERMINAL',
+          message: 'x',
+          kind: 'http',
+        })
+      )
+    ).toBe('terminal')
   })
 })
