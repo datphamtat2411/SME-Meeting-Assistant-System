@@ -1,3 +1,5 @@
+import type { ReactNode } from 'react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import {
   createMemoryHistory,
   createRootRoute,
@@ -12,7 +14,9 @@ import { Bell, Palette, UserCog, Wrench } from 'lucide-react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { page, userEvent } from 'vitest/browser'
+import { CoreApiError, coreApi } from '@/lib/core-api'
 import { getCookie } from '@/lib/cookies'
+import { currentUserQueryKey } from '@/features/auth/session/current-user'
 import { FontProvider } from '@/context/font-provider'
 import { ThemeProvider } from '@/context/theme-provider'
 import { navigationGroups } from '@/components/layout/data/navigation-data'
@@ -68,9 +72,50 @@ function createSettingsRouter(initialPath: string) {
   })
 }
 
+
+const profile = {
+  id: '11111111-1111-4111-8111-111111111111',
+  email: 'employee@example.com',
+  displayName: 'Employee One',
+  globalRole: 'EMPLOYEE' as const,
+  accountStatus: 'ACTIVE' as const,
+  primaryOrgUnitId: null,
+}
+
+const preferences = {
+  timezone: 'Asia/Ho_Chi_Minh',
+  locale: 'vi-VN',
+  meetingEmailEnabled: true,
+  actionItemEmailEnabled: false,
+}
+
+function mockSettingsReads() {
+  return vi.spyOn(coreApi, 'get').mockImplementation((url) => {
+    if (url === '/me/profile') return Promise.resolve(profile) as never
+    if (url === '/me/preferences') return Promise.resolve(preferences) as never
+    return Promise.reject(new Error('Unexpected GET: ' + url)) as never
+  })
+}
+
+async function renderApiSettings(children: ReactNode) {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false },
+      mutations: { retry: false },
+    },
+  })
+  const screen = await render(
+    <QueryClientProvider client={queryClient}>
+      {children}
+    </QueryClientProvider>
+  )
+  return { screen, queryClient }
+}
+
 describe('settings navigation and cleanup', () => {
   beforeEach(() => {
     clearCookies()
+    vi.restoreAllMocks()
     vi.clearAllMocks()
   })
 
@@ -133,37 +178,150 @@ describe('settings navigation and cleanup', () => {
     )
   })
 
-  it('replaces fixture settings forms with truthful unavailable states', async () => {
-    const rootRoute = createRootRoute({
-      component: () => (
-        <>
-          <ProfileForm />
-          <AccountForm />
-          <NotificationsForm />
-        </>
-      ),
-    })
-    const route = createRoute({
-      getParentRoute: () => rootRoute,
-      path: '/',
-      component: () => null,
-    })
-    const router = createRouter({
-      routeTree: rootRoute.addChildren([route]),
-      history: createMemoryHistory({ initialEntries: ['/'] }),
-    })
-    const screen = await render(<RouterProvider router={router} />)
+  it('loads profile and preferences from the Core API instead of fixture fields', async () => {
+    const get = mockSettingsReads()
+    const { screen } = await renderApiSettings(
+      <>
+        <ProfileForm />
+        <AccountForm />
+        <NotificationsForm />
+      </>
+    )
 
     await expect
-      .element(screen.getByText(/not available in this workspace/i).first())
-      .toBeInTheDocument()
+      .element(screen.getByRole('textbox', { name: 'Display name' }))
+      .toHaveValue('Employee One')
+    await expect
+      .element(screen.getByRole('textbox', { name: 'Organization email' }))
+      .toHaveValue('employee@example.com')
+    await expect
+      .element(screen.getByRole('textbox', { name: 'IANA timezone' }))
+      .toHaveValue('Asia/Ho_Chi_Minh')
+    await expect
+      .element(screen.getByRole('textbox', { name: 'Language / locale' }))
+      .toHaveValue('vi-VN')
+    await expect
+      .element(screen.getByRole('switch', { name: 'Meeting emails' }))
+      .toHaveAttribute('aria-checked', 'true')
+    await expect
+      .element(screen.getByRole('switch', { name: 'Action item emails' }))
+      .toHaveAttribute('aria-checked', 'false')
+    expect(get.mock.calls.map(([url]) => url)).toContain('/me/profile')
+    expect(get.mock.calls.map(([url]) => url)).toContain('/me/preferences')
     await expect.element(screen.getByText('Username')).not.toBeInTheDocument()
+    await expect.element(screen.getByText('Date of birth')).not.toBeInTheDocument()
+    await expect.element(screen.getByText('Marketing emails')).not.toBeInTheDocument()
+  })
+
+  it('saves profile changes through the API and invalidates identity data', async () => {
+    mockSettingsReads()
+    const patch = vi.spyOn(coreApi, 'patch').mockImplementation((url, value) => {
+      if (url === '/me/profile') {
+        return Promise.resolve({
+          ...profile,
+          displayName: (value as { displayName: string }).displayName,
+        }) as never
+      }
+      return Promise.reject(new Error('Unexpected PATCH: ' + url)) as never
+    })
+    const { screen, queryClient } = await renderApiSettings(<ProfileForm />)
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    const name = screen.getByRole('textbox', { name: 'Display name' })
+    const save = screen.getByRole('button', { name: 'Save profile' })
+
+    await expect.element(name).toHaveValue(profile.displayName)
+    await expect.element(save).toBeDisabled()
+    await userEvent.fill(name, 'Updated Employee')
+    await expect.element(save).toBeEnabled()
+    await userEvent.click(save)
+
+    await vi.waitFor(() =>
+      expect(patch).toHaveBeenCalledWith('/me/profile', {
+        displayName: 'Updated Employee',
+      })
+    )
+    await vi.waitFor(() =>
+      expect(invalidate).toHaveBeenCalledWith({
+        queryKey: currentUserQueryKey,
+      })
+    )
+    expect(showSubmittedData).not.toHaveBeenCalled()
+  })
+
+  it('persists account preferences and notification switches through the API', async () => {
+    mockSettingsReads()
+    const patch = vi.spyOn(coreApi, 'patch').mockImplementation((url, value) => {
+      if (url === '/me/preferences') {
+        return Promise.resolve({ ...preferences, ...(value as object) }) as never
+      }
+      return Promise.reject(new Error('Unexpected PATCH: ' + url)) as never
+    })
+    const { screen, queryClient } = await renderApiSettings(
+      <>
+        <AccountForm />
+        <NotificationsForm />
+      </>
+    )
+    const locale = screen.getByRole('textbox', { name: 'Language / locale' })
+
+    await expect.element(locale).toHaveValue('vi-VN')
+    await userEvent.fill(locale, 'en-US')
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Save preferences' })
+    )
+    await vi.waitFor(() =>
+      expect(patch).toHaveBeenCalledWith('/me/preferences', {
+        timezone: 'Asia/Ho_Chi_Minh',
+        locale: 'en-US',
+      })
+    )
+    await vi.waitFor(() =>
+      expect(queryClient.getQueryData(['me', 'preferences'])).toMatchObject({
+        locale: 'en-US',
+      })
+    )
+
+    const actionEmails = screen.getByRole('switch', {
+      name: 'Action item emails',
+    })
+    await expect.element(actionEmails).toHaveAttribute('aria-checked', 'false')
+    await userEvent.click(actionEmails)
+    await vi.waitFor(() =>
+      expect(patch).toHaveBeenCalledWith('/me/preferences', {
+        actionItemEmailEnabled: true,
+      })
+    )
     await expect
-      .element(screen.getByText('Date of birth'))
-      .not.toBeInTheDocument()
+      .element(actionEmails)
+      .toHaveAttribute('aria-checked', 'true')
+    expect(showSubmittedData).not.toHaveBeenCalled()
+  })
+
+  it('shows an API failure and supports a real retry instead of hiding it', async () => {
+    const get = vi
+      .spyOn(coreApi, 'get')
+      .mockRejectedValueOnce(
+        new CoreApiError({
+          message: 'Profile service unavailable',
+          status: 503,
+          code: 'SERVICE_UNAVAILABLE',
+          kind: 'server',
+        })
+      )
+      .mockResolvedValueOnce(profile as never)
+    const { screen } = await renderApiSettings(<ProfileForm />)
+
     await expect
-      .element(screen.getByText('Marketing emails'))
+      .element(screen.getByRole('alert'))
+      .toHaveTextContent('Profile service unavailable')
+    await expect
+      .element(screen.getByRole('textbox', { name: 'Display name' }))
       .not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await expect
+      .element(screen.getByRole('textbox', { name: 'Display name' }))
+      .toHaveValue(profile.displayName)
+    expect(get).toHaveBeenCalledTimes(2)
   })
 
   it('preserves local Appearance preferences without generic submission messaging', async () => {

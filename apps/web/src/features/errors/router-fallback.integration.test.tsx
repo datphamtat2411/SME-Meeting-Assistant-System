@@ -38,6 +38,29 @@ const identity = {
   },
 }
 
+const dashboard = {
+  asOf: '2026-11-11T00:00:00Z',
+  timezone: 'Asia/Ho_Chi_Minh',
+  meetingCountsByState: { SCHEDULED: 2 },
+  upcomingMeetings: [],
+  recentMeetings: [],
+  assignedActionItems: { open: 1, inProgress: 0, done: 0, overdue: 0 },
+}
+
+const emptyMeetingList = {
+  data: [],
+  meta: {
+    pagination: {
+      page: 0,
+      size: 100,
+      totalElements: 0,
+      totalPages: 0,
+      hasNext: false,
+      hasPrevious: false,
+    },
+  },
+}
+
 vi.mock('react-top-loading-bar', () => ({
   default: () => null,
 }))
@@ -174,7 +197,15 @@ describe('router fallback integration', () => {
   beforeEach(() => {
     clearCookies()
     vi.restoreAllMocks()
-    vi.spyOn(coreApi, 'get').mockResolvedValue(identity as never)
+    vi.spyOn(coreApi, 'get').mockImplementation((url) => {
+      if (url === '/auth/me') return Promise.resolve(identity) as never
+      if (url === '/dashboard/me') return Promise.resolve(dashboard) as never
+      return Promise.reject(new Error('Unexpected GET: ' + url)) as never
+    })
+    vi.spyOn(coreApi, 'getWithMeta').mockImplementation((url) => {
+      if (url === '/meetings') return Promise.resolve(emptyMeetingList) as never
+      return Promise.reject(new Error('Unexpected GET with meta: ' + url)) as never
+    })
   })
 
   it('uses the authenticated not-found boundary for nested deep links', async () => {
@@ -214,7 +245,13 @@ describe('router fallback integration', () => {
     )
     await expect.poll(() => router.history.location.pathname).toBe('/')
     await expect
-      .element(screen.getByRole('heading', { name: /Good morning, Nguyễn/ }))
+      .element(screen.getByRole('heading', { name: 'Dashboard', exact: true }))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('Scheduled meetings'))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('No upcoming meetings'))
       .toBeInTheDocument()
   })
 
@@ -246,7 +283,13 @@ describe('router fallback integration', () => {
     )
     await expect.poll(() => router.history.location.pathname).toBe('/')
     await expect
-      .element(screen.getByRole('heading', { name: /Good morning, Nguyễn/ }))
+      .element(screen.getByRole('heading', { name: 'Dashboard', exact: true }))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('Scheduled meetings'))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('No upcoming meetings'))
       .toBeInTheDocument()
   })
 
