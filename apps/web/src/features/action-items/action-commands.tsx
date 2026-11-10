@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { actionCommand, type ActionItem } from './action-api'
+import { invalidateMeetingArtifacts } from '@/features/meetings/intelligence/query-invalidation'
 
 const allowed: Record<
   ActionItem['status'],
@@ -34,7 +35,7 @@ export function ActionCommands({ item }: { item: ActionItem }) {
     ) => actionCommand(item.id, command),
     onSuccess: () => {
       toast.success('Action status updated')
-      void qc.invalidateQueries({ queryKey: ['action-items'] })
+      invalidateMeetingArtifacts(qc, item.meetingId, { actions: true })
     },
     onError: (error) =>
       toast.error('Status transition rejected', {
