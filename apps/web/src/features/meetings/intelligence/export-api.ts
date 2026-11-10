@@ -18,7 +18,7 @@ export type ExportStatus = z.infer<typeof exportStatusSchema>
 export function createMinutesExport(
   meetingId: string,
   format: ExportStatus['format'],
-  idempotencyKey = crypto.randomUUID()
+  idempotencyKey: string = crypto.randomUUID()
 ) {
   return z
     .object({ exportId: z.string().uuid() })
