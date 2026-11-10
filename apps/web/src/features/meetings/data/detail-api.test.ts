@@ -36,6 +36,7 @@ const participants = [
     addedAt: '2026-09-01T00:00:00Z',
     removedAt: null,
     removedByUserId: null,
+    displayName: 'Active participant',
   },
   {
     id: 'membership-2',
@@ -45,6 +46,7 @@ const participants = [
     addedAt: '2026-09-01T01:00:00Z',
     removedAt: '2026-09-01T02:00:00Z',
     removedByUserId: 'organizer-1',
+    displayName: 'Historical participant',
   },
 ]
 
@@ -137,5 +139,15 @@ describe('meeting detail API adapter', () => {
         meta: {},
       })
     ).toThrowError(CoreApiError)
+  })
+
+  it('accepts an unresolved projected identity without exposing an ID fallback', () => {
+    const result = parseMeetingParticipantsResponse({
+      data: [{ ...participants[0], displayName: null }],
+      meta: {},
+    })
+
+    expect(result[0]?.displayName).toBeNull()
+    expect(result[0]?.userId).toBe('user-1')
   })
 })

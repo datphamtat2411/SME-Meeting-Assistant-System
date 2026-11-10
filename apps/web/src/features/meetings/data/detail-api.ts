@@ -38,7 +38,7 @@ export const participantViewSchema = z.object({
   addedAt: offsetDateTimeSchema,
   removedAt: nullableOffsetDateTimeSchema,
   removedByUserId: idSchema.nullable(),
-  displayName: z.string().nullable().optional(),
+  displayName: z.string().trim().min(1).nullable().optional(),
 })
 
 export type MeetingView = z.infer<typeof meetingViewSchema>

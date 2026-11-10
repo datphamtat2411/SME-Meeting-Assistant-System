@@ -82,6 +82,7 @@ const participants = [
     addedAt: '2026-09-01T00:00:00Z',
     removedAt: null,
     removedByUserId: null,
+    displayName: 'Active participant',
   },
   {
     id: 'membership-2',
@@ -91,6 +92,7 @@ const participants = [
     addedAt: '2026-09-01T00:30:00Z',
     removedAt: '2026-09-01T08:00:00Z',
     removedByUserId: 'organizer-1',
+    displayName: 'Historical participant',
   },
 ]
 
@@ -248,14 +250,17 @@ describe('MeetingWorkspacePage', () => {
     await expect
       .element(screen.getByText('Completed', { exact: true }).first())
       .toBeInTheDocument()
-    await expect.element(screen.getByText('user-1')).toBeInTheDocument()
     await expect
-      .element(screen.getByText('Name unavailable').first())
+      .element(screen.getByText('Active participant').first())
       .toBeInTheDocument()
     await expect
       .element(screen.getByText('Removed membership history'))
       .toBeInTheDocument()
-    await expect.element(screen.getByText('user-2')).toBeInTheDocument()
+    await expect
+      .element(screen.getByText('Historical participant').first())
+      .toBeInTheDocument()
+    await expect.element(screen.getByText('user-1')).not.toBeInTheDocument()
+    await expect.element(screen.getByText('user-2')).not.toBeInTheDocument()
     await expect
       .element(
         screen.getByText(

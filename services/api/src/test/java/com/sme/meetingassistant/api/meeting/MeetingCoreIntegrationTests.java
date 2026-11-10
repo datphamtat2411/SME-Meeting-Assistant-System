@@ -14,6 +14,8 @@ import com.sme.meetingassistant.api.userorganization.entity.GlobalRole;
 import com.sme.meetingassistant.api.userorganization.entity.UserEntity;
 import com.sme.meetingassistant.api.userorganization.repository.UserRepository;
 import java.security.Principal;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
@@ -258,6 +260,40 @@ class MeetingCoreIntegrationTests {
             .andExpect(status().isCreated());
         assertThat(body(mvc.perform(get("/api/v1/meetings/"+id+"/participants")
             .principal(principal(organizer))).andExpect(status().isOk()).andReturn()).path("data")).hasSize(3);
+    }
+
+    @Test void participantProjectionIncludesActiveAndHistoricalIdentityWithoutChangingAccessBoundary() throws Exception {
+        organizer.renameDisplayName("Meeting Organizer");
+        member.renameDisplayName("Historical Member");
+        users.saveAllAndFlush(java.util.List.of(organizer, member));
+
+        MvcResult created=create();
+        String id=body(created).path("data").path("id").asText();
+        JsonNode initial=body(mvc.perform(get("/api/v1/meetings/"+id+"/participants")
+            .principal(principal(organizer))).andExpect(status().isOk()).andReturn()).path("data");
+        assertThat(initial.get(0).path("displayName").asText()).isEqualTo("Meeting Organizer");
+        assertThat(initial.get(1).path("displayName").asText()).isEqualTo("Historical Member");
+
+        MvcResult removed=mvc.perform(delete("/api/v1/meetings/"+id+"/participants/"+member.getId())
+            .principal(principal(organizer)).header(HttpHeaders.IF_MATCH,
+                created.getResponse().getHeader(HttpHeaders.ETAG)))
+            .andExpect(status().isOk()).andReturn();
+        member.deactivate(OffsetDateTime.now(ZoneOffset.UTC));
+        users.saveAndFlush(member);
+
+        JsonNode history=body(mvc.perform(get("/api/v1/meetings/"+id+"/participants")
+            .principal(principal(organizer))).andExpect(status().isOk()).andReturn()).path("data");
+        JsonNode historical=null;
+        for (JsonNode row : history) {
+            if (member.getId().toString().equals(row.path("userId").asText())) historical=row;
+        }
+        assertThat(historical).isNotNull();
+        assertThat(historical.path("removedAt").isTextual()).isTrue();
+        assertThat(historical.path("displayName").asText()).isEqualTo("Historical Member");
+
+        mvc.perform(get("/api/v1/meetings/"+id+"/participants")
+            .principal(principal(other))).andExpect(status().isNotFound());
+        assertThat(removed.getResponse().getHeader(HttpHeaders.ETAG)).isNotBlank();
     }
 
     @Test void cancellationIsTerminalAndEmitsIntentWithoutDeletingMeeting() throws Exception {

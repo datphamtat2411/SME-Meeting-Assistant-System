@@ -361,7 +361,8 @@ public class MeetingCoreService implements MeetingMediaAccess, MeetingIntelligen
         MeetingEntity committed = flush(meeting);
         notifications.participantAdded(committed, record);
         audit.participantAdded(committed, record);
-        return ParticipantView.from(record);
+        return ParticipantView.from(record,
+            users.displayNamesFor(List.of(record.getUserId())).get(record.getUserId()));
     }
 
     public void removeParticipant(UUID meetingId, UUID userId, String ifMatch) {
@@ -384,8 +385,12 @@ public class MeetingCoreService implements MeetingMediaAccess, MeetingIntelligen
     public List<ParticipantView> listParticipants(UUID meetingId) {
         MeetingEntity meeting = lookup(meetingId);
         requireAccess(meeting, authorization.requireActiveActor().getId());
-        return participants.findByMeetingIdOrderByAddedAtAsc(meetingId).stream()
-            .map(ParticipantView::from).toList();
+        List<MeetingParticipantEntity> records = participants.findByMeetingIdOrderByAddedAtAsc(meetingId);
+        Map<UUID, String> displayNames = users.displayNamesFor(records.stream()
+            .map(MeetingParticipantEntity::getUserId).toList());
+        return records.stream()
+            .map(record -> ParticipantView.from(record, displayNames.get(record.getUserId())))
+            .toList();
     }
 
     private MeetingEntity owned(UUID id) {

@@ -3,27 +3,10 @@ import { z } from 'zod'
 import { useForm, useWatch } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import {
-  AlertCircle,
-  CalendarDays,
-  Check,
-  ChevronLeft,
-  ChevronRight,
-  LoaderCircle,
-  X,
-  Users,
-} from 'lucide-react'
+import { AlertCircle, CalendarDays, Check, LoaderCircle } from 'lucide-react'
 import { normalizeCoreApiError } from '@/lib/core-api'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import {
-  Command,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-} from '@/components/ui/command'
 import {
   Dialog,
   DialogClose,
@@ -43,11 +26,6 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from '@/components/ui/popover'
 import { Textarea } from '@/components/ui/textarea'
 import {
   currentUserQueryKey,
@@ -62,12 +40,7 @@ import {
   roomFilterOptionByIdQueryOptions,
   roomFilterQueryOptions,
 } from '../data/list-api'
-import {
-  isValidMeetingParticipantCandidateQuery,
-  meetingParticipantCandidateQueryOptions,
-  type MeetingParticipantCandidate,
-  type MeetingParticipantCandidatePagination,
-} from '../data/meeting-candidates-api'
+import { type MeetingParticipantCandidate } from '../data/meeting-candidates-api'
 import {
   buildCreateMeetingPayload,
   buildScheduleCheckPayload,
@@ -90,6 +63,7 @@ import {
   type ScheduleValues,
 } from '../data/meeting-scheduling-utils'
 import { roomAvailabilityQueryOptions } from '../data/room-availability-api'
+import { MeetingParticipantLookup } from './meeting-participant-lookup'
 import {
   MeetingRoomLookup,
   MeetingScheduleFields,
@@ -308,29 +282,9 @@ export function MeetingCreationDialog({
     selectedRoomQuery.data ??
     roomsQuery.data?.options.find((room) => room.id === roomId)
 
-  const [participantLookupOpen, setParticipantLookupOpen] = useState(false)
-  const [participantLookupSearch, setParticipantLookupSearch] = useState('')
-  const [participantLookupPage, setParticipantLookupPage] = useState(1)
-  const deferredParticipantLookupSearch = useDeferredValue(
-    participantLookupSearch
-  )
   const [selectedCandidatesById, setSelectedCandidatesById] = useState<
     Record<string, MeetingParticipantCandidate>
   >({})
-  const participantSearchReady = isValidMeetingParticipantCandidateQuery(
-    deferredParticipantLookupSearch
-  )
-  const participantCandidatesQuery = useQuery({
-    ...meetingParticipantCandidateQueryOptions({
-      q: deferredParticipantLookupSearch,
-      page: participantLookupPage,
-      pageSize: 20,
-    }),
-    enabled: open && participantLookupOpen && participantSearchReady,
-  })
-  const participantOptions = (
-    participantCandidatesQuery.data?.candidates ?? []
-  ).filter((candidate) => candidate.id !== currentUser?.userId)
   const selectedParticipants = (participantIds ?? [])
     .map((id) => selectedCandidatesById[id])
     .filter((candidate): candidate is MeetingParticipantCandidate =>
@@ -381,9 +335,6 @@ export function MeetingCreationDialog({
         setRoomLookupOpen(false)
         setRoomLookupSearch('')
         setRoomLookupPage(1)
-        setParticipantLookupOpen(false)
-        setParticipantLookupSearch('')
-        setParticipantLookupPage(1)
         setSelectedCandidatesById({})
         resetOnClose.current = false
       }
@@ -1077,34 +1028,13 @@ export function MeetingCreationDialog({
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Participants</FormLabel>
-                  <ParticipantLookup
+                  <MeetingParticipantLookup
                     value={field.value}
                     onToggle={handleParticipantToggle}
                     selectedCandidates={selectedParticipants}
-                    open={participantLookupOpen}
-                    onOpenChange={setParticipantLookupOpen}
-                    searchValue={participantLookupSearch}
-                    onSearchChange={(value) => {
-                      setParticipantLookupSearch(value)
-                      setParticipantLookupPage(1)
-                    }}
-                    options={participantOptions}
-                    pagination={participantCandidatesQuery.data?.pagination}
-                    page={participantLookupPage}
-                    searchReady={participantSearchReady}
-                    isLoading={
-                      participantLookupOpen &&
-                      participantSearchReady &&
-                      participantCandidatesQuery.isPending
+                    excludedIds={
+                      currentUser?.userId ? [currentUser.userId] : []
                     }
-                    isFetching={
-                      participantLookupOpen &&
-                      participantSearchReady &&
-                      participantCandidatesQuery.isFetching
-                    }
-                    isError={participantCandidatesQuery.isError}
-                    onRetry={() => void participantCandidatesQuery.refetch()}
-                    onPageChange={setParticipantLookupPage}
                   />
                   <FormDescription>
                     Search active users by name or email. The authenticated
@@ -1255,203 +1185,6 @@ export function MeetingCreationDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  )
-}
-
-function ParticipantLookup({
-  value,
-  onToggle,
-  selectedCandidates,
-  open,
-  onOpenChange,
-  searchValue,
-  onSearchChange,
-  options,
-  pagination,
-  page,
-  searchReady,
-  isLoading,
-  isFetching,
-  isError,
-  onRetry,
-  onPageChange,
-}: {
-  value: string[]
-  onToggle: (candidate: MeetingParticipantCandidate) => void
-  selectedCandidates: MeetingParticipantCandidate[]
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  searchValue: string
-  onSearchChange: (value: string) => void
-  options: MeetingParticipantCandidate[]
-  pagination?: MeetingParticipantCandidatePagination
-  page: number
-  searchReady: boolean
-  isLoading: boolean
-  isFetching: boolean
-  isError: boolean
-  onRetry: () => void
-  onPageChange: (page: number) => void
-}) {
-  const currentPage = pagination ? pagination.page + 1 : page
-  const totalPages = Math.max(pagination?.totalPages ?? 0, 1)
-
-  return (
-    <div className='grid gap-2'>
-      <Popover open={open} onOpenChange={onOpenChange}>
-        <PopoverTrigger asChild>
-          <Button
-            type='button'
-            variant='outline'
-            role='combobox'
-            aria-expanded={open}
-            aria-label='Participants'
-            className='w-full justify-between font-normal'
-          >
-            <span className='flex min-w-0 items-center gap-2 truncate'>
-              <Users className='size-4 shrink-0 text-muted-foreground' />
-              <span className='truncate'>
-                {value.length > 0
-                  ? `${value.length} participant${value.length === 1 ? '' : 's'} selected`
-                  : 'Add participants'}
-              </span>
-            </span>
-            <ChevronRight className='size-4 rotate-90 opacity-50' />
-          </Button>
-        </PopoverTrigger>
-        <PopoverContent
-          className='w-[min(28rem,calc(100vw-2rem))] p-0'
-          align='start'
-        >
-          <Command shouldFilter={false}>
-            <CommandInput
-              value={searchValue}
-              onValueChange={onSearchChange}
-              placeholder='Search active participants...'
-            />
-            <CommandList>
-              {!searchReady ? (
-                <CommandEmpty>
-                  Enter at least 2 characters to search.
-                </CommandEmpty>
-              ) : isLoading ? (
-                <div role='status' className='px-3 py-6 text-center text-sm'>
-                  Loading participant options...
-                </div>
-              ) : isError ? (
-                <div className='grid gap-2 px-3 py-6 text-center text-sm'>
-                  <span>Participant options could not be loaded.</span>
-                  <Button
-                    type='button'
-                    variant='outline'
-                    size='sm'
-                    onClick={onRetry}
-                    className='mx-auto'
-                  >
-                    Try again
-                  </Button>
-                </div>
-              ) : options.length === 0 ? (
-                <CommandEmpty>No active participants found.</CommandEmpty>
-              ) : (
-                <CommandGroup>
-                  {options.map((option) => {
-                    const selected = value.includes(option.id)
-                    return (
-                      <CommandItem
-                        key={option.id}
-                        value={option.id}
-                        onSelect={() => onToggle(option)}
-                      >
-                        <Check
-                          className={`size-4 ${
-                            selected ? 'opacity-100' : 'opacity-0'
-                          }`}
-                        />
-                        <span className='min-w-0 flex-1 truncate'>
-                          <span className='block truncate'>
-                            {option.displayName}
-                          </span>
-                          <span className='block truncate text-xs text-muted-foreground'>
-                            {option.email}
-                            {option.organizationalUnitName
-                              ? ` · ${option.organizationalUnitName}`
-                              : ''}
-                          </span>
-                        </span>
-                      </CommandItem>
-                    )
-                  })}
-                </CommandGroup>
-              )}
-            </CommandList>
-            {isFetching && !isLoading && (
-              <p
-                role='status'
-                className='border-t px-3 py-2 text-xs text-muted-foreground'
-              >
-                Updating participant options...
-              </p>
-            )}
-            {searchReady &&
-              !isLoading &&
-              !isError &&
-              pagination &&
-              pagination.totalPages > 1 && (
-                <div className='flex items-center justify-between border-t p-2'>
-                  <Button
-                    type='button'
-                    variant='ghost'
-                    size='sm'
-                    aria-label='Previous participant options page'
-                    onClick={() => onPageChange(page - 1)}
-                    disabled={!pagination.hasPrevious}
-                  >
-                    <ChevronLeft />
-                  </Button>
-                  <span className='text-xs text-muted-foreground'>
-                    Page {currentPage} of {totalPages}
-                  </span>
-                  <Button
-                    type='button'
-                    variant='ghost'
-                    size='sm'
-                    aria-label='Next participant options page'
-                    onClick={() => onPageChange(page + 1)}
-                    disabled={!pagination.hasNext}
-                  >
-                    <ChevronRight />
-                  </Button>
-                </div>
-              )}
-          </Command>
-        </PopoverContent>
-      </Popover>
-
-      {selectedCandidates.length > 0 && (
-        <div
-          className='flex flex-wrap gap-2'
-          aria-label='Selected participants'
-        >
-          {selectedCandidates.map((candidate) => (
-            <span
-              key={candidate.id}
-              className='inline-flex max-w-full items-center gap-1 rounded-full border bg-muted/50 px-2 py-1 text-xs'
-            >
-              <span className='truncate'>{candidate.displayName}</span>
-              <button
-                type='button'
-                aria-label={`Remove ${candidate.displayName}`}
-                className='rounded-full p-0.5 text-muted-foreground hover:text-foreground'
-                onClick={() => onToggle(candidate)}
-              >
-                <X className='size-3' />
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
-    </div>
   )
 }
 

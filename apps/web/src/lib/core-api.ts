@@ -483,4 +483,7 @@ export const coreApi = {
   delete<T>(url: string, config?: AxiosRequestConfig) {
     return request<T>({ ...config, method: 'DELETE', url })
   },
+  deleteWithMetaAndEtag<T>(url: string, config?: AxiosRequestConfig) {
+    return requestWithMetaAndEtag<T>({ ...config, method: 'DELETE', url })
+  },
 }

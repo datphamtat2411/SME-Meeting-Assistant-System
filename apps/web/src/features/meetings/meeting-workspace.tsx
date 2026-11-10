@@ -9,7 +9,6 @@ import {
   FileText,
   MapPin,
   RefreshCw,
-  UserRound,
   Users,
 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -35,6 +34,7 @@ import {
   type MeetingEditCommit,
   type EditableMeetingView,
 } from './components/meeting-edit-dialog'
+import { MeetingParticipantManagement } from './components/meeting-participant-management'
 import { MeetingStatusBadge } from './components/meeting-status-badge'
 import {
   classifyParticipantMemberships,
@@ -50,6 +50,7 @@ import {
   type OrganizerFilterOption,
   type RoomFilterOption,
 } from './data/list-api'
+import type { MeetingParticipantRefresh } from './data/participant-management-api'
 
 const presentationTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
 const meetingDateFormatter = new Intl.DateTimeFormat('en-US', {
@@ -94,6 +95,21 @@ export function MeetingWorkspacePage({ meetingId }: { meetingId: string }) {
   const participantsQuery = useQuery(
     meetingParticipantsQueryOptions(meetingId, Boolean(meeting))
   )
+  const handleParticipantReconciled = (
+    refresh: MeetingParticipantRefresh,
+    confirmed: boolean
+  ) => {
+    queryClient.setQueryData(['meetings', 'detail', meetingId], refresh.detail)
+    queryClient.setQueryData(
+      ['meetings', 'participants', meetingId],
+      refresh.participants
+    )
+    if (!confirmed) return
+    void queryClient.invalidateQueries({ queryKey: ['meetings', 'list'] })
+    void queryClient.invalidateQueries({
+      queryKey: ['rooms', 'availability'],
+    })
+  }
   const roomQuery = useQuery({
     ...roomFilterOptionByIdQueryOptions(meeting?.roomId ?? undefined),
     enabled: Boolean(meeting?.roomId),
@@ -209,6 +225,7 @@ export function MeetingWorkspacePage({ meetingId }: { meetingId: string }) {
                 organizerQuery.isError,
               onRetry: () => void organizerQuery.refetch(),
             }}
+            onParticipantReconciled={handleParticipantReconciled}
           />
         ) : null}
       </Main>
@@ -223,6 +240,7 @@ function MeetingWorkspace({
   participants,
   room,
   organizer,
+  onParticipantReconciled,
 }: {
   meeting: MeetingView
   etag: string
@@ -230,6 +248,10 @@ function MeetingWorkspace({
   participants: ParticipantState
   room: LookupState<RoomFilterOption>
   organizer: LookupState<OrganizerFilterOption>
+  onParticipantReconciled: (
+    refresh: MeetingParticipantRefresh,
+    confirmed: boolean
+  ) => void
 }) {
   const [editOpen, setEditOpen] = useState(false)
   const notifiedEditCommits = useRef(new Set<string>())
@@ -287,6 +309,8 @@ function MeetingWorkspace({
         participants={participants}
         room={room}
         organizer={organizer}
+        etag={etag}
+        onParticipantReconciled={onParticipantReconciled}
       />
     </>
   )
@@ -379,12 +403,19 @@ function OperationalOverview({
   participants,
   room,
   organizer,
+  etag,
+  onParticipantReconciled,
 }: {
   meeting: MeetingView
   currentUser?: AuthContext
   participants: ParticipantState
   room: LookupState<RoomFilterOption>
   organizer: LookupState<OrganizerFilterOption>
+  etag: string
+  onParticipantReconciled: (
+    refresh: MeetingParticipantRefresh,
+    confirmed: boolean
+  ) => void
 }) {
   return (
     <div className='grid gap-6 xl:grid-cols-[minmax(0,1.35fr)_minmax(280px,0.8fr)]'>
@@ -439,7 +470,13 @@ function OperationalOverview({
           organizer={organizer}
           currentUser={currentUser}
         />
-        <ParticipantsCard state={participants} />
+        <ParticipantsCard
+          meeting={meeting}
+          etag={etag}
+          currentUser={currentUser}
+          state={participants}
+          onParticipantReconciled={onParticipantReconciled}
+        />
       </div>
     </div>
   )
@@ -499,7 +536,22 @@ function MeetingInformationCard({
   )
 }
 
-function ParticipantsCard({ state }: { state: ParticipantState }) {
+function ParticipantsCard({
+  meeting,
+  etag,
+  currentUser,
+  state,
+  onParticipantReconciled,
+}: {
+  meeting: MeetingView
+  etag: string
+  currentUser?: AuthContext
+  state: ParticipantState
+  onParticipantReconciled: (
+    refresh: MeetingParticipantRefresh,
+    confirmed: boolean
+  ) => void
+}) {
   return (
     <Card>
       <CardHeader className='border-b'>
@@ -532,93 +584,16 @@ function ParticipantsCard({ state }: { state: ParticipantState }) {
             onRetry={state.onRetry}
           />
         ) : (
-          <ParticipantMemberships participants={state.data ?? []} />
+          <MeetingParticipantManagement
+            meeting={meeting}
+            etag={etag}
+            currentUserId={currentUser?.userId}
+            participants={state.data ?? []}
+            onReconciled={onParticipantReconciled}
+          />
         )}
       </CardContent>
     </Card>
-  )
-}
-
-function ParticipantMemberships({
-  participants,
-}: {
-  participants: ParticipantView[]
-}) {
-  const { active, removed } = classifyParticipantMemberships(participants)
-
-  return (
-    <div className='space-y-6'>
-      <div className='space-y-4'>
-        <p className='text-sm font-semibold'>Active participants</p>
-        {active.length ? (
-          active.map((participant) => (
-            <ParticipantMembership
-              key={participant.id}
-              participant={participant}
-            />
-          ))
-        ) : (
-          <p className='text-sm text-muted-foreground'>
-            No active participants are listed.
-          </p>
-        )}
-      </div>
-
-      {removed.length > 0 && (
-        <div className='space-y-4 border-t pt-5'>
-          <div>
-            <p className='text-sm font-semibold'>Removed membership history</p>
-            <p className='mt-1 text-xs text-muted-foreground'>
-              Historical memberships remain visible with their removal metadata.
-            </p>
-          </div>
-          {removed.map((participant) => (
-            <ParticipantMembership
-              key={participant.id}
-              participant={participant}
-              historical
-            />
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
-function ParticipantMembership({
-  participant,
-  historical = false,
-}: {
-  participant: ParticipantView
-  historical?: boolean
-}) {
-  const displayName = participant.displayName?.trim()
-
-  return (
-    <div className='flex items-start gap-3'>
-      <div className='flex size-9 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground'>
-        <UserRound className='size-4' />
-      </div>
-      <div className='min-w-0 space-y-1'>
-        <p className='text-sm font-medium break-all'>
-          {displayName || participant.userId}
-        </p>
-        <p className='text-xs text-muted-foreground'>
-          {displayName ? 'Name provided by Core API' : 'Name unavailable'}
-        </p>
-        <p className='text-xs text-muted-foreground'>
-          Added {formatDateTime(participant.addedAt)}
-        </p>
-        {historical && participant.removedAt && (
-          <p className='text-xs text-muted-foreground'>
-            Removed {formatDateTime(participant.removedAt)}
-            {participant.removedByUserId
-              ? ` by user ID ${participant.removedByUserId}`
-              : ''}
-          </p>
-        )}
-      </div>
-    </div>
   )
 }
 
