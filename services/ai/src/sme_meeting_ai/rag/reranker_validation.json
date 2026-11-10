@@ -1,0 +1,44 @@
+{
+  "dataset_id": "rag-t03-vietnamese-retrieval-v1",
+  "model_id": "BAAI/bge-reranker-v2-m3",
+  "model_revision": "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
+  "case_count": 24,
+  "label_counts": {
+    "ANSWERABLE": 8,
+    "WEAKLY_RELATED": 8,
+    "UNANSWERABLE": 8
+  },
+  "provisional_raw_score_cutoff": 0.0,
+  "selection_method": "Pinned-model raw-score sign operating point reviewed against the balanced Vietnamese case labels",
+  "limitations": [
+    "The cases are synthetic engineering fixtures, not a production benchmark.",
+    "The cutoff is provisional until the provisioned model is calibrated against live Vietnamese retrieval scores.",
+    "No factual-confidence or probability interpretation is assigned to the raw score."
+  ],
+  "cases": [
+    {"id": "vi-01", "label": "ANSWERABLE", "query": "Kế hoạch phát hành bản thử nghiệm là gì?"},
+    {"id": "vi-02", "label": "ANSWERABLE", "query": "Ai gửi báo cáo dữ liệu trước cuộc họp tiếp theo?"},
+    {"id": "vi-03", "label": "ANSWERABLE", "query": "Thời hạn hoàn thành API là khi nào?"},
+    {"id": "vi-04", "label": "ANSWERABLE", "query": "Quyết định ngân sách quý IV là gì?"},
+    {"id": "vi-05", "label": "ANSWERABLE", "query": "Nhóm kỹ thuật cần kiểm tra hạng mục nào?"},
+    {"id": "vi-06", "label": "ANSWERABLE", "query": "Release plan của dự án được thống nhất ra sao?"},
+    {"id": "vi-07", "label": "ANSWERABLE", "query": "Deadline gửi báo cáo là ngày nào?"},
+    {"id": "vi-08", "label": "ANSWERABLE", "query": "Confirmed decision về dữ liệu là gì?"},
+    {"id": "vi-09", "label": "WEAKLY_RELATED", "query": "Kế hoạch phát hành có những rủi ro nào?"},
+    {"id": "vi-10", "label": "WEAKLY_RELATED", "query": "Báo cáo dữ liệu có cần định dạng mới không?"},
+    {"id": "vi-11", "label": "WEAKLY_RELATED", "query": "API có liên quan đến cuộc họp nào?"},
+    {"id": "vi-12", "label": "WEAKLY_RELATED", "query": "Ngân sách và kế hoạch có được thảo luận không?"},
+    {"id": "vi-13", "label": "WEAKLY_RELATED", "query": "Nhóm kỹ thuật đang xử lý sản phẩm nào?"},
+    {"id": "vi-14", "label": "WEAKLY_RELATED", "query": "Release có thể dời sang tuần sau không?"},
+    {"id": "vi-15", "label": "WEAKLY_RELATED", "query": "Ai tham dự phần thảo luận API?"},
+    {"id": "vi-16", "label": "WEAKLY_RELATED", "query": "Có summary chính thức cho cuộc họp không?"},
+    {"id": "vi-17", "label": "UNANSWERABLE", "query": "Doanh thu tháng sau sẽ là bao nhiêu?"},
+    {"id": "vi-18", "label": "UNANSWERABLE", "query": "Khách hàng nào sẽ ký hợp đồng mới?"},
+    {"id": "vi-19", "label": "UNANSWERABLE", "query": "Mật khẩu production hiện tại là gì?"},
+    {"id": "vi-20", "label": "UNANSWERABLE", "query": "Thời tiết Hà Nội ngày mai thế nào?"},
+    {"id": "vi-21", "label": "UNANSWERABLE", "query": "Ai thắng giải bóng đá năm nay?"},
+    {"id": "vi-22", "label": "UNANSWERABLE", "query": "Chi phí quảng cáo quý tới cần bao nhiêu?"},
+    {"id": "vi-23", "label": "UNANSWERABLE", "query": "Cổ phiếu công ty sẽ tăng hay giảm?"},
+    {"id": "vi-24", "label": "UNANSWERABLE", "query": "Có nên mua thiết bị mới cho văn phòng không?"}
+  ]
+}

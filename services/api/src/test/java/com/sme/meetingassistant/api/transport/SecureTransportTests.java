@@ -137,6 +137,18 @@ class SecureTransportTests {
             .isEqualTo("transcription.read-delivery");
         assertThat(WorkerOperations.allowed("urn:sme:service:ai-worker", "admin")).isFalse();
         assertThat(WorkerOperations.allowed("urn:sme:service:core-api", "transcription.claim")).isFalse();
+
+        String knowledge = "/internal/v1/worker/knowledge-indexing/deliveries/"
+            + "22222222-2222-4222-8222-222222222222";
+        for (String op : new String[]{"claim", "renew", "snapshot", "result"}) {
+            assertThat(WorkerOperations.operation("POST", knowledge + "/" + op))
+                .isEqualTo("knowledge." + op);
+            assertThat(WorkerOperations.allowed("urn:sme:service:knowledge-worker",
+                "knowledge." + op)).isTrue();
+        }
+        assertThat(WorkerOperations.operation("GET", knowledge))
+            .isEqualTo("knowledge.read-delivery");
+        assertThat(WorkerOperations.allowed("urn:sme:service:ai-worker", "knowledge.claim")).isFalse();
     }
 
     static int send(HttpClient client, String url, String method) throws Exception {

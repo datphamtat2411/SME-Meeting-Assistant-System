@@ -16,8 +16,21 @@ from sme_meeting_ai.api.app import create_app
 from sme_meeting_ai.api.security import require_internal_operation
 
 def test_app(settings, **kwargs):
-    app = create_app(settings, operation_policy={"test.execute": {"core-api"}}, **kwargs)
-    @app.post("/test-internal", dependencies=[Depends(require_internal_operation("test.execute"))])
+    policy = dict(kwargs.pop("operation_policy", None) or {})
+    policy["test.execute"] = {"core-api"}
+
+    app = create_app(
+        settings,
+        operation_policy=policy,
+        **kwargs,
+    )
+
+    @app.post(
+        "/test-internal",
+        dependencies=[
+            Depends(require_internal_operation("test.execute"))
+        ],
+    )
     async def protected():
         return {"ok": True}
     return app

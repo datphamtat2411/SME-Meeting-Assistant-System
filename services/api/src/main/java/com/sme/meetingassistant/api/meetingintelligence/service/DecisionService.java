@@ -7,6 +7,7 @@ import com.sme.meetingassistant.api.meetingintelligence.dto.EditDecisionRequest;
 import com.sme.meetingassistant.api.meetingintelligence.repository.DecisionRepository;
 import com.sme.meetingassistant.api.transcript.repository.TranscriptRepository.TranscriptSource;
 import com.sme.meetingassistant.api.transcript.service.TranscriptSourceGuard;
+import com.sme.meetingassistant.api.knowledge.KnowledgeIndexingProducer;
 import com.sme.meetingassistant.api.userorganization.service.AuthenticatedUserId;
 import java.util.HashSet;
 import java.util.List;
@@ -30,15 +31,17 @@ public class DecisionService {
     private final AuthenticatedUserId identity;
     private final TranscriptSourceGuard transcripts;
     private final MeetingIntelligenceAudit audit;
+    private final KnowledgeIndexingProducer knowledge;
 
     public DecisionService(DecisionRepository decisions, MeetingIntelligenceAccess access,
             AuthenticatedUserId identity, TranscriptSourceGuard transcripts,
-            MeetingIntelligenceAudit audit) {
+            MeetingIntelligenceAudit audit, KnowledgeIndexingProducer knowledge) {
         this.decisions = decisions;
         this.access = access;
         this.identity = identity;
         this.transcripts = transcripts;
         this.audit = audit;
+        this.knowledge = knowledge;
     }
 
     @Transactional(readOnly = true)
@@ -75,6 +78,7 @@ public class DecisionService {
             source == null ? null : source.transcriptId(),
             source == null ? null : source.contentRevision(), evidence);
         audit.decisionCreated(actor, meetingId, decisionId, evidence.size());
+        knowledge.request("DECISION", decisionId, meetingId);
         return decisions.find(meetingId, decisionId).orElseThrow(DecisionService::missing);
     }
 
@@ -101,6 +105,7 @@ public class DecisionService {
             throw new ResponseStatusException(HttpStatus.PRECONDITION_FAILED);
         }
         var updated = decisions.find(meetingId, decisionId).orElseThrow(DecisionService::missing);
+        knowledge.request("DECISION", decisionId, meetingId);
         audit.decisionEdited(actor, meetingId, decisionId, current.version(), updated.version());
         return updated;
     }
@@ -149,6 +154,7 @@ public class DecisionService {
             throw new ResponseStatusException(HttpStatus.PRECONDITION_FAILED);
         }
         var reviewed = decisions.find(meetingId, decisionId).orElseThrow(DecisionService::missing);
+        if (confirm) knowledge.request("DECISION", decisionId, meetingId);
         audit.decisionReviewed(actor, meetingId, decisionId, confirm,
             existing.version(), reviewed.version());
         return reviewed;

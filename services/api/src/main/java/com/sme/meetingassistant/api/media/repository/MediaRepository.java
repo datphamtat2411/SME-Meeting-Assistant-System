@@ -1289,11 +1289,14 @@ public class MediaRepository {
               UPDATE outbox_events SET status = 'FAILED',
                 claim_token = NULL, claim_expires_at = NULL,
                 last_error = COALESCE(last_error, 'OUTBOX_CONFIRM_NOT_OBSERVED')
-              WHERE status = 'PENDING' AND aggregate_type = 'PROCESSING_JOB'
-                AND event_type IN ('PROCESSING_JOB_QUEUED', 'PROCESSING_JOB_RETRY_REQUESTED', 'PROCESSING_DIARIZATION_REQUESTED', 'PROCESSING_INTELLIGENCE_STAGE_REQUESTED')
+              WHERE status = 'PENDING' AND (
+                (aggregate_type = 'PROCESSING_JOB'
+                  AND event_type IN ('PROCESSING_JOB_QUEUED', 'PROCESSING_JOB_RETRY_REQUESTED', 'PROCESSING_DIARIZATION_REQUESTED', 'PROCESSING_INTELLIGENCE_STAGE_REQUESTED'))
+                OR (aggregate_type = 'KNOWLEDGE_SOURCE'
+                  AND event_type = 'KNOWLEDGE_INDEXING_REQUESTED'))
                 AND attempt_count >= ?
                 AND (claim_expires_at IS NULL OR claim_expires_at <= CURRENT_TIMESTAMP)
-              RETURNING aggregate_id, aggregate_type, event_type, payload
+               RETURNING id, aggregate_id, aggregate_type, event_type, payload
             ), failed_jobs AS (
               UPDATE processing_jobs p SET status = 'FAILED', retryable = TRUE,
                 error_code = 'JOB_DISPATCH_FAILED',
@@ -1308,18 +1311,34 @@ public class MediaRepository {
                     AND e.payload->>'attemptNumber' = p.retry_count::text)
                 )
                 AND p.id = e.aggregate_id AND p.status = 'PENDING'
-              RETURNING p.id
-            ) SELECT count(*) FROM exhausted
+               RETURNING p.id
+             ), failed_knowledge AS (
+               UPDATE knowledge_indexing_work k SET state='TERMINAL_FAILURE',
+                 last_error_code='OUTBOX_CONFIRM_NOT_OBSERVED',
+                 last_error_summary='Knowledge indexing notification publication was not confirmed.',
+                 updated_at=CURRENT_TIMESTAMP
+               FROM exhausted e
+                 WHERE e.aggregate_type = 'KNOWLEDGE_SOURCE'
+                   AND e.event_type = 'KNOWLEDGE_INDEXING_REQUESTED'
+                 AND k.event_id = e.id
+                 AND k.state NOT IN ('INDEXED','NO_ELIGIBLE_CONTENT','SUPERSEDED','TERMINAL_FAILURE')
+               RETURNING k.event_id
+             ) SELECT count(*) FROM exhausted
             """, Long.class, maxAttempts);
         return this.jdbc.query("""
             WITH candidates AS (
               SELECT id FROM outbox_events
-              WHERE status = 'PENDING' AND aggregate_type = 'PROCESSING_JOB'
-                AND event_type IN ('PROCESSING_JOB_QUEUED', 'PROCESSING_JOB_RETRY_REQUESTED', 'PROCESSING_DIARIZATION_REQUESTED', 'PROCESSING_INTELLIGENCE_STAGE_REQUESTED')
-                AND (event_type<>'PROCESSING_INTELLIGENCE_STAGE_REQUESTED' OR ?)
-                AND NOT (event_type IN ('PROCESSING_JOB_QUEUED','PROCESSING_JOB_RETRY_REQUESTED') AND (
-                  EXISTS(SELECT 1 FROM processing_jobs j WHERE j.id=aggregate_id AND j.job_type='DERIVED_STAGE_PROCESSING')
-                  OR COALESCE(payload->>'retryFromStage','') IN ('GENERATING_SUMMARY','EXTRACTING_DECISIONS','EXTRACTING_ACTION_ITEMS')))
+              WHERE status = 'PENDING' AND (
+                (aggregate_type = 'PROCESSING_JOB'
+                  AND event_type IN ('PROCESSING_JOB_QUEUED', 'PROCESSING_JOB_RETRY_REQUESTED', 'PROCESSING_DIARIZATION_REQUESTED', 'PROCESSING_INTELLIGENCE_STAGE_REQUESTED')
+                  AND (event_type<>'PROCESSING_INTELLIGENCE_STAGE_REQUESTED' OR ?)
+                  AND NOT (event_type IN ('PROCESSING_JOB_QUEUED','PROCESSING_JOB_RETRY_REQUESTED') AND (
+                   EXISTS(SELECT 1 FROM processing_jobs j WHERE j.id=aggregate_id AND j.job_type='DERIVED_STAGE_PROCESSING')
+                   OR COALESCE(payload->>'retryFromStage','') IN ('GENERATING_SUMMARY','EXTRACTING_DECISIONS','EXTRACTING_ACTION_ITEMS')))
+                )
+                OR (aggregate_type = 'KNOWLEDGE_SOURCE'
+                  AND event_type = 'KNOWLEDGE_INDEXING_REQUESTED')
+              )
                 AND attempt_count < ?
                 AND next_attempt_at <= CURRENT_TIMESTAMP
                 AND (claim_expires_at IS NULL OR claim_expires_at <= CURRENT_TIMESTAMP)
@@ -1352,7 +1371,7 @@ public class MediaRepository {
                 claim_token = NULL, claim_expires_at = NULL
               WHERE id = ? AND claim_token = ? AND status = 'PENDING'
                 AND claim_expires_at > CURRENT_TIMESTAMP
-              RETURNING aggregate_id, aggregate_type, event_type, payload
+              RETURNING id, aggregate_id, aggregate_type, event_type, payload
             ), queued_jobs AS (
               UPDATE processing_jobs p SET status = 'QUEUED',
                 queued_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP,
@@ -1370,7 +1389,15 @@ public class MediaRepository {
                         WHERE x.processing_job_id=p.id AND x.stage_code=s.stage_code)))
                 )
                 AND p.id = e.aggregate_id AND p.status = 'PENDING'
-              RETURNING p.id
+                RETURNING p.id
+            ), knowledge_published AS (
+              UPDATE knowledge_indexing_work k SET published_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+              FROM published e
+              WHERE e.aggregate_type = 'KNOWLEDGE_SOURCE'
+                AND e.event_type = 'KNOWLEDGE_INDEXING_REQUESTED'
+                AND k.event_id = e.id
+              RETURNING k.event_id
             ) SELECT count(*) FROM published
             """, Long.class, eventId, claimToken,eventId);
         return updated == 1;
@@ -1395,7 +1422,7 @@ public class MediaRepository {
                 claim_token = NULL, claim_expires_at = NULL
               WHERE id = ? AND claim_token = ? AND status = 'PENDING'
                 AND attempt_count = ? AND claim_expires_at > CURRENT_TIMESTAMP
-              RETURNING aggregate_id, aggregate_type, event_type, status, payload
+              RETURNING id, aggregate_id, aggregate_type, event_type, status, payload
             ), failed_jobs AS (
               UPDATE processing_jobs p SET status = 'FAILED', retryable = TRUE,
                 error_code = 'JOB_DISPATCH_FAILED',
@@ -1411,7 +1438,17 @@ public class MediaRepository {
                     AND e.payload->>'attemptNumber' = p.retry_count::text)
                 )
                 AND p.id = e.aggregate_id AND p.status = 'PENDING'
-              RETURNING p.id
+                RETURNING p.id
+            ), failed_knowledge AS (
+              UPDATE knowledge_indexing_work k SET state='TERMINAL_FAILURE',
+                last_error_code='OUTBOX_CONFIRM_NOT_OBSERVED',
+                last_error_summary='Knowledge indexing notification publication was not confirmed.',
+                updated_at=CURRENT_TIMESTAMP
+              FROM decided e
+               WHERE e.status='FAILED' AND e.aggregate_type='KNOWLEDGE_SOURCE'
+                 AND e.event_type='KNOWLEDGE_INDEXING_REQUESTED' AND k.event_id=e.id
+                 AND k.state NOT IN ('INDEXED','NO_ELIGIBLE_CONTENT','SUPERSEDED','TERMINAL_FAILURE')
+              RETURNING k.event_id
             ) SELECT count(*) FROM decided
             """, Long.class, maxAttempts, safeError, delaySeconds,
             eventId, claimToken, attemptCount);

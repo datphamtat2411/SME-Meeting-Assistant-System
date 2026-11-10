@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.sme.meetingassistant.api.meeting.dto.ParticipantView;
+import com.sme.meetingassistant.api.meeting.entity.MeetingParticipantEntity;
 import com.sme.meetingassistant.api.meeting.entity.MeetingStatus;
 import com.sme.meetingassistant.api.meeting.repository.MeetingRepository;
 import com.sme.meetingassistant.api.room.entity.RoomEntity;
@@ -14,6 +16,8 @@ import com.sme.meetingassistant.api.userorganization.entity.GlobalRole;
 import com.sme.meetingassistant.api.userorganization.entity.UserEntity;
 import com.sme.meetingassistant.api.userorganization.repository.UserRepository;
 import java.security.Principal;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
@@ -91,6 +95,40 @@ class MeetingCoreIntegrationTests {
         assertThat(list).hasSize(2);
         assertThat(list.toString()).contains(organizer.getId().toString(),member.getId().toString());
         assertThat(meetings.findById(id).orElseThrow().getCreatedByUserId()).isEqualTo(organizer.getId());
+    }
+
+    @Test void activeDirectoryCandidatesAreAcceptedByCreateAndParticipantAddition() throws Exception {
+        String candidateQuery = "candidate-" + UUID.randomUUID().toString().substring(0, 8);
+        member.renameDisplayName(candidateQuery + " member");
+        other.renameDisplayName(candidateQuery + " other");
+        users.saveAndFlush(member);
+        users.saveAndFlush(other);
+        JsonNode candidates=body(mvc.perform(get("/api/v1/users/meeting-candidates")
+            .principal(principal(organizer)).param("q",candidateQuery))
+            .andExpect(status().isOk()).andReturn()).path("data");
+        java.util.List<String> candidateIds = new java.util.ArrayList<>();
+        candidates.forEach(candidate -> candidateIds.add(candidate.path("id").asText()));
+        assertThat(candidateIds)
+            .contains(member.getId().toString(), other.getId().toString())
+            .doesNotContain(organizer.getId().toString());
+
+        mvc.perform(post("/api/v1/meetings").principal(principal(organizer))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(json.writeValueAsString(Map.of("title","Directory candidate create",
+                "participantUserIds",java.util.List.of(member.getId())))))
+            .andExpect(status().isCreated());
+
+        MvcResult emptyMeeting=mvc.perform(post("/api/v1/meetings").principal(principal(organizer))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("{\"title\":\"Directory candidate addition\"}"))
+            .andExpect(status().isCreated()).andReturn();
+        UUID meetingId=UUID.fromString(body(emptyMeeting).path("data").path("id").asText());
+        mvc.perform(post("/api/v1/meetings/"+meetingId+"/participants")
+            .principal(principal(organizer))
+            .header(HttpHeaders.IF_MATCH,emptyMeeting.getResponse().getHeader(HttpHeaders.ETAG))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(json.writeValueAsString(Map.of("userId",other.getId()))))
+            .andExpect(status().isCreated());
     }
 
     @Test void organizerAndCurrentParticipantCanReadButOutsiderAndAdminCannot() throws Exception {
@@ -229,6 +267,50 @@ class MeetingCoreIntegrationTests {
             .andExpect(status().isCreated());
         assertThat(body(mvc.perform(get("/api/v1/meetings/"+id+"/participants")
             .principal(principal(organizer))).andExpect(status().isOk()).andReturn()).path("data")).hasSize(3);
+    }
+
+    @Test void participantProjectionIncludesActiveAndHistoricalIdentityWithoutChangingAccessBoundary() throws Exception {
+        organizer.renameDisplayName("Meeting Organizer");
+        member.renameDisplayName("Historical Member");
+        users.saveAllAndFlush(java.util.List.of(organizer, member));
+
+        MvcResult created=create();
+        String id=body(created).path("data").path("id").asText();
+        JsonNode initial=body(mvc.perform(get("/api/v1/meetings/"+id+"/participants")
+            .principal(principal(organizer))).andExpect(status().isOk()).andReturn()).path("data");
+        assertThat(initial.get(0).path("displayName").asText()).isEqualTo("Meeting Organizer");
+        assertThat(initial.get(1).path("displayName").asText()).isEqualTo("Historical Member");
+        JsonNode memberProjection=body(mvc.perform(get("/api/v1/meetings/"+id+"/participants")
+            .principal(principal(member))).andExpect(status().isOk()).andReturn()).path("data");
+        assertThat(memberProjection.get(1).path("displayName").asText())
+            .isEqualTo("Historical Member");
+
+        MvcResult removed=mvc.perform(delete("/api/v1/meetings/"+id+"/participants/"+member.getId())
+            .principal(principal(organizer)).header(HttpHeaders.IF_MATCH,
+                created.getResponse().getHeader(HttpHeaders.ETAG)))
+            .andExpect(status().isOk()).andReturn();
+        member.deactivate(OffsetDateTime.now(ZoneOffset.UTC));
+        users.saveAndFlush(member);
+
+        JsonNode history=body(mvc.perform(get("/api/v1/meetings/"+id+"/participants")
+            .principal(principal(organizer))).andExpect(status().isOk()).andReturn()).path("data");
+        JsonNode historical=null;
+        for (JsonNode row : history) {
+            if (member.getId().toString().equals(row.path("userId").asText())) historical=row;
+        }
+        assertThat(historical).isNotNull();
+        assertThat(historical.path("removedAt").isTextual()).isTrue();
+        assertThat(historical.path("displayName").asText()).isEqualTo("Historical Member");
+
+        mvc.perform(get("/api/v1/meetings/"+id+"/participants")
+            .principal(principal(other))).andExpect(status().isNotFound());
+        assertThat(removed.getResponse().getHeader(HttpHeaders.ETAG)).isNotBlank();
+    }
+
+    @Test void missingIdentityProjectionRemainsNullableWithoutFabricatingAName() {
+        MeetingParticipantEntity record = new MeetingParticipantEntity(
+            UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());
+        assertThat(ParticipantView.from(record, null).displayName()).isNull();
     }
 
     @Test void cancellationIsTerminalAndEmitsIntentWithoutDeletingMeeting() throws Exception {

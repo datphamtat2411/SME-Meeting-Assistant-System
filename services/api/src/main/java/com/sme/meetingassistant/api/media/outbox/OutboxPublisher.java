@@ -58,7 +58,8 @@ public class OutboxPublisher {
                     .setHeader("eventType", event.eventType());
                 boolean diarization = "PROCESSING_DIARIZATION_REQUESTED".equals(event.eventType());
                 boolean intelligence="PROCESSING_INTELLIGENCE_STAGE_REQUESTED".equals(event.eventType());
-                if (diarization || intelligence) {
+                boolean knowledge = "KNOWLEDGE_INDEXING_REQUESTED".equals(event.eventType());
+                if (diarization || intelligence || knowledge) {
                     // Retry the persisted notification, never manufacture a version
                     // for legacy payloads or upgrade them during publication.
                     int version = (int) WorkerJson.number(WorkerJson.parse(payload, 16384), "schemaVersion", 1, 1);
@@ -66,7 +67,8 @@ public class OutboxPublisher {
                 }
                 Message message = builder.build();
                 CorrelationData correlation = new CorrelationData(event.id().toString());
-                String routingKey = intelligence ? outbox.getIntelligenceRoutingKey()
+                String routingKey = knowledge ? outbox.getKnowledgeRoutingKey()
+                    : intelligence ? outbox.getIntelligenceRoutingKey()
                     : diarization ? outbox.getDiarizationRoutingKey() : outbox.getRoutingKey();
                 this.rabbitTemplate.send(outbox.getExchange(), routingKey, message, correlation);
                 var confirm = correlation.getFuture().get(confirmTimeoutSeconds, TimeUnit.SECONDS);

@@ -31,6 +31,18 @@ public final class AiCoreTransport implements AutoCloseable {
     }
 
     public HttpResponse<String> get(String path) throws IOException, InterruptedException {
+        return client.send(request(path).GET().build(), HttpResponse.BodyHandlers.ofString());
+    }
+
+    public HttpResponse<String> post(String path, String body) throws IOException, InterruptedException {
+        if (body == null || body.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 256 * 1024) {
+            throw new IllegalArgumentException("AI request body is outside the supported bound");
+        }
+        return client.send(request(path).header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(body)).build(), HttpResponse.BodyHandlers.ofString());
+    }
+
+    private HttpRequest.Builder request(String path) {
         if (path == null || !path.startsWith("/") || path.startsWith("//") || path.contains("\\")) {
             throw new IllegalArgumentException("Origin-relative AI path required");
         }
@@ -38,8 +50,8 @@ public final class AiCoreTransport implements AutoCloseable {
         if (!base.getScheme().equals(target.getScheme()) || !base.getRawAuthority().equals(target.getRawAuthority())) {
             throw new IllegalArgumentException("AI origin cannot change");
         }
-        return client.send(HttpRequest.newBuilder(target).timeout(Duration.ofSeconds(15))
-            .header("Accept", "application/json").GET().build(), HttpResponse.BodyHandlers.ofString());
+        return HttpRequest.newBuilder(target).timeout(Duration.ofSeconds(15))
+            .header("Accept", "application/json");
     }
 
     public void requireReady() throws IOException, InterruptedException {

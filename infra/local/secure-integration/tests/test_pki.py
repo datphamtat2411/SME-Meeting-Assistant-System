@@ -28,6 +28,10 @@ def test_valid_core_worker_and_server(certificates):
         pki.validate(role, certificates / f"{name}.crt", certificates / f"{name}.key", certificates / "ca.crt", hostname, 60)
 
 
+def test_knowledge_worker_client_role_is_registered():
+    assert pki.CLIENTS["knowledge-client"] == "knowledge-worker"
+
+
 @pytest.mark.parametrize("role,name,ca,host", [
     ("worker-client", "core-api", "ca", None),
     ("core-client", "ambiguous", "ca", None),

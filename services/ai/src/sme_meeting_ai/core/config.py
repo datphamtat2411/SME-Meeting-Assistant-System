@@ -71,6 +71,62 @@ class Settings(BaseSettings):
         default=30, gt=0, le=300, allow_inf_nan=False,
     )
     worker_execution_timeout_seconds: float = Field(default=14400, gt=0, le=86400, allow_inf_nan=False)
+    rag_model_id: Literal["BAAI/bge-m3"] = "BAAI/bge-m3"
+    rag_model_revision: str = Field(
+        default="5617a9f61b028005a4858fdac845db406aefb181",
+        pattern=r"^[a-f0-9]{40}$",
+    )
+    rag_model_path: Path | None = None
+    rag_model_cache_dir: Path = Path("/var/lib/sme-meeting-ai/models")
+    rag_inference_device: str = Field(default="cpu", pattern=r"^(cpu|cuda(?::[0-9]+)?)$")
+    rag_inference_precision: Literal["fp32", "fp16"] = "fp32"
+    rag_embedding_batch_size: int = Field(default=8, gt=0, le=256, strict=True)
+    rag_embedding_max_input_tokens: int = Field(default=512, gt=0, le=8192, strict=True)
+    rag_chunk_target_tokens: int = Field(default=384, gt=0, le=8192, strict=True)
+    rag_embedding_max_concurrent: int = Field(default=1, gt=0, le=4, strict=True)
+    rag_model_init_timeout_seconds: float = Field(default=900, gt=0, le=7200, allow_inf_nan=False)
+    rag_embedding_timeout_seconds: float = Field(default=900, gt=0, le=7200, allow_inf_nan=False)
+    rag_reranker_model_id: Literal["BAAI/bge-reranker-v2-m3"] = "BAAI/bge-reranker-v2-m3"
+    rag_reranker_model_revision: str = Field(
+        default="953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
+        pattern=r"^[a-f0-9]{40}$",
+    )
+    rag_reranker_model_path: Path | None = None
+    rag_reranker_batch_size: int = Field(default=8, gt=0, le=64, strict=True)
+    rag_reranker_query_max_tokens: int = Field(default=256, gt=0, le=512, strict=True)
+    rag_reranker_passage_max_tokens: int = Field(default=512, gt=0, le=2048, strict=True)
+    rag_reranker_pair_max_tokens: int = Field(default=768, gt=0, le=4096, strict=True)
+    rag_reranker_max_concurrent: int = Field(default=1, gt=0, le=4, strict=True)
+    rag_reranker_timeout_seconds: float = Field(default=900, gt=0, le=7200, allow_inf_nan=False)
+    rag_index_generation_id: str = Field(default="rag-t02-bge-m3-v1", pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$")
+    rag_index_configuration_version: str = Field(default="rag-t02-bge-m3-v1", pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$")
+    rag_index_configuration_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    rag_qdrant_url: str = "http://127.0.0.1:6333"
+    rag_qdrant_api_key: SecretStr | None = Field(default=None, repr=False)
+    rag_qdrant_collection: str = Field(
+        default="sme_meeting_knowledge_bge_m3",
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,126}$",
+    )
+    rag_qdrant_timeout_seconds: float = Field(default=10, gt=0, le=120, allow_inf_nan=False)
+    rag_qdrant_upsert_batch_size: int = Field(default=64, gt=0, le=256, strict=True)
+    rag_retrieval_dense_prefetch_limit: int = Field(default=40, gt=0, le=256, strict=True)
+    rag_retrieval_sparse_prefetch_limit: int = Field(default=40, gt=0, le=256, strict=True)
+    rag_retrieval_fusion_limit: int = Field(default=40, gt=0, le=256, strict=True)
+    rag_retrieval_rerank_limit: int = Field(default=40, gt=0, le=256, strict=True)
+    rag_retrieval_final_evidence_limit: int = Field(default=8, gt=0, le=8, strict=True)
+    rag_retrieval_score_cutoff: float = Field(default=0.0, allow_inf_nan=False)
+    knowledge_indexing_worker_enabled: bool = False
+    knowledge_indexing_reconciliation_enabled: bool = False
+    knowledge_indexing_worker_concurrency: int = Field(default=1, gt=0, le=16, strict=True)
+    knowledge_indexing_worker_execution_timeout_seconds: float = Field(
+        default=1800, gt=0, le=7200, allow_inf_nan=False,
+    )
+    knowledge_indexing_retry_delay_seconds: float = Field(
+        default=5, gt=0, le=30, allow_inf_nan=False,
+    )
+    knowledge_indexing_exchange: Literal["meeting.processing"] = "meeting.processing"
+    knowledge_indexing_routing_key: Literal["knowledge.indexing.requested"] = "knowledge.indexing.requested"
+    knowledge_indexing_queue: Literal["meeting.knowledge.indexing"] = "meeting.knowledge.indexing"
     rabbitmq_url: str | None = Field(default=None, repr=False)
     rabbitmq_username: SecretStr | None = Field(default=None, repr=False)
     rabbitmq_password: SecretStr | None = Field(default=None, repr=False)
@@ -209,6 +265,29 @@ class Settings(BaseSettings):
     meeting_intelligence_rabbitmq_password: SecretStr | None = Field(default=None, repr=False)
     meeting_intelligence_core_api_client_cert_file: Path | None = None
     meeting_intelligence_core_api_client_key_file: Path | None = Field(default=None, repr=False)
+    # RAG-T04: Assistant inference is independently enabled and remains fail-closed
+    # until a trusted T03 runtime, Core authorization, and source verification are wired.
+    assistant_enabled: bool = False
+    assistant_inference_enabled: bool = False
+    assistant_model: str = Field(
+        default="openai/gpt-6-luna", max_length=160,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_./:-]{0,159}$",
+    )
+    assistant_reasoning_effort: ReasoningEffort = "high"
+    assistant_context_window_tokens: int = Field(default=16384, ge=1, le=400000, strict=True)
+    assistant_max_input_tokens: int = Field(default=12000, ge=1, le=12000, strict=True)
+    assistant_max_output_tokens: int = Field(default=2000, ge=1, le=2000, strict=True)
+    assistant_conversation_context_token_budget: int = Field(default=1200, ge=1, le=1200, strict=True)
+    assistant_request_timeout_seconds: float = Field(default=60, gt=0, le=300, allow_inf_nan=False)
+    assistant_provider_timeout_seconds: float = Field(default=45, gt=0, le=120, allow_inf_nan=False)
+    assistant_max_attempts: int = Field(default=2, ge=1, le=2, strict=True)
+    assistant_max_response_bytes: int = Field(default=1048576, ge=1, le=16777216, strict=True)
+    assistant_max_concurrent_requests: int = Field(default=1, ge=1, le=4, strict=True)
+    assistant_max_request_bytes: int = Field(default=262144, ge=1, le=1048576, strict=True)
+    assistant_max_question_characters: int = Field(default=4096, ge=1, le=4096, strict=True)
+    assistant_max_answer_characters: int = Field(default=20000, ge=1, le=20000, strict=True)
+    assistant_max_selected_evidence: int = Field(default=8, ge=1, le=8, strict=True)
+    assistant_provider_overhead_tokens: int = Field(default=512, ge=0, le=4096, strict=True)
     diarization_model: str = Field(
         default="konieshadow/speaker-diarization:c58b6b038f6de30f93eaccd6aecb59d1b9a48ac13b22be000bcffe853efb2c20",
         pattern=r"^konieshadow/speaker-diarization:[a-f0-9]{64}$",
@@ -340,7 +419,59 @@ class Settings(BaseSettings):
         _ = parts.port
         return value.rstrip("/") if scheme == "https" else value
 
-    @field_validator("rabbitmq_delivery_limit", "core_api_max_attempts", mode="before")
+    @field_validator("rag_qdrant_url")
+    @classmethod
+    def qdrant_endpoint(cls, value: str) -> str:
+        parts = urlsplit(value)
+        if (
+            parts.scheme not in {"http", "https"}
+            or not parts.hostname
+            or parts.username
+            or parts.password
+            or parts.query
+            or parts.fragment
+            or any(ord(c) <= 32 for c in value)
+            or (parts.scheme == "http" and parts.hostname.lower() not in {"127.0.0.1", "localhost", "::1"})
+        ):
+            raise ValueError("Invalid Qdrant endpoint")
+        _ = parts.port
+        return value.rstrip("/")
+
+    @model_validator(mode="after")
+    def valid_rag_runtime(self) -> Self:
+        if self.rag_chunk_target_tokens > self.rag_embedding_max_input_tokens:
+            raise ValueError("RAG chunk target exceeds embedding input budget")
+        if self.rag_inference_precision == "fp16" and self.rag_inference_device == "cpu":
+            raise ValueError("RAG fp16 requires a CUDA device")
+        if self.rag_reranker_pair_max_tokens < self.rag_reranker_query_max_tokens:
+            raise ValueError("RAG reranker pair budget is smaller than its query budget")
+        if self.rag_retrieval_rerank_limit > self.rag_retrieval_fusion_limit:
+            raise ValueError("RAG rerank limit cannot exceed the fused candidate limit")
+        if self.rag_retrieval_final_evidence_limit > self.rag_retrieval_rerank_limit:
+            raise ValueError("RAG final evidence limit cannot exceed the rerank limit")
+        return self
+
+    @field_validator(
+        "rabbitmq_delivery_limit",
+        "core_api_max_attempts",
+        "rag_embedding_batch_size",
+        "rag_embedding_max_input_tokens",
+        "rag_chunk_target_tokens",
+         "rag_embedding_max_concurrent",
+         "rag_qdrant_upsert_batch_size",
+         "knowledge_indexing_worker_concurrency",
+        "rag_reranker_batch_size",
+        "rag_reranker_query_max_tokens",
+        "rag_reranker_passage_max_tokens",
+        "rag_reranker_pair_max_tokens",
+        "rag_reranker_max_concurrent",
+        "rag_retrieval_dense_prefetch_limit",
+        "rag_retrieval_sparse_prefetch_limit",
+        "rag_retrieval_fusion_limit",
+        "rag_retrieval_rerank_limit",
+        "rag_retrieval_final_evidence_limit",
+        mode="before",
+    )
     @classmethod
     def parse_worker_integers(cls, value: object) -> object:
         return cls.parse_asr_chunk_integers(value)
@@ -423,6 +554,10 @@ class Settings(BaseSettings):
         "meeting_intelligence_decision_max_model_calls", "meeting_intelligence_decision_max_evidence_references",
         "meeting_intelligence_action_item_max_signals", "meeting_intelligence_action_item_max_candidates",
         "meeting_intelligence_action_item_max_model_calls", "meeting_intelligence_action_item_max_evidence_references",
+        "assistant_context_window_tokens", "assistant_max_input_tokens", "assistant_max_output_tokens",
+        "assistant_conversation_context_token_budget", "assistant_max_attempts", "assistant_max_response_bytes",
+        "assistant_max_concurrent_requests", "assistant_max_request_bytes", "assistant_max_question_characters",
+        "assistant_max_answer_characters", "assistant_max_selected_evidence", "assistant_provider_overhead_tokens",
         mode="before",
     )
     @classmethod
@@ -436,11 +571,26 @@ class Settings(BaseSettings):
             raise ValueError("Intelligence timeout must be numeric")
         return value
 
+    @field_validator("assistant_request_timeout_seconds", "assistant_provider_timeout_seconds", mode="before")
+    @classmethod
+    def reject_boolean_assistant_timeout(cls, value: object) -> object:
+        if isinstance(value, bool):
+            raise ValueError("Assistant timeout must be numeric")
+        return value
+
     @model_validator(mode="after")
     def valid_intelligence_context(self) -> Self:
         if (self.meeting_intelligence_max_input_tokens + self.meeting_intelligence_max_output_tokens
                 > self.meeting_intelligence_context_window_tokens):
             raise ValueError("Intelligence input and output allowances must fit the context window")
+        return self
+
+    @model_validator(mode="after")
+    def valid_assistant_context(self) -> Self:
+        if self.assistant_max_input_tokens + self.assistant_max_output_tokens > self.assistant_context_window_tokens:
+            raise ValueError("Assistant input and output allowances must fit the context window")
+        if self.assistant_provider_timeout_seconds > self.assistant_request_timeout_seconds:
+            raise ValueError("Assistant provider timeout cannot exceed request timeout")
         return self
 
     @field_validator(

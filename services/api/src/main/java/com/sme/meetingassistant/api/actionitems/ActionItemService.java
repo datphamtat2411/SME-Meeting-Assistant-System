@@ -5,6 +5,7 @@ import com.sme.meetingassistant.api.actionitems.dto.PatchActionItemRequest;
 import com.sme.meetingassistant.api.actionitems.application.ActionItemCreationIdempotency;
 import com.sme.meetingassistant.api.actionitems.application.ActionItemAssignmentEvents;
 import com.sme.meetingassistant.api.actionitems.application.ActionItemAssignmentEvents.Kind;
+import com.sme.meetingassistant.api.knowledge.KnowledgeIndexingProducer;
 import com.sme.meetingassistant.api.actionitems.ActionItemLifecycle.Command;
 import com.sme.meetingassistant.api.meeting.service.MeetingActionItemAccess;
 import java.sql.ResultSet;
@@ -39,17 +40,20 @@ public class ActionItemService {
     private final ActionItemAssignmentEvents assignmentEvents;
     private final ObjectMapper json;
     private final ZoneId businessZone;
+    private final KnowledgeIndexingProducer knowledge;
 
     public ActionItemService(JdbcTemplate jdbc, MeetingActionItemAccess meetingAccess,
             ActionItemCreationIdempotency idempotency,
             ActionItemAssignmentEvents assignmentEvents, ObjectMapper json,
-            @Value("${app.action-items.business-zone:UTC}") String zoneId) {
+            @Value("${app.action-items.business-zone:UTC}") String zoneId,
+            KnowledgeIndexingProducer knowledge) {
         this.jdbc = jdbc;
         this.meetingAccess = meetingAccess;
         this.idempotency = idempotency;
         this.assignmentEvents = assignmentEvents;
         this.json = json;
         this.businessZone = ZoneId.of(zoneId);
+        this.knowledge = knowledge;
     }
 
     @Transactional
@@ -102,6 +106,7 @@ public class ActionItemService {
         assignmentEvents.record(id, 0L, assignmentHistory,
             request.assigneeUserId(), Kind.ASSIGNED);
         if (idempotencyKey != null) idempotency.complete(actorId, idempotencyKey, id);
+        knowledge.request("ACTION_ITEM", id, request.meetingId());
         return visibleForActor(byId(id), actorId);
     }
 
@@ -276,7 +281,9 @@ public class ActionItemService {
         if (dueChanged) {
             history(id, "DUE_DATE", string(old.dueDate()), string(dueDate), actorId);
         }
-        return visibleForActor(byId(id), actorId);
+        ActionItemView updatedItem = byId(id);
+        knowledge.request("ACTION_ITEM", id, updatedItem.meetingId());
+        return visibleForActor(updatedItem, actorId);
     }
 
     @Transactional public ActionItemView confirm(UUID id, UUID actor, String tag) {
@@ -340,7 +347,9 @@ public class ActionItemService {
             // subsequent DONE -> OPEN reopen could resurrect pending mail.
             assignmentEvents.invalidate(id, old.version() + 1, statusHistory, target.name());
         }
-        return visibleForActor(byId(id), actor);
+        ActionItemView updatedItem = byId(id);
+        knowledge.request("ACTION_ITEM", id, updatedItem.meetingId());
+        return visibleForActor(updatedItem, actor);
     }
 
     private void requireActiveAssignee(UUID assignee) {

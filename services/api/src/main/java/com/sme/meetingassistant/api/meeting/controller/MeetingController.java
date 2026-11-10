@@ -48,7 +48,7 @@ public class MeetingController {
         return result(service.detail(meetingId));
     }
     @GetMapping
-    public ApiResponse<List<MeetingView>> list(
+    public ApiResponse<List<MeetingListView>> list(
         @RequestParam(required = false) MeetingStatus status,
         @RequestParam(required = false) @Size(max=200) String q,
         @RequestParam(required = false) UUID organizerId,

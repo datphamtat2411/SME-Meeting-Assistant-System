@@ -17,6 +17,13 @@ public final class WorkerOperations {
     private static final Pattern INTELLIGENCE_COMMAND=Pattern.compile(INTELLIGENCE+"(claim|renew|fail)");
     private static final Pattern INTELLIGENCE_DELIVERY=Pattern.compile(INTELLIGENCE+"deliveries/"+UUID);
     private static final Set<String> INTELLIGENCE_GRANTS=Set.of("intelligence.claim","intelligence.renew","intelligence.fail","intelligence.read-delivery");
+    private static final String KNOWLEDGE="/internal/v1/worker/knowledge-indexing/deliveries/" + UUID + "/";
+    private static final Pattern KNOWLEDGE_COMMAND=Pattern.compile(KNOWLEDGE+"(claim|renew|snapshot|result)");
+    private static final Pattern KNOWLEDGE_DELIVERY=Pattern.compile(
+        "/internal/v1/worker/knowledge-indexing/deliveries/" + UUID);
+    private static final Set<String> KNOWLEDGE_GRANTS=Set.of("knowledge.claim","knowledge.renew",
+        "knowledge.snapshot","knowledge.result","knowledge.read-delivery",
+        "knowledge.source-verification");
     private static final Set<String> GRANTS = Set.of("transcription.claim", "transcription.read-delivery",
         "transcription.renew", "transcription.complete", "transcription.fail",
         "diarization.claim", "diarization.snapshot", "diarization.renew", "diarization.complete", "diarization.fail", "diarization.read-delivery");
@@ -31,11 +38,19 @@ public final class WorkerOperations {
         var intelligence=INTELLIGENCE_COMMAND.matcher(path);
         if("POST".equals(method) && intelligence.matches()) return "intelligence."+intelligence.group(1);
         if("GET".equals(method) && INTELLIGENCE_DELIVERY.matcher(path).matches()) return "intelligence.read-delivery";
+        var knowledge=KNOWLEDGE_COMMAND.matcher(path);
+        if("POST".equals(method) && knowledge.matches()) return "knowledge." + knowledge.group(1);
+        if("GET".equals(method) && KNOWLEDGE_DELIVERY.matcher(path).matches()) return "knowledge.read-delivery";
+        if("POST".equals(method)
+                && "/internal/v1/worker/knowledge-indexing/source-verification".equals(path)) {
+            return "knowledge.source-verification";
+        }
         return null;
     }
 
     public static boolean allowed(String principal, String operation) {
         return operation!=null && ("urn:sme:service:ai-worker".equals(principal) && GRANTS.contains(operation)
-            || "urn:sme:service:mi-worker".equals(principal) && INTELLIGENCE_GRANTS.contains(operation));
+            || "urn:sme:service:mi-worker".equals(principal) && INTELLIGENCE_GRANTS.contains(operation)
+            || "urn:sme:service:knowledge-worker".equals(principal) && KNOWLEDGE_GRANTS.contains(operation));
     }
 }

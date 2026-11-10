@@ -340,7 +340,7 @@ class IntelligenceWorkerIntegrationTests {
                 jdbc.update("INSERT INTO outbox_events(id,aggregate_type,aggregate_id,event_type,payload,occurred_at) VALUES (?,'PROCESSING_JOB',?,'PROCESSING_JOB_QUEUED',CAST(? AS jsonb),clock_timestamp())",legacy,job,payload);
             });
             var upgraded=org.flywaydb.core.Flyway.configure().dataSource(jdbc.getDataSource()).schemas(schema).defaultSchema(schema)
-                .locations("classpath:db/migration").load();
+                .locations("classpath:db/migration").target("45").load();
             assertThat(upgraded.migrate().migrationsExecuted).isEqualTo(1);upgraded.validate();
             assertThat(jdbc.queryForObject("SELECT count(*) FROM "+schema+".processing_stage_runs WHERE processing_job_id=?",Long.class,job)).isEqualTo(derived?1:2);
             assertThat(jdbc.queryForObject("SELECT count(*) FROM "+schema+".processing_intelligence_dispatches",Long.class)).isZero();

@@ -6,6 +6,7 @@ import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle.StageCl
 import com.sme.meetingassistant.api.meetingintelligence.service.IntelligenceResultArtifactReader.ResultArtifact;
 import com.sme.meetingassistant.api.transcript.repository.TranscriptRepository.DerivedSource;
 import com.sme.meetingassistant.api.transcript.service.TranscriptSourceGuard;
+import com.sme.meetingassistant.api.knowledge.KnowledgeIndexingProducer;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -25,15 +26,17 @@ public class IntelligenceResultAcceptance {
     private final TranscriptSourceGuard transcript;
     private final MeetingIntelligenceAudit audit;
     private final MeetingIntelligenceMetrics metrics;
+    private final KnowledgeIndexingProducer knowledge;
 
     public IntelligenceResultAcceptance(JdbcTemplate jdbc, ProcessingJobLifecycle media,
             TranscriptSourceGuard transcript, MeetingIntelligenceAudit audit,
-            MeetingIntelligenceMetrics metrics) {
+            MeetingIntelligenceMetrics metrics, KnowledgeIndexingProducer knowledge) {
         this.jdbc = jdbc;
         this.media = media;
         this.transcript = transcript;
         this.audit = audit;
         this.metrics = metrics;
+        this.knowledge = knowledge;
     }
 
     public record Acceptance(boolean replay, int writtenRows) { }
@@ -138,17 +141,19 @@ public class IntelligenceResultAcceptance {
                 """,Boolean.class,stage.meetingId());
             // Never displace ANY current Summary, including one produced by AI.
             boolean promote=evidence.current() && !Boolean.TRUE.equals(hasCurrent);
+            UUID summaryId = UUID.randomUUID();
             jdbc.update("""
                 INSERT INTO meeting_summary_versions(
                     id,meeting_id,version_number,content,source_type,
                     processing_job_id,result_receipt_id,transcript_id,
                     content_revision,quality_status,is_current,ai_warning_codes)
                 VALUES (?,?,?,?,'AI_GENERATED',?,?,?, ?,?,?,?::text[])
-                """,UUID.randomUUID(),stage.meetingId(),version,payload.summary(),
+                """,summaryId,stage.meetingId(),version,payload.summary(),
                 stage.jobId(),receiptId,source.transcript(),source.revision(),
                 (evidence.hasQualityWarnings() || !payload.warnings().isEmpty())
                     ?"READY_WITH_WARNINGS":"READY",
-                promote,AiQualityMetadata.pgArray(payload.warnings()));
+                 promote,AiQualityMetadata.pgArray(payload.warnings()));
+            knowledge.request("SUMMARY", summaryId, stage.meetingId());
             written=1;
         } else {
             for (var candidate:payload.candidates()) {
@@ -169,6 +174,7 @@ public class IntelligenceResultAcceptance {
                         VALUES (?,?,?)
                         """,id,source.transcript(),segment);
                 }
+                knowledge.request("DECISION", id, stage.meetingId());
             }
             written=payload.candidates().size();
         }

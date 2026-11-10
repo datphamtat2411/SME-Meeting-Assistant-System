@@ -72,3 +72,23 @@ def test_intelligence_opt_in_has_dedicated_route_and_identity_without_dlq_replay
     assert permissions["mi"]["write"] == permissions["mi"]["configure"] == "^$"
     assert permissions["ai"]["read"] == r"^meeting\.processing\.jobs$"
     assert permissions["dlq"]["read"] == r"^(?:meeting\.processing\.jobs\.dead|meeting\.processing\.intelligence\.dead)$"
+
+
+def test_knowledge_opt_in_has_dedicated_route_and_consumer_identity():
+    definitions = broker.definitions("fixture", {
+        "publisher": "core", "worker": "ai", "reconciler": "dlq", "knowledge": "rag",
+    }, knowledge=True)
+    queues = {q["name"]: q for q in definitions["queues"]}
+    assert set(queues) == {broker.WORK, broker.DEAD, broker.KNOWLEDGE_WORK, broker.KNOWLEDGE_DEAD}
+    work = queues[broker.KNOWLEDGE_WORK]["arguments"]
+    dead = queues[broker.KNOWLEDGE_DEAD]["arguments"]
+    assert work["x-queue-type"] == "quorum"
+    assert work["x-delivery-limit"] == 5
+    assert work["x-dead-letter-routing-key"] == broker.KNOWLEDGE_DEAD
+    assert dead["x-queue-type"] == "quorum"
+    assert any(binding["destination"] == broker.KNOWLEDGE_WORK
+               and binding["routing_key"] == broker.KNOWLEDGE_ROUTE
+               for binding in definitions["bindings"])
+    permissions = {permission["user"]: permission for permission in definitions["permissions"]}
+    assert permissions["rag"]["read"] == r"^meeting\.knowledge\.indexing$"
+    assert permissions["rag"]["write"] == permissions["rag"]["configure"] == "^$"

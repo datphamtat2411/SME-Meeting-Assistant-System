@@ -217,6 +217,34 @@ class OutboxPublisherTests {
     }
 
     @Test
+    void knowledgeNotificationUsesDedicatedRouteAndPersistentVersionedHeaders() {
+        event = new Outbox(UUID.randomUUID(), "KNOWLEDGE_INDEXING_REQUESTED",
+            "{\"schemaVersion\":1,\"operation\":\"UPSERT\"}", 1, UUID.randomUUID());
+        props.getOutbox().setKnowledgeRoutingKey("knowledge.indexing.requested");
+        when(repository.claimPendingOutbox(1,60,3,false)).thenReturn(List.of(event),List.of());
+        when(repository.markPublished(event.id(),event.claimToken())).thenReturn(true);
+        doAnswer(invocation -> {
+            CorrelationData cd = invocation.getArgument(3);
+            cd.getFuture().complete(new CorrelationData.Confirm(true,null));
+            return null;
+        }).when(rabbit).send(eq("meeting.processing"),eq("knowledge.indexing.requested"),
+            any(Message.class),any(CorrelationData.class));
+
+        publisher.publishPending();
+
+        ArgumentCaptor<Message> message = ArgumentCaptor.forClass(Message.class);
+        verify(rabbit).send(eq("meeting.processing"),eq("knowledge.indexing.requested"),
+            message.capture(),any(CorrelationData.class));
+        assertEquals(MessageDeliveryMode.PERSISTENT,
+            message.getValue().getMessageProperties().getDeliveryMode());
+        assertEquals(Integer.valueOf(1),
+            message.getValue().getMessageProperties().getHeaders().get("eventSchemaVersion"));
+        assertEquals(event.id().toString(),
+            message.getValue().getMessageProperties().getHeaders().get("eventId"));
+        verify(repository).markPublished(event.id(),event.claimToken());
+    }
+
+    @Test
     void latePublisherCannotClearAnotherWorkersLeaseAfterConfirm() {
         oneClaim();
         when(repository.markPublished(event.id(), event.claimToken())).thenReturn(false);

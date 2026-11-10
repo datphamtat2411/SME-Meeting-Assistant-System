@@ -13,6 +13,7 @@ public class MediaProperties {
     private final Admission admission = new Admission();
     private final Processing processing = new Processing();
     private final Intelligence intelligence = new Intelligence();
+    private final KnowledgeIndexing knowledgeIndexing = new KnowledgeIndexing();
 
     public Storage getStorage() { return storage; }
     public Upload getUpload() { return upload; }
@@ -20,6 +21,7 @@ public class MediaProperties {
     public Admission getAdmission() { return admission; }
     public Processing getProcessing() { return processing; }
     public Intelligence getIntelligence() { return intelligence; }
+    public KnowledgeIndexing getKnowledgeIndexing() { return knowledgeIndexing; }
 
     public static class Intelligence {
         private boolean enabled;
@@ -40,6 +42,37 @@ public class MediaProperties {
         public void setStorageId(String value) { storageId=value; }
         public List<String> getEnabledStages() { return enabledStages; }
         public void setEnabledStages(List<String> value) { enabledStages=value; }
+    }
+
+    public static class KnowledgeIndexing {
+        private boolean enabled;
+        private int leaseSeconds = 1800;
+        private int maxAttempts = 5;
+        // Keep these defaults aligned with contracts/RAG_T05_BGE_M3_INDEX_GENERATION_V1.json.
+        private String generationId = "rag-t02-bge-m3-v1";
+        private String configurationVersion = "rag-t02-bge-m3-v1";
+        private String configurationSha256 =
+            "b09c19a082d96d3a3fe66bbdfde4c7f50cde139bd539d456da3f41691ab3f4b1";
+        private String tokenizerId =
+            "BAAI/bge-m3-tokenizer:5617a9f61b028005a4858fdac845db406aefb181";
+        private String collectionName = "sme_meeting_knowledge_bge_m3";
+
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean value) { enabled = value; }
+        public int getLeaseSeconds() { return leaseSeconds; }
+        public void setLeaseSeconds(int value) { leaseSeconds = value; }
+        public int getMaxAttempts() { return maxAttempts; }
+        public void setMaxAttempts(int value) { maxAttempts = value; }
+        public String getGenerationId() { return generationId; }
+        public void setGenerationId(String value) { generationId = value; }
+        public String getConfigurationVersion() { return configurationVersion; }
+        public void setConfigurationVersion(String value) { configurationVersion = value; }
+        public String getConfigurationSha256() { return configurationSha256; }
+        public void setConfigurationSha256(String value) { configurationSha256 = value; }
+        public String getTokenizerId() { return tokenizerId; }
+        public void setTokenizerId(String value) { tokenizerId = value; }
+        public String getCollectionName() { return collectionName; }
+        public void setCollectionName(String value) { collectionName = value; }
     }
 
     public static class Storage {
@@ -126,6 +159,7 @@ public class MediaProperties {
         private String routingKey;
         private String diarizationRoutingKey = "processing.diarization.requested";
         private String intelligenceRoutingKey = "processing.intelligence.requested";
+        private String knowledgeRoutingKey = "knowledge.indexing.requested";
         private long pollDelayMs = 2000;
         private int maxAttempts = 12;
         private int leaseSeconds = 60;
@@ -138,6 +172,8 @@ public class MediaProperties {
         public void setDiarizationRoutingKey(String value) { diarizationRoutingKey = value; }
         public String getIntelligenceRoutingKey() { return intelligenceRoutingKey; }
         public void setIntelligenceRoutingKey(String value) { intelligenceRoutingKey=value; }
+        public String getKnowledgeRoutingKey() { return knowledgeRoutingKey; }
+        public void setKnowledgeRoutingKey(String value) { knowledgeRoutingKey = value; }
         public long getPollDelayMs() { return pollDelayMs; }
         public void setPollDelayMs(long value) { pollDelayMs = value; }
         public int getMaxAttempts() { return maxAttempts; }

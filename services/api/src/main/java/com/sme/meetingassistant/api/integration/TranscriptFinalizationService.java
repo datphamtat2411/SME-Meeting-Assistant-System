@@ -5,6 +5,7 @@ import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle.StageCl
 import com.sme.meetingassistant.api.transcript.repository.TranscriptRepository;
 import com.sme.meetingassistant.api.transcript.service.TranscriptIngestion;
 import com.sme.meetingassistant.api.transcript.service.TranscriptIngestion.TranscriptResult;
+import com.sme.meetingassistant.api.knowledge.KnowledgeIndexingProducer;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -21,11 +22,13 @@ import org.springframework.transaction.annotation.Transactional;
 public class TranscriptFinalizationService {
     private final TranscriptRepository transcripts;
     private final ProcessingJobLifecycle lifecycle;
+    private final KnowledgeIndexingProducer knowledge;
 
     public TranscriptFinalizationService(TranscriptRepository transcripts,
-            ProcessingJobLifecycle lifecycle) {
+            ProcessingJobLifecycle lifecycle, KnowledgeIndexingProducer knowledge) {
         this.transcripts = transcripts;
         this.lifecycle = lifecycle;
+        this.knowledge = knowledge;
     }
 
     /** Lock-order entry point for atomic adapters using this application boundary. */
@@ -58,6 +61,7 @@ public class TranscriptFinalizationService {
         // All writes participate in this method's transaction. Any exception
         // rolls back transcript rows, stage success and job completion together.
         transcripts.publishDuringFinalization(result);
+        knowledge.request("TRANSCRIPT", transcripts.publicationId(result.processingJobId()), result.meetingId());
         String stageOutcome = result.status() == TranscriptIngestion.Status.READY_WITH_WARNINGS
             ? "SUCCEEDED_WITH_WARNING" : "SUCCEEDED";
         lifecycle.completeStage(claim, stageOutcome, null, null);

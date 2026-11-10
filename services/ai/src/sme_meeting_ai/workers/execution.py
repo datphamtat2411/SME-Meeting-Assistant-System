@@ -5,6 +5,7 @@ from contextlib import AsyncExitStack
 
 from .diarization import DiarizationExecution
 from .intelligence import IntelligenceExecution
+from .knowledge_indexing import KnowledgeIndexingExecution
 from .transcription import TranscriptionExecution
 
 
@@ -13,6 +14,7 @@ class AiWorkerExecution:
         self.transcription = TranscriptionExecution(settings)
         self.diarization = DiarizationExecution(settings)
         self.intelligence = IntelligenceExecution(settings)
+        self.knowledge = KnowledgeIndexingExecution(settings) if settings.knowledge_indexing_worker_enabled else None
         self.resources = AsyncExitStack()
 
     async def __aenter__(self):
@@ -20,6 +22,8 @@ class AiWorkerExecution:
             await self.resources.enter_async_context(self.transcription)
             await self.resources.enter_async_context(self.diarization)
             await self.resources.enter_async_context(self.intelligence)
+            if self.knowledge is not None:
+                await self.resources.enter_async_context(self.knowledge)
             return self
         except BaseException:
             await self.resources.aclose()
@@ -30,6 +34,8 @@ class AiWorkerExecution:
             tasks.create_task(self.transcription(shutdown_requested))
             tasks.create_task(self.diarization(shutdown_requested))
             tasks.create_task(self.intelligence(shutdown_requested))
+            if self.knowledge is not None:
+                tasks.create_task(self.knowledge(shutdown_requested))
 
     async def __aexit__(self, *_):
         await self.resources.aclose()

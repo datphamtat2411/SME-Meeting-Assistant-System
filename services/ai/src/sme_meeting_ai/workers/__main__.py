@@ -44,6 +44,9 @@ def main() -> int:
         if settings.diarization_worker_enabled or settings.meeting_intelligence_worker_enabled:
             from .execution import AiWorkerExecution
             execution = AiWorkerExecution(settings)
+        elif settings.knowledge_indexing_worker_enabled:
+            from .knowledge_indexing import KnowledgeIndexingExecution
+            execution = KnowledgeIndexingExecution(settings)
         else:
             execution = TranscriptionExecution(settings)
         return asyncio.run(run_worker(settings, execution, (lambda: execution,)))

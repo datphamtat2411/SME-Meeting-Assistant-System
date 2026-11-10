@@ -1,0 +1,29 @@
+{
+  "schema_version": "1.0",
+  "model_id": "BAAI/bge-reranker-v2-m3",
+  "revision": "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
+  "revision_type": "commit",
+  "required_files": [
+    "config.json",
+    "model.safetensors",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "special_tokens_map.json",
+    "sentencepiece.bpe.model"
+  ],
+  "inference_implementation": {
+    "package": "FlagEmbedding",
+    "class": "FlagReranker"
+  },
+  "tokenizer": {
+    "tokenizer_id": "BAAI/bge-reranker-v2-m3-tokenizer:953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
+    "max_model_tokens": 8192
+  },
+  "runtime": {
+    "default_query_max_tokens": 256,
+    "default_passage_max_tokens": 512,
+    "default_pair_max_tokens": 768,
+    "cpu_precision": "fp32",
+    "cuda_precision": "fp16"
+  }
+}

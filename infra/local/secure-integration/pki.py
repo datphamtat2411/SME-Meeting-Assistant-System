@@ -15,7 +15,8 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 REPO = Path(__file__).resolve().parents[3]
-CLIENTS = {"core-client": "core-api", "worker-client": "ai-worker", "mi-client": "mi-worker"}
+CLIENTS = {"core-client": "core-api", "worker-client": "ai-worker", "mi-client": "mi-worker",
+           "knowledge-client": "knowledge-worker"}
 ROLES = (*CLIENTS, "core-server", "broker-server", "storage-server")
 
 
