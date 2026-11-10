@@ -25,7 +25,8 @@ flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8080/api/v1
 - `lib/core/`: API envelope, transport, credential rotation, models, UI theme.
 - `lib/features/auth/`: sign in, session restore, reset and setup flows.
 - `lib/features/dashboard/`: personal dashboard cards.
-- `lib/features/meetings/`: meeting list/calendar, creation, lifecycle, details.
+- `lib/features/meetings/`: meeting list/calendar shortcut, creation, lifecycle, details.
+- `lib/features/calendar/`: month-by-month calendar with My Meetings/All Accessible filters and pagination across Core API results.
 - `lib/features/recording/`: explicit microphone capture, file import, signed upload, processing.
 - `lib/features/results/`: meeting summary, transcript timeline, decisions, job status.
 - `lib/features/action_items/`: official and proposed work, lifecycle transitions.

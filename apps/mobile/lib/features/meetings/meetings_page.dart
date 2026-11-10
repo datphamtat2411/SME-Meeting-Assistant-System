@@ -6,6 +6,7 @@ import '../../core/models.dart';
 import '../../core/widgets.dart';
 import 'meeting_detail_page.dart';
 import 'meeting_form.dart';
+import '../calendar/calendar_page.dart';
 
 class MeetingsPage extends StatefulWidget {
   final ApiClient api;
@@ -68,7 +69,14 @@ class _MeetingsPageState extends State<MeetingsPage> {
       padding: const EdgeInsets.fromLTRB(18, 18, 18, 4),
       child: Column(children: [
         SectionHeading('Cuộc họp', subtitle: 'Lịch họp và nội dung được phân quyền',
-          trailing: IconButton(onPressed: reload, icon: const Icon(Icons.refresh))),
+          trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+            IconButton(tooltip: 'Lịch họp theo tháng',
+              onPressed: () => Navigator.push(context, MaterialPageRoute(
+                builder: (_) => CalendarPage(api: widget.api))),
+              icon: const Icon(Icons.calendar_month_outlined)),
+            IconButton(tooltip: 'Làm mới', onPressed: reload,
+              icon: const Icon(Icons.refresh)),
+          ])),
         Row(children: [
           Expanded(child: TextField(
             controller: search,
