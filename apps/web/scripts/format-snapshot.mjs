@@ -51,11 +51,15 @@ const files = [
 ]
 const formatted = {}
 for (const file of files) {
-  const source = await fs.readFile(file, 'utf8')
-  const config = await prettier.resolveConfig(file)
-  const output = await prettier.format(source, { ...config, filepath: file })
-  await fs.writeFile(file, output, 'utf8')
-  formatted[file] = output
+  try {
+    const source = await fs.readFile(file, 'utf8')
+    const config = await prettier.resolveConfig(file)
+    const output = await prettier.format(source, { ...config, filepath: file })
+    await fs.writeFile(file, output, 'utf8')
+    formatted[file] = output
+  } catch (error) {
+    console.log('SME_FORMAT_ERROR', file, String(error?.message ?? error).slice(0, 500))
+  }
 }
 const encoded = Buffer.from(JSON.stringify(formatted), 'utf8').toString('base64')
 console.log('SME_FORMAT_BEGIN', files.length, encoded.length)
