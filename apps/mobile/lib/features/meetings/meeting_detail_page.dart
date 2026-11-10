@@ -6,6 +6,8 @@ import '../../core/models.dart';
 import '../../core/widgets.dart';
 import '../recording/recording_page.dart';
 import '../results/results_panel.dart';
+import 'meeting_participants.dart';
+import 'meeting_edit_sheet.dart';
 
 class MeetingDetailPage extends StatefulWidget {
   final ApiClient api;
@@ -71,6 +73,14 @@ class _MeetingDetailPageState extends State<MeetingDetailPage> {
   Widget overview(Meeting meeting) => ListView(padding: const EdgeInsets.all(18),
     children: [
       SectionHeading(meeting.title, subtitle: 'Thông tin cuộc họp'),
+      if (meeting.status == 'DRAFT' || meeting.status == 'SCHEDULED')
+        Padding(padding: const EdgeInsets.only(bottom: 10), child: OutlinedButton.icon(
+          onPressed: () async {
+            final updated = await showModalBottomSheet<bool>(context: context,
+              isScrollControlled: true, showDragHandle: true,
+              builder: (_) => MeetingEditSheet(api: widget.api, meeting: meeting));
+            if (updated == true && mounted) reload();
+          }, icon: const Icon(Icons.edit_outlined), label: const Text('Chỉnh sửa cuộc họp'))),
       ContentCard(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           StatePill(meeting.status),
@@ -127,14 +137,16 @@ class _MeetingDetailPageState extends State<MeetingDetailPage> {
               ButtonSegment(value: 0, label: Text('Tổng quan')),
               ButtonSegment(value: 1, label: Text('Biên bản AI')),
               ButtonSegment(value: 2, label: Text('Ghi âm')),
+              ButtonSegment(value: 3, label: Text('Thành viên')),
             ],
             selected: {tab}, onSelectionChanged: (v) => setState(() => tab = v.first),
           )),
         Expanded(child: switch (tab) {
           0 => overview(m),
           1 => ResultsPanel(api: widget.api, meetingId: widget.meetingId),
-          _ => RecordingPage(api: widget.api, meetingId: widget.meetingId,
+          2 => RecordingPage(api: widget.api, meetingId: widget.meetingId,
             enabled: m.status != 'CANCELLED'),
+          _ => MeetingParticipants(api: widget.api, meeting: m),
         }),
       ])),
   );

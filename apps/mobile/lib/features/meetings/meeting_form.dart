@@ -4,6 +4,7 @@ import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
 import '../../core/models.dart';
 import '../../core/widgets.dart';
+import 'schedule_preview.dart';
 
 class MeetingForm extends StatefulWidget {
   final ApiClient api;
@@ -150,6 +151,10 @@ class _MeetingFormState extends State<MeetingForm> {
                 onChanged: (v) => setState(() => roomId = v == '' ? null : v),
               );
             }),
+          const SizedBox(height: 12),
+          SchedulePreview(
+            api: widget.api, start: start, end: end,
+            roomId: roomId, participantIds: members.keys.toList()),
           const SizedBox(height: 12),
           TextField(controller: searchMember,
             decoration: InputDecoration(labelText: 'Tìm người tham gia',
