@@ -5,12 +5,15 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 import com.sme.meetingassistant.api.assistant.AssistantAiGateway;
+import com.sme.meetingassistant.api.media.MediaProperties;
 import com.sme.meetingassistant.api.knowledge.KnowledgeIndexingProducer;
 import com.sme.meetingassistant.api.knowledge.KnowledgeIndexingWorkerService;
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
 import java.security.Principal;
 import java.util.List;
 import java.util.UUID;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -32,7 +35,6 @@ import tools.jackson.databind.ObjectMapper;
  */
 @ActiveProfiles("test")
 @SpringBootTest(properties={
-    "app.media.knowledge-indexing.enabled=true",
     "app.media.outbox.enabled=false",
     "app.assistant.enabled=true"
 })
@@ -42,10 +44,28 @@ class CrossModuleRevisionConsistencyIntegrationTests {
     @Autowired MockMvc mvc;
     @Autowired JdbcTemplate jdbc;
     @Autowired ObjectMapper json;
+    @Autowired MediaProperties mediaProperties;
     @Autowired KnowledgeIndexingProducer knowledge;
     @Autowired KnowledgeIndexingWorkerService verification;
     @Autowired PlatformTransactionManager transactions;
     @MockitoBean AssistantAiGateway gateway;
+
+    private boolean originalIndexingEnabled;
+
+    // This HTTP test exercises canonical business-to-outbox transitions, not
+    // the private worker receiver. Production still refuses starting a receiver
+    // without mTLS. Match the existing KnowledgeIndexingWorkerIntegrationTests
+    // pattern: enable the domain producer only after secure Spring bootstrapping.
+    @BeforeEach
+    void enableDomainIndexing() {
+        originalIndexingEnabled=mediaProperties.getKnowledgeIndexing().isEnabled();
+        mediaProperties.getKnowledgeIndexing().setEnabled(true);
+    }
+
+    @AfterEach
+    void restoreDomainConfiguration() {
+        mediaProperties.getKnowledgeIndexing().setEnabled(originalIndexingEnabled);
+    }
 
     private UUID user() {
         UUID id=UUID.randomUUID();
