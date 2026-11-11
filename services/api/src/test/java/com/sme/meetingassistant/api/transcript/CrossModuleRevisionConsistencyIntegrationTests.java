@@ -175,8 +175,10 @@ class CrossModuleRevisionConsistencyIntegrationTests {
         assertThat(jdbc.queryForObject("""
             SELECT content_revision FROM transcripts WHERE id=?
             """,Long.class,transcript)).isEqualTo(1L);
-        assertThat(sourceStatus("SUMMARY",summary,meeting,1)).isEqualTo("SUPERSEDED");
-        assertThat(sourceStatus("DECISION",decision,meeting,0)).isEqualTo("SUPERSEDED");
+        // The source's own version is unchanged, but its pinned transcript is stale:
+        // Core therefore classifies it as INELIGIBLE rather than CURRENT.
+        assertThat(sourceStatus("SUMMARY",summary,meeting,1)).isEqualTo("INELIGIBLE");
+        assertThat(sourceStatus("DECISION",decision,meeting,0)).isEqualTo("INELIGIBLE");
         assertThat(intents("SUMMARY",summary,"INVALIDATE")).isEqualTo(1);
         assertThat(intents("DECISION",decision,"INVALIDATE")).isEqualTo(1);
         assertThat(jdbc.queryForObject("""
