@@ -213,5 +213,23 @@ class CrossModuleRevisionConsistencyIntegrationTests {
             .andExpect(status().isOk());
         assertThat(intents("SUMMARY",summary,"INVALIDATE")).isEqualTo(1);
         assertThat(intents("DECISION",decision,"INVALIDATE")).isEqualTo(1);
+
+        // An authorized historical reader who loses membership cannot fetch
+        // the same protected source through another feature's HTTP route.
+        jdbc.update("""
+            UPDATE meeting_participants SET removed_at=CURRENT_TIMESTAMP
+             WHERE meeting_id=? AND user_id=?
+            """,meeting,reader);
+        mvc.perform(get("/api/v1/meetings/"+meeting+"/transcript").principal(as(reader)))
+            .andExpect(status().isNotFound());
+        mvc.perform(get("/api/v1/meetings/"+meeting+"/summary").principal(as(reader)))
+            .andExpect(status().isNotFound());
+        mvc.perform(get("/api/v1/meetings/"+meeting+"/decisions").principal(as(reader)))
+            .andExpect(status().isNotFound());
+        mvc.perform(get(conversationUrl).principal(as(reader)))
+            .andExpect(status().isNotFound());
+        // Revocation cannot destroy the organizer's canonical historical record.
+        mvc.perform(get("/api/v1/meetings/"+meeting+"/summary").principal(as(organizer)))
+            .andExpect(status().isOk());
     }
 }
