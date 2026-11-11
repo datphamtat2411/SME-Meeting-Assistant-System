@@ -79,6 +79,40 @@ public class KnowledgeIndexingProducer {
         return event;
     }
 
+    /**
+     * A transcript revision supersedes previously indexed Summary/Decision
+     * sources whose pinned transcript evidence is no longer current.
+     * Caller already owns the meeting row lock and source mutation transaction;
+     * invalidation intents are durable in that very transaction.
+     *
+     * Human-confirmed Action Items retain their independent business authority.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void invalidateStaleTranscriptDependents(UUID meetingId) {
+        if (!properties.getKnowledgeIndexing().isEnabled()) return;
+        if (meetingId == null) throw new IllegalArgumentException("Meeting identity is required");
+        List<DerivedSource> tracked = jdbc.query("""
+            SELECT DISTINCT source_type,source_id
+              FROM knowledge_indexing_work
+             WHERE meeting_id=? AND operation='UPSERT'
+               AND source_type IN ('SUMMARY','DECISION')
+             ORDER BY source_type,source_id
+            """, (rs,i)->new DerivedSource(rs.getString("source_type"),
+                rs.getObject("source_id",UUID.class)),meetingId);
+        for (DerivedSource derived:tracked) {
+            boolean eligible=switch (derived.type()) {
+                case "SUMMARY" -> summary(derived.id(),meetingId)!=null;
+                case "DECISION" -> decision(derived.id(),meetingId)!=null;
+                default -> throw new IllegalStateException("Unsupported derived source");
+            };
+            if (!eligible) {
+                requestLifecycleForSource(derived.type(),derived.id(),meetingId,
+                    null,"INVALIDATE","SOURCE_SUPERSEDED",null);
+            }
+        }
+    }
+    private record DerivedSource(String type, UUID id) {}
+
     /** Create a same-revision repair intent without changing canonical source state. */
     @Transactional(propagation = Propagation.MANDATORY)
     public Optional<KnowledgeIndexingEvent> requestReindex(String sourceType, UUID sourceId,
