@@ -56,6 +56,12 @@ class AssistantStore {
         if(rows.isEmpty())throw new ResponseStatusException(HttpStatus.NOT_FOUND);
         return rows.getFirst();
     }
+    /** Held through final citation acceptance; source mutations lock this meeting FOR UPDATE. */
+    void lockMeetingForEvidence(UUID meetingId) {
+        List<UUID> rows=jdbc.query("SELECT id FROM meetings WHERE id=? FOR SHARE",
+            (rs,i)->rs.getObject(1,UUID.class),meetingId);
+        if(rows.isEmpty())throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+    }
     Conversation create(UUID id,UUID owner,UUID meeting,String title) {
         jdbc.update("""
             INSERT INTO assistant_conversations(id,user_id,meeting_id,title,status)

@@ -34,6 +34,7 @@ class AssistantHttpIntegrationTests {
     @Autowired JdbcTemplate jdbc;
     @Autowired ObjectMapper json;
     @MockitoBean AssistantAiGateway gateway;
+    @MockitoBean AssistantSourceVerifier sourceVerifier;
 
     private UUID user() {
         UUID id=UUID.randomUUID();
@@ -173,4 +174,61 @@ class AssistantHttpIntegrationTests {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM assistant_messages WHERE conversation_id=? AND answer_status='GROUNDED'",
             Integer.class,id)).isZero();
     }
+    private String grounded(String requestJson,UUID sourceId,UUID meetingId) throws Exception {
+        JsonNode req=json.readTree(requestJson);
+        Map<String,Object> identity=Map.of("sourceType","TRANSCRIPT",
+            "sourceId",sourceId.toString(),"meetingId",meetingId.toString());
+        Map<String,Object> revision=Map.of("number",0);
+        Map<String,Object> citation=Map.of(
+            "citationId","C1","verificationStatus","AUTHORITATIVELY_VERIFIED",
+            "sourceIdentity",identity,"sourceRevision",revision,
+            "retrievalChunkId","test-chunk",
+            "sourceReferences",List.of(Map.of("sourceIdentity",identity,"sourceRevision",revision)));
+        Map<String,Object> body=new java.util.LinkedHashMap<>();
+        body.put("contractVersion","1.0");
+        body.put("requestId",req.path("requestId").asText());
+        body.put("scopeId",req.path("authorizedScope").path("scopeId").asText());
+        body.put("scopeVersion",req.path("authorizedScope").path("scopeVersion").asText());
+        body.put("status","GROUNDED");
+        body.put("answer","Dự án đã được phê duyệt.");
+        body.put("claims",List.of(Map.of("claimId","A1","text","Dự án đã được phê duyệt.",
+            "support","SUPPORTED","citationIds",List.of("C1"))));
+        body.put("citations",List.of(citation));
+        body.put("diagnostics",Map.of());
+        body.put("modelProvenance",Map.of("provider","test",
+            "configuredModel","test-pinned","attempts",1));
+        body.put("failures",List.of());
+        return json.writeValueAsString(body);
+    }
+
+    @Test void sourceRevisionChangeBetweenVerificationAndCommitFailsClosed() throws Exception {
+        UUID owner=user(),meeting=meeting(owner),id=conversation(owner,meeting);
+        UUID source=UUID.randomUUID();
+        // First check validates AI's evidence. The second simulates a newer
+        // canonical source revision appearing before the result-acceptance transaction.
+        when(sourceVerifier.current("TRANSCRIPT",source,meeting,0L))
+            .thenReturn(true,false);
+        when(gateway.answer(anyString())).thenAnswer(inv->
+            grounded(inv.getArgument(0),source,meeting));
+        mvc.perform(post(target(id)).principal(principal(owner))
+            .header("Idempotency-Key","source-superseded-at-acceptance")
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("{\"question\":\"Dự án có được duyệt không?\"}"))
+            .andExpect(status().isServiceUnavailable());
+        verify(sourceVerifier,times(2)).current("TRANSCRIPT",source,meeting,0L);
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM assistant_messages
+             WHERE conversation_id=? AND answer_status='GROUNDED'
+            """,Integer.class,id)).isZero();
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM assistant_messages
+             WHERE conversation_id=? AND answer_status='FAILED'
+            """,Integer.class,id)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM assistant_message_sources s
+             JOIN assistant_messages m ON m.id=s.assistant_message_id
+            WHERE m.conversation_id=?
+            """,Integer.class,id)).isZero();
+    }
+
 }

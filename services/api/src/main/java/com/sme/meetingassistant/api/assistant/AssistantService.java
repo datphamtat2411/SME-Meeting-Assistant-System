@@ -99,10 +99,11 @@ public final class AssistantService {
             return outcome(admitted.turn(),conversation.meetingId());
         }
 
-        // Only previously committed dialogue with CURRENT canonical evidence may enter LLM context.
-        List<Map<String,Object>> context=safeContext(conversation.meetingId(),admitted.turn());
         ValidatedAnswer reply;
         try {
+            // Context failures are also terminalized, rather than stranding a leased turn.
+            // Only committed dialogue with CURRENT evidence may enter the LLM context.
+            List<Map<String,Object>> context=safeContext(conversation.meetingId(),admitted.turn());
             String payload=request(conversation,user,admitted.turn(),question,context);
             String raw=gateway.getObject().answer(payload);
             access.requireReadable(conversation.meetingId(),user);
@@ -118,9 +119,22 @@ public final class AssistantService {
         final ValidatedAnswer accepted=reply;
         try {
             tx.execute(s->{
+                // The meeting row is the serialization point shared with transcript,
+                // summary and decision writers. A source revision cannot change
+                // between revalidation and persistence of the canonical answer.
+                store.lockMeetingForEvidence(conversation.meetingId());
                 var current=store.require(conversationId,user,true);
                 access.requireReadable(current.meetingId(),user);
-                store.saveCompleted(admitted.turn(),admitted.turn().token(),accepted);
+                ValidatedAnswer toPersist=accepted;
+                for(CitationView citation:accepted.citations()){
+                    if(!citation.meetingId().equals(current.meetingId())
+                        ||!sources.current(citation.sourceType(),citation.sourceId(),
+                            current.meetingId(),citation.sourceRevision())){
+                        toPersist=failed(); // fail closed: never persist an obsolete grounded answer
+                        break;
+                    }
+                }
+                store.saveCompleted(admitted.turn(),admitted.turn().token(),toPersist);
                 return null;
             });
         } catch(ResponseStatusException revoked) {
