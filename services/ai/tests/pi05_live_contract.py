@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
+from pathlib import Path
 from uuid import UUID
 
 # Every required observation must have the named component and actual outcome.
@@ -176,7 +177,7 @@ def validate_live_evidence(
 
 
 
-def verify_proof_files(payload: dict, root: "Path") -> None:
+def verify_proof_files(payload: dict, root: Path) -> None:
     """Verify every claimed digest against a separate content-addressed receipt.
 
     Receipts are emitted by the isolated observer, not synthesized from the
@@ -185,7 +186,6 @@ def verify_proof_files(payload: dict, root: "Path") -> None:
     """
     import hashlib
     import json
-    from pathlib import Path
 
     if not isinstance(root, Path) or not root.is_dir() or root.is_symlink():
         raise ValueError("Proof directory missing or symbolic")
