@@ -236,6 +236,7 @@ class KnowledgeIndexingWorkerIntegrationTests {
     @Test
     @Transactional
     void reconciliationFindsIndexedWorkWithMissingQdrantPoints() {
+
         var fixture = publishedAction();
         String certificate = "c".repeat(64);
         UUID claimToken = (UUID) worker.claim(fixture.event().eventId(),
@@ -248,6 +249,8 @@ class KnowledgeIndexingWorkerIntegrationTests {
         when(vectorAudit.countPoints(fixture.event().indexGenerationId(), java.util.List.of(source)))
             .thenReturn(Map.of(source, 0L));
 
+        when(vectorAudit.inventoryPage(fixture.event().indexGenerationId(), null, 10))
+            .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(), null));
         Map<String, Object> result = admin.startReconciliation(
             fixture.event().indexGenerationId(), 10, true, fixture.userId());
 
@@ -270,6 +273,8 @@ class KnowledgeIndexingWorkerIntegrationTests {
         var key = new KnowledgeVectorAudit.SourceKey("ACTION_ITEM", item, meeting, 0);
         when(vectorAudit.countPoints(properties.getKnowledgeIndexing().getGenerationId(),
             java.util.List.of(key))).thenReturn(Map.of(key, 0L));
+        when(vectorAudit.inventoryPage(properties.getKnowledgeIndexing().getGenerationId(), null, 100))
+            .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(), null));
         var run = admin.startReconciliation(properties.getKnowledgeIndexing().getGenerationId(),
             100, false, actor);
         assertThat(run).containsEntry("state", "COMPLETED");
@@ -294,8 +299,12 @@ class KnowledgeIndexingWorkerIntegrationTests {
         jdbc.update("UPDATE action_items SET version=version+1 WHERE id=?", fixture.itemId());
         var key = new KnowledgeVectorAudit.SourceKey("ACTION_ITEM",
             fixture.itemId(), fixture.meetingId(), oldRevision);
+        var newer = new KnowledgeVectorAudit.SourceKey("ACTION_ITEM",
+            fixture.itemId(), fixture.meetingId(), oldRevision + 1);
         when(vectorAudit.countPoints(fixture.event().indexGenerationId(),
-            java.util.List.of(key))).thenReturn(Map.of(key, 1L));
+            java.util.List.of(key, newer))).thenReturn(Map.of(key, 1L, newer, 0L));
+        when(vectorAudit.inventoryPage(fixture.event().indexGenerationId(), null, 100))
+            .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(), null));
         var run=admin.startReconciliation(fixture.event().indexGenerationId(), 100, false, fixture.userId());
         assertThat(run).containsEntry("state", "COMPLETED");
         assertThat(jdbc.queryForObject("""
@@ -321,8 +330,55 @@ class KnowledgeIndexingWorkerIntegrationTests {
         assertThat(failed).containsEntry("state","FAILED");
         when(vectorAudit.countPoints(fixture.event().indexGenerationId(),
             java.util.List.of(key))).thenReturn(Map.of(key,0L));
+        when(vectorAudit.inventoryPage(fixture.event().indexGenerationId(), null, 10))
+            .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(), null));
         var resumed=admin.resumeReconciliation((UUID)failed.get("id"),fixture.userId());
         assertThat(resumed).containsEntry("state","COMPLETED")
+            .containsEntry("findingCount",1L);
+    }
+
+    @Test
+    @Transactional
+    void reconciliationInventoriesUntrackedQdrantPointsWithoutBlindDeletion() {
+        enableKnowledgeIndexing();
+        String generation=properties.getKnowledgeIndexing().getGenerationId();
+        var source = new KnowledgeVectorAudit.SourceKey("ACTION_ITEM",
+            UUID.randomUUID(), UUID.randomUUID(), 3);
+        when(vectorAudit.inventoryPage(generation, null, 10))
+            .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(source), null));
+        var run = admin.startReconciliation(generation, 10, false, UUID.randomUUID());
+        assertThat(run).containsEntry("state","COMPLETED")
+            .containsEntry("phase","VECTORS")
+            .containsEntry("vectorScannedCount",1L)
+            .containsEntry("findingCount",1L)
+            .containsEntry("repairedCount",0L);
+        assertThat(jdbc.queryForMap("""
+            SELECT finding_type,action FROM knowledge_reconciliation_findings WHERE run_id=?
+            """,run.get("id"))).containsEntry("finding_type","ORPHANED_POINTS")
+            .containsEntry("action","MANUAL_REVIEW");
+        assertThat(jdbc.queryForObject("""
+            SELECT COUNT(*) FROM knowledge_indexing_work
+            """,Integer.class)).isZero();
+    }
+
+    @Test
+    @Transactional
+    void pagedVectorInventoryPersistsCursorAndCompletesOnlyAfterLastPage() {
+        enableKnowledgeIndexing();
+        String generation=properties.getKnowledgeIndexing().getGenerationId();
+        var source=new KnowledgeVectorAudit.SourceKey("ACTION_ITEM",
+            UUID.randomUUID(),UUID.randomUUID(),0);
+        when(vectorAudit.inventoryPage(generation,null,1))
+            .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(source),"7"));
+        when(vectorAudit.inventoryPage(generation,"7",1))
+            .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(),null));
+        var first=admin.startReconciliation(generation,1,true,UUID.randomUUID());
+        assertThat(first).containsEntry("state","RUNNING")
+            .containsEntry("phase","VECTORS")
+            .containsEntry("vectorCursor","7");
+        var last=admin.resumeReconciliation((UUID)first.get("id"),UUID.randomUUID());
+        assertThat(last).containsEntry("state","COMPLETED")
+            .containsEntry("vectorScannedCount",1L)
             .containsEntry("findingCount",1L);
     }
 

@@ -205,16 +205,22 @@ public class KnowledgeIndexingAdminService {
     private Map<String, Object> reconcile(UUID runId, UUID requestedByUserId) {
         ReconciliationRun run = jdbc.query("""
             SELECT id,generation_id,batch_size,dry_run,state,checkpoint_source_type,
-                   checkpoint_source_id,checkpoint_source_revision,scanned_count,repaired_count,finding_count
+                   checkpoint_source_id,checkpoint_source_revision,scanned_count,repaired_count,finding_count,
+                   phase,vector_cursor,vector_scanned_count
               FROM knowledge_reconciliation_runs WHERE id=? FOR UPDATE
             """, (rs, row) -> new ReconciliationRun(rs.getObject("id", UUID.class),
                 rs.getString("generation_id"), rs.getInt("batch_size"), rs.getBoolean("dry_run"),
                 rs.getString("state"), rs.getString("checkpoint_source_type"),
                 rs.getObject("checkpoint_source_id", UUID.class),
                 (Long) rs.getObject("checkpoint_source_revision"), rs.getLong("scanned_count"),
-                rs.getLong("repaired_count"), rs.getLong("finding_count")), runId).stream().findFirst()
+                rs.getLong("repaired_count"), rs.getLong("finding_count"),
+                rs.getString("phase"), rs.getString("vector_cursor"),
+                rs.getLong("vector_scanned_count")), runId).stream().findFirst()
             .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
         if (!"RUNNING".equals(run.state())) return runData(runId);
+        if ("VECTORS".equals(run.phase())) {
+            return reconcileVectorPage(run, requestedByUserId);
+        }
 
         List<WorkRow> rows = workRows(run);
         if (!rows.isEmpty()) {
@@ -252,7 +258,8 @@ public class KnowledgeIndexingAdminService {
             }
             return reconcileRows(run, rows, pointCounts, requestedByUserId, runId);
         }
-        return completeReconciliation(run, rows, run.repairedCount(), run.findingCount(), runId);
+        return completeReconciliation(run, rows, run.repairedCount(), run.findingCount(),
+            runId, requestedByUserId);
     }
 
     private Map<String, Object> reconcileRows(ReconciliationRun run, List<WorkRow> rows,
@@ -325,7 +332,8 @@ public class KnowledgeIndexingAdminService {
 
         long scanned = run.scannedCount() + rows.size();
         if (rows.isEmpty() || rows.size() < run.batchSize()) {
-            return completeReconciliation(run, rows, repaired, findings, runId, scanned);
+            return completeReconciliation(run, rows, repaired, findings, runId,
+                requestedByUserId, scanned);
         } else {
             WorkRow checkpoint = rows.getLast();
             jdbc.update("""
@@ -338,20 +346,25 @@ public class KnowledgeIndexingAdminService {
         return runData(runId);
     }
 
+    /**
+     * Completion of the relational phase is not completion of reconciliation.
+     * The vector phase must cover orphan identities absent from all Core work.
+     */
     private Map<String, Object> completeReconciliation(ReconciliationRun run, List<WorkRow> rows,
-            long repaired, long findings, UUID runId) {
-        return completeReconciliation(run, rows, repaired, findings, runId,
+            long repaired, long findings, UUID runId, UUID requestedByUserId) {
+        return completeReconciliation(run, rows, repaired, findings, runId, requestedByUserId,
             run.scannedCount() + rows.size());
     }
 
     private Map<String, Object> completeReconciliation(ReconciliationRun run, List<WorkRow> rows,
-            long repaired, long findings, UUID runId, long scanned) {
+            long repaired, long findings, UUID runId, UUID requestedByUserId, long scanned) {
         if (rows.isEmpty() || rows.size() < run.batchSize()) {
             jdbc.update("""
-                UPDATE knowledge_reconciliation_runs SET state='COMPLETED',scanned_count=?,repaired_count=?,
-                    finding_count=?,completed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?
+                UPDATE knowledge_reconciliation_runs SET phase='VECTORS',
+                    scanned_count=?,repaired_count=?,finding_count=?,
+                    updated_at=CURRENT_TIMESTAMP WHERE id=?
                 """, scanned, repaired, findings, runId);
-            return runData(runId);
+            return reconcile(runId, requestedByUserId);
         }
         WorkRow checkpoint = rows.getLast();
         jdbc.update("""
@@ -360,6 +373,79 @@ public class KnowledgeIndexingAdminService {
                 updated_at=CURRENT_TIMESTAMP WHERE id=?
             """, checkpoint.sourceType(), checkpoint.sourceId(), checkpoint.sourceRevision(), scanned,
             repaired, findings, runId);
+        return runData(runId);
+    }
+
+    /** One page per persisted transaction. Unknown points are reported, never blindly deleted. */
+    private Map<String, Object> reconcileVectorPage(ReconciliationRun run, UUID requestedByUserId) {
+        UUID runId = run.id();
+        KnowledgeVectorAudit audit = vectorAudits.getIfAvailable();
+        if (audit == null) {
+            return failVectorAudit(runId, "VECTOR_AUDIT_UNAVAILABLE");
+        }
+        KnowledgeVectorAudit.InventoryPage page;
+        try {
+            page = audit.inventoryPage(run.generationId(), run.vectorCursor(), run.batchSize());
+        } catch (RuntimeException failure) {
+            return failVectorAudit(runId, "VECTOR_AUDIT_UNAVAILABLE");
+        }
+        if (page == null || page.sources() == null || page.sources().size() > run.batchSize()
+                || page.nextCursor() != null
+                   && (page.nextCursor().equals(run.vectorCursor()) || page.sources().isEmpty())) {
+            return failVectorAudit(runId, "VECTOR_AUDIT_INVALID");
+        }
+        long findings = run.findingCount();
+        for (var source : page.sources().stream().distinct().toList()) {
+            if (source == null || source.sourceId() == null || source.meetingId() == null
+                    || source.sourceRevision() < 0
+                    || !Set.of("TRANSCRIPT","SUMMARY","DECISION","ACTION_ITEM").contains(source.sourceType())) {
+                return failVectorAudit(runId, "VECTOR_AUDIT_INVALID");
+            }
+            boolean hasWork = Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT EXISTS(SELECT 1 FROM knowledge_indexing_work
+                 WHERE index_generation_id=? AND source_type=? AND source_id=?
+                   AND meeting_id=? AND source_revision=? AND operation='UPSERT')
+                """, Boolean.class, run.generationId(), source.sourceType(), source.sourceId(),
+                source.meetingId(), source.sourceRevision()));
+            if (hasWork) continue;
+            var observed = worker.verifySources(List.of(
+                new KnowledgeIndexingWorkerService.SourceVerificationRequest(
+                    source.sourceType(),source.sourceId(),source.meetingId(),
+                    source.sourceRevision()))).getFirst();
+            String status = (String)observed.get("status");
+            int inserted = jdbc.update("""
+                INSERT INTO knowledge_reconciliation_findings(
+                    id,run_id,finding_type,action,source_type,source_id,meeting_id,
+                    source_revision,generation_id,detail)
+                VALUES (? ,?,'ORPHANED_POINTS','MANUAL_REVIEW',?,?,?,?,?,
+                        CAST(? AS jsonb)) ON CONFLICT DO NOTHING
+                """, UUID.randomUUID(), runId, source.sourceType(), source.sourceId(),
+                source.meetingId(), source.sourceRevision(), run.generationId(),
+                "{\"sourceStatus\":\"" + status + "\",\"observation\":\"NO_CANONICAL_UPSERT_WORK\"}");
+            findings += inserted;
+        }
+        long scanned = run.vectorScannedCount() + page.sources().size();
+        if (page.nextCursor() == null) {
+            jdbc.update("""
+                UPDATE knowledge_reconciliation_runs SET state='COMPLETED',
+                    vector_scanned_count=?,finding_count=?,completed_at=CURRENT_TIMESTAMP,
+                    updated_at=CURRENT_TIMESTAMP WHERE id=?
+                """, scanned, findings, runId);
+        } else {
+            jdbc.update("""
+                UPDATE knowledge_reconciliation_runs SET vector_cursor=?,
+                    vector_scanned_count=?,finding_count=?,updated_at=CURRENT_TIMESTAMP WHERE id=?
+                """, page.nextCursor(), scanned, findings, runId);
+        }
+        return runData(runId);
+    }
+
+    private Map<String,Object> failVectorAudit(UUID runId, String code) {
+        jdbc.update("""
+            UPDATE knowledge_reconciliation_runs SET state='FAILED',last_error_code=?,
+                last_error_summary='AI vector inventory was unavailable or invalid.',
+                updated_at=CURRENT_TIMESTAMP WHERE id=?
+            """, code, runId);
         return runData(runId);
     }
 
@@ -538,7 +624,8 @@ public class KnowledgeIndexingAdminService {
         return jdbc.query("""
             SELECT id,generation_id,batch_size,dry_run,state,checkpoint_source_type,checkpoint_source_id,
                    checkpoint_source_revision,scanned_count,repaired_count,finding_count,last_error_code,
-                   last_error_summary,started_at,completed_at,updated_at
+                   last_error_summary,started_at,completed_at,updated_at,
+                   phase,vector_cursor,vector_scanned_count
               FROM knowledge_reconciliation_runs WHERE id=?
             """, (rs, row) -> {
                 Map<String, Object> data = new LinkedHashMap<>();
@@ -553,6 +640,9 @@ public class KnowledgeIndexingAdminService {
                 data.put("scannedCount", rs.getLong("scanned_count"));
                 data.put("repairedCount", rs.getLong("repaired_count"));
                 data.put("findingCount", rs.getLong("finding_count"));
+                data.put("phase", rs.getString("phase"));
+                data.put("vectorCursor", rs.getString("vector_cursor"));
+                data.put("vectorScannedCount", rs.getLong("vector_scanned_count"));
                 data.put("lastErrorCode", rs.getString("last_error_code"));
                 data.put("lastErrorSummary", rs.getString("last_error_summary"));
                 data.put("startedAt", rs.getObject("started_at"));
@@ -585,7 +675,8 @@ public class KnowledgeIndexingAdminService {
     private record GenerationProgress(long targetCount, long indexedCount) { }
     private record ReconciliationRun(UUID id, String generationId, int batchSize, boolean dryRun,
             String state, String checkpointSourceType, UUID checkpointSourceId,
-            Long checkpointSourceRevision, long scannedCount, long repairedCount, long findingCount) { }
+            Long checkpointSourceRevision, long scannedCount, long repairedCount, long findingCount,
+            String phase, String vectorCursor, long vectorScannedCount) { }
     private record WorkRow(String sourceType, UUID sourceId, UUID meetingId, long sourceRevision,
             String generationId, String state, Integer indexedChunkCount) { }
 }
