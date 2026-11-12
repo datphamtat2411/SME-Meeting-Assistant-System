@@ -75,9 +75,26 @@ LIVE_SCENARIOS = [
 def read_results(report_dir: Path) -> dict[str, list[str]]:
     observed: dict[str, list[str]] = {}
     for file in sorted(report_dir.glob("TEST-*.xml")):
+        if file.stat().st_size > 8_000_000:
+            raise ValueError("Surefire test report exceeds safety bound")
         root = ET.parse(file).getroot()
         if root.tag not in {"testsuite", "testsuites"}:
             raise ValueError(f"Unsupported Surefire XML root: {file.name}")
+        # Refuse internally contradictory suite counts; an XML report claiming
+        # zero failures with a failed testcase is not an honest acceptance artifact.
+        suite_nodes = [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
+        for suite in suite_nodes:
+            direct = list(suite.findall("testcase"))
+            if not direct:
+                continue
+            for attr, actual in (
+                ("tests", len(direct)),
+                ("failures", sum(c.find("failure") is not None for c in direct)),
+                ("errors", sum(c.find("error") is not None for c in direct)),
+                ("skipped", sum(c.find("skipped") is not None for c in direct)),
+            ):
+                if attr in suite.attrib and int(suite.get(attr, "-1")) != actual:
+                    raise ValueError("Surefire suite count contradicts testcase elements")
         for case in root.iter("testcase"):
             classname = case.get("classname", "")
             name = case.get("name", "")
@@ -115,6 +132,8 @@ def evaluate(observed: dict[str, list[str]]) -> dict[str, dict]:
 def build_evidence(report_dir: Path) -> dict:
     observed = read_results(report_dir)
     result = evaluate(observed)
+    unexpected = {key: states for key, states in observed.items()
+                  if len(states) != 1 or states[0] != "PASS"}
     sha = os.environ.get("GITHUB_SHA", "")
     return {
         "schemaVersion": "1.0",
@@ -124,6 +143,9 @@ def build_evidence(report_dir: Path) -> dict:
         "githubRunId": os.environ.get("GITHUB_RUN_ID") or None,
         "environment": "CI_POSTGRES_WITH_CONTROLLED_EXTERNAL_BOUNDARIES",
         "deterministic": result,
+        "suite": {"observedTestcases": sum(map(len, observed.values())),
+                  "invalidTestcases": len(unexpected),
+                  "allPassed": bool(observed) and not unexpected},
         "live": {scenario: {"status": "NOT_RUN", "kind": "LIVE_INFRASTRUCTURE",
                            "reason": "Requires isolated real-process evidence"}
                  for scenario in LIVE_SCENARIOS},
@@ -147,7 +169,8 @@ def main(argv: list[str] | None = None) -> int:
     args.output.write_text(json.dumps(evidence, ensure_ascii=False, indent=2,
                                       sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(evidence["summary"], sort_keys=True))
-    if args.strict and any(v["status"] != "PASS" for v in evidence["deterministic"].values()):
+    if args.strict and (not evidence["suite"]["allPassed"] or
+                        any(v["status"] != "PASS" for v in evidence["deterministic"].values())):
         return 1
     return 0
 

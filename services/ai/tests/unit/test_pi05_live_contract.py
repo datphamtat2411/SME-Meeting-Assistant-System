@@ -113,3 +113,32 @@ def test_evidence_without_timezone_or_digest_fails():
     with pytest.raises(ValueError):
         validate_live_evidence(scenario, payload, run_id=RUN, commit=SHA,
                                generation=GEN, collection=COLL)
+
+def test_proof_receipts_are_external_and_content_verified(tmp_path):
+    import hashlib
+    import json
+
+    from pi05_live_contract import verify_proof_files
+
+    scenario = "room-notification"
+    payload = valid(scenario)
+    for observation in payload["observations"]:
+        receipt = {key: observation[key] for key in (
+            "runId", "requestId", "step", "component", "observedResult", "observedAt",
+        )}
+        raw = json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode()
+        digest = hashlib.sha256(raw).hexdigest()
+        observation["proofSha256"] = digest
+        (tmp_path / f"{digest}.json").write_bytes(raw)
+    verify_proof_files(payload, tmp_path)
+    first = payload["observations"][0]["proofSha256"]
+    (tmp_path / f"{first}.json").write_text('{"status":"PASS"}')
+    with pytest.raises(ValueError, match="SHA-256"):
+        verify_proof_files(payload, tmp_path)
+
+
+def test_missing_proof_is_not_sufficient_to_claim_live_pass(tmp_path):
+    from pi05_live_contract import verify_proof_files
+
+    with pytest.raises(ValueError, match="Missing"):
+        verify_proof_files(valid("qdrant-outage"), tmp_path)

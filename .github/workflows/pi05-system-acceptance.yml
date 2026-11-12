@@ -53,6 +53,8 @@ jobs:
         run: docker info
       - name: Unit-check evidence collector, including invalid and skipped runs
         run: python3 -m unittest discover -s scripts -p 'test_pi05_collect_evidence.py' -v
+      - name: Remove stale Surefire reports before acceptance
+        run: rm -rf target/surefire-reports
       - name: Run the real Core HTTP/PostgreSQL cross-module acceptance matrix
         run: >-
           ./mvnw -B -ntp

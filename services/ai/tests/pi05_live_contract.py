@@ -173,3 +173,40 @@ def validate_live_evidence(
             raise ValueError("Observation time must be timezone-aware")
     if seen != set(REQUIRED[scenario]):
         raise ValueError("Incomplete live acceptance observations")
+
+
+
+def verify_proof_files(payload: dict, root: "Path") -> None:
+    """Verify every claimed digest against a separate content-addressed receipt.
+
+    Receipts are emitted by the isolated observer, not synthesized from the
+    harness's PASS response. This verifies integrity, not the observer's honesty:
+    independent operator review of underlying system logs remains mandatory.
+    """
+    import hashlib
+    import json
+    from pathlib import Path
+
+    if not isinstance(root, Path) or not root.is_dir() or root.is_symlink():
+        raise ValueError("Proof directory missing or symbolic")
+    for observation in payload["observations"]:
+        digest = observation["proofSha256"]
+        path = root / (digest + ".json")
+        if path.is_symlink() or not path.is_file():
+            raise ValueError("Missing independently captured proof receipt")
+        if path.stat().st_size > 4096:
+            raise ValueError("Proof receipt exceeds bound")
+        raw = path.read_bytes()
+        if hashlib.sha256(raw).hexdigest() != digest:
+            raise ValueError("Proof receipt SHA-256 does not match claim")
+        try:
+            receipt = json.loads(raw)
+        except (ValueError, UnicodeError) as error:
+            raise ValueError("Invalid proof receipt JSON") from error
+        if not isinstance(receipt, dict) or set(receipt) != {
+            "runId", "requestId", "step", "component", "observedResult", "observedAt",
+        }:
+            raise ValueError("Unexpected receipt schema")
+        _safe_fields(receipt)
+        if any(receipt[key] != observation[key] for key in receipt):
+            raise ValueError("Receipt and observation disagree")

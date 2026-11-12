@@ -46,6 +46,25 @@ class AcceptanceEvidenceTests(unittest.TestCase):
             self.assertEqual(manifest["deterministic"]["PI05-001-access-revocation"]
                              ["status"],"NOT_RUN")
 
+    def test_falsified_suite_counts_cannot_claim_pass(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Element("testsuite",{"tests":"1","failures":"0","errors":"0"})
+            case=SubElement(root,"testcase",{"classname":"com.test.Outside","name":"broken"})
+            SubElement(case,"failure",{"message":"example"})
+            ElementTree(root).write(Path(directory)/"TEST-invalid-count.xml")
+            with self.assertRaises(ValueError):
+                build_evidence(Path(directory))
+
+    def test_unrelated_failed_test_invalidates_full_suite(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Element("testsuite",{"tests":"1","failures":"1","errors":"0"})
+            case=SubElement(root,"testcase",{"classname":"com.test.Outside","name":"broken"})
+            SubElement(case,"failure",{"message":"example"})
+            ElementTree(root).write(Path(directory)/"TEST-failed.xml")
+            result=build_evidence(Path(directory))
+            self.assertFalse(result["suite"]["allPassed"])
+            self.assertEqual(result["suite"]["invalidTestcases"],1)
+
     def test_invalid_xml_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             (Path(directory)/"TEST-invalid.xml").write_text("<testsuite><testcase")
