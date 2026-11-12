@@ -11,6 +11,9 @@ from uuid import UUID
 REQUIRED = {
     "full-pipeline": {
         "meeting-record": ("CORE", "PERSISTED"),
+        "source-media-verified": ("STORAGE", "VERIFIED"),
+        "broker-message-delivered": ("RABBITMQ", "DELIVERED"),
+        "media-worker-completed": ("AI", "COMPLETED"),
         "transcript-current": ("CORE", "READY"),
         "intelligence-official": ("CORE", "ACCEPTED"),
         "qdrant-points": ("QDRANT", "INDEXED"),
@@ -96,6 +99,9 @@ def validate_live_evidence(
         raise ValueError("Unknown PI-05 live scenario")
     if not isinstance(payload, dict):
         raise ValueError("Live evidence must be a JSON object")
+    if set(payload) != {"contractVersion", "scenario", "status", "runId",
+                        "sourceCommit", "environment", "observations"}:
+        raise ValueError("Unexpected or missing top-level evidence fields")
     _safe_fields(payload)
     if payload.get("contractVersion") != "1.0" or payload.get("scenario") != scenario:
         raise ValueError("Live evidence contract mismatch")
@@ -107,6 +113,14 @@ def validate_live_evidence(
     environment = payload.get("environment")
     if not isinstance(environment, dict) or environment.get("disposable") is not True:
         raise ValueError("Live environment is not declared disposable")
+    if set(environment) != {"disposable", "environmentId", "coreBuild", "aiBuild",
+                            "flywayVersion", "tlsMode", "generationId", "collectionName"}:
+        raise ValueError("Incomplete or overbroad environment evidence")
+    if environment.get("coreBuild") != commit or environment.get("aiBuild") != commit:
+        raise ValueError("Reported service build does not match source commit")
+    migration = environment.get("flywayVersion")
+    if not isinstance(migration, str) or not re.fullmatch(r"V[0-9]+", migration) or int(migration[1:]) < 51:
+        raise ValueError("Observed Core schema version is not current enough")
     for key in ("environmentId", "coreBuild", "aiBuild", "flywayVersion"):
         if not isinstance(environment.get(key), str) or not environment[key].strip():
             raise ValueError("Incomplete real-service provenance")
@@ -119,9 +133,14 @@ def validate_live_evidence(
     if not isinstance(observations, list) or len(observations) != len(REQUIRED[scenario]):
         raise ValueError("Missing or excessive observation identities")
     seen: set[str] = set()
+    observed_requests: set[str] = set()
+    observed_proofs: set[str] = set()
     for record in observations:
         if not isinstance(record, dict):
             raise ValueError("Malformed live observation")
+        if set(record) != {"step", "component", "observedResult", "runId",
+                           "requestId", "proofSha256", "observedAt"}:
+            raise ValueError("Incomplete or overbroad live observation")
         identity = record.get("step")
         if not isinstance(identity, str) or identity not in REQUIRED[scenario] or identity in seen:
             raise ValueError("Missing, repeated or unknown observation step")
@@ -131,11 +150,18 @@ def validate_live_evidence(
             raise ValueError("Wrong evidence service boundary")
         if record.get("observedResult") != outcome:
             raise ValueError("Observed result does not satisfy the acceptance invariant")
-        if record.get("runId") != run_id or not _uuid(record.get("requestId")):
+        request_id = record.get("requestId")
+        if record.get("runId") != run_id or not _uuid(request_id):
             raise ValueError("Observation cannot be correlated to a real request")
+        if request_id in observed_requests:
+            raise ValueError("Observations cannot reuse the same request ID")
+        observed_requests.add(request_id)
         proof = record.get("proofSha256")
         if not isinstance(proof, str) or not re.fullmatch(r"[0-9a-f]{64}", proof):
             raise ValueError("Missing immutable proof digest")
+        if proof in observed_proofs:
+            raise ValueError("Observations cannot reuse unrelated proof digests")
+        observed_proofs.add(proof)
         observed_at = record.get("observedAt")
         if not isinstance(observed_at, str):
             raise ValueError("Missing observation timestamp")

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from hashlib import sha256
 from uuid import uuid4
 
 import pytest
@@ -37,7 +38,7 @@ def valid(scenario):
                 "observedResult": outcome,
                 "runId": RUN,
                 "requestId": str(uuid4()),
-                "proofSha256": "b" * 64,
+                "proofSha256": sha256(f"{scenario}:{step}".encode()).hexdigest(),
                 "observedAt": datetime.now(UTC).isoformat(),
             }
             for step, (component, outcome) in REQUIRED[scenario].items()

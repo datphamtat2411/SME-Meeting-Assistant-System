@@ -7,6 +7,7 @@ requirements skip the test, never produce a false PASS.
 from __future__ import annotations
 
 import ipaddress
+import json
 import os
 import re
 from pathlib import Path
@@ -89,7 +90,23 @@ def test_pi05_real_system_scenario(scenario):
             },
         )
         assert response.status_code == 200, f"{scenario}: unexpected harness HTTP status"
+        payload = response.json()
         validate_live_evidence(
-            scenario, response.json(), run_id=run_id, commit=sha,
+            scenario, payload, run_id=run_id, commit=sha,
             generation=generation, collection=collection,
         )
+        # Retain only the already schema-validated, sanitized evidence. Exclusive
+        # creation avoids overwriting observations from a prior real test run.
+        evidence_dir = os.environ.get("AI_PI05_EVIDENCE_DIR")
+        if not evidence_dir:
+            pytest.fail("PI-05 live evidence directory is required")
+        destination = Path(evidence_dir)
+        if not destination.is_dir():
+            pytest.fail("PI-05 evidence directory must be preprovisioned")
+        path = destination / f"{run_id}-{scenario}.json"
+        try:
+            with path.open("x", encoding="utf-8") as output:
+                json.dump(payload, output, indent=2, sort_keys=True)
+                output.write("\\n")
+        except FileExistsError:
+            pytest.fail("PI-05 evidence already exists; use a new isolated run ID")
