@@ -46,6 +46,9 @@ def _client() -> httpx.Client:
         )
     if not safe:
         pytest.fail("PI-05 live harness is not a private/isolation-scoped endpoint")
+    evidence_dir = os.getenv("AI_PI05_EVIDENCE_DIR")
+    if not evidence_dir or not Path(evidence_dir).is_dir():
+        pytest.fail("PI-05 evidence directory must exist BEFORE invoking destructive scenarios")
     files = {
         name: os.getenv(name) for name in (
             "AI_PI05_CA_FILE", "AI_PI05_CERT_FILE", "AI_PI05_KEY_FILE",
@@ -105,7 +108,9 @@ def test_pi05_real_system_scenario(scenario):
             pytest.fail("PI-05 evidence directory must be preprovisioned")
         path = destination / f"{run_id}-{scenario}.json"
         try:
-            with path.open("x", encoding="utf-8") as output:
+            # Mode 0600 even if the environment has an overly permissive umask.
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as output:
                 json.dump(payload, output, indent=2, sort_keys=True)
                 output.write("\\n")
         except FileExistsError:
