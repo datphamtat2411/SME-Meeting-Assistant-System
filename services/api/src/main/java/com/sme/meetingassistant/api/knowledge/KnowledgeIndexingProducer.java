@@ -221,19 +221,28 @@ public class KnowledgeIndexingProducer {
     }
 
     private void retireObsoleteSources(Candidate candidate) {
-        if (!Set.of("TRANSCRIPT", "SUMMARY").contains(candidate.sourceType())) return;
-        List<RetiredSource> retired = jdbc.query("""
-            SELECT DISTINCT source_id FROM knowledge_indexing_work
-             WHERE meeting_id=? AND source_type=? AND source_id<>? AND operation='UPSERT'
-            """, (rs, row) -> new RetiredSource(rs.getObject("source_id", UUID.class)),
-            candidate.meetingId(), candidate.sourceType(), candidate.sourceId());
-        for (RetiredSource source : retired) {
+        // Every previously indexed revision must eventually be removed, not
+        // merely the immediately previous revision. A skipped publication or a
+        // repair of a historical generation can leave older points behind.
+        // For TRANSCRIPT/SUMMARY, a new current identity also supersedes
+        // previously indexed identities within the same meeting. Decisions and
+        // official action items have independent identities and business history.
+        List<RetiredRevision> retired = jdbc.query("""
+            SELECT DISTINCT source_id,source_revision FROM knowledge_indexing_work
+             WHERE meeting_id=? AND source_type=? AND operation='UPSERT'
+               AND ((source_id=? AND source_revision<?)
+                    OR (? IN ('TRANSCRIPT','SUMMARY') AND source_id<>?))
+             ORDER BY source_id,source_revision
+            """, (rs, row) -> new RetiredRevision(
+                rs.getObject("source_id", UUID.class), rs.getLong("source_revision")),
+            candidate.meetingId(), candidate.sourceType(), candidate.sourceId(),
+            candidate.revision(), candidate.sourceType(), candidate.sourceId());
+        for (RetiredRevision source : retired) {
             requestLifecycleForSource(candidate.sourceType(), source.sourceId(), candidate.meetingId(),
-                null, "INVALIDATE", "SOURCE_SUPERSEDED", null);
+                source.revision(), "INVALIDATE", "SOURCE_SUPERSEDED", null);
         }
-        requestLifecycleForSource(candidate.sourceType(), candidate.sourceId(), candidate.meetingId(),
-            candidate.revision() - 1, "INVALIDATE", "SOURCE_SUPERSEDED", null);
     }
+    private record RetiredRevision(UUID sourceId, long revision) { }
 
     private Snapshot snapshot(Candidate candidate) {
         byte[] bytes = candidate.snapshotBytes();
@@ -611,7 +620,7 @@ public class KnowledgeIndexingProducer {
     }
     private record WorkTarget(long revision, String generationId, String configurationVersion,
             String configurationSha256, String tokenizerId) { }
-    private record RetiredSource(UUID sourceId) { }
+
     private record SummaryRow(UUID id, UUID meetingId, int versionNumber, String content,
             String sourceType, String qualityStatus, boolean isCurrent, UUID processingJobId,
             UUID transcriptId, Long contentRevision, long selectionEpoch, String aiWarningCodes,

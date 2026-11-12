@@ -341,6 +341,42 @@ class KnowledgeIndexingWorkerIntegrationTests {
 
     @Test
     @Transactional
+    void revisedOfficialActionInvalidatesEveryPreviouslyIndexedRevisionWithoutRevokingBusinessState() {
+        var fixture = publishedAction();
+        // Explicitly publish a second revision, then a third. Both historical
+        // revisions need durable source-scoped cleanup, not only rev N-1.
+        jdbc.update("UPDATE action_items SET title='Corrected task',version=version+1 WHERE id=?",
+            fixture.itemId());
+        producer.request("ACTION_ITEM", fixture.itemId(), fixture.meetingId()).orElseThrow();
+        jdbc.update("UPDATE action_items SET title='Final task',version=version+1 WHERE id=?",
+            fixture.itemId());
+        producer.request("ACTION_ITEM", fixture.itemId(), fixture.meetingId()).orElseThrow();
+        assertThat(jdbc.queryForList("""
+            SELECT source_revision FROM knowledge_indexing_work
+             WHERE meeting_id=? AND source_type='ACTION_ITEM' AND source_id=?
+               AND operation='INVALIDATE' ORDER BY source_revision
+            """, Long.class, fixture.meetingId(), fixture.itemId()))
+            .containsExactly(0L, 1L);
+        assertThat(jdbc.queryForObject("SELECT status FROM action_items WHERE id=?",
+            String.class, fixture.itemId())).isEqualTo("OPEN");
+        assertThat(jdbc.queryForObject("""
+            SELECT COUNT(*) FROM outbox_events o
+            JOIN knowledge_indexing_work w ON w.event_id=o.id
+            WHERE w.source_id=? AND w.operation='INVALIDATE'
+              AND o.event_type='KNOWLEDGE_INDEXING_REQUESTED'
+            """, Integer.class, fixture.itemId())).isEqualTo(2);
+
+        // Reprocessing the same logical revision must not produce extra cleanup.
+        assertThat(producer.request("ACTION_ITEM", fixture.itemId(), fixture.meetingId()))
+            .isEmpty();
+        assertThat(jdbc.queryForObject("""
+            SELECT COUNT(*) FROM knowledge_indexing_work
+             WHERE source_id=? AND operation='INVALIDATE'
+            """, Integer.class, fixture.itemId())).isEqualTo(2);
+    }
+
+    @Test
+    @Transactional
     void knowledgePublisherConfirmationUpdatesOnlyThePublishedWork() {
         UUID userId = UUID.randomUUID();
         UUID meetingId = UUID.randomUUID();
