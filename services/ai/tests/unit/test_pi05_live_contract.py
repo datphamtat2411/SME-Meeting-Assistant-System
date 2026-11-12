@@ -58,7 +58,6 @@ def test_ai_proposal_cannot_be_falsely_reported_as_human_confirmation():
     scenario = "full-pipeline"
     payload = valid(scenario)
     proposed = next(o for o in payload["observations"] if o["step"] == "intelligence-proposal")
-    confirmed = next(o for o in payload["observations"] if o["step"] == "human-decision-confirmed")
     proposed["observedResult"] = "ACCEPTED"
     with pytest.raises(ValueError):
         validate_live_evidence(scenario, payload, run_id=RUN, commit=SHA,
