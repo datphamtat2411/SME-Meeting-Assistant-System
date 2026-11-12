@@ -248,7 +248,9 @@ class KnowledgeIndexingWorkerIntegrationTests {
     @Test
     @Transactional
     void newlyIneligibleIndexedSourceCannotQualifyCandidateForActivation() {
-        UUID actor=UUID.randomUUID(),meeting=UUID.randomUUID(),decision=UUID.randomUUID();
+        UUID actor=UUID.randomUUID(),meeting=UUID.randomUUID(),summary=UUID.randomUUID();
+        UUID media=UUID.randomUUID(),job=UUID.randomUUID(),transcript=UUID.randomUUID();
+        UUID stage=UUID.randomUUID(),snapshot=UUID.randomUUID(),receipt=UUID.randomUUID();
         String email=actor+"@example.invalid";
         jdbc.update("""
             INSERT INTO users(id,email,email_normalized,display_name,password_hash,global_role,account_status)
@@ -259,10 +261,44 @@ class KnowledgeIndexingWorkerIntegrationTests {
             VALUES (?,'PI04 generation source',?,?)
             """,meeting,actor,actor);
         jdbc.update("""
-            INSERT INTO meeting_decisions(id,meeting_id,content,status,source_type,
-                created_by_user_id,confirmed_by_user_id,confirmed_at)
-            VALUES (?,?,'Previously confirmed','CONFIRMED','MANUAL',?,?,CURRENT_TIMESTAMP)
-            """,decision,meeting,actor,actor);
+            INSERT INTO meeting_media(id,meeting_id,source_type,status,object_key,
+                pending_object_key,content_type,expected_size_bytes,size_bytes,
+                duration_ms,uploaded_by_user_id,available_at)
+            VALUES (?,?,'UPLOAD','AVAILABLE',?,?,'audio/wav',100,100,10000,?,CURRENT_TIMESTAMP)
+            """,media,meeting,"meetings/"+meeting+"/sources/"+media,
+            "meetings/"+meeting+"/pending/"+media,actor);
+        jdbc.update("""
+            INSERT INTO processing_jobs(id,meeting_id,source_media_id,requested_by_user_id,status)
+            VALUES (?,?,?,?,'COMPLETED')
+            """,job,meeting,media,actor);
+        jdbc.update("""
+            INSERT INTO transcripts(id,meeting_id,source_media_id,processing_job_id,
+                version_number,language_code,status,is_current,content_revision)
+            VALUES (?,?,?,?,1,'vi','READY',TRUE,0)
+            """,transcript,meeting,media,job);
+        jdbc.update("""
+            INSERT INTO processing_stage_runs(id,processing_job_id,stage_code,attempt_number,status)
+            VALUES (?,?,'GENERATING_SUMMARY',1,'SUCCEEDED')
+            """,stage,job);
+        jdbc.update("""
+            INSERT INTO meeting_intelligence_source_snapshots(id,meeting_id,source_media_id,
+                processing_job_id,transcript_id,content_revision,sha256,object_key,size_bytes)
+            VALUES (?,?,?,?,?,0,?,?,100)
+            """,snapshot,meeting,media,job,transcript,"a".repeat(64),
+            "processing/"+job+"/intelligence/source/"+snapshot+".json");
+        jdbc.update("""
+            INSERT INTO meeting_intelligence_result_receipts(id,meeting_id,processing_job_id,
+                stage_run_id,result_type,source_snapshot_id,transcript_id,content_revision,
+                artifact_sha256,artifact_object_key,artifact_size_bytes)
+            VALUES (?,?,?,?,'SUMMARY',?,?,0,?,?,200)
+            """,receipt,meeting,job,stage,snapshot,transcript,"b".repeat(64),
+            "processing/"+job+"/intelligence/results/"+stage+".json");
+        jdbc.update("""
+            INSERT INTO meeting_summary_versions(id,meeting_id,version_number,content,
+                source_type,processing_job_id,result_receipt_id,transcript_id,
+                content_revision,quality_status,is_current)
+            VALUES (?,?,1,'Reviewable old summary','AI_GENERATED',?,?,?,0,'READY',TRUE)
+            """,summary,meeting,job,receipt,transcript);
         enableKnowledgeIndexing();
         String generation="pi04-fresh-"+UUID.randomUUID();
         String version="pi04-freshness-v1";
@@ -270,29 +306,31 @@ class KnowledgeIndexingWorkerIntegrationTests {
         String tokenizer="BAAI/bge-m3-tokenizer:pi04";
         String collection="pi04_freshness_"+UUID.randomUUID();
         admin.prepare(generation,version,hash,tokenizer,collection);
-        var event=producer.requestReindex("DECISION",decision,meeting,generation,actor).orElseThrow();
+        var event=producer.requestReindex("SUMMARY",summary,meeting,generation,actor).orElseThrow();
         byte[] payload=jdbc.queryForObject("""
             SELECT payload FROM knowledge_source_snapshots WHERE id=?
             """,byte[].class,event.snapshotId());
         publish(event.eventId());
         var command=new KnowledgeIndexingWorkerCommands.Claim("1.0",1,event.eventId(),
-            KnowledgeIndexingProducer.EVENT_TYPE,meeting,"DECISION",decision,
+            KnowledgeIndexingProducer.EVENT_TYPE,meeting,"SUMMARY",summary,
             event.sourceRevision(),event.snapshotId(),event.snapshotSha256(),payload.length,
             generation,version,hash,tokenizer,"UPSERT","REINDEX_REQUESTED",UUID.randomUUID());
         UUID token=(UUID)worker.claim(event.eventId(),command,"c".repeat(64)).get("claimToken");
         worker.result(event.eventId(),new KnowledgeIndexingWorkerCommands.Result(
             "1.0",event.eventId(),token,UUID.randomUUID(),"INDEXED",generation,
             1,"d".repeat(64),"NONE"),"c".repeat(64));
-        assertThat(admin.refresh(generation)).containsEntry("state","READY");
-        // A controlled state edit advances the canonical optimistic version,
-        // while the previously indexed source/receipt remains historical.
-        jdbc.update("""
-            UPDATE meeting_decisions
-               SET status='REJECTED',version=version+1,updated_at=CURRENT_TIMESTAMP
-             WHERE id=?
-            """,decision);
+        assertThat(admin.refresh(generation)).containsEntry("state","READY")
+            .containsEntry("targetCount",1L).containsEntry("indexedCount",1L);
+
+        // Withdrawing current selection is supported by Summary Management.
+        // No newer eligible Summary exists, while the old UPSERT receipt is
+        // still INDEXED. It MUST NOT count toward candidate readiness.
+        jdbc.update("UPDATE meeting_summary_versions SET is_current=FALSE WHERE id=?",summary);
         assertThat(admin.refresh(generation)).containsEntry("state","PREPARING")
             .containsEntry("targetCount",1L).containsEntry("indexedCount",0L);
+        assertThat(jdbc.queryForObject("""
+            SELECT state FROM knowledge_indexing_work WHERE event_id=?
+            """,String.class,event.eventId())).isEqualTo("INDEXED");
     }
 
     @Test
