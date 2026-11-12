@@ -216,6 +216,26 @@ class OperationalGateTests(unittest.TestCase):
                                         "sourceCommit": SHA, "alerts": policy}))
             self.assertTrue(check_alerts(path, SHA))
 
+    def test_metrics_health_alert_cannot_be_silenced_by_zero_threshold(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "alerts.json"
+            policy = [{
+                "metric": name,
+                "comparison": "lt" if name.endswith("_aggregation_healthy") else "gt",
+                "threshold": 0 if name.endswith("_aggregation_healthy") else 1,
+                "forSeconds": 30, "owner": "unit-oncall", "runbook": "PI06-OPERATIONS",
+            } for name in ALERT_METRICS]
+            path.write_text(json.dumps({
+                "schemaVersion": "1.0", "sourceCommit": SHA, "alerts": policy,
+            }))
+            self.assertTrue(check_alerts(path, SHA))
+            next(a for a in policy if a["metric"].endswith("_aggregation_healthy"))["threshold"] = 1
+            path.write_text(json.dumps({
+                "schemaVersion": "1.0", "sourceCommit": SHA, "alerts": policy,
+            }))
+            self.assertEqual(check_alerts(path, SHA), [])
+
+
     def test_alert_policy_rejects_wrong_comparison_and_nonfinite_threshold(self):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/"alerts.json"

@@ -188,6 +188,8 @@ def check_alerts(path: Path | None, sha: str) -> list[str]:
             if (type(item["threshold"]) not in (int, float)
                     or not math.isfinite(item["threshold"]) or item["threshold"] < 0):
                 raise ValueError("Alert threshold invalid")
+            if metric.endswith("_aggregation_healthy") and not (0 < item["threshold"] <= 1):
+                raise ValueError("Aggregation-health alert must fire when value drops to zero")
             if type(item["forSeconds"]) is not int or item["forSeconds"] <= 0:
                 raise ValueError("Alert evaluation window invalid")
             if any(not isinstance(item[k], str) or len(item[k].strip()) < 3

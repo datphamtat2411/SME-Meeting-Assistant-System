@@ -185,7 +185,10 @@ JSON record includes: metric, comparison (gt or lt), threshold (chosen
 based on real load), forSeconds, owner and runbook. The metric field MUST use
 the actual Prometheus scrape name with underscores, e.g.
 product_integration_knowledge_oldest_age_seconds, not the dotted Micrometer
-registration name. This is a release configuration invariant. It has one record per required family.
+registration name. The aggregation-health gauge is 1 for success and 0 on
+failure: its 'lt' threshold MUST be greater than zero (at most 1), or the
+alert would never fire when the collector fails. This is a release
+configuration invariant. It has one record per required family.
 
     python3 services/api/scripts/pi06_release_gate.py \
       --sha "$PINNED_SHA" --run-id "$ISOLATED_RUN_UUID" \
