@@ -206,7 +206,7 @@ public class KnowledgeIndexingAdminService {
         ReconciliationRun run = jdbc.query("""
             SELECT id,generation_id,batch_size,dry_run,state,checkpoint_source_type,
                    checkpoint_source_id,checkpoint_source_revision,scanned_count,repaired_count,finding_count,
-                   phase,vector_cursor,vector_scanned_count
+                   phase,vector_cursor,vector_scanned_count,inventory_complete
               FROM knowledge_reconciliation_runs WHERE id=? FOR UPDATE
             """, (rs, row) -> new ReconciliationRun(rs.getObject("id", UUID.class),
                 rs.getString("generation_id"), rs.getInt("batch_size"), rs.getBoolean("dry_run"),
@@ -427,7 +427,7 @@ public class KnowledgeIndexingAdminService {
         long scanned = run.vectorScannedCount() + page.sources().size();
         if (page.nextCursor() == null) {
             jdbc.update("""
-                UPDATE knowledge_reconciliation_runs SET state='COMPLETED',
+                UPDATE knowledge_reconciliation_runs SET state='COMPLETED',inventory_complete=TRUE,
                     vector_scanned_count=?,finding_count=?,completed_at=CURRENT_TIMESTAMP,
                     updated_at=CURRENT_TIMESTAMP WHERE id=?
                 """, scanned, findings, runId);
@@ -625,7 +625,7 @@ public class KnowledgeIndexingAdminService {
             SELECT id,generation_id,batch_size,dry_run,state,checkpoint_source_type,checkpoint_source_id,
                    checkpoint_source_revision,scanned_count,repaired_count,finding_count,last_error_code,
                    last_error_summary,started_at,completed_at,updated_at,
-                   phase,vector_cursor,vector_scanned_count
+                   phase,vector_cursor,vector_scanned_count,inventory_complete
               FROM knowledge_reconciliation_runs WHERE id=?
             """, (rs, row) -> {
                 Map<String, Object> data = new LinkedHashMap<>();
@@ -643,6 +643,7 @@ public class KnowledgeIndexingAdminService {
                 data.put("phase", rs.getString("phase"));
                 data.put("vectorCursor", rs.getString("vector_cursor"));
                 data.put("vectorScannedCount", rs.getLong("vector_scanned_count"));
+                data.put("inventoryComplete", rs.getBoolean("inventory_complete"));
                 data.put("lastErrorCode", rs.getString("last_error_code"));
                 data.put("lastErrorSummary", rs.getString("last_error_summary"));
                 data.put("startedAt", rs.getObject("started_at"));

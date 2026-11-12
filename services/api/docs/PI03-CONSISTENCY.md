@@ -11,6 +11,7 @@ This reuses the existing KnowledgeIndexingProducer, transaction, outbox, generat
 - Official Action Items retain business authority after transcript edits. Their lifecycle must not be auto-revoked.
 - When knowledge indexing is disabled, no fake work rows or success assertions are created.
 - This handles tracked indexed dependents only. G-004 full source/work/vector inventory reconciliation remains PI-04.
+- PI-03 review also closed a version-lifecycle defect in KnowledgeIndexingProducer: the replacement of an official Decision/Action Item (or a skip across multiple revisions) now emits source/revision-scoped invalidation intents for **all** tracked older revisions, not just the immediately previous transcript/summary revision. Repeated processing cannot duplicate an existing lifecycle intent. Confirmed action-item status remains untouched; see KnowledgeIndexingWorkerIntegrationTests.revisedOfficialActionInvalidatesEveryPreviouslyIndexedRevisionWithoutRevokingBusinessState.
 
 ## Verification
 

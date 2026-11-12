@@ -52,5 +52,5 @@ jobs:
       - name: Run Assistant and cross-module regression suites
         run: >
           ./mvnw -B -ntp
-          -Dtest=AssistantHttpIntegrationTests,CrossModuleRevisionConsistencyIntegrationTests
+          -Dtest=AssistantHttpIntegrationTests,CrossModuleRevisionConsistencyIntegrationTests,KnowledgeIndexingWorkerIntegrationTests,AiCoreKnowledgeVectorAuditContractTests
           test

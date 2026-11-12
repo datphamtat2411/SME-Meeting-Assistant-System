@@ -4,6 +4,7 @@ ALTER TABLE knowledge_reconciliation_runs
     ADD COLUMN phase VARCHAR(16) NOT NULL DEFAULT 'SOURCES',
     ADD COLUMN vector_cursor VARCHAR(36),
     ADD COLUMN vector_scanned_count BIGINT NOT NULL DEFAULT 0,
+    ADD COLUMN inventory_complete BOOLEAN NOT NULL DEFAULT FALSE,
     ADD CONSTRAINT ck_knowledge_reconciliation_phase
         CHECK (phase IN ('SOURCES','VECTORS')),
     ADD CONSTRAINT ck_knowledge_reconciliation_vector_cursor

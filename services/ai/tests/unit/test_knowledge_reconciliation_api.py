@@ -127,3 +127,81 @@ def test_reconciliation_endpoint_returns_exact_source_point_count():
     }
     assert store.validated is True
     assert store.requests == [(MEETING_ID, "ACTION_ITEM", SOURCE_ID, 4, GENERATION)]
+
+def test_qdrant_inventory_adapter_paginates_and_filters_generation():
+    from sme_meeting_ai.rag.qdrant import QdrantVectorStore
+    from sme_meeting_ai.rag.qdrant import QdrantError
+    import pytest
+
+    class Client:
+        def __init__(self):
+            self.calls = []
+
+        def scroll(self, **kwargs):
+            self.calls.append(kwargs)
+            if kwargs.get("offset") is None:
+                return ([SimpleNamespace(payload={
+                    "meeting_id": MEETING_ID,
+                    "source_type": "ACTION_ITEM",
+                    "canonical_source_id": SOURCE_ID,
+                    "canonical_source_revision": 4,
+                    "index_generation_id": GENERATION,
+                    "meeting_content": "Must never cross inventory API",
+                })], 7)
+            return ([], None)
+
+    store = object.__new__(QdrantVectorStore)
+    store.spec = SimpleNamespace(
+        collection_name="isolated-test",
+        compatibility=SimpleNamespace(index_generation_id=GENERATION),
+    )
+    store.client = Client()
+    first, cursor = store.inventory_source_page(GENERATION, 1)
+    assert cursor == "7"
+    assert first == [{
+        "sourceIdentity": {"sourceType": "ACTION_ITEM", "sourceId": SOURCE_ID, "meetingId": MEETING_ID},
+        "sourceRevision": {"number": 4},
+    }]
+    second, end = store.inventory_source_page(GENERATION, 1, cursor)
+    assert second == [] and end is None
+    assert store.client.calls[0]["scroll_filter"].must[0].key == "index_generation_id"
+    assert store.client.calls[1]["offset"] == 7
+    with pytest.raises(QdrantError):
+        store.inventory_source_page("another-generation", 1)
+    with pytest.raises(ValueError):
+        store.inventory_source_page(GENERATION, 1, "bad-cursor")
+
+
+def test_qdrant_inventory_fails_closed_for_malformed_or_stalled_payloads():
+    from sme_meeting_ai.rag.qdrant import QdrantVectorStore, QdrantError
+    import pytest
+
+    store = object.__new__(QdrantVectorStore)
+    store.spec = SimpleNamespace(
+        collection_name="isolated-test",
+        compatibility=SimpleNamespace(index_generation_id=GENERATION),
+    )
+
+    class Malformed:
+        def scroll(self, **kwargs):
+            return ([SimpleNamespace(payload={
+                "meeting_id": MEETING_ID,
+                "source_type": "ACTION_ITEM",
+                "canonical_source_id": SOURCE_ID,
+                "canonical_source_revision": -1,
+                "index_generation_id": GENERATION,
+            })], None)
+
+    store.client = Malformed()
+    with pytest.raises(QdrantError) as error:
+        store.inventory_source_page(GENERATION, 10)
+    assert error.value.category == "INVENTORY_INVALID"
+
+    class Stalled:
+        def scroll(self, **kwargs):
+            return ([], 7)
+
+    store.client = Stalled()
+    with pytest.raises(QdrantError) as error:
+        store.inventory_source_page(GENERATION, 1, "7")
+    assert error.value.category == "INVENTORY_STALLED"
