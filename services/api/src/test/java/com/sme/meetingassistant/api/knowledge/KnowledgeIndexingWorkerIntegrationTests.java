@@ -284,11 +284,12 @@ class KnowledgeIndexingWorkerIntegrationTests {
             "1.0",event.eventId(),token,UUID.randomUUID(),"INDEXED",generation,
             1,"d".repeat(64),"NONE"),"c".repeat(64));
         assertThat(admin.refresh(generation)).containsEntry("state","READY");
-        // Losing human confirmation changes eligibility without changing the
-        // source revision or updating an old indexed-work receipt.
+        // A controlled state edit advances the canonical optimistic version,
+        // while the previously indexed source/receipt remains historical.
         jdbc.update("""
-            UPDATE meeting_decisions SET status='REJECTED',updated_at=CURRENT_TIMESTAMP
-            WHERE id=?
+            UPDATE meeting_decisions
+               SET status='REJECTED',version=version+1,updated_at=CURRENT_TIMESTAMP
+             WHERE id=?
             """,decision);
         assertThat(admin.refresh(generation)).containsEntry("state","PREPARING")
             .containsEntry("targetCount",1L).containsEntry("indexedCount",0L);
