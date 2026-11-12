@@ -5,7 +5,6 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
-
 from pi05_live_contract import REQUIRED, validate_live_evidence
 
 RUN = str(uuid4())

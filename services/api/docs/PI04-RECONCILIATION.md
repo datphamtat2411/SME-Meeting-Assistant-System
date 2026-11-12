@@ -26,3 +26,5 @@ The existing outbox, PostgreSQL work ledger, producer claims, certificate-bound 
 - Reconciliation cleanup is generation- and revision-scoped. If a previous cleanup was acknowledged or terminal but actual points persist, a new durable intent sequence is emitted; an active pending/claimed/retryable intent is not duplicated.
 - Candidate generation activation requires a completed, clean, unrepaired Qdrant inventory since its last work update. Existing RETIRED generation rollback remains an explicit fast recovery path, not a fresh readiness certification.
 - Nonzero persisted points on unreceipted in-flight work are reported for manual review. Zero-point stale or deleted sources are not repeatedly scheduled for redundant cleanup.
+
+- PI-04 follow-up fixed an activation-readiness blind spot: a superseded/now-ineligible source with an old `INDEXED` UPSERT receipt does **not** qualify as complete until the latest lifecycle transition has actually invalidated/deleted/superseded it and the Qdrant audit confirms safe vector state. A dedicated PostgreSQL test exercises confirmed → rejected Decision eligibility without changing the work receipt.

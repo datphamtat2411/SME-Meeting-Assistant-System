@@ -247,6 +247,55 @@ class KnowledgeIndexingWorkerIntegrationTests {
 
     @Test
     @Transactional
+    void newlyIneligibleIndexedSourceCannotQualifyCandidateForActivation() {
+        UUID actor=UUID.randomUUID(),meeting=UUID.randomUUID(),decision=UUID.randomUUID();
+        String email=actor+"@example.invalid";
+        jdbc.update("""
+            INSERT INTO users(id,email,email_normalized,display_name,password_hash,global_role,account_status)
+            VALUES (?,?,?,'PI04 freshness reviewer','test-only','EMPLOYEE','ACTIVE')
+            """,actor,email,email);
+        jdbc.update("""
+            INSERT INTO meetings(id,title,organizer_user_id,created_by_user_id)
+            VALUES (?,'PI04 generation source',?,?)
+            """,meeting,actor,actor);
+        jdbc.update("""
+            INSERT INTO meeting_decisions(id,meeting_id,content,status,source_type,
+                created_by_user_id,confirmed_by_user_id,confirmed_at)
+            VALUES (?,?,'Previously confirmed','CONFIRMED','MANUAL',?,?,CURRENT_TIMESTAMP)
+            """,decision,meeting,actor,actor);
+        enableKnowledgeIndexing();
+        String generation="pi04-fresh-"+UUID.randomUUID();
+        String version="pi04-freshness-v1";
+        String hash="d".repeat(64);
+        String tokenizer="BAAI/bge-m3-tokenizer:pi04";
+        String collection="pi04_freshness_"+UUID.randomUUID();
+        admin.prepare(generation,version,hash,tokenizer,collection);
+        var event=producer.requestReindex("DECISION",decision,meeting,generation,actor).orElseThrow();
+        byte[] payload=jdbc.queryForObject("""
+            SELECT payload FROM knowledge_source_snapshots WHERE id=?
+            """,byte[].class,event.snapshotId());
+        publish(event.eventId());
+        var command=new KnowledgeIndexingWorkerCommands.Claim("1.0",1,event.eventId(),
+            KnowledgeIndexingProducer.EVENT_TYPE,meeting,"DECISION",decision,
+            event.sourceRevision(),event.snapshotId(),event.snapshotSha256(),payload.length,
+            generation,version,hash,tokenizer,"UPSERT","REINDEX_REQUESTED",UUID.randomUUID());
+        UUID token=(UUID)worker.claim(event.eventId(),command,"c".repeat(64)).get("claimToken");
+        worker.result(event.eventId(),new KnowledgeIndexingWorkerCommands.Result(
+            "1.0",event.eventId(),token,UUID.randomUUID(),"INDEXED",generation,
+            1,"d".repeat(64),"NONE"),"c".repeat(64));
+        assertThat(admin.refresh(generation)).containsEntry("state","READY");
+        // Losing human confirmation changes eligibility without changing the
+        // source revision or updating an old indexed-work receipt.
+        jdbc.update("""
+            UPDATE meeting_decisions SET status='REJECTED',updated_at=CURRENT_TIMESTAMP
+            WHERE id=?
+            """,decision);
+        assertThat(admin.refresh(generation)).containsEntry("state","PREPARING")
+            .containsEntry("targetCount",1L).containsEntry("indexedCount",0L);
+    }
+
+    @Test
+    @Transactional
     void reconciliationFindsIndexedWorkWithMissingQdrantPoints() {
 
         var fixture = publishedAction();

@@ -49,6 +49,7 @@ SCENARIOS = {
     ],
     "PI05-008-generation-readiness": [
         "KnowledgeIndexingWorkerIntegrationTests.generationActivationRequiresCompleteWorkAndRetainsRollbackGeneration",
+        "KnowledgeIndexingWorkerIntegrationTests.newlyIneligibleIndexedSourceCannotQualifyCandidateForActivation",
         "KnowledgeIndexingWorkerIntegrationTests.pagedVectorInventoryPersistsCursorAndCompletesOnlyAfterLastPage",
     ],
     "PI05-009-worker-recovery": [

@@ -550,7 +550,7 @@ public class KnowledgeIndexingAdminService {
                    count(*) FILTER (WHERE
                        (eligible AND operation='UPSERT' AND state IN ('INDEXED','NO_ELIGIBLE_CONTENT'))
                        OR (NOT eligible AND state IN
-                           ('INDEXED','NO_ELIGIBLE_CONTENT','INVALIDATED','DELETED','SUPERSEDED'))) AS indexed_count
+                           ('INVALIDATED','DELETED','SUPERSEDED'))) AS indexed_count
               FROM targets
             """, (rs, row) -> new GenerationProgress(rs.getLong("target_count"),
                 rs.getLong("indexed_count")), generationId);

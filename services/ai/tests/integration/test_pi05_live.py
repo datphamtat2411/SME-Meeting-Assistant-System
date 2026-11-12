@@ -15,7 +15,6 @@ from uuid import UUID
 
 import httpx
 import pytest
-
 from pi05_live_contract import REQUIRED, validate_live_evidence
 
 pytestmark = [pytest.mark.evaluation, pytest.mark.live_infrastructure]
