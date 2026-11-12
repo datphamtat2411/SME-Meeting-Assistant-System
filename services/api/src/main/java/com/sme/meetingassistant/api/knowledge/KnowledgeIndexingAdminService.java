@@ -142,6 +142,29 @@ public class KnowledgeIndexingAdminService {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                 "Knowledge generation is not ready for activation.");
         }
+        // A READY SQL work ledger is insufficient evidence that Qdrant contains
+        // the correct points. New generations need an inventory-complete, clean
+        // reconciliation performed after the last generation work transition.
+        // RETIRED is the explicit rollback path: preserve the last-known-good
+        // generation when the new deployment is being reverted.
+        if ("READY".equals(generation.state())) {
+            Boolean cleanInventory = jdbc.queryForObject("""
+                SELECT EXISTS (
+                    SELECT 1 FROM knowledge_reconciliation_runs r
+                     WHERE r.generation_id=? AND r.state='COMPLETED'
+                       AND r.inventory_complete AND r.finding_count=0
+                       AND r.repaired_count=0
+                       AND r.started_at >= COALESCE((
+                         SELECT MAX(w.updated_at) FROM knowledge_indexing_work w
+                          WHERE w.index_generation_id=?
+                       ), '-infinity'::timestamptz)
+                )
+                """, Boolean.class, generationId, generationId);
+            if (!Boolean.TRUE.equals(cleanInventory)) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Knowledge generation requires a clean completed vector inventory.");
+            }
+        }
         var configured = properties.getKnowledgeIndexing();
         if (!generation.id().equals(configured.getGenerationId())
                 || !generation.configurationVersion().equals(configured.getConfigurationVersion())
@@ -248,7 +271,8 @@ public class KnowledgeIndexingAdminService {
                 return runData(runId);
             }
             if (pointCounts == null || pointCounts.size() != sources.size()
-                    || sources.stream().anyMatch(source -> !pointCounts.containsKey(source))) {
+                    || sources.stream().anyMatch(source -> !pointCounts.containsKey(source)
+                        || pointCounts.get(source) == null || pointCounts.get(source) < 0)) {
                 jdbc.update("""
                     UPDATE knowledge_reconciliation_runs SET state='FAILED',last_error_code=?,
                         last_error_summary=?,updated_at=CURRENT_TIMESTAMP WHERE id=?
@@ -278,7 +302,9 @@ public class KnowledgeIndexingAdminService {
             Integer expectedPointCount = work.indexedChunkCount();
             if ("CURRENT".equals(status) && work.state() == null) {
                 findingType = "MISSING_WORK";
-                action = "REINDEX";
+                // Existing vectors without an authoritative Core work/receipt
+                // are not safe to overwrite automatically.
+                action = pointCount == 0 ? "REINDEX" : "MANUAL_REVIEW";
             } else if ("CURRENT".equals(status) && Set.of("INDEXED", "NO_ELIGIBLE_CONTENT")
                     .contains(work.state())) {
                 if (expectedPointCount != null && pointCount == expectedPointCount.longValue()) {
@@ -293,12 +319,17 @@ public class KnowledgeIndexingAdminService {
             } else if ("CURRENT".equals(status)
                     && !Set.of("RETRYABLE_FAILURE", "TERMINAL_FAILURE", "SUPERSEDED")
                     .contains(work.state())) {
-                // PENDING/CLAIMED is in-flight work, not evidence of lost data.
-                continue;
+                // PENDING/CLAIMED is in-flight, but persisted points without
+                // a verified receipt are an integrity anomaly.
+                if (pointCount == 0) continue;
+                findingType = "INCOMPLETE_POINTS";
+                action = "MANUAL_REVIEW";
             } else if ("DELETED".equals(status)) {
+                if (pointCount == 0) continue;
                 findingType = "DELETED_SOURCE_POINTS";
                 action = "DELETE";
             } else if (!"CURRENT".equals(status)) {
+                if (pointCount == 0) continue;
                 findingType = "STALE_POINTS";
                 action = "INVALIDATE";
             } else {
@@ -319,10 +350,9 @@ public class KnowledgeIndexingAdminService {
             findings += inserted;
             if (!run.dryRun() && inserted > 0 && !"MANUAL_REVIEW".equals(action)) {
                 var event = switch (action) {
-                    case "DELETE" -> producer.requestDelete(work.sourceType(), work.sourceId(),
-                        work.meetingId(), requestedByUserId);
-                    case "INVALIDATE" -> producer.requestInvalidateRevision(work.sourceType(), work.sourceId(),
-                        work.meetingId(), work.sourceRevision(), requestedByUserId);
+                    case "DELETE", "INVALIDATE" -> producer.requestReconcileLifecycle(
+                        work.sourceType(), work.sourceId(), work.meetingId(),
+                        work.sourceRevision(), work.generationId(), action, requestedByUserId);
                     default -> producer.requestReindex(work.sourceType(), work.sourceId(), work.meetingId(),
                         work.generationId(), requestedByUserId);
                 };

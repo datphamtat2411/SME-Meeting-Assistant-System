@@ -209,6 +209,18 @@ class KnowledgeIndexingWorkerIntegrationTests {
             assertThat(admin.refresh(newGeneration)).containsEntry("state", "READY")
                 .containsEntry("targetCount", 1L).containsEntry("indexedCount", 1L);
 
+            // READY is not sufficient: require the completed Qdrant inventory
+            // evidence before a new generation becomes active.
+            var audited = new KnowledgeVectorAudit.SourceKey("ACTION_ITEM", itemId, meetingId,
+                event.sourceRevision());
+            when(vectorAudit.countPoints(newGeneration, java.util.List.of(audited)))
+                .thenReturn(Map.of(audited, 1L));
+            when(vectorAudit.inventoryPage(newGeneration, null, 10))
+                .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(audited), null));
+            var audit = admin.startReconciliation(newGeneration, 10, true, userId);
+            assertThat(audit).containsEntry("inventoryComplete", true)
+                .containsEntry("findingCount", 0L).containsEntry("repairedCount", 0L);
+
             config.setGenerationId(newGeneration);
             config.setConfigurationVersion(newVersion);
             config.setConfigurationSha256(newSha);
@@ -395,6 +407,70 @@ class KnowledgeIndexingWorkerIntegrationTests {
         assertThat(last).containsEntry("state","COMPLETED")
             .containsEntry("vectorScannedCount",1L)
             .containsEntry("findingCount",1L);
+    }
+
+    @Test
+    @Transactional
+    void missingWorkWithUnattributedVectorsRequiresManualReviewNotBlindReindex() {
+        UUID actor=UUID.randomUUID(), meeting=UUID.randomUUID(), item=UUID.randomUUID();
+        insertManualAction(actor,meeting,item);
+        enableKnowledgeIndexing();
+        String generation=properties.getKnowledgeIndexing().getGenerationId();
+        var key=new KnowledgeVectorAudit.SourceKey("ACTION_ITEM",item,meeting,0);
+        when(vectorAudit.countPoints(generation,java.util.List.of(key)))
+            .thenReturn(Map.of(key,2L));
+        when(vectorAudit.inventoryPage(generation,null,10))
+            .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(key),null));
+        var result=admin.startReconciliation(generation,10,false,actor);
+        assertThat(result).containsEntry("state","COMPLETED")
+            .containsEntry("inventoryComplete",true).containsEntry("repairedCount",0L);
+        assertThat(jdbc.queryForMap("""
+            SELECT finding_type,action FROM knowledge_reconciliation_findings
+             WHERE run_id=? AND finding_type='MISSING_WORK'
+            """,result.get("id"))).containsEntry("action","MANUAL_REVIEW");
+        assertThat(jdbc.queryForObject("""
+            SELECT COUNT(*) FROM knowledge_indexing_work WHERE source_id=?
+            """,Integer.class,item)).isZero();
+    }
+
+    @Test
+    @Transactional
+    void failedOrAcknowledgedLifecycleWithRemainingPointsCanBeRepairedAgain() {
+        var fixture=publishedAction();
+        var event=fixture.event();
+        // A newer authoritative revision makes the indexed old source stale.
+        jdbc.update("UPDATE action_items SET title='Changed',version=version+1 WHERE id=?",
+            fixture.itemId());
+        var key=new KnowledgeVectorAudit.SourceKey("ACTION_ITEM",fixture.itemId(),
+            fixture.meetingId(),event.sourceRevision());
+        var next=new KnowledgeVectorAudit.SourceKey("ACTION_ITEM",fixture.itemId(),
+            fixture.meetingId(),event.sourceRevision()+1);
+        when(vectorAudit.countPoints(event.indexGenerationId(),java.util.List.of(key,next)))
+            .thenReturn(Map.of(key,2L,next,0L));
+        when(vectorAudit.inventoryPage(event.indexGenerationId(),null,10))
+            .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(),null));
+        var first=admin.startReconciliation(event.indexGenerationId(),10,false,fixture.userId());
+        assertThat(first).containsEntry("state","COMPLETED");
+        UUID firstIntent=jdbc.queryForObject("""
+            SELECT event_id FROM knowledge_indexing_work
+             WHERE source_id=? AND source_revision=? AND operation='INVALIDATE'
+            """,UUID.class,fixture.itemId(),event.sourceRevision());
+        // The worker reports an acknowledged cleanup but the points persist.
+        // A second run must not regard that immutable receipt as vector truth.
+        jdbc.update("""
+            UPDATE knowledge_indexing_work SET state='INVALIDATED' WHERE event_id=?
+            """,firstIntent);
+        var second=admin.startReconciliation(event.indexGenerationId(),10,false,fixture.userId());
+        assertThat(second).containsEntry("state","COMPLETED");
+        assertThat(jdbc.queryForObject("""
+            SELECT COUNT(*) FROM knowledge_indexing_work
+             WHERE source_id=? AND source_revision=? AND operation='INVALIDATE'
+            """,Integer.class,fixture.itemId(),event.sourceRevision())).isEqualTo(2);
+        assertThat(jdbc.queryForObject("""
+            SELECT COUNT(*) FROM outbox_events o
+             JOIN knowledge_indexing_work w ON w.event_id=o.id
+             WHERE w.source_id=? AND w.operation='INVALIDATE'
+            """,Integer.class,fixture.itemId())).isEqualTo(2);
     }
 
     @Test

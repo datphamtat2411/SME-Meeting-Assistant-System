@@ -149,6 +149,63 @@ public class KnowledgeIndexingProducer {
             "INVALIDATE", "RECONCILIATION_REQUESTED", requestedByUserId);
     }
 
+    /**
+     * Reconcile an exact source revision in exactly one generation. If the prior
+     * lifecycle intent was terminal or acknowledged but its points persist,
+     * enqueue a new fenced sequence instead of treating the old intent as
+     * permanent proof of Qdrant cleanup.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public Optional<KnowledgeIndexingEvent> requestReconcileLifecycle(String sourceType, UUID sourceId,
+            UUID meetingId, long sourceRevision, String generationId, String operation,
+            UUID requestedByUserId) {
+        if (!properties.getKnowledgeIndexing().isEnabled()) return Optional.empty();
+        if (sourceType == null || sourceId == null || meetingId == null || generationId == null
+                || sourceRevision < 0 || !Set.of("DELETE", "INVALIDATE").contains(operation)
+                || !Set.of("TRANSCRIPT","SUMMARY","DECISION","ACTION_ITEM").contains(sourceType)) {
+            throw new IllegalArgumentException("Invalid knowledge lifecycle repair identity.");
+        }
+        // Match the worker's meeting-scoped lock to serialize repair attempts
+        // against source revisions and parallel reconciliation runs.
+        List<UUID> locks = jdbc.query("SELECT id FROM meetings WHERE id=? FOR UPDATE",
+            (rs,row)->rs.getObject(1,UUID.class),meetingId);
+        if (locks.isEmpty()) return Optional.empty();
+        List<WorkTarget> upserts = jdbc.query("""
+            SELECT source_revision,index_generation_id,configuration_version,
+                   configuration_sha256,tokenizer_id
+              FROM knowledge_indexing_work
+             WHERE meeting_id=? AND source_type=? AND source_id=?
+               AND source_revision=? AND index_generation_id=? AND operation='UPSERT'
+             ORDER BY intent_sequence DESC,event_id DESC LIMIT 1
+            """, (rs,row)->new WorkTarget(rs.getLong("source_revision"),
+                rs.getString("index_generation_id"),rs.getString("configuration_version"),
+                rs.getString("configuration_sha256"),rs.getString("tokenizer_id")),
+            meetingId,sourceType,sourceId,sourceRevision,generationId);
+        if (upserts.isEmpty()) return Optional.empty();
+        List<String> priorStates = jdbc.query("""
+            SELECT state FROM knowledge_indexing_work
+             WHERE meeting_id=? AND source_type=? AND source_id=? AND source_revision=?
+               AND index_generation_id=? AND operation=?
+             ORDER BY intent_sequence DESC,event_id DESC LIMIT 1
+            """, (rs,row)->rs.getString(1),
+            meetingId,sourceType,sourceId,sourceRevision,generationId,operation);
+        if (!priorStates.isEmpty() && Set.of("PENDING","CLAIMED","RETRYABLE_FAILURE")
+                .contains(priorStates.getFirst())) return Optional.empty();
+        long sequence = jdbc.queryForObject("""
+            SELECT COALESCE(MAX(intent_sequence),-1)+1 FROM knowledge_indexing_work
+             WHERE meeting_id=? AND source_type=? AND source_id=? AND source_revision=?
+               AND index_generation_id=? AND operation=?
+            """,Long.class,meetingId,sourceType,sourceId,sourceRevision,generationId,operation);
+        WorkTarget target=upserts.getFirst();
+        GenerationSpec generation=new GenerationSpec(target.generationId(),
+            target.configurationVersion(),target.configurationSha256(),target.tokenizerId());
+        KnowledgeIndexingEvent event=event(new Candidate(sourceType,sourceId,meetingId,
+            sourceRevision,new byte[0]),null,generation,operation,
+            "DELETE".equals(operation) ? "SOURCE_DELETED" : "RECONCILIATION_REQUESTED");
+        insertEventAndWork(event,sequence,requestedByUserId);
+        return Optional.of(event);
+    }
+
     /** Explicit Core-authorized lifecycle request used by deletion/retention controls. */
     @Transactional(propagation = Propagation.MANDATORY)
     public Optional<KnowledgeIndexingEvent> requestDelete(String sourceType, UUID sourceId,

@@ -20,3 +20,9 @@ The existing outbox, PostgreSQL work ledger, producer claims, certificate-bound 
 - Paginated Qdrant scans are not point-in-time transactional snapshots when writes occur concurrently. A release-grade inventory needs a quiescent controlled window or repeated scans with a reconciliation convergence criterion; otherwise findings are a bounded observation, not proof of zero drift.
 - Orphan point deletion is deliberately manual-review/fail-closed. A future reviewed, exact-identity lifecycle cleanup may be added if operator approval and safe authority checks are defined.
 - `state=COMPLETED` means the scan ended; operators must inspect `inventoryComplete`, `findingCount`, unresolved findings and generation readiness. Neither a clean CI result nor a zero-findings scan certifies historical product behavior or AI model quality.
+
+## PI-04 audit hardening (subsequent review)
+- Missing canonical work **with existing vectors** is unsafe to auto-reindex: it now creates a `MISSING_WORK/MANUAL_REVIEW` finding, retaining the observed count. Unattributed points never become provenance by inference.
+- Reconciliation cleanup is generation- and revision-scoped. If a previous cleanup was acknowledged or terminal but actual points persist, a new durable intent sequence is emitted; an active pending/claimed/retryable intent is not duplicated.
+- Candidate generation activation requires a completed, clean, unrepaired Qdrant inventory since its last work update. Existing RETIRED generation rollback remains an explicit fast recovery path, not a fresh readiness certification.
+- Nonzero persisted points on unreceipted in-flight work are reported for manual review. Zero-point stale or deleted sources are not repeatedly scheduled for redundant cleanup.
