@@ -9,11 +9,11 @@ from uuid import uuid4
 from datetime import UTC, datetime
 from hashlib import sha256
 
-from pi05_collect_evidence import SCENARIOS
-from pi05_live_contract import REQUIRED
 
 from pi06_release_gate import (
     ALERT_METRICS,
+    REQUIRED,
+    SCENARIOS,
     PINNED,
     REQUIRED_FALSE,
     REQUIRED_TRUE,
