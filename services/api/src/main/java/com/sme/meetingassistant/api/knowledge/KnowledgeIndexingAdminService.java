@@ -185,6 +185,15 @@ public class KnowledgeIndexingAdminService {
     @Transactional
     public Map<String, Object> resumeReconciliation(UUID runId, UUID requestedByUserId) {
         requireEnabled();
+        // A temporary AI/Qdrant outage is not a terminal reconciliation
+        // decision. Resume from the durable checkpoint, never from page zero.
+        jdbc.update("""
+            UPDATE knowledge_reconciliation_runs
+               SET state='RUNNING',last_error_code=NULL,last_error_summary=NULL,
+                   updated_at=CURRENT_TIMESTAMP
+             WHERE id=? AND state='FAILED'
+               AND last_error_code IN ('VECTOR_AUDIT_UNAVAILABLE','VECTOR_AUDIT_INVALID')
+            """, runId);
         return reconcile(runId, requestedByUserId);
     }
 
@@ -260,14 +269,25 @@ public class KnowledgeIndexingAdminService {
             String findingType;
             String action;
             Integer expectedPointCount = work.indexedChunkCount();
-            if ("CURRENT".equals(status) && !Set.of("RETRYABLE_FAILURE", "TERMINAL_FAILURE")
+            if ("CURRENT".equals(status) && work.state() == null) {
+                findingType = "MISSING_WORK";
+                action = "REINDEX";
+            } else if ("CURRENT".equals(status) && Set.of("INDEXED", "NO_ELIGIBLE_CONTENT")
                     .contains(work.state())) {
-                if (!Set.of("INDEXED", "NO_ELIGIBLE_CONTENT").contains(work.state())
-                        || expectedPointCount != null && pointCount == expectedPointCount) {
+                if (expectedPointCount != null && pointCount == expectedPointCount.longValue()) {
                     continue;
                 }
+                // An excess point count or an absent worker receipt cannot be
+                // repaired blindly by reindexing: that might leave leaked
+                // points or an unknown previous generation behind.
                 findingType = pointCount == 0 ? "MISSING_POINTS" : "INCOMPLETE_POINTS";
-                action = "REINDEX";
+                action = expectedPointCount == null || pointCount > expectedPointCount
+                    ? "MANUAL_REVIEW" : "REINDEX";
+            } else if ("CURRENT".equals(status)
+                    && !Set.of("RETRYABLE_FAILURE", "TERMINAL_FAILURE", "SUPERSEDED")
+                    .contains(work.state())) {
+                // PENDING/CLAIMED is in-flight work, not evidence of lost data.
+                continue;
             } else if ("DELETED".equals(status)) {
                 findingType = "DELETED_SOURCE_POINTS";
                 action = "DELETE";
@@ -278,22 +298,24 @@ public class KnowledgeIndexingAdminService {
                 findingType = "STRANDED_WORK";
                 action = "RETRY";
             }
-            jdbc.update("""
+            int inserted = jdbc.update("""
                 INSERT INTO knowledge_reconciliation_findings(
                     id,run_id,finding_type,action,source_type,source_id,meeting_id,source_revision,
-                    generation_id,detail)
-                VALUES (?,?,?,?,?,?,?,?,?,CAST(? AS jsonb)) ON CONFLICT DO NOTHING
+                    generation_id,point_count,detail)
+                VALUES (?,?,?,?,?,?,?,?,?,?,CAST(? AS jsonb)) ON CONFLICT DO NOTHING
                 """, UUID.randomUUID(), runId, findingType, action, work.sourceType(), work.sourceId(),
-                work.meetingId(), work.sourceRevision(), work.generationId(),
-                "{\"status\":\"" + status + "\",\"state\":\"" + work.state()
+                work.meetingId(), work.sourceRevision(), work.generationId(), pointCount,
+                "{\"status\":\"" + status + "\",\"state\":\""
+                    + (work.state() == null ? "NO_WORK" : work.state())
                     + "\",\"pointCount\":" + pointCount
                     + (expectedPointCount == null ? "" : ",\"expectedPointCount\":" + expectedPointCount) + "}");
-            findings++;
-            if (!run.dryRun()) {
+            findings += inserted;
+            if (!run.dryRun() && inserted > 0 && !"MANUAL_REVIEW".equals(action)) {
                 var event = switch (action) {
                     case "DELETE" -> producer.requestDelete(work.sourceType(), work.sourceId(),
                         work.meetingId(), requestedByUserId);
-                    case "INVALIDATE" -> producer.request(work.sourceType(), work.sourceId(), work.meetingId());
+                    case "INVALIDATE" -> producer.requestInvalidateRevision(work.sourceType(), work.sourceId(),
+                        work.meetingId(), work.sourceRevision(), requestedByUserId);
                     default -> producer.requestReindex(work.sourceType(), work.sourceId(), work.meetingId(),
                         work.generationId(), requestedByUserId);
                 };
@@ -434,26 +456,75 @@ public class KnowledgeIndexingAdminService {
             rs.getLong("indexed_count"));
     }
 
+    /**
+     * Enumerate the UNION of canonical eligible sources and latest UPSERT work.
+     * Scanning only existing work would falsely complete a run if an event had
+     * never been written. The same stable keyset handles missing work and old
+     * work for superseded/deleted revisions without double-counting retries.
+     */
     private List<WorkRow> workRows(ReconciliationRun run) {
-        if (run.checkpointSourceType() == null) {
-            return jdbc.query("""
-                SELECT source_type,source_id,meeting_id,source_revision,index_generation_id,state
-                       ,indexed_chunk_count
+        String inventory = """
+            WITH eligible_sources AS (
+                SELECT 'TRANSCRIPT' AS source_type,t.id AS source_id,t.meeting_id,
+                       t.content_revision AS source_revision
+                  FROM transcripts t
+                 WHERE t.is_current AND t.status IN ('READY','READY_WITH_WARNINGS')
+                   AND t.finalized_at IS NOT NULL
+                   AND EXISTS (SELECT 1 FROM transcript_segments s WHERE s.transcript_id=t.id)
+                UNION ALL
+                SELECT 'SUMMARY',s.id,s.meeting_id,s.version_number
+                  FROM meeting_summary_versions s
+                  JOIN transcripts t ON t.meeting_id=s.meeting_id AND t.is_current
+                   AND t.id=s.transcript_id AND t.content_revision=s.content_revision
+                 WHERE s.is_current AND s.quality_status IN ('READY','READY_WITH_WARNINGS')
+                   AND t.status IN ('READY','READY_WITH_WARNINGS')
+                UNION ALL
+                SELECT 'DECISION',d.id,d.meeting_id,d.version
+                  FROM meeting_decisions d
+                  LEFT JOIN transcripts t ON t.meeting_id=d.meeting_id AND t.is_current
+                 WHERE d.status='CONFIRMED'
+                   AND (d.transcript_id IS NULL OR
+                       (t.id=d.transcript_id AND t.content_revision=d.content_revision
+                        AND t.status IN ('READY','READY_WITH_WARNINGS')))
+                UNION ALL
+                SELECT 'ACTION_ITEM',a.id,a.meeting_id,a.version
+                  FROM action_items a
+                 WHERE (a.source_type='MANUAL' OR a.confirmed_by_user_id IS NOT NULL)
+                   AND a.status<>'PROPOSED'
+            ), latest_work AS (
+                SELECT DISTINCT ON (source_type,source_id,meeting_id,source_revision)
+                       source_type,source_id,meeting_id,source_revision,
+                       index_generation_id,state,indexed_chunk_count
                   FROM knowledge_indexing_work
                  WHERE index_generation_id=? AND operation='UPSERT'
-                 ORDER BY source_type,source_id,source_revision,event_id LIMIT ?
-                """, this::workRow, run.generationId(), run.batchSize());
+                 ORDER BY source_type,source_id,meeting_id,source_revision,
+                          intent_sequence DESC,created_at DESC,event_id DESC
+            ), inventory AS (
+                SELECT COALESCE(e.source_type,w.source_type) AS source_type,
+                       COALESCE(e.source_id,w.source_id) AS source_id,
+                       COALESCE(e.meeting_id,w.meeting_id) AS meeting_id,
+                       COALESCE(e.source_revision,w.source_revision) AS source_revision,
+                       COALESCE(w.index_generation_id,?) AS index_generation_id,
+                       w.state,w.indexed_chunk_count
+                  FROM eligible_sources e FULL OUTER JOIN latest_work w
+                    ON e.source_type=w.source_type AND e.source_id=w.source_id
+                   AND e.meeting_id=w.meeting_id AND e.source_revision=w.source_revision
+            )
+            SELECT source_type,source_id,meeting_id,source_revision,
+                   index_generation_id,state,indexed_chunk_count
+              FROM inventory
+            """;
+        if (run.checkpointSourceType() == null) {
+            return jdbc.query(inventory + """
+                 ORDER BY source_type,source_id,source_revision LIMIT ?
+                """, this::workRow, run.generationId(), run.generationId(), run.batchSize());
         }
-        return jdbc.query("""
-              SELECT source_type,source_id,meeting_id,source_revision,index_generation_id,state,indexed_chunk_count
-              FROM knowledge_indexing_work
-             WHERE index_generation_id=? AND operation='UPSERT'
-               AND (source_type>? OR (source_type=? AND source_id>?)
-                    OR (source_type=? AND source_id=? AND source_revision>?))
-             ORDER BY source_type,source_id,source_revision,event_id LIMIT ?
-            """, this::workRow, run.generationId(), run.checkpointSourceType(), run.checkpointSourceType(),
-            run.checkpointSourceId(), run.checkpointSourceType(), run.checkpointSourceId(),
-            run.checkpointSourceRevision(), run.batchSize());
+        return jdbc.query(inventory + """
+             WHERE (source_type,source_id,source_revision) >
+                   (CAST(? AS VARCHAR),CAST(? AS UUID),CAST(? AS BIGINT))
+             ORDER BY source_type,source_id,source_revision LIMIT ?
+            """, this::workRow, run.generationId(), run.generationId(), run.checkpointSourceType(),
+            run.checkpointSourceId(), run.checkpointSourceRevision(), run.batchSize());
     }
 
     private WorkRow workRow(java.sql.ResultSet rs, int row) throws java.sql.SQLException {

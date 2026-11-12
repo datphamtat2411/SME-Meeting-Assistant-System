@@ -140,6 +140,15 @@ public class KnowledgeIndexingProducer {
             requestedByUserId, true);
     }
 
+    /** Reconcile an exact historical revision; never re-UPSERT the current revision in its place. */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public Optional<KnowledgeIndexingEvent> requestInvalidateRevision(String sourceType, UUID sourceId,
+            UUID meetingId, long sourceRevision, UUID requestedByUserId) {
+        if (sourceRevision < 0) throw new IllegalArgumentException("Invalid source revision");
+        return requestLifecycleForSource(sourceType, sourceId, meetingId, sourceRevision,
+            "INVALIDATE", "RECONCILIATION_REQUESTED", requestedByUserId);
+    }
+
     /** Explicit Core-authorized lifecycle request used by deletion/retention controls. */
     @Transactional(propagation = Propagation.MANDATORY)
     public Optional<KnowledgeIndexingEvent> requestDelete(String sourceType, UUID sourceId,

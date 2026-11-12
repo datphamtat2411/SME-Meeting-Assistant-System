@@ -263,6 +263,71 @@ class KnowledgeIndexingWorkerIntegrationTests {
 
     @Test
     @Transactional
+    void reconciliationFindsEligibleCanonicalSourceWithoutAnyIndexingWork() {
+        UUID actor=UUID.randomUUID(), meeting=UUID.randomUUID(), item=UUID.randomUUID();
+        insertManualAction(actor, meeting, item);
+        enableKnowledgeIndexing();
+        var key = new KnowledgeVectorAudit.SourceKey("ACTION_ITEM", item, meeting, 0);
+        when(vectorAudit.countPoints(properties.getKnowledgeIndexing().getGenerationId(),
+            java.util.List.of(key))).thenReturn(Map.of(key, 0L));
+        var run = admin.startReconciliation(properties.getKnowledgeIndexing().getGenerationId(),
+            100, false, actor);
+        assertThat(run).containsEntry("state", "COMPLETED");
+        assertThat(jdbc.queryForObject("""
+            SELECT finding_type FROM knowledge_reconciliation_findings WHERE run_id=?
+            """, String.class, run.get("id"))).isEqualTo("MISSING_WORK");
+        assertThat(jdbc.queryForObject("""
+            SELECT COUNT(*) FROM knowledge_indexing_work
+            WHERE source_type='ACTION_ITEM' AND source_id=? AND operation='UPSERT'
+            """, Integer.class, item)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+            SELECT COUNT(*) FROM outbox_events o JOIN knowledge_indexing_work w ON w.event_id=o.id
+            WHERE w.source_id=? AND w.operation='UPSERT'
+            """, Integer.class, item)).isEqualTo(1);
+    }
+
+    @Test
+    @Transactional
+    void staleWorkReconciliationUsesHistoricalInvalidationNotCurrentUpsert() {
+        var fixture=publishedAction();
+        var oldRevision=fixture.event().sourceRevision();
+        jdbc.update("UPDATE action_items SET version=version+1 WHERE id=?", fixture.itemId());
+        var key = new KnowledgeVectorAudit.SourceKey("ACTION_ITEM",
+            fixture.itemId(), fixture.meetingId(), oldRevision);
+        when(vectorAudit.countPoints(fixture.event().indexGenerationId(),
+            java.util.List.of(key))).thenReturn(Map.of(key, 1L));
+        var run=admin.startReconciliation(fixture.event().indexGenerationId(), 100, false, fixture.userId());
+        assertThat(run).containsEntry("state", "COMPLETED");
+        assertThat(jdbc.queryForObject("""
+            SELECT action FROM knowledge_reconciliation_findings WHERE run_id=?
+            """,String.class,run.get("id"))).isEqualTo("INVALIDATE");
+        assertThat(jdbc.queryForObject("""
+            SELECT COUNT(*) FROM knowledge_indexing_work WHERE source_id=? AND operation='INVALIDATE'
+              AND source_revision=?
+            """,Integer.class,fixture.itemId(),oldRevision)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+            SELECT COUNT(*) FROM knowledge_indexing_work WHERE source_id=? AND source_revision=1
+            """,Integer.class,fixture.itemId())).isZero();
+    }
+
+    @Test
+    @Transactional
+    void reconciliationFailedVectorAuditCanResumeFromCheckpoint() {
+        var fixture=publishedAction();
+        var key=new KnowledgeVectorAudit.SourceKey("ACTION_ITEM",fixture.itemId(),
+            fixture.meetingId(),fixture.event().sourceRevision());
+        var failed=admin.startReconciliation(fixture.event().indexGenerationId(),
+            10,true,fixture.userId());
+        assertThat(failed).containsEntry("state","FAILED");
+        when(vectorAudit.countPoints(fixture.event().indexGenerationId(),
+            java.util.List.of(key))).thenReturn(Map.of(key,0L));
+        var resumed=admin.resumeReconciliation((UUID)failed.get("id"),fixture.userId());
+        assertThat(resumed).containsEntry("state","COMPLETED")
+            .containsEntry("findingCount",1L);
+    }
+
+    @Test
+    @Transactional
     void expiredClaimIsReplacedAndThePreviousTokenCannotSubmitAResult() {
         var fixture = publishedAction();
         String firstCertificate = "c".repeat(64);
