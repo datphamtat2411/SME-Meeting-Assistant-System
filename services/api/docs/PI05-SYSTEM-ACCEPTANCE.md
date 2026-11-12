@@ -117,3 +117,8 @@ requires both `intelligence-proposal=CORE/PROPOSED` and
 Assistant grounding. A Core AI result-acceptance receipt alone is not proof
 of user confirmation. This is an acceptance-contract correction, not a claim
 that any live data has been observed.
+
+PI05-L01 additionally checks the CORE-observed causal order:
+proposal must precede human confirmation, and confirmation must precede the
+CORE Assistant grounded-answer observation. A list of correctly named outcomes
+with impossible ordering is rejected rather than interpreted as completion.

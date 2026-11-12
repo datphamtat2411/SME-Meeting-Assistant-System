@@ -69,6 +69,17 @@ def test_ai_proposal_cannot_be_falsely_reported_as_human_confirmation():
                                generation=GEN, collection=COLL)
 
 
+def test_human_confirmation_cannot_precede_ai_proposal():
+    scenario = "full-pipeline"
+    payload = valid(scenario)
+    next(o for o in payload["observations"] if o["step"] == "human-decision-confirmed")[
+        "observedAt"
+    ] = "2020-01-01T00:00:00Z"
+    with pytest.raises(ValueError, match="out of order"):
+        validate_live_evidence(scenario, payload, run_id=RUN, commit=SHA,
+                               generation=GEN, collection=COLL)
+
+
 def test_malformed_disposable_environment_identity_is_rejected():
     for bad in ("../prod", "https://prod.example", "production", "my isolated env"):
         payload = valid("full-pipeline")

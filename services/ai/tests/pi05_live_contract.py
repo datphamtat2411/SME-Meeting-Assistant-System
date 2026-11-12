@@ -142,6 +142,7 @@ def validate_live_evidence(
     if not isinstance(observations, list) or len(observations) != len(REQUIRED[scenario]):
         raise ValueError("Missing or excessive observation identities")
     seen: set[str] = set()
+    observed_times: dict[str, datetime] = {}
     observed_requests: set[str] = set()
     observed_proofs: set[str] = set()
     for record in observations:
@@ -180,6 +181,12 @@ def validate_live_evidence(
             raise ValueError("Invalid observation timestamp") from error
         if timestamp.utcoffset() is None:
             raise ValueError("Observation time must be timezone-aware")
+        observed_times[identity] = timestamp
+    if scenario == "full-pipeline" and (
+        observed_times["intelligence-proposal"] > observed_times["human-decision-confirmed"]
+        or observed_times["human-decision-confirmed"] > observed_times["assistant-grounded"]
+    ):
+        raise ValueError("Human-confirmation and grounded-answer evidence are out of order")
     if seen != set(REQUIRED[scenario]):
         raise ValueError("Incomplete live acceptance observations")
 
