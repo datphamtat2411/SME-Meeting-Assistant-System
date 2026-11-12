@@ -70,6 +70,7 @@ exception text.
 | product_integration_knowledge_pending / terminal / oldest_age_seconds | Indexing lag and terminal failures |
 | product_integration_reconciliation_open_findings / failed_runs / incomplete_runs | Unresolved drift and incomplete Qdrant inventory |
 | product_integration_notification_pending / failed | Transactional email backlog |
+| product_integration_exports_pending / generating / failed / oldest_age_seconds | Export rendering backlog and failures |
 | product_integration_metrics_aggregation_healthy | 1 = valid DB sample, 0 = unavailable snapshot |
 
 On database/query errors, metrics aggregation health becomes 0 and
@@ -90,9 +91,9 @@ connector. Never store the client key in a dashboard or code repository.
 Alert thresholds are chosen from measured baseline traffic, worker processing
 budgets, model cost/latency and team response capacity. We do not bake arbitrary
 global thresholds into the application. The PI-06 release policy must include
-a threshold, duration, escalation owner and runbook for each required metric:
+a threshold, comparison direction (gt for backlog, lt for aggregation health), duration, escalation owner and runbook for each required metric:
 outbox age, processing age, Assistant expired turns, knowledge age and terminal
-failures, reconciliation open findings, notification failures, and telemetry
+failures, reconciliation open findings, notification failures, export age, and telemetry
 aggregation health. The policy is pinned to the release commit.
 
 Independent infrastructure exporters must additionally monitor RabbitMQ
@@ -178,8 +179,8 @@ checks, not manual checkboxes):
 
 All transport claims must be confirmed against original observer logs and
 service identities. A self-reported PASS is insufficient. An alert-policy
-JSON record includes: metric, threshold (chosen based on real load), forSeconds,
-owner and runbook. It has one record per required family.
+JSON record includes: metric, comparison (gt or lt), threshold (chosen
+based on real load), forSeconds, owner and runbook. It has one record per required family.
 
     python3 services/api/scripts/pi06_release_gate.py \
       --sha "$PINNED_SHA" --run-id "$ISOLATED_RUN_UUID" \

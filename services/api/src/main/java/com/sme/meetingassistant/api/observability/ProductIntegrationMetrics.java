@@ -39,6 +39,10 @@ public final class ProductIntegrationMetrics {
         "product.integration.reconciliation.incomplete.runs",
         "product.integration.notification.pending",
         "product.integration.notification.failed",
+        "product.integration.exports.pending",
+        "product.integration.exports.generating",
+        "product.integration.exports.failed",
+        "product.integration.exports.oldest.age.seconds",
         "product.integration.metrics.aggregation.healthy"
     );
 
@@ -75,7 +79,7 @@ public final class ProductIntegrationMetrics {
             refreshedAt = now;
             try {
                 cached = transaction.execute(tx -> readSnapshot());
-            } catch (DataAccessException | TransactionException failure) {
+            } catch (DataAccessException | TransactionException | IllegalStateException failure) {
                 cached = null;
             }
         }
@@ -102,7 +106,7 @@ public final class ProductIntegrationMetrics {
                    count(*) FILTER (WHERE status='RUNNING') AS running,
                    count(*) FILTER (WHERE status='FAILED') AS failed,
                    coalesce(max(greatest(0,extract(epoch from
-                       transaction_timestamp()-coalesce(started_at,queued_at))))
+                       transaction_timestamp()-queued_at)))
                        FILTER (WHERE status IN ('QUEUED','RUNNING')),0) AS age
             FROM processing_jobs
             """);
@@ -153,6 +157,20 @@ public final class ProductIntegrationMetrics {
             """);
         put(out, "notification.pending", mail, "pending");
         put(out, "notification.failed", mail, "failed");
+
+        Map<String, Object> exports = jdbc.queryForMap("""
+            SELECT count(*) FILTER (WHERE status='PENDING') AS pending,
+                   count(*) FILTER (WHERE status='GENERATING') AS generating,
+                   count(*) FILTER (WHERE status='FAILED') AS failed,
+                   coalesce(max(greatest(0,extract(epoch from
+                       transaction_timestamp()-created_at)))
+                       FILTER (WHERE status IN ('PENDING','GENERATING')),0) AS age
+            FROM meeting_exports
+            """);
+        put(out, "exports.pending", exports, "pending");
+        put(out, "exports.generating", exports, "generating");
+        put(out, "exports.failed", exports, "failed");
+        put(out, "exports.oldest.age.seconds", exports, "age");
         if (out.size() != EXPORTED_NAMES.size()-1) {
             throw new IllegalStateException("Incomplete operational measurement registry");
         }

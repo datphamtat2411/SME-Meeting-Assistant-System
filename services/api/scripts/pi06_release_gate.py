@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import sys
 from datetime import datetime
@@ -50,6 +51,7 @@ ALERT_METRICS = frozenset({
     "product.integration.knowledge.terminal",
     "product.integration.reconciliation.open.findings",
     "product.integration.notification.failed",
+    "product.integration.exports.oldest.age.seconds",
     "product.integration.metrics.aggregation.healthy",
 })
 
@@ -162,14 +164,18 @@ def check_alerts(path: Path | None, sha: str) -> list[str]:
         seen = set()
         for item in alerts:
             if not isinstance(item, dict) or set(item) != {
-                "metric", "threshold", "forSeconds", "owner", "runbook",
+                "metric", "comparison", "threshold", "forSeconds", "owner", "runbook",
             }:
                 raise ValueError("Invalid alert configuration")
             metric = item["metric"]
             if metric not in ALERT_METRICS or metric in seen:
                 raise ValueError("Unbounded or duplicate alert metric")
             seen.add(metric)
-            if type(item["threshold"]) not in (int, float) or item["threshold"] < 0:
+            expected_comparison = "lt" if metric.endswith(".aggregation.healthy") else "gt"
+            if item["comparison"] != expected_comparison:
+                raise ValueError("Alert comparator would suppress a failure")
+            if (type(item["threshold"]) not in (int, float)
+                    or not math.isfinite(item["threshold"]) or item["threshold"] < 0):
                 raise ValueError("Alert threshold invalid")
             if type(item["forSeconds"]) is not int or item["forSeconds"] <= 0:
                 raise ValueError("Alert evaluation window invalid")

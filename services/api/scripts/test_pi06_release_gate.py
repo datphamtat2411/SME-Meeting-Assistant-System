@@ -85,7 +85,8 @@ class OperationalGateTests(unittest.TestCase):
     def test_alert_policy_requires_exact_metric_owners_and_windows(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "alerts.json"
-            policy = [{"metric": name, "threshold": 1, "forSeconds": 60,
+            policy = [{"metric": name, "comparison": "lt" if name.endswith(".aggregation.healthy") else "gt",
+                       "threshold": 1, "forSeconds": 60,
                        "owner": "oncall-team", "runbook": "PI06-OPERATIONS"}
                       for name in sorted(ALERT_METRICS)]
             path.write_text(json.dumps({"schemaVersion": "1.0",
@@ -95,6 +96,21 @@ class OperationalGateTests(unittest.TestCase):
             path.write_text(json.dumps({"schemaVersion": "1.0",
                                         "sourceCommit": SHA, "alerts": policy}))
             self.assertTrue(check_alerts(path, SHA))
+
+    def test_alert_policy_rejects_wrong_comparison_and_nonfinite_threshold(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/"alerts.json"
+            policy=[{"metric":name,
+                     "comparison":"lt" if name.endswith(".aggregation.healthy") else "gt",
+                     "threshold":1, "forSeconds":60, "owner":"ops-oncall",
+                     "runbook":"PI06-OPERATIONS"} for name in sorted(ALERT_METRICS)]
+            policy[0]["comparison"] = "ne"
+            path.write_text(json.dumps({"schemaVersion":"1.0","sourceCommit":SHA,"alerts":policy}))
+            self.assertTrue(check_alerts(path,SHA))
+            policy[0]["comparison"] = ("lt" if policy[0]["metric"].endswith(".aggregation.healthy") else "gt")
+            policy[0]["threshold"] = float("nan")
+            path.write_text(json.dumps({"schemaVersion":"1.0","sourceCommit":SHA,"alerts":policy}))
+            self.assertTrue(check_alerts(path,SHA))
 
 
 if __name__ == "__main__":
