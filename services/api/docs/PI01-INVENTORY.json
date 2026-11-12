@@ -337,9 +337,9 @@
     {
       "id": "G-004",
       "severity": "HIGH",
-      "state": "OPEN",
+      "state": "RESOLVED_IN_PI04",
       "owner": "PI-04",
-      "summary": "RAG-T06 cannot demonstrate full missing-work and orphan-Qdrant-point inventory coverage."
+      "summary": "PI-04 now inventories eligible canonical sources without work and scans Qdrant generation points with durable cursor; deterministic acceptance in PI04-RECONCILIATION.md. Cross-process verification remains PI-05 NOT_RUN."
     },
     {
       "id": "G-005",
@@ -386,9 +386,9 @@
     {
       "id": "G-011",
       "severity": "HIGH",
-      "state": "OPEN",
+      "state": "PARTIAL_IN_PI03",
       "owner": "PI-03",
-      "summary": "Cross-module current-revision and revoked-access acceptance is unverified for transcript → intelligence → RAG/Assistant/export."
+      "summary": "PI-03 closes transcript-to-derived-source revision and historical-citation consistency with PostgreSQL tests, while full cross-service revocation and export/AI worker E2E remains unverified under PI-05."
     }
   ],
   "source_assertions": [

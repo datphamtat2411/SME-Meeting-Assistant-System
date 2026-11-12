@@ -48,9 +48,9 @@ def _client() -> httpx.Client:
         pytest.fail("PI-05 live harness is not a private/isolation-scoped endpoint")
     evidence_dir = os.getenv("AI_PI05_EVIDENCE_DIR")
     proof_dir = os.getenv("AI_PI05_PROOF_DIR")
-    if not proof_dir or not Path(proof_dir).is_dir():
+    if not proof_dir or not Path(proof_dir).is_dir() or Path(proof_dir).is_symlink():
         pytest.fail("PI-05 independently collected proof directory must exist before live faults")
-    if not evidence_dir or not Path(evidence_dir).is_dir():
+    if not evidence_dir or not Path(evidence_dir).is_dir() or Path(evidence_dir).is_symlink():
         pytest.fail("PI-05 evidence directory must exist BEFORE invoking destructive scenarios")
     files = {
         name: os.getenv(name) for name in (
@@ -113,7 +113,7 @@ def test_pi05_real_system_scenario(scenario):
         if not evidence_dir:
             pytest.fail("PI-05 live evidence directory is required")
         destination = Path(evidence_dir)
-        if not destination.is_dir():
+        if not destination.is_dir() or destination.is_symlink():
             pytest.fail("PI-05 evidence directory must be preprovisioned")
         path = destination / f"{run_id}-{scenario}.json"
         try:

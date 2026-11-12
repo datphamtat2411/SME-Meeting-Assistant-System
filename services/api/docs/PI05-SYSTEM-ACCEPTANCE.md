@@ -107,3 +107,13 @@ The live response schema rejects arbitrary/extra fields, foreign builds, schema 
 - Each proof SHA-256 must match an independently captured, size-bounded JSON receipt in `AI_PI05_PROOF_DIR`, with matching run/request/step/component/outcome/time fields. A harness-supplied hash without its receipt is insufficient. This detects missing or tampered proofs but still requires an operator to review the underlying service log provenance; a dishonest harness alone cannot certify reality.
 - CI refuses a contradictory Surefire suite declaration, any failing/skipped/duplicated testcase (including outside the named acceptance matrix), and stale reports from earlier builds.
 - Ten full live scenarios require a provisioned harness and separately running infrastructure; none are claimed PASS merely by implementing this contract.
+
+## Requirement alignment: human authority in PI05-L01
+
+BR-AI-001..003, FEAT-DEC-CONFIRM-001 and FEAT-ACT-CONFIRM-001 distinguish
+AI proposals from human-confirmed official business state. L01 therefore
+requires both `intelligence-proposal=CORE/PROPOSED` and
+`human-decision-confirmed=CORE/CONFIRMED` as separate observed steps before
+Assistant grounding. A Core AI result-acceptance receipt alone is not proof
+of user confirmation. This is an acceptance-contract correction, not a claim
+that any live data has been observed.

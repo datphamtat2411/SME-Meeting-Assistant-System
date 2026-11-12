@@ -110,3 +110,16 @@ The root `plan.md` still described old RAG-T06 work before this audit. PI-01 upd
 ## Addendum — PI-02 source evolution
 
 The PI-01 narrative above is an immutable historical audit snapshot. PI-02 adds Core Assistant, Flyway V50 and fenced, reauthorized citation acceptance. `PI01-INVENTORY.json` is updated for current code presence and G-001/G-002/G-003/G-010 are recorded `RESOLVED_IN_PI02`. This does not retroactively convert PI-01 evidence into live product acceptance; refer to `PI02-ACCEPTANCE.md`.
+
+## Addendum — PI-03/PI-04 implementation follow-through (2026-11-12)
+
+The original G-004/G-011 findings above describe the PI-01 *historical baseline*, not
+current source behavior. PI-03 introduced transactional transcript revision/dependent
+source invalidation, verified by PostgreSQL-backed cross-module regression tests.
+PI-04 added full canonical and Qdrant generation inventory, resumable cursor,
+missing-work/orphan findings, conservative repair and guarded activation.
+Consequently inventory states are now G-004=RESOLVED_IN_PI04 (deterministic
+implementation), G-011=PARTIAL_IN_PI03 (source-revision portion addressed;
+cross-process chain still pending). G-005/G-007/G-008 remain OPEN; none of
+these source-level improvements converts live testing to PASS. Refer to
+PI03-CONSISTENCY.md, PI04-RECONCILIATION.md and PI05-SYSTEM-ACCEPTANCE.md.

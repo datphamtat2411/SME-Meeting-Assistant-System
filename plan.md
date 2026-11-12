@@ -1,15 +1,29 @@
-# PI-04 Reliability and Recovery — Active Build Plan
+# Product Integration (PI-01..PI-06) — Cross-task Requirement Review
 
-## Scope and decisions
-- Reuse the current Postgres outbox, work ledger, generation states, mTLS transport, source verifier and Qdrant collection architecture.
-- PI-03 reviewed and corrected superseded-version lifecycle for all official source types.
-- Repair source/work inconsistency, stale-vector lifecycle and retryable reconciliation failures. Detect Qdrant-only orphan identities without blindly deleting them.
-- Paginate separate canonical and vector inventories with durable checkpoints; expose explicit inventory-completion evidence. Preserve prior run history and truthful NOT RUN live evidence.
+## Scope
+Review the full product-integration workstream against requirement-docs/RE01–RE09,
+existing Spring Boot/AI code, Flyway migrations, and independent CI evidence.
+Respect the canonical Core/AI ownership and meeting-content authorization; reuse
+existing outbox/worker/knowledge infrastructure. Do not broaden mandatory product
+scope beyond the approved requirements.
 
-## Touched components
-- KnowledgeIndexingProducer, KnowledgeIndexingAdminService, KnowledgeVectorAudit, AiCoreKnowledgeVectorAudit, QdrantVectorStore, reconciliation endpoint.
-- Flyway V51, PostgreSQL integration tests, Core/AI contract tests, PI Integration CI and focused technical notes.
+## Implementation evidence
+- PI-01: repository audit/inventory; source snapshot is historical and addenda
+  distinguish subsequent remediation from its original observations.
+- PI-02: public Assistant endpoints, scope-bound persistence and reauthorization.
+- PI-03: source revision, knowledge, and historical-answer consistency.
+- PI-04: canonical/Qdrant inventory and safe generation/recovery decisions.
+- PI-05: deterministic acceptance and a strict opt-in live evidence protocol.
+- PI-06: private bounded metrics, release gating, secure rollout and runbooks.
 
-## Verification
-- Triggered API CI and PI Integration CI must both pass Maven suites; AI CI must pass full Python lint/tests, image build and smoke.
-- Run mandatory PI-05 live scenarios separately on authorized isolated infrastructure; do not disable security or count skipped suites as PASS.
+## Release truth boundary
+The nine PI-05 deterministic scenarios and PI-06 negative safety checks may be
+PASS on GitHub Actions, but the ten live PI-05 real-infrastructure scenarios
+remain NOT_RUN until observed separately in an approved disposable environment.
+Unverified transport, model, backups, alert delivery and rollout controls remain
+BLOCKED for production sign-off. No source-only PR closes that acceptance gap.
+
+## Verification and review workflow
+Run PI01 checker, PI05/PI06 Python negative suites, Spring Boot/Flyway test
+matrices and AI CI lint/unit/image checks on the *final commit*. Compare
+against develop. Open a PR for human review; do not merge automatically.

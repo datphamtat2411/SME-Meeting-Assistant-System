@@ -16,7 +16,8 @@ REQUIRED = {
         "broker-message-delivered": ("RABBITMQ", "DELIVERED"),
         "media-worker-completed": ("AI", "COMPLETED"),
         "transcript-current": ("CORE", "READY"),
-        "intelligence-official": ("CORE", "ACCEPTED"),
+        "intelligence-proposal": ("CORE", "PROPOSED"),
+        "human-decision-confirmed": ("CORE", "CONFIRMED"),
         "qdrant-points": ("QDRANT", "INDEXED"),
         "assistant-grounded": ("CORE", "GROUNDED"),
     },
@@ -125,6 +126,13 @@ def validate_live_evidence(
     for key in ("environmentId", "coreBuild", "aiBuild", "flywayVersion"):
         if not isinstance(environment.get(key), str) or not environment[key].strip():
             raise ValueError("Incomplete real-service provenance")
+    # A well-formed claim is not proof of an isolated environment, but do not
+    # accept arbitrary paths/URLs or operator notes in the evidence identifier.
+    identity = environment.get("environmentId")
+    if (not isinstance(identity, str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{2,127}", identity)
+            or identity.casefold() in {"prod", "production", "live", "main"}):
+        raise ValueError("Isolated environment identifier is invalid")
     if environment.get("tlsMode") != "MTLS":
         raise ValueError("Service boundary did not report mTLS")
     if environment.get("generationId") != generation or environment.get("collectionName") != collection:
