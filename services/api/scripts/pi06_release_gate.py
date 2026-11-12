@@ -27,7 +27,7 @@ REQUIRED_TRUE = frozenset({
     "APP_MEDIA_INTELLIGENCE_ENABLED", "APP_MEDIA_INTELLIGENCE_DISPATCH_ENABLED",
     "APP_MEDIA_INTELLIGENCE_INFRASTRUCTURE_VERIFIED", "APP_MI_INTERNAL_RESULT_ENABLED",
     "APP_MEDIA_KNOWLEDGE_INDEXING_ENABLED", "APP_EXPORTS_PUBLIC_ADMISSION_ENABLED",
-    "APP_EXPORTS_WORKER_ENABLED",
+    "APP_EXPORTS_WORKER_ENABLED", "APP_ASSISTANT_ENABLED",
 })
 REQUIRED_FALSE = frozenset({
     "APP_EXPORTS_RECONCILIATION_PURGE_ENABLED", "APP_MI_ORPHAN_CLEANUP_ENABLED",
@@ -37,22 +37,23 @@ PINNED = frozenset({
     "APP_MEDIA_KNOWLEDGE_INDEXING_CONFIGURATION_VERSION",
     "APP_MEDIA_KNOWLEDGE_INDEXING_CONFIGURATION_SHA256",
     "APP_MEDIA_KNOWLEDGE_INDEXING_TOKENIZER_ID",
+    "APP_MEDIA_KNOWLEDGE_INDEXING_COLLECTION_NAME",
 })
 TRANSPORT_CHECKS = frozenset({
     "corePrivateMtls", "aiPrivateMtls", "rabbitMqTls",
     "objectStorageTls", "qdrantAuthenticated", "monitoringIdentity",
-    "brokerDlqObserved",
+    "brokerDlqObserved", "alertsRoutedObserved", "backupRestoreRehearsed",
 })
 ALERT_METRICS = frozenset({
-    "product.integration.outbox.oldest.age.seconds",
-    "product.integration.processing.oldest.age.seconds",
-    "product.integration.assistant.expired.turns",
-    "product.integration.knowledge.oldest.age.seconds",
-    "product.integration.knowledge.terminal",
-    "product.integration.reconciliation.open.findings",
-    "product.integration.notification.failed",
-    "product.integration.exports.oldest.age.seconds",
-    "product.integration.metrics.aggregation.healthy",
+    "product_integration_outbox_oldest_age_seconds",
+    "product_integration_processing_oldest_age_seconds",
+    "product_integration_assistant_expired_turns",
+    "product_integration_knowledge_oldest_age_seconds",
+    "product_integration_knowledge_terminal",
+    "product_integration_reconciliation_open_findings",
+    "product_integration_notification_failed",
+    "product_integration_exports_oldest_age_seconds",
+    "product_integration_metrics_aggregation_healthy",
 })
 
 
@@ -62,7 +63,8 @@ def read_json(path: Path | None) -> object:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def check_config(path: Path | None) -> list[str]:
+def check_config(path: Path | None, generation: str | None = None,
+                 collection: str | None = None) -> list[str]:
     try:
         if path is None or not path.is_file() or path.is_symlink() or path.stat().st_size > 64000:
             raise ValueError("No external effective configuration snapshot")
@@ -79,8 +81,17 @@ def check_config(path: Path | None) -> list[str]:
             cfg[k] = v.strip()
         issues = ["CONFIG_REQUIRED_ON:" + k for k in sorted(REQUIRED_TRUE) if cfg.get(k) != "true"]
         issues += ["CONFIG_REQUIRED_OFF:" + k for k in sorted(REQUIRED_FALSE) if cfg.get(k) != "false"]
-        issues += ["CONFIG_UNPINNED:" + k for k in sorted(PINNED)
-                   if not cfg.get(k) or "$" + "{" in cfg[k]]
+        # Flags are never shell-evaluated; only bounded, literal deployment
+        # identifiers are accepted. Reject placeholder approvals as evidence.
+        for key in sorted(PINNED):
+            value = cfg.get(key, "")
+            if (not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}", value)
+                    or value.casefold() in {"not-approved", "unknown", "todo", "tbd"}):
+                issues.append("CONFIG_UNPINNED:" + key)
+        if generation is not None and cfg.get("APP_MEDIA_KNOWLEDGE_INDEXING_GENERATION_ID") != generation:
+            issues.append("CONFIG_GENERATION_MISMATCH")
+        if collection is not None and cfg.get("APP_MEDIA_KNOWLEDGE_INDEXING_COLLECTION_NAME") != collection:
+            issues.append("CONFIG_COLLECTION_MISMATCH")
         if not re.fullmatch(r"[a-f0-9]{64}", cfg.get("APP_MEDIA_KNOWLEDGE_INDEXING_CONFIGURATION_SHA256", "")):
             issues.append("CONFIG_MODEL_DIGEST_INVALID")
         return issues
@@ -171,7 +182,7 @@ def check_alerts(path: Path | None, sha: str) -> list[str]:
             if metric not in ALERT_METRICS or metric in seen:
                 raise ValueError("Unbounded or duplicate alert metric")
             seen.add(metric)
-            expected_comparison = "lt" if metric.endswith(".aggregation.healthy") else "gt"
+            expected_comparison = "lt" if metric.endswith("_aggregation_healthy") else "gt"
             if item["comparison"] != expected_comparison:
                 raise ValueError("Alert comparator would suppress a failure")
             if (type(item["threshold"]) not in (int, float)
@@ -201,7 +212,7 @@ def inspect(sha: str, run_id: str, generation: str, collection: str,
     if any(not value or "/" in value or ".." in value for value in (generation, collection)):
         raise ValueError("Invalid source generation or collection")
     sections = {
-        "configuration": check_config(config),
+        "configuration": check_config(config, generation, collection),
         "deterministic": check_ci(ci, sha),
         "live": check_live(live, proofs, run_id, sha, generation, collection),
         "transport": check_transport(transport, sha, run_id),

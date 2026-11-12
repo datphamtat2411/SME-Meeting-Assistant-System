@@ -173,14 +173,19 @@ checks, not manual checkboxes):
         "objectStorageTls": "PASS",
         "qdrantAuthenticated": "PASS",
         "monitoringIdentity": "PASS",
-        "brokerDlqObserved": "PASS"
+        "brokerDlqObserved": "PASS",
+        "alertsRoutedObserved": "PASS",
+        "backupRestoreRehearsed": "PASS"
       }
     }
 
 All transport claims must be confirmed against original observer logs and
 service identities. A self-reported PASS is insufficient. An alert-policy
 JSON record includes: metric, comparison (gt or lt), threshold (chosen
-based on real load), forSeconds, owner and runbook. It has one record per required family.
+based on real load), forSeconds, owner and runbook. The metric field MUST use
+the actual Prometheus scrape name with underscores, e.g.
+product_integration_knowledge_oldest_age_seconds, not the dotted Micrometer
+registration name. This is a release configuration invariant. It has one record per required family.
 
     python3 services/api/scripts/pi06_release_gate.py \
       --sha "$PINNED_SHA" --run-id "$ISOLATED_RUN_UUID" \
@@ -189,6 +194,12 @@ based on real load), forSeconds, owner and runbook. It has one record per requir
       --live "$PI05_LIVE_JSON_DIR" --proofs "$INDEPENDENT_PROOF_DIR" \
       --transport "$TRANSPORT_EVIDENCE_JSON" --alerts "$APPROVED_ALERTS_JSON" \
       --output "$NEW_RELEASE_DECISION_FILE"
+
+The release-admission inputs must refer to the same generation and collection.
+A config that enables a different generation or disables the Assistant is
+BLOCKED. A static JSON claim is not itself proof that an alert actually reached
+the on-call route or that backups were restored; the operator must review the
+independent source logs for both transport checks before approval.
 
 The script NEVER overwrites prior decisions. It exits nonzero with BLOCKED
 on incomplete/unattributed evidence; with all inputs validated it returns

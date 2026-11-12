@@ -45,6 +45,41 @@ class OperationalGateTests(unittest.TestCase):
             path.write_text("\n".join(f"{k}={v}" for k, v in cfg.items()))
             self.assertEqual(check_config(path), [])
 
+    def test_release_generation_collection_and_assistant_must_match_actual_flags(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "effective-flags"
+            cfg = {key: "true" for key in REQUIRED_TRUE}
+            cfg.update({key: "false" for key in REQUIRED_FALSE})
+            cfg.update({key: "approved-v1" for key in PINNED})
+            cfg["APP_MEDIA_KNOWLEDGE_INDEXING_GENERATION_ID"] = "rag-generation-verified"
+            cfg["APP_MEDIA_KNOWLEDGE_INDEXING_COLLECTION_NAME"] = "qdrant-verified"
+            cfg["APP_MEDIA_KNOWLEDGE_INDEXING_CONFIGURATION_SHA256"] = "b" * 64
+            path.write_text("\n".join(f"{key}={value}" for key, value in cfg.items()))
+            self.assertEqual(
+                check_config(path, "rag-generation-verified", "qdrant-verified"), []
+            )
+            self.assertIn("CONFIG_GENERATION_MISMATCH",
+                          check_config(path, "wrong-generation", "qdrant-verified"))
+            self.assertIn("CONFIG_COLLECTION_MISMATCH",
+                          check_config(path, "rag-generation-verified", "wrong-collection"))
+            cfg["APP_ASSISTANT_ENABLED"] = "false"
+            path.write_text("\n".join(f"{key}={value}" for key, value in cfg.items()))
+            self.assertIn("CONFIG_REQUIRED_ON:APP_ASSISTANT_ENABLED",
+                          check_config(path, "rag-generation-verified", "qdrant-verified"))
+
+    def test_pinned_config_rejects_shell_substitution_and_placeholders(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "effective-flags"
+            cfg = {key: "true" for key in REQUIRED_TRUE}
+            cfg.update({key: "false" for key in REQUIRED_FALSE})
+            cfg.update({key: "approved-v1" for key in PINNED})
+            cfg["APP_MEDIA_KNOWLEDGE_INDEXING_CONFIGURATION_SHA256"] = "b" * 64
+            for dangerous in ("$(printenv)", "not-approved", "approved value", "../secret"):
+                cfg["APP_MEDIA_KNOWLEDGE_INDEXING_GENERATION_ID"] = dangerous
+                path.write_text("\n".join(f"{key}={value}" for key, value in cfg.items()))
+                self.assertIn("CONFIG_UNPINNED:APP_MEDIA_KNOWLEDGE_INDEXING_GENERATION_ID",
+                              check_config(path))
+
     def test_repeated_keys_or_shell_content_are_not_interpreted(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config"
@@ -85,7 +120,7 @@ class OperationalGateTests(unittest.TestCase):
     def test_alert_policy_requires_exact_metric_owners_and_windows(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "alerts.json"
-            policy = [{"metric": name, "comparison": "lt" if name.endswith(".aggregation.healthy") else "gt",
+            policy = [{"metric": name, "comparison": "lt" if name.endswith("_aggregation_healthy") else "gt",
                        "threshold": 1, "forSeconds": 60,
                        "owner": "oncall-team", "runbook": "PI06-OPERATIONS"}
                       for name in sorted(ALERT_METRICS)]
