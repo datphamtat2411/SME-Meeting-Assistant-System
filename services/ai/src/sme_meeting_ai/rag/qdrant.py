@@ -390,6 +390,78 @@ class QdrantVectorStore:
         self._validate_payload_indexes(info, create_missing=False, require_all=True)
         self._validate_existing_generation()
 
+    def inventory_source_page(
+        self, generation_id: str, limit: int, cursor: str | None = None,
+    ) -> tuple[list[dict[str, object]], str | None]:
+        """Return one bounded page of source identities without exposing content or point IDs.
+
+        The caller must checkpoint the returned cursor after accepting this page;
+        a page is not a snapshot when other writers mutate Qdrant concurrently.
+        """
+        from uuid import UUID
+
+        if generation_id != self.spec.compatibility.index_generation_id:
+            raise QdrantSchemaError("Qdrant inventory generation is incompatible")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 500:
+            raise ValueError("Invalid Qdrant inventory page size")
+        if cursor is None:
+            offset: int | str | None = None
+        elif cursor.isdecimal() and len(cursor) <= 20:
+            offset = int(cursor)
+        else:
+            try:
+                offset = str(UUID(cursor))
+            except (ValueError, AttributeError) as error:
+                raise ValueError("Invalid Qdrant inventory cursor") from error
+        query_filter = models.Filter(must=[
+            models.FieldCondition(key="index_generation_id", match=models.MatchValue(value=generation_id)),
+        ])
+        try:
+            page, next_offset = self.client.scroll(
+                collection_name=self.spec.collection_name,
+                scroll_filter=query_filter,
+                limit=limit,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            records: list[dict[str, object]] = []
+            for point in page:
+                payload = getattr(point, "payload", None)
+                if not isinstance(payload, dict):
+                    raise QdrantError("INVENTORY_INVALID")
+                kind = payload.get("source_type")
+                if kind not in {"TRANSCRIPT", "SUMMARY", "DECISION", "ACTION_ITEM"}:
+                    raise QdrantError("INVENTORY_INVALID")
+                try:
+                    meeting = str(UUID(payload["meeting_id"]))
+                    source = str(UUID(payload["canonical_source_id"]))
+                except (KeyError, ValueError, AttributeError, TypeError) as error:
+                    raise QdrantError("INVENTORY_INVALID") from error
+                revision = payload.get("canonical_source_revision")
+                if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+                    raise QdrantError("INVENTORY_INVALID")
+                if payload.get("index_generation_id") != generation_id:
+                    raise QdrantError("INVENTORY_INVALID")
+                records.append({
+                    "sourceIdentity": {
+                        "sourceType": kind,
+                        "sourceId": source,
+                        "meetingId": meeting,
+                    },
+                    "sourceRevision": {"number": revision},
+                })
+            next_cursor = None if next_offset is None else str(next_offset)
+            if next_cursor is not None and next_cursor == cursor:
+                raise QdrantError("INVENTORY_STALLED")
+            return records, next_cursor
+        except QdrantError:
+            raise
+        except Exception as error:
+            if _is_transient(error):
+                raise QdrantError("QDRANT_UNAVAILABLE") from error
+            raise QdrantError("INVENTORY_READ_FAILED") from error
+
     def count_source_points(
         self, meeting_id: str, source_type: str, source_id: str, source_revision: int, generation_id: str,
     ) -> int:

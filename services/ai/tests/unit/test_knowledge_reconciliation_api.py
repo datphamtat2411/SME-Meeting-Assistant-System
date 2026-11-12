@@ -37,6 +37,50 @@ class FakeStore:
         return 3
 
 
+def test_inventory_endpoint_returns_paginated_identities_and_rejects_broad_requests():
+    class InventoryStore(FakeStore):
+        def inventory_source_page(self, generation_id, limit, cursor):
+            assert generation_id == GENERATION
+            assert limit == 2
+            assert cursor is None
+            return ([{
+                "sourceIdentity": {
+                    "sourceType": "ACTION_ITEM", "sourceId": SOURCE_ID, "meetingId": MEETING_ID,
+                },
+                "sourceRevision": {"number": 4},
+            }], "7")
+
+    store = InventoryStore()
+    settings = Settings(service_name="test-ai", service_identity="ai-core", _env_file=None)
+    app = create_app(
+        settings,
+        identity_source=Boundary(),
+        operation_policy={"knowledge.reconciliation": {"core-api"}},
+        knowledge_vector_store=store,
+    )
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            good = await client.post("/internal/v1/knowledge-indexing/reconciliation/inventory",
+                json={"contractVersion": "1.0", "generationId": GENERATION, "limit": 2})
+            invalid = await client.post("/internal/v1/knowledge-indexing/reconciliation/inventory",
+                json={"contractVersion": "1.0", "generationId": GENERATION, "limit": 501})
+            return good, invalid
+
+    good, invalid = asyncio.run(run())
+    assert good.status_code == 200
+    assert good.json() == {
+        "contractVersion": "1.0", "generationId": GENERATION,
+        "records": [{
+            "sourceIdentity": {"sourceType": "ACTION_ITEM", "sourceId": SOURCE_ID, "meetingId": MEETING_ID},
+            "sourceRevision": {"number": 4},
+        }],
+        "nextCursor": "7",
+    }
+    assert invalid.status_code == 422
+    assert store.validated is True
+
+
 def test_reconciliation_endpoint_returns_exact_source_point_count():
     store = FakeStore()
     settings = Settings(service_name="test-ai", service_identity="ai-core", _env_file=None)

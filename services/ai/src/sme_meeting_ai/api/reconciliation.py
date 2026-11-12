@@ -48,6 +48,15 @@ class ReconciliationRequest(BaseModel):
     requests: tuple[SourceAuditRequest, ...] = Field(min_length=1, max_length=500)
 
 
+class InventoryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    contractVersion: Literal["1.0"]
+    generationId: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$")
+    cursor: str | None = Field(default=None, max_length=36, pattern=r"^[0-9a-fA-F-]+$")
+    limit: int = Field(ge=1, le=500, strict=True)
+
+
 router = APIRouter(prefix="/internal/v1/knowledge-indexing")
 
 
@@ -93,6 +102,46 @@ async def reconciliation(request: Request) -> JSONResponse:
         raise HTTPException(503) from None
     return JSONResponse(
         {"contractVersion": "1.0", "generationId": payload.generationId, "records": records},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.post(
+    "/reconciliation/inventory",
+    dependencies=[Depends(require_internal_operation(RECONCILIATION_OPERATION))],
+)
+async def inventory(request: Request) -> JSONResponse:
+    """Read-only, bounded Qdrant generation inventory. Never delete orphan points here."""
+    content_length = request.headers.get("content-length")
+    if content_length is not None and (not content_length.isdecimal() or int(content_length) > MAX_REQUEST_BYTES):
+        raise HTTPException(413)
+    raw = await request.body()
+    if len(raw) > MAX_REQUEST_BYTES:
+        raise HTTPException(413)
+    try:
+        payload = InventoryRequest.model_validate_json(raw)
+    except Exception:
+        raise HTTPException(422) from None
+
+    store = getattr(request.app.state, "knowledge_vector_store", None)
+    if store is None:
+        raise HTTPException(503)
+    if payload.generationId != store.spec.compatibility.index_generation_id:
+        raise HTTPException(409)
+    try:
+        store.validate_retrieval_schema()
+        records, next_cursor = store.inventory_source_page(
+            payload.generationId, payload.limit, payload.cursor,
+        )
+    except QdrantError:
+        raise HTTPException(503) from None
+    return JSONResponse(
+        {
+            "contractVersion": "1.0",
+            "generationId": payload.generationId,
+            "records": records,
+            "nextCursor": next_cursor,
+        },
         headers={"Cache-Control": "no-store"},
     )
 
