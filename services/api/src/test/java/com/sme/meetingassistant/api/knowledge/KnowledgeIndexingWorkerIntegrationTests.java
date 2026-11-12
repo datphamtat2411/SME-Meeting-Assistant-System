@@ -308,21 +308,36 @@ class KnowledgeIndexingWorkerIntegrationTests {
         var run=admin.startReconciliation(fixture.event().indexGenerationId(), 100, false, fixture.userId());
         assertThat(run).containsEntry("state", "COMPLETED");
         assertThat(jdbc.queryForObject("""
-            SELECT action FROM knowledge_reconciliation_findings WHERE run_id=?
-            """,String.class,run.get("id"))).isEqualTo("INVALIDATE");
+            SELECT action FROM knowledge_reconciliation_findings
+             WHERE run_id=? AND source_revision=? AND finding_type='STALE_POINTS'
+            """,String.class,run.get("id"),oldRevision)).isEqualTo("INVALIDATE");
+        assertThat(jdbc.queryForObject("""
+            SELECT action FROM knowledge_reconciliation_findings
+             WHERE run_id=? AND source_revision=? AND finding_type='MISSING_WORK'
+            """,String.class,run.get("id"),oldRevision + 1)).isEqualTo("REINDEX");
         assertThat(jdbc.queryForObject("""
             SELECT COUNT(*) FROM knowledge_indexing_work WHERE source_id=? AND operation='INVALIDATE'
               AND source_revision=?
             """,Integer.class,fixture.itemId(),oldRevision)).isEqualTo(1);
+        // Canonical revision +1 legitimately has no work and is repaired by
+        // MISSING_WORK. That is independent of the exact-revision INVALIDATE.
         assertThat(jdbc.queryForObject("""
-            SELECT COUNT(*) FROM knowledge_indexing_work WHERE source_id=? AND source_revision=1
-            """,Integer.class,fixture.itemId())).isZero();
+            SELECT COUNT(*) FROM knowledge_indexing_work
+             WHERE source_id=? AND source_revision=? AND operation='UPSERT'
+            """,Integer.class,fixture.itemId(),oldRevision + 1)).isEqualTo(1);
     }
 
     @Test
     @Transactional
     void reconciliationFailedVectorAuditCanResumeFromCheckpoint() {
         var fixture=publishedAction();
+        // A PENDING work row is legitimately still processing and must not
+        // report missing vectors. Make the fixture INDEXED before auditing.
+        String certificate = "c".repeat(64);
+        UUID token=(UUID)worker.claim(fixture.event().eventId(),
+            claimCommand(fixture, UUID.randomUUID()), certificate).get("claimToken");
+        worker.result(fixture.event().eventId(),
+            indexedResult(fixture.event().eventId(), token, UUID.randomUUID()), certificate);
         var key=new KnowledgeVectorAudit.SourceKey("ACTION_ITEM",fixture.itemId(),
             fixture.meetingId(),fixture.event().sourceRevision());
         var failed=admin.startReconciliation(fixture.event().indexGenerationId(),

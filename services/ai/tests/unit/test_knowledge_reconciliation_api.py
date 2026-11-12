@@ -129,9 +129,9 @@ def test_reconciliation_endpoint_returns_exact_source_point_count():
     assert store.requests == [(MEETING_ID, "ACTION_ITEM", SOURCE_ID, 4, GENERATION)]
 
 def test_qdrant_inventory_adapter_paginates_and_filters_generation():
-    from sme_meeting_ai.rag.qdrant import QdrantVectorStore
-    from sme_meeting_ai.rag.qdrant import QdrantError
     import pytest
+
+    from sme_meeting_ai.rag.qdrant import QdrantError, QdrantVectorStore
 
     class Client:
         def __init__(self):
@@ -173,8 +173,9 @@ def test_qdrant_inventory_adapter_paginates_and_filters_generation():
 
 
 def test_qdrant_inventory_fails_closed_for_malformed_or_stalled_payloads():
-    from sme_meeting_ai.rag.qdrant import QdrantVectorStore, QdrantError
     import pytest
+
+    from sme_meeting_ai.rag.qdrant import QdrantError, QdrantVectorStore
 
     store = object.__new__(QdrantVectorStore)
     store.spec = SimpleNamespace(
