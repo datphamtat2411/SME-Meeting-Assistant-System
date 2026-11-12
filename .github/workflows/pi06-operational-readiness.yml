@@ -1,0 +1,73 @@
+name: PI-06 Operational Readiness
+
+on:
+  push:
+    branches:
+      - 'api/**'
+    paths:
+      - 'services/api/**'
+      - 'services/ai/tests/pi05_live_contract.py'
+      - 'infra/local/secure-integration/**'
+      - '.github/workflows/pi06-operational-readiness.yml'
+  pull_request:
+    branches:
+      - develop
+      - 'api/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ops-verification:
+    name: PI-06 safety and PostgreSQL telemetry
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: services/api
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: |
+            services/api/pom.xml
+            services/api/.mvn/wrapper/maven-wrapper.properties
+      - name: Verify Docker-backed PostgreSQL
+        run: docker info
+      - name: Negative release admission tests
+        run: python3 -m unittest discover -s scripts -p 'test_pi06_release_gate.py' -v
+      - name: Verify real durable backlog metrics
+        run: ./mvnw -B -ntp -Dtest=ProductIntegrationMetricsIntegrationTests test
+      - name: Release gate MUST refuse missing live evidence
+        run: |
+          set +e
+          python3 scripts/pi06_release_gate.py \
+            --sha "$GITHUB_SHA" \
+            --run-id 00000000-0000-4000-8000-000000000006 \
+            --generation not-approved --collection not-approved \
+            --config ../../infra/local/secure-integration/pi06-release.env.example \
+            --output target/pi06-blocked.json
+          rc=$?
+          set -e
+          test "$rc" -eq 1
+          python3 -c 'import json; p=json.load(open("target/pi06-blocked.json")); assert p["releaseDecision"]=="BLOCKED"; assert set(p["checks"].values())=={"BLOCKED"}'
+      - name: Archive fail-closed release decision and PostgreSQL tests
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pi06-safe-release-refusal
+          path: |
+            services/api/target/pi06-blocked.json
+            services/api/target/surefire-reports/TEST-*.xml
+          if-no-files-found: warn
+          retention-days: 30
