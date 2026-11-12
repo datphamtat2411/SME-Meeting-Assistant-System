@@ -153,7 +153,7 @@ class PrivateMetricsSecurityTests {
         try(var client=client("monitor")) {
             var response=get(client,privateBase(),PATH);
             assertThat(response.statusCode()).isEqualTo(503);
-            assertThat(response.body()).isEqualTo("Metrics unavailable.\\n");
+            assertThat(response.body()).isEqualTo("Metrics unavailable.\n");
         } finally {registry.remove(meter);}
     }
 
