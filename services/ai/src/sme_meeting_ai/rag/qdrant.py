@@ -413,13 +413,12 @@ class QdrantVectorStore:
                 offset = str(UUID(cursor))
             except (ValueError, AttributeError) as error:
                 raise ValueError("Invalid Qdrant inventory cursor") from error
-        query_filter = models.Filter(must=[
-            models.FieldCondition(key="index_generation_id", match=models.MatchValue(value=generation_id)),
-        ])
+        # Every point in this generation-isolated collection must be audited.
+        # Filtering by generation here would silently skip malformed or foreign
+        # points and could falsely report the inventory as complete.
         try:
             page, next_offset = self.client.scroll(
                 collection_name=self.spec.collection_name,
-                scroll_filter=query_filter,
                 limit=limit,
                 offset=offset,
                 with_payload=True,

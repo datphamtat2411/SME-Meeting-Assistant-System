@@ -164,7 +164,9 @@ def test_qdrant_inventory_adapter_paginates_and_filters_generation():
     }]
     second, end = store.inventory_source_page(GENERATION, 1, cursor)
     assert second == [] and end is None
-    assert store.client.calls[0]["scroll_filter"].must[0].key == "index_generation_id"
+    # Scan ALL points in the generation-isolated collection; a generation
+    # filter would conceal malformed or foreign-generation payloads.
+    assert "scroll_filter" not in store.client.calls[0]
     assert store.client.calls[1]["offset"] == 7
     with pytest.raises(QdrantError):
         store.inventory_source_page("another-generation", 1)
@@ -194,6 +196,21 @@ def test_qdrant_inventory_fails_closed_for_malformed_or_stalled_payloads():
             })], None)
 
     store.client = Malformed()
+    with pytest.raises(QdrantError) as error:
+        store.inventory_source_page(GENERATION, 10)
+    assert error.value.category == "INVENTORY_INVALID"
+
+    class ForeignGeneration:
+        def scroll(self, **kwargs):
+            return ([SimpleNamespace(payload={
+                "meeting_id": MEETING_ID,
+                "source_type": "ACTION_ITEM",
+                "canonical_source_id": SOURCE_ID,
+                "canonical_source_revision": 0,
+                "index_generation_id": "foreign-generation",
+            })], None)
+
+    store.client = ForeignGeneration()
     with pytest.raises(QdrantError) as error:
         store.inventory_source_page(GENERATION, 10)
     assert error.value.category == "INVENTORY_INVALID"
