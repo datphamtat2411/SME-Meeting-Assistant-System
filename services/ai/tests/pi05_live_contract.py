@@ -1,0 +1,149 @@
+"""Strict PI-05 live-evidence schema; never accept bare scenario PASS booleans."""
+
+from __future__ import annotations
+
+import re
+from datetime import datetime
+from uuid import UUID
+
+# Every required observation must have the named component and actual outcome.
+# The harness is responsible for producing source-backed sanitized proof digests.
+REQUIRED = {
+    "full-pipeline": {
+        "meeting-record": ("CORE", "PERSISTED"),
+        "transcript-current": ("CORE", "READY"),
+        "intelligence-official": ("CORE", "ACCEPTED"),
+        "qdrant-points": ("QDRANT", "INDEXED"),
+        "assistant-grounded": ("CORE", "GROUNDED"),
+    },
+    "revision-retrieval": {
+        "transcript-revised": ("CORE", "NEW_REVISION"),
+        "old-revision-rejected": ("AI", "REJECTED"),
+        "new-revision-retrieved": ("AI", "CURRENT"),
+    },
+    "membership-revocation": {
+        "authorized-before": ("CORE", "AUTHORIZED"),
+        "revoked-during-generation": ("CORE", "REVOKED"),
+        "assistant-citation-redacted": ("CORE", "REDACTED"),
+    },
+    "broker-redelivery": {
+        "broker-redelivered": ("RABBITMQ", "REDELIVERED"),
+        "worker-idempotent": ("AI", "IDEMPOTENT"),
+        "core-single-result": ("CORE", "SINGLE_COMMIT"),
+    },
+    "worker-restart": {
+        "original-lease-expired": ("CORE", "LEASE_EXPIRED"),
+        "old-owner-fenced": ("CORE", "REJECTED"),
+        "restarted-worker-recovered": ("AI", "RECOVERED"),
+    },
+    "qdrant-outage": {
+        "qdrant-outage-observed": ("QDRANT", "UNAVAILABLE"),
+        "core-failed-closed": ("CORE", "FAILED"),
+        "reconciliation-resumed": ("CORE", "COMPLETED"),
+    },
+    "inventory-coverage": {
+        "missing-work-reported": ("CORE", "MISSING_WORK"),
+        "orphan-point-reported": ("CORE", "ORPHANED_POINTS"),
+        "unsafe-auto-delete-prevented": ("CORE", "MANUAL_REVIEW"),
+    },
+    "generation-rollback": {
+        "incomplete-candidate-rejected": ("CORE", "REJECTED"),
+        "clean-candidate-activated": ("CORE", "ACTIVE"),
+        "old-generation-rollback": ("CORE", "ACTIVE"),
+    },
+    "export-revocation": {
+        "historical-export-stale": ("CORE", "STALE"),
+        "revoke-download-access": ("CORE", "DENIED"),
+        "historical-record-preserved": ("CORE", "PRESERVED"),
+    },
+    "room-notification": {
+        "overlap-rejected": ("CORE", "CONFLICT"),
+        "cancellation-released-room": ("CORE", "RELEASED"),
+        "notification-recovered": ("CORE", "DELIVERED"),
+    },
+}
+_ALLOWED_COMPONENTS = {"CORE", "AI", "RABBITMQ", "QDRANT", "STORAGE"}
+_UNSAFE = re.compile(
+    r"password|privatekey|clientkey|secret|accesstoken|refreshtoken|"
+    r"authorization|presigned|signedurl|audio|transcripttext|prompt|rawcontent",
+    re.IGNORECASE,
+)
+
+
+def _uuid(value: object) -> bool:
+    try:
+        return isinstance(value, str) and str(UUID(value)) == value.lower()
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+
+def _safe_fields(value: object) -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str) or _UNSAFE.search(key):
+                raise ValueError("Protected evidence field")
+            _safe_fields(item)
+    elif isinstance(value, list):
+        for item in value:
+            _safe_fields(item)
+
+
+def validate_live_evidence(
+    scenario: str, payload: object, *, run_id: str, commit: str, generation: str,
+    collection: str,
+) -> None:
+    if scenario not in REQUIRED:
+        raise ValueError("Unknown PI-05 live scenario")
+    if not isinstance(payload, dict):
+        raise ValueError("Live evidence must be a JSON object")
+    _safe_fields(payload)
+    if payload.get("contractVersion") != "1.0" or payload.get("scenario") != scenario:
+        raise ValueError("Live evidence contract mismatch")
+    if payload.get("status") != "PASS" or payload.get("runId") != run_id or not _uuid(run_id):
+        raise ValueError("Live run identity or outcome mismatch")
+    if payload.get("sourceCommit") != commit or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError("Live code revision not pinned")
+
+    environment = payload.get("environment")
+    if not isinstance(environment, dict) or environment.get("disposable") is not True:
+        raise ValueError("Live environment is not declared disposable")
+    for key in ("environmentId", "coreBuild", "aiBuild", "flywayVersion"):
+        if not isinstance(environment.get(key), str) or not environment[key].strip():
+            raise ValueError("Incomplete real-service provenance")
+    if environment.get("tlsMode") != "MTLS":
+        raise ValueError("Service boundary did not report mTLS")
+    if environment.get("generationId") != generation or environment.get("collectionName") != collection:
+        raise ValueError("Vector generation or collection mismatch")
+
+    observations = payload.get("observations")
+    if not isinstance(observations, list) or len(observations) != len(REQUIRED[scenario]):
+        raise ValueError("Missing or excessive observation identities")
+    seen: set[str] = set()
+    for record in observations:
+        if not isinstance(record, dict):
+            raise ValueError("Malformed live observation")
+        identity = record.get("step")
+        if not isinstance(identity, str) or identity not in REQUIRED[scenario] or identity in seen:
+            raise ValueError("Missing, repeated or unknown observation step")
+        seen.add(identity)
+        component, outcome = REQUIRED[scenario][identity]
+        if record.get("component") != component or component not in _ALLOWED_COMPONENTS:
+            raise ValueError("Wrong evidence service boundary")
+        if record.get("observedResult") != outcome:
+            raise ValueError("Observed result does not satisfy the acceptance invariant")
+        if record.get("runId") != run_id or not _uuid(record.get("requestId")):
+            raise ValueError("Observation cannot be correlated to a real request")
+        proof = record.get("proofSha256")
+        if not isinstance(proof, str) or not re.fullmatch(r"[0-9a-f]{64}", proof):
+            raise ValueError("Missing immutable proof digest")
+        observed_at = record.get("observedAt")
+        if not isinstance(observed_at, str):
+            raise ValueError("Missing observation timestamp")
+        try:
+            timestamp = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise ValueError("Invalid observation timestamp") from error
+        if timestamp.utcoffset() is None:
+            raise ValueError("Observation time must be timezone-aware")
+    if seen != set(REQUIRED[scenario]):
+        raise ValueError("Incomplete live acceptance observations")

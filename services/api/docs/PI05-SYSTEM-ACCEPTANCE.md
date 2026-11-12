@@ -67,3 +67,33 @@ This document defines the gate. The task is not declared live-accepted until
 all ten scenarios have independently verifiable, real-infrastructure PASS records.
 The existing T06 five live cases remain NOT_RUN until the real isolated harness
 runs; PI-05 CI cannot retroactively change that historical fact.
+
+
+## Opt-in real-process PI-05 driver
+`services/ai/tests/integration/test_pi05_live.py` defines ten isolated,
+destructive-capable live acceptance scenarios. Unlike the earlier T06 boolean
+harness, each scenario must return a typed `contractVersion=1.0` record pinned
+to the run UUID, exact commit and Qdrant generation, with independently
+correlatable per-step request IDs, component-specific observed outcomes,
+timezone-aware observation times and SHA-256 proof references. Incomplete
+evidence and arbitrary `status=PASS` responses are rejected by unit tests.
+That contract remains external-harness dependent: returned digests are still
+subject to operator review of isolated service logs.
+
+For an already-provisioned approved **disposable isolated** environment:
+```bash
+cd services/ai
+AI_RUN_PI05_LIVE=1 AI_PI05_ENVIRONMENT_KIND=DISPOSABLE \
+AI_PI05_HARNESS_URL=https://localhost:9443 \
+AI_PI05_RUN_ID=<new-uuid> \
+AI_PI05_SOURCE_COMMIT=<40-hex-git-sha> \
+AI_PI05_GENERATION_ID=<approved-generation> \
+AI_PI05_COLLECTION_NAME=<isolated-collection> \
+AI_PI05_CA_FILE=/secure/ca.pem \
+AI_PI05_CERT_FILE=/secure/client.pem \
+AI_PI05_KEY_FILE=/secure/client-key.pem \
+uv run pytest -m live_infrastructure tests/integration/test_pi05_live.py -q -rs
+```
+The example is a command template, not evidence that the external harness or
+models have been provisioned. Until a real run reports verifiable outcomes,
+all PI05-L01..L10 remain **NOT_RUN**.
