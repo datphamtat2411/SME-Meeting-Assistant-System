@@ -1,0 +1,77 @@
+name: PI-05 System Acceptance
+
+on:
+  push:
+    branches:
+      - 'api/**'
+    paths:
+      - 'services/api/**'
+      - 'services/ai/**'
+      - 'infra/**'
+      - 'requirement-docs/**'
+      - '.github/workflows/pi05-system-acceptance.yml'
+  pull_request:
+    branches:
+      - develop
+      - 'api/**'
+    paths:
+      - 'services/api/**'
+      - 'services/ai/**'
+      - 'infra/**'
+      - 'requirement-docs/**'
+      - '.github/workflows/pi05-system-acceptance.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cross-module-acceptance:
+    name: PI-05 deterministic cross-module acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: services/api
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: |
+            services/api/pom.xml
+            services/api/.mvn/wrapper/maven-wrapper.properties
+      - name: Verify PostgreSQL Testcontainers capability
+        run: docker info
+      - name: Unit-check evidence collector, including invalid and skipped runs
+        run: python3 -m unittest discover -s scripts -p 'test_pi05_collect_evidence.py' -v
+      - name: Run the real Core HTTP/PostgreSQL cross-module acceptance matrix
+        run: >-
+          ./mvnw -B -ntp
+          -Dtest=Pi05CrossModuleAcceptanceTests,CrossModuleRevisionConsistencyIntegrationTests,AssistantHttpIntegrationTests,KnowledgeIndexingWorkerIntegrationTests,AiCoreKnowledgeVectorAuditContractTests,MeetingRoomLifecycleIntegrationTests,ActionItemProposalHandoffIntegrationTests,IntelligenceResultIngestionIntegrationTests,ExportAccessHttpIntegrationTests,ExportJobIntegrationTests,OutboxLeaseIntegrationTests,ProcessingStageFencingIntegrationTests,TranscriptReviewRevisionGuardIntegrationTests
+          test
+      - name: Derive deterministic PASS/FAIL from JUnit testcase XML
+        if: always()
+        run: >-
+          python3 scripts/pi05_collect_evidence.py
+          --reports target/surefire-reports
+          --output target/pi05-evidence.json
+          --strict
+      - name: Preserve machine-readable evidence and test failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pi05-deterministic-evidence
+          path: |
+            services/api/target/pi05-evidence.json
+            services/api/target/surefire-reports/TEST-*.xml
+          if-no-files-found: warn
+          retention-days: 30
