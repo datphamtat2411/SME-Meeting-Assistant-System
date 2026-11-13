@@ -1709,6 +1709,24 @@ Citations preserve exact source revisions and validated claim linkage. Historica
 answers must pass current meeting authorization and authoritative source verification.
 If ANY cited revision is no longer eligible/current, withhold the entire answer.
 
+## 23.4 `assistant_admission_events`
+
+Core resource-abuse protection uses a dedicated PostgreSQL event table rather
+than authentication-abuse records. Each row contains an owning `user_id`, a
+bounded event type (`ASK` or `CONVERSATION_CREATE`), one foreign-key reference
+to the successful Assistant turn or conversation, and `occurred_at`. It MUST
+NOT contain question text, conversation transcripts, prompts, provider output,
+or tokens. The event and its referenced business row are inserted in the same
+transaction, so a rolled-back admission leaves no quota charge.
+
+The `(user_id, event_type, occurred_at)` index supports rolling-window checks;
+the timestamp index supports retention maintenance. Events older than the
+largest configured window may be deleted. The application prunes the current
+user opportunistically and operations SHOULD periodically remove older rows for
+inactive users. Active inference capacity is intentionally not stored here: it
+is derived from leased `assistant_turns` rows so crashes and expired claims
+cannot leave a counter out of sync.
+
 ### DB-AST-004 — Source traceability is preservable
 
 Grounded assistant answers SHOULD retain enough source references to explain which meeting knowledge contributed to the answer.

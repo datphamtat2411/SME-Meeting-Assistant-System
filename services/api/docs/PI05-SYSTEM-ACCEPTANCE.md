@@ -33,7 +33,7 @@ checks the evidence parser's negative cases.
 | PI05-003 | Room hard conflict | Real concurrent HTTP reservation and cancellation/reuse |
 | PI05-004 | Proposal vs official truth | Cross-stage fencing and human confirmation |
 | PI05-005 | Export freshness and protected capability | Revocation, immutable historical fingerprint and safe retry |
-| PI05-006 | Assistant idempotency/TOCTOU | Durable replay and verified citation at commit |
+| PI05-006 | Assistant idempotency/TOCTOU/admission | Durable replay, verified citation at commit, PostgreSQL user/meeting/global admission and quota contention |
 | PI05-007 | Knowledge inventory/recovery | Missing work, orphan vectors, failed cleanup replay |
 | PI05-008 | Generation promotion | DB readiness, clean inventory, checkpoint resume |
 | PI05-009 | Worker and broker recovery | Durable lease replay and media stage fencing |
@@ -41,7 +41,7 @@ checks the evidence parser's negative cases.
 ## Execution
 ```bash
 cd services/api
-./mvnw -B -ntp -Dtest=Pi05CrossModuleAcceptanceTests,CrossModuleRevisionConsistencyIntegrationTests,AssistantHttpIntegrationTests,KnowledgeIndexingWorkerIntegrationTests,AiCoreKnowledgeVectorAuditContractTests,MeetingRoomLifecycleIntegrationTests,ActionItemProposalHandoffIntegrationTests,IntelligenceResultIngestionIntegrationTests,ExportAccessHttpIntegrationTests,ExportJobIntegrationTests,OutboxLeaseIntegrationTests,ProcessingStageFencingIntegrationTests,TranscriptReviewRevisionGuardIntegrationTests test
+./mvnw -B -ntp -Dtest=Pi05CrossModuleAcceptanceTests,CrossModuleRevisionConsistencyIntegrationTests,AssistantHttpIntegrationTests,AssistantAdmissionIntegrationTests,AssistantAdmissionPropertiesTests,KnowledgeIndexingWorkerIntegrationTests,AiCoreKnowledgeVectorAuditContractTests,MeetingRoomLifecycleIntegrationTests,ActionItemProposalHandoffIntegrationTests,IntelligenceResultIngestionIntegrationTests,ExportAccessHttpIntegrationTests,ExportJobIntegrationTests,OutboxLeaseIntegrationTests,ProcessingStageFencingIntegrationTests,TranscriptReviewRevisionGuardIntegrationTests test
 python3 scripts/pi05_collect_evidence.py --reports target/surefire-reports --output target/pi05-evidence.json --strict
 ```
 

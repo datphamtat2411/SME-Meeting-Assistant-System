@@ -55,8 +55,19 @@ distinct approved monitoring client certificate has been issued and tested.
 Public /actuator/prometheus, /actuator/metrics and /internal/** remain denied.
 Do not work around failures by opening the private connector to the internet.
 
+Assistant admission configuration is documented in
+[`ASSISTANT-ADMISSION.md`](ASSISTANT-ADMISSION.md). Its active-turn gauge is
+derived from durable `PROCESSING` turns with live leases; it is not an in-memory
+counter. Operators should alert on admission persistence failures, rejection
+rate, active capacity, expired/reclaimed leases and admission latency using
+measured thresholds. Admission events contain only bounded UUID references and
+timestamps; use the documented periodic PostgreSQL retention statement for
+inactive users. A 429 concurrency `Retry-After` is advisory, while a quota hint
+is based on the oldest event expiration.
+
 ProductIntegrationMetrics uses a bounded repeatable-read PostgreSQL snapshot
-and a 30-second in-process cache. Its fixed-cardinality gauges are exposed
+and a 30-second in-process cache. Its fixed-cardinality gauges, together with
+the allowlisted Assistant admission gauges/counters/timers, are exposed
 through the existing explicit private metrics allowlist, alongside existing
 diarization families. Monitoring never labels a time series with a meeting ID,
 user ID, transcript, prompt, worker certificate, signed URL or arbitrary
@@ -143,7 +154,7 @@ rechecked, not merely after the queue becomes empty.
    last-known-good generation; do not mutate the database to fake readiness.
 5. Reconcile outbox, stale work, exports, Assistant citations and authorized
    retrieval after rollback; continue only when consistency is proven.
-6. Flyway migrations (including V51) are not assumed to be reversible. If
+6. Flyway migrations (including V51 and V52) are not assumed to be reversible. If
    the old application cannot run on the new schema, stop and use a reviewed
    forward fix, not manual DROP statements or force repair in production.
 7. Repeat mTLS/security, worker fencing and live smoke before reopening traffic.

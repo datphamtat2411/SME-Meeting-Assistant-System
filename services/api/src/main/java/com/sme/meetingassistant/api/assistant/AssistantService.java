@@ -11,9 +11,11 @@ import java.util.*;
 import java.util.regex.Pattern;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.core.env.Environment;
+import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionException;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
 import tools.jackson.databind.ObjectMapper;
@@ -23,6 +25,7 @@ import tools.jackson.databind.ObjectMapper;
 public final class AssistantService {
     private static final Pattern KEY=Pattern.compile("[A-Za-z0-9][A-Za-z0-9._:-]{0,127}");
     private final AssistantStore store;
+    private final AssistantAdmissionGuard admission;
     private final MeetingMediaAccess access;
     private final OrganizationalAuthorizationService identity;
     private final AssistantSourceVerifier sources;
@@ -32,11 +35,11 @@ public final class AssistantService {
     private final TransactionTemplate tx;
     private final boolean enabled;
 
-    AssistantService(AssistantStore store,MeetingMediaAccess access,
+    AssistantService(AssistantStore store,AssistantAdmissionGuard admission,MeetingMediaAccess access,
             OrganizationalAuthorizationService identity,AssistantSourceVerifier sources,
             ObjectProvider<AssistantAiGateway> gateway,ObjectMapper json,
             PlatformTransactionManager transactions,Environment env) {
-        this.store=store;this.access=access;this.identity=identity;this.sources=sources;
+        this.store=store;this.admission=admission;this.access=access;this.identity=identity;this.sources=sources;
         this.answers=new AssistantAnswerValidator(sources);this.gateway=gateway;this.json=json;
         this.tx=new TransactionTemplate(transactions);
         this.enabled=env.getProperty("app.assistant.enabled",Boolean.class,false);
@@ -52,14 +55,32 @@ public final class AssistantService {
 
     ConversationView create(CreateConversation input) {
         requireEnabled();
-        UUID user=actor();
+        UUID user;
+        try {
+            user=actor();
+        } catch (DataAccessException|TransactionException unavailable) {
+            throw admission.databaseUnavailable();
+        }
         if(input==null||input.meetingId()==null)throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY);
         String title=input.title()==null||input.title().isBlank()?null:input.title().trim();
-        access.requireReadable(input.meetingId(),user);
-        ConversationView created=tx.execute(s->{
+        try {
             access.requireReadable(input.meetingId(),user);
-            return store.create(UUID.randomUUID(),user,input.meetingId(),title).view();
-        });
+        } catch (DataAccessException|TransactionException unavailable) {
+            throw admission.databaseUnavailable();
+        }
+        ConversationView created;
+        try {
+            created=tx.execute(s->{
+                admission.lockConversationCreationScope(user);
+                access.requireReadable(input.meetingId(),user);
+                admission.ensureConversationCreationQuota(user);
+                var saved=store.create(UUID.randomUUID(),user,input.meetingId(),title);
+                admission.recordConversationCreation(user,saved.id());
+                return saved.view();
+            });
+        } catch (DataAccessException|TransactionException unavailable) {
+            throw admission.databaseUnavailable();
+        }
         access.requireReadable(input.meetingId(),user);
         return created;
     }
@@ -83,7 +104,13 @@ public final class AssistantService {
     }
 
     TurnOutcome submit(UUID conversationId,String idempotencyKey,Ask input){
-        requireEnabled();UUID user=actor();
+        requireEnabled();
+        UUID user;
+        try {
+            user=actor();
+        } catch (DataAccessException|TransactionException unavailable) {
+            throw admission.databaseUnavailable();
+        }
         if(input==null||input.question()==null||input.question().isBlank()
             ||input.question().codePointCount(0,input.question().length())>4096
             ||idempotencyKey==null||!KEY.matcher(idempotencyKey).matches())
@@ -91,9 +118,23 @@ public final class AssistantService {
         String question=input.question().trim();
         if(question.isEmpty())throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY);
         String fingerprint=WorkerJson.sha256(question.getBytes(StandardCharsets.UTF_8));
-        var conversation=store.require(conversationId,user,false);
-        access.requireReadable(conversation.meetingId(),user);
-        Admission admitted=tx.execute(s->reserve(conversationId,user,idempotencyKey,question,fingerprint));
+        AssistantStore.Conversation conversation;
+        try {
+            conversation=store.require(conversationId,user,false);
+            access.requireReadable(conversation.meetingId(),user);
+        } catch (DataAccessException|TransactionException unavailable) {
+            throw admission.databaseUnavailable();
+        }
+        Admission admitted;
+        long admissionStarted=System.nanoTime();
+        try {
+            admitted=tx.execute(s->reserve(conversationId,user,idempotencyKey,question,fingerprint,
+                conversation.meetingId()));
+        } catch (DataAccessException|TransactionException unavailable) {
+            throw admission.databaseUnavailable();
+        } finally {
+            admission.latency("ASK",System.nanoTime()-admissionStarted);
+        }
         if(!admitted.execute()) {
             access.requireReadable(conversation.meetingId(),user);
             return outcome(admitted.turn(),conversation.meetingId());
@@ -112,6 +153,10 @@ public final class AssistantService {
         } catch(ResponseStatusException revoked) {
             markFailed(conversationId,user,admitted.turn());
             throw revoked;
+        } catch(DataAccessException|TransactionException unavailable) {
+            // Do not turn a Core persistence outage into an AI call or a
+            // synthetic FAILED answer. The durable lease will recover it.
+            throw admission.databaseUnavailable();
         } catch(Exception invalidOrUnavailable) {
             // Provider exceptions, credentials, text and raw responses are never returned or logged.
             reply=failed();
@@ -159,26 +204,46 @@ public final class AssistantService {
         });
     }
 
-    private Admission reserve(UUID conversationId,UUID user,String key,String question,String fingerprint){
+    private Admission reserve(UUID conversationId,UUID user,String key,String question,
+            String fingerprint,UUID expectedMeeting){
+        // Advisory locks are acquired before the conversation row lock. This is
+        // the same global -> user -> meeting order used by conversation create.
+        admission.lockAskScope(user,expectedMeeting);
         var conversation=store.require(conversationId,user,true);
+        if(!conversation.meetingId().equals(expectedMeeting))
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND);
         access.requireReadable(conversation.meetingId(),user);
         if(!"ACTIVE".equals(conversation.status()))throw new ResponseStatusException(HttpStatus.CONFLICT);
         AssistantStore.Turn prior=store.findTurn(conversationId,key);
         if(prior!=null){
             if(!prior.fingerprint().equals(fingerprint))
                 throw new ResponseStatusException(HttpStatus.CONFLICT,"Idempotency key reused with different question");
-            if(!"PROCESSING".equals(prior.state()))return new Admission(prior,false);
-            if(store.live(prior))return new Admission(prior,false);
-            return new Admission(store.reclaim(prior),true);
+            if(!"PROCESSING".equals(prior.state())){
+                admission.replay();
+                return new Admission(prior,false);
+            }
+            if(store.live(prior)){
+                admission.replay();
+                return new Admission(prior,false);
+            }
+            admission.ensureActiveCapacity(user,conversation.meetingId());
+            var reclaimed=store.reclaim(prior);
+            admission.leaseReclaimed();
+            return new Admission(reclaimed,true);
         }
         AssistantStore.Turn busy=store.active(conversationId);
         if(busy!=null){
             if(store.live(busy))throw new ResponseStatusException(HttpStatus.CONFLICT,
                 "A previous Assistant turn is still processing");
             store.expire(busy);
+            admission.leaseExpired();
         }
-        return new Admission(store.insertTurn(conversationId,key,fingerprint,question,
-            version(conversation.meetingId(),user)),true);
+        admission.ensureAskQuota(user);
+        admission.ensureActiveCapacity(user,conversation.meetingId());
+        var inserted=store.insertTurn(conversationId,key,fingerprint,question,
+            version(conversation.meetingId(),user));
+        admission.recordAsk(user,inserted.id());
+        return new Admission(inserted,true);
     }
 
     private TurnOutcome outcome(AssistantStore.Turn turn,UUID meeting){

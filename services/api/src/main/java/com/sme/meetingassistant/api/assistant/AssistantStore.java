@@ -107,7 +107,7 @@ class AssistantStore {
         jdbc.update("""
             INSERT INTO assistant_turns(id,conversation_id,idempotency_key,request_sha256,
                 user_message_id,state,claim_token,claim_expires_at,scope_version)
-            VALUES (?,?,?,?,?,'PROCESSING',?,CURRENT_TIMESTAMP+INTERVAL '120 seconds',?)
+            VALUES (?,?,?,?,?,'PROCESSING',?,clock_timestamp()+INTERVAL '120 seconds',?)
             """,turn,conversation,key,fingerprint,userMsg,token,version);
         jdbc.update("UPDATE assistant_conversations SET updated_at=CURRENT_TIMESTAMP WHERE id=?",conversation);
         return findTurn(conversation,key);
@@ -115,7 +115,7 @@ class AssistantStore {
     Turn reclaim(Turn old) {
         UUID token=UUID.randomUUID();
         jdbc.update("""
-            UPDATE assistant_turns SET claim_token=?,claim_expires_at=CURRENT_TIMESTAMP+INTERVAL '120 seconds',
+            UPDATE assistant_turns SET claim_token=?,claim_expires_at=clock_timestamp()+INTERVAL '120 seconds',
                    updated_at=CURRENT_TIMESTAMP
              WHERE id=? AND state='PROCESSING'
             """,token,old.id());
@@ -123,7 +123,7 @@ class AssistantStore {
     }
     boolean live(Turn turn){
         return turn.expiresAt()!=null && turn.expiresAt().isAfter(
-            jdbc.queryForObject("SELECT CURRENT_TIMESTAMP",OffsetDateTime.class));
+            jdbc.queryForObject("SELECT clock_timestamp()",OffsetDateTime.class));
     }
     void expire(Turn turn) {
         if(!"PROCESSING".equals(turn.state())||live(turn))throw new IllegalStateException("Turn not expired");
