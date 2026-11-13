@@ -6,17 +6,28 @@ from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.exceptions import HTTPException
 from starlette.responses import JSONResponse
 
+from sme_meeting_ai.rag.inventory_cursor import (
+    MAX_INVENTORY_CURSOR_LENGTH,
+    InvalidInventoryCursor,
+    parse_inventory_cursor,
+)
 from sme_meeting_ai.rag.qdrant import QdrantError
 
+from .errors import error_response
 from .security import require_internal_operation
 
 RECONCILIATION_OPERATION = "knowledge.reconciliation"
 RECONCILIATION_PATH = "/internal/v1/knowledge-indexing/reconciliation"
 MAX_REQUEST_BYTES = 256 * 1024
+INVENTORY_INTEGRITY_CATEGORIES = frozenset({
+    "INVENTORY_INVALID",
+    "INVENTORY_CURSOR_INVALID",
+    "INVENTORY_STALLED",
+})
 
 
 class SourceIdentity(BaseModel):
@@ -53,8 +64,14 @@ class InventoryRequest(BaseModel):
 
     contractVersion: Literal["1.0"]
     generationId: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$")
-    cursor: str | None = Field(default=None, max_length=36, pattern=r"^[0-9a-fA-F-]+$")
+    cursor: str | None = Field(default=None, max_length=MAX_INVENTORY_CURSOR_LENGTH)
     limit: int = Field(ge=1, le=500, strict=True)
+
+    @field_validator("cursor")
+    @classmethod
+    def validate_cursor(cls, value: str | None) -> str | None:
+        parsed = parse_inventory_cursor(value)
+        return None if parsed is None else str(parsed)
 
 
 router = APIRouter(prefix="/internal/v1/knowledge-indexing")
@@ -133,7 +150,11 @@ async def inventory(request: Request) -> JSONResponse:
         records, next_cursor = store.inventory_source_page(
             payload.generationId, payload.limit, payload.cursor,
         )
-    except QdrantError:
+    except InvalidInventoryCursor:
+        raise HTTPException(422) from None
+    except QdrantError as error:
+        if error.category in INVENTORY_INTEGRITY_CATEGORIES:
+            return error_response(503, "inventory_integrity_failure", "Knowledge inventory unavailable")
         raise HTTPException(503) from None
     return JSONResponse(
         {

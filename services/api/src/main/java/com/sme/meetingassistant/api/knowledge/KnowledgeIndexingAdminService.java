@@ -4,6 +4,7 @@ import com.sme.meetingassistant.api.media.MediaProperties;
 import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import org.springframework.beans.factory.ObjectProvider;
@@ -409,28 +410,49 @@ public class KnowledgeIndexingAdminService {
     /** One page per persisted transaction. Unknown points are reported, never blindly deleted. */
     private Map<String, Object> reconcileVectorPage(ReconciliationRun run, UUID requestedByUserId) {
         UUID runId = run.id();
+        String normalizedCursor;
+        try {
+            normalizedCursor = InventoryCursor.normalize(run.vectorCursor());
+        } catch (IllegalArgumentException invalidCheckpoint) {
+            return failVectorAudit(runId, "VECTOR_CURSOR_INVALID");
+        }
         KnowledgeVectorAudit audit = vectorAudits.getIfAvailable();
         if (audit == null) {
             return failVectorAudit(runId, "VECTOR_AUDIT_UNAVAILABLE");
         }
         KnowledgeVectorAudit.InventoryPage page;
         try {
-            page = audit.inventoryPage(run.generationId(), run.vectorCursor(), run.batchSize());
+            page = audit.inventoryPage(run.generationId(), normalizedCursor, run.batchSize());
+        } catch (AiCoreKnowledgeVectorAudit.KnowledgeVectorAuditException failure) {
+            return failVectorAudit(runId, failure.reconciliationCode());
         } catch (RuntimeException failure) {
             return failVectorAudit(runId, "VECTOR_AUDIT_UNAVAILABLE");
         }
-        if (page == null || page.sources() == null || page.sources().size() > run.batchSize()
-                || page.nextCursor() != null
-                   && (page.nextCursor().equals(run.vectorCursor()) || page.sources().isEmpty())) {
+        String nextCursor;
+        if (page == null || page.sources() == null || page.sources().size() > run.batchSize()) {
             return failVectorAudit(runId, "VECTOR_AUDIT_INVALID");
+        }
+        try {
+            nextCursor = InventoryCursor.normalize(page.nextCursor());
+        } catch (IllegalArgumentException invalidResponse) {
+            return failVectorAudit(runId, "VECTOR_AUDIT_INVALID");
+        }
+        if (nextCursor != null
+                && (Objects.equals(nextCursor, normalizedCursor) || page.sources().isEmpty())) {
+            return failVectorAudit(runId, "VECTOR_AUDIT_INVALID");
+        }
+        // Validate the complete page before recording any findings or progress.
+        // A later malformed identity must not leave a partially accepted page.
+        for (var source : page.sources()) {
+            if (source == null || source.sourceType() == null || source.sourceId() == null
+                    || source.meetingId() == null || source.sourceRevision() < 0
+                    || !Set.of("TRANSCRIPT", "SUMMARY", "DECISION", "ACTION_ITEM")
+                        .contains(source.sourceType())) {
+                return failVectorAudit(runId, "VECTOR_AUDIT_INVALID");
+            }
         }
         long findings = run.findingCount();
         for (var source : page.sources().stream().distinct().toList()) {
-            if (source == null || source.sourceId() == null || source.meetingId() == null
-                    || source.sourceRevision() < 0
-                    || !Set.of("TRANSCRIPT","SUMMARY","DECISION","ACTION_ITEM").contains(source.sourceType())) {
-                return failVectorAudit(runId, "VECTOR_AUDIT_INVALID");
-            }
             boolean hasWork = Boolean.TRUE.equals(jdbc.queryForObject("""
                 SELECT EXISTS(SELECT 1 FROM knowledge_indexing_work
                  WHERE index_generation_id=? AND source_type=? AND source_id=?
@@ -455,7 +477,7 @@ public class KnowledgeIndexingAdminService {
             findings += inserted;
         }
         long scanned = run.vectorScannedCount() + page.sources().size();
-        if (page.nextCursor() == null) {
+        if (nextCursor == null) {
             jdbc.update("""
                 UPDATE knowledge_reconciliation_runs SET state='COMPLETED',inventory_complete=TRUE,
                     vector_scanned_count=?,finding_count=?,completed_at=CURRENT_TIMESTAMP,
@@ -465,7 +487,7 @@ public class KnowledgeIndexingAdminService {
             jdbc.update("""
                 UPDATE knowledge_reconciliation_runs SET vector_cursor=?,
                     vector_scanned_count=?,finding_count=?,updated_at=CURRENT_TIMESTAMP WHERE id=?
-                """, page.nextCursor(), scanned, findings, runId);
+                """, nextCursor, scanned, findings, runId);
         }
         return runData(runId);
     }
@@ -473,6 +495,7 @@ public class KnowledgeIndexingAdminService {
     private Map<String,Object> failVectorAudit(UUID runId, String code) {
         jdbc.update("""
             UPDATE knowledge_reconciliation_runs SET state='FAILED',last_error_code=?,
+                inventory_complete=FALSE,
                 last_error_summary='AI vector inventory was unavailable or invalid.',
                 updated_at=CURRENT_TIMESTAMP WHERE id=?
             """, code, runId);

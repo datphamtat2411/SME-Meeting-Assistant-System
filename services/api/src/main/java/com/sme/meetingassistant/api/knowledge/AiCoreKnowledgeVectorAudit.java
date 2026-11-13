@@ -70,22 +70,36 @@ public class AiCoreKnowledgeVectorAudit implements KnowledgeVectorAudit {
 
     @Override
     public InventoryPage inventoryPage(String generationId, String cursor, int limit) {
-        if (generationId == null || generationId.isBlank() || limit < 1 || limit > 500
-                || cursor != null && !cursor.matches("[0-9a-fA-F-]{1,36}")) {
+        if (generationId == null || generationId.isBlank() || limit < 1 || limit > 500) {
             throw new KnowledgeVectorAuditException();
+        }
+        String normalizedCursor;
+        try {
+            normalizedCursor = InventoryCursor.normalize(cursor);
+        } catch (IllegalArgumentException error) {
+            throw KnowledgeVectorAuditException.invalidCheckpoint();
         }
         try {
             var request = json.createObjectNode();
             request.put("contractVersion", "1.0");
             request.put("generationId", generationId);
             request.put("limit", limit);
-            if (cursor != null) request.put("cursor", cursor);
+            if (normalizedCursor != null) request.put("cursor", normalizedCursor);
             var response = transport.post(PATH + "/inventory", json.writeValueAsString(request));
+            if (response.statusCode() == 409) {
+                throw KnowledgeVectorAuditException.generationMismatch();
+            }
             if (response.statusCode() != 200 || response.body() == null
                     || response.body().getBytes(StandardCharsets.UTF_8).length > MAX_JSON_BYTES) {
-                throw new KnowledgeVectorAuditException();
+                throw classifyInventoryFailure(response.statusCode(), response.body());
             }
-            return decodeInventory(response.body(), generationId, cursor, limit);
+            try {
+                return decodeInventory(response.body(), generationId, normalizedCursor, limit);
+            } catch (KnowledgeVectorAuditException error) {
+                throw error;
+            } catch (RuntimeException error) {
+                throw KnowledgeVectorAuditException.invalidResponse();
+            }
         } catch (KnowledgeVectorAuditException error) {
             throw error;
         } catch (IOException error) {
@@ -96,6 +110,23 @@ public class AiCoreKnowledgeVectorAudit implements KnowledgeVectorAudit {
         } catch (RuntimeException error) {
             throw new KnowledgeVectorAuditException();
         }
+    }
+
+    private KnowledgeVectorAuditException classifyInventoryFailure(int statusCode, String body) {
+        if (statusCode == 503 && body != null) {
+            try {
+                JsonNode root = WorkerJson.parse(body.getBytes(StandardCharsets.UTF_8), MAX_JSON_BYTES);
+                JsonNode error = root.get("error");
+                JsonNode code = error == null ? null : error.get("code");
+                if (code != null && code.isString()
+                        && "inventory_integrity_failure".equals(code.asString())) {
+                    return KnowledgeVectorAuditException.invalidResponse();
+                }
+            } catch (RuntimeException ignored) {
+                // A non-contract error body is intentionally treated as unavailable.
+            }
+        }
+        return KnowledgeVectorAuditException.unavailable();
     }
 
     private InventoryPage decodeInventory(String body, String generationId, String cursor, int limit) {
@@ -120,9 +151,9 @@ public class AiCoreKnowledgeVectorAudit implements KnowledgeVectorAudit {
         }
         JsonNode after = root.get("nextCursor");
         WorkerJson.require(after != null);
-        String next = after.isNull() ? null : WorkerJson.string(root, "nextCursor", 36);
-        WorkerJson.require(next == null || next.matches("[0-9a-fA-F-]{1,36}")
-            && !next.equals(cursor) && !identities.isEmpty());
+        String next = after.isNull() ? null : InventoryCursor.normalize(
+            WorkerJson.string(root, "nextCursor", InventoryCursor.MAX_LENGTH));
+        WorkerJson.require(next == null || !next.equals(cursor) && !identities.isEmpty());
         return new InventoryPage(List.copyOf(identities), next);
     }
 
@@ -153,8 +184,51 @@ public class AiCoreKnowledgeVectorAudit implements KnowledgeVectorAudit {
     }
 
     public static final class KnowledgeVectorAuditException extends RuntimeException {
+        public enum FailureKind {
+            UNAVAILABLE,
+            INVALID_CHECKPOINT,
+            INVALID_RESPONSE,
+            GENERATION_MISMATCH
+        }
+
+        private final FailureKind kind;
+
         public KnowledgeVectorAuditException() {
+            this(FailureKind.UNAVAILABLE);
+        }
+
+        private KnowledgeVectorAuditException(FailureKind kind) {
             super("AI vector audit unavailable");
+            this.kind = kind;
+        }
+
+        static KnowledgeVectorAuditException unavailable() {
+            return new KnowledgeVectorAuditException(FailureKind.UNAVAILABLE);
+        }
+
+        static KnowledgeVectorAuditException invalidCheckpoint() {
+            return new KnowledgeVectorAuditException(FailureKind.INVALID_CHECKPOINT);
+        }
+
+        static KnowledgeVectorAuditException invalidResponse() {
+            return new KnowledgeVectorAuditException(FailureKind.INVALID_RESPONSE);
+        }
+
+        static KnowledgeVectorAuditException generationMismatch() {
+            return new KnowledgeVectorAuditException(FailureKind.GENERATION_MISMATCH);
+        }
+
+        public FailureKind kind() {
+            return kind;
+        }
+
+        String reconciliationCode() {
+            return switch (kind) {
+                case INVALID_CHECKPOINT -> "VECTOR_CURSOR_INVALID";
+                case INVALID_RESPONSE -> "VECTOR_AUDIT_INVALID";
+                case GENERATION_MISMATCH -> "VECTOR_GENERATION_MISMATCH";
+                case UNAVAILABLE -> "VECTOR_AUDIT_UNAVAILABLE";
+            };
         }
     }
 }

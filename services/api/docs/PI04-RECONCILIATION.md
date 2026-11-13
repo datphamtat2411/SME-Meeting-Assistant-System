@@ -9,11 +9,53 @@ The existing outbox, PostgreSQL work ledger, producer claims, certificate-bound 
 4. **Orphans** — Vectors without a matching generation-specific Core UPSERT work row produce `ORPHANED_POINTS/MANUAL_REVIEW`. This is **not** a delete instruction: destructive Qdrant cleanup needs confirmed source identity, generation authorization and operator-approved scoped action. The Core source verifier still rejects deleted/ineligible/out-of-scope identities on retrieval.
 5. **Recovery** — A temporary or malformed vector audit marks the run `FAILED` with a safe error code. An administrator can resume those explicitly retryable failures from durable checkpoints, rather than inventing completion. Event acceptance remains fenced/idempotent in existing workers.
 
+## Inventory cursor contract
+
+The contract remains `contractVersion=1.0` across Core and AI. `cursor` may be
+omitted or `null`, an ASCII unsigned decimal point offset from `0` through
+`18446744073709551615`, or a Qdrant UUID represented by exactly 32 hexadecimal
+characters or a canonical 36-character hyphenated UUID. Decimal offsets are
+canonicalized to their shortest decimal form. UUIDs are canonicalized to
+lowercase hyphenated form. A 32-digit decimal-looking value is interpreted as
+the supported 32-hex UUID representation, not as an overflowing numeric offset.
+
+Empty, whitespace-padded, negative, overflowing, overlength, Unicode-digit,
+malformed, and unexpected JSON cursor values are rejected. The AI request
+boundary returns HTTP 422 before schema validation or Qdrant access. Qdrant
+generated offsets use the same parser before they become `nextCursor`; malformed
+provider data, equivalent/repeated offsets, and stalled pagination fail with
+HTTP 503. Temporary Qdrant failures also remain HTTP 503, while generation
+mismatch remains HTTP 409.
+
+Core validates a persisted cursor before transport and validates the decoded
+`nextCursor` before accepting a page. Local legacy corruption is recorded as
+`VECTOR_CURSOR_INVALID`; malformed AI/Qdrant inventory data is recorded as
+`VECTOR_AUDIT_INVALID`; temporary transport/provider failure is
+`VECTOR_AUDIT_UNAVAILABLE`; and generation mismatch is recorded separately.
+Only the unavailable and retryable invalid-audit classes can be resumed.
+
+The V51 `VARCHAR(36)` storage and existing check are intentionally not rewritten
+and no stronger migration is applied in this change. A stricter `NOT VALID`
+check would still reject updates to pre-existing invalid rows, blocking Core
+from marking those runs failed. Boundary validation therefore provides the
+strict semantic contract without silently changing legacy checkpoint values;
+invalid legacy rows fail closed on their next resume attempt.
+
+Checkpoint progress is committed only after the complete page, source identities,
+and next cursor have been validated. An invalid page cannot advance
+`vector_cursor`, `vector_scanned_count`, or `inventory_complete`, and therefore
+cannot satisfy generation activation readiness or trigger destructive repair.
+
 ## Reproducible deterministic gates
-- API CI: `./mvnw -B -ntp verify` (includes Flyway V51).
+- API CI: `./mvnw -B -ntp verify` (includes the unchanged Flyway V51 checkpoint schema).
 - PI Integration CI: `./mvnw -B -ntp -Dtest=AssistantHttpIntegrationTests,CrossModuleRevisionConsistencyIntegrationTests,KnowledgeIndexingWorkerIntegrationTests,AiCoreKnowledgeVectorAuditContractTests test`.
 - AI CI: Ruff, full Python tests and runtime packaging.
-- Unit/integration fixtures cover missing-work UPSERT, historical invalidation, recoverable audit failures, orphan observation, cursor resume, invalid payload and mTLS client response validation.
+- Cursor regression evidence includes `tests/unit/test_inventory_cursor.py`,
+  `tests/unit/test_knowledge_reconciliation_api.py`,
+  `AiCoreKnowledgeVectorAuditContractTests`, and PostgreSQL-backed
+  `KnowledgeIndexingWorkerIntegrationTests` checkpoint cases.
+- These deterministic tests do not claim live Qdrant or cross-process mTLS
+  acceptance.
 
 ## Explicit limits before PI-05
 - This is **implemented deterministic recovery logic**, not a claim that all real infrastructure interactions have been run. RAG-T06's five live scenarios remain `NOT RUN` until executed with isolated Core/AI, PostgreSQL, broker, Qdrant, mTLS and approved model artifacts.

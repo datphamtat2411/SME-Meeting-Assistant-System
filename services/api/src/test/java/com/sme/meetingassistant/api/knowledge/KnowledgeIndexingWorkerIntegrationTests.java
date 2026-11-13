@@ -216,16 +216,23 @@ class KnowledgeIndexingWorkerIntegrationTests {
             when(vectorAudit.countPoints(newGeneration, java.util.List.of(audited)))
                 .thenReturn(Map.of(audited, 1L));
             when(vectorAudit.inventoryPage(newGeneration, null, 10))
-                .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(audited), null));
-            var audit = admin.startReconciliation(newGeneration, 10, true, userId);
-            assertThat(audit).containsEntry("inventoryComplete", true)
-                .containsEntry("findingCount", 0L).containsEntry("repairedCount", 0L);
-
+                .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(audited), "abcd"),
+                    new KnowledgeVectorAudit.InventoryPage(java.util.List.of(audited), null));
+            var invalidAudit = admin.startReconciliation(newGeneration, 10, true, userId);
+            assertThat(invalidAudit).containsEntry("state", "FAILED")
+                .containsEntry("inventoryComplete", false)
+                .containsEntry("lastErrorCode", "VECTOR_AUDIT_INVALID");
             config.setGenerationId(newGeneration);
             config.setConfigurationVersion(newVersion);
             config.setConfigurationSha256(newSha);
             config.setTokenizerId(newTokenizer);
             config.setCollectionName(newCollection);
+            assertThatThrownBy(() -> admin.activate(newGeneration))
+                .isInstanceOf(org.springframework.web.server.ResponseStatusException.class);
+            var audit = admin.startReconciliation(newGeneration, 10, true, userId);
+            assertThat(audit).containsEntry("inventoryComplete", true)
+                .containsEntry("findingCount", 0L).containsEntry("repairedCount", 0L);
+
             assertThat(admin.activate(newGeneration)).containsEntry("state", "ACTIVE");
 
             config.setGenerationId(oldGeneration);
@@ -495,6 +502,49 @@ class KnowledgeIndexingWorkerIntegrationTests {
         assertThat(last).containsEntry("state","COMPLETED")
             .containsEntry("vectorScannedCount",1L)
             .containsEntry("findingCount",1L);
+    }
+
+    @Test
+    @Transactional
+    void invalidInventoryPageLeavesVectorCheckpointUnchanged() {
+        enableKnowledgeIndexing();
+        String generation = properties.getKnowledgeIndexing().getGenerationId();
+        var source = new KnowledgeVectorAudit.SourceKey("ACTION_ITEM", UUID.randomUUID(), UUID.randomUUID(), 0);
+        when(vectorAudit.inventoryPage(generation, null, 10))
+            .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(source), "abcd"));
+
+        var result = admin.startReconciliation(generation, 10, true, UUID.randomUUID());
+
+        assertThat(result).containsEntry("state", "FAILED")
+            .containsEntry("lastErrorCode", "VECTOR_AUDIT_INVALID")
+            .containsEntry("vectorCursor", null)
+            .containsEntry("vectorScannedCount", 0L)
+            .containsEntry("inventoryComplete", false)
+            .containsEntry("findingCount", 0L);
+        assertThat(jdbc.queryForObject("""
+            SELECT COUNT(*) FROM knowledge_reconciliation_findings WHERE run_id=?
+            """, Integer.class, result.get("id"))).isZero();
+    }
+
+    @Test
+    @Transactional
+    void invalidLegacyVectorCheckpointFailsClosedWithoutCallingAi() {
+        enableKnowledgeIndexing();
+        String generation = properties.getKnowledgeIndexing().getGenerationId();
+        UUID runId = UUID.randomUUID();
+        jdbc.update("""
+            INSERT INTO knowledge_reconciliation_runs(id,generation_id,batch_size,phase,state,vector_cursor)
+            VALUES (?,? ,10,'VECTORS','RUNNING','abcd')
+            """, runId, generation);
+
+        var result = admin.resumeReconciliation(runId, UUID.randomUUID());
+
+        assertThat(result).containsEntry("state", "FAILED")
+            .containsEntry("lastErrorCode", "VECTOR_CURSOR_INVALID")
+            .containsEntry("vectorCursor", "abcd")
+            .containsEntry("vectorScannedCount", 0L)
+            .containsEntry("inventoryComplete", false);
+        org.mockito.Mockito.verifyNoInteractions(vectorAudit);
     }
 
     @Test

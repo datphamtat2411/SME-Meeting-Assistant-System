@@ -38,6 +38,33 @@ checks the evidence parser's negative cases.
 | PI05-008 | Generation promotion | DB readiness, clean inventory, checkpoint resume |
 | PI05-009 | Worker and broker recovery | Durable lease replay and media stage fencing |
 
+### PI-04 cursor regression contract
+
+The deterministic PI05-007/PI05-008 evidence must use the same inventory cursor
+contract at both service boundaries. Accepted values are omitted/`null`, ASCII
+unsigned decimal offsets `0..18446744073709551615`, exactly 32 hexadecimal
+UUID characters, or canonical 36-character hyphenated UUIDs. Decimal values
+and UUIDs are normalized before transport and checkpoint persistence. A
+32-digit decimal-looking value is the 32-hex UUID form; it is not parsed as an
+overflowing integer.
+
+AI rejects malformed request cursors with HTTP 422 before Qdrant access. AI
+rejects malformed Qdrant-generated offsets, stalled pagination, and invalid
+inventory payloads with a safe HTTP 503 response. Generation mismatch remains
+HTTP 409. Core rejects invalid persisted checkpoints before HTTP transport and
+rejects invalid or non-advancing `nextCursor` values before updating PostgreSQL.
+The internal reconciliation classifications are `VECTOR_CURSOR_INVALID`,
+`VECTOR_AUDIT_INVALID`, `VECTOR_AUDIT_UNAVAILABLE`, and
+`VECTOR_GENERATION_MISMATCH`; no public response includes exception text,
+collection identifiers, or storage details.
+
+The V51 cursor column is not rewritten and no migration silently normalizes
+legacy values. A legacy value that does not satisfy the semantic contract fails
+closed as `VECTOR_CURSOR_INVALID`; it cannot restart at page zero. A valid page
+updates the cursor and accepted scan count in one transaction. An invalid page
+leaves the cursor, count, completion flag, findings, and generation-promotion
+evidence unchanged.
+
 ## Execution
 ```bash
 cd services/api

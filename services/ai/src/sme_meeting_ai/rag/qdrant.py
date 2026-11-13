@@ -6,6 +6,7 @@ import math
 from dataclasses import dataclass
 from math import ceil
 from typing import Any, Protocol, Sequence
+from uuid import UUID
 
 from qdrant_client import QdrantClient, models
 
@@ -16,6 +17,11 @@ from .embedding import (
     EmbeddingCompatibility,
     QueryEmbedding,
     SparseEmbedding,
+)
+from .inventory_cursor import (
+    InvalidInventoryCursor,
+    normalize_inventory_cursor_value,
+    parse_inventory_cursor,
 )
 
 
@@ -398,21 +404,12 @@ class QdrantVectorStore:
         The caller must checkpoint the returned cursor after accepting this page;
         a page is not a snapshot when other writers mutate Qdrant concurrently.
         """
-        from uuid import UUID
-
         if generation_id != self.spec.compatibility.index_generation_id:
             raise QdrantSchemaError("Qdrant inventory generation is incompatible")
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 500:
             raise ValueError("Invalid Qdrant inventory page size")
-        if cursor is None:
-            offset: int | str | None = None
-        elif cursor.isdecimal() and len(cursor) <= 20:
-            offset = int(cursor)
-        else:
-            try:
-                offset = str(UUID(cursor))
-            except (ValueError, AttributeError) as error:
-                raise ValueError("Invalid Qdrant inventory cursor") from error
+        offset = parse_inventory_cursor(cursor)
+        current_cursor = None if offset is None else str(offset)
         # Every point in this generation-isolated collection must be audited.
         # Filtering by generation here would silently skip malformed or foreign
         # points and could falsely report the inventory as complete.
@@ -450,8 +447,11 @@ class QdrantVectorStore:
                     },
                     "sourceRevision": {"number": revision},
                 })
-            next_cursor = None if next_offset is None else str(next_offset)
-            if next_cursor is not None and next_cursor == cursor:
+            try:
+                next_cursor = normalize_inventory_cursor_value(next_offset)
+            except InvalidInventoryCursor as error:
+                raise QdrantError("INVENTORY_CURSOR_INVALID") from error
+            if next_cursor is not None and next_cursor == current_cursor:
                 raise QdrantError("INVENTORY_STALLED")
             return records, next_cursor
         except QdrantError:
