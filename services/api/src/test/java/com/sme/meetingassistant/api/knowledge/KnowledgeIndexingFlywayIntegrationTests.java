@@ -97,7 +97,7 @@ class KnowledgeIndexingFlywayIntegrationTests {
     }
 
     @Test
-    void migrationUpgradesV53ThroughV55WithoutRewritingTheBaseline() {
+    void migrationUpgradesV53ThroughV56WithoutRewritingTheBaseline() {
         String schema = "knowledge_t05_upgrade_" + UUID.randomUUID().toString().replace("-", "");
         try {
             Flyway before = Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema)
@@ -108,20 +108,54 @@ class KnowledgeIndexingFlywayIntegrationTests {
 
             Flyway upgraded = Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema)
                 .locations("classpath:db/migration").load();
-            assertThat(upgraded.migrate().migrationsExecuted).isEqualTo(2);
+            assertThat(upgraded.migrate().migrationsExecuted).isEqualTo(3);
             assertThat(jdbc.queryForObject("""
                 SELECT count(*) FROM information_schema.columns
                 WHERE table_schema=? AND table_name='knowledge_qdrant_write_permits'
                   AND column_name IN ('mutation_execution_id','reserved_at','started_at')
                 """, Integer.class, schema)).isEqualTo(3);
             assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM information_schema.columns
+                WHERE table_schema=? AND table_name='knowledge_source_snapshots'
+                  AND column_name='selection_epoch'
+                """, Integer.class, schema)).isEqualTo(1);
+            assertThat(jdbc.queryForObject("""
                 SELECT count(*) FROM %s.flyway_schema_history
                 WHERE installed_rank=53 AND version='53'
                 """.formatted(schema), Integer.class)).isEqualTo(1);
             assertThat(jdbc.queryForObject("""
                 SELECT version FROM %s.flyway_schema_history
-                WHERE version='55'
-                """.formatted(schema), String.class)).isEqualTo("55");
+                WHERE version='56'
+                """.formatted(schema), String.class)).isEqualTo("56");
+        } finally {
+            jdbc.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE");
+        }
+    }
+
+    @Test
+    void migrationUpgradesPopulatedV55SnapshotsAndKeepsWorkBound() {
+        String schema = "knowledge_v55_" + UUID.randomUUID().toString().replace("-", "");
+        try {
+            Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema)
+                .locations("classpath:db/migration").target(MigrationVersion.fromVersion("55")).load().migrate();
+            UUID user = UUID.randomUUID(), meeting = UUID.randomUUID(), source = UUID.randomUUID();
+            UUID snapshot = UUID.randomUUID(), event = UUID.randomUUID();
+            byte[] payload = "{}".getBytes(StandardCharsets.UTF_8);
+            String sha = WorkerJson.sha256(payload);
+            jdbc.update("INSERT INTO " + schema + ".users(id,email,email_normalized,display_name,password_hash,global_role,account_status) VALUES (?,?,?,'Migration test','test-only','EMPLOYEE','ACTIVE')",
+                user, user + "@example.invalid", user + "@example.invalid");
+            jdbc.update("INSERT INTO " + schema + ".meetings(id,title,organizer_user_id,created_by_user_id) VALUES (?,'Migration test',?,?)", meeting, user, user);
+            jdbc.update("INSERT INTO " + schema + ".knowledge_source_snapshots(id,meeting_id,source_type,source_id,source_revision,payload,sha256,size_bytes) VALUES (?,?,'SUMMARY',?,7,?,?,?)",
+                snapshot, meeting, source, payload, sha, payload.length);
+            jdbc.update("INSERT INTO " + schema + ".outbox_events(id,aggregate_type,aggregate_id,event_type,payload) VALUES (?,'KNOWLEDGE_SOURCE',?,'KNOWLEDGE_INDEXING_REQUESTED','{}'::jsonb)", event, source);
+            jdbc.update("INSERT INTO " + schema + ".knowledge_indexing_work(event_id,meeting_id,source_type,source_id,source_revision,snapshot_id,snapshot_sha256,snapshot_size_bytes,index_generation_id,configuration_version,configuration_sha256,tokenizer_id) VALUES (?,?,'SUMMARY',?,7,?,?,?,'rag-t02-bge-m3-v1','rag-t02-bge-m3-v1',?,'bge-m3')",
+                event, meeting, source, snapshot, sha, payload.length, "b".repeat(64));
+            assertThat(Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema)
+                .locations("classpath:db/migration").load().migrate().migrationsExecuted).isEqualTo(1);
+            assertThat(jdbc.queryForObject("SELECT selection_epoch FROM " + schema + ".knowledge_source_snapshots WHERE id=?", Long.class, snapshot)).isZero();
+            assertThat(jdbc.update("UPDATE " + schema + ".knowledge_indexing_work SET updated_at=CURRENT_TIMESTAMP WHERE event_id=?", event)).isEqualTo(1);
+            assertThatThrownBy(() -> jdbc.update("UPDATE " + schema + ".knowledge_indexing_work SET source_revision=8 WHERE event_id=?", event))
+                .isInstanceOf(RuntimeException.class);
         } finally {
             jdbc.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE");
         }

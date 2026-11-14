@@ -80,7 +80,7 @@ public class KnowledgeIndexingWorkerService {
             (rs, row) -> rs.getObject(1, UUID.class), request.meetingId(), request.sourceId()).isEmpty();
     }
 
-    @Transactional
+    @Transactional(noRollbackFor = WorkerException.class)
     public Map<String, Object> claim(UUID eventId, KnowledgeIndexingWorkerCommands.Claim command,
             String certificateFingerprint) {
         KnowledgeIndexingWorkerCommands.requireEvent(eventId, command.eventId());
@@ -128,8 +128,7 @@ public class KnowledgeIndexingWorkerService {
         }
         if ("UPSERT".equals(work.operation())) {
             SourceState source = source(work);
-            if (!source.eligible() || source.currentRevision() != work.sourceRevision()
-                    || !source.sameIdentity()) {
+            if (!sourceCurrent(work, source)) {
                 supersede(eventId);
                 throw WorkerException.conflict("WORKER_SOURCE_SUPERSEDED");
             }
@@ -206,7 +205,7 @@ public class KnowledgeIndexingWorkerService {
      * mutation. The order is meeting -> work -> generation; it is the same
      * order used by source writers and worker result acceptance.
      */
-    @Transactional
+    @Transactional(noRollbackFor = WorkerException.class)
     public Map<String, Object> acquirePermit(UUID eventId,
             KnowledgeIndexingWorkerCommands.PermitAcquire command, String certificateFingerprint) {
         KnowledgeIndexingWorkerCommands.requireEvent(eventId, command.eventId());
@@ -220,6 +219,13 @@ public class KnowledgeIndexingWorkerService {
         }
         if (!work.indexGenerationId().equals(command.generationId())) {
             throw WorkerException.conflict("WORKER_GENERATION_CONFLICT");
+        }
+        if ("UPSERT".equals(work.operation())) {
+            SourceState source = source(work);
+            if (!sourceCurrent(work, source)) {
+                supersede(eventId);
+                throw WorkerException.conflict("WORKER_SOURCE_SUPERSEDED");
+            }
         }
 
         GenerationBarrier generation = lockGeneration(work.indexGenerationId());
@@ -252,6 +258,21 @@ public class KnowledgeIndexingWorkerService {
                 throw WorkerException.conflict("WORKER_PERMIT_NOT_REUSABLE");
             }
             return permitData(existing);
+        }
+        Boolean sourcePermitOpen = jdbc.queryForObject("""
+            SELECT EXISTS(
+                SELECT 1
+                  FROM knowledge_qdrant_write_permits p
+                  JOIN knowledge_indexing_work w ON w.event_id=p.event_id
+                 WHERE w.meeting_id=? AND w.source_type=? AND w.source_id=?
+                   AND p.generation_id=?
+                   AND (p.state='RUNNING'
+                        OR (p.state='RESERVED' AND p.generation_epoch=?)))
+            """, Boolean.class, work.meetingId(), work.sourceType(), work.sourceId(),
+            work.indexGenerationId(), generation.writeEpoch());
+        if (Boolean.TRUE.equals(sourcePermitOpen)) {
+            metrics.permitReservationConflict();
+            throw WorkerException.conflict("WORKER_PERMIT_BUSY");
         }
         Boolean unresolved = jdbc.queryForObject("""
             SELECT EXISTS(SELECT 1 FROM knowledge_qdrant_write_permits
@@ -380,7 +401,7 @@ public class KnowledgeIndexingWorkerService {
             """, this::permit, command.permitId()));
     }
 
-    @Transactional
+    @Transactional(noRollbackFor = WorkerException.class)
     public Map<String, Object> result(UUID eventId, KnowledgeIndexingWorkerCommands.Result command,
             String certificateFingerprint) {
         KnowledgeIndexingWorkerCommands.requireEvent(eventId, command.eventId());
@@ -401,8 +422,7 @@ public class KnowledgeIndexingWorkerService {
         }
         if ("UPSERT".equals(work.operation())) {
             SourceState source = source(work);
-            if (!source.eligible() || source.currentRevision() != work.sourceRevision()
-                    || !source.sameIdentity()) {
+            if (!sourceCurrent(work, source)) {
                 supersede(eventId);
                 throw WorkerException.conflict("WORKER_SOURCE_SUPERSEDED");
             }
@@ -684,8 +704,18 @@ public class KnowledgeIndexingWorkerService {
             case "SUMMARY" -> summarySource(work);
             case "DECISION" -> decisionSource(work);
             case "ACTION_ITEM" -> actionSource(work);
-            default -> new SourceState(-1, false, false);
+            default -> new SourceState(-1, false, false, null);
         };
+    }
+
+    private boolean sourceCurrent(Work work, SourceState source) {
+        if (!source.eligible() || source.currentRevision() != work.sourceRevision()
+                || !source.sameIdentity()) return false;
+        if (!"SUMMARY".equals(work.sourceType())) return true;
+        Long snapshotEpoch = jdbc.queryForObject("""
+            SELECT selection_epoch FROM knowledge_source_snapshots WHERE id=?
+            """, Long.class, work.snapshotId());
+        return Objects.equals(snapshotEpoch, source.selectionEpoch());
     }
 
     private SourceState transcriptSource(Work work) {
@@ -699,13 +729,13 @@ public class KnowledgeIndexingWorkerService {
                 boolean eligible = work.sourceId().equals(id)
                     && List.of("READY", "READY_WITH_WARNINGS").contains(rs.getString("status"))
                     && rs.getObject("finalized_at") != null && rs.getBoolean("has_content");
-                return new SourceState(revision, eligible, work.sourceId().equals(id));
-            }, work.meetingId()).stream().findFirst().orElse(new SourceState(-1, false, false));
+                return new SourceState(revision, eligible, work.sourceId().equals(id), null);
+            }, work.meetingId()).stream().findFirst().orElse(new SourceState(-1, false, false, null));
     }
 
     private SourceState summarySource(Work work) {
         return jdbc.query("""
-            SELECT s.id,s.version_number,s.is_current,s.quality_status,s.transcript_id,
+            SELECT s.id,s.version_number,s.is_current,s.quality_status,s.selection_epoch,s.transcript_id,
                    s.content_revision,current_source.id AS current_transcript_id,
                    current_source.content_revision AS current_transcript_revision,
                    current_source.status AS current_transcript_status
@@ -724,8 +754,9 @@ public class KnowledgeIndexingWorkerService {
                     || !List.of("READY", "READY_WITH_WARNINGS").contains(rs.getString("current_transcript_status")));
                 boolean eligible = rs.getBoolean("is_current") && !stale
                     && List.of("READY", "READY_WITH_WARNINGS").contains(rs.getString("quality_status"));
-                return new SourceState(rs.getLong("version_number"), eligible, work.sourceId().equals(id));
-            }, work.meetingId(), work.sourceId()).stream().findFirst().orElse(new SourceState(-1, false, false));
+                return new SourceState(rs.getLong("version_number"), eligible, work.sourceId().equals(id),
+                    rs.getLong("selection_epoch"));
+            }, work.meetingId(), work.sourceId()).stream().findFirst().orElse(new SourceState(-1, false, false, null));
     }
 
     private SourceState decisionSource(Work work) {
@@ -747,8 +778,8 @@ public class KnowledgeIndexingWorkerService {
                     || !java.util.Objects.equals(revision, nullableLong(rs, "current_transcript_revision"))
                     || !List.of("READY", "READY_WITH_WARNINGS").contains(rs.getString("current_transcript_status")));
                 return new SourceState(rs.getLong("version"), "CONFIRMED".equals(rs.getString("status"))
-                    && !stale, work.sourceId().equals(id));
-            }, work.meetingId(), work.sourceId()).stream().findFirst().orElse(new SourceState(-1, false, false));
+                    && !stale, work.sourceId().equals(id), null);
+            }, work.meetingId(), work.sourceId()).stream().findFirst().orElse(new SourceState(-1, false, false, null));
     }
 
     private SourceState actionSource(Work work) {
@@ -760,8 +791,8 @@ public class KnowledgeIndexingWorkerService {
                 boolean official = "MANUAL".equals(rs.getString("source_type"))
                     || rs.getObject("confirmed_by_user_id") != null;
                 return new SourceState(rs.getLong("version"), official && !"PROPOSED".equals(rs.getString("status")),
-                    work.sourceId().equals(id));
-            }, work.meetingId(), work.sourceId()).stream().findFirst().orElse(new SourceState(-1, false, false));
+                    work.sourceId().equals(id), null);
+            }, work.meetingId(), work.sourceId()).stream().findFirst().orElse(new SourceState(-1, false, false, null));
     }
 
     private OffsetDateTime now() {
@@ -808,7 +839,8 @@ public class KnowledgeIndexingWorkerService {
             long sourceRevision) { }
 
     private record SnapshotRow(UUID id, String sha256, long sizeBytes, byte[] payload) { }
-    private record SourceState(long currentRevision, boolean eligible, boolean sameIdentity) { }
+    private record SourceState(long currentRevision, boolean eligible, boolean sameIdentity,
+            Long selectionEpoch) { }
     private record Work(UUID eventId, UUID meetingId, String sourceType, UUID sourceId,
             long sourceRevision, UUID snapshotId, String snapshotSha256, long snapshotSizeBytes,
             String indexGenerationId, String configurationVersion, String configurationSha256,

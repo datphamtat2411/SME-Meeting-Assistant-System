@@ -29,7 +29,7 @@ state, or change the authoritative release requirements.
    canonical Core work and Qdrant vector inventory. No candidate activation
    without `certificationUsable=true`, a completed clean unrepaired certification,
     and zero `RESERVED`/`RUNNING` Qdrant permits; retain a previous generation to
-    support authorized rollback. Apply V55 forward-only after immutable V53/V54.
+     support authorized rollback. Apply V55/V56 forward-only after immutable V53/V54.
 5. **Exports and notifications:** validate object storage, signed capability
    TTL, export revision freshness, authorization and idempotency. Enable
    export worker and SMTP delivery. Do not switch on broad purge or orphan
@@ -159,7 +159,7 @@ rechecked, not merely after the queue becomes empty.
    last-known-good generation; do not mutate the database to fake readiness.
 5. Reconcile outbox, stale work, exports, Assistant citations and authorized
    retrieval after rollback; continue only when consistency is proven.
-6. Flyway migrations (including V51, V52, V53, V54 and V55) are not assumed to be reversible. If
+  6. Flyway migrations (including V51, V52, V53, V54, V55 and V56) are not assumed to be reversible. If
    the old application cannot run on the new schema, stop and use a reviewed
    forward fix, not manual DROP statements or force repair in production.
 7. Repeat mTLS/security, worker fencing and live smoke before reopening traffic.

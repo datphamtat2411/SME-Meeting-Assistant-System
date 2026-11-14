@@ -29,7 +29,8 @@ public class TranscriptSnapshotCapture {
         transcripts.lockMeetingForReview(meetingId);
         var current = transcripts.current(meetingId).orElseThrow(() ->
             new ResponseStatusException(HttpStatus.CONFLICT, "A finalized transcript is required."));
-        if (!("READY".equals(current.status()) || "READY_WITH_WARNINGS".equals(current.status()))
+        if (current.finalizedAt() == null
+                || !("READY".equals(current.status()) || "READY_WITH_WARNINGS".equals(current.status()))
                 || current.segments().isEmpty()) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "No eligible finalized transcript.");
         }

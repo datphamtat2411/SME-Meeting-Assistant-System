@@ -145,10 +145,20 @@ public class KnowledgeIndexingAdminService {
         metrics.sealAttempt();
         GenerationRow generation = lockGeneration(generationId);
         if ("SEALED".equals(generation.barrierState())) return generation(generationId);
+        cancelStaleReservedPermits(generation);
         if (!"READY".equals(generation.state()) || generation.targetCount() != generation.indexedCount()) {
             throw sealConflict("GENERATION_NOT_READY", "GENERATION_NOT_READY_FOR_SEAL");
         }
         if (liveClaim(generationId)) throw sealConflict("WORKER_CLAIM_ACTIVE", "WORKER_CLAIM_ACTIVE");
+        Boolean reconciliationClaim = jdbc.queryForObject("""
+            SELECT EXISTS(
+                SELECT 1 FROM knowledge_reconciliation_runs
+                 WHERE generation_id=? AND state='RUNNING'
+                   AND claim_token IS NOT NULL AND claim_expires_at>CURRENT_TIMESTAMP)
+            """, Boolean.class, generationId);
+        if (Boolean.TRUE.equals(reconciliationClaim)) {
+            throw sealConflict("RECONCILIATION_CLAIM_ACTIVE", "RECONCILIATION_CLAIM_ACTIVE");
+        }
         Boolean openPermit = jdbc.queryForObject("""
             SELECT EXISTS(SELECT 1 FROM knowledge_qdrant_write_permits
                 WHERE generation_id=? AND state IN ('OPEN','RESERVED','RUNNING'))
@@ -193,7 +203,12 @@ public class KnowledgeIndexingAdminService {
     @Transactional
     public Map<String, Object> activate(String generationId) {
         requireEnabled();
-        GenerationRow generation = lockGeneration(generationId);
+        // Source mutation triggers acquire affected generations in ID order.
+        // Lock the same set before changing the active row to avoid holding a
+        // candidate while a source writer holds an earlier generation.
+        GenerationRow generation = lockGenerations().stream()
+            .filter(row -> row.id().equals(generationId)).findFirst().orElseThrow(() ->
+                new ResponseStatusException(HttpStatus.NOT_FOUND, "Knowledge generation was not found."));
         if ("ACTIVE".equals(generation.state())) return generation(generationId);
         if ("PREPARING".equals(generation.state())
                 || "READY".equals(generation.state()) && "OPEN".equals(generation.barrierState())) {
@@ -293,6 +308,24 @@ public class KnowledgeIndexingAdminService {
                 new ResponseStatusException(HttpStatus.NOT_FOUND, "Knowledge generation was not found."));
     }
 
+    private List<GenerationRow> lockGenerations() {
+        return jdbc.query("""
+            SELECT generation_id,configuration_version,configuration_sha256,tokenizer_id,collection_name,
+                   state,target_count,indexed_count,write_epoch,write_barrier_state,seal_id,sealed_epoch
+              FROM knowledge_index_generations ORDER BY generation_id FOR UPDATE
+            """, this::generationRow);
+    }
+
+    private void cancelStaleReservedPermits(GenerationRow generation) {
+        jdbc.update("""
+            UPDATE knowledge_qdrant_write_permits
+               SET state='CANCELLED',outcome_code='WORKER_PERMIT_STALE',
+                   outcome_summary='Reserved Qdrant permit became stale before execution started.',
+                   completed_at=CURRENT_TIMESTAMP
+             WHERE generation_id=? AND state='RESERVED' AND generation_epoch<>?
+            """, generation.id(), generation.writeEpoch());
+    }
+
     private boolean liveClaim(String generationId) {
         return Boolean.TRUE.equals(jdbc.queryForObject("""
             SELECT EXISTS(SELECT 1 FROM knowledge_indexing_work
@@ -342,8 +375,8 @@ public class KnowledgeIndexingAdminService {
                        source_type,source_id,meeting_id,source_revision,operation,state
                   FROM knowledge_indexing_work
                  WHERE index_generation_id=?
-                 ORDER BY source_type,source_id,meeting_id,source_revision,
-                          created_at DESC,intent_sequence DESC,event_id DESC
+                  ORDER BY source_type,source_id,meeting_id,source_revision,
+                           intent_sequence DESC,created_at DESC,event_id DESC
             ), targets AS (
                 SELECT e.source_type,e.source_id,e.meeting_id,e.source_revision,
                        w.operation,w.state,TRUE AS eligible

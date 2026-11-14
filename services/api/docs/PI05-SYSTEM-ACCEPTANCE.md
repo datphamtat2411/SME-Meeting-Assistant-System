@@ -61,12 +61,14 @@ collection identifiers, or storage details.
 ### Generation and worker fencing
 
 PI05-007 and PI05-008 evidence must identify the V53 baseline and forward-only
-V54 migration. Candidate readiness is fenced by the generation write epoch and
+V54, V55 and V56 migrations. Candidate readiness is fenced by the generation write epoch and
 seal; `certificationUsable` is true only for a current, completed, clean,
 unrepaired dry-run certification. Qdrant mutation evidence must show a single
 permit execution identity moving `RESERVED -> RUNNING -> SUCCEEDED/FAILED`,
 with the physical mutation completed before the terminal Core acknowledgement.
 `OPEN`, reused, stale-epoch, and stale-seal permits are not valid authorization.
+Summary selection changes are independently fenced by `selection_epoch` and
+must never reuse immutable snapshot bytes from another selection epoch.
 
 The V51 cursor column is not rewritten and no migration silently normalizes
 legacy values. A legacy value that does not satisfy the semantic contract fails

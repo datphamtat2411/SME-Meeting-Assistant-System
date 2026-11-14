@@ -61,6 +61,7 @@ _RETRYABLE_CORE_CODES = frozenset({
     "SERVICE_UNAVAILABLE",
     "WORKER_TRANSPORT",
     "WORKER_RESPONSE_INVALID",
+    "WORKER_PERMIT_STALE",
 })
 _PERMANENT_CORE_CODES = frozenset({
     "WORKER_DELIVERY_UNKNOWN",
@@ -68,6 +69,7 @@ _PERMANENT_CORE_CODES = frozenset({
     "WORKER_IDENTITY_CONFLICT",
     "WORKER_GENERATION_CONFLICT",
     "WORKER_RESULT_CONFLICT",
+    "WORKER_SOURCE_SUPERSEDED",
     "WORKER_GENERATION_SEALED",
     "WORKER_PERMIT_BUSY",
     "WORKER_PERMIT_CONFLICT",
@@ -86,6 +88,7 @@ _PERMANENT_CORE_CODES = frozenset({
     "UNSUPPORTED_MEDIA_TYPE",
 })
 _ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,79}$")
+_MAX_STALE_PERMIT_REACQUISITIONS = 1
 
 
 class KnowledgeWorkerFailure(Exception):
@@ -401,18 +404,33 @@ class KnowledgeIndexingWorker:
         task.add_done_callback(self._mutation_finalizers.discard)
 
     async def _run_permitted_mutation(self, event, claim, guard, operation):
-        permit = await guard.protect(self.core.acquire_write_permit(
-            event, claim, deadline=guard.deadline,
-        ))
-        if (getattr(permit, "state", None) != "RESERVED"
-                or not getattr(permit, "mutationExecutionId", None)):
-            raise CoreError(409, "WORKER_PERMIT_CONFLICT")
-        permit = await guard.protect(self.core.start_write_permit(
-            event, claim, permit, deadline=guard.deadline,
-        ))
-        if (getattr(permit, "state", None) != "RUNNING"
-                or not getattr(permit, "mutationExecutionId", None)):
-            raise CoreError(409, "WORKER_PERMIT_CONFLICT")
+        for stale_reacquisitions in range(_MAX_STALE_PERMIT_REACQUISITIONS + 1):
+            permit = await guard.protect(self.core.acquire_write_permit(
+                event, claim, deadline=guard.deadline,
+            ))
+            if (getattr(permit, "state", None) != "RESERVED"
+                    or not getattr(permit, "mutationExecutionId", None)):
+                raise CoreError(409, "WORKER_PERMIT_CONFLICT")
+            try:
+                permit = await guard.protect(self.core.start_write_permit(
+                    event, claim, permit, deadline=guard.deadline,
+                ))
+            except CoreError as error:
+                if error.code != "WORKER_PERMIT_STALE" or not guard.live():
+                    raise
+                if stale_reacquisitions >= _MAX_STALE_PERMIT_REACQUISITIONS:
+                    raise
+                # No external mutation started for a cancelled reservation.
+                # Reacquire against the new generation epoch instead of
+                # redelivering a still-live claim until the broker limit.
+                await asyncio.sleep(0)
+                continue
+            if (getattr(permit, "state", None) != "RUNNING"
+                    or not getattr(permit, "mutationExecutionId", None)):
+                raise CoreError(409, "WORKER_PERMIT_CONFLICT")
+            break
+        else:
+            raise CoreError(409, "WORKER_PERMIT_STALE")
         loop = asyncio.get_running_loop()
         # Keep the concurrent executor future alive independently of the
         # asyncio waiter. Cancelling a wrapped future cannot stop its thread.
@@ -519,20 +537,26 @@ class KnowledgeIndexingWorker:
         try:
             if not guard.live():
                 raise KnowledgeLeaseLost()
-            try:
-                snapshot = None
-                if event.operation == "UPSERT":
+            snapshot = None
+            if event.operation == "UPSERT":
+                try:
                     snapshot = await self._snapshot(event, claim, guard)
                     outcome = await self._run_permitted_mutation(
                         event, claim, guard, lambda: self._process(snapshot),
                     )
-                else:
-                    outcome = await self._run_permitted_mutation(
-                        event, claim, guard, lambda: self._process_lifecycle(event),
+                except KnowledgeWorkerFailure as failure:
+                    pre_permit_outcome = _IndexOutcome(
+                        "RETRYABLE_FAILURE" if failure.retryable else "TERMINAL_FAILURE",
+                        0,
+                        error_code=failure.code,
                     )
-            except KnowledgeWorkerFailure as failure:
-                outcome = _IndexOutcome("RETRYABLE_FAILURE" if failure.retryable else "TERMINAL_FAILURE", 0,
-                                        error_code=failure.code)
+                    outcome = await self._run_permitted_mutation(
+                        event, claim, guard, lambda: pre_permit_outcome,
+                    )
+            else:
+                outcome = await self._run_permitted_mutation(
+                    event, claim, guard, lambda: self._process_lifecycle(event),
+                )
             if not guard.live():
                 raise KnowledgeLeaseLost()
             status = await self._submit(event, claim, snapshot if "snapshot" in locals() else None, outcome, guard)

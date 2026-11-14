@@ -437,6 +437,8 @@ public class KnowledgeReconciliationService {
 
     private boolean fenceGeneration(Run run, Generation generation) {
         return generation.writeEpoch() == run.expectedGenerationEpochOrCertification()
+            && (!"OPERATIONAL".equals(run.certificationMode())
+                || !"SEALED".equals(generation.barrierState()))
             && (!"CERTIFICATION".equals(run.certificationMode())
                 || ("SEALED".equals(generation.barrierState())
                     && Objects.equals(run.certificationSealId(), generation.sealId())

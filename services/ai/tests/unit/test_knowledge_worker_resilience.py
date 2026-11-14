@@ -28,6 +28,7 @@ from sme_meeting_ai.workers.knowledge_indexing import (
     KnowledgeIndexingWorker,
     KnowledgeLeaseGuard,
     KnowledgeLeaseLost,
+    KnowledgeWorkerFailure,
     _IndexOutcome,
 )
 
@@ -376,6 +377,114 @@ def test_cancelled_asyncio_waiter_leaves_permit_open_until_qdrant_thread_returns
         release.set()
         assert await worker.wait_for_mutations(2)
         assert core.completed_permits[0][1:] == ("SUCCEEDED", "NONE")
+
+    asyncio.run(run())
+
+
+def test_stale_reserved_permit_is_reacquired_before_qdrant_mutation():
+    async def run():
+        item = event()
+        core = FakeCore(item)
+        worker = worker_for(item, core)
+        claim = claim_for(item)
+
+        class Guard:
+            deadline = 60.0
+
+            def __init__(self):
+                self.lost = asyncio.Event()
+
+            async def protect(self, awaitable):
+                return await awaitable
+
+            def live(self):
+                return True
+
+        class StaleOnceCore(FakeCore):
+            def __init__(self, item):
+                super().__init__(item)
+                self.stale = True
+
+            async def start_write_permit(self, event_value, claim_value, permit, **options):
+                if self.stale:
+                    self.stale = False
+                    raise CoreError(409, "WORKER_PERMIT_STALE")
+                return await super().start_write_permit(event_value, claim_value, permit, **options)
+
+        core = StaleOnceCore(item)
+        worker.core = core
+        outcome = await worker._run_permitted_mutation(
+            item, claim, Guard(), lambda: _IndexOutcome("INDEXED", 1, (str(uuid4()),)),
+        )
+
+        assert outcome.state == "INDEXED"
+        assert core.permit_count == 2
+        assert len(core.started_permits) == 1
+
+    asyncio.run(run())
+
+
+def test_repeated_stale_permits_are_bounded_before_qdrant_mutation():
+    async def run():
+        item = event()
+        claim = claim_for(item)
+        mutation_calls = []
+
+        class Guard:
+            deadline = 60.0
+
+            def __init__(self):
+                self.lost = asyncio.Event()
+
+            async def protect(self, awaitable):
+                return await awaitable
+
+            def live(self):
+                return True
+
+        class AlwaysStaleCore(FakeCore):
+            async def start_write_permit(self, *_args, **_options):
+                raise CoreError(409, "WORKER_PERMIT_STALE")
+
+        core = AlwaysStaleCore(item)
+        worker = worker_for(item, core)
+        with pytest.raises(CoreError) as failure:
+            await worker._run_permitted_mutation(
+                item, claim, Guard(), lambda: mutation_calls.append(True),
+            )
+
+        assert failure.value.code == "WORKER_PERMIT_STALE"
+        assert core.permit_count == 2
+        assert mutation_calls == []
+
+    asyncio.run(run())
+
+
+def test_invalid_snapshot_is_recorded_after_a_permit_before_result_submission():
+    async def run():
+        item = event()
+
+        class StrictCore(FakeCore):
+            async def result(self, event_value, claim_value, **options):
+                if not self.completed_permits:
+                    raise CoreError(409, "WORKER_PERMIT_REQUIRED")
+                return await super().result(event_value, claim_value, **options)
+
+        core = StrictCore(item)
+        worker = worker_for(item, core)
+
+        async def invalid_snapshot(_event, _claim, _guard):
+            raise KnowledgeWorkerFailure("SNAPSHOT_CONTRACT_INVALID", retryable=False)
+
+        worker._snapshot = invalid_snapshot
+        delivery = Delivery(item)
+        await worker.handle(delivery)
+
+        assert core.permit_count == 1
+        assert len(core.started_permits) == 1
+        assert core.completed_permits == [(core.started_permits[0], "FAILED", "SNAPSHOT_CONTRACT_INVALID")]
+        assert core.result_count == 1
+        assert delivery.acked == 1
 
     asyncio.run(run())
 

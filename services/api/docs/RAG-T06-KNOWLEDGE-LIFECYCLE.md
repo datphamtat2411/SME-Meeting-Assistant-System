@@ -19,6 +19,8 @@ The implementation includes:
 - Semantic generation epochs for work and accepted-result mutations, OLD/NEW
   source-child eligibility fencing, and database-cancelled stale `RESERVED`
   permits before an external mutation starts.
+- Summary `selection_epoch` snapshot identity and bounded stale-permit
+  reacquisition before any Qdrant mutation starts.
 - Reconciliation obtains bounded source/revision/generation point counts through
   an authenticated Core-to-AI mTLS endpoint. AI returns counts only; if the audit
   is unavailable or incomplete, Core fails the run instead of reporting it
@@ -72,7 +74,7 @@ before serving retrieval.
 ## Generation Rollout
 
 1. Apply PostgreSQL migrations through Flyway. The migration must complete through
-   V55 before
+    V56 before
    enabling knowledge indexing.
 
    ```bash

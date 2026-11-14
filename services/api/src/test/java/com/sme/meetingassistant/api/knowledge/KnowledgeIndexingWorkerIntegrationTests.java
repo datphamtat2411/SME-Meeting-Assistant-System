@@ -177,6 +177,205 @@ class KnowledgeIndexingWorkerIntegrationTests {
 
     @Test
     @Transactional
+    void renewalWhilePermitIsRunningKeepsItsExecutionIdentity() {
+        var fixture = publishedAction();
+        var event = fixture.event();
+        String certificate = "c".repeat(64);
+        UUID token = (UUID) worker.claim(event.eventId(), claimCommand(fixture, UUID.randomUUID()), certificate).get("claimToken");
+        UUID execution = UUID.randomUUID();
+        UUID permit = (UUID) worker.acquirePermit(event.eventId(), new KnowledgeIndexingWorkerCommands.PermitAcquire(
+            "1.0", event.eventId(), token, "UPSERT", event.indexGenerationId(), execution), certificate).get("permitId");
+        worker.startPermit(event.eventId(), new KnowledgeIndexingWorkerCommands.PermitStart(
+            "1.0", event.eventId(), permit, token, event.indexGenerationId(), execution), certificate);
+        long epoch = jdbc.queryForObject("SELECT write_epoch FROM knowledge_index_generations WHERE generation_id=?",
+            Long.class, event.indexGenerationId());
+        worker.renew(event.eventId(), new KnowledgeIndexingWorkerCommands.Owner("1.0", event.eventId(), token), certificate);
+        assertThat(jdbc.queryForObject("SELECT state FROM knowledge_qdrant_write_permits WHERE permit_id=?", String.class, permit))
+            .isEqualTo("RUNNING");
+        assertThat(jdbc.queryForObject("SELECT write_epoch FROM knowledge_index_generations WHERE generation_id=?",
+            Long.class, event.indexGenerationId())).isEqualTo(epoch);
+        worker.completePermit(event.eventId(), new KnowledgeIndexingWorkerCommands.PermitComplete(
+            "1.0", event.eventId(), permit, token, event.indexGenerationId(), execution, "SUCCEEDED", "NONE"), certificate);
+        assertThat(worker.result(event.eventId(), indexedResult(event.eventId(), token, UUID.randomUUID()), certificate))
+            .containsEntry("state", "INDEXED");
+    }
+
+    @Test
+    @Transactional
+    void differentSourcesCanCompleteRunningPermitsInReverseOrderAcrossTransactions() {
+        var first = publishedAction();
+        var second = publishedAction();
+        String certificate = "c".repeat(64);
+        UUID firstToken = (UUID) worker.claim(first.event().eventId(), claimCommand(first, UUID.randomUUID()), certificate).get("claimToken");
+        UUID secondToken = (UUID) worker.claim(second.event().eventId(), claimCommand(second, UUID.randomUUID()), certificate).get("claimToken");
+        UUID firstExecution = UUID.randomUUID(), secondExecution = UUID.randomUUID();
+        String generation = first.event().indexGenerationId();
+        UUID firstPermit = (UUID) worker.acquirePermit(first.event().eventId(), new KnowledgeIndexingWorkerCommands.PermitAcquire(
+            "1.0", first.event().eventId(), firstToken, "UPSERT", generation, firstExecution), certificate).get("permitId");
+        UUID secondPermit = (UUID) worker.acquirePermit(second.event().eventId(), new KnowledgeIndexingWorkerCommands.PermitAcquire(
+            "1.0", second.event().eventId(), secondToken, "UPSERT", generation, secondExecution), certificate).get("permitId");
+        worker.startPermit(first.event().eventId(), new KnowledgeIndexingWorkerCommands.PermitStart(
+            "1.0", first.event().eventId(), firstPermit, firstToken, generation, firstExecution), certificate);
+        worker.startPermit(second.event().eventId(), new KnowledgeIndexingWorkerCommands.PermitStart(
+            "1.0", second.event().eventId(), secondPermit, secondToken, generation, secondExecution), certificate);
+        commitFixture();
+        worker.completePermit(second.event().eventId(), new KnowledgeIndexingWorkerCommands.PermitComplete(
+            "1.0", second.event().eventId(), secondPermit, secondToken, generation, secondExecution, "SUCCEEDED", "NONE"), certificate);
+        assertThat(worker.result(second.event().eventId(), indexedResult(second.event().eventId(), secondToken, UUID.randomUUID()), certificate))
+            .containsEntry("state", "INDEXED");
+        worker.completePermit(first.event().eventId(), new KnowledgeIndexingWorkerCommands.PermitComplete(
+            "1.0", first.event().eventId(), firstPermit, firstToken, generation, firstExecution, "SUCCEEDED", "NONE"), certificate);
+        assertThat(worker.result(first.event().eventId(), indexedResult(first.event().eventId(), firstToken, UUID.randomUUID()), certificate))
+            .containsEntry("state", "INDEXED");
+    }
+
+    @Test
+    @Transactional
+    void lostStartAcknowledgementCannotSpendThePermitAgain() {
+        var fixture = publishedAction();
+        var event = fixture.event();
+        String certificate = "c".repeat(64);
+        UUID token = (UUID) worker.claim(event.eventId(), claimCommand(fixture, UUID.randomUUID()), certificate).get("claimToken");
+        UUID execution = UUID.randomUUID();
+        UUID permit = (UUID) worker.acquirePermit(event.eventId(), new KnowledgeIndexingWorkerCommands.PermitAcquire(
+            "1.0", event.eventId(), token, "UPSERT", event.indexGenerationId(), execution), certificate).get("permitId");
+        var command = new KnowledgeIndexingWorkerCommands.PermitStart("1.0", event.eventId(), permit, token,
+            event.indexGenerationId(), execution);
+        worker.startPermit(event.eventId(), command, certificate);
+        commitFixture(); // The server committed, but the caller never observed its response.
+        assertThatThrownBy(() -> worker.startPermit(event.eventId(), command, certificate))
+            .isInstanceOf(WorkerException.class).hasMessage("WORKER_PERMIT_ALREADY_STARTED");
+        assertThat(jdbc.queryForObject("SELECT state FROM knowledge_qdrant_write_permits WHERE permit_id=?", String.class, permit))
+            .isEqualTo("RUNNING");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM knowledge_qdrant_write_permits WHERE event_id=?", Integer.class, event.eventId()))
+            .isEqualTo(1);
+    }
+
+    @Test
+    @Transactional
+    void sealRefusesRunningExternalWriterEvenAfterWorkerLeaseExpires() {
+        var fixture = publishedAction();
+        String generation = "seal-writer-" + UUID.randomUUID();
+        String hash = "a".repeat(64), tokenizer = "test-tokenizer", version = "seal-writer-v1";
+        admin.prepare(generation, version, hash, tokenizer, "seal_writer_" + UUID.randomUUID());
+        var event = producer.requestReindex("ACTION_ITEM", fixture.itemId(), fixture.meetingId(), generation, fixture.userId()).orElseThrow();
+        publish(event.eventId());
+        var command = new KnowledgeIndexingWorkerCommands.Claim("1.0", 1, event.eventId(),
+            KnowledgeIndexingProducer.EVENT_TYPE, fixture.meetingId(), "ACTION_ITEM", fixture.itemId(), event.sourceRevision(),
+            event.snapshotId(), event.snapshotSha256(), event.snapshotSizeBytes(), generation, version, hash, tokenizer,
+            "UPSERT", "REINDEX_REQUESTED", UUID.randomUUID());
+        String certificate = "c".repeat(64);
+        UUID token = (UUID) worker.claim(event.eventId(), command, certificate).get("claimToken");
+        UUID execution = UUID.randomUUID();
+        UUID permit = (UUID) worker.acquirePermit(event.eventId(), new KnowledgeIndexingWorkerCommands.PermitAcquire(
+            "1.0", event.eventId(), token, "UPSERT", generation, execution), certificate).get("permitId");
+        worker.startPermit(event.eventId(), new KnowledgeIndexingWorkerCommands.PermitStart(
+            "1.0", event.eventId(), permit, token, generation, execution), certificate);
+        // Model stale READY bookkeeping: the independently durable RUNNING permit must still fence sealing.
+        jdbc.update("UPDATE knowledge_index_generations SET state='READY',target_count=0,indexed_count=0 WHERE generation_id=?", generation);
+        jdbc.update("UPDATE knowledge_indexing_work SET claim_expires_at=CURRENT_TIMESTAMP - INTERVAL '1 second' WHERE event_id=?", event.eventId());
+        commitFixture();
+        assertThatThrownBy(() -> admin.seal(generation))
+            .isInstanceOf(org.springframework.web.server.ResponseStatusException.class).hasMessageContaining("QDRANT_PERMIT_OPEN");
+        assertThat(jdbc.queryForObject("SELECT state FROM knowledge_qdrant_write_permits WHERE permit_id=?", String.class, permit)).isEqualTo("RUNNING");
+        assertThat(admin.generation(generation)).containsEntry("writeBarrierState", "OPEN");
+    }
+
+    @Test
+    @Transactional
+    void expiredInventoryClaimCannotOverwriteItsSuccessfulReplacement() throws Exception {
+        enableKnowledgeIndexing();
+        String generation = properties.getKnowledgeIndexing().getGenerationId();
+        CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        var lateSource = new KnowledgeVectorAudit.SourceKey("ACTION_ITEM", UUID.randomUUID(), UUID.randomUUID(), 0);
+        when(vectorAudit.inventoryPage(generation, null, 10)).thenAnswer(invocation -> {
+            assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+            if (calls.incrementAndGet() == 1) {
+                entered.countDown();
+                if (!release.await(20, TimeUnit.SECONDS)) throw new IllegalStateException("Inventory gate timed out");
+                return new KnowledgeVectorAudit.InventoryPage(java.util.List.of(lateSource), null);
+            }
+            return new KnowledgeVectorAudit.InventoryPage(java.util.List.of(), null);
+        });
+        commitFixture();
+        try (var executor = Executors.newSingleThreadExecutor()) {
+            var first = executor.submit(() -> admin.startReconciliation(generation, 10, true, UUID.randomUUID()));
+            try {
+                assertThat(entered.await(20, TimeUnit.SECONDS)).isTrue();
+                UUID runId = jdbc.queryForObject("SELECT id FROM knowledge_reconciliation_runs WHERE generation_id=?", UUID.class, generation);
+                jdbc.update("UPDATE knowledge_reconciliation_runs SET claim_expires_at=CURRENT_TIMESTAMP - INTERVAL '1 second' WHERE id=?", runId);
+                assertThat(admin.resumeReconciliation(runId, UUID.randomUUID())).containsEntry("state", "COMPLETED")
+                    .containsEntry("vectorScannedCount", 0L);
+                release.countDown();
+                assertThat(first.get(20, TimeUnit.SECONDS)).containsEntry("state", "COMPLETED");
+                assertThat(jdbc.queryForObject("SELECT count(*) FROM knowledge_reconciliation_findings WHERE run_id=?", Integer.class, runId)).isZero();
+                assertThat(jdbc.queryForObject("SELECT claim_attempt FROM knowledge_reconciliation_runs WHERE id=?", Integer.class, runId)).isEqualTo(3);
+            } finally { release.countDown(); }
+        }
+    }
+
+    @Test
+    @Transactional
+    void canonicalMutationDuringInventoryRejectsTheRemotePage() throws Exception {
+        enableKnowledgeIndexing();
+        String generation = "inventory-race-" + UUID.randomUUID();
+        admin.prepare(generation, "inventory-race-v1", "a".repeat(64), "test-tokenizer", "inventory_" + UUID.randomUUID());
+        CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
+        when(vectorAudit.inventoryPage(generation, null, 10)).thenAnswer(invocation -> {
+            assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+            entered.countDown();
+            if (!release.await(20, TimeUnit.SECONDS)) throw new IllegalStateException("Inventory gate timed out");
+            return new KnowledgeVectorAudit.InventoryPage(java.util.List.of(), null);
+        });
+        commitFixture();
+        try (var executor = Executors.newSingleThreadExecutor()) {
+            var result = executor.submit(() -> admin.startReconciliation(generation, 10, true, UUID.randomUUID()));
+            try {
+                assertThat(entered.await(20, TimeUnit.SECONDS)).isTrue();
+                long before = jdbc.queryForObject("SELECT write_epoch FROM knowledge_index_generations WHERE generation_id=?", Long.class, generation);
+                insertManualAction(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());
+                assertThat(jdbc.queryForObject("SELECT write_epoch FROM knowledge_index_generations WHERE generation_id=?", Long.class, generation)).isGreaterThan(before);
+                release.countDown();
+                assertThat(result.get(20, TimeUnit.SECONDS)).containsEntry("state", "FAILED")
+                    .containsEntry("lastErrorCode", "GENERATION_EPOCH_MISMATCH")
+                    .containsEntry("inventoryComplete", false);
+            } finally { release.countDown(); }
+        }
+    }
+
+    @Test
+    @Transactional
+    void unsealDuringCertificationInventoryRejectsTheOldPage() throws Exception {
+        enableKnowledgeIndexing();
+        String generation = "cert-race-" + UUID.randomUUID();
+        admin.prepare(generation, "cert-race-v1", "a".repeat(64), "test-tokenizer", "cert_" + UUID.randomUUID());
+        assertThat(admin.refresh(generation)).containsEntry("state", "READY");
+        admin.seal(generation);
+        CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
+        when(vectorAudit.inventoryPage(generation, null, 10)).thenAnswer(invocation -> {
+            assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+            entered.countDown();
+            if (!release.await(20, TimeUnit.SECONDS)) throw new IllegalStateException("Inventory gate timed out");
+            return new KnowledgeVectorAudit.InventoryPage(java.util.List.of(), null);
+        });
+        commitFixture();
+        try (var executor = Executors.newSingleThreadExecutor()) {
+            var result = executor.submit(() -> admin.startCertification(generation, 10, UUID.randomUUID()));
+            try {
+                assertThat(entered.await(20, TimeUnit.SECONDS)).isTrue();
+                assertThat(admin.unseal(generation)).containsEntry("writeBarrierState", "OPEN");
+                release.countDown();
+                assertThat(result.get(20, TimeUnit.SECONDS)).containsEntry("state", "FAILED")
+                    .containsEntry("lastErrorCode", "GENERATION_EPOCH_MISMATCH")
+                    .containsEntry("inventoryComplete", false);
+                assertThat(admin.generation(generation)).containsEntry("certificationUsable", false);
+            } finally { release.countDown(); }
+        }
+    }
+
+    @Test
+    @Transactional
     void permitCannotStartAfterTheGenerationEpochChanges() {
         var fixture = publishedAction();
         String certificate = "c".repeat(64);
@@ -199,6 +398,122 @@ class KnowledgeIndexingWorkerIntegrationTests {
             .hasMessage("WORKER_PERMIT_STALE");
         assertThat(jdbc.queryForObject("SELECT state FROM knowledge_qdrant_write_permits WHERE permit_id=?",
             String.class, permitId)).isEqualTo("CANCELLED");
+    }
+
+    @Test
+    @Transactional
+    void staleSourceCannotAcquireAnUpsertPermitAndPersistsSupersession() {
+        var fixture = publishedAction();
+        String certificate = "c".repeat(64);
+        UUID claimToken = (UUID) worker.claim(fixture.event().eventId(),
+            claimCommand(fixture, UUID.randomUUID()), certificate).get("claimToken");
+
+        jdbc.update("UPDATE action_items SET title='Superseded before permit',version=version+1 WHERE id=?",
+            fixture.itemId());
+
+        assertThatThrownBy(() -> worker.acquirePermit(fixture.event().eventId(),
+            new KnowledgeIndexingWorkerCommands.PermitAcquire("1.0", fixture.event().eventId(),
+                claimToken, "UPSERT", fixture.event().indexGenerationId(), UUID.randomUUID()), certificate))
+            .isInstanceOf(WorkerException.class)
+            .hasMessage("WORKER_SOURCE_SUPERSEDED");
+        assertThat(jdbc.queryForObject("SELECT state FROM knowledge_indexing_work WHERE event_id=?",
+            String.class, fixture.event().eventId())).isEqualTo("SUPERSEDED");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM knowledge_qdrant_write_permits WHERE event_id=?",
+            Integer.class, fixture.event().eventId())).isZero();
+    }
+
+    @Test
+    @Transactional
+    void staleSourceClaimPersistsSupersededStateBeforeTheWorkerRetries() {
+        var fixture = publishedAction();
+        jdbc.update("UPDATE action_items SET title='Superseded before claim',version=version+1 WHERE id=?",
+            fixture.itemId());
+
+        assertThatThrownBy(() -> worker.claim(fixture.event().eventId(),
+            claimCommand(fixture, UUID.randomUUID()), "c".repeat(64)))
+            .isInstanceOf(WorkerException.class)
+            .hasMessage("WORKER_SOURCE_SUPERSEDED");
+        assertThat(jdbc.queryForObject("SELECT state FROM knowledge_indexing_work WHERE event_id=?",
+            String.class, fixture.event().eventId())).isEqualTo("SUPERSEDED");
+    }
+
+    @Test
+    @Transactional
+    void summarySelectionEpochCreatesAFreshImmutableIndexSnapshot() {
+        UUID actor = UUID.randomUUID();
+        UUID meeting = UUID.randomUUID();
+        UUID media = UUID.randomUUID();
+        UUID job = UUID.randomUUID();
+        UUID transcript = UUID.randomUUID();
+        UUID stage = UUID.randomUUID();
+        UUID sourceSnapshot = UUID.randomUUID();
+        UUID receipt = UUID.randomUUID();
+        UUID summary = UUID.randomUUID();
+        String email = actor + "@example.invalid";
+        jdbc.update("""
+            INSERT INTO users(id,email,email_normalized,display_name,password_hash,global_role,account_status)
+            VALUES (?,?,?,'Summary selection test user','test-only','EMPLOYEE','ACTIVE')
+            """, actor, email, email);
+        jdbc.update("""
+            INSERT INTO meetings(id,title,organizer_user_id,created_by_user_id)
+            VALUES (?,'Summary selection test meeting',?,?)
+            """, meeting, actor, actor);
+        jdbc.update("""
+            INSERT INTO meeting_media(id,meeting_id,source_type,status,object_key,
+                pending_object_key,content_type,expected_size_bytes,size_bytes,
+                duration_ms,uploaded_by_user_id,available_at)
+            VALUES (?,?,'UPLOAD','AVAILABLE',?,?,'audio/wav',100,100,10000,?,CURRENT_TIMESTAMP)
+            """, media, meeting, "meetings/" + meeting + "/sources/" + media,
+            "meetings/" + meeting + "/pending/" + media, actor);
+        jdbc.update("""
+            INSERT INTO processing_jobs(id,meeting_id,source_media_id,requested_by_user_id,status)
+            VALUES (?,?,?,?,'COMPLETED')
+            """, job, meeting, media, actor);
+        jdbc.update("""
+            INSERT INTO transcripts(id,meeting_id,source_media_id,processing_job_id,
+                version_number,language_code,status,is_current,content_revision,finalized_at)
+            VALUES (?,?,?,?,1,'vi','READY',TRUE,0,CURRENT_TIMESTAMP)
+            """, transcript, meeting, media, job);
+        jdbc.update("""
+            INSERT INTO processing_stage_runs(id,processing_job_id,stage_code,attempt_number,status)
+            VALUES (?,?,'GENERATING_SUMMARY',1,'SUCCEEDED')
+            """, stage, job);
+        jdbc.update("""
+            INSERT INTO meeting_intelligence_source_snapshots(id,meeting_id,source_media_id,
+                processing_job_id,transcript_id,content_revision,sha256,object_key,size_bytes)
+            VALUES (?,?,?,?,?,0,?,?,100)
+            """, sourceSnapshot, meeting, media, job, transcript, "a".repeat(64),
+            "processing/" + job + "/intelligence/source/" + sourceSnapshot + ".json");
+        jdbc.update("""
+            INSERT INTO meeting_intelligence_result_receipts(id,meeting_id,processing_job_id,
+                stage_run_id,result_type,source_snapshot_id,transcript_id,content_revision,
+                artifact_sha256,artifact_object_key,artifact_size_bytes)
+            VALUES (?,?,?,?,'SUMMARY',?,?,0,?,?,200)
+            """, receipt, meeting, job, stage, sourceSnapshot, transcript, "b".repeat(64),
+            "processing/" + job + "/intelligence/results/" + stage + ".json");
+        jdbc.update("""
+            INSERT INTO meeting_summary_versions(id,meeting_id,version_number,content,
+                source_type,processing_job_id,result_receipt_id,transcript_id,
+                content_revision,quality_status,is_current)
+            VALUES (?,?,1,'Selection epoch summary','AI_GENERATED',?,?,?,0,'READY',TRUE)
+            """, summary, meeting, job, receipt, transcript);
+
+        enableKnowledgeIndexing();
+        var first = producer.request("SUMMARY", summary, meeting).orElseThrow();
+        jdbc.update("UPDATE meeting_summary_versions SET is_current=FALSE WHERE id=?", summary);
+        jdbc.update("UPDATE meeting_summary_versions SET is_current=TRUE,selection_epoch=1 WHERE id=?", summary);
+
+        var second = producer.request("SUMMARY", summary, meeting).orElseThrow();
+        assertThat(second.sourceRevision()).isEqualTo(first.sourceRevision());
+        assertThat(second.snapshotId()).isNotEqualTo(first.snapshotId());
+        assertThat(jdbc.queryForObject("""
+            SELECT COUNT(*) FROM knowledge_source_snapshots
+             WHERE source_type='SUMMARY' AND source_id=? AND source_revision=?
+            """, Integer.class, summary, first.sourceRevision())).isEqualTo(2);
+        assertThat(jdbc.queryForObject("""
+            SELECT COUNT(*) FROM knowledge_indexing_work
+             WHERE source_type='SUMMARY' AND source_id=? AND source_revision=? AND operation='UPSERT'
+            """, Integer.class, summary, first.sourceRevision())).isEqualTo(2);
     }
 
     @Test
@@ -345,6 +660,29 @@ class KnowledgeIndexingWorkerIntegrationTests {
             Long.class, itemId)).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT snapshot_id FROM knowledge_indexing_work WHERE event_id=?",
             UUID.class, first.eventId())).isEqualTo(first.snapshotId());
+    }
+
+    @Test
+    @Transactional
+    void preV56SnapshotCanBeReusedAfterUpgrade() {
+        UUID user = UUID.randomUUID(), meeting = UUID.randomUUID(), item = UUID.randomUUID();
+        insertManualAction(user, meeting, item);
+        enableKnowledgeIndexing();
+        Object candidate = org.springframework.test.util.ReflectionTestUtils.invokeMethod(producer, "actionItem", item, meeting);
+        byte[] current = org.springframework.test.util.ReflectionTestUtils.invokeMethod(candidate, "snapshotBytes");
+        String v1 = UUID.nameUUIDFromBytes(("sme-knowledge-snapshot-v1:ACTION_ITEM:" + item + ":0")
+            .getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+        String v2 = UUID.nameUUIDFromBytes(("sme-knowledge-snapshot-v2:ACTION_ITEM:" + item + ":0:0")
+            .getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+        String currentJson = new String(current, java.nio.charset.StandardCharsets.UTF_8);
+        byte[] legacy = currentJson.replace(v2, v1).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        assertThat(new String(legacy, java.nio.charset.StandardCharsets.UTF_8)).contains(v1);
+        UUID snapshot = UUID.randomUUID();
+        jdbc.update("""
+            INSERT INTO knowledge_source_snapshots(id,meeting_id,source_type,source_id,source_revision,payload,sha256,size_bytes)
+            VALUES (?,?,'ACTION_ITEM',?,0,?,?,?)
+            """, snapshot, meeting, item, legacy, com.sme.meetingassistant.api.media.worker.WorkerJson.sha256(legacy), legacy.length);
+        assertThat(producer.request("ACTION_ITEM", item, meeting).orElseThrow().snapshotId()).isEqualTo(snapshot);
     }
 
     @Test
