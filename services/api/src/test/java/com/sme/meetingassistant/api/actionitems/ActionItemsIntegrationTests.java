@@ -46,6 +46,7 @@ class ActionItemsIntegrationTests {
     @Autowired UserRepository users;
     @Autowired JdbcTemplate jdbc;
     @Autowired ActionItemProposalSink sink;
+    @org.springframework.beans.factory.annotation.Value("${app.action-items.business-zone:UTC}") String businessZone;
 
     UserEntity organizer;
     UserEntity assignee;
@@ -117,7 +118,7 @@ class ActionItemsIntegrationTests {
     }
 
     @Test void overdueIsDerivedAndDoesNotChangeCanonicalStatus() throws Exception {
-        UUID id = createManual(assignee.getId(), LocalDate.now().minusDays(1));
+        UUID id = createManual(assignee.getId(), LocalDate.now(java.time.ZoneId.of(businessZone)).minusDays(1));
 
         MvcResult result = mvc.perform(get("/api/v1/action-items/{id}", id).principal(principal(organizer)))
             .andExpect(status().isOk()).andReturn();

@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import time
@@ -13,6 +14,19 @@ import xml.etree.ElementTree as ET
 ROOT = Path(__file__).resolve().parents[3]
 AI = ROOT / "services/ai"
 API = ROOT / "services/api"
+_DIAGNOSTIC_LIMIT = 12_000
+_SECRET = re.compile(
+    r"(?i)(\b(?:password|passwd|secret|token|api[_-]?key|authorization|private[_-]?key)\b\s*[:=]\s*)([^\s,;]+)"
+)
+
+
+def sanitized_tail(path: Path) -> str:
+    try:
+        raw = path.read_text(errors="replace")
+    except OSError as error:
+        return f"Unable to read check log: {type(error).__name__}"
+    raw = _SECRET.sub(r"\1[REDACTED]", raw.replace("\x00", ""))
+    return "\n".join(raw.splitlines()[-120:])[-_DIAGNOSTIC_LIMIT:]
 
 
 def main():
@@ -71,6 +85,19 @@ def main():
         print(f"{'PASS' if code == 0 else 'FAIL'} {name}; log: {output / (name + '.log')}", flush=True)
     report = dict(fullStackRequested=args.full_stack, fullSuites=args.full_suites, checks=results)
     (output / "results.json").write_text(json.dumps(report, indent=2) + "\n")
+    diagnostics = []
+    for result in results:
+        if result["exitCode"]:
+            log_path = output / f'{result["check"]}.log'
+            diagnostics.append({
+                "check": result["check"],
+                "exitCode": result["exitCode"],
+                "log": str(log_path.relative_to(ROOT)),
+                "tail": sanitized_tail(log_path),
+            })
+    (output / "failure-summary.json").write_text(json.dumps(
+        {"diagnostics": diagnostics}, ensure_ascii=False, indent=2
+    ) + "\n")
     print(f"Results: {output / 'results.json'}", flush=True)
     return int(any(r["exitCode"] for r in results))
 

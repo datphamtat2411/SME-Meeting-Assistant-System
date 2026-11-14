@@ -16,6 +16,11 @@ The implementation includes:
   guard against deleting the active generation.
 - Lease-fenced worker claims/results, exact source-scoped Qdrant lifecycle
   operations, resumable reconciliation, and bounded retries.
+- Semantic generation epochs for work and accepted-result mutations, OLD/NEW
+  source-child eligibility fencing, and database-cancelled stale `RESERVED`
+  permits before an external mutation starts.
+- Summary `selection_epoch` snapshot identity and bounded stale-permit
+  reacquisition before any Qdrant mutation starts.
 - Reconciliation obtains bounded source/revision/generation point counts through
   an authenticated Core-to-AI mTLS endpoint. AI returns counts only; if the audit
   is unavailable or incomplete, Core fails the run instead of reporting it
@@ -68,7 +73,8 @@ before serving retrieval.
 
 ## Generation Rollout
 
-1. Apply PostgreSQL migrations through Flyway. The migration must complete before
+1. Apply PostgreSQL migrations through Flyway. The migration must complete through
+    V56 before
    enabling knowledge indexing.
 
    ```bash
@@ -175,6 +181,9 @@ each scenario.
   it and verify Core lookup makes the redelivery idempotent.
 - Expire or revoke a lease during processing and verify no late result is
   accepted; the message is retried within the configured delivery limit.
+- Mutate a source after a permit is reserved but before execution starts and
+  verify the generation epoch fences the permit as `CANCELLED` with
+  `WORKER_PERMIT_STALE`; no Qdrant call is allowed for that permit.
 
 ## Focused Verification
 
@@ -194,7 +203,7 @@ uv run pytest \
 uv run ruff check src tests
 
 cd ../api
-mvn -Dtest=KnowledgeIndexingGenerationContractTests,KnowledgeIndexingFlywayIntegrationTests,KnowledgeIndexingWorkerIntegrationTests test
+./mvnw -Dtest=KnowledgeIndexingGenerationContractTests,KnowledgeIndexingFlywayIntegrationTests,KnowledgeIndexingWorkerIntegrationTests,KnowledgeOperationalMetricsTests,ProductIntegrationMetricsIntegrationTests,PrivateMetricsConfigurationTests,PrivateMetricsSecurityTests test
 ```
 
 Opt-in live verification, only after the isolated environment is provisioned:

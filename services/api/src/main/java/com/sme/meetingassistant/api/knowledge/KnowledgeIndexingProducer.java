@@ -79,6 +79,40 @@ public class KnowledgeIndexingProducer {
         return event;
     }
 
+    /**
+     * A transcript revision supersedes previously indexed Summary/Decision
+     * sources whose pinned transcript evidence is no longer current.
+     * Caller already owns the meeting row lock and source mutation transaction;
+     * invalidation intents are durable in that very transaction.
+     *
+     * Human-confirmed Action Items retain their independent business authority.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void invalidateStaleTranscriptDependents(UUID meetingId) {
+        if (!properties.getKnowledgeIndexing().isEnabled()) return;
+        if (meetingId == null) throw new IllegalArgumentException("Meeting identity is required");
+        List<DerivedSource> tracked = jdbc.query("""
+            SELECT DISTINCT source_type,source_id
+              FROM knowledge_indexing_work
+             WHERE meeting_id=? AND operation='UPSERT'
+               AND source_type IN ('SUMMARY','DECISION')
+             ORDER BY source_type,source_id
+            """, (rs,i)->new DerivedSource(rs.getString("source_type"),
+                rs.getObject("source_id",UUID.class)),meetingId);
+        for (DerivedSource derived:tracked) {
+            boolean eligible=switch (derived.type()) {
+                case "SUMMARY" -> summary(derived.id(),meetingId)!=null;
+                case "DECISION" -> decision(derived.id(),meetingId)!=null;
+                default -> throw new IllegalStateException("Unsupported derived source");
+            };
+            if (!eligible) {
+                requestLifecycleForSource(derived.type(),derived.id(),meetingId,
+                    null,"INVALIDATE","SOURCE_SUPERSEDED",null);
+            }
+        }
+    }
+    private record DerivedSource(String type, UUID id) {}
+
     /** Create a same-revision repair intent without changing canonical source state. */
     @Transactional(propagation = Propagation.MANDATORY)
     public Optional<KnowledgeIndexingEvent> requestReindex(String sourceType, UUID sourceId,
@@ -106,6 +140,72 @@ public class KnowledgeIndexingProducer {
             requestedByUserId, true);
     }
 
+    /** Reconcile an exact historical revision; never re-UPSERT the current revision in its place. */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public Optional<KnowledgeIndexingEvent> requestInvalidateRevision(String sourceType, UUID sourceId,
+            UUID meetingId, long sourceRevision, UUID requestedByUserId) {
+        if (sourceRevision < 0) throw new IllegalArgumentException("Invalid source revision");
+        return requestLifecycleForSource(sourceType, sourceId, meetingId, sourceRevision,
+            "INVALIDATE", "RECONCILIATION_REQUESTED", requestedByUserId);
+    }
+
+    /**
+     * Reconcile an exact source revision in exactly one generation. If the prior
+     * lifecycle intent was terminal or acknowledged but its points persist,
+     * enqueue a new fenced sequence instead of treating the old intent as
+     * permanent proof of Qdrant cleanup.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public Optional<KnowledgeIndexingEvent> requestReconcileLifecycle(String sourceType, UUID sourceId,
+            UUID meetingId, long sourceRevision, String generationId, String operation,
+            UUID requestedByUserId) {
+        if (!properties.getKnowledgeIndexing().isEnabled()) return Optional.empty();
+        if (sourceType == null || sourceId == null || meetingId == null || generationId == null
+                || sourceRevision < 0 || !Set.of("DELETE", "INVALIDATE").contains(operation)
+                || !Set.of("TRANSCRIPT","SUMMARY","DECISION","ACTION_ITEM").contains(sourceType)) {
+            throw new IllegalArgumentException("Invalid knowledge lifecycle repair identity.");
+        }
+        // Match the worker's meeting-scoped lock to serialize repair attempts
+        // against source revisions and parallel reconciliation runs.
+        List<UUID> locks = jdbc.query("SELECT id FROM meetings WHERE id=? FOR UPDATE",
+            (rs,row)->rs.getObject(1,UUID.class),meetingId);
+        if (locks.isEmpty()) return Optional.empty();
+        List<WorkTarget> upserts = jdbc.query("""
+            SELECT source_revision,index_generation_id,configuration_version,
+                   configuration_sha256,tokenizer_id
+              FROM knowledge_indexing_work
+             WHERE meeting_id=? AND source_type=? AND source_id=?
+               AND source_revision=? AND index_generation_id=? AND operation='UPSERT'
+             ORDER BY intent_sequence DESC,event_id DESC LIMIT 1
+            """, (rs,row)->new WorkTarget(rs.getLong("source_revision"),
+                rs.getString("index_generation_id"),rs.getString("configuration_version"),
+                rs.getString("configuration_sha256"),rs.getString("tokenizer_id")),
+            meetingId,sourceType,sourceId,sourceRevision,generationId);
+        if (upserts.isEmpty()) return Optional.empty();
+        List<String> priorStates = jdbc.query("""
+            SELECT state FROM knowledge_indexing_work
+             WHERE meeting_id=? AND source_type=? AND source_id=? AND source_revision=?
+               AND index_generation_id=? AND operation=?
+             ORDER BY intent_sequence DESC,event_id DESC LIMIT 1
+            """, (rs,row)->rs.getString(1),
+            meetingId,sourceType,sourceId,sourceRevision,generationId,operation);
+        if (!priorStates.isEmpty() && Set.of("PENDING","CLAIMED","RETRYABLE_FAILURE")
+                .contains(priorStates.getFirst())) return Optional.empty();
+        long sequence = jdbc.queryForObject("""
+            SELECT COALESCE(MAX(intent_sequence),-1)+1 FROM knowledge_indexing_work
+             WHERE meeting_id=? AND source_type=? AND source_id=? AND source_revision=?
+               AND index_generation_id=? AND operation=?
+            """,Long.class,meetingId,sourceType,sourceId,sourceRevision,generationId,operation);
+        WorkTarget target=upserts.getFirst();
+        GenerationSpec generation=new GenerationSpec(target.generationId(),
+            target.configurationVersion(),target.configurationSha256(),target.tokenizerId());
+        KnowledgeIndexingEvent event=event(new Candidate(sourceType,sourceId,meetingId,
+            sourceRevision,0,new byte[0]),null,generation,operation,
+            "DELETE".equals(operation) ? "SOURCE_DELETED" : "RECONCILIATION_REQUESTED");
+        insertEventAndWork(event,sequence,requestedByUserId);
+        return Optional.of(event);
+    }
+
     /** Explicit Core-authorized lifecycle request used by deletion/retention controls. */
     @Transactional(propagation = Propagation.MANDATORY)
     public Optional<KnowledgeIndexingEvent> requestDelete(String sourceType, UUID sourceId,
@@ -116,14 +216,42 @@ public class KnowledgeIndexingProducer {
 
     private Optional<KnowledgeIndexingEvent> createUpsert(Candidate candidate, GenerationSpec generation,
             String reason, long intentSequence, UUID requestedByUserId, boolean repair) {
-        if (!repair && Boolean.TRUE.equals(jdbc.queryForObject("""
-            SELECT EXISTS(
-                SELECT 1 FROM knowledge_indexing_work
+        Snapshot stored = snapshot(candidate);
+        if (!repair) {
+            List<ExistingUpsert> existing = jdbc.query("""
+                SELECT snapshot_id,snapshot_sha256,snapshot_size_bytes,intent_sequence
+                  FROM knowledge_indexing_work
                  WHERE source_type=? AND source_id=? AND source_revision=?
-                   AND index_generation_id=? AND operation='UPSERT' AND intent_sequence=0
-            )
-            """, Boolean.class, candidate.sourceType(), candidate.sourceId(), candidate.revision(), generation.id()))) {
-            return Optional.empty();
+                   AND index_generation_id=? AND operation='UPSERT'
+                 ORDER BY intent_sequence DESC,event_id DESC
+                """, (rs, row) -> new ExistingUpsert(rs.getObject("snapshot_id", UUID.class),
+                    rs.getString("snapshot_sha256"), rs.getLong("snapshot_size_bytes"),
+                    rs.getLong("intent_sequence")), candidate.sourceType(), candidate.sourceId(),
+                candidate.revision(), generation.id());
+            if (existing.stream().anyMatch(previous -> stored.id().equals(previous.snapshotId())
+                    && stored.sha256().equals(previous.snapshotSha256())
+                    && stored.sizeBytes() == previous.snapshotSizeBytes())) {
+                return Optional.empty();
+            }
+            intentSequence = existing.stream().mapToLong(ExistingUpsert::intentSequence).max().orElse(-1) + 1;
+            if (intentSequence > 0) {
+                // A changed semantic representation of the same public source
+                // revision supersedes only unfinished older intents. A RUNNING
+                // permit is serialized by the worker boundary before this one
+                // may start, so its physical write cannot be overtaken.
+                jdbc.update("""
+                    UPDATE knowledge_indexing_work
+                       SET state='SUPERSEDED',claim_token=NULL,claim_request_id=NULL,
+                           claim_fingerprint=NULL,owner_certificate_sha256=NULL,
+                           claim_expires_at=NULL,updated_at=CURRENT_TIMESTAMP
+                     WHERE source_type=? AND source_id=? AND source_revision=?
+                       AND index_generation_id=? AND operation='UPSERT'
+                       AND intent_sequence<?
+                       AND state NOT IN ('SUPERSEDED','TERMINAL_FAILURE','INDEXED',
+                                         'NO_ELIGIBLE_CONTENT')
+                    """, candidate.sourceType(), candidate.sourceId(), candidate.revision(),
+                    generation.id(), intentSequence);
+            }
         }
 
         if (!repair) {
@@ -139,7 +267,6 @@ public class KnowledgeIndexingProducer {
                 """, candidate.sourceType(), candidate.sourceId(), candidate.revision());
         }
 
-        Snapshot stored = snapshot(candidate);
         KnowledgeIndexingEvent event = event(candidate, stored, generation, "UPSERT", reason);
         insertEventAndWork(event, intentSequence, requestedByUserId);
         return Optional.of(event);
@@ -179,7 +306,7 @@ public class KnowledgeIndexingProducer {
             GenerationSpec generation = new GenerationSpec(target.generationId(),
                 target.configurationVersion(), target.configurationSha256(), target.tokenizerId());
             KnowledgeIndexingEvent event = event(new Candidate(sourceType, sourceId, meetingId,
-                target.revision(), new byte[0]), null, generation, operation, reason);
+                target.revision(), 0, new byte[0]), null, generation, operation, reason);
             insertEventAndWork(event, 0, requestedByUserId);
             if (first == null) first = event;
         }
@@ -187,19 +314,28 @@ public class KnowledgeIndexingProducer {
     }
 
     private void retireObsoleteSources(Candidate candidate) {
-        if (!Set.of("TRANSCRIPT", "SUMMARY").contains(candidate.sourceType())) return;
-        List<RetiredSource> retired = jdbc.query("""
-            SELECT DISTINCT source_id FROM knowledge_indexing_work
-             WHERE meeting_id=? AND source_type=? AND source_id<>? AND operation='UPSERT'
-            """, (rs, row) -> new RetiredSource(rs.getObject("source_id", UUID.class)),
-            candidate.meetingId(), candidate.sourceType(), candidate.sourceId());
-        for (RetiredSource source : retired) {
+        // Every previously indexed revision must eventually be removed, not
+        // merely the immediately previous revision. A skipped publication or a
+        // repair of a historical generation can leave older points behind.
+        // For TRANSCRIPT/SUMMARY, a new current identity also supersedes
+        // previously indexed identities within the same meeting. Decisions and
+        // official action items have independent identities and business history.
+        List<RetiredRevision> retired = jdbc.query("""
+            SELECT DISTINCT source_id,source_revision FROM knowledge_indexing_work
+             WHERE meeting_id=? AND source_type=? AND operation='UPSERT'
+               AND ((source_id=? AND source_revision<?)
+                    OR (? IN ('TRANSCRIPT','SUMMARY') AND source_id<>?))
+             ORDER BY source_id,source_revision
+            """, (rs, row) -> new RetiredRevision(
+                rs.getObject("source_id", UUID.class), rs.getLong("source_revision")),
+            candidate.meetingId(), candidate.sourceType(), candidate.sourceId(),
+            candidate.revision(), candidate.sourceType(), candidate.sourceId());
+        for (RetiredRevision source : retired) {
             requestLifecycleForSource(candidate.sourceType(), source.sourceId(), candidate.meetingId(),
-                null, "INVALIDATE", "SOURCE_SUPERSEDED", null);
+                source.revision(), "INVALIDATE", "SOURCE_SUPERSEDED", null);
         }
-        requestLifecycleForSource(candidate.sourceType(), candidate.sourceId(), candidate.meetingId(),
-            candidate.revision() - 1, "INVALIDATE", "SOURCE_SUPERSEDED", null);
     }
+    private record RetiredRevision(UUID sourceId, long revision) { }
 
     private Snapshot snapshot(Candidate candidate) {
         byte[] bytes = candidate.snapshotBytes();
@@ -207,10 +343,10 @@ public class KnowledgeIndexingProducer {
         long snapshotSize = bytes.length;
         List<Snapshot> existing = jdbc.query("""
             SELECT id,sha256,size_bytes FROM knowledge_source_snapshots
-             WHERE source_type=? AND source_id=? AND source_revision=?
+             WHERE source_type=? AND source_id=? AND source_revision=? AND selection_epoch=?
             """, (rs, row) -> new Snapshot(rs.getObject("id", UUID.class),
                 rs.getString("sha256"), rs.getLong("size_bytes")),
-            candidate.sourceType(), candidate.sourceId(), candidate.revision());
+            candidate.sourceType(), candidate.sourceId(), candidate.revision(), candidate.selectionEpoch());
         if (!existing.isEmpty()) {
             Snapshot stored = existing.getFirst();
             if (!snapshotSha.equals(stored.sha256()) || snapshotSize != stored.sizeBytes()) {
@@ -221,17 +357,17 @@ public class KnowledgeIndexingProducer {
         UUID snapshotId = snapshotId(bytes);
         jdbc.update("""
             INSERT INTO knowledge_source_snapshots(
-                id,meeting_id,source_type,source_id,source_revision,payload,sha256,size_bytes)
-            VALUES (?,?,?,?,?,?,?,?)
-            ON CONFLICT (source_type,source_id,source_revision) DO NOTHING
+                id,meeting_id,source_type,source_id,source_revision,selection_epoch,payload,sha256,size_bytes)
+            VALUES (?,?,?,?,?,?,?,?,?)
+            ON CONFLICT (source_type,source_id,source_revision,selection_epoch) DO NOTHING
             """, snapshotId, candidate.meetingId(), candidate.sourceType(), candidate.sourceId(),
-            candidate.revision(), bytes, snapshotSha, snapshotSize);
+            candidate.revision(), candidate.selectionEpoch(), bytes, snapshotSha, snapshotSize);
         Snapshot stored = jdbc.queryForObject("""
             SELECT id,sha256,size_bytes FROM knowledge_source_snapshots
-             WHERE source_type=? AND source_id=? AND source_revision=?
+             WHERE source_type=? AND source_id=? AND source_revision=? AND selection_epoch=?
             """, (rs, row) -> new Snapshot(rs.getObject("id", UUID.class),
                 rs.getString("sha256"), rs.getLong("size_bytes")),
-            candidate.sourceType(), candidate.sourceId(), candidate.revision());
+            candidate.sourceType(), candidate.sourceId(), candidate.revision(), candidate.selectionEpoch());
         if (!snapshotSha.equals(stored.sha256()) || snapshotSize != stored.sizeBytes()) {
             throw new IllegalStateException("Canonical knowledge revision has conflicting snapshot bytes.");
         }
@@ -303,8 +439,9 @@ public class KnowledgeIndexingProducer {
                 || !List.of("READY", "READY_WITH_WARNINGS").contains(current.status())
                 || current.bytes().length == 0) return null;
         byte[] payload = current.bytes();
-        return new Candidate("TRANSCRIPT", sourceId, meetingId, current.contentRevision(),
-            wrap("TRANSCRIPT", meetingId, sourceId, current.contentRevision(), payload, true, "RECONCILED"));
+        return new Candidate("TRANSCRIPT", sourceId, meetingId, current.contentRevision(), 0,
+            wrap("TRANSCRIPT", meetingId, sourceId, current.contentRevision(), 0,
+                payload, true, "RECONCILED"));
     }
 
     private Candidate summary(UUID sourceId, UUID meetingId) {
@@ -352,8 +489,10 @@ public class KnowledgeIndexingProducer {
         content.put("contentRevision", row.contentRevision());
         content.put("selectionEpoch", row.selectionEpoch());
         content.put("aiWarnings", csv(row.aiWarningCodes()));
-        Map<String, Object> snapshot = snapshot("SUMMARY", row.meetingId(), row.id(), row.versionNumber(), content);
-        return new Candidate("SUMMARY", row.id(), row.meetingId(), row.versionNumber(), bytes(snapshot));
+        Map<String, Object> snapshot = snapshot("SUMMARY", row.meetingId(), row.id(), row.versionNumber(),
+            row.selectionEpoch(), content);
+        return new Candidate("SUMMARY", row.id(), row.meetingId(), row.versionNumber(),
+            row.selectionEpoch(), bytes(snapshot));
     }
 
     private Candidate decision(UUID sourceId, UUID meetingId) {
@@ -401,8 +540,8 @@ public class KnowledgeIndexingProducer {
         put(content, "confirmedByUserId", row.confirmedByUserId());
         put(content, "confirmedAt", row.confirmedAt());
         put(content, "aiWarnings", csv(row.aiWarningCodes()));
-        Map<String, Object> snapshot = snapshot("DECISION", row.meetingId(), row.id(), row.version(), content);
-        return new Candidate("DECISION", row.id(), row.meetingId(), row.version(), bytes(snapshot));
+        Map<String, Object> snapshot = snapshot("DECISION", row.meetingId(), row.id(), row.version(), 0, content);
+        return new Candidate("DECISION", row.id(), row.meetingId(), row.version(), 0, bytes(snapshot));
     }
 
     private Candidate actionItem(UUID sourceId, UUID meetingId) {
@@ -439,27 +578,27 @@ public class KnowledgeIndexingProducer {
         put(content, "transcriptRevision", revision(row.contentRevision()));
         put(content, "contentRevision", row.contentRevision());
         content.put("evidenceSegmentIds", evidence("action_item_evidence", "action_item_id", sourceId));
-        Map<String, Object> snapshot = snapshot("ACTION_ITEM", row.meetingId(), row.id(), row.version(), content);
-        return new Candidate("ACTION_ITEM", row.id(), row.meetingId(), row.version(), bytes(snapshot));
+        Map<String, Object> snapshot = snapshot("ACTION_ITEM", row.meetingId(), row.id(), row.version(), 0, content);
+        return new Candidate("ACTION_ITEM", row.id(), row.meetingId(), row.version(), 0, bytes(snapshot));
     }
 
     private Map<String, Object> snapshot(String type, UUID meetingId, UUID sourceId,
-            long revision, Map<String, Object> content) {
+            long revision, long selectionEpoch, Map<String, Object> content) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("contractVersion", "1.0");
         result.put("snapshotType", type);
-        result.put("metadata", metadata(stableSnapshotId(type, sourceId, revision), meetingId,
+        result.put("metadata", metadata(stableSnapshotId(type, sourceId, revision, selectionEpoch), meetingId,
             type, sourceId, revision));
         result.put("content", content);
         return result;
     }
 
-    private byte[] wrap(String type, UUID meetingId, UUID sourceId, long revision,
+    private byte[] wrap(String type, UUID meetingId, UUID sourceId, long revision, long selectionEpoch,
             byte[] payloadBytes, boolean current, String representation) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("contractVersion", "1.0");
         result.put("snapshotType", type);
-        result.put("metadata", metadata(stableSnapshotId(type, sourceId, revision), meetingId,
+        result.put("metadata", metadata(stableSnapshotId(type, sourceId, revision, selectionEpoch), meetingId,
             type, sourceId, revision));
         result.put("current", current);
         result.put("representation", representation);
@@ -480,8 +619,12 @@ public class KnowledgeIndexingProducer {
         }
     }
 
-    private static UUID stableSnapshotId(String sourceType, UUID sourceId, long revision) {
-        String key = "sme-knowledge-snapshot-v1:" + sourceType + ":" + sourceId + ":" + revision;
+    private static UUID stableSnapshotId(String sourceType, UUID sourceId, long revision, long selectionEpoch) {
+        // Epoch zero includes pre-V56 snapshots; retain their immutable bytes
+        // so an unchanged source can be requested again after an upgrade.
+        String key = selectionEpoch == 0
+            ? "sme-knowledge-snapshot-v1:" + sourceType + ":" + sourceId + ":" + revision
+            : "sme-knowledge-snapshot-v2:" + sourceType + ":" + sourceId + ":" + revision + ":" + selectionEpoch;
         return UUID.nameUUIDFromBytes(key.getBytes(StandardCharsets.UTF_8));
     }
 
@@ -556,7 +699,7 @@ public class KnowledgeIndexingProducer {
     }
 
     private record Candidate(String sourceType, UUID sourceId, UUID meetingId, long revision,
-            byte[] snapshotBytes) {
+            long selectionEpoch, byte[] snapshotBytes) {
         private Candidate {
             snapshotBytes = snapshotBytes.clone();
         }
@@ -564,6 +707,8 @@ public class KnowledgeIndexingProducer {
     }
 
     private record Snapshot(UUID id, String sha256, long sizeBytes) { }
+    private record ExistingUpsert(UUID snapshotId, String snapshotSha256, long snapshotSizeBytes,
+            long intentSequence) { }
     private record GenerationSpec(String id, String configurationVersion,
             String configurationSha256, String tokenizerId) {
         private GenerationSpec {
@@ -577,7 +722,7 @@ public class KnowledgeIndexingProducer {
     }
     private record WorkTarget(long revision, String generationId, String configurationVersion,
             String configurationSha256, String tokenizerId) { }
-    private record RetiredSource(UUID sourceId) { }
+
     private record SummaryRow(UUID id, UUID meetingId, int versionNumber, String content,
             String sourceType, String qualityStatus, boolean isCurrent, UUID processingJobId,
             UUID transcriptId, Long contentRevision, long selectionEpoch, String aiWarningCodes,

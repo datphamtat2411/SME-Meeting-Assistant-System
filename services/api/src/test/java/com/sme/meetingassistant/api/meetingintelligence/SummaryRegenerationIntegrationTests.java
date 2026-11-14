@@ -104,8 +104,8 @@ class SummaryRegenerationIntegrationTests {
             """,origin,meeting,media,owner);
         jdbc.update("""
             INSERT INTO transcripts(id,meeting_id,source_media_id,processing_job_id,version_number,
-                language_code,status,is_current,content_revision)
-            VALUES (?,?,?,?,1,'vi','READY',TRUE,2)
+                language_code,status,is_current,content_revision,finalized_at)
+            VALUES (?,?,?,?,1,'vi','READY',TRUE,2,CURRENT_TIMESTAMP)
             """,transcript,meeting,media,origin);
         jdbc.update("""
             INSERT INTO transcript_segments(id,transcript_id,ordinal,start_ms,end_ms,current_text,quality_status)

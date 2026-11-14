@@ -718,3 +718,13 @@ Do not use `down -v`, queue purge, direct backend exposure or result deletion to
 checks pass. No automated cleanup of shared fixture prefixes is provided. Stop the
 secure project with the non-destructive `stop` command above. E2E-04 still owns real
 worker interoperability; E2E-05 still owns final fully connected acceptance.
+
+
+## PI-06 operational release readiness
+
+Staged feature gates, private PostgreSQL-derived monitoring, alert ownership,
+incident tracing, rollback procedure and the release-admission verifier are
+documented in [PI06-OPERATIONS.md](../../../services/api/docs/PI06-OPERATIONS.md).
+The committed pi06-release.env.example is intentionally disabled and not a
+production environment. Live PI-05 proof and independent operator readiness
+checks remain mandatory before approval.

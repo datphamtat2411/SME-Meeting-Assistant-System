@@ -48,6 +48,8 @@ public class MediaProperties {
         private boolean enabled;
         private int leaseSeconds = 1800;
         private int maxAttempts = 5;
+        // Must exceed the bounded AI audit timeout; never use an unbounded claim.
+        private int reconciliationClaimSeconds = 120;
         // Keep these defaults aligned with contracts/RAG_T05_BGE_M3_INDEX_GENERATION_V1.json.
         private String generationId = "rag-t02-bge-m3-v1";
         private String configurationVersion = "rag-t02-bge-m3-v1";
@@ -63,6 +65,8 @@ public class MediaProperties {
         public void setLeaseSeconds(int value) { leaseSeconds = value; }
         public int getMaxAttempts() { return maxAttempts; }
         public void setMaxAttempts(int value) { maxAttempts = value; }
+        public int getReconciliationClaimSeconds() { return reconciliationClaimSeconds; }
+        public void setReconciliationClaimSeconds(int value) { reconciliationClaimSeconds = value; }
         public String getGenerationId() { return generationId; }
         public void setGenerationId(String value) { generationId = value; }
         public String getConfigurationVersion() { return configurationVersion; }

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Annotated, Any, Literal, get_args, get_origin
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 from pydantic import (
@@ -287,6 +287,55 @@ class KnowledgeDeliveryStatus(WireModel):
         }
 
 
+class KnowledgeWritePermit(WireModel):
+    contractVersion: Literal["1.0"]
+    eventId: Uuid
+    permitId: Uuid
+    generationId: str = Field(min_length=1, max_length=128)
+    generationEpoch: Count
+    operation: Literal["UPSERT", "INVALIDATE", "DELETE"]
+    state: Literal["OPEN", "RESERVED", "RUNNING", "CANCELLED", "SUCCEEDED", "FAILED"]
+    mutationExecutionId: Uuid | None = None
+    createdAt: Timestamp
+    reservedAt: Timestamp | None = None
+    startedAt: Timestamp | None = None
+    completedAt: Timestamp | None = None
+    outcomeCode: str | None = Field(default=None, pattern=r"^[A-Z][A-Z0-9_]{0,79}$")
+
+    @model_validator(mode="after")
+    def validate_lifecycle(self):
+        if self.state == "OPEN":
+            if any(value is not None for value in (
+                self.mutationExecutionId, self.reservedAt, self.startedAt,
+                self.completedAt, self.outcomeCode,
+            )):
+                raise ValueError("Open permit cannot have execution state")
+        elif self.state == "RESERVED":
+            if self.mutationExecutionId is None or self.reservedAt is None \
+                    or self.startedAt is not None or self.completedAt is not None \
+                    or self.outcomeCode is not None:
+                raise ValueError("Reserved permit lifecycle is invalid")
+        elif self.state == "RUNNING":
+            if self.mutationExecutionId is None or self.reservedAt is None \
+                    or self.startedAt is None or self.completedAt is not None \
+                    or self.outcomeCode is not None:
+                raise ValueError("Running permit lifecycle is invalid")
+        elif self.state == "CANCELLED":
+            if self.mutationExecutionId is None or self.reservedAt is None \
+                    or self.startedAt is not None or self.completedAt is None \
+                    or self.outcomeCode != "WORKER_PERMIT_STALE":
+                raise ValueError("Cancelled permit lifecycle is invalid")
+        elif self.mutationExecutionId is None or self.reservedAt is None \
+                or self.startedAt is None or self.completedAt is None \
+                or self.outcomeCode is None:
+            raise ValueError("Terminal permit lifecycle is invalid")
+        if self.state == "SUCCEEDED" and self.outcomeCode != "NONE":
+            raise ValueError("Succeeded permit must have a NONE outcome")
+        if self.state == "FAILED" and self.outcomeCode == "NONE":
+            raise ValueError("Failed permit must have a failure outcome")
+        return self
+
+
 @dataclass(frozen=True)
 class KnowledgeSnapshotResponse:
     snapshot_id: str
@@ -307,8 +356,13 @@ class CoreError(Exception):
             "WORKER_CONTRACT_UNSUPPORTED", "WORKER_DELIVERY_NOT_FOUND", "WORKER_IDENTITY_CONFLICT",
             "WORKER_DELIVERY_UNKNOWN", "WORKER_DELIVERY_NOT_PUBLISHED", "WORKER_ATTEMPT_BUSY",
             "WORKER_RETRY_BACKOFF", "WORKER_SOURCE_SUPERSEDED", "WORKER_GENERATION_CONFLICT",
-            "WORKER_LEASE_LOST", "WORKER_SNAPSHOT_INTEGRITY_UNAVAILABLE", "WORKER_RESULT_CONFLICT",
-            "WORKER_COMMAND_CONFLICT", "WORKER_ATTEMPTS_EXHAUSTED",
+             "WORKER_LEASE_LOST", "WORKER_SNAPSHOT_INTEGRITY_UNAVAILABLE", "WORKER_RESULT_CONFLICT",
+             "WORKER_COMMAND_CONFLICT", "WORKER_ATTEMPTS_EXHAUSTED", "WORKER_GENERATION_SEALED",
+             "WORKER_PERMIT_BUSY", "WORKER_PERMIT_CONFLICT", "WORKER_PERMIT_NOT_FOUND",
+             "WORKER_PERMIT_REQUIRED", "WORKER_PERMIT_OPEN", "WORKER_PERMIT_NOT_REUSABLE",
+             "WORKER_PERMIT_NOT_TERMINAL", "WORKER_PERMIT_NOT_STARTABLE",
+              "WORKER_PERMIT_ALREADY_STARTED", "WORKER_PERMIT_NOT_RUNNING",
+              "WORKER_PERMIT_START_CONFLICT", "WORKER_PERMIT_STALE",
             "WORKER_RESPONSE_INVALID", "VALIDATION_ERROR", "PAYLOAD_TOO_LARGE", "UNSUPPORTED_MEDIA_TYPE",
             "SERVICE_UNAVAILABLE",
             "DIARIZATION_SOURCE_STALE", "DIARIZATION_RESULT_INVALID", "DIARIZATION_RESULT_MISSING",
@@ -586,6 +640,13 @@ class KnowledgeCoreApiClient(CoreApiClient):
             if result.eventId != event.event_id:
                 raise CoreError(409, "WORKER_IDENTITY_CONFLICT")
             return result
+        if operation == "permit" or operation.startswith("permit/"):
+            result = KnowledgeWritePermit.model_validate(payload)
+            if (result.eventId != event.event_id
+                    or result.generationId != event.index_generation.generation_id
+                    or result.operation != event.operation):
+                raise CoreError(409, "WORKER_IDENTITY_CONFLICT")
+            return result
         if operation == "claim" and "claimToken" in payload:
             result = KnowledgeClaim.model_validate(payload)
             if (
@@ -643,13 +704,12 @@ class KnowledgeCoreApiClient(CoreApiClient):
                 mode="json", by_alias=True, exclude_none=True,
             ),
             "operation": event.operation,
+            "reason": event.reason,
             "indexGeneration": event.index_generation.model_dump(mode="json", by_alias=True),
             "claimRequestId": str(request_id),
         }
         if event.operation == "UPSERT":
             body["snapshot"] = event.snapshot.model_dump(mode="json", by_alias=True)
-        else:
-            body["reason"] = event.reason
         return await self.request_knowledge(event, "claim", body)
 
     async def renew(self, event, claim, **options):
@@ -684,6 +744,57 @@ class KnowledgeCoreApiClient(CoreApiClient):
             "errorCode": error_code,
         }
         return await self.request_knowledge(event, "result", body, **options)
+
+    async def acquire_write_permit(self, event, claim, **options):
+        mutation_execution_id = str(uuid4())
+        body = {
+            "contractVersion": "1.0",
+            "eventId": event.event_id,
+            "claimToken": claim.claimToken.get_secret_value(),
+            "operation": event.operation,
+            "generationId": event.index_generation.generation_id,
+            "mutationExecutionId": mutation_execution_id,
+        }
+        permit = await self.request_knowledge(event, "permit", body, **options)
+        if permit.state != "RESERVED" or permit.mutationExecutionId != mutation_execution_id:
+            raise CoreError(409, "WORKER_PERMIT_CONFLICT")
+        return permit
+
+    async def start_write_permit(self, event, claim, permit, **options):
+        body = {
+            "contractVersion": "1.0",
+            "eventId": event.event_id,
+            "permitId": permit.permitId,
+            "claimToken": claim.claimToken.get_secret_value(),
+            "generationId": event.index_generation.generation_id,
+            "mutationExecutionId": permit.mutationExecutionId,
+        }
+        started = await self.request_knowledge(
+            event, f"permit/{permit.permitId}/start", body, **options,
+        )
+        if (started.state != "RUNNING" or started.mutationExecutionId != permit.mutationExecutionId):
+            raise CoreError(409, "WORKER_PERMIT_CONFLICT")
+        return started
+
+    async def complete_write_permit(self, event, claim, permit, *, state: str,
+            outcome_code: str, **options):
+        body = {
+            "contractVersion": "1.0",
+            "eventId": event.event_id,
+            "permitId": permit.permitId,
+            "claimToken": claim.claimToken.get_secret_value(),
+            "generationId": event.index_generation.generation_id,
+            "mutationExecutionId": permit.mutationExecutionId,
+            "state": state,
+            "outcomeCode": outcome_code,
+        }
+        completed = await self.request_knowledge(
+            event, f"permit/{permit.permitId}/complete", body, **options,
+        )
+        if (completed.state != state
+                or completed.mutationExecutionId != permit.mutationExecutionId):
+            raise CoreError(409, "WORKER_PERMIT_CONFLICT")
+        return completed
 
 
 def claim_fields(claim):

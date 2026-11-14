@@ -51,6 +51,9 @@ public final class PrivateConnector {
                 host.addCertificate(cert);
                 connector = new Connector(Http11NioProtocol.class.getName());
                 var protocol = (Http11NioProtocol) connector.getProtocolHandler();
+                // Let authenticated controllers reject headers (including oversized
+                // Content-Length) before inviting an Expect: 100-continue upload.
+                protocol.setContinueResponseTiming("onRead");
                 protocol.setAddress(InetAddress.getByName(settings.address()));
                 protocol.setSSLEnabled(true);
                 protocol.setSslImplementationName("org.apache.tomcat.util.net.jsse.JSSEImplementation");

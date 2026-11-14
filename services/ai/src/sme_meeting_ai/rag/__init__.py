@@ -61,6 +61,13 @@ from .indexing import (
     KnowledgeIndexingEngine,
     build_qdrant_payload,
 )
+from .inventory_cursor import (
+    MAX_INVENTORY_CURSOR_LENGTH,
+    MAX_UNSIGNED_POINT_ID,
+    InvalidInventoryCursor,
+    normalize_inventory_cursor_value,
+    parse_inventory_cursor,
+)
 from .processing import (
     KnowledgeContractError,
     KnowledgeProcessingError,
@@ -217,6 +224,9 @@ __all__ = [
     "IndexingResult",
     "IndexingStatus",
     "KnowledgeIndexingEngine",
+    "InvalidInventoryCursor",
+    "MAX_INVENTORY_CURSOR_LENGTH",
+    "MAX_UNSIGNED_POINT_ID",
     "ModelManifest",
     "ModelProvisioningError",
     "ModelSnapshot",
@@ -269,6 +279,8 @@ __all__ = [
     "load_bge_m3_manifest",
     "load_reranker_validation_policy",
     "normalize_bge_m3_output",
+    "normalize_inventory_cursor_value",
+    "parse_inventory_cursor",
     "prepare_query",
     "select_evidence",
 ]
