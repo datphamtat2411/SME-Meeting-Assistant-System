@@ -109,9 +109,9 @@ class PrivateMetricsSecurityTests {
                 assertThat(line).satisfiesAnyOf(
                     x -> assertThat(x).startsWith("diarization_"),
                     x -> assertThat(x).startsWith("product_integration_"),
-                    x -> assertThat(x).startsWith("sme_assistant_"));
+                     x -> assertThat(x).startsWith("sme_assistant_"));
                 if(line.contains("{")) for(String tag:line.substring(line.indexOf('{')+1,line.indexOf('}')).split(","))
-                    assertThat(tag.split("=")[0]).isIn("outcome","le","le_seconds","state","operation","reason");
+                    assertThat(tag.split("=")[0]).isIn("outcome","le","le_seconds","state","operation","reason","phase");
             }
             var actual=response.body().lines().filter(l->!l.startsWith("#")&&!l.isBlank())
                 .map(l->l.split("[ {]",2)[0]).collect(java.util.stream.Collectors.toSet());
@@ -121,6 +121,8 @@ class PrivateMetricsSecurityTests {
                     "diarization_window_unknown_assignments","diarization_window_lease_expirations","diarization_verified_only_outstanding",
                     "diarization_verified_only_count","diarization_verified_only_oldest_age_seconds","diarization_metrics_aggregation_healthy"));
             for(String name:com.sme.meetingassistant.api.observability.ProductIntegrationMetrics.EXPORTED_NAMES)
+                expected.add(name.replace('.', '_'));
+            for(String name:com.sme.meetingassistant.api.knowledge.KnowledgeOperationalMetrics.EXPORTED_NAMES)
                 expected.add(name.replace('.', '_'));
             expected.add("sme_assistant_admission_active");
             assertThat(actual).containsExactlyInAnyOrderElementsOf(expected);

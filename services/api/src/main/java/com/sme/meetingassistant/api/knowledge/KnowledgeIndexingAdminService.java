@@ -19,13 +19,16 @@ public class KnowledgeIndexingAdminService {
     private final KnowledgeIndexingProducer producer;
     private final MediaProperties properties;
     private final KnowledgeReconciliationService reconciliation;
+    private final KnowledgeOperationalMetrics metrics;
 
     public KnowledgeIndexingAdminService(JdbcTemplate jdbc, KnowledgeIndexingProducer producer,
-            MediaProperties properties, KnowledgeReconciliationService reconciliation) {
+            MediaProperties properties, KnowledgeReconciliationService reconciliation,
+            KnowledgeOperationalMetrics metrics) {
         this.jdbc = jdbc;
         this.producer = producer;
         this.properties = properties;
         this.reconciliation = reconciliation;
+        this.metrics = metrics;
     }
 
     @Transactional
@@ -139,23 +142,26 @@ public class KnowledgeIndexingAdminService {
     @Transactional
     public Map<String, Object> seal(String generationId) {
         requireEnabled();
+        metrics.sealAttempt();
         GenerationRow generation = lockGeneration(generationId);
         if ("SEALED".equals(generation.barrierState())) return generation(generationId);
         if (!"READY".equals(generation.state()) || generation.targetCount() != generation.indexedCount()) {
-            throw conflict("GENERATION_NOT_READY_FOR_SEAL");
+            throw sealConflict("GENERATION_NOT_READY", "GENERATION_NOT_READY_FOR_SEAL");
         }
-        if (liveClaim(generationId)) throw conflict("WORKER_CLAIM_ACTIVE");
+        if (liveClaim(generationId)) throw sealConflict("WORKER_CLAIM_ACTIVE", "WORKER_CLAIM_ACTIVE");
         Boolean openPermit = jdbc.queryForObject("""
             SELECT EXISTS(SELECT 1 FROM knowledge_qdrant_write_permits
                 WHERE generation_id=? AND state IN ('OPEN','RESERVED','RUNNING'))
             """, Boolean.class, generationId);
-        if (Boolean.TRUE.equals(openPermit)) throw conflict("QDRANT_PERMIT_OPEN");
+        if (Boolean.TRUE.equals(openPermit)) throw sealConflict("QDRANT_PERMIT_OPEN", "QDRANT_PERMIT_OPEN");
         Boolean unresolvedWork = jdbc.queryForObject("""
             SELECT EXISTS(SELECT 1 FROM knowledge_indexing_work
                 WHERE index_generation_id=?
                   AND state NOT IN ('INDEXED','INVALIDATED','DELETED','SUPERSEDED','NO_ELIGIBLE_CONTENT'))
             """, Boolean.class, generationId);
-        if (Boolean.TRUE.equals(unresolvedWork)) throw conflict("INDEXING_WORK_UNRESOLVED");
+        if (Boolean.TRUE.equals(unresolvedWork)) {
+            throw sealConflict("INDEXING_WORK_UNRESOLVED", "INDEXING_WORK_UNRESOLVED");
+        }
 
         UUID sealId = UUID.randomUUID();
         jdbc.update("""
@@ -163,7 +169,8 @@ public class KnowledgeIndexingAdminService {
                SET write_barrier_state='SEALED',seal_id=?,sealed_epoch=write_epoch,
                    sealed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP
              WHERE generation_id=? AND state='READY' AND write_barrier_state='OPEN'
-            """, sealId, generationId);
+             """, sealId, generationId);
+        metrics.sealSuccess();
         return generation(generationId);
     }
 
@@ -178,15 +185,7 @@ public class KnowledgeIndexingAdminService {
             UPDATE knowledge_index_generations
                SET write_epoch=write_epoch+1,write_barrier_state='OPEN',seal_id=NULL,
                    sealed_epoch=NULL,sealed_at=NULL,updated_at=CURRENT_TIMESTAMP
-             WHERE generation_id=?
-            """, generationId);
-        jdbc.update("""
-            UPDATE knowledge_reconciliation_runs
-               SET state='FAILED',inventory_complete=FALSE,last_error_code='CERTIFICATION_STALE',
-                   last_error_summary='Administrative unseal invalidated certification evidence.',
-                   claim_token=NULL,claim_expires_at=NULL,updated_at=CURRENT_TIMESTAMP
-             WHERE generation_id=? AND certification_mode='CERTIFICATION'
-               AND state IN ('RUNNING','PAUSED','COMPLETED')
+              WHERE generation_id=?
             """, generationId);
         return generation(generationId);
     }
@@ -203,12 +202,13 @@ public class KnowledgeIndexingAdminService {
         }
         if (!("READY".equals(generation.state()) || "RETIRED".equals(generation.state()))
                 || generation.indexedCount() != generation.targetCount()) {
-            throw conflict("Knowledge generation is not ready for activation.");
+            throw activationConflict("NOT_READY", "Knowledge generation is not ready for activation.");
         }
         if ("READY".equals(generation.state())) {
             if (!"SEALED".equals(generation.barrierState()) || generation.sealId() == null
                     || generation.sealedEpoch() == null || generation.sealedEpoch() != generation.writeEpoch()) {
-                throw conflict("Knowledge generation requires a current durable seal.");
+                throw activationConflict("SEAL_REQUIRED",
+                    "Knowledge generation requires a current durable seal.");
             }
             Boolean cleanCertification = jdbc.queryForObject("""
                 SELECT EXISTS(
@@ -219,23 +219,26 @@ public class KnowledgeIndexingAdminService {
                        AND finding_count=0 AND repaired_count=0)
                 """, Boolean.class, generationId, generation.sealId(), generation.writeEpoch());
             if (!Boolean.TRUE.equals(cleanCertification)) {
-                throw conflict("Knowledge generation requires clean current certification.");
+                throw activationConflict("CERTIFICATION_REQUIRED",
+                    "Knowledge generation requires clean current certification.");
             }
             Boolean openPermit = jdbc.queryForObject("""
                 SELECT EXISTS(SELECT 1 FROM knowledge_qdrant_write_permits
                     WHERE generation_id=? AND state IN ('OPEN','RESERVED','RUNNING'))
                 """, Boolean.class, generationId);
             if (Boolean.TRUE.equals(openPermit) || liveClaim(generationId)) {
-                throw conflict("Knowledge generation still has an unaccounted worker operation.");
+                throw activationConflict("PERMIT_OPEN",
+                    "Knowledge generation still has an unaccounted worker operation.");
             }
         }
         var configured = properties.getKnowledgeIndexing();
         if (!generation.id().equals(configured.getGenerationId())
                 || !generation.configurationVersion().equals(configured.getConfigurationVersion())
                 || !generation.configurationSha256().equals(configured.getConfigurationSha256())
-                || !generation.tokenizerId().equals(configured.getTokenizerId())
-                || !generation.collectionName().equals(configured.getCollectionName())) {
-            throw conflict("Runtime knowledge generation does not match the requested generation.");
+                 || !generation.tokenizerId().equals(configured.getTokenizerId())
+                 || !generation.collectionName().equals(configured.getCollectionName())) {
+            throw activationConflict("RUNTIME_MISMATCH",
+                "Runtime knowledge generation does not match the requested generation.");
         }
         jdbc.update("""
             UPDATE knowledge_index_generations SET state='RETIRED',retired_at=CURRENT_TIMESTAMP,
@@ -392,6 +395,16 @@ public class KnowledgeIndexingAdminService {
 
     private static ResponseStatusException conflict(String message) {
         return new ResponseStatusException(HttpStatus.CONFLICT, message);
+    }
+
+    private ResponseStatusException sealConflict(String reason, String message) {
+        metrics.sealRejected(reason);
+        return conflict(message);
+    }
+
+    private ResponseStatusException activationConflict(String reason, String message) {
+        metrics.activationRejected(reason);
+        return conflict(message);
     }
 
     private static ResponseStatusException unavailableSource() {

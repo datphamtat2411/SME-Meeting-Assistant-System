@@ -2,6 +2,7 @@ package com.sme.meetingassistant.api.transport;
 
 import com.sme.meetingassistant.api.assistant.AssistantAdmissionMetrics;
 import com.sme.meetingassistant.api.media.diarization.DiarizationMetrics;
+import com.sme.meetingassistant.api.knowledge.KnowledgeOperationalMetrics;
 import com.sme.meetingassistant.api.observability.ProductIntegrationMetrics;
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
 import java.util.Set;
@@ -17,7 +18,8 @@ import org.springframework.web.bind.annotation.RestController;
 public class PrivateMetricsController {
     private static final Set<String> EXPORTED_NAMES = java.util.stream.Stream.concat(
         java.util.stream.Stream.concat(DiarizationMetrics.EXPORTED_NAMES.stream(),
-            ProductIntegrationMetrics.EXPORTED_NAMES.stream()),
+            java.util.stream.Stream.concat(ProductIntegrationMetrics.EXPORTED_NAMES.stream(),
+                KnowledgeOperationalMetrics.EXPORTED_NAMES.stream())),
         AssistantAdmissionMetrics.EXPORTED_NAMES.stream())
         .collect(Collectors.toUnmodifiableSet());
     private final PrometheusMeterRegistry registry;
@@ -47,13 +49,19 @@ public class PrivateMetricsController {
             case "le" -> Set.of("0","1","2","5","10","100","1000","16384").contains(value);
             case "operation" -> Set.of("ASK","CONVERSATION_CREATE").contains(value);
             case "reason" -> Set.of("ASK_QUOTA","CONVERSATION_QUOTA","USER_CONCURRENCY",
-                "MEETING_CONCURRENCY","GLOBAL_CONCURRENCY").contains(value);
+                "MEETING_CONCURRENCY","GLOBAL_CONCURRENCY", "GENERATION_NOT_READY",
+                "WORKER_CLAIM_ACTIVE", "QDRANT_PERMIT_OPEN", "INDEXING_WORK_UNRESOLVED",
+                "NOT_READY", "SEAL_REQUIRED", "CERTIFICATION_REQUIRED", "PERMIT_OPEN",
+                "RUNTIME_MISMATCH", "ACTIVE_GENERATION_UNSEALABLE", "MUTATION", "UNSEALED",
+                "ACTIVATED").contains(value);
+            case "phase" -> Set.of("SOURCE_COUNTS", "VECTOR_INVENTORY").contains(value);
             default -> false;
         };
     }
 
     private static boolean safeType(String name,io.micrometer.core.instrument.Meter.Type type) {
-        if (!AssistantAdmissionMetrics.EXPORTED_NAMES.contains(name)) {
+        if (!AssistantAdmissionMetrics.EXPORTED_NAMES.contains(name)
+                || KnowledgeOperationalMetrics.EXPORTED_NAMES.contains(name)) {
             return type==io.micrometer.core.instrument.Meter.Type.GAUGE;
         }
         return switch(name) {

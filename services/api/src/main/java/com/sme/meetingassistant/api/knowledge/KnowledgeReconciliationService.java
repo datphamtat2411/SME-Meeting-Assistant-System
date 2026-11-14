@@ -10,6 +10,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Supplier;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -30,20 +31,40 @@ public class KnowledgeReconciliationService {
     private final KnowledgeIndexingWorkerService worker;
     private final MediaProperties properties;
     private final KnowledgeVectorAudit vectorAudit;
+    private final KnowledgeOperationalMetrics metrics;
     private final TransactionTemplate transaction;
 
     public KnowledgeReconciliationService(JdbcTemplate jdbc, KnowledgeIndexingProducer producer,
             KnowledgeIndexingWorkerService worker, MediaProperties properties,
             org.springframework.beans.factory.ObjectProvider<KnowledgeVectorAudit> vectorAudits,
-            PlatformTransactionManager transactionManager) {
+            PlatformTransactionManager transactionManager, KnowledgeOperationalMetrics metrics) {
         this.jdbc = jdbc;
         this.producer = producer;
         this.worker = worker;
         this.properties = properties;
         this.vectorAudit = vectorAudits.getIfAvailable();
+        this.metrics = metrics;
         this.transaction = new TransactionTemplate(transactionManager);
         this.transaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         this.transaction.setTimeout(30);
+    }
+
+    private <T> T executeTransaction(org.springframework.transaction.support.TransactionCallback<T> callback) {
+        long started = System.nanoTime();
+        try {
+            return transaction.execute(callback);
+        } finally {
+            metrics.reconciliationTransactionDuration(System.nanoTime() - started);
+        }
+    }
+
+    private <T> T remoteAudit(String phase, Supplier<T> operation) {
+        long started = System.nanoTime();
+        try {
+            return operation.get();
+        } finally {
+            metrics.remoteAuditLatency(phase, System.nanoTime() - started);
+        }
     }
 
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
@@ -55,13 +76,16 @@ public class KnowledgeReconciliationService {
         }
         String mode = certificationMode == null || certificationMode.isBlank()
             ? "OPERATIONAL" : certificationMode;
-        UUID runId = transaction.execute(status -> createRun(generationId, batchSize, dryRun, mode));
+        UUID runId = executeTransaction(status -> createRun(generationId, batchSize, dryRun, mode));
         return executeBoundary(runId, requestedByUserId);
     }
 
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public Map<String, Object> resume(UUID runId, UUID requestedByUserId) {
-        transaction.executeWithoutResult(status -> resumeLocked(runId));
+        executeTransaction(status -> {
+            resumeLocked(runId);
+            return null;
+        });
         return executeBoundary(runId, requestedByUserId);
     }
 
@@ -132,7 +156,7 @@ public class KnowledgeReconciliationService {
     }
 
     private Map<String, Object> executePage(UUID runId, UUID requestedByUserId) {
-        PageClaim claim = transaction.execute(status -> claimPage(runId));
+        PageClaim claim = executeTransaction(status -> claimPage(runId));
         if (claim == null) return runData(runId);
 
         if (claim.phase().equals("SOURCES") && claim.rows().isEmpty()) {
@@ -142,8 +166,8 @@ public class KnowledgeReconciliationService {
             if (vectorAudit == null) return fail(claim, "VECTOR_AUDIT_UNAVAILABLE");
             try {
                 List<KnowledgeVectorAudit.SourceKey> sources = claim.rows().stream().map(this::sourceKey).toList();
-                Map<KnowledgeVectorAudit.SourceKey, Long> counts = vectorAudit.countPoints(
-                    claim.generationId(), sources);
+                Map<KnowledgeVectorAudit.SourceKey, Long> counts = remoteAudit("SOURCE_COUNTS",
+                    () -> vectorAudit.countPoints(claim.generationId(), sources));
                 if (!completeSourceCounts(counts, sources)) return fail(claim, "VECTOR_AUDIT_INVALID");
                 return acceptSource(claim, counts, requestedByUserId);
             } catch (RuntimeException failure) {
@@ -154,8 +178,8 @@ public class KnowledgeReconciliationService {
 
         if (vectorAudit == null) return fail(claim, "VECTOR_AUDIT_UNAVAILABLE");
         try {
-            KnowledgeVectorAudit.InventoryPage page = vectorAudit.inventoryPage(
-                claim.generationId(), claim.vectorCursor(), claim.batchSize());
+            KnowledgeVectorAudit.InventoryPage page = remoteAudit("VECTOR_INVENTORY",
+                () -> vectorAudit.inventoryPage(claim.generationId(), claim.vectorCursor(), claim.batchSize()));
             validateInventoryPage(page, claim.vectorCursor(), claim.batchSize());
             return acceptVector(claim, page, requestedByUserId);
         } catch (AiCoreKnowledgeVectorAudit.KnowledgeVectorAuditException failure) {
@@ -173,6 +197,7 @@ public class KnowledgeReconciliationService {
         if (run.claimToken() != null) {
             OffsetDateTime now = jdbc.queryForObject("SELECT CURRENT_TIMESTAMP", OffsetDateTime.class);
             if (run.claimExpiresAt() != null && run.claimExpiresAt().isAfter(now)) return null;
+            metrics.reconciliationClaimExpired();
             clearClaim(runId);
             run = lockRun(runId);
         }
@@ -181,16 +206,19 @@ public class KnowledgeReconciliationService {
                 && (!Objects.equals(run.certificationEpoch(), generation.writeEpoch())
                     || !Objects.equals(run.certificationSealId(), generation.sealId())
                     || !"SEALED".equals(generation.barrierState()))) {
+            metrics.reconciliationEpochMismatch();
             failLocked(runId, "CERTIFICATION_STALE");
             return null;
         }
         if ("CERTIFICATION".equals(run.certificationMode())
                 && !"SEALED".equals(generation.barrierState())) {
+            metrics.reconciliationEpochMismatch();
             failLocked(runId, "CERTIFICATION_STALE");
             return null;
         }
         if ("OPERATIONAL".equals(run.certificationMode())
                 && "SEALED".equals(generation.barrierState())) {
+            metrics.reconciliationEpochMismatch();
             failLocked(runId, "SEALED_GENERATION_REQUIRES_CERTIFICATION");
             return null;
         }
@@ -230,7 +258,7 @@ public class KnowledgeReconciliationService {
 
     private Map<String, Object> acceptSource(PageClaim claim,
             Map<KnowledgeVectorAudit.SourceKey, Long> pointCounts, UUID requestedByUserId) {
-        Map<String, Object> result = transaction.execute(status -> {
+        Map<String, Object> result = executeTransaction(status -> {
             Run run = lockRun(claim.runId());
             if (!acceptanceFence(run, claim)) return runData(claim.runId());
             lockMeetings(claim.rows());
@@ -302,7 +330,7 @@ public class KnowledgeReconciliationService {
 
     private Map<String, Object> acceptVector(PageClaim claim, KnowledgeVectorAudit.InventoryPage page,
             UUID requestedByUserId) {
-        return transaction.execute(status -> {
+        return executeTransaction(status -> {
             Run run = lockRun(claim.runId());
             if (!acceptanceFence(run, claim)) return runData(claim.runId());
             List<WorkRow> observed = page.sources().stream().distinct().map(source ->
@@ -356,7 +384,7 @@ public class KnowledgeReconciliationService {
     }
 
     private Map<String, Object> fail(PageClaim claim, String code) {
-        return transaction.execute(status -> {
+        return executeTransaction(status -> {
             Run run = lockRun(claim.runId());
             if (!acceptanceFence(run, claim)) return runData(claim.runId());
             Generation generation = lockGeneration(claim.generationId());
@@ -367,15 +395,20 @@ public class KnowledgeReconciliationService {
     }
 
     private Map<String, Object> staleLocked(Run run, PageClaim claim) {
+        metrics.reconciliationEpochMismatch();
         failLocked(claim.runId(), "GENERATION_EPOCH_MISMATCH");
         return runData(claim.runId());
     }
 
     private boolean acceptanceFence(Run run, PageClaim claim) {
         if (!"RUNNING".equals(run.state()) || run.claimToken() == null
-                || !claim.claimToken().equals(run.claimToken())) return false;
+                || !claim.claimToken().equals(run.claimToken())) {
+            metrics.reconciliationStaleResult();
+            return false;
+        }
         OffsetDateTime now = jdbc.queryForObject("SELECT CURRENT_TIMESTAMP", OffsetDateTime.class);
         if (run.claimExpiresAt() == null || !run.claimExpiresAt().isAfter(now)) {
+            metrics.reconciliationClaimExpired();
             clearClaim(claim.runId());
             jdbc.update("""
                 UPDATE knowledge_reconciliation_runs SET last_error_code='RECONCILIATION_CLAIM_EXPIRED',
@@ -389,11 +422,13 @@ public class KnowledgeReconciliationService {
                 || !Objects.equals(run.checkpointSourceId(), claim.expectedCheckpointSourceId())
                 || !Objects.equals(run.checkpointSourceRevision(), claim.expectedCheckpointSourceRevision())
                 || !Objects.equals(normalizeCursor(run.vectorCursor()), normalizeCursor(claim.expectedVectorCursor()))) {
+            metrics.reconciliationStaleResult();
             clearClaim(claim.runId());
             return false;
         }
         if (!Objects.equals(run.expectedPhase(), claim.phase())
                 || !Objects.equals(run.expectedSealId(), claim.expectedSealId())) {
+            metrics.reconciliationStaleResult();
             clearClaim(claim.runId());
             return false;
         }

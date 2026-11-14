@@ -36,6 +36,9 @@ public final class ProductIntegrationMetrics {
         "product.integration.knowledge.oldest.age.seconds",
         "product.integration.knowledge.permits.reserved",
         "product.integration.knowledge.permits.running",
+        "product.integration.knowledge.permits.open",
+        "product.integration.knowledge.permits.unresolved",
+        "product.integration.knowledge.permits.oldest.age.seconds",
         "product.integration.knowledge.permits.failed",
         "product.integration.reconciliation.open.findings",
         "product.integration.reconciliation.failed.runs",
@@ -144,11 +147,19 @@ public final class ProductIntegrationMetrics {
         put(out, "knowledge.oldest.age.seconds", knowledge, "age");
         Map<String, Object> permits = jdbc.queryForMap("""
             SELECT count(*) FILTER (WHERE state='RESERVED') AS reserved,
+                   count(*) FILTER (WHERE state='OPEN') AS open,
+                   count(*) FILTER (WHERE state IN ('OPEN','RESERVED','RUNNING')) AS unresolved,
+                   coalesce(max(greatest(0,extract(epoch from
+                       transaction_timestamp()-created_at)))
+                       FILTER (WHERE state IN ('OPEN','RESERVED','RUNNING')),0) AS age,
                    count(*) FILTER (WHERE state='RUNNING') AS running,
                    count(*) FILTER (WHERE state='FAILED') AS failed
               FROM knowledge_qdrant_write_permits
             """);
         put(out, "knowledge.permits.reserved", permits, "reserved");
+        put(out, "knowledge.permits.open", permits, "open");
+        put(out, "knowledge.permits.unresolved", permits, "unresolved");
+        put(out, "knowledge.permits.oldest.age.seconds", permits, "age");
         put(out, "knowledge.permits.running", permits, "running");
         put(out, "knowledge.permits.failed", permits, "failed");
         put(out, "reconciliation.open.findings", jdbc.queryForMap("""

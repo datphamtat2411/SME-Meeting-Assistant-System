@@ -294,7 +294,7 @@ class KnowledgeWritePermit(WireModel):
     generationId: str = Field(min_length=1, max_length=128)
     generationEpoch: Count
     operation: Literal["UPSERT", "INVALIDATE", "DELETE"]
-    state: Literal["OPEN", "RESERVED", "RUNNING", "SUCCEEDED", "FAILED"]
+    state: Literal["OPEN", "RESERVED", "RUNNING", "CANCELLED", "SUCCEEDED", "FAILED"]
     mutationExecutionId: Uuid | None = None
     createdAt: Timestamp
     reservedAt: Timestamp | None = None
@@ -304,16 +304,35 @@ class KnowledgeWritePermit(WireModel):
 
     @model_validator(mode="after")
     def validate_lifecycle(self):
-        if self.state != "OPEN" and self.mutationExecutionId is None:
-            raise ValueError("Permit execution identity is required")
-        if self.state in {"RESERVED", "RUNNING", "SUCCEEDED", "FAILED"} and self.reservedAt is None:
-            raise ValueError("Reserved permit timestamp is required")
-        if self.state in {"RUNNING", "SUCCEEDED", "FAILED"} and self.startedAt is None:
-            raise ValueError("Started permit timestamp is required")
-        if self.state in {"SUCCEEDED", "FAILED"} and self.completedAt is None:
-            raise ValueError("Completed permit timestamp is required")
-        if self.state in {"OPEN", "RESERVED", "RUNNING"} and self.outcomeCode is not None:
-            raise ValueError("Open permit cannot have an outcome")
+        if self.state == "OPEN":
+            if any(value is not None for value in (
+                self.mutationExecutionId, self.reservedAt, self.startedAt,
+                self.completedAt, self.outcomeCode,
+            )):
+                raise ValueError("Open permit cannot have execution state")
+        elif self.state == "RESERVED":
+            if self.mutationExecutionId is None or self.reservedAt is None \
+                    or self.startedAt is not None or self.completedAt is not None \
+                    or self.outcomeCode is not None:
+                raise ValueError("Reserved permit lifecycle is invalid")
+        elif self.state == "RUNNING":
+            if self.mutationExecutionId is None or self.reservedAt is None \
+                    or self.startedAt is None or self.completedAt is not None \
+                    or self.outcomeCode is not None:
+                raise ValueError("Running permit lifecycle is invalid")
+        elif self.state == "CANCELLED":
+            if self.mutationExecutionId is None or self.reservedAt is None \
+                    or self.startedAt is not None or self.completedAt is None \
+                    or self.outcomeCode != "WORKER_PERMIT_STALE":
+                raise ValueError("Cancelled permit lifecycle is invalid")
+        elif self.mutationExecutionId is None or self.reservedAt is None \
+                or self.startedAt is None or self.completedAt is None \
+                or self.outcomeCode is None:
+            raise ValueError("Terminal permit lifecycle is invalid")
+        if self.state == "SUCCEEDED" and self.outcomeCode != "NONE":
+            raise ValueError("Succeeded permit must have a NONE outcome")
+        if self.state == "FAILED" and self.outcomeCode == "NONE":
+            raise ValueError("Failed permit must have a failure outcome")
         return self
 
 
@@ -342,8 +361,8 @@ class CoreError(Exception):
              "WORKER_PERMIT_BUSY", "WORKER_PERMIT_CONFLICT", "WORKER_PERMIT_NOT_FOUND",
              "WORKER_PERMIT_REQUIRED", "WORKER_PERMIT_OPEN", "WORKER_PERMIT_NOT_REUSABLE",
              "WORKER_PERMIT_NOT_TERMINAL", "WORKER_PERMIT_NOT_STARTABLE",
-             "WORKER_PERMIT_ALREADY_STARTED", "WORKER_PERMIT_NOT_RUNNING",
-             "WORKER_PERMIT_START_CONFLICT",
+              "WORKER_PERMIT_ALREADY_STARTED", "WORKER_PERMIT_NOT_RUNNING",
+              "WORKER_PERMIT_START_CONFLICT", "WORKER_PERMIT_STALE",
             "WORKER_RESPONSE_INVALID", "VALIDATION_ERROR", "PAYLOAD_TOO_LARGE", "UNSUPPORTED_MEDIA_TYPE",
             "SERVICE_UNAVAILABLE",
             "DIARIZATION_SOURCE_STALE", "DIARIZATION_RESULT_INVALID", "DIARIZATION_RESULT_MISSING",

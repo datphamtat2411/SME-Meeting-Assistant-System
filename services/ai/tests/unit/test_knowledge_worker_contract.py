@@ -12,6 +12,7 @@ from sme_meeting_ai.integrations.core_api import (
     CoreError,
     KnowledgeCoreApiClient,
     KnowledgeSnapshotResponse,
+    KnowledgeWritePermit,
 )
 from sme_meeting_ai.integrations.knowledge_indexing import decode_notification
 from sme_meeting_ai.rag import (
@@ -425,3 +426,30 @@ def test_permit_protocol_reserves_spends_and_completes_one_execution_identity():
     assert acquired["mutationExecutionId"]
     assert start["mutationExecutionId"] == acquired["mutationExecutionId"]
     assert complete["mutationExecutionId"] == acquired["mutationExecutionId"]
+
+
+def test_cancelled_permit_is_a_terminal_pre_start_stale_reservation():
+    execution_id = str(uuid4())
+    payload = {
+        "contractVersion": "1.0",
+        "eventId": str(uuid4()),
+        "permitId": str(uuid4()),
+        "generationId": "rag-t02-bge-m3-v1",
+        "generationEpoch": 4,
+        "operation": "UPSERT",
+        "state": "CANCELLED",
+        "mutationExecutionId": execution_id,
+        "createdAt": "2026-10-31T12:00:00Z",
+        "reservedAt": "2026-10-31T12:00:01Z",
+        "completedAt": "2026-10-31T12:00:02Z",
+        "outcomeCode": "WORKER_PERMIT_STALE",
+    }
+
+    permit = KnowledgeWritePermit.model_validate(payload)
+
+    assert permit.state == "CANCELLED"
+    assert permit.startedAt is None
+
+    invalid = {**payload, "startedAt": "2026-10-31T12:00:02Z"}
+    with pytest.raises(ValueError):
+        KnowledgeWritePermit.model_validate(invalid)

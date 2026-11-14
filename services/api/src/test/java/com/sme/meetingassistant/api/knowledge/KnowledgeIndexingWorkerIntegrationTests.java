@@ -10,6 +10,9 @@ import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
 import java.time.OffsetDateTime;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -193,7 +196,135 @@ class KnowledgeIndexingWorkerIntegrationTests {
             new KnowledgeIndexingWorkerCommands.PermitStart("1.0", fixture.event().eventId(), permitId,
                 claimToken, generationId, executionId), certificate))
             .isInstanceOf(WorkerException.class)
-            .hasMessage("WORKER_GENERATION_CONFLICT");
+            .hasMessage("WORKER_PERMIT_STALE");
+        assertThat(jdbc.queryForObject("SELECT state FROM knowledge_qdrant_write_permits WHERE permit_id=?",
+            String.class, permitId)).isEqualTo("CANCELLED");
+    }
+
+    @Test
+    @Transactional
+    void deletingTheFinalTranscriptSegmentFencesAReservedPermit() {
+        UUID userId = UUID.randomUUID();
+        UUID meetingId = UUID.randomUUID();
+        UUID mediaId = UUID.randomUUID();
+        UUID jobId = UUID.randomUUID();
+        UUID transcriptId = UUID.randomUUID();
+        UUID segmentId = UUID.randomUUID();
+        jdbc.update("""
+            INSERT INTO users(id,email,email_normalized,display_name,password_hash,global_role,account_status)
+            VALUES (?,? ,?,'Knowledge transcript test user','test-only','EMPLOYEE','ACTIVE')
+            """, userId, userId + "@example.invalid", userId + "@example.invalid");
+        jdbc.update("""
+            INSERT INTO meetings(id,title,organizer_user_id,created_by_user_id)
+            VALUES (?,'Knowledge transcript test meeting',?,?)
+            """, meetingId, userId, userId);
+        jdbc.update("""
+            INSERT INTO meeting_media(id,meeting_id,source_type,status,object_key,
+                pending_object_key,content_type,expected_size_bytes,size_bytes,
+                duration_ms,uploaded_by_user_id,available_at)
+            VALUES (?,?,'UPLOAD','AVAILABLE',?,?,'audio/wav',100,100,10000,?,CURRENT_TIMESTAMP)
+            """, mediaId, meetingId, "meetings/" + meetingId + "/sources/" + mediaId,
+            "meetings/" + meetingId + "/pending/" + mediaId, userId);
+        jdbc.update("""
+            INSERT INTO processing_jobs(id,meeting_id,source_media_id,requested_by_user_id,status)
+            VALUES (?,?,?,?,'COMPLETED')
+            """, jobId, meetingId, mediaId, userId);
+        jdbc.update("""
+            INSERT INTO transcripts(id,meeting_id,source_media_id,processing_job_id,
+                version_number,language_code,status,is_current,content_revision,finalized_at)
+            VALUES (?,?,?,?,1,'vi','READY',TRUE,0,CURRENT_TIMESTAMP)
+            """, transcriptId, meetingId, mediaId, jobId);
+        jdbc.update("""
+            INSERT INTO transcript_segments(id,transcript_id,ordinal,start_ms,end_ms,
+                current_text,quality_status)
+            VALUES (?,?,0,0,1000,'Final transcript content','ACCEPTED')
+            """, segmentId, transcriptId);
+
+        enableKnowledgeIndexing();
+        var event = producer.request("TRANSCRIPT", transcriptId, meetingId).orElseThrow();
+        byte[] payload = jdbc.queryForObject("SELECT payload FROM knowledge_source_snapshots WHERE id=?",
+            byte[].class, event.snapshotId());
+        publish(event.eventId());
+        var claim = new KnowledgeIndexingWorkerCommands.Claim("1.0", 1, event.eventId(),
+            KnowledgeIndexingProducer.EVENT_TYPE, meetingId, "TRANSCRIPT", transcriptId,
+            event.sourceRevision(), event.snapshotId(), event.snapshotSha256(), payload.length,
+            event.indexGenerationId(), event.configurationVersion(), event.configurationSha256(),
+            event.tokenizerId(), "UPSERT", "NEW_REVISION", UUID.randomUUID());
+        String certificate = "c".repeat(64);
+        UUID claimToken = (UUID) worker.claim(event.eventId(), claim, certificate).get("claimToken");
+        UUID executionId = UUID.randomUUID();
+        var acquire = worker.acquirePermit(event.eventId(),
+            new KnowledgeIndexingWorkerCommands.PermitAcquire("1.0", event.eventId(), claimToken,
+                "UPSERT", event.indexGenerationId(), executionId), certificate);
+        UUID permitId = (UUID) acquire.get("permitId");
+        long epochBefore = jdbc.queryForObject(
+            "SELECT write_epoch FROM knowledge_index_generations WHERE generation_id=?",
+            Long.class, event.indexGenerationId());
+
+        jdbc.update("DELETE FROM transcript_segments WHERE id=?", segmentId);
+
+        assertThat(jdbc.queryForObject(
+            "SELECT write_epoch FROM knowledge_index_generations WHERE generation_id=?",
+            Long.class, event.indexGenerationId())).isEqualTo(epochBefore + 1);
+        assertThatThrownBy(() -> worker.startPermit(event.eventId(),
+            new KnowledgeIndexingWorkerCommands.PermitStart("1.0", event.eventId(), permitId,
+                claimToken, event.indexGenerationId(), executionId), certificate))
+            .isInstanceOf(WorkerException.class)
+            .hasMessage("WORKER_PERMIT_STALE");
+        assertThat(jdbc.queryForMap("""
+            SELECT state,outcome_code,completed_at FROM knowledge_qdrant_write_permits
+             WHERE permit_id=?
+            """, permitId))
+            .containsEntry("state", "CANCELLED")
+            .containsEntry("outcome_code", "WORKER_PERMIT_STALE");
+    }
+
+    @Test
+    @Transactional
+    void concurrentPermitReservationsUseTheMeetingWorkGenerationLockOrder() throws Exception {
+        var fixture = publishedAction();
+        String certificate = "c".repeat(64);
+        UUID claimToken = (UUID) worker.claim(fixture.event().eventId(),
+            claimCommand(fixture, UUID.randomUUID()), certificate).get("claimToken");
+        commitFixture();
+
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        var executor = Executors.newFixedThreadPool(2);
+        try {
+            var futures = new java.util.ArrayList<java.util.concurrent.Future<Object>>();
+            for (int i = 0; i < 2; i++) {
+                futures.add(executor.submit(() -> {
+                    ready.countDown();
+                    if (!start.await(20, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("Concurrent permit gate timed out");
+                    }
+                    try {
+                        return worker.acquirePermit(fixture.event().eventId(),
+                            new KnowledgeIndexingWorkerCommands.PermitAcquire("1.0",
+                                fixture.event().eventId(), claimToken, "UPSERT",
+                                fixture.event().indexGenerationId(), UUID.randomUUID()), certificate);
+                    } catch (WorkerException conflict) {
+                        return conflict.getMessage();
+                    }
+                }));
+            }
+            assertThat(ready.await(20, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+            var results = new java.util.ArrayList<Object>();
+            for (var future : futures) results.add(future.get(90, TimeUnit.SECONDS));
+
+            assertThat(results.stream().filter(result -> result instanceof Map<?, ?>)).hasSize(1);
+            assertThat(results).contains("WORKER_PERMIT_BUSY");
+            assertThat(jdbc.queryForObject("""
+                SELECT COUNT(*) FROM knowledge_qdrant_write_permits
+                 WHERE event_id=? AND state='RESERVED'
+                """, Integer.class, fixture.event().eventId())).isEqualTo(1);
+        } finally {
+            start.countDown();
+            executor.shutdownNow();
+            assertThat(executor.awaitTermination(20, TimeUnit.SECONDS)).isTrue();
+        }
     }
 
     @Test

@@ -97,7 +97,7 @@ class KnowledgeIndexingFlywayIntegrationTests {
     }
 
     @Test
-    void migrationUpgradesV53ToV54WithoutRewritingTheBaseline() {
+    void migrationUpgradesV53ThroughV55WithoutRewritingTheBaseline() {
         String schema = "knowledge_t05_upgrade_" + UUID.randomUUID().toString().replace("-", "");
         try {
             Flyway before = Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema)
@@ -108,7 +108,7 @@ class KnowledgeIndexingFlywayIntegrationTests {
 
             Flyway upgraded = Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema)
                 .locations("classpath:db/migration").load();
-            assertThat(upgraded.migrate().migrationsExecuted).isEqualTo(1);
+            assertThat(upgraded.migrate().migrationsExecuted).isEqualTo(2);
             assertThat(jdbc.queryForObject("""
                 SELECT count(*) FROM information_schema.columns
                 WHERE table_schema=? AND table_name='knowledge_qdrant_write_permits'
@@ -118,6 +118,10 @@ class KnowledgeIndexingFlywayIntegrationTests {
                 SELECT count(*) FROM %s.flyway_schema_history
                 WHERE installed_rank=53 AND version='53'
                 """.formatted(schema), Integer.class)).isEqualTo(1);
+            assertThat(jdbc.queryForObject("""
+                SELECT version FROM %s.flyway_schema_history
+                WHERE version='55'
+                """.formatted(schema), String.class)).isEqualTo("55");
         } finally {
             jdbc.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE");
         }
