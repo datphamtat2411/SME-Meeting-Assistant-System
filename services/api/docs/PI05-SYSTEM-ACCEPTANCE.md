@@ -58,6 +58,16 @@ The internal reconciliation classifications are `VECTOR_CURSOR_INVALID`,
 `VECTOR_GENERATION_MISMATCH`; no public response includes exception text,
 collection identifiers, or storage details.
 
+### Generation and worker fencing
+
+PI05-007 and PI05-008 evidence must identify the V53 baseline and forward-only
+V54 migration. Candidate readiness is fenced by the generation write epoch and
+seal; `certificationUsable` is true only for a current, completed, clean,
+unrepaired dry-run certification. Qdrant mutation evidence must show a single
+permit execution identity moving `RESERVED -> RUNNING -> SUCCEEDED/FAILED`,
+with the physical mutation completed before the terminal Core acknowledgement.
+`OPEN`, reused, stale-epoch, and stale-seal permits are not valid authorization.
+
 The V51 cursor column is not rewritten and no migration silently normalizes
 legacy values. A legacy value that does not satisfy the semantic contract fails
 closed as `VECTOR_CURSOR_INVALID`; it cannot restart at page zero. A valid page

@@ -138,6 +138,66 @@ class KnowledgeIndexingWorkerIntegrationTests {
 
     @Test
     @Transactional
+    void qdrantPermitIsReservedStartedOnceAndTerminallyConsumed() {
+        var fixture = publishedAction();
+        String certificate = "c".repeat(64);
+        UUID claimToken = (UUID) worker.claim(fixture.event().eventId(),
+            claimCommand(fixture, UUID.randomUUID()), certificate).get("claimToken");
+        String generationId = fixture.event().indexGenerationId();
+        UUID executionId = UUID.randomUUID();
+        var acquire = worker.acquirePermit(fixture.event().eventId(),
+            new KnowledgeIndexingWorkerCommands.PermitAcquire("1.0", fixture.event().eventId(),
+                claimToken, "UPSERT", generationId, executionId), certificate);
+        UUID permitId = (UUID) acquire.get("permitId");
+        assertThat(acquire).containsEntry("state", "RESERVED");
+
+        var started = worker.startPermit(fixture.event().eventId(),
+            new KnowledgeIndexingWorkerCommands.PermitStart("1.0", fixture.event().eventId(), permitId,
+                claimToken, generationId, executionId), certificate);
+        assertThat(started).containsEntry("state", "RUNNING");
+        assertThatThrownBy(() -> worker.startPermit(fixture.event().eventId(),
+            new KnowledgeIndexingWorkerCommands.PermitStart("1.0", fixture.event().eventId(), permitId,
+                claimToken, generationId, executionId), certificate))
+            .isInstanceOf(WorkerException.class)
+            .hasMessage("WORKER_PERMIT_ALREADY_STARTED");
+
+        var complete = worker.completePermit(fixture.event().eventId(),
+            new KnowledgeIndexingWorkerCommands.PermitComplete("1.0", fixture.event().eventId(), permitId,
+                claimToken, generationId, executionId, "SUCCEEDED", "NONE"), certificate);
+        assertThat(complete).containsEntry("state", "SUCCEEDED");
+        assertThatThrownBy(() -> worker.acquirePermit(fixture.event().eventId(),
+            new KnowledgeIndexingWorkerCommands.PermitAcquire("1.0", fixture.event().eventId(),
+                claimToken, "UPSERT", generationId, executionId), certificate))
+            .isInstanceOf(WorkerException.class)
+            .hasMessage("WORKER_PERMIT_NOT_REUSABLE");
+    }
+
+    @Test
+    @Transactional
+    void permitCannotStartAfterTheGenerationEpochChanges() {
+        var fixture = publishedAction();
+        String certificate = "c".repeat(64);
+        UUID claimToken = (UUID) worker.claim(fixture.event().eventId(),
+            claimCommand(fixture, UUID.randomUUID()), certificate).get("claimToken");
+        String generationId = fixture.event().indexGenerationId();
+        UUID executionId = UUID.randomUUID();
+        var acquire = worker.acquirePermit(fixture.event().eventId(),
+            new KnowledgeIndexingWorkerCommands.PermitAcquire("1.0", fixture.event().eventId(),
+                claimToken, "UPSERT", generationId, executionId), certificate);
+        UUID permitId = (UUID) acquire.get("permitId");
+
+        jdbc.update("UPDATE action_items SET title='Epoch changed',version=version+1 WHERE id=?",
+            fixture.itemId());
+
+        assertThatThrownBy(() -> worker.startPermit(fixture.event().eventId(),
+            new KnowledgeIndexingWorkerCommands.PermitStart("1.0", fixture.event().eventId(), permitId,
+                claimToken, generationId, executionId), certificate))
+            .isInstanceOf(WorkerException.class)
+            .hasMessage("WORKER_GENERATION_CONFLICT");
+    }
+
+    @Test
+    @Transactional
     void repeatedRequestsForTheSameRevisionAndGenerationCreateOneWorkRow() {
         UUID userId = UUID.randomUUID();
         UUID meetingId = UUID.randomUUID();
@@ -960,11 +1020,19 @@ class KnowledgeIndexingWorkerIntegrationTests {
 
     private void completePermit(UUID eventId, String operation, UUID claimToken, String certificate,
             String state, String outcomeCode) {
+        String generationId = jdbc.queryForObject(
+            "SELECT index_generation_id FROM knowledge_indexing_work WHERE event_id=?",
+            String.class, eventId);
+        UUID mutationExecutionId = UUID.randomUUID();
         Map<String, Object> acquired = worker.acquirePermit(eventId,
-            new KnowledgeIndexingWorkerCommands.PermitAcquire("1.0", eventId, claimToken, operation),
+            new KnowledgeIndexingWorkerCommands.PermitAcquire("1.0", eventId, claimToken, operation,
+                generationId, mutationExecutionId),
             certificate);
+        UUID permitId = (UUID) acquired.get("permitId");
+        worker.startPermit(eventId, new KnowledgeIndexingWorkerCommands.PermitStart("1.0", eventId,
+            permitId, claimToken, generationId, mutationExecutionId), certificate);
         worker.completePermit(eventId, new KnowledgeIndexingWorkerCommands.PermitComplete("1.0", eventId,
-            (UUID) acquired.get("permitId"), claimToken, state, outcomeCode), certificate);
+            permitId, claimToken, generationId, mutationExecutionId, state, outcomeCode), certificate);
     }
 
     private record PublishedAction(UUID userId, UUID meetingId, UUID itemId,

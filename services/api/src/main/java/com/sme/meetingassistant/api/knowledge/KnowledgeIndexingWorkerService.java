@@ -215,6 +215,9 @@ public class KnowledgeIndexingWorkerService {
         if (!work.operation().equals(command.operation())) {
             throw WorkerException.conflict("WORKER_IDENTITY_CONFLICT");
         }
+        if (!work.indexGenerationId().equals(command.generationId())) {
+            throw WorkerException.conflict("WORKER_GENERATION_CONFLICT");
+        }
 
         GenerationBarrier generation = lockGeneration(work.indexGenerationId());
         if ("SEALED".equals(generation.barrierState())) {
@@ -224,7 +227,8 @@ public class KnowledgeIndexingWorkerService {
         List<Permit> matching = jdbc.query("""
             SELECT permit_id,generation_id,event_id,operation,claim_token_sha256,
                    worker_certificate_sha256,generation_epoch,state,outcome_code,
-                   outcome_summary,created_at,completed_at
+                   outcome_summary,created_at,reserved_at,started_at,completed_at,
+                   mutation_execution_id
               FROM knowledge_qdrant_write_permits
              WHERE event_id=? AND claim_token_sha256=? AND operation=? FOR UPDATE
             """, this::permit, eventId, tokenHash, command.operation());
@@ -233,11 +237,19 @@ public class KnowledgeIndexingWorkerService {
             if (!certificateFingerprint.equals(existing.workerCertificateSha256())) {
                 throw WorkerException.conflict("WORKER_PERMIT_CONFLICT");
             }
+            if (!command.mutationExecutionId().equals(existing.mutationExecutionId())) {
+                throw WorkerException.conflict("WORKER_PERMIT_BUSY");
+            }
+            // A retry of the same reservation is safe only while it is still
+            // reserved.  RUNNING and terminal rows are never capabilities.
+            if (!"RESERVED".equals(existing.state())) {
+                throw WorkerException.conflict("WORKER_PERMIT_NOT_REUSABLE");
+            }
             return permitData(existing);
         }
         Boolean unresolved = jdbc.queryForObject("""
             SELECT EXISTS(SELECT 1 FROM knowledge_qdrant_write_permits
-             WHERE event_id=? AND state='OPEN')
+             WHERE event_id=? AND state IN ('OPEN','RESERVED','RUNNING'))
             """, Boolean.class, eventId);
         if (Boolean.TRUE.equals(unresolved)) {
             throw WorkerException.conflict("WORKER_PERMIT_BUSY");
@@ -247,16 +259,58 @@ public class KnowledgeIndexingWorkerService {
         jdbc.update("""
             INSERT INTO knowledge_qdrant_write_permits(
                 permit_id,generation_id,event_id,operation,claim_token_sha256,
-                worker_certificate_sha256,generation_epoch)
-            VALUES (?,?,?,?,?,?,?)
+                worker_certificate_sha256,generation_epoch,state,mutation_execution_id,reserved_at)
+            VALUES (?,?,?,?,?,?,?,'RESERVED',?,CURRENT_TIMESTAMP)
             """, permitId, work.indexGenerationId(), eventId, work.operation(), tokenHash,
-            certificateFingerprint, generation.writeEpoch());
+                certificateFingerprint, generation.writeEpoch(), command.mutationExecutionId());
         return permitData(jdbc.queryForObject("""
             SELECT permit_id,generation_id,event_id,operation,claim_token_sha256,
                    worker_certificate_sha256,generation_epoch,state,outcome_code,
-                   outcome_summary,created_at,completed_at
+                   outcome_summary,created_at,reserved_at,started_at,completed_at,
+                   mutation_execution_id
               FROM knowledge_qdrant_write_permits WHERE permit_id=?
             """, this::permit, permitId));
+    }
+
+    /**
+     * Atomically spend a reservation.  The returned RUNNING row is not an
+     * invitation to retry: a lost response is deliberately unrecoverable
+     * without controlled physical-writer inspection.
+     */
+    @Transactional
+    public Map<String, Object> startPermit(UUID eventId,
+            KnowledgeIndexingWorkerCommands.PermitStart command, String certificateFingerprint) {
+        KnowledgeIndexingWorkerCommands.requireEvent(eventId, command.eventId());
+        Work initial = find(eventId).orElseThrow(() -> new WorkerException(404, "WORKER_DELIVERY_UNKNOWN"));
+        lockMeeting(initial.meetingId());
+        Work work = lock(eventId);
+        requireOwner(work, new KnowledgeIndexingWorkerCommands.Owner(command.contractVersion(),
+            command.eventId(), command.claimToken()), certificateFingerprint, true);
+        if (!work.indexGenerationId().equals(command.generationId())) {
+            throw WorkerException.conflict("WORKER_GENERATION_CONFLICT");
+        }
+        GenerationBarrier generation = lockGeneration(work.indexGenerationId());
+        if ("SEALED".equals(generation.barrierState())) {
+            throw WorkerException.conflict("WORKER_GENERATION_SEALED");
+        }
+        Permit permit = permitForUpdate(eventId, command.permitId());
+        if (permit.generationEpoch() != generation.writeEpoch()) {
+            throw WorkerException.conflict("WORKER_GENERATION_CONFLICT");
+        }
+        requirePermitBinding(work, permit, certificateFingerprint, command.claimToken(),
+            command.generationId(), command.mutationExecutionId());
+        if (!"RESERVED".equals(permit.state())) {
+            throw WorkerException.conflict("RUNNING".equals(permit.state())
+                ? "WORKER_PERMIT_ALREADY_STARTED" : "WORKER_PERMIT_NOT_STARTABLE");
+        }
+        int changed = jdbc.update("""
+            UPDATE knowledge_qdrant_write_permits
+               SET state='RUNNING',started_at=CURRENT_TIMESTAMP
+             WHERE permit_id=? AND state='RESERVED'
+               AND mutation_execution_id=?
+            """, command.permitId(), command.mutationExecutionId());
+        if (changed != 1) throw WorkerException.conflict("WORKER_PERMIT_START_CONFLICT");
+        return permitData(permitForUpdate(eventId, command.permitId()));
     }
 
     /** Close a permit only after the caller has established physical mutation termination. */
@@ -271,35 +325,36 @@ public class KnowledgeIndexingWorkerService {
         Permit permit = jdbc.query("""
             SELECT permit_id,generation_id,event_id,operation,claim_token_sha256,
                    worker_certificate_sha256,generation_epoch,state,outcome_code,
-                   outcome_summary,created_at,completed_at
+                   outcome_summary,created_at,reserved_at,started_at,completed_at,
+                   mutation_execution_id
               FROM knowledge_qdrant_write_permits
              WHERE permit_id=? AND event_id=? FOR UPDATE
             """, this::permit, command.permitId(), eventId).stream().findFirst()
             .orElseThrow(() -> new WorkerException(404, "WORKER_PERMIT_NOT_FOUND"));
-        if (!work.operation().equals(permit.operation())
-                || !certificateFingerprint.equals(permit.workerCertificateSha256())
-                || !KnowledgeIndexingWorkerCommands.tokenHash(command.claimToken())
-                    .equals(permit.claimTokenSha256())) {
-            throw WorkerException.conflict("WORKER_PERMIT_CONFLICT");
-        }
-        if (!"OPEN".equals(permit.state())) {
+        requirePermitBinding(work, permit, certificateFingerprint, command.claimToken(),
+            command.generationId(), command.mutationExecutionId());
+        if (Set.of("SUCCEEDED", "FAILED").contains(permit.state())) {
             if (permit.state().equals(command.state())
                     && java.util.Objects.equals(permit.outcomeCode(), command.outcomeCode())) {
                 return permitData(permit);
             }
             throw WorkerException.conflict("WORKER_PERMIT_CONFLICT");
         }
+        if (!"RUNNING".equals(permit.state())) {
+            throw WorkerException.conflict("WORKER_PERMIT_NOT_RUNNING");
+        }
         String summary = "NONE".equals(command.outcomeCode()) ? null
             : "Knowledge Qdrant mutation completed with a bounded outcome.";
         jdbc.update("""
             UPDATE knowledge_qdrant_write_permits
                SET state=?,outcome_code=?,outcome_summary=?,completed_at=CURRENT_TIMESTAMP
-             WHERE permit_id=? AND state='OPEN'
+             WHERE permit_id=? AND state='RUNNING'
             """, command.state(), command.outcomeCode(), summary, command.permitId());
         return permitData(jdbc.queryForObject("""
             SELECT permit_id,generation_id,event_id,operation,claim_token_sha256,
                    worker_certificate_sha256,generation_epoch,state,outcome_code,
-                   outcome_summary,created_at,completed_at
+                   outcome_summary,created_at,reserved_at,started_at,completed_at,
+                   mutation_execution_id
               FROM knowledge_qdrant_write_permits WHERE permit_id=?
             """, this::permit, command.permitId()));
     }
@@ -317,7 +372,8 @@ public class KnowledgeIndexingWorkerService {
         }
         requireOwner(work, new KnowledgeIndexingWorkerCommands.Owner(command.contractVersion(),
             command.eventId(), command.claimToken()), certificateFingerprint, true);
-        requireCompletedPermit(work, command.claimToken(), command.state());
+        GenerationBarrier generation = lockGeneration(work.indexGenerationId());
+        Permit completedPermit = requireCompletedPermit(work, command.claimToken(), command.state());
         if (!work.indexGenerationId().equals(command.indexGenerationId())) {
             throw WorkerException.conflict("WORKER_GENERATION_CONFLICT");
         }
@@ -328,6 +384,9 @@ public class KnowledgeIndexingWorkerService {
                 supersede(eventId);
                 throw WorkerException.conflict("WORKER_SOURCE_SUPERSEDED");
             }
+        }
+        if (completedPermit.generationEpoch() != generation.writeEpoch()) {
+            throw WorkerException.conflict("WORKER_GENERATION_CONFLICT");
         }
         String state = command.state();
         if ("INVALIDATE".equals(work.operation()) && !"INVALIDATED".equals(state)
@@ -383,25 +442,28 @@ public class KnowledgeIndexingWorkerService {
         }
     }
 
-    private void requireCompletedPermit(Work work, UUID claimToken, String resultState) {
+    private Permit requireCompletedPermit(Work work, UUID claimToken,
+            String resultState) {
         String tokenHash = KnowledgeIndexingWorkerCommands.tokenHash(claimToken);
         Permit permit = jdbc.query("""
             SELECT permit_id,generation_id,event_id,operation,claim_token_sha256,
                    worker_certificate_sha256,generation_epoch,state,outcome_code,
-                   outcome_summary,created_at,completed_at
+                   outcome_summary,created_at,reserved_at,started_at,completed_at,
+                   mutation_execution_id
               FROM knowledge_qdrant_write_permits
              WHERE event_id=? AND claim_token_sha256=? AND operation=?
              ORDER BY created_at DESC LIMIT 1
             """, this::permit, work.eventId(), tokenHash, work.operation())
             .stream().findFirst().orElseThrow(() -> WorkerException.conflict("WORKER_PERMIT_REQUIRED"));
-        if ("OPEN".equals(permit.state())) {
-            throw WorkerException.conflict("WORKER_PERMIT_OPEN");
+        if (Set.of("OPEN", "RESERVED", "RUNNING").contains(permit.state())) {
+            throw WorkerException.conflict("WORKER_PERMIT_NOT_TERMINAL");
         }
         boolean success = Set.of("INDEXED", "NO_ELIGIBLE_CONTENT", "INVALIDATED", "DELETED")
             .contains(resultState);
         if (success != "SUCCEEDED".equals(permit.state())) {
             throw WorkerException.conflict("WORKER_PERMIT_CONFLICT");
         }
+        return permit;
     }
 
     private boolean sameResult(Work work, KnowledgeIndexingWorkerCommands.Result result) {
@@ -505,13 +567,40 @@ public class KnowledgeIndexingWorkerService {
             .orElseThrow(() -> WorkerException.conflict("WORKER_GENERATION_CONFLICT"));
     }
 
+    private Permit permitForUpdate(UUID eventId, UUID permitId) {
+        return jdbc.query("""
+            SELECT permit_id,generation_id,event_id,operation,claim_token_sha256,
+                   worker_certificate_sha256,generation_epoch,state,outcome_code,
+                   outcome_summary,created_at,reserved_at,started_at,completed_at,
+                   mutation_execution_id
+              FROM knowledge_qdrant_write_permits
+             WHERE permit_id=? AND event_id=? FOR UPDATE
+            """, this::permit, permitId, eventId).stream().findFirst()
+            .orElseThrow(() -> new WorkerException(404, "WORKER_PERMIT_NOT_FOUND"));
+    }
+
+    private void requirePermitBinding(Work work, Permit permit, String certificateFingerprint,
+            UUID claimToken, String generationId, UUID mutationExecutionId) {
+        if (!work.operation().equals(permit.operation())
+                || !work.indexGenerationId().equals(permit.generationId())
+                || !work.indexGenerationId().equals(generationId)
+                || !certificateFingerprint.equals(permit.workerCertificateSha256())
+                || !KnowledgeIndexingWorkerCommands.tokenHash(claimToken).equals(permit.claimTokenSha256())
+                || !mutationExecutionId.equals(permit.mutationExecutionId())) {
+            throw WorkerException.conflict("WORKER_PERMIT_CONFLICT");
+        }
+    }
+
     private Permit permit(ResultSet rs, int row) throws SQLException {
         return new Permit(rs.getObject("permit_id", UUID.class), rs.getString("generation_id"),
             rs.getObject("event_id", UUID.class), rs.getString("operation"),
             rs.getString("claim_token_sha256"), rs.getString("worker_certificate_sha256"),
             rs.getLong("generation_epoch"), rs.getString("state"), rs.getString("outcome_code"),
             rs.getString("outcome_summary"), rs.getObject("created_at", OffsetDateTime.class),
-            rs.getObject("completed_at", OffsetDateTime.class));
+            rs.getObject("reserved_at", OffsetDateTime.class),
+            rs.getObject("started_at", OffsetDateTime.class),
+            rs.getObject("completed_at", OffsetDateTime.class),
+            rs.getObject("mutation_execution_id", UUID.class));
     }
 
     private Map<String, Object> permitData(Permit permit) {
@@ -523,7 +612,10 @@ public class KnowledgeIndexingWorkerService {
         data.put("generationEpoch", permit.generationEpoch());
         data.put("operation", permit.operation());
         data.put("state", permit.state());
+        data.put("mutationExecutionId", permit.mutationExecutionId());
         data.put("createdAt", permit.createdAt());
+        if (permit.reservedAt() != null) data.put("reservedAt", permit.reservedAt());
+        if (permit.startedAt() != null) data.put("startedAt", permit.startedAt());
         if (permit.completedAt() != null) data.put("completedAt", permit.completedAt());
         if (permit.outcomeCode() != null) data.put("outcomeCode", permit.outcomeCode());
         return data;
@@ -699,5 +791,6 @@ public class KnowledgeIndexingWorkerService {
     private record Permit(UUID permitId, String generationId, UUID eventId, String operation,
             String claimTokenSha256, String workerCertificateSha256, long generationEpoch,
             String state, String outcomeCode, String outcomeSummary, OffsetDateTime createdAt,
-            OffsetDateTime completedAt) { }
+            OffsetDateTime reservedAt, OffsetDateTime startedAt, OffsetDateTime completedAt,
+            UUID mutationExecutionId) { }
 }

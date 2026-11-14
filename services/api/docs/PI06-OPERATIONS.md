@@ -27,8 +27,9 @@ state, or change the authoritative release requirements.
 4. **Knowledge:** validate BGE-M3 dense+sparse, approved model versions,
    Qdrant collection schema, source revision and authorization. Check both
    canonical Core work and Qdrant vector inventory. No candidate activation
-   without a completed, clean, unrepaired reconciliation; retain a previous
-   generation to support authorized rollback.
+   without `certificationUsable=true`, a completed clean unrepaired certification,
+   and zero `RESERVED`/`RUNNING` Qdrant permits; retain a previous generation to
+   support authorized rollback. Apply V54 forward-only after V53.
 5. **Exports and notifications:** validate object storage, signed capability
    TTL, export revision freshness, authorization and idempotency. Enable
    export worker and SMTP delivery. Do not switch on broad purge or orphan
@@ -79,7 +80,9 @@ exception text.
 | product_integration_processing_queued / running / failed / oldest_age_seconds | Processing backlog, stalled stage and queue age |
 | product_integration_assistant_expired_turns / failed_answers_window | AI timeout/lease and past-24-hour failed answers |
 | product_integration_knowledge_pending / terminal / oldest_age_seconds | Indexing lag and terminal failures |
+| product_integration_knowledge_permits_reserved / running / failed | External mutation authorization held, executing, or failed |
 | product_integration_reconciliation_open_findings / failed_runs / incomplete_runs | Unresolved drift and incomplete Qdrant inventory |
+| product_integration_reconciliation_certification_unusable | READY candidates without current clean certification evidence |
 | product_integration_notification_pending / failed | Transactional email backlog |
 | product_integration_exports_pending / generating / failed / oldest_age_seconds | Export rendering backlog and failures |
 | product_integration_metrics_aggregation_healthy | 1 = valid DB sample, 0 = unavailable snapshot |
@@ -154,7 +157,7 @@ rechecked, not merely after the queue becomes empty.
    last-known-good generation; do not mutate the database to fake readiness.
 5. Reconcile outbox, stale work, exports, Assistant citations and authorized
    retrieval after rollback; continue only when consistency is proven.
-6. Flyway migrations (including V51 and V52) are not assumed to be reversible. If
+6. Flyway migrations (including V51, V52, V53 and V54) are not assumed to be reversible. If
    the old application cannot run on the new schema, stop and use a reviewed
    forward fix, not manual DROP statements or force repair in production.
 7. Repeat mTLS/security, worker fencing and live smoke before reopening traffic.

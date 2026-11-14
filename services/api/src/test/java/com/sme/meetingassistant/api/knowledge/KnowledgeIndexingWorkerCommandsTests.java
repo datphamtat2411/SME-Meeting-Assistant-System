@@ -34,7 +34,7 @@ class KnowledgeIndexingWorkerCommandsTests {
             .isInstanceOf(WorkerException.class);
 
         JsonBuilder extra = new JsonBuilder(eventId, UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());
-        extra.node().put("reason", "NEW_REVISION");
+        extra.node().put("unexpected", true);
         assertThatThrownBy(() -> KnowledgeIndexingWorkerCommands.claim(extra.node()))
             .isInstanceOf(WorkerException.class);
     }
@@ -62,10 +62,11 @@ class KnowledgeIndexingWorkerCommandsTests {
                 .put("contractVersion", "1.0")
                 .put("eventId", eventId.toString())
                 .put("eventType", KnowledgeIndexingProducer.EVENT_TYPE)
-                .put("eventSchemaVersion", 1)
-                .put("meetingId", meetingId.toString())
-                .put("operation", "UPSERT")
-                .put("claimRequestId", UUID.randomUUID().toString());
+                 .put("eventSchemaVersion", 1)
+                 .put("meetingId", meetingId.toString())
+                 .put("operation", "UPSERT")
+                 .put("reason", "NEW_REVISION")
+                 .put("claimRequestId", UUID.randomUUID().toString());
             node.set("sourceIdentity", WorkerJson.MAPPER.createObjectNode()
                 .put("sourceType", "SUMMARY")
                 .put("sourceId", sourceId.toString())

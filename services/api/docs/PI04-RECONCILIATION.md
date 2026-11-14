@@ -8,6 +8,8 @@ The existing outbox, PostgreSQL work ledger, producer claims, certificate-bound 
 3. **Full vector identity discovery** — The AI Qdrant adapter pages through **every point in the generation-isolated collection** (at most 500 per request), fails closed on any point carrying a missing/foreign generation identity, returns identity/revision only, validates every payload and refuses malformed/incompatible generations. Core persists `phase`, source checkpoint, `vector_cursor`, `vector_scanned_count` and `inventory_complete` in Flyway V51. Each admin resume advances at most one inventory page; a failed scan cannot report full coverage. Previous runs remain historically visible but `inventoryComplete=false`.
 4. **Orphans** — Vectors without a matching generation-specific Core UPSERT work row produce `ORPHANED_POINTS/MANUAL_REVIEW`. This is **not** a delete instruction: destructive Qdrant cleanup needs confirmed source identity, generation authorization and operator-approved scoped action. The Core source verifier still rejects deleted/ineligible/out-of-scope identities on retrieval.
 5. **Recovery** — A temporary or malformed vector audit marks the run `FAILED` with a safe error code. An administrator can resume those explicitly retryable failures from durable checkpoints, rather than inventing completion. Event acceptance remains fenced/idempotent in existing workers.
+6. **Generation and write fencing** — V54 is forward-only after V53. Canonical mutations advance the generation epoch for every `PREPARING`/`READY` candidate, including candidates with no existing work row. A Qdrant permit is reserved with an execution identity, spent exactly once as `RESERVED -> RUNNING`, and completed only after the physical worker mutation returns. Legacy `OPEN` permits are never auto-expired or auto-closed.
+7. **Short reconciliation transactions** — A page claim and page acceptance each use a bounded database transaction. Core releases the transaction before the AI/Qdrant audit call, then re-locks the run, affected meetings and generation to accept only the claimed page and epoch. `certificationUsable` is derived from the current seal/epoch and a completed clean unrepaired certification; it is not a manually writable flag.
 
 ## Inventory cursor contract
 
@@ -47,7 +49,7 @@ and next cursor have been validated. An invalid page cannot advance
 cannot satisfy generation activation readiness or trigger destructive repair.
 
 ## Reproducible deterministic gates
-- API CI: `./mvnw -B -ntp verify` (includes the unchanged Flyway V51 checkpoint schema).
+- API CI: `./mvnw -B -ntp verify` (includes the unchanged V53 baseline and forward-only V54 fencing migration).
 - PI Integration CI: `./mvnw -B -ntp -Dtest=AssistantHttpIntegrationTests,CrossModuleRevisionConsistencyIntegrationTests,KnowledgeIndexingWorkerIntegrationTests,AiCoreKnowledgeVectorAuditContractTests test`.
 - AI CI: Ruff, full Python tests and runtime packaging.
 - Cursor regression evidence includes `tests/unit/test_inventory_cursor.py`,

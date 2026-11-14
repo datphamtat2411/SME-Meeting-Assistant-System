@@ -194,6 +194,7 @@ class FakeCore:
         self.claim_count = 0
         self.result_count = 0
         self.permit_count = 0
+        self.started_permits = []
         self.completed_permits = []
 
     async def lookup(self, _event, **_options):
@@ -222,7 +223,19 @@ class FakeCore:
 
     async def acquire_write_permit(self, _event, _claim, **_options):
         self.permit_count += 1
-        return SimpleNamespace(permitId=str(uuid4()), state="OPEN")
+        return SimpleNamespace(
+            permitId=str(uuid4()),
+            state="RESERVED",
+            mutationExecutionId=str(uuid4()),
+        )
+
+    async def start_write_permit(self, _event, _claim, permit, **_options):
+        self.started_permits.append(permit.permitId)
+        return SimpleNamespace(
+            permitId=permit.permitId,
+            state="RUNNING",
+            mutationExecutionId=permit.mutationExecutionId,
+        )
 
     async def complete_write_permit(self, _event, _claim, permit, *, state, outcome_code, **_options):
         self.completed_permits.append((permit.permitId, state, outcome_code))
@@ -354,6 +367,7 @@ def test_cancelled_asyncio_waiter_leaves_permit_open_until_qdrant_thread_returns
             item, claim, Guard(), blocked_mutation,
         ))
         await asyncio.to_thread(entered.wait, 1)
+        assert len(core.started_permits) == 1
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task

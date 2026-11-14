@@ -375,3 +375,53 @@ def test_claim_request_omits_optional_source_revision_fields():
     asyncio.run(client.claim(event, claim_request_id=uuid4()))
 
     assert client.body["sourceRevision"] == {"number": event.source_revision.number}
+
+
+def test_permit_protocol_reserves_spends_and_completes_one_execution_identity():
+    event = knowledge_event()
+    claim_token = str(uuid4())
+    permit_id = str(uuid4())
+
+    class CaptureClient(KnowledgeCoreApiClient):
+        async def request_knowledge(self, _event, operation, body=None, **_options):
+            self.calls.append((operation, body))
+            if operation == "permit":
+                return SimpleNamespace(
+                    permitId=permit_id,
+                    state="RESERVED",
+                    mutationExecutionId=body["mutationExecutionId"],
+                )
+            if operation.endswith("/start"):
+                return SimpleNamespace(
+                    permitId=permit_id,
+                    state="RUNNING",
+                    mutationExecutionId=body["mutationExecutionId"],
+                )
+            return SimpleNamespace(
+                permitId=permit_id,
+                state="SUCCEEDED",
+                mutationExecutionId=body["mutationExecutionId"],
+            )
+
+    client = CaptureClient.__new__(CaptureClient)
+    client.calls = []
+    claim = SimpleNamespace(
+        claimToken=SimpleNamespace(get_secret_value=lambda: claim_token),
+    )
+
+    permit = asyncio.run(client.acquire_write_permit(event, claim))
+    started = asyncio.run(client.start_write_permit(event, claim, permit))
+    asyncio.run(client.complete_write_permit(
+        event, claim, started, state="SUCCEEDED", outcome_code="NONE",
+    ))
+
+    assert [operation for operation, _ in client.calls] == [
+        "permit", f"permit/{permit_id}/start", f"permit/{permit_id}/complete",
+    ]
+    _, acquired = client.calls[0]
+    _, start = client.calls[1]
+    _, complete = client.calls[2]
+    assert acquired["generationId"] == event.index_generation.generation_id
+    assert acquired["mutationExecutionId"]
+    assert start["mutationExecutionId"] == acquired["mutationExecutionId"]
+    assert complete["mutationExecutionId"] == acquired["mutationExecutionId"]

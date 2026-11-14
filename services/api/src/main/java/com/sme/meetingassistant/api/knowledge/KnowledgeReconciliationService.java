@@ -623,12 +623,23 @@ public class KnowledgeReconciliationService {
 
     private Map<String, Object> runData(UUID runId) {
         return jdbc.query("""
-            SELECT id,generation_id,batch_size,dry_run,state,checkpoint_source_type,checkpoint_source_id,
-                   checkpoint_source_revision,scanned_count,repaired_count,finding_count,last_error_code,
-                   last_error_summary,started_at,completed_at,updated_at,phase,vector_cursor,
-                   vector_scanned_count,inventory_complete,certification_mode,certification_seal_id,
-                   certification_epoch,claim_expires_at,claim_attempt
-              FROM knowledge_reconciliation_runs WHERE id=?
+            SELECT r.id,r.generation_id,r.batch_size,r.dry_run,r.state,r.checkpoint_source_type,r.checkpoint_source_id,
+                   r.checkpoint_source_revision,r.scanned_count,r.repaired_count,r.finding_count,r.last_error_code,
+                   r.last_error_summary,r.started_at,r.completed_at,r.updated_at,r.phase,r.vector_cursor,
+                   r.vector_scanned_count,r.inventory_complete,r.certification_mode,r.certification_seal_id,
+                   r.certification_epoch,r.claim_expires_at,r.claim_attempt,
+                   (
+                       r.certification_mode='CERTIFICATION'
+                       AND r.state='COMPLETED' AND r.dry_run AND r.inventory_complete
+                       AND r.finding_count=0 AND r.repaired_count=0
+                       AND g.write_barrier_state='SEALED'
+                       AND g.seal_id=r.certification_seal_id
+                       AND g.sealed_epoch=r.certification_epoch
+                       AND g.write_epoch=r.certification_epoch
+                   ) AS certification_usable
+              FROM knowledge_reconciliation_runs r
+              JOIN knowledge_index_generations g ON g.generation_id=r.generation_id
+             WHERE r.id=?
             """, (rs, row) -> {
                 Map<String, Object> data = new LinkedHashMap<>();
                 data.put("id", rs.getObject("id", UUID.class));
@@ -649,6 +660,7 @@ public class KnowledgeReconciliationService {
                 data.put("certificationMode", rs.getString("certification_mode"));
                 data.put("certificationSealId", rs.getObject("certification_seal_id", UUID.class));
                 data.put("certificationEpoch", rs.getObject("certification_epoch"));
+                data.put("certificationUsable", rs.getBoolean("certification_usable"));
                 data.put("claimExpiresAt", rs.getObject("claim_expires_at"));
                 data.put("claimAttempt", rs.getInt("claim_attempt"));
                 data.put("lastErrorCode", rs.getString("last_error_code"));

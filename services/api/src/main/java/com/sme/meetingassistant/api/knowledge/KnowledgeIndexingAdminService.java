@@ -53,7 +53,16 @@ public class KnowledgeIndexingAdminService {
                    collection_name,state,target_count,indexed_count,checkpoint_source_type,
                    checkpoint_source_id,last_error_code,last_error_summary,prepared_at,ready_at,
                    activated_at,retired_at,created_at,updated_at,write_epoch,
-                   write_barrier_state,seal_id,sealed_epoch,sealed_at
+                    write_barrier_state,seal_id,sealed_epoch,sealed_at,
+                    EXISTS (
+                        SELECT 1 FROM knowledge_reconciliation_runs r
+                         WHERE r.generation_id=knowledge_index_generations.generation_id
+                           AND r.certification_mode='CERTIFICATION'
+                           AND r.certification_seal_id=knowledge_index_generations.seal_id
+                           AND r.certification_epoch=knowledge_index_generations.write_epoch
+                           AND r.state='COMPLETED' AND r.dry_run
+                           AND r.inventory_complete AND r.finding_count=0 AND r.repaired_count=0
+                    ) AS certification_usable
               FROM knowledge_index_generations WHERE generation_id=?
             """, (rs, row) -> {
                 Map<String, Object> data = new LinkedHashMap<>();
@@ -80,6 +89,13 @@ public class KnowledgeIndexingAdminService {
                 data.put("sealId", rs.getObject("seal_id", UUID.class));
                 data.put("sealedEpoch", rs.getObject("sealed_epoch"));
                 data.put("sealedAt", rs.getObject("sealed_at"));
+                data.put("certificationUsable", rs.getBoolean("certification_usable")
+                    && "READY".equals(rs.getString("state"))
+                    && "SEALED".equals(rs.getString("write_barrier_state"))
+                    && rs.getObject("seal_id") != null
+                    && rs.getObject("sealed_epoch") != null
+                    && rs.getLong("sealed_epoch") == rs.getLong("write_epoch")
+                    && rs.getLong("target_count") == rs.getLong("indexed_count"));
                 return data;
             }, generationId).stream().findFirst().orElseThrow(() ->
                 new ResponseStatusException(HttpStatus.NOT_FOUND, "Knowledge generation was not found."));
@@ -131,7 +147,7 @@ public class KnowledgeIndexingAdminService {
         if (liveClaim(generationId)) throw conflict("WORKER_CLAIM_ACTIVE");
         Boolean openPermit = jdbc.queryForObject("""
             SELECT EXISTS(SELECT 1 FROM knowledge_qdrant_write_permits
-                WHERE generation_id=? AND state='OPEN')
+                WHERE generation_id=? AND state IN ('OPEN','RESERVED','RUNNING'))
             """, Boolean.class, generationId);
         if (Boolean.TRUE.equals(openPermit)) throw conflict("QDRANT_PERMIT_OPEN");
         Boolean unresolvedWork = jdbc.queryForObject("""
@@ -207,7 +223,7 @@ public class KnowledgeIndexingAdminService {
             }
             Boolean openPermit = jdbc.queryForObject("""
                 SELECT EXISTS(SELECT 1 FROM knowledge_qdrant_write_permits
-                    WHERE generation_id=? AND state='OPEN')
+                    WHERE generation_id=? AND state IN ('OPEN','RESERVED','RUNNING'))
                 """, Boolean.class, generationId);
             if (Boolean.TRUE.equals(openPermit) || liveClaim(generationId)) {
                 throw conflict("Knowledge generation still has an unaccounted worker operation.");

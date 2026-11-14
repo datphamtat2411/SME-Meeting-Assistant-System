@@ -34,9 +34,13 @@ public final class ProductIntegrationMetrics {
         "product.integration.knowledge.pending",
         "product.integration.knowledge.terminal",
         "product.integration.knowledge.oldest.age.seconds",
+        "product.integration.knowledge.permits.reserved",
+        "product.integration.knowledge.permits.running",
+        "product.integration.knowledge.permits.failed",
         "product.integration.reconciliation.open.findings",
         "product.integration.reconciliation.failed.runs",
         "product.integration.reconciliation.incomplete.runs",
+        "product.integration.reconciliation.certification.unusable",
         "product.integration.notification.pending",
         "product.integration.notification.failed",
         "product.integration.exports.pending",
@@ -138,6 +142,15 @@ public final class ProductIntegrationMetrics {
         put(out, "knowledge.pending", knowledge, "pending");
         put(out, "knowledge.terminal", knowledge, "terminal");
         put(out, "knowledge.oldest.age.seconds", knowledge, "age");
+        Map<String, Object> permits = jdbc.queryForMap("""
+            SELECT count(*) FILTER (WHERE state='RESERVED') AS reserved,
+                   count(*) FILTER (WHERE state='RUNNING') AS running,
+                   count(*) FILTER (WHERE state='FAILED') AS failed
+              FROM knowledge_qdrant_write_permits
+            """);
+        put(out, "knowledge.permits.reserved", permits, "reserved");
+        put(out, "knowledge.permits.running", permits, "running");
+        put(out, "knowledge.permits.failed", permits, "failed");
         put(out, "reconciliation.open.findings", jdbc.queryForMap("""
             SELECT count(*) AS amount FROM knowledge_reconciliation_findings
             WHERE state IN ('OPEN','MANUAL_REVIEW')
@@ -149,6 +162,21 @@ public final class ProductIntegrationMetrics {
             """);
         put(out, "reconciliation.failed.runs", runs, "failed");
         put(out, "reconciliation.incomplete.runs", runs, "incomplete");
+        Map<String, Object> certification = jdbc.queryForMap("""
+            SELECT count(*) AS unusable
+              FROM knowledge_index_generations g
+             WHERE g.state='READY'
+               AND NOT EXISTS (
+                   SELECT 1 FROM knowledge_reconciliation_runs r
+                    WHERE r.generation_id=g.generation_id
+                      AND r.certification_mode='CERTIFICATION'
+                      AND r.certification_seal_id=g.seal_id
+                      AND r.certification_epoch=g.write_epoch
+                      AND r.state='COMPLETED' AND r.dry_run
+                      AND r.inventory_complete AND r.finding_count=0 AND r.repaired_count=0
+               )
+            """);
+        put(out, "reconciliation.certification.unusable", certification, "unusable");
 
         Map<String, Object> mail = jdbc.queryForMap("""
             SELECT count(*) FILTER (WHERE status='PENDING') AS pending,

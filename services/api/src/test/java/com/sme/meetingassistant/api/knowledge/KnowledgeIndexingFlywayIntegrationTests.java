@@ -9,6 +9,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.UUID;
 import javax.sql.DataSource;
 import org.flywaydb.core.Flyway;
+import org.flywaydb.core.api.MigrationVersion;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -90,6 +91,33 @@ class KnowledgeIndexingFlywayIntegrationTests {
             assertThatThrownBy(() -> jdbc.update("UPDATE " + schema
                 + ".outbox_events SET payload='{\"changed\":true}'::jsonb WHERE id=?", eventId))
                 .isInstanceOf(RuntimeException.class);
+        } finally {
+            jdbc.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE");
+        }
+    }
+
+    @Test
+    void migrationUpgradesV53ToV54WithoutRewritingTheBaseline() {
+        String schema = "knowledge_t05_upgrade_" + UUID.randomUUID().toString().replace("-", "");
+        try {
+            Flyway before = Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema)
+                .locations("classpath:db/migration")
+                .target(MigrationVersion.fromVersion("53"))
+                .load();
+            assertThat(before.migrate().migrationsExecuted).isEqualTo(53);
+
+            Flyway upgraded = Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema)
+                .locations("classpath:db/migration").load();
+            assertThat(upgraded.migrate().migrationsExecuted).isEqualTo(1);
+            assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM information_schema.columns
+                WHERE table_schema=? AND table_name='knowledge_qdrant_write_permits'
+                  AND column_name IN ('mutation_execution_id','reserved_at','started_at')
+                """, Integer.class, schema)).isEqualTo(3);
+            assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM %s.flyway_schema_history
+                WHERE installed_rank=53 AND version='53'
+                """.formatted(schema), Integer.class)).isEqualTo(1);
         } finally {
             jdbc.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE");
         }

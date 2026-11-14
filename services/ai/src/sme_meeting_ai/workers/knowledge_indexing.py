@@ -74,6 +74,12 @@ _PERMANENT_CORE_CODES = frozenset({
     "WORKER_PERMIT_NOT_FOUND",
     "WORKER_PERMIT_REQUIRED",
     "WORKER_PERMIT_OPEN",
+    "WORKER_PERMIT_NOT_REUSABLE",
+    "WORKER_PERMIT_NOT_TERMINAL",
+    "WORKER_PERMIT_NOT_STARTABLE",
+    "WORKER_PERMIT_ALREADY_STARTED",
+    "WORKER_PERMIT_NOT_RUNNING",
+    "WORKER_PERMIT_START_CONFLICT",
     "WORKER_CONTRACT_UNSUPPORTED",
     "VALIDATION_ERROR",
     "PAYLOAD_TOO_LARGE",
@@ -386,7 +392,7 @@ class KnowledgeIndexingWorker:
             return outcome
         except CoreError:
             # The mutation has terminated, but failure to durably close the
-            # permit is fail-closed. It remains OPEN for controlled recovery.
+            # RUNNING permit is fail-closed and requires controlled recovery.
             self.stop_intake.set()
             raise
 
@@ -398,6 +404,15 @@ class KnowledgeIndexingWorker:
         permit = await guard.protect(self.core.acquire_write_permit(
             event, claim, deadline=guard.deadline,
         ))
+        if (getattr(permit, "state", None) != "RESERVED"
+                or not getattr(permit, "mutationExecutionId", None)):
+            raise CoreError(409, "WORKER_PERMIT_CONFLICT")
+        permit = await guard.protect(self.core.start_write_permit(
+            event, claim, permit, deadline=guard.deadline,
+        ))
+        if (getattr(permit, "state", None) != "RUNNING"
+                or not getattr(permit, "mutationExecutionId", None)):
+            raise CoreError(409, "WORKER_PERMIT_CONFLICT")
         loop = asyncio.get_running_loop()
         # Keep the concurrent executor future alive independently of the
         # asyncio waiter. Cancelling a wrapped future cannot stop its thread.
