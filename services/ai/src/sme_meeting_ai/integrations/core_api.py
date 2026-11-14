@@ -287,6 +287,19 @@ class KnowledgeDeliveryStatus(WireModel):
         }
 
 
+class KnowledgeWritePermit(WireModel):
+    contractVersion: Literal["1.0"]
+    eventId: Uuid
+    permitId: Uuid
+    generationId: str = Field(min_length=1, max_length=128)
+    generationEpoch: Count
+    operation: Literal["UPSERT", "INVALIDATE", "DELETE"]
+    state: Literal["OPEN", "SUCCEEDED", "FAILED"]
+    createdAt: Timestamp
+    completedAt: Timestamp | None = None
+    outcomeCode: str | None = Field(default=None, pattern=r"^[A-Z][A-Z0-9_]{0,79}$")
+
+
 @dataclass(frozen=True)
 class KnowledgeSnapshotResponse:
     snapshot_id: str
@@ -307,8 +320,10 @@ class CoreError(Exception):
             "WORKER_CONTRACT_UNSUPPORTED", "WORKER_DELIVERY_NOT_FOUND", "WORKER_IDENTITY_CONFLICT",
             "WORKER_DELIVERY_UNKNOWN", "WORKER_DELIVERY_NOT_PUBLISHED", "WORKER_ATTEMPT_BUSY",
             "WORKER_RETRY_BACKOFF", "WORKER_SOURCE_SUPERSEDED", "WORKER_GENERATION_CONFLICT",
-            "WORKER_LEASE_LOST", "WORKER_SNAPSHOT_INTEGRITY_UNAVAILABLE", "WORKER_RESULT_CONFLICT",
-            "WORKER_COMMAND_CONFLICT", "WORKER_ATTEMPTS_EXHAUSTED",
+             "WORKER_LEASE_LOST", "WORKER_SNAPSHOT_INTEGRITY_UNAVAILABLE", "WORKER_RESULT_CONFLICT",
+             "WORKER_COMMAND_CONFLICT", "WORKER_ATTEMPTS_EXHAUSTED", "WORKER_GENERATION_SEALED",
+             "WORKER_PERMIT_BUSY", "WORKER_PERMIT_CONFLICT", "WORKER_PERMIT_NOT_FOUND",
+             "WORKER_PERMIT_REQUIRED", "WORKER_PERMIT_OPEN",
             "WORKER_RESPONSE_INVALID", "VALIDATION_ERROR", "PAYLOAD_TOO_LARGE", "UNSUPPORTED_MEDIA_TYPE",
             "SERVICE_UNAVAILABLE",
             "DIARIZATION_SOURCE_STALE", "DIARIZATION_RESULT_INVALID", "DIARIZATION_RESULT_MISSING",
@@ -586,6 +601,13 @@ class KnowledgeCoreApiClient(CoreApiClient):
             if result.eventId != event.event_id:
                 raise CoreError(409, "WORKER_IDENTITY_CONFLICT")
             return result
+        if operation == "permit" or operation.startswith("permit/"):
+            result = KnowledgeWritePermit.model_validate(payload)
+            if (result.eventId != event.event_id
+                    or result.generationId != event.index_generation.generation_id
+                    or result.operation != event.operation):
+                raise CoreError(409, "WORKER_IDENTITY_CONFLICT")
+            return result
         if operation == "claim" and "claimToken" in payload:
             result = KnowledgeClaim.model_validate(payload)
             if (
@@ -643,13 +665,12 @@ class KnowledgeCoreApiClient(CoreApiClient):
                 mode="json", by_alias=True, exclude_none=True,
             ),
             "operation": event.operation,
+            "reason": event.reason,
             "indexGeneration": event.index_generation.model_dump(mode="json", by_alias=True),
             "claimRequestId": str(request_id),
         }
         if event.operation == "UPSERT":
             body["snapshot"] = event.snapshot.model_dump(mode="json", by_alias=True)
-        else:
-            body["reason"] = event.reason
         return await self.request_knowledge(event, "claim", body)
 
     async def renew(self, event, claim, **options):
@@ -684,6 +705,29 @@ class KnowledgeCoreApiClient(CoreApiClient):
             "errorCode": error_code,
         }
         return await self.request_knowledge(event, "result", body, **options)
+
+    async def acquire_write_permit(self, event, claim, **options):
+        body = {
+            "contractVersion": "1.0",
+            "eventId": event.event_id,
+            "claimToken": claim.claimToken.get_secret_value(),
+            "operation": event.operation,
+        }
+        return await self.request_knowledge(event, "permit", body, **options)
+
+    async def complete_write_permit(self, event, claim, permit, *, state: str,
+            outcome_code: str, **options):
+        body = {
+            "contractVersion": "1.0",
+            "eventId": event.event_id,
+            "permitId": permit.permitId,
+            "claimToken": claim.claimToken.get_secret_value(),
+            "state": state,
+            "outcomeCode": outcome_code,
+        }
+        return await self.request_knowledge(
+            event, f"permit/{permit.permitId}/complete", body, **options,
+        )
 
 
 def claim_fields(claim):

@@ -17,6 +17,10 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.annotation.DirtiesContext;
+import org.springframework.test.context.transaction.BeforeTransaction;
+import org.springframework.test.context.transaction.TestTransaction;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.annotation.Transactional;
 
 import static org.mockito.Mockito.when;
@@ -24,6 +28,7 @@ import static org.mockito.Mockito.when;
 @ActiveProfiles("test")
 @SpringBootTest
 @Import(PostgresTestConfiguration.class)
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class KnowledgeIndexingWorkerIntegrationTests {
     @Autowired JdbcTemplate jdbc;
     @Autowired KnowledgeIndexingWorkerService worker;
@@ -32,6 +37,25 @@ class KnowledgeIndexingWorkerIntegrationTests {
     @Autowired MediaProperties properties;
     @Autowired MediaRepository outbox;
     @MockitoBean KnowledgeVectorAudit vectorAudit;
+
+    /** These tests use a dedicated Testcontainers database and commit reconciliation fixtures. */
+    @BeforeTransaction
+    void resetTestDatabase() {
+        jdbc.execute("TRUNCATE meetings, outbox_events, knowledge_index_generations CASCADE");
+        jdbc.update("""
+            INSERT INTO knowledge_index_generations(generation_id,configuration_version,
+                configuration_sha256,tokenizer_id,collection_name,state,activated_at)
+            VALUES ('rag-t02-bge-m3-v1','rag-t02-bge-m3-v1',
+                'b09c19a082d96d3a3fe66bbdfde4c7f50cde139bd539d456da3f41691ab3f4b1',
+                'BAAI/bge-m3-tokenizer:5617a9f61b028005a4858fdac845db406aefb181',
+                'sme_meeting_knowledge_bge_m3','ACTIVE',CURRENT_TIMESTAMP)
+            """);
+    }
+
+    private void commitFixture() {
+        TestTransaction.flagForCommit();
+        TestTransaction.end();
+    }
 
     @Test
     @Transactional
@@ -95,6 +119,7 @@ class KnowledgeIndexingWorkerIntegrationTests {
 
         var result = new KnowledgeIndexingWorkerCommands.Result("1.0", eventId, token,
             UUID.randomUUID(), "INDEXED", "rag-t02-bge-m3-v1", 1, "d".repeat(64), "NONE");
+        completePermit(eventId, "UPSERT", token, certificate, "SUCCEEDED", "NONE");
         var accepted = worker.result(eventId, result, certificate);
         assertThat(accepted).containsEntry("state", "INDEXED").containsEntry("acknowledge", true);
 
@@ -159,6 +184,7 @@ class KnowledgeIndexingWorkerIntegrationTests {
         var result = new KnowledgeIndexingWorkerCommands.Result("1.0", invalidation.eventId(), token,
             UUID.randomUUID(), "DELETED", "rag-t02-bge-m3-v1", 0, "d".repeat(64), "NONE");
 
+        completePermit(invalidation.eventId(), "DELETE", token, certificate, "SUCCEEDED", "NONE");
         assertThat(worker.result(invalidation.eventId(), result, certificate))
             .containsEntry("state", "DELETED").containsEntry("acknowledge", true);
     }
@@ -205,20 +231,26 @@ class KnowledgeIndexingWorkerIntegrationTests {
 
             var result = new KnowledgeIndexingWorkerCommands.Result("1.0", event.eventId(), claimToken,
                 UUID.randomUUID(), "INDEXED", newGeneration, 1, "d".repeat(64), "NONE");
+            completePermit(event.eventId(), "UPSERT", claimToken, "c".repeat(64), "SUCCEEDED", "NONE");
             worker.result(event.eventId(), result, "c".repeat(64));
             assertThat(admin.refresh(newGeneration)).containsEntry("state", "READY")
                 .containsEntry("targetCount", 1L).containsEntry("indexedCount", 1L);
+            commitFixture();
+            assertThat(admin.seal(newGeneration)).containsEntry("writeBarrierState", "SEALED");
 
             // READY is not sufficient: require the completed Qdrant inventory
             // evidence before a new generation becomes active.
             var audited = new KnowledgeVectorAudit.SourceKey("ACTION_ITEM", itemId, meetingId,
                 event.sourceRevision());
             when(vectorAudit.countPoints(newGeneration, java.util.List.of(audited)))
-                .thenReturn(Map.of(audited, 1L));
+                .thenAnswer(invocation -> {
+                    assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+                    return Map.of(audited, 1L);
+                });
             when(vectorAudit.inventoryPage(newGeneration, null, 10))
                 .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(audited), "abcd"),
                     new KnowledgeVectorAudit.InventoryPage(java.util.List.of(audited), null));
-            var invalidAudit = admin.startReconciliation(newGeneration, 10, true, userId);
+            var invalidAudit = admin.startCertification(newGeneration, 10, userId);
             assertThat(invalidAudit).containsEntry("state", "FAILED")
                 .containsEntry("inventoryComplete", false)
                 .containsEntry("lastErrorCode", "VECTOR_AUDIT_INVALID");
@@ -229,7 +261,7 @@ class KnowledgeIndexingWorkerIntegrationTests {
             config.setCollectionName(newCollection);
             assertThatThrownBy(() -> admin.activate(newGeneration))
                 .isInstanceOf(org.springframework.web.server.ResponseStatusException.class);
-            var audit = admin.startReconciliation(newGeneration, 10, true, userId);
+            var audit = admin.startCertification(newGeneration, 10, userId);
             assertThat(audit).containsEntry("inventoryComplete", true)
                 .containsEntry("findingCount", 0L).containsEntry("repairedCount", 0L);
 
@@ -323,6 +355,7 @@ class KnowledgeIndexingWorkerIntegrationTests {
             event.sourceRevision(),event.snapshotId(),event.snapshotSha256(),payload.length,
             generation,version,hash,tokenizer,"UPSERT","REINDEX_REQUESTED",UUID.randomUUID());
         UUID token=(UUID)worker.claim(event.eventId(),command,"c".repeat(64)).get("claimToken");
+        completePermit(event.eventId(), "UPSERT", token, "c".repeat(64), "SUCCEEDED", "NONE");
         worker.result(event.eventId(),new KnowledgeIndexingWorkerCommands.Result(
             "1.0",event.eventId(),token,UUID.randomUUID(),"INDEXED",generation,
             1,"d".repeat(64),"NONE"),"c".repeat(64));
@@ -348,6 +381,7 @@ class KnowledgeIndexingWorkerIntegrationTests {
         String certificate = "c".repeat(64);
         UUID claimToken = (UUID) worker.claim(fixture.event().eventId(),
             claimCommand(fixture, UUID.randomUUID()), certificate).get("claimToken");
+        completePermit(fixture.event().eventId(), "UPSERT", claimToken, certificate, "SUCCEEDED", "NONE");
         worker.result(fixture.event().eventId(),
             indexedResult(fixture.event().eventId(), claimToken, UUID.randomUUID()), certificate);
 
@@ -358,6 +392,7 @@ class KnowledgeIndexingWorkerIntegrationTests {
 
         when(vectorAudit.inventoryPage(fixture.event().indexGenerationId(), null, 10))
             .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(), null));
+        commitFixture();
         Map<String, Object> result = admin.startReconciliation(
             fixture.event().indexGenerationId(), 10, true, fixture.userId());
 
@@ -382,6 +417,7 @@ class KnowledgeIndexingWorkerIntegrationTests {
             java.util.List.of(key))).thenReturn(Map.of(key, 0L));
         when(vectorAudit.inventoryPage(properties.getKnowledgeIndexing().getGenerationId(), null, 100))
             .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(), null));
+        commitFixture();
         var run = admin.startReconciliation(properties.getKnowledgeIndexing().getGenerationId(),
             100, false, actor);
         assertThat(run).containsEntry("state", "COMPLETED");
@@ -412,6 +448,7 @@ class KnowledgeIndexingWorkerIntegrationTests {
             java.util.List.of(key, newer))).thenReturn(Map.of(key, 1L, newer, 0L));
         when(vectorAudit.inventoryPage(fixture.event().indexGenerationId(), null, 100))
             .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(), null));
+        commitFixture();
         var run=admin.startReconciliation(fixture.event().indexGenerationId(), 100, false, fixture.userId());
         assertThat(run).containsEntry("state", "COMPLETED");
         assertThat(jdbc.queryForObject("""
@@ -443,10 +480,12 @@ class KnowledgeIndexingWorkerIntegrationTests {
         String certificate = "c".repeat(64);
         UUID token=(UUID)worker.claim(fixture.event().eventId(),
             claimCommand(fixture, UUID.randomUUID()), certificate).get("claimToken");
+        completePermit(fixture.event().eventId(), "UPSERT", token, certificate, "SUCCEEDED", "NONE");
         worker.result(fixture.event().eventId(),
             indexedResult(fixture.event().eventId(), token, UUID.randomUUID()), certificate);
         var key=new KnowledgeVectorAudit.SourceKey("ACTION_ITEM",fixture.itemId(),
             fixture.meetingId(),fixture.event().sourceRevision());
+        commitFixture();
         var failed=admin.startReconciliation(fixture.event().indexGenerationId(),
             10,true,fixture.userId());
         assertThat(failed).containsEntry("state","FAILED");
@@ -468,6 +507,7 @@ class KnowledgeIndexingWorkerIntegrationTests {
             UUID.randomUUID(), UUID.randomUUID(), 3);
         when(vectorAudit.inventoryPage(generation, null, 10))
             .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(source), null));
+        commitFixture();
         var run = admin.startReconciliation(generation, 10, false, UUID.randomUUID());
         assertThat(run).containsEntry("state","COMPLETED")
             .containsEntry("phase","VECTORS")
@@ -494,6 +534,7 @@ class KnowledgeIndexingWorkerIntegrationTests {
             .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(source),"7"));
         when(vectorAudit.inventoryPage(generation,"7",1))
             .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(),null));
+        commitFixture();
         var first=admin.startReconciliation(generation,1,true,UUID.randomUUID());
         assertThat(first).containsEntry("state","RUNNING")
             .containsEntry("phase","VECTORS")
@@ -513,6 +554,7 @@ class KnowledgeIndexingWorkerIntegrationTests {
         when(vectorAudit.inventoryPage(generation, null, 10))
             .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(source), "abcd"));
 
+        commitFixture();
         var result = admin.startReconciliation(generation, 10, true, UUID.randomUUID());
 
         assertThat(result).containsEntry("state", "FAILED")
@@ -537,6 +579,7 @@ class KnowledgeIndexingWorkerIntegrationTests {
             VALUES (?,? ,10,'VECTORS','RUNNING','abcd')
             """, runId, generation);
 
+        commitFixture();
         var result = admin.resumeReconciliation(runId, UUID.randomUUID());
 
         assertThat(result).containsEntry("state", "FAILED")
@@ -559,6 +602,7 @@ class KnowledgeIndexingWorkerIntegrationTests {
             .thenReturn(Map.of(key,2L));
         when(vectorAudit.inventoryPage(generation,null,10))
             .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(key),null));
+        commitFixture();
         var result=admin.startReconciliation(generation,10,false,actor);
         assertThat(result).containsEntry("state","COMPLETED")
             .containsEntry("inventoryComplete",true).containsEntry("repairedCount",0L);
@@ -587,6 +631,7 @@ class KnowledgeIndexingWorkerIntegrationTests {
             .thenReturn(Map.of(key,2L,next,0L));
         when(vectorAudit.inventoryPage(event.indexGenerationId(),null,10))
             .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(),null));
+        commitFixture();
         var first=admin.startReconciliation(event.indexGenerationId(),10,false,fixture.userId());
         assertThat(first).containsEntry("state","COMPLETED");
         UUID firstIntent=jdbc.queryForObject("""
@@ -634,6 +679,7 @@ class KnowledgeIndexingWorkerIntegrationTests {
             indexedResult(fixture.event().eventId(), firstToken, UUID.randomUUID()), firstCertificate))
             .isInstanceOf(WorkerException.class).hasMessage("WORKER_LEASE_LOST");
 
+        completePermit(fixture.event().eventId(), "UPSERT", secondToken, firstCertificate, "SUCCEEDED", "NONE");
         assertThat(worker.result(fixture.event().eventId(),
             indexedResult(fixture.event().eventId(), secondToken, UUID.randomUUID()), firstCertificate))
             .containsEntry("state", "INDEXED");
@@ -650,6 +696,8 @@ class KnowledgeIndexingWorkerIntegrationTests {
         var retry = new KnowledgeIndexingWorkerCommands.Result("1.0", fixture.event().eventId(), firstToken,
             UUID.randomUUID(), "RETRYABLE_FAILURE", "rag-t02-bge-m3-v1", 0, "d".repeat(64),
             "QDRANT_UNAVAILABLE");
+        completePermit(fixture.event().eventId(), "UPSERT", firstToken, certificate, "FAILED",
+            "QDRANT_UNAVAILABLE");
         assertThat(worker.result(fixture.event().eventId(), retry, certificate))
             .containsEntry("state", "RETRYABLE_FAILURE").containsEntry("acknowledge", false);
         assertThatThrownBy(() -> worker.claim(fixture.event().eventId(),
@@ -661,6 +709,7 @@ class KnowledgeIndexingWorkerIntegrationTests {
         UUID secondToken = (UUID) worker.claim(fixture.event().eventId(),
             claimCommand(fixture, UUID.randomUUID()), certificate).get("claimToken");
         assertThat(secondToken).isNotEqualTo(firstToken);
+        completePermit(fixture.event().eventId(), "UPSERT", secondToken, certificate, "SUCCEEDED", "NONE");
         assertThat(worker.result(fixture.event().eventId(),
             indexedResult(fixture.event().eventId(), secondToken, UUID.randomUUID()), certificate))
             .containsEntry("state", "INDEXED");
@@ -673,6 +722,7 @@ class KnowledgeIndexingWorkerIntegrationTests {
         String certificate = "c".repeat(64);
         UUID oldToken = (UUID) worker.claim(fixture.event().eventId(),
             claimCommand(fixture, UUID.randomUUID()), certificate).get("claimToken");
+        completePermit(fixture.event().eventId(), "UPSERT", oldToken, certificate, "SUCCEEDED", "NONE");
 
         jdbc.update("UPDATE action_items SET title='Updated official worker task', version=version+1, "
             + "updated_at=CURRENT_TIMESTAMP WHERE id=?", fixture.itemId());
@@ -906,6 +956,15 @@ class KnowledgeIndexingWorkerIntegrationTests {
     private KnowledgeIndexingWorkerCommands.Result indexedResult(UUID eventId, UUID claimToken, UUID resultId) {
         return new KnowledgeIndexingWorkerCommands.Result("1.0", eventId, claimToken, resultId,
             "INDEXED", "rag-t02-bge-m3-v1", 1, "d".repeat(64), "NONE");
+    }
+
+    private void completePermit(UUID eventId, String operation, UUID claimToken, String certificate,
+            String state, String outcomeCode) {
+        Map<String, Object> acquired = worker.acquirePermit(eventId,
+            new KnowledgeIndexingWorkerCommands.PermitAcquire("1.0", eventId, claimToken, operation),
+            certificate);
+        worker.completePermit(eventId, new KnowledgeIndexingWorkerCommands.PermitComplete("1.0", eventId,
+            (UUID) acquired.get("permitId"), claimToken, state, outcomeCode), certificate);
     }
 
     private record PublishedAction(UUID userId, UUID meetingId, UUID itemId,
