@@ -163,6 +163,11 @@ class KnowledgeIndexingWorkerIntegrationTests {
                 claimToken, generationId, executionId), certificate))
             .isInstanceOf(WorkerException.class)
             .hasMessage("WORKER_PERMIT_ALREADY_STARTED");
+        assertThatThrownBy(() -> worker.acquirePermit(fixture.event().eventId(),
+            new KnowledgeIndexingWorkerCommands.PermitAcquire("1.0", fixture.event().eventId(),
+                claimToken, "UPSERT", generationId, UUID.randomUUID()), certificate))
+            .isInstanceOf(WorkerException.class)
+            .hasMessage("WORKER_PERMIT_BUSY");
 
         var complete = worker.completePermit(fixture.event().eventId(),
             new KnowledgeIndexingWorkerCommands.PermitComplete("1.0", fixture.event().eventId(), permitId,
@@ -171,6 +176,11 @@ class KnowledgeIndexingWorkerIntegrationTests {
         assertThatThrownBy(() -> worker.acquirePermit(fixture.event().eventId(),
             new KnowledgeIndexingWorkerCommands.PermitAcquire("1.0", fixture.event().eventId(),
                 claimToken, "UPSERT", generationId, executionId), certificate))
+            .isInstanceOf(WorkerException.class)
+            .hasMessage("WORKER_PERMIT_NOT_REUSABLE");
+        assertThatThrownBy(() -> worker.acquirePermit(fixture.event().eventId(),
+            new KnowledgeIndexingWorkerCommands.PermitAcquire("1.0", fixture.event().eventId(),
+                claimToken, "UPSERT", generationId, UUID.randomUUID()), certificate))
             .isInstanceOf(WorkerException.class)
             .hasMessage("WORKER_PERMIT_NOT_REUSABLE");
     }
@@ -398,6 +408,211 @@ class KnowledgeIndexingWorkerIntegrationTests {
             .hasMessage("WORKER_PERMIT_STALE");
         assertThat(jdbc.queryForObject("SELECT state FROM knowledge_qdrant_write_permits WHERE permit_id=?",
             String.class, permitId)).isEqualTo("CANCELLED");
+    }
+
+    @Test
+    @Transactional
+    void cancelledPermitCanBeReacquiredAndCompletedUnderTheSameLiveClaim() {
+        var fixture = publishedAction();
+        String certificate = "c".repeat(64);
+        UUID claimToken = (UUID) worker.claim(fixture.event().eventId(),
+            claimCommand(fixture, UUID.randomUUID()), certificate).get("claimToken");
+        String generation = fixture.event().indexGenerationId();
+        UUID firstExecution = UUID.randomUUID();
+        UUID firstPermit = (UUID) worker.acquirePermit(fixture.event().eventId(),
+            new KnowledgeIndexingWorkerCommands.PermitAcquire("1.0", fixture.event().eventId(),
+                claimToken, "UPSERT", generation, firstExecution), certificate).get("permitId");
+
+        // A semantic mutation in the same generation makes the reservation
+        // stale without superseding the source owned by this work event.
+        insertActionItem(UUID.randomUUID(), fixture.meetingId(), fixture.userId(), "Epoch fence");
+        assertThatThrownBy(() -> worker.startPermit(fixture.event().eventId(),
+            new KnowledgeIndexingWorkerCommands.PermitStart("1.0", fixture.event().eventId(),
+                firstPermit, claimToken, generation, firstExecution), certificate))
+            .isInstanceOf(WorkerException.class).hasMessage("WORKER_PERMIT_STALE");
+
+        UUID secondExecution = UUID.randomUUID();
+        Map<String, Object> second = worker.acquirePermit(fixture.event().eventId(),
+            new KnowledgeIndexingWorkerCommands.PermitAcquire("1.0", fixture.event().eventId(),
+                claimToken, "UPSERT", generation, secondExecution), certificate);
+        UUID secondPermit = (UUID) second.get("permitId");
+        assertThat(secondPermit).isNotEqualTo(firstPermit);
+        assertThat(second.get("mutationExecutionId")).isEqualTo(secondExecution);
+        assertThat(second.get("state")).isEqualTo("RESERVED");
+
+        assertThat(worker.startPermit(fixture.event().eventId(),
+            new KnowledgeIndexingWorkerCommands.PermitStart("1.0", fixture.event().eventId(),
+                secondPermit, claimToken, generation, secondExecution), certificate))
+            .containsEntry("state", "RUNNING");
+        assertThat(worker.completePermit(fixture.event().eventId(),
+            new KnowledgeIndexingWorkerCommands.PermitComplete("1.0", fixture.event().eventId(),
+                secondPermit, claimToken, generation, secondExecution, "SUCCEEDED", "NONE"), certificate))
+            .containsEntry("state", "SUCCEEDED");
+
+        assertThat(worker.result(fixture.event().eventId(),
+            indexedResult(fixture.event().eventId(), claimToken, UUID.randomUUID()), certificate))
+            .containsEntry("state", "INDEXED").containsEntry("acknowledge", true);
+        assertThat(jdbc.queryForObject("""
+            SELECT state FROM knowledge_qdrant_write_permits WHERE permit_id=?
+            """, String.class, firstPermit)).isEqualTo("CANCELLED");
+        assertThat(jdbc.queryForObject("""
+            SELECT state FROM knowledge_qdrant_write_permits WHERE permit_id=?
+            """, String.class, secondPermit)).isEqualTo("SUCCEEDED");
+        assertThat(jdbc.queryForObject("""
+            SELECT COUNT(*) FROM knowledge_qdrant_write_permits
+             WHERE event_id=? AND started_at IS NOT NULL
+            """, Integer.class, fixture.event().eventId())).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+            SELECT COUNT(*) FROM knowledge_qdrant_write_permits
+             WHERE event_id=? AND claim_token_sha256=?
+            """, Integer.class, fixture.event().eventId(),
+            KnowledgeIndexingWorkerCommands.tokenHash(claimToken))).isEqualTo(2);
+    }
+
+    @Test
+    @Transactional
+    void concurrentReacquisitionAfterCancellationAllocatesExactlyOneReplacement() throws Exception {
+        var fixture = publishedAction();
+        String certificate = "c".repeat(64);
+        UUID claimToken = (UUID) worker.claim(fixture.event().eventId(),
+            claimCommand(fixture, UUID.randomUUID()), certificate).get("claimToken");
+        String generation = fixture.event().indexGenerationId();
+        UUID firstExecution = UUID.randomUUID();
+        UUID firstPermit = (UUID) worker.acquirePermit(fixture.event().eventId(),
+            new KnowledgeIndexingWorkerCommands.PermitAcquire("1.0", fixture.event().eventId(),
+                claimToken, "UPSERT", generation, firstExecution), certificate).get("permitId");
+        insertActionItem(UUID.randomUUID(), fixture.meetingId(), fixture.userId(), "Concurrent recovery fence");
+        assertThatThrownBy(() -> worker.startPermit(fixture.event().eventId(),
+            new KnowledgeIndexingWorkerCommands.PermitStart("1.0", fixture.event().eventId(),
+                firstPermit, claimToken, generation, firstExecution), certificate))
+            .isInstanceOf(WorkerException.class).hasMessage("WORKER_PERMIT_STALE");
+        commitFixture();
+
+        CountDownLatch ready = new CountDownLatch(2), start = new CountDownLatch(1);
+        var executor = Executors.newFixedThreadPool(2);
+        try {
+            var futures = new java.util.ArrayList<java.util.concurrent.Future<Object>>();
+            for (int i = 0; i < 2; i++) {
+                futures.add(executor.submit(() -> {
+                    ready.countDown();
+                    if (!start.await(20, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("Concurrent recovery gate timed out");
+                    }
+                    try {
+                        return worker.acquirePermit(fixture.event().eventId(),
+                            new KnowledgeIndexingWorkerCommands.PermitAcquire("1.0",
+                                fixture.event().eventId(), claimToken, "UPSERT", generation,
+                                UUID.randomUUID()), certificate);
+                    } catch (WorkerException conflict) {
+                        return conflict.getMessage();
+                    }
+                }));
+            }
+            assertThat(ready.await(20, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+            var results = new java.util.ArrayList<Object>();
+            for (var future : futures) results.add(future.get(90, TimeUnit.SECONDS));
+
+            assertThat(results.stream().filter(result -> result instanceof Map<?, ?>)).hasSize(1);
+            assertThat(results).contains("WORKER_PERMIT_BUSY");
+            assertThat(jdbc.queryForObject("""
+                SELECT COUNT(*) FROM knowledge_qdrant_write_permits
+                 WHERE event_id=? AND state='RESERVED'
+                """, Integer.class, fixture.event().eventId())).isEqualTo(1);
+            assertThat(jdbc.queryForObject("""
+                SELECT COUNT(*) FROM knowledge_qdrant_write_permits
+                 WHERE event_id=? AND claim_token_sha256=?
+                """, Integer.class, fixture.event().eventId(),
+                KnowledgeIndexingWorkerCommands.tokenHash(claimToken))).isEqualTo(2);
+        } finally {
+            start.countDown();
+            executor.shutdownNow();
+            assertThat(executor.awaitTermination(20, TimeUnit.SECONDS)).isTrue();
+        }
+    }
+
+    @Test
+    @Transactional
+    void multipleCancelledAttemptsRemainHistoryBeforeTheNextExecutablePermit() {
+        var fixture = publishedAction();
+        String certificate = "c".repeat(64);
+        UUID claimToken = (UUID) worker.claim(fixture.event().eventId(),
+            claimCommand(fixture, UUID.randomUUID()), certificate).get("claimToken");
+        String generation = fixture.event().indexGenerationId();
+        UUID firstExecution = UUID.randomUUID();
+        UUID firstPermit = (UUID) worker.acquirePermit(fixture.event().eventId(),
+            new KnowledgeIndexingWorkerCommands.PermitAcquire("1.0", fixture.event().eventId(),
+                claimToken, "UPSERT", generation, firstExecution), certificate).get("permitId");
+        insertActionItem(UUID.randomUUID(), fixture.meetingId(), fixture.userId(), "First cancellation");
+        assertThatThrownBy(() -> worker.startPermit(fixture.event().eventId(),
+            new KnowledgeIndexingWorkerCommands.PermitStart("1.0", fixture.event().eventId(),
+                firstPermit, claimToken, generation, firstExecution), certificate))
+            .isInstanceOf(WorkerException.class).hasMessage("WORKER_PERMIT_STALE");
+
+        UUID secondExecution = UUID.randomUUID();
+        UUID secondPermit = (UUID) worker.acquirePermit(fixture.event().eventId(),
+            new KnowledgeIndexingWorkerCommands.PermitAcquire("1.0", fixture.event().eventId(),
+                claimToken, "UPSERT", generation, secondExecution), certificate).get("permitId");
+        insertActionItem(UUID.randomUUID(), fixture.meetingId(), fixture.userId(), "Second cancellation");
+        assertThatThrownBy(() -> worker.startPermit(fixture.event().eventId(),
+            new KnowledgeIndexingWorkerCommands.PermitStart("1.0", fixture.event().eventId(),
+                secondPermit, claimToken, generation, secondExecution), certificate))
+            .isInstanceOf(WorkerException.class).hasMessage("WORKER_PERMIT_STALE");
+
+        UUID thirdExecution = UUID.randomUUID();
+        UUID thirdPermit = (UUID) worker.acquirePermit(fixture.event().eventId(),
+            new KnowledgeIndexingWorkerCommands.PermitAcquire("1.0", fixture.event().eventId(),
+                claimToken, "UPSERT", generation, thirdExecution), certificate).get("permitId");
+        worker.startPermit(fixture.event().eventId(),
+            new KnowledgeIndexingWorkerCommands.PermitStart("1.0", fixture.event().eventId(),
+                thirdPermit, claimToken, generation, thirdExecution), certificate);
+        worker.completePermit(fixture.event().eventId(),
+            new KnowledgeIndexingWorkerCommands.PermitComplete("1.0", fixture.event().eventId(),
+                thirdPermit, claimToken, generation, thirdExecution, "SUCCEEDED", "NONE"), certificate);
+        worker.result(fixture.event().eventId(),
+            indexedResult(fixture.event().eventId(), claimToken, UUID.randomUUID()), certificate);
+
+        assertThat(jdbc.queryForList("""
+            SELECT state FROM knowledge_qdrant_write_permits
+             WHERE event_id=? ORDER BY attempt_sequence
+            """, String.class, fixture.event().eventId()))
+            .containsExactly("CANCELLED", "CANCELLED", "SUCCEEDED");
+        assertThat(jdbc.queryForObject("""
+            SELECT COUNT(*) FROM knowledge_qdrant_write_permits
+             WHERE event_id=? AND started_at IS NOT NULL
+            """, Integer.class, fixture.event().eventId())).isEqualTo(1);
+    }
+
+    @Test
+    @Transactional
+    void sourceRevisionChangeAfterCancellationRejectsRecoveryWithoutIssuingPermit() {
+        var fixture = publishedAction();
+        String certificate = "c".repeat(64);
+        UUID claimToken = (UUID) worker.claim(fixture.event().eventId(),
+            claimCommand(fixture, UUID.randomUUID()), certificate).get("claimToken");
+        String generation = fixture.event().indexGenerationId();
+        UUID firstExecution = UUID.randomUUID();
+        UUID firstPermit = (UUID) worker.acquirePermit(fixture.event().eventId(),
+            new KnowledgeIndexingWorkerCommands.PermitAcquire("1.0", fixture.event().eventId(),
+                claimToken, "UPSERT", generation, firstExecution), certificate).get("permitId");
+        insertActionItem(UUID.randomUUID(), fixture.meetingId(), fixture.userId(), "Epoch fence");
+        assertThatThrownBy(() -> worker.startPermit(fixture.event().eventId(),
+            new KnowledgeIndexingWorkerCommands.PermitStart("1.0", fixture.event().eventId(),
+                firstPermit, claimToken, generation, firstExecution), certificate))
+            .isInstanceOf(WorkerException.class).hasMessage("WORKER_PERMIT_STALE");
+
+        jdbc.update("UPDATE action_items SET title='Source superseded',version=version+1 WHERE id=?",
+            fixture.itemId());
+        assertThatThrownBy(() -> worker.acquirePermit(fixture.event().eventId(),
+            new KnowledgeIndexingWorkerCommands.PermitAcquire("1.0", fixture.event().eventId(),
+                claimToken, "UPSERT", generation, UUID.randomUUID()), certificate))
+            .isInstanceOf(WorkerException.class).hasMessage("WORKER_SOURCE_SUPERSEDED");
+        assertThat(jdbc.queryForObject("""
+            SELECT COUNT(*) FROM knowledge_qdrant_write_permits WHERE event_id=?
+            """, Integer.class, fixture.event().eventId())).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+            SELECT state FROM knowledge_indexing_work WHERE event_id=?
+            """, String.class, fixture.event().eventId())).isEqualTo("SUPERSEDED");
     }
 
     @Test

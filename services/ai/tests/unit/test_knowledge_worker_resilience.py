@@ -197,6 +197,7 @@ class FakeCore:
         self.permit_count = 0
         self.started_permits = []
         self.completed_permits = []
+        self.permits = []
 
     async def lookup(self, _event, **_options):
         return status_for(self.item, self.state, attempt=self.claim_count)
@@ -224,21 +225,36 @@ class FakeCore:
 
     async def acquire_write_permit(self, _event, _claim, **_options):
         self.permit_count += 1
-        return SimpleNamespace(
+        if any(permit.state in {"OPEN", "RESERVED", "RUNNING"} for permit in self.permits):
+            raise CoreError(409, "WORKER_PERMIT_BUSY")
+        if any(permit.state in {"SUCCEEDED", "FAILED"} for permit in self.permits):
+            raise CoreError(409, "WORKER_PERMIT_NOT_REUSABLE")
+        permit = SimpleNamespace(
             permitId=str(uuid4()),
             state="RESERVED",
             mutationExecutionId=str(uuid4()),
         )
+        self.permits.append(permit)
+        return permit
 
     async def start_write_permit(self, _event, _claim, permit, **_options):
+        if permit.state == "RUNNING":
+            raise CoreError(409, "WORKER_PERMIT_ALREADY_STARTED")
+        if permit.state != "RESERVED":
+            raise CoreError(409, "WORKER_PERMIT_NOT_STARTABLE")
+        permit.state = "RUNNING"
         self.started_permits.append(permit.permitId)
-        return SimpleNamespace(
-            permitId=permit.permitId,
-            state="RUNNING",
-            mutationExecutionId=permit.mutationExecutionId,
-        )
+        return permit
 
     async def complete_write_permit(self, _event, _claim, permit, *, state, outcome_code, **_options):
+        if permit.state in {"SUCCEEDED", "FAILED"}:
+            if permit.state == state and permit.outcome_code == outcome_code:
+                return SimpleNamespace(permitId=permit.permitId, state=state)
+            raise CoreError(409, "WORKER_PERMIT_CONFLICT")
+        if permit.state != "RUNNING":
+            raise CoreError(409, "WORKER_PERMIT_NOT_RUNNING")
+        permit.state = state
+        permit.outcome_code = outcome_code
         self.completed_permits.append((permit.permitId, state, outcome_code))
         return SimpleNamespace(permitId=permit.permitId, state=state)
 
@@ -408,18 +424,24 @@ def test_stale_reserved_permit_is_reacquired_before_qdrant_mutation():
             async def start_write_permit(self, event_value, claim_value, permit, **options):
                 if self.stale:
                     self.stale = False
+                    permit.state = "CANCELLED"
                     raise CoreError(409, "WORKER_PERMIT_STALE")
                 return await super().start_write_permit(event_value, claim_value, permit, **options)
 
         core = StaleOnceCore(item)
         worker.core = core
+        mutation_calls = []
         outcome = await worker._run_permitted_mutation(
-            item, claim, Guard(), lambda: _IndexOutcome("INDEXED", 1, (str(uuid4()),)),
+            item, claim, Guard(), lambda: (
+                mutation_calls.append(True) or _IndexOutcome("INDEXED", 1, (str(uuid4()),))
+            ),
         )
 
         assert outcome.state == "INDEXED"
         assert core.permit_count == 2
         assert len(core.started_permits) == 1
+        assert [permit.state for permit in core.permits] == ["CANCELLED", "SUCCEEDED"]
+        assert mutation_calls == [True]
 
     asyncio.run(run())
 
@@ -444,6 +466,7 @@ def test_repeated_stale_permits_are_bounded_before_qdrant_mutation():
 
         class AlwaysStaleCore(FakeCore):
             async def start_write_permit(self, *_args, **_options):
+                self.permits[-1].state = "CANCELLED"
                 raise CoreError(409, "WORKER_PERMIT_STALE")
 
         core = AlwaysStaleCore(item)
@@ -455,6 +478,7 @@ def test_repeated_stale_permits_are_bounded_before_qdrant_mutation():
 
         assert failure.value.code == "WORKER_PERMIT_STALE"
         assert core.permit_count == 2
+        assert [permit.state for permit in core.permits] == ["CANCELLED", "CANCELLED"]
         assert mutation_calls == []
 
     asyncio.run(run())

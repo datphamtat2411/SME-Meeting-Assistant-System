@@ -238,38 +238,58 @@ public class KnowledgeIndexingWorkerService {
                    worker_certificate_sha256,generation_epoch,state,outcome_code,
                    outcome_summary,created_at,reserved_at,started_at,completed_at,
                    mutation_execution_id
-              FROM knowledge_qdrant_write_permits
-             WHERE event_id=? AND claim_token_sha256=? AND operation=? FOR UPDATE
+               FROM knowledge_qdrant_write_permits
+              WHERE event_id=? AND claim_token_sha256=? AND operation=?
+              ORDER BY CASE WHEN state IN ('OPEN','RESERVED','RUNNING') THEN 0 ELSE 1 END,
+                       attempt_sequence DESC,created_at DESC,permit_id DESC
+              FOR UPDATE
             """, this::permit, eventId, tokenHash, command.operation());
         if (!matching.isEmpty()) {
-            Permit existing = matching.getFirst();
-            if (!certificateFingerprint.equals(existing.workerCertificateSha256())) {
+            if (matching.stream().anyMatch(existing ->
+                    !certificateFingerprint.equals(existing.workerCertificateSha256()))) {
                 metrics.permitReservationConflict();
                 throw WorkerException.conflict("WORKER_PERMIT_CONFLICT");
             }
-            if (!command.mutationExecutionId().equals(existing.mutationExecutionId())) {
-                metrics.permitReservationConflict();
-                throw WorkerException.conflict("WORKER_PERMIT_BUSY");
-            }
-            // A retry of the same reservation is safe only while it is still
-            // reserved.  RUNNING and terminal rows are never capabilities.
-            if (!"RESERVED".equals(existing.state())) {
+
+            Permit exact = matching.stream()
+                .filter(existing -> command.mutationExecutionId().equals(existing.mutationExecutionId()))
+                .findFirst().orElse(null);
+            if (exact != null && !"RESERVED".equals(exact.state())) {
                 metrics.permitReservationConflict();
                 throw WorkerException.conflict("WORKER_PERMIT_NOT_REUSABLE");
             }
-            return permitData(existing);
+
+            // A retry of the same reservation is safe only while it is still
+            // reserved. RUNNING and all terminal rows are never capabilities.
+            if (exact != null) return permitData(exact);
+
+            Permit unresolved = matching.stream()
+                .filter(existing -> Set.of("OPEN", "RESERVED", "RUNNING").contains(existing.state()))
+                .findFirst().orElse(null);
+            if (unresolved != null) {
+                metrics.permitReservationConflict();
+                throw WorkerException.conflict("WORKER_PERMIT_BUSY");
+            }
+
+            // A failed or successful execution must be retried through a new
+            // durable work claim. Only pre-start cancellation permits another
+            // execution under this still-live claim.
+            if (matching.stream().anyMatch(existing ->
+                    Set.of("SUCCEEDED", "FAILED").contains(existing.state()))) {
+                metrics.permitReservationConflict();
+                throw WorkerException.conflict("WORKER_PERMIT_NOT_REUSABLE");
+            }
         }
         Boolean sourcePermitOpen = jdbc.queryForObject("""
             SELECT EXISTS(
                 SELECT 1
                   FROM knowledge_qdrant_write_permits p
                   JOIN knowledge_indexing_work w ON w.event_id=p.event_id
-                 WHERE w.meeting_id=? AND w.source_type=? AND w.source_id=?
-                   AND p.generation_id=?
-                   AND (p.state='RUNNING'
-                        OR (p.state='RESERVED' AND p.generation_epoch=?)))
+                  WHERE w.meeting_id=? AND w.source_type=? AND w.source_id=?
+                    AND p.generation_id=?
+                    AND p.state IN ('OPEN','RESERVED','RUNNING'))
             """, Boolean.class, work.meetingId(), work.sourceType(), work.sourceId(),
-            work.indexGenerationId(), generation.writeEpoch());
+            work.indexGenerationId());
         if (Boolean.TRUE.equals(sourcePermitOpen)) {
             metrics.permitReservationConflict();
             throw WorkerException.conflict("WORKER_PERMIT_BUSY");
@@ -489,11 +509,12 @@ public class KnowledgeIndexingWorkerService {
                    worker_certificate_sha256,generation_epoch,state,outcome_code,
                    outcome_summary,created_at,reserved_at,started_at,completed_at,
                    mutation_execution_id
-              FROM knowledge_qdrant_write_permits
-             WHERE event_id=? AND claim_token_sha256=? AND operation=?
-               AND generation_id=? AND worker_certificate_sha256=?
-             ORDER BY created_at DESC LIMIT 1 FOR UPDATE
-             """, this::permit, work.eventId(), tokenHash, work.operation(),
+               FROM knowledge_qdrant_write_permits
+              WHERE event_id=? AND claim_token_sha256=? AND operation=?
+                AND generation_id=? AND worker_certificate_sha256=?
+              ORDER BY attempt_sequence DESC,created_at DESC,permit_id DESC
+              LIMIT 1 FOR UPDATE
+              """, this::permit, work.eventId(), tokenHash, work.operation(),
              work.indexGenerationId(), certificateFingerprint)
             .stream().findFirst().orElseThrow(() -> WorkerException.conflict("WORKER_PERMIT_REQUIRED"));
         if (Set.of("OPEN", "RESERVED", "RUNNING").contains(permit.state())) {
