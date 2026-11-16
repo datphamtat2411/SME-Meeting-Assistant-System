@@ -5,7 +5,7 @@ The existing outbox, PostgreSQL work ledger, producer claims, certificate-bound 
 
 1. **Canonical inventory** — The Core reconciliation scans the union of eligible canonical TRANSCRIPT/SUMMARY/DECISION/ACTION_ITEM sources and existing latest generation UPSERT work, in stable keyset order. A canonical source without any work row is reported as `MISSING_WORK`; an authorized reindex creates a durable outbox/work intent inside the transaction. Multiple UPSERT attempts are deduplicated by source identity/revision and latest intent sequence.
 2. **Known-work verification** — Generation-scoped point counts cross authenticated Core–AI transport; missing or incomplete points can be reindexed. Excess point counts or missing indexed receipt counts go to `MANUAL_REVIEW` rather than unsafe blind upserts. Stale revisions are invalidated by exact revision (never by implicitly re-upserting the current revision).
-3. **Full vector identity discovery** — The AI Qdrant adapter pages through **every point in the generation-isolated collection** (at most 500 per request), fails closed on any point carrying a missing/foreign generation identity, returns identity/revision only, validates every payload and refuses malformed/incompatible generations. Core persists `phase`, source checkpoint, `vector_cursor`, `vector_scanned_count` and `inventory_complete` in Flyway V51. Each admin resume advances at most one inventory page; a failed scan cannot report full coverage. Previous runs remain historically visible but `inventoryComplete=false`.
+3. **Full vector identity discovery** — The AI Qdrant adapter pages through **every point in the generation-isolated collection** (at most 500 per request), fails closed on any point carrying a missing/foreign generation identity, returns identity/revision only, validates every payload and refuses malformed/incompatible generations. Core persists `phase`, source checkpoint, `vector_cursor`, `vector_scanned_count` and `inventory_complete` in Flyway V51, and records every accepted non-terminal cursor in the run-scoped V58 cursor history. Each admin resume advances at most one inventory page; a failed scan cannot report full coverage. Previous runs remain historically visible but `inventoryComplete=false`.
 4. **Orphans** — Vectors without a matching generation-specific Core UPSERT work row produce `ORPHANED_POINTS/MANUAL_REVIEW`. This is **not** a delete instruction: destructive Qdrant cleanup needs confirmed source identity, generation authorization and operator-approved scoped action. The Core source verifier still rejects deleted/ineligible/out-of-scope identities on retrieval.
 5. **Recovery** — A temporary or malformed vector audit marks the run `FAILED` with a safe error code. An administrator can resume those explicitly retryable failures from durable checkpoints, rather than inventing completion. Event acceptance remains fenced/idempotent in existing workers.
 6. **Generation and write fencing** — V53 and V54 remain immutable; V55 and V56 are forward-only. Semantic work/result mutations advance the generation epoch while bookkeeping-only changes do not. Summary snapshots include a durable `selection_epoch`, so changing the current selection creates a new immutable snapshot identity even when the public summary revision is unchanged. Source-child triggers evaluate both OLD and NEW eligibility, including the final transcript-segment delete case, so candidate readiness cannot retain an obsolete source. A Qdrant permit is reserved with an execution identity, spent exactly once as `RESERVED -> RUNNING`, and completed only after the physical worker mutation returns. A reserved permit that becomes stale before execution is fenced as `CANCELLED` with `WORKER_PERMIT_STALE`; `RUNNING` permits are never auto-cancelled. Legacy `OPEN` permits are never auto-expired or auto-closed.
@@ -32,21 +32,45 @@ mismatch remains HTTP 409.
 Core validates a persisted cursor before transport and validates the decoded
 `nextCursor` before accepting a page. Local legacy corruption is recorded as
 `VECTOR_CURSOR_INVALID`; malformed AI/Qdrant inventory data is recorded as
-`VECTOR_AUDIT_INVALID`; temporary transport/provider failure is
+`VECTOR_AUDIT_INVALID`; a repeated canonical cursor is recorded as the
+non-retryable `VECTOR_CURSOR_CYCLE`; temporary transport/provider failure is
 `VECTOR_AUDIT_UNAVAILABLE`; and generation mismatch is recorded separately.
-Only the unavailable and retryable invalid-audit classes can be resumed.
+Only temporary/unavailable and retryable invalid-audit classes can be resumed.
 
-The V51 `VARCHAR(36)` storage and existing check are intentionally not rewritten
-and no stronger migration is applied in this change. A stricter `NOT VALID`
-check would still reject updates to pre-existing invalid rows, blocking Core
-from marking those runs failed. Boundary validation therefore provides the
-strict semantic contract without silently changing legacy checkpoint values;
-invalid legacy rows fail closed on their next resume attempt.
+The V51 `VARCHAR(36)` storage and existing check remain unchanged. V58 adds
+`knowledge_reconciliation_cursor_history` with a `(run_id, canonical_cursor)`
+primary key and preserves the current valid checkpoint of an existing run as
+recoverable history without rewriting the run row. Malformed legacy values are
+left untouched and fail closed as `VECTOR_CURSOR_INVALID` on their next resume
+attempt. V58 never stores Qdrant payloads or meeting content.
 
-Checkpoint progress is committed only after the complete page, source identities,
-and next cursor have been validated. An invalid page cannot advance
-`vector_cursor`, `vector_scanned_count`, or `inventory_complete`, and therefore
-cannot satisfy generation activation readiness or trigger destructive repair.
+Checkpoint progress and cursor history are committed in the same short
+acceptance transaction, only after the complete page, source identities,
+generation fence and next cursor have been validated. A non-terminal
+`nextCursor` is inserted with database uniqueness; a conflict fails the run
+with `VECTOR_CURSOR_CYCLE` before findings, repairs, counters or checkpoint
+changes. An invalid or cyclic page cannot advance `vector_cursor`,
+`vector_scanned_count`, or `inventory_complete`, and therefore cannot satisfy
+generation activation readiness or trigger destructive repair.
+
+## Durable cursor history and recovery
+
+A pagination cycle is any non-null canonical cursor returned as `nextCursor`
+that already occurred in an accepted transition for the same reconciliation
+run. This includes immediate self-loops and multi-page loops such as
+`null → A → B → C → B`. Decimal aliases (`0007`/`7`) and UUID aliases
+(uppercase, compact hexadecimal and lowercase hyphenated forms) compare equal
+under the existing `InventoryCursor.normalize()` grammar. `nextCursor=null`
+is the terminal end marker and is not a cycle.
+
+`VECTOR_CURSOR_CYCLE` is deterministic evidence that the inventory boundary
+cannot establish trustworthy completeness. The run is failed, its last
+accepted checkpoint and counters remain intact, and its cursor history is
+retained for diagnosis. Operators should preserve the run ID/history, inspect
+Qdrant and provider pagination health, and start a fresh controlled inventory
+only after resolving the underlying issue; the failed run is intentionally not
+resumable. A cyclic or otherwise failed scan cannot certify or activate a
+candidate generation.
 
 ## Reproducible deterministic gates
 - API CI: `./mvnw -B -ntp verify` (includes the unchanged V53/V54 baseline and forward-only V55/V56 semantic and snapshot fencing migrations).
@@ -61,7 +85,7 @@ cannot satisfy generation activation readiness or trigger destructive repair.
 
 ## Explicit limits before PI-05
 - This is **implemented deterministic recovery logic**, not a claim that all real infrastructure interactions have been run. RAG-T06's five live scenarios remain `NOT RUN` until executed with isolated Core/AI, PostgreSQL, broker, Qdrant, mTLS and approved model artifacts.
-- Paginated Qdrant scans are not point-in-time transactional snapshots when writes occur concurrently. A release-grade inventory needs a quiescent controlled window or repeated scans with a reconciliation convergence criterion; otherwise findings are a bounded observation, not proof of zero drift.
+- Paginated Qdrant scans are not point-in-time transactional snapshots when writes occur concurrently. Cycle detection prevents repeated checkpoints but is not snapshot isolation and does not prove that the collection remained unchanged. A release-grade inventory still needs a quiescent controlled window or repeated scans with a reconciliation convergence criterion; otherwise findings are a bounded observation, not proof of zero drift.
 - Orphan point deletion is deliberately manual-review/fail-closed. A future reviewed, exact-identity lifecycle cleanup may be added if operator approval and safe authority checks are defined.
 - `state=COMPLETED` means the scan ended; operators must inspect `inventoryComplete`, `findingCount`, unresolved findings and generation readiness. Neither a clean CI result nor a zero-findings scan certifies historical product behavior or AI model quality.
 

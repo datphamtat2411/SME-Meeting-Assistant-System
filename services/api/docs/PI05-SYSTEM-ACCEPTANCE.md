@@ -52,16 +52,18 @@ AI rejects malformed request cursors with HTTP 422 before Qdrant access. AI
 rejects malformed Qdrant-generated offsets, stalled pagination, and invalid
 inventory payloads with a safe HTTP 503 response. Generation mismatch remains
 HTTP 409. Core rejects invalid persisted checkpoints before HTTP transport and
-rejects invalid or non-advancing `nextCursor` values before updating PostgreSQL.
-The internal reconciliation classifications are `VECTOR_CURSOR_INVALID`,
-`VECTOR_AUDIT_INVALID`, `VECTOR_AUDIT_UNAVAILABLE`, and
+rejects invalid or repeated canonical `nextCursor` values before updating
+PostgreSQL. Accepted non-terminal cursors are durably unique per run in V58;
+`VECTOR_CURSOR_CYCLE` is a stable, non-retryable failure. The internal
+reconciliation classifications are `VECTOR_CURSOR_INVALID`,
+`VECTOR_AUDIT_INVALID`, `VECTOR_CURSOR_CYCLE`, `VECTOR_AUDIT_UNAVAILABLE`, and
 `VECTOR_GENERATION_MISMATCH`; no public response includes exception text,
 collection identifiers, or storage details.
 
 ### Generation and worker fencing
 
 PI05-007 and PI05-008 evidence must identify the V53 baseline and forward-only
-V54, V55 and V56 migrations. Candidate readiness is fenced by the generation write epoch and
+V54, V55, V56 and V58 migrations. Candidate readiness is fenced by the generation write epoch and
 seal; `certificationUsable` is true only for a current, completed, clean,
 unrepaired dry-run certification. Qdrant mutation evidence must show a single
 permit execution identity moving `RESERVED -> RUNNING -> SUCCEEDED/FAILED`,
@@ -70,12 +72,21 @@ with the physical mutation completed before the terminal Core acknowledgement.
 Summary selection changes are independently fenced by `selection_epoch` and
 must never reuse immutable snapshot bytes from another selection epoch.
 
-The V51 cursor column is not rewritten and no migration silently normalizes
-legacy values. A legacy value that does not satisfy the semantic contract fails
-closed as `VECTOR_CURSOR_INVALID`; it cannot restart at page zero. A valid page
-updates the cursor and accepted scan count in one transaction. An invalid page
-leaves the cursor, count, completion flag, findings, and generation-promotion
-evidence unchanged.
+The V51 cursor column is not rewritten. V58 adds durable cursor history and
+backfills only a valid current legacy checkpoint into canonical history; a
+malformed legacy value remains unchanged and fails closed as
+`VECTOR_CURSOR_INVALID`, never restarting at page zero. A valid page updates
+the history, cursor and accepted scan count in one transaction. An invalid or
+cyclic page leaves the last accepted cursor/count, completion flag, findings
+and generation-promotion evidence unchanged. `null` is the terminal cursor,
+not a history entry.
+
+Cycle detection is not snapshot isolation or proof that Qdrant remained
+unchanged during a scan. Concurrent Qdrant writes can still cause omissions or
+duplicates between pages. Release-grade acceptance requires a quiescent or
+otherwise validated inventory window; a cyclic run must be preserved for
+diagnosis and cannot be resumed merely to obtain a green result or qualify a
+candidate generation.
 
 ## Execution
 ```bash

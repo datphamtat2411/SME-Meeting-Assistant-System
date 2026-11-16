@@ -27,6 +27,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.transaction.annotation.Transactional;
 
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.doReturn;
 
 @ActiveProfiles("test")
 @SpringBootTest
@@ -304,7 +305,7 @@ class KnowledgeIndexingWorkerIntegrationTests {
             if (calls.incrementAndGet() == 1) {
                 entered.countDown();
                 if (!release.await(20, TimeUnit.SECONDS)) throw new IllegalStateException("Inventory gate timed out");
-                return new KnowledgeVectorAudit.InventoryPage(java.util.List.of(lateSource), null);
+                return new KnowledgeVectorAudit.InventoryPage(java.util.List.of(lateSource), "7");
             }
             return new KnowledgeVectorAudit.InventoryPage(java.util.List.of(), null);
         });
@@ -320,6 +321,9 @@ class KnowledgeIndexingWorkerIntegrationTests {
                 release.countDown();
                 assertThat(first.get(20, TimeUnit.SECONDS)).containsEntry("state", "COMPLETED");
                 assertThat(jdbc.queryForObject("SELECT count(*) FROM knowledge_reconciliation_findings WHERE run_id=?", Integer.class, runId)).isZero();
+                assertThat(jdbc.queryForObject("""
+                    SELECT count(*) FROM knowledge_reconciliation_cursor_history WHERE run_id=?
+                    """, Integer.class, runId)).isZero();
                 assertThat(jdbc.queryForObject("SELECT claim_attempt FROM knowledge_reconciliation_runs WHERE id=?", Integer.class, runId)).isEqualTo(3);
             } finally { release.countDown(); }
         }
@@ -336,7 +340,8 @@ class KnowledgeIndexingWorkerIntegrationTests {
             assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
             entered.countDown();
             if (!release.await(20, TimeUnit.SECONDS)) throw new IllegalStateException("Inventory gate timed out");
-            return new KnowledgeVectorAudit.InventoryPage(java.util.List.of(), null);
+            return new KnowledgeVectorAudit.InventoryPage(java.util.List.of(
+                new KnowledgeVectorAudit.SourceKey("ACTION_ITEM", UUID.randomUUID(), UUID.randomUUID(), 0)), "7");
         });
         commitFixture();
         try (var executor = Executors.newSingleThreadExecutor()) {
@@ -350,6 +355,11 @@ class KnowledgeIndexingWorkerIntegrationTests {
                 assertThat(result.get(20, TimeUnit.SECONDS)).containsEntry("state", "FAILED")
                     .containsEntry("lastErrorCode", "GENERATION_EPOCH_MISMATCH")
                     .containsEntry("inventoryComplete", false);
+                UUID runId = jdbc.queryForObject("SELECT id FROM knowledge_reconciliation_runs WHERE generation_id=?",
+                    UUID.class, generation);
+                assertThat(jdbc.queryForObject("""
+                    SELECT count(*) FROM knowledge_reconciliation_cursor_history WHERE run_id=?
+                    """, Integer.class, runId)).isZero();
             } finally { release.countDown(); }
         }
     }
@@ -1287,6 +1297,279 @@ class KnowledgeIndexingWorkerIntegrationTests {
         assertThat(last).containsEntry("state","COMPLETED")
             .containsEntry("vectorScannedCount",1L)
             .containsEntry("findingCount",1L);
+        assertThat(jdbc.queryForObject("""
+            SELECT canonical_cursor FROM knowledge_reconciliation_cursor_history WHERE run_id=?
+            """, String.class, first.get("id"))).isEqualTo("7");
+    }
+
+    @Test
+    @Transactional
+    void multiPageVectorInventoryCycleFailsClosed() {
+        enableKnowledgeIndexing();
+        String generation = properties.getKnowledgeIndexing().getGenerationId();
+        var first = new KnowledgeVectorAudit.SourceKey("ACTION_ITEM", UUID.randomUUID(), UUID.randomUUID(), 0);
+        var second = new KnowledgeVectorAudit.SourceKey("ACTION_ITEM", UUID.randomUUID(), UUID.randomUUID(), 0);
+        when(vectorAudit.inventoryPage(generation, null, 10))
+            .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(first), "7"));
+        when(vectorAudit.inventoryPage(generation, "7", 10))
+            .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(second), "8"));
+        when(vectorAudit.inventoryPage(generation, "8", 10))
+            .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(first), "7"));
+
+        commitFixture();
+        var firstPage = admin.startReconciliation(generation, 10, true, UUID.randomUUID());
+        var secondPage = admin.resumeReconciliation((UUID) firstPage.get("id"), UUID.randomUUID());
+        var cycle = admin.resumeReconciliation((UUID) firstPage.get("id"), UUID.randomUUID());
+
+        assertThat(firstPage).containsEntry("state", "RUNNING").containsEntry("vectorCursor", "7");
+        assertThat(secondPage).containsEntry("state", "RUNNING").containsEntry("vectorCursor", "8");
+        assertThat(cycle).containsEntry("state", "FAILED")
+            .containsEntry("lastErrorCode", "VECTOR_CURSOR_CYCLE")
+            .containsEntry("vectorCursor", "8")
+            .containsEntry("vectorScannedCount", 2L);
+        assertThat(jdbc.queryForObject("""
+            SELECT COUNT(*) FROM knowledge_reconciliation_cursor_history WHERE run_id=?
+            """, Integer.class, firstPage.get("id"))).isEqualTo(2);
+        assertThat(jdbc.queryForObject("""
+            SELECT COUNT(*) FROM knowledge_reconciliation_findings WHERE run_id=?
+            """, Integer.class, firstPage.get("id"))).isEqualTo(2);
+    }
+
+    @Test
+    @Transactional
+    void immediateVectorInventorySelfLoopFailsClosedBeforeAcceptingThePage() {
+        enableKnowledgeIndexing();
+        String generation = properties.getKnowledgeIndexing().getGenerationId();
+        var source = new KnowledgeVectorAudit.SourceKey("ACTION_ITEM", UUID.randomUUID(), UUID.randomUUID(), 0);
+        when(vectorAudit.inventoryPage(generation, null, 10))
+            .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(source), "7"));
+        when(vectorAudit.inventoryPage(generation, "7", 10))
+            .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(source), "7"));
+
+        commitFixture();
+        var first = admin.startReconciliation(generation, 10, true, UUID.randomUUID());
+        var rejected = admin.resumeReconciliation((UUID) first.get("id"), UUID.randomUUID());
+
+        assertThat(rejected).containsEntry("state", "FAILED")
+            .containsEntry("lastErrorCode", "VECTOR_AUDIT_INVALID")
+            .containsEntry("vectorCursor", "7")
+            .containsEntry("vectorScannedCount", 1L)
+            .containsEntry("findingCount", 1L);
+        assertThat(jdbc.queryForObject("""
+            SELECT COUNT(*) FROM knowledge_reconciliation_cursor_history WHERE run_id=?
+            """, Integer.class, first.get("id"))).isEqualTo(1);
+    }
+
+    @Test
+    @Transactional
+    void multiPageVectorInventoryCycleReturningToAnEarlierPageFailsClosed() {
+        enableKnowledgeIndexing();
+        String generation = properties.getKnowledgeIndexing().getGenerationId();
+        var firstSource = new KnowledgeVectorAudit.SourceKey(
+            "ACTION_ITEM", UUID.randomUUID(), UUID.randomUUID(), 0);
+        var secondSource = new KnowledgeVectorAudit.SourceKey(
+            "ACTION_ITEM", UUID.randomUUID(), UUID.randomUUID(), 0);
+        var thirdSource = new KnowledgeVectorAudit.SourceKey(
+            "ACTION_ITEM", UUID.randomUUID(), UUID.randomUUID(), 0);
+        when(vectorAudit.inventoryPage(generation, null, 10))
+            .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(firstSource), "7"));
+        when(vectorAudit.inventoryPage(generation, "7", 10))
+            .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(secondSource), "8"));
+        when(vectorAudit.inventoryPage(generation, "8", 10))
+            .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(thirdSource), "9"));
+        when(vectorAudit.inventoryPage(generation, "9", 10))
+            .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(firstSource), "8"));
+
+        commitFixture();
+        var first = admin.startReconciliation(generation, 10, true, UUID.randomUUID());
+        var second = admin.resumeReconciliation((UUID) first.get("id"), UUID.randomUUID());
+        var third = admin.resumeReconciliation((UUID) first.get("id"), UUID.randomUUID());
+        var rejected = admin.resumeReconciliation((UUID) first.get("id"), UUID.randomUUID());
+
+        assertThat(second).containsEntry("vectorCursor", "8");
+        assertThat(third).containsEntry("vectorCursor", "9");
+        assertThat(rejected).containsEntry("state", "FAILED")
+            .containsEntry("lastErrorCode", "VECTOR_CURSOR_CYCLE")
+            .containsEntry("vectorCursor", "9")
+            .containsEntry("vectorScannedCount", 3L)
+            .containsEntry("findingCount", 3L);
+        assertThat(jdbc.queryForObject("""
+            SELECT COUNT(*) FROM knowledge_reconciliation_cursor_history WHERE run_id=?
+            """, Integer.class, first.get("id"))).isEqualTo(3);
+    }
+
+    @Test
+    @Transactional
+    void decimalCursorAliasesCannotBypassDurableCycleDetection() {
+        enableKnowledgeIndexing();
+        String generation = properties.getKnowledgeIndexing().getGenerationId();
+        var firstSource = new KnowledgeVectorAudit.SourceKey(
+            "ACTION_ITEM", UUID.randomUUID(), UUID.randomUUID(), 0);
+        var secondSource = new KnowledgeVectorAudit.SourceKey(
+            "ACTION_ITEM", UUID.randomUUID(), UUID.randomUUID(), 0);
+        var thirdSource = new KnowledgeVectorAudit.SourceKey(
+            "ACTION_ITEM", UUID.randomUUID(), UUID.randomUUID(), 0);
+        when(vectorAudit.inventoryPage(generation, null, 10))
+            .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(firstSource), "0007"));
+        when(vectorAudit.inventoryPage(generation, "7", 10))
+            .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(secondSource), "8"));
+        when(vectorAudit.inventoryPage(generation, "8", 10))
+            .thenReturn(new KnowledgeVectorAudit.InventoryPage(
+                java.util.List.of(thirdSource), "00000000000000000007"));
+
+        commitFixture();
+        var first = admin.startReconciliation(generation, 10, true, UUID.randomUUID());
+        var second = admin.resumeReconciliation((UUID) first.get("id"), UUID.randomUUID());
+        var rejected = admin.resumeReconciliation((UUID) first.get("id"), UUID.randomUUID());
+
+        assertThat(first).containsEntry("vectorCursor", "7");
+        assertThat(second).containsEntry("vectorCursor", "8");
+        assertThat(rejected).containsEntry("state", "FAILED")
+            .containsEntry("lastErrorCode", "VECTOR_CURSOR_CYCLE")
+            .containsEntry("vectorCursor", "8")
+            .containsEntry("vectorScannedCount", 2L);
+    }
+
+    @Test
+    @Transactional
+    void uuidCursorAliasesCannotBypassDurableCycleDetection() {
+        enableKnowledgeIndexing();
+        String generation = properties.getKnowledgeIndexing().getGenerationId();
+        String firstCompact = "abcdefabcdef4abc8defabcdefabcdef";
+        String firstCanonical = "abcdefab-cdef-4abc-8def-abcdefabcdef";
+        String secondCompact = "12345678123441238123123456789abc";
+        String secondCanonical = "12345678-1234-4123-8123-123456789abc";
+        var firstSource = new KnowledgeVectorAudit.SourceKey(
+            "ACTION_ITEM", UUID.randomUUID(), UUID.randomUUID(), 0);
+        var secondSource = new KnowledgeVectorAudit.SourceKey(
+            "ACTION_ITEM", UUID.randomUUID(), UUID.randomUUID(), 0);
+        var thirdSource = new KnowledgeVectorAudit.SourceKey(
+            "ACTION_ITEM", UUID.randomUUID(), UUID.randomUUID(), 0);
+        when(vectorAudit.inventoryPage(generation, null, 10))
+            .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(firstSource), firstCompact));
+        when(vectorAudit.inventoryPage(generation, firstCanonical, 10))
+            .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(secondSource), secondCompact));
+        when(vectorAudit.inventoryPage(generation, secondCanonical, 10))
+            .thenReturn(new KnowledgeVectorAudit.InventoryPage(
+                java.util.List.of(thirdSource), "ABCDEFAB-CDEF-4ABC-8DEF-ABCDEFABCDEF"));
+
+        commitFixture();
+        var first = admin.startReconciliation(generation, 10, true, UUID.randomUUID());
+        var second = admin.resumeReconciliation((UUID) first.get("id"), UUID.randomUUID());
+        var rejected = admin.resumeReconciliation((UUID) first.get("id"), UUID.randomUUID());
+
+        assertThat(first).containsEntry("vectorCursor", firstCanonical);
+        assertThat(second).containsEntry("vectorCursor", secondCanonical);
+        assertThat(rejected).containsEntry("state", "FAILED")
+            .containsEntry("lastErrorCode", "VECTOR_CURSOR_CYCLE")
+            .containsEntry("vectorCursor", secondCanonical)
+            .containsEntry("vectorScannedCount", 2L);
+    }
+
+    @Test
+    @Transactional
+    void concurrentResumeHasOnePageClaimAndOneAcceptedCursorTransition() throws Exception {
+        enableKnowledgeIndexing();
+        String generation = properties.getKnowledgeIndexing().getGenerationId();
+        var firstSource = new KnowledgeVectorAudit.SourceKey(
+            "ACTION_ITEM", UUID.randomUUID(), UUID.randomUUID(), 0);
+        var secondSource = new KnowledgeVectorAudit.SourceKey(
+            "ACTION_ITEM", UUID.randomUUID(), UUID.randomUUID(), 0);
+        when(vectorAudit.inventoryPage(generation, null, 10))
+            .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(firstSource), "7"));
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        when(vectorAudit.inventoryPage(generation, "7", 10)).thenAnswer(invocation -> {
+            entered.countDown();
+            if (!release.await(20, TimeUnit.SECONDS)) {
+                throw new IllegalStateException("Concurrent inventory gate timed out");
+            }
+            return new KnowledgeVectorAudit.InventoryPage(java.util.List.of(secondSource), "8");
+        });
+
+        commitFixture();
+        var first = admin.startReconciliation(generation, 10, true, UUID.randomUUID());
+        UUID runId = (UUID) first.get("id");
+        try (var executor = Executors.newSingleThreadExecutor()) {
+            var acceptedPage = executor.submit(() -> admin.resumeReconciliation(runId, UUID.randomUUID()));
+            assertThat(entered.await(20, TimeUnit.SECONDS)).isTrue();
+            var concurrent = admin.resumeReconciliation(runId, UUID.randomUUID());
+            assertThat(concurrent).containsEntry("vectorCursor", "7");
+            release.countDown();
+            var accepted = acceptedPage.get(20, TimeUnit.SECONDS);
+            assertThat(accepted).containsEntry("vectorCursor", "8");
+            assertThat(jdbc.queryForObject("""
+                SELECT COUNT(*) FROM knowledge_reconciliation_cursor_history WHERE run_id=?
+                """, Integer.class, runId)).isEqualTo(2);
+            assertThat(jdbc.queryForObject("""
+                SELECT vector_scanned_count FROM knowledge_reconciliation_runs WHERE id=?
+                """, Long.class, runId)).isEqualTo(2L);
+        } finally {
+            release.countDown();
+        }
+    }
+
+    @Test
+    @Transactional
+    void temporaryVectorTransportFailureRemainsRetryableWithoutHistoryMutation() {
+        enableKnowledgeIndexing();
+        String generation = properties.getKnowledgeIndexing().getGenerationId();
+        when(vectorAudit.inventoryPage(generation, null, 10))
+            .thenThrow(new AiCoreKnowledgeVectorAudit.KnowledgeVectorAuditException());
+
+        commitFixture();
+        var failed = admin.startReconciliation(generation, 10, true, UUID.randomUUID());
+        assertThat(failed).containsEntry("state", "FAILED")
+            .containsEntry("lastErrorCode", "VECTOR_AUDIT_UNAVAILABLE")
+            .containsEntry("vectorScannedCount", 0L);
+        assertThat(jdbc.queryForObject("""
+            SELECT COUNT(*) FROM knowledge_reconciliation_cursor_history WHERE run_id=?
+            """, Integer.class, failed.get("id"))).isZero();
+
+        doReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(), null))
+            .when(vectorAudit).inventoryPage(generation, null, 10);
+        var resumed = admin.resumeReconciliation((UUID) failed.get("id"), UUID.randomUUID());
+        assertThat(resumed).containsEntry("state", "COMPLETED")
+            .containsEntry("inventoryComplete", true)
+            .containsEntry("vectorScannedCount", 0L);
+    }
+
+    @Test
+    @Transactional
+    void cyclicCertificationCannotBeUsableOrActivateCandidateGeneration() {
+        enableKnowledgeIndexing();
+        String generation = "cursor-cycle-cert-" + UUID.randomUUID();
+        admin.prepare(generation, "cursor-cycle-cert-v1", "a".repeat(64),
+            "test-tokenizer", "cursor_cycle_cert_" + UUID.randomUUID());
+        assertThat(admin.refresh(generation)).containsEntry("state", "READY");
+        admin.seal(generation);
+
+        var firstSource = new KnowledgeVectorAudit.SourceKey(
+            "ACTION_ITEM", UUID.randomUUID(), UUID.randomUUID(), 0);
+        var secondSource = new KnowledgeVectorAudit.SourceKey(
+            "ACTION_ITEM", UUID.randomUUID(), UUID.randomUUID(), 0);
+        var thirdSource = new KnowledgeVectorAudit.SourceKey(
+            "ACTION_ITEM", UUID.randomUUID(), UUID.randomUUID(), 0);
+        when(vectorAudit.inventoryPage(generation, null, 10))
+            .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(firstSource), "7"));
+        when(vectorAudit.inventoryPage(generation, "7", 10))
+            .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(secondSource), "8"));
+        when(vectorAudit.inventoryPage(generation, "8", 10))
+            .thenReturn(new KnowledgeVectorAudit.InventoryPage(java.util.List.of(thirdSource), "7"));
+
+        commitFixture();
+        var first = admin.startCertification(generation, 10, UUID.randomUUID());
+        var second = admin.resumeReconciliation((UUID) first.get("id"), UUID.randomUUID());
+        var cycle = admin.resumeReconciliation((UUID) first.get("id"), UUID.randomUUID());
+
+        assertThat(second).containsEntry("vectorCursor", "8");
+        assertThat(cycle).containsEntry("state", "FAILED")
+            .containsEntry("lastErrorCode", "VECTOR_CURSOR_CYCLE")
+            .containsEntry("certificationUsable", false);
+        assertThat(admin.generation(generation)).containsEntry("certificationUsable", false);
+        assertThatThrownBy(() -> admin.activate(generation))
+            .isInstanceOf(org.springframework.web.server.ResponseStatusException.class)
+            .hasMessageContaining("clean current certification");
     }
 
     @Test

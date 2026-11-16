@@ -180,8 +180,8 @@ public class KnowledgeReconciliationService {
         try {
             KnowledgeVectorAudit.InventoryPage page = remoteAudit("VECTOR_INVENTORY",
                 () -> vectorAudit.inventoryPage(claim.generationId(), claim.vectorCursor(), claim.batchSize()));
-            validateInventoryPage(page, claim.vectorCursor(), claim.batchSize());
-            return acceptVector(claim, page, requestedByUserId);
+            String nextCursor = validateInventoryPage(page, claim.vectorCursor(), claim.batchSize());
+            return acceptVector(claim, page, nextCursor, requestedByUserId);
         } catch (AiCoreKnowledgeVectorAudit.KnowledgeVectorAuditException failure) {
             return fail(claim, failure.reconciliationCode());
         } catch (InvalidAuditResponse failure) {
@@ -329,7 +329,7 @@ public class KnowledgeReconciliationService {
     }
 
     private Map<String, Object> acceptVector(PageClaim claim, KnowledgeVectorAudit.InventoryPage page,
-            UUID requestedByUserId) {
+            String nextCursor, UUID requestedByUserId) {
         return executeTransaction(status -> {
             Run run = lockRun(claim.runId());
             if (!acceptanceFence(run, claim)) return runData(claim.runId());
@@ -339,6 +339,11 @@ public class KnowledgeReconciliationService {
             lockMeetings(observed);
             Generation generation = lockGeneration(claim.generationId());
             if (!fenceGeneration(run, generation)) return staleLocked(run, claim);
+
+            if (nextCursor != null && !recordAcceptedCursor(claim.runId(), nextCursor)) {
+                failLocked(claim.runId(), "VECTOR_CURSOR_CYCLE");
+                return runData(claim.runId());
+            }
 
             long findings = run.findingCount();
             for (KnowledgeVectorAudit.SourceKey source : page.sources().stream().distinct().toList()) {
@@ -360,7 +365,7 @@ public class KnowledgeReconciliationService {
                 findings += inserted;
             }
             long scanned = run.vectorScannedCount() + page.sources().size();
-            if (page.nextCursor() == null) {
+            if (nextCursor == null) {
                 jdbc.update("""
                     UPDATE knowledge_reconciliation_runs SET state='COMPLETED',inventory_complete=TRUE,
                         vector_scanned_count=?,finding_count=?,completed_at=CURRENT_TIMESTAMP,
@@ -377,7 +382,7 @@ public class KnowledgeReconciliationService {
                         expected_checkpoint_source_type=NULL,expected_checkpoint_source_id=NULL,
                         expected_checkpoint_source_revision=NULL,expected_vector_cursor=NULL,
                         updated_at=CURRENT_TIMESTAMP WHERE id=?
-                    """, page.nextCursor(), scanned, findings, claim.runId());
+                    """, nextCursor, scanned, findings, claim.runId());
             }
             return runData(claim.runId());
         });
@@ -480,7 +485,7 @@ public class KnowledgeReconciliationService {
             work.meetingId(), work.sourceRevision(), work.generationId(), pointCount, detail);
     }
 
-    private void validateInventoryPage(KnowledgeVectorAudit.InventoryPage page, String cursor, int batchSize) {
+    private String validateInventoryPage(KnowledgeVectorAudit.InventoryPage page, String cursor, int batchSize) {
         if (page == null || page.sources() == null || page.sources().size() > batchSize) {
             throw new InvalidAuditResponse();
         }
@@ -499,6 +504,15 @@ public class KnowledgeReconciliationService {
                     || !Set.of("TRANSCRIPT", "SUMMARY", "DECISION", "ACTION_ITEM")
                         .contains(source.sourceType())) throw new InvalidAuditResponse();
         }
+        return next;
+    }
+
+    private boolean recordAcceptedCursor(UUID runId, String canonicalCursor) {
+        return jdbc.update("""
+            INSERT INTO knowledge_reconciliation_cursor_history(run_id,canonical_cursor)
+            VALUES (?,?)
+            ON CONFLICT (run_id,canonical_cursor) DO NOTHING
+            """, runId, canonicalCursor) == 1;
     }
 
     private boolean completeSourceCounts(Map<KnowledgeVectorAudit.SourceKey, Long> counts,
