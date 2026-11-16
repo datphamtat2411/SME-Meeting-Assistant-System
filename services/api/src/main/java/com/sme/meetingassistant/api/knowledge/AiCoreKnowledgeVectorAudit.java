@@ -113,13 +113,19 @@ public class AiCoreKnowledgeVectorAudit implements KnowledgeVectorAudit {
     }
 
     private KnowledgeVectorAuditException classifyInventoryFailure(int statusCode, String body) {
-        if (statusCode == 503 && body != null) {
+        if (statusCode == 503 && body != null
+                && body.getBytes(StandardCharsets.UTF_8).length <= MAX_JSON_BYTES) {
             try {
                 JsonNode root = WorkerJson.parse(body.getBytes(StandardCharsets.UTF_8), MAX_JSON_BYTES);
+                WorkerJson.fields(root, "error");
                 JsonNode error = root.get("error");
-                JsonNode code = error == null ? null : error.get("code");
-                if (code != null && code.isString()
-                        && "inventory_integrity_failure".equals(code.asString())) {
+                WorkerJson.fields(error, "code", "message");
+                String code = WorkerJson.string(error, "code", 128);
+                WorkerJson.string(error, "message", 256);
+                if ("inventory_cursor_cycle".equals(code)) {
+                    return KnowledgeVectorAuditException.cursorCycle();
+                }
+                if ("inventory_integrity_failure".equals(code)) {
                     return KnowledgeVectorAuditException.invalidResponse();
                 }
             } catch (RuntimeException ignored) {
@@ -153,7 +159,10 @@ public class AiCoreKnowledgeVectorAudit implements KnowledgeVectorAudit {
         WorkerJson.require(after != null);
         String next = after.isNull() ? null : InventoryCursor.normalize(
             WorkerJson.string(root, "nextCursor", InventoryCursor.MAX_LENGTH));
-        WorkerJson.require(next == null || !next.equals(cursor) && !identities.isEmpty());
+        if (next != null && next.equals(cursor)) {
+            throw KnowledgeVectorAuditException.cursorCycle();
+        }
+        WorkerJson.require(next == null || !identities.isEmpty());
         return new InventoryPage(List.copyOf(identities), next);
     }
 
@@ -188,7 +197,8 @@ public class AiCoreKnowledgeVectorAudit implements KnowledgeVectorAudit {
             UNAVAILABLE,
             INVALID_CHECKPOINT,
             INVALID_RESPONSE,
-            GENERATION_MISMATCH
+            GENERATION_MISMATCH,
+            CURSOR_CYCLE
         }
 
         private final FailureKind kind;
@@ -218,6 +228,10 @@ public class AiCoreKnowledgeVectorAudit implements KnowledgeVectorAudit {
             return new KnowledgeVectorAuditException(FailureKind.GENERATION_MISMATCH);
         }
 
+        static KnowledgeVectorAuditException cursorCycle() {
+            return new KnowledgeVectorAuditException(FailureKind.CURSOR_CYCLE);
+        }
+
         public FailureKind kind() {
             return kind;
         }
@@ -228,6 +242,7 @@ public class AiCoreKnowledgeVectorAudit implements KnowledgeVectorAudit {
                 case INVALID_RESPONSE -> "VECTOR_AUDIT_INVALID";
                 case GENERATION_MISMATCH -> "VECTOR_GENERATION_MISMATCH";
                 case UNAVAILABLE -> "VECTOR_AUDIT_UNAVAILABLE";
+                case CURSOR_CYCLE -> "VECTOR_CURSOR_CYCLE";
             };
         }
     }

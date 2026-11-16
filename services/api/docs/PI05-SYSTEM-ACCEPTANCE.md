@@ -48,14 +48,19 @@ and UUIDs are normalized before transport and checkpoint persistence. A
 32-digit decimal-looking value is the 32-hex UUID form; it is not parsed as an
 overflowing integer.
 
-AI rejects malformed request cursors with HTTP 422 before Qdrant access. AI
-rejects malformed Qdrant-generated offsets, stalled pagination, and invalid
-inventory payloads with a safe HTTP 503 response. Generation mismatch remains
-HTTP 409. Core rejects invalid persisted checkpoints before HTTP transport and
-rejects invalid or repeated canonical `nextCursor` values before updating
-PostgreSQL. Accepted non-terminal cursors are durably unique per run in V58;
-Both immediate self-loops and historical repeats use the stable,
-non-retryable `VECTOR_CURSOR_CYCLE`. V59 adds `LEGACY_UNVERIFIED` and
+AI rejects malformed request cursors with HTTP 422 before Qdrant access.
+`INVENTORY_STALLED` is the only provider category mapped to HTTP 503
+`inventory_cursor_cycle`; Core decodes it as `CURSOR_CYCLE` and reconciliation
+persists `VECTOR_CURSOR_CYCLE`. Malformed Qdrant-generated offsets and invalid
+inventory payloads (`INVENTORY_CURSOR_INVALID` and `INVENTORY_INVALID`) retain
+HTTP 503 `inventory_integrity_failure` and `VECTOR_AUDIT_INVALID`. Temporary
+Qdrant failures remain the existing HTTP 503 unavailable response and
+`VECTOR_AUDIT_UNAVAILABLE`; generation mismatch remains HTTP 409. Core rejects
+invalid persisted checkpoints before HTTP transport and rejects invalid or
+repeated canonical `nextCursor` values before updating PostgreSQL. Accepted
+non-terminal cursors are durably unique per run in V58; both immediate
+self-loops and historical repeats use the stable, non-retryable
+`VECTOR_CURSOR_CYCLE`. V59 adds `LEGACY_UNVERIFIED` and
 `TRACKED_FROM_START` provenance; unverified runs fail closed with
 `VECTOR_HISTORY_UNVERIFIED`. The internal reconciliation classifications are
 `VECTOR_CURSOR_INVALID`, `VECTOR_AUDIT_INVALID`, `VECTOR_CURSOR_CYCLE`,

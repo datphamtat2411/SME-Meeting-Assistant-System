@@ -7,17 +7,21 @@ import com.sme.meetingassistant.api.media.MediaProperties;
 import com.sme.meetingassistant.api.media.repository.MediaRepository;
 import com.sme.meetingassistant.api.media.worker.WorkerException;
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
+import com.sme.meetingassistant.api.transport.AiCoreTransport;
 import java.time.OffsetDateTime;
+import java.net.http.HttpResponse;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import org.springframework.beans.factory.ObjectProvider;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.scheduling.annotation.ScheduledAnnotationBeanPostProcessor;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.annotation.DirtiesContext;
@@ -25,12 +29,17 @@ import org.springframework.test.context.transaction.BeforeTransaction;
 import org.springframework.test.context.transaction.TestTransaction;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import tools.jackson.databind.ObjectMapper;
 
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
 
 @ActiveProfiles("test")
-@SpringBootTest
+@SpringBootTest(properties = "app.media.processing.stage-lease-sweep-enabled=false")
 @Import(PostgresTestConfiguration.class)
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class KnowledgeIndexingWorkerIntegrationTests {
@@ -40,11 +49,19 @@ class KnowledgeIndexingWorkerIntegrationTests {
     @Autowired KnowledgeIndexingAdminService admin;
     @Autowired MediaProperties properties;
     @Autowired MediaRepository outbox;
+    @Autowired PlatformTransactionManager transactionManager;
+    @Autowired KnowledgeOperationalMetrics metrics;
+    @Autowired ObjectMapper objectMapper;
+    @Autowired ScheduledAnnotationBeanPostProcessor scheduledTasks;
     @MockitoBean KnowledgeVectorAudit vectorAudit;
 
-    /** These tests use a dedicated Testcontainers database and commit reconciliation fixtures. */
+    /** Committed fixtures must not race the unrelated Media lease-recovery scheduler. */
     @BeforeTransaction
     void resetTestDatabase() {
+        assertThat(scheduledTasks.getScheduledTasks())
+            .allSatisfy(task -> assertThat(task.getTask().getRunnable().toString())
+                .doesNotContain("ProcessingJobLeaseSweepScheduler.sweep",
+                    "ProcessingJobLifecycleService.expireAbandonedStages"));
         jdbc.execute("TRUNCATE meetings, outbox_events, knowledge_index_generations CASCADE");
         jdbc.update("""
             INSERT INTO knowledge_index_generations(generation_id,configuration_version,
@@ -1360,7 +1377,83 @@ class KnowledgeIndexingWorkerIntegrationTests {
             .containsEntry("findingCount", 1L);
         assertThat(jdbc.queryForObject("""
             SELECT COUNT(*) FROM knowledge_reconciliation_cursor_history WHERE run_id=?
-            """, Integer.class, first.get("id"))).isEqualTo(1);
+        """, Integer.class, first.get("id"))).isEqualTo(1);
+    }
+
+    @Test
+    @Transactional
+    void realAiDecoder503CursorCycleFailsReconciliationWithoutMutatingAcceptedCheckpoint() throws Exception {
+        enableKnowledgeIndexing();
+        String generation = properties.getKnowledgeIndexing().getGenerationId();
+        UUID sourceId = UUID.randomUUID();
+        UUID meetingId = UUID.randomUUID();
+        String records = "[{\"sourceIdentity\":{\"sourceType\":\"ACTION_ITEM\",\"sourceId\":\""
+            + sourceId + "\",\"meetingId\":\"" + meetingId
+            + "\"},\"sourceRevision\":{\"number\":0}}]";
+        String acceptedBody = "{\"contractVersion\":\"1.0\",\"generationId\":\"" + generation
+            + "\",\"records\":" + records + ",\"nextCursor\":\"7\"}";
+        String cycleBody = "{\"error\":{\"code\":\"inventory_cursor_cycle\","
+            + "\"message\":\"Knowledge inventory unavailable\"}}";
+
+        AiCoreTransport transport = mock(AiCoreTransport.class);
+        HttpResponse<String> acceptedResponse = mock(HttpResponse.class);
+        when(acceptedResponse.statusCode()).thenReturn(200);
+        when(acceptedResponse.body()).thenReturn(acceptedBody);
+        HttpResponse<String> cycleResponse = mock(HttpResponse.class);
+        when(cycleResponse.statusCode()).thenReturn(503);
+        when(cycleResponse.body()).thenReturn(cycleBody);
+        String inventoryPath = "/internal/v1/knowledge-indexing/reconciliation/inventory";
+        when(transport.post(eq(inventoryPath), anyString()))
+            .thenReturn(acceptedResponse, cycleResponse);
+
+        AiCoreKnowledgeVectorAudit decoder = new AiCoreKnowledgeVectorAudit(transport, objectMapper);
+        @SuppressWarnings("unchecked")
+        ObjectProvider<KnowledgeVectorAudit> audits = mock(ObjectProvider.class);
+        when(audits.getIfAvailable()).thenReturn(decoder);
+        var reconciliation = new KnowledgeReconciliationService(
+            jdbc, producer, worker, properties, audits, transactionManager, metrics);
+
+        commitFixture();
+        var first = reconciliation.start(generation, 10, true, "OPERATIONAL", UUID.randomUUID());
+        assertThat(first).containsEntry("state", "RUNNING")
+            .containsEntry("vectorCursor", "7")
+            .containsEntry("vectorScannedCount", 1L)
+            .containsEntry("inventoryComplete", false);
+        int findingsBeforeFailure = jdbc.queryForObject(
+            "SELECT COUNT(*) FROM knowledge_reconciliation_findings WHERE run_id=?",
+            Integer.class, first.get("id"));
+        int historyBeforeFailure = jdbc.queryForObject(
+            "SELECT COUNT(*) FROM knowledge_reconciliation_cursor_history WHERE run_id=?",
+            Integer.class, first.get("id"));
+
+        var failed = reconciliation.resume((UUID) first.get("id"), UUID.randomUUID());
+        assertThat(failed).containsEntry("state", "FAILED")
+            .containsEntry("lastErrorCode", "VECTOR_CURSOR_CYCLE")
+            .containsEntry("vectorCursor", "7")
+            .containsEntry("vectorScannedCount", 1L)
+            .containsEntry("scannedCount", 0L)
+            .containsEntry("repairedCount", 0L)
+            .containsEntry("findingCount", (long) findingsBeforeFailure)
+            .containsEntry("inventoryComplete", false)
+            .containsEntry("certificationUsable", false);
+        assertThat(jdbc.queryForObject(
+            "SELECT COUNT(*) FROM knowledge_reconciliation_findings WHERE run_id=?",
+            Integer.class, first.get("id"))).isEqualTo(findingsBeforeFailure);
+        assertThat(jdbc.queryForObject(
+            "SELECT COUNT(*) FROM knowledge_reconciliation_cursor_history WHERE run_id=?",
+            Integer.class, first.get("id"))).isEqualTo(historyBeforeFailure);
+        assertThat(jdbc.queryForObject(
+            "SELECT canonical_cursor FROM knowledge_reconciliation_cursor_history WHERE run_id=?",
+            String.class, first.get("id"))).isEqualTo("7");
+        assertThat(jdbc.queryForObject(
+            "SELECT COUNT(*) FROM knowledge_indexing_work WHERE index_generation_id=?",
+            Integer.class, generation)).isZero();
+
+        var resumed = reconciliation.resume((UUID) first.get("id"), UUID.randomUUID());
+        assertThat(resumed).containsEntry("state", "FAILED")
+            .containsEntry("lastErrorCode", "VECTOR_CURSOR_CYCLE");
+        org.mockito.Mockito.verify(transport, org.mockito.Mockito.times(2))
+            .post(eq(inventoryPath), anyString());
     }
 
     @Test

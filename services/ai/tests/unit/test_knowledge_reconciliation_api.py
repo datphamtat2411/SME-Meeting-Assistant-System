@@ -189,6 +189,10 @@ def test_inventory_endpoint_preserves_generation_conflict_and_qdrant_failures():
         def inventory_source_page(self, *args):
             raise QdrantError("INVENTORY_CURSOR_INVALID")
 
+    class InvalidInventoryStore(FakeStore):
+        def inventory_source_page(self, *args):
+            raise QdrantError("INVENTORY_INVALID")
+
     store = InventoryStore()
     settings = Settings(service_name="test-ai", service_identity="ai-core", _env_file=None)
     app = create_app(
@@ -230,15 +234,81 @@ def test_inventory_endpoint_preserves_generation_conflict_and_qdrant_failures():
                     "limit": 100,
                 },
             )
-            return conflict, unavailable, integrity
+            app.state.knowledge_vector_store = InvalidInventoryStore()
+            invalid_inventory = await client.post(
+                "/internal/v1/knowledge-indexing/reconciliation/inventory",
+                json={
+                    "contractVersion": "1.0",
+                    "generationId": GENERATION,
+                    "cursor": "7",
+                    "limit": 100,
+                },
+            )
+            return conflict, unavailable, integrity, invalid_inventory
 
-    conflict, unavailable, integrity = asyncio.run(run())
+    conflict, unavailable, integrity, invalid_inventory = asyncio.run(run())
     assert conflict.status_code == 409
     assert unavailable.status_code == 503
+    assert unavailable.json() == {
+        "error": {"code": "service_security_unavailable", "message": "Service security unavailable"}
+    }
     assert integrity.status_code == 503
     assert integrity.json() == {
         "error": {"code": "inventory_integrity_failure", "message": "Knowledge inventory unavailable"}
     }
+    assert invalid_inventory.status_code == 503
+    assert invalid_inventory.json() == {
+        "error": {"code": "inventory_integrity_failure", "message": "Knowledge inventory unavailable"}
+    }
+
+
+def test_inventory_endpoint_maps_stalled_pagination_to_a_dedicated_safe_error():
+    from sme_meeting_ai.rag.qdrant import QdrantError
+
+    class StalledStore(FakeStore):
+        def inventory_source_page(self, *args):
+            raise QdrantError(
+                "INVENTORY_STALLED",
+                "cursor=0007 collection=private_collection point_id=secret-point",
+            )
+
+    store = StalledStore()
+    settings = Settings(service_name="test-ai", service_identity="ai-core", _env_file=None)
+    app = create_app(
+        settings,
+        identity_source=Boundary(),
+        operation_policy={"knowledge.reconciliation": {"core-api"}},
+        knowledge_vector_store=store,
+    )
+
+    async def run():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            return await client.post(
+                "/internal/v1/knowledge-indexing/reconciliation/inventory",
+                json={
+                    "contractVersion": "1.0",
+                    "generationId": GENERATION,
+                    "cursor": "0007",
+                    "limit": 100,
+                },
+            )
+
+    response = asyncio.run(run())
+    assert response.status_code == 503
+    assert response.json() == {
+        "error": {"code": "inventory_cursor_cycle", "message": "Knowledge inventory unavailable"}
+    }
+    for secret in (
+        "INVENTORY_STALLED",
+        "0007",
+        "private_collection",
+        "secret-point",
+        "QdrantError",
+        "Traceback",
+    ):
+        assert secret not in response.text
 
 
 def test_reconciliation_endpoint_returns_exact_source_point_count():
@@ -407,7 +477,14 @@ def test_qdrant_inventory_rejects_malformed_generated_offsets(next_offset):
     assert error.value.category == "INVENTORY_CURSOR_INVALID"
 
 
-def test_qdrant_inventory_detects_semantically_stalled_normalized_cursor():
+@pytest.mark.parametrize(
+    ("cursor", "next_offset"),
+    [
+        ("0007", 7),
+        ("ABCDEFAB-CDEF-4ABC-8DEF-ABCDEFABCDEF", "ABCDEFABCDEF4ABC8DEFABCDEFABCDEF"),
+    ],
+)
+def test_qdrant_inventory_detects_semantically_stalled_normalized_cursor(cursor, next_offset):
     from sme_meeting_ai.rag.qdrant import QdrantError, QdrantVectorStore
 
     store = object.__new__(QdrantVectorStore)
@@ -418,9 +495,9 @@ def test_qdrant_inventory_detects_semantically_stalled_normalized_cursor():
 
     class StalledOffset:
         def scroll(self, **kwargs):
-            return ([], 7)
+            return ([], next_offset)
 
     store.client = StalledOffset()
     with pytest.raises(QdrantError) as error:
-        store.inventory_source_page(GENERATION, 10, "0007")
+        store.inventory_source_page(GENERATION, 10, cursor)
     assert error.value.category == "INVENTORY_STALLED"

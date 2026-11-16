@@ -26,7 +26,6 @@ MAX_REQUEST_BYTES = 256 * 1024
 INVENTORY_INTEGRITY_CATEGORIES = frozenset({
     "INVENTORY_INVALID",
     "INVENTORY_CURSOR_INVALID",
-    "INVENTORY_STALLED",
 })
 
 
@@ -153,6 +152,8 @@ async def inventory(request: Request) -> JSONResponse:
     except InvalidInventoryCursor:
         raise HTTPException(422) from None
     except QdrantError as error:
+        if error.category == "INVENTORY_STALLED":
+            return error_response(503, "inventory_cursor_cycle", "Knowledge inventory unavailable")
         if error.category in INVENTORY_INTEGRITY_CATEGORIES:
             return error_response(503, "inventory_integrity_failure", "Knowledge inventory unavailable")
         raise HTTPException(503) from None

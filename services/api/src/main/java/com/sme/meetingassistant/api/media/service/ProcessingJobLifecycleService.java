@@ -11,7 +11,6 @@ import com.sme.meetingassistant.api.media.intelligence.IntelligenceWorkerCapabil
 import com.sme.meetingassistant.api.media.intelligence.IntelligenceOperationLog;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.beans.factory.annotation.Autowired;
 import java.util.UUID;
 import java.util.List;
@@ -75,7 +74,6 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
         return value;
     }
 
-    @Scheduled(fixedDelayString = "${app.media.processing.stage-lease-sweep-ms:60000}")
     public void expireAbandonedStages() {
         this.repository.expireAbandonedStages(25);
         repository.reconcileIntelligencePublicationFailures(25,properties.getIntelligence().getDispatchClaimTimeoutSeconds());

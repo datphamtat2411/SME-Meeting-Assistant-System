@@ -24,10 +24,15 @@ the supported 32-hex UUID representation, not as an overflowing numeric offset.
 Empty, whitespace-padded, negative, overflowing, overlength, Unicode-digit,
 malformed, and unexpected JSON cursor values are rejected. The AI request
 boundary returns HTTP 422 before schema validation or Qdrant access. Qdrant
-generated offsets use the same parser before they become `nextCursor`; malformed
-provider data, equivalent/repeated offsets, and stalled pagination fail with
-HTTP 503. Temporary Qdrant failures also remain HTTP 503, while generation
-mismatch remains HTTP 409.
+generated offsets use the same parser before they become `nextCursor`.
+The exact provider self-loop category `INVENTORY_STALLED` is returned as
+HTTP 503 `inventory_cursor_cycle`; Core decodes that structured error as
+`CURSOR_CYCLE`, which reconciles as `VECTOR_CURSOR_CYCLE`. Malformed inventory
+payloads and provider-generated cursors (`INVENTORY_INVALID` and
+`INVENTORY_CURSOR_INVALID`) remain HTTP 503 `inventory_integrity_failure` and
+reconcile as `VECTOR_AUDIT_INVALID`. Temporary Qdrant failures
+(`QDRANT_UNAVAILABLE`) retain their existing HTTP 503 unavailable response and
+reconcile as `VECTOR_AUDIT_UNAVAILABLE`; generation mismatch remains HTTP 409.
 
 Core validates a persisted cursor before transport and validates the decoded
 `nextCursor` before accepting a page. Local legacy corruption is recorded as
@@ -79,8 +84,9 @@ cannot establish trustworthy completeness. The run is failed, its last
 accepted checkpoint and counters remain intact, and its cursor history is
 retained for diagnosis. Operators should preserve the run ID/history, inspect
 Qdrant and provider pagination health, and start a fresh controlled inventory
-only after resolving the underlying issue; the failed run is intentionally not
-resumable. A cyclic or otherwise failed scan cannot certify or activate a
+only after resolving the underlying issue; both an immediate self-loop and a
+multi-page cycle are deterministic failures and the failed run is intentionally
+not resumable. A cyclic or otherwise failed scan cannot certify or activate a
 candidate generation.
 
 An unverified legacy run follows the same fail-closed evidence policy without

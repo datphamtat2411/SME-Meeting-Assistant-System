@@ -93,8 +93,9 @@ class AiCoreKnowledgeVectorAuditContractTests {
     void rejectsUntrustedResponseAndNonprogressingCursor() throws Exception {
         String records = "[{\"sourceIdentity\":{\"sourceType\":\"ACTION_ITEM\",\"sourceId\":\""+
             SOURCE+"\",\"meetingId\":\""+MEETING+"\"},\"sourceRevision\":{\"number\":3}}]";
-        assertThatThrownBy(() -> client(response(records,"\"7\"")).inventoryPage(GEN,"7",10))
-            .isInstanceOf(AiCoreKnowledgeVectorAudit.KnowledgeVectorAuditException.class);
+        var cycle = catchFailure(() -> client(response(records,"\"7\"")).inventoryPage(GEN,"7",10));
+        assertThat(cycle.kind()).isEqualTo(
+            AiCoreKnowledgeVectorAudit.KnowledgeVectorAuditException.FailureKind.CURSOR_CYCLE);
         assertThatThrownBy(() -> client(response(records,"null").replace("\"1.0\"","\"9.0\""))
             .inventoryPage(GEN,null,10))
             .isInstanceOf(AiCoreKnowledgeVectorAudit.KnowledgeVectorAuditException.class);
@@ -112,13 +113,57 @@ class AiCoreKnowledgeVectorAuditContractTests {
             + SOURCE + "\",\"meetingId\":\"" + MEETING
             + "\"},\"sourceRevision\":{\"number\":3}}]";
         for (String cursor : new String[] {
-            "\"abcd\"", "true", "7", "{}", "\"18446744073709551616\"", "\"0007\""
+            "\"abcd\"", "true", "{}", "\"18446744073709551616\""
         }) {
             var failure = catchFailure(() -> client(response(records, cursor))
                 .inventoryPage(GEN, "7", 10));
             assertThat(failure.kind()).isEqualTo(
                 AiCoreKnowledgeVectorAudit.KnowledgeVectorAuditException.FailureKind.INVALID_RESPONSE);
         }
+    }
+
+    @Test
+    void classifiesCanonicalNumericSelfLoopAliasesAsCursorCycles() throws Exception {
+        String records = "[{\"sourceIdentity\":{\"sourceType\":\"ACTION_ITEM\",\"sourceId\":\""
+            + SOURCE + "\",\"meetingId\":\"" + MEETING
+            + "\"},\"sourceRevision\":{\"number\":3}}]";
+        for (String[] alias : new String[][] {
+            {"7", "\"7\""},
+            {"0007", "\"7\""},
+            {"7", "\"0007\""},
+        }) {
+            var failure = catchFailure(() -> client(response(records, alias[1]))
+                .inventoryPage(GEN, alias[0], 10));
+            assertThat(failure.kind()).isEqualTo(
+                AiCoreKnowledgeVectorAudit.KnowledgeVectorAuditException.FailureKind.CURSOR_CYCLE);
+            assertThat(failure.reconciliationCode()).isEqualTo("VECTOR_CURSOR_CYCLE");
+        }
+    }
+
+    @Test
+    void classifiesCanonicalUuidSelfLoopAliasesAsCursorCycles() throws Exception {
+        String records = "[{\"sourceIdentity\":{\"sourceType\":\"ACTION_ITEM\",\"sourceId\":\""
+            + SOURCE + "\",\"meetingId\":\"" + MEETING
+            + "\"},\"sourceRevision\":{\"number\":3}}]";
+        for (String[] alias : new String[][] {
+            {"abcdefab-cdef-4abc-8def-abcdefabcdef", "\"ABCDEFAB-CDEF-4ABC-8DEF-ABCDEFABCDEF\""},
+            {"ABCDEFAB-CDEF-4ABC-8DEF-ABCDEFABCDEF", "\"abcdefabcdef4abc8defabcdefabcdef\""},
+            {"abcdefabcdef4abc8defabcdefabcdef", "\"abcdefab-cdef-4abc-8def-abcdefabcdef\""},
+        }) {
+            var failure = catchFailure(() -> client(response(records, alias[1]))
+                .inventoryPage(GEN, alias[0], 10));
+            assertThat(failure.kind()).isEqualTo(
+                AiCoreKnowledgeVectorAudit.KnowledgeVectorAuditException.FailureKind.CURSOR_CYCLE);
+            assertThat(failure.reconciliationCode()).isEqualTo("VECTOR_CURSOR_CYCLE");
+        }
+    }
+
+    @Test
+    void rejectsEmptyNonterminalPageAsInvalidResponseRatherThanCursorCycle() throws Exception {
+        var failure = catchFailure(() -> client(response("[]", "\"8\""))
+            .inventoryPage(GEN, "7", 10));
+        assertThat(failure.kind()).isEqualTo(
+            AiCoreKnowledgeVectorAudit.KnowledgeVectorAuditException.FailureKind.INVALID_RESPONSE);
     }
 
     @Test
@@ -141,6 +186,41 @@ class AiCoreKnowledgeVectorAuditContractTests {
                 + "\"message\":\"Knowledge inventory unavailable\"}}")
             .inventoryPage(GEN, null, 10));
         assertThat(integrity.kind()).isEqualTo(
+            AiCoreKnowledgeVectorAudit.KnowledgeVectorAuditException.FailureKind.INVALID_RESPONSE);
+    }
+
+    @Test
+    void mapsOnlyTheStrictDedicated503ErrorEnvelopeToCursorCycle() throws Exception {
+        var cycle = catchFailure(() -> client(503,
+            "{\"error\":{\"code\":\"inventory_cursor_cycle\","
+                + "\"message\":\"Knowledge inventory unavailable\"}}")
+            .inventoryPage(GEN, null, 10));
+        assertThat(cycle.kind()).isEqualTo(
+            AiCoreKnowledgeVectorAudit.KnowledgeVectorAuditException.FailureKind.CURSOR_CYCLE);
+        assertThat(cycle.reconciliationCode()).isEqualTo("VECTOR_CURSOR_CYCLE");
+
+        for (String body : new String[] {
+            "{\"error\":{\"code\":\"inventory_cursor_cycle\"}}",
+            "{\"message\":\"inventory_cursor_cycle\"}",
+            "{\"error\":{\"code\":\"INVENTORY_CURSOR_CYCLE\","
+                + "\"message\":\"Knowledge inventory unavailable\"}}",
+            "{\"error\":{\"code\":\"unknown\","
+                + "\"message\":\"inventory_cursor_cycle\"}}",
+            "{\"error\":{\"code\":\"inventory_cursor_cycle\","
+                + "\"message\":\"Knowledge inventory unavailable\",\"extra\":true}}",
+            "{\"error\":{\"code\":\"inventory_cursor_cycle\","
+                + "\"message\":\"Knowledge inventory unavailable\"}} trailing",
+        }) {
+            var failure = catchFailure(() -> client(503, body).inventoryPage(GEN, null, 10));
+            assertThat(failure.kind()).isEqualTo(
+                AiCoreKnowledgeVectorAudit.KnowledgeVectorAuditException.FailureKind.UNAVAILABLE);
+        }
+
+        var successfulStatus = catchFailure(() -> client(200,
+            "{\"error\":{\"code\":\"inventory_cursor_cycle\","
+                + "\"message\":\"Knowledge inventory unavailable\"}}")
+            .inventoryPage(GEN, null, 10));
+        assertThat(successfulStatus.kind()).isEqualTo(
             AiCoreKnowledgeVectorAudit.KnowledgeVectorAuditException.FailureKind.INVALID_RESPONSE);
     }
 
