@@ -181,9 +181,10 @@ public final class ProductIntegrationMetrics {
                    SELECT 1 FROM knowledge_reconciliation_runs r
                     WHERE r.generation_id=g.generation_id
                       AND r.certification_mode='CERTIFICATION'
-                      AND r.certification_seal_id=g.seal_id
-                      AND r.certification_epoch=g.write_epoch
-                      AND r.state='COMPLETED' AND r.dry_run
+                       AND r.certification_seal_id=g.seal_id
+                       AND r.certification_epoch=g.write_epoch
+                       AND r.cursor_history_provenance='TRACKED_FROM_START'
+                       AND r.state='COMPLETED' AND r.dry_run
                       AND r.inventory_complete AND r.finding_count=0 AND r.repaired_count=0
                )
             """);

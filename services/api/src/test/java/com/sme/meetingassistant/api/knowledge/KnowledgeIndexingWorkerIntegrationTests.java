@@ -1298,6 +1298,9 @@ class KnowledgeIndexingWorkerIntegrationTests {
             .containsEntry("vectorScannedCount",1L)
             .containsEntry("findingCount",1L);
         assertThat(jdbc.queryForObject("""
+            SELECT cursor_history_provenance FROM knowledge_reconciliation_runs WHERE id=?
+            """, String.class, first.get("id"))).isEqualTo("TRACKED_FROM_START");
+        assertThat(jdbc.queryForObject("""
             SELECT canonical_cursor FROM knowledge_reconciliation_cursor_history WHERE run_id=?
             """, String.class, first.get("id"))).isEqualTo("7");
     }
@@ -1351,7 +1354,7 @@ class KnowledgeIndexingWorkerIntegrationTests {
         var rejected = admin.resumeReconciliation((UUID) first.get("id"), UUID.randomUUID());
 
         assertThat(rejected).containsEntry("state", "FAILED")
-            .containsEntry("lastErrorCode", "VECTOR_AUDIT_INVALID")
+            .containsEntry("lastErrorCode", "VECTOR_CURSOR_CYCLE")
             .containsEntry("vectorCursor", "7")
             .containsEntry("vectorScannedCount", 1L)
             .containsEntry("findingCount", 1L);
@@ -1597,13 +1600,141 @@ class KnowledgeIndexingWorkerIntegrationTests {
 
     @Test
     @Transactional
+    void unverifiedLegacyRunFailsClosedWithoutRemoteAuditOrEvidenceMutation() {
+        enableKnowledgeIndexing();
+        String generation = properties.getKnowledgeIndexing().getGenerationId();
+        UUID runId = UUID.randomUUID();
+        jdbc.update("""
+            INSERT INTO knowledge_reconciliation_runs(
+                id,generation_id,batch_size,phase,state,vector_cursor,vector_scanned_count,
+                scanned_count,repaired_count,finding_count)
+            VALUES (?,? ,10,'VECTORS','RUNNING','7',4,3,2,1)
+            """, runId, generation);
+        jdbc.update("""
+            INSERT INTO knowledge_reconciliation_cursor_history(run_id,canonical_cursor)
+            VALUES (?,'7')
+            """, runId);
+        jdbc.update("""
+            INSERT INTO knowledge_reconciliation_findings(
+                id,run_id,finding_type,action,generation_id,detail)
+            VALUES (?,?,'ORPHANED_POINTS','MANUAL_REVIEW',?,'{}'::jsonb)
+            """, UUID.randomUUID(), runId, generation);
+
+        commitFixture();
+        var result = admin.resumeReconciliation(runId, UUID.randomUUID());
+
+        assertThat(result).containsEntry("state", "FAILED")
+            .containsEntry("lastErrorCode", "VECTOR_HISTORY_UNVERIFIED")
+            .containsEntry("cursorHistoryProvenance", "LEGACY_UNVERIFIED")
+            .containsEntry("vectorCursor", "7")
+            .containsEntry("vectorScannedCount", 4L)
+            .containsEntry("scannedCount", 3L)
+            .containsEntry("repairedCount", 2L)
+            .containsEntry("findingCount", 1L)
+            .containsEntry("inventoryComplete", false);
+        assertThat(jdbc.queryForObject("""
+            SELECT COUNT(*) FROM knowledge_reconciliation_cursor_history WHERE run_id=?
+            """, Integer.class, runId)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+            SELECT COUNT(*) FROM knowledge_reconciliation_findings WHERE run_id=?
+            """, Integer.class, runId)).isEqualTo(1);
+        org.mockito.Mockito.verifyNoInteractions(vectorAudit);
+    }
+
+    @Test
+    @Transactional
+    void legacyCompletedCertificationCannotBeUsableOrActivateCandidate() {
+        enableKnowledgeIndexing();
+        String generation = "legacy-cert-" + UUID.randomUUID();
+        admin.prepare(generation, "legacy-cert-v1", "a".repeat(64), "test-tokenizer",
+            "legacy_cert_" + UUID.randomUUID());
+        assertThat(admin.refresh(generation)).containsEntry("state", "READY");
+        admin.seal(generation);
+        UUID sealId = jdbc.queryForObject(
+            "SELECT seal_id FROM knowledge_index_generations WHERE generation_id=?",
+            UUID.class, generation);
+        long epoch = jdbc.queryForObject(
+            "SELECT write_epoch FROM knowledge_index_generations WHERE generation_id=?",
+            Long.class, generation);
+        UUID runId = UUID.randomUUID();
+        jdbc.update("""
+            INSERT INTO knowledge_reconciliation_runs(
+                id,generation_id,batch_size,phase,state,dry_run,certification_mode,
+                certification_seal_id,certification_epoch,inventory_complete)
+            VALUES (?,? ,10,'VECTORS','COMPLETED',TRUE,'CERTIFICATION',?,?,TRUE)
+            """, runId, generation, sealId, epoch);
+
+        var run = admin.reconciliation(runId);
+        assertThat(run).containsEntry("state", "COMPLETED")
+            .containsEntry("cursorHistoryProvenance", "LEGACY_UNVERIFIED")
+            .containsEntry("certificationUsable", false);
+        assertThat(admin.generation(generation)).containsEntry("certificationUsable", false);
+        assertThatThrownBy(() -> admin.activate(generation))
+            .isInstanceOf(org.springframework.web.server.ResponseStatusException.class)
+            .hasMessageContaining("clean current certification");
+        assertThat(jdbc.queryForObject("""
+            SELECT state FROM knowledge_index_generations WHERE generation_id=?
+            """, String.class, generation)).isEqualTo("READY");
+        assertThat(jdbc.queryForObject("""
+            SELECT state FROM knowledge_reconciliation_runs WHERE id=?
+            """, String.class, runId)).isEqualTo("COMPLETED");
+    }
+
+    @Test
+    @Transactional
+    void legacyClaimIsRejectedAtAcceptanceAfterTheClaimWasIssued() throws Exception {
+        enableKnowledgeIndexing();
+        String generation = properties.getKnowledgeIndexing().getGenerationId();
+        CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
+        when(vectorAudit.inventoryPage(generation, null, 10)).thenAnswer(invocation -> {
+            entered.countDown();
+            if (!release.await(20, TimeUnit.SECONDS)) {
+                throw new IllegalStateException("Legacy claim gate timed out");
+            }
+            return new KnowledgeVectorAudit.InventoryPage(java.util.List.of(), null);
+        });
+        commitFixture();
+        try (var executor = Executors.newSingleThreadExecutor()) {
+            var pending = executor.submit(() ->
+                admin.startReconciliation(generation, 10, true, UUID.randomUUID()));
+            try {
+                assertThat(entered.await(20, TimeUnit.SECONDS)).isTrue();
+                UUID runId = jdbc.queryForObject("""
+                    SELECT id FROM knowledge_reconciliation_runs WHERE generation_id=?
+                    """, UUID.class, generation);
+                jdbc.update("""
+                    UPDATE knowledge_reconciliation_runs
+                       SET cursor_history_provenance='LEGACY_UNVERIFIED'
+                     WHERE id=?
+                    """, runId);
+                release.countDown();
+                assertThat(pending.get(20, TimeUnit.SECONDS))
+                    .containsEntry("state", "FAILED")
+                    .containsEntry("lastErrorCode", "VECTOR_HISTORY_UNVERIFIED")
+                    .containsEntry("vectorScannedCount", 0L)
+                    .containsEntry("inventoryComplete", false);
+                assertThat(jdbc.queryForObject("""
+                    SELECT COUNT(*) FROM knowledge_reconciliation_cursor_history WHERE run_id=?
+                    """, Integer.class, runId)).isZero();
+                assertThat(jdbc.queryForObject("""
+                    SELECT COUNT(*) FROM knowledge_reconciliation_findings WHERE run_id=?
+                    """, Integer.class, runId)).isZero();
+            } finally {
+                release.countDown();
+            }
+        }
+    }
+
+    @Test
+    @Transactional
     void invalidLegacyVectorCheckpointFailsClosedWithoutCallingAi() {
         enableKnowledgeIndexing();
         String generation = properties.getKnowledgeIndexing().getGenerationId();
         UUID runId = UUID.randomUUID();
         jdbc.update("""
-            INSERT INTO knowledge_reconciliation_runs(id,generation_id,batch_size,phase,state,vector_cursor)
-            VALUES (?,? ,10,'VECTORS','RUNNING','abcd')
+            INSERT INTO knowledge_reconciliation_runs(
+                id,generation_id,batch_size,phase,state,vector_cursor,cursor_history_provenance)
+            VALUES (?,? ,10,'VECTORS','RUNNING','abcd','TRACKED_FROM_START')
             """, runId, generation);
 
         commitFixture();

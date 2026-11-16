@@ -54,18 +54,23 @@ inventory payloads with a safe HTTP 503 response. Generation mismatch remains
 HTTP 409. Core rejects invalid persisted checkpoints before HTTP transport and
 rejects invalid or repeated canonical `nextCursor` values before updating
 PostgreSQL. Accepted non-terminal cursors are durably unique per run in V58;
-`VECTOR_CURSOR_CYCLE` is a stable, non-retryable failure. The internal
-reconciliation classifications are `VECTOR_CURSOR_INVALID`,
-`VECTOR_AUDIT_INVALID`, `VECTOR_CURSOR_CYCLE`, `VECTOR_AUDIT_UNAVAILABLE`, and
+Both immediate self-loops and historical repeats use the stable,
+non-retryable `VECTOR_CURSOR_CYCLE`. V59 adds `LEGACY_UNVERIFIED` and
+`TRACKED_FROM_START` provenance; unverified runs fail closed with
+`VECTOR_HISTORY_UNVERIFIED`. The internal reconciliation classifications are
+`VECTOR_CURSOR_INVALID`, `VECTOR_AUDIT_INVALID`, `VECTOR_CURSOR_CYCLE`,
+`VECTOR_HISTORY_UNVERIFIED`, `VECTOR_AUDIT_UNAVAILABLE`, and
 `VECTOR_GENERATION_MISMATCH`; no public response includes exception text,
 collection identifiers, or storage details.
 
 ### Generation and worker fencing
 
 PI05-007 and PI05-008 evidence must identify the V53 baseline and forward-only
-V54, V55, V56 and V58 migrations. Candidate readiness is fenced by the generation write epoch and
-seal; `certificationUsable` is true only for a current, completed, clean,
-unrepaired dry-run certification. Qdrant mutation evidence must show a single
+V54, V55, V56, V58 and V59 migrations. Candidate readiness is fenced by the
+generation write epoch and seal; `certificationUsable` is true only for a
+current, completed, clean, unrepaired dry-run certification whose run is
+`TRACKED_FROM_START`. A completed legacy run remains diagnostic evidence only,
+even when its inventory and seal/epoch fields look clean. Qdrant mutation evidence must show a single
 permit execution identity moving `RESERVED -> RUNNING -> SUCCEEDED/FAILED`,
 with the physical mutation completed before the terminal Core acknowledgement.
 `OPEN`, reused, stale-epoch, and stale-seal permits are not valid authorization.
@@ -73,8 +78,15 @@ Summary selection changes are independently fenced by `selection_epoch` and
 must never reuse immutable snapshot bytes from another selection epoch.
 
 The V51 cursor column is not rewritten. V58 adds durable cursor history and
-backfills only a valid current legacy checkpoint into canonical history; a
-malformed legacy value remains unchanged and fails closed as
+backfills only a valid current legacy checkpoint into canonical history; because
+that cannot prove full transition coverage, V59 marks every existing run
+`LEGACY_UNVERIFIED`, including completed runs and runs created after V58 but
+before V59. The migration preserves checkpoints, counters, findings, history,
+timestamps and identities. New application-created runs explicitly establish
+`TRACKED_FROM_START`; uncontrolled direct inserts default to unverified.
+Unverified runs cannot resume, claim, accept a late page, or qualify
+activation, while completed legacy rows remain available for diagnostics.
+A malformed trusted legacy value remains unchanged and fails closed as
 `VECTOR_CURSOR_INVALID`, never restarting at page zero. A valid page updates
 the history, cursor and accepted scan count in one transaction. An invalid or
 cyclic page leaves the last accepted cursor/count, completion flag, findings
@@ -87,6 +99,15 @@ duplicates between pages. Release-grade acceptance requires a quiescent or
 otherwise validated inventory window; a cyclic run must be preserved for
 diagnosis and cannot be resumed merely to obtain a green result or qualify a
 candidate generation.
+
+An unverified legacy run is preserved for diagnostics but cannot resume,
+advance a claim, accept a late remote result, or provide certification
+evidence. Active or incomplete legacy runs fail with
+`VECTOR_HISTORY_UNVERIFIED`; completed legacy runs retain their status and
+historical evidence but remain ineligible for `certificationUsable`. Recovery
+requires a fresh reconciliation from the legitimate initial cursor and a
+normal clean certification. This conservative V59 classification is required
+because V58 could not reconstruct every prior cursor transition.
 
 ## Execution
 ```bash

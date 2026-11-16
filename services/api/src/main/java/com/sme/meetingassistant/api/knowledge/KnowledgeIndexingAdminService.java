@@ -61,9 +61,10 @@ public class KnowledgeIndexingAdminService {
                         SELECT 1 FROM knowledge_reconciliation_runs r
                          WHERE r.generation_id=knowledge_index_generations.generation_id
                            AND r.certification_mode='CERTIFICATION'
-                           AND r.certification_seal_id=knowledge_index_generations.seal_id
-                           AND r.certification_epoch=knowledge_index_generations.write_epoch
-                           AND r.state='COMPLETED' AND r.dry_run
+                            AND r.certification_seal_id=knowledge_index_generations.seal_id
+                            AND r.certification_epoch=knowledge_index_generations.write_epoch
+                            AND r.cursor_history_provenance='TRACKED_FROM_START'
+                            AND r.state='COMPLETED' AND r.dry_run
                            AND r.inventory_complete AND r.finding_count=0 AND r.repaired_count=0
                     ) AS certification_usable
               FROM knowledge_index_generations WHERE generation_id=?
@@ -229,8 +230,9 @@ public class KnowledgeIndexingAdminService {
                 SELECT EXISTS(
                     SELECT 1 FROM knowledge_reconciliation_runs
                      WHERE generation_id=? AND certification_mode='CERTIFICATION'
-                       AND certification_seal_id=? AND certification_epoch=?
-                       AND state='COMPLETED' AND dry_run AND inventory_complete
+                        AND certification_seal_id=? AND certification_epoch=?
+                        AND cursor_history_provenance='TRACKED_FROM_START'
+                        AND state='COMPLETED' AND dry_run AND inventory_complete
                        AND finding_count=0 AND repaired_count=0)
                 """, Boolean.class, generationId, generation.sealId(), generation.writeEpoch());
             if (!Boolean.TRUE.equals(cleanCertification)) {

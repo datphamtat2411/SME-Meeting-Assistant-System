@@ -26,6 +26,9 @@ import org.springframework.web.server.ResponseStatusException;
  */
 @Service
 public class KnowledgeReconciliationService {
+    private static final String TRACKED_FROM_START = "TRACKED_FROM_START";
+    private static final String HISTORY_UNVERIFIED = "VECTOR_HISTORY_UNVERIFIED";
+
     private final JdbcTemplate jdbc;
     private final KnowledgeIndexingProducer producer;
     private final KnowledgeIndexingWorkerService worker;
@@ -114,8 +117,8 @@ public class KnowledgeReconciliationService {
         jdbc.update("""
             INSERT INTO knowledge_reconciliation_runs(
                 id,generation_id,batch_size,dry_run,certification_mode,
-                certification_seal_id,certification_epoch)
-            VALUES (?,?,?,?,?,?,?)
+                certification_seal_id,certification_epoch,cursor_history_provenance)
+            VALUES (?,?,?,?,?,?,?,'TRACKED_FROM_START')
             """, runId, generationId, batchSize, dryRun, mode,
             "CERTIFICATION".equals(mode) ? generation.sealId() : null,
             "CERTIFICATION".equals(mode) ? generation.writeEpoch() : null);
@@ -124,6 +127,7 @@ public class KnowledgeReconciliationService {
 
     private void resumeLocked(UUID runId) {
         Run run = lockRun(runId);
+        if (rejectUnverifiedRun(run)) return;
         if (!"FAILED".equals(run.state()) || !Set.of(
                 "VECTOR_AUDIT_UNAVAILABLE", "VECTOR_AUDIT_INVALID", "VECTOR_CURSOR_INVALID",
                 "VECTOR_GENERATION_MISMATCH", "RECONCILIATION_CLAIM_EXPIRED")
@@ -184,6 +188,8 @@ public class KnowledgeReconciliationService {
             return acceptVector(claim, page, nextCursor, requestedByUserId);
         } catch (AiCoreKnowledgeVectorAudit.KnowledgeVectorAuditException failure) {
             return fail(claim, failure.reconciliationCode());
+        } catch (CursorCycle failure) {
+            return fail(claim, "VECTOR_CURSOR_CYCLE");
         } catch (InvalidAuditResponse failure) {
             return fail(claim, "VECTOR_AUDIT_INVALID");
         } catch (RuntimeException failure) {
@@ -193,6 +199,7 @@ public class KnowledgeReconciliationService {
 
     private PageClaim claimPage(UUID runId) {
         Run run = lockRun(runId);
+        if (rejectUnverifiedRun(run)) return null;
         if (!"RUNNING".equals(run.state())) return null;
         if (run.claimToken() != null) {
             OffsetDateTime now = jdbc.queryForObject("SELECT CURRENT_TIMESTAMP", OffsetDateTime.class);
@@ -406,6 +413,7 @@ public class KnowledgeReconciliationService {
     }
 
     private boolean acceptanceFence(Run run, PageClaim claim) {
+        if (rejectUnverifiedRun(run)) return false;
         if (!"RUNNING".equals(run.state()) || run.claimToken() == null
                 || !claim.claimToken().equals(run.claimToken())) {
             metrics.reconciliationStaleResult();
@@ -495,7 +503,10 @@ public class KnowledgeReconciliationService {
         } catch (IllegalArgumentException invalid) {
             throw new InvalidAuditResponse();
         }
-        if (next != null && (next.equals(normalizeCursor(cursor)) || page.sources().isEmpty())) {
+        if (next != null && next.equals(normalizeCursor(cursor))) {
+            throw new CursorCycle();
+        }
+        if (next != null && page.sources().isEmpty()) {
             throw new InvalidAuditResponse();
         }
         for (KnowledgeVectorAudit.SourceKey source : page.sources()) {
@@ -505,6 +516,14 @@ public class KnowledgeReconciliationService {
                         .contains(source.sourceType())) throw new InvalidAuditResponse();
         }
         return next;
+    }
+
+    private boolean rejectUnverifiedRun(Run run) {
+        if (TRACKED_FROM_START.equals(run.cursorHistoryProvenance())) return false;
+        if (!"COMPLETED".equals(run.state())) {
+            failLocked(run.id(), HISTORY_UNVERIFIED);
+        }
+        return true;
     }
 
     private boolean recordAcceptedCursor(UUID runId, String canonicalCursor) {
@@ -549,7 +568,8 @@ public class KnowledgeReconciliationService {
             SELECT id,generation_id,batch_size,dry_run,state,checkpoint_source_type,checkpoint_source_id,
                    checkpoint_source_revision,scanned_count,repaired_count,finding_count,phase,vector_cursor,
                    vector_scanned_count,inventory_complete,certification_mode,certification_seal_id,
-                   certification_epoch,last_error_code,claim_token,claim_expires_at,expected_generation_epoch,
+                   certification_epoch,cursor_history_provenance,last_error_code,claim_token,claim_expires_at,
+                   expected_generation_epoch,
                    expected_seal_id,expected_phase,expected_checkpoint_source_type,
                    expected_checkpoint_source_id,expected_checkpoint_source_revision,expected_vector_cursor
               FROM knowledge_reconciliation_runs WHERE id=? FOR UPDATE
@@ -652,11 +672,12 @@ public class KnowledgeReconciliationService {
         return new Run(rs.getObject("id", UUID.class), rs.getString("generation_id"), rs.getInt("batch_size"),
             rs.getBoolean("dry_run"), rs.getString("state"), rs.getString("checkpoint_source_type"),
             rs.getObject("checkpoint_source_id", UUID.class), (Long) rs.getObject("checkpoint_source_revision"),
-            rs.getLong("scanned_count"), rs.getLong("repaired_count"), rs.getLong("finding_count"),
-            rs.getString("phase"), rs.getString("vector_cursor"), rs.getLong("vector_scanned_count"),
-            rs.getBoolean("inventory_complete"), rs.getString("certification_mode"),
-            rs.getObject("certification_seal_id", UUID.class), (Long) rs.getObject("certification_epoch"),
-            rs.getString("last_error_code"), rs.getObject("claim_token", UUID.class),
+             rs.getLong("scanned_count"), rs.getLong("repaired_count"), rs.getLong("finding_count"),
+             rs.getString("phase"), rs.getString("vector_cursor"), rs.getLong("vector_scanned_count"),
+             rs.getBoolean("inventory_complete"), rs.getString("certification_mode"),
+             rs.getObject("certification_seal_id", UUID.class), (Long) rs.getObject("certification_epoch"),
+             rs.getString("cursor_history_provenance"),
+             rs.getString("last_error_code"), rs.getObject("claim_token", UUID.class),
             rs.getObject("claim_expires_at", OffsetDateTime.class),
             (Long) rs.getObject("expected_generation_epoch"), rs.getObject("expected_seal_id", UUID.class),
             rs.getString("expected_phase"), rs.getString("expected_checkpoint_source_type"),
@@ -675,13 +696,14 @@ public class KnowledgeReconciliationService {
     private Map<String, Object> runData(UUID runId) {
         return jdbc.query("""
             SELECT r.id,r.generation_id,r.batch_size,r.dry_run,r.state,r.checkpoint_source_type,r.checkpoint_source_id,
-                   r.checkpoint_source_revision,r.scanned_count,r.repaired_count,r.finding_count,r.last_error_code,
-                   r.last_error_summary,r.started_at,r.completed_at,r.updated_at,r.phase,r.vector_cursor,
-                   r.vector_scanned_count,r.inventory_complete,r.certification_mode,r.certification_seal_id,
-                   r.certification_epoch,r.claim_expires_at,r.claim_attempt,
-                   (
-                       r.certification_mode='CERTIFICATION'
-                       AND r.state='COMPLETED' AND r.dry_run AND r.inventory_complete
+                    r.checkpoint_source_revision,r.scanned_count,r.repaired_count,r.finding_count,r.last_error_code,
+                    r.last_error_summary,r.started_at,r.completed_at,r.updated_at,r.phase,r.vector_cursor,
+                    r.vector_scanned_count,r.inventory_complete,r.certification_mode,r.certification_seal_id,
+                    r.certification_epoch,r.cursor_history_provenance,r.claim_expires_at,r.claim_attempt,
+                    (
+                        r.certification_mode='CERTIFICATION'
+                        AND r.cursor_history_provenance='TRACKED_FROM_START'
+                        AND r.state='COMPLETED' AND r.dry_run AND r.inventory_complete
                        AND r.finding_count=0 AND r.repaired_count=0
                        AND g.write_barrier_state='SEALED'
                        AND g.seal_id=r.certification_seal_id
@@ -711,6 +733,7 @@ public class KnowledgeReconciliationService {
                 data.put("certificationMode", rs.getString("certification_mode"));
                 data.put("certificationSealId", rs.getObject("certification_seal_id", UUID.class));
                 data.put("certificationEpoch", rs.getObject("certification_epoch"));
+                data.put("cursorHistoryProvenance", rs.getString("cursor_history_provenance"));
                 data.put("certificationUsable", rs.getBoolean("certification_usable"));
                 data.put("claimExpiresAt", rs.getObject("claim_expires_at"));
                 data.put("claimAttempt", rs.getInt("claim_attempt"));
@@ -740,7 +763,8 @@ public class KnowledgeReconciliationService {
             String checkpointSourceType, UUID checkpointSourceId, Long checkpointSourceRevision,
             long scannedCount, long repairedCount, long findingCount, String phase, String vectorCursor,
             long vectorScannedCount, boolean inventoryComplete, String certificationMode,
-            UUID certificationSealId, Long certificationEpoch, String lastErrorCode, UUID claimToken,
+            UUID certificationSealId, Long certificationEpoch, String cursorHistoryProvenance,
+            String lastErrorCode, UUID claimToken,
             OffsetDateTime claimExpiresAt, Long expectedGenerationEpoch, UUID expectedSealId,
             String expectedPhase, String expectedCheckpointSourceType, UUID expectedCheckpointSourceId,
             Long expectedCheckpointSourceRevision, String expectedVectorCursor) {
@@ -759,4 +783,5 @@ public class KnowledgeReconciliationService {
         String expectedVectorCursor() { return vectorCursor; }
     }
     private static final class InvalidAuditResponse extends RuntimeException { }
+    private static final class CursorCycle extends RuntimeException { }
 }

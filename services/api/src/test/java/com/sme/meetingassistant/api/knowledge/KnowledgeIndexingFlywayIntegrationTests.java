@@ -101,7 +101,7 @@ class KnowledgeIndexingFlywayIntegrationTests {
     }
 
     @Test
-    void migrationUpgradesV53ThroughV58WithoutRewritingTheBaseline() {
+    void migrationUpgradesV53ThroughV59WithoutRewritingTheBaseline() {
         String schema = "knowledge_t05_upgrade_" + UUID.randomUUID().toString().replace("-", "");
         try {
             Flyway before = Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema)
@@ -112,7 +112,7 @@ class KnowledgeIndexingFlywayIntegrationTests {
 
             Flyway upgraded = Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema)
                 .locations("classpath:db/migration").load();
-            assertThat(upgraded.migrate().migrationsExecuted).isEqualTo(5);
+            assertThat(upgraded.migrate().migrationsExecuted).isEqualTo(6);
             assertThat(jdbc.queryForObject("""
                 SELECT count(*) FROM information_schema.columns
                 WHERE table_schema=? AND table_name='knowledge_qdrant_write_permits'
@@ -129,8 +129,13 @@ class KnowledgeIndexingFlywayIntegrationTests {
                 """.formatted(schema), Integer.class)).isEqualTo(1);
             assertThat(jdbc.queryForObject("""
                 SELECT version FROM %s.flyway_schema_history
-                WHERE version='58'
-                """.formatted(schema), String.class)).isEqualTo("58");
+                WHERE version='59'
+                """.formatted(schema), String.class)).isEqualTo("59");
+            assertThat(jdbc.queryForObject("""
+                SELECT column_default FROM information_schema.columns
+                WHERE table_schema=? AND table_name='knowledge_reconciliation_runs'
+                  AND column_name='cursor_history_provenance'
+                """, String.class, schema)).contains("LEGACY_UNVERIFIED");
         } finally {
             jdbc.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE");
         }
@@ -147,13 +152,15 @@ class KnowledgeIndexingFlywayIntegrationTests {
             UUID corruptRun = UUID.randomUUID();
             jdbc.update("""
                 INSERT INTO %s.knowledge_reconciliation_runs(
-                    id,generation_id,batch_size,phase,state,vector_cursor)
-                VALUES (?,? ,10,'VECTORS','RUNNING','0007'),
-                       (?,? ,10,'VECTORS','RUNNING','abcd')
+                    id,generation_id,batch_size,phase,state,vector_cursor,
+                    scanned_count,repaired_count,finding_count)
+                VALUES (?,? ,10,'VECTORS','RUNNING','0007',7,2,3),
+                       (?,? ,10,'VECTORS','RUNNING','abcd',0,0,0)
                 """.formatted(schema), validRun, "rag-t02-bge-m3-v1", corruptRun, "rag-t02-bge-m3-v1");
 
             assertThat(Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema)
-                .locations("classpath:db/migration").load().migrate().migrationsExecuted).isEqualTo(1);
+                .locations("classpath:db/migration").target(MigrationVersion.fromVersion("58")).load()
+                .migrate().migrationsExecuted).isEqualTo(1);
             assertThat(jdbc.queryForObject("SELECT vector_cursor FROM " + schema
                 + ".knowledge_reconciliation_runs WHERE id=?", String.class, validRun)).isEqualTo("0007");
             assertThat(jdbc.queryForObject("SELECT canonical_cursor FROM " + schema
@@ -164,6 +171,46 @@ class KnowledgeIndexingFlywayIntegrationTests {
                 .isZero();
             assertThat(jdbc.queryForObject("SELECT vector_cursor FROM " + schema
                 + ".knowledge_reconciliation_runs WHERE id=?", String.class, corruptRun)).isEqualTo("abcd");
+
+            UUID findingId = UUID.randomUUID();
+            jdbc.update("""
+                INSERT INTO %s.knowledge_reconciliation_findings(
+                    id,run_id,finding_type,action,generation_id,detail)
+                VALUES (?,?,'ORPHANED_POINTS','MANUAL_REVIEW',?,'{}'::jsonb)
+                """.formatted(schema), findingId, validRun, "rag-t02-bge-m3-v1");
+            assertThat(Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema)
+                .locations("classpath:db/migration").load().migrate().migrationsExecuted).isEqualTo(1);
+            assertThat(jdbc.queryForObject("SELECT cursor_history_provenance FROM " + schema
+                + ".knowledge_reconciliation_runs WHERE id=?", String.class, validRun))
+                .isEqualTo("LEGACY_UNVERIFIED");
+            assertThat(jdbc.queryForObject("SELECT vector_cursor FROM " + schema
+                + ".knowledge_reconciliation_runs WHERE id=?", String.class, validRun)).isEqualTo("0007");
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM " + schema
+                + ".knowledge_reconciliation_cursor_history WHERE run_id=?", Integer.class, validRun))
+                .isEqualTo(1);
+            assertThat(jdbc.queryForMap("""
+                SELECT scanned_count,repaired_count,finding_count
+                  FROM %s.knowledge_reconciliation_runs WHERE id=?
+                """.formatted(schema), validRun))
+                .containsEntry("scanned_count", 7L)
+                .containsEntry("repaired_count", 2L)
+                .containsEntry("finding_count", 3L);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM " + schema
+                + ".knowledge_reconciliation_findings WHERE run_id=?", Integer.class, validRun))
+                .isEqualTo(1);
+
+            UUID directRun = UUID.randomUUID();
+            jdbc.update("""
+                INSERT INTO %s.knowledge_reconciliation_runs(
+                    id,generation_id,batch_size,phase,state)
+                VALUES (?,? ,10,'VECTORS','RUNNING')
+                """.formatted(schema), directRun, "rag-t02-bge-m3-v1");
+            assertThat(jdbc.queryForObject("SELECT cursor_history_provenance FROM " + schema
+                + ".knowledge_reconciliation_runs WHERE id=?", String.class, directRun))
+                .isEqualTo("LEGACY_UNVERIFIED");
+            assertThatThrownBy(() -> jdbc.update("UPDATE " + schema
+                + ".knowledge_reconciliation_runs SET cursor_history_provenance='UNCONTROLLED' WHERE id=?",
+                directRun)).isInstanceOf(RuntimeException.class);
         } finally {
             jdbc.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE");
         }
@@ -188,7 +235,7 @@ class KnowledgeIndexingFlywayIntegrationTests {
             jdbc.update("INSERT INTO " + schema + ".knowledge_indexing_work(event_id,meeting_id,source_type,source_id,source_revision,snapshot_id,snapshot_sha256,snapshot_size_bytes,index_generation_id,configuration_version,configuration_sha256,tokenizer_id) VALUES (?,?,'SUMMARY',?,7,?,?,?,'rag-t02-bge-m3-v1','rag-t02-bge-m3-v1',?,'bge-m3')",
                 event, meeting, source, snapshot, sha, payload.length, "b".repeat(64));
             assertThat(Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema)
-                .locations("classpath:db/migration").load().migrate().migrationsExecuted).isEqualTo(3);
+                .locations("classpath:db/migration").load().migrate().migrationsExecuted).isEqualTo(4);
             assertThat(jdbc.queryForObject("SELECT selection_epoch FROM " + schema + ".knowledge_source_snapshots WHERE id=?", Long.class, snapshot)).isZero();
             assertThat(jdbc.update("UPDATE " + schema + ".knowledge_indexing_work SET updated_at=CURRENT_TIMESTAMP WHERE event_id=?", event)).isEqualTo(1);
             assertThatThrownBy(() -> jdbc.update("UPDATE " + schema + ".knowledge_indexing_work SET source_revision=8 WHERE event_id=?", event))
@@ -303,7 +350,7 @@ class KnowledgeIndexingFlywayIntegrationTests {
             }
 
             assertThat(Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema)
-                .locations("classpath:db/migration").load().migrate().migrationsExecuted).isEqualTo(2);
+                .locations("classpath:db/migration").load().migrate().migrationsExecuted).isEqualTo(3);
             String permitBindingFunction = jdbc.queryForObject("""
                 SELECT pg_get_functiondef(p.oid)
                   FROM pg_proc p
