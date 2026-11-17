@@ -180,20 +180,90 @@ The live response schema rejects arbitrary/extra fields, foreign builds, schema 
 
 ## PI-05-006 admission evidence
 
-The PI05-006 deterministic workflow runs these exact PostgreSQL-backed
-Assistant identities in addition to the HTTP idempotency and citation
-acceptance cases:
+PI05-006 is deterministic PostgreSQL acceptance, not live deployment
+acceptance. The workflow runs the following exact testcase identities, and the
+collector requires one successful Surefire testcase result for every identity.
+The Java class is shown in full through its executable method identity; a test
+class result alone is not sufficient.
 
-- `AssistantAdmissionIntegrationTests.conversationContentionDoesNotCreateGlobalHeadOfLineBlocking`
-- `AssistantAdmissionIntegrationTests.sameUserConversationContentionDoesNotCreateGlobalHeadOfLineBlocking`
-- `AssistantAdmissionIntegrationTests.competingUsersCannotExceedGlobalActiveCapacity`
-- `AssistantAdmissionIntegrationTests.sameMeetingCapacityIsEnforcedBeforeGlobalCapacity`
-- `AssistantAdmissionIntegrationTests.completedReplayDoesNotWaitForGlobalAdmissionLock`
-- `AssistantAdmissionIntegrationTests.busyRequestDoesNotWaitForGlobalAdmissionLock`
-- `AssistantAdmissionIntegrationTests.admissionLockTimeoutReturns503WithoutPartialAdmission`
+### Idempotency and evidence freshness
 
-These methods use real Testcontainers PostgreSQL transactions and bounded
-barriers; the evidence collector requires their individual Surefire results.
+| Acceptance claim | Required testcase |
+| --- | --- |
+| Repeated successful requests return the durable result without duplicate turns or out-of-scope delivery | `AssistantHttpIntegrationTests.successfulSubmissionIsDurableIdempotentAndScopeBound` |
+| A source revision change is rejected at result acceptance rather than persisted as grounded evidence | `AssistantHttpIntegrationTests.sourceRevisionChangeBetweenVerificationAndCommitFailsClosed` |
+| A completed replay is returned without waiting for global admission | `AssistantAdmissionIntegrationTests.completedReplayDoesNotWaitForGlobalAdmissionLock` |
+| A live same-key replay is handled without waiting for global admission | `AssistantAdmissionIntegrationTests.busyRequestDoesNotWaitForGlobalAdmissionLock` |
+
+### Per-user quota
+
+| Acceptance claim | Required testcase |
+| --- | --- |
+| Ten conversations cannot bypass the configured two-active-turn per-user limit | `AssistantAdmissionIntegrationTests.tenConcurrentConversationsForOneUserNeverHoldMoreThanTwoTurns` |
+| Rolling ASK quota is bounded, an accepted replay is idempotent, and a rejected request creates no turn | `AssistantAdmissionIntegrationTests.askQuotaIsRollingIdempotentAndRejectedRequestDoesNotCreateTurn` |
+
+### User, meeting and global concurrency
+
+| Acceptance claim | Required testcase |
+| --- | --- |
+| Competing users cannot exceed global active capacity | `AssistantAdmissionIntegrationTests.competingUsersCannotExceedGlobalActiveCapacity` |
+| Meeting active capacity is enforced before global capacity | `AssistantAdmissionIntegrationTests.sameMeetingCapacityIsEnforcedBeforeGlobalCapacity` |
+
+### Shared PostgreSQL coordination
+
+| Acceptance claim | Required testcase |
+| --- | --- |
+| Independent admission guard instances coordinate at the shared PostgreSQL capacity boundary | `AssistantAdmissionIntegrationTests.independentGuardInstancesSharePostgresCapacityAtTheBoundary` |
+
+This is explicitly **shared-PostgreSQL coordination between independent
+guard instances**. The test does not claim a real multi-process deployment;
+that remains part of live infrastructure acceptance.
+
+### Head-of-line contention
+
+| Acceptance claim | Required testcase |
+| --- | --- |
+| A blocked conversation does not hold unrelated users behind the global lock | `AssistantAdmissionIntegrationTests.conversationContentionDoesNotCreateGlobalHeadOfLineBlocking` |
+| A blocked conversation for one user does not hold another conversation of the same user behind the global lock | `AssistantAdmissionIntegrationTests.sameUserConversationContentionDoesNotCreateGlobalHeadOfLineBlocking` |
+
+### Lease reclaim and stale-token fencing
+
+| Acceptance claim | Required testcase |
+| --- | --- |
+| Expired same-key reclaim reuses the original ASK quota event | `AssistantAdmissionIntegrationTests.expiredReclaimReusesTheExistingQuotaEvent` |
+| A stale claim cannot finalize a turn after reclaim | `AssistantAdmissionIntegrationTests.staleClaimCannotFinalizeAfterReclaim` |
+
+### Atomic rollback
+
+| Acceptance claim | Required testcase |
+| --- | --- |
+| Failed new-turn admission leaves no durable turn, message or ASK quota event | `AssistantAdmissionIntegrationTests.rolledBackTurnAdmissionLeavesNoDurableWork` |
+
+### Lock timeout
+
+| Acceptance claim | Required testcase |
+| --- | --- |
+| Admission lock timeout returns safe HTTP 503 without partial admission or AI invocation | `AssistantAdmissionIntegrationTests.admissionLockTimeoutReturns503WithoutPartialAdmission` |
+
+### Conversation creation quota
+
+| Acceptance claim | Required testcase |
+| --- | --- |
+| Conversation creation quota is transactional and uses the canonical HTTP 429 contract | `AssistantAdmissionIntegrationTests.conversationCreationQuotaIsTransactionalAndUsesCanonical429Contract` |
+
+The collector derives each identity from the `classname` and `name` fields in
+Surefire XML. A missing identity is `NOT_RUN`, a failed/error testcase is
+`FAIL`, and a skipped testcase is `BLOCKED`; duplicate identities are
+contradictory evidence and invalidate the suite. PI05-006 is `PASS` only when
+all identities above have exactly one successful result, and strict collection
+also requires `suite.allPassed=true` for every observed testcase, including
+testcases outside PI05-006.
+
+The separate `PI05-L01` through `PI05-L10` records remain
+`LIVE_INFRASTRUCTURE` and `NOT_RUN` until an isolated real Core/AI/PostgreSQL/
+RabbitMQ/Qdrant/object-storage execution supplies independently verifiable
+evidence. A green deterministic PostgreSQL matrix cannot promote a live
+scenario to `PASS`.
 
 ## PI-05 evidence hardening review
 - When live mode is explicitly enabled, missing isolation designation, harness, mTLS credentials or pinned run provenance now fail the test instead of silently skipping. Disabled live mode remains NOT_RUN.

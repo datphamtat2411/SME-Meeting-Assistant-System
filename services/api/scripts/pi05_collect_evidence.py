@@ -48,6 +48,13 @@ SCENARIOS = {
         "AssistantAdmissionIntegrationTests.completedReplayDoesNotWaitForGlobalAdmissionLock",
         "AssistantAdmissionIntegrationTests.busyRequestDoesNotWaitForGlobalAdmissionLock",
         "AssistantAdmissionIntegrationTests.admissionLockTimeoutReturns503WithoutPartialAdmission",
+        "AssistantAdmissionIntegrationTests.tenConcurrentConversationsForOneUserNeverHoldMoreThanTwoTurns",
+        "AssistantAdmissionIntegrationTests.independentGuardInstancesSharePostgresCapacityAtTheBoundary",
+        "AssistantAdmissionIntegrationTests.askQuotaIsRollingIdempotentAndRejectedRequestDoesNotCreateTurn",
+        "AssistantAdmissionIntegrationTests.expiredReclaimReusesTheExistingQuotaEvent",
+        "AssistantAdmissionIntegrationTests.staleClaimCannotFinalizeAfterReclaim",
+        "AssistantAdmissionIntegrationTests.rolledBackTurnAdmissionLeavesNoDurableWork",
+        "AssistantAdmissionIntegrationTests.conversationCreationQuotaIsTransactionalAndUsesCanonical429Contract",
     ],
     "PI05-007-reconciliation-inventory": [
         "KnowledgeIndexingWorkerIntegrationTests.missingWorkWithUnattributedVectorsRequiresManualReviewNotBlindReindex",
