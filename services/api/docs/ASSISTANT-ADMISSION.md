@@ -24,45 +24,57 @@ The defaults are engineering starting points, not capacity guarantees:
 | `app.assistant.admission.max-active-turns-per-meeting` | 5 |
 | `app.assistant.admission.max-conversation-creations-per-user` | 20 |
 | `app.assistant.admission.conversation-creation-window-seconds` | 3600 |
+| `app.assistant.admission.lock-wait-ms` | 1500 |
 
 Each property has an `APP_ASSISTANT_ADMISSION_*` environment override in
-`application.properties`. Startup rejects zero, negative, contradictory, or
-out-of-bounds values. Admission is not silently disabled when the Assistant is
-enabled.
+`application.properties`. The lock-wait setting is validated to 50–5000 ms;
+the other settings retain their existing bounds. Startup rejects zero,
+negative, contradictory, or out-of-bounds values. Admission is not silently
+disabled when the Assistant is enabled.
 
 ## Transaction and Lock Order
 
 Authorization and the initial conversation lookup happen before admission. The
-short admission transaction rechecks authorization, then uses transaction-scoped
-PostgreSQL advisory locks in this order:
+short admission transaction applies a transaction-local PostgreSQL
+`lock_timeout`, then rechecks ownership, meeting identity, current
+readability, and active conversation status while holding the conversation row.
+For a new or reclaimed ASK, its lock order is:
 
-1. `assistant-admission|global` for the shared active-turn decision.
+1. `assistant_conversations` row with `FOR UPDATE`.
 2. `assistant-admission|user|<UUID>` for the user's rolling quota and active count.
 3. `assistant-admission|meeting|<UUID>` for the meeting active count.
-4. The `assistant_conversations` row with `FOR UPDATE` for idempotency and
-   reclaim.
+4. `assistant-admission|global` for the final shared active-turn decision.
+5. Final global capacity check and the already-scoped durable writes.
 
-Conversation creation takes only the user advisory lock because it does not
-   participate in active-turn capacity; it never holds a lock and then waits
-   for the global ASK lock. This preserves the ASK ordering without needlessly
-   serializing creation quota with inference admission. Existing result
-   acceptance takes the meeting row lock before the conversation row lock and
-   does not acquire these advisory locks, so the new path cannot invert that row
-   lock order.
+Terminal/live idempotent replays and same-conversation live-busy conflicts stop
+after the conversation authorization/state checks and never request the global
+lock. Expired same-key reclaim follows the local scopes and then the global
+scope without another ASK event. Conversation creation takes only the user
+advisory lock and remains independent of the global ASK lock.
+
+No local advisory lock, authorization lookup, cleanup, quota pruning, or
+remote request is performed while waiting for or holding the global lock.
+The global critical section contains only the bounded final capacity decision
+and the durable admission writes. The transaction-local timeout applies to the
+conversation row and advisory lock waits; timeout failures are safe HTTP 503,
+not policy 429 responses.
 
 The global advisory lock deliberately serializes active-capacity decisions. A
 single shared decision point is required when active capacity is derived from
 durable turn rows rather than a separately maintained counter. It is released
 before any AI call. No database transaction, row lock, or advisory transaction
-lock spans inference.
+lock spans inference. Result acceptance takes the meeting row `FOR SHARE` first
+and then the conversation row `FOR UPDATE`; ASK admission does not take a
+meeting row lock, so it introduces no meeting-row/conversation-row cycle.
 
 ## Atomicity and Idempotency
 
 Within one transaction the service revalidates the conversation and meeting,
-resolves the idempotency key, checks rolling ASK quota and active user/meeting/
-global capacity, inserts the turn, and records the ASK event. A conversation
-creation similarly inserts its event only after the conversation row. A rollback
-removes both the business row and its event.
+resolves the idempotency key, checks rolling ASK quota and scoped user/meeting
+capacity, serializes the final global capacity decision, inserts the turn, and
+records the ASK event. A conversation creation similarly inserts its event only
+after the conversation row. A rollback removes both the business row and its
+event.
 
 Terminal or live same-key requests return the existing turn without charging.
 An expired same-key turn is reclaimed with a new claim token without another
@@ -97,11 +109,23 @@ The private metrics boundary exposes bounded Assistant measurements:
 - `sme.assistant.admission.rejected` by fixed policy reason.
 - `sme.assistant.admission.active` as a database-derived live-turn gauge.
 - `sme.assistant.admission.latency` by operation.
+- `sme.assistant.admission.lock.wait` by fixed `CONVERSATION`, `USER`,
+  `MEETING`, or `GLOBAL` scope.
+- `sme.assistant.admission.lock.timeouts` by the same fixed scope.
+- `sme.assistant.admission.global.critical.section` for time holding the
+  global admission lock through commit or rollback.
 - `sme.assistant.admission.persistence.failures`.
 - `sme.assistant.leases.expired` and `sme.assistant.leases.reclaimed`.
 
 No metric label contains a user, meeting, conversation, turn, question,
 prompt, token, provider response, or exception message.
+
+The result-acceptance graph is `meeting row FOR SHARE → conversation row FOR
+UPDATE`; meeting source mutations use the meeting row serialization point.
+Admission is `conversation row → user advisory → meeting advisory → global
+advisory` and does not acquire that meeting row, so the two paths have no
+cycle. A PostgreSQL deadlock remains a database failure requiring diagnosis;
+the application does not retry it or relabel it as a quota rejection.
 
 ## Retention and Tuning
 

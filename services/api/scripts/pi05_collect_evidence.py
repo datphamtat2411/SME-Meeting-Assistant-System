@@ -41,6 +41,13 @@ SCENARIOS = {
     "PI05-006-assistant-idempotency": [
         "AssistantHttpIntegrationTests.successfulSubmissionIsDurableIdempotentAndScopeBound",
         "AssistantHttpIntegrationTests.sourceRevisionChangeBetweenVerificationAndCommitFailsClosed",
+        "AssistantAdmissionIntegrationTests.conversationContentionDoesNotCreateGlobalHeadOfLineBlocking",
+        "AssistantAdmissionIntegrationTests.sameUserConversationContentionDoesNotCreateGlobalHeadOfLineBlocking",
+        "AssistantAdmissionIntegrationTests.competingUsersCannotExceedGlobalActiveCapacity",
+        "AssistantAdmissionIntegrationTests.sameMeetingCapacityIsEnforcedBeforeGlobalCapacity",
+        "AssistantAdmissionIntegrationTests.completedReplayDoesNotWaitForGlobalAdmissionLock",
+        "AssistantAdmissionIntegrationTests.busyRequestDoesNotWaitForGlobalAdmissionLock",
+        "AssistantAdmissionIntegrationTests.admissionLockTimeoutReturns503WithoutPartialAdmission",
     ],
     "PI05-007-reconciliation-inventory": [
         "KnowledgeIndexingWorkerIntegrationTests.missingWorkWithUnattributedVectorsRequiresManualReviewNotBlindReindex",

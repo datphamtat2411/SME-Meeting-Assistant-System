@@ -48,6 +48,7 @@ public class PrivateMetricsController {
             case "le_seconds" -> Set.of("30","120","300","900","3600","infinity").contains(value);
             case "le" -> Set.of("0","1","2","5","10","100","1000","16384").contains(value);
             case "operation" -> Set.of("ASK","CONVERSATION_CREATE").contains(value);
+            case "scope" -> Set.of("CONVERSATION", "USER", "MEETING", "GLOBAL").contains(value);
             case "reason" -> Set.of("ASK_QUOTA","CONVERSATION_QUOTA","USER_CONCURRENCY",
                 "MEETING_CONCURRENCY","GLOBAL_CONCURRENCY", "GENERATION_NOT_READY",
                 "WORKER_CLAIM_ACTIVE", "QDRANT_PERMIT_OPEN", "INDEXING_WORK_UNRESOLVED",
@@ -67,6 +68,9 @@ public class PrivateMetricsController {
         return switch(name) {
             case "sme.assistant.admission.active" -> type==io.micrometer.core.instrument.Meter.Type.GAUGE;
             case "sme.assistant.admission.latency" -> type==io.micrometer.core.instrument.Meter.Type.TIMER;
+            case "sme.assistant.admission.lock.wait",
+                 "sme.assistant.admission.global.critical.section" ->
+                type==io.micrometer.core.instrument.Meter.Type.TIMER;
             default -> type==io.micrometer.core.instrument.Meter.Type.COUNTER;
         };
     }

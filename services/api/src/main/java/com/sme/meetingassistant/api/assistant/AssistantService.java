@@ -206,10 +206,11 @@ public final class AssistantService {
 
     private Admission reserve(UUID conversationId,UUID user,String key,String question,
             String fingerprint,UUID expectedMeeting){
-        // Advisory locks are acquired before the conversation row lock. This is
-        // the same global -> user -> meeting order used by conversation create.
-        admission.lockAskScope(user,expectedMeeting);
-        var conversation=store.require(conversationId,user,true);
+        // The transaction-local timeout covers the conversation row and every
+        // later advisory lock without changing the pooled session.
+        admission.configureLockWaitTimeout();
+        var conversation=admission.lockConversation(
+            () -> store.require(conversationId,user,true));
         if(!conversation.meetingId().equals(expectedMeeting))
             throw new ResponseStatusException(HttpStatus.NOT_FOUND);
         access.requireReadable(conversation.meetingId(),user);
@@ -226,7 +227,10 @@ public final class AssistantService {
                 admission.replay();
                 return new Admission(prior,false);
             }
-            admission.ensureActiveCapacity(user,conversation.meetingId());
+            admission.lockAskLocalScopes(user,conversation.meetingId());
+            admission.ensureScopedActiveCapacity(user,conversation.meetingId());
+            admission.lockAskGlobalScope();
+            admission.ensureGlobalActiveCapacity();
             var reclaimed=store.reclaim(prior);
             admission.leaseReclaimed();
             return new Admission(reclaimed,true);
@@ -238,8 +242,11 @@ public final class AssistantService {
             store.expire(busy);
             admission.leaseExpired();
         }
+        admission.lockAskLocalScopes(user,conversation.meetingId());
         admission.ensureAskQuota(user);
-        admission.ensureActiveCapacity(user,conversation.meetingId());
+        admission.ensureScopedActiveCapacity(user,conversation.meetingId());
+        admission.lockAskGlobalScope();
+        admission.ensureGlobalActiveCapacity();
         var inserted=store.insertTurn(conversationId,key,fingerprint,question,
             version(conversation.meetingId(),user));
         admission.recordAsk(user,inserted.id());

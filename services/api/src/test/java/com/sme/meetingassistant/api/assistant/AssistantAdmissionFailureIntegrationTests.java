@@ -1,7 +1,6 @@
 package com.sme.meetingassistant.api.assistant;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -46,7 +45,7 @@ class AssistantAdmissionFailureIntegrationTests {
         UUID meeting = meeting(owner);
         UUID conversation = conversation(owner, meeting);
         doThrow(new DataAccessResourceFailureException("database unavailable"))
-            .when(admission).lockAskScope(any(UUID.class), any(UUID.class));
+            .when(admission).configureLockWaitTimeout();
         when(admission.databaseUnavailable()).thenReturn(
             new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE));
 

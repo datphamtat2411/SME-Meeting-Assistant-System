@@ -53,7 +53,8 @@ import tools.jackson.databind.ObjectMapper;
     "app.assistant.admission.max-active-turns-global=3",
     "app.assistant.admission.max-active-turns-per-meeting=2",
     "app.assistant.admission.max-conversation-creations-per-user=2",
-    "app.assistant.admission.conversation-creation-window-seconds=3600"
+    "app.assistant.admission.conversation-creation-window-seconds=3600",
+    "app.assistant.admission.lock-wait-ms=1500"
 })
 @AutoConfigureMockMvc
 @Import(PostgresTestConfiguration.class)
@@ -106,6 +107,106 @@ class AssistantAdmissionIntegrationTests {
              WHERE c.user_id=?
             """, Long.class, owner)).isEqualTo(2L);
         verify(gateway, times(2)).answer(anyString());
+    }
+
+    @Test
+    void conversationContentionDoesNotCreateGlobalHeadOfLineBlocking() throws Exception {
+        UUID blockedUser = user();
+        UUID independentUser = user();
+        UUID blockedConversation = conversation(blockedUser, meeting(blockedUser));
+        UUID independentConversation = conversation(independentUser, meeting(independentUser));
+        fastProvider();
+
+        try (HeldTransaction held = holdConversation(blockedConversation, blockedUser)) {
+            ExecutorService executor = Executors.newSingleThreadExecutor();
+            try {
+                Future<MvcResult> blocked = executor.submit(
+                    () -> submit(blockedUser, blockedConversation, "blocked-row"));
+                awaitConversationLockWait();
+
+                assertThat(submit(independentUser, independentConversation, "independent-row")
+                    .getResponse().getStatus()).isEqualTo(200);
+                held.release();
+                assertThat(blocked.get(10, TimeUnit.SECONDS).getResponse().getStatus()).isEqualTo(200);
+            } finally {
+                executor.shutdownNow();
+            }
+        }
+    }
+
+    @Test
+    void sameUserConversationContentionDoesNotCreateGlobalHeadOfLineBlocking() throws Exception {
+        UUID owner = user();
+        UUID blockedConversation = conversation(owner, meeting(owner));
+        UUID independentConversation = conversation(owner, meeting(owner));
+        fastProvider();
+
+        try (HeldTransaction held = holdConversation(blockedConversation, owner)) {
+            ExecutorService executor = Executors.newSingleThreadExecutor();
+            try {
+                Future<MvcResult> blocked = executor.submit(
+                    () -> submit(owner, blockedConversation, "same-user-blocked"));
+                awaitConversationLockWait();
+
+                assertThat(submit(owner, independentConversation, "same-user-independent")
+                    .getResponse().getStatus()).isEqualTo(200);
+                held.release();
+                assertThat(blocked.get(10, TimeUnit.SECONDS).getResponse().getStatus()).isEqualTo(200);
+            } finally {
+                executor.shutdownNow();
+            }
+        }
+    }
+
+    @Test
+    void completedReplayDoesNotWaitForGlobalAdmissionLock() throws Exception {
+        UUID owner = user();
+        UUID conversation = conversation(owner, meeting(owner));
+        fastProvider();
+        assertThat(submit(owner, conversation, "replay-with-global-held").getResponse().getStatus())
+            .isEqualTo(200);
+
+        try (HeldTransaction held = holdGlobalLock()) {
+            assertThat(submit(owner, conversation, "replay-with-global-held").getResponse().getStatus())
+                .isEqualTo(200);
+            verify(gateway, times(1)).answer(anyString());
+        }
+    }
+
+    @Test
+    void busyRequestDoesNotWaitForGlobalAdmissionLock() throws Exception {
+        UUID owner = user();
+        UUID conversation = conversation(owner, meeting(owner));
+        TransactionTemplate transactions = new TransactionTemplate(transactionManager);
+        transactions.executeWithoutResult(status ->
+            store.insertTurn(conversation, "live-existing",
+                WorkerJson.sha256("live question".getBytes()), "live question", "test-scope"));
+
+        try (HeldTransaction held = holdGlobalLock()) {
+            assertThat(submit(owner, conversation, "different-key").getResponse().getStatus())
+                .isEqualTo(409);
+            verifyNoAiCalls();
+        } finally {
+            jdbc.update("UPDATE assistant_turns SET claim_expires_at=clock_timestamp()-interval '1 second' "
+                + "WHERE conversation_id=?", conversation);
+        }
+    }
+
+    @Test
+    void admissionLockTimeoutReturns503WithoutPartialAdmission() throws Exception {
+        UUID owner = user();
+        UUID meeting = meeting(owner);
+        UUID conversation = conversation(owner, meeting);
+
+        try (HeldTransaction held = holdUserLock(owner)) {
+            MvcResult result = submit(owner, conversation, "user-lock-timeout");
+            assertThat(result.getResponse().getStatus()).isEqualTo(503);
+            verifyNoAiCalls();
+        }
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM assistant_turns WHERE conversation_id=?",
+            Long.class, conversation)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM assistant_admission_events WHERE user_id=? "
+            + "AND event_type='ASK'", Long.class, owner)).isZero();
     }
 
     @Test
@@ -183,9 +284,14 @@ class AssistantAdmissionIntegrationTests {
             attempts.add(() -> {
                 try {
                     Boolean accepted = transactions.execute(status -> {
-                        guard.lockAskScope(owner, meetings.get(attempt));
+                        guard.configureLockWaitTimeout();
+                        guard.lockConversation(() ->
+                            store.require(conversations.get(attempt), owner, true));
+                        guard.lockAskLocalScopes(owner, meetings.get(attempt));
                         guard.ensureAskQuota(owner);
-                        guard.ensureActiveCapacity(owner, meetings.get(attempt));
+                        guard.ensureScopedActiveCapacity(owner, meetings.get(attempt));
+                        guard.lockAskGlobalScope();
+                        guard.ensureGlobalActiveCapacity();
                         var turn = store.insertTurn(conversations.get(attempt), "guard-race-" + attempt,
                             WorkerJson.sha256(("question-" + attempt).getBytes()), "question-" + attempt,
                             "test-scope");
@@ -286,9 +392,13 @@ class AssistantAdmissionIntegrationTests {
         UUID conversation = conversation(owner, meeting);
         TransactionTemplate transactions = new TransactionTemplate(transactionManager);
         AssistantStore.Turn original = transactions.execute(status -> {
-            admission.lockAskScope(owner, meeting);
+            admission.configureLockWaitTimeout();
+            admission.lockConversation(() -> store.require(conversation, owner, true));
+            admission.lockAskLocalScopes(owner, meeting);
             admission.ensureAskQuota(owner);
-            admission.ensureActiveCapacity(owner, meeting);
+            admission.ensureScopedActiveCapacity(owner, meeting);
+            admission.lockAskGlobalScope();
+            admission.ensureGlobalActiveCapacity();
             var turn = store.insertTurn(conversation, "reclaim-key",
                 WorkerJson.sha256("Question reclaim-key".getBytes()), "Question reclaim-key", "test-scope");
             admission.recordAsk(owner, turn.id());
@@ -330,6 +440,35 @@ class AssistantAdmissionIntegrationTests {
         transactions.executeWithoutResult(status -> store.saveCompleted(reclaimed, reclaimed.token(), failed));
         assertThat(jdbc.queryForObject("SELECT count(*) FROM assistant_messages WHERE conversation_id=? "
             + "AND role='ASSISTANT'", Long.class, conversation)).isEqualTo(1L);
+    }
+
+    @Test
+    void rolledBackTurnAdmissionLeavesNoDurableWork() throws Exception {
+        UUID owner = user();
+        UUID meeting = meeting(owner);
+        UUID conversation = conversation(owner, meeting);
+        TransactionTemplate transactions = new TransactionTemplate(transactionManager);
+
+        assertThatThrownBy(() -> transactions.execute(status -> {
+            admission.configureLockWaitTimeout();
+            admission.lockConversation(() -> store.require(conversation, owner, true));
+            admission.lockAskLocalScopes(owner, meeting);
+            admission.ensureAskQuota(owner);
+            admission.ensureScopedActiveCapacity(owner, meeting);
+            admission.lockAskGlobalScope();
+            admission.ensureGlobalActiveCapacity();
+            var turn = store.insertTurn(conversation, "rollback-turn",
+                WorkerJson.sha256("rollback question".getBytes()), "rollback question", "test-scope");
+            admission.recordAsk(owner, turn.id());
+            throw new IllegalStateException("intentional admission rollback");
+        })).isInstanceOf(IllegalStateException.class);
+
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM assistant_turns WHERE conversation_id=?",
+            Long.class, conversation)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM assistant_messages WHERE conversation_id=?",
+            Long.class, conversation)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM assistant_admission_events WHERE user_id=? "
+            + "AND event_type='ASK'", Long.class, owner)).isZero();
     }
 
     private void fastProvider() throws Exception {
@@ -403,6 +542,65 @@ class AssistantAdmissionIntegrationTests {
         assertThat(rejected(reason) - baseline).isGreaterThanOrEqualTo(amount);
     }
 
+    private void awaitConversationLockWait() {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (System.nanoTime() < deadline) {
+            Long waiting = jdbc.queryForObject("""
+                SELECT count(*) FROM pg_stat_activity
+                 WHERE wait_event_type='Lock'
+                   AND query ILIKE '%assistant_conversations%'
+                   AND query ILIKE '%FOR UPDATE%'
+                """, Long.class);
+            if (waiting != null && waiting > 0) return;
+            Thread.onSpinWait();
+        }
+        throw new AssertionError("conversation admission did not reach its row lock wait");
+    }
+
+    private HeldTransaction holdConversation(UUID conversation, UUID owner) throws Exception {
+        return hold(() -> store.require(conversation, owner, true));
+    }
+
+    private HeldTransaction holdGlobalLock() throws Exception {
+        return hold(() -> jdbc.query(
+            "SELECT pg_advisory_xact_lock(hashtextextended('assistant-admission|global',0))",
+            (rs, row) -> null));
+    }
+
+    private HeldTransaction holdUserLock(UUID owner) throws Exception {
+        return hold(() -> jdbc.query(
+            "SELECT pg_advisory_xact_lock(hashtextextended(?,0))",
+            (rs, row) -> null, "assistant-admission|user|" + owner));
+    }
+
+    private HeldTransaction hold(Runnable lock) throws Exception {
+        TransactionTemplate transactions = new TransactionTemplate(transactionManager);
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        Future<?> future = executor.submit(() -> transactions.executeWithoutResult(status -> {
+            lock.run();
+            entered.countDown();
+            try {
+                if (!release.await(10, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("held transaction release timed out");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("held transaction interrupted", interrupted);
+            }
+        }));
+        if (!entered.await(10, TimeUnit.SECONDS)) {
+            executor.shutdownNow();
+            throw new AssertionError("held transaction did not acquire its lock");
+        }
+        return new HeldTransaction(release, future, executor);
+    }
+
+    private void verifyNoAiCalls() throws Exception {
+        verify(gateway, times(0)).answer(anyString());
+    }
+
     private UUID user() {
         UUID id = UUID.randomUUID();
         String email = id + "@assistant-admission.test";
@@ -463,6 +661,33 @@ class AssistantAdmissionIntegrationTests {
     }
 
     private record BlockingProvider(CountDownLatch entered, CountDownLatch release) {}
+
+    private static final class HeldTransaction implements AutoCloseable {
+        private final CountDownLatch release;
+        private final Future<?> future;
+        private final ExecutorService executor;
+
+        private HeldTransaction(CountDownLatch release, Future<?> future, ExecutorService executor) {
+            this.release = release;
+            this.future = future;
+            this.executor = executor;
+        }
+
+        private void release() throws Exception {
+            release.countDown();
+            future.get(10, TimeUnit.SECONDS);
+        }
+
+        @Override
+        public void close() throws Exception {
+            release.countDown();
+            future.get(10, TimeUnit.SECONDS);
+            executor.shutdownNow();
+            if (!executor.awaitTermination(10, TimeUnit.SECONDS)) {
+                throw new IllegalStateException("held transaction executor did not terminate");
+            }
+        }
+    }
 
     private static final class ConcurrentRequests implements AutoCloseable {
         private final ExecutorService executor;

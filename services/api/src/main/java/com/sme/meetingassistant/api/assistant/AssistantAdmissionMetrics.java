@@ -19,9 +19,13 @@ public final class AssistantAdmissionMetrics {
         "sme.assistant.admission.rejected",
         "sme.assistant.admission.persistence.failures",
         "sme.assistant.admission.latency",
+        "sme.assistant.admission.lock.wait",
+        "sme.assistant.admission.lock.timeouts",
+        "sme.assistant.admission.global.critical.section",
         "sme.assistant.leases.expired",
         "sme.assistant.leases.reclaimed");
     private static final Set<String> OPERATIONS = Set.of("ASK", "CONVERSATION_CREATE");
+    private static final Set<String> LOCK_SCOPES = Set.of("CONVERSATION", "USER", "MEETING", "GLOBAL");
     private static final Set<String> REASONS = Set.of(
         "ASK_QUOTA", "CONVERSATION_QUOTA", "USER_CONCURRENCY",
         "MEETING_CONCURRENCY", "GLOBAL_CONCURRENCY");
@@ -73,6 +77,27 @@ public final class AssistantAdmissionMetrics {
             .record(Math.max(0L, elapsedNanos), TimeUnit.NANOSECONDS);
     }
 
+    void lockWait(String scope, long elapsedNanos) {
+        requireScope(scope);
+        Timer.builder("sme.assistant.admission.lock.wait")
+            .tag("scope", scope)
+            .description("PostgreSQL Assistant admission lock acquisition wait")
+            .register(registry)
+            .record(Math.max(0L, elapsedNanos), TimeUnit.NANOSECONDS);
+    }
+
+    void lockTimeout(String scope) {
+        requireScope(scope);
+        registry.counter("sme.assistant.admission.lock.timeouts", "scope", scope).increment();
+    }
+
+    void globalCriticalSection(long elapsedNanos) {
+        Timer.builder("sme.assistant.admission.global.critical.section")
+            .description("Time holding the global Assistant admission lock")
+            .register(registry)
+            .record(Math.max(0L, elapsedNanos), TimeUnit.NANOSECONDS);
+    }
+
     private double activeTurns() {
         try {
             Long count = jdbc.queryForObject("""
@@ -87,5 +112,9 @@ public final class AssistantAdmissionMetrics {
 
     private static void requireOperation(String operation) {
         if (!OPERATIONS.contains(operation)) throw new IllegalArgumentException("Unknown admission operation");
+    }
+
+    private static void requireScope(String scope) {
+        if (!LOCK_SCOPES.contains(scope)) throw new IllegalArgumentException("Unknown admission lock scope");
     }
 }

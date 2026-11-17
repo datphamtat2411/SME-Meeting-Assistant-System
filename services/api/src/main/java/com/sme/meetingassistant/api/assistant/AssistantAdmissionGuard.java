@@ -1,6 +1,7 @@
 package com.sme.meetingassistant.api.assistant;
 
 import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.util.UUID;
@@ -37,14 +38,41 @@ final class AssistantAdmissionGuard {
             properties.conversationCreationWindowSeconds());
     }
 
-    /** Lock order: global admission -> user -> meeting -> conversation row. */
-    void lockAskScope(UUID userId, UUID meetingId) {
+    /**
+     * PostgreSQL applies this setting only to the current transaction. It must
+     * be called before the conversation row is locked so every admission wait
+     * is bounded without changing the pool's session configuration.
+     */
+    void configureLockWaitTimeout() {
         requireTransaction();
         persist(() -> {
-            lock(GLOBAL_LOCK);
-            lock("assistant-admission|user|" + userId);
-            lock("assistant-admission|meeting|" + meetingId);
+            jdbc.queryForObject("SELECT set_config('lock_timeout', ?, true)",
+                String.class, properties.lockWaitMs() + "ms");
+            return null;
+        });
+    }
+
+    /**
+     * The conversation row is deliberately locked by the service before this
+     * method is called. No global lock is held while either local scope waits.
+     */
+    void lockAskLocalScopes(UUID userId, UUID meetingId) {
+        requireTransaction();
+        persist(() -> {
+            lock("USER", "assistant-admission|user|" + userId);
+            lock("MEETING", "assistant-admission|meeting|" + meetingId);
             prune(userId);
+            return null;
+        });
+    }
+
+    /** The global lock is the last shared admission scope lock. */
+    void lockAskGlobalScope() {
+        requireTransaction();
+        persist(() -> {
+            lock("GLOBAL", GLOBAL_LOCK);
+            long started = System.nanoTime();
+            afterCompletion(() -> metrics.globalCriticalSection(System.nanoTime() - started));
             return null;
         });
     }
@@ -52,8 +80,9 @@ final class AssistantAdmissionGuard {
     /** Conversation creation has no active capacity and needs only the user lock. */
     void lockConversationCreationScope(UUID userId) {
         requireTransaction();
+        configureLockWaitTimeout();
         persist(() -> {
-            lock("assistant-admission|user|" + userId);
+            lock("USER", "assistant-admission|user|" + userId);
             prune(userId);
             return null;
         });
@@ -80,7 +109,7 @@ final class AssistantAdmissionGuard {
     }
 
     /** Active turns are durable PROCESSING rows with an unexpired lease. */
-    void ensureActiveCapacity(UUID userId, UUID meetingId) {
+    void ensureScopedActiveCapacity(UUID userId, UUID meetingId) {
         requireTransaction();
         long userActive = persist(() -> activeForUser(userId));
         if (userActive >= properties.maxActiveTurnsPerUser()) {
@@ -108,6 +137,10 @@ final class AssistantAdmissionGuard {
                     """, meetingId));
         }
 
+    }
+
+    void ensureGlobalActiveCapacity() {
+        requireTransaction();
         long globalActive = persist(this::activeGlobally);
         if (globalActive >= properties.maxActiveTurnsGlobal()) {
             reject(Reason.GLOBAL_CONCURRENCY,
@@ -166,6 +199,19 @@ final class AssistantAdmissionGuard {
 
     void latency(String operation, long elapsedNanos) {
         metrics.latency(operation, elapsedNanos);
+    }
+
+    <T> T lockConversation(Supplier<T> action) {
+        requireTransaction();
+        long started = System.nanoTime();
+        try {
+            return action.get();
+        } catch (DataAccessException failure) {
+            if (isLockTimeout(failure)) metrics.lockTimeout("CONVERSATION");
+            throw failure;
+        } finally {
+            metrics.lockWait("CONVERSATION", System.nanoTime() - started);
+        }
     }
 
     ResponseStatusException databaseUnavailable() {
@@ -253,9 +299,17 @@ final class AssistantAdmissionGuard {
             """, userId, retentionSeconds);
     }
 
-    private void lock(String key) {
-        jdbc.query("SELECT pg_advisory_xact_lock(hashtextextended(?,0))",
-            (ResultSet rs) -> {}, key);
+    private void lock(String scope, String key) {
+        long started = System.nanoTime();
+        try {
+            jdbc.query("SELECT pg_advisory_xact_lock(hashtextextended(?,0))",
+                (ResultSet rs) -> {}, key);
+        } catch (DataAccessException failure) {
+            if (isLockTimeout(failure)) metrics.lockTimeout(scope);
+            throw failure;
+        } finally {
+            metrics.lockWait(scope, System.nanoTime() - started);
+        }
     }
 
     private <T> T persist(Supplier<T> action) {
@@ -274,15 +328,36 @@ final class AssistantAdmissionGuard {
     }
 
     private void afterCommit(Runnable action) {
-        if (!TransactionSynchronizationManager.isActualTransactionActive()
-                || !TransactionSynchronizationManager.isSynchronizationActive()) {
-            throw new IllegalStateException("Assistant admission telemetry requires a transaction");
-        }
-        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+        registerSynchronization(new TransactionSynchronization() {
             @Override public void afterCommit() {
                 action.run();
             }
         });
+    }
+
+    private void afterCompletion(Runnable action) {
+        registerSynchronization(new TransactionSynchronization() {
+            @Override public void afterCompletion(int status) {
+                action.run();
+            }
+        });
+    }
+
+    private void registerSynchronization(TransactionSynchronization synchronization) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()
+                || !TransactionSynchronizationManager.isSynchronizationActive()) {
+            throw new IllegalStateException("Assistant admission telemetry requires a transaction");
+        }
+        TransactionSynchronizationManager.registerSynchronization(synchronization);
+    }
+
+    private static boolean isLockTimeout(DataAccessException failure) {
+        Throwable current = failure;
+        while (current != null) {
+            if (current instanceof SQLException sql && "55P03".equals(sql.getSQLState())) return true;
+            current = current.getCause();
+        }
+        return false;
     }
 
     private void reject(Reason reason, int retryAfter) {

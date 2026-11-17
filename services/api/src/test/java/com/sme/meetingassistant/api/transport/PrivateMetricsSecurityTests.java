@@ -111,7 +111,7 @@ class PrivateMetricsSecurityTests {
                     x -> assertThat(x).startsWith("product_integration_"),
                      x -> assertThat(x).startsWith("sme_assistant_"));
                 if(line.contains("{")) for(String tag:line.substring(line.indexOf('{')+1,line.indexOf('}')).split(","))
-                    assertThat(tag.split("=")[0]).isIn("outcome","le","le_seconds","state","operation","reason","phase");
+                     assertThat(tag.split("=")[0]).isIn("outcome","le","le_seconds","state","operation","reason","phase","scope");
             }
             var actual=response.body().lines().filter(l->!l.startsWith("#")&&!l.isBlank())
                 .map(l->l.split("[ {]",2)[0]).collect(java.util.stream.Collectors.toSet());

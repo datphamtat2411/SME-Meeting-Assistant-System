@@ -57,14 +57,18 @@ Public /actuator/prometheus, /actuator/metrics and /internal/** remain denied.
 Do not work around failures by opening the private connector to the internet.
 
 Assistant admission configuration is documented in
-[`ASSISTANT-ADMISSION.md`](ASSISTANT-ADMISSION.md). Its active-turn gauge is
+[`ASSISTANT-ADMISSION.md`](ASSISTANT-ADMISSION.md), including the validated
+50–5000 ms transaction-local lock-wait bound and the
+`APP_ASSISTANT_ADMISSION_LOCK_WAIT_MS` override. Its active-turn gauge is
 derived from durable `PROCESSING` turns with live leases; it is not an in-memory
 counter. Operators should alert on admission persistence failures, rejection
-rate, active capacity, expired/reclaimed leases and admission latency using
-measured thresholds. Admission events contain only bounded UUID references and
-timestamps; use the documented periodic PostgreSQL retention statement for
-inactive users. A 429 concurrency `Retry-After` is advisory, while a quota hint
-is based on the oldest event expiration.
+rate, active capacity, expired/reclaimed leases, admission latency, scoped lock
+wait/timeouts, and global critical-section duration using measured thresholds.
+Lock timeout is a safe 503 database failure, not a 429 policy rejection.
+Admission events contain only bounded UUID references and timestamps; use the
+documented periodic PostgreSQL retention statement for inactive users. A 429
+concurrency `Retry-After` is advisory, while a quota hint is based on the
+oldest event expiration.
 
 ProductIntegrationMetrics uses a bounded repeatable-read PostgreSQL snapshot
 and a 30-second in-process cache. Its fixed-cardinality gauges, together with
@@ -73,6 +77,12 @@ through the existing explicit private metrics allowlist, alongside existing
 diarization families. Monitoring never labels a time series with a meeting ID,
 user ID, transcript, prompt, worker certificate, signed URL or arbitrary
 exception text.
+
+Assistant lock diagnostics use only the fixed scopes `CONVERSATION`, `USER`,
+`MEETING`, and `GLOBAL`. A high global critical-section timer with low global
+wait indicates work is being held too long; high scoped wait with low global
+wait indicates local contention. PostgreSQL deadlock SQLSTATE `40P01` is not
+retried or converted into a policy limit and requires incident investigation.
 
 | Metric family | Diagnostic meaning |
 | --- | --- |

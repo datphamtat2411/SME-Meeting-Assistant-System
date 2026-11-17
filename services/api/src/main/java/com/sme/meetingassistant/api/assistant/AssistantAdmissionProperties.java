@@ -11,7 +11,8 @@ public record AssistantAdmissionProperties(
         int maxActiveTurnsGlobal,
         int maxActiveTurnsPerMeeting,
         int maxConversationCreationsPerUser,
-        int conversationCreationWindowSeconds) {
+        int conversationCreationWindowSeconds,
+        int lockWaitMs) {
 
     public AssistantAdmissionProperties {
         positiveBounded(maxAskRequestsPerUser, 100_000, "maxAskRequestsPerUser");
@@ -23,6 +24,7 @@ public record AssistantAdmissionProperties(
             "maxConversationCreationsPerUser");
         positiveBounded(conversationCreationWindowSeconds, 7 * 24 * 60 * 60,
             "conversationCreationWindowSeconds");
+        bounded(lockWaitMs, 50, 5_000, "lockWaitMs");
         if (maxActiveTurnsGlobal < maxActiveTurnsPerUser
                 || maxActiveTurnsGlobal < maxActiveTurnsPerMeeting) {
             throw new IllegalArgumentException(
@@ -32,6 +34,12 @@ public record AssistantAdmissionProperties(
 
     private static void positiveBounded(int value, int maximum, String name) {
         if (value < 1 || value > maximum) {
+            throw new IllegalArgumentException("Invalid Assistant admission setting: " + name);
+        }
+    }
+
+    private static void bounded(int value, int minimum, int maximum, String name) {
+        if (value < minimum || value > maximum) {
             throw new IllegalArgumentException("Invalid Assistant admission setting: " + name);
         }
     }

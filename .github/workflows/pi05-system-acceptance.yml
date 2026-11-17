@@ -58,7 +58,7 @@ jobs:
       - name: Run the real Core HTTP/PostgreSQL cross-module acceptance matrix
         run: >-
           ./mvnw -B -ntp
-          -Dtest=Pi05CrossModuleAcceptanceTests,CrossModuleRevisionConsistencyIntegrationTests,AssistantHttpIntegrationTests,KnowledgeIndexingWorkerIntegrationTests,AiCoreKnowledgeVectorAuditContractTests,MeetingRoomLifecycleIntegrationTests,ActionItemProposalHandoffIntegrationTests,IntelligenceResultIngestionIntegrationTests,ExportAccessHttpIntegrationTests,ExportJobIntegrationTests,OutboxLeaseIntegrationTests,ProcessingStageFencingIntegrationTests,TranscriptReviewRevisionGuardIntegrationTests
+          -Dtest=Pi05CrossModuleAcceptanceTests,CrossModuleRevisionConsistencyIntegrationTests,AssistantHttpIntegrationTests,AssistantAdmissionIntegrationTests,AssistantAdmissionPropertiesTests,KnowledgeIndexingWorkerIntegrationTests,AiCoreKnowledgeVectorAuditContractTests,MeetingRoomLifecycleIntegrationTests,ActionItemProposalHandoffIntegrationTests,IntelligenceResultIngestionIntegrationTests,ExportAccessHttpIntegrationTests,ExportJobIntegrationTests,OutboxLeaseIntegrationTests,ProcessingStageFencingIntegrationTests,TranscriptReviewRevisionGuardIntegrationTests
           test
       - name: Derive deterministic PASS/FAIL from JUnit testcase XML
         if: always()
