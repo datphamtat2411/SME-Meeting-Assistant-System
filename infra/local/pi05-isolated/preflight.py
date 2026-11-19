@@ -149,7 +149,7 @@ def check_fresh_project(run_id: str) -> None:
             raise Blocked("The run's Compose project already exists; do not reuse it as a fresh run")
     for command, matches in (
         (["docker", "ps", "-a", "--format", "{{.Names}}"],
-         lambda name: name.startswith(project + "-") or name.startswith(project + "_")),
+         lambda name: name.startswith((project + "-", project + "_"))),
         (["docker", "volume", "ls", "--format", "{{.Name}}"],
          lambda name: name in {project + "_" + suffix for suffix in
                                ("postgres_data", "broker_data", "storage_data", "qdrant_data")}),
@@ -170,9 +170,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--run-root", required=True, type=Path)
+    parser.add_argument("--runs-base", type=Path)
     args = parser.parse_args()
     try:
-        check_files(args.run_id, args.run_root)
+        check_files(args.run_id, args.run_root, runs_base=args.runs_base)
         check_fresh_project(args.run_id)
     except Blocked as error:
         print("BLOCKED:", error)

@@ -1045,6 +1045,27 @@ def test_isolated_endpoints_keep_loopback_route_separate_from_tls_identity():
     assert settings.core_api_connect_host == "127.0.0.1"
 
 
+def test_empty_connect_hosts_use_network_endpoint_routing():
+    settings = Settings(
+        service_name="test",
+        service_identity="ai-core",
+        _env_file=None,
+        rabbitmq_url="amqps://rabbitmq.internal:5671/sme-integration",
+        rabbitmq_connect_host="",
+        rabbitmq_tls_server_name="rabbitmq.internal",
+        s3_endpoint_url="https://storage.internal:9000",
+        s3_connect_host="",
+        s3_tls_server_name="storage.internal",
+        core_api_base_url="https://core-api.internal:8443",
+        core_api_connect_host="",
+        core_api_tls_server_name="core-api.internal",
+    )
+
+    assert settings.rabbitmq_connect_host is None
+    assert settings.s3_connect_host is None
+    assert settings.core_api_connect_host is None
+
+
 @pytest.mark.parametrize(
     "overrides",
     [

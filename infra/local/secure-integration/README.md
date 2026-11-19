@@ -129,38 +129,37 @@ variants. No public proxy may target the private connector. Core's engine Valve
 independently checks the actual connector object, never Host/forwarding headers,
 and guards servlet forward/include/error dispatches.
 
-Copy `compose.env.example`, `core.env.example`, `worker.env.example`, and
-`intelligence-worker.env.example` outside Git,
-mode 0600. Edit literal absolute paths. Docker env files and application process
-environments are distinct. Supply bootstrap files:
+Use the canonical `infra/local/secure-integration/.env.example` as
+`infra/local/secure-integration/.env`, mode 0600. Core settings belong to
+`services/api/.env`, AI settings belong to `services/ai/.env`, and PostgreSQL
+bootstrap settings belong to `infra/local/postgres/.env`. The AI launcher
+renders short-lived, mode-0600 process files from its one canonical file;
+Docker env files and application process environments remain distinct.
+Supply bootstrap values in the secure integration `.env`:
 
-- `broker.env`: `RABBITMQ_DEFAULT_USER`, `RABBITMQ_DEFAULT_PASS`,
+- `RABBITMQ_DEFAULT_USER`, `RABBITMQ_DEFAULT_PASS`,
   `RABBITMQ_DEFAULT_VHOST=sme-integration`. No default credentials in this project.
-- `storage.env`: `RUSTFS_ACCESS_KEY`, `RUSTFS_SECRET_KEY` (operator bootstrap only).
-- `worker.env`: worker example plus **separate** `AI_RABBITMQ_USERNAME/PASSWORD`,
-  `AI_S3_ACCESS_KEY_ID/SECRET_ACCESS_KEY`. These are not administrator accounts.
-  Keep the required `AI_SERVICE_NAME` and `AI_SERVICE_IDENTITY=ai-worker` from the
-  example; the smoke CLI disables implicit `.env` loading and reads its process
-  environment. These settings name the process; mTLS identity still comes only
-  from the verified certificate URI SAN.
-- `intelligence-worker.env`: dedicated MI worker example with
-  `AI_SERVICE_IDENTITY=mi-worker`, separate MI broker/storage/Core acceptance
-  credentials, and all MI/model gates disabled. Never reuse the transcription
-  worker certificate or account. Provider credentials remain external and are
-  required only for an approved enabled inference run.
-- Core's normal DB/JWT/SMTP settings plus `core.env.example` and separate publisher
+- `RUSTFS_ACCESS_KEY`, `RUSTFS_SECRET_KEY` (operator bootstrap only).
+- `services/ai/.env`: the transcription process block supplies separate
+  `AI_RABBITMQ_USERNAME/PASSWORD` and `AI_S3_ACCESS_KEY_ID/SECRET_ACCESS_KEY`.
+  The Knowledge and Meeting Intelligence blocks use separate identities.
+  These are not administrator accounts. Provider credentials remain external
+  and are required only for an approved enabled inference run.
+- `services/api/.env`: Core's normal DB/JWT/SMTP settings plus separate publisher
   `RABBITMQ_USERNAME/PASSWORD`, storage `APP_MEDIA_STORAGE_ACCESS_KEY/SECRET_KEY`.
 
 ```sh
-docker compose --env-file "$CONFIG/compose.env" -f infra/local/secure-integration/compose.yaml config --quiet
-docker compose --env-file "$CONFIG/compose.env" -f infra/local/secure-integration/compose.yaml --profile http up -d --build
-docker compose --env-file "$CONFIG/compose.env" -f infra/local/secure-integration/compose.yaml ps
-docker compose --env-file "$CONFIG/compose.env" -f infra/local/secure-integration/compose.yaml --profile checks run --rm transport-health
+./dev.sh doctor
+./dev.sh up
+SME_DEV_SECURE_SMOKE=1 ./dev.sh smoke
 ```
 
-The last command does read-only infrastructure checks; exit 2 means the positives
-passed but live negatives need `--wrong-ca`. Run the complete check on the host
-below with host paths/ports. RustFS health verifies HTTPS with its issuer bundle;
+`dev.sh up` does not start this secure Compose project; it starts only the
+local PostgreSQL project and host Core/AI processes. The secure smoke command
+uses an already-running, operator-approved integration project and does not
+start its root-owned permission helper. Exit 2 means the positives passed but
+live negatives need `--wrong-ca`. Run the complete check on the host below with
+host paths/ports. RustFS health verifies HTTPS with its issuer bundle;
 Rabbit health checks its listener, while SDK smoke proves TLS/login. AI readiness
 is checked externally by Java or its existing separate operator probe, never by
 mounting the probe key into AI Core. Existing AI renewal's container allowlist

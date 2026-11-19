@@ -429,6 +429,11 @@ class Settings(BaseSettings):
         _ = parts.port
         return value.rstrip("/") if scheme == "https" else value
 
+    @field_validator("rabbitmq_connect_host", "s3_connect_host", "core_api_connect_host", mode="before")
+    @classmethod
+    def optional_connect_host(cls, value: object) -> object:
+        return None if value == "" else value
+
     @model_validator(mode="after")
     def isolated_endpoint_routing(self) -> Self:
         """Keep host-run loopback routing separate from TLS/HTTP identity."""

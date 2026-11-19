@@ -46,7 +46,13 @@ _PATH_KEYS = frozenset({
     "PI05_CORE_OBSERVER_CERT_FILE", "PI05_CORE_OBSERVER_KEY_FILE",
     "PI05_AI_CA_FILE", "PI05_AI_CERT_FILE", "PI05_AI_KEY_FILE",
     "PI05_STORAGE_CA_FILE", "PI05_MEDIA_FILE", "PI05_QDRANT_CA_FILE",
-    "AI_RAG_QDRANT_CA_FILE",
+    "AI_TLS_CERT_FILE", "AI_TLS_KEY_FILE", "AI_TLS_CLIENT_CA_FILE",
+    "AI_CORE_API_SERVER_CA_FILE", "AI_CORE_API_CLIENT_CERT_FILE",
+    "AI_CORE_API_CLIENT_KEY_FILE", "AI_RABBITMQ_CA_FILE", "AI_S3_CA_FILE",
+    "AI_RAG_QDRANT_CA_FILE", "AI_RAG_MODEL_PATH",
+    "AI_RAG_RERANKER_MODEL_PATH",
+    "AI_MEETING_INTELLIGENCE_CORE_API_CLIENT_CERT_FILE",
+    "AI_MEETING_INTELLIGENCE_CORE_API_CLIENT_KEY_FILE",
     "PI05_SCENARIO_FIXTURES_FILE",
 })
 
@@ -109,31 +115,36 @@ _CORE_REQUIRED = frozenset({
     "APP_MEDIA_INTELLIGENCE_DISPATCH_ENABLED",
     "APP_MEDIA_KNOWLEDGE_INDEXING_ENABLED", "APP_ASSISTANT_ENABLED",
 })
-_AI_REQUIRED = frozenset({
+_AI_COMMON_REQUIRED = frozenset({
     "AI_SERVICE_NAME", "AI_SERVICE_IDENTITY", "AI_ENVIRONMENT",
+})
+_AI_TRANSPORT_REQUIRED = frozenset({
     "AI_CORE_API_BASE_URL", "AI_CORE_API_SERVER_CA_FILE",
     "AI_CORE_API_CLIENT_CERT_FILE", "AI_CORE_API_CLIENT_KEY_FILE",
     "AI_CORE_API_CONNECT_HOST", "AI_CORE_API_TLS_SERVER_NAME",
     "AI_RABBITMQ_URL", "AI_RABBITMQ_USERNAME", "AI_RABBITMQ_PASSWORD",
     "AI_RABBITMQ_CA_FILE", "AI_RABBITMQ_CONNECT_HOST",
-    "AI_RABBITMQ_TLS_SERVER_NAME", "AI_S3_ENDPOINT_URL", "AI_S3_BUCKET",
-    "AI_S3_ACCESS_KEY_ID", "AI_S3_SECRET_ACCESS_KEY", "AI_S3_CA_FILE",
-    "AI_S3_CONNECT_HOST", "AI_S3_TLS_SERVER_NAME",
-    "AI_RAG_INDEX_GENERATION_ID", "AI_RAG_QDRANT_URL",
-    "AI_RAG_QDRANT_CA_FILE", "AI_RAG_QDRANT_API_KEY", "AI_RAG_QDRANT_COLLECTION",
-    "AI_RAG_MODEL_PATH", "AI_RAG_RERANKER_MODEL_PATH",
-    "AI_KNOWLEDGE_INDEXING_WORKER_ENABLED",
-    "AI_MEETING_INTELLIGENCE_WORKER_ENABLED",
-    "AI_MEETING_INTELLIGENCE_INFERENCE_ENABLED",
-    "AI_MEETING_INTELLIGENCE_DECISION_ENABLED",
-    "AI_ASSISTANT_ENABLED", "AI_ASSISTANT_INFERENCE_ENABLED",
-    "OPENROUTER_API_KEY",
+    "AI_RABBITMQ_TLS_SERVER_NAME",
 })
-_AI_HTTP_REQUIRED = _AI_REQUIRED | frozenset({
+_AI_STORAGE_REQUIRED = frozenset({
+    "AI_S3_ENDPOINT_URL", "AI_S3_BUCKET", "AI_S3_ACCESS_KEY_ID",
+    "AI_S3_SECRET_ACCESS_KEY", "AI_S3_CA_FILE", "AI_S3_CONNECT_HOST",
+    "AI_S3_TLS_SERVER_NAME",
+})
+_AI_HTTP_REQUIRED = _AI_COMMON_REQUIRED | frozenset({
     "AI_TLS_CERT_FILE", "AI_TLS_KEY_FILE", "AI_TLS_CLIENT_CA_FILE",
 })
-_WORKER_REQUIRED = _AI_REQUIRED | frozenset({"AI_WORKER_ROLE"})
-_MI_WORKER_REQUIRED = _WORKER_REQUIRED | frozenset({
+_WORKER_REQUIRED = _AI_COMMON_REQUIRED | _AI_TRANSPORT_REQUIRED | frozenset({
+    "AI_WORKER_ROLE",
+})
+_TRANSCRIPTION_WORKER_REQUIRED = _WORKER_REQUIRED | _AI_STORAGE_REQUIRED
+_KNOWLEDGE_WORKER_REQUIRED = _WORKER_REQUIRED | frozenset({
+    "AI_RAG_INDEX_GENERATION_ID", "AI_RAG_QDRANT_URL",
+    "AI_RAG_QDRANT_CA_FILE", "AI_RAG_QDRANT_API_KEY",
+    "AI_RAG_QDRANT_COLLECTION", "AI_RAG_MODEL_PATH",
+    "AI_RAG_RERANKER_MODEL_PATH",
+})
+_MI_WORKER_REQUIRED = _WORKER_REQUIRED | _AI_STORAGE_REQUIRED | frozenset({
     "AI_MEETING_INTELLIGENCE_ACCEPTANCE_TOKEN",
     "AI_MEETING_INTELLIGENCE_S3_ACCESS_KEY_ID",
     "AI_MEETING_INTELLIGENCE_S3_SECRET_ACCESS_KEY",
@@ -162,6 +173,67 @@ _HARNESS_REQUIRED = frozenset({
     "PI05_RABBIT_TLS_SERVER_NAME", "PI05_RABBIT_QUEUE",
     "PI05_QDRANT_API_KEY", "PI05_MEDIA_FILE",
 })
+
+_AI_PROCESS_FORBIDDEN = {
+    "ai-http": frozenset({
+        "AI_WORKER_ROLE",
+        "AI_RABBITMQ_URL", "AI_RABBITMQ_USERNAME", "AI_RABBITMQ_PASSWORD",
+        "AI_RABBITMQ_CA_FILE", "AI_RABBITMQ_CONNECT_HOST",
+        "AI_RABBITMQ_TLS_SERVER_NAME",
+        "AI_S3_ENDPOINT_URL", "AI_S3_BUCKET", "AI_S3_ACCESS_KEY_ID",
+        "AI_S3_SECRET_ACCESS_KEY", "AI_S3_CA_FILE", "AI_S3_CONNECT_HOST",
+        "AI_S3_TLS_SERVER_NAME",
+        "AI_CORE_API_CLIENT_CERT_FILE", "AI_CORE_API_CLIENT_KEY_FILE",
+        "AI_DIARIZATION_WORKER_S3_ACCESS_KEY_ID",
+        "AI_DIARIZATION_WORKER_S3_SECRET_ACCESS_KEY",
+        "AI_MEETING_INTELLIGENCE_ACCEPTANCE_TOKEN",
+        "AI_MEETING_INTELLIGENCE_S3_ACCESS_KEY_ID",
+        "AI_MEETING_INTELLIGENCE_S3_SECRET_ACCESS_KEY",
+        "AI_MEETING_INTELLIGENCE_RABBITMQ_USERNAME",
+        "AI_MEETING_INTELLIGENCE_RABBITMQ_PASSWORD",
+        "AI_MEETING_INTELLIGENCE_CORE_API_CLIENT_CERT_FILE",
+        "AI_MEETING_INTELLIGENCE_CORE_API_CLIENT_KEY_FILE",
+        "REPLICATE_API_TOKEN",
+    }),
+    "transcription-worker": frozenset({
+        "AI_RAG_QDRANT_API_KEY", "AI_RAG_QDRANT_CA_FILE",
+        "AI_MEETING_INTELLIGENCE_ACCEPTANCE_TOKEN",
+        "AI_MEETING_INTELLIGENCE_S3_ACCESS_KEY_ID",
+        "AI_MEETING_INTELLIGENCE_S3_SECRET_ACCESS_KEY",
+        "AI_MEETING_INTELLIGENCE_RABBITMQ_USERNAME",
+        "AI_MEETING_INTELLIGENCE_RABBITMQ_PASSWORD",
+        "AI_MEETING_INTELLIGENCE_CORE_API_CLIENT_CERT_FILE",
+        "AI_MEETING_INTELLIGENCE_CORE_API_CLIENT_KEY_FILE",
+    }),
+    "knowledge-worker": frozenset({
+        "AI_S3_ENDPOINT_URL", "AI_S3_BUCKET", "AI_S3_ACCESS_KEY_ID",
+        "AI_S3_SECRET_ACCESS_KEY", "AI_S3_CA_FILE", "AI_S3_CONNECT_HOST",
+        "AI_S3_TLS_SERVER_NAME",
+        "OPENROUTER_API_KEY", "REPLICATE_API_TOKEN",
+        "AI_DIARIZATION_WORKER_S3_ACCESS_KEY_ID",
+        "AI_DIARIZATION_WORKER_S3_SECRET_ACCESS_KEY",
+        "AI_MEETING_INTELLIGENCE_ACCEPTANCE_TOKEN",
+        "AI_MEETING_INTELLIGENCE_S3_ACCESS_KEY_ID",
+        "AI_MEETING_INTELLIGENCE_S3_SECRET_ACCESS_KEY",
+        "AI_MEETING_INTELLIGENCE_RABBITMQ_USERNAME",
+        "AI_MEETING_INTELLIGENCE_RABBITMQ_PASSWORD",
+        "AI_MEETING_INTELLIGENCE_CORE_API_CLIENT_CERT_FILE",
+        "AI_MEETING_INTELLIGENCE_CORE_API_CLIENT_KEY_FILE",
+    }),
+    "mi-worker": frozenset({
+        "AI_RAG_QDRANT_API_KEY", "AI_RAG_QDRANT_CA_FILE",
+        "AI_DIARIZATION_WORKER_S3_ACCESS_KEY_ID",
+        "AI_DIARIZATION_WORKER_S3_SECRET_ACCESS_KEY",
+        "AI_CORE_API_CLIENT_CERT_FILE", "AI_CORE_API_CLIENT_KEY_FILE",
+        "AI_RABBITMQ_USERNAME", "AI_RABBITMQ_PASSWORD",
+        "AI_S3_ACCESS_KEY_ID", "AI_S3_SECRET_ACCESS_KEY",
+    }),
+}
+
+
+def _allowlisted_ai_environment(process: str, values: dict[str, str]) -> dict[str, str]:
+    forbidden = _AI_PROCESS_FORBIDDEN[process]
+    return {name: value for name, value in values.items() if name not in forbidden}
 
 
 def _canonical_run_id(value: object) -> str:
@@ -526,10 +598,14 @@ class RunConfiguration:
         """Return process settings; supervisor supplies fixed PI05 identity vars."""
         process = {
             "core": dict(self.core_env),
-            "ai-http": dict(self.ai_http_env),
-            "transcription-worker": dict(self.transcription_worker_env),
-            "mi-worker": dict(self.mi_worker_env),
-            "knowledge-worker": dict(self.knowledge_worker_env),
+            "ai-http": _allowlisted_ai_environment("ai-http", self.ai_http_env),
+            "transcription-worker": _allowlisted_ai_environment(
+                "transcription-worker", self.transcription_worker_env,
+            ),
+            "mi-worker": _allowlisted_ai_environment("mi-worker", self.mi_worker_env),
+            "knowledge-worker": _allowlisted_ai_environment(
+                "knowledge-worker", self.knowledge_worker_env,
+            ),
         }
         for values in process.values():
             values.pop("PI05_RUN_ID", None)
@@ -576,9 +652,13 @@ def load_run_configuration(
     harness = read_private_environment(secrets / "harness.env", names=_HARNESS_KEYS)
     _required(core, _CORE_REQUIRED, "Core")
     _required(ai_http, _AI_HTTP_REQUIRED, "AI HTTP")
-    _required(transcription_worker, _WORKER_REQUIRED, "Transcription worker")
+    _required(
+        transcription_worker,
+        _TRANSCRIPTION_WORKER_REQUIRED,
+        "Transcription worker",
+    )
     _required(mi_worker, _MI_WORKER_REQUIRED, "Meeting Intelligence worker")
-    _required(knowledge_worker, _WORKER_REQUIRED, "Knowledge worker")
+    _required(knowledge_worker, _KNOWLEDGE_WORKER_REQUIRED, "Knowledge worker")
     _required(harness, _HARNESS_REQUIRED, "Harness")
     return RunConfiguration(
         run_id,

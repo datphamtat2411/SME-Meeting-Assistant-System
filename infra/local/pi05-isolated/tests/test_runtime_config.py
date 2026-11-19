@@ -213,6 +213,15 @@ def test_loader_reads_only_private_run_files_and_adds_no_parent_environment(
     assert config.core_env["PI05_RUN_ROOT"] == str(root)
     assert config.harness("PI05_REVOKED_MEMBER_EMAIL") == "member@example.test"
     assert config.application_environments()["ai-http"]["AI_SETTINGS_ENV_FILE"] == ""
+    environments = config.application_environments()
+    assert "AI_RABBITMQ_PASSWORD" not in environments["ai-http"]
+    assert "AI_S3_SECRET_ACCESS_KEY" not in environments["ai-http"]
+    assert "AI_MEETING_INTELLIGENCE_S3_SECRET_ACCESS_KEY" not in environments["transcription-worker"]
+    assert "AI_RAG_QDRANT_API_KEY" not in environments["transcription-worker"]
+    assert "AI_S3_SECRET_ACCESS_KEY" not in environments["knowledge-worker"]
+    assert "AI_MEETING_INTELLIGENCE_S3_SECRET_ACCESS_KEY" not in environments["knowledge-worker"]
+    assert "AI_RABBITMQ_PASSWORD" not in environments["mi-worker"]
+    assert "AI_S3_SECRET_ACCESS_KEY" not in environments["mi-worker"]
     assert config.transcription_worker_env["AI_SERVICE_IDENTITY"] == "ai-worker"
     assert config.mi_worker_env["AI_SERVICE_IDENTITY"] == "mi-worker"
     assert config.knowledge_worker_env["AI_SERVICE_IDENTITY"] == "knowledge-worker"

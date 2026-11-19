@@ -5,7 +5,10 @@ services:
   rabbitmq:
     image: rabbitmq:4.1-management
     restart: unless-stopped
-    env_file: ["${BROKER_ENV_FILE:?external broker bootstrap environment required}"]
+    environment:
+      RABBITMQ_DEFAULT_USER: "${RABBITMQ_DEFAULT_USER:?RabbitMQ bootstrap user required}"
+      RABBITMQ_DEFAULT_PASS: "${RABBITMQ_DEFAULT_PASS:?RabbitMQ bootstrap password required}"
+      RABBITMQ_DEFAULT_VHOST: "${RABBITMQ_DEFAULT_VHOST:?RabbitMQ bootstrap vhost required}"
     volumes:
       - type: bind
         source: ./rabbitmq.conf
@@ -42,8 +45,9 @@ services:
     depends_on:
       storage-permissions: {condition: service_completed_successfully}
     restart: unless-stopped
-    env_file: ["${STORAGE_ENV_FILE:?external storage bootstrap environment required}"]
     environment:
+      RUSTFS_ACCESS_KEY: "${RUSTFS_ACCESS_KEY:?RustFS bootstrap access key required}"
+      RUSTFS_SECRET_KEY: "${RUSTFS_SECRET_KEY:?RustFS bootstrap secret required}"
       RUSTFS_ADDRESS: ":9000"
       RUSTFS_CONSOLE_ENABLE: "false"
       RUSTFS_TLS_PATH: /run/secrets/storage
@@ -93,10 +97,8 @@ services:
     build: ../../../services/ai
     image: sme-ai-core:secure-integration
     restart: unless-stopped
+    env_file: ["${AI_HTTP_ENV_FILE:?generated AI HTTP environment required}"]
     environment:
-      AI_SERVICE_NAME: sme-meeting-ai
-      AI_SERVICE_IDENTITY: ai-core
-      AI_ENVIRONMENT: development
       AI_HTTP_HOST: 0.0.0.0
       AI_HTTP_PORT: "8000"
       AI_TLS_CERT_FILE: /run/secrets/ai-core/ai-server.crt
@@ -122,7 +124,18 @@ services:
     profiles: ["checks"]
     image: sme-ai-core:secure-integration
     entrypoint: ["python", "/checks/smoke.py", "--infrastructure"]
-    env_file: ["${WORKER_ENV_FILE:?external worker transport environment required}"]
+    env_file: ["${AI_TRANSCRIPTION_ENV_FILE:?generated transcription environment required}"]
+    environment:
+      E2E01_STORAGE_PROBE_KEY: "${E2E01_STORAGE_PROBE_KEY:?synthetic probe key required}"
+      AI_CORE_API_CONNECT_HOST: ""
+      AI_CORE_API_SERVER_CA_FILE: /run/secrets/ai-worker/core-server-ca.crt
+      AI_CORE_API_CLIENT_CERT_FILE: /run/secrets/ai-worker/tls.crt
+      AI_CORE_API_CLIENT_KEY_FILE: /run/secrets/ai-worker/tls.key
+      AI_RABBITMQ_CONNECT_HOST: ""
+      AI_RABBITMQ_CA_FILE: /run/secrets/ai-worker/broker-ca.crt
+      AI_S3_ENDPOINT_URL: "https://${STORAGE_DNS:-storage.internal}:9000"
+      AI_S3_CONNECT_HOST: ""
+      AI_S3_CA_FILE: /run/secrets/ai-worker/storage-ca.crt
     volumes:
       - type: bind
         source: ./smoke.py

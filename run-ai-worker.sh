@@ -4,13 +4,26 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT/services/ai"
 
-echo "Starting AI Worker..."
+ROLE="${1:-transcription-worker}"
+case "$ROLE" in
+  transcription|transcription-worker)
+    ROLE="transcription-worker"
+    ;;
+  knowledge|knowledge-worker)
+    ROLE="knowledge-worker"
+    ;;
+  mi|mi-worker|meeting-intelligence)
+    ROLE="mi-worker"
+    ;;
+  *)
+    echo "Usage: $0 [transcription|knowledge|mi]" >&2
+    exit 2
+    ;;
+esac
 
-# Load AI defaults first, then Worker-specific overrides.
-# Remove RustFS bootstrap/admin credentials before starting the Worker.
 exec uv run --locked \
-  --env-file "$ROOT/services/ai/.env" \
-  --env-file "$ROOT/infra/local/secure-integration/.env" \
-  env -u RUSTFS_ACCESS_KEY \
-      -u RUSTFS_SECRET_KEY \
-      sme-ai-worker
+  python scripts/process_env.py \
+  --config "$ROOT/services/ai/.env" \
+  --process "$ROLE" \
+  --validate-files \
+  --exec sme-ai-worker

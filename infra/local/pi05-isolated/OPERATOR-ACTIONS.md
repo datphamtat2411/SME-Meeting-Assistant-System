@@ -1069,10 +1069,12 @@ owner-controlled paths in the private run files. Use a run-specific storage
 bucket; the Core accepted media key remains the fixed
 `meetings/{meetingId}/sources/{mediaId}` form inside that bucket.
 
-Prepare `core.env`, `ai-http.env`, `worker.env`, and `harness.env` only from
-reviewed values accepted by `runtime_config.py`; finalize their dynamic
-endpoint ports only after the foundation port snapshot below. They must be
-mode `0600`.
+Prepare one private `runtime-input.env` manifest with the reviewed,
+process-prefixed values accepted by `generate_runtime.py`; finalize dynamic
+endpoint ports only after the foundation port snapshot below. Then run
+`generate_runtime.py` to create `core.env`, `ai-http.env`,
+`transcription-worker.env`, `mi-worker.env`, `knowledge-worker.env`, and
+`harness.env`. Every generated file must be mode `0600`.
 The harness file must contain separate action and observer identities and
 certificate paths. `PI05_MEDIA_FILE` must point to a private, bounded WAV file
 owned by the operator.
@@ -1109,8 +1111,8 @@ python3 infra/local/pi05-isolated/runtime_inspection.py \
 ```
 
 Use only the returned `127.0.0.1:<port>` values. Complete the reviewed
-`core.env`, `ai-http.env`, `worker.env` and `harness.env` mappings before
-starting applications:
+run manifest and regenerate the six process mappings before starting
+applications:
 
 - RabbitMQ physical destination: the verified `rabbitmq` port; TLS/SNI:
   `rabbitmq.internal`.
@@ -1125,10 +1127,17 @@ shared port, `/etc/hosts` entry, proxy, or container DNS route. The runtime
 loader and `L01RuntimeSettings` reject missing identities and stale port
 mappings.
 
+```sh
+python3 infra/local/pi05-isolated/generate_runtime.py \
+  --run-id "$PI05_RUN_ID" \
+  --run-root "$PI05_RUN_ROOT" \
+  --manifest "$PI05_RUN_ROOT/secrets/runtime-input.env"
+```
+
 ## Start applications explicitly
 
-Load the reviewed run configuration in memory and pass its three mappings to
-`ApplicationRuntime.start_all()`. Do not call shared `run-core.sh` or
+Load the reviewed run configuration in memory and pass its five application
+mappings to `ApplicationRuntime.start_all()`. Do not call shared `run-core.sh` or
 `run-ai-worker.sh`; do not inherit the shell environment. The supervisor adds
 only the fixed run identity and sets `AI_SETTINGS_ENV_FILE=` so a repository
 `.env` cannot be loaded implicitly.
