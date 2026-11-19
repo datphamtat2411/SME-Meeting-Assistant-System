@@ -7,8 +7,61 @@ import sys
 from sme_meeting_ai.core.config import ConfigurationError, Settings, load_settings
 from sme_meeting_ai.observability.logging import configure_logging
 
+from .execution import AiWorkerExecution
+from .intelligence import IntelligenceExecution
+from .knowledge_indexing import KnowledgeIndexingExecution
 from .runtime import ResourceFactory, WorkerExecution, WorkerRuntime
 from .transcription import TranscriptionExecution
+
+
+_ROLE_IDENTITIES = {
+    "transcription": "ai-worker",
+    "meeting-intelligence": "mi-worker",
+    "knowledge-indexing": "knowledge-worker",
+}
+
+
+def build_execution(settings: Settings) -> WorkerExecution:
+    """Select exactly one capability for an explicitly role-bound worker."""
+    role = settings.worker_role
+    if role is None:
+        # Existing test and development callers may still exercise the
+        # historical composition. Isolated run environments always provide a
+        # role and are rejected below if its capability gates are ambiguous.
+        if settings.diarization_worker_enabled or settings.meeting_intelligence_worker_enabled:
+            return AiWorkerExecution(settings)
+        if settings.knowledge_indexing_worker_enabled:
+            return KnowledgeIndexingExecution(settings)
+        return TranscriptionExecution(settings)
+
+    if settings.service_identity != _ROLE_IDENTITIES[role]:
+        raise RuntimeError("worker identity does not match worker role")
+    if role == "transcription":
+        if (
+            settings.knowledge_indexing_worker_enabled
+            or settings.meeting_intelligence_worker_enabled
+            or settings.meeting_intelligence_inference_enabled
+            or settings.meeting_intelligence_decision_enabled
+        ):
+            raise RuntimeError("worker capability gates are not isolated")
+        return TranscriptionExecution(settings)
+    if role == "meeting-intelligence":
+        if (
+            settings.knowledge_indexing_worker_enabled
+            or not settings.meeting_intelligence_worker_enabled
+            or not settings.meeting_intelligence_inference_enabled
+            or not settings.meeting_intelligence_decision_enabled
+        ):
+            raise RuntimeError("worker capability gates are not isolated")
+        return IntelligenceExecution(settings)
+    if (
+        not settings.knowledge_indexing_worker_enabled
+        or settings.meeting_intelligence_worker_enabled
+        or settings.meeting_intelligence_inference_enabled
+        or settings.meeting_intelligence_decision_enabled
+    ):
+        raise RuntimeError("worker capability gates are not isolated")
+    return KnowledgeIndexingExecution(settings)
 
 
 async def run_worker(
@@ -41,14 +94,7 @@ def main() -> int:
         return 1
     configure_logging(settings)
     try:
-        if settings.diarization_worker_enabled or settings.meeting_intelligence_worker_enabled:
-            from .execution import AiWorkerExecution
-            execution = AiWorkerExecution(settings)
-        elif settings.knowledge_indexing_worker_enabled:
-            from .knowledge_indexing import KnowledgeIndexingExecution
-            execution = KnowledgeIndexingExecution(settings)
-        else:
-            execution = TranscriptionExecution(settings)
+        execution = build_execution(settings)
         return asyncio.run(run_worker(settings, execution, (lambda: execution,)))
     except KeyboardInterrupt:
         return 0

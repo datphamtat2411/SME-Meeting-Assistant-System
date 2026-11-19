@@ -51,12 +51,18 @@ class QdrantConfig:
     timeout_seconds: float = 10
     prefer_grpc: bool = False
     upsert_batch_size: int = 64
+    ca_file: str | None = None
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "QdrantConfig":
         return cls(
             url=settings.rag_qdrant_url,
             collection_name=settings.rag_qdrant_collection,
+            ca_file=(
+                str(settings.rag_qdrant_ca_file)
+                if settings.rag_qdrant_ca_file is not None
+                else None
+            ),
             api_key=settings.rag_qdrant_api_key.get_secret_value()
             if settings.rag_qdrant_api_key is not None
             else None,
@@ -67,6 +73,10 @@ class QdrantConfig:
     def __post_init__(self) -> None:
         if not self.url.startswith(("http://", "https://")):
             raise ValueError("Qdrant URL must use HTTP or HTTPS")
+        if self.url.startswith("https://") and not self.ca_file:
+            raise ValueError("HTTPS Qdrant requires an explicit CA file")
+        if self.ca_file and not self.url.startswith("https://"):
+            raise ValueError("Qdrant CA material requires HTTPS")
         if not self.collection_name or len(self.collection_name) > 127:
             raise ValueError("Qdrant collection name is invalid")
         if self.timeout_seconds <= 0 or self.upsert_batch_size < 1:
@@ -194,12 +204,18 @@ class QdrantVectorStore:
     ):
         self.config = config
         self.spec = bge_m3_collection_spec(config.collection_name, compatibility)
-        self.client = client or QdrantClient(
-            url=config.url,
-            api_key=config.api_key,
-            timeout=config.timeout_seconds,
-            prefer_grpc=config.prefer_grpc,
-        )
+        if client is None:
+            client_options = {
+                "url": config.url,
+                "api_key": config.api_key,
+                "timeout": config.timeout_seconds,
+                "prefer_grpc": config.prefer_grpc,
+            }
+            if config.ca_file is not None:
+                client_options["verify"] = config.ca_file
+            self.client = QdrantClient(**client_options)
+        else:
+            self.client = client
 
     @classmethod
     def from_settings(cls, settings: Settings, compatibility: EmbeddingCompatibility) -> "QdrantVectorStore":

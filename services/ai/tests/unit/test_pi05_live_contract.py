@@ -6,7 +6,7 @@ from hashlib import sha256
 from uuid import uuid4
 
 import pytest
-from pi05_live_contract import REQUIRED, validate_live_evidence
+from pi05_live_contract import REQUIRED, validate_live_evidence, verify_proof_files
 
 RUN = str(uuid4())
 SHA = "a" * 40
@@ -164,7 +164,9 @@ def test_proof_receipts_are_external_and_content_verified(tmp_path):
         raw = json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode()
         digest = hashlib.sha256(raw).hexdigest()
         observation["proofSha256"] = digest
-        (tmp_path / f"{digest}.json").write_bytes(raw)
+        path = tmp_path / f"{digest}.json"
+        path.write_bytes(raw)
+        path.chmod(0o600)
     verify_proof_files(payload, tmp_path)
     first = payload["observations"][0]["proofSha256"]
     (tmp_path / f"{first}.json").write_text('{"status":"PASS"}')
@@ -177,3 +179,32 @@ def test_missing_proof_is_not_sufficient_to_claim_live_pass(tmp_path):
 
     with pytest.raises(ValueError, match="Missing"):
         verify_proof_files(valid("qdrant-outage"), tmp_path)
+
+
+def test_proof_receipts_require_private_owner_only_single_link_files(tmp_path):
+    import hashlib
+    import json
+
+    scenario = "room-notification"
+    payload = valid(scenario)
+    for observation in payload["observations"]:
+        receipt = {key: observation[key] for key in (
+            "runId", "requestId", "step", "component", "observedResult", "observedAt",
+        )}
+        raw = json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode()
+        digest = hashlib.sha256(raw).hexdigest()
+        observation["proofSha256"] = digest
+        path = tmp_path / f"{digest}.json"
+        path.write_bytes(raw)
+        path.chmod(0o600)
+
+    first = tmp_path / f"{payload['observations'][0]['proofSha256']}.json"
+    first.chmod(0o644)
+    with pytest.raises(ValueError):
+        verify_proof_files(payload, tmp_path)
+
+    first.chmod(0o600)
+    hardlink = tmp_path / "hardlink.json"
+    hardlink.hardlink_to(first)
+    with pytest.raises(ValueError):
+        verify_proof_files(payload, tmp_path)

@@ -59,6 +59,7 @@ class OperationalGateTests(unittest.TestCase):
             live_path, proof_path = root / "live", root / "proofs"
             live_path.mkdir()
             proof_path.mkdir()
+            proof_path.chmod(0o700)
             for scenario, steps in REQUIRED.items():
                 observations = []
                 for step, (component, result) in steps.items():
@@ -69,7 +70,9 @@ class OperationalGateTests(unittest.TestCase):
                     }
                     data = json.dumps(observation, sort_keys=True, separators=(",", ":")).encode()
                     digest = sha256(data).hexdigest()
-                    (proof_path / f"{digest}.json").write_bytes(data)
+                    proof_file = proof_path / f"{digest}.json"
+                    proof_file.write_bytes(data)
+                    proof_file.chmod(0o600)
                     observations.append({**observation, "proofSha256": digest})
                 payload = {
                     "contractVersion": "1.0", "scenario": scenario, "status": "PASS",

@@ -11,8 +11,10 @@ import threading
 import time
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import boto3
+import botocore.awsrequest
 from botocore.config import Config
 from botocore.exceptions import (
     BotoCoreError,
@@ -20,6 +22,9 @@ from botocore.exceptions import (
     ConnectTimeoutError,
     ReadTimeoutError,
 )
+from botocore.httpsession import URLLib3Session
+from urllib3 import PoolManager
+from urllib3.util import connection as urllib3_connection
 
 from .core_api import MAX_RESULT_BYTES
 
@@ -28,6 +33,144 @@ class StorageError(Exception):
     def __init__(self, category):
         self.category = category
         super().__init__(f"WORKER_STORAGE_{category}")
+
+
+class _LoopbackHttpsConnection(botocore.awsrequest.AWSHTTPSConnection):
+    """Keep the S3 origin for Host/SNI while dialing one literal loopback address."""
+
+    def __init__(
+        self,
+        *args,
+        connect_host: str,
+        server_hostname: str = "storage.internal",
+        **kwargs,
+    ):
+        if connect_host != "127.0.0.1" or server_hostname != "storage.internal":
+            raise ValueError("Storage connection destination must be loopback")
+        self._connect_host = connect_host
+        self._server_hostname = server_hostname
+        kwargs["server_hostname"] = server_hostname
+        super().__init__(*args, **kwargs)
+
+    def _new_conn(self):
+        return urllib3_connection.create_connection(
+            (self._connect_host, self.port),
+            self.timeout,
+            source_address=self.source_address,
+            socket_options=self.socket_options,
+        )
+
+
+class _LoopbackHttpsConnectionPool(botocore.awsrequest.AWSHTTPSConnectionPool):
+    ConnectionCls = _LoopbackHttpsConnection
+
+
+class _LoopbackPoolManager(PoolManager):
+    def __init__(
+        self,
+        *,
+        connect_host: str,
+        server_hostname: str = "storage.internal",
+        **kwargs,
+    ):
+        if connect_host != "127.0.0.1" or server_hostname != "storage.internal":
+            raise ValueError("Storage connection destination must be loopback")
+        self._connect_host = connect_host
+        self._server_hostname = server_hostname
+        super().__init__(**kwargs)
+
+    def connection_from_context(self, request_context):
+        context = dict(request_context)
+        connect_host = context.pop("connect_host", self._connect_host)
+        server_hostname = context.pop("server_hostname", self._server_hostname)
+        scheme = context["scheme"].lower()
+        pool_key = self.key_fn_by_scheme[scheme](context)
+        context["connect_host"] = connect_host
+        context["server_hostname"] = server_hostname
+        return self.connection_from_pool_key(pool_key, request_context=context)
+
+
+class _LoopbackUrlLib3Session(URLLib3Session):
+    def __init__(
+        self,
+        *,
+        connect_host: str,
+        server_hostname: str = "storage.internal",
+        **kwargs,
+    ):
+        if connect_host != "127.0.0.1" or server_hostname != "storage.internal":
+            raise ValueError("Storage connection destination must be loopback")
+        self._connect_host = connect_host
+        self._server_hostname = server_hostname
+        super().__init__(**kwargs)
+        self._manager.clear()
+        pool_kwargs = self._get_pool_manager_kwargs()
+        self._manager = _LoopbackPoolManager(
+            connect_host=connect_host,
+            server_hostname=server_hostname,
+            **pool_kwargs,
+        )
+        self._manager.pool_classes_by_scheme = {
+            **self._pool_classes_by_scheme,
+            "https": _LoopbackHttpsConnectionPool,
+        }
+
+
+def _isolated_storage_client(settings):
+    """Build an S3 client whose endpoint host remains the TLS/HTTP identity."""
+    if not settings.s3_connect_host:
+        return boto3.client(
+            "s3",
+            endpoint_url=settings.s3_endpoint_url,
+            region_name=settings.s3_region,
+            aws_access_key_id=settings.s3_access_key_id.get_secret_value(),
+            aws_secret_access_key=settings.s3_secret_access_key.get_secret_value(),
+            verify=str(settings.s3_ca_file) if settings.s3_ca_file else True,
+            config=Config(
+                connect_timeout=settings.s3_connect_timeout_seconds,
+                read_timeout=settings.s3_read_timeout_seconds,
+                retries={"total_max_attempts": 1},
+                max_pool_connections=settings.worker_concurrency,
+                s3={"addressing_style": "path" if settings.s3_path_style else "virtual"},
+            ),
+        )
+    endpoint = urlsplit(settings.s3_endpoint_url or "")
+    if (
+        endpoint.hostname != "storage.internal"
+        or endpoint.port is None
+        or settings.s3_tls_server_name != "storage.internal"
+    ):
+        raise ValueError("Isolated storage routing must preserve storage.internal")
+    client = boto3.client(
+        "s3",
+        endpoint_url=settings.s3_endpoint_url,
+        region_name=settings.s3_region,
+        aws_access_key_id=settings.s3_access_key_id.get_secret_value(),
+        aws_secret_access_key=settings.s3_secret_access_key.get_secret_value(),
+        verify=str(settings.s3_ca_file),
+        config=Config(
+            connect_timeout=settings.s3_connect_timeout_seconds,
+            read_timeout=settings.s3_read_timeout_seconds,
+            retries={"total_max_attempts": 1},
+            max_pool_connections=settings.worker_concurrency,
+            s3={"addressing_style": "path" if settings.s3_path_style else "virtual"},
+        ),
+    )
+    endpoint = client._endpoint
+    previous = endpoint.http_session
+    endpoint.http_session = _LoopbackUrlLib3Session(
+        connect_host=settings.s3_connect_host,
+        server_hostname=settings.s3_tls_server_name,
+        verify=str(settings.s3_ca_file),
+        timeout=(
+            settings.s3_connect_timeout_seconds,
+            settings.s3_read_timeout_seconds,
+        ),
+        max_pool_connections=settings.worker_concurrency,
+        proxies={},
+    )
+    previous.close()
+    return client
 
 
 def _category(error):
@@ -77,16 +220,7 @@ class ObjectStorage:
                         ssl.create_default_context(cafile=str(self.settings.s3_ca_file))
                     except (OSError, ValueError):
                         raise StorageError("CONFIGURATION") from None
-                self.client = boto3.client("s3", endpoint_url=self.settings.s3_endpoint_url,
-                    region_name=self.settings.s3_region,
-                    aws_access_key_id=self.settings.s3_access_key_id.get_secret_value(),
-                    aws_secret_access_key=self.settings.s3_secret_access_key.get_secret_value(),
-                    verify=str(self.settings.s3_ca_file) if self.settings.s3_ca_file else True,
-                    config=Config(connect_timeout=self.settings.s3_connect_timeout_seconds,
-                        read_timeout=self.settings.s3_read_timeout_seconds,
-                        retries={"total_max_attempts": 1},
-                        max_pool_connections=self.settings.worker_concurrency,
-                        s3={"addressing_style": "path" if self.settings.s3_path_style else "virtual"}))
+                self.client = _isolated_storage_client(self.settings)
             base = self.settings.audio_temp_dir / self.namespace
             base.mkdir(mode=0o700, exist_ok=True)
             info = base.lstat()

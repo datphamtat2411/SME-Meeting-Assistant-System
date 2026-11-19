@@ -8,6 +8,7 @@ from uuid import uuid4
 import httpx
 import pytest
 from botocore.exceptions import ClientError, ReadTimeoutError
+from yarl import URL
 
 from sme_meeting_ai.core.config import Settings
 from sme_meeting_ai.integrations.core_api import (
@@ -15,8 +16,17 @@ from sme_meeting_ai.integrations.core_api import (
     CoreError,
     SourceDescriptor,
 )
-from sme_meeting_ai.integrations.messaging import MessageError, decode_event
-from sme_meeting_ai.integrations.object_storage import ObjectStorage, StorageError
+from sme_meeting_ai.integrations.messaging import (
+    MessageError,
+    _LoopbackTlsTransportFactory,
+    decode_event,
+)
+from sme_meeting_ai.integrations.object_storage import (
+    ObjectStorage,
+    StorageError,
+    _LoopbackUrlLib3Session,
+)
+from sme_meeting_ai.integrations.loopback_http import _LoopbackSyncBackend
 
 
 def event_body(retry=False):
@@ -76,6 +86,70 @@ def test_duplicate_keys_and_oversized_messages():
     for raw in (json.dumps(body)[:-1].encode() + b',"schemaVersion":1}', b" " * 16385):
         with pytest.raises(MessageError):
             decode_event(raw, **options)
+
+
+def test_isolated_rabbit_transport_dials_loopback_with_internal_sni(monkeypatch):
+    calls = []
+
+    class Provider:
+        async def get_context(self):
+            return "verified-context"
+
+    async def open_connection(**kwargs):
+        calls.append(kwargs)
+        return "reader", "writer"
+
+    monkeypatch.setattr("sme_meeting_ai.integrations.messaging.asyncio.open_connection", open_connection)
+    result = asyncio.run(
+        _LoopbackTlsTransportFactory("127.0.0.1", "rabbitmq.internal").create(
+            URL("amqps://rabbitmq.internal:53101/sme-integration"),
+            ssl_context_provider=Provider(),
+        )
+    )
+    assert result == ("reader", "writer")
+    assert calls == [{
+        "host": "127.0.0.1",
+        "port": 53101,
+        "ssl": "verified-context",
+        "server_hostname": "rabbitmq.internal",
+    }]
+
+
+def test_isolated_storage_pool_routes_loopback_without_changing_origin():
+    session = _LoopbackUrlLib3Session(connect_host="127.0.0.1", verify=True, proxies={})
+    try:
+        pool = session._manager.connection_from_url("https://storage.internal:53102")
+        assert pool.ConnectionCls.__name__ == "_LoopbackHttpsConnection"
+        assert pool.conn_kw["connect_host"] == "127.0.0.1"
+        assert pool.conn_kw["server_hostname"] == "storage.internal"
+        assert pool.host == "storage.internal"
+        assert pool.port == 53102
+    finally:
+        session.close()
+
+
+def test_isolated_core_transport_routes_loopback_without_changing_tls_identity():
+    calls = []
+
+    class Backend:
+        def connect_tcp(self, host, port, **kwargs):
+            calls.append((host, port, kwargs))
+            return "stream"
+
+        def sleep(self, seconds):
+            return None
+
+    backend = _LoopbackSyncBackend("127.0.0.1", "core-api.internal")
+    backend._backend = Backend()
+
+    assert backend.connect_tcp("core-api.internal", 53103, timeout=3) == "stream"
+    assert calls == [("127.0.0.1", 53103, {
+        "timeout": 3,
+        "local_address": None,
+        "socket_options": None,
+    })]
+    with pytest.raises(ValueError):
+        backend.connect_tcp("127.0.0.1", 53103)
 
 
 class S3:

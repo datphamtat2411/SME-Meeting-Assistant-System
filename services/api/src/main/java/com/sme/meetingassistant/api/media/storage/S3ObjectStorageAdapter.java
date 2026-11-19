@@ -3,7 +3,9 @@ package com.sme.meetingassistant.api.media.storage;
 import com.sme.meetingassistant.api.media.MediaProperties;
 import com.sme.meetingassistant.api.transport.PemTls;
 import java.io.IOException;
+import java.net.InetAddress;
 import java.net.URI;
+import java.net.UnknownHostException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -30,6 +32,7 @@ import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest;
 import software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignRequest;
+import org.apache.http.conn.DnsResolver;
 
 @Component
 public class S3ObjectStorageAdapter implements ObjectStorage {
@@ -41,6 +44,22 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
     public S3ObjectStorageAdapter(MediaProperties properties) {
         this.properties = properties.getStorage();
         var endpoint = URI.create(this.properties.getEndpoint());
+        String connectHost = blankToNull(this.properties.getConnectHost());
+        String tlsServerName = blankToNull(this.properties.getTlsServerName());
+        if (tlsServerName != null && !tlsServerName.equalsIgnoreCase(endpoint.getHost())) {
+            throw new IllegalStateException("S3 TLS identity must match the endpoint host.");
+        }
+        if (connectHost != null && !"127.0.0.1".equals(connectHost)) {
+            throw new IllegalStateException("S3 isolated connection destination must be loopback.");
+        }
+        if (connectHost != null
+                && (!"storage.internal".equalsIgnoreCase(endpoint.getHost())
+                    || !"storage.internal".equalsIgnoreCase(tlsServerName))) {
+            throw new IllegalStateException("Isolated S3 routing must preserve storage.internal.");
+        }
+        if ("storage.internal".equalsIgnoreCase(endpoint.getHost()) && connectHost == null) {
+            throw new IllegalStateException("S3 storage.internal requires an explicit loopback destination.");
+        }
         // Validate the trusted public origin before allocating any SDK clients.
         URI external = validatedPublicDownloadOrigin(this.properties.getPublicDownloadEndpoint());
         boolean hasAccessKey = this.properties.getAccessKey() != null && !this.properties.getAccessKey().isBlank();
@@ -51,7 +70,10 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
         var builder = S3Client.builder().endpointOverride(endpoint).region(Region.of(this.properties.getRegion()))
             .credentialsProvider(credentialsProvider()).serviceConfiguration(serviceConfig);
         if (this.properties.getCaFile() != null && !this.properties.getCaFile().isBlank()) {
-            builder.httpClientBuilder(verifiedHttps(this.properties.getEndpoint(), Path.of(this.properties.getCaFile())));
+            builder.httpClientBuilder(verifiedHttps(
+                this.properties.getEndpoint(), Path.of(this.properties.getCaFile()), connectHost));
+        } else if (connectHost != null) {
+            throw new IllegalStateException("Isolated S3 routing requires an explicit CA bundle.");
         }
         this.client = builder.build();
         this.presigner = S3Presigner.builder().endpointOverride(endpoint).region(Region.of(this.properties.getRegion()))
@@ -64,6 +86,10 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
                 .credentialsProvider(credentialsProvider())
                 .serviceConfiguration(serviceConfig).build();
         }
+    }
+
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value;
     }
 
     private static URI validatedPublicDownloadOrigin(String configured) {
@@ -87,16 +113,37 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
 
     /** Dedicated SDK trust, preserving Apache's hostname verification. No global JVM truststore changes. */
     public static software.amazon.awssdk.http.apache.ApacheHttpClient.Builder verifiedHttps(String endpoint, Path ca) {
+        return verifiedHttps(endpoint, ca, null);
+    }
+
+    /** Dedicated trust plus a process-local loopback resolver for an isolated endpoint. */
+    public static software.amazon.awssdk.http.apache.ApacheHttpClient.Builder verifiedHttps(
+            String endpoint, Path ca, String connectHost) {
         URI uri = URI.create(endpoint);
         if (!"https".equals(uri.getScheme()) || uri.getHost() == null || uri.getUserInfo() != null
                 || uri.getQuery() != null || uri.getFragment() != null) {
             throw new IllegalStateException("Explicit S3 trust requires an HTTPS endpoint");
         }
+        if (connectHost != null && !"127.0.0.1".equals(connectHost)) {
+            throw new IllegalStateException("Explicit S3 routing requires a loopback destination");
+        }
         try {
             var trust = PemTls.trustManager(ca);
-            return software.amazon.awssdk.http.apache.ApacheHttpClient.builder()
+            var builder = software.amazon.awssdk.http.apache.ApacheHttpClient.builder()
                 .connectionTimeout(Duration.ofSeconds(3)).socketTimeout(Duration.ofSeconds(15))
                 .tlsTrustManagersProvider(() -> new javax.net.ssl.TrustManager[]{trust});
+            if (connectHost != null) {
+                builder.dnsResolver(new DnsResolver() {
+                    @Override
+                    public InetAddress[] resolve(String host) throws UnknownHostException {
+                        if (!uri.getHost().equalsIgnoreCase(host)) {
+                            throw new UnknownHostException("Unexpected S3 endpoint host");
+                        }
+                        return new InetAddress[]{InetAddress.getByName(connectHost)};
+                    }
+                });
+            }
+            return builder;
         } catch (Exception e) { throw new IllegalStateException("Invalid S3 TLS trust configuration"); }
     }
 

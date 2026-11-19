@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
+import os
 from pathlib import Path
+import stat
 from uuid import UUID
 
 # Every required observation must have the named component and actual outcome.
@@ -202,16 +204,32 @@ def verify_proof_files(payload: dict, root: Path) -> None:
     import hashlib
     import json
 
-    if not isinstance(root, Path) or not root.is_dir() or root.is_symlink():
+    if not isinstance(root, Path) or root.is_symlink() or not root.is_dir():
         raise ValueError("Proof directory missing or symbolic")
+    root_info = root.stat()
+    if root_info.st_uid != os.getuid() or root_info.st_mode & 0o077:
+        raise ValueError("Proof directory must be private and owner-controlled")
     for observation in payload["observations"]:
         digest = observation["proofSha256"]
         path = root / (digest + ".json")
-        if path.is_symlink() or not path.is_file():
-            raise ValueError("Missing independently captured proof receipt")
-        if path.stat().st_size > 4096:
+        try:
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(descriptor, "rb") as source:
+                info = os.fstat(source.fileno())
+                if (
+                    not stat.S_ISREG(info.st_mode)
+                    or info.st_uid != os.getuid()
+                    or info.st_nlink != 1
+                    or info.st_mode & 0o077
+                ):
+                    raise ValueError("Proof receipt file is not private")
+                if info.st_size > 4096:
+                    raise ValueError("Proof receipt exceeds bound")
+                raw = source.read(4097)
+        except OSError as error:
+            raise ValueError("Missing independently captured proof receipt") from error
+        if len(raw) > 4096:
             raise ValueError("Proof receipt exceeds bound")
-        raw = path.read_bytes()
         if hashlib.sha256(raw).hexdigest() != digest:
             raise ValueError("Proof receipt SHA-256 does not match claim")
         try:

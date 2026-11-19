@@ -1,0 +1,177 @@
+# Infrastructure foundation only. This is NOT a PI-05 scenario harness.
+# Use a fresh, preflight-checked PI05_RUN_ID and task-owned PI05_RUN_ROOT.
+name: "pi05-${PI05_RUN_ID:?set a new canonical run UUID}"
+
+services:
+  postgres:
+    image: postgres:17
+    restart: "no"
+    env_file: ["${PI05_RUN_ROOT:?set the private run directory}/secrets/postgres.env"]
+    ports:
+      - target: 5432
+        host_ip: 127.0.0.1
+        protocol: tcp
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks: [integration]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  rabbitmq:
+    image: rabbitmq:4.1-management
+    restart: "no"
+    env_file: ["${PI05_RUN_ROOT:?set the private run directory}/secrets/broker.env"]
+    ports:
+      - target: 5671
+        host_ip: 127.0.0.1
+        protocol: tcp
+    volumes:
+      - type: bind
+        source: ../secure-integration/rabbitmq.conf
+        target: /etc/rabbitmq/rabbitmq.conf
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ../secure-integration/enabled_plugins
+        target: /etc/rabbitmq/enabled_plugins
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${PI05_RUN_ROOT:?set the private run directory}/pki/broker-server
+        target: /run/secrets/broker
+        read_only: true
+        bind: {create_host_path: false}
+      - broker_data:/var/lib/rabbitmq
+    networks:
+      integration:
+        aliases: [rabbitmq.internal]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  storage-permissions:
+    image: alpine:3.22
+    user: root
+    network_mode: none
+    command: ["chown", "10001:10001", "/data"]
+    volumes: ["storage_data:/data"]
+    restart: "no"
+
+  storage:
+    image: rustfs/rustfs:1.0.3
+    restart: "no"
+    depends_on:
+      storage-permissions: {condition: service_completed_successfully}
+    env_file: ["${PI05_RUN_ROOT:?set the private run directory}/secrets/storage.env"]
+    environment:
+      RUSTFS_ADDRESS: ":9000"
+      RUSTFS_CONSOLE_ENABLE: "false"
+      RUSTFS_TLS_PATH: /run/secrets/storage
+    command: ["/data"]
+    volumes:
+      - storage_data:/data
+      - type: bind
+        source: ${PI05_RUN_ROOT:?set the private run directory}/pki/storage-server
+        target: /run/secrets/storage
+        read_only: true
+        bind: {create_host_path: false}
+    networks:
+      storage-backend:
+        aliases: [storage.internal]
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "--cacert", "/run/secrets/storage/issuer-ca.crt", "https://storage.internal:9000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  storage-boundary:
+    image: nginx:1.28-alpine
+    user: "10001:10001"
+    entrypoint: ["nginx", "-c", "/etc/nginx/storage-boundary.conf", "-g", "daemon off;"]
+    restart: "no"
+    depends_on:
+      storage: {condition: service_healthy}
+    ports:
+      - target: 9000
+        host_ip: 127.0.0.1
+        protocol: tcp
+    volumes:
+      - type: bind
+        source: ../secure-integration/storage-boundary.conf
+        target: /etc/nginx/storage-boundary.conf
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${PI05_RUN_ROOT:?set the private run directory}/pki/storage-server
+        target: /run/secrets/storage
+        read_only: true
+        bind: {create_host_path: false}
+    networks:
+      integration:
+        aliases: [storage.internal]
+      storage-backend: {}
+    read_only: true
+    tmpfs: ["/tmp:mode=1777,size=32m"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+  qdrant-permissions:
+    image: alpine:3.22
+    user: root
+    network_mode: none
+    command: ["chown", "10001:10001", "/data"]
+    volumes: ["qdrant_data:/data"]
+    restart: "no"
+
+  qdrant:
+    image: qdrant/qdrant:v1.20.0
+    user: "10001:10001"
+    restart: "no"
+    depends_on:
+      qdrant-permissions: {condition: service_completed_successfully}
+    env_file: ["${PI05_RUN_ROOT:?set the private run directory}/secrets/qdrant.env"]
+    environment:
+      QDRANT__SERVICE__ENABLE_TLS: "true"
+      QDRANT__TLS__CERT: /run/secrets/qdrant/tls.crt
+      QDRANT__TLS__KEY: /run/secrets/qdrant/tls.key
+      QDRANT__STORAGE__SNAPSHOTS_PATH: /qdrant/storage/snapshots
+      QDRANT_INIT_FILE_PATH: /qdrant/storage/.qdrant-initialized
+    entrypoint: ["/bin/bash", "-ec"]
+    command:
+      - |
+        if [ -z "$${QDRANT__SERVICE__API_KEY:-}" ]; then
+          echo "Qdrant API key is required" >&2
+          exit 1
+        fi
+        exec /qdrant/entrypoint.sh
+    ports:
+      - target: 6333
+        host_ip: 127.0.0.1
+        protocol: tcp
+    volumes:
+      - qdrant_data:/qdrant/storage
+      - type: bind
+        source: ${PI05_RUN_ROOT:?set the private run directory}/pki/qdrant-server
+        target: /run/secrets/qdrant
+        read_only: true
+        bind: {create_host_path: false}
+    networks: [integration]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+networks:
+  integration:
+    internal: true
+  storage-backend:
+    internal: true
+
+volumes:
+  postgres_data: {}
+  broker_data: {}
+  storage_data: {}
+  qdrant_data: {}

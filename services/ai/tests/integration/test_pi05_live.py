@@ -59,11 +59,19 @@ def _client() -> httpx.Client:
     }
     if not all(value and Path(value).is_file() for value in files.values()):
         pytest.fail("PI-05 mTLS identity or CA files are not provisioned")
+    timeout_text = os.getenv("AI_PI05_SCENARIO_TIMEOUT_SECONDS", "60")
+    if (
+        not timeout_text.isascii()
+        or not timeout_text.isdecimal()
+        or len(timeout_text) > 5
+        or not 60 <= int(timeout_text) <= 14400
+    ):
+        pytest.fail("PI-05 scenario timeout must be an integer from 60 to 14400 seconds")
     return httpx.Client(
         base_url=url.rstrip("/"),
         verify=files["AI_PI05_CA_FILE"],
         cert=(files["AI_PI05_CERT_FILE"], files["AI_PI05_KEY_FILE"]),
-        timeout=60,
+        timeout=int(timeout_text),
         follow_redirects=False,
         trust_env=False,
     )

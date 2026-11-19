@@ -23,6 +23,7 @@ from pydantic import (
 )
 
 from sme_meeting_ai.core.config import Settings
+from sme_meeting_ai.integrations.loopback_http import LoopbackAsyncHTTPTransport
 
 MAX_RESULT_BYTES = 8388608
 KNOWLEDGE_EVENT_TYPE = "KNOWLEDGE_INDEXING_REQUESTED"
@@ -399,11 +400,32 @@ class CoreApiClient:
                 context.minimum_version = ssl.TLSVersion.TLSv1_2
                 context.load_verify_locations(cafile=str(settings.core_api_server_ca_file))
                 context.load_cert_chain(str(settings.core_api_client_cert_file), str(settings.core_api_client_key_file))
-                client = httpx.AsyncClient(verify=context, trust_env=False, follow_redirects=False,
-                         limits=httpx.Limits(max_connections=max(
-                             settings.worker_concurrency,
-                             getattr(settings, "knowledge_indexing_worker_concurrency", 1),
-                         ) + 1))
+                limits = httpx.Limits(max_connections=max(
+                    settings.worker_concurrency,
+                    getattr(settings, "knowledge_indexing_worker_concurrency", 1),
+                ) + 1)
+                if settings.core_api_connect_host:
+                    if settings.core_api_tls_server_name != "core-api.internal":
+                        raise ValueError
+                    transport = LoopbackAsyncHTTPTransport(
+                        connect_host=settings.core_api_connect_host,
+                        server_hostname=settings.core_api_tls_server_name,
+                        verify=context,
+                        trust_env=False,
+                        limits=limits,
+                    )
+                    client = httpx.AsyncClient(
+                        transport=transport,
+                        trust_env=False,
+                        follow_redirects=False,
+                    )
+                else:
+                    client = httpx.AsyncClient(
+                        verify=context,
+                        trust_env=False,
+                        follow_redirects=False,
+                        limits=limits,
+                    )
             except Exception:
                 failed = True
             if failed:

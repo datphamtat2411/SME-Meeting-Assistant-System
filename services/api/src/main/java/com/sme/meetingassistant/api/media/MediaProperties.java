@@ -88,6 +88,10 @@ public class MediaProperties {
         private boolean pathStyleAccess = true;
         private boolean createBucketIfMissing;
         private String caFile;
+        // Host-run isolated deployments dial a literal loopback address while
+        // retaining the endpoint host for SNI, hostname verification and Host.
+        private String connectHost;
+        private String tlsServerName;
         // Optional browser-reachable HTTPS endpoint for presigning exports.
         // Never use an internal container-only hostname in a user capability.
         private String publicDownloadEndpoint;
@@ -95,6 +99,10 @@ public class MediaProperties {
         public void setPublicDownloadEndpoint(String value) { publicDownloadEndpoint = value; }
         public String getCaFile() { return caFile; }
         public void setCaFile(String value) { caFile = value; }
+        public String getConnectHost() { return connectHost; }
+        public void setConnectHost(String value) { connectHost = value; }
+        public String getTlsServerName() { return tlsServerName; }
+        public void setTlsServerName(String value) { tlsServerName = value; }
         public String getEndpoint() { return endpoint; }
         public void setEndpoint(String value) { endpoint = value; }
         public String getRegion() { return region; }

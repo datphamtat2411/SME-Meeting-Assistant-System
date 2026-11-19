@@ -16,6 +16,7 @@ from sme_meeting_ai.rag.retrieval_contracts import (
 )
 
 from .core_api import strict_json
+from .loopback_http import LoopbackHTTPTransport
 
 
 class CoreSourceVerificationError(RuntimeError):
@@ -49,7 +50,26 @@ class CoreSourceVerificationProvider:
             context.load_cert_chain(
                 str(settings.core_api_client_cert_file), str(settings.core_api_client_key_file)
             )
-            self.http = httpx.Client(verify=context, trust_env=False, follow_redirects=False)
+            if settings.core_api_connect_host:
+                if settings.core_api_tls_server_name != "core-api.internal":
+                    raise ValueError
+                transport = LoopbackHTTPTransport(
+                    connect_host=settings.core_api_connect_host,
+                    server_hostname=settings.core_api_tls_server_name,
+                    verify=context,
+                    trust_env=False,
+                )
+                self.http = httpx.Client(
+                    transport=transport,
+                    trust_env=False,
+                    follow_redirects=False,
+                )
+            else:
+                self.http = httpx.Client(
+                    verify=context,
+                    trust_env=False,
+                    follow_redirects=False,
+                )
         except Exception as error:
             raise CoreSourceVerificationError("SOURCE_VERIFICATION_UNAVAILABLE") from error
 
