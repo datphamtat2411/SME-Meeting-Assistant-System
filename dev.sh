@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # One-command host development workflow.
 #
-# This wrapper never sources dotenv files. It starts only the local PostgreSQL
-# project and explicitly selected host processes. Secure integration and PI-05
-# are inspected or exercised only through their own opt-in commands; no
-# privileged helper, certificate issuer, or shared volume is started here.
+# This wrapper never sources dotenv files. It manages only the normal local
+# PostgreSQL and secure-integration Compose projects plus explicitly selected
+# host processes. It never starts the separate PI-05 project, a CA, or a
+# privileged permission helper.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -14,13 +14,22 @@ RUNTIME_DIR="$STATE_DIR/runtime"
 PROCESS_HELPER="$ROOT/scripts/dev_process.py"
 AI_ENV_HELPER="$ROOT/services/ai/scripts/process_env.py"
 CORE_ENV_HELPER="$ROOT/scripts/module_env.py"
+CONFIG_HELPER="$ROOT/scripts/configuration.py"
+INFRA_HELPER="$ROOT/scripts/dev_infra.py"
+READINESS_HELPER="$ROOT/scripts/dev_readiness.py"
 POSTGRES_COMPOSE="$ROOT/infra/local/postgres/compose.yaml"
 POSTGRES_ENV="$ROOT/infra/local/postgres/.env"
 SECURE_COMPOSE="$ROOT/infra/local/secure-integration/compose.yaml"
 SECURE_ENV="$ROOT/infra/local/secure-integration/.env"
+PI05_ENV="$ROOT/infra/local/pi05-isolated/.env"
+PI05_ORCHESTRATOR="$ROOT/infra/local/pi05-isolated/orchestrator.py"
 AI_ENV="$ROOT/services/ai/.env"
 API_ENV="$ROOT/services/api/.env"
 WEB_ENV="$ROOT/apps/web/.env"
+POSTGRES_PROJECT="sme-meeting-local"
+SECURE_PROJECT="sme-meeting-secure-integration"
+DEPENDENCY_STATE="$RUNTIME_DIR/dependencies.json"
+DEPENDENCY_MODE="${SME_DEV_DEPENDENCY_MODE:-secure}"
 
 mkdir_state() {
   mkdir -p "$STATE_DIR" "$RUNTIME_DIR"
@@ -34,18 +43,55 @@ require_file() {
   fi
 }
 
-render_ai_environment() {
+configuration_migration_check() {
+  "$PYTHON" "$CONFIG_HELPER" migration --root "$ROOT"
+}
+
+worker_role() {
+  case "${SME_DEV_WORKER_ROLE:-transcription}" in
+    transcription|transcription-worker)
+      printf '%s\n' transcription-worker
+      ;;
+    knowledge|knowledge-worker)
+      printf '%s\n' knowledge-worker
+      ;;
+    mi|mi-worker|meeting-intelligence)
+      printf '%s\n' mi-worker
+      ;;
+    *)
+      echo "BLOCKED: unsupported SME_DEV_WORKER_ROLE" >&2
+      return 1
+      ;;
+  esac
+}
+
+worker_enabled() {
+  [[ "${SME_DEV_START_WORKER:-0}" == "1" ]]
+}
+
+qdrant_enabled() {
+  [[ "${SME_DEV_START_QDRANT:-0}" == "1" ]] ||
+    { worker_enabled && [[ "$(worker_role)" == "knowledge-worker" ]]; }
+}
+
+render_ai_process() {
+  local process="$1"
+  local output="$2"
   mkdir_state
   "$PYTHON" "$AI_ENV_HELPER" \
     --config "$AI_ENV" \
-    --process ai-http \
+    --process "$process" \
     --validate-files \
-    --output "$RUNTIME_DIR/ai-http.env" >/dev/null
-  "$PYTHON" "$AI_ENV_HELPER" \
-    --config "$AI_ENV" \
-    --process transcription-worker \
-    --validate-files \
-    --output "$RUNTIME_DIR/transcription-worker.env" >/dev/null
+    --output "$output" >/dev/null
+}
+
+render_ai_environment() {
+  render_ai_process ai-http "$RUNTIME_DIR/ai-http.env"
+  if worker_enabled; then
+    local role
+    role="$(worker_role)"
+    render_ai_process "$role" "$RUNTIME_DIR/${role}.env"
+  fi
 }
 
 compose_postgres() {
@@ -53,17 +99,28 @@ compose_postgres() {
 }
 
 compose_secure() {
+  local worker_environment="$RUNTIME_DIR/transcription-worker.env"
+  if [[ ! -f "$worker_environment" ]]; then
+    worker_environment="/dev/null"
+  fi
   AI_HTTP_ENV_FILE="$RUNTIME_DIR/ai-http.env" \
-  AI_TRANSCRIPTION_ENV_FILE="$RUNTIME_DIR/transcription-worker.env" \
+  AI_TRANSCRIPTION_ENV_FILE="$worker_environment" \
   docker compose --env-file "$SECURE_ENV" -f "$SECURE_COMPOSE" "$@"
 }
 
 doctor() {
+  configuration_migration_check
+  [[ "$DEPENDENCY_MODE" == "secure" ]] || {
+    echo "BLOCKED: SME_DEV_DEPENDENCY_MODE must be secure" >&2
+    return 1
+  }
   require_file "$API_ENV"
   require_file "$AI_ENV"
   require_file "$POSTGRES_ENV"
   require_file "$SECURE_ENV"
-  require_file "$WEB_ENV"
+  if [[ "${SME_DEV_CHECK_WEB:-0}" == "1" ]]; then
+    require_file "$WEB_ENV"
+  fi
   [[ -x "$ROOT/services/api/mvnw" ]] || {
     echo "BLOCKED: services/api/mvnw is unavailable" >&2
     return 1
@@ -90,8 +147,22 @@ doctor() {
     --postgres-file "$POSTGRES_ENV" \
     --check >/dev/null
   render_ai_environment
+  "$PYTHON" "$CONFIG_HELPER" paths \
+    --file "$SECURE_ENV" --directory-key BROKER_TLS_DIR \
+    tls.crt tls.key issuer-ca.crt >/dev/null
+  "$PYTHON" "$CONFIG_HELPER" paths \
+    --file "$SECURE_ENV" --directory-key STORAGE_TLS_DIR \
+    rustfs_cert.pem rustfs_key.pem issuer-ca.crt >/dev/null
   compose_postgres config -q >/dev/null
   compose_secure config -q >/dev/null
+  if qdrant_enabled; then
+    "$PYTHON" "$CONFIG_HELPER" require \
+      --file "$SECURE_ENV" QDRANT_API_KEY QDRANT_TLS_DIR >/dev/null
+    "$PYTHON" "$CONFIG_HELPER" paths \
+      --file "$SECURE_ENV" --directory-key QDRANT_TLS_DIR \
+      tls.crt tls.key issuer-ca.crt >/dev/null
+    compose_secure --profile knowledge config -q >/dev/null
+  fi
   echo "PASS: canonical configuration, process mappings and Compose contracts are valid"
 }
 
@@ -125,111 +196,163 @@ status_process() {
     --name "$name"
 }
 
-require_environment() {
-  local name
-  for name in "$@"; do
-    if [[ -z "${!name:-}" ]]; then
-      echo "BLOCKED: required PI-05 setting is missing: ${name}" >&2
-      return 1
-    fi
-  done
+dependency_snapshot() {
+  local project="$1"
+  local destination="$2"
+  "$PYTHON" "$INFRA_HELPER" snapshot \
+    --project "$project" >"$destination"
 }
 
-validate_e2e_environment() {
-  require_environment \
-    AI_PI05_ENVIRONMENT_KIND \
-    AI_PI05_HARNESS_URL \
-    AI_PI05_RUN_ID \
-    AI_PI05_SOURCE_COMMIT \
-    AI_PI05_GENERATION_ID \
-    AI_PI05_COLLECTION_NAME \
-    AI_PI05_CA_FILE \
-    AI_PI05_CERT_FILE \
-    AI_PI05_KEY_FILE \
-    AI_PI05_EVIDENCE_DIR \
-    AI_PI05_PROOF_DIR
-  [[ "$AI_PI05_ENVIRONMENT_KIND" == "DISPOSABLE" ]] || {
-    echo "BLOCKED: PI-05 live execution requires a disposable environment" >&2
+dependency_assert_startable() {
+  local project="$1"
+  local services="$2"
+  "$PYTHON" "$INFRA_HELPER" assert-startable \
+    --state-file "$DEPENDENCY_STATE" \
+    --project "$project" \
+    --services "$services"
+}
+
+dependency_record() {
+  local project="$1"
+  local services="$2"
+  local before="$3"
+  "$PYTHON" "$INFRA_HELPER" record \
+    --state-file "$DEPENDENCY_STATE" \
+    --project "$project" \
+    --services "$services" \
+    --before "$before"
+}
+
+dependency_verify() {
+  local project="$1"
+  local services="$2"
+  local volumes="$3"
+  local healthy="$4"
+  "$PYTHON" "$INFRA_HELPER" verify \
+    --project "$project" \
+    --services "$services" \
+    --volumes "$volumes" \
+    --healthy "$healthy" \
+    --forbid-running "storage-permissions,qdrant-permissions"
+}
+
+start_dependencies() {
+  mkdir_state
+  local postgres_before="$RUNTIME_DIR/postgres.before"
+  local secure_before="$RUNTIME_DIR/secure.before"
+  dependency_snapshot "$POSTGRES_PROJECT" "$postgres_before"
+  dependency_snapshot "$SECURE_PROJECT" "$secure_before"
+  dependency_assert_startable "$POSTGRES_PROJECT" postgres
+  dependency_assert_startable "$SECURE_PROJECT" "rabbitmq,storage,storage-boundary"
+  if qdrant_enabled; then
+    dependency_assert_startable "$SECURE_PROJECT" "qdrant"
+  fi
+
+  if ! compose_postgres up -d --wait --no-recreate postgres >/dev/null; then
+    echo "ERROR: PostgreSQL startup failed; existing resources were not stopped" >&2
     return 1
-  }
-  [[ "$AI_PI05_RUN_ID" == "$PI05_RUN_ID" ]] || {
-    echo "BLOCKED: PI-05 run identities do not match" >&2
+  fi
+  dependency_record "$POSTGRES_PROJECT" postgres "$postgres_before"
+  if ! dependency_verify "$POSTGRES_PROJECT" postgres postgres_data postgres; then
+    echo "ERROR: PostgreSQL ownership/readiness verification failed; inspect with ./dev.sh logs postgres" >&2
     return 1
-  }
-  [[ "$AI_PI05_SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
-    echo "BLOCKED: PI-05 source commit must be a pinned 40-hex value" >&2
-    return 1
-  }
-  "$PYTHON" - "$PI05_RUN_ROOT" \
-    "$AI_PI05_CA_FILE" "$AI_PI05_CERT_FILE" "$AI_PI05_KEY_FILE" \
-    "$AI_PI05_EVIDENCE_DIR" "$AI_PI05_PROOF_DIR" <<'PY'
-import os
-import stat
-import sys
-from pathlib import Path
+  fi
 
-root = Path(sys.argv[1]).absolute()
-paths = [Path(value).absolute() for value in sys.argv[2:]]
-
-def safe_path(path):
-    return root in path.parents and not any(
-        item.is_symlink() for item in (path, *path.parents)
-    )
-
-def private_file(path):
-    info = path.stat()
-    return (
-        stat.S_ISREG(info.st_mode)
-        and info.st_uid == os.getuid()
-        and info.st_nlink == 1
-        and not info.st_mode & 0o077
-    )
-
-def private_directory(path):
-    info = path.stat()
-    return (
-        stat.S_ISDIR(info.st_mode)
-        and info.st_uid == os.getuid()
-        and not info.st_mode & 0o077
-    )
-
-try:
-    valid = (
-        private_directory(root)
-        and all(safe_path(path) for path in paths)
-        and all(private_file(path) for path in paths[:3])
-        and all(private_directory(path) for path in paths[3:])
-    )
-except OSError:
-    valid = False
-if not valid:
-    raise SystemExit(1)
-PY
-  local environment_file
-  for environment_file in \
-    core.env ai-http.env transcription-worker.env mi-worker.env knowledge-worker.env harness.env
-  do
-    if [[ ! -f "$PI05_RUN_ROOT/secrets/$environment_file" ||
-          -L "$PI05_RUN_ROOT/secrets/$environment_file" ||
-          "$(stat -c '%a' "$PI05_RUN_ROOT/secrets/$environment_file")" != "600" ]]
-    then
-      echo "BLOCKED: generated PI-05 process environments are unavailable" >&2
+  local service
+  for service in rabbitmq storage storage-boundary; do
+    if ! compose_secure up -d --wait --no-recreate --no-deps "$service" >/dev/null; then
+      echo "ERROR: secure dependency startup failed for ${service}; already-started resources were not stopped" >&2
       return 1
     fi
+    dependency_record "$SECURE_PROJECT" "rabbitmq,storage,storage-boundary" "$secure_before"
   done
+
+  if qdrant_enabled; then
+    if ! compose_secure --profile knowledge up -d --wait --no-recreate --no-deps qdrant >/dev/null; then
+      echo "ERROR: secure Qdrant startup failed; already-started resources were not stopped" >&2
+      return 1
+    fi
+    dependency_record "$SECURE_PROJECT" "rabbitmq,storage,storage-boundary,qdrant" "$secure_before"
+  fi
+
+  local secure_volumes="broker_secure_data,storage_secure_data"
+  local secure_services="rabbitmq,storage,storage-boundary"
+  local secure_healthy="rabbitmq,storage"
+  if qdrant_enabled; then
+    secure_volumes="$secure_volumes,qdrant_secure_data"
+    secure_services="$secure_services,qdrant"
+    secure_healthy="$secure_healthy,qdrant"
+  fi
+  dependency_verify "$SECURE_PROJECT" "$secure_services" "$secure_volumes" "$secure_healthy" || {
+    echo "ERROR: secure dependency ownership/readiness verification failed; inspect with ./dev.sh logs" >&2
+    return 1
+  }
+}
+
+wait_owned_process() {
+  local name="$1"
+  local attempt
+  for attempt in $(seq 1 60); do
+    if "$PYTHON" "$PROCESS_HELPER" status \
+      --state-dir "$STATE_DIR" \
+      --name "$name" | grep -q '"running": true'
+    then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "ERROR: ${name} exited before readiness; inspect ${STATE_DIR}/${name}.log" >&2
+  return 1
+}
+
+wait_core_readiness() {
+  local attempt
+  for attempt in $(seq 1 60); do
+    if curl --fail --silent --show-error --max-time 2 \
+      http://127.0.0.1:8080/actuator/health/liveness >/dev/null 2>&1
+    then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "ERROR: Core liveness did not become ready; inspect ${STATE_DIR}/core.log" >&2
+  return 1
+}
+
+wait_ai_readiness() {
+  local port
+  port="$("$PYTHON" "$READINESS_HELPER" port \
+    --file "$RUNTIME_DIR/ai-http.env" \
+    --name AI_HTTP_PORT)"
+  if ! "$PYTHON" "$READINESS_HELPER" wait-listener \
+    --host 127.0.0.1 --port "$port" --timeout 60
+  then
+    echo "ERROR: AI HTTP listener did not become ready; inspect ${STATE_DIR}/ai-http.log" >&2
+    return 1
+  fi
 }
 
 up() {
   doctor
-  compose_postgres up -d --wait >/dev/null
+  start_dependencies
   start_process ai-http "$ROOT" bash "$ROOT/run-ai-http.sh"
+  wait_owned_process ai-http
+  wait_ai_readiness
   start_process core "$ROOT" bash "$ROOT/run-core.sh"
-  if [[ "${SME_DEV_START_WORKER:-0}" == "1" ]]; then
-    start_process worker "$ROOT" bash "$ROOT/run-ai-worker.sh" "${SME_DEV_WORKER_ROLE:-transcription}"
+  wait_owned_process core
+  wait_core_readiness
+  if worker_enabled; then
+    local role
+    role="$(worker_role)"
+    start_process worker "$ROOT" bash "$ROOT/run-ai-worker.sh" "$role"
+    wait_owned_process worker
   fi
-  echo "PASS: PostgreSQL, AI HTTP and Core launchers started"
-  if [[ "${SME_DEV_START_WORKER:-0}" != "1" ]]; then
+  echo "PASS: PostgreSQL, RabbitMQ, RustFS, AI HTTP and Core are ready"
+  if ! worker_enabled; then
     echo "INFO: set SME_DEV_START_WORKER=1 to start the selected worker"
+  fi
+  if ! qdrant_enabled; then
+    echo "INFO: Qdrant remains stopped until the Knowledge worker or SME_DEV_START_QDRANT=1 is selected"
   fi
 }
 
@@ -241,6 +364,9 @@ status() {
   if command -v docker >/dev/null && [[ -f "$POSTGRES_ENV" ]]; then
     compose_postgres ps --format '{{.Name}}\t{{.State}}' 2>/dev/null || true
   fi
+  if command -v docker >/dev/null && [[ -f "$SECURE_ENV" ]]; then
+    compose_secure ps --format '{{.Name}}\t{{.State}}' 2>/dev/null || true
+  fi
 }
 
 smoke() {
@@ -250,7 +376,18 @@ smoke() {
   echo "PASS: Core liveness endpoint responded"
   if [[ "${SME_DEV_SECURE_SMOKE:-0}" == "1" ]]; then
     require_file "$SECURE_ENV"
-    render_ai_environment
+    render_ai_process transcription-worker "$RUNTIME_DIR/transcription-worker.env"
+    "$PYTHON" "$CONFIG_HELPER" paths \
+      --file "$SECURE_ENV" --directory-key WORKER_TLS_DIR \
+      tls.crt tls.key core-server-ca.crt broker-ca.crt storage-ca.crt >/dev/null
+    if ! dependency_verify "$SECURE_PROJECT" \
+      "rabbitmq,storage,storage-boundary" \
+      "broker_secure_data,storage_secure_data" \
+      "rabbitmq,storage"
+    then
+      echo "BLOCKED: secure smoke dependencies are not ready" >&2
+      return 1
+    fi
     compose_secure --profile checks run --rm --no-deps transport-health >/dev/null
     echo "PASS: secure transport smoke completed"
   fi
@@ -261,40 +398,126 @@ e2e() {
     echo "BLOCKED: set AI_RUN_PI05_LIVE=1 for an explicitly approved PI-05 run" >&2
     return 1
   fi
-  : "${PI05_RUN_ID:?BLOCKED: PI05_RUN_ID must be supplied by the private run environment}"
-  : "${PI05_RUN_ROOT:?BLOCKED: PI05_RUN_ROOT must be supplied by the private run environment}"
-  validate_e2e_environment
-  "$PYTHON" "$ROOT/infra/local/pi05-isolated/preflight.py" \
-    --run-id "$PI05_RUN_ID" \
-    --run-root "$PI05_RUN_ROOT" \
-    --runs-base "${PI05_RUN_BASE_DIR:-$(dirname "$PI05_RUN_ROOT")}" >/dev/null
+  require_file "$PI05_ENV"
   (
     cd "$ROOT/services/ai"
-    exec uv run --locked python -m pytest -q -m live_infrastructure \
+    exec "$PYTHON" "$PI05_ORCHESTRATOR" \
+      --config "$PI05_ENV" \
+      --active \
+      -- uv run --locked python -m pytest -q -m live_infrastructure \
       tests/integration/test_pi05_live.py
   )
 }
 
+admit() {
+  require_file "$PI05_ENV"
+  "$PYTHON" "$PI05_ORCHESTRATOR" \
+    --config "$PI05_ENV" \
+    --admit
+}
+
 down() {
-  stop_process worker
-  stop_process core
-  stop_process ai-http
-  if command -v docker >/dev/null && [[ -f "$POSTGRES_ENV" ]]; then
-    compose_postgres down >/dev/null
+  local failure=0
+  stop_process worker || failure=1
+  stop_process core || failure=1
+  stop_process ai-http || failure=1
+
+  if command -v docker >/dev/null && [[ -f "$SECURE_ENV" ]]; then
+    local secure_owned
+    secure_owned="$("$PYTHON" "$INFRA_HELPER" owned \
+      --state-file "$DEPENDENCY_STATE" --project "$SECURE_PROJECT")" || failure=1
+    if [[ -n "$secure_owned" ]]; then
+      if ! compose_secure --profile knowledge stop $secure_owned >/dev/null; then
+        echo "ERROR: unable to stop only dev.sh-owned secure dependencies" >&2
+        failure=1
+      else
+        "$PYTHON" "$INFRA_HELPER" clear \
+          --state-file "$DEPENDENCY_STATE" --project "$SECURE_PROJECT" || failure=1
+      fi
+    fi
   fi
-  echo "PASS: owned development processes stopped; PostgreSQL data was preserved"
+  if command -v docker >/dev/null && [[ -f "$POSTGRES_ENV" ]]; then
+    local postgres_owned
+    postgres_owned="$("$PYTHON" "$INFRA_HELPER" owned \
+      --state-file "$DEPENDENCY_STATE" --project "$POSTGRES_PROJECT")" || failure=1
+    if [[ -n "$postgres_owned" ]]; then
+      if ! compose_postgres stop $postgres_owned >/dev/null; then
+        echo "ERROR: unable to stop only dev.sh-owned PostgreSQL" >&2
+        failure=1
+      else
+        "$PYTHON" "$INFRA_HELPER" clear \
+          --state-file "$DEPENDENCY_STATE" --project "$POSTGRES_PROJECT" || failure=1
+      fi
+    fi
+  fi
+  if [[ "$failure" -ne 0 ]]; then
+    return 1
+  fi
+  echo "PASS: owned development processes stopped; unrelated resources and volumes were preserved"
+}
+
+logs() {
+  local selected="${2:-all}"
+  case "$selected" in
+    all|ai-http|core|worker)
+      ;;
+    postgres|rabbitmq|storage|storage-boundary|qdrant)
+      ;;
+    *)
+      echo "Usage: ./dev.sh logs [all|ai-http|core|worker|postgres|rabbitmq|storage|storage-boundary|qdrant]" >&2
+      return 2
+      ;;
+  esac
+
+  if [[ "$selected" == "all" || "$selected" == "ai-http" || "$selected" == "core" || "$selected" == "worker" ]]; then
+    local process
+    for process in ai-http core worker; do
+      if [[ "$selected" != "all" && "$selected" != "$process" ]]; then
+        continue
+      fi
+      if [[ -f "$STATE_DIR/${process}.log" ]]; then
+        echo "===== ${process} ====="
+        cat "$STATE_DIR/${process}.log"
+      else
+        echo "INFO: no owned ${process} log exists"
+      fi
+    done
+  fi
+
+  if [[ "$selected" == "all" || "$selected" == "postgres" ]]; then
+    if [[ -f "$POSTGRES_ENV" ]]; then
+      echo "===== postgres ====="
+      compose_postgres logs --no-color --tail="${SME_DEV_LOG_TAIL:-200}" postgres 2>/dev/null || true
+    fi
+  fi
+  if [[ "$selected" == "all" || "$selected" == "rabbitmq" || "$selected" == "storage" ||
+        "$selected" == "storage-boundary" || "$selected" == "qdrant" ]]; then
+    if [[ -f "$SECURE_ENV" ]]; then
+      local service_args=()
+      if [[ "$selected" == "all" ]]; then
+        service_args=(rabbitmq storage storage-boundary qdrant)
+      else
+        service_args=("$selected")
+      fi
+      compose_secure --profile knowledge logs --no-color \
+        --tail="${SME_DEV_LOG_TAIL:-200}" "${service_args[@]}" 2>/dev/null || true
+    fi
+  fi
 }
 
 usage() {
   cat <<'EOF'
-Usage: ./dev.sh doctor|up|status|smoke|e2e|down
+Usage: ./dev.sh doctor|up|status|smoke|e2e|admit|migrate|logs|down
 
-up      Validate canonical files, start PostgreSQL, Core and AI HTTP.
+ up      Validate canonical files, start dependencies and ready Core/AI.
 doctor  Validate mappings and Compose interpolation without starting services.
 status  Show only owned process and PostgreSQL status.
 smoke   Check Core liveness; set SME_DEV_SECURE_SMOKE=1 for secure checks.
-e2e     Run an explicitly approved, pre-existing PI-05 live environment only.
-down    Stop owned processes and PostgreSQL without deleting volumes.
+ e2e     Run an explicitly approved, already-running PI-05 environment only.
+ admit   Perform the separate read-only fresh-project PI-05 admission check.
+ migrate Inventory legacy dotenv files without changing or printing values.
+ logs    Show owned process or Compose dependency logs.
+ down    Stop only resources started by this wrapper; preserve volumes.
 EOF
 }
 
@@ -304,6 +527,9 @@ case "${1:-}" in
   status) status ;;
   smoke) smoke ;;
   e2e) e2e ;;
+  admit) admit ;;
+  migrate) configuration_migration_check ;;
+  logs) logs "$@" ;;
   down) down ;;
   *) usage; exit 2 ;;
 esac

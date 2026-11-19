@@ -3,22 +3,20 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import sys
 import time
+from pathlib import Path
 
 import pytest
-
 
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 
-from process_supervisor import (  # noqa: E402
+from process_supervisor import (
     ProcessSpec,
     RunSupervisor,
     SupervisorError,
 )
-
 
 RUN_ID = "5cf6be2a-0a06-46bb-a040-729db426b022"
 

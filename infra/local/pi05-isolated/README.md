@@ -61,6 +61,14 @@ Choose one new canonical UUID for the entire run. The directory must be
 `$HOME/.local/share/sme-pi05/runs/<UUID>`; use new material, not copies of
 shared credentials or keys. Creating empty task-owned directories is safe:
 
+The repository file `infra/local/pi05-isolated/.env` is only orchestration
+metadata: it selects the run base/UUID and may record reviewed provenance. It
+never replaces the run-owned `secrets/runtime-input.env` manifest or the
+generated mode-0600 process environments. Keep application credentials,
+certificates and harness identities in that UUID-scoped directory only.
+`./dev.sh admit` performs the read-only fresh-project admission check; it does
+not create a run or start Docker resources.
+
 ```sh
 export PI05_RUN_ID="$(python3 -c 'import uuid; print(uuid.uuid4())')"
 export PI05_RUN_ROOT="$HOME/.local/share/sme-pi05/runs/$PI05_RUN_ID"
@@ -210,6 +218,12 @@ file ownership, modes, restricted literal env syntax, separate secret values,
 run-directory identity and absence of already-labeled Compose resources:
 
 ```sh
+./dev.sh admit
+```
+
+The lower-level command remains available for operator scripts:
+
+```sh
 python3 infra/local/pi05-isolated/preflight.py \
   --run-id "$PI05_RUN_ID" --run-root "$PI05_RUN_ROOT"
 ```
@@ -250,6 +264,13 @@ and reload; it does not automatically revoke already issued leaves. No CA
 configuration, provisioner, signing or reload has been performed here.
 
 ## Starting and stopping the foundation
+
+`./dev.sh up` does not start this PI-05 project. It starts only the normal
+PostgreSQL/secure-integration dependencies and host Core/AI development
+processes. `./dev.sh e2e` requires this project to have been prepared and
+started by the separately approved operator procedure; it performs active-run
+readiness and does not perform fresh-project admission or start PI-05 Docker
+resources.
 
 After secrets, certificates, ACLs, fresh-project preflight and explicit approval
 for Docker resource creation:

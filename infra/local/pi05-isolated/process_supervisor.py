@@ -9,19 +9,17 @@ process.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import signal
 import subprocess
-import tempfile
 import time
-from typing import Mapping
+from collections.abc import Mapping
+from dataclasses import dataclass
+from pathlib import Path
 from uuid import UUID, uuid4
-
 
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 _DANGEROUS_ENV = frozenset({
@@ -278,19 +276,29 @@ class RunSupervisor:
                 start_new_session=True,
                 shell=False,
             )
-            starttime = _proc_starttime(child.pid)
-            if starttime is None and child.poll() is None:
-                child.kill()
-                child.wait(timeout=2)
+            deadline = time.monotonic() + 1.0
+            starttime = None
+            pgid = None
+            while time.monotonic() < deadline:
+                starttime = _proc_starttime(child.pid)
+                try:
+                    pgid = os.getpgid(child.pid)
+                except ProcessLookupError:
+                    pgid = None
+                if starttime is not None and pgid == child.pid:
+                    break
+                if child.poll() is not None:
+                    break
+                time.sleep(0.01)
+            if starttime is None or pgid != child.pid:
+                if child.poll() is None:
+                    child.kill()
+                    child.wait(timeout=2)
                 raise SupervisorError("started process identity could not be recorded")
-            try:
-                pgid = os.getpgid(child.pid)
-            except ProcessLookupError:
-                pgid = None
             state = {
                 "name": spec.name,
                 "pid": child.pid,
-                "pgid": child.pid if pgid == child.pid else None,
+                "pgid": child.pid,
                 "starttime": starttime,
                 "command": list(command),
                 "commandSha256": hashlib.sha256(

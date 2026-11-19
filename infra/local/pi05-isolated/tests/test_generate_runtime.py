@@ -148,6 +148,20 @@ def _value(name: str, root: Path, run_id: str) -> str:
     if name == "AI_MEETING_INTELLIGENCE_CORE_API_CLIENT_KEY_FILE":
         return _path(root, "mi-worker/tls.key")
     if name.startswith("PI05_"):
+        if name == "PI05_ENVIRONMENT_KIND":
+            return "DISPOSABLE"
+        if name == "PI05_HARNESS_URL":
+            return "https://localhost:50110"
+        if name == "PI05_SOURCE_COMMIT":
+            return "a" * 40
+        if name == "PI05_GENERATION_ID":
+            return "generation-" + run_id
+        if name == "PI05_COLLECTION_NAME":
+            return "collection-" + run_id
+        if name in {"PI05_EVIDENCE_DIR", "PI05_PROOF_DIR"}:
+            return str(root / name.lower())
+        if name == "PI05_SCENARIO_TIMEOUT_SECONDS":
+            return "60"
         if name.endswith("_BASE_URL"):
             return "https://127.0.0.1:50110"
         if name.endswith(("_CA_FILE", "_CERT_FILE", "_KEY_FILE")):
@@ -229,6 +243,8 @@ def _run(tmp_path: Path):
     root = tmp_path / "runs" / run_id
     (root / "secrets").mkdir(mode=0o700, parents=True)
     root.chmod(0o700)
+    for name in ("pi05_evidence_dir", "pi05_proof_dir"):
+        (root / name).mkdir(mode=0o700)
     manifest = _write_manifest(root, _manifest(root, run_id))
     return run_id, root, manifest
 

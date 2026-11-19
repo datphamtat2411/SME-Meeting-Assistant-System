@@ -92,6 +92,48 @@ services:
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
 
+  # Qdrant is started only when the Knowledge worker is explicitly selected.
+  # It has its own operator-provided TLS directory and volume; it is never
+  # coupled to the PI-05 project.
+  qdrant:
+    profiles: ["knowledge"]
+    image: qdrant/qdrant:v1.20.0
+    restart: unless-stopped
+    environment:
+      QDRANT__SERVICE__ENABLE_TLS: "true"
+      QDRANT__SERVICE__API_KEY: "${QDRANT_API_KEY:-}"
+      QDRANT__TLS__CERT: /run/secrets/qdrant/tls.crt
+      QDRANT__TLS__KEY: /run/secrets/qdrant/tls.key
+      QDRANT__STORAGE__SNAPSHOTS_PATH: /qdrant/storage/snapshots
+    entrypoint: ["/bin/bash", "-ec"]
+    command:
+      - |
+        if [ -z "$${QDRANT__SERVICE__API_KEY:-}" ]; then
+          echo "Qdrant API key is required" >&2
+          exit 1
+        fi
+        exec /qdrant/entrypoint.sh
+    volumes:
+      - qdrant_secure_data:/qdrant/storage
+      - type: bind
+        source: ${QDRANT_TLS_DIR:-/dev/null}
+        target: /run/secrets/qdrant
+        read_only: true
+        bind: {create_host_path: false}
+    ports: ["127.0.0.1:${QDRANT_PORT:-6333}:6333"]
+    networks: [integration]
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl --fail --silent --show-error --cacert /run/secrets/qdrant/issuer-ca.crt https://127.0.0.1:6333/health",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
   ai-core:
     profiles: ["http"]
     build: ../../../services/ai
@@ -159,3 +201,4 @@ networks:
 volumes:
   broker_secure_data:
   storage_secure_data:
+  qdrant_secure_data:

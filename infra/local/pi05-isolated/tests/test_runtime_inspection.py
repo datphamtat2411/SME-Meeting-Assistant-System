@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import copy
 import importlib.util
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -210,7 +210,7 @@ def test_inspection_queries_network_members_and_all_volume_users(tmp_path, monke
 )
 def test_rejects_unsafe_or_incomplete_metadata(tmp_path, change):
     data = list(copy.deepcopy(snapshot(tmp_path)))
-    base, root, containers, networks, volumes, image_ids = data
+    _base, _root, containers, networks, volumes, _image_ids = data
     by_service = {item["service"]: item for item in containers}
     if change == "foreign-volume":
         by_service["postgres"]["mounts"][0]["Name"] = "sme-meeting-local_postgres_data"

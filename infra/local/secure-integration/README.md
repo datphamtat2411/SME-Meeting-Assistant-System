@@ -140,6 +140,10 @@ Supply bootstrap values in the secure integration `.env`:
 - `RABBITMQ_DEFAULT_USER`, `RABBITMQ_DEFAULT_PASS`,
   `RABBITMQ_DEFAULT_VHOST=sme-integration`. No default credentials in this project.
 - `RUSTFS_ACCESS_KEY`, `RUSTFS_SECRET_KEY` (operator bootstrap only).
+- When starting the Knowledge worker, `QDRANT_API_KEY` and `QDRANT_TLS_DIR`
+  are required. Qdrant uses a separate existing server certificate directory
+  and `qdrant_secure_data`; no permission helper or CA operation is run by
+  `dev.sh`.
 - `services/ai/.env`: the transcription process block supplies separate
   `AI_RABBITMQ_USERNAME/PASSWORD` and `AI_S3_ACCESS_KEY_ID/SECRET_ACCESS_KEY`.
   The Knowledge and Meeting Intelligence blocks use separate identities.
@@ -154,12 +158,15 @@ Supply bootstrap values in the secure integration `.env`:
 SME_DEV_SECURE_SMOKE=1 ./dev.sh smoke
 ```
 
-`dev.sh up` does not start this secure Compose project; it starts only the
-local PostgreSQL project and host Core/AI processes. The secure smoke command
-uses an already-running, operator-approved integration project and does not
-start its root-owned permission helper. Exit 2 means the positives passed but
-live negatives need `--wrong-ca`. Run the complete check on the host below with
-host paths/ports. RustFS health verifies HTTPS with its issuer bundle;
+`dev.sh up` starts only the normal secure-integration dependencies (RabbitMQ,
+RustFS and its storage boundary, plus Qdrant when the Knowledge worker is
+selected) with `--no-deps`; it does not start the PI-05 Compose project or the
+root-owned permission helpers. It then starts host Core and AI HTTP processes
+and waits for dependency/process readiness. Existing containers and volumes are
+verified by Compose project labels before they are managed. The secure smoke
+command uses the already-running dependencies and does not create resources.
+Exit 2 means the positives passed but live negatives need `--wrong-ca`. Run the
+complete check on the host below with host paths/ports. RustFS health verifies HTTPS with its issuer bundle;
 Rabbit health checks its listener, while SDK smoke proves TLS/login. AI readiness
 is checked externally by Java or its existing separate operator probe, never by
 mounting the probe key into AI Core. Existing AI renewal's container allowlist

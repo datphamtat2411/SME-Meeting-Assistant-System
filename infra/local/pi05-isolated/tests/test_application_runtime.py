@@ -12,11 +12,11 @@ import pytest
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 
-from application_runtime import (  # noqa: E402
+from application_runtime import (
     ApplicationRuntime,
     RuntimeWiringError,
 )
-from process_supervisor import ProcessSpec  # noqa: E402
+from process_supervisor import ProcessSpec
 
 
 def runtime(tmp_path, monkeypatch):

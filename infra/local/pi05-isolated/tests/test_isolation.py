@@ -138,6 +138,19 @@ def test_preflight_accepts_only_run_scoped_private_material(tmp_path):
     preflight.check_files(RUN_ID, root, runs_base=base)
 
 
+def test_active_preflight_requires_generated_process_files_without_fresh_check(tmp_path):
+    base, root = make_run(tmp_path)
+    with pytest.raises(preflight.Blocked):
+        preflight.check_active_run(RUN_ID, root, runs_base=base)
+
+    for name in preflight.GENERATED_ENVIRONMENTS:
+        path = root / "secrets" / name
+        path.write_text("private-generated-placeholder\n", encoding="utf-8")
+        path.chmod(0o600)
+
+    preflight.check_active_run(RUN_ID, root, runs_base=base)
+
+
 def test_preflight_requires_qdrant_issuer_ca(tmp_path):
     base, root = make_run(tmp_path)
     (root / "pki" / "qdrant-server" / "issuer-ca.crt").unlink()

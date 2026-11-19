@@ -96,6 +96,9 @@ _HARNESS_KEYS = frozenset({
     "PI05_RABBIT_TLS_SERVER_NAME", "PI05_RABBIT_QUEUE",
     "PI05_QDRANT_CA_FILE", "PI05_QDRANT_API_KEY",
     "PI05_MEDIA_FILE", "PI05_SCENARIO_TIMEOUT_SECONDS",
+    "PI05_ENVIRONMENT_KIND", "PI05_HARNESS_URL", "PI05_SOURCE_COMMIT",
+    "PI05_GENERATION_ID", "PI05_COLLECTION_NAME", "PI05_EVIDENCE_DIR",
+    "PI05_PROOF_DIR",
     "PI05_POLL_INTERVAL_SECONDS", "PI05_RABBIT_MINIMUM_MESSAGE_COUNT",
     "PI05_SCENARIO_FIXTURES_FILE",
 })
@@ -172,7 +175,27 @@ _HARNESS_REQUIRED = frozenset({
     "PI05_RABBIT_PASSWORD", "PI05_RABBIT_LEAF_SHA256",
     "PI05_RABBIT_TLS_SERVER_NAME", "PI05_RABBIT_QUEUE",
     "PI05_QDRANT_API_KEY", "PI05_MEDIA_FILE",
+    "PI05_ENVIRONMENT_KIND", "PI05_HARNESS_URL", "PI05_SOURCE_COMMIT",
+    "PI05_GENERATION_ID", "PI05_COLLECTION_NAME", "PI05_EVIDENCE_DIR",
+    "PI05_PROOF_DIR", "PI05_SCENARIO_TIMEOUT_SECONDS",
 })
+_HARNESS_PATH_KEYS = frozenset({
+    "PI05_EVIDENCE_DIR", "PI05_PROOF_DIR",
+})
+_HARNESS_PROCESS_NAMES = {
+    "PI05_ENVIRONMENT_KIND": "AI_PI05_ENVIRONMENT_KIND",
+    "PI05_HARNESS_URL": "AI_PI05_HARNESS_URL",
+    "PI05_RUN_ID": "AI_PI05_RUN_ID",
+    "PI05_SOURCE_COMMIT": "AI_PI05_SOURCE_COMMIT",
+    "PI05_GENERATION_ID": "AI_PI05_GENERATION_ID",
+    "PI05_COLLECTION_NAME": "AI_PI05_COLLECTION_NAME",
+    "PI05_AI_CA_FILE": "AI_PI05_CA_FILE",
+    "PI05_AI_CERT_FILE": "AI_PI05_CERT_FILE",
+    "PI05_AI_KEY_FILE": "AI_PI05_KEY_FILE",
+    "PI05_EVIDENCE_DIR": "AI_PI05_EVIDENCE_DIR",
+    "PI05_PROOF_DIR": "AI_PI05_PROOF_DIR",
+    "PI05_SCENARIO_TIMEOUT_SECONDS": "AI_PI05_SCENARIO_TIMEOUT_SECONDS",
+}
 
 _AI_PROCESS_FORBIDDEN = {
     "ai-http": frozenset({
@@ -351,6 +374,11 @@ def _validate_run_values(run_id: str, root: Path, values: dict[str, str]) -> Non
         if root not in path.parents:
             raise RuntimeConfigError("Run file reference must remain inside the run root")
         _no_symlink(path)
+    for name in _HARNESS_PATH_KEYS.intersection(values):
+        value = values[name]
+        path = _private_directory(Path(value), "PI-05 evidence directory")
+        if root not in path.parents:
+            raise RuntimeConfigError("PI-05 evidence directories must remain inside the run root")
     for name, expected_scheme in _URL_SCHEMES.items():
         if name not in values:
             continue
@@ -414,6 +442,29 @@ def _validate_run_values(run_id: str, root: Path, values: dict[str, str]) -> Non
             or qdrant.fragment
         ):
             raise RuntimeConfigError("AI Qdrant endpoint must use verified HTTPS loopback")
+    if "PI05_SOURCE_COMMIT" in values and not re.fullmatch(
+        r"[0-9a-f]{40}", values["PI05_SOURCE_COMMIT"]
+    ):
+        raise RuntimeConfigError("PI-05 source commit must be a pinned 40-hex value")
+    if "PI05_ENVIRONMENT_KIND" in values and values["PI05_ENVIRONMENT_KIND"] != "DISPOSABLE":
+        raise RuntimeConfigError("PI-05 environment must be disposable")
+    if "PI05_HARNESS_URL" in values:
+        harness = urlsplit(values["PI05_HARNESS_URL"])
+        if (
+            harness.scheme != "https"
+            or harness.hostname is None
+            or harness.username is not None
+            or harness.password is not None
+            or harness.query
+            or harness.fragment
+            or harness.path not in ("", "/")
+            or not (
+                harness.hostname == "localhost"
+                or harness.hostname.endswith((".internal", ".test"))
+                or harness.hostname == _LOOPBACK
+            )
+        ):
+            raise RuntimeConfigError("PI-05 harness endpoint must be private HTTPS")
     if "RABBITMQ_PORT" in values:
         try:
             broker_port = int(values["RABBITMQ_PORT"])
@@ -619,6 +670,16 @@ class RunConfiguration:
         if name not in self.harness_env:
             raise RuntimeConfigError("Requested harness setting is unavailable")
         return self.harness_env[name]
+
+    def harness_process_environment(self) -> dict[str, str]:
+        """Map only reviewed harness inputs into the live-test namespace."""
+        result = {
+            target: self.harness_env[source]
+            for source, target in _HARNESS_PROCESS_NAMES.items()
+            if source in self.harness_env
+        }
+        result["AI_RUN_PI05_LIVE"] = "1"
+        return result
 
 
 def load_run_configuration(

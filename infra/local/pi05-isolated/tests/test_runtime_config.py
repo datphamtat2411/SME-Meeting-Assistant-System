@@ -31,6 +31,8 @@ def _files(tmp_path: Path, run_id: str) -> tuple[Path, dict[str, str]]:
     root = tmp_path / "runs" / run_id
     (root / "secrets").mkdir(mode=0o700, parents=True)
     root.chmod(0o700)
+    (root / "evidence").mkdir(mode=0o700)
+    (root / "proofs").mkdir(mode=0o700)
     common = {
         "PI05_RUN_ID": run_id,
         "PI05_RUN_ROOT": str(root),
@@ -156,6 +158,14 @@ def _files(tmp_path: Path, run_id: str) -> tuple[Path, dict[str, str]]:
     })
     _write_environment(root, "harness.env", {
         **common,
+        "PI05_ENVIRONMENT_KIND": "DISPOSABLE",
+        "PI05_HARNESS_URL": "https://localhost:50110",
+        "PI05_SOURCE_COMMIT": "a" * 40,
+        "PI05_GENERATION_ID": "generation-" + run_id,
+        "PI05_COLLECTION_NAME": "collection-" + run_id,
+        "PI05_EVIDENCE_DIR": str(root / "evidence"),
+        "PI05_PROOF_DIR": str(root / "proofs"),
+        "PI05_SCENARIO_TIMEOUT_SECONDS": "60",
         "PI05_CORE_BASE_URL": "https://127.0.0.1:8080",
         "PI05_CORE_CA_FILE": str(root / "pki" / "core" / "issuer-ca.crt"),
         "PI05_CORE_CERT_FILE": str(root / "pki" / "action" / "tls.crt"),
@@ -212,6 +222,8 @@ def test_loader_reads_only_private_run_files_and_adds_no_parent_environment(
     assert config.core_env["DB_PASSWORD"] == "database-password"
     assert config.core_env["PI05_RUN_ROOT"] == str(root)
     assert config.harness("PI05_REVOKED_MEMBER_EMAIL") == "member@example.test"
+    assert config.harness_process_environment()["AI_PI05_ENVIRONMENT_KIND"] == "DISPOSABLE"
+    assert config.harness_process_environment()["AI_PI05_RUN_ID"] == run_id
     assert config.application_environments()["ai-http"]["AI_SETTINGS_ENV_FILE"] == ""
     environments = config.application_environments()
     assert "AI_RABBITMQ_PASSWORD" not in environments["ai-http"]

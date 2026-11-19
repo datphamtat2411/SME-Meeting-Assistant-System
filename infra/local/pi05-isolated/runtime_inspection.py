@@ -227,7 +227,12 @@ def _json_docker(*args: str) -> dict:
     return value
 
 
-def _inspect_verified(run_id: str, root: Path) -> tuple[dict[str, str], dict[str, str]]:
+def _inspect_verified(
+    run_id: str,
+    root: Path,
+    *,
+    runs_base: Path | None = None,
+) -> tuple[dict[str, str], dict[str, str]]:
     project = "pi05-" + _run_id(run_id)
     _directory(root, private=True)
     identifiers = _docker(
@@ -276,7 +281,25 @@ def _inspect_verified(run_id: str, root: Path) -> tuple[dict[str, str], dict[str
         ).splitlines()
     image_ids = {image: _docker("image", "inspect", "--format", "{{.Id}}", image)
                  for image in set(IMAGES.values())}
-    ports = validate_topology(run_id, root, containers, networks, volumes, image_ids)
+    if runs_base is None:
+        ports = validate_topology(
+            run_id,
+            root,
+            containers,
+            networks,
+            volumes,
+            image_ids,
+        )
+    else:
+        ports = validate_topology(
+            run_id,
+            root,
+            containers,
+            networks,
+            volumes,
+            image_ids,
+            runs_base=runs_base,
+        )
     container_ids = {
         container["service"]: container["id"]
         for container in containers
@@ -284,15 +307,25 @@ def _inspect_verified(run_id: str, root: Path) -> tuple[dict[str, str], dict[str
     return ports, container_ids
 
 
-def inspect_topology(run_id: str, root: Path) -> dict[str, str]:
+def inspect_topology(
+    run_id: str,
+    root: Path,
+    *,
+    runs_base: Path | None = None,
+) -> dict[str, str]:
     """Return verified loopback ports for the complete running foundation."""
-    ports, _container_ids = _inspect_verified(run_id, root)
+    ports, _container_ids = _inspect_verified(run_id, root, runs_base=runs_base)
     return ports
 
 
-def inspect_container_ids(run_id: str, root: Path) -> dict[str, str]:
+def inspect_container_ids(
+    run_id: str,
+    root: Path,
+    *,
+    runs_base: Path | None = None,
+) -> dict[str, str]:
     """Return verified infrastructure container IDs from one metadata snapshot."""
-    _ports, container_ids = _inspect_verified(run_id, root)
+    _ports, container_ids = _inspect_verified(run_id, root, runs_base=runs_base)
     return container_ids
 
 
@@ -350,9 +383,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--run-root", required=True, type=Path)
+    parser.add_argument("--runs-base", type=Path)
     args = parser.parse_args()
     try:
-        ports = inspect_topology(args.run_id, args.run_root)
+        ports = inspect_topology(args.run_id, args.run_root, runs_base=args.runs_base)
     except Blocked as error:
         print("BLOCKED:", error)
         return 1

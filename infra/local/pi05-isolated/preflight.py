@@ -37,6 +37,14 @@ ROLE_FILES = {
     "storage-server": ("rustfs_cert.pem", "rustfs_key.pem", "issuer-ca.crt"),
     "qdrant-server": ("tls.crt", "tls.key", "issuer-ca.crt"),
 }
+GENERATED_ENVIRONMENTS = (
+    "core.env",
+    "ai-http.env",
+    "transcription-worker.env",
+    "mi-worker.env",
+    "knowledge-worker.env",
+    "harness.env",
+)
 
 
 def _run_id(value: str) -> str:
@@ -130,6 +138,14 @@ def check_files(run_id: str, root: Path, *, runs_base: Path | None = None) -> No
             _file(directory / name, key=name.endswith((".key", "_key.pem")))
 
 
+def check_active_run(run_id: str, root: Path, *, runs_base: Path | None = None) -> None:
+    """Check an already prepared run without fresh-project admission."""
+    check_files(run_id, root, runs_base=runs_base)
+    root = Path(os.path.abspath(root))
+    for name in GENERATED_ENVIRONMENTS:
+        _file(root / "secrets" / name, private=True)
+
+
 def check_fresh_project(run_id: str) -> None:
     """Refuse labeled resources and unlabelled names that could collide."""
     project = "pi05-" + _run_id(run_id)
@@ -171,14 +187,21 @@ def main() -> int:
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--run-root", required=True, type=Path)
     parser.add_argument("--runs-base", type=Path)
+    parser.add_argument("--mode", choices=("fresh", "active"), default="fresh")
     args = parser.parse_args()
     try:
-        check_files(args.run_id, args.run_root, runs_base=args.runs_base)
-        check_fresh_project(args.run_id)
+        if args.mode == "active":
+            check_active_run(args.run_id, args.run_root, runs_base=args.runs_base)
+        else:
+            check_files(args.run_id, args.run_root, runs_base=args.runs_base)
+            check_fresh_project(args.run_id)
     except Blocked as error:
         print("BLOCKED:", error)
         return 1
-    print("PASS: private file layout and fresh project only; TLS and deployment remain unverified")
+    if args.mode == "active":
+        print("PASS: private active-run files only; Docker topology and TLS remain separately verified")
+    else:
+        print("PASS: private file layout and fresh project only; TLS and deployment remain unverified")
     return 0
 
 
