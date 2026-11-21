@@ -14,7 +14,11 @@ from sme_meeting_ai.integrations.intelligence import (
     IntelligenceStatus,
 )
 from sme_meeting_ai.integrations.object_storage import StorageError
-from sme_meeting_ai.meeting_intelligence.errors import IntelligenceError
+from sme_meeting_ai.meeting_intelligence.errors import (
+    IntelligenceError,
+    ValidationEvidence,
+    ValidationReference,
+)
 from sme_meeting_ai.meeting_intelligence.result import ResultError, serialize_result
 from sme_meeting_ai.meeting_intelligence.source import (
     SourceIntegrityError,
@@ -203,6 +207,7 @@ def lifecycle():
 
         def __init__(self):
             self.body = json.dumps(body).encode()
+            self.claim = owned
 
         async def ack(self):
             self.acked = True
@@ -278,7 +283,7 @@ def lifecycle():
     return settings, Core(), Storage(), Delivery(), candidate
 
 
-def test_coordinator_acceptance_and_duplicate_delivery():
+def test_coordinator_acceptance_and_duplicate_delivery(caplog):
     async def run():
         settings, core, storage, delivery, candidate = lifecycle()
         calls = []
@@ -291,11 +296,17 @@ def test_coordinator_acceptance_and_duplicate_delivery():
             settings, core, storage, {"GENERATING_SUMMARY": processor}
         )
         try:
-            await worker.handle(delivery)
-            assert delivery.acked and core.accepts == 1 and len(calls) == 1
-            duplicate = type(delivery)()
-            await worker.handle(duplicate)
-            assert duplicate.acked and core.accepts == 1 and core.claims == 1
+            with caplog.at_level(logging.WARNING, logger="sme_meeting_ai.workers.intelligence"):
+                await worker.handle(delivery)
+                assert delivery.acked and core.accepts == 1 and len(calls) == 1
+                duplicate = type(delivery)()
+                await worker.handle(duplicate)
+                assert duplicate.acked and core.accepts == 1 and core.claims == 1
+            assert not any(
+                getattr(getattr(record, "_sme_meeting_ai_event", None), "name", "")
+                .startswith("worker.intelligence.failure.")
+                for record in caplog.records
+            )
         finally:
             await worker.aclose()
 
@@ -331,6 +342,63 @@ def test_summary_validation_diagnostic_is_logged_but_core_receives_only_validati
             assert record._sme_validation_rule == "UNSUPPORTED_NUMBER"
             assert record._sme_validation_item_index == 3
             assert record.msg == ""
+        finally:
+            await worker.aclose()
+
+    asyncio.run(run())
+
+
+def test_summary_validation_diagnostic_carries_bounded_evidence_to_logs(caplog):
+    async def run():
+        settings, core, storage, delivery, _ = lifecycle()
+        evidence = ValidationEvidence(
+            source_snapshot_id=str(uuid4()),
+            transcript_id=str(uuid4()),
+            content_revision=3,
+            source_sha256="a" * 64,
+            references=(ValidationReference(str(uuid4()), 2, 12),),
+            model_category="AGREEMENT",
+            statement_sha256=hashlib.sha256(b"private statement").hexdigest(),
+            statement_char_length=len("private statement"),
+            evidence_sha256=hashlib.sha256(b"private evidence").hexdigest(),
+            evidence_char_length=len("private evidence"),
+            affirmative_marker=False,
+            negative_marker=False,
+            assessment="UNSUPPORTED_MODEL_CLASSIFICATION",
+        )
+
+        def processor(context):
+            raise IntelligenceError(
+                "GROUNDING_FAILURE",
+                rule="AGREEMENT_UNSUPPORTED",
+                item_index=3,
+                evidence=evidence,
+            )
+
+        worker = IntelligenceWorker(
+            settings, core, storage, {"GENERATING_SUMMARY": processor}
+        )
+        try:
+            with caplog.at_level(logging.WARNING, logger="sme_meeting_ai.workers.intelligence"):
+                await worker.handle(delivery)
+            record = next(
+                record for record in caplog.records
+                if getattr(getattr(record, "_sme_meeting_ai_event", None), "name", None)
+                == "worker.intelligence.failure.inference.validation"
+            )
+            assert record._sme_validation_reason == "GROUNDING_FAILURE"
+            assert record._sme_validation_rule == "AGREEMENT_UNSUPPORTED"
+            assert record._sme_validation_item_index == 3
+            assert record._sme_processing_phase == "INFERENCE"
+            assert record._sme_stage_code == "GENERATING_SUMMARY"
+            assert record._sme_stage_run_id == delivery.claim.executionStageRunId
+            assert record._sme_job_id == delivery.claim.processingJobId
+            assert record._sme_validation_evidence["validation_assessment"] == (
+                "UNSUPPORTED_MODEL_CLASSIFICATION"
+            )
+            assert "private" not in repr(record._sme_validation_evidence)
+            assert core.failure_body["category"] == "VALIDATION"
+            assert "validation_evidence" not in core.failure_body
         finally:
             await worker.aclose()
 

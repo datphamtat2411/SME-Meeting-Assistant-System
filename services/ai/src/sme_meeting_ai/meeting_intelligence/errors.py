@@ -32,22 +32,68 @@ VALIDATION_RULES = frozenset({
     "MATERIAL_CLAIM_COVERAGE",
 })
 MAX_VALIDATION_ITEM_INDEX = 10_000
+MAX_VALIDATION_REFERENCES = 16
+MAX_VALIDATION_REFERENCE_OFFSET = 8_388_608
+VALIDATION_EVIDENCE_ASSESSMENTS = frozenset({
+    "SUPPORTED",
+    "NEGATIVE_OR_TENTATIVE",
+    "INCOMPLETE_CITATION",
+    "POSSIBLE_VALIDATOR_FALSE_NEGATIVE",
+    "UNSUPPORTED_MODEL_CLASSIFICATION",
+})
+
+
+@dataclass(frozen=True)
+class ValidationReference:
+    """Safe source coordinates; never carries transcript text."""
+
+    segment_id: str
+    char_start: int
+    char_end: int
+
+
+@dataclass(frozen=True)
+class ValidationEvidence:
+    """Bounded, content-minimizing evidence for local validation diagnosis."""
+
+    source_snapshot_id: str
+    transcript_id: str
+    content_revision: int
+    source_sha256: str
+    references: tuple[ValidationReference, ...]
+    model_category: str
+    statement_sha256: str
+    statement_char_length: int
+    evidence_sha256: str
+    evidence_char_length: int
+    affirmative_marker: bool
+    negative_marker: bool
+    assessment: str
 
 
 @dataclass(frozen=True)
 class ValidationDiagnostic:
-    """Content-free, allowlisted context for semantic validation failures."""
+    """Allowlisted context for semantic validation failures."""
 
     reason: str
     rule: str | None
     item_index: int | None
+    evidence: ValidationEvidence | None = None
 
 
 class IntelligenceError(Exception):
-    def __init__(self, category: str, *, rule: str | None = None, item_index: int | None = None):
+    def __init__(
+        self,
+        category: str,
+        *,
+        rule: str | None = None,
+        item_index: int | None = None,
+        evidence: ValidationEvidence | None = None,
+    ):
         self.category = category
         self.rule = rule
         self.item_index = item_index
+        self.evidence = evidence
         super().__init__(f"INTELLIGENCE_{category}")
 
     @property
@@ -59,13 +105,15 @@ class IntelligenceError(Exception):
             self.rule if isinstance(self.rule, str) and self.rule in VALIDATION_RULES else None,
             self.item_index if type(self.item_index) is int
             and 0 <= self.item_index <= MAX_VALIDATION_ITEM_INDEX else None,
+            self.evidence if isinstance(self.evidence, ValidationEvidence) else None,
         )
 
 
 def require(condition: bool, category: str, *, rule: str | None = None,
-            item_index: int | None = None) -> None:
+            item_index: int | None = None,
+            evidence: ValidationEvidence | None = None) -> None:
     if not condition:
-        raise IntelligenceError(category, rule=rule, item_index=item_index)
+        raise IntelligenceError(category, rule=rule, item_index=item_index, evidence=evidence)
 
 
 def check_authority(deadline: float, cancelled: Event) -> None:

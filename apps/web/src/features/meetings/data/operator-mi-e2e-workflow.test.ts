@@ -4,7 +4,9 @@ import { coreApi, coreApiAxios, resetCsrfToken } from '@/lib/core-api'
 import { resetRequestRecoveryState } from '@/lib/request-recovery'
 import {
   OPERATOR_MI_SUMMARY_CONTRACT,
+  acknowledgeTranscriptReview,
   actionItemEtag,
+  admitOperatorMeetingIntelligence,
   admitOperatorProcessingJob,
   admitProcessingJob,
   applyApprovedTranscriptCorrection,
@@ -145,6 +147,32 @@ const transcript = {
     },
   ],
 }
+
+const coverage = [
+  {
+    id: 'coverage-1',
+    startMs: 0,
+    endMs: 3000,
+    coverageStatus: 'COVERED',
+    recovered: false,
+    retryCount: 0,
+  },
+]
+
+const transcriptReviewAcknowledgement = {
+  reviewId: 'review-1',
+  processingJobId: 'job-1',
+  meetingId: 'meeting/1',
+  transcriptId: 'transcript-1',
+  contentRevision: 0,
+  correctionDigest:
+    'd86b55549a26c55c9b83e9b267ba3b87b9ce56e264bbcaa2f2b115de64172c7f',
+  transcriptStatus: 'READY',
+  acknowledgedByUserId: identity.userId,
+  acknowledgedAt: '2026-11-21T00:03:30Z',
+  admittedByUserId: null,
+  admittedAt: null,
+} as const
 
 const summary = {
   id: 'summary-1',
@@ -509,6 +537,10 @@ describe('operator MI E2E workflow adapter', () => {
       meta: {},
       etag: '"t-transcript-1-0"',
     })
+    vi.spyOn(coreApi, 'getWithMeta').mockResolvedValue({
+      data: coverage,
+      meta: {},
+    })
 
     await expect(
       fetchFinalizedTranscriptEvidence('meeting/1')
@@ -517,7 +549,63 @@ describe('operator MI E2E workflow adapter', () => {
       etag: '"t-transcript-1-0"',
       digest:
         'd86b55549a26c55c9b83e9b267ba3b87b9ce56e264bbcaa2f2b115de64172c7f',
+      coverage,
     })
+  })
+
+  it('acknowledges one exact transcript revision and admits MI with the Core proof', async () => {
+    const postSpy = vi
+      .spyOn(coreApi, 'post')
+      .mockResolvedValueOnce(transcriptReviewAcknowledgement)
+      .mockResolvedValueOnce({
+        ...job,
+        status: 'RUNNING',
+      })
+    const evidence = {
+      transcript,
+      etag: '"t-transcript-1-0"',
+      digest: transcriptReviewAcknowledgement.correctionDigest,
+      coverage,
+    }
+
+    await expect(
+      acknowledgeTranscriptReview(
+        'job-1',
+        evidence,
+        'review-ack-1',
+        identity.userId
+      )
+    ).resolves.toEqual(transcriptReviewAcknowledgement)
+    await expect(
+      admitOperatorMeetingIntelligence(
+        'job-1',
+        transcriptReviewAcknowledgement,
+        'mi-admission-1',
+        identity.userId
+      )
+    ).resolves.toMatchObject({ id: 'job-1', status: 'RUNNING' })
+
+    expect(postSpy).toHaveBeenNthCalledWith(
+      1,
+      '/processing-jobs/job-1/transcript-review/acknowledge',
+      {
+        transcriptId: 'transcript-1',
+        contentRevision: 0,
+        correctionDigest: transcriptReviewAcknowledgement.correctionDigest,
+      },
+      { headers: { 'Idempotency-Key': 'review-ack-1' } }
+    )
+    expect(postSpy).toHaveBeenNthCalledWith(
+      2,
+      '/processing-jobs/job-1/meeting-intelligence/admit',
+      {
+        reviewId: 'review-1',
+        transcriptId: 'transcript-1',
+        contentRevision: 0,
+        correctionDigest: transcriptReviewAcknowledgement.correctionDigest,
+      },
+      { headers: { 'Idempotency-Key': 'mi-admission-1' } }
+    )
   })
 
   it('reviews Summary, Decision, and Action Item results without making proposal decisions', async () => {

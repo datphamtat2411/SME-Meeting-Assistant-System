@@ -6,9 +6,13 @@ import com.sme.meetingassistant.api.media.dto.FinalizeMediaResponse;
 import com.sme.meetingassistant.api.media.dto.MediaUploadIntentResponse;
 import com.sme.meetingassistant.api.media.dto.ProcessingJobResponse;
 import com.sme.meetingassistant.api.media.dto.RetryProcessingJobRequest;
+import com.sme.meetingassistant.api.media.dto.AdmitMeetingIntelligenceRequest;
+import com.sme.meetingassistant.api.media.dto.TranscriptReviewRequest;
+import com.sme.meetingassistant.api.media.dto.TranscriptReviewResponse;
 import com.sme.meetingassistant.api.media.repository.MediaRepository;
 import com.sme.meetingassistant.api.media.repository.MediaRepository.Job;
 import com.sme.meetingassistant.api.media.repository.MediaRepository.Media;
+import com.sme.meetingassistant.api.media.repository.MediaRepository.TranscriptReview;
 import com.sme.meetingassistant.api.media.storage.ObjectStorage;
 import com.sme.meetingassistant.api.media.validation.MediaInspection;
 import com.sme.meetingassistant.api.media.validation.MediaInspector;
@@ -49,12 +53,23 @@ public class MediaProcessingService {
     private final com.sme.meetingassistant.api.media.worker.TranscriptionWorkerCapability workerCapability;
     private final ProcessingTranscriptEvidence transcriptEvidence;
     private final com.sme.meetingassistant.api.media.intelligence.IntelligenceWorkerCapability intelligenceCapability;
+    private final ProcessingJobLifecycle lifecycle;
 
     public MediaProcessingService(MediaRepository repository, ObjectStorage storage, MediaInspector inspector,
             MeetingMediaAccess meetingAccess, AuthenticatedUserId authenticatedUser, MediaProperties properties,
             com.sme.meetingassistant.api.media.worker.TranscriptionWorkerCapability workerCapability,
             ProcessingTranscriptEvidence transcriptEvidence) {
-        this(repository,storage,inspector,meetingAccess,authenticatedUser,properties,workerCapability,transcriptEvidence,null);
+        this(repository,storage,inspector,meetingAccess,authenticatedUser,properties,workerCapability,
+            transcriptEvidence,null,null);
+    }
+
+    public MediaProcessingService(MediaRepository repository,ObjectStorage storage,MediaInspector inspector,
+            MeetingMediaAccess meetingAccess,AuthenticatedUserId authenticatedUser,MediaProperties properties,
+            com.sme.meetingassistant.api.media.worker.TranscriptionWorkerCapability workerCapability,
+            ProcessingTranscriptEvidence transcriptEvidence,
+            com.sme.meetingassistant.api.media.intelligence.IntelligenceWorkerCapability intelligenceCapability) {
+        this(repository,storage,inspector,meetingAccess,authenticatedUser,properties,workerCapability,
+            transcriptEvidence,intelligenceCapability,null);
     }
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -62,7 +77,8 @@ public class MediaProcessingService {
             MeetingMediaAccess meetingAccess,AuthenticatedUserId authenticatedUser,MediaProperties properties,
             com.sme.meetingassistant.api.media.worker.TranscriptionWorkerCapability workerCapability,
             ProcessingTranscriptEvidence transcriptEvidence,
-            com.sme.meetingassistant.api.media.intelligence.IntelligenceWorkerCapability intelligenceCapability) {
+            com.sme.meetingassistant.api.media.intelligence.IntelligenceWorkerCapability intelligenceCapability,
+            ProcessingJobLifecycle lifecycle) {
         this.repository = repository;
         this.storage = storage;
         this.inspector = inspector;
@@ -72,6 +88,7 @@ public class MediaProcessingService {
         this.workerCapability = workerCapability;
         this.transcriptEvidence = transcriptEvidence;
         this.intelligenceCapability=intelligenceCapability;
+        this.lifecycle=lifecycle;
     }
 
     @Transactional
@@ -363,7 +380,7 @@ public class MediaProcessingService {
         String fingerprint = fingerprint(mediaId + "\n" + reprocessOfJobId);
         Job job = new Job(UUID.randomUUID(), meetingId, mediaId, "OFFLINE_MEETING_PROCESSING", "PENDING", actor,
             null, 0, null, null, null, null, null, null,
-            OffsetDateTime.now(), OffsetDateTime.now(), reprocessOfJobId, false);
+            OffsetDateTime.now(), OffsetDateTime.now(), reprocessOfJobId, false).withTranscriptReviewRequired();
         // Every admission takes the same row lock before inserting idempotency.
         this.repository.lockAdmissionUser(actor);
         UUID claimedId = claimIdempotency(actor, operation, idempotencyKey, fingerprint, job.id());
@@ -424,6 +441,94 @@ public class MediaProcessingService {
         if (properties.getProcessing().isDiarizationEnabled()) plan.add("DIARIZING");
         plan.addAll(stages);
         return List.copyOf(plan);
+    }
+
+    @Transactional
+    public TranscriptReviewResponse acknowledgeTranscriptReview(UUID jobId,
+            TranscriptReviewRequest request, String idempotencyKey) {
+        UUID actor = this.authenticatedUser.requireUserId();
+        Job target = job(jobId);
+        this.meetingAccess.requireProcessingAllowed(target.meetingId(), actor);
+        validateIdempotencyKey(idempotencyKey);
+        validateTranscriptReviewRequest(request);
+        String digest = normalizeDigest(request.correctionDigest());
+        String operation = "TRANSCRIPT_REVIEW_ACK:" + jobId;
+        String fingerprint = fingerprint(request.transcriptId() + "\n"
+            + request.contentRevision() + "\n" + digest);
+
+        this.repository.lockAdmissionUser(actor);
+        this.transcriptEvidence.lockTranscriptReview(jobId);
+        target = this.repository.lockJobForOfflineSource(jobId).orElseThrow(MediaProcessingService::notFound);
+
+        UUID proposedReviewId = UUID.randomUUID();
+        MediaRepository.IdempotencyClaim claim;
+        try {
+            claim = this.repository.claimIdempotencyWithStatus(actor, operation, idempotencyKey,
+                fingerprint, proposedReviewId);
+        } catch (MediaRepository.IdempotencyConflictException conflict) {
+            throw conflict("The Idempotency-Key was already used for a different transcript review.");
+        }
+        if (!claim.claimed()) {
+            return this.repository.transcriptReview(claim.resourceId())
+                .map(MediaProcessingService::reviewResponse)
+                .orElseThrow(() -> conflict("The transcript review replay is unavailable."));
+        }
+
+        requireReviewWaiting(target);
+        ProcessingTranscriptEvidence.Review current = currentReview(target, request, digest);
+        TranscriptReview review = this.repository.insertTranscriptReview(proposedReviewId,
+            target.id(), target.meetingId(), current.transcriptId(), current.contentRevision(),
+            current.correctionDigest(), current.status(), actor);
+        if (!review.id().equals(proposedReviewId)) {
+            this.repository.updateIdempotencyResource(actor, operation, idempotencyKey, review.id());
+        }
+        return reviewResponse(review);
+    }
+
+    @Transactional
+    public ProcessingJobResponse admitMeetingIntelligence(UUID jobId,
+            AdmitMeetingIntelligenceRequest request, String idempotencyKey) {
+        UUID actor = this.authenticatedUser.requireUserId();
+        Job target = job(jobId);
+        this.meetingAccess.requireProcessingAllowed(target.meetingId(), actor);
+        validateIdempotencyKey(idempotencyKey);
+        validateAdmissionRequest(request);
+        String digest = normalizeDigest(request.correctionDigest());
+        String operation = "MI_ADMISSION:" + jobId;
+        String fingerprint = fingerprint(request.reviewId() + "\n" + request.transcriptId() + "\n"
+            + request.contentRevision() + "\n" + digest);
+
+        this.repository.lockAdmissionUser(actor);
+        this.transcriptEvidence.lockTranscriptReview(jobId);
+        target = this.repository.lockJobForOfflineSource(jobId).orElseThrow(MediaProcessingService::notFound);
+        MediaRepository.IdempotencyClaim claim;
+        try {
+            claim = this.repository.claimIdempotencyWithStatus(actor, operation, idempotencyKey,
+                fingerprint, jobId);
+        } catch (MediaRepository.IdempotencyConflictException conflict) {
+            throw conflict("The Idempotency-Key was already used for a different MI admission.");
+        }
+        if (!claim.claimed()) return toResponse(job(jobId));
+
+        TranscriptReview review = this.repository.transcriptReview(request.reviewId())
+            .orElseThrow(() -> conflict("The transcript review does not exist."));
+        if (!review.processingJobId().equals(jobId)
+                || !review.meetingId().equals(target.meetingId())
+                || !review.transcriptId().equals(request.transcriptId())
+                || review.contentRevision() != request.contentRevision()
+                || !review.correctionDigest().equals(digest)) {
+            throw staleReview();
+        }
+        requireReviewWaiting(target);
+        currentReview(target, request.transcriptId(), request.contentRevision(), digest);
+        if (this.lifecycle == null) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+                "Meeting Intelligence admission is not installed.");
+        }
+        this.repository.admitTranscriptReview(jobId, review.id(), actor);
+        this.lifecycle.dispatchPlannedDiarization(jobId);
+        this.lifecycle.advanceJob(jobId);
+        return toResponse(job(jobId));
     }
 
     @Transactional(readOnly = true)
@@ -540,6 +645,68 @@ public class MediaProcessingService {
                     .noneMatch(contentType::equals)) {
             throw new ResponseStatusException(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Media type is not supported.");
         }
+    }
+
+    private static void requireReviewWaiting(Job target) {
+        if (!target.transcriptReviewRequired()
+                || !"OFFLINE_MEETING_PROCESSING".equals(target.jobType())
+                || !"WAITING_FOR_REVIEW".equals(target.status())) {
+            throw conflict("The processing job is not waiting for transcript review.");
+        }
+    }
+
+    private ProcessingTranscriptEvidence.Review currentReview(Job target,
+            TranscriptReviewRequest request, String digest) {
+        return currentReview(target, request.transcriptId(), request.contentRevision(), digest);
+    }
+
+    private ProcessingTranscriptEvidence.Review currentReview(Job target, UUID transcriptId,
+            long contentRevision, String digest) {
+        ProcessingTranscriptEvidence.Review current = this.transcriptEvidence.currentTranscriptReview(target.id())
+            .orElseThrow(MediaProcessingService::staleReview);
+        if (!target.sourceMediaId().equals(current.sourceMediaId())
+                || !transcriptId.equals(current.transcriptId())
+                || contentRevision != current.contentRevision()
+                || !digest.equals(current.correctionDigest())) {
+            throw staleReview();
+        }
+        return current;
+    }
+
+    private static TranscriptReviewResponse reviewResponse(TranscriptReview review) {
+        return new TranscriptReviewResponse(review.id(), review.processingJobId(), review.meetingId(),
+            review.transcriptId(), review.contentRevision(), review.correctionDigest(),
+            review.transcriptStatus(), review.acknowledgedByUserId(), review.acknowledgedAt(),
+            review.admittedByUserId(), review.admittedAt());
+    }
+
+    private static void validateTranscriptReviewRequest(TranscriptReviewRequest request) {
+        if (request == null || request.transcriptId() == null || request.contentRevision() < 0) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
+                "A transcript identity and non-negative revision are required.");
+        }
+        normalizeDigest(request.correctionDigest());
+    }
+
+    private static void validateAdmissionRequest(AdmitMeetingIntelligenceRequest request) {
+        if (request == null || request.reviewId() == null || request.transcriptId() == null
+                || request.contentRevision() < 0) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
+                "A transcript review proof is required for Meeting Intelligence admission.");
+        }
+        normalizeDigest(request.correctionDigest());
+    }
+
+    private static String normalizeDigest(String digest) {
+        if (digest == null || !digest.matches("[0-9a-fA-F]{64}")) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
+                "A SHA-256 transcript correction digest is required.");
+        }
+        return digest.toLowerCase(Locale.ROOT);
+    }
+
+    private static ResponseStatusException staleReview() {
+        return conflict("The transcript changed after this review proof was created.");
     }
 
     private boolean detectedFormatAllowed(String ffprobeFormats) {

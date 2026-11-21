@@ -2,6 +2,7 @@
 
 import re
 from dataclasses import asdict, dataclass
+from hashlib import sha256
 
 from .composition import PreparedContext, prepare_context
 from .contracts import (
@@ -14,7 +15,13 @@ from .contracts import (
     payload_for,
     valid_text,
 )
-from .errors import IntelligenceError, check_authority, require
+from .errors import (
+    IntelligenceError,
+    ValidationEvidence,
+    ValidationReference,
+    check_authority,
+    require,
+)
 from .evidence import EvidenceSource
 from .processor import StageContext
 
@@ -62,6 +69,29 @@ _INJECTION_PATTERN = re.compile(
     r"(?:ignore\s+(?:all\s+)?(?:prior|previous|these)\s+rules|reveal\s+secrets|"
     r"bỏ\s+qua\s+(?:mọi\s+)?(?:quy\s+định|hướng\s+dẫn)|tiết\s+lộ\s+mật\s+khẩu|"
     r"system\s+prompt|json\s+schema)", re.IGNORECASE,
+)
+_AGREEMENT_POSITIVE_PATTERN = re.compile(
+    r"(?:thống\s+nhất|đồng\s+ý|nhất\s+trí|đã\s+chốt|quyết\s+định|"
+    r"được\s+(?:duyệt|phê\s+duyệt|thông\s+qua)|"
+    r"đã\s+(?:duyệt|phê\s+duyệt|thông\s+qua)|"
+    r"agreed|approved|decided)", re.IGNORECASE,
+)
+_AGREEMENT_NEGATIVE_PATTERN = re.compile(
+    r"(?:có\s+lẽ|đề\s+xuất|nên|chưa\s+chốt|chưa\s+thống\s+nhất|bác\s+bỏ|phản\s+đối|"
+    r"không\s+đồng\s+ý|"
+    r"(?:chưa|không|sẽ|có\s+thể|đang\s+chờ|chờ)\s+(?:xác\s+nhận|được\s+"
+    r"(?:duyệt|phê\s+duyệt|thông\s+qua))|"
+    r"(?:nếu|if)\b[^.!?\n]{0,200}\b(?:xác\s+nhận|được\s+"
+    r"(?:duyệt|phê\s+duyệt|thông\s+qua))|"
+    r"có\s+được\s+(?:duyệt|phê\s+duyệt|thông\s+qua)\s+không|"
+    r"đã\s+(?:được\s+)?(?:duyệt|phê\s+duyệt|thông\s+qua)\b[^.!?\n]{0,200}\bchưa\b|"
+    r"not\s+approved|rejected)", re.IGNORECASE,
+)
+# Diagnostic-only candidates are deliberately broader than the validator. They
+# never make a claim pass; they only identify a possible future marker gap.
+_AGREEMENT_DIAGNOSTIC_CANDIDATE_PATTERN = re.compile(
+    r"(?:đồng\s+thuận|tán\s+thành|chấp\s+thuận|phê\s+chuẩn|consent(?:ed|s)?)",
+    re.IGNORECASE,
 )
 
 
@@ -324,22 +354,98 @@ def _validate_text_grounding(statement: str, evidence_text: str, *,
             rule=grounding_rule, item_index=item_index)
 
 
-def _validate_category_grounding(category: str, evidence_text: str, *,
-                                 item_index: int | None = None) -> None:
+def _positive_marker_outside_citation(
+    source: EvidenceSource | None,
+    references: tuple[EvidenceReference, ...],
+) -> bool:
+    if source is None:
+        return False
+    cited_segment_ids = {reference.segment_id for reference in references}
+    for segment in source.segments:
+        if segment.segment_id not in cited_segment_ids:
+            continue
+        for marker in _AGREEMENT_POSITIVE_PATTERN.finditer(segment.text):
+            if not any(
+                reference.segment_id == segment.segment_id
+                and reference.char_start <= marker.start()
+                and marker.end() <= reference.char_end
+                for reference in references
+            ):
+                return True
+    return False
+
+
+def _agreement_assessment(
+    evidence_text: str,
+    positive: re.Match | None,
+    negative: re.Match | None,
+    source: EvidenceSource | None,
+    references: tuple[EvidenceReference, ...],
+) -> str:
+    if negative is not None:
+        return "NEGATIVE_OR_TENTATIVE"
+    if positive is not None:
+        return "SUPPORTED"
+    if _positive_marker_outside_citation(source, references):
+        return "INCOMPLETE_CITATION"
+    if _AGREEMENT_DIAGNOSTIC_CANDIDATE_PATTERN.search(evidence_text):
+        return "POSSIBLE_VALIDATOR_FALSE_NEGATIVE"
+    return "UNSUPPORTED_MODEL_CLASSIFICATION"
+
+
+def _agreement_validation_evidence(
+    source: EvidenceSource | None,
+    references: tuple[EvidenceReference, ...],
+    statement: str | None,
+    evidence_text: str,
+    category: str,
+    positive: re.Match | None,
+    negative: re.Match | None,
+) -> ValidationEvidence | None:
+    if source is None or not isinstance(statement, str):
+        return None
+    return ValidationEvidence(
+        source_snapshot_id=source.identity.snapshot_id,
+        transcript_id=source.identity.transcript_id,
+        content_revision=source.identity.content_revision,
+        source_sha256=source.identity.sha256,
+        references=tuple(
+            ValidationReference(reference.segment_id, reference.char_start, reference.char_end)
+            for reference in references
+        ),
+        model_category=category,
+        statement_sha256=sha256(statement.encode("utf-8")).hexdigest(),
+        statement_char_length=len(statement),
+        evidence_sha256=sha256(evidence_text.encode("utf-8")).hexdigest(),
+        evidence_char_length=len(evidence_text),
+        affirmative_marker=positive is not None,
+        negative_marker=negative is not None,
+        assessment=_agreement_assessment(evidence_text, positive, negative, source, references),
+    )
+
+
+def _validate_category_grounding(
+    category: str,
+    evidence_text: str,
+    *,
+    source: EvidenceSource | None = None,
+    references: tuple[EvidenceReference, ...] = (),
+    statement: str | None = None,
+    item_index: int | None = None,
+) -> None:
     if category != "AGREEMENT":
         return
-    positive = re.search(
-        r"(?:thống\s+nhất|đồng\s+ý|nhất\s+trí|đã\s+chốt|quyết\s+định|được\s+(?:duyệt|phê\s+duyệt)|"
-        r"agreed|approved|decided)", evidence_text, re.IGNORECASE,
-    )
-    negative = re.search(
-        r"(?:có\s+lẽ|đề\s+xuất|nên|chưa\s+chốt|chưa\s+thống\s+nhất|bác\s+bỏ|phản\s+đối|"
-        r"không\s+đồng\s+ý|not\s+approved|rejected)", evidence_text, re.IGNORECASE,
+    # Personal acknowledgement or acceptance (for example, "xác nhận nhận việc")
+    # is a FACT/action signal, not a group decision; keep bare "xác nhận" out.
+    positive = _AGREEMENT_POSITIVE_PATTERN.search(evidence_text)
+    negative = _AGREEMENT_NEGATIVE_PATTERN.search(evidence_text)
+    diagnostic_evidence = _agreement_validation_evidence(
+        source, references, statement, evidence_text, category, positive, negative,
     )
     require(negative is None, "GROUNDING_FAILURE",
-            rule="AGREEMENT_CONTRADICTED", item_index=item_index)
+            rule="AGREEMENT_CONTRADICTED", item_index=item_index, evidence=diagnostic_evidence)
     require(positive is not None, "GROUNDING_FAILURE",
-            rule="AGREEMENT_UNSUPPORTED", item_index=item_index)
+            rule="AGREEMENT_UNSUPPORTED", item_index=item_index, evidence=diagnostic_evidence)
 
 
 def _reference_text(source: EvidenceSource, references: tuple[EvidenceReference, ...]) -> str:
@@ -395,7 +501,14 @@ def _validate_record_output(
                         "INVALID_REFERENCE", rule="REFERENCE_NOT_ALLOWED", item_index=item_index)
         evidence_text = _reference_text(source, references)
         _validate_text_grounding(unit["statement"], evidence_text, item_index=item_index)
-        _validate_category_grounding(unit["category"], evidence_text, item_index=item_index)
+        _validate_category_grounding(
+            unit["category"],
+            evidence_text,
+            source=source,
+            references=references,
+            statement=unit["statement"],
+            item_index=item_index,
+        )
         if unit["qualification"]:
             _validate_text_grounding(unit["qualification"], evidence_text, item_index=item_index,
                                     grounding_rule="QUALIFICATION_NOT_GROUNDED")

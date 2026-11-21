@@ -56,6 +56,7 @@ export type SyntheticMeetingResult = {
 
 export type FinalizedTranscriptEvidence = TranscriptReview & {
   digest: string
+  coverage: TranscriptCoverage[]
 }
 
 const identifierSchema = z.string().min(1)
@@ -107,6 +108,7 @@ const processingJobSchema = z.object({
     'PENDING',
     'QUEUED',
     'RUNNING',
+    'WAITING_FOR_REVIEW',
     'COMPLETED',
     'COMPLETED_WITH_WARNINGS',
     'FAILED',
@@ -151,6 +153,29 @@ const transcriptSchema = z.object({
   finalizedAt: nullableDateTimeSchema,
   contentRevision: z.number().int().nonnegative(),
   segments: z.array(transcriptSegmentSchema),
+})
+
+const transcriptCoverageSchema = z.object({
+  id: identifierSchema,
+  startMs: z.number().int().nonnegative(),
+  endMs: z.number().int().nonnegative(),
+  coverageStatus: z.string().min(1),
+  recovered: z.boolean(),
+  retryCount: z.number().int().nonnegative(),
+})
+
+const transcriptReviewAcknowledgementSchema = z.object({
+  reviewId: identifierSchema,
+  processingJobId: identifierSchema,
+  meetingId: identifierSchema,
+  transcriptId: identifierSchema,
+  contentRevision: z.number().int().nonnegative(),
+  correctionDigest: z.string().regex(/^[0-9a-f]{64}$/),
+  transcriptStatus: z.enum(['READY', 'READY_WITH_WARNINGS']),
+  acknowledgedByUserId: identifierSchema,
+  acknowledgedAt: dateTimeSchema,
+  admittedByUserId: identifierSchema.nullable(),
+  admittedAt: nullableDateTimeSchema,
 })
 
 const correctionSchema = z.object({
@@ -238,7 +263,11 @@ export type ProcessingStage = z.infer<typeof processingStageSchema>
 export type ProcessingJob = z.infer<typeof processingJobSchema>
 export type TranscriptSegment = z.infer<typeof transcriptSegmentSchema>
 export type Transcript = z.infer<typeof transcriptSchema>
+export type TranscriptCoverage = z.infer<typeof transcriptCoverageSchema>
 export type TranscriptCorrection = z.infer<typeof correctionSchema>
+export type TranscriptReviewAcknowledgement = z.infer<
+  typeof transcriptReviewAcknowledgementSchema
+>
 export type SummaryResult = z.infer<typeof summarySchema>
 export type DecisionResult = z.infer<typeof decisionSchema>
 export type ActionItemResult = z.infer<typeof actionItemSchema>
@@ -651,6 +680,93 @@ export async function admitOperatorProcessingJob(
   return job
 }
 
+export async function acknowledgeTranscriptReview(
+  jobId: string,
+  evidence: FinalizedTranscriptEvidence,
+  idempotencyKey: string,
+  expectedUserId: string,
+  signal?: AbortSignal
+): Promise<TranscriptReviewAcknowledgement> {
+  requireSameOriginCoreApi()
+  requireIdentifier(jobId, 'processing job ID')
+  requireIdentifier(expectedUserId, 'operator user ID')
+  requireIdempotencyKey(idempotencyKey, 'transcript review idempotency key')
+  const response = await coreApi.post<unknown>(
+    `/processing-jobs/${encodeURIComponent(jobId)}/transcript-review/acknowledge`,
+    {
+      transcriptId: evidence.transcript.id,
+      contentRevision: evidence.transcript.contentRevision,
+      correctionDigest: evidence.digest,
+    },
+    headerOptions('Idempotency-Key', idempotencyKey, signal)
+  )
+  const acknowledgement = readWithSchema(
+    { data: response, meta: {} },
+    transcriptReviewAcknowledgementSchema,
+    'Core API returned a malformed transcript review acknowledgement.'
+  )
+  if (
+    acknowledgement.processingJobId !== jobId ||
+    acknowledgement.meetingId !== evidence.transcript.meetingId ||
+    acknowledgement.transcriptId !== evidence.transcript.id ||
+    acknowledgement.contentRevision !== evidence.transcript.contentRevision ||
+    acknowledgement.correctionDigest !== evidence.digest ||
+    acknowledgement.acknowledgedByUserId !== expectedUserId
+  ) {
+    throw new CoreApiError({
+      message:
+        'Core API did not bind the transcript acknowledgement to this operator and revision.',
+      code: 'TRANSCRIPT_REVIEW_BINDING_NOT_CONFIRMED',
+      kind: 'http',
+    })
+  }
+  return acknowledgement
+}
+
+export async function admitOperatorMeetingIntelligence(
+  jobId: string,
+  review: TranscriptReviewAcknowledgement,
+  idempotencyKey: string,
+  expectedUserId: string,
+  signal?: AbortSignal
+): Promise<ProcessingJob> {
+  requireSameOriginCoreApi()
+  requireIdentifier(jobId, 'processing job ID')
+  requireIdentifier(expectedUserId, 'operator user ID')
+  requireIdempotencyKey(
+    idempotencyKey,
+    'Meeting Intelligence admission idempotency key'
+  )
+  const response = await coreApi.post<unknown>(
+    `/processing-jobs/${encodeURIComponent(jobId)}/meeting-intelligence/admit`,
+    {
+      reviewId: review.reviewId,
+      transcriptId: review.transcriptId,
+      contentRevision: review.contentRevision,
+      correctionDigest: review.correctionDigest,
+    },
+    headerOptions('Idempotency-Key', idempotencyKey, signal)
+  )
+  const admitted = readWithSchema(
+    { data: response, meta: {} },
+    processingJobSchema,
+    'Core API returned a malformed Meeting Intelligence admission response.'
+  )
+  if (
+    admitted.id !== jobId ||
+    admitted.meetingId !== review.meetingId ||
+    admitted.requestedByUserId !== expectedUserId
+  ) {
+    throw new CoreApiError({
+      message:
+        'Core API did not confirm the Meeting Intelligence admission binding.',
+      code: 'MEETING_INTELLIGENCE_BINDING_NOT_CONFIRMED',
+      kind: 'http',
+    })
+  }
+  return admitted
+}
+
 export async function fetchProcessingJob(
   jobId: string,
   signal?: AbortSignal
@@ -684,6 +800,22 @@ export async function fetchMeetingTranscript(
     'Core API did not return a transcript ETag.'
   )
   return { transcript: parsed.data, etag: parsed.etag }
+}
+
+export async function fetchTranscriptCoverage(
+  meetingId: string,
+  signal?: AbortSignal
+): Promise<TranscriptCoverage[]> {
+  requireSameOriginCoreApi()
+  const response = await coreApi.getWithMeta<unknown>(
+    `${meetingPath(meetingId)}/transcript/coverage`,
+    requestOptions(signal)
+  )
+  return readWithSchema(
+    response,
+    z.array(transcriptCoverageSchema),
+    'Core API returned malformed transcript coverage evidence.'
+  )
 }
 
 function digestUnavailable(): CoreApiError {
@@ -748,7 +880,10 @@ export async function fetchFinalizedTranscriptEvidence(
   signal?: AbortSignal
 ): Promise<FinalizedTranscriptEvidence> {
   requireSameOriginCoreApi()
-  const review = await fetchMeetingTranscript(meetingId, signal)
+  const [review, coverage] = await Promise.all([
+    fetchMeetingTranscript(meetingId, signal),
+    fetchTranscriptCoverage(meetingId, signal),
+  ])
   if (
     !['READY', 'READY_WITH_WARNINGS'].includes(review.transcript.status) ||
     review.transcript.finalizedAt === null ||
@@ -764,6 +899,7 @@ export async function fetchFinalizedTranscriptEvidence(
   return {
     ...review,
     digest: await computeTranscriptCorrectionDigest(review.transcript.segments),
+    coverage,
   }
 }
 

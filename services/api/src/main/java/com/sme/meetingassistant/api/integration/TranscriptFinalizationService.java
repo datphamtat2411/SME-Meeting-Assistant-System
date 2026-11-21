@@ -65,6 +65,10 @@ public class TranscriptFinalizationService {
         String stageOutcome = result.status() == TranscriptIngestion.Status.READY_WITH_WARNINGS
             ? "SUCCEEDED_WITH_WARNING" : "SUCCEEDED";
         lifecycle.completeStage(claim, stageOutcome, null, null);
+        if (lifecycle.awaitTranscriptReview(result.processingJobId(), result.meetingId(),
+                result.sourceMediaId(), claim)) {
+            return;
+        }
         lifecycle.dispatchPlannedDiarization(result.processingJobId());
         lifecycle.advanceJob(result.processingJobId());
     }

@@ -39,6 +39,11 @@ public class OfflineIntelligenceSnapshotPersistence {
             throw new ProcessingLifecycleConflictException(
                 "Offline job changed before snapshot source admission.");
         }
+        if (job.transcriptReviewRequired()
+                && !media.hasAdmittedTranscriptReview(jobId, source.transcriptId(), source.contentRevision())) {
+            throw new ProcessingLifecycleConflictException(
+                "Offline intelligence source is not bound to the admitted transcript review.");
+        }
         Boolean exists=jdbc.queryForObject("""
             SELECT EXISTS(SELECT 1 FROM meeting_intelligence_source_snapshots
               WHERE processing_job_id=?)

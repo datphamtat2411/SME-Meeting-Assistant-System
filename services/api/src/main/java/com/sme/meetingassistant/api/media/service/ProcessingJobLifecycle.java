@@ -42,6 +42,12 @@ public interface ProcessingJobLifecycle {
     /** Worker failure details are untrusted and ignored; Core derives safe summaries from errorCode. */
     void failStage(StageClaim claim, String errorCode, String untrustedWorkerSummary, boolean retryable);
 
+    /**
+     * Move a newly admitted public job to the durable transcript-review
+     * checkpoint after canonical finalization. Legacy jobs return false.
+     */
+    boolean awaitTranscriptReview(UUID jobId, UUID meetingId, UUID mediaId, StageClaim claim);
+
     void completeJob(UUID jobId);
 
     /** Admit only a currently claimed finalization attempt for matching source media. */

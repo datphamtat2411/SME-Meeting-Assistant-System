@@ -155,6 +155,13 @@ public class MediaRepository {
         return new IdempotencyClaim(claimedId, inserted == 1);
     }
 
+    public void updateIdempotencyResource(UUID caller, String operation, String key, UUID resourceId) {
+        jdbc.update("""
+            UPDATE processing_job_idempotency SET resource_id=?
+            WHERE requester_id=? AND operation=? AND idempotency_key=?
+            """, resourceId, caller, operation, key);
+    }
+
     /**
      * Must run inside the caller's transaction. Row-level user locks serialize
      * admissions across API instances without a new distributed lock service.
@@ -166,7 +173,7 @@ public class MediaRepository {
     public int activeJobsForMeeting(UUID meetingId) {
         return this.jdbc.queryForObject("""
             SELECT count(*) FROM processing_jobs WHERE meeting_id = ?
-              AND status IN ('PENDING', 'QUEUED', 'RUNNING')
+              AND status IN ('PENDING', 'QUEUED', 'RUNNING', 'WAITING_FOR_REVIEW')
             """, Integer.class, meetingId);
     }
 
@@ -180,7 +187,7 @@ public class MediaRepository {
     public int activeJobsForUser(UUID userId) {
         return this.jdbc.queryForObject("""
             SELECT count(*) FROM processing_jobs WHERE requested_by_user_id = ?
-              AND status IN ('PENDING', 'QUEUED', 'RUNNING')
+              AND status IN ('PENDING', 'QUEUED', 'RUNNING', 'WAITING_FOR_REVIEW')
             """, Integer.class, userId);
     }
 
@@ -210,11 +217,13 @@ public class MediaRepository {
     public void insertJobAndOutbox(Job job, UUID eventId, List<String> requiredDownstreamStages) {
         int inserted = this.jdbc.update("""
             INSERT INTO processing_jobs (id, meeting_id, source_media_id, job_type, status,
-              requested_by_user_id, reprocess_of_job_id, diarization_planned, queued_at, created_at, updated_at)
-            VALUES (?, ?, ?, 'OFFLINE_MEETING_PROCESSING', 'PENDING', ?, ?, ?, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+              requested_by_user_id, reprocess_of_job_id, diarization_planned,
+              transcript_review_required, queued_at, created_at, updated_at)
+            VALUES (?, ?, ?, 'OFFLINE_MEETING_PROCESSING', 'PENDING', ?, ?, ?, ?, NULL,
+              CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             ON CONFLICT DO NOTHING
             """, job.id(), job.meetingId(), job.sourceMediaId(), job.requestedBy(), job.reprocessOfJobId(),
-            requiredDownstreamStages.contains("DIARIZING"));
+            requiredDownstreamStages.contains("DIARIZING"), job.transcriptReviewRequired());
         if (inserted != 1) throw new JobAdmissionConflictException();
         // Each newly admitted job must complete whole-meeting contextual correction.
         // Historical pre-hardening jobs have no planned correction attempt.
@@ -277,6 +286,133 @@ public class MediaRepository {
     public Optional<Job> lockJobForOfflineSource(UUID id) {
         return this.jdbc.query("SELECT * FROM processing_jobs WHERE id = ? FOR UPDATE",
             MediaRepository::jobRow,id).stream().findFirst();
+    }
+
+    public boolean transcriptReviewRequired(UUID jobId) {
+        return Boolean.TRUE.equals(jdbc.queryForObject(
+            "SELECT transcript_review_required FROM processing_jobs WHERE id=?",
+            Boolean.class, jobId));
+    }
+
+    public boolean hasAdmittedTranscriptReview(UUID jobId) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+            SELECT EXISTS(
+                SELECT 1 FROM processing_job_transcript_reviews
+                WHERE processing_job_id=? AND admitted_at IS NOT NULL)
+            """, Boolean.class, jobId));
+    }
+
+    public boolean hasAdmittedTranscriptReview(UUID jobId, UUID transcriptId, long contentRevision) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+            SELECT EXISTS(
+                SELECT 1 FROM processing_job_transcript_reviews
+                WHERE processing_job_id=? AND transcript_id=? AND content_revision=?
+                  AND admitted_at IS NOT NULL)
+            """, Boolean.class, jobId, transcriptId, contentRevision));
+    }
+
+    /**
+     * The finalization transaction calls this after canonical transcript
+     * publication and finalization-stage success. The job lock prevents a
+     * review admission from racing the transition.
+     */
+    public boolean awaitTranscriptReview(UUID jobId, UUID meetingId, UUID mediaId) {
+        List<ReviewGateState> states = jdbc.query("""
+            SELECT j.status,j.transcript_review_required,j.meeting_id,j.source_media_id,
+                   EXISTS(
+                     SELECT 1 FROM processing_stage_runs s
+                     WHERE s.processing_job_id=j.id AND s.stage_code='FINALIZING_TRANSCRIPT'
+                       AND s.status IN ('SUCCEEDED','SUCCEEDED_WITH_WARNING')
+                       AND s.attempt_number=(
+                         SELECT MAX(x.attempt_number) FROM processing_stage_runs x
+                         WHERE x.processing_job_id=s.processing_job_id
+                           AND x.stage_code=s.stage_code)
+                   ) AS finalized
+            FROM processing_jobs j WHERE j.id=? FOR UPDATE
+            """, (rs, row) -> new ReviewGateState(rs.getString("status"),
+                rs.getBoolean("transcript_review_required"),
+                rs.getObject("meeting_id", UUID.class), rs.getObject("source_media_id", UUID.class),
+                rs.getBoolean("finalized")), jobId);
+        if (states.size() != 1) throw new ProcessingLifecycleConflictException(
+            "Processing job does not exist.");
+        ReviewGateState state = states.getFirst();
+        if (!state.reviewRequired() || !"RUNNING".equals(state.status())) return false;
+        if (!meetingId.equals(state.meetingId()) || !mediaId.equals(state.mediaId())
+                || !state.finalized()) {
+            throw new ProcessingLifecycleConflictException(
+                "Transcript review gate does not match the finalized processing job.");
+        }
+        int changed = jdbc.update("""
+            UPDATE processing_jobs SET status='WAITING_FOR_REVIEW',
+              current_stage='TRANSCRIPT_REVIEW',
+              warning_summary='Transcript review is required before Meeting Intelligence admission.',
+              completed_at=NULL, updated_at=CURRENT_TIMESTAMP, version=version+1
+            WHERE id=? AND status='RUNNING' AND transcript_review_required
+            """, jobId);
+        if (changed != 1) throw new ProcessingLifecycleConflictException(
+            "Processing job changed before transcript review could begin.");
+        return true;
+    }
+
+    public Optional<TranscriptReview> transcriptReview(UUID reviewId) {
+        return jdbc.query("""
+            SELECT id,processing_job_id,meeting_id,transcript_id,content_revision,
+                   correction_sha256,transcript_status,acknowledged_by_user_id,
+                   acknowledged_at,admitted_by_user_id,admitted_at
+            FROM processing_job_transcript_reviews WHERE id=?
+            """, MediaRepository::transcriptReviewRow, reviewId).stream().findFirst();
+    }
+
+    public TranscriptReview insertTranscriptReview(UUID reviewId, UUID jobId, UUID meetingId,
+            UUID transcriptId, long contentRevision, String correctionDigest, String transcriptStatus,
+            UUID actorId) {
+        int inserted = jdbc.update("""
+            INSERT INTO processing_job_transcript_reviews(
+                id,processing_job_id,meeting_id,transcript_id,content_revision,
+                correction_sha256,transcript_status,acknowledged_by_user_id)
+            VALUES (?,?,?,?,?,?,?,?)
+            ON CONFLICT(processing_job_id,transcript_id,content_revision,correction_sha256)
+            DO NOTHING
+            """, reviewId, jobId, meetingId, transcriptId, contentRevision,
+            correctionDigest, transcriptStatus, actorId);
+        if (inserted == 0) {
+            return jdbc.query("""
+                SELECT id,processing_job_id,meeting_id,transcript_id,content_revision,
+                       correction_sha256,transcript_status,acknowledged_by_user_id,
+                       acknowledged_at,admitted_by_user_id,admitted_at
+                FROM processing_job_transcript_reviews
+                WHERE processing_job_id=? AND transcript_id=? AND content_revision=?
+                  AND correction_sha256=?
+                """, MediaRepository::transcriptReviewRow, jobId, transcriptId,
+                contentRevision, correctionDigest).stream().findFirst().orElseThrow(
+                    () -> new ProcessingLifecycleConflictException(
+                        "Transcript review changed during acknowledgement."));
+        }
+        return transcriptReview(reviewId).orElseThrow(() ->
+            new ProcessingLifecycleConflictException("Transcript review was not persisted."));
+    }
+
+    /**
+     * Marks one validated review as the durable MI admission proof and releases
+     * the job. The caller holds the Meeting lock and then the Job lock.
+     */
+    public boolean admitTranscriptReview(UUID jobId, UUID reviewId, UUID actorId) {
+        int reviewChanged = jdbc.update("""
+            UPDATE processing_job_transcript_reviews
+            SET admitted_by_user_id=?, admitted_at=CURRENT_TIMESTAMP
+            WHERE id=? AND processing_job_id=? AND admitted_at IS NULL
+            """, actorId, reviewId, jobId);
+        if (reviewChanged == 0) {
+            return hasAdmittedTranscriptReview(jobId);
+        }
+        int jobChanged = jdbc.update("""
+            UPDATE processing_jobs SET status='RUNNING',current_stage=NULL,
+              completed_at=NULL,updated_at=CURRENT_TIMESTAMP,version=version+1
+            WHERE id=? AND status='WAITING_FOR_REVIEW' AND transcript_review_required
+            """, jobId);
+        if (jobChanged != 1) throw new ProcessingLifecycleConflictException(
+            "Processing job is no longer waiting for transcript review.");
+        return true;
     }
 
     public List<Job> listJobs(UUID meetingId) {
@@ -486,7 +622,8 @@ public class MediaRepository {
                 "Finalization claim does not match the current accepted job and media.");
         }
         FinalizationState state = matches.getFirst();
-        if ("RUNNING".equals(state.jobStatus()) && isSuccessful(state.stageStatus())) {
+        if (List.of("RUNNING", "WAITING_FOR_REVIEW").contains(state.jobStatus())
+                && isSuccessful(state.stageStatus())) {
             // Duplicate transcript result while downstream stages are pending.
             return true;
         }
@@ -935,6 +1072,7 @@ public class MediaRepository {
         var job=findJob(jobId).orElseThrow();
         if(!List.of("PENDING","QUEUED","RUNNING").contains(job.status()) || hasRunningStage(jobId)
             || findMedia(job.sourceMediaId()).filter(m->"AVAILABLE".equals(m.status())).isEmpty()) return false;
+        if (job.transcriptReviewRequired() && !hasAdmittedTranscriptReview(jobId)) return false;
         if(isDerivedSummaryJob(jobId)) {
             var stages=latestIntelligenceStages(jobId);
             return stages.size()==1 && "GENERATING_SUMMARY".equals(stages.getFirst().stageCode());
@@ -1473,7 +1611,18 @@ public class MediaRepository {
             rs.getString("error_code"), rs.getString("error_summary"), rs.getString("warning_summary"),
             rs.getObject("created_at", OffsetDateTime.class), rs.getObject("updated_at", OffsetDateTime.class),
             rs.getObject("reprocess_of_job_id", UUID.class), rs.getBoolean("retryable"),
-            rs.getInt("retry_count"));
+            rs.getInt("retry_count"), rs.getBoolean("transcript_review_required"));
+    }
+
+    private static TranscriptReview transcriptReviewRow(ResultSet rs, int row) throws SQLException {
+        return new TranscriptReview(rs.getObject("id", UUID.class),
+            rs.getObject("processing_job_id", UUID.class), rs.getObject("meeting_id", UUID.class),
+            rs.getObject("transcript_id", UUID.class), rs.getLong("content_revision"),
+            rs.getString("correction_sha256"), rs.getString("transcript_status"),
+            rs.getObject("acknowledged_by_user_id", UUID.class),
+            rs.getObject("acknowledged_at", OffsetDateTime.class),
+            rs.getObject("admitted_by_user_id", UUID.class),
+            rs.getObject("admitted_at", OffsetDateTime.class));
     }
 
     public record Media(UUID id, UUID meetingId, String sourceType, String status, String objectKey,
@@ -1483,7 +1632,17 @@ public class MediaRepository {
             UUID requestedBy, String currentStage, int attemptCount, OffsetDateTime queuedAt,
             OffsetDateTime startedAt, OffsetDateTime completedAt, String errorCode, String errorSummary,
             String warningSummary, OffsetDateTime createdAt, OffsetDateTime updatedAt,
-            UUID reprocessOfJobId, boolean retryable, int retryCount) {
+            UUID reprocessOfJobId, boolean retryable, int retryCount,
+            boolean transcriptReviewRequired) {
+        public Job(UUID id, UUID meetingId, UUID sourceMediaId, String jobType, String status,
+                UUID requestedBy, String currentStage, int attemptCount, OffsetDateTime queuedAt,
+                OffsetDateTime startedAt, OffsetDateTime completedAt, String errorCode, String errorSummary,
+                String warningSummary, OffsetDateTime createdAt, OffsetDateTime updatedAt,
+                UUID reprocessOfJobId, boolean retryable, int retryCount) {
+            this(id, meetingId, sourceMediaId, jobType, status, requestedBy, currentStage, attemptCount,
+                queuedAt, startedAt, completedAt, errorCode, errorSummary, warningSummary, createdAt,
+                updatedAt, reprocessOfJobId, retryable, retryCount, false);
+        }
         public Job(UUID id, UUID meetingId, UUID sourceMediaId, String jobType, String status,
                 UUID requestedBy, String currentStage, int attemptCount, OffsetDateTime queuedAt,
                 OffsetDateTime startedAt, OffsetDateTime completedAt, String errorCode, String errorSummary,
@@ -1491,7 +1650,7 @@ public class MediaRepository {
                 UUID reprocessOfJobId, boolean retryable) {
             this(id, meetingId, sourceMediaId, jobType, status, requestedBy, currentStage, attemptCount,
                 queuedAt, startedAt, completedAt, errorCode, errorSummary, warningSummary, createdAt,
-                updatedAt, reprocessOfJobId, retryable, 0);
+                updatedAt, reprocessOfJobId, retryable, 0, false);
         }
         public Job(UUID id, UUID meetingId, UUID sourceMediaId, String jobType, String status,
                 UUID requestedBy, String currentStage, int attemptCount, OffsetDateTime queuedAt,
@@ -1499,12 +1658,23 @@ public class MediaRepository {
                 String warningSummary, OffsetDateTime createdAt, OffsetDateTime updatedAt) {
             this(id, meetingId, sourceMediaId, jobType, status, requestedBy, currentStage, attemptCount,
                 queuedAt, startedAt, completedAt, errorCode, errorSummary, warningSummary, createdAt,
-                updatedAt, null, false, 0);
+                updatedAt, null, false, 0, false);
+        }
+        public Job withTranscriptReviewRequired() {
+            return new Job(id, meetingId, sourceMediaId, jobType, status, requestedBy, currentStage,
+                attemptCount, queuedAt, startedAt, completedAt, errorCode, errorSummary,
+                warningSummary, createdAt, updatedAt, reprocessOfJobId, retryable, retryCount, true);
         }
     }
+    public record TranscriptReview(UUID id, UUID processingJobId, UUID meetingId, UUID transcriptId,
+            long contentRevision, String correctionDigest, String transcriptStatus,
+            UUID acknowledgedByUserId, OffsetDateTime acknowledgedAt,
+            UUID admittedByUserId, OffsetDateTime admittedAt) { }
     public record RecentJobAdmissions(int count, long retryAfterSeconds) { }
     public record IdempotencyClaim(UUID resourceId, boolean claimed) { }
     private record JobStart(String status, String mediaStatus) { }
+    private record ReviewGateState(String status, boolean reviewRequired, UUID meetingId,
+            UUID mediaId, boolean finalized) { }
     private record StageRun(String stageCode, String status) { }
     public record StageIdentity(UUID jobId, String stageCode) { }
     private record StageCompletion(UUID id, String stageCode, String status) { }

@@ -426,17 +426,26 @@ class IntelligenceWorker:
                 try:
                     digest = await guard.protect(asyncio.shield(wrapped))
                 except WorkFailure as error:
+                    diagnostic = error.diagnostic
                     log_event(logger, logging.WARNING,
                               f"worker.intelligence.failure.{error.phase.lower()}.{error.category.lower()}",
                               validation_reason=(
-                                  error.diagnostic.reason if error.diagnostic is not None else None
+                                  diagnostic.reason if diagnostic is not None else None
                               ),
                               validation_rule=(
-                                  error.diagnostic.rule if error.diagnostic is not None else None
+                                  diagnostic.rule if diagnostic is not None else None
                               ),
                               validation_item_index=(
-                                  error.diagnostic.item_index if error.diagnostic is not None else None
-                              ))
+                                  diagnostic.item_index if diagnostic is not None else None
+                              ),
+                              processing_phase=error.phase,
+                              stage_code=claim.executionStageCode,
+                              stage_run_id=claim.executionStageRunId,
+                              job_id=claim.processingJobId,
+                              validation_evidence=(
+                                  diagnostic.evidence if diagnostic is not None else None
+                              ),
+                    )
                     if error.category in ("AUTHENTICATION", "CONFIGURATION"):
                         self.stop_intake.set()
                     if error.phase == "RESULT_STORAGE" and error.category in ("TIMEOUT", "TRANSPORT", "RESOURCE"):

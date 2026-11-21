@@ -34,7 +34,9 @@ import { HeaderActions } from '@/components/layout/header-actions'
 import { Main } from '@/components/layout/main'
 import {
   OPERATOR_MI_SUMMARY_CONTRACT,
+  acknowledgeTranscriptReview,
   actionItemEtag,
+  admitOperatorMeetingIntelligence,
   admitOperatorProcessingJob,
   applyApprovedTranscriptCorrection,
   confirmActionItem,
@@ -56,6 +58,7 @@ import {
   type OperatorSession,
   type ProcessingJob,
   type SyntheticMeetingResult,
+  type TranscriptReviewAcknowledgement,
 } from './data/operator-mi-e2e-workflow'
 
 export const EXPECTED_OPERATOR_USER_ID = '46a30219-3c9f-498d-94fa-d6558f200714'
@@ -114,6 +117,15 @@ export function OperatorMiE2eWorkspace() {
   const [transcriptError, setTranscriptError] = useState<string | null>(null)
   const [transcript, setTranscript] =
     useState<FinalizedTranscriptEvidence | null>(null)
+  const [transcriptReview, setTranscriptReview] =
+    useState<TranscriptReviewAcknowledgement | null>(null)
+  const [transcriptAcknowledged, setTranscriptAcknowledged] = useState(false)
+  const [reviewPending, setReviewPending] = useState(false)
+  const [reviewError, setReviewError] = useState<string | null>(null)
+  const [admissionPending, setAdmissionPending] = useState(false)
+  const [admissionError, setAdmissionError] = useState<string | null>(null)
+  const reviewKey = useRef<string | null>(null)
+  const admissionKey = useRef<string | null>(null)
   const [corrections, setCorrections] = useState<
     Record<string, CorrectionDraft>
   >({})
@@ -143,6 +155,7 @@ export function OperatorMiE2eWorkspace() {
     job?.status === 'COMPLETED' ||
     job?.status === 'COMPLETED_WITH_WARNINGS' ||
     job?.status === 'FAILED'
+  const jobIsWaitingForTranscriptReview = job?.status === 'WAITING_FOR_REVIEW'
   const canCreate =
     operatorMatchesExpected &&
     !meetingResult &&
@@ -284,10 +297,16 @@ export function OperatorMiE2eWorkspace() {
   }
 
   const loadTranscript = async () => {
-    if (!meetingId || !jobIsTerminal || job?.status === 'FAILED') return
+    if (
+      !meetingId ||
+      (!jobIsWaitingForTranscriptReview && !jobIsTerminal) ||
+      job?.status === 'FAILED'
+    )
+      return
     setTranscriptPending(true)
     setTranscriptError(null)
     setCorrectionMessage(null)
+    setTranscriptAcknowledged(false)
     try {
       const evidence = await fetchFinalizedTranscriptEvidence(meetingId, 'vi')
       setTranscript(evidence)
@@ -298,6 +317,14 @@ export function OperatorMiE2eWorkspace() {
             { text: segment.text, reason: '', approved: false },
           ])
         )
+      )
+      setTranscriptReview((current) =>
+        current &&
+        current.transcriptId === evidence.transcript.id &&
+        current.contentRevision === evidence.transcript.contentRevision &&
+        current.correctionDigest === evidence.digest
+          ? current
+          : null
       )
     } catch (error) {
       setTranscriptError(readableError(error))
@@ -344,6 +371,12 @@ export function OperatorMiE2eWorkspace() {
           operatorApproved: true,
         }
       )
+      setTranscriptReview(null)
+      setTranscriptAcknowledged(false)
+      setReviewError(null)
+      setAdmissionError(null)
+      reviewKey.current = null
+      admissionKey.current = null
       await loadTranscript()
       setCorrectionMessage(
         'The approved correction was saved and the finalized transcript was read back.'
@@ -352,6 +385,74 @@ export function OperatorMiE2eWorkspace() {
       setTranscriptError(readableError(error))
     } finally {
       setCorrectionPending(null)
+    }
+  }
+
+  const acknowledgeReview = async () => {
+    if (
+      !job ||
+      !transcript ||
+      !session ||
+      job.status !== 'WAITING_FOR_REVIEW' ||
+      reviewPending ||
+      !transcriptAcknowledged
+    )
+      return
+    setReviewPending(true)
+    setReviewError(null)
+    setAdmissionError(null)
+    setWorkflowError(null)
+    const key =
+      reviewKey.current ?? createIdempotencyKey('transcript-review-ack')
+    reviewKey.current = key
+    try {
+      setTranscriptReview(
+        await acknowledgeTranscriptReview(
+          job.id,
+          transcript,
+          key,
+          session.user.userId
+        )
+      )
+    } catch (error) {
+      const message = readableError(error)
+      setReviewError(message)
+      setWorkflowError({ step: 'Transcript review acknowledgement', message })
+    } finally {
+      setReviewPending(false)
+    }
+  }
+
+  const admitMeetingIntelligence = async () => {
+    if (
+      !job ||
+      !transcriptReview ||
+      !session ||
+      job.status !== 'WAITING_FOR_REVIEW' ||
+      admissionPending
+    )
+      return
+    setAdmissionPending(true)
+    setAdmissionError(null)
+    setWorkflowError(null)
+    const key =
+      admissionKey.current ?? createIdempotencyKey('meeting-intelligence')
+    admissionKey.current = key
+    try {
+      setJob(
+        await admitOperatorMeetingIntelligence(
+          job.id,
+          transcriptReview,
+          key,
+          session.user.userId
+        )
+      )
+    } catch (error) {
+      const message = readableError(error)
+      setAdmissionError(message)
+      setWorkflowError({ step: 'Meeting Intelligence admission', message })
+    } finally {
+      setAdmissionPending(false)
     }
   }
 
@@ -524,9 +625,18 @@ export function OperatorMiE2eWorkspace() {
           pending={transcriptPending}
           error={transcriptError}
           correctionMessage={correctionMessage}
+          review={transcriptReview}
+          transcriptAcknowledged={transcriptAcknowledged}
+          reviewPending={reviewPending}
+          reviewError={reviewError}
+          admissionPending={admissionPending}
+          admissionError={admissionError}
           corrections={corrections}
           correctionPending={correctionPending}
           onReview={() => void loadTranscript()}
+          onTranscriptAcknowledged={setTranscriptAcknowledged}
+          onAcknowledgeReview={() => void acknowledgeReview()}
+          onAdmitMeetingIntelligence={() => void admitMeetingIntelligence()}
           onCorrectionChange={updateCorrection}
           onSaveCorrection={(segmentId) => void saveCorrection(segmentId)}
         />
@@ -890,11 +1000,11 @@ function ProcessingCard({
   return (
     <Card>
       <CardHeader className='border-b'>
-        <CardTitle>4. Admit one full processing job</CardTitle>
+        <CardTitle>4. Admit one transcription processing job</CardTitle>
         <CardDescription>
-          This is the Core public admission endpoint with one stable
-          Idempotency-Key. The helper exposes status refresh only; it never
-          calls the retry endpoint.
+          Core performs audio transcription and pauses at the durable transcript
+          review boundary. Meeting Intelligence is admitted only after the
+          operator acknowledges the current transcript below.
         </CardDescription>
       </CardHeader>
       <CardContent className='space-y-4 pt-6'>
@@ -916,6 +1026,24 @@ function ProcessingCard({
                 value={shortIdentifier(job.requestedByUserId)}
               />
             </dl>
+            {job.status === 'WAITING_FOR_REVIEW' && (
+              <Alert className='mt-4'>
+                <FileCheck2 />
+                <AlertTitle>Transcript review required</AlertTitle>
+                <AlertDescription>
+                  Core has completed transcription and is waiting for the
+                  operator review. Downstream Meeting Intelligence has not been
+                  admitted.
+                </AlertDescription>
+              </Alert>
+            )}
+            {job.warningSummary && (
+              <Alert className='mt-4'>
+                <AlertCircle />
+                <AlertTitle>Processing warning</AlertTitle>
+                <AlertDescription>{job.warningSummary}</AlertDescription>
+              </Alert>
+            )}
             <Button
               type='button'
               variant='outline'
@@ -946,9 +1074,18 @@ function TranscriptCard({
   pending,
   error,
   correctionMessage,
+  review,
+  transcriptAcknowledged,
+  reviewPending,
+  reviewError,
+  admissionPending,
+  admissionError,
   corrections,
   correctionPending,
   onReview,
+  onTranscriptAcknowledged,
+  onAcknowledgeReview,
+  onAdmitMeetingIntelligence,
   onCorrectionChange,
   onSaveCorrection,
 }: {
@@ -957,9 +1094,18 @@ function TranscriptCard({
   pending: boolean
   error: string | null
   correctionMessage: string | null
+  review: TranscriptReviewAcknowledgement | null
+  transcriptAcknowledged: boolean
+  reviewPending: boolean
+  reviewError: string | null
+  admissionPending: boolean
+  admissionError: string | null
   corrections: Record<string, CorrectionDraft>
   correctionPending: string | null
   onReview: () => void
+  onTranscriptAcknowledged: (checked: boolean) => void
+  onAcknowledgeReview: () => void
+  onAdmitMeetingIntelligence: () => void
   onCorrectionChange: (
     segmentId: string,
     update: Partial<CorrectionDraft>
@@ -967,7 +1113,14 @@ function TranscriptCard({
   onSaveCorrection: (segmentId: string) => void
 }) {
   const ready =
-    job?.status === 'COMPLETED' || job?.status === 'COMPLETED_WITH_WARNINGS'
+    job?.status === 'WAITING_FOR_REVIEW' ||
+    job?.status === 'COMPLETED' ||
+    job?.status === 'COMPLETED_WITH_WARNINGS'
+  const reviewGateOpen = job?.status === 'WAITING_FOR_REVIEW'
+  const coverageWarnings =
+    evidence?.coverage.filter(
+      (region) => region.coverageStatus !== 'COVERED' || region.recovered
+    ) ?? []
   return (
     <Card>
       <CardHeader className='border-b'>
@@ -991,8 +1144,8 @@ function TranscriptCard({
         )}
         {!ready && !evidence && (
           <p className='text-sm text-muted-foreground'>
-            Wait for an observed COMPLETED or COMPLETED_WITH_WARNINGS job
-            status; this page does not poll automatically.
+            Wait for Core to report WAITING_FOR_REVIEW; this page does not poll
+            automatically.
           </p>
         )}
         {evidence && (
@@ -1020,6 +1173,35 @@ function TranscriptCard({
                 />
               </div>
             </div>
+            {(evidence.transcript.status === 'READY_WITH_WARNINGS' ||
+              coverageWarnings.length > 0 ||
+              Boolean(job?.warningSummary)) && (
+              <Alert>
+                <AlertCircle />
+                <AlertTitle>Transcript warnings remain visible</AlertTitle>
+                <AlertDescription className='space-y-2'>
+                  {job?.warningSummary && <p>{job.warningSummary}</p>}
+                  {evidence.transcript.status === 'READY_WITH_WARNINGS' && (
+                    <p>
+                      Core marked this transcript READY_WITH_WARNINGS. Review
+                      the text and coverage before acknowledging it.
+                    </p>
+                  )}
+                  {coverageWarnings.length > 0 && (
+                    <ul className='list-disc pl-5'>
+                      {coverageWarnings.map((region) => (
+                        <li key={region.id}>
+                          {region.coverageStatus} ·{' '}
+                          {formatMilliseconds(region.startMs)}–
+                          {formatMilliseconds(region.endMs)}
+                          {region.recovered ? ' · recovered' : ''}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </AlertDescription>
+              </Alert>
+            )}
             <div className='space-y-4'>
               {evidence.transcript.segments.map((segment) => {
                 const draft = corrections[segment.id] ?? {
@@ -1101,6 +1283,69 @@ function TranscriptCard({
               <p className='text-sm text-emerald-700'>{correctionMessage}</p>
             )}
             {error && <p className='text-sm text-destructive'>{error}</p>}
+            {reviewGateOpen && !review && (
+              <div className='rounded-lg border bg-muted/30 p-4'>
+                <label className='flex items-start gap-2 text-sm'>
+                  <input
+                    type='checkbox'
+                    checked={transcriptAcknowledged}
+                    onChange={(event) =>
+                      onTranscriptAcknowledged(event.target.checked)
+                    }
+                    disabled={Boolean(correctionPending) || reviewPending}
+                  />
+                  <span>
+                    I reviewed the complete transcript and the visible
+                    transcription warnings, including any coverage warnings.
+                  </span>
+                </label>
+                <Button
+                  type='button'
+                  className='mt-3'
+                  onClick={onAcknowledgeReview}
+                  disabled={
+                    !transcriptAcknowledged ||
+                    Boolean(correctionPending) ||
+                    reviewPending
+                  }
+                >
+                  {reviewPending
+                    ? 'Saving review acknowledgement...'
+                    : 'Acknowledge reviewed transcript'}
+                </Button>
+                {reviewError && (
+                  <p className='mt-3 text-sm text-destructive'>{reviewError}</p>
+                )}
+              </div>
+            )}
+            {review && (
+              <div className='rounded-lg border bg-muted/30 p-4 text-sm'>
+                <div className='font-medium text-emerald-700'>
+                  Transcript revision acknowledged in Core
+                </div>
+                <p className='mt-2'>
+                  Review {shortIdentifier(review.reviewId)} is bound to revision{' '}
+                  {review.contentRevision} and digest {review.correctionDigest}.
+                </p>
+                {reviewGateOpen && (
+                  <Button
+                    type='button'
+                    className='mt-3'
+                    onClick={onAdmitMeetingIntelligence}
+                    disabled={admissionPending}
+                  >
+                    {admissionPending
+                      ? 'Admitting Meeting Intelligence...'
+                      : 'Admit Meeting Intelligence'}
+                  </Button>
+                )}
+                {admissionError && (
+                  <p className='mt-3 text-sm text-destructive'>
+                    {admissionError}
+                  </p>
+                )}
+              </div>
+            )}
           </>
         )}
       </CardContent>

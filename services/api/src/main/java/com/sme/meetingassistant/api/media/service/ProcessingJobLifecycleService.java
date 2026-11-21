@@ -256,6 +256,23 @@ public class ProcessingJobLifecycleService implements ProcessingJobLifecycle {
         } else if("DIARIZING".equals(identity.stageCode())) advanceJob(identity.jobId());
     }
 
+    @Override
+    @Transactional
+    public boolean awaitTranscriptReview(UUID jobId, UUID meetingId, UUID mediaId, StageClaim claim) {
+        requireClaim(claim);
+        var identity = repository.stageIdentity(claim.stageRunId());
+        if (!jobId.equals(identity.jobId()) || !"FINALIZING_TRANSCRIPT".equals(identity.stageCode())) {
+            throw new ProcessingLifecycleConflictException(
+                "Only the canonical transcript finalization attempt can open review.");
+        }
+        if (!repository.transcriptReviewRequired(jobId)) return false;
+        if (transcriptEvidence.forFinalization(jobId, claim.stageRunId()).isEmpty()) {
+            throw new ProcessingLifecycleConflictException(
+                "Transcript review requires canonical finalized transcript evidence.");
+        }
+        return repository.awaitTranscriptReview(jobId, meetingId, mediaId);
+    }
+
     private void requireCurrentDiarizationSource(UUID jobId) {
         transcriptEvidence.lockDiarizationSource(jobId);
         repository.requireDiarizationSource(jobId, transcriptEvidence.diarizationSource(jobId).orElse(null));

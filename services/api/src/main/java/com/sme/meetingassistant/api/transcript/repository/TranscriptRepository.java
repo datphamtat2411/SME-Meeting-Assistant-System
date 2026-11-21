@@ -87,15 +87,15 @@ public class TranscriptRepository implements ProcessingTranscriptEvidence {
               WHERE t.processing_job_id=? AND t.source_stage_run_id=?
                 AND s.status IN ('SUCCEEDED','SUCCEEDED_WITH_WARNING')
                 AND (
-                  j.status IN ('COMPLETED','COMPLETED_WITH_WARNINGS')
-                  OR (j.status='RUNNING' AND EXISTS (
+                   j.status IN ('COMPLETED','COMPLETED_WITH_WARNINGS','WAITING_FOR_REVIEW')
+                   OR (j.status='RUNNING' AND EXISTS (
                     SELECT 1 FROM processing_stage_runs pending
                     WHERE pending.processing_job_id=j.id AND pending.status='PENDING'
                       AND pending.stage_code IN ('DIARIZING', 'GENERATING_SUMMARY', 'EXTRACTING_DECISIONS',
                                                  'EXTRACTING_ACTION_ITEMS', 'INDEXING')
                   ))
                  )
-                AND (NOT j.diarization_planned OR EXISTS (
+                AND (NOT j.diarization_planned OR j.status='WAITING_FOR_REVIEW' OR EXISTS (
                   SELECT 1 FROM processing_diarization_dispatches d
                   JOIN outbox_events o ON o.id=d.event_id
                   WHERE d.processing_job_id=j.id AND d.transcript_id=t.id
@@ -423,6 +423,46 @@ public class TranscriptRepository implements ProcessingTranscriptEvidence {
             SELECT m.id FROM meetings m JOIN processing_jobs j ON j.meeting_id=m.id
             WHERE j.id=? FOR UPDATE OF m
             """, (rs, row) -> rs.getObject(1, UUID.class), jobId);
+    }
+
+    @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public void lockTranscriptReview(UUID jobId) {
+        jdbc.query("""
+            SELECT m.id FROM meetings m JOIN processing_jobs j ON j.meeting_id=m.id
+            WHERE j.id=? FOR UPDATE OF m
+            """, (rs, row) -> rs.getObject(1, UUID.class), jobId).stream().findFirst()
+            .orElseThrow(TranscriptRepository::notFound);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<Review> currentTranscriptReview(UUID jobId) {
+        List<ReviewHeader> headers = jdbc.query("""
+            SELECT j.id AS processing_job_id,j.source_media_id,t.id AS transcript_id,
+                   t.content_revision,t.status
+            FROM processing_jobs j
+            JOIN transcripts t ON t.processing_job_id=j.id
+              AND t.meeting_id=j.meeting_id AND t.source_media_id=j.source_media_id
+              AND t.is_current
+            WHERE j.id=? AND t.status IN ('READY','READY_WITH_WARNINGS')
+            """, (rs, row) -> new ReviewHeader(
+                rs.getObject("processing_job_id", UUID.class),
+                rs.getObject("source_media_id", UUID.class),
+                rs.getObject("transcript_id", UUID.class),
+                rs.getLong("content_revision"), rs.getString("status")), jobId);
+        if (headers.size() != 1) return Optional.empty();
+        ReviewHeader header = headers.getFirst();
+        List<TranscriptCorrectionDigest.SegmentDigest> segments = jdbc.query("""
+            SELECT ordinal,start_ms,end_ms,current_text
+            FROM transcript_segments WHERE transcript_id=? ORDER BY ordinal
+            """, (rs, row) -> new TranscriptCorrectionDigest.SegmentDigest(
+                rs.getInt("ordinal"), rs.getLong("start_ms"), rs.getLong("end_ms"),
+                rs.getString("current_text")), header.transcriptId());
+        if (segments.isEmpty()) return Optional.empty();
+        return Optional.of(new Review(header.processingJobId(), header.sourceMediaId(),
+            header.transcriptId(), header.contentRevision(), header.status(),
+            TranscriptCorrectionDigest.sha256(segments)));
     }
 
     @Override
@@ -796,6 +836,8 @@ public class TranscriptRepository implements ProcessingTranscriptEvidence {
     private record Header(UUID id, UUID meetingId, UUID mediaId, UUID jobId, int version,
             String language, String status, Long duration, OffsetDateTime finalizedAt,
             long contentRevision) {}
+    private record ReviewHeader(UUID processingJobId, UUID sourceMediaId, UUID transcriptId,
+            long contentRevision, String status) {}
     private record SegmentState(UUID id, String text, String quality, long version) {}
     public record SpeakerMapResult(SpeakerView speaker, UUID transcriptId, long contentRevision) {}
     private record SpeakerKey(UUID id, UUID transcriptId, long contentRevision) {}

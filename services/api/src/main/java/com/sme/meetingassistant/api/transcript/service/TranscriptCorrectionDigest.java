@@ -7,6 +7,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Comparator;
 import java.util.HexFormat;
+import java.util.List;
 
 /**
  * Stable cross-service digest contract for context-corrected transcript output.
@@ -18,14 +19,24 @@ import java.util.HexFormat;
 public final class TranscriptCorrectionDigest {
     private TranscriptCorrectionDigest() {}
 
+    public record SegmentDigest(int ordinal, long startMs, long endMs, String text) {}
+
     public static String sha256(TranscriptResult result) {
         if (result == null || result.segments() == null) {
             throw new IllegalArgumentException("Transcript segments are required.");
         }
+        return sha256(result.segments().stream()
+            .map(segment -> new SegmentDigest(segment.ordinal(), segment.startMs(),
+                segment.endMs(), segment.text())).toList());
+    }
+
+    /** Same wire contract for a persisted canonical transcript projection. */
+    public static String sha256(List<SegmentDigest> segments) {
+        if (segments == null) throw new IllegalArgumentException("Transcript segments are required.");
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
             md.update("SME-CONTEXTUAL-CORRECTION-V1\0".getBytes(StandardCharsets.UTF_8));
-            for (var segment : result.segments().stream()
+            for (var segment : segments.stream()
                     .sorted(Comparator.comparingInt(s -> s.ordinal())).toList()) {
                 byte[] text = segment.text().getBytes(StandardCharsets.UTF_8);
                 md.update(ByteBuffer.allocate(24).putInt(segment.ordinal())

@@ -447,6 +447,166 @@ def test_summary_validation_diagnostics_distinguish_unsupported_agreement():
     assert error.value.diagnostic.rule == "AGREEMENT_UNSUPPORTED"
 
 
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "Nhóm quyết định sử dụng Payment API v2.",
+        "Nhóm THỐNG NHẤT — sử dụng Payment API v2!",
+        "Phương án sử dụng Payment API v2 đã được thông qua.",
+        "PHƯƠNG ÁN SỬ DỤNG PAYMENT API V2 ĐƯỢC THÔNG QUA!",
+    ],
+)
+def test_summary_accepts_explicit_decisions_and_approved_proposals(statement):
+    context = stage(snapshot((statement,)))
+
+    def callback(request):
+        evidence = _all_window_units(request)[0]
+        return _evidence_output(request, [
+            _unit(statement, "AGREEMENT", [_reference(evidence)]),
+        ])
+
+    candidate = SummaryProcessor(settings(), ScriptedAdapter(callback))(context)
+    assert "## Kết quả được thống nhất" in candidate["result"]["content"]
+    assert statement in candidate["result"]["content"]
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "Quang chưa xác nhận nhận công việc.",
+        "Quang không xác nhận nhận công việc.",
+        "Phương án sử dụng Payment API v2 chưa được thông qua.",
+        "Phương án sử dụng Payment API v2 không được thông qua.",
+        "Phương án sử dụng Payment API v2 sẽ được thông qua.",
+        "Phương án sử dụng Payment API v2 có thể được thông qua.",
+        "Phương án sử dụng Payment API v2 có được thông qua không?",
+        "Phương án sử dụng Payment API v2 đã được thông qua chưa?",
+        "Nếu phương án sử dụng Payment API v2 được thông qua thì sẽ triển khai.",
+    ],
+)
+def test_summary_rejects_negated_or_pending_agreement_language(statement):
+    context = stage(snapshot((statement,)))
+
+    def callback(request):
+        evidence = _all_window_units(request)[0]
+        return _evidence_output(request, [
+            _unit(statement, "AGREEMENT", [_reference(evidence)]),
+        ])
+
+    with pytest.raises(IntelligenceError) as error:
+        SummaryProcessor(settings(), ScriptedAdapter(callback))(context)
+
+    assert error.value.category == "GROUNDING_FAILURE"
+    assert error.value.diagnostic.rule == "AGREEMENT_CONTRADICTED"
+
+
+def test_summary_keeps_personal_assignment_acceptance_out_of_group_agreement():
+    statement = "Quang xác nhận nhận công việc."
+    context = stage(snapshot((statement,)))
+
+    def fact_callback(request):
+        evidence = _all_window_units(request)[0]
+        return _evidence_output(request, [
+            _unit(statement, "FACT", [_reference(evidence)]),
+        ])
+
+    candidate = SummaryProcessor(settings(), ScriptedAdapter(fact_callback))(context)
+    assert statement in candidate["result"]["content"]
+    assert "## Kết quả được thống nhất" not in candidate["result"]["content"]
+
+    def agreement_callback(request):
+        evidence = _all_window_units(request)[0]
+        return _evidence_output(request, [
+            _unit(statement, "AGREEMENT", [_reference(evidence)]),
+        ])
+
+    with pytest.raises(IntelligenceError) as error:
+        SummaryProcessor(settings(), ScriptedAdapter(agreement_callback))(context)
+
+    assert error.value.diagnostic.rule == "AGREEMENT_UNSUPPORTED"
+
+
+def test_summary_does_not_promote_mere_acknowledgment_to_agreement():
+    statement = "Quang xác nhận đã nghe phần báo cáo."
+    context = stage(snapshot((statement,)))
+
+    def callback(request):
+        evidence = _all_window_units(request)[0]
+        return _evidence_output(request, [
+            _unit(statement, "AGREEMENT", [_reference(evidence)]),
+        ])
+
+    with pytest.raises(IntelligenceError) as error:
+        SummaryProcessor(settings(), ScriptedAdapter(callback))(context)
+
+    assert error.value.diagnostic.rule == "AGREEMENT_UNSUPPORTED"
+
+
+def test_summary_rejects_a_proposal_labeled_as_agreement():
+    statement = "Có lẽ nên dùng Payment API v2, nhưng chưa chốt."
+    context = stage(snapshot((statement,)))
+
+    def callback(request):
+        evidence = _all_window_units(request)[0]
+        return _evidence_output(request, [
+            _unit(statement, "AGREEMENT", [_reference(evidence)], "TENTATIVE"),
+        ])
+
+    with pytest.raises(IntelligenceError) as error:
+        SummaryProcessor(settings(), ScriptedAdapter(callback))(context)
+
+    assert error.value.diagnostic.rule == "AGREEMENT_CONTRADICTED"
+
+
+def test_summary_agreement_citation_must_include_approval_phrase():
+    statement = "Nhóm thống nhất sử dụng Payment API v2."
+    cited_statement = "sử dụng Payment API v2."
+    start = statement.index("sử dụng")
+    context = stage(snapshot((statement,)))
+
+    def narrow_callback(request):
+        evidence = _all_window_units(request)[0]
+        return _evidence_output(request, [
+            _unit(cited_statement, "AGREEMENT", [
+                _reference(evidence, char_start=start, char_end=len(statement)),
+            ]),
+        ])
+
+    with pytest.raises(IntelligenceError) as narrow_error:
+        SummaryProcessor(settings(), ScriptedAdapter(narrow_callback))(context)
+    assert narrow_error.value.diagnostic.rule == "AGREEMENT_UNSUPPORTED"
+
+    def complete_callback(request):
+        evidence = _all_window_units(request)[0]
+        return _evidence_output(request, [
+            _unit(statement, "AGREEMENT", [_reference(evidence)]),
+        ])
+
+    candidate = SummaryProcessor(settings(), ScriptedAdapter(complete_callback))(context)
+    assert "## Kết quả được thống nhất" in candidate["result"]["content"]
+
+
+def test_summary_keeps_adjacent_proposal_and_approval_in_their_cited_scopes():
+    texts = (
+        "Có lẽ nên dùng Payment API v2, nhưng chưa chốt.",
+        "Phương án sử dụng Payment API v2 đã được thông qua.",
+    )
+    context = stage(snapshot(texts))
+
+    def callback(request):
+        evidence = _all_window_units(request)
+        return _evidence_output(request, [
+            _unit("Đề xuất dùng Payment API v2 nhưng chưa chốt", "PROPOSAL",
+                  [_reference(evidence[0])], "TENTATIVE"),
+            _unit(texts[1], "AGREEMENT", [_reference(evidence[1])]),
+        ])
+
+    candidate = SummaryProcessor(settings(), ScriptedAdapter(callback))(context)
+    content = candidate["result"]["content"]
+    assert "## Vấn đề còn bỏ ngỏ" in content
+    assert "## Kết quả được thống nhất" in content
+
+
 def test_overlapping_windows_are_deduplicated_before_final_synthesis():
     data = snapshot(tuple(f"Lượt {i}: API gateway và CI/CD cần kiểm thử." for i in range(13)))
     context = stage(data)

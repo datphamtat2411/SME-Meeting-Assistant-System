@@ -5,6 +5,9 @@ import com.sme.meetingassistant.api.common.ApiResponseFactory;
 import com.sme.meetingassistant.api.media.dto.CreateProcessingJobRequest;
 import com.sme.meetingassistant.api.media.dto.ProcessingJobResponse;
 import com.sme.meetingassistant.api.media.dto.RetryProcessingJobRequest;
+import com.sme.meetingassistant.api.media.dto.AdmitMeetingIntelligenceRequest;
+import com.sme.meetingassistant.api.media.dto.TranscriptReviewRequest;
+import com.sme.meetingassistant.api.media.dto.TranscriptReviewResponse;
 import com.sme.meetingassistant.api.media.service.MediaProcessingService;
 import jakarta.validation.Valid;
 import java.net.URI;
@@ -60,5 +63,24 @@ public class ProcessingJobController {
         return ResponseEntity.status(HttpStatus.ACCEPTED)
             .location(URI.create("/api/v1/processing-jobs/" + job.id()))
             .body(this.responses.success("Processing retry accepted.", job));
+    }
+
+    @PostMapping("/processing-jobs/{jobId}/transcript-review/acknowledge")
+    public ApiResponse<TranscriptReviewResponse> acknowledgeTranscriptReview(
+            @PathVariable UUID jobId,
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @Valid @RequestBody TranscriptReviewRequest request) {
+        return this.responses.success(this.service.acknowledgeTranscriptReview(jobId, request, idempotencyKey));
+    }
+
+    @PostMapping("/processing-jobs/{jobId}/meeting-intelligence/admit")
+    public ResponseEntity<ApiResponse<ProcessingJobResponse>> admitMeetingIntelligence(
+            @PathVariable UUID jobId,
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @Valid @RequestBody AdmitMeetingIntelligenceRequest request) {
+        ProcessingJobResponse job = this.service.admitMeetingIntelligence(jobId, request, idempotencyKey);
+        return ResponseEntity.status(HttpStatus.ACCEPTED)
+            .location(URI.create("/api/v1/processing-jobs/" + job.id()))
+            .body(this.responses.success("Meeting Intelligence admission accepted.", job));
     }
 }

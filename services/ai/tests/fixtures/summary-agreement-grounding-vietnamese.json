@@ -1,0 +1,268 @@
+{
+  "fixtureVersion": 1,
+  "purpose": "Offline agreement-grounding probes for the approved revision-1 transcript shape.",
+  "liveFailure": {
+    "processingJobId": "5cd2c226-b6f7-4731-8f87-674328a1fd31",
+    "validationReason": "GROUNDING_FAILURE",
+    "validationRule": "AGREEMENT_UNSUPPORTED",
+    "validationItemIndex": 3,
+    "providerOutputRetained": false,
+    "evidenceReferencesRetained": false,
+    "reconstruction": "UNRECOVERABLE"
+  },
+  "sources": {
+    "approved_revision_1": [
+      "Về tiến độ dự án cánh buồm, phần giao diện UI đã hoàn thành. Riêng phần tích hợp mô đun thanh toán hiện đạt khoảng 70%. Chúng ta cần hoàn thiện phần này trước khi phát hành bản thử nghiệm.",
+      "Về phương án kỹ thuật, nhóm thống nhất quyết định sử dụng Payment API phiên bản 2 cho bản phát hành thử nghiệm.",
+      "Đây là quyết định chính thức của cuộc họp.",
+      "Quang sẽ phụ trách hoàn thiện tích hợp mô đun thanh toán và gửi bản build thử nghiệm.",
+      "Thời hạn hoàn thành là ngày 15 tháng 12 năm 2026.",
+      "Quang xác nhận nhận công việc này."
+    ],
+    "proposal_and_approval": [
+      "Có lẽ nên dùng Payment API phiên bản 2, nhưng chưa chốt.",
+      "Phương án sử dụng Payment API phiên bản 2 đã được thông qua."
+    ],
+    "affirmative_approval": [
+      "Nhóm đã thông qua phương án sử dụng Payment API phiên bản 2."
+    ],
+    "approval_question": [
+      "Nhóm đã thông qua phương án sử dụng Payment API phiên bản 2 chưa?"
+    ],
+    "negated_agreement": [
+      "Nhóm không đồng ý sử dụng Payment API phiên bản 2."
+    ],
+    "tentative_agreement": [
+      "Phương án sử dụng Payment API phiên bản 2 sẽ được thông qua."
+    ],
+    "plain_fact": [
+      "Nhóm đang kiểm thử Payment API phiên bản 2."
+    ],
+    "diagnostic_candidate": [
+      "Nhóm đồng thuận sử dụng Payment API phiên bản 2."
+    ]
+  },
+  "probes": [
+    {
+      "name": "target_collective_agreement",
+      "source": "approved_revision_1",
+      "expected": "PASS",
+      "units": [
+        {
+          "statement": "Về phương án kỹ thuật, nhóm thống nhất quyết định sử dụng Payment API phiên bản 2 cho bản phát hành thử nghiệm.",
+          "category": "AGREEMENT",
+          "segment": 1,
+          "citation": "full"
+        }
+      ]
+    },
+    {
+      "name": "target_official_decision",
+      "source": "approved_revision_1",
+      "expected": "PASS",
+      "units": [
+        {
+          "statement": "Đây là quyết định chính thức của cuộc họp.",
+          "category": "AGREEMENT",
+          "segment": 2,
+          "citation": "full"
+        }
+      ]
+    },
+    {
+      "name": "target_assignment_as_fact",
+      "source": "approved_revision_1",
+      "expected": "PASS",
+      "units": [
+        {
+          "statement": "Quang sẽ phụ trách hoàn thiện tích hợp mô đun thanh toán và gửi bản build thử nghiệm.",
+          "category": "FACT",
+          "segment": 3,
+          "citation": "full"
+        }
+      ]
+    },
+    {
+      "name": "target_assignment_mislabeled_as_agreement",
+      "source": "approved_revision_1",
+      "expected": "FAIL",
+      "rule": "AGREEMENT_UNSUPPORTED",
+      "assessment": "UNSUPPORTED_MODEL_CLASSIFICATION",
+      "units": [
+        {
+          "statement": "Quang sẽ phụ trách hoàn thiện tích hợp mô đun thanh toán và gửi bản build thử nghiệm.",
+          "category": "AGREEMENT",
+          "segment": 3,
+          "citation": "full"
+        }
+      ]
+    },
+    {
+      "name": "target_personal_acceptance_as_fact",
+      "source": "approved_revision_1",
+      "expected": "PASS",
+      "units": [
+        {
+          "statement": "Quang xác nhận nhận công việc này.",
+          "category": "FACT",
+          "segment": 5,
+          "citation": "full"
+        }
+      ]
+    },
+    {
+      "name": "target_personal_acceptance_mislabeled_as_agreement",
+      "source": "approved_revision_1",
+      "expected": "FAIL",
+      "rule": "AGREEMENT_UNSUPPORTED",
+      "assessment": "UNSUPPORTED_MODEL_CLASSIFICATION",
+      "units": [
+        {
+          "statement": "Quang xác nhận nhận công việc này.",
+          "category": "AGREEMENT",
+          "segment": 5,
+          "citation": "full"
+        }
+      ]
+    },
+    {
+      "name": "affirmative_approval",
+      "source": "affirmative_approval",
+      "expected": "PASS",
+      "units": [
+        {
+          "statement": "Nhóm đã thông qua phương án sử dụng Payment API phiên bản 2.",
+          "category": "AGREEMENT",
+          "segment": 0,
+          "citation": "full"
+        }
+      ]
+    },
+    {
+      "name": "approval_question",
+      "source": "approval_question",
+      "expected": "FAIL",
+      "rule": "AGREEMENT_CONTRADICTED",
+      "assessment": "NEGATIVE_OR_TENTATIVE",
+      "units": [
+        {
+          "statement": "Nhóm đã thông qua phương án sử dụng Payment API phiên bản 2 chưa?",
+          "category": "AGREEMENT",
+          "segment": 0,
+          "citation": "full"
+        }
+      ]
+    },
+    {
+      "name": "proposal_and_approval_in_separate_citations",
+      "source": "proposal_and_approval",
+      "expected": "PASS",
+      "units": [
+        {
+          "statement": "Có lẽ nên dùng Payment API phiên bản 2, nhưng chưa chốt.",
+          "category": "PROPOSAL",
+          "uncertainty": "TENTATIVE",
+          "segment": 0,
+          "citation": "full"
+        },
+        {
+          "statement": "Phương án sử dụng Payment API phiên bản 2 đã được thông qua.",
+          "category": "AGREEMENT",
+          "segment": 1,
+          "citation": "full"
+        }
+      ]
+    },
+    {
+      "name": "proposal_mislabeled_as_agreement",
+      "source": "proposal_and_approval",
+      "expected": "FAIL",
+      "rule": "AGREEMENT_CONTRADICTED",
+      "assessment": "NEGATIVE_OR_TENTATIVE",
+      "units": [
+        {
+          "statement": "Có lẽ nên dùng Payment API phiên bản 2, nhưng chưa chốt.",
+          "category": "AGREEMENT",
+          "uncertainty": "TENTATIVE",
+          "segment": 0,
+          "citation": "full"
+        }
+      ]
+    },
+    {
+      "name": "rejected_agreement",
+      "source": "negated_agreement",
+      "expected": "FAIL",
+      "rule": "AGREEMENT_CONTRADICTED",
+      "assessment": "NEGATIVE_OR_TENTATIVE",
+      "units": [
+        {
+          "statement": "Nhóm không đồng ý sử dụng Payment API phiên bản 2.",
+          "category": "AGREEMENT",
+          "segment": 0,
+          "citation": "full"
+        }
+      ]
+    },
+    {
+      "name": "tentative_agreement",
+      "source": "tentative_agreement",
+      "expected": "FAIL",
+      "rule": "AGREEMENT_CONTRADICTED",
+      "assessment": "NEGATIVE_OR_TENTATIVE",
+      "units": [
+        {
+          "statement": "Phương án sử dụng Payment API phiên bản 2 sẽ được thông qua.",
+          "category": "AGREEMENT",
+          "segment": 0,
+          "citation": "full"
+        }
+      ]
+    },
+    {
+      "name": "incomplete_evidence_span_omits_approval_marker",
+      "source": "approved_revision_1",
+      "expected": "FAIL",
+      "rule": "AGREEMENT_UNSUPPORTED",
+      "assessment": "INCOMPLETE_CITATION",
+      "units": [
+        {
+          "statement": "Nhóm thống nhất quyết định sử dụng Payment API phiên bản 2 cho bản phát hành thử nghiệm.",
+          "category": "AGREEMENT",
+          "segment": 1,
+          "citation": "sử dụng Payment API phiên bản 2 cho bản phát hành thử nghiệm."
+        }
+      ]
+    },
+    {
+      "name": "unsupported_agreement_on_plain_fact",
+      "source": "plain_fact",
+      "expected": "FAIL",
+      "rule": "AGREEMENT_UNSUPPORTED",
+      "assessment": "UNSUPPORTED_MODEL_CLASSIFICATION",
+      "units": [
+        {
+          "statement": "Nhóm đang kiểm thử Payment API phiên bản 2.",
+          "category": "AGREEMENT",
+          "segment": 0,
+          "citation": "full"
+        }
+      ]
+    },
+    {
+      "name": "possible_validator_false_negative_candidate",
+      "source": "diagnostic_candidate",
+      "expected": "FAIL",
+      "rule": "AGREEMENT_UNSUPPORTED",
+      "assessment": "POSSIBLE_VALIDATOR_FALSE_NEGATIVE",
+      "units": [
+        {
+          "statement": "Nhóm đồng thuận sử dụng Payment API phiên bản 2.",
+          "category": "AGREEMENT",
+          "segment": 0,
+          "citation": "full"
+        }
+      ]
+    }
+  ]
+}
