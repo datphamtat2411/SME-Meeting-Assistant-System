@@ -118,7 +118,14 @@ class ActionItemWorkerAcceptanceIntegrationTests {
             .header("X-Request-Id","t06-test").timeout(java.time.Duration.ofSeconds(15));
         if(token!=null) builder.header("Authorization","Bearer "+token);
         if(expectContinue) builder.expectContinue(true);
-        return client.send(builder.POST(HttpRequest.BodyPublishers.ofString(body)).build(),HttpResponse.BodyHandlers.ofString());
+        try {
+            return client.send(builder.POST(HttpRequest.BodyPublishers.ofString(body)).build(),HttpResponse.BodyHandlers.ofString());
+        } catch (java.io.IOException failure) {
+            String operation=path.equals(acceptPath()) ? "action-item-accept" : path.endsWith("/renew") ? "control-renew" : "control-other";
+            throw new java.io.IOException("HTTP POST failed before response: operation="+operation
+                +", bodyBytes="+body.getBytes(java.nio.charset.StandardCharsets.UTF_8).length
+                +", expectContinue="+expectContinue, failure);
+        }
     }
     String control() {return "/internal/v1/worker/processing-jobs/"+job+"/intelligence/";}
     String acceptPath() {return "/internal/api/v1/meeting-intelligence/action-items/accept";}
@@ -151,7 +158,7 @@ class ActionItemWorkerAcceptanceIntegrationTests {
     @Test void realCanonicalReceiptCompletesStageAndReplayCannotOverwriteIt() throws Exception {
         try(var mi=client("mi","mi-worker")) {
             var input=batch(claim(mi),false);
-            assertThat(post(mi,acceptPath(),input.toString(),TOKEN).statusCode()).isEqualTo(200);assertAccepted(1);
+            assertThat(post(mi,acceptPath(),input.toString(),TOKEN,true).statusCode()).isEqualTo(200);assertAccepted(1);
             assertThat(jdbc.queryForObject("SELECT count(*) FROM action_item_evidence WHERE action_item_id IN (SELECT id FROM action_items WHERE processing_job_id=?)",Long.class,job)).isEqualTo(1);
             assertThat(jdbc.queryForObject("SELECT count(*) FROM action_item_history WHERE action_item_id IN (SELECT id FROM action_items WHERE processing_job_id=?)",Long.class,job)).isEqualTo(1);
             assertThat(post(mi,acceptPath(),input.toString(),TOKEN).statusCode()).isEqualTo(409);
@@ -210,6 +217,24 @@ class ActionItemWorkerAcceptanceIntegrationTests {
             assertThat(post(mi,acceptPath(),input.toString(),TOKEN).statusCode()).isEqualTo(200);assertAccepted(1);
         }
     }
+    @Test void oversizedExpectedBodyIsRejectedBeforeContinue() throws Exception {
+        var tls=PemTls.clientContext(PKI.resolve("mi.crt"),PKI.resolve("mi.key"),
+            PKI.resolve("ca.crt"),PKI.resolve("ca.crt"),"urn:sme:service:mi-worker");
+        try(var socket=(javax.net.ssl.SSLSocket)tls.getSocketFactory().createSocket("localhost",PORT)) {
+            socket.setSoTimeout(15000);
+            var headers="POST "+acceptPath()+" HTTP/1.1\r\nHost: localhost:"+PORT
+                +"\r\nContent-Type: application/json\r\nContent-Length: 4194305"
+                +"\r\nExpect: 100-continue\r\nX-Request-Id: t06-test"
+                +"\r\nAuthorization: Bearer "+TOKEN+"\r\n\r\n";
+            socket.getOutputStream().write(headers.getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+            socket.getOutputStream().flush();
+            var reader=new java.io.BufferedReader(new java.io.InputStreamReader(socket.getInputStream(),java.nio.charset.StandardCharsets.UTF_8));
+            assertThat(reader.readLine()).as("first response before sending the body").startsWith("HTTP/1.1 413 ");
+            String line; while((line=reader.readLine())!=null && !line.isEmpty()) { }
+            var body=new StringBuilder(); while((line=reader.readLine())!=null) body.append(line);
+            assertThat(body.toString()).contains("PAYLOAD_TOO_LARGE").contains("\"success\":false");
+        }
+    }
     @Test void eventSnapshotTokenForeignEvidenceAndExpiredOwnerFailWithoutPartialWrites() throws Exception {
         try(var mi=client("mi","mi-worker")) {
             var input=batch(claim(mi),false);
@@ -255,7 +280,11 @@ class ActionItemWorkerAcceptanceIntegrationTests {
                 .withCopyToContainer(org.testcontainers.images.builder.Transferable.of(Files.readAllBytes(PKI.resolve("ca.crt")),0444),"/etc/rabbitmq/ca.crt")
                 .withCopyToContainer(org.testcontainers.images.builder.Transferable.of(Files.readAllBytes(PKI.resolve("server.crt")),0444),"/etc/rabbitmq/server.crt")
                 .withCopyToContainer(org.testcontainers.images.builder.Transferable.of(Files.readAllBytes(PKI.resolve("server.key")),0444),"/etc/rabbitmq/server.key")
-                .withExposedPorts(5671).waitingFor(org.testcontainers.containers.wait.strategy.Wait.forListeningPort())
+                .withExposedPorts(5671)
+                .waitingFor(new org.testcontainers.containers.wait.strategy.WaitAllStrategy()
+                    .withStrategy(org.testcontainers.containers.wait.strategy.Wait.forListeningPort())
+                    .withStrategy(org.testcontainers.containers.wait.strategy.Wait.forLogMessage(
+                        ".*Server startup complete.*", 1)))
                 .withStartupTimeout(java.time.Duration.ofSeconds(120))) {
             broker.start();
             for(String mode:List.of("normal","lost","empty")) {

@@ -229,18 +229,30 @@ describe('UserAuthForm', () => {
   })
 
   it.each([
-    [401, 'Invalid email or password.'],
-    [403, 'Sign-in was blocked. Refresh the page and try again.'],
-    [429, 'Too many sign-in attempts. Please wait a moment and try again.'],
-    [503, 'The service is temporarily unavailable. Please try again later.'],
+    [401, 'AUTH_REQUIRED', 'Invalid email or password.'],
+    [
+      403,
+      'AUTHZ_FORBIDDEN',
+      'Sign-in was blocked. Refresh the page and try again.',
+    ],
+    [
+      429,
+      'RATE_LIMIT_EXCEEDED',
+      'Too many sign-in attempts. Please wait a moment and try again.',
+    ],
+    [
+      503,
+      'INTERNAL_SERVICE_UNAVAILABLE',
+      'The service is temporarily unavailable. Please try again later.',
+    ],
   ] as const)(
     'renders a truthful %s error message',
-    async (status, message) => {
+    async (status, code, message) => {
       signInMock.mockRejectedValue(
         new CoreApiError({
           message: 'backend message must not drive this UI',
           status,
-          code: 'BACKEND_CODE',
+          code,
           kind: status >= 500 ? 'server' : 'http',
         })
       )

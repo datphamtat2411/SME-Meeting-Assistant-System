@@ -34,6 +34,11 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Validate PI-01 inventory and negative tests
+        run: |
+          python3 scripts/verify_pi01_inventory.py
+          python3 -m unittest discover -s scripts -p 'test_verify_pi01_inventory.py' -v
+
       - name: Set up Java 21
         uses: actions/setup-java@v6
         with:

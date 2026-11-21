@@ -48,8 +48,8 @@ migration.
    bearer token, broker user, and storage user. Do not reuse `ai-worker`, Core
    publisher, broker bootstrap, or storage administrator credentials.
 3. Mount only the files listed by
-   `infra/local/secure-integration/intelligence-worker.env.example`. Container
-   paths and host paths are not interchangeable.
+   `services/ai/.env` under the `AI_MI_PROCESS_*` block. Container paths and
+   host paths are not interchangeable.
 4. Verify the dedicated quorum work/dead queues and exact route with
    `broker.py --intelligence`. The MI dead queue has no transcription consumer
    and no automatic replay path.

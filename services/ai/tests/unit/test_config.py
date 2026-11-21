@@ -163,6 +163,14 @@ def test_dotenv_loading_ignores_unrelated_keys_and_environment_wins(
     assert settings.http_port == 9001
 
 
+def test_empty_isolated_env_file_control_disables_default_dotenv_loading(monkeypatch):
+    monkeypatch.setenv("AI_SETTINGS_ENV_FILE", "")
+    monkeypatch.setenv("AI_SERVICE_IDENTITY", "ai-core")
+
+    with pytest.raises(ConfigurationError):
+        load_settings()
+
+
 def test_example_dotenv_loads_documented_defaults():
     env_file = Path(__file__).resolve().parents[2] / ".env.example"
 
@@ -1015,6 +1023,80 @@ def test_correction_invalid_environment_is_sanitized(monkeypatch, field):
 def test_worker_integration_settings_fail_closed(field, value):
     with pytest.raises(ValueError):
         Settings(service_name="test", service_identity="ai-core", _env_file=None, **{field: value})
+
+
+def test_isolated_endpoints_keep_loopback_route_separate_from_tls_identity():
+    settings = Settings(
+        service_name="test",
+        service_identity="ai-core",
+        _env_file=None,
+        rabbitmq_url="amqps://rabbitmq.internal:53101/sme-integration",
+        rabbitmq_connect_host="127.0.0.1",
+        rabbitmq_tls_server_name="rabbitmq.internal",
+        s3_endpoint_url="https://storage.internal:53102",
+        s3_connect_host="127.0.0.1",
+        s3_tls_server_name="storage.internal",
+        core_api_base_url="https://core-api.internal:53103",
+        core_api_connect_host="127.0.0.1",
+        core_api_tls_server_name="core-api.internal",
+    )
+    assert settings.rabbitmq_connect_host == "127.0.0.1"
+    assert settings.s3_connect_host == "127.0.0.1"
+    assert settings.core_api_connect_host == "127.0.0.1"
+
+
+def test_empty_connect_hosts_use_network_endpoint_routing():
+    settings = Settings(
+        service_name="test",
+        service_identity="ai-core",
+        _env_file=None,
+        rabbitmq_url="amqps://rabbitmq.internal:5671/sme-integration",
+        rabbitmq_connect_host="",
+        rabbitmq_tls_server_name="rabbitmq.internal",
+        s3_endpoint_url="https://storage.internal:9000",
+        s3_connect_host="",
+        s3_tls_server_name="storage.internal",
+        core_api_base_url="https://core-api.internal:8443",
+        core_api_connect_host="",
+        core_api_tls_server_name="core-api.internal",
+    )
+
+    assert settings.rabbitmq_connect_host is None
+    assert settings.s3_connect_host is None
+    assert settings.core_api_connect_host is None
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"rabbitmq_connect_host": "127.0.0.2"},
+        {
+            "rabbitmq_url": "amqps://unexpected.internal:53101/sme-integration",
+            "rabbitmq_connect_host": "127.0.0.1",
+            "rabbitmq_tls_server_name": "rabbitmq.internal",
+        },
+        {"s3_connect_host": "10.0.0.4"},
+        {
+            "s3_endpoint_url": "https://unexpected.internal:53102",
+            "s3_connect_host": "127.0.0.1",
+            "s3_tls_server_name": "storage.internal",
+        },
+        {"core_api_connect_host": "10.0.0.4"},
+        {
+            "core_api_base_url": "https://127.0.0.1:53103",
+            "core_api_connect_host": "127.0.0.1",
+            "core_api_tls_server_name": "core-api.internal",
+        },
+    ],
+)
+def test_isolated_endpoint_mismatch_is_rejected(overrides):
+    with pytest.raises(ValueError):
+        Settings(
+            service_name="test",
+            service_identity="ai-core",
+            _env_file=None,
+            **overrides,
+        )
 
 
 def test_worker_credentials_are_secret_and_outbound_tls_is_distinct():

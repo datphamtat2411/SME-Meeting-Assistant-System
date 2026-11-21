@@ -23,16 +23,38 @@ import org.flywaydb.core.api.exception.FlywayValidateException;
 import org.flywaydb.core.api.output.MigrateResult;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.ImportAutoConfiguration;
+import org.springframework.boot.flyway.autoconfigure.FlywayAutoConfiguration;
+import org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.testcontainers.service.connection.ServiceConnectionAutoConfiguration;
+import org.springframework.context.ApplicationContext;
+import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.Profile;
 import org.springframework.core.env.Environment;
+import org.springframework.scheduling.annotation.ScheduledAnnotationBeanPostProcessor;
 import org.springframework.test.context.ActiveProfiles;
 import org.testcontainers.containers.PostgreSQLContainer;
 
-@ActiveProfiles("test")
-@SpringBootTest(properties = "spring.flyway.locations=classpath:db/flyway-fixtures/valid")
+@ActiveProfiles({ "test", "flyway-migration-fixture" })
+@SpringBootTest(classes = FlywayMigrationIntegrationTests.MigrationTestConfiguration.class,
+		webEnvironment = SpringBootTest.WebEnvironment.NONE,
+		properties = {
+				"spring.flyway.locations=classpath:db/flyway-fixtures/valid",
+				// Fail closed if Testcontainers service-connection wiring ever disappears.
+				"spring.datasource.url=jdbc:postgresql://127.0.0.1:1/unused_flyway_fixture"
+		})
 @Import(PostgresTestConfiguration.class)
 class FlywayMigrationIntegrationTests {
+
+	/** No business tables or component scan; keep the real Boot/Testcontainers wiring. */
+	@Configuration(proxyBeanMethods = false)
+	@Profile("flyway-migration-fixture")
+	@ImportAutoConfiguration({ ServiceConnectionAutoConfiguration.class,
+			DataSourceAutoConfiguration.class, FlywayAutoConfiguration.class })
+	static class MigrationTestConfiguration {
+	}
 
 	private static final String VALID_LOCATION = "classpath:db/flyway-fixtures/valid";
 	private static final String MODIFIED_LOCATION = "classpath:db/flyway-fixtures/modified";
@@ -52,6 +74,14 @@ class FlywayMigrationIntegrationTests {
 
 	@Autowired
 	private PostgreSQLContainer<?> postgresContainer;
+
+	@Autowired
+	private ApplicationContext context;
+
+	@Test
+	void migrationOnlyFixtureDoesNotStartBusinessSchedulers() {
+		assertThat(this.context.getBeansOfType(ScheduledAnnotationBeanPostProcessor.class)).isEmpty();
+	}
 
 	@Test
 	void springBootStartupAutomaticallyAppliesTheValidMigration() throws Exception {

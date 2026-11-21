@@ -5,6 +5,7 @@ All material paths must be outside the checkout. No live file replacement or ser
 restart is performed. Renew writes a separately validated candidate for operator activation.
 """
 import argparse
+import ipaddress
 import os
 import re
 import stat
@@ -17,7 +18,15 @@ from urllib.parse import urlsplit
 REPO = Path(__file__).resolve().parents[3]
 CLIENTS = {"core-client": "core-api", "worker-client": "ai-worker", "mi-client": "mi-worker",
            "knowledge-client": "knowledge-worker"}
-ROLES = (*CLIENTS, "core-server", "broker-server", "storage-server")
+SERVER_ROLES = {
+    "core-server": (("DNS", "core-api.internal"),),
+    "broker-server": (("DNS", "rabbitmq.internal"),),
+    "storage-server": (("DNS", "storage.internal"),),
+    "ai-server": (("IP", "127.0.0.1"),),
+    "qdrant-server": (("DNS", "localhost"), ("IP", "127.0.0.1")),
+}
+_STRICT_SERVER_ROLES = frozenset({"ai-server", "qdrant-server"})
+ROLES = (*CLIENTS, *SERVER_ROLES)
 
 
 def external(path, *, directory=False, secret=False):
@@ -49,7 +58,25 @@ def public_key(cert):
     return run("openssl", "x509", "-in", str(cert), "-pubkey", "-noout")
 
 
+def _server_sans(role, hostname):
+    if role in _STRICT_SERVER_ROLES:
+        return SERVER_ROLES[role]
+    return (("DNS", hostname),)
+
+
+def _hostname(value):
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9.-]*", value) is not None
+
+
 def validate(role, cert, key, issuer, hostname=None, margin=3600):
+    if role not in ROLES:
+        raise ValueError("unknown certificate role")
     cert, key, issuer = external(cert), external(key, secret=True), external(issuer)
     data = cert.read_bytes()
     blocks = re.findall(rb"-----BEGIN CERTIFICATE-----\s*[A-Za-z0-9+/=\s]+-----END CERTIFICATE-----", data)
@@ -68,21 +95,43 @@ def validate(role, cert, key, issuer, hostname=None, margin=3600):
     command = ["openssl", "verify", "-no-CApath", "-no-CAstore", "-CAfile", str(issuer),
                "-untrusted", str(cert), "-purpose", purpose]
     if role not in CLIENTS:
-        if not hostname or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9.-]*", hostname):
-            raise ValueError("explicit DNS hostname required")
-        command += ["-verify_hostname", hostname]
+        if not _hostname(hostname):
+            raise ValueError("explicit server identity required")
+        expected_sans = _server_sans(role, hostname)
+        if role in _STRICT_SERVER_ROLES and hostname not in {value for _, value in expected_sans}:
+            raise ValueError("hostname does not identify the requested server role")
+        for kind, value in expected_sans:
+            command_identity = "-verify_ip" if kind == "IP" else "-verify_hostname"
+            command += [command_identity, value]
     run(*command, str(cert))
     eku = run("openssl", "x509", "-in", str(cert), "-noout", "-ext", "extendedKeyUsage").decode()
     expected = "TLS Web Client Authentication" if role in CLIENTS else "TLS Web Server Authentication"
-    if eku.splitlines()[1].strip() != expected:
+    eku_values = [
+        item.strip()
+        for item in eku.split(":", 1)[-1].split(",")
+        if item.strip()
+    ]
+    if eku_values != [expected]:
         raise ValueError("certificate requires exact role EKU")
     san = run("openssl", "x509", "-in", str(cert), "-noout", "-ext", "subjectAltName").decode()
     if role in CLIENTS:
         uris = re.findall(r"URI:([^,\s]+)", san)
         if uris != [f"urn:sme:service:{CLIENTS[role]}"]:
             raise ValueError("wrong or ambiguous workload identity")
-    elif hostname.lower() not in [x.lower() for x in re.findall(r"DNS:([^,\s]+)", san)]:
-        raise ValueError("explicit matching DNS SAN required")
+    else:
+        actual_sans = [
+            ("DNS", value) for value in re.findall(r"DNS:([^,\s]+)", san)
+        ] + [
+            ("IP", value) for value in re.findall(r"IP Address:([^,\s]+)", san)
+        ]
+        expected_sans = _server_sans(role, hostname)
+        if role in _STRICT_SERVER_ROLES:
+            if len(actual_sans) != len(set(actual_sans)) or set(actual_sans) != set(expected_sans):
+                raise ValueError("server SAN set is not the exact role contract")
+        elif hostname.lower() not in [
+            value.lower() for kind, value in actual_sans if kind == "DNS"
+        ]:
+            raise ValueError("explicit matching DNS SAN required")
     if public_key(cert) != run("openssl", "pkey", "-in", str(key), "-pubout"):
         raise ValueError("certificate/key mismatch")
 
@@ -107,13 +156,17 @@ def main():
     csr = directory / "request.csr"
     if args.minimum_validity < 60:
         raise ValueError("minimum validity must be at least 60 seconds")
-    if args.role not in CLIENTS and (not args.hostname or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9.-]*", args.hostname)):
-        raise ValueError("DNS hostname required")
+    if args.role not in CLIENTS and not _hostname(args.hostname):
+        raise ValueError("server identity required")
     if args.command == "csr":
         if any(p.exists() for p in (key, csr, cert)):
             raise ValueError("refusing to overwrite existing enrollment")
         identity = f"urn:sme:service:{CLIENTS[args.role]}" if args.role in CLIENTS else args.hostname
-        san = "URI:" + identity if args.role in CLIENTS else "DNS:" + identity
+        san = (
+            "URI:" + identity
+            if args.role in CLIENTS
+            else ",".join(f"{kind}:{value}" for kind, value in _server_sans(args.role, args.hostname))
+        )
         eku = "clientAuth" if args.role in CLIENTS else "serverAuth"
         # PKCS8, distinct role key. No secret or provisioner credential on command line.
         with tempfile.TemporaryDirectory(prefix=".csr-", dir=directory) as stage:

@@ -129,38 +129,49 @@ variants. No public proxy may target the private connector. Core's engine Valve
 independently checks the actual connector object, never Host/forwarding headers,
 and guards servlet forward/include/error dispatches.
 
-Copy `compose.env.example`, `core.env.example`, `worker.env.example`, and
-`intelligence-worker.env.example` outside Git,
-mode 0600. Edit literal absolute paths. Docker env files and application process
-environments are distinct. Supply bootstrap files:
+Use the canonical `infra/local/secure-integration/.env.example` as
+`infra/local/secure-integration/.env`, mode 0600. Core settings belong to
+`services/api/.env`, AI settings belong to `services/ai/.env`, and PostgreSQL
+bootstrap settings belong to `infra/local/postgres/.env`. The AI launcher
+renders short-lived, mode-0600 process files from its one canonical file;
+Docker env files and application process environments remain distinct.
+Supply bootstrap values in the secure integration `.env`:
 
-- `broker.env`: `RABBITMQ_DEFAULT_USER`, `RABBITMQ_DEFAULT_PASS`,
+- `RABBITMQ_DEFAULT_USER`, `RABBITMQ_DEFAULT_PASS`,
   `RABBITMQ_DEFAULT_VHOST=sme-integration`. No default credentials in this project.
-- `storage.env`: `RUSTFS_ACCESS_KEY`, `RUSTFS_SECRET_KEY` (operator bootstrap only).
-- `worker.env`: worker example plus **separate** `AI_RABBITMQ_USERNAME/PASSWORD`,
-  `AI_S3_ACCESS_KEY_ID/SECRET_ACCESS_KEY`. These are not administrator accounts.
-  Keep the required `AI_SERVICE_NAME` and `AI_SERVICE_IDENTITY=ai-worker` from the
-  example; the smoke CLI disables implicit `.env` loading and reads its process
-  environment. These settings name the process; mTLS identity still comes only
-  from the verified certificate URI SAN.
-- `intelligence-worker.env`: dedicated MI worker example with
-  `AI_SERVICE_IDENTITY=mi-worker`, separate MI broker/storage/Core acceptance
-  credentials, and all MI/model gates disabled. Never reuse the transcription
-  worker certificate or account. Provider credentials remain external and are
-  required only for an approved enabled inference run.
-- Core's normal DB/JWT/SMTP settings plus `core.env.example` and separate publisher
+- `RUSTFS_ACCESS_KEY`, `RUSTFS_SECRET_KEY` (operator bootstrap only).
+- When starting the Knowledge worker, `QDRANT_TLS_DIR` and a Qdrant API key
+  source are required. Set `QDRANT_API_KEY_FILE` to a mode-0600 protected
+  one-line key file, or supply `QDRANT_API_KEY` in the ignored local file.
+  `dev.sh` renders the protected source into a private runtime Compose
+  interpolation file; it never prints or commits the key. Qdrant uses a
+  separate existing server certificate directory and `qdrant_secure_data`;
+  no permission helper or CA operation is run by `dev.sh`.
+- `services/ai/.env`: the transcription process block supplies separate
+  `AI_RABBITMQ_USERNAME/PASSWORD` and `AI_S3_ACCESS_KEY_ID/SECRET_ACCESS_KEY`.
+  The Knowledge and Meeting Intelligence blocks use separate identities.
+  These are not administrator accounts. Provider credentials remain external
+  and are required only for an approved enabled inference run. The MI worker
+  also uses the same pre-existing logical storage alias as Core; the alias is
+  not a bucket name, IAM user, or permission grant.
+- `services/api/.env`: Core's normal DB/JWT/SMTP settings plus separate publisher
   `RABBITMQ_USERNAME/PASSWORD`, storage `APP_MEDIA_STORAGE_ACCESS_KEY/SECRET_KEY`.
 
 ```sh
-docker compose --env-file "$CONFIG/compose.env" -f infra/local/secure-integration/compose.yaml config --quiet
-docker compose --env-file "$CONFIG/compose.env" -f infra/local/secure-integration/compose.yaml --profile http up -d --build
-docker compose --env-file "$CONFIG/compose.env" -f infra/local/secure-integration/compose.yaml ps
-docker compose --env-file "$CONFIG/compose.env" -f infra/local/secure-integration/compose.yaml --profile checks run --rm transport-health
+./dev.sh doctor
+./dev.sh up
+SME_DEV_SECURE_SMOKE=1 ./dev.sh smoke
 ```
 
-The last command does read-only infrastructure checks; exit 2 means the positives
-passed but live negatives need `--wrong-ca`. Run the complete check on the host
-below with host paths/ports. RustFS health verifies HTTPS with its issuer bundle;
+`dev.sh up` starts only the normal secure-integration dependencies (RabbitMQ,
+RustFS and its storage boundary, plus Qdrant when the Knowledge worker is
+selected) with `--no-deps`; it does not start the PI-05 Compose project or the
+root-owned permission helpers. It then starts host Core and AI HTTP processes
+and waits for dependency/process readiness. Existing containers and volumes are
+verified by Compose project labels before they are managed. The secure smoke
+command uses the already-running dependencies and does not create resources.
+Exit 2 means the positives passed but live negatives need `--wrong-ca`. Run the
+complete check on the host below with host paths/ports. RustFS health verifies HTTPS with its issuer bundle;
 Rabbit health checks its listener, while SDK smoke proves TLS/login. AI readiness
 is checked externally by Java or its existing separate operator probe, never by
 mounting the probe key into AI Core. Existing AI renewal's container allowlist
@@ -395,6 +406,34 @@ tool refuses existing users and never rotates credentials. Keep the MI Core
 storage grant limited to source snapshots and accepted-result reads. It must not
 write or delete `processing/*/intelligence/results/*`.
 
+### Meeting Intelligence storage alias and lifecycle
+
+`APP_MEDIA_INTELLIGENCE_STORAGE_ID` is a Core-owned logical descriptor carried
+in the private worker source and result-slot contracts. It selects no bucket,
+does not create storage, and is not an IAM identity. For an approved run,
+Core's value must exactly match the already provisioned MI worker
+`AI_S3_STORAGE_ID` value. Keep the existing endpoint, bucket, TLS trust, and
+storage boundary unchanged; do not invent a new alias as part of activation.
+
+The underlying storage is the existing `APP_MEDIA_STORAGE_*` configuration.
+Core creates and verifies immutable source snapshots under
+`processing/{job}/intelligence/source/{snapshot}.json`; the MI identity may
+read those snapshots and may create/read the corresponding immutable result
+objects under `processing/{job}/intelligence/results/{stage}.json`. Core reads
+accepted results and owns canonical acceptance. The MI identity cannot read
+meeting uploads, write source snapshots, delete results, list the bucket, or
+administer storage. The Core identity must not write MI result objects.
+
+Provisioning is an explicit operator action against the already approved
+bucket: review `storage_admin.py policy --role intelligence`, then provision
+one separate workload IAM identity with externally supplied restricted
+credentials. The tool refuses existing or uninspectable users and performs no
+bucket creation, deletion, or credential rotation. Keep
+`APP_MEDIA_STORAGE_CREATE_BUCKET_IF_MISSING=false`. Source/result retention is
+not inferred from the alias; baseline orphan cleanup remains disabled, and any
+future cleanup requires the existing audited opt-in with a minimum age of at
+least 24 hours.
+
 Secure Core sets `spring.rabbitmq.dynamic=false` and
 `app.media.messaging.topology=external-quorum`; its publisher cannot administer
 resources. Simple local development retains `legacy` declarations on its separate
@@ -595,6 +634,45 @@ an approved policy and Core-reference reconciliation; no arbitrary expiry is ass
 
 ## E2E-04 Core-owned controlled acceptance
 
+### Future bounded MI activation (operator authorization required)
+
+This repository is **offline-ready for a fresh authorization decision**, not
+live-E2E-ready. Do not enable these values in the committed examples or in the
+current baseline. After the broker, storage, mTLS, identity, acceptance-token,
+browser-identity, and provider approvals are independently recorded, a single
+operator-owned run may use the existing launch wrappers with a run-owned
+environment overlay containing the following full-stage contract:
+
+```text
+APP_MEDIA_OUTBOX_ENABLED=true
+APP_MEDIA_INTELLIGENCE_ENABLED=true
+APP_MEDIA_INTELLIGENCE_DISPATCH_ENABLED=true
+APP_MEDIA_INTELLIGENCE_INFRASTRUCTURE_VERIFIED=true
+APP_MEDIA_INTELLIGENCE_STORAGE_ID=<existing-approved-storage-alias>
+APP_MEDIA_INTELLIGENCE_ENABLED_STAGES=GENERATING_SUMMARY,EXTRACTING_DECISIONS,EXTRACTING_ACTION_ITEMS
+APP_MEDIA_PROCESSING_REQUIRED_DOWNSTREAM_STAGES=GENERATING_SUMMARY,EXTRACTING_DECISIONS,EXTRACTING_ACTION_ITEMS
+APP_MEDIA_PROCESSING_ACTION_ITEM_HANDOFF_ENABLED=true
+APP_MI_INTERNAL_RESULT_ENABLED=true
+```
+
+`<existing-approved-storage-alias>` is an operator-supplied value, not a
+placeholder to invent here. The Core and MI worker values must match. The
+dedicated MI worker is launched as `run-ai-worker.sh mi`; its launch-time
+selection enables Worker, inference, Summary, Decisions, and Action Items
+without changing the canonical disabled source file. Provider credentials and
+the existing protected acceptance-token sources remain run-owned and are never
+copied into this repository.
+
+Before any such run, record byte hashes and metadata for every baseline file
+the selected wrappers would read, store the copies outside the repository with
+mode `0600`, and record the exact run-owned overlay separately. Do not source
+dotenv files or edit a shared file in place. After the one bounded run, stop
+only the run-owned processes, remove only the run-owned overlay, and verify
+the original files with `cmp` and the saved SHA-256 manifest. If a baseline
+file differs from its pre-run hash, stop and obtain owner review rather than
+overwriting another change. No queue, volume, database row, token, legacy
+configuration file, or historical DLQ message is part of this restoration.
+
 After the secure broker/storage checks and controlled activation prerequisites
 above, enable Core's existing outbox and transcription capability with
 `external-quorum`, dead-letter reconciliation, the verified infrastructure
@@ -718,3 +796,13 @@ Do not use `down -v`, queue purge, direct backend exposure or result deletion to
 checks pass. No automated cleanup of shared fixture prefixes is provided. Stop the
 secure project with the non-destructive `stop` command above. E2E-04 still owns real
 worker interoperability; E2E-05 still owns final fully connected acceptance.
+
+
+## PI-06 operational release readiness
+
+Staged feature gates, private PostgreSQL-derived monitoring, alert ownership,
+incident tracing, rollback procedure and the release-admission verifier are
+documented in [PI06-OPERATIONS.md](../../../services/api/docs/PI06-OPERATIONS.md).
+The committed pi06-release.env.example is intentionally disabled and not a
+production environment. Live PI-05 proof and independent operator readiness
+checks remain mandatory before approval.

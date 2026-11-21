@@ -267,7 +267,8 @@ function normalizeBackendError(error: AxiosError): CoreApiError {
     status,
     code:
       readString(getErrorPayloadValue(payload, 'code')) ??
-      readString(getErrorPayloadValue(payload, 'errorCode')),
+      readString(getErrorPayloadValue(payload, 'errorCode')) ??
+      (kind === 'network' ? 'NETWORK_ERROR' : undefined),
     fieldErrors,
     retryAfter: typeof retryAfter === 'string' ? retryAfter : undefined,
     kind,

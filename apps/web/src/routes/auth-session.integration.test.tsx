@@ -1,3 +1,9 @@
+import {
+  AxiosError,
+  AxiosHeaders,
+  type AxiosAdapter,
+  type AxiosResponse,
+} from 'axios'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import {
   createMemoryHistory,
@@ -8,7 +14,13 @@ import { routeTree } from '@/routeTree.gen'
 import { beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { page } from 'vitest/browser'
-import { CoreApiError, coreApi } from '@/lib/core-api'
+import {
+  CoreApiError,
+  coreApi,
+  coreApiAxios,
+  resetCsrfToken,
+} from '@/lib/core-api'
+import { RECOVERY_DISABLED_MARKER } from '@/lib/request-recovery'
 import { DirectionProvider } from '@/context/direction-provider'
 import { FontProvider } from '@/context/font-provider'
 import { ThemeProvider } from '@/context/theme-provider'
@@ -45,6 +57,27 @@ const apiError = (status: number, kind: 'http' | 'network' | 'server') =>
     code: status === 401 ? 'AUTH_REQUIRED' : 'AUTHZ_FORBIDDEN',
     kind,
   })
+
+function unauthorizedError(config: Parameters<AxiosAdapter>[0]): AxiosError {
+  const response: AxiosResponse<unknown> = {
+    data: {
+      code: 'AUTH_REQUIRED',
+      message: 'Authentication is required.',
+    },
+    status: 401,
+    statusText: 'Unauthorized',
+    headers: new AxiosHeaders(),
+    config,
+  }
+
+  return new AxiosError(
+    'Request failed with status 401',
+    'ERR_BAD_REQUEST',
+    config,
+    undefined,
+    response
+  )
+}
 
 let getCurrentUser: MockInstance
 
@@ -83,6 +116,8 @@ async function renderRoute(initialPath: string) {
 describe('session restoration and protected routing', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
+    coreApiAxios.defaults.adapter = undefined
+    resetCsrfToken()
     resetAuthLifecycleAfterSignIn()
     getCurrentUser = vi.spyOn(coreApi, 'get')
     getCurrentUser.mockResolvedValue(identity as never)
@@ -141,6 +176,31 @@ describe('session restoration and protected routing', () => {
       .element(screen.getByText('Canonical User'))
       .not.toBeInTheDocument()
     expect(getCurrentUser).toHaveBeenCalledTimes(2)
+    expect(
+      getCurrentUser.mock.calls[getCurrentUser.mock.calls.length - 1]?.[1]
+    ).toMatchObject({
+      [RECOVERY_DISABLED_MARKER]: true,
+    })
+  })
+
+  it('renders the sign-in form for an actual anonymous Core 401 without recovery', async () => {
+    getCurrentUser.mockRestore()
+    const requests: string[] = []
+    coreApiAxios.defaults.adapter = async (config) => {
+      requests.push(config.url ?? '')
+      throw unauthorizedError(config)
+    }
+
+    const { screen, router } = await renderRoute('/sign-in')
+
+    await expect
+      .element(screen.getByRole('button', { name: 'Sign in' }))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('Session temporarily unavailable'))
+      .not.toBeInTheDocument()
+    expect(router.state.location.pathname).toBe('/sign-in')
+    expect(requests).toEqual(['/auth/me'])
   })
 
   it('renders denied without redirecting to sign-in for a 403 identity response', async () => {

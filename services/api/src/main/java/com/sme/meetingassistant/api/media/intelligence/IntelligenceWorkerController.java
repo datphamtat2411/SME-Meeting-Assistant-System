@@ -31,6 +31,16 @@ public class IntelligenceWorkerController {
     public ResponseEntity<ApiResponse<Object>> fail(@PathVariable String jobId,HttpServletRequest request) throws IOException {
         return success(worker.fail(id(jobId),IntelligenceCommands.fail(body(request)),PrivateConnector.workerCertificateFingerprint(request)));
     }
+    @PostMapping("/attempts/reserve")
+    public ResponseEntity<ApiResponse<Object>> reserveAttempt(@PathVariable String jobId,HttpServletRequest request) throws IOException {
+        return success(worker.reserveAttempt(id(jobId),IntelligenceCommands.attemptReserve(body(request)),
+            PrivateConnector.workerCertificateFingerprint(request)));
+    }
+    @PostMapping("/attempts/report")
+    public ResponseEntity<ApiResponse<Object>> reportAttempt(@PathVariable String jobId,HttpServletRequest request) throws IOException {
+        return success(worker.reportAttempt(id(jobId),IntelligenceCommands.attemptReport(body(request)),
+            PrivateConnector.workerCertificateFingerprint(request)));
+    }
     @GetMapping("/deliveries/{eventId}")
     public ResponseEntity<ApiResponse<Object>> status(@PathVariable String jobId,@PathVariable String eventId,HttpServletRequest request) {
         correlation(request);return success(worker.status(id(jobId),id(eventId)));

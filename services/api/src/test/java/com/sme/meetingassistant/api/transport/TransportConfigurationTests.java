@@ -40,4 +40,14 @@ class TransportConfigurationTests {
             "http://storage.internal:9000", java.nio.file.Path.of("/absent")))
             .isInstanceOf(IllegalStateException.class);
     }
+
+    @Test void loopbackTlsRouteRejectsUnexpectedDestinationOrIdentity() {
+        var ssl = (javax.net.ssl.SSLSocketFactory) javax.net.ssl.SSLSocketFactory.getDefault();
+        assertThatThrownBy(() -> new LoopbackTlsSocketFactory(
+            ssl, "127.0.0.2", "rabbitmq.internal", 3000))
+            .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new LoopbackTlsSocketFactory(
+            ssl, "127.0.0.1", "rabbit mq.internal", 3000))
+            .isInstanceOf(IllegalArgumentException.class);
+    }
 }

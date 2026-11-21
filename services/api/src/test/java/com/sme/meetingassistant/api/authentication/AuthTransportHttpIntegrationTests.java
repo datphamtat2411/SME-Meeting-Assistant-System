@@ -7,11 +7,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.sme.meetingassistant.api.authentication.transport.AuthTransport;
 import com.sme.meetingassistant.api.authentication.repository.AuthSessionRepository;
 import com.sme.meetingassistant.api.authentication.entity.AuthSessionStatus;
+import com.sme.meetingassistant.api.authentication.transport.SessionCsrfTokens;
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
 import com.sme.meetingassistant.api.userorganization.entity.*;
 import com.sme.meetingassistant.api.userorganization.repository.UserRepository;
 import com.sme.meetingassistant.api.userorganization.setup.AccountSetupPasswordHasher;
 import jakarta.servlet.http.Cookie;
+import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
@@ -29,6 +31,7 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.test.util.ReflectionTestUtils;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.JsonNode;
 
@@ -36,15 +39,19 @@ import tools.jackson.databind.JsonNode;
 @SpringBootTest
 @AutoConfigureMockMvc
 @Import(PostgresTestConfiguration.class)
-@TestPropertySource(properties = "app.auth.transport.enabled=true")
+@TestPropertySource(properties = {
+    "app.auth.transport.enabled=true",
+    "app.http.security.cors.allowed-origins=http://localhost:5173"
+})
 class AuthTransportHttpIntegrationTests {
-    private static final String ORIGIN = "http://localhost:3000";
+    private static final String ORIGIN = "http://localhost:5173";
     private static final String PASS = "A long Unicode transport password 🔐 2026!";
     @Autowired MockMvc mvc;
     @Autowired ObjectMapper mapper;
     @Autowired UserRepository users;
     @Autowired AuthSessionRepository sessions;
     @Autowired AccountSetupPasswordHasher hasher;
+    @Autowired SessionCsrfTokens csrfTokens;
     @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
     private UserEntity user;
 
@@ -161,11 +168,37 @@ class AuthTransportHttpIntegrationTests {
             .cookie(cookie(start, AuthTransport.CSRF))
             .contentType(MediaType.APPLICATION_JSON).content(loginBody))
             .andExpect(status().isForbidden());
+        String expiredMessage = (Instant.now().getEpochSecond() - 601) + "." + "A".repeat(32);
+        String expiredProof = expiredMessage + "."
+            + ReflectionTestUtils.invokeMethod(
+                csrfTokens, "signature", "prelogin", expiredMessage);
+        mvc.perform(post("/api/v1/auth/login").header(HttpHeaders.ORIGIN, ORIGIN)
+            .cookie(new Cookie(AuthTransport.CSRF, expiredProof))
+            .header("X-CSRF-Token", expiredProof)
+            .contentType(MediaType.APPLICATION_JSON).content(loginBody))
+            .andExpect(status().isForbidden());
         mvc.perform(post("/api/v1/auth/login").header(HttpHeaders.ORIGIN, "https://evil.invalid")
             .cookie(cookie(start, AuthTransport.CSRF))
             .header("X-CSRF-Token", data(start).path("csrfToken").asText())
             .contentType(MediaType.APPLICATION_JSON).content(loginBody))
             .andExpect(status().isForbidden());
+        assertThat(sessions.countByUserIdAndStatus(user.getId(), AuthSessionStatus.ACTIVE)).isZero();
+    }
+
+    @Test
+    void invalidWebCredentialsReturnCanonicalUnauthorizedWithoutCreatingSession() throws Exception {
+        var bootstrap = bootstrap();
+        String loginBody = json(Map.of("email", user.getEmail(), "password", PASS + "-wrong"));
+        var rejected = mvc.perform(post("/api/v1/auth/login")
+            .header(HttpHeaders.ORIGIN, ORIGIN)
+            .header("X-CSRF-Token", data(bootstrap).path("csrfToken").asText())
+            .cookie(cookie(bootstrap, AuthTransport.CSRF))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(loginBody))
+            .andExpect(status().isUnauthorized()).andReturn();
+
+        assertThat(mapper.readTree(rejected.getResponse().getContentAsString())
+            .path("code").asText()).isEqualTo("AUTH_REQUIRED");
         assertThat(sessions.countByUserIdAndStatus(user.getId(), AuthSessionStatus.ACTIVE)).isZero();
     }
 

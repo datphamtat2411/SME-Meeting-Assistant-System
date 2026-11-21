@@ -61,6 +61,7 @@ _RETRYABLE_CORE_CODES = frozenset({
     "SERVICE_UNAVAILABLE",
     "WORKER_TRANSPORT",
     "WORKER_RESPONSE_INVALID",
+    "WORKER_PERMIT_STALE",
 })
 _PERMANENT_CORE_CODES = frozenset({
     "WORKER_DELIVERY_UNKNOWN",
@@ -68,12 +69,26 @@ _PERMANENT_CORE_CODES = frozenset({
     "WORKER_IDENTITY_CONFLICT",
     "WORKER_GENERATION_CONFLICT",
     "WORKER_RESULT_CONFLICT",
+    "WORKER_SOURCE_SUPERSEDED",
+    "WORKER_GENERATION_SEALED",
+    "WORKER_PERMIT_BUSY",
+    "WORKER_PERMIT_CONFLICT",
+    "WORKER_PERMIT_NOT_FOUND",
+    "WORKER_PERMIT_REQUIRED",
+    "WORKER_PERMIT_OPEN",
+    "WORKER_PERMIT_NOT_REUSABLE",
+    "WORKER_PERMIT_NOT_TERMINAL",
+    "WORKER_PERMIT_NOT_STARTABLE",
+    "WORKER_PERMIT_ALREADY_STARTED",
+    "WORKER_PERMIT_NOT_RUNNING",
+    "WORKER_PERMIT_START_CONFLICT",
     "WORKER_CONTRACT_UNSUPPORTED",
     "VALIDATION_ERROR",
     "PAYLOAD_TOO_LARGE",
     "UNSUPPORTED_MEDIA_TYPE",
 })
 _ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,79}$")
+_MAX_STALE_PERMIT_REACQUISITIONS = 1
 
 
 class KnowledgeWorkerFailure(Exception):
@@ -230,6 +245,7 @@ class KnowledgeIndexingWorker:
         self.stop_intake = asyncio.Event()
         self._slots = asyncio.Semaphore(settings.knowledge_indexing_worker_concurrency)
         self._event_locks: dict[str, asyncio.Lock] = {}
+        self._mutation_finalizers: set[asyncio.Task] = set()
         self._closed = False
 
     @property
@@ -341,6 +357,115 @@ class KnowledgeIndexingWorker:
             raise KnowledgeWorkerFailure(error.category, retryable=retryable) from error
         raise KnowledgeWorkerFailure("LIFECYCLE_OPERATION_INVALID", retryable=False)
 
+    @staticmethod
+    def _mutation_failure(error: Exception) -> _IndexOutcome:
+        if isinstance(error, KnowledgeWorkerFailure):
+            return _IndexOutcome(
+                "RETRYABLE_FAILURE" if error.retryable else "TERMINAL_FAILURE",
+                0,
+                error_code=error.code,
+            )
+        if isinstance(error, QdrantError):
+            retryable = error.category in {
+                "QDRANT_UNAVAILABLE", "PERSISTENCE_FAILED", "PERSISTENCE_VERIFY_FAILED",
+            }
+            return _IndexOutcome(
+                "RETRYABLE_FAILURE" if retryable else "TERMINAL_FAILURE",
+                0,
+                error_code=error.category,
+            )
+        return _IndexOutcome("RETRYABLE_FAILURE", 0, error_code="QDRANT_MUTATION_FAILED")
+
+    async def _finish_permitted_mutation(self, event, claim, permit, mutation_future):
+        try:
+            try:
+                outcome = await asyncio.shield(mutation_future)
+                if not isinstance(outcome, _IndexOutcome):
+                    raise RuntimeError("Invalid knowledge mutation outcome")
+            except Exception as error:
+                outcome = self._mutation_failure(error)
+            success = outcome.state in {"INDEXED", "NO_ELIGIBLE_CONTENT", "INVALIDATED", "DELETED"}
+            await self.core.complete_write_permit(
+                event,
+                claim,
+                permit,
+                state="SUCCEEDED" if success else "FAILED",
+                outcome_code="NONE" if success else outcome.error_code,
+            )
+            return outcome
+        except CoreError:
+            # The mutation has terminated, but failure to durably close the
+            # RUNNING permit is fail-closed and requires controlled recovery.
+            self.stop_intake.set()
+            raise
+
+    def _track_mutation_finalizer(self, task: asyncio.Task) -> None:
+        self._mutation_finalizers.add(task)
+        task.add_done_callback(self._mutation_finalizers.discard)
+
+    async def _run_permitted_mutation(self, event, claim, guard, operation):
+        for stale_reacquisitions in range(_MAX_STALE_PERMIT_REACQUISITIONS + 1):
+            permit = await guard.protect(self.core.acquire_write_permit(
+                event, claim, deadline=guard.deadline,
+            ))
+            if (getattr(permit, "state", None) != "RESERVED"
+                    or not getattr(permit, "mutationExecutionId", None)):
+                raise CoreError(409, "WORKER_PERMIT_CONFLICT")
+            try:
+                permit = await guard.protect(self.core.start_write_permit(
+                    event, claim, permit, deadline=guard.deadline,
+                ))
+            except CoreError as error:
+                if error.code != "WORKER_PERMIT_STALE" or not guard.live():
+                    raise
+                if stale_reacquisitions >= _MAX_STALE_PERMIT_REACQUISITIONS:
+                    raise
+                # No external mutation started for a cancelled reservation.
+                # Reacquire against the new generation epoch instead of
+                # redelivering a still-live claim until the broker limit.
+                await asyncio.sleep(0)
+                continue
+            if (getattr(permit, "state", None) != "RUNNING"
+                    or not getattr(permit, "mutationExecutionId", None)):
+                raise CoreError(409, "WORKER_PERMIT_CONFLICT")
+            break
+        else:
+            raise CoreError(409, "WORKER_PERMIT_STALE")
+        loop = asyncio.get_running_loop()
+        # Keep the concurrent executor future alive independently of the
+        # asyncio waiter. Cancelling a wrapped future cannot stop its thread.
+        mutation_future = loop.run_in_executor(None, operation)
+        finalizer = asyncio.create_task(self._finish_permitted_mutation(
+            event, claim, permit, mutation_future,
+        ))
+        self._track_mutation_finalizer(finalizer)
+        lost = asyncio.create_task(guard.lost.wait())
+        try:
+            done, _ = await asyncio.wait(
+                (mutation_future, lost), return_when=asyncio.FIRST_COMPLETED,
+            )
+            if lost in done or not guard.live():
+                raise KnowledgeLeaseLost()
+            return await finalizer
+        except asyncio.CancelledError:
+            # The finalizer intentionally remains scheduled. If the thread is
+            # still blocked, permit completion must wait for physical return.
+            raise
+        finally:
+            lost.cancel()
+            await asyncio.gather(lost, return_exceptions=True)
+            if finalizer.done():
+                await asyncio.gather(finalizer, return_exceptions=True)
+
+    async def wait_for_mutations(self, timeout: float) -> bool:
+        tasks = tuple(self._mutation_finalizers)
+        if not tasks:
+            return True
+        done, pending = await asyncio.wait(tasks, timeout=max(0.0, timeout))
+        for task in done:
+            await asyncio.gather(task, return_exceptions=True)
+        return not pending
+
     async def _submit(self, event, claim, snapshot, outcome, guard):
         error_code = outcome.error_code
         snapshot_id = event.snapshot.snapshot_id if event.snapshot is not None else None
@@ -412,16 +537,26 @@ class KnowledgeIndexingWorker:
         try:
             if not guard.live():
                 raise KnowledgeLeaseLost()
-            try:
-                snapshot = None
-                if event.operation == "UPSERT":
+            snapshot = None
+            if event.operation == "UPSERT":
+                try:
                     snapshot = await self._snapshot(event, claim, guard)
-                    outcome = await guard.protect(asyncio.to_thread(self._process, snapshot))
-                else:
-                    outcome = await guard.protect(asyncio.to_thread(self._process_lifecycle, event))
-            except KnowledgeWorkerFailure as failure:
-                outcome = _IndexOutcome("RETRYABLE_FAILURE" if failure.retryable else "TERMINAL_FAILURE", 0,
-                                        error_code=failure.code)
+                    outcome = await self._run_permitted_mutation(
+                        event, claim, guard, lambda: self._process(snapshot),
+                    )
+                except KnowledgeWorkerFailure as failure:
+                    pre_permit_outcome = _IndexOutcome(
+                        "RETRYABLE_FAILURE" if failure.retryable else "TERMINAL_FAILURE",
+                        0,
+                        error_code=failure.code,
+                    )
+                    outcome = await self._run_permitted_mutation(
+                        event, claim, guard, lambda: pre_permit_outcome,
+                    )
+            else:
+                outcome = await self._run_permitted_mutation(
+                    event, claim, guard, lambda: self._process_lifecycle(event),
+                )
             if not guard.live():
                 raise KnowledgeLeaseLost()
             status = await self._submit(event, claim, snapshot if "snapshot" in locals() else None, outcome, guard)
@@ -583,8 +718,18 @@ class KnowledgeIndexingExecution:
         if self._exited:
             return
         self._exited = True
-        await self.resources.aclose()
-        if self.adapter is not None:
-            self.adapter.close()
-        if self.store is not None:
-            self.store.close()
+        settled = True
+        if self.worker is not None:
+            settled = await self.worker.wait_for_mutations(
+                min(30.0, max(1.0, self.settings.knowledge_indexing_worker_execution_timeout_seconds)),
+            )
+        if settled:
+            await self.resources.aclose()
+            if self.adapter is not None:
+                self.adapter.close()
+            if self.store is not None:
+                self.store.close()
+        else:
+            # Do not close Qdrant/Core resources while a synchronous writer is
+            # still running. The unresolved permit is the recovery fence.
+            logger.error("worker.knowledge_indexing.mutation_unresolved")

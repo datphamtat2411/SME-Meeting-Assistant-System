@@ -16,7 +16,8 @@ from .contracts import (
 from .errors import IntelligenceError, check_authority, require
 from .processor import StageContext
 
-ACTION_PROMPT_VERSION = "action-items-v1"
+ACTION_PROMPT_VERSION = "action-items-v2"
+ACTION_GROUP_PROMPT_VERSION = "action-resolution-v2"
 _STATES = ["SUGGESTED", "ASSIGNED", "COMMITTED", "REVISED", "CANCELLED", "UNRESOLVED", "CONDITIONAL", "HISTORICAL"]
 _NEGATIVE = re.compile(r"không cần|khỏi cần|hủy|huỷ|bỏ việc|đừng|cancel|không làm nữa", re.I)
 _UNCERTAIN = re.compile(r"\?|hay là|nên |có lẽ|chưa chốt|chưa thống nhất|nếu |nếu như|có thể|not agreed", re.I)
@@ -74,7 +75,12 @@ Gộp lặp lại/overlap, giao việc rồi hủy, sửa phạm vi/hạn/ngư�
 Không gộp chỉ vì cùng chữ API; API đăng nhập và API thanh toán là hai việc khác. Hai deliverable
 được giao riêng vẫn riêng. Đại từ 'việc này' chỉ liên kết khi nguồn chứng minh cùng đầu việc;
 mâu thuẫn trách nhiệm không được tự chọn người thắng. Giữ tất cả trạng thái âm để bộ chọn cục bộ
-giải quyết theo thứ tự nguồn, không thứ tự JSON. Không dùng Summary hoặc Decision. Trả đúng JSON.
+giải quyết theo thứ tự nguồn, không thứ tự JSON. Nếu deliverable khác nhau thì mặc định tạo nhóm
+riêng, kể cả khi cùng dự án/chủ đề, là bước trước/sau, hoặc hành động sau bao hàm từ của hành động
+trước. Chỉ gộp khác deliverable khi tín hiệu sau là REVISED, bằng chứng nêu rõ sửa/đổi/thay/chuyển
+và chỉ ra deliverable trước; ASSIGNED, COMMITTED hoặc HISTORICAL khác deliverable không phải là
+revision. Khi không chứng minh được cùng một nghĩa vụ, giữ các nhóm singleton thay vì ép gộp.
+Không dùng Summary hoặc Decision. Trả đúng JSON.
 """.strip()
 
 
@@ -285,8 +291,7 @@ class ActionItemProcessor:
             tokens += request.window.estimated_input_tokens
             require(calls <= self.settings.meeting_intelligence_action_item_max_model_calls
                 and tokens <= self.settings.meeting_intelligence_max_total_context_tokens, "CONTEXT_BUDGET")
-            result = self.adapter.complete(request)
-            check_authority(context.deadline, context.cancelled)
+            result = prepared.execute_request(self.adapter, request)
             output = _validated_output(result, request, source)
             current = (result.requested_model, result.provider)
             require(producer is None or producer == current, "INTEGRITY")
@@ -306,7 +311,7 @@ class ActionItemProcessor:
         if len(ordered) > 1:
             payload = canonical_json(dict(data_classification="validated_derived_action_evidence",
                 source=asdict(source.identity), signals=[r.derived(source) for r in ordered]))
-            task = TaskSpec(_GROUP_PROMPT, "action-resolution-v1", _GROUP_SCHEMA)
+            task = TaskSpec(_GROUP_PROMPT, ACTION_GROUP_PROMPT_VERSION, _GROUP_SCHEMA)
             # Single bounded global pass. Never truncate input or silently discard
             # material signals to make synthesis fit a provider's budget.
             request = prepared.derived_request(task, payload, "resolution-1")

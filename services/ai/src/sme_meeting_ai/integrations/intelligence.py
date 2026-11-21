@@ -3,7 +3,7 @@
 import asyncio
 import base64
 import re
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import uuid4
 
 import httpx
@@ -27,6 +27,7 @@ ROUTE = "processing.intelligence.requested"
 EVENT_TYPE = "PROCESSING_INTELLIGENCE_STAGE_REQUESTED"
 Stage = Literal["GENERATING_SUMMARY", "EXTRACTING_DECISIONS", "EXTRACTING_ACTION_ITEMS"]
 TERMINAL = frozenset(("RESULT_ACCEPTED", "FAILURE_RECORDED", "SUPERSEDED"))
+Money = Annotated[str, Field(pattern=r"^(?:0|[1-9][0-9]*)(?:\.[0-9]{1,24})?$")]
 
 
 class IntelligenceEvent(WireModel):
@@ -157,6 +158,25 @@ class IntelligenceClaim(IntelligenceLease):
         return self
 
 
+class ProviderAttemptResult(Identity):
+    attemptId: Uuid
+    outcome: Literal["RESERVED", "SUCCEEDED", "FAILED"]
+    estimatedInputTokens: Count
+    outputTokenCeiling: Count
+    reservedTokens: Count
+    estimatedCostUsd: Money
+    reportedCostUsd: Money | None
+    replay: bool
+    budgetExceeded: bool
+    aggregateReservedAttempts: Count
+    aggregateReservedTokens: Count
+    aggregateEstimatedCostUsd: Money
+    aggregateReportedCostUsd: Money
+    reservedTokenCeiling: Count
+    estimatedCostCeilingUsd: Money
+    providerAccountLimitEnforced: Literal[False]
+
+
 class AcceptedResult(WireModel):
     replay: bool
     writtenRows: int = Field(ge=0)
@@ -204,8 +224,12 @@ class IntelligenceCoreClient(CoreApiClient):
         payload = data["data"]
         if payload.get("contractVersion") != "1.0":
             raise CoreError(422, "WORKER_CONTRACT_UNSUPPORTED")
-        model = (IntelligenceClaim if operation == "claim" and "claimToken" in payload
-                 else IntelligenceLease if operation == "renew" else IntelligenceStatus)
+        model = (
+            IntelligenceClaim if operation == "claim" and "claimToken" in payload
+            else IntelligenceLease if operation == "renew"
+            else ProviderAttemptResult if operation in {"attempts/reserve", "attempts/report"}
+            else IntelligenceStatus
+        )
         result = model.model_validate(payload)
         if (result.processingJobId != event.processingJobId or result.eventId != event.eventId
                 or result.executionStageRunId != event.executionStageRunId
@@ -218,6 +242,72 @@ class IntelligenceCoreClient(CoreApiClient):
             eventSchemaVersion=event.schemaVersion, executionStageRunId=event.executionStageRunId,
             executionStageCode=event.executionStageCode, claimRequestId=str(uuid4()))
         return await self.request(event, "claim", command, deadline=deadline)
+
+    @staticmethod
+    def _estimated_cost(settings, input_tokens, output_tokens) -> str:
+        from decimal import Decimal
+
+        value = (
+            Decimal(input_tokens) * settings.meeting_intelligence_input_cost_per_million_usd
+            + Decimal(output_tokens) * settings.meeting_intelligence_output_cost_per_million_usd
+        ) / Decimal(1_000_000)
+        rendered = format(value, "f")
+        if "." in rendered:
+            rendered = rendered.rstrip("0").rstrip(".")
+        return rendered or "0"
+
+    async def reserve_provider_attempt(self, event, claim, request, attempt_id, *, deadline=None):
+        reserved = request.window.estimated_input_tokens + request.output_budget
+        body = dict(
+            contractVersion="1.0",
+            eventId=event.eventId,
+            executionStageRunId=claim.executionStageRunId,
+            claimToken=claim.claimToken.get_secret_value(),
+            attemptId=attempt_id,
+            executionStageCode=claim.executionStageCode,
+            estimatedInputTokens=request.window.estimated_input_tokens,
+            outputTokenCeiling=request.output_budget,
+            reservedTokens=reserved,
+            estimatedCostUsd=self._estimated_cost(
+                self.settings, request.window.estimated_input_tokens, request.output_budget,
+            ),
+        )
+        return await self.request(event, "attempts/reserve", body, deadline=deadline)
+
+    async def report_provider_attempt(
+        self, event, claim, attempt_id, *, outcome, input_tokens, output_tokens,
+        total_tokens, reasoning_tokens, reported_cost, failure_category=None, deadline=None,
+    ):
+        from decimal import Decimal, localcontext
+
+        def money(value):
+            if value is None:
+                return None
+            with localcontext() as context:
+                context.prec = 80
+                rendered = format(
+                    Decimal(value.numerator) / Decimal(value.denominator), "f",
+                )
+                if "." in rendered:
+                    rendered = rendered.rstrip("0").rstrip(".")
+            return rendered or "0"
+
+        body = dict(
+            contractVersion="1.0",
+            eventId=event.eventId,
+            executionStageRunId=claim.executionStageRunId,
+            claimToken=claim.claimToken.get_secret_value(),
+            attemptId=attempt_id,
+            executionStageCode=claim.executionStageCode,
+            outcome=outcome,
+            inputTokens=input_tokens,
+            outputTokens=output_tokens,
+            totalTokens=total_tokens,
+            reasoningTokens=reasoning_tokens,
+            reportedCostUsd=money(reported_cost),
+            failureCategory=failure_category,
+        )
+        return await self.request(event, "attempts/report", body, deadline=deadline)
 
     async def accept(self, event, claim_token, digest, *, deadline=None):
         uuid_string(claim_token)

@@ -2,6 +2,8 @@ package com.sme.meetingassistant.api.transport;
 
 import java.net.URI;
 import java.nio.file.Path;
+import javax.net.ssl.SSLSocketFactory;
+import org.springframework.boot.amqp.autoconfigure.ConnectionFactoryCustomizer;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.web.server.WebServerFactoryCustomizer;
@@ -99,6 +101,25 @@ public class SecureTransportConfiguration {
         return new AiCoreTransport(URI.create(env.getRequiredProperty("app.transport.ai.base-url")),
             path(env, "app.transport.ai.server-ca"), path(env, "app.transport.ai.certificate"), clientKey,
             path(env, "app.transport.ai.issuer-ca"));
+    }
+
+    @Bean
+    ConnectionFactoryCustomizer isolatedRabbitLoopbackRoute(Environment env) {
+        String connectHost = env.getProperty("RABBITMQ_CONNECT_HOST");
+        if (connectHost == null || connectHost.isBlank()) return factory -> { };
+        String serverName = env.getRequiredProperty("RABBITMQ_TLS_SERVER_NAME");
+        if (!"127.0.0.1".equals(connectHost)
+                || !"rabbitmq.internal".equals(serverName)
+                || !"rabbitmq.internal".equals(env.getProperty("spring.rabbitmq.host"))) {
+            throw new IllegalStateException("Isolated RabbitMQ routing must preserve rabbitmq.internal");
+        }
+        return factory -> {
+            if (!factory.isSSL() || !(factory.getSocketFactory() instanceof SSLSocketFactory ssl)) {
+                throw new IllegalStateException("Isolated RabbitMQ routing requires verified TLS");
+            }
+            factory.setSocketFactory(new LoopbackTlsSocketFactory(ssl, connectHost, serverName, 3_000));
+            factory.enableHostnameVerification();
+        };
     }
 
     @Bean

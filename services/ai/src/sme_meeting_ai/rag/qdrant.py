@@ -6,6 +6,7 @@ import math
 from dataclasses import dataclass
 from math import ceil
 from typing import Any, Protocol, Sequence
+from uuid import UUID
 
 from qdrant_client import QdrantClient, models
 
@@ -16,6 +17,11 @@ from .embedding import (
     EmbeddingCompatibility,
     QueryEmbedding,
     SparseEmbedding,
+)
+from .inventory_cursor import (
+    InvalidInventoryCursor,
+    normalize_inventory_cursor_value,
+    parse_inventory_cursor,
 )
 
 
@@ -45,12 +51,18 @@ class QdrantConfig:
     timeout_seconds: float = 10
     prefer_grpc: bool = False
     upsert_batch_size: int = 64
+    ca_file: str | None = None
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "QdrantConfig":
         return cls(
             url=settings.rag_qdrant_url,
             collection_name=settings.rag_qdrant_collection,
+            ca_file=(
+                str(settings.rag_qdrant_ca_file)
+                if settings.rag_qdrant_ca_file is not None
+                else None
+            ),
             api_key=settings.rag_qdrant_api_key.get_secret_value()
             if settings.rag_qdrant_api_key is not None
             else None,
@@ -61,6 +73,10 @@ class QdrantConfig:
     def __post_init__(self) -> None:
         if not self.url.startswith(("http://", "https://")):
             raise ValueError("Qdrant URL must use HTTP or HTTPS")
+        if self.url.startswith("https://") and not self.ca_file:
+            raise ValueError("HTTPS Qdrant requires an explicit CA file")
+        if self.ca_file and not self.url.startswith("https://"):
+            raise ValueError("Qdrant CA material requires HTTPS")
         if not self.collection_name or len(self.collection_name) > 127:
             raise ValueError("Qdrant collection name is invalid")
         if self.timeout_seconds <= 0 or self.upsert_batch_size < 1:
@@ -188,12 +204,18 @@ class QdrantVectorStore:
     ):
         self.config = config
         self.spec = bge_m3_collection_spec(config.collection_name, compatibility)
-        self.client = client or QdrantClient(
-            url=config.url,
-            api_key=config.api_key,
-            timeout=config.timeout_seconds,
-            prefer_grpc=config.prefer_grpc,
-        )
+        if client is None:
+            client_options = {
+                "url": config.url,
+                "api_key": config.api_key,
+                "timeout": config.timeout_seconds,
+                "prefer_grpc": config.prefer_grpc,
+            }
+            if config.ca_file is not None:
+                client_options["verify"] = config.ca_file
+            self.client = QdrantClient(**client_options)
+        else:
+            self.client = client
 
     @classmethod
     def from_settings(cls, settings: Settings, compatibility: EmbeddingCompatibility) -> "QdrantVectorStore":
@@ -389,6 +411,71 @@ class QdrantVectorStore:
         self._validate_collection_metadata(info, populated=populated)
         self._validate_payload_indexes(info, create_missing=False, require_all=True)
         self._validate_existing_generation()
+
+    def inventory_source_page(
+        self, generation_id: str, limit: int, cursor: str | None = None,
+    ) -> tuple[list[dict[str, object]], str | None]:
+        """Return one bounded page of source identities without exposing content or point IDs.
+
+        The caller must checkpoint the returned cursor after accepting this page;
+        a page is not a snapshot when other writers mutate Qdrant concurrently.
+        """
+        if generation_id != self.spec.compatibility.index_generation_id:
+            raise QdrantSchemaError("Qdrant inventory generation is incompatible")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 500:
+            raise ValueError("Invalid Qdrant inventory page size")
+        offset = parse_inventory_cursor(cursor)
+        current_cursor = None if offset is None else str(offset)
+        # Every point in this generation-isolated collection must be audited.
+        # Filtering by generation here would silently skip malformed or foreign
+        # points and could falsely report the inventory as complete.
+        try:
+            page, next_offset = self.client.scroll(
+                collection_name=self.spec.collection_name,
+                limit=limit,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            records: list[dict[str, object]] = []
+            for point in page:
+                payload = getattr(point, "payload", None)
+                if not isinstance(payload, dict):
+                    raise QdrantError("INVENTORY_INVALID")
+                kind = payload.get("source_type")
+                if kind not in {"TRANSCRIPT", "SUMMARY", "DECISION", "ACTION_ITEM"}:
+                    raise QdrantError("INVENTORY_INVALID")
+                try:
+                    meeting = str(UUID(payload["meeting_id"]))
+                    source = str(UUID(payload["canonical_source_id"]))
+                except (KeyError, ValueError, AttributeError, TypeError) as error:
+                    raise QdrantError("INVENTORY_INVALID") from error
+                revision = payload.get("canonical_source_revision")
+                if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+                    raise QdrantError("INVENTORY_INVALID")
+                if payload.get("index_generation_id") != generation_id:
+                    raise QdrantError("INVENTORY_INVALID")
+                records.append({
+                    "sourceIdentity": {
+                        "sourceType": kind,
+                        "sourceId": source,
+                        "meetingId": meeting,
+                    },
+                    "sourceRevision": {"number": revision},
+                })
+            try:
+                next_cursor = normalize_inventory_cursor_value(next_offset)
+            except InvalidInventoryCursor as error:
+                raise QdrantError("INVENTORY_CURSOR_INVALID") from error
+            if next_cursor is not None and next_cursor == current_cursor:
+                raise QdrantError("INVENTORY_STALLED")
+            return records, next_cursor
+        except QdrantError:
+            raise
+        except Exception as error:
+            if _is_transient(error):
+                raise QdrantError("QDRANT_UNAVAILABLE") from error
+            raise QdrantError("INVENTORY_READ_FAILED") from error
 
     def count_source_points(
         self, meeting_id: str, source_type: str, source_id: str, source_revision: int, generation_id: str,

@@ -1,6 +1,7 @@
 package com.sme.meetingassistant.api.media;
 
 import java.time.Duration;
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -30,6 +31,15 @@ public class MediaProperties {
         private int dispatchClaimTimeoutSeconds = 1800;
         private String storageId = "";
         private List<String> enabledStages = new ArrayList<>();
+        // Core-persisted bounds for one explicitly approved MI acceptance.
+        private int summaryAttemptCeiling = 1;
+        private int decisionAttemptCeiling = 1;
+        private int actionItemAttemptCeiling = 2;
+        private int aggregateAttemptCeiling = 4;
+        private long reservedTokenCeiling = 161970;
+        private BigDecimal estimatedCostCeilingUsd = new BigDecimal("0.15");
+        private BigDecimal inputCostPerMillionUsd = new BigDecimal("0.20");
+        private BigDecimal outputCostPerMillionUsd = new BigDecimal("1.00");
         public boolean isEnabled() { return enabled; }
         public void setEnabled(boolean value) { enabled=value; }
         public boolean isDispatchEnabled() { return dispatchEnabled; }
@@ -42,12 +52,30 @@ public class MediaProperties {
         public void setStorageId(String value) { storageId=value; }
         public List<String> getEnabledStages() { return enabledStages; }
         public void setEnabledStages(List<String> value) { enabledStages=value; }
+        public int getSummaryAttemptCeiling() { return summaryAttemptCeiling; }
+        public void setSummaryAttemptCeiling(int value) { summaryAttemptCeiling=value; }
+        public int getDecisionAttemptCeiling() { return decisionAttemptCeiling; }
+        public void setDecisionAttemptCeiling(int value) { decisionAttemptCeiling=value; }
+        public int getActionItemAttemptCeiling() { return actionItemAttemptCeiling; }
+        public void setActionItemAttemptCeiling(int value) { actionItemAttemptCeiling=value; }
+        public int getAggregateAttemptCeiling() { return aggregateAttemptCeiling; }
+        public void setAggregateAttemptCeiling(int value) { aggregateAttemptCeiling=value; }
+        public long getReservedTokenCeiling() { return reservedTokenCeiling; }
+        public void setReservedTokenCeiling(long value) { reservedTokenCeiling=value; }
+        public BigDecimal getEstimatedCostCeilingUsd() { return estimatedCostCeilingUsd; }
+        public void setEstimatedCostCeilingUsd(BigDecimal value) { estimatedCostCeilingUsd=value; }
+        public BigDecimal getInputCostPerMillionUsd() { return inputCostPerMillionUsd; }
+        public void setInputCostPerMillionUsd(BigDecimal value) { inputCostPerMillionUsd=value; }
+        public BigDecimal getOutputCostPerMillionUsd() { return outputCostPerMillionUsd; }
+        public void setOutputCostPerMillionUsd(BigDecimal value) { outputCostPerMillionUsd=value; }
     }
 
     public static class KnowledgeIndexing {
         private boolean enabled;
         private int leaseSeconds = 1800;
         private int maxAttempts = 5;
+        // Must exceed the bounded AI audit timeout; never use an unbounded claim.
+        private int reconciliationClaimSeconds = 120;
         // Keep these defaults aligned with contracts/RAG_T05_BGE_M3_INDEX_GENERATION_V1.json.
         private String generationId = "rag-t02-bge-m3-v1";
         private String configurationVersion = "rag-t02-bge-m3-v1";
@@ -63,6 +91,8 @@ public class MediaProperties {
         public void setLeaseSeconds(int value) { leaseSeconds = value; }
         public int getMaxAttempts() { return maxAttempts; }
         public void setMaxAttempts(int value) { maxAttempts = value; }
+        public int getReconciliationClaimSeconds() { return reconciliationClaimSeconds; }
+        public void setReconciliationClaimSeconds(int value) { reconciliationClaimSeconds = value; }
         public String getGenerationId() { return generationId; }
         public void setGenerationId(String value) { generationId = value; }
         public String getConfigurationVersion() { return configurationVersion; }
@@ -84,6 +114,10 @@ public class MediaProperties {
         private boolean pathStyleAccess = true;
         private boolean createBucketIfMissing;
         private String caFile;
+        // Host-run isolated deployments dial a literal loopback address while
+        // retaining the endpoint host for SNI, hostname verification and Host.
+        private String connectHost;
+        private String tlsServerName;
         // Optional browser-reachable HTTPS endpoint for presigning exports.
         // Never use an internal container-only hostname in a user capability.
         private String publicDownloadEndpoint;
@@ -91,6 +125,10 @@ public class MediaProperties {
         public void setPublicDownloadEndpoint(String value) { publicDownloadEndpoint = value; }
         public String getCaFile() { return caFile; }
         public void setCaFile(String value) { caFile = value; }
+        public String getConnectHost() { return connectHost; }
+        public void setConnectHost(String value) { connectHost = value; }
+        public String getTlsServerName() { return tlsServerName; }
+        public void setTlsServerName(String value) { tlsServerName = value; }
         public String getEndpoint() { return endpoint; }
         public void setEndpoint(String value) { endpoint = value; }
         public String getRegion() { return region; }

@@ -34,6 +34,13 @@ public final class KnowledgeIndexingWorkerCommands {
     public record Result(String contractVersion, UUID eventId, UUID claimToken, UUID resultId,
             String state, String indexGenerationId, int chunkCount, String receiptSha256,
             String errorCode) { }
+    public record PermitAcquire(String contractVersion, UUID eventId, UUID claimToken,
+            String operation, String generationId, UUID mutationExecutionId) { }
+    public record PermitStart(String contractVersion, UUID eventId, UUID permitId,
+            UUID claimToken, String generationId, UUID mutationExecutionId) { }
+    public record PermitComplete(String contractVersion, UUID eventId, UUID permitId,
+            UUID claimToken, String generationId, UUID mutationExecutionId,
+            String state, String outcomeCode) { }
 
     public static Claim claim(JsonNode input) {
         WorkerJson.require(input != null && input.isObject());
@@ -41,9 +48,8 @@ public final class KnowledgeIndexingWorkerCommands {
         String operation = WorkerJson.choice(input, "operation", "UPSERT", "INVALIDATE", "DELETE");
         boolean hasReason = input.has("reason");
         if ("UPSERT".equals(operation)) {
-            WorkerJson.require(!hasReason);
             WorkerJson.fields(input, "contractVersion", "eventId", "eventType", "eventSchemaVersion",
-                "meetingId", "sourceIdentity", "sourceRevision", "operation", "snapshot",
+                "meetingId", "sourceIdentity", "sourceRevision", "operation", "reason", "snapshot",
                 "indexGeneration", "claimRequestId");
         } else {
             WorkerJson.fields(input, "contractVersion", "eventId", "eventType", "eventSchemaVersion",
@@ -95,6 +101,7 @@ public final class KnowledgeIndexingWorkerCommands {
                 "SOURCE_DELETED", "RECONCILIATION_REQUESTED").contains(reason)) WorkerJson.require(false);
         if ("DELETE".equals(operation)) WorkerJson.require("SOURCE_DELETED".equals(reason));
         UUID requestId = WorkerJson.uuid(input, "claimRequestId");
+        WorkerJson.require(hasReason);
         return new Claim("1.0", schema, eventId, KnowledgeIndexingProducer.EVENT_TYPE, meetingId,
             sourceType, sourceId, sourceRevision, snapshotId, snapshotSha, snapshotSize,
             generationId, configurationVersion, configurationSha, tokenizerId, operation, reason, requestId);
@@ -123,6 +130,39 @@ public final class KnowledgeIndexingWorkerCommands {
             WorkerJson.uuid(input, "claimToken"), WorkerJson.uuid(input, "resultId"), state,
             WorkerJson.token(input, "indexGenerationId", 128), chunks,
             WorkerJson.digest(input, "receiptSha256"), error);
+    }
+
+    public static PermitAcquire permitAcquire(JsonNode input) {
+        WorkerJson.fields(input, "contractVersion", "eventId", "claimToken", "operation",
+            "generationId", "mutationExecutionId");
+        WorkerJson.require("1.0".equals(WorkerJson.string(input, "contractVersion", 8)));
+        String operation = WorkerJson.choice(input, "operation", "UPSERT", "INVALIDATE", "DELETE");
+        return new PermitAcquire("1.0", WorkerJson.uuid(input, "eventId"),
+            WorkerJson.uuid(input, "claimToken"), operation,
+            WorkerJson.token(input, "generationId", 128), WorkerJson.uuid(input, "mutationExecutionId"));
+    }
+
+    public static PermitStart permitStart(JsonNode input) {
+        WorkerJson.fields(input, "contractVersion", "eventId", "permitId", "claimToken",
+            "generationId", "mutationExecutionId");
+        WorkerJson.require("1.0".equals(WorkerJson.string(input, "contractVersion", 8)));
+        return new PermitStart("1.0", WorkerJson.uuid(input, "eventId"),
+            WorkerJson.uuid(input, "permitId"), WorkerJson.uuid(input, "claimToken"),
+            WorkerJson.token(input, "generationId", 128), WorkerJson.uuid(input, "mutationExecutionId"));
+    }
+
+    public static PermitComplete permitComplete(JsonNode input) {
+        WorkerJson.fields(input, "contractVersion", "eventId", "permitId", "claimToken",
+            "generationId", "mutationExecutionId", "state", "outcomeCode");
+        WorkerJson.require("1.0".equals(WorkerJson.string(input, "contractVersion", 8)));
+        String state = WorkerJson.choice(input, "state", "SUCCEEDED", "FAILED");
+        String outcome = WorkerJson.string(input, "outcomeCode", 80);
+        WorkerJson.require("NONE".equals(outcome) || outcome.matches("[A-Z][A-Z0-9_]{0,79}"));
+        WorkerJson.require("SUCCEEDED".equals(state) ? "NONE".equals(outcome) : !"NONE".equals(outcome));
+        return new PermitComplete("1.0", WorkerJson.uuid(input, "eventId"),
+            WorkerJson.uuid(input, "permitId"), WorkerJson.uuid(input, "claimToken"),
+            WorkerJson.token(input, "generationId", 128), WorkerJson.uuid(input, "mutationExecutionId"),
+            state, outcome);
     }
 
     public static String fingerprint(Object command) {

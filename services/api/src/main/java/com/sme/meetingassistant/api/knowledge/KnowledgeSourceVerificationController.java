@@ -44,24 +44,34 @@ public class KnowledgeSourceVerificationController {
         WorkerJson.require("1.0".equals(WorkerJson.string(body, "contractVersion", 8)));
         JsonNode values = WorkerJson.array(body, "requests", 1, 256);
         List<KnowledgeIndexingWorkerService.SourceVerificationRequest> requests = new ArrayList<>();
-        for (JsonNode value : values) {
-            WorkerJson.fields(value, "sourceIdentity", "sourceRevision");
-            JsonNode identity = value.get("sourceIdentity");
-            WorkerJson.fields(identity, "sourceType", "sourceId", "meetingId");
-            String sourceType = WorkerJson.choice(identity, "sourceType", "TRANSCRIPT", "SUMMARY", "DECISION",
-                "ACTION_ITEM");
-            UUID sourceId = WorkerJson.uuid(identity, "sourceId");
-            UUID meetingId = WorkerJson.uuid(identity, "meetingId");
-            JsonNode revision = value.get("sourceRevision");
-            WorkerJson.fields(revision, "number");
-            long number = WorkerJson.number(revision, "number", 0, Long.MAX_VALUE);
-            requests.add(new KnowledgeIndexingWorkerService.SourceVerificationRequest(sourceType, sourceId,
-                meetingId, number));
-        }
+        for (JsonNode value : values) requests.add(parseRequest(value));
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
             .contentType(MediaType.APPLICATION_JSON)
             .body(responses.success(Map.of("contractVersion", "1.0", "records",
                 worker.verifySources(requests))));
+    }
+
+    static KnowledgeIndexingWorkerService.SourceVerificationRequest parseRequest(JsonNode value) {
+        WorkerJson.fields(value, "sourceIdentity", "sourceRevision");
+        JsonNode identity = value.get("sourceIdentity");
+        WorkerJson.fields(identity, "sourceType", "sourceId", "meetingId");
+        String sourceType = WorkerJson.choice(identity, "sourceType", "TRANSCRIPT", "SUMMARY", "DECISION",
+            "ACTION_ITEM");
+        UUID sourceId = WorkerJson.uuid(identity, "sourceId");
+        UUID meetingId = WorkerJson.uuid(identity, "meetingId");
+        JsonNode revision = value.get("sourceRevision");
+        WorkerJson.require(revision != null && revision.isObject());
+        long number = WorkerJson.number(revision, "number", 0, Long.MAX_VALUE);
+        String contentSha256;
+        if (revision.has("contentSha256")) {
+            WorkerJson.fields(revision, "number", "contentSha256");
+            contentSha256 = WorkerJson.digest(revision, "contentSha256");
+        } else {
+            WorkerJson.fields(revision, "number");
+            contentSha256 = null;
+        }
+        return new KnowledgeIndexingWorkerService.SourceVerificationRequest(sourceType, sourceId, meetingId,
+            number, contentSha256);
     }
 
     private static JsonNode body(HttpServletRequest request) throws IOException {

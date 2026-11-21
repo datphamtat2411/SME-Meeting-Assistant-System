@@ -38,6 +38,7 @@ public class TranscriptReviewService implements TranscriptIngestion {
     public void publish(TranscriptResult result) {
         this.repository.publish(result);
         this.knowledge.request("TRANSCRIPT", repository.publicationId(result.processingJobId()), result.meetingId());
+        this.knowledge.invalidateStaleTranscriptDependents(result.meetingId());
     }
 
     @Transactional(readOnly = true)
@@ -74,6 +75,7 @@ public class TranscriptReviewService implements TranscriptIngestion {
         var corrected = this.repository.correct(meetingId, segmentId, actor, request.text().trim(), request.reason(), version);
         this.repository.current(meetingId).ifPresent(current ->
             this.knowledge.request("TRANSCRIPT", current.id(), meetingId));
+        this.knowledge.invalidateStaleTranscriptDependents(meetingId);
         return corrected;
     }
 
@@ -90,6 +92,7 @@ public class TranscriptReviewService implements TranscriptIngestion {
         var mapped = this.repository.mapSpeaker(meetingId, clusterId,
             request == null ? null : request.userId(), actor, tag.transcriptId(), tag.revision());
         this.knowledge.request("TRANSCRIPT", mapped.transcriptId(), meetingId);
+        this.knowledge.invalidateStaleTranscriptDependents(meetingId);
         return mapped;
     }
 

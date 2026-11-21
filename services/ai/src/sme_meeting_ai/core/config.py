@@ -1,6 +1,8 @@
 """Typed configuration without runtime or infrastructure initialization."""
 
+import os
 import re
+from decimal import Decimal
 from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
@@ -20,6 +22,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict, SettingsError
 SERVICE_IDENTITY_PATTERN = r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
 ServiceIdentity = Annotated[str, Field(pattern=SERVICE_IDENTITY_PATTERN, max_length=63)]
 ReasoningEffort = Literal["max", "xhigh", "high", "medium", "low", "minimal", "none"]
+WorkerRole = Literal["transcription", "meeting-intelligence", "knowledge-indexing"]
 
 
 class Environment(StrEnum):
@@ -71,6 +74,7 @@ class Settings(BaseSettings):
         default=30, gt=0, le=300, allow_inf_nan=False,
     )
     worker_execution_timeout_seconds: float = Field(default=14400, gt=0, le=86400, allow_inf_nan=False)
+    worker_role: WorkerRole | None = None
     rag_model_id: Literal["BAAI/bge-m3"] = "BAAI/bge-m3"
     rag_model_revision: str = Field(
         default="5617a9f61b028005a4858fdac845db406aefb181",
@@ -102,6 +106,7 @@ class Settings(BaseSettings):
     rag_index_configuration_version: str = Field(default="rag-t02-bge-m3-v1", pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$")
     rag_index_configuration_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     rag_qdrant_url: str = "http://127.0.0.1:6333"
+    rag_qdrant_ca_file: Path | None = None
     rag_qdrant_api_key: SecretStr | None = Field(default=None, repr=False)
     rag_qdrant_collection: str = Field(
         default="sme_meeting_knowledge_bge_m3",
@@ -128,6 +133,8 @@ class Settings(BaseSettings):
     knowledge_indexing_routing_key: Literal["knowledge.indexing.requested"] = "knowledge.indexing.requested"
     knowledge_indexing_queue: Literal["meeting.knowledge.indexing"] = "meeting.knowledge.indexing"
     rabbitmq_url: str | None = Field(default=None, repr=False)
+    rabbitmq_connect_host: str | None = None
+    rabbitmq_tls_server_name: str | None = None
     rabbitmq_username: SecretStr | None = Field(default=None, repr=False)
     rabbitmq_password: SecretStr | None = Field(default=None, repr=False)
     rabbitmq_ca_file: Path | None = None
@@ -137,6 +144,8 @@ class Settings(BaseSettings):
     rabbitmq_delivery_limit: Literal[5] = 5
     rabbitmq_connect_timeout_seconds: float = Field(default=10, gt=0, le=30, allow_inf_nan=False)
     s3_endpoint_url: str | None = Field(default=None, repr=False)
+    s3_connect_host: str | None = None
+    s3_tls_server_name: str | None = None
     s3_storage_id: str = Field(default="private", pattern=r"^[A-Za-z0-9_-]{1,64}$")
     s3_region: str = Field(default="us-east-1", pattern=r"^[A-Za-z0-9_-]{1,80}$")
     s3_bucket: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")
@@ -148,6 +157,8 @@ class Settings(BaseSettings):
     s3_read_timeout_seconds: float = Field(default=15, gt=0, le=30, allow_inf_nan=False)
     s3_download_timeout_seconds: float = Field(default=300, gt=0, le=900, allow_inf_nan=False)
     core_api_base_url: str | None = Field(default=None, repr=False)
+    core_api_connect_host: str | None = None
+    core_api_tls_server_name: str | None = None
     core_api_server_ca_file: Path | None = None
     core_api_client_cert_file: Path | None = None
     core_api_client_key_file: Path | None = Field(default=None, repr=False)
@@ -224,7 +235,7 @@ class Settings(BaseSettings):
     diarization_worker_s3_access_key_id: SecretStr | None = Field(default=None, repr=False)
     diarization_worker_s3_secret_access_key: SecretStr | None = Field(default=None, repr=False)
     meeting_intelligence_worker_enabled: bool = False
-    meeting_intelligence_worker_concurrency: int = Field(default=1, ge=1, le=4)
+    meeting_intelligence_worker_concurrency: int = Field(default=1, ge=1, le=1)
     meeting_intelligence_worker_execution_timeout_seconds: float = Field(default=1800, gt=0, le=7200, allow_inf_nan=False)
     meeting_intelligence_inference_enabled: bool = False
     meeting_intelligence_summary_enabled: bool = False
@@ -242,9 +253,19 @@ class Settings(BaseSettings):
     meeting_intelligence_max_source_bytes: int = Field(default=8388608, ge=1, le=8388608, strict=True)
     meeting_intelligence_max_evidence_units: int = Field(default=16384, ge=1, le=65536, strict=True)
     meeting_intelligence_provider_timeout_seconds: float = Field(default=120, gt=0, le=600, allow_inf_nan=False)
-    meeting_intelligence_max_attempts: int = Field(default=2, ge=1, le=2, strict=True)
+    # A physical provider attempt is reserved durably before transport.  The
+    # bounded MI acceptance deliberately has no provider retry or fallback.
+    meeting_intelligence_max_attempts: int = Field(default=1, ge=1, le=1, strict=True)
     meeting_intelligence_max_response_bytes: int = Field(default=1048576, ge=1, le=16777216, strict=True)
-    meeting_intelligence_max_concurrent_requests: int = Field(default=1, ge=1, le=4, strict=True)
+    meeting_intelligence_max_concurrent_requests: int = Field(default=1, ge=1, le=1, strict=True)
+    meeting_intelligence_summary_attempt_ceiling: int = Field(default=1, ge=1, le=1, strict=True)
+    meeting_intelligence_decision_attempt_ceiling: int = Field(default=1, ge=1, le=1, strict=True)
+    meeting_intelligence_action_item_attempt_ceiling: int = Field(default=2, ge=1, le=2, strict=True)
+    meeting_intelligence_aggregate_attempt_ceiling: int = Field(default=4, ge=1, le=4, strict=True)
+    meeting_intelligence_reserved_token_ceiling: int = Field(default=161970, ge=1, le=161970, strict=True)
+    meeting_intelligence_estimated_cost_ceiling_usd: Decimal = Decimal("0.15")
+    meeting_intelligence_input_cost_per_million_usd: Decimal = Decimal("0.20")
+    meeting_intelligence_output_cost_per_million_usd: Decimal = Decimal("1.00")
     meeting_intelligence_summary_target_chars: int = Field(default=8000, ge=1000, le=20000, strict=True)
     meeting_intelligence_summary_max_records: int = Field(default=2048, ge=1, le=16384, strict=True)
     meeting_intelligence_summary_max_synthesis_depth: int = Field(default=3, ge=1, le=8, strict=True)
@@ -419,6 +440,63 @@ class Settings(BaseSettings):
         _ = parts.port
         return value.rstrip("/") if scheme == "https" else value
 
+    @field_validator("rabbitmq_connect_host", "s3_connect_host", "core_api_connect_host", mode="before")
+    @classmethod
+    def optional_connect_host(cls, value: object) -> object:
+        return None if value == "" else value
+
+    @model_validator(mode="after")
+    def isolated_endpoint_routing(self) -> Self:
+        """Keep host-run loopback routing separate from TLS/HTTP identity."""
+        if self.rabbitmq_tls_server_name is not None and self.rabbitmq_url is None:
+            raise ValueError("RabbitMQ TLS identity requires an endpoint")
+        if self.s3_tls_server_name is not None and self.s3_endpoint_url is None:
+            raise ValueError("Storage TLS identity requires an endpoint")
+        if self.rabbitmq_connect_host is not None:
+            if self.rabbitmq_connect_host != "127.0.0.1":
+                raise ValueError("RabbitMQ connection destination must be loopback")
+            endpoint = urlsplit(self.rabbitmq_url or "")
+            if (
+                endpoint.hostname != "rabbitmq.internal"
+                or endpoint.port is None
+                or self.rabbitmq_tls_server_name != "rabbitmq.internal"
+            ):
+                raise ValueError("RabbitMQ TLS identity and endpoint must be explicit")
+        elif self.rabbitmq_tls_server_name is not None and self.rabbitmq_url is not None:
+            if urlsplit(self.rabbitmq_url).hostname != self.rabbitmq_tls_server_name:
+                raise ValueError("RabbitMQ TLS identity does not match its endpoint")
+
+        if self.s3_connect_host is not None:
+            if self.s3_connect_host != "127.0.0.1":
+                raise ValueError("Storage connection destination must be loopback")
+            endpoint = urlsplit(self.s3_endpoint_url or "")
+            if (
+                endpoint.hostname != "storage.internal"
+                or endpoint.port is None
+                or self.s3_tls_server_name != "storage.internal"
+            ):
+                raise ValueError("Storage TLS identity and endpoint must be explicit")
+        elif self.s3_tls_server_name is not None and self.s3_endpoint_url is not None:
+            if urlsplit(self.s3_endpoint_url).hostname != self.s3_tls_server_name:
+                raise ValueError("Storage TLS identity does not match its endpoint")
+
+        if self.core_api_tls_server_name is not None and self.core_api_base_url is None:
+            raise ValueError("Core API TLS identity requires an endpoint")
+        if self.core_api_connect_host is not None:
+            if self.core_api_connect_host != "127.0.0.1":
+                raise ValueError("Core API connection destination must be loopback")
+            endpoint = urlsplit(self.core_api_base_url or "")
+            if (
+                endpoint.hostname != "core-api.internal"
+                or endpoint.port is None
+                or self.core_api_tls_server_name != "core-api.internal"
+            ):
+                raise ValueError("Core API TLS identity and endpoint must be explicit")
+        elif self.core_api_tls_server_name is not None and self.core_api_base_url is not None:
+            if urlsplit(self.core_api_base_url).hostname != self.core_api_tls_server_name:
+                raise ValueError("Core API TLS identity does not match its endpoint")
+        return self
+
     @field_validator("rag_qdrant_url")
     @classmethod
     def qdrant_endpoint(cls, value: str) -> str:
@@ -441,6 +519,10 @@ class Settings(BaseSettings):
     def valid_rag_runtime(self) -> Self:
         if self.rag_chunk_target_tokens > self.rag_embedding_max_input_tokens:
             raise ValueError("RAG chunk target exceeds embedding input budget")
+        if self.rag_qdrant_url.startswith("https://") and self.rag_qdrant_ca_file is None:
+            raise ValueError("HTTPS Qdrant requires an explicit CA file")
+        if self.rag_qdrant_ca_file is not None and not self.rag_qdrant_url.startswith("https://"):
+            raise ValueError("Qdrant CA material requires HTTPS")
         if self.rag_inference_precision == "fp16" and self.rag_inference_device == "cpu":
             raise ValueError("RAG fp16 requires a CUDA device")
         if self.rag_reranker_pair_max_tokens < self.rag_reranker_query_max_tokens:
@@ -541,13 +623,48 @@ class Settings(BaseSettings):
         return self
 
     @field_validator(
+        "meeting_intelligence_estimated_cost_ceiling_usd",
+        "meeting_intelligence_input_cost_per_million_usd",
+        "meeting_intelligence_output_cost_per_million_usd",
+        mode="before",
+    )
+    @classmethod
+    def parse_meeting_intelligence_money(cls, value: object) -> object:
+        if isinstance(value, str) and re.fullmatch(r"(?:0|[1-9][0-9]*)(?:\.[0-9]{1,24})?", value):
+            return Decimal(value)
+        if isinstance(value, Decimal) and value.is_finite() and value >= 0:
+            return value
+        raise ValueError("Meeting Intelligence cost settings must be finite decimal values")
+
+    @model_validator(mode="after")
+    def bounded_meeting_intelligence_budget(self) -> Self:
+        if (
+            self.meeting_intelligence_worker_concurrency != 1
+            or self.meeting_intelligence_max_concurrent_requests != 1
+            or self.meeting_intelligence_max_attempts != 1
+            or self.meeting_intelligence_summary_attempt_ceiling != 1
+            or self.meeting_intelligence_decision_attempt_ceiling != 1
+            or self.meeting_intelligence_action_item_attempt_ceiling != 2
+            or self.meeting_intelligence_aggregate_attempt_ceiling != 4
+            or self.meeting_intelligence_reserved_token_ceiling != 161970
+            or self.meeting_intelligence_estimated_cost_ceiling_usd != Decimal("0.15")
+            or self.meeting_intelligence_input_cost_per_million_usd != Decimal("0.20")
+            or self.meeting_intelligence_output_cost_per_million_usd != Decimal("1.00")
+        ):
+            raise ValueError("Meeting Intelligence bounded acceptance limits are immutable")
+        return self
+
+    @field_validator(
         "meeting_intelligence_context_window_tokens", "meeting_intelligence_max_input_tokens",
         "meeting_intelligence_max_output_tokens", "meeting_intelligence_overlap_units",
         "meeting_intelligence_max_windows", "meeting_intelligence_max_total_context_tokens",
         "meeting_intelligence_max_total_inference_tokens",
         "meeting_intelligence_max_source_bytes", "meeting_intelligence_max_evidence_units",
         "meeting_intelligence_max_attempts", "meeting_intelligence_max_response_bytes",
-        "meeting_intelligence_max_concurrent_requests", "meeting_intelligence_summary_target_chars",
+        "meeting_intelligence_max_concurrent_requests", "meeting_intelligence_summary_attempt_ceiling",
+        "meeting_intelligence_decision_attempt_ceiling", "meeting_intelligence_action_item_attempt_ceiling",
+        "meeting_intelligence_aggregate_attempt_ceiling", "meeting_intelligence_reserved_token_ceiling",
+        "meeting_intelligence_summary_target_chars",
         "meeting_intelligence_summary_max_records", "meeting_intelligence_summary_max_synthesis_depth",
         "meeting_intelligence_summary_max_model_calls", "meeting_intelligence_decision_max_signals",
         "meeting_intelligence_decision_max_candidates", "meeting_intelligence_decision_max_synthesis_depth",
@@ -644,6 +761,12 @@ class Settings(BaseSettings):
 
 def load_settings(env_file: str | Path | None = ".env") -> Settings:
     """Load and validate settings, discarding input-bearing validation errors."""
+    # Isolated PI-05 application processes set this explicit control to an
+    # empty value so a developer checkout's .env can never become part of the
+    # reviewed run configuration. Ordinary callers retain the historical
+    # .env default.
+    if env_file == ".env" and "AI_SETTINGS_ENV_FILE" in os.environ:
+        env_file = os.environ["AI_SETTINGS_ENV_FILE"] or None
     try:
         return Settings(_env_file=env_file)
     except ValidationError as error:

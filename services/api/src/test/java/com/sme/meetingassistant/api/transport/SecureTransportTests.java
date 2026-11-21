@@ -146,6 +146,13 @@ class SecureTransportTests {
             assertThat(WorkerOperations.allowed("urn:sme:service:knowledge-worker",
                 "knowledge." + op)).isTrue();
         }
+        String permit = knowledge + "/permit/22222222-2222-4222-8222-222222222222";
+        for (String op : new String[]{"start", "complete"}) {
+            assertThat(WorkerOperations.operation("POST", permit + "/" + op))
+                .isEqualTo("knowledge.permit-" + op);
+            assertThat(WorkerOperations.allowed("urn:sme:service:knowledge-worker",
+                "knowledge.permit-" + op)).isTrue();
+        }
         assertThat(WorkerOperations.operation("GET", knowledge))
             .isEqualTo("knowledge.read-delivery");
         assertThat(WorkerOperations.allowed("urn:sme:service:ai-worker", "knowledge.claim")).isFalse();

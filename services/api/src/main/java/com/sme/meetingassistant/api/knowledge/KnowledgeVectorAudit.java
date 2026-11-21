@@ -8,5 +8,9 @@ import java.util.UUID;
 public interface KnowledgeVectorAudit {
     Map<SourceKey, Long> countPoints(String generationId, List<SourceKey> sources);
 
+    /** Bounded identity-only inventory of Qdrant points (not an authorization source). */
+    InventoryPage inventoryPage(String generationId, String cursor, int limit);
+
     record SourceKey(String sourceType, UUID sourceId, UUID meetingId, long sourceRevision) { }
+    record InventoryPage(List<SourceKey> sources, String nextCursor) { }
 }

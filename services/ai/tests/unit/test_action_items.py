@@ -6,7 +6,11 @@ from pathlib import Path
 import pytest
 from intelligence_support import settings, snapshot, stage, uid
 
-from sme_meeting_ai.meeting_intelligence.action_items import ActionItemProcessor
+from sme_meeting_ai.meeting_intelligence.action_items import (
+    _GROUP_PROMPT,
+    ACTION_GROUP_PROMPT_VERSION,
+    ActionItemProcessor,
+)
 from sme_meeting_ai.meeting_intelligence.errors import IntelligenceError
 from sme_meeting_ai.workers.intelligence import production_processors
 from unit.test_decision import ScriptedAdapter, _identity
@@ -93,6 +97,13 @@ def test_order_and_overlap_do_not_change_identity_or_batch():
     assert a == b
     assert len(a["result"]["candidates"]) == 1
     assert len(a["result"]["candidates"][0]["evidenceSegmentIds"]) == 2
+
+
+def test_grouping_prompt_explicitly_separates_related_distinct_deliverables():
+    assert ACTION_GROUP_PROMPT_VERSION == "action-resolution-v2"
+    assert "Nếu deliverable khác nhau thì mặc định tạo nhóm" in _GROUP_PROMPT
+    assert "ASSIGNED, COMMITTED hoặc HISTORICAL khác deliverable không phải là" in _GROUP_PROMPT
+    assert "giữ các nhóm singleton thay vì ép gộp" in _GROUP_PROMPT
 
 
 @pytest.mark.parametrize("mutation", ["foreign", "unicode-range", "outside-window", "identity", "action", "party", "deadline", "authority", "missing", "unjustified-revision"])

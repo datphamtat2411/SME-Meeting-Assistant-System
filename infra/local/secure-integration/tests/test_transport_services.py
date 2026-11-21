@@ -17,7 +17,6 @@ from pathlib import Path
 import boto3
 import pytest
 from botocore.config import Config
-from dotenv import dotenv_values
 from pydantic import SecretStr
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -67,9 +66,40 @@ def test_fixture_settings_ignore_developer_environment_and_dotenv(tmp_path, monk
 
 def test_compose_and_worker_examples_supply_required_ai_settings(tmp_path):
     # Render configuration only: no daemon, CA, private dotenv or service startup.
-    env = dict(os.environ, BROKER_ENV_FILE="/dev/null", STORAGE_ENV_FILE="/dev/null", WORKER_ENV_FILE="/dev/null",
-        BROKER_TLS_DIR=str(tmp_path), STORAGE_TLS_DIR=str(tmp_path), AI_TLS_DIR=str(tmp_path),
-        WORKER_TLS_DIR=str(tmp_path), AI_DNS="ai-fixture.invalid")
+    http_env = tmp_path / "ai-http.env"
+    http_env.write_text(
+        "AI_SERVICE_NAME=http-fixture\n"
+        "AI_SERVICE_IDENTITY=ai-core\n"
+        "AI_ENVIRONMENT=development\n",
+        encoding="utf-8",
+    )
+    worker_env = tmp_path / "transcription-worker.env"
+    worker_env.write_text(
+        "AI_SERVICE_NAME=worker-fixture\n"
+        "AI_SERVICE_IDENTITY=ai-worker\n"
+        "AI_ENVIRONMENT=development\n"
+        "AI_WORKER_ROLE=transcription\n"
+        "AI_CORE_API_BASE_URL=https://core-api.internal:8443\n"
+        "AI_RABBITMQ_URL=amqps://rabbitmq.internal:5671/sme-integration\n"
+        "AI_S3_ENDPOINT_URL=https://storage.internal:9443\n",
+        encoding="utf-8",
+    )
+    env = dict(
+        os.environ,
+        RABBITMQ_DEFAULT_USER="fixture",
+        RABBITMQ_DEFAULT_PASS="fixture-password",
+        RABBITMQ_DEFAULT_VHOST="sme-integration",
+        RUSTFS_ACCESS_KEY="fixture",
+        RUSTFS_SECRET_KEY="fixture-password",
+        AI_HTTP_ENV_FILE=str(http_env),
+        AI_TRANSCRIPTION_ENV_FILE=str(worker_env),
+        E2E01_STORAGE_PROBE_KEY="integration/transport-probe.txt",
+        BROKER_TLS_DIR=str(tmp_path),
+        STORAGE_TLS_DIR=str(tmp_path),
+        AI_TLS_DIR=str(tmp_path),
+        WORKER_TLS_DIR=str(tmp_path),
+        AI_DNS="ai-fixture.invalid",
+    )
     rendered = subprocess.check_output(["docker", "compose", "--env-file", "/dev/null", "-f", str(HERE / "compose.yaml"),
         "--profile", "http", "--profile", "checks", "config", "--format", "json"], env=env, text=True, timeout=20)
     configuration = json.loads(rendered)
@@ -78,7 +108,10 @@ def test_compose_and_worker_examples_supply_required_ai_settings(tmp_path):
     assert configuration["networks"]["storage-backend"]["internal"] is True
     assert "storage-boundary" in configuration["services"]
     compose_environment = configuration["services"]["ai-core"]["environment"]
-    worker_environment = dotenv_values(HERE / "worker.env.example")
+    worker_environment = configuration["services"]["transport-health"]["environment"]
+    assert worker_environment["AI_S3_ENDPOINT_URL"] == "https://storage.internal:9000"
+    assert worker_environment["AI_S3_CONNECT_HOST"] == ""
+    assert worker_environment["AI_RABBITMQ_CONNECT_HOST"] == ""
     for values, identity in ((compose_environment, "ai-core"), (worker_environment, "ai-worker")):
         with pytest.MonkeyPatch.context() as isolated:
             for name in tuple(os.environ):
@@ -163,7 +196,12 @@ def services(tmp_path_factory):
         for name in reversed(names):
             # --rm may already have removed a failed fixture. Do not mask the
             # actual startup failure with a second cleanup exception.
-            subprocess.run(["docker", "stop", "--time", "5", name], capture_output=True, timeout=20)
+            subprocess.run(
+                ["docker", "stop", "--time", "5", name],
+                check=False,
+                capture_output=True,
+                timeout=20,
+            )
 
 
 def test_actual_python_stacks_and_tls_negatives(services, monkeypatch):
@@ -186,6 +224,17 @@ def test_actual_java_broker_and_aws_stacks(services):
         APP_MEDIA_STORAGE_CA_FILE=str(settings.s3_ca_file), E2E01_STORAGE_PROBE_KEY="transport.txt",
         E2E01_WRONG_CA_FILE=str(pki / "rogue-ca.crt"), E2E01_WRONG_BROKER_HOST="127.0.0.1",
         E2E01_WRONG_STORAGE_URL=settings.s3_endpoint_url.replace("localhost", "127.0.0.1"))
-    result = subprocess.run(["mvn", "-q", "-Dtest=LiveSecureTransportTests#javaAmqpsHandshakeAndLogin+javaAwsSdkVerifiedHttpsRead+javaBrokerAndStorageRejectWrongTrustAndHostname", "test"],
-        cwd=ROOT / "services/api", env=env, capture_output=True, text=True, timeout=180)
+    result = subprocess.run(
+        [
+            "mvn", "-q",
+            "-Dtest=LiveSecureTransportTests#javaAmqpsHandshakeAndLogin+javaAwsSdkVerifiedHttpsRead+javaBrokerAndStorageRejectWrongTrustAndHostname",
+            "test",
+        ],
+        check=False,
+        cwd=ROOT / "services/api",
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
     assert result.returncode == 0, result.stdout + result.stderr

@@ -32,6 +32,80 @@ def test_knowledge_worker_client_role_is_registered():
     assert pki.CLIENTS["knowledge-client"] == "knowledge-worker"
 
 
+def _issue_leaf(certificates, directory, name, san, eku="serverAuth"):
+    directory.mkdir(mode=0o700)
+    key = directory / f"{name}.key"
+    csr = directory / f"{name}.csr"
+    cert = directory / f"{name}.crt"
+    extensions = directory / f"{name}.ext"
+    subprocess.run(
+        [
+            "openssl", "genpkey", "-algorithm", "EC",
+            "-pkeyopt", "ec_paramgen_curve:P-256", "-out", str(key),
+        ],
+        check=True, capture_output=True,
+    )
+    subprocess.run(
+        [
+            "openssl", "req", "-new", "-key", str(key),
+            "-subj", f"/CN={name}", "-out", str(csr),
+        ],
+        check=True, capture_output=True,
+    )
+    extensions.write_text(
+        f"subjectAltName={san}\nextendedKeyUsage={eku}\n"
+        "keyUsage=critical,digitalSignature\n",
+        encoding="ascii",
+    )
+    subprocess.run(
+        [
+            "openssl", "x509", "-req", "-in", str(csr),
+            "-CA", str(certificates / "ca.crt"), "-CAkey", str(certificates / "ca.key"),
+            "-CAcreateserial", "-days", "2", "-out", str(cert),
+            "-extfile", str(extensions),
+        ],
+        check=True, capture_output=True,
+    )
+    for path in (key, csr, cert, extensions):
+        path.chmod(0o600)
+    return cert, key
+
+
+def test_custom_ip_and_dual_san_server_roles_are_registered_and_strict(
+    certificates, tmp_path,
+):
+    ai_cert, ai_key = _issue_leaf(certificates, tmp_path / "ai", "ai-server", "IP:127.0.0.1")
+    pki.validate(
+        "ai-server", ai_cert, ai_key, certificates / "ca.crt", "127.0.0.1", 60,
+    )
+
+    qdrant_cert, qdrant_key = _issue_leaf(
+        certificates, tmp_path / "qdrant", "qdrant-server",
+        "DNS:localhost,IP:127.0.0.1",
+    )
+    pki.validate(
+        "qdrant-server", qdrant_cert, qdrant_key, certificates / "ca.crt", "localhost", 60,
+    )
+    assert pki.SERVER_ROLES["qdrant-server"] == (
+        ("DNS", "localhost"), ("IP", "127.0.0.1"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("role", "name", "san", "hostname"),
+    [
+        ("ai-server", "ai-dns-only", "DNS:localhost", "127.0.0.1"),
+        ("qdrant-server", "qdrant-dns-only", "DNS:localhost", "localhost"),
+    ],
+)
+def test_custom_server_roles_reject_missing_ip_san(
+    certificates, tmp_path, role, name, san, hostname,
+):
+    cert, key = _issue_leaf(certificates, tmp_path / name, name, san)
+    with pytest.raises((ValueError, subprocess.CalledProcessError)):
+        pki.validate(role, cert, key, certificates / "ca.crt", hostname, 60)
+
+
 @pytest.mark.parametrize("role,name,ca,host", [
     ("worker-client", "core-api", "ca", None),
     ("core-client", "ambiguous", "ca", None),

@@ -88,6 +88,40 @@ public class KnowledgeIndexingWorkerController {
         return success(worker.result(path, command, PrivateConnector.workerCertificateFingerprint(request)));
     }
 
+    @PostMapping("/permit")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> permit(@PathVariable String eventId,
+            HttpServletRequest request) throws IOException {
+        UUID path = id(eventId);
+        var command = KnowledgeIndexingWorkerCommands.permitAcquire(body(request));
+        KnowledgeIndexingWorkerCommands.requireEvent(path, command.eventId());
+        return success(worker.acquirePermit(path, command,
+            PrivateConnector.workerCertificateFingerprint(request)));
+    }
+
+    @PostMapping("/permit/{permitId}/start")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> startPermit(@PathVariable String eventId,
+            @PathVariable String permitId, HttpServletRequest request) throws IOException {
+        UUID path = id(eventId);
+        UUID permit = id(permitId);
+        var command = KnowledgeIndexingWorkerCommands.permitStart(body(request));
+        KnowledgeIndexingWorkerCommands.requireEvent(path, command.eventId());
+        if (!permit.equals(command.permitId())) throw WorkerException.conflict("WORKER_IDENTITY_CONFLICT");
+        return success(worker.startPermit(path, command,
+            PrivateConnector.workerCertificateFingerprint(request)));
+    }
+
+    @PostMapping("/permit/{permitId}/complete")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> completePermit(@PathVariable String eventId,
+            @PathVariable String permitId, HttpServletRequest request) throws IOException {
+        UUID path = id(eventId);
+        UUID permit = id(permitId);
+        var command = KnowledgeIndexingWorkerCommands.permitComplete(body(request));
+        KnowledgeIndexingWorkerCommands.requireEvent(path, command.eventId());
+        if (!permit.equals(command.permitId())) throw WorkerException.conflict("WORKER_IDENTITY_CONFLICT");
+        return success(worker.completePermit(path, command,
+            PrivateConnector.workerCertificateFingerprint(request)));
+    }
+
     private ResponseEntity<ApiResponse<Map<String, Object>>> success(Map<String, Object> data) {
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(responses.success(data));
     }

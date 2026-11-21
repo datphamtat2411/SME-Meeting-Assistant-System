@@ -7,6 +7,8 @@ from typing import Literal
 from urllib.parse import unquote, urlsplit
 
 import aio_pika
+from aio_pika.abc import UnderlayConnection
+from aio_pika.connection import Connection as AioPikaConnection
 from pydantic import Field, ValidationError, field_validator
 
 from .core_api import Count, StageCode, Timestamp, Uuid, WireModel, strict_json
@@ -57,6 +59,50 @@ class RetryEvent(QueuedEvent):
         return "PROCESSING_JOB_RETRY_REQUESTED"
 
 
+class _LoopbackTlsTransportFactory:
+    """Dial loopback while retaining the broker hostname for TLS/SNI."""
+
+    def __init__(self, connect_host: str, server_hostname: str):
+        if connect_host != "127.0.0.1" or server_hostname != "rabbitmq.internal":
+            raise ValueError("Invalid isolated RabbitMQ route")
+        self.connect_host = connect_host
+        self.server_hostname = server_hostname
+
+    async def create(self, url, **kwargs):
+        provider = kwargs.pop("ssl_context_provider", None)
+        if provider is None or url.scheme != "amqps" or url.port is None:
+            raise ValueError("Verified TLS is required for the isolated broker")
+        context = await provider.get_context()
+        return await asyncio.open_connection(
+            host=self.connect_host,
+            port=url.port,
+            ssl=context,
+            server_hostname=self.server_hostname,
+            **kwargs,
+        )
+
+
+class _LoopbackRabbitConnection(AioPikaConnection):
+    """Aio-pika connection with an explicit process-local transport route."""
+
+    def __init__(self, url, *, connect_host, server_hostname, **kwargs):
+        self._isolated_transport = _LoopbackTlsTransportFactory(
+            connect_host,
+            server_hostname,
+        )
+        super().__init__(url, **kwargs)
+
+    async def connect(self, timeout=None):
+        self.transport = await UnderlayConnection.connect(
+            self.url,
+            self._on_connection_close,
+            timeout=timeout,
+            transport_factory=self._isolated_transport,
+            **self.kwargs,
+        )
+        await self._on_connected()
+
+
 def decode_event(body, *, headers, message_id, content_type, delivery_mode):
     try:
         if content_type != "application/json" or delivery_mode != 2:
@@ -103,15 +149,27 @@ class RabbitConsumer:
             context.minimum_version = ssl.TLSVersion.TLSv1_2
             context.load_verify_locations(cafile=str(self.settings.rabbitmq_ca_file))
             endpoint = urlsplit(self.settings.rabbitmq_url)
+            if self.settings.rabbitmq_connect_host and (
+                endpoint.hostname != "rabbitmq.internal"
+                or self.settings.rabbitmq_tls_server_name != "rabbitmq.internal"
+                or endpoint.port is None
+            ):
+                raise ValueError
             # aio-pika's make_url ignores login/password kwargs when URL is set.
             # Build through its keyword form so external credentials really reach
             # the transport, retaining TLS, explicit ports and encoded vhosts.
             async with asyncio.timeout(self.settings.rabbitmq_connect_timeout_seconds):
                 self.connection = await aio_pika.connect(
-                    host=endpoint.hostname, port=endpoint.port or 5671, ssl=True,
+                    host=endpoint.hostname,
+                    port=endpoint.port or 5671, ssl=True,
                     virtualhost=unquote(endpoint.path[1:]) if endpoint.path not in ("", "/") else "/",
                     login=self.settings.rabbitmq_username.get_secret_value(),
                     password=self.settings.rabbitmq_password.get_secret_value(), ssl_context=context,
+                    connection_class=_LoopbackRabbitConnection
+                    if self.settings.rabbitmq_connect_host
+                    else AioPikaConnection,
+                    connect_host=self.settings.rabbitmq_connect_host or endpoint.hostname,
+                    server_hostname=self.settings.rabbitmq_tls_server_name or endpoint.hostname,
                     timeout=self.settings.rabbitmq_connect_timeout_seconds,
                 )
                 self.channel = await self.connection.channel()
