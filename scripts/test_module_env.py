@@ -63,6 +63,50 @@ def test_process_environment_overrides_canonical_values():
     assert json.loads(result["SPRING_APPLICATION_JSON"])["app"]["media"]["outbox"]["enabled"] is False
 
 
+def test_meeting_intelligence_activation_keys_are_run_owned_and_not_synthesized():
+    baseline = module_env.build_core_environment(_api(), _postgres(), inherited={})
+    assert "APP_MEDIA_INTELLIGENCE_STORAGE_ID" not in baseline
+    assert "APP_MEDIA_INTELLIGENCE_ENABLED_STAGES" not in baseline
+    assert "APP_MEDIA_PROCESSING_REQUIRED_DOWNSTREAM_STAGES" not in baseline
+
+    activation = {
+        "APP_MEDIA_INTELLIGENCE_ENABLED": "true",
+        "APP_MEDIA_INTELLIGENCE_DISPATCH_ENABLED": "true",
+        "APP_MEDIA_INTELLIGENCE_INFRASTRUCTURE_VERIFIED": "true",
+        "APP_MEDIA_INTELLIGENCE_STORAGE_ID": "approved-existing-alias",
+        "APP_MEDIA_INTELLIGENCE_ENABLED_STAGES": (
+            "GENERATING_SUMMARY,EXTRACTING_DECISIONS,EXTRACTING_ACTION_ITEMS"
+        ),
+        "APP_MEDIA_PROCESSING_REQUIRED_DOWNSTREAM_STAGES": (
+            "GENERATING_SUMMARY,EXTRACTING_DECISIONS,EXTRACTING_ACTION_ITEMS"
+        ),
+        "APP_MEDIA_PROCESSING_ACTION_ITEM_HANDOFF_ENABLED": "true",
+        "APP_MI_INTERNAL_RESULT_ENABLED": "true",
+    }
+    result = module_env.build_core_environment(_api() | activation, _postgres(), inherited={})
+
+    for name, value in activation.items():
+        assert result[name] == value
+
+
+def test_core_result_acceptance_token_uses_a_protected_file(tmp_path):
+    token = tmp_path / "mi-core-result-acceptance-token"
+    token.write_text("mi-acceptance-token\n", encoding="utf-8")
+    token.chmod(0o600)
+
+    result = module_env.build_core_environment(
+        _api() | {
+            "APP_MI_INTERNAL_RESULT_TOKEN": "",
+            "APP_MI_INTERNAL_RESULT_TOKEN_FILE": str(token),
+        },
+        _postgres(),
+        inherited={},
+    )
+
+    assert result["APP_MI_INTERNAL_RESULT_TOKEN"] == "mi-acceptance-token"
+    assert "APP_MI_INTERNAL_RESULT_TOKEN_FILE" not in result
+
+
 def test_missing_postgres_setting_is_rejected_without_value():
     values = _postgres()
     values["POSTGRES_PASSWORD"] = ""

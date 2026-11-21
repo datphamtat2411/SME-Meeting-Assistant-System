@@ -18,6 +18,8 @@ class ModuleEnvironmentError(RuntimeError):
 
 
 _KEY = re.compile(r"[A-Z][A-Z0-9_]*\Z")
+_SAFE_VALUE = re.compile(r"[^\x00-\x1f\x7f]*\Z")
+_REPO = Path(__file__).resolve().parents[1]
 _CORE_PREFIXES = ("APP_", "SPRING_", "RABBITMQ_", "SERVER_", "MANAGEMENT_", "JAVA_")
 _INHERITED_NAMES = frozenset({
     "HOME",
@@ -93,6 +95,45 @@ def _process_overrides() -> dict[str, str]:
     return {name: os.environ[name] for name in names}
 
 
+def _protected_secret(path_value: str) -> str:
+    path = Path(path_value).expanduser().absolute()
+    try:
+        info = path.lstat()
+        resolved = path.resolve()
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or stat.S_ISLNK(info.st_mode)
+            or info.st_nlink != 1
+            or info.st_uid != os.getuid()
+            or info.st_mode & 0o077
+            or info.st_size > 1_048_576
+            or resolved.is_relative_to(_REPO)
+            or any(item.is_symlink() for item in (path, *path.parents))
+        ):
+            raise ModuleEnvironmentError("protected secret source is unsafe")
+        value = path.read_text(encoding="utf-8")
+    except ModuleEnvironmentError:
+        raise
+    except (OSError, UnicodeError) as error:
+        raise ModuleEnvironmentError("protected secret source is unavailable") from error
+    lines = value.splitlines()
+    if len(lines) != 1 or not lines[0].strip() or _SAFE_VALUE.fullmatch(lines[0]) is None:
+        raise ModuleEnvironmentError("protected secret source is invalid")
+    return lines[0].strip()
+
+
+def _resolve_protected_secrets(api: dict[str, str]) -> None:
+    reference_name = "APP_MI_INTERNAL_RESULT_TOKEN_FILE"
+    reference = api.pop(reference_name, "").strip()
+    if not reference:
+        return
+    if api.get("APP_MI_INTERNAL_RESULT_TOKEN", "").strip():
+        raise ModuleEnvironmentError(
+            "a setting and its protected secret source are both configured"
+        )
+    api["APP_MI_INTERNAL_RESULT_TOKEN"] = _protected_secret(reference)
+
+
 def build_core_environment(
     api_values: dict[str, str],
     postgres_values: dict[str, str],
@@ -110,6 +151,7 @@ def build_core_environment(
             if name in postgres:
                 postgres[name] = value
 
+    _resolve_protected_secrets(api)
     selected = {
         name: value for name, value in api.items()
         if name.startswith(_CORE_PREFIXES) and name not in {"SPRING_APPLICATION_JSON"}

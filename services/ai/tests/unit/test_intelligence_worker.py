@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import logging
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from uuid import uuid4
@@ -13,6 +14,7 @@ from sme_meeting_ai.integrations.intelligence import (
     IntelligenceStatus,
 )
 from sme_meeting_ai.integrations.object_storage import StorageError
+from sme_meeting_ai.meeting_intelligence.errors import IntelligenceError
 from sme_meeting_ai.meeting_intelligence.result import ResultError, serialize_result
 from sme_meeting_ai.meeting_intelligence.source import (
     SourceIntegrityError,
@@ -211,6 +213,7 @@ def lifecycle():
     class Core:
         state = "AVAILABLE"
         accepts = claims = failures = 0
+        failure_body = None
         lose_response = False
 
         async def lookup(self, event, **kwargs):
@@ -236,6 +239,7 @@ def lifecycle():
         async def request(self, event, operation, body, **kwargs):
             assert operation == "fail"
             self.failures += 1
+            self.failure_body = body
             self.state = "FAILURE_RECORDED"
             return await self.lookup(event)
 
@@ -292,6 +296,41 @@ def test_coordinator_acceptance_and_duplicate_delivery():
             duplicate = type(delivery)()
             await worker.handle(duplicate)
             assert duplicate.acked and core.accepts == 1 and core.claims == 1
+        finally:
+            await worker.aclose()
+
+    asyncio.run(run())
+
+
+def test_summary_validation_diagnostic_is_logged_but_core_receives_only_validation(caplog):
+    async def run():
+        settings, core, storage, delivery, _ = lifecycle()
+
+        def processor(context):
+            raise IntelligenceError(
+                "GROUNDING_FAILURE", rule="UNSUPPORTED_NUMBER", item_index=3
+            )
+
+        worker = IntelligenceWorker(
+            settings, core, storage, {"GENERATING_SUMMARY": processor}
+        )
+        try:
+            with caplog.at_level(logging.WARNING, logger="sme_meeting_ai.workers.intelligence"):
+                await worker.handle(delivery)
+            assert delivery.acked
+            assert storage.artifact is None
+            assert core.accepts == 0 and core.failures == 1
+            assert core.failure_body["category"] == "VALIDATION"
+            assert "validation_reason" not in core.failure_body
+            record = next(
+                record for record in caplog.records
+                if getattr(getattr(record, "_sme_meeting_ai_event", None), "name", None)
+                == "worker.intelligence.failure.inference.validation"
+            )
+            assert record._sme_validation_reason == "GROUNDING_FAILURE"
+            assert record._sme_validation_rule == "UNSUPPORTED_NUMBER"
+            assert record._sme_validation_item_index == 3
+            assert record.msg == ""
         finally:
             await worker.aclose()
 
@@ -448,9 +487,11 @@ def test_valid_existing_result_recovered_without_processor_reexecution():
             await worker.handle(delivery)
             core.state = "AVAILABLE"
             replay = type(delivery)()
-            worker.processors.clear()
-            await worker.handle(replay)
+            await worker.aclose()
+            restarted = IntelligenceWorker(settings, core, storage, {})
+            await restarted.handle(replay)
             assert replay.acked and core.accepts == 2 and core.failures == 0
+            await restarted.aclose()
         finally:
             await worker.aclose()
 

@@ -229,6 +229,9 @@ class ModelRequest:
     output_budget: int
     deadline: float
     cancelled: Event = field(repr=False)
+    # Opaque Core-backed capability installed only for the live MI worker.
+    # It is deliberately not serializable and never enters the provider payload.
+    provider_attempts: object | None = field(default=None, repr=False)
 
 
 def payload_for(model: str, reasoning_effort: str, task: TaskSpec, evidence_json: str, output_budget: int) -> dict:

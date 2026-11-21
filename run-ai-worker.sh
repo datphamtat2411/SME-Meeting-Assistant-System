@@ -26,4 +26,5 @@ exec uv run --locked \
   --config "$ROOT/services/ai/.env" \
   --process "$ROLE" \
   --validate-files \
+  --enable-selected-worker \
   --exec sme-ai-worker

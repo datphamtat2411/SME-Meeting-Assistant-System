@@ -21,6 +21,7 @@ POSTGRES_COMPOSE="$ROOT/infra/local/postgres/compose.yaml"
 POSTGRES_ENV="$ROOT/infra/local/postgres/.env"
 SECURE_COMPOSE="$ROOT/infra/local/secure-integration/compose.yaml"
 SECURE_ENV="$ROOT/infra/local/secure-integration/.env"
+SECURE_RUNTIME_ENV="$RUNTIME_DIR/secure.env"
 PI05_ENV="$ROOT/infra/local/pi05-isolated/.env"
 PI05_ORCHESTRATOR="$ROOT/infra/local/pi05-isolated/orchestrator.py"
 AI_ENV="$ROOT/services/ai/.env"
@@ -30,6 +31,18 @@ POSTGRES_PROJECT="sme-meeting-local"
 SECURE_PROJECT="sme-meeting-secure-integration"
 DEPENDENCY_STATE="$RUNTIME_DIR/dependencies.json"
 DEPENDENCY_MODE="${SME_DEV_DEPENDENCY_MODE:-secure}"
+
+ai_http_mode() {
+  case "${SME_DEV_AI_HTTP_MODE:-managed}" in
+    managed|external)
+      printf '%s\n' "${SME_DEV_AI_HTTP_MODE:-managed}"
+      ;;
+    *)
+      echo "BLOCKED: SME_DEV_AI_HTTP_MODE must be managed or external" >&2
+      return 1
+      ;;
+  esac
+}
 
 mkdir_state() {
   mkdir -p "$STATE_DIR" "$RUNTIME_DIR"
@@ -86,7 +99,7 @@ render_ai_process() {
 }
 
 render_ai_environment() {
-  render_ai_process ai-http "$RUNTIME_DIR/ai-http.env"
+    render_ai_process ai-http "$RUNTIME_DIR/ai-http.env"
   if worker_enabled; then
     local role
     role="$(worker_role)"
@@ -94,21 +107,31 @@ render_ai_environment() {
   fi
 }
 
+render_secure_environment() {
+  mkdir_state
+  "$PYTHON" "$CONFIG_HELPER" render-secure \
+    --file "$SECURE_ENV" \
+    --output "$SECURE_RUNTIME_ENV" >/dev/null
+}
+
 compose_postgres() {
   docker compose --env-file "$POSTGRES_ENV" -f "$POSTGRES_COMPOSE" "$@"
 }
 
 compose_secure() {
+  render_secure_environment
   local worker_environment="$RUNTIME_DIR/transcription-worker.env"
   if [[ ! -f "$worker_environment" ]]; then
     worker_environment="/dev/null"
   fi
   AI_HTTP_ENV_FILE="$RUNTIME_DIR/ai-http.env" \
   AI_TRANSCRIPTION_ENV_FILE="$worker_environment" \
-  docker compose --env-file "$SECURE_ENV" -f "$SECURE_COMPOSE" "$@"
+  docker compose --env-file "$SECURE_RUNTIME_ENV" -f "$SECURE_COMPOSE" "$@"
 }
 
 doctor() {
+  local ai_mode
+  ai_mode="$(ai_http_mode)" || return 1
   configuration_migration_check
   [[ "$DEPENDENCY_MODE" == "secure" ]] || {
     echo "BLOCKED: SME_DEV_DEPENDENCY_MODE must be secure" >&2
@@ -149,19 +172,32 @@ doctor() {
   render_ai_environment
   "$PYTHON" "$CONFIG_HELPER" paths \
     --file "$SECURE_ENV" --directory-key BROKER_TLS_DIR \
+    --allow-acl-uid 999 \
     tls.crt tls.key issuer-ca.crt >/dev/null
   "$PYTHON" "$CONFIG_HELPER" paths \
     --file "$SECURE_ENV" --directory-key STORAGE_TLS_DIR \
+    --allow-acl-uid 10001 \
     rustfs_cert.pem rustfs_key.pem issuer-ca.crt >/dev/null
+  "$PYTHON" "$CONFIG_HELPER" paths \
+    --file "$SECURE_ENV" --directory-key AI_TLS_DIR \
+    --allow-acl-uid 10001 \
+    ai-server.crt ai-server.key client-ca.crt >/dev/null
   compose_postgres config -q >/dev/null
   compose_secure config -q >/dev/null
   if qdrant_enabled; then
     "$PYTHON" "$CONFIG_HELPER" require \
-      --file "$SECURE_ENV" QDRANT_API_KEY QDRANT_TLS_DIR >/dev/null
+      --file "$SECURE_ENV" QDRANT_TLS_DIR >/dev/null
+    render_secure_environment
+    "$PYTHON" "$CONFIG_HELPER" require \
+      --file "$SECURE_RUNTIME_ENV" QDRANT_API_KEY >/dev/null
     "$PYTHON" "$CONFIG_HELPER" paths \
       --file "$SECURE_ENV" --directory-key QDRANT_TLS_DIR \
+      --allow-acl-uid 0 \
       tls.crt tls.key issuer-ca.crt >/dev/null
     compose_secure --profile knowledge config -q >/dev/null
+  fi
+  if [[ "$ai_mode" == "external" ]]; then
+    echo "INFO: AI HTTP mode is external; dev.sh will not start or stop that process"
   fi
   echo "PASS: canonical configuration, process mappings and Compose contracts are valid"
 }
@@ -320,6 +356,17 @@ wait_core_readiness() {
 }
 
 wait_ai_readiness() {
+  local ai_mode
+  ai_mode="$(ai_http_mode)" || return 1
+  if [[ "$ai_mode" == "external" ]]; then
+    if ! "$PYTHON" "$READINESS_HELPER" probe-ai \
+      --api-file "$API_ENV" --timeout 5
+    then
+      echo "ERROR: externally managed AI HTTP HTTPS/mTLS readiness failed" >&2
+      return 1
+    fi
+    return 0
+  fi
   local port
   port="$("$PYTHON" "$READINESS_HELPER" port \
     --file "$RUNTIME_DIR/ai-http.env" \
@@ -333,11 +380,17 @@ wait_ai_readiness() {
 }
 
 up() {
+  local ai_mode
+  ai_mode="$(ai_http_mode)" || return 1
   doctor
   start_dependencies
-  start_process ai-http "$ROOT" bash "$ROOT/run-ai-http.sh"
-  wait_owned_process ai-http
-  wait_ai_readiness
+  if [[ "$ai_mode" == "external" ]]; then
+    wait_ai_readiness
+  else
+    start_process ai-http "$ROOT" bash "$ROOT/run-ai-http.sh"
+    wait_owned_process ai-http
+    wait_ai_readiness
+  fi
   start_process core "$ROOT" bash "$ROOT/run-core.sh"
   wait_owned_process core
   wait_core_readiness
@@ -347,7 +400,11 @@ up() {
     start_process worker "$ROOT" bash "$ROOT/run-ai-worker.sh" "$role"
     wait_owned_process worker
   fi
-  echo "PASS: PostgreSQL, RabbitMQ, RustFS, AI HTTP and Core are ready"
+  if [[ "$ai_mode" == "external" ]]; then
+    echo "PASS: PostgreSQL, RabbitMQ, RustFS, external AI HTTP and Core are ready"
+  else
+    echo "PASS: PostgreSQL, RabbitMQ, RustFS, AI HTTP and Core are ready"
+  fi
   if ! worker_enabled; then
     echo "INFO: set SME_DEV_START_WORKER=1 to start the selected worker"
   fi
@@ -357,8 +414,14 @@ up() {
 }
 
 status() {
+  local ai_mode
+  ai_mode="$(ai_http_mode)" || return 1
   mkdir_state
-  status_process ai-http
+  if [[ "$ai_mode" == "external" ]]; then
+    echo "INFO: AI HTTP is externally managed; dev.sh does not own its process"
+  else
+    status_process ai-http
+  fi
   status_process core
   status_process worker
   if command -v docker >/dev/null && [[ -f "$POSTGRES_ENV" ]]; then
@@ -379,6 +442,7 @@ smoke() {
     render_ai_process transcription-worker "$RUNTIME_DIR/transcription-worker.env"
     "$PYTHON" "$CONFIG_HELPER" paths \
       --file "$SECURE_ENV" --directory-key WORKER_TLS_DIR \
+      --allow-acl-uid 10001 \
       tls.crt tls.key core-server-ca.crt broker-ca.crt storage-ca.crt >/dev/null
     if ! dependency_verify "$SECURE_PROJECT" \
       "rabbitmq,storage,storage-boundary" \
@@ -417,10 +481,16 @@ admit() {
 }
 
 down() {
+  local ai_mode
+  ai_mode="$(ai_http_mode)" || return 1
   local failure=0
   stop_process worker || failure=1
   stop_process core || failure=1
-  stop_process ai-http || failure=1
+  if [[ "$ai_mode" == "external" ]]; then
+    echo "INFO: AI HTTP is externally managed; leaving it running"
+  else
+    stop_process ai-http || failure=1
+  fi
 
   if command -v docker >/dev/null && [[ -f "$SECURE_ENV" ]]; then
     local secure_owned
@@ -510,8 +580,9 @@ usage() {
 Usage: ./dev.sh doctor|up|status|smoke|e2e|admit|migrate|logs|down
 
  up      Validate canonical files, start dependencies and ready Core/AI.
-doctor  Validate mappings and Compose interpolation without starting services.
-status  Show only owned process and PostgreSQL status.
+ doctor  Validate mappings and Compose interpolation without starting services.
+         Set SME_DEV_AI_HTTP_MODE=external to use an existing HTTPS/mTLS AI API.
+ status  Show only owned process and PostgreSQL status.
 smoke   Check Core liveness; set SME_DEV_SECURE_SMOKE=1 for secure checks.
  e2e     Run an explicitly approved, already-running PI-05 environment only.
  admit   Perform the separate read-only fresh-project PI-05 admission check.

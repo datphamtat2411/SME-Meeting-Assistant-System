@@ -32,19 +32,34 @@ public class IntelligenceWorkerCapability {
                 || !env.getProperty("spring.rabbitmq.template.mandatory",Boolean.class,false)
                 || !List.of("quorum","external-quorum").contains(env.getProperty("app.media.messaging.topology","legacy"))
                 || !"processing.intelligence.requested".equals(properties.getOutbox().getIntelligenceRoutingKey())
-                || properties.getOutbox().getIntelligenceRoutingKey().equals(properties.getOutbox().getRoutingKey())
-                || properties.getOutbox().getIntelligenceRoutingKey().equals(properties.getOutbox().getDiarizationRoutingKey())
-                || properties.getOutbox().getExchange()==null || properties.getOutbox().getExchange().isBlank()
-                || p.getStorageId()==null || !p.getStorageId().matches("[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
-                || p.getEnabledStages()==null || p.getEnabledStages().isEmpty()
-                || p.getEnabledStages().stream().anyMatch(v->!ORDER.contains(v))
-                || p.getEnabledStages().stream().distinct().count()!=p.getEnabledStages().size()
-                || p.getEnabledStages().contains("EXTRACTING_ACTION_ITEMS") && !properties.getProcessing().isActionItemHandoffEnabled()
-                || !"https".equals(uri.getScheme()) || uri.getHost()==null || uri.getUserInfo()!=null || uri.getQuery()!=null || uri.getFragment()!=null
-                || s.getBucket()==null || s.getBucket().isBlank() || s.getRegion()==null || s.getRegion().isBlank()
-                || s.isCreateBucketIfMissing() || properties.getProcessing().getStageLeaseSeconds()<30) throw new IllegalStateException();
-            PemTls.trustStore(Path.of(s.getCaFile()));
-        } catch(Exception invalid) {throw new IllegalStateException("Invalid Meeting Intelligence worker capability configuration");}
+                 || properties.getOutbox().getIntelligenceRoutingKey().equals(properties.getOutbox().getRoutingKey())
+                 || properties.getOutbox().getIntelligenceRoutingKey().equals(properties.getOutbox().getDiarizationRoutingKey())
+                 || properties.getOutbox().getExchange()==null || properties.getOutbox().getExchange().isBlank()
+                 || p.getStorageId()==null || !p.getStorageId().matches("[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+                 || !validStageSelection(p)
+                 || !"https".equals(uri.getScheme()) || uri.getHost()==null || uri.getUserInfo()!=null || uri.getQuery()!=null || uri.getFragment()!=null
+                 || s.getBucket()==null || s.getBucket().isBlank() || s.getRegion()==null || s.getRegion().isBlank()
+                 || s.isCreateBucketIfMissing() || properties.getProcessing().getStageLeaseSeconds()<30) throw new IllegalStateException();
+             PemTls.trustStore(Path.of(s.getCaFile()));
+         } catch(Exception invalid) {throw new IllegalStateException("Invalid Meeting Intelligence worker capability configuration");}
+     }
+    private boolean validStageSelection(MediaProperties.Intelligence intelligence) {
+        var enabled=intelligence.getEnabledStages();
+        var required=properties.getProcessing().getRequiredDownstreamStages();
+        if(enabled==null || enabled.isEmpty() || required==null
+            || enabled.stream().anyMatch(v->!ORDER.contains(v))
+            || enabled.stream().distinct().count()!=enabled.size()
+            || required.stream().anyMatch(v->!ORDER.contains(v) && !"INDEXING".equals(v))
+            || required.stream().distinct().count()!=required.size()
+            || enabled.contains("EXTRACTING_ACTION_ITEMS") && !properties.getProcessing().isActionItemHandoffEnabled())
+            return false;
+        int previous=-1;
+        for(String stage:enabled) {
+            int index=ORDER.indexOf(stage);
+            if(index<=previous) return false;
+            previous=index;
+        }
+        return required.stream().filter(ORDER::contains).toList().equals(enabled);
     }
     public boolean canDispatch(String stage) {
         var p=properties.getIntelligence();

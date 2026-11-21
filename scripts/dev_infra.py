@@ -46,7 +46,7 @@ _CONTAINER_FORMAT = (
     '"project":{{json (index .Config.Labels "com.docker.compose.project")}},'
     '"service":{{json (index .Config.Labels "com.docker.compose.service")}},'
     '"status":{{json .State.Status}},'
-    '"health":{{if .State.Health}}{{json .State.Health.Status}}{{else}}"none"{{end}},'
+    '"health":{{with (index .State "Health")}}{{json .Status}}{{else}}"none"{{end}},'
     '"user":{{json .Config.User}}}'
 )
 _VOLUME_FORMAT = (

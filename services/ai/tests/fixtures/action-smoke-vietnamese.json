@@ -1,0 +1,17 @@
+{
+  "name": "bounded-mi-action-smoke",
+  "language": "vi",
+  "synthetic": true,
+  "segments": [
+    "Linh: Cập nhật tiến độ dự án Cánh Buồm của Công ty Sao Bắc: thiết kế giao diện đã hoàn thành và nhóm kỹ thuật đang tích hợp mô-đun thanh toán, hiện đạt khoảng bảy mươi phần trăm.",
+    "Quang: Quyết định rõ ràng của cuộc họp là nhóm sẽ dùng phiên bản API thanh toán v2 cho bản phát hành thử nghiệm.",
+    "Linh: Quang, tôi giao bạn hoàn thiện tích hợp mô-đun thanh toán và gửi bản chạy thử cho nhóm trước ngày 2026-12-15."
+  ],
+  "expected": {
+    "count": 1,
+    "actionPhrase": "hoàn thiện tích hợp mô-đun thanh toán",
+    "party": "Quang",
+    "dueDate": "2026-12-15",
+    "evidenceOrdinal": 2
+  }
+}

@@ -17,6 +17,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID
 
+import httpx
 from pydantic import SecretStr
 
 from sme_meeting_ai.core.config import Settings
@@ -49,9 +50,39 @@ class EvaluationMode(StrEnum):
     APPROVED_LIVE = "approved-live"
 
 
+_UNSPECIFIED = object()
+
+
+class ProviderAttemptCapture(httpx.AsyncBaseTransport):
+    """Safe one-shot transport telemetry; never retains request/response bodies."""
+
+    def __init__(self):
+        self._inner = httpx.AsyncHTTPTransport(trust_env=False)
+        self.request_count = 0
+        self.response_statuses = []
+        self.transport_error_count = 0
+        self._closed = False
+
+    async def handle_async_request(self, request):
+        self.request_count += 1
+        try:
+            response = await self._inner.handle_async_request(request)
+        except Exception:
+            self.transport_error_count += 1
+            raise
+        self.response_statuses.append(response.status_code)
+        return response
+
+    async def aclose(self):
+        if not self._closed:
+            self._closed = True
+            await self._inner.aclose()
+
+
 class _TelemetryAdapter:
-    def __init__(self, adapter):
+    def __init__(self, adapter, *, provider_metadata=None):
         self.adapter = adapter
+        self.provider_metadata = provider_metadata
         self.calls = []
 
     def complete(self, request):
@@ -70,10 +101,19 @@ class _TelemetryAdapter:
         finally:
             usage = getattr(result, "usage", None)
             duration = time.monotonic_ns() - started
+            schema_failure_categories = {
+                "MALFORMED_OUTPUT", "SCHEMA_MISMATCH", "INCOMPLETE_OUTPUT",
+                "REFUSAL", "UNSUPPORTED_SCHEMA",
+            }
             self.calls.append({
                 "call_index": len(self.calls),
                 "duration_ns": duration,
                 "failure_category": failure,
+                "schema_validation": (
+                    "PASS" if result is not None else
+                    "FAIL" if failure in schema_failure_categories else
+                    "NOT_REACHED"
+                ),
                 "requested_model": getattr(result, "requested_model", request.model) if result else request.model,
                 "reported_model": getattr(result, "reported_model", None) if result else None,
                 "provider": getattr(result, "provider", None) if result else None,
@@ -81,6 +121,7 @@ class _TelemetryAdapter:
                 "input_tokens": getattr(usage, "input_tokens", None) if usage else None,
                 "output_tokens": getattr(usage, "output_tokens", None) if usage else None,
                 "total_tokens": getattr(usage, "total_tokens", None) if usage else None,
+                "reasoning_tokens": getattr(usage, "reasoning_tokens", None) if usage else None,
                 "reported_cost": _fraction(getattr(usage, "reported_cost", None)) if usage else None,
                 "configuration_sha256": getattr(result, "configuration_sha256", None) if result else None,
                 "planning_version": getattr(result, "planning_version", None) if result else None,
@@ -92,10 +133,21 @@ class _TelemetryAdapter:
                 "estimated_input_tokens": getattr(result, "estimated_input_tokens", None) if result else None,
                 "reserved_tokens": request.window.estimated_input_tokens + request.output_budget,
                 "attempts": getattr(result, "attempts", None) if result else None,
-             })
+              })
 
     def report(self):
         costs = [call["reported_cost"] for call in self.calls if call["reported_cost"] is not None]
+        statuses = getattr(self.provider_metadata, "response_statuses", None)
+        request_count = getattr(self.provider_metadata, "request_count", None)
+        transport_errors = getattr(self.provider_metadata, "transport_error_count", None)
+        if not isinstance(statuses, list):
+            statuses = None
+        elif not all(type(status) is int and 100 <= status <= 599 for status in statuses):
+            statuses = None
+        if type(request_count) is not int or request_count < 0:
+            request_count = None
+        if type(transport_errors) is not int or transport_errors < 0:
+            transport_errors = None
         return {
             "call_count": len(self.calls),
             "calls": sorted(self.calls, key=lambda call: call["call_index"]),
@@ -103,6 +155,9 @@ class _TelemetryAdapter:
             "reported_cost_subtotal": _sum_fraction(costs),
             "cost": _sum_fraction(costs) if costs and len(costs) == len(self.calls) else None,
             "provider_duration_ns": sum(call["duration_ns"] for call in self.calls),
+            "provider_request_count": request_count,
+            "provider_response_statuses": statuses,
+            "provider_transport_error_count": transport_errors,
         }
 
 
@@ -128,24 +183,44 @@ def _sum_fraction(values):
     return {"numerator": total.numerator, "denominator": total.denominator}
 
 
+def _schema_validation_status(telemetry):
+    if any(call["schema_validation"] == "PASS" for call in telemetry.calls):
+        return "PASS"
+    if any(call["schema_validation"] == "FAIL" for call in telemetry.calls):
+        return "FAIL"
+    return "NOT_REACHED"
+
+
 class _BudgetAdapter:
-    """Bound provider attempts and estimated request cost for one live run."""
+    """Bound aggregate adapter calls and reserved tokens for one run.
+
+    Live callers must pair this with ``meeting_intelligence_max_attempts=1``
+    when the bound is an HTTP-request budget. The production adapter otherwise
+    may retry a single logical call for a transient provider response.
+    """
 
     def __init__(self, adapter, *, max_calls: int, budget: int):
+        require(type(max_calls) is int and max_calls > 0, "CONFIGURATION")
+        require(type(budget) is int and budget > 0, "CONFIGURATION")
         self.adapter = adapter
         self.max_calls = max_calls
         self.budget = budget
         self.calls = 0
+        self.accepted_calls = 0
+        self.blocked_calls = 0
         self.estimated_units = 0
 
     def complete(self, request):
         self.calls += 1
         if self.calls > self.max_calls:
+            self.blocked_calls += 1
             raise IntelligenceError("CONTEXT_BUDGET")
         units = request.window.estimated_input_tokens + request.output_budget
         if self.estimated_units + units > self.budget:
+            self.blocked_calls += 1
             raise IntelligenceError("CONTEXT_BUDGET")
         self.estimated_units += units
+        self.accepted_calls += 1
         return self.adapter.complete(request)
 
 
@@ -248,30 +323,46 @@ def _failure_category(error):
 def run_processor_case(feature: str, context: StageContext, settings: Settings, adapter,
                        *, mode: EvaluationMode | str = EvaluationMode.DETERMINISTIC_OFFLINE,
                        processor_version: str = "meeting-intelligence-processors-1",
-                       fixture_id: str | None = None) -> dict:
+                       fixture_id: str | None = None,
+                       provider_metadata=None) -> dict:
     """Run one real production processor with an injected, bounded adapter."""
     if feature not in FEATURES:
         raise EvaluationError("unknown meeting intelligence feature")
     mode = str(mode)
-    telemetry = _TelemetryAdapter(adapter)
+    telemetry = _TelemetryAdapter(adapter, provider_metadata=provider_metadata)
     record = {
         "fixture_id": fixture_id or context.source_snapshot_id,
         "feature": feature,
         "status": "FAILED",
         "failure_category": None,
+        "failure_reason": None,
         "empty_result": False,
         "quality_status": "UNESTABLISHED" if mode != EvaluationMode.APPROVED_LIVE.value else "UNESTABLISHED",
         "source": {"snapshot_id": context.source_snapshot_id, "transcript_id": context.transcript_id,
                    "content_revision": context.content_revision, "source_sha256": context.source_sha256},
         "provenance": {"processor_version": processor_version, "mode": mode},
         "telemetry": None,
+        "schema_validation": "NOT_REACHED",
+        "canonical_validation": "NOT_RUN",
+        "semantic_validation": "NOT_REACHED",
+        "candidate_count": None,
+        "smoke_semantic_validation": "NOT_RUN",
+        "smoke_semantic_failure_reasons": [],
         "metrics": None,
         "critical_failures": [],
         "prediction": None,
     }
+    candidate = None
     try:
         candidate = _processor(feature, settings, telemetry)(context)
+        if isinstance(candidate, dict) and isinstance(candidate.get("result"), dict):
+            values = candidate["result"].get("candidates")
+            if isinstance(values, list):
+                record["candidate_count"] = len(values)
+        record["schema_validation"] = _schema_validation_status(telemetry)
         validate_processor_candidate(feature, candidate, context.snapshot, _claim(context, feature))
+        record["canonical_validation"] = "PASS"
+        record["semantic_validation"] = "PASS"
         result = candidate["result"]
         empty = (feature in {"decision", "action"} and not result.get("candidates"))
         if feature == "summary":
@@ -290,15 +381,178 @@ def run_processor_case(feature: str, context: StageContext, settings: Settings, 
         })
     except IntelligenceError as error:
         record["failure_category"] = _failure_category(error)
+        record["failure_reason"] = record["failure_category"]
+        record["schema_validation"] = _schema_validation_status(telemetry)
+        record["semantic_validation"] = (
+            "FAIL" if record["schema_validation"] == "PASS" else "NOT_REACHED"
+        )
     except EvaluationError:
         record["failure_category"] = "VALIDATION"
+        record["failure_reason"] = "CANONICAL_VALIDATION"
+        record["canonical_validation"] = "FAIL"
+        record["semantic_validation"] = "FAIL"
     except Exception:
         record["failure_category"] = "PROCESSOR_FAILURE"
+        record["failure_reason"] = "PROCESSOR_FAILURE"
+        record["semantic_validation"] = (
+            "FAIL" if record["schema_validation"] == "PASS" else "NOT_REACHED"
+        )
     finally:
         record["telemetry"] = telemetry.report()
         record["duration_ns"] = record["telemetry"]["provider_duration_ns"]
+        if telemetry.calls:
+            first = telemetry.calls[0]
+            record["provenance"] = {
+                **record["provenance"],
+                "model": first.get("requested_model"),
+                "reported_model": first.get("reported_model"),
+                "provider": first.get("provider"),
+                "reported_provider": first.get("reported_provider"),
+                "prompt_version": first.get("prompt_version"),
+                "schema_version": first.get("schema_version"),
+                "configuration_sha256": first.get("configuration_sha256"),
+                "planning_version": first.get("planning_version"),
+                "task_sha256": first.get("task_sha256"),
+                "reasoning_effort": first.get("reasoning_effort"),
+            }
         record["prediction"] = record.get("prediction")
     return record
+
+
+def evaluate_action_smoke_semantics(
+    record: dict,
+    *,
+    expected_count: int,
+    expected_action_phrase: str | None = None,
+    expected_due_date: str | None | object = _UNSPECIFIED,
+    expected_party: str | None | object = _UNSPECIFIED,
+    expected_evidence_segment_id: str | None = None,
+) -> dict:
+    """Apply fixture-specific expectations without narrowing the production contract.
+
+    Empty and multi-candidate production results are valid processor outcomes.
+    This evaluator reports a smoke-fixture mismatch instead of raising or
+    converting either outcome into a provider/schema failure.
+    """
+    require(record.get("feature") == "action", "action smoke feature")
+    reasons = []
+    prediction = record.get("prediction")
+    candidates = []
+    if record.get("status") == "SUCCESS" and isinstance(prediction, dict):
+        result = prediction.get("result")
+        if isinstance(result, dict) and isinstance(result.get("candidates"), list):
+            candidates = result["candidates"]
+    actual_count = len(candidates) if record.get("status") == "SUCCESS" else record.get("candidate_count")
+    if record.get("status") != "SUCCESS":
+        smoke_status = "NOT_REACHED"
+    else:
+        if actual_count != expected_count:
+            reasons.append("ACTION_COUNT_MISMATCH")
+        if expected_action_phrase is not None and not any(
+            isinstance(item.get("title"), str)
+            and expected_action_phrase.casefold() in item["title"].casefold()
+            for item in candidates
+        ):
+            reasons.append("EXPECTED_ACTION_NOT_FOUND")
+        if expected_due_date is not _UNSPECIFIED and expected_due_date is not None and not any(
+            item.get("suggestedDueDate") == expected_due_date for item in candidates
+        ):
+            reasons.append("EXPECTED_DEADLINE_NOT_FOUND")
+        if expected_due_date is None and any(
+            item.get("suggestedDueDate") is not None for item in candidates
+        ):
+            reasons.append("UNEXPECTED_DEADLINE")
+        party_marker = "Người được nhắc trong bằng chứng:"
+        parties = [
+            item.get("details", "").split(party_marker, 1)[1].split(".", 1)[0].strip()
+            for item in candidates
+            if isinstance(item.get("details"), str) and party_marker in item["details"]
+        ]
+        if expected_party is None and parties:
+            reasons.append("UNEXPECTED_ASSIGNEE")
+        elif expected_party is not _UNSPECIFIED and expected_party is not None and not any(
+            expected_party.casefold() in party.casefold() for party in parties
+        ):
+            reasons.append("EXPECTED_ASSIGNEE_NOT_FOUND")
+        if expected_evidence_segment_id is not None and not any(
+            expected_evidence_segment_id in item.get("evidenceSegmentIds", ())
+            for item in candidates
+        ):
+            reasons.append("EXPECTED_EVIDENCE_NOT_FOUND")
+        smoke_status = "PASS" if not reasons else "FAIL"
+    record.update({
+        "smoke_semantic_validation": smoke_status,
+        "smoke_semantic_failure_reasons": reasons,
+        "smoke_candidate_count": actual_count,
+    })
+    return record
+
+
+def run_action_smoke_case(
+    context: StageContext,
+    settings: Settings,
+    adapter,
+    *,
+    expected_count: int,
+    expected_action_phrase: str | None = None,
+    expected_due_date: str | None | object = _UNSPECIFIED,
+    expected_party: str | None | object = _UNSPECIFIED,
+    expected_evidence_segment_id: str | None = None,
+    provider_metadata=None,
+    mode: EvaluationMode | str = EvaluationMode.DETERMINISTIC_OFFLINE,
+    max_provider_calls: int | None = None,
+    aggregate_token_budget: int | None = None,
+) -> dict:
+    """Run one production Action Items processor and a fixture check.
+
+    ``max_provider_calls`` and ``aggregate_token_budget`` install the same
+    aggregate guard used by approved live evaluation. The HTTP-request
+    interpretation additionally requires the production adapter's retry
+    setting to be one.
+    """
+    require(
+        (max_provider_calls is None and aggregate_token_budget is None)
+        or (
+            type(max_provider_calls) is int
+            and max_provider_calls > 0
+            and type(aggregate_token_budget) is int
+            and aggregate_token_budget > 0
+        ),
+        "CONFIGURATION",
+    )
+    bounded_adapter = adapter
+    if max_provider_calls is not None:
+        bounded_adapter = _BudgetAdapter(
+            adapter,
+            max_calls=max_provider_calls,
+            budget=aggregate_token_budget,
+        )
+    record = run_processor_case(
+        "action",
+        context,
+        settings,
+        bounded_adapter,
+        mode=mode,
+        processor_version="meeting-intelligence-smoke-1",
+        provider_metadata=provider_metadata,
+    )
+    if isinstance(bounded_adapter, _BudgetAdapter):
+        record["telemetry"].update({
+            "aggregate_max_calls": bounded_adapter.max_calls,
+            "aggregate_attempted_calls": bounded_adapter.calls,
+            "aggregate_accepted_calls": bounded_adapter.accepted_calls,
+            "aggregate_blocked_calls": bounded_adapter.blocked_calls,
+            "aggregate_reserved_tokens": bounded_adapter.estimated_units,
+            "aggregate_token_budget": bounded_adapter.budget,
+        })
+    return evaluate_action_smoke_semantics(
+        record,
+        expected_count=expected_count,
+        expected_action_phrase=expected_action_phrase,
+        expected_due_date=expected_due_date,
+        expected_party=expected_party,
+        expected_evidence_segment_id=expected_evidence_segment_id,
+    )
 
 
 def _context(case, feature: str):

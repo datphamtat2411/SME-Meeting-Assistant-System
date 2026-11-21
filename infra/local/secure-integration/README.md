@@ -140,15 +140,20 @@ Supply bootstrap values in the secure integration `.env`:
 - `RABBITMQ_DEFAULT_USER`, `RABBITMQ_DEFAULT_PASS`,
   `RABBITMQ_DEFAULT_VHOST=sme-integration`. No default credentials in this project.
 - `RUSTFS_ACCESS_KEY`, `RUSTFS_SECRET_KEY` (operator bootstrap only).
-- When starting the Knowledge worker, `QDRANT_API_KEY` and `QDRANT_TLS_DIR`
-  are required. Qdrant uses a separate existing server certificate directory
-  and `qdrant_secure_data`; no permission helper or CA operation is run by
-  `dev.sh`.
+- When starting the Knowledge worker, `QDRANT_TLS_DIR` and a Qdrant API key
+  source are required. Set `QDRANT_API_KEY_FILE` to a mode-0600 protected
+  one-line key file, or supply `QDRANT_API_KEY` in the ignored local file.
+  `dev.sh` renders the protected source into a private runtime Compose
+  interpolation file; it never prints or commits the key. Qdrant uses a
+  separate existing server certificate directory and `qdrant_secure_data`;
+  no permission helper or CA operation is run by `dev.sh`.
 - `services/ai/.env`: the transcription process block supplies separate
   `AI_RABBITMQ_USERNAME/PASSWORD` and `AI_S3_ACCESS_KEY_ID/SECRET_ACCESS_KEY`.
   The Knowledge and Meeting Intelligence blocks use separate identities.
   These are not administrator accounts. Provider credentials remain external
-  and are required only for an approved enabled inference run.
+  and are required only for an approved enabled inference run. The MI worker
+  also uses the same pre-existing logical storage alias as Core; the alias is
+  not a bucket name, IAM user, or permission grant.
 - `services/api/.env`: Core's normal DB/JWT/SMTP settings plus separate publisher
   `RABBITMQ_USERNAME/PASSWORD`, storage `APP_MEDIA_STORAGE_ACCESS_KEY/SECRET_KEY`.
 
@@ -401,6 +406,34 @@ tool refuses existing users and never rotates credentials. Keep the MI Core
 storage grant limited to source snapshots and accepted-result reads. It must not
 write or delete `processing/*/intelligence/results/*`.
 
+### Meeting Intelligence storage alias and lifecycle
+
+`APP_MEDIA_INTELLIGENCE_STORAGE_ID` is a Core-owned logical descriptor carried
+in the private worker source and result-slot contracts. It selects no bucket,
+does not create storage, and is not an IAM identity. For an approved run,
+Core's value must exactly match the already provisioned MI worker
+`AI_S3_STORAGE_ID` value. Keep the existing endpoint, bucket, TLS trust, and
+storage boundary unchanged; do not invent a new alias as part of activation.
+
+The underlying storage is the existing `APP_MEDIA_STORAGE_*` configuration.
+Core creates and verifies immutable source snapshots under
+`processing/{job}/intelligence/source/{snapshot}.json`; the MI identity may
+read those snapshots and may create/read the corresponding immutable result
+objects under `processing/{job}/intelligence/results/{stage}.json`. Core reads
+accepted results and owns canonical acceptance. The MI identity cannot read
+meeting uploads, write source snapshots, delete results, list the bucket, or
+administer storage. The Core identity must not write MI result objects.
+
+Provisioning is an explicit operator action against the already approved
+bucket: review `storage_admin.py policy --role intelligence`, then provision
+one separate workload IAM identity with externally supplied restricted
+credentials. The tool refuses existing or uninspectable users and performs no
+bucket creation, deletion, or credential rotation. Keep
+`APP_MEDIA_STORAGE_CREATE_BUCKET_IF_MISSING=false`. Source/result retention is
+not inferred from the alias; baseline orphan cleanup remains disabled, and any
+future cleanup requires the existing audited opt-in with a minimum age of at
+least 24 hours.
+
 Secure Core sets `spring.rabbitmq.dynamic=false` and
 `app.media.messaging.topology=external-quorum`; its publisher cannot administer
 resources. Simple local development retains `legacy` declarations on its separate
@@ -600,6 +633,45 @@ still eligible for reconciliation remain protected. Future orphan retention requ
 an approved policy and Core-reference reconciliation; no arbitrary expiry is assumed.
 
 ## E2E-04 Core-owned controlled acceptance
+
+### Future bounded MI activation (operator authorization required)
+
+This repository is **offline-ready for a fresh authorization decision**, not
+live-E2E-ready. Do not enable these values in the committed examples or in the
+current baseline. After the broker, storage, mTLS, identity, acceptance-token,
+browser-identity, and provider approvals are independently recorded, a single
+operator-owned run may use the existing launch wrappers with a run-owned
+environment overlay containing the following full-stage contract:
+
+```text
+APP_MEDIA_OUTBOX_ENABLED=true
+APP_MEDIA_INTELLIGENCE_ENABLED=true
+APP_MEDIA_INTELLIGENCE_DISPATCH_ENABLED=true
+APP_MEDIA_INTELLIGENCE_INFRASTRUCTURE_VERIFIED=true
+APP_MEDIA_INTELLIGENCE_STORAGE_ID=<existing-approved-storage-alias>
+APP_MEDIA_INTELLIGENCE_ENABLED_STAGES=GENERATING_SUMMARY,EXTRACTING_DECISIONS,EXTRACTING_ACTION_ITEMS
+APP_MEDIA_PROCESSING_REQUIRED_DOWNSTREAM_STAGES=GENERATING_SUMMARY,EXTRACTING_DECISIONS,EXTRACTING_ACTION_ITEMS
+APP_MEDIA_PROCESSING_ACTION_ITEM_HANDOFF_ENABLED=true
+APP_MI_INTERNAL_RESULT_ENABLED=true
+```
+
+`<existing-approved-storage-alias>` is an operator-supplied value, not a
+placeholder to invent here. The Core and MI worker values must match. The
+dedicated MI worker is launched as `run-ai-worker.sh mi`; its launch-time
+selection enables Worker, inference, Summary, Decisions, and Action Items
+without changing the canonical disabled source file. Provider credentials and
+the existing protected acceptance-token sources remain run-owned and are never
+copied into this repository.
+
+Before any such run, record byte hashes and metadata for every baseline file
+the selected wrappers would read, store the copies outside the repository with
+mode `0600`, and record the exact run-owned overlay separately. Do not source
+dotenv files or edit a shared file in place. After the one bounded run, stop
+only the run-owned processes, remove only the run-owned overlay, and verify
+the original files with `cmp` and the saved SHA-256 manifest. If a baseline
+file differs from its pre-run hash, stop and obtain owner review rather than
+overwriting another change. No queue, volume, database row, token, legacy
+configuration file, or historical DLQ message is part of this restoration.
 
 After the secure broker/storage checks and controlled activation prerequisites
 above, enable Core's existing outbox and transcription capability with

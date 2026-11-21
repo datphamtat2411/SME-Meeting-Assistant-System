@@ -57,9 +57,10 @@ public class KnowledgeIndexingWorkerService {
             "sourceId", request.sourceId().toString(), "meetingId", request.meetingId().toString());
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("sourceIdentity", identity);
-        result.put("sourceRevision", Map.of("number", request.sourceRevision()));
+        result.put("sourceRevision", revision(request.sourceRevision(), request.contentSha256()));
         if (source.currentRevision() >= 0) result.put("currentRevision",
-            Map.of("number", source.currentRevision()));
+            revision(source.currentRevision(),
+                source.currentRevision() == request.sourceRevision() ? request.contentSha256() : null));
         result.put("status", status);
         result.put("eligible", "CURRENT".equals(status));
         result.put("available", exists);
@@ -856,8 +857,26 @@ public class KnowledgeIndexingWorkerService {
         @Override public byte[] bytes() { return bytes.clone(); }
     }
 
+    private static Map<String, Object> revision(long number, String contentSha256) {
+        Map<String, Object> value = new LinkedHashMap<>();
+        value.put("number", number);
+        if (contentSha256 != null) value.put("contentSha256", contentSha256);
+        return value;
+    }
+
     public record SourceVerificationRequest(String sourceType, UUID sourceId, UUID meetingId,
-            long sourceRevision) { }
+            long sourceRevision, String contentSha256) {
+        public SourceVerificationRequest(String sourceType, UUID sourceId, UUID meetingId,
+                long sourceRevision) {
+            this(sourceType, sourceId, meetingId, sourceRevision, null);
+        }
+
+        public SourceVerificationRequest {
+            if (contentSha256 != null && !contentSha256.matches("[a-f0-9]{64}")) {
+                throw new IllegalArgumentException("Invalid source content hash");
+            }
+        }
+    }
 
     private record SnapshotRow(UUID id, String sha256, long sizeBytes, byte[] payload) { }
     private record SourceState(long currentRevision, boolean eligible, boolean sameIdentity,

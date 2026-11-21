@@ -44,6 +44,7 @@ import { Route as AuthenticatedSettingsNotificationsRouteImport } from './routes
 import { Route as AuthenticatedSettingsDisplayRouteImport } from './routes/_authenticated/settings/display'
 import { Route as AuthenticatedSettingsAppearanceRouteImport } from './routes/_authenticated/settings/appearance'
 import { Route as AuthenticatedSettingsAccountRouteImport } from './routes/_authenticated/settings/account'
+import { Route as AuthenticatedMeetingsOperatorMiE2eRouteImport } from './routes/_authenticated/meetings/operator-mi-e2e'
 import { Route as AuthenticatedMeetingsMeetingIdRouteImport } from './routes/_authenticated/meetings/$meetingId'
 import { Route as AuthenticatedErrorsErrorRouteImport } from './routes/_authenticated/errors/$error'
 import { Route as AuthenticatedMeetingsMeetingIdLiveRouteImport } from './routes/_authenticated/meetings/$meetingId.live'
@@ -233,6 +234,12 @@ const AuthenticatedSettingsAccountRoute =
     path: '/account',
     getParentRoute: () => AuthenticatedSettingsRouteRoute,
   } as any)
+const AuthenticatedMeetingsOperatorMiE2eRoute =
+  AuthenticatedMeetingsOperatorMiE2eRouteImport.update({
+    id: '/meetings/operator-mi-e2e',
+    path: '/meetings/operator-mi-e2e',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 const AuthenticatedMeetingsMeetingIdRoute =
   AuthenticatedMeetingsMeetingIdRouteImport.update({
     id: '/meetings/$meetingId',
@@ -268,6 +275,7 @@ export interface FileRoutesByFullPath {
   '/503': typeof errors503Route
   '/errors/$error': typeof AuthenticatedErrorsErrorRoute
   '/meetings/$meetingId': typeof AuthenticatedMeetingsMeetingIdRouteWithChildren
+  '/meetings/operator-mi-e2e': typeof AuthenticatedMeetingsOperatorMiE2eRoute
   '/settings/account': typeof AuthenticatedSettingsAccountRoute
   '/settings/appearance': typeof AuthenticatedSettingsAppearanceRoute
   '/settings/display': typeof AuthenticatedSettingsDisplayRoute
@@ -304,6 +312,7 @@ export interface FileRoutesByTo {
   '/': typeof AuthenticatedIndexRoute
   '/errors/$error': typeof AuthenticatedErrorsErrorRoute
   '/meetings/$meetingId': typeof AuthenticatedMeetingsMeetingIdRouteWithChildren
+  '/meetings/operator-mi-e2e': typeof AuthenticatedMeetingsOperatorMiE2eRoute
   '/settings/account': typeof AuthenticatedSettingsAccountRoute
   '/settings/appearance': typeof AuthenticatedSettingsAppearanceRoute
   '/settings/display': typeof AuthenticatedSettingsDisplayRoute
@@ -345,6 +354,7 @@ export interface FileRoutesById {
   '/_authenticated/': typeof AuthenticatedIndexRoute
   '/_authenticated/errors/$error': typeof AuthenticatedErrorsErrorRoute
   '/_authenticated/meetings/$meetingId': typeof AuthenticatedMeetingsMeetingIdRouteWithChildren
+  '/_authenticated/meetings/operator-mi-e2e': typeof AuthenticatedMeetingsOperatorMiE2eRoute
   '/_authenticated/settings/account': typeof AuthenticatedSettingsAccountRoute
   '/_authenticated/settings/appearance': typeof AuthenticatedSettingsAppearanceRoute
   '/_authenticated/settings/display': typeof AuthenticatedSettingsDisplayRoute
@@ -384,6 +394,7 @@ export interface FileRouteTypes {
     | '/503'
     | '/errors/$error'
     | '/meetings/$meetingId'
+    | '/meetings/operator-mi-e2e'
     | '/settings/account'
     | '/settings/appearance'
     | '/settings/display'
@@ -420,6 +431,7 @@ export interface FileRouteTypes {
     | '/'
     | '/errors/$error'
     | '/meetings/$meetingId'
+    | '/meetings/operator-mi-e2e'
     | '/settings/account'
     | '/settings/appearance'
     | '/settings/display'
@@ -460,6 +472,7 @@ export interface FileRouteTypes {
     | '/_authenticated/'
     | '/_authenticated/errors/$error'
     | '/_authenticated/meetings/$meetingId'
+    | '/_authenticated/meetings/operator-mi-e2e'
     | '/_authenticated/settings/account'
     | '/_authenticated/settings/appearance'
     | '/_authenticated/settings/display'
@@ -744,6 +757,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedSettingsAccountRouteImport
       parentRoute: typeof AuthenticatedSettingsRouteRoute
     }
+    '/_authenticated/meetings/operator-mi-e2e': {
+      id: '/_authenticated/meetings/operator-mi-e2e'
+      path: '/meetings/operator-mi-e2e'
+      fullPath: '/meetings/operator-mi-e2e'
+      preLoaderRoute: typeof AuthenticatedMeetingsOperatorMiE2eRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/meetings/$meetingId': {
       id: '/_authenticated/meetings/$meetingId'
       path: '/meetings/$meetingId'
@@ -811,6 +831,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedIndexRoute: typeof AuthenticatedIndexRoute
   AuthenticatedErrorsErrorRoute: typeof AuthenticatedErrorsErrorRoute
   AuthenticatedMeetingsMeetingIdRoute: typeof AuthenticatedMeetingsMeetingIdRouteWithChildren
+  AuthenticatedMeetingsOperatorMiE2eRoute: typeof AuthenticatedMeetingsOperatorMiE2eRoute
   AuthenticatedActionItemsIndexRoute: typeof AuthenticatedActionItemsIndexRoute
   AuthenticatedAppsIndexRoute: typeof AuthenticatedAppsIndexRoute
   AuthenticatedAssistantIndexRoute: typeof AuthenticatedAssistantIndexRoute
@@ -830,6 +851,8 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedErrorsErrorRoute: AuthenticatedErrorsErrorRoute,
   AuthenticatedMeetingsMeetingIdRoute:
     AuthenticatedMeetingsMeetingIdRouteWithChildren,
+  AuthenticatedMeetingsOperatorMiE2eRoute:
+    AuthenticatedMeetingsOperatorMiE2eRoute,
   AuthenticatedActionItemsIndexRoute: AuthenticatedActionItemsIndexRoute,
   AuthenticatedAppsIndexRoute: AuthenticatedAppsIndexRoute,
   AuthenticatedAssistantIndexRoute: AuthenticatedAssistantIndexRoute,

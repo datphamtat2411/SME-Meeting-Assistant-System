@@ -124,10 +124,14 @@ services:
     networks: [integration]
     healthcheck:
       test:
-        [
-          "CMD-SHELL",
-          "curl --fail --silent --show-error --cacert /run/secrets/qdrant/issuer-ca.crt https://127.0.0.1:6333/health",
-        ]
+        - "CMD-SHELL"
+        - >-
+          response="$$(printf 'GET /healthz HTTP/1.1\r\nHost: localhost\r\napi-key: %s\r\nConnection: close\r\n\r\n'
+          "$${QDRANT__SERVICE__API_KEY}" | openssl s_client -quiet -connect
+          127.0.0.1:6333 -servername localhost -verify_hostname localhost
+          -verify_return_error -CAfile /run/secrets/qdrant/issuer-ca.crt 2>/dev/null)";
+          case "$${response}" in *'HTTP/1.1 200 '*|*'HTTP/1.0 200 '*) exit 0
+          ;; *) exit 1 ;; esac
       interval: 10s
       timeout: 5s
       retries: 12

@@ -30,6 +30,10 @@ _PROCESS_PREFIXES = {
     "mi-worker": "AI_MI_PROCESS_",
 }
 _ROLE_SOURCE_PREFIXES = tuple(_PROCESS_PREFIXES.values())
+_PROCESS_EXCLUDED_SHARED_PREFIXES = {
+    "transcription-worker": ("AI_RAG_",),
+    "mi-worker": ("AI_RAG_",),
+}
 _INHERITED_NAMES = frozenset({
     "HOME",
     "LANG",
@@ -179,6 +183,16 @@ _PROCESS_EXPECTATIONS = {
         "WORKER_ROLE": "meeting-intelligence",
     },
 }
+_PROTECTED_SOURCE_ENV_KEYS = {
+    "RABBITMQ_PASSWORD": "AI_RABBITMQ_PASSWORD",
+    "RAG_QDRANT_API_KEY": None,
+    "MEETING_INTELLIGENCE_RABBITMQ_USERNAME": "MI_RABBITMQ_USERNAME",
+    "MEETING_INTELLIGENCE_RABBITMQ_PASSWORD": "MI_RABBITMQ_PASSWORD",
+    "MEETING_INTELLIGENCE_S3_ACCESS_KEY_ID": "MI_STORAGE_ACCESS_KEY_ID",
+    "MEETING_INTELLIGENCE_S3_SECRET_ACCESS_KEY": "MI_STORAGE_SECRET_ACCESS_KEY",
+    "MEETING_INTELLIGENCE_ACCEPTANCE_TOKEN": None,
+    "OPENROUTER_API_KEY": None,
+}
 
 
 def _decode_value(value: str) -> str:
@@ -245,6 +259,56 @@ def _merged_values(values: dict[str, str]) -> dict[str, str]:
     return merged
 
 
+def _protected_secret_path(value: str) -> Path:
+    path = Path(value).expanduser()
+    try:
+        info = path.lstat()
+    except OSError as error:
+        raise ProcessEnvironmentError("Protected secret source is unavailable") from error
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or stat.S_ISLNK(info.st_mode)
+        or info.st_nlink != 1
+        or info.st_uid != os.getuid()
+        or info.st_mode & 0o077
+        or info.st_size > 1_048_576
+        or any(item.is_symlink() for item in (path, *path.parents))
+    ):
+        raise ProcessEnvironmentError("Protected secret source is unsafe")
+    return path
+
+
+def _read_protected_secret(path_value: str, suffix: str) -> str:
+    path = _protected_secret_path(path_value)
+    try:
+        source_key = _PROTECTED_SOURCE_ENV_KEYS[suffix]
+        if source_key is not None:
+            secret = read_environment(path).get(source_key, "")
+        else:
+            lines = path.read_text(encoding="utf-8").splitlines()
+            secret = lines[0].strip() if len(lines) == 1 else ""
+    except (OSError, UnicodeError) as error:
+        raise ProcessEnvironmentError("Protected secret source is unavailable") from error
+    if not secret or "\x00" in secret or "\n" in secret or "\r" in secret:
+        raise ProcessEnvironmentError("Protected secret source is invalid")
+    return secret
+
+
+def _resolve_protected_secrets(source_suffixes: dict[str, str]) -> None:
+    for reference_suffix in tuple(source_suffixes):
+        if not reference_suffix.endswith("_FILE"):
+            continue
+        suffix = reference_suffix.removesuffix("_FILE")
+        if suffix not in _PROTECTED_SOURCE_ENV_KEYS:
+            continue
+        reference = source_suffixes.pop(reference_suffix)
+        if not reference.strip():
+            continue
+        if source_suffixes.get(suffix, "").strip():
+            raise ProcessEnvironmentError("A setting and its protected secret source are both configured")
+        source_suffixes[suffix] = _read_protected_secret(reference, suffix)
+
+
 def _target_name(suffix: str, process: str) -> tuple[str, ...]:
     if suffix in {"OPENROUTER_API_KEY", "REPLICATE_API_TOKEN"}:
         return (suffix,)
@@ -270,12 +334,15 @@ def _target_name(suffix: str, process: str) -> tuple[str, ...]:
     return ("AI_" + suffix,)
 
 
-def _shared_values(values: dict[str, str]) -> dict[str, str]:
+def _shared_values(values: dict[str, str], process: str) -> dict[str, str]:
+    excluded_prefixes = _PROCESS_EXCLUDED_SHARED_PREFIXES.get(process, ())
     result = {}
     for name, value in values.items():
         if not name.startswith("AI_") or name.startswith(_ROLE_SOURCE_PREFIXES):
             continue
         if name in _PROCESS_SENSITIVE_NAMES:
+            continue
+        if any(name.startswith(prefix) for prefix in excluded_prefixes):
             continue
         result[name] = value
     return result
@@ -287,6 +354,7 @@ def build_environment(
     *,
     inherited: dict[str, str] | None = None,
     validate_files: bool = False,
+    enable_selected_worker: bool = False,
 ) -> dict[str, str]:
     """Build a process environment with explicit role mapping and allowlisting."""
     if process not in _PROCESS_PREFIXES:
@@ -298,14 +366,18 @@ def build_environment(
         merged = _merged_values(merged)
 
     prefix = _PROCESS_PREFIXES[process]
-    selected = _shared_values(merged)
+    selected = _shared_values(merged, process)
     source_suffixes = {
         name.removeprefix(prefix): value
         for name, value in merged.items()
         if name.startswith(prefix)
     }
+    _resolve_protected_secrets(source_suffixes)
+    required = _PROCESS_REQUIRED_SUFFIXES[process]
+    if process == "ai-http" and merged.get("AI_RAG_QDRANT_URL", "").startswith("https://"):
+        required = required | frozenset({"RAG_QDRANT_API_KEY", "RAG_QDRANT_CA_FILE"})
     missing = [
-        suffix for suffix in _PROCESS_REQUIRED_SUFFIXES[process]
+        suffix for suffix in required
         if not source_suffixes.get(suffix, "").strip()
     ]
     if missing:
@@ -334,9 +406,21 @@ def build_environment(
         selected.setdefault("AI_MEETING_INTELLIGENCE_DECISION_ENABLED", "false")
     elif process == "mi-worker":
         selected.setdefault("AI_KNOWLEDGE_INDEXING_WORKER_ENABLED", "false")
-        selected.setdefault("AI_MEETING_INTELLIGENCE_WORKER_ENABLED", "true")
-        selected.setdefault("AI_MEETING_INTELLIGENCE_INFERENCE_ENABLED", "true")
-        selected.setdefault("AI_MEETING_INTELLIGENCE_DECISION_ENABLED", "true")
+        selected.setdefault("AI_MEETING_INTELLIGENCE_WORKER_ENABLED", "false")
+        selected.setdefault("AI_MEETING_INTELLIGENCE_INFERENCE_ENABLED", "false")
+        selected.setdefault("AI_MEETING_INTELLIGENCE_SUMMARY_ENABLED", "false")
+        selected.setdefault("AI_MEETING_INTELLIGENCE_DECISION_ENABLED", "false")
+        selected.setdefault("AI_MEETING_INTELLIGENCE_ACTION_ITEM_ENABLED", "false")
+
+    if enable_selected_worker:
+        if process == "knowledge-worker":
+            selected["AI_KNOWLEDGE_INDEXING_WORKER_ENABLED"] = "true"
+        elif process == "mi-worker":
+            selected["AI_MEETING_INTELLIGENCE_WORKER_ENABLED"] = "true"
+            selected["AI_MEETING_INTELLIGENCE_INFERENCE_ENABLED"] = "true"
+            selected["AI_MEETING_INTELLIGENCE_SUMMARY_ENABLED"] = "true"
+            selected["AI_MEETING_INTELLIGENCE_DECISION_ENABLED"] = "true"
+            selected["AI_MEETING_INTELLIGENCE_ACTION_ITEM_ENABLED"] = "true"
 
     selected["AI_SETTINGS_ENV_FILE"] = ""
     if validate_files:
@@ -349,6 +433,8 @@ def _validate_files(values: dict[str, str], process: str) -> None:
     directories = []
     if process == "ai-http":
         files.extend(("AI_TLS_CERT_FILE", "AI_TLS_KEY_FILE", "AI_TLS_CLIENT_CA_FILE"))
+        if values.get("AI_RAG_QDRANT_URL", "").startswith("https://"):
+            files.append("AI_RAG_QDRANT_CA_FILE")
     else:
         files.extend(("AI_CORE_API_SERVER_CA_FILE", "AI_CORE_API_CLIENT_CERT_FILE",
                       "AI_CORE_API_CLIENT_KEY_FILE", "AI_RABBITMQ_CA_FILE"))
@@ -409,6 +495,7 @@ def main() -> int:
     parser.add_argument("--process", choices=tuple(_PROCESS_PREFIXES), required=True)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--validate-files", action="store_true")
+    parser.add_argument("--enable-selected-worker", action="store_true")
     parser.add_argument("--exec", dest="command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     try:
@@ -416,6 +503,7 @@ def main() -> int:
             read_environment(args.config),
             args.process,
             validate_files=args.validate_files,
+            enable_selected_worker=args.enable_selected_worker,
         )
         if args.output is not None:
             write_environment(args.output, values)

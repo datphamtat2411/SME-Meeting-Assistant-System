@@ -6,6 +6,7 @@ import com.sme.meetingassistant.api.media.service.*;
 import com.sme.meetingassistant.api.media.service.ProcessingIntelligenceSource.Snapshot;
 import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle.StageClaim;
 import com.sme.meetingassistant.api.media.worker.WorkerException;
+import java.math.BigDecimal;
 import java.util.*;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.*;
@@ -62,6 +63,7 @@ public class IntelligenceWorkerTransactions {
         } else {
             var claim=lifecycle.startIntelligenceWorkerStage(job,d.stage(),d.code());
             if(!claim.stageRunId().equals(d.stage())) throw WorkerException.conflict("WORKER_IDENTITY_CONFLICT");
+            repository.ensureBudget(job,limits());
             repository.insertClaim(d,command,peer,source.snapshotId());
         }
         d=repository.delivery(job,d.event());
@@ -105,6 +107,73 @@ public class IntelligenceWorkerTransactions {
         repository.recordFailure(d.event(),command);IntelligenceOperationLog.record("FAILED",job,d.stage(),d.event());
         return status(repository.delivery(job,d.event()));
     }
+    @Transactional
+    public Map<String,Object> reserveAttempt(UUID job,IntelligenceCommands.AttemptReserve command,String peer) {
+        var d=lock(job,command.eventId());
+        if(!d.code().equals(command.executionStageCode())) throw WorkerException.conflict("WORKER_IDENTITY_CONFLICT");
+        capability.requireStage(d.code());
+        owner(d,command.owner(),peer,true);
+        repository.ensureBudget(job,limits());
+        var budget=repository.budget(job);
+        var fingerprint=IntelligenceCommands.fingerprint(command);
+        var existing=repository.providerAttempt(command.attemptId());
+        if(existing.isPresent()) {
+            var a=existing.get();
+            if(!a.job().equals(job) || !a.event().equals(command.eventId())
+                || !a.stage().equals(command.executionStageRunId()) || !a.code().equals(command.executionStageCode())
+                || !a.reserveFingerprint().equals(fingerprint)) throw WorkerException.conflict("WORKER_COMMAND_CONFLICT");
+            return attemptResponse(a,budget,true);
+        }
+        long expectedTokens=command.estimatedInputTokens()+command.outputTokenCeiling();
+        BigDecimal expectedCost=command.estimatedCostUsd();
+        BigDecimal calculated=BigDecimal.valueOf(command.estimatedInputTokens()).multiply(budget.inputCost())
+            .add(BigDecimal.valueOf(command.outputTokenCeiling()).multiply(budget.outputCost()))
+            .divide(BigDecimal.valueOf(1_000_000));
+        if(command.reservedTokens()!=expectedTokens || expectedCost.compareTo(calculated)!=0)
+            throw new WorkerException(422,"VALIDATION_ERROR");
+        int stageUsed=switch(d.code()) {
+            case "GENERATING_SUMMARY" -> budget.summaryAttempts();
+            case "EXTRACTING_DECISIONS" -> budget.decisionAttempts();
+            case "EXTRACTING_ACTION_ITEMS" -> budget.actionItemAttempts();
+            default -> throw WorkerException.conflict("WORKER_IDENTITY_CONFLICT");
+        };
+        int stageLimit=switch(d.code()) {
+            case "GENERATING_SUMMARY" -> budget.summaryCeiling();
+            case "EXTRACTING_DECISIONS" -> budget.decisionCeiling();
+            case "EXTRACTING_ACTION_ITEMS" -> budget.actionItemCeiling();
+            default -> 0;
+        };
+        if(stageUsed>=stageLimit || budget.reservedAttempts()>=budget.aggregateCeiling()
+            || expectedTokens>budget.tokenCeiling()-budget.reservedTokens()
+            || expectedCost.compareTo(budget.costCeiling().subtract(budget.estimatedCost()))>0)
+            throw WorkerException.conflict("WORKER_BUDGET_EXHAUSTED");
+        repository.insertProviderAttempt(command,job,fingerprint);
+        repository.incrementBudget(job,d.code(),expectedTokens,expectedCost);
+        return attemptResponse(repository.providerAttempt(command.attemptId()).orElseThrow(),
+            repository.budget(job),false);
+    }
+    @Transactional
+    public Map<String,Object> reportAttempt(UUID job,IntelligenceCommands.AttemptReport command,String peer) {
+        var d=lock(job,command.eventId());
+        if(!d.code().equals(command.executionStageCode())) throw WorkerException.conflict("WORKER_IDENTITY_CONFLICT");
+        capability.requireStage(d.code());
+        owner(d,command.owner(),peer,true);
+        repository.ensureBudget(job,limits());
+        var a=repository.providerAttempt(command.attemptId())
+            .orElseThrow(()->WorkerException.conflict("WORKER_ATTEMPT_NOT_FOUND"));
+        if(!a.job().equals(job) || !a.event().equals(command.eventId())
+            || !a.stage().equals(command.executionStageRunId()) || !a.code().equals(command.executionStageCode()))
+            throw WorkerException.conflict("WORKER_IDENTITY_CONFLICT");
+        var fingerprint=IntelligenceCommands.fingerprint(command);
+        if(a.reportedAt()!=null) {
+            if(!fingerprint.equals(a.reportFingerprint())) throw WorkerException.conflict("WORKER_COMMAND_CONFLICT");
+            return attemptResponse(a,repository.budget(job),true);
+        }
+        validateUsage(a,command);
+        repository.reportProviderAttempt(command,fingerprint);
+        return attemptResponse(repository.providerAttempt(command.attemptId()).orElseThrow(),
+            repository.budget(job),false);
+    }
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
     public Map<String,Object> status(UUID job,UUID event) {return status(repository.delivery(job,event));}
 
@@ -117,6 +186,74 @@ public class IntelligenceWorkerTransactions {
         if(!"EXTRACTING_ACTION_ITEMS".equals(d.code())) throw WorkerException.conflict("WORKER_IDENTITY_CONFLICT");
         var c=owner(d,new IntelligenceCommands.Owner(event,claim.stageRunId(),claim.claimToken()),peer,true);
         if(!c.snapshot().equals(snapshot)) throw WorkerException.conflict("WORKER_IDENTITY_CONFLICT");
+    }
+    private IntelligenceWorkerRepository.BudgetLimits limits() {
+        var p=properties.getIntelligence();
+        if(p.getSummaryAttemptCeiling()!=1 || p.getDecisionAttemptCeiling()!=1
+            || p.getActionItemAttemptCeiling()!=2 || p.getAggregateAttemptCeiling()!=4
+            || p.getReservedTokenCeiling()!=161970L
+            || p.getEstimatedCostCeilingUsd()==null
+            || p.getEstimatedCostCeilingUsd().compareTo(new BigDecimal("0.15"))!=0
+            || p.getInputCostPerMillionUsd()==null
+            || p.getInputCostPerMillionUsd().compareTo(new BigDecimal("0.20"))!=0
+            || p.getOutputCostPerMillionUsd()==null
+            || p.getOutputCostPerMillionUsd().compareTo(new BigDecimal("1.00"))!=0)
+            throw WorkerException.conflict("WORKER_BUDGET_CONFIGURATION_CONFLICT");
+        return new IntelligenceWorkerRepository.BudgetLimits(p.getSummaryAttemptCeiling(),
+            p.getDecisionAttemptCeiling(),p.getActionItemAttemptCeiling(),p.getAggregateAttemptCeiling(),
+            p.getReservedTokenCeiling(),p.getEstimatedCostCeilingUsd(),p.getInputCostPerMillionUsd(),
+            p.getOutputCostPerMillionUsd());
+    }
+    private void validateUsage(IntelligenceWorkerRepository.ProviderAttempt a,IntelligenceCommands.AttemptReport c) {
+        boolean complete=c.inputTokens()!=null && c.outputTokens()!=null && c.totalTokens()!=null;
+        boolean any=c.inputTokens()!=null || c.outputTokens()!=null || c.totalTokens()!=null
+            || c.reasoningTokens()!=null;
+        boolean totalMatches=false;
+        if(complete) try {
+            totalMatches=Math.addExact(c.inputTokens(),c.outputTokens())==c.totalTokens();
+        } catch(ArithmeticException ignored) {}
+        if(!Set.of("SUCCEEDED","FAILED").contains(c.outcome())
+            || "SUCCEEDED".equals(c.outcome()) && (c.failureCategory()!=null || !complete || c.reportedCostUsd()==null)
+            || "FAILED".equals(c.outcome()) && c.failureCategory()==null
+            || any && !complete
+            || c.inputTokens()!=null && c.inputTokens()<0
+            || c.outputTokens()!=null && c.outputTokens()<0
+            || c.totalTokens()!=null && c.totalTokens()<0
+            || c.reasoningTokens()!=null && c.reasoningTokens()<0
+            || c.reportedCostUsd()!=null && c.reportedCostUsd().signum()<0
+            || c.inputTokens()!=null && c.inputTokens()>a.inputEstimate()
+            || c.outputTokens()!=null && c.outputTokens()>a.outputCeiling()
+            || c.totalTokens()!=null && c.totalTokens()>a.reservedTokens()
+            || c.reasoningTokens()!=null && c.outputTokens()!=null && c.reasoningTokens()>c.outputTokens()
+            || c.reasoningTokens()!=null && c.outputTokens()==null
+            || complete && !totalMatches)
+            throw new WorkerException(422,"WORKER_USAGE_INVALID");
+    }
+    private Map<String,Object> attemptResponse(IntelligenceWorkerRepository.ProviderAttempt a,
+            IntelligenceWorkerRepository.Budget b,boolean replay) {
+        var response=base(a.job(),a.event(),a.stage(),a.code());
+        response.put("attemptId",a.id());response.put("outcome",a.outcome());
+        response.put("estimatedInputTokens",a.inputEstimate());response.put("outputTokenCeiling",a.outputCeiling());
+        response.put("reservedTokens",a.reservedTokens());response.put("estimatedCostUsd",money(a.estimatedCost()));
+        response.put("reportedCostUsd",a.reportedCost()==null?null:money(a.reportedCost()));
+        response.put("replay",replay);
+        response.put("budgetExceeded",b.reportedCost().compareTo(b.costCeiling())>0);
+        response.put("aggregateReservedAttempts",b.reservedAttempts());
+        response.put("aggregateReservedTokens",b.reservedTokens());
+        response.put("aggregateEstimatedCostUsd",money(b.estimatedCost()));
+        response.put("aggregateReportedCostUsd",money(b.reportedCost()));
+        response.put("reservedTokenCeiling",b.tokenCeiling());
+        response.put("estimatedCostCeilingUsd",money(b.costCeiling()));
+        response.put("providerAccountLimitEnforced",false);
+        return response;
+    }
+    private String money(BigDecimal value) {
+        return value.stripTrailingZeros().toPlainString();
+    }
+    private LinkedHashMap<String,Object> base(UUID job,UUID event,UUID stage,String code) {
+        var data=new LinkedHashMap<String,Object>();data.put("contractVersion","1.0");
+        data.put("processingJobId",job);data.put("eventId",event);data.put("executionStageRunId",stage);
+        data.put("executionStageCode",code);return data;
     }
     private LinkedHashMap<String,Object> base(Delivery d) {
         var data=new LinkedHashMap<String,Object>();data.put("contractVersion","1.0");data.put("processingJobId",d.job());data.put("eventId",d.event());

@@ -66,6 +66,9 @@ def test_http_mapping_uses_process_identity_and_does_not_copy_worker_credentials
         "AI_HTTP_PROCESS_TLS_CERT_FILE": "/run/http.crt",
         "AI_HTTP_PROCESS_TLS_KEY_FILE": "/run/http.key",
         "AI_HTTP_PROCESS_TLS_CLIENT_CA_FILE": "/run/client-ca.crt",
+        "AI_RAG_QDRANT_URL": "https://localhost:6333",
+        "AI_HTTP_PROCESS_RAG_QDRANT_API_KEY": "http-qdrant",
+        "AI_HTTP_PROCESS_RAG_QDRANT_CA_FILE": "/run/qdrant-ca.crt",
         "AI_HTTP_PROCESS_OPENROUTER_API_KEY": "http-provider",
     }
 
@@ -77,6 +80,9 @@ def test_http_mapping_uses_process_identity_and_does_not_copy_worker_credentials
     assert result["AI_HTTP_PORT"] == "9000"
     assert result["AI_HTTP_SHUTDOWN_TIMEOUT_SECONDS"] == "12"
     assert result["AI_TLS_CERT_FILE"] == "/run/http.crt"
+    assert result["AI_RAG_QDRANT_URL"] == "https://localhost:6333"
+    assert result["AI_RAG_QDRANT_API_KEY"] == "http-qdrant"
+    assert result["AI_RAG_QDRANT_CA_FILE"] == "/run/qdrant-ca.crt"
     assert result["OPENROUTER_API_KEY"] == "http-provider"
     assert "AI_RABBITMQ_PASSWORD" not in result
     assert "AI_S3_SECRET_ACCESS_KEY" not in result
@@ -98,6 +104,231 @@ def test_worker_mapping_is_role_specific():
     assert "AI_RAG_QDRANT_API_KEY" not in result
 
 
+def test_explicit_worker_launcher_enables_only_selected_knowledge_capability():
+    values = {
+        "AI_KNOWLEDGE_PROCESS_SERVICE_NAME": "knowledge-ai",
+        "AI_KNOWLEDGE_PROCESS_SERVICE_IDENTITY": "knowledge-worker",
+        "AI_KNOWLEDGE_PROCESS_WORKER_ROLE": "knowledge-indexing",
+        "AI_KNOWLEDGE_PROCESS_CORE_API_BASE_URL": "https://core-api.internal:8443",
+        "AI_KNOWLEDGE_PROCESS_CORE_API_SERVER_CA_FILE": "/run/core-ca.crt",
+        "AI_KNOWLEDGE_PROCESS_CORE_API_CLIENT_CERT_FILE": "/run/knowledge.crt",
+        "AI_KNOWLEDGE_PROCESS_CORE_API_CLIENT_KEY_FILE": "/run/knowledge.key",
+        "AI_KNOWLEDGE_PROCESS_RABBITMQ_URL": "amqps://rabbitmq.internal:5671/sme-integration",
+        "AI_KNOWLEDGE_PROCESS_RABBITMQ_USERNAME": "knowledge-user",
+        "AI_KNOWLEDGE_PROCESS_RABBITMQ_PASSWORD": "knowledge-password",
+        "AI_KNOWLEDGE_PROCESS_RABBITMQ_CA_FILE": "/run/broker-ca.crt",
+        "AI_KNOWLEDGE_PROCESS_RAG_MODEL_PATH": "/run/bge-m3",
+        "AI_KNOWLEDGE_PROCESS_RAG_RERANKER_MODEL_PATH": "/run/reranker",
+        "AI_KNOWLEDGE_PROCESS_RAG_QDRANT_API_KEY": "qdrant-key",
+        "AI_KNOWLEDGE_PROCESS_RAG_QDRANT_CA_FILE": "/run/qdrant-ca.crt",
+        "AI_RAG_QDRANT_URL": "https://qdrant.internal:6333",
+        "AI_KNOWLEDGE_PROCESS_KNOWLEDGE_INDEXING_WORKER_ENABLED": "false",
+        "AI_KNOWLEDGE_PROCESS_MEETING_INTELLIGENCE_WORKER_ENABLED": "false",
+        "AI_KNOWLEDGE_PROCESS_MEETING_INTELLIGENCE_INFERENCE_ENABLED": "false",
+        "AI_KNOWLEDGE_PROCESS_MEETING_INTELLIGENCE_DECISION_ENABLED": "false",
+    }
+
+    result = process_env.build_environment(
+        values,
+        "knowledge-worker",
+        inherited={},
+        enable_selected_worker=True,
+    )
+
+    assert result["AI_KNOWLEDGE_INDEXING_WORKER_ENABLED"] == "true"
+    assert result["AI_RAG_QDRANT_URL"] == "https://qdrant.internal:6333"
+    assert result["AI_MEETING_INTELLIGENCE_WORKER_ENABLED"] == "false"
+    assert result["AI_MEETING_INTELLIGENCE_INFERENCE_ENABLED"] == "false"
+    assert result["AI_MEETING_INTELLIGENCE_DECISION_ENABLED"] == "false"
+
+
+def test_explicit_mi_launcher_enables_all_meeting_intelligence_capability_gates():
+    values = _values() | {
+        "AI_MI_PROCESS_MEETING_INTELLIGENCE_WORKER_ENABLED": "false",
+        "AI_MI_PROCESS_MEETING_INTELLIGENCE_INFERENCE_ENABLED": "false",
+        "AI_MI_PROCESS_MEETING_INTELLIGENCE_SUMMARY_ENABLED": "false",
+        "AI_MI_PROCESS_MEETING_INTELLIGENCE_DECISION_ENABLED": "false",
+        "AI_MI_PROCESS_MEETING_INTELLIGENCE_ACTION_ITEM_ENABLED": "false",
+    }
+    gate_names = (
+        "AI_MEETING_INTELLIGENCE_WORKER_ENABLED",
+        "AI_MEETING_INTELLIGENCE_INFERENCE_ENABLED",
+        "AI_MEETING_INTELLIGENCE_SUMMARY_ENABLED",
+        "AI_MEETING_INTELLIGENCE_DECISION_ENABLED",
+        "AI_MEETING_INTELLIGENCE_ACTION_ITEM_ENABLED",
+    )
+
+    disabled = process_env.build_environment(values, "mi-worker", inherited={})
+    assert all(disabled[name] == "false" for name in gate_names)
+
+    enabled = process_env.build_environment(
+        values,
+        "mi-worker",
+        inherited={},
+        enable_selected_worker=True,
+    )
+    assert all(enabled[name] == "true" for name in gate_names)
+
+
+def test_transcription_mapping_excludes_unrelated_shared_rag_settings():
+    values = _values() | {
+        "AI_RAG_MODEL_PATH": "/run/knowledge-model",
+        "AI_RAG_QDRANT_URL": "https://qdrant.internal:6333",
+        "AI_RAG_QDRANT_CA_FILE": "/run/qdrant-ca.crt",
+    }
+
+    result = process_env.build_environment(values, "transcription-worker", inherited={})
+
+    assert not any(name.startswith("AI_RAG_") for name in result)
+
+
+def test_protected_secret_file_references_feed_http_and_knowledge_processes(tmp_path):
+    rabbit_secret = tmp_path / "knowledge-worker.env"
+    rabbit_secret.write_text("AI_RABBITMQ_PASSWORD=knowledge-password\n", encoding="utf-8")
+    rabbit_secret.chmod(0o600)
+    qdrant_secret = tmp_path / "qdrant-api-key"
+    qdrant_secret.write_text("qdrant-api-key-value\n", encoding="utf-8")
+    qdrant_secret.chmod(0o600)
+
+    values = _values() | {
+        "AI_HTTP_PROCESS_SERVICE_NAME": "http-ai",
+        "AI_HTTP_PROCESS_SERVICE_IDENTITY": "ai-core",
+        "AI_HTTP_PROCESS_HOST": "127.0.0.1",
+        "AI_HTTP_PROCESS_PORT": "9000",
+        "AI_HTTP_PROCESS_SHUTDOWN_TIMEOUT_SECONDS": "12",
+        "AI_HTTP_PROCESS_TLS_CERT_FILE": "/run/http.crt",
+        "AI_HTTP_PROCESS_TLS_KEY_FILE": "/run/http.key",
+        "AI_HTTP_PROCESS_TLS_CLIENT_CA_FILE": "/run/client-ca.crt",
+        "AI_HTTP_PROCESS_RAG_QDRANT_API_KEY_FILE": str(qdrant_secret),
+        "AI_HTTP_PROCESS_RAG_QDRANT_CA_FILE": "/run/qdrant-ca.crt",
+        "AI_KNOWLEDGE_PROCESS_SERVICE_NAME": "knowledge-ai",
+        "AI_KNOWLEDGE_PROCESS_SERVICE_IDENTITY": "knowledge-worker",
+        "AI_KNOWLEDGE_PROCESS_WORKER_ROLE": "knowledge-indexing",
+        "AI_KNOWLEDGE_PROCESS_CORE_API_BASE_URL": "https://core-api.internal:8443",
+        "AI_KNOWLEDGE_PROCESS_CORE_API_SERVER_CA_FILE": "/run/core-ca.crt",
+        "AI_KNOWLEDGE_PROCESS_CORE_API_CLIENT_CERT_FILE": "/run/knowledge.crt",
+        "AI_KNOWLEDGE_PROCESS_CORE_API_CLIENT_KEY_FILE": "/run/knowledge.key",
+        "AI_KNOWLEDGE_PROCESS_RABBITMQ_URL": "amqps://rabbitmq.internal:5671/sme-integration",
+        "AI_KNOWLEDGE_PROCESS_RABBITMQ_USERNAME": "knowledge-user",
+        "AI_KNOWLEDGE_PROCESS_RABBITMQ_PASSWORD": "",
+        "AI_KNOWLEDGE_PROCESS_RABBITMQ_PASSWORD_FILE": str(rabbit_secret),
+        "AI_KNOWLEDGE_PROCESS_RABBITMQ_CA_FILE": "/run/broker-ca.crt",
+        "AI_KNOWLEDGE_PROCESS_RAG_MODEL_PATH": "/run/bge-m3",
+        "AI_KNOWLEDGE_PROCESS_RAG_RERANKER_MODEL_PATH": "/run/reranker",
+        "AI_KNOWLEDGE_PROCESS_RAG_QDRANT_API_KEY": "",
+        "AI_KNOWLEDGE_PROCESS_RAG_QDRANT_API_KEY_FILE": str(qdrant_secret),
+        "AI_KNOWLEDGE_PROCESS_RAG_QDRANT_CA_FILE": "/run/qdrant-ca.crt",
+    }
+
+    http = process_env.build_environment(values, "ai-http", inherited={})
+    knowledge = process_env.build_environment(values, "knowledge-worker", inherited={})
+
+    assert http["AI_RAG_QDRANT_API_KEY"] == "qdrant-api-key-value"
+    assert http["AI_RAG_QDRANT_CA_FILE"] == "/run/qdrant-ca.crt"
+    assert knowledge["AI_RABBITMQ_PASSWORD"] == "knowledge-password"
+    assert knowledge["AI_RAG_QDRANT_API_KEY"] == "qdrant-api-key-value"
+    assert "AI_RAG_QDRANT_API_KEY_FILE" not in http
+    assert "AI_RAG_QDRANT_API_KEY_FILE" not in knowledge
+    assert "AI_RABBITMQ_PASSWORD_FILE" not in knowledge
+
+
+def test_protected_secret_file_references_fail_closed_when_permissions_are_broad(tmp_path):
+    secret = tmp_path / "qdrant-api-key"
+    secret.write_text("qdrant-api-key-value\n", encoding="utf-8")
+    secret.chmod(0o644)
+    values = {
+        "AI_HTTP_PROCESS_SERVICE_NAME": "http-ai",
+        "AI_HTTP_PROCESS_SERVICE_IDENTITY": "ai-core",
+        "AI_HTTP_PROCESS_HOST": "127.0.0.1",
+        "AI_HTTP_PROCESS_PORT": "9000",
+        "AI_HTTP_PROCESS_SHUTDOWN_TIMEOUT_SECONDS": "12",
+        "AI_HTTP_PROCESS_TLS_CERT_FILE": "/run/http.crt",
+        "AI_HTTP_PROCESS_TLS_KEY_FILE": "/run/http.key",
+        "AI_HTTP_PROCESS_TLS_CLIENT_CA_FILE": "/run/client-ca.crt",
+        "AI_HTTP_PROCESS_RAG_QDRANT_API_KEY_FILE": str(secret),
+    }
+
+    with pytest.raises(process_env.ProcessEnvironmentError, match="(?i)protected secret"):
+        process_env.build_environment(values, "ai-http", inherited={})
+
+
+def test_meeting_intelligence_protected_credential_files_are_resolved(tmp_path):
+    broker = tmp_path / "mi-worker-rabbitmq.env"
+    broker.write_text(
+        "MI_RABBITMQ_USERNAME=mi-user\n"
+        "MI_RABBITMQ_PASSWORD=mi-password\n",
+        encoding="utf-8",
+    )
+    broker.chmod(0o600)
+    storage = tmp_path / "mi-worker-storage.env"
+    storage.write_text(
+        "MI_STORAGE_ACCESS_KEY_ID=mi-access\n"
+        "MI_STORAGE_SECRET_ACCESS_KEY=mi-secret\n",
+        encoding="utf-8",
+    )
+    storage.chmod(0o600)
+    token = tmp_path / "mi-worker-result-acceptance-token"
+    token.write_text("mi-acceptance\n", encoding="utf-8")
+    token.chmod(0o600)
+
+    values = _values() | {
+        "AI_MI_PROCESS_MEETING_INTELLIGENCE_RABBITMQ_USERNAME": "",
+        "AI_MI_PROCESS_MEETING_INTELLIGENCE_RABBITMQ_USERNAME_FILE": str(broker),
+        "AI_MI_PROCESS_MEETING_INTELLIGENCE_RABBITMQ_PASSWORD": "",
+        "AI_MI_PROCESS_MEETING_INTELLIGENCE_RABBITMQ_PASSWORD_FILE": str(broker),
+        "AI_MI_PROCESS_MEETING_INTELLIGENCE_S3_ACCESS_KEY_ID": "",
+        "AI_MI_PROCESS_MEETING_INTELLIGENCE_S3_ACCESS_KEY_ID_FILE": str(storage),
+        "AI_MI_PROCESS_MEETING_INTELLIGENCE_S3_SECRET_ACCESS_KEY": "",
+        "AI_MI_PROCESS_MEETING_INTELLIGENCE_S3_SECRET_ACCESS_KEY_FILE": str(storage),
+        "AI_MI_PROCESS_MEETING_INTELLIGENCE_ACCEPTANCE_TOKEN": "",
+        "AI_MI_PROCESS_MEETING_INTELLIGENCE_ACCEPTANCE_TOKEN_FILE": str(token),
+    }
+
+    result = process_env.build_environment(values, "mi-worker", inherited={})
+
+    assert result["AI_RABBITMQ_USERNAME"] == "mi-user"
+    assert result["AI_RABBITMQ_PASSWORD"] == "mi-password"
+    assert result["AI_S3_ACCESS_KEY_ID"] == "mi-access"
+    assert result["AI_S3_SECRET_ACCESS_KEY"] == "mi-secret"
+    assert result["AI_MEETING_INTELLIGENCE_ACCEPTANCE_TOKEN"] == "mi-acceptance"
+    assert not any(name in result for name in (
+        "AI_MEETING_INTELLIGENCE_RABBITMQ_USERNAME_FILE",
+        "AI_MEETING_INTELLIGENCE_RABBITMQ_PASSWORD_FILE",
+        "AI_MEETING_INTELLIGENCE_S3_ACCESS_KEY_ID_FILE",
+        "AI_MEETING_INTELLIGENCE_S3_SECRET_ACCESS_KEY_FILE",
+        "AI_MEETING_INTELLIGENCE_ACCEPTANCE_TOKEN_FILE",
+    ))
+
+
+def test_meeting_intelligence_provider_uses_its_dedicated_one_line_file(tmp_path):
+    provider = tmp_path / "mi-worker-openrouter-api-key"
+    provider.write_text("mi-provider-key\n", encoding="utf-8")
+    provider.chmod(0o600)
+
+    values = _values() | {
+        "AI_MI_PROCESS_OPENROUTER_API_KEY_FILE": str(provider),
+    }
+
+    result = process_env.build_environment(values, "mi-worker", inherited={})
+    transcription = process_env.build_environment(values, "transcription-worker", inherited={})
+
+    assert result["OPENROUTER_API_KEY"] == "mi-provider-key"
+    assert transcription["OPENROUTER_API_KEY"] == "transcription-provider"
+    assert "AI_MI_PROCESS_OPENROUTER_API_KEY_FILE" not in result
+
+
+def test_meeting_intelligence_does_not_inherit_knowledge_rag_settings():
+    values = _values() | {
+        "AI_RAG_MODEL_PATH": "/run/knowledge-model",
+        "AI_RAG_QDRANT_URL": "https://localhost:6333",
+        "AI_RAG_QDRANT_CA_FILE": "/run/qdrant-ca.crt",
+    }
+
+    result = process_env.build_environment(values, "mi-worker", inherited={})
+
+    assert not any(name.startswith("AI_RAG_") for name in result)
+
+
 def test_meeting_intelligence_mapping_keeps_its_dedicated_credentials():
     result = process_env.build_environment(_values(), "mi-worker", inherited={})
 
@@ -109,6 +340,13 @@ def test_meeting_intelligence_mapping_keeps_its_dedicated_credentials():
     assert result["AI_S3_SECRET_ACCESS_KEY"] == "mi-secret"
     assert result["AI_MEETING_INTELLIGENCE_ACCEPTANCE_TOKEN"] == "mi-acceptance"
     assert "AI_RAG_QDRANT_API_KEY" not in result
+    assert all(result[name] == "false" for name in (
+        "AI_MEETING_INTELLIGENCE_WORKER_ENABLED",
+        "AI_MEETING_INTELLIGENCE_INFERENCE_ENABLED",
+        "AI_MEETING_INTELLIGENCE_SUMMARY_ENABLED",
+        "AI_MEETING_INTELLIGENCE_DECISION_ENABLED",
+        "AI_MEETING_INTELLIGENCE_ACTION_ITEM_ENABLED",
+    ))
 
 
 def test_process_environment_precedence_is_explicit():

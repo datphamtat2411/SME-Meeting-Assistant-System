@@ -1,6 +1,7 @@
 package com.sme.meetingassistant.api.media;
 
 import java.time.Duration;
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -30,6 +31,15 @@ public class MediaProperties {
         private int dispatchClaimTimeoutSeconds = 1800;
         private String storageId = "";
         private List<String> enabledStages = new ArrayList<>();
+        // Core-persisted bounds for one explicitly approved MI acceptance.
+        private int summaryAttemptCeiling = 1;
+        private int decisionAttemptCeiling = 1;
+        private int actionItemAttemptCeiling = 2;
+        private int aggregateAttemptCeiling = 4;
+        private long reservedTokenCeiling = 161970;
+        private BigDecimal estimatedCostCeilingUsd = new BigDecimal("0.15");
+        private BigDecimal inputCostPerMillionUsd = new BigDecimal("0.20");
+        private BigDecimal outputCostPerMillionUsd = new BigDecimal("1.00");
         public boolean isEnabled() { return enabled; }
         public void setEnabled(boolean value) { enabled=value; }
         public boolean isDispatchEnabled() { return dispatchEnabled; }
@@ -42,6 +52,22 @@ public class MediaProperties {
         public void setStorageId(String value) { storageId=value; }
         public List<String> getEnabledStages() { return enabledStages; }
         public void setEnabledStages(List<String> value) { enabledStages=value; }
+        public int getSummaryAttemptCeiling() { return summaryAttemptCeiling; }
+        public void setSummaryAttemptCeiling(int value) { summaryAttemptCeiling=value; }
+        public int getDecisionAttemptCeiling() { return decisionAttemptCeiling; }
+        public void setDecisionAttemptCeiling(int value) { decisionAttemptCeiling=value; }
+        public int getActionItemAttemptCeiling() { return actionItemAttemptCeiling; }
+        public void setActionItemAttemptCeiling(int value) { actionItemAttemptCeiling=value; }
+        public int getAggregateAttemptCeiling() { return aggregateAttemptCeiling; }
+        public void setAggregateAttemptCeiling(int value) { aggregateAttemptCeiling=value; }
+        public long getReservedTokenCeiling() { return reservedTokenCeiling; }
+        public void setReservedTokenCeiling(long value) { reservedTokenCeiling=value; }
+        public BigDecimal getEstimatedCostCeilingUsd() { return estimatedCostCeilingUsd; }
+        public void setEstimatedCostCeilingUsd(BigDecimal value) { estimatedCostCeilingUsd=value; }
+        public BigDecimal getInputCostPerMillionUsd() { return inputCostPerMillionUsd; }
+        public void setInputCostPerMillionUsd(BigDecimal value) { inputCostPerMillionUsd=value; }
+        public BigDecimal getOutputCostPerMillionUsd() { return outputCostPerMillionUsd; }
+        public void setOutputCostPerMillionUsd(BigDecimal value) { outputCostPerMillionUsd=value; }
     }
 
     public static class KnowledgeIndexing {

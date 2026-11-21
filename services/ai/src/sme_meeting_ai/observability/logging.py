@@ -7,6 +7,11 @@ import sys
 from datetime import UTC, datetime
 
 from sme_meeting_ai.core.config import Settings, get_settings
+from sme_meeting_ai.meeting_intelligence.errors import (
+    MAX_VALIDATION_ITEM_INDEX,
+    VALIDATION_LEAF_REASONS,
+    VALIDATION_RULES,
+)
 
 from .context import get_correlation_context
 
@@ -69,6 +74,16 @@ class JsonFormatter(logging.Formatter):
         attempts = getattr(record, "_sme_attempts", None)
         if type(attempts) is int and 0 <= attempts <= 100:
             data["attempts"] = attempts
+        validation_reason = getattr(record, "_sme_validation_reason", None)
+        if isinstance(validation_reason, str) and validation_reason in VALIDATION_LEAF_REASONS:
+            data["validation_reason"] = validation_reason
+            validation_rule = getattr(record, "_sme_validation_rule", None)
+            if isinstance(validation_rule, str) and validation_rule in VALIDATION_RULES:
+                data["validation_rule"] = validation_rule
+            validation_item_index = getattr(record, "_sme_validation_item_index", None)
+            if (type(validation_item_index) is int
+                    and 0 <= validation_item_index <= MAX_VALIDATION_ITEM_INDEX):
+                data["validation_item_index"] = validation_item_index
         context = get_correlation_context()
         if context is not None:
             for field in (
@@ -102,7 +117,9 @@ def log_event(logger: logging.Logger, level: int, event: str, *, duration_ms: in
               upload_bytes: int | None = None, input_tokens: int | None = None,
               output_tokens: int | None = None, total_tokens: int | None = None,
               reasoning_tokens: int | None = None, reserved_tokens: int | None = None,
-              attempts: int | None = None) -> None:
+              attempts: int | None = None, validation_reason: str | None = None,
+              validation_rule: str | None = None,
+              validation_item_index: int | None = None) -> None:
     """Log a bounded stable event name, with no free-text payload API."""
     if not _valid_event(event):
         raise ValueError("Invalid event name")
@@ -118,4 +135,11 @@ def log_event(logger: logging.Logger, level: int, event: str, *, duration_ms: in
             extra["_sme_" + field] = value
     if type(attempts) is int and 0 <= attempts <= 100:
         extra["_sme_attempts"] = attempts
+    if isinstance(validation_reason, str) and validation_reason in VALIDATION_LEAF_REASONS:
+        extra["_sme_validation_reason"] = validation_reason
+        if isinstance(validation_rule, str) and validation_rule in VALIDATION_RULES:
+            extra["_sme_validation_rule"] = validation_rule
+        if (type(validation_item_index) is int
+                and 0 <= validation_item_index <= MAX_VALIDATION_ITEM_INDEX):
+            extra["_sme_validation_item_index"] = validation_item_index
     logger.log(level, "", extra=extra)

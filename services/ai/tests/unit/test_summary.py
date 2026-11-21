@@ -5,9 +5,17 @@ from pathlib import Path
 import pytest
 from intelligence_support import settings, snapshot, stage, uid
 
-from sme_meeting_ai.meeting_intelligence.contracts import ModelResult, ModelUsage
+from sme_meeting_ai.meeting_intelligence.contracts import (
+    ModelResult,
+    ModelUsage,
+    payload_for,
+)
 from sme_meeting_ai.meeting_intelligence.errors import IntelligenceError
-from sme_meeting_ai.meeting_intelligence.summary import SummaryProcessor
+from sme_meeting_ai.meeting_intelligence.summary import (
+    SUMMARY_EXTRACTION_PROMPT_VERSION,
+    SummaryProcessor,
+    extraction_task,
+)
 from sme_meeting_ai.workers.intelligence import production_processors
 
 
@@ -130,6 +138,152 @@ def _responsive_output(request):
     }
 
 
+def test_summary_qualification_prompt_contract_and_schema_are_explicit():
+    extraction = extraction_task()
+    extraction_schema = extraction.schema.to_dict()
+    extraction_qualification = extraction_schema["properties"]["units"]["items"]["properties"]["qualification"]
+
+    assert SUMMARY_EXTRACTION_PROMPT_VERSION == "summary-extraction-v2"
+    assert extraction.prompt_version == SUMMARY_EXTRACTION_PROMPT_VERSION
+    assert extraction.schema.version == "summary-evidence-v1"
+    assert "qualification" in extraction_schema["properties"]["units"]["items"]["required"]
+    instructions = " ".join(extraction.instructions.lower().split())
+    for phrase in (
+        "qualification",
+        "mặc định là chuỗi rỗng",
+        "sao chép nguyên văn",
+        "không dịch",
+        "không chuẩn hóa",
+        "không diễn giải",
+        "phủ định",
+        "không chắc chắn",
+        "tình thái",
+        "thời gian",
+        "trạng thái",
+        "nửa khoảng ký tự Unicode",
+    ):
+        assert phrase.lower() in instructions
+    for phrase in (
+        "empty string",
+        "verbatim",
+        "infer",
+        "translate",
+        "normalize",
+        "reinterpret",
+        "paraphrase",
+        "negation",
+        "uncertainty",
+        "modality",
+        "temporal",
+        "status",
+    ):
+        assert phrase in extraction_qualification["description"].lower()
+
+
+def test_summary_provider_payload_keeps_strict_no_fallback_contract():
+    task = extraction_task()
+    payload = payload_for("openai/gpt-6-luna", "high", task, '{"synthetic":true}', 1200)
+
+    assert payload["provider"] == {"require_parameters": True, "allow_fallbacks": False}
+    assert payload["response_format"]["type"] == "json_schema"
+    assert payload["response_format"]["json_schema"]["strict"] is True
+    assert payload["response_format"]["json_schema"]["name"] == task.schema.name
+    assert payload["response_format"]["json_schema"]["schema"] == task.schema.to_dict()
+    assert payload["messages"][0]["content"].endswith(task.instructions)
+
+
+def test_summary_empty_and_explicit_qualification_remain_valid_and_rendered():
+    data = snapshot(("Nhóm đang tích hợp mô-đun thanh toán, hiện đạt bảy mươi phần trăm.",))
+    evidence_text = "đang tích hợp mô-đun thanh toán"
+    qualification = "hiện đạt bảy mươi phần trăm"
+
+    def callback(request):
+        evidence = _all_window_units(request)[0]
+        return _evidence_output(request, [
+            _unit(evidence_text, "FACT", [_reference(evidence)], qualification=qualification),
+        ])
+
+    candidate = SummaryProcessor(settings(), ScriptedAdapter(callback))(stage(data))
+    assert qualification in candidate["result"]["content"]
+    assert f"({qualification})" in candidate["result"]["content"]
+
+    def empty_callback(request):
+        evidence = _all_window_units(request)[0]
+        return _evidence_output(request, [
+            _unit(evidence_text, "FACT", [_reference(evidence)]),
+        ])
+
+    empty_candidate = SummaryProcessor(settings(), ScriptedAdapter(empty_callback))(stage(data))
+    assert qualification not in empty_candidate["result"]["content"]
+
+
+@pytest.mark.parametrize("qualification", [
+    "đã được khách hàng phê duyệt",
+    "đang lắp ghép module thu tiền",
+])
+def test_summary_unsupported_or_synonym_only_qualification_remains_rejected(qualification):
+    data = snapshot(("Nhóm đang tích hợp mô-đun thanh toán.",))
+
+    def callback(request):
+        evidence = _all_window_units(request)[0]
+        return _evidence_output(request, [
+            _unit(
+                "đang tích hợp mô-đun thanh toán",
+                "FACT",
+                [_reference(evidence)],
+                qualification=qualification,
+            ),
+        ])
+
+    with pytest.raises(IntelligenceError) as error:
+        SummaryProcessor(settings(), ScriptedAdapter(callback))(stage(data))
+
+    assert error.value.category == "GROUNDING_FAILURE"
+    assert error.value.diagnostic.rule == "QUALIFICATION_NOT_GROUNDED"
+    assert error.value.diagnostic.item_index == 0
+    assert qualification not in repr(error.value)
+
+
+def test_summary_qualification_uses_half_open_source_ranges():
+    text = "Nhóm đang tích hợp API."
+    phrase = "đang tích hợp"
+    start = text.index(phrase)
+    end = start + len(phrase)
+    data = snapshot((text,))
+
+    def callback(request):
+        evidence = _all_window_units(request)[0]
+        return _evidence_output(request, [
+            _unit(
+                phrase,
+                "FACT",
+                [_reference(evidence, char_start=start, char_end=end)],
+                qualification=phrase,
+            ),
+        ])
+
+    candidate = SummaryProcessor(settings(), ScriptedAdapter(callback))(stage(data))
+    assert phrase in candidate["result"]["content"]
+
+
+def test_summary_qualification_failure_diagnostic_remains_content_free():
+    marker = "qualification-marker-not-loggable"
+    context = stage(snapshot(("Nhóm đang tích hợp API.",)))
+
+    def callback(request):
+        evidence = _all_window_units(request)[0]
+        return _evidence_output(request, [
+            _unit("đang tích hợp API", "FACT", [_reference(evidence)], qualification=marker),
+        ])
+
+    with pytest.raises(IntelligenceError) as error:
+        SummaryProcessor(settings(), ScriptedAdapter(callback))(context)
+
+    assert marker not in repr(error.value)
+    assert error.value.diagnostic.rule == "QUALIFICATION_NOT_GROUNDED"
+    assert error.value.diagnostic.item_index == 0
+
+
 def test_short_summary_is_vietnamese_grounded_and_warns_without_inventing_identity():
     data = snapshot((
         "Mục tiêu là rà soát API và CI/CD trước khi triển khai.",
@@ -178,6 +332,119 @@ def test_summary_rejects_invalid_or_ungrounded_window_claims(mode):
     with pytest.raises(IntelligenceError) as error:
         SummaryProcessor(settings(), ScriptedAdapter(callback))(context)
     assert error.value.category in {"INVALID_REFERENCE", "GROUNDING_FAILURE"}
+
+
+def test_summary_validation_diagnostic_preserves_identity_rule_without_content():
+    context = stage()
+
+    def callback(request):
+        evidence = _all_window_units(request)[0]
+        output = _evidence_output(request, [
+            _unit(evidence["text"], "FACT", [_reference(evidence)]),
+        ])
+        output["content_revision"] = 2
+        return output
+
+    with pytest.raises(IntelligenceError) as error:
+        SummaryProcessor(settings(), ScriptedAdapter(callback))(context)
+
+    assert error.value.category == "INVALID_REFERENCE"
+    assert error.value.diagnostic.reason == "INVALID_REFERENCE"
+    assert error.value.diagnostic.rule == "SOURCE_IDENTITY"
+    assert error.value.diagnostic.item_index is None
+    assert str(error.value) == "INTELLIGENCE_INVALID_REFERENCE"
+    assert "Chúng ta" not in repr(error.value)
+
+
+def test_validation_error_contract_drops_unallowlisted_diagnostic_context():
+    error = IntelligenceError(
+        "GROUNDING_FAILURE", rule="private transcript", item_index=10001
+    )
+
+    assert error.diagnostic.reason == "GROUNDING_FAILURE"
+    assert error.diagnostic.rule is None
+    assert error.diagnostic.item_index is None
+    assert "private transcript" not in repr(error)
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_rule"),
+    [
+        ("unknown_segment", "REFERENCE_SEGMENT_NOT_FOUND"),
+        ("duplicate", "REFERENCE_DUPLICATE"),
+        ("unsupported_number", "UNSUPPORTED_NUMBER"),
+    ],
+)
+def test_summary_validation_diagnostics_identify_safe_reference_and_grounding_rules(mode, expected_rule):
+    context = stage()
+
+    def callback(request):
+        evidence = _all_window_units(request)[0]
+        reference = _reference(evidence)
+        statement = evidence["text"]
+        references = [reference]
+        if mode == "unknown_segment":
+            reference["segment_id"] = uid(9999)
+        elif mode == "duplicate":
+            references.append(dict(reference))
+        elif mode == "unsupported_number":
+            statement = f"{evidence['text']} với 900000 đơn vị"
+        return _evidence_output(request, [_unit(statement, "FACT", references)])
+
+    with pytest.raises(IntelligenceError) as error:
+        SummaryProcessor(settings(), ScriptedAdapter(callback))(context)
+
+    assert error.value.category in {"INVALID_REFERENCE", "GROUNDING_FAILURE"}
+    assert error.value.diagnostic.reason == error.value.category
+    assert error.value.diagnostic.rule == expected_rule
+    assert error.value.diagnostic.item_index == 0
+    assert "900000" not in repr(error.value)
+
+
+def test_summary_validation_diagnostic_identifies_out_of_window_reference():
+    data = snapshot(tuple(f"Lượt {index}: API gateway cần kiểm thử." for index in range(13)))
+    context = stage(data)
+    conf = settings(
+        meeting_intelligence_max_input_tokens=11000,
+        meeting_intelligence_context_window_tokens=12500,
+        meeting_intelligence_max_output_tokens=1200,
+        meeting_intelligence_overlap_units=0,
+    )
+    all_segments = data["transcript"]["segments"]
+
+    def callback(request):
+        evidence = [item for item in _all_window_units(request) if item["text"].strip()]
+        current_ids = {item["segment_id"] for item in evidence}
+        foreign = next(segment for segment in all_segments if segment["id"] not in current_ids)
+        reference = {
+            "segment_id": foreign["id"],
+            "char_start": 0,
+            "char_end": len(foreign["text"]),
+        }
+        return _evidence_output(request, [_unit(foreign["text"], "FACT", [reference])])
+
+    with pytest.raises(IntelligenceError) as error:
+        SummaryProcessor(conf, ScriptedAdapter(callback))(context)
+
+    assert error.value.category == "INVALID_REFERENCE"
+    assert error.value.diagnostic.rule == "REFERENCE_OUTSIDE_WINDOW"
+    assert error.value.diagnostic.item_index == 0
+
+
+def test_summary_validation_diagnostics_distinguish_unsupported_agreement():
+    context = stage(snapshot(("Mục tiêu là rà soát API trước khi triển khai.",)))
+
+    def callback(request):
+        evidence = _all_window_units(request)[0]
+        return _evidence_output(request, [
+            _unit("Mục tiêu là rà soát API", "AGREEMENT", [_reference(evidence)]),
+        ])
+
+    with pytest.raises(IntelligenceError) as error:
+        SummaryProcessor(settings(), ScriptedAdapter(callback))(context)
+
+    assert error.value.category == "GROUNDING_FAILURE"
+    assert error.value.diagnostic.rule == "AGREEMENT_UNSUPPORTED"
 
 
 def test_overlapping_windows_are_deduplicated_before_final_synthesis():
@@ -327,6 +594,35 @@ def _hierarchical_context(texts):
     return stage(snapshot(tuple(texts)))
 
 
+def test_summary_synthesis_preserves_verbatim_qualification_rendering():
+    texts = ["Nhóm đang tích hợp API, hiện đạt bảy mươi phần trăm."]
+    texts.extend(f"Lượt {index}: API gateway cần kiểm thử." for index in range(1, 13))
+    context = _hierarchical_context(texts)
+    qualification = "hiện đạt bảy mươi phần trăm"
+
+    def callback(request):
+        if request.task.schema.name != "summary_window_evidence":
+            return _responsive_output(request)
+        evidence = [item for item in _all_window_units(request) if item["text"].strip()]
+        item = evidence[0]
+        if item["ordinal"] == 0:
+            unit = _unit(
+                "đang tích hợp API",
+                "FACT",
+                [_reference(item)],
+                qualification=qualification,
+            )
+        else:
+            unit = _unit(item["text"][:180], "FACT", [_reference(item)])
+        return _evidence_output(request, [unit])
+
+    adapter = ScriptedAdapter(callback)
+    candidate = SummaryProcessor(_hierarchical_settings(), adapter)(context)
+
+    assert any(request.task.schema.name == "summary_synthesis" for request in adapter.requests)
+    assert f"({qualification})" in candidate["result"]["content"]
+
+
 def test_final_synthesis_rejects_invalid_references_and_unresolved_agreement_progression():
     texts = ["Nhóm thống nhất triển khai API."]
     texts.extend(f"Lượt {index}: API gateway đang kiểm thử." for index in range(1, 12))
@@ -343,8 +639,9 @@ def test_final_synthesis_rejects_invalid_references_and_unresolved_agreement_pro
         item = evidence[-1]
         return _evidence_output(request, [_unit(item["text"], "REJECTION", [_reference(item)])])
 
-    with pytest.raises(IntelligenceError, match="GROUNDING_FAILURE"):
+    with pytest.raises(IntelligenceError, match="GROUNDING_FAILURE") as conflict_error:
         SummaryProcessor(_hierarchical_settings(), ScriptedAdapter(conflict_callback))(context)
+    assert conflict_error.value.diagnostic.rule == "AGREEMENT_CONTRADICTED"
 
     def invalid_reference_callback(request):
         if request.task.schema.name == "summary_window_evidence":

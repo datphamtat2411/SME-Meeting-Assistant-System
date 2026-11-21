@@ -2,6 +2,7 @@
 
 import os
 import re
+from decimal import Decimal
 from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
@@ -234,7 +235,7 @@ class Settings(BaseSettings):
     diarization_worker_s3_access_key_id: SecretStr | None = Field(default=None, repr=False)
     diarization_worker_s3_secret_access_key: SecretStr | None = Field(default=None, repr=False)
     meeting_intelligence_worker_enabled: bool = False
-    meeting_intelligence_worker_concurrency: int = Field(default=1, ge=1, le=4)
+    meeting_intelligence_worker_concurrency: int = Field(default=1, ge=1, le=1)
     meeting_intelligence_worker_execution_timeout_seconds: float = Field(default=1800, gt=0, le=7200, allow_inf_nan=False)
     meeting_intelligence_inference_enabled: bool = False
     meeting_intelligence_summary_enabled: bool = False
@@ -252,9 +253,19 @@ class Settings(BaseSettings):
     meeting_intelligence_max_source_bytes: int = Field(default=8388608, ge=1, le=8388608, strict=True)
     meeting_intelligence_max_evidence_units: int = Field(default=16384, ge=1, le=65536, strict=True)
     meeting_intelligence_provider_timeout_seconds: float = Field(default=120, gt=0, le=600, allow_inf_nan=False)
-    meeting_intelligence_max_attempts: int = Field(default=2, ge=1, le=2, strict=True)
+    # A physical provider attempt is reserved durably before transport.  The
+    # bounded MI acceptance deliberately has no provider retry or fallback.
+    meeting_intelligence_max_attempts: int = Field(default=1, ge=1, le=1, strict=True)
     meeting_intelligence_max_response_bytes: int = Field(default=1048576, ge=1, le=16777216, strict=True)
-    meeting_intelligence_max_concurrent_requests: int = Field(default=1, ge=1, le=4, strict=True)
+    meeting_intelligence_max_concurrent_requests: int = Field(default=1, ge=1, le=1, strict=True)
+    meeting_intelligence_summary_attempt_ceiling: int = Field(default=1, ge=1, le=1, strict=True)
+    meeting_intelligence_decision_attempt_ceiling: int = Field(default=1, ge=1, le=1, strict=True)
+    meeting_intelligence_action_item_attempt_ceiling: int = Field(default=2, ge=1, le=2, strict=True)
+    meeting_intelligence_aggregate_attempt_ceiling: int = Field(default=4, ge=1, le=4, strict=True)
+    meeting_intelligence_reserved_token_ceiling: int = Field(default=161970, ge=1, le=161970, strict=True)
+    meeting_intelligence_estimated_cost_ceiling_usd: Decimal = Decimal("0.15")
+    meeting_intelligence_input_cost_per_million_usd: Decimal = Decimal("0.20")
+    meeting_intelligence_output_cost_per_million_usd: Decimal = Decimal("1.00")
     meeting_intelligence_summary_target_chars: int = Field(default=8000, ge=1000, le=20000, strict=True)
     meeting_intelligence_summary_max_records: int = Field(default=2048, ge=1, le=16384, strict=True)
     meeting_intelligence_summary_max_synthesis_depth: int = Field(default=3, ge=1, le=8, strict=True)
@@ -612,13 +623,48 @@ class Settings(BaseSettings):
         return self
 
     @field_validator(
+        "meeting_intelligence_estimated_cost_ceiling_usd",
+        "meeting_intelligence_input_cost_per_million_usd",
+        "meeting_intelligence_output_cost_per_million_usd",
+        mode="before",
+    )
+    @classmethod
+    def parse_meeting_intelligence_money(cls, value: object) -> object:
+        if isinstance(value, str) and re.fullmatch(r"(?:0|[1-9][0-9]*)(?:\.[0-9]{1,24})?", value):
+            return Decimal(value)
+        if isinstance(value, Decimal) and value.is_finite() and value >= 0:
+            return value
+        raise ValueError("Meeting Intelligence cost settings must be finite decimal values")
+
+    @model_validator(mode="after")
+    def bounded_meeting_intelligence_budget(self) -> Self:
+        if (
+            self.meeting_intelligence_worker_concurrency != 1
+            or self.meeting_intelligence_max_concurrent_requests != 1
+            or self.meeting_intelligence_max_attempts != 1
+            or self.meeting_intelligence_summary_attempt_ceiling != 1
+            or self.meeting_intelligence_decision_attempt_ceiling != 1
+            or self.meeting_intelligence_action_item_attempt_ceiling != 2
+            or self.meeting_intelligence_aggregate_attempt_ceiling != 4
+            or self.meeting_intelligence_reserved_token_ceiling != 161970
+            or self.meeting_intelligence_estimated_cost_ceiling_usd != Decimal("0.15")
+            or self.meeting_intelligence_input_cost_per_million_usd != Decimal("0.20")
+            or self.meeting_intelligence_output_cost_per_million_usd != Decimal("1.00")
+        ):
+            raise ValueError("Meeting Intelligence bounded acceptance limits are immutable")
+        return self
+
+    @field_validator(
         "meeting_intelligence_context_window_tokens", "meeting_intelligence_max_input_tokens",
         "meeting_intelligence_max_output_tokens", "meeting_intelligence_overlap_units",
         "meeting_intelligence_max_windows", "meeting_intelligence_max_total_context_tokens",
         "meeting_intelligence_max_total_inference_tokens",
         "meeting_intelligence_max_source_bytes", "meeting_intelligence_max_evidence_units",
         "meeting_intelligence_max_attempts", "meeting_intelligence_max_response_bytes",
-        "meeting_intelligence_max_concurrent_requests", "meeting_intelligence_summary_target_chars",
+        "meeting_intelligence_max_concurrent_requests", "meeting_intelligence_summary_attempt_ceiling",
+        "meeting_intelligence_decision_attempt_ceiling", "meeting_intelligence_action_item_attempt_ceiling",
+        "meeting_intelligence_aggregate_attempt_ceiling", "meeting_intelligence_reserved_token_ceiling",
+        "meeting_intelligence_summary_target_chars",
         "meeting_intelligence_summary_max_records", "meeting_intelligence_summary_max_synthesis_depth",
         "meeting_intelligence_summary_max_model_calls", "meeting_intelligence_decision_max_signals",
         "meeting_intelligence_decision_max_candidates", "meeting_intelligence_decision_max_synthesis_depth",

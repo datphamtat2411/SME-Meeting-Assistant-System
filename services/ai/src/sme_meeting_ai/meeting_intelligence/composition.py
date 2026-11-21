@@ -31,16 +31,19 @@ class PreparedContext:
     deadline: float
     cancelled: Event = field(repr=False)
     budget: "InferenceBudget" = field(repr=False)
+    provider_attempts: object | None = field(default=None, repr=False)
 
     def request(self, window_index: int) -> ModelRequest:
         check_authority(self.deadline, self.cancelled)
         require(type(window_index) is int and 0 <= window_index < len(self.plan.windows), "INVALID_REFERENCE")
         return ModelRequest(self.model, self.reasoning_effort, self.task, self.plan.windows[window_index],
                             self.limits.max_input_tokens, self.limits.max_output_tokens,
-                            self.deadline, self.cancelled)
+                            self.deadline, self.cancelled, self.provider_attempts)
 
     def execute(self, adapter: ModelAdapter, window_index: int) -> ModelResult:
-        request = self.request(window_index)
+        return self.execute_request(adapter, self.request(window_index))
+
+    def execute_request(self, adapter: ModelAdapter, request: ModelRequest) -> ModelResult:
         self.budget.reserve(request)
         result = adapter.complete(request)
         check_authority(self.deadline, self.cancelled)
@@ -70,15 +73,13 @@ class PreparedContext:
             evidence_json=evidence_json,
         )
         return ModelRequest(self.model, self.reasoning_effort, task, derived, self.limits.max_input_tokens,
-                            self.limits.max_output_tokens, self.deadline, self.cancelled)
+                            self.limits.max_output_tokens, self.deadline, self.cancelled,
+                            self.provider_attempts)
 
     def execute_derived(self, adapter: ModelAdapter, task: TaskSpec,
                         evidence_json: str, level: str) -> ModelResult:
         request = self.derived_request(task, evidence_json, level)
-        self.budget.reserve(request)
-        result = adapter.complete(request)
-        check_authority(self.deadline, self.cancelled)
-        return result
+        return self.execute_request(adapter, request)
 
 
 @dataclass(frozen=True)
@@ -121,4 +122,5 @@ def prepare_context(context: StageContext, task: TaskSpec, settings: Settings) -
     return PreparedContext(plan, task, settings.meeting_intelligence_model,
                            settings.meeting_intelligence_reasoning_effort, limits,
                            context.deadline, context.cancelled,
-                           InferenceBudget(limits.max_total_inference_tokens))
+                           InferenceBudget(limits.max_total_inference_tokens),
+                           context.provider_attempts)

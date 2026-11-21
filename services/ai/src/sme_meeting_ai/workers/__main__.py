@@ -13,7 +13,6 @@ from .knowledge_indexing import KnowledgeIndexingExecution
 from .runtime import ResourceFactory, WorkerExecution, WorkerRuntime
 from .transcription import TranscriptionExecution
 
-
 _ROLE_IDENTITIES = {
     "transcription": "ai-worker",
     "meeting-intelligence": "mi-worker",
@@ -46,13 +45,21 @@ def build_execution(settings: Settings) -> WorkerExecution:
             raise RuntimeError("worker capability gates are not isolated")
         return TranscriptionExecution(settings)
     if role == "meeting-intelligence":
-        if (
-            settings.knowledge_indexing_worker_enabled
-            or not settings.meeting_intelligence_worker_enabled
-            or not settings.meeting_intelligence_inference_enabled
-            or not settings.meeting_intelligence_decision_enabled
-        ):
+        required_gates = {
+            "worker": settings.meeting_intelligence_worker_enabled,
+            "inference": settings.meeting_intelligence_inference_enabled,
+            "summary": settings.meeting_intelligence_summary_enabled,
+            "decisions": settings.meeting_intelligence_decision_enabled,
+            "action_items": settings.meeting_intelligence_action_item_enabled,
+        }
+        if settings.knowledge_indexing_worker_enabled:
             raise RuntimeError("worker capability gates are not isolated")
+        missing = [name for name, enabled in required_gates.items() if not enabled]
+        if missing:
+            raise RuntimeError(
+                "meeting-intelligence capability gate is disabled: "
+                + ",".join(missing)
+            )
         return IntelligenceExecution(settings)
     if (
         not settings.knowledge_indexing_worker_enabled

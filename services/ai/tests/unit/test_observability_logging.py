@@ -63,7 +63,8 @@ def test_no_context_and_no_optional_ids_are_valid(capsys):
     log_event(logger, logging.INFO, "runtime.ready")
     with correlation_scope(new_correlation_context()):
         log_event(logger, logging.INFO, "runtime.ready")
-    first, second = map(json.loads, capsys.readouterr().out.splitlines())
+    output = capsys.readouterr().out
+    first, second = map(json.loads, output.splitlines())
     assert first.keys() == {"timestamp", "severity", "event", "service"}
     assert second.keys() == first.keys() | {"trace_id", "span_id", "trace_flags"}
 
@@ -81,6 +82,39 @@ def test_provider_telemetry_is_numeric_and_allowlisted(capsys):
     assert data["reasoning_tokens"] == 10
     assert data["reserved_tokens"] == 4096
     assert data["attempts"] == 2
+
+
+def test_validation_diagnostics_are_allowlisted_and_content_free(capsys):
+    configure_logging(settings())
+    log_event(
+        logging.getLogger("sme_meeting_ai"),
+        logging.WARNING,
+        "worker.intelligence.failure.inference.validation",
+        validation_reason="GROUNDING_FAILURE",
+        validation_rule="UNSUPPORTED_NUMBER",
+        validation_item_index=3,
+    )
+    log_event(
+        logging.getLogger("sme_meeting_ai"),
+        logging.WARNING,
+        "worker.intelligence.failure.inference.validation",
+        validation_reason="GROUNDING_FAILURE",
+        validation_rule="private transcript",
+        validation_item_index=-1,
+    )
+    output = capsys.readouterr().out
+    first, second = map(json.loads, output.splitlines())
+    assert first["validation_reason"] == "GROUNDING_FAILURE"
+    assert first["validation_rule"] == "UNSUPPORTED_NUMBER"
+    assert first["validation_item_index"] == 3
+    assert second == {
+        "timestamp": second["timestamp"],
+        "severity": "WARNING",
+        "event": "worker.intelligence.failure.inference.validation",
+        "service": "test-ai",
+        "validation_reason": "GROUNDING_FAILURE",
+    }
+    assert "private transcript" not in output
 
 
 def test_repeated_configuration_emits_once_updates_settings_and_preserves_other_handlers(capsys):

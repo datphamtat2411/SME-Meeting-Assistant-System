@@ -86,7 +86,10 @@ class CoreSourceVerificationProvider:
             raise CoreSourceVerificationError("SOURCE_VERIFICATION_INCOMPLETE")
         body = {
             "contractVersion": "1.0",
-            "requests": [request.model_dump(mode="json", by_alias=True) for request in request_tuple],
+            "requests": [
+                request.model_dump(mode="json", by_alias=True, exclude_none=True)
+                for request in request_tuple
+            ],
         }
         try:
             response = self.http.post(
