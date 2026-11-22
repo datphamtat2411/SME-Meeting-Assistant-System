@@ -165,11 +165,11 @@ class Settings(BaseSettings):
     core_api_connect_timeout_seconds: float = Field(default=3, gt=0, le=3, allow_inf_nan=False)
     core_api_timeout_seconds: float = Field(default=15, gt=0, le=15, allow_inf_nan=False)
     core_api_max_attempts: int = Field(default=3, ge=1, le=3, strict=True)
-    audio_max_input_bytes: int = Field(default=536870912, gt=0, le=2147483648)
+    audio_max_input_bytes: int = Field(default=1073741824, gt=0, le=2147483648)
     audio_max_duration_seconds: float = Field(
-        default=3600, gt=0, le=14400, allow_inf_nan=False,
+        default=5400, gt=0, le=14400, allow_inf_nan=False,
     )
-    audio_max_output_bytes: int = Field(default=134217728, gt=0, le=1073741824)
+    audio_max_output_bytes: int = Field(default=201326592, gt=0, le=1073741824)
     audio_probe_timeout_seconds: float = Field(
         default=10, gt=0, le=120, allow_inf_nan=False,
     )
@@ -236,7 +236,7 @@ class Settings(BaseSettings):
     diarization_worker_s3_secret_access_key: SecretStr | None = Field(default=None, repr=False)
     meeting_intelligence_worker_enabled: bool = False
     meeting_intelligence_worker_concurrency: int = Field(default=1, ge=1, le=1)
-    meeting_intelligence_worker_execution_timeout_seconds: float = Field(default=1800, gt=0, le=7200, allow_inf_nan=False)
+    meeting_intelligence_worker_execution_timeout_seconds: float = Field(default=3600, gt=0, le=7200, allow_inf_nan=False)
     meeting_intelligence_inference_enabled: bool = False
     meeting_intelligence_summary_enabled: bool = False
     meeting_intelligence_decision_enabled: bool = False
@@ -244,8 +244,8 @@ class Settings(BaseSettings):
     meeting_intelligence_model: str = Field(default="openai/gpt-6-luna", pattern=r"^[A-Za-z0-9][A-Za-z0-9_./:-]{0,159}$")
     meeting_intelligence_reasoning_effort: ReasoningEffort = "high"
     meeting_intelligence_context_window_tokens: int = Field(default=131072, ge=1, le=400000, strict=True)
-    meeting_intelligence_max_input_tokens: int = Field(default=98304, ge=1, le=272000, strict=True)
-    meeting_intelligence_max_output_tokens: int = Field(default=32768, ge=1, le=128000, strict=True)
+    meeting_intelligence_max_input_tokens: int = Field(default=24000, ge=1, le=272000, strict=True)
+    meeting_intelligence_max_output_tokens: int = Field(default=8192, ge=1, le=128000, strict=True)
     meeting_intelligence_overlap_units: int = Field(default=1, ge=0, le=8, strict=True)
     meeting_intelligence_max_windows: int = Field(default=64, ge=1, le=1024, strict=True)
     meeting_intelligence_max_total_context_tokens: int = Field(default=1000000, ge=1, le=8000000, strict=True)
@@ -253,17 +253,16 @@ class Settings(BaseSettings):
     meeting_intelligence_max_source_bytes: int = Field(default=8388608, ge=1, le=8388608, strict=True)
     meeting_intelligence_max_evidence_units: int = Field(default=16384, ge=1, le=65536, strict=True)
     meeting_intelligence_provider_timeout_seconds: float = Field(default=120, gt=0, le=600, allow_inf_nan=False)
-    # A physical provider attempt is reserved durably before transport.  The
-    # bounded MI acceptance deliberately has no provider retry or fallback.
-    meeting_intelligence_max_attempts: int = Field(default=1, ge=1, le=1, strict=True)
+    # A physical provider attempt (including transient retry) is reserved before transport.
+    meeting_intelligence_max_attempts: int = Field(default=2, ge=1, le=2, strict=True)
     meeting_intelligence_max_response_bytes: int = Field(default=1048576, ge=1, le=16777216, strict=True)
     meeting_intelligence_max_concurrent_requests: int = Field(default=1, ge=1, le=1, strict=True)
-    meeting_intelligence_summary_attempt_ceiling: int = Field(default=1, ge=1, le=1, strict=True)
-    meeting_intelligence_decision_attempt_ceiling: int = Field(default=1, ge=1, le=1, strict=True)
-    meeting_intelligence_action_item_attempt_ceiling: int = Field(default=2, ge=1, le=2, strict=True)
-    meeting_intelligence_aggregate_attempt_ceiling: int = Field(default=4, ge=1, le=4, strict=True)
-    meeting_intelligence_reserved_token_ceiling: int = Field(default=161970, ge=1, le=161970, strict=True)
-    meeting_intelligence_estimated_cost_ceiling_usd: Decimal = Decimal("0.15")
+    meeting_intelligence_summary_attempt_ceiling: int = Field(default=16, ge=1, le=64, strict=True)
+    meeting_intelligence_decision_attempt_ceiling: int = Field(default=16, ge=1, le=64, strict=True)
+    meeting_intelligence_action_item_attempt_ceiling: int = Field(default=12, ge=1, le=64, strict=True)
+    meeting_intelligence_aggregate_attempt_ceiling: int = Field(default=44, ge=1, le=192, strict=True)
+    meeting_intelligence_reserved_token_ceiling: int = Field(default=2_000_000, ge=1, le=4_000_000, strict=True)
+    meeting_intelligence_estimated_cost_ceiling_usd: Decimal = Decimal("0.75")
     meeting_intelligence_input_cost_per_million_usd: Decimal = Decimal("0.20")
     meeting_intelligence_output_cost_per_million_usd: Decimal = Decimal("1.00")
     meeting_intelligence_summary_target_chars: int = Field(default=8000, ge=1000, le=20000, strict=True)
@@ -323,18 +322,19 @@ class Settings(BaseSettings):
     )
     audio_asr_temperature: float = Field(default=0, ge=0, le=1, allow_inf_nan=False)
     audio_asr_max_payload_bytes: int = Field(default=26214400, gt=0, le=26214400)
-    audio_asr_max_concurrent_chunks: int = Field(default=1, gt=0, le=4, strict=True)
+    audio_asr_max_concurrent_chunks: int = Field(default=4, gt=0, le=4, strict=True)
+    audio_asr_retry_transient_chunks: bool = True
     audio_asr_timeout_seconds: float = Field(
         default=120, gt=0, le=600, allow_inf_nan=False,
     )
     audio_asr_strategy_mode: Literal["chunked", "adaptive"] = "chunked"
     # Standing per-recording authorization, not a duration-derived allocation.
     # Preflight reserves the actual plan and one shared supplemental allowance.
-    audio_asr_max_total_calls: int = Field(default=256, gt=0, le=65793, strict=True)
+    audio_asr_max_total_calls: int = Field(default=400, gt=0, le=65793, strict=True)
     # Internal trial ceiling, not a verified provider recording-duration limit.
     audio_asr_native_max_samples: int = Field(default=1920000, gt=0, le=230400000, strict=True)
     # At most the validated chunk limit + Recovery limit + one native request.
-    audio_asr_adaptive_max_total_calls: int = Field(default=32, gt=0, le=65793, strict=True)
+    audio_asr_adaptive_max_total_calls: int = Field(default=48, gt=0, le=65793, strict=True)
     audio_asr_coverage_max_tolerated_speech_map_gap_samples: int = Field(
         default=0, ge=0, le=230400000, strict=True,
     )
@@ -357,13 +357,13 @@ class Settings(BaseSettings):
         default=1440000, gt=0, le=230400000, strict=True,
     )
     audio_asr_recovery_max_total_attempts: int = Field(
-        default=16, gt=0, le=256, strict=True,
+        default=32, gt=0, le=256, strict=True,
     )
     audio_asr_recovery_max_total_request_samples: int = Field(
-        default=2400000, gt=0, le=230400000, strict=True,
+        default=4800000, gt=0, le=230400000, strict=True,
     )
     audio_asr_recovery_max_wall_time_seconds: float = Field(
-        default=300, gt=0, le=3600, allow_inf_nan=False,
+        default=600, gt=0, le=3600, allow_inf_nan=False,
     )
     # Pause deferral controls scheduling only; zero disables it without changing coverage.
     audio_asr_recovery_pause_max_samples: int = Field(default=8000, ge=0, le=16000, strict=True)
@@ -638,20 +638,13 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def bounded_meeting_intelligence_budget(self) -> Self:
-        if (
-            self.meeting_intelligence_worker_concurrency != 1
-            or self.meeting_intelligence_max_concurrent_requests != 1
-            or self.meeting_intelligence_max_attempts != 1
-            or self.meeting_intelligence_summary_attempt_ceiling != 1
-            or self.meeting_intelligence_decision_attempt_ceiling != 1
-            or self.meeting_intelligence_action_item_attempt_ceiling != 2
-            or self.meeting_intelligence_aggregate_attempt_ceiling != 4
-            or self.meeting_intelligence_reserved_token_ceiling != 161970
-            or self.meeting_intelligence_estimated_cost_ceiling_usd != Decimal("0.15")
-            or self.meeting_intelligence_input_cost_per_million_usd != Decimal("0.20")
-            or self.meeting_intelligence_output_cost_per_million_usd != Decimal("1.00")
+        for amount, maximum in (
+            (self.meeting_intelligence_estimated_cost_ceiling_usd, 20),
+            (self.meeting_intelligence_input_cost_per_million_usd, 100),
+            (self.meeting_intelligence_output_cost_per_million_usd, 100),
         ):
-            raise ValueError("Meeting Intelligence bounded acceptance limits are immutable")
+            if not 0 < amount <= maximum or amount.normalize().as_tuple().exponent < -18:
+                raise ValueError("Meeting Intelligence rates and costs must be positive and bounded")
         return self
 
     @field_validator(

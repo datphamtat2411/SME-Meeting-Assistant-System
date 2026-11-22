@@ -145,7 +145,8 @@ public class IntelligenceWorkerTransactions {
         };
         if(stageUsed>=stageLimit || budget.reservedAttempts()>=budget.aggregateCeiling()
             || expectedTokens>budget.tokenCeiling()-budget.reservedTokens()
-            || expectedCost.compareTo(budget.costCeiling().subtract(budget.estimatedCost()))>0)
+            || expectedCost.compareTo(budget.costCeiling().subtract(
+                budget.estimatedCost().max(budget.reportedCost())))>0)
             throw WorkerException.conflict("WORKER_BUDGET_EXHAUSTED");
         repository.insertProviderAttempt(command,job,fingerprint);
         repository.incrementBudget(job,d.code(),expectedTokens,expectedCost);
@@ -189,15 +190,7 @@ public class IntelligenceWorkerTransactions {
     }
     private IntelligenceWorkerRepository.BudgetLimits limits() {
         var p=properties.getIntelligence();
-        if(p.getSummaryAttemptCeiling()!=1 || p.getDecisionAttemptCeiling()!=1
-            || p.getActionItemAttemptCeiling()!=2 || p.getAggregateAttemptCeiling()!=4
-            || p.getReservedTokenCeiling()!=161970L
-            || p.getEstimatedCostCeilingUsd()==null
-            || p.getEstimatedCostCeilingUsd().compareTo(new BigDecimal("0.15"))!=0
-            || p.getInputCostPerMillionUsd()==null
-            || p.getInputCostPerMillionUsd().compareTo(new BigDecimal("0.20"))!=0
-            || p.getOutputCostPerMillionUsd()==null
-            || p.getOutputCostPerMillionUsd().compareTo(new BigDecimal("1.00"))!=0)
+        if (!p.validBudget())
             throw WorkerException.conflict("WORKER_BUDGET_CONFIGURATION_CONFLICT");
         return new IntelligenceWorkerRepository.BudgetLimits(p.getSummaryAttemptCeiling(),
             p.getDecisionAttemptCeiling(),p.getActionItemAttemptCeiling(),p.getAggregateAttemptCeiling(),

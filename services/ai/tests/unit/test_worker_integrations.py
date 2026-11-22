@@ -196,15 +196,17 @@ def descriptor(data=b"accepted audio", **overrides):
     return SourceDescriptor.model_validate(fields)
 
 
-def test_source_stream_verification_and_private_cleanup(tmp_path):
+@pytest.mark.parametrize("mime,suffix", [("audio/wav", ".wav"), ("audio/mpeg", ".mp3"), ("audio/mp4", ".m4a")])
+def test_source_stream_verification_and_private_cleanup(tmp_path, mime, suffix):
     s3 = S3()
     with ObjectStorage(storage_settings(tmp_path), client=s3) as storage:
-        with storage.source_file(descriptor()) as path:
+        with storage.source_file(descriptor(contentType=mime)) as path:
+            assert path.suffix == suffix
             assert path.read_bytes() == s3.data
             assert path.stat().st_mode & 0o077 == 0
         assert not path.exists()
     assert all(stream.closed for stream in s3.streams)
-    assert not list(tmp_path.rglob("source.media"))
+    assert not list(tmp_path.rglob("source.*"))
 
 
 @pytest.mark.parametrize("kind,category", [
@@ -234,7 +236,7 @@ def test_storage_failures_cleanup_and_sanitization(tmp_path, kind, category):
     assert caught.value.category == category
     assert "private" not in "".join(traceback.format_exception(caught.value))
     assert all(stream.closed for stream in s3.streams)
-    assert not list(tmp_path.rglob("source.media"))
+    assert not list(tmp_path.rglob("source.*"))
 
 
 def test_result_create_only_and_uncertain_put_readback(tmp_path):

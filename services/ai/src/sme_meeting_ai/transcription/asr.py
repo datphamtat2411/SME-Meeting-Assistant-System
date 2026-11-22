@@ -20,8 +20,11 @@ class AsrErrorCategory(StrEnum):
 class AsrError(Exception):
     """Category-only failure, without provider diagnostics or sensitive context."""
 
-    def __init__(self, category: AsrErrorCategory):
+    def __init__(self, category: AsrErrorCategory, *, retryable: bool | None = None):
         self.category = category
+        self.retryable = retryable if retryable is not None else category in {
+            AsrErrorCategory.TRANSPORT, AsrErrorCategory.TIMEOUT, AsrErrorCategory.RATE_LIMIT,
+        }
         super().__init__(category.value)
 
 

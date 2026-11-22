@@ -360,7 +360,8 @@ class ObjectStorage:
                         }):
                     raise StorageError("VALIDATION")
                 temporary = tempfile.TemporaryDirectory(prefix="source-", dir=self._root)
-                path = Path(temporary.name) / "source.media"
+                suffix = {"audio/wav": "wav", "audio/mpeg": "mp3", "audio/mp4": "m4a"}.get(source.contentType, "media")
+                path = Path(temporary.name) / f"source.{suffix}"
                 with path.open("xb") as output:
                     path.chmod(0o600)
                     _, digest = self._read(source.storageId, source.objectKey, source.sizeBytes,

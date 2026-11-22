@@ -43,7 +43,9 @@ def build_execution(settings: Settings) -> WorkerExecution:
             or settings.meeting_intelligence_decision_enabled
         ):
             raise RuntimeError("worker capability gates are not isolated")
-        return TranscriptionExecution(settings)
+        # The deployed transcription role owns the optional diarization route
+        # and its worker identity. It still uses separate S3 write credentials.
+        return AiWorkerExecution(settings) if settings.diarization_worker_enabled else TranscriptionExecution(settings)
     if role == "meeting-intelligence":
         required_gates = {
             "worker": settings.meeting_intelligence_worker_enabled,

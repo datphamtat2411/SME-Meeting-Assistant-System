@@ -130,7 +130,7 @@ class AudioEvidenceDetector:
                 raise AudioProcessingError("VALIDATION")
             if self._vad.frame_samples != self._settings.audio_vad_frame_samples:
                 raise AudioProcessingError("MODEL_UNAVAILABLE")
-            with _open_pcm(source, self._settings.audio_max_input_bytes) as (descriptor, size):
+            with _open_pcm(source, self._settings.audio_max_output_bytes) as (descriptor, size):
                 data_offset, sample_count = _wav_layout(descriptor, size, deadline)
                 if expected_sample_count is not None and sample_count != expected_sample_count:
                     raise AudioProcessingError("VALIDATION")
@@ -225,7 +225,7 @@ class AudioEvidenceDetector:
                 "timeout_seconds": settings.audio_vad_timeout_seconds,
                 "model_max_bytes": settings.audio_vad_model_max_bytes,
                 "evidence_max_bytes": settings.audio_evidence_max_bytes,
-                "max_input_bytes": settings.audio_max_input_bytes,
+                "max_input_bytes": settings.audio_max_output_bytes,
                 "max_duration_seconds": settings.audio_max_duration_seconds,
                 "max_concurrent_recordings": self._vad.max_concurrent_recordings,
                 "inference_threads": self._vad.inference_threads,

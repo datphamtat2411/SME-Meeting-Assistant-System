@@ -4,6 +4,8 @@ import json
 import re
 from uuid import UUID
 
+from .grounding import RESULT_WARNING_CODES
+
 
 class ResultError(Exception):
     def __init__(self):
@@ -33,8 +35,8 @@ def serialize_result(candidate, claim, snapshot):
         if not isinstance(result, dict) or not isinstance(result.get("warnings"), list):
             raise ValueError
         warnings = result["warnings"]
-        if (len(warnings) > 4 or len(set(warnings)) != len(warnings)
-                or any(w not in {"INCOMPLETE_COVERAGE", "UNRESOLVED_EVIDENCE", "SUSPICIOUS_EVIDENCE", "SOURCE_QUALITY_WARNING"} for w in warnings)):
+        if (len(warnings) > len(RESULT_WARNING_CODES) or len(set(warnings)) != len(warnings)
+                or any(w not in RESULT_WARNING_CODES for w in warnings)):
             raise ValueError
         if claim.executionStageCode == "GENERATING_SUMMARY":
             if set(result) != {"content", "warnings"}:

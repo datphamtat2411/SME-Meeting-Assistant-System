@@ -21,6 +21,12 @@ def test_quorum_contract_and_non_administrative_permissions():
     assert all(p["configure"] == "^$" for p in definitions["permissions"])
 
 
+def test_acknowledgement_window_leaves_margin_after_four_hour_worker_deadline():
+    conf = (Path(__file__).parents[1] / "rabbitmq.conf").read_text()
+    values = dict(line.strip().split(" = ", 1) for line in conf.splitlines() if " = " in line and not line.startswith("#"))
+    assert int(values["consumer_timeout"]) >= (4 * 3600 + 60) * 1000
+
+
 def test_migration_readiness_rejects_nonempty_or_active_queues():
     for field in ("messages", "messages_ready", "messages_unacknowledged", "consumers"):
         with pytest.raises(broker.Blocked):

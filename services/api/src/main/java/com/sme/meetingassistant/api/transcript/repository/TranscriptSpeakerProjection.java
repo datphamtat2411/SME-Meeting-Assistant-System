@@ -116,12 +116,17 @@ public class TranscriptSpeakerProjection implements DiarizationSpeakerProjection
                   JOIN processing_jobs j ON j.id=t.processing_job_id
                   WHERE t.id=? AND t.source_media_id=? AND t.is_current AND t.content_revision=?
                     AND v.producer_stage_run_id=? AND v.source_revision=? AND v.transcript_revision=?
-                    AND (j.status IN ('COMPLETED','COMPLETED_WITH_WARNINGS') OR (j.status='RUNNING' AND EXISTS (
-                      SELECT 1 FROM processing_stage_runs pending WHERE pending.processing_job_id=j.id
-                        AND pending.status IN ('PENDING','RUNNING') AND pending.stage_code IN
-                          ('GENERATING_SUMMARY','EXTRACTING_DECISIONS','EXTRACTING_ACTION_ITEMS','INDEXING')))))
-                """,Boolean.class,result.transcriptId(),result.sourceMediaId(),acceptedRevision,
-                result.producerStageRunId(),result.sourceRevision(),result.transcriptRevision().longValueExact()));
+                     AND (j.status IN ('COMPLETED','COMPLETED_WITH_WARNINGS') OR (j.status='RUNNING' AND EXISTS (
+                       SELECT 1 FROM processing_stage_runs pending WHERE pending.processing_job_id=j.id
+                         AND pending.status IN ('PENDING','RUNNING') AND pending.stage_code IN
+                           ('GENERATING_SUMMARY','EXTRACTING_DECISIONS','EXTRACTING_ACTION_ITEMS','INDEXING')))
+                       OR (j.status='WAITING_FOR_REVIEW' AND j.current_stage='TRANSCRIPT_REVIEW'
+                         AND j.transcript_review_required AND j.diarization_before_review
+                         AND NOT EXISTS (
+                           SELECT 1 FROM processing_job_transcript_reviews admitted
+                           WHERE admitted.processing_job_id=j.id AND admitted.admitted_at IS NOT NULL))))
+                 """,Boolean.class,result.transcriptId(),result.sourceMediaId(),acceptedRevision,
+                 result.producerStageRunId(),result.sourceRevision(),result.transcriptRevision().longValueExact()));
             if (!accepted) throw conflict();
         } catch (DataAccessException invalidState) {
             throw conflict();

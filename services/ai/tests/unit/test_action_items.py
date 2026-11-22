@@ -143,6 +143,74 @@ def test_misclassified_obligations_are_not_emitted(text):
     assert output["result"]["candidates"] == []
 
 
+def test_invalid_owner_is_discarded_without_erasing_an_independent_task():
+    fixture = dict(
+        segments=["Minh sẽ kiểm tra API đăng nhập.", "Lan sẽ cập nhật tài liệu trợ giúp."],
+        signals=[
+            dict(at=0, action="kiểm tra API đăng nhập", deliverable="API đăng nhập", type="COMMITTED", party="Minh"),
+            dict(at=1, action="cập nhật tài liệu trợ giúp", deliverable="tài liệu trợ giúp", type="COMMITTED", party="Hải"),
+        ],
+    )
+    result = ActionItemProcessor(settings(), scripted(fixture))(action_stage(fixture))["result"]
+    assert [item["title"] for item in result["candidates"]] == ["kiểm tra API đăng nhập"]
+    assert result["warnings"] == ["GROUNDING_CLAIM_DISCARDED"]
+
+
+def test_invalid_nonempty_grouping_falls_back_to_validated_singletons():
+    fixture = dict(
+        segments=["Minh sẽ kiểm tra API đăng nhập.", "Lan sẽ cập nhật tài liệu trợ giúp."],
+        signals=[
+            dict(at=0, action="kiểm tra API đăng nhập", deliverable="API đăng nhập", type="COMMITTED", party="Minh"),
+            dict(at=1, action="cập nhật tài liệu trợ giúp", deliverable="tài liệu trợ giúp", type="COMMITTED", party="Lan"),
+        ],
+    )
+
+    def merge_groups(output):
+        if "groups" in output:
+            output["groups"] = [sum(output["groups"], [])]
+
+    result = ActionItemProcessor(settings(), scripted(fixture, mutate=merge_groups))(action_stage(fixture))["result"]
+    assert [item["title"] for item in result["candidates"]] == [
+        "kiểm tra API đăng nhập", "cập nhật tài liệu trợ giúp",
+    ]
+    assert result["warnings"] == ["GROUNDING_CLAIM_DISCARDED"]
+
+
+def test_incomplete_nonempty_grouping_falls_back_to_validated_singletons():
+    fixture = dict(
+        segments=["Minh sẽ kiểm tra API đăng nhập.", "Lan sẽ cập nhật tài liệu trợ giúp."],
+        signals=[
+            dict(at=0, action="kiểm tra API đăng nhập", deliverable="API đăng nhập", type="COMMITTED", party="Minh"),
+            dict(at=1, action="cập nhật tài liệu trợ giúp", deliverable="tài liệu trợ giúp", type="COMMITTED", party="Lan"),
+        ],
+    )
+
+    def omit_group(output):
+        if "groups" in output:
+            output["groups"] = output["groups"][:1]
+
+    result = ActionItemProcessor(settings(), scripted(fixture, mutate=omit_group))(action_stage(fixture))["result"]
+    assert [item["title"] for item in result["candidates"]] == [
+        "kiểm tra API đăng nhập", "cập nhật tài liệu trợ giúp",
+    ]
+    assert result["warnings"] == ["GROUNDING_CLAIM_DISCARDED"]
+
+
+def test_grouping_cannot_separate_later_cancellation_to_resurrect_an_action():
+    fixture = dict(
+        segments=["Minh sẽ kiểm tra API đăng nhập.", "Không cần kiểm tra API đăng nhập nữa.",
+                  "Lan sẽ cập nhật tài liệu trợ giúp."],
+        signals=[
+            dict(at=0, action="kiểm tra API đăng nhập", deliverable="API đăng nhập", type="COMMITTED", party="Minh", group="a"),
+            dict(at=1, action="kiểm tra API đăng nhập", deliverable="API đăng nhập", type="CANCELLED", group="b"),
+            dict(at=2, action="cập nhật tài liệu trợ giúp", deliverable="tài liệu trợ giúp", type="COMMITTED", party="Lan", group="c"),
+        ],
+    )
+    result = ActionItemProcessor(settings(), scripted(fixture))(action_stage(fixture))["result"]
+    assert [item["title"] for item in result["candidates"]] == ["cập nhật tài liệu trợ giúp"]
+    assert result["warnings"] == ["GROUNDING_CLAIM_DISCARDED"]
+
+
 @pytest.mark.parametrize("expression,due", [("2026-11-15", "2026-11-15"),
     ("ngày 15 tháng 11 năm 2026", "2026-11-15"), ("sớm", None), ("sau khi khách hàng phản hồi", None)])
 def test_only_explicit_calendar_dates_are_suggested(expression, due):

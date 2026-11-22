@@ -71,6 +71,19 @@ public class DerivedSummaryJobAdmission {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                 "Regeneration requires a completed source processing job.");
         }
+        requireCapacity(actor, meetingId);
+        try {
+            repository.insertDerivedSummaryJobAndOutbox(proposedId,meetingId,mediaId,actor,
+                originJobId,UUID.randomUUID());
+        } catch(JobAdmissionConflictException duplicate) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                "Another processing job already occupies the meeting.");
+        }
+        return new Result(proposedId,true);
+    }
+
+    @Transactional(propagation=Propagation.MANDATORY)
+    public void requireCapacity(UUID actor, UUID meetingId) {
         if(repository.activeJobsForMeeting(meetingId)>0)
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                 "Another processing job is already active for this meeting.");
@@ -83,14 +96,6 @@ public class DerivedSummaryJobAdmission {
         if(repository.recentJobAdmissions(actor,period).count()>=limit)
             throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS,
                 "Processing admission rate limit exceeded.");
-        try {
-            repository.insertDerivedSummaryJobAndOutbox(proposedId,meetingId,mediaId,actor,
-                originJobId,UUID.randomUUID());
-        } catch(JobAdmissionConflictException duplicate) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT,
-                "Another processing job already occupies the meeting.");
-        }
-        return new Result(proposedId,true);
     }
     private static int positive(int value) {
         if(value<1) throw new IllegalStateException("Invalid processing quota configuration.");

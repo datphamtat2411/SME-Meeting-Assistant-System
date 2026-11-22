@@ -41,7 +41,7 @@ import tools.jackson.databind.ObjectMapper;
  * provider, worker, broker, or object store.
  */
 @ActiveProfiles("test")
-@SpringBootTest(properties = "app.media.outbox.enabled=false")
+@SpringBootTest(properties = {"app.media.outbox.enabled=false", "app.media.intelligence.regeneration-enabled=true"})
 @AutoConfigureMockMvc
 @Import(PostgresTestConfiguration.class)
 class TranscriptReviewAdmissionIntegrationTests {
@@ -51,6 +51,7 @@ class TranscriptReviewAdmissionIntegrationTests {
     @Autowired ProcessingJobLifecycle lifecycle;
     @Autowired TranscriptFinalizationService finalization;
     @MockitoBean com.sme.meetingassistant.api.media.storage.ObjectStorage storage;
+    @MockitoBean com.sme.meetingassistant.api.media.intelligence.IntelligenceWorkerCapability intelligence;
 
     private UUID organizer;
     private UUID meeting;
@@ -176,6 +177,50 @@ class TranscriptReviewAdmissionIntegrationTests {
             SELECT count(*) FROM processing_job_transcript_reviews
             WHERE processing_job_id=? AND admitted_at IS NOT NULL
             """, Integer.class, job)).isEqualTo(1);
+    }
+
+    @Test
+    void regenerationUsesOnlyTheOriginalAdmittedProofAndDoesNotReopenTheTerminalJob() throws Exception {
+        JsonNode transcript = currentTranscript();
+        String digest = TranscriptCorrectionDigest.sha256(published);
+        String body = reviewBody(UUID.fromString(transcript.path("id").asText()),
+            transcript.path("contentRevision").asLong(), digest);
+        String path = jobPath("/meeting-intelligence/regenerate");
+        org.mockito.Mockito.when(intelligence.canDispatch(org.mockito.ArgumentMatchers.anyString())).thenReturn(true);
+        mvc.perform(post(path).principal(as(organizer)).header("Idempotency-Key", "regenerate")
+            .contentType(MediaType.APPLICATION_JSON).content(body)).andExpect(status().isConflict());
+
+        var acknowledgment = mvc.perform(post(jobPath("/transcript-review/acknowledge"))
+            .principal(as(organizer)).header("Idempotency-Key", "regenerate-review")
+            .contentType(MediaType.APPLICATION_JSON).content(body)).andExpect(status().isOk()).andReturn();
+        String reviewId = json.readTree(acknowledgment.getResponse().getContentAsString()).at("/data/reviewId").asText();
+        mvc.perform(post(jobPath("/meeting-intelligence/admit"))
+            .principal(as(organizer)).header("Idempotency-Key", "regenerate-admit")
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(body.substring(0, body.length() - 1) + ",\"reviewId\":\"" + reviewId + "\"}"))
+            .andExpect(status().isAccepted());
+        com.sme.meetingassistant.api.support.ImmutableSnapshotObjectFixture.install(storage);
+
+        var first = mvc.perform(post(path).principal(as(organizer)).header("Idempotency-Key", "regenerate")
+            .contentType(MediaType.APPLICATION_JSON).content(body)).andExpect(status().isAccepted()).andReturn();
+        var replay = mvc.perform(post(path).principal(as(organizer)).header("Idempotency-Key", "regenerate")
+            .contentType(MediaType.APPLICATION_JSON).content(body)).andExpect(status().isAccepted()).andReturn();
+        UUID child = UUID.fromString(json.readTree(first.getResponse().getContentAsString()).at("/data/id").asText());
+        assertThat(json.readTree(replay.getResponse().getContentAsString()).at("/data/id").asText())
+            .isEqualTo(child.toString());
+        assertThat(jdbc.queryForObject("SELECT status FROM processing_jobs WHERE id=?", String.class, job))
+            .isEqualTo("COMPLETED");
+        assertThat(jdbc.queryForObject("SELECT origin_review_id FROM processing_mi_regenerations WHERE processing_job_id=?",
+            UUID.class, child)).isEqualTo(UUID.fromString(reviewId));
+        assertThat(jdbc.queryForList("SELECT stage_code FROM processing_stage_runs WHERE processing_job_id=?",
+            String.class, child)).containsExactlyInAnyOrder("GENERATING_SUMMARY", "EXTRACTING_DECISIONS", "EXTRACTING_ACTION_ITEMS");
+        assertThat(jdbc.queryForList("SELECT event_type FROM outbox_events WHERE aggregate_id=?", String.class, child))
+            .containsExactly("PROCESSING_INTELLIGENCE_STAGE_REQUESTED");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM processing_job_transcript_reviews WHERE processing_job_id=?",
+            Integer.class, child)).isZero();
+        mvc.perform(post(path).principal(as(organizer)).header("Idempotency-Key", "regenerate")
+            .contentType(MediaType.APPLICATION_JSON).content(body.replace(digest, "0".repeat(64))))
+            .andExpect(status().isConflict());
     }
 
     @Test

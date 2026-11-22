@@ -37,6 +37,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.web.server.ResponseStatusException;
@@ -87,6 +89,44 @@ class MediaProcessingServiceTests {
         verify(this.meetingAccess).requireUploadAllowed(this.meetingId, this.actor);
         verify(this.repository).insertMedia(uploaded.capture());
         assertTrue(uploaded.getValue().objectKey().contains("/pending/"));
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+        "meeting.WAV,audio/x-wav,audio/wav",
+        "meeting.mp3,audio/mp3,audio/mpeg",
+        "meeting.m4a,audio/x-m4a,audio/mp4",
+        "meeting.m4a,video/mp4,audio/mp4",
+        "meeting.m4a,application/octet-stream,audio/mp4"
+    })
+    void signsCanonicalTypeForSupportedBrowserAliases(String filename, String submitted, String canonical) {
+        this.properties.getUpload().setAllowedExtensions(List.of("wav", "mp3", "m4a"));
+        this.properties.getUpload().setAllowedContentTypes(List.of("audio/wav", "audio/mpeg", "audio/mp4"));
+        this.properties.getUpload().setMaxSizeBytes(1L << 30);
+        when(this.repository.claimIdempotency(any(), anyString(), anyString(), anyString(), any(UUID.class)))
+            .thenAnswer(invocation -> invocation.getArgument(4));
+        when(this.storage.createUploadCapability(anyString(), anyString(),
+            org.mockito.ArgumentMatchers.anyLong(), any())).thenReturn("https://storage.test/signed");
+
+        var intent = this.service.createUploadIntent(this.meetingId,
+            new CreateMediaUploadRequest(CreateMediaUploadRequest.SourceType.UPLOAD,
+                filename, submitted, 1L << 30), "large-recording");
+
+        assertEquals(canonical, intent.requiredContentType());
+        verify(this.storage).createUploadCapability(anyString(), org.mockito.ArgumentMatchers.eq(canonical),
+            org.mockito.ArgumentMatchers.eq(1L << 30), any());
+    }
+
+    @Test
+    void rejectsAnAllowedMimeThatDoesNotBelongToTheExtension() {
+        this.properties.getUpload().setAllowedExtensions(List.of("wav", "mp3", "m4a"));
+        this.properties.getUpload().setAllowedContentTypes(List.of("audio/wav", "audio/mpeg", "audio/mp4"));
+        var error = assertThrows(ResponseStatusException.class, () ->
+            this.service.createUploadIntent(this.meetingId,
+                new CreateMediaUploadRequest(CreateMediaUploadRequest.SourceType.UPLOAD,
+                    "meeting.m4a", "audio/mpeg", 512L), "wrong-mime"));
+        assertEquals(415, error.getStatusCode().value());
+        verify(this.repository, never()).lockAdmissionUser(any());
     }
 
     @Test
@@ -273,8 +313,9 @@ class MediaProcessingServiceTests {
         verify(this.repository, never()).insertMedia(any(Media.class));
     }
 
-    @Test
-    void finalizeRejectsContainerWithoutConfiguredAudioFormat() throws Exception {
+    @ParameterizedTest
+    @CsvSource({"matroska|webm,opus", "wav,adpcm_ms", "mp3,mp3", "mov|mp4|m4a|3gp|3g2|mj2,aac"})
+    void finalizeRejectsContainerOrCodecThatDoesNotMatchIntent(String container, String codec) throws Exception {
         UUID mediaId = UUID.randomUUID();
         Media pending = media(mediaId, "PENDING_UPLOAD");
         when(this.repository.findMedia(mediaId))
@@ -286,9 +327,9 @@ class MediaProcessingServiceTests {
             .thenReturn(new ObjectStorage.StoredObject(512, "audio/wav", "etag"));
         doAnswer(invocation -> {
             Files.write(invocation.getArgument(1), new byte[512]);
-            return null;
-        }).when(this.storage).downloadTo(anyString(), any());
-        when(this.inspector.inspect(any())).thenReturn(new MediaInspection("matroska,webm", 1000, true));
+            return true;
+        }).when(this.storage).downloadSourceTo(anyString(), any(), org.mockito.ArgumentMatchers.eq(512L));
+        when(this.inspector.inspect(any())).thenReturn(new MediaInspection(container.replace('|', ','), 1000, codec, true));
         when(this.repository.rejectMedia(any(UUID.class), any(UUID.class), anyString())).thenReturn(true);
 
         var response = this.service.finalizeUpload(this.meetingId, mediaId);
@@ -296,7 +337,7 @@ class MediaProcessingServiceTests {
         assertEquals("REJECTED", response.status());
         verify(this.repository).rejectMedia(org.mockito.ArgumentMatchers.eq(mediaId),
             any(UUID.class), org.mockito.ArgumentMatchers.eq("MEDIA_FORMAT_UNSUPPORTED"));
-        verify(this.storage, never()).putAcceptedIfAbsent(anyString(), any(), anyString());
+        verify(this.storage, never()).putAcceptedSourceIfAbsent(anyString(), any(), anyString(), anyString());
     }
 
     @Test
@@ -315,10 +356,10 @@ class MediaProcessingServiceTests {
             .thenReturn(new ObjectStorage.StoredObject(512, "audio/wav", "pending-etag"));
         doAnswer(invocation -> {
             Files.write(invocation.getArgument(1), new byte[512]);
-            return null;
-        }).when(this.storage).downloadTo(anyString(), any());
-        when(this.inspector.inspect(any())).thenReturn(new MediaInspection("wav", 1000, true));
-        when(this.storage.putAcceptedIfAbsent(anyString(), any(), anyString())).thenReturn(true);
+            return true;
+        }).when(this.storage).downloadSourceTo(anyString(), any(), org.mockito.ArgumentMatchers.eq(512L));
+        when(this.inspector.inspect(any())).thenReturn(new MediaInspection("wav", 1000, "pcm_s16le", true));
+        when(this.storage.putAcceptedSourceIfAbsent(anyString(), any(), anyString(), anyString())).thenReturn(true);
         when(this.repository.acceptMedia(any(UUID.class), any(UUID.class), anyString(),
             org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyLong(), anyString()))
             .thenReturn(true);
@@ -327,7 +368,8 @@ class MediaProcessingServiceTests {
 
         assertEquals("AVAILABLE", this.service.finalizeUpload(this.meetingId, id).status());
         assertEquals("https://storage.test/download", this.service.mediaAccessUrl(this.meetingId, id));
-        verify(this.storage).putAcceptedIfAbsent(org.mockito.ArgumentMatchers.eq(acceptedKey(id)), any(), anyString());
+        verify(this.storage).putAcceptedSourceIfAbsent(org.mockito.ArgumentMatchers.eq(acceptedKey(id)),
+            any(), anyString(), org.mockito.ArgumentMatchers.eq("audio/wav"));
         verify(this.repository).acceptMedia(org.mockito.ArgumentMatchers.eq(id), any(UUID.class),
             org.mockito.ArgumentMatchers.eq(acceptedKey(id)),
             org.mockito.ArgumentMatchers.eq(512L), org.mockito.ArgumentMatchers.eq(1000L), anyString());
@@ -346,16 +388,18 @@ class MediaProcessingServiceTests {
             .thenReturn(new ObjectStorage.StoredObject(512, "audio/wav", "accepted-etag"));
         doAnswer(invocation -> {
             Files.write(invocation.getArgument(1), new byte[512]);
-            return null;
-        }).when(this.storage).downloadTo(org.mockito.ArgumentMatchers.eq(acceptedKey(id)), any());
-        when(this.inspector.inspect(any())).thenReturn(new MediaInspection("wav", 1000, true));
+            return true;
+        }).when(this.storage).downloadSourceTo(org.mockito.ArgumentMatchers.eq(acceptedKey(id)),
+            any(), org.mockito.ArgumentMatchers.eq(512L));
+        when(this.inspector.inspect(any())).thenReturn(new MediaInspection("wav", 1000, "pcm_s16le", true));
         when(this.repository.acceptMedia(any(UUID.class), any(UUID.class), anyString(),
             org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyLong(), anyString()))
             .thenReturn(true);
 
         assertEquals("AVAILABLE", this.service.finalizeUpload(this.meetingId, id).status());
-        verify(this.storage, never()).putAcceptedIfAbsent(anyString(), any(), anyString());
-        verify(this.storage, never()).downloadTo(org.mockito.ArgumentMatchers.eq(pending.objectKey()), any());
+        verify(this.storage, never()).putAcceptedSourceIfAbsent(anyString(), any(), anyString(), anyString());
+        verify(this.storage, never()).downloadSourceTo(org.mockito.ArgumentMatchers.eq(pending.objectKey()),
+            any(), org.mockito.ArgumentMatchers.anyLong());
     }
 
     @Test
@@ -399,8 +443,8 @@ class MediaProcessingServiceTests {
             .thenReturn(new ObjectStorage.StoredObject(512, "audio/wav", "etag"));
         doAnswer(invocation -> {
             Files.write(invocation.getArgument(1), new byte[511]);
-            return null;
-        }).when(this.storage).downloadTo(anyString(), any());
+            return false;
+        }).when(this.storage).downloadSourceTo(anyString(), any(), org.mockito.ArgumentMatchers.eq(512L));
         when(this.repository.rejectMedia(any(UUID.class), any(UUID.class), anyString())).thenReturn(true);
 
         assertEquals("REJECTED", this.service.finalizeUpload(this.meetingId, id).status());

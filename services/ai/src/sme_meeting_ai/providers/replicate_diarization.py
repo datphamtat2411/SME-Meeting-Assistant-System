@@ -27,7 +27,9 @@ from sme_meeting_ai.observability.logging import log_event
 _API = "https://api.replicate.com"
 _MAX_UPLOAD_BYTES = 100_000_000
 _MAX_API_BYTES = 1024 * 1024
-_POLL_INTERVAL_SECONDS = 15
+_POLL_INTERVAL_SECONDS = 5
+_STATUS_TIMEOUT_SECONDS = 12
+_PENDING_STATUSES = frozenset(("queued", "starting", "processing"))
 logger = logging.getLogger(__name__)
 
 
@@ -209,6 +211,7 @@ class ReplicateDiarizationAdapter:
                 if not isinstance(urls, dict):
                     raise DiarizationError(DiarizationErrorCategory.MALFORMED_OUTPUT)
                 audio_url = _upload_url(urls.get("get"))
+                log_event(logger, logging.INFO, "worker.diarization.provider.uploaded")
                 prediction = await _json_request(
                     client, "POST", f"{_API}/v1/predictions",
                     deadline=deadline, retry="create",
@@ -216,18 +219,33 @@ class ReplicateDiarizationAdapter:
                     json={"version": self._settings.diarization_model.split(":", 1)[1],
                           "input": {"audio": audio_url, **hints}},
                 )
-                while prediction.get("status") in ("starting", "processing"):
+                log_event(logger, logging.INFO, "worker.diarization.provider.prediction_created")
+                while prediction.get("status") in _PENDING_STATUSES:
                     prediction_id = prediction.get("id")
                     if not isinstance(prediction_id, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,128}", prediction_id):
                         raise DiarizationError(DiarizationErrorCategory.MALFORMED_OUTPUT)
-                    await asyncio.sleep(_POLL_INTERVAL_SECONDS)
+                    remaining = deadline - asyncio.get_running_loop().time()
+                    if remaining <= 0:
+                        raise DiarizationError(DiarizationErrorCategory.TIMEOUT)
+                    await asyncio.sleep(min(_POLL_INTERVAL_SECONDS, remaining))
+                    remaining = deadline - asyncio.get_running_loop().time()
+                    if remaining <= 0:
+                        raise DiarizationError(DiarizationErrorCategory.TIMEOUT)
                     prediction = await _json_request(client, "GET", f"{_API}/v1/predictions/{prediction_id}",
-                                                     deadline=deadline, retry="read", headers=auth)
-                if prediction.get("status") in ("failed", "canceled"):
+                                                      deadline=deadline, retry="read", headers=auth,
+                                                      timeout=min(_STATUS_TIMEOUT_SECONDS, remaining))
+                # Replicate uses "aborted" for a prediction stopped by its
+                # Cancel-After deadline. Treat it as a provider outcome rather
+                # than malformed output so the worker preserves the real
+                # failure category and never attempts to project an artifact.
+                if prediction.get("status") in ("failed", "canceled", "cancelled", "aborted"):
                     raise DiarizationError(DiarizationErrorCategory.PROVIDER)
                 if prediction.get("status") != "succeeded":
                     raise DiarizationError(DiarizationErrorCategory.MALFORMED_OUTPUT)
+                log_event(logger, logging.INFO, "worker.diarization.provider.prediction_succeeded")
                 output_url = _delivery_url(prediction.get("output"))
                 data = await _request_body(client, "GET", output_url, limit=MAX_OUTPUT_BYTES,
                                            deadline=deadline, retry="read")
-                return parse_output(data, self._settings.diarization_model)
+                result = parse_output(data, self._settings.diarization_model)
+                log_event(logger, logging.INFO, "worker.diarization.provider.output_validated")
+                return result

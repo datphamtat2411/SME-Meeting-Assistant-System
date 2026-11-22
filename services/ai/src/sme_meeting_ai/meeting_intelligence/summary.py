@@ -23,6 +23,7 @@ from .errors import (
     require,
 )
 from .evidence import EvidenceSource
+from .grounding import DISCARDED, REPAIRED, RESULT_WARNING_CODES, GroundingChanges
 from .processor import StageContext
 
 SUMMARY_PROMPT_VERSION = "summary-v1"
@@ -44,12 +45,7 @@ _CATEGORIES = (
     "DISAGREEMENT",
 )
 _UNCERTAINTIES = ("NONE", "TENTATIVE", "UNCERTAIN", "CONTESTED")
-_WARNING_ORDER = (
-    "INCOMPLETE_COVERAGE",
-    "UNRESOLVED_EVIDENCE",
-    "SUSPICIOUS_EVIDENCE",
-    "SOURCE_QUALITY_WARNING",
-)
+_WARNING_ORDER = RESULT_WARNING_CODES
 _UNCERTAINTY_RANK = {name: index for index, name in enumerate(_UNCERTAINTIES)}
 _QUALIFICATION_DESCRIPTION = (
     "Required field; empty string is the default. When non-empty, use only a short, meaningful phrase "
@@ -91,6 +87,10 @@ _AGREEMENT_NEGATIVE_PATTERN = re.compile(
 # never make a claim pass; they only identify a possible future marker gap.
 _AGREEMENT_DIAGNOSTIC_CANDIDATE_PATTERN = re.compile(
     r"(?:đồng\s+thuận|tán\s+thành|chấp\s+thuận|phê\s+chuẩn|consent(?:ed|s)?)",
+    re.IGNORECASE,
+)
+_PERSONAL_ACCEPTANCE = re.compile(
+    r"\b(?:đồng\s+ý|chấp\s+nhận)\s+(?:sẽ\s+)?(?:nhận\s+(?:việc|nhiệm\s+vụ|phần)|đảm\s+nhận|phụ\s+trách)\b",
     re.IGNORECASE,
 )
 
@@ -437,7 +437,8 @@ def _validate_category_grounding(
         return
     # Personal acknowledgement or acceptance (for example, "xác nhận nhận việc")
     # is a FACT/action signal, not a group decision; keep bare "xác nhận" out.
-    positive = _AGREEMENT_POSITIVE_PATTERN.search(evidence_text)
+    positive = next((marker for marker in _AGREEMENT_POSITIVE_PATTERN.finditer(evidence_text)
+                     if not _PERSONAL_ACCEPTANCE.match(evidence_text, marker.start())), None)
     negative = _AGREEMENT_NEGATIVE_PATTERN.search(evidence_text)
     diagnostic_evidence = _agreement_validation_evidence(
         source, references, statement, evidence_text, category, positive, negative,
@@ -472,6 +473,59 @@ def _resolve_reference(source: EvidenceSource, reference: EvidenceReference, *,
         raise
 
 
+def _validate_record(
+    unit: dict, source: EvidenceSource, item_index: int, ranges, allowed_references,
+) -> EvidenceRecord:
+    references = tuple(_reference_from_dict(item, item_index=item_index) for item in unit["evidence"])
+    require(len({reference.key for reference in references}) == len(references), "INVALID_REFERENCE",
+            rule="REFERENCE_DUPLICATE", item_index=item_index)
+    for reference in references:
+        _resolve_reference(source, reference, item_index=item_index)
+        if ranges is not None:
+            require(_reference_in_range(reference, ranges), "INVALID_REFERENCE",
+                    rule="REFERENCE_OUTSIDE_WINDOW", item_index=item_index)
+        if allowed_references:
+            require(any(reference.segment_id == item.segment_id and item.char_start <= reference.char_start
+                        and reference.char_end <= item.char_end for item in allowed_references),
+                    "INVALID_REFERENCE", rule="REFERENCE_NOT_ALLOWED", item_index=item_index)
+    evidence_text = _reference_text(source, references)
+    _validate_text_grounding(unit["statement"], evidence_text, item_index=item_index)
+    _validate_category_grounding(unit["category"], evidence_text, source=source, references=references,
+                                 statement=unit["statement"], item_index=item_index)
+    if unit["qualification"]:
+        require(any(unit["qualification"] in _reference_text(source, (ref,)) for ref in references),
+                "GROUNDING_FAILURE", rule="QUALIFICATION_NOT_GROUNDED", item_index=item_index)
+    first_ordinal, first_char = _position(source, references)
+    return EvidenceRecord(unit["statement"].strip(), unit["category"], unit["uncertainty"],
+                          unit["qualification"].strip(), references, first_ordinal, first_char)
+
+
+def _repair_citation(unit, error, source, item_index, ranges):
+    evidence = error.evidence
+    # Never supply missing identity, resolve multiple possible statements or
+    # downgrade a classifier's unsupported Agreement into Fact.
+    if (ranges is None or error.rule != "AGREEMENT_UNSUPPORTED" or evidence is None
+            or evidence.assessment != "INCOMPLETE_CITATION" or len(evidence.references) != 1):
+        return None
+    reference, = evidence.references
+    text = next(segment.text for segment in source.segments if segment.segment_id == reference.segment_id)
+    for clause in re.finditer(r"[^.!?;\n]+(?:[.!?;]|$)", text):
+        if not (clause.start() <= reference.char_start < reference.char_end <= clause.end()
+                and clause.end() - clause.start() <= 512):
+            continue
+        phrase = clause.group()
+        if len(tuple(_AGREEMENT_POSITIVE_PATTERN.finditer(phrase))) != 1 or _PERSONAL_ACCEPTANCE.search(phrase):
+            return None
+        # Only expand within the same local clause and current extraction window.
+        try:
+            return _validate_record({**unit, "evidence": [{
+                "segment_id": reference.segment_id, "char_start": clause.start(), "char_end": clause.end(),
+            }]}, source, item_index, ranges, ())
+        except IntelligenceError:
+            return None
+    return None
+
+
 def _validate_record_output(
     result: ModelResult,
     request,
@@ -479,42 +533,24 @@ def _validate_record_output(
     *,
     ranges: tuple[tuple[str, int, int], ...] | None = None,
     allowed: tuple[EvidenceReference, ...] = (),
+    changes: GroundingChanges | None = None,
 ) -> tuple[EvidenceRecord, ...]:
     _validate_model_result(result, request, source)
     output = request.task.schema.parse(canonical_json(result.output))
     _source_identity_matches(output, source)
-    allowed_references = allowed
     records = []
     for item_index, unit in enumerate(output["units"]):
-        references = tuple(_reference_from_dict(item, item_index=item_index) for item in unit["evidence"])
-        require(len({reference.key for reference in references}) == len(references), "INVALID_REFERENCE",
-                rule="REFERENCE_DUPLICATE", item_index=item_index)
-        for reference in references:
-            _resolve_reference(source, reference, item_index=item_index)
-            if ranges is not None:
-                require(_reference_in_range(reference, ranges), "INVALID_REFERENCE",
-                        rule="REFERENCE_OUTSIDE_WINDOW", item_index=item_index)
-            if allowed_references:
-                require(any(reference.segment_id == item.segment_id
-                            and item.char_start <= reference.char_start
-                            and reference.char_end <= item.char_end for item in allowed_references),
-                        "INVALID_REFERENCE", rule="REFERENCE_NOT_ALLOWED", item_index=item_index)
-        evidence_text = _reference_text(source, references)
-        _validate_text_grounding(unit["statement"], evidence_text, item_index=item_index)
-        _validate_category_grounding(
-            unit["category"],
-            evidence_text,
-            source=source,
-            references=references,
-            statement=unit["statement"],
-            item_index=item_index,
-        )
-        if unit["qualification"]:
-            _validate_text_grounding(unit["qualification"], evidence_text, item_index=item_index,
-                                    grounding_rule="QUALIFICATION_NOT_GROUNDED")
-        first_ordinal, first_char = _position(source, references)
-        records.append(EvidenceRecord(unit["statement"].strip(), unit["category"], unit["uncertainty"],
-                                      unit["qualification"].strip(), references, first_ordinal, first_char))
+        try:
+            records.append(_validate_record(unit, source, item_index, ranges, allowed))
+        except IntelligenceError as error:
+            if changes is None or ranges is not None and unit["category"] in {"REJECTION", "CORRECTION", "DISAGREEMENT"}:
+                raise
+            repaired = _repair_citation(unit, error, source, item_index, ranges)
+            if repaired is None:
+                changes.discard(error)
+            else:
+                changes.repaired = True
+                records.append(repaired)
     return tuple(records)
 
 
@@ -621,8 +657,8 @@ def _ensure_reduction_coverage(input_records: tuple[EvidenceRecord, ...], output
 
 
 def _reduce_records(prepared: PreparedContext, adapter: ModelAdapter, source: EvidenceSource,
-                    records: tuple[EvidenceRecord, ...], calls: list[int], settings,
-                    producer: Producer) -> tuple[EvidenceRecord, ...]:
+                     records: tuple[EvidenceRecord, ...], calls: list[int], settings,
+                     producer: Producer, changes: GroundingChanges) -> tuple[EvidenceRecord, ...]:
     synthesis = synthesis_task(settings.meeting_intelligence_summary_target_chars)
     reduction = reduction_task()
     current = records
@@ -643,9 +679,14 @@ def _reduce_records(prepared: PreparedContext, adapter: ModelAdapter, source: Ev
             output = _validate_record_output(result, type("Request", (), {
                 "model": prepared.model, "reasoning_effort": prepared.reasoning_effort,
                 "task": reduction, "window": window,
-            })(), source, allowed=tuple(reference for record in batch for reference in record.evidence))
-            require(output, "GROUNDING_FAILURE", rule="REDUCTION_EMPTY")
-            _ensure_reduction_coverage(batch, output)
+            })(), source, allowed=tuple(reference for record in batch for reference in record.evidence),
+                  changes=changes)
+            try:
+                require(output, "GROUNDING_FAILURE", rule="REDUCTION_EMPTY")
+                _ensure_reduction_coverage(batch, output)
+            except IntelligenceError as error:
+                changes.discard(error)
+                output = batch  # Never lose original evidence just to shrink the prompt.
             reduced.extend(output)
         current = _merge_records(tuple(reduced), settings.meeting_intelligence_summary_max_records)
     raise IntelligenceError("CONTEXT_BUDGET")
@@ -699,6 +740,8 @@ def _validate_claim(
     source_text = _reference_text(source, references)
     _validate_text_grounding(claim["text"], source_text, item_index=item_index,
                              grounding_rule="CLAIM_NOT_GROUNDED")
+    _validate_category_grounding(claim["category"], source_text, source=source,
+                                 references=references, statement=claim["text"], item_index=item_index)
     require(any(_tokens(claim["text"]) & _tokens(record.statement) for record in matching),
             "GROUNDING_FAILURE", rule="CLAIM_RECORD_GROUNDING", item_index=item_index)
     for record in matching:
@@ -706,45 +749,54 @@ def _validate_claim(
             require(_tokens(record.qualification) & (_tokens(claim["text"]) | _tokens(claim["qualification"])),
                     "GROUNDING_FAILURE", rule="CLAIM_QUALIFICATION_GROUNDING", item_index=item_index)
     if claim["qualification"]:
-        _validate_text_grounding(claim["qualification"], source_text, item_index=item_index,
-                                 grounding_rule="CLAIM_QUALIFICATION_GROUNDING")
+        require(any(claim["qualification"] in _reference_text(source, (ref,)) for ref in references),
+                "GROUNDING_FAILURE", rule="CLAIM_QUALIFICATION_GROUNDING", item_index=item_index)
 
 
-def _validate_synthesis(output: dict, source: EvidenceSource, records: tuple[EvidenceRecord, ...]) -> tuple[dict, ...]:
+def _uncontradicted(record: EvidenceRecord, records: tuple[EvidenceRecord, ...]) -> bool:
+    position = (record.first_ordinal, record.first_char)
+    return record.category != "AGREEMENT" or not any(
+        (other.first_ordinal, other.first_char) > position
+        and other.category in {"REJECTION", "CORRECTION", "DISAGREEMENT"} and _related(record, other)
+        for other in records
+    )
+
+
+def _validate_synthesis(output: dict, source: EvidenceSource, records: tuple[EvidenceRecord, ...],
+                        changes: GroundingChanges) -> dict[str, tuple[dict, ...]]:
     _source_identity_matches(output, source)
     allowed_references = tuple(reference for record in records for reference in record.evidence)
-    claims = []
-    claim_indexes = {}
+    sections = {section: [] for section in _synthesis_sections(output)}
     next_index = 0
-    for section in ("overview", "topics", "findings", "agreements", "changes", "open_questions"):
+    for section in sections:
         for claim in output[section]:
-            _validate_claim(claim, section, source, records, allowed_references, item_index=next_index)
-            claims.append(claim)
-            claim_indexes[id(claim)] = next_index
+            try:
+                _validate_claim(claim, section, source, records, allowed_references, item_index=next_index)
+                if claim["category"] == "AGREEMENT":
+                    require(all(_uncontradicted(record, records) for record in records
+                                if _claim_record_matches(claim, record)),
+                            "GROUNDING_FAILURE", rule="AGREEMENT_CONTRADICTED", item_index=next_index)
+            except IntelligenceError as error:
+                changes.discard(error)
+            else:
+                sections[section].append(claim)
             next_index += 1
-    require(claims, "EMPTY_OUTPUT")
-    material = tuple(record for record in records if record.category in {
+
+    # A synthesis error must not erase independently validated evidence. Keep
+    # original statements, not a rephrasing or reclassification of bad claims.
+    claims = [claim for section in sections.values() for claim in section]
+    material = {record for record in records if record.category in {
         "FACT", "PROBLEM", "CONCLUSION", "AGREEMENT", "REJECTION", "CORRECTION", "DISAGREEMENT",
-    })
-    for record in material:
-        require(any(_claim_record_matches(claim, record) for claim in claims), "GROUNDING_FAILURE",
-                rule="MATERIAL_CLAIM_COVERAGE")
-    agreements = [claim for claim in claims if claim["category"] == "AGREEMENT"]
-    for claim in agreements:
-        supporting = tuple(record for record in records if _claim_record_matches(claim, record))
-        for agreement in supporting:
-            later_conflict = any(
-                other.first_ordinal > agreement.first_ordinal
-                and other.category in {"REJECTION", "CORRECTION", "DISAGREEMENT"}
-                and _related(agreement, other)
-                and not any(final_record.category == "AGREEMENT"
-                            and final_record.first_ordinal > other.first_ordinal
-                            and _related(final_record, other) for final_record in records)
-                for other in records
-            )
-            require(not later_conflict, "GROUNDING_FAILURE", rule="AGREEMENT_CONTRADICTED",
-                    item_index=claim_indexes.get(id(claim)))
-    return tuple(claims)
+    }}
+    omitted = tuple(record for record in records if (record in material or not claims)
+                    and not any(_claim_record_matches(claim, record) for claim in claims))
+    if omitted:
+        changes.discard(IntelligenceError("GROUNDING_FAILURE", rule="MATERIAL_CLAIM_COVERAGE"))
+        for section, replacements in _short_sections(tuple(r for r in omitted if _uncontradicted(r, records))).items():
+            sections[section].extend(replacements)
+    changes.require_usable(any(sections.values()))
+    require(any(sections.values()), "EMPTY_OUTPUT")
+    return {section: tuple(values) for section, values in sections.items()}
 
 
 def _claim_position(source: EvidenceSource, claim: dict) -> tuple[int, int]:
@@ -803,6 +855,8 @@ def _render_sections(source: EvidenceSource, sections: dict[str, tuple[dict, ...
         "UNRESOLVED_EVIDENCE": "Một số đoạn lời nói chưa được giải quyết rõ; các nội dung liên quan được giữ ở trạng thái chưa chắc chắn.",
         "SUSPICIOUS_EVIDENCE": "Một số bằng chứng được đánh dấu đáng ngờ và không nên được xem là xác nhận độc lập.",
         "SOURCE_QUALITY_WARNING": "Nguồn transcript có cảnh báo chất lượng; bản tóm tắt không thay thế transcript gốc.",
+        DISCARDED: "Đã loại bỏ nội dung không đủ căn cứ hoặc không được giữ nguyên qua bước tổng hợp.",
+        REPAIRED: "Đã chỉnh phạm vi trích dẫn dựa trên bằng chứng hiện có.",
         "COVERAGE_UNKNOWN": "Không có đủ metadata để xác nhận phạm vi bao phủ âm thanh; không coi đây là xác nhận đầy đủ.",
         "UNKNOWN_SEGMENT_QUALITY": "Chất lượng của một số đoạn transcript chưa được xác định.",
         "UNKNOWN_SPEAKERS": "Danh tính người nói không được xác minh; bản tóm tắt không gán danh tính.",
@@ -870,6 +924,7 @@ class SummaryProcessor:
         source = prepared.plan.source
         require(source.has_usable_evidence, "INVALID_SOURCE")
         calls = [0]
+        changes = GroundingChanges()
         records: list[EvidenceRecord] = []
         producer: Producer | None = None
         for window in prepared.plan.windows:
@@ -881,19 +936,25 @@ class SummaryProcessor:
                 require(producer == Producer(result.requested_model, result.provider), "INTEGRITY")
             ranges = tuple((unit.segment_id, unit.char_start, unit.char_end) for unit in window.units)
             request = prepared.request(window.index)
-            records.extend(_validate_record_output(result, request, source, ranges=ranges))
+            records.extend(_validate_record_output(result, request, source, ranges=ranges, changes=changes))
             require(len(records) <= self.settings.meeting_intelligence_summary_max_records, "CONTEXT_BUDGET")
         consolidated = _merge_records(tuple(records), self.settings.meeting_intelligence_summary_max_records)
+        safe = tuple(record for record in consolidated if _uncontradicted(record, consolidated))
+        if safe != consolidated:
+            changes.discard(IntelligenceError("GROUNDING_FAILURE", rule="AGREEMENT_CONTRADICTED"))
+        consolidated = safe
+        changes.require_usable(consolidated)
         require(consolidated, "EMPTY_OUTPUT")
 
         if len(prepared.plan.windows) == 1:
             sections = _short_sections(consolidated)
-            content = _render_sections(source, sections, source.quality_flags)
+            flags = changes.flags(source.quality_flags)
+            content = _render_sections(source, sections, flags)
             if len(content) <= self.settings.meeting_intelligence_summary_target_chars:
                 check_authority(context.deadline, context.cancelled)
-                return self._candidate(producer, content, source.quality_flags)
+                return self._candidate(producer, content, flags)
 
-        synthesis_records = _reduce_records(prepared, self.adapter, source, consolidated, calls, self.settings, producer)
+        synthesis_records = _reduce_records(prepared, self.adapter, source, consolidated, calls, self.settings, producer, changes)
         synthesis = synthesis_task(self.settings.meeting_intelligence_summary_target_chars)
         evidence_json = _derived_payload(source, synthesis_records, "synthesis-final")
         result, window = _call_derived(prepared, self.adapter, synthesis, evidence_json, "synthesis-final",
@@ -904,11 +965,12 @@ class SummaryProcessor:
                                        "task": synthesis, "window": window})()
         output = synthesis.schema.parse(canonical_json(result.output))
         _validate_model_result(result, request, source)
-        _validate_synthesis(output, source, synthesis_records)
-        content = _render_sections(source, _synthesis_sections(output), source.quality_flags)
+        sections = _validate_synthesis(output, source, synthesis_records, changes)
+        flags = changes.flags(source.quality_flags)
+        content = _render_sections(source, sections, flags)
         require(0 < len(content) <= 20000, "RESOURCE")
         check_authority(context.deadline, context.cancelled)
-        return self._candidate(producer, content, source.quality_flags)
+        return self._candidate(producer, content, flags)
 
     @staticmethod
     def _candidate(producer: Producer | None, content: str, quality_flags: tuple[str, ...]) -> dict:

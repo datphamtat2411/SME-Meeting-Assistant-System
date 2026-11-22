@@ -18,6 +18,7 @@ import org.springframework.security.oauth2.server.resource.web.DefaultBearerToke
 import org.springframework.security.oauth2.core.OAuth2AuthenticationException;
 import org.springframework.security.oauth2.core.OAuth2Error;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.session.NullAuthenticatedSessionStrategy;
 import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
 import org.springframework.security.web.csrf.CsrfTokenRequestAttributeHandler;
 import org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter;
@@ -52,6 +53,10 @@ public class AccessSecurityConfiguration {
         csrfCookie.setCookieCustomizer(b -> b.secure(true).sameSite("Lax").httpOnly(false));
         http.csrf(csrf -> csrf
             .csrfTokenRepository(csrfCookie)
+            // Stateless JWT authentication runs on every protected request. The
+            // controller issues session-bound CSRF on login/refresh and clears
+            // it on logout; the framework must not clear it on ordinary reads.
+            .sessionAuthenticationStrategy(new NullAuthenticatedSessionStrategy())
             .csrfTokenRequestHandler(new CsrfTokenRequestAttributeHandler())
             .requireCsrfProtectionMatcher(request -> {
                 String method = request.getMethod();

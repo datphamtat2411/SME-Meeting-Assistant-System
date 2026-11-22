@@ -46,6 +46,17 @@ def test_isolated_role_selects_only_its_capability(monkeypatch, role, identity, 
     assert entrypoint.build_execution(settings(role, identity)) is selected
 
 
+def test_transcription_role_runs_optional_diarization_only_when_enabled(monkeypatch):
+    selected = object()
+    monkeypatch.setattr(entrypoint, "AiWorkerExecution", lambda _settings: selected)
+    configured = settings("transcription", "ai-worker").model_copy(update={
+        "diarization_worker_enabled": True,
+    })
+    assert entrypoint.build_execution(configured) is selected
+    with pytest.raises(RuntimeError, match="capability gates"):
+        entrypoint.build_execution(configured.model_copy(update={"meeting_intelligence_worker_enabled": True}))
+
+
 @pytest.mark.parametrize(
     ("role", "identity"),
     [

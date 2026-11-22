@@ -17,6 +17,7 @@ from .contracts import (
 )
 from .errors import IntelligenceError, check_authority, require
 from .evidence import EvidenceSource
+from .grounding import RESULT_WARNING_CODES, GroundingChanges
 from .processor import StageContext
 
 DECISION_PROMPT_VERSION = "decision-v1"
@@ -40,12 +41,8 @@ _STATUSES = (
 )
 _UNCERTAINTIES = ("NONE", "LOW", "MATERIAL")
 _UNCERTAINTY_RANK = {value: index for index, value in enumerate(_UNCERTAINTIES)}
-_WARNING_ORDER = (
-    "INCOMPLETE_COVERAGE",
-    "UNRESOLVED_EVIDENCE",
-    "SUSPICIOUS_EVIDENCE",
-    "SOURCE_QUALITY_WARNING",
-)
+_WARNING_ORDER = RESULT_WARNING_CODES
+_MATERIAL_STATES = {"REJECTED", "REVISED", "CONDITIONAL", "UNRESOLVED"}
 _STOP_WORDS = {
     "a", "an", "anh", "bạn", "bị", "bởi", "các", "cho", "chỉ", "chưa", "có",
     "của", "cùng", "đã", "đang", "đây", "để", "đến", "được", "em", "hay", "hoặc",
@@ -285,7 +282,7 @@ def _source_identity_matches(output: dict, source: EvidenceSource) -> None:
     identity = source.identity
     require(output["source_snapshot_id"] == identity.snapshot_id
             and output["transcript_id"] == identity.transcript_id
-            and output["content_revision"] == identity.content_revision, "INVALID_REFERENCE")
+            and output["content_revision"] == identity.content_revision, "INVALID_REFERENCE", rule="SOURCE_IDENTITY")
 
 
 def _validate_model_result(result: ModelResult, request, source: EvidenceSource) -> None:
@@ -360,47 +357,50 @@ def _text_grounding(text: str, evidence_text: str, maximum: int) -> None:
     require(_numbers(text) <= _numbers(evidence_text), "GROUNDING_FAILURE")
 
 
-def _validate_signal_output(
-    result: ModelResult,
-    request,
-    source: EvidenceSource,
-    *,
-    ranges: tuple[tuple[str, int, int], ...] | None = None,
-    allowed_references: tuple[EvidenceReference, ...] | None = None,
-) -> tuple[DecisionSignal, ...]:
+def _validate_signal(item, source, ranges, allowed_references):
+    references = tuple(_reference_from_dict(value) for value in item["evidence"])
+    require(len({reference.key for reference in references}) == len(references), "INVALID_REFERENCE")
+    for reference in references:
+        source.resolve(reference.segment_id, reference.char_start, reference.char_end)
+        if ranges is not None:
+            require(_reference_in_range(reference, ranges), "INVALID_REFERENCE")
+        if allowed_references is not None:
+            require(any(reference.segment_id == allowed.segment_id
+                        and allowed.char_start <= reference.char_start
+                        and reference.char_end <= allowed.char_end
+                        for allowed in allowed_references), "INVALID_REFERENCE")
+    evidence_text = _reference_text(source, references)
+    _text_grounding(item["proposition"], evidence_text, 2000)
+    _text_grounding(item["scope"], evidence_text, 500)
+    if item["qualification"]:
+        _text_grounding(item["qualification"], evidence_text, 500)
+    status = item["status"]
+    if status in {"ACCEPTED", "REVISED", "CONDITIONAL"}:
+        require(_has_adoption(evidence_text), "GROUNDING_FAILURE")
+        require(not _pattern_after_adoption(_QUESTION_PATTERN, evidence_text), "GROUNDING_FAILURE")
+    elif status == "REJECTED":
+        require(_REJECTION_PATTERN.search(evidence_text) is not None, "GROUNDING_FAILURE")
+    first_ordinal, first_char = _position(source, references)
+    return DecisionSignal(
+        item["proposition"].strip(), item["scope"].strip(), status, item["uncertainty"],
+        item["qualification"].strip(), item["requires_context"], references, first_ordinal, first_char,
+    )
+
+
+def _validate_signal_output(result, request, source, *, ranges=None, allowed_references=None, changes=None):
     _validate_model_result(result, request, source)
     output = request.task.schema.parse(canonical_json(result.output))
     _source_identity_matches(output, source)
     signals = []
     for item in output["signals"]:
-        references = tuple(_reference_from_dict(value) for value in item["evidence"])
-        require(len({reference.key for reference in references}) == len(references), "INVALID_REFERENCE")
-        for reference in references:
-            source.resolve(reference.segment_id, reference.char_start, reference.char_end)
-            if ranges is not None:
-                require(_reference_in_range(reference, ranges), "INVALID_REFERENCE")
-            if allowed_references is not None:
-                require(any(reference.segment_id == allowed.segment_id
-                            and allowed.char_start <= reference.char_start
-                            and reference.char_end <= allowed.char_end
-                            for allowed in allowed_references), "INVALID_REFERENCE")
-        evidence_text = _reference_text(source, references)
-        _text_grounding(item["proposition"], evidence_text, 2000)
-        _text_grounding(item["scope"], evidence_text, 500)
-        if item["qualification"]:
-            _text_grounding(item["qualification"], evidence_text, 500)
-        status = item["status"]
-        if status in {"ACCEPTED", "REVISED", "CONDITIONAL"}:
-            require(_has_adoption(evidence_text), "GROUNDING_FAILURE")
-            require(not _pattern_after_adoption(_QUESTION_PATTERN, evidence_text), "GROUNDING_FAILURE")
-        elif status == "REJECTED":
-            require(_REJECTION_PATTERN.search(evidence_text) is not None, "GROUNDING_FAILURE")
-        first_ordinal, first_char = _position(source, references)
-        signals.append(DecisionSignal(
-            item["proposition"].strip(), item["scope"].strip(), status, item["uncertainty"],
-            item["qualification"].strip(), item["requires_context"], references,
-            first_ordinal, first_char,
-        ))
+        try:
+            signals.append(_validate_signal(item, source, ranges, allowed_references))
+        except IntelligenceError as error:
+            # Dropping an unreadable invalidation/revision could resurrect an
+            # earlier decision. There is no safe partial extraction in that case.
+            if changes is None or item["status"] in _MATERIAL_STATES:
+                raise
+            changes.discard(error)
     return tuple(signals)
 
 
@@ -540,7 +540,8 @@ def _call_derived(
 def _ensure_coverage(input_records: tuple[DecisionSignal, ...], output_records: tuple[DecisionSignal, ...]) -> None:
     for original in input_records:
         require(any(
-            _scope_related(original, candidate)
+            original.status == candidate.status
+            and _signal_related(original, candidate)
             and any(_references_overlap(left, right) or left.key == right.key
                     for left in original.evidence for right in candidate.evidence)
             for candidate in output_records
@@ -555,6 +556,7 @@ def _resolve_cross_window(
     calls: list[int],
     settings,
     producer: Producer,
+    changes: GroundingChanges,
 ) -> tuple[DecisionSignal, ...]:
     current = _merge_signals(records, settings.meeting_intelligence_decision_max_signals)
     if len(prepared.plan.windows) == 1 or not current:
@@ -573,9 +575,13 @@ def _resolve_cross_window(
                 settings.meeting_intelligence_decision_max_model_calls,
             )
             require(producer == Producer(result.requested_model, result.provider), "INTEGRITY")
-            output = _validate_signal_output(result, request, source, allowed_references=all_references)
-            require(output, "GROUNDING_FAILURE")
-            _ensure_coverage(current, output)
+            try:
+                output = _validate_signal_output(result, request, source, allowed_references=all_references)
+                require(output, "GROUNDING_FAILURE")
+                _ensure_coverage(current, output)
+            except IntelligenceError as error:
+                changes.discard(error)
+                return current
             resolved = _merge_signals(output, settings.meeting_intelligence_decision_max_signals)
             require(_reference_count(resolved) <= settings.meeting_intelligence_decision_max_evidence_references,
                     "CONTEXT_BUDGET")
@@ -593,9 +599,13 @@ def _resolve_cross_window(
             )
             require(producer == Producer(result.requested_model, result.provider), "INTEGRITY")
             allowed = tuple(reference for record in batch for reference in record.evidence)
-            output = _validate_signal_output(result, request, source, allowed_references=allowed)
-            require(output, "GROUNDING_FAILURE")
-            _ensure_coverage(batch, output)
+            try:
+                output = _validate_signal_output(result, request, source, allowed_references=allowed)
+                require(output, "GROUNDING_FAILURE")
+                _ensure_coverage(batch, output)
+            except IntelligenceError as error:
+                changes.discard(error)
+                output = batch
             reduced.extend(output)
         current = _merge_signals(tuple(reduced), settings.meeting_intelligence_decision_max_signals)
         require(_reference_count(current) <= settings.meeting_intelligence_decision_max_evidence_references,
@@ -655,6 +665,8 @@ def _revision_or_rejection_invalidates(
         if (later.first_ordinal, later.first_char) <= (signal.first_ordinal, signal.first_char):
             continue
         if later.status == "REJECTED" and _scope_related(signal, later) and _proposition_related(signal, later):
+            return True
+        if later.status == "UNRESOLVED" and _scope_related(signal, later):
             return True
         if later.status == "REVISED" and _scope_related(signal, later) and not _candidate_equivalent(signal, later):
             return True
@@ -799,6 +811,7 @@ class DecisionProcessor:
         source = prepared.plan.source
         require(source.has_usable_evidence, "INVALID_SOURCE")
         calls = [0]
+        changes = GroundingChanges()
         records: list[DecisionSignal] = []
         producer: Producer | None = None
         for window in prepared.plan.windows:
@@ -811,23 +824,24 @@ class DecisionProcessor:
                 require(producer == current_producer, "INTEGRITY")
             ranges = tuple((unit.segment_id, unit.char_start, unit.char_end) for unit in window.units)
             request = prepared.request(window.index)
-            records.extend(_validate_signal_output(result, request, source, ranges=ranges))
+            records.extend(_validate_signal_output(result, request, source, ranges=ranges, changes=changes))
             require(len(records) <= self.settings.meeting_intelligence_decision_max_signals,
                     "CONTEXT_BUDGET")
             require(_reference_count(tuple(records))
                     <= self.settings.meeting_intelligence_decision_max_evidence_references, "CONTEXT_BUDGET")
 
         consolidated = _merge_signals(tuple(records), self.settings.meeting_intelligence_decision_max_signals)
+        changes.require_usable(consolidated)
         if len(prepared.plan.windows) > 1 and consolidated:
             require(producer is not None, "MALFORMED_OUTPUT")
             consolidated = _resolve_cross_window(
-                prepared, self.adapter, source, consolidated, calls, self.settings, producer,
+                prepared, self.adapter, source, consolidated, calls, self.settings, producer, changes,
             )
         candidates = _select_candidates(
             source, consolidated, self.settings.meeting_intelligence_decision_max_candidates,
         )
         check_authority(context.deadline, context.cancelled)
-        return self._candidate(producer, candidates, source.quality_flags)
+        return self._candidate(producer, candidates, changes.flags(source.quality_flags))
 
     @staticmethod
     def _candidate(producer: Producer | None, candidates: tuple[dict, ...], quality_flags: tuple[str, ...]) -> dict:

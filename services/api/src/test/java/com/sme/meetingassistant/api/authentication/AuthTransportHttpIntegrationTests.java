@@ -125,6 +125,28 @@ class AuthTransportHttpIntegrationTests {
     }
 
     @Test
+    void ordinaryJwtReadsAndWritesDoNotEraseSessionBoundCsrfCookie() throws Exception {
+        var login = webLogin();
+        var access = cookie(login, AuthTransport.ACCESS);
+        var csrf = cookie(login, AuthTransport.CSRF);
+        var read = mvc.perform(get("/api/v1/auth/me").cookie(access, csrf))
+            .andExpect(status().isOk()).andReturn();
+        assertThat(read.getResponse().getHeaders(HttpHeaders.SET_COOKIE))
+            .noneMatch(header -> header.startsWith(AuthTransport.CSRF + "="));
+
+        for (int i = 0; i < 2; i++) {
+            var write = mvc.perform(post("/api/v1/meetings")
+                    .cookie(access, csrf).header(HttpHeaders.ORIGIN, ORIGIN)
+                    .header("X-CSRF-Token", csrf.getValue())
+                    .header("Idempotency-Key", UUID.randomUUID().toString())
+                    .contentType(MediaType.APPLICATION_JSON).content("{\"title\":\"CSRF persistence\"}"))
+                .andExpect(status().isCreated()).andReturn();
+            assertThat(write.getResponse().getHeaders(HttpHeaders.SET_COOKIE))
+                .noneMatch(header -> header.startsWith(AuthTransport.CSRF + "="));
+        }
+    }
+
+    @Test
     void webMutationRequiresSignedSessionBoundCsrfAndExactOrigin() throws Exception {
         var login = webLogin();
         Cookie access = cookie(login, AuthTransport.ACCESS);

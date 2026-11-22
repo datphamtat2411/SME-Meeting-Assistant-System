@@ -64,7 +64,7 @@ def test_explicit_settings_defaults_without_external_configuration():
 
     assert settings.audio_asr_strategy_mode == "chunked"
     assert settings.audio_asr_native_max_samples == 1920000
-    assert settings.audio_asr_adaptive_max_total_calls == 32
+    assert settings.audio_asr_adaptive_max_total_calls == 48
 
     assert settings.service_name == "test-ai"
     assert settings.environment is Environment.DEVELOPMENT
@@ -81,9 +81,9 @@ def test_explicit_settings_defaults_without_external_configuration():
     assert settings.service_identity == "ai-core"
     assert settings.internal_allowed_callers == ("core-api",)
     assert "internal_service_token" not in Settings.model_fields
-    assert settings.audio_max_input_bytes == 536870912
-    assert settings.audio_max_duration_seconds == 3600
-    assert settings.audio_max_output_bytes == 134217728
+    assert settings.audio_max_input_bytes == 1073741824
+    assert settings.audio_max_duration_seconds == 5400
+    assert settings.audio_max_output_bytes == 201326592
     assert settings.audio_probe_timeout_seconds == 10
     assert settings.audio_decode_timeout_seconds == 900
     assert str(settings.audio_temp_dir) == "/tmp"
@@ -188,7 +188,7 @@ def test_example_dotenv_loads_documented_defaults():
     assert settings.audio_asr_chunk_overlap_samples == 80000
     assert settings.audio_asr_chunk_boundary_search_samples == 80000
     assert settings.audio_asr_chunk_max_chunks == 4096
-    assert settings.audio_asr_max_concurrent_chunks == 2
+    assert settings.audio_asr_max_concurrent_chunks == 4
 
 
 @pytest.mark.parametrize(
@@ -611,7 +611,7 @@ def test_asr_provider_defaults():
     assert settings.audio_asr_temperature == 0
     assert settings.audio_asr_max_payload_bytes == 26214400
     assert settings.audio_asr_timeout_seconds == 120
-    assert settings.audio_asr_max_concurrent_chunks == 1
+    assert settings.audio_asr_max_concurrent_chunks == 4
 
 
 @pytest.mark.parametrize("source", ["environment", "dotenv"])
@@ -820,9 +820,9 @@ def test_recovery_defaults_match_documented_configuration():
         "audio_asr_recovery_context_samples": 16000,
         "audio_asr_recovery_max_attempts_per_region": 3,
         "audio_asr_recovery_max_request_samples_per_region": 1440000,
-        "audio_asr_recovery_max_total_attempts": 16,
-        "audio_asr_recovery_max_total_request_samples": 2400000,
-        "audio_asr_recovery_max_wall_time_seconds": 300,
+        "audio_asr_recovery_max_total_attempts": 32,
+        "audio_asr_recovery_max_total_request_samples": 4800000,
+        "audio_asr_recovery_max_wall_time_seconds": 600,
         "audio_asr_recovery_pause_max_samples": 8000,
         "audio_asr_recovery_pause_noise_margin_db": 6,
         "audio_asr_recovery_pause_strong_speech_threshold": 0.8,
@@ -937,11 +937,11 @@ def test_meeting_intelligence_defaults_match_gpt6_high_reasoning_rollout():
         "meeting_intelligence_model": "openai/gpt-6-luna",
         "meeting_intelligence_reasoning_effort": "high",
         "meeting_intelligence_context_window_tokens": 131072,
-        "meeting_intelligence_max_input_tokens": 98304,
-        "meeting_intelligence_max_output_tokens": 32768,
+        "meeting_intelligence_max_input_tokens": 24000,
+        "meeting_intelligence_max_output_tokens": 8192,
         "meeting_intelligence_max_total_inference_tokens": 2000000,
         "meeting_intelligence_provider_timeout_seconds": 120,
-        "meeting_intelligence_worker_execution_timeout_seconds": 1800,
+        "meeting_intelligence_worker_execution_timeout_seconds": 3600,
     }
     defaults = Settings(service_name="test-ai", service_identity="ai-core", _env_file=None)
     example = load_settings(env_file)
@@ -955,7 +955,7 @@ def test_meeting_intelligence_defaults_match_gpt6_high_reasoning_rollout():
 
 @pytest.mark.parametrize("field,value", [
     ("meeting_intelligence_reasoning_effort", "invalid"),
-    ("meeting_intelligence_context_window_tokens", 131071),
+    ("meeting_intelligence_context_window_tokens", 32191),
     ("meeting_intelligence_max_total_inference_tokens", 0),
     ("meeting_intelligence_max_total_inference_tokens", 16000001),
 ])

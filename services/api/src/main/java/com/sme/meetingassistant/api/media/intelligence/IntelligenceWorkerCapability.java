@@ -20,7 +20,7 @@ public class IntelligenceWorkerCapability {
         if(p.isEnabled() || p.isDispatchEnabled()) try {
             var s=properties.getStorage();var uri=URI.create(s.getEndpoint());
              if(!p.isEnabled() || !p.isInfrastructureVerified() || p.getDispatchClaimTimeoutSeconds()<30
-                 || p.getDispatchClaimTimeoutSeconds()>7200
+                 || p.getDispatchClaimTimeoutSeconds()>7200 || !p.validBudget()
                 || !env.getProperty("app.transport.private.enabled",Boolean.class,false)
                 || !env.getProperty("app.mi.internal-result.enabled",Boolean.class,false)
                 || !env.getProperty("app.media.outbox.enabled",Boolean.class,true)

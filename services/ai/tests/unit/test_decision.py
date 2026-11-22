@@ -217,6 +217,60 @@ def test_invalid_references_and_ungrounded_adoption_fail_closed():
         DecisionProcessor(settings(), ScriptedAdapter(unsupported_adoption))(context)
 
 
+def test_unsupported_adoption_does_not_erase_an_independent_decision():
+    data = snapshot(("Nhóm thống nhất dùng Redis cho bộ nhớ đệm.", "Tôi đề xuất đổi giao diện."))
+
+    def respond(request):
+        evidence = _window_evidence(request)
+        return {**_identity(request), "signals": [
+            _signal({"scope": scope, "proposition": item["text"], "status": "ACCEPTED",
+                     "uncertainty": "NONE", "qualification": ""}, item)
+            for scope, item in zip(("bộ nhớ đệm", "giao diện"), evidence)
+        ]}
+
+    result = DecisionProcessor(settings(), ScriptedAdapter(respond))(_decision_stage(data))["result"]
+    assert len(result["candidates"]) == 1
+    assert "Redis" in result["candidates"][0]["content"]
+    assert "GROUNDING_CLAIM_DISCARDED" in result["warnings"]
+
+
+def test_cross_window_resolution_cannot_relabel_a_retraction_as_discussion():
+    filler = _fixture("proposal-and-agreement-different-windows")["segments"][1:-1]
+    rejected_at = len(filler) + 1
+    fixture = dict(
+        segments=[
+            "Nhóm thống nhất dùng Redis cho bộ nhớ đệm.",
+            *filler,
+            "Nhóm bác bỏ việc dùng Redis cho bộ nhớ đệm.",
+            "Nhóm thống nhất dùng Kafka cho luồng sự kiện.",
+        ],
+        signals=[
+            dict(ordinal=at, scope=scope, proposition=proposition, status=status, qualification="", uncertainty="NONE")
+            for at, scope, proposition, status in [
+                (0, "bộ nhớ đệm", "dùng Redis cho bộ nhớ đệm", "ACCEPTED"),
+                (rejected_at, "bộ nhớ đệm", "dùng Redis cho bộ nhớ đệm", "REJECTED"),
+                (rejected_at + 1, "luồng sự kiện", "dùng Kafka cho luồng sự kiện", "ACCEPTED"),
+            ]
+        ],
+    )
+    respond = _fixture_callback(fixture)
+
+    def change_retraction(request):
+        output = respond(request)
+        if request.task.schema.name == "decision_synthesis_signals":
+            for record in output["signals"]:
+                if record["status"] == "REJECTED":
+                    record["status"] = "DISCUSSION"
+        return output
+
+    adapter = ScriptedAdapter(change_retraction)
+    conf = settings(meeting_intelligence_max_input_tokens=7000, meeting_intelligence_max_output_tokens=1200)
+    result = DecisionProcessor(conf, adapter)(_decision_stage(_fixture_data(fixture)))["result"]
+    assert len(adapter.requests) > 2 and adapter.requests[-1].task.schema.name == "decision_synthesis_signals"
+    assert len(result["candidates"]) == 1 and "Kafka" in result["candidates"][0]["content"]
+    assert "GROUNDING_CLAIM_DISCARDED" in result["warnings"]
+
+
 def test_invalid_schema_is_not_converted_to_an_empty_success():
     def malformed(request):
         return {"unexpected": True}

@@ -32,21 +32,27 @@ import { Textarea } from '@/components/ui/textarea'
 import { Header } from '@/components/layout/header'
 import { HeaderActions } from '@/components/layout/header-actions'
 import { Main } from '@/components/layout/main'
+import { fetchMeetingParticipants } from './data/detail-api'
 import {
   OPERATOR_MI_SUMMARY_CONTRACT,
   acknowledgeTranscriptReview,
-  actionItemEtag,
   admitOperatorMeetingIntelligence,
   admitOperatorProcessingJob,
   applyApprovedTranscriptCorrection,
+  audioUploadProblem,
+  assignProposedActionItem,
   confirmActionItem,
   confirmDecision,
   createSyntheticMeeting,
   fetchFinalizedTranscriptEvidence,
   fetchProcessingJob,
+  fetchReviewAudio,
+  fetchSpeakerClusters,
+  mapSpeakerCluster,
+  regenerateReviewedIntelligence,
   rejectActionItem,
   rejectDecision,
-  readMeetingIntelligenceResults,
+  readRunIntelligenceResults,
   transcriptSegmentEtag,
   uploadAndFinalizeMeetingMedia,
   verifyOperatorSession,
@@ -59,6 +65,7 @@ import {
   type ProcessingJob,
   type SyntheticMeetingResult,
   type TranscriptReviewAcknowledgement,
+  type SpeakerCluster,
 } from './data/operator-mi-e2e-workflow'
 
 export const EXPECTED_OPERATOR_USER_ID = '46a30219-3c9f-498d-94fa-d6558f200714'
@@ -78,6 +85,26 @@ type ProposalAction = {
   kind: 'decision' | 'action-item'
   id: string
   action: 'confirm' | 'reject'
+}
+
+type MemberOption = { userId: string; displayName: string }
+
+async function meetingMembers(
+  meetingId: string,
+  operator: OperatorSession['user']
+): Promise<MemberOption[]> {
+  const participants = await fetchMeetingParticipants(meetingId)
+  return [
+    { userId: operator.userId, displayName: operator.displayName },
+    ...participants
+      .filter(
+        ({ removedAt, userId }) => !removedAt && userId !== operator.userId
+      )
+      .map(({ userId, displayName }) => ({
+        userId,
+        displayName: displayName ?? userId,
+      })),
+  ]
 }
 
 type WorkflowError = {
@@ -112,6 +139,9 @@ export function OperatorMiE2eWorkspace() {
   const [jobError, setJobError] = useState<string | null>(null)
   const [job, setJob] = useState<ProcessingJob | null>(null)
   const jobKey = useRef<string | null>(null)
+  const regenerationKey = useRef<string | null>(null)
+  const [regenerationOpen, setRegenerationOpen] = useState(false)
+  const [existingJobId, setExistingJobId] = useState('')
 
   const [transcriptPending, setTranscriptPending] = useState(false)
   const [transcriptError, setTranscriptError] = useState<string | null>(null)
@@ -144,12 +174,14 @@ export function OperatorMiE2eWorkspace() {
   )
   const [proposalPending, setProposalPending] = useState<string | null>(null)
   const [proposalError, setProposalError] = useState<string | null>(null)
+  const [assignee, setAssignee] = useState('')
+  const [assigneeOptions, setAssigneeOptions] = useState<MemberOption[]>([])
 
   const [workflowError, setWorkflowError] = useState<WorkflowError>(null)
 
   const operatorMatchesExpected =
     session?.user.userId === EXPECTED_OPERATOR_USER_ID
-  const meetingId = meetingResult?.meeting.meeting.id
+  const meetingId = job?.meetingId ?? meetingResult?.meeting.meeting.id
   const mediaId = media?.id
   const jobIsTerminal =
     job?.status === 'COMPLETED' ||
@@ -159,18 +191,46 @@ export function OperatorMiE2eWorkspace() {
   const canCreate =
     operatorMatchesExpected &&
     !meetingResult &&
+    !job &&
     !creationStarted &&
     !creationPending
   const canUpload =
-    Boolean(meetingId && mediaFile && mediaFile.size > 0 && mediaFile.type) &&
+    Boolean(
+      meetingId &&
+      mediaFile &&
+      !audioUploadProblem(mediaFile.name, mediaFile.type, mediaFile.size)
+    ) &&
+    operatorMatchesExpected &&
+    !job &&
     !media &&
     !mediaAttempted &&
     !mediaPending
   const canAdmitJob =
-    Boolean(meetingId && mediaId && session?.user.userId) &&
+    Boolean(meetingId && mediaId && operatorMatchesExpected) &&
     !job &&
     !jobAttempted &&
     !jobPending
+  const canRegenerate = Boolean(
+    jobIsTerminal &&
+    transcript &&
+    operatorMatchesExpected &&
+    !jobPending &&
+    !transcriptPending &&
+    !resultsPending &&
+    !proposalPending
+  )
+
+  const selectedActionItem =
+    proposalAction?.kind === 'action-item'
+      ? results?.actionItems.find(
+          ({ actionItem }) => actionItem.id === proposalAction.id
+        )
+      : undefined
+  const needsAssignee = Boolean(
+    selectedActionItem &&
+    proposalAction?.action === 'confirm' &&
+    !selectedActionItem.actionItem.assigneeUserId
+  )
 
   const verifySession = async () => {
     setSessionPending(true)
@@ -189,7 +249,8 @@ export function OperatorMiE2eWorkspace() {
   }
 
   const createMeetingRequest = async () => {
-    if (!operatorMatchesExpected || meetingResult || creationPending) return
+    if (!operatorMatchesExpected || job || meetingResult || creationPending)
+      return
     setCreationStarted(true)
     setCreationPending(true)
     setCreationError(null)
@@ -296,26 +357,62 @@ export function OperatorMiE2eWorkspace() {
     }
   }
 
-  const loadTranscript = async () => {
+  const openExistingRun = async () => {
     if (
-      !meetingId ||
-      (!jobIsWaitingForTranscriptReview && !jobIsTerminal) ||
-      job?.status === 'FAILED'
+      !operatorMatchesExpected ||
+      job ||
+      jobPending ||
+      creationPending ||
+      mediaPending ||
+      !existingJobId.trim()
     )
       return
+    setJobPending(true)
+    setJobError(null)
+    try {
+      setJob(await fetchProcessingJob(existingJobId.trim()))
+    } catch (error) {
+      setJobError(readableError(error))
+    } finally {
+      setJobPending(false)
+    }
+  }
+
+  const loadTranscript = async (savedSegmentId?: string) => {
+    if (!meetingId || (!jobIsWaitingForTranscriptReview && !jobIsTerminal))
+      return false
     setTranscriptPending(true)
     setTranscriptError(null)
     setCorrectionMessage(null)
     setTranscriptAcknowledged(false)
     try {
       const evidence = await fetchFinalizedTranscriptEvidence(meetingId, 'vi')
+      if (
+        job &&
+        (evidence.transcript.meetingId !== meetingId ||
+          evidence.transcript.sourceMediaId !== job.sourceMediaId ||
+          evidence.transcript.processingJobId !==
+            (job.reprocessOfJobId && job.jobType === 'DERIVED_STAGE_PROCESSING'
+              ? job.reprocessOfJobId
+              : job.id))
+      ) {
+        throw new Error(
+          'The current transcript does not belong to the selected run.'
+        )
+      }
       setTranscript(evidence)
-      setCorrections(
+      const previousVersions = new Map(
+        transcript?.transcript.segments.map(({ id, version }) => [id, version])
+      )
+      setCorrections((drafts) =>
         Object.fromEntries(
-          evidence.transcript.segments.map((segment) => [
-            segment.id,
-            { text: segment.text, reason: '', approved: false },
-          ])
+          evidence.transcript.segments.flatMap(({ id, version }) =>
+            id !== savedSegmentId &&
+            previousVersions.get(id) === version &&
+            drafts[id]
+              ? [[id, drafts[id]]]
+              : []
+          )
         )
       )
       setTranscriptReview((current) =>
@@ -326,8 +423,12 @@ export function OperatorMiE2eWorkspace() {
           ? current
           : null
       )
+      return true
     } catch (error) {
+      setTranscript(null)
+      setTranscriptReview(null)
       setTranscriptError(readableError(error))
+      return false
     } finally {
       setTranscriptPending(false)
     }
@@ -337,10 +438,15 @@ export function OperatorMiE2eWorkspace() {
     segmentId: string,
     update: Partial<CorrectionDraft>
   ) => {
+    setTranscriptAcknowledged(false)
     setCorrections((current) => ({
       ...current,
       [segmentId]: {
-        text: current[segmentId]?.text ?? '',
+        text:
+          current[segmentId]?.text ??
+          transcript?.transcript.segments.find((s) => s.id === segmentId)
+            ?.text ??
+          '',
         reason: current[segmentId]?.reason ?? '',
         approved: current[segmentId]?.approved ?? false,
         ...update,
@@ -349,13 +455,24 @@ export function OperatorMiE2eWorkspace() {
   }
 
   const saveCorrection = async (segmentId: string) => {
-    if (!meetingId || !transcript || correctionPending) return
+    if (
+      !meetingId ||
+      !transcript ||
+      !jobIsWaitingForTranscriptReview ||
+      correctionPending ||
+      transcriptPending
+    )
+      return
     const segment = transcript.transcript.segments.find(
       (candidate) => candidate.id === segmentId
     )
     const draft = corrections[segmentId]
     if (!segment || !draft?.approved || !draft.text.trim()) return
-    if (draft.text.trim() === segment.text.trim()) return
+    if (
+      draft.text.trim() === segment.text.trim() &&
+      segment.qualityStatus !== 'SUSPICIOUS'
+    )
+      return
 
     setCorrectionPending(segmentId)
     setTranscriptError(null)
@@ -377,12 +494,49 @@ export function OperatorMiE2eWorkspace() {
       setAdmissionError(null)
       reviewKey.current = null
       admissionKey.current = null
-      await loadTranscript()
-      setCorrectionMessage(
-        'The approved correction was saved and the finalized transcript was read back.'
-      )
+      if (await loadTranscript(segmentId)) {
+        setCorrectionMessage(
+          'The approved correction was saved and the finalized transcript was read back.'
+        )
+      }
     } catch (error) {
       setTranscriptError(readableError(error))
+    } finally {
+      setCorrectionPending(null)
+    }
+  }
+
+  const regenerate = async () => {
+    if (!transcript || !canRegenerate) return
+    setRegenerationOpen(false)
+    setJobPending(true)
+    setJobError(null)
+    const key = regenerationKey.current ?? createIdempotencyKey('regenerate-mi')
+    regenerationKey.current = key
+    try {
+      setJob(await regenerateReviewedIntelligence(transcript, key))
+      regenerationKey.current = null
+      setResults(null)
+    } catch (error) {
+      setJobError(readableError(error))
+    } finally {
+      setJobPending(false)
+    }
+  }
+
+  const saveSpeakerMapping = async (
+    clusterId: string,
+    userId: string | null
+  ) => {
+    if (!meetingId || !transcript || !jobIsWaitingForTranscriptReview) return
+    setCorrectionPending(clusterId)
+    try {
+      await mapSpeakerCluster(meetingId, clusterId, transcript.etag, userId)
+      reviewKey.current = null
+      admissionKey.current = null
+      setTranscriptReview(null)
+      setTranscriptAcknowledged(false)
+      await loadTranscript()
     } finally {
       setCorrectionPending(null)
     }
@@ -395,6 +549,8 @@ export function OperatorMiE2eWorkspace() {
       !session ||
       job.status !== 'WAITING_FOR_REVIEW' ||
       reviewPending ||
+      correctionPending ||
+      transcriptPending ||
       !transcriptAcknowledged
     )
       return
@@ -429,7 +585,9 @@ export function OperatorMiE2eWorkspace() {
       !transcriptReview ||
       !session ||
       job.status !== 'WAITING_FOR_REVIEW' ||
-      admissionPending
+      admissionPending ||
+      correctionPending ||
+      transcriptPending
     )
       return
     setAdmissionPending(true)
@@ -457,12 +615,22 @@ export function OperatorMiE2eWorkspace() {
   }
 
   const readResults = async () => {
-    if (!meetingId || !jobIsTerminal || job?.status === 'FAILED') return
+    if (!job || !transcript || !jobIsTerminal || job.status === 'FAILED') return
     setResultsPending(true)
     setResultsError(null)
     setWorkflowError(null)
     try {
-      setResults(await readMeetingIntelligenceResults(meetingId))
+      const result = await readRunIntelligenceResults(job)
+      if (
+        result.summary.summary.transcriptId !== transcript.transcript.id ||
+        result.summary.summary.contentRevision !==
+          transcript.transcript.contentRevision
+      ) {
+        throw new Error(
+          'The Summary does not match the loaded transcript revision.'
+        )
+      }
+      setResults(result)
     } catch (error) {
       const message = readableError(error)
       setResultsError(message)
@@ -472,8 +640,43 @@ export function OperatorMiE2eWorkspace() {
     }
   }
 
+  const openProposal = (action: ProposalAction) => {
+    setAssignee('')
+    setProposalError(null)
+    setProposalAction(action)
+    if (
+      !meetingId ||
+      !session ||
+      action.kind !== 'action-item' ||
+      action.action !== 'confirm' ||
+      !results?.actionItems.some(
+        ({ actionItem }) =>
+          actionItem.id === action.id && !actionItem.assigneeUserId
+      )
+    )
+      return
+    setAssigneeOptions([
+      { userId: session.user.userId, displayName: session.user.displayName },
+    ])
+    void meetingMembers(meetingId, session.user)
+      .then(setAssigneeOptions)
+      .catch(() => {
+        setProposalError(
+          'Other participants could not be loaded. Only the verified organizer is listed.'
+        )
+      })
+  }
+
   const performProposalAction = async () => {
-    if (!proposalAction || !results || !meetingId) return
+    if (
+      !proposalAction ||
+      !results ||
+      !meetingId ||
+      proposalPending ||
+      (needsAssignee &&
+        !assigneeOptions.some((option) => option.userId === assignee))
+    )
+      return
     const actionKey = `${proposalAction.kind}:${proposalAction.id}:${proposalAction.action}`
     setProposalPending(actionKey)
     setProposalError(null)
@@ -502,30 +705,36 @@ export function OperatorMiE2eWorkspace() {
             : previous
         )
       } else {
-        const current = results.actionItems.find(
+        let current = results.actionItems.find(
           (item) => item.actionItem.id === proposalAction.id
         )
         if (!current) return
+        const saveResult = (updated: ActionItemReview) =>
+          setResults((previous) =>
+            previous
+              ? {
+                  ...previous,
+                  actionItems: previous.actionItems.map((item) =>
+                    item.actionItem.id === updated.actionItem.id
+                      ? updated
+                      : item
+                  ),
+                }
+              : previous
+          )
+        if (needsAssignee) {
+          current = await assignProposedActionItem(
+            current.actionItem.id,
+            current.etag,
+            assignee
+          )
+          saveResult(current)
+        }
         const updated =
           proposalAction.action === 'confirm'
-            ? await confirmActionItem(
-                current.actionItem.id,
-                actionItemEtag(current.actionItem)
-              )
-            : await rejectActionItem(
-                current.actionItem.id,
-                actionItemEtag(current.actionItem)
-              )
-        setResults((previous) =>
-          previous
-            ? {
-                ...previous,
-                actionItems: previous.actionItems.map((item) =>
-                  item.actionItem.id === updated.actionItem.id ? updated : item
-                ),
-              }
-            : previous
-        )
+            ? await confirmActionItem(current.actionItem.id, current.etag)
+            : await rejectActionItem(current.actionItem.id, current.etag)
+        saveResult(updated)
       }
     } catch (error) {
       setProposalError(readableError(error))
@@ -543,26 +752,25 @@ export function OperatorMiE2eWorkspace() {
       <Main className='flex flex-1 flex-col gap-6'>
         <div>
           <p className='text-sm font-medium text-primary'>
-            Operator-assisted preparation
+            Level 3B.5 operator workflow
           </p>
           <h1 className='mt-1 text-2xl font-bold tracking-tight sm:text-3xl'>
             Vietnamese MI E2E workflow
           </h1>
           <p className='mt-2 max-w-3xl text-muted-foreground'>
-            This browser-only helper prepares one future bounded run. It does
-            not start workers, enable gates, call OpenRouter, or retry failed
-            processing jobs.
+            Upload and review a recording, track the real processing stages, and
+            inspect the resulting proposals before making any decision.
           </p>
         </div>
 
         <Alert>
           <ShieldCheck />
-          <AlertTitle>Preparation only</AlertTitle>
+          <AlertTitle>Operator review required</AlertTitle>
           <AlertDescription>
             The operator owns this normal Web session and every approval. Core
             requests use HttpOnly cookies plus the existing CSRF mechanism.
-            Signed storage capabilities are consumed once and never displayed
-            here.
+            Signed storage capabilities are used only to upload or play the
+            selected recording.
           </AlertDescription>
         </Alert>
 
@@ -586,7 +794,7 @@ export function OperatorMiE2eWorkspace() {
           description={description}
           setTitle={setTitle}
           setDescription={setDescription}
-          disabled={creationStarted || Boolean(meetingResult)}
+          disabled={creationStarted || Boolean(meetingResult || job)}
           canCreate={canCreate}
           pending={creationPending}
           error={creationError}
@@ -598,7 +806,7 @@ export function OperatorMiE2eWorkspace() {
         />
 
         <MediaCard
-          meetingId={meetingId}
+          meetingId={job ? undefined : meetingId}
           file={mediaFile}
           onFileChange={setMediaFile}
           canUpload={canUpload}
@@ -617,9 +825,22 @@ export function OperatorMiE2eWorkspace() {
           error={jobError}
           onAdmit={() => void admitJob()}
           onRefresh={() => void refreshJob()}
+          existingJobId={existingJobId}
+          onExistingJobId={setExistingJobId}
+          onOpenExisting={() => void openExistingRun()}
+          canOpenExisting={
+            operatorMatchesExpected &&
+            !job &&
+            !jobPending &&
+            !creationPending &&
+            !mediaPending
+          }
+          onRegenerate={() => setRegenerationOpen(true)}
+          canRegenerate={canRegenerate}
         />
 
         <TranscriptCard
+          key={transcript?.transcript.id ?? 'unloaded'}
           job={job}
           evidence={transcript}
           pending={transcriptPending}
@@ -633,6 +854,9 @@ export function OperatorMiE2eWorkspace() {
           admissionError={admissionError}
           corrections={corrections}
           correctionPending={correctionPending}
+          meetingId={meetingId}
+          organizer={session?.user}
+          onSaveSpeakerMapping={saveSpeakerMapping}
           onReview={() => void loadTranscript()}
           onTranscriptAcknowledged={setTranscriptAcknowledged}
           onAcknowledgeReview={() => void acknowledgeReview()}
@@ -650,9 +874,31 @@ export function OperatorMiE2eWorkspace() {
           proposalError={proposalError}
           proposalPending={proposalPending}
           onRead={() => void readResults()}
-          onProposalAction={setProposalAction}
+          onProposalAction={openProposal}
         />
       </Main>
+
+      <AlertDialog open={regenerationOpen} onOpenChange={setRegenerationOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Regenerate Meeting Intelligence?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Core must verify the original admitted review for this exact
+              revision. This starts a separate Summary, Decision, and Action
+              Item run with its own inference budget. It does not retranscribe
+              the audio or replace the selected Summary or existing proposals.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void regenerate()}>
+              Start MI-only regeneration
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog
         open={Boolean(proposalAction)}
@@ -668,13 +914,40 @@ export function OperatorMiE2eWorkspace() {
               reject anything until you approve this exact action.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {needsAssignee && (
+            <label className='grid gap-2 text-sm'>
+              Assign this action item to
+              <select
+                value={assignee}
+                onChange={(event) => setAssignee(event.target.value)}
+                className='rounded border bg-background px-2 py-1'
+                disabled={Boolean(proposalPending)}
+              >
+                <option value=''>Choose a person</option>
+                {assigneeOptions.map(({ userId, displayName }) => (
+                  <option key={userId} value={userId}>
+                    {displayName}
+                  </option>
+                ))}
+              </select>
+              Core records your selection before confirming. The AI has not
+              assigned anyone.
+            </label>
+          )}
+          {proposalError && (
+            <p role='alert' className='text-sm text-destructive'>
+              {proposalError}
+            </p>
+          )}
           <AlertDialogFooter>
             <AlertDialogCancel disabled={Boolean(proposalPending)}>
               Cancel
             </AlertDialogCancel>
             <AlertDialogAction
               onClick={() => void performProposalAction()}
-              disabled={Boolean(proposalPending)}
+              disabled={
+                Boolean(proposalPending) || (needsAssignee && !assignee)
+              }
             >
               {proposalPending ? 'Submitting...' : 'Approve this action'}
             </AlertDialogAction>
@@ -909,6 +1182,8 @@ function MediaCard({
   media: FinalizedMedia | null
   onUpload: () => void
 }) {
+  const fileProblem =
+    file && audioUploadProblem(file.name, file.type, file.size)
   return (
     <Card>
       <CardHeader className='border-b'>
@@ -917,8 +1192,8 @@ function MediaCard({
           3. Upload and finalize one media source
         </CardTitle>
         <CardDescription>
-          Core issues the upload intent; the browser performs one credentialless
-          signed PUT and one Core finalization. Signed URLs are never rendered.
+          Upload WAV, MP3, or AAC M4A, up to 90 minutes and 1 GiB. Core verifies
+          the recording before processing.
         </CardDescription>
       </CardHeader>
       <CardContent className='space-y-4 pt-6'>
@@ -931,7 +1206,7 @@ function MediaCard({
           Synthetic Vietnamese audio
           <Input
             type='file'
-            accept='audio/*,.wav,.mp3,.m4a,.ogg,.webm'
+            accept='.wav,.mp3,.m4a,audio/wav,audio/mpeg,audio/mp4'
             disabled={!meetingId || attempted}
             onChange={(event) => onFileChange(event.target.files?.[0] ?? null)}
           />
@@ -939,7 +1214,12 @@ function MediaCard({
         {file && (
           <p className='text-sm text-muted-foreground'>
             Selected {file.name} · {file.size} bytes ·{' '}
-            {file.type || 'missing MIME type'}
+            {file.type || 'format will be verified by Core'}
+          </p>
+        )}
+        {fileProblem && (
+          <p role='alert' className='text-sm text-destructive'>
+            {fileProblem}
           </p>
         )}
         <Button type='button' onClick={onUpload} disabled={!canUpload}>
@@ -988,6 +1268,12 @@ function ProcessingCard({
   error,
   onAdmit,
   onRefresh,
+  existingJobId,
+  onExistingJobId,
+  onOpenExisting,
+  canOpenExisting,
+  onRegenerate,
+  canRegenerate,
 }: {
   job: ProcessingJob | null
   canAdmit: boolean
@@ -996,6 +1282,12 @@ function ProcessingCard({
   error: string | null
   onAdmit: () => void
   onRefresh: () => void
+  existingJobId: string
+  onExistingJobId: (value: string) => void
+  onOpenExisting: () => void
+  canOpenExisting: boolean
+  onRegenerate: () => void
+  canRegenerate: boolean
 }) {
   return (
     <Card>
@@ -1016,10 +1308,28 @@ function ProcessingCard({
         <Button type='button' onClick={onAdmit} disabled={!canAdmit}>
           {pending ? 'Admitting...' : 'Admit one processing job'}
         </Button>
+        {!job && (
+          <div className='flex flex-wrap gap-2'>
+            <Input
+              className='max-w-md'
+              aria-label='Existing processing job ID'
+              value={existingJobId}
+              onChange={(event) => onExistingJobId(event.target.value)}
+              placeholder='Existing processing job ID'
+            />
+            <Button
+              variant='outline'
+              onClick={onOpenExisting}
+              disabled={!canOpenExisting || !existingJobId.trim()}
+            >
+              Open existing run
+            </Button>
+          </div>
+        )}
         {job && (
           <div className='rounded-lg border bg-muted/30 p-4 text-sm'>
             <dl className='grid gap-2 sm:grid-cols-3'>
-              <EvidenceRow label='Job' value={shortIdentifier(job.id)} />
+              <EvidenceRow label='Job' value={job.id} />
               <EvidenceRow label='Status' value={job.status} />
               <EvidenceRow
                 label='Requested by'
@@ -1057,8 +1367,24 @@ function ProcessingCard({
             </Button>
             {job.status === 'FAILED' && (
               <p className='mt-3 text-sm text-destructive'>
-                The job is FAILED. No retry control is provided by this helper.
+                {job.errorSummary || 'The processing job failed.'}
               </p>
+            )}
+            <ul className='mt-4 space-y-1' aria-label='Processing stages'>
+              {job.stageRuns.map((stage) => (
+                <li key={stage.id}>
+                  {stage.stageCode} · {stage.status} · attempt{' '}
+                  {stage.attemptNumber}
+                  {stage.errorCode
+                    ? ` · ${resultWarningLabel(stage.errorCode)}`
+                    : ''}
+                </li>
+              ))}
+            </ul>
+            {canRegenerate && (
+              <Button className='mt-4' variant='outline' onClick={onRegenerate}>
+                Regenerate Meeting Intelligence from reviewed transcript
+              </Button>
             )}
           </div>
         )}
@@ -1082,6 +1408,9 @@ function TranscriptCard({
   admissionError,
   corrections,
   correctionPending,
+  meetingId,
+  organizer,
+  onSaveSpeakerMapping,
   onReview,
   onTranscriptAcknowledged,
   onAcknowledgeReview,
@@ -1102,6 +1431,12 @@ function TranscriptCard({
   admissionError: string | null
   corrections: Record<string, CorrectionDraft>
   correctionPending: string | null
+  meetingId?: string
+  organizer?: OperatorSession['user']
+  onSaveSpeakerMapping: (
+    clusterId: string,
+    userId: string | null
+  ) => Promise<void>
   onReview: () => void
   onTranscriptAcknowledged: (checked: boolean) => void
   onAcknowledgeReview: () => void
@@ -1115,12 +1450,46 @@ function TranscriptCard({
   const ready =
     job?.status === 'WAITING_FOR_REVIEW' ||
     job?.status === 'COMPLETED' ||
-    job?.status === 'COMPLETED_WITH_WARNINGS'
+    job?.status === 'COMPLETED_WITH_WARNINGS' ||
+    job?.status === 'FAILED'
   const reviewGateOpen = job?.status === 'WAITING_FOR_REVIEW'
+  const [page, setPage] = useState(0)
+  const [warningPage, setWarningPage] = useState(0)
+  const [onlyFlagged, setOnlyFlagged] = useState(false)
+  const [recording, setRecording] = useState<string | null>(null)
+  const [recordingError, setRecordingError] = useState<string | null>(null)
+  const segments = evidence?.transcript.segments ?? []
+  const pageSize = 25
+  const visibleSegments = onlyFlagged
+    ? segments.filter((segment) => segment.qualityStatus !== 'ACCEPTED')
+    : segments
+  const lastPage = Math.max(0, Math.ceil(visibleSegments.length / pageSize) - 1)
+  const currentPage = Math.max(0, Math.min(page, lastPage))
+  const hasDrafts = segments.some(
+    (segment) =>
+      corrections[segment.id]?.text.trim() !== segment.text.trim() &&
+      Boolean(corrections[segment.id])
+  )
   const coverageWarnings =
     evidence?.coverage.filter(
       (region) => region.coverageStatus !== 'COVERED' || region.recovered
     ) ?? []
+  const lastWarningPage = Math.max(
+    0,
+    Math.ceil(coverageWarnings.length / 10) - 1
+  )
+  const currentWarningPage = Math.min(warningPage, lastWarningPage)
+  const loadRecording = async () => {
+    if (!meetingId || !evidence) return
+    setRecordingError(null)
+    try {
+      setRecording(
+        await fetchReviewAudio(meetingId, evidence.transcript.sourceMediaId)
+      )
+    } catch (failure) {
+      setRecordingError(readableError(failure))
+    }
+  }
   return (
     <Card>
       <CardHeader className='border-b'>
@@ -1141,6 +1510,9 @@ function TranscriptCard({
               ? 'Reading transcript...'
               : 'Review finalized Vietnamese transcript'}
           </Button>
+        )}
+        {!evidence && error && (
+          <p className='text-sm text-destructive'>{error}</p>
         )}
         {!ready && !evidence && (
           <p className='text-sm text-muted-foreground'>
@@ -1173,6 +1545,50 @@ function TranscriptCard({
                 />
               </div>
             </div>
+            <div className='space-y-2'>
+              <Button
+                variant='outline'
+                size='sm'
+                onClick={() => void loadRecording()}
+              >
+                {recording
+                  ? 'Refresh recording link'
+                  : 'Load recording for playback'}
+              </Button>
+              {recording && (
+                <audio
+                  aria-label='Source recording'
+                  controls
+                  preload='metadata'
+                  crossOrigin='anonymous'
+                  src={recording}
+                  onError={() =>
+                    setRecordingError(
+                      'The recording could not be loaded. Refresh the link to try again.'
+                    )
+                  }
+                />
+              )}
+              {recordingError && (
+                <p className='text-sm text-destructive'>{recordingError}</p>
+              )}
+            </div>
+            {meetingId &&
+              organizer &&
+              segments.some((segment) => segment.speakerClusterId) && (
+                <SpeakerMappings
+                  meetingId={meetingId}
+                  organizer={organizer}
+                  readOnly={!reviewGateOpen}
+                  disabled={
+                    pending ||
+                    Boolean(correctionPending) ||
+                    reviewPending ||
+                    admissionPending
+                  }
+                  onSave={onSaveSpeakerMapping}
+                />
+              )}
             {(evidence.transcript.status === 'READY_WITH_WARNINGS' ||
               coverageWarnings.length > 0 ||
               Boolean(job?.warningSummary)) && (
@@ -1189,95 +1605,219 @@ function TranscriptCard({
                   )}
                   {coverageWarnings.length > 0 && (
                     <ul className='list-disc pl-5'>
-                      {coverageWarnings.map((region) => (
-                        <li key={region.id}>
-                          {region.coverageStatus} ·{' '}
-                          {formatMilliseconds(region.startMs)}–
-                          {formatMilliseconds(region.endMs)}
-                          {region.recovered ? ' · recovered' : ''}
-                        </li>
-                      ))}
+                      {coverageWarnings
+                        .slice(
+                          currentWarningPage * 10,
+                          (currentWarningPage + 1) * 10
+                        )
+                        .map((region) => (
+                          <li key={region.id}>
+                            {region.coverageStatus} ·{' '}
+                            {formatMilliseconds(region.startMs)}–
+                            {formatMilliseconds(region.endMs)}
+                            {region.recovered ? ' · recovered' : ''}
+                            <Button
+                              variant='link'
+                              size='sm'
+                              onClick={() => {
+                                const index = segments.findIndex(
+                                  (segment) => segment.endMs > region.startMs
+                                )
+                                setOnlyFlagged(false)
+                                setPage(
+                                  Math.floor(
+                                    (index < 0 ? segments.length - 1 : index) /
+                                      pageSize
+                                  )
+                                )
+                              }}
+                            >
+                              Show nearby segments
+                            </Button>
+                          </li>
+                        ))}
                     </ul>
+                  )}
+                  {lastWarningPage > 0 && (
+                    <div className='flex items-center gap-2'>
+                      <Button
+                        size='sm'
+                        variant='outline'
+                        disabled={currentWarningPage === 0}
+                        onClick={() => setWarningPage(currentWarningPage - 1)}
+                      >
+                        Previous warnings
+                      </Button>
+                      <span>
+                        {currentWarningPage + 1} / {lastWarningPage + 1}
+                      </span>
+                      <Button
+                        size='sm'
+                        variant='outline'
+                        disabled={currentWarningPage === lastWarningPage}
+                        onClick={() => setWarningPage(currentWarningPage + 1)}
+                      >
+                        Next warnings
+                      </Button>
+                    </div>
                   )}
                 </AlertDescription>
               </Alert>
             )}
+            <div className='flex flex-wrap items-center gap-2'>
+              <label className='flex items-center gap-2 text-sm'>
+                <input
+                  type='checkbox'
+                  checked={onlyFlagged}
+                  onChange={(event) => {
+                    setOnlyFlagged(event.target.checked)
+                    setPage(0)
+                  }}
+                />{' '}
+                Flagged segments only
+              </label>
+              <span role='status' className='text-sm text-muted-foreground'>
+                {visibleSegments.length
+                  ? `${currentPage * pageSize + 1}–${Math.min((currentPage + 1) * pageSize, visibleSegments.length)} of ${visibleSegments.length}`
+                  : 'No flagged segments'}
+              </span>
+              <Button
+                variant='outline'
+                size='sm'
+                disabled={currentPage === 0}
+                onClick={() => setPage(currentPage - 1)}
+              >
+                Previous transcript page
+              </Button>
+              <Button
+                variant='outline'
+                size='sm'
+                disabled={currentPage === lastPage}
+                onClick={() => setPage(currentPage + 1)}
+              >
+                Next transcript page
+              </Button>
+            </div>
             <div className='space-y-4'>
-              {evidence.transcript.segments.map((segment) => {
-                const draft = corrections[segment.id] ?? {
-                  text: segment.text,
-                  reason: '',
-                  approved: false,
-                }
-                const changed = draft.text.trim() !== segment.text.trim()
-                return (
-                  <div key={segment.id} className='rounded-lg border p-4'>
-                    <div className='flex flex-wrap justify-between gap-2 text-xs text-muted-foreground'>
-                      <span>
-                        Segment {segment.ordinal + 1} ·{' '}
-                        {formatMilliseconds(segment.startMs)}–
-                        {formatMilliseconds(segment.endMs)}
-                      </span>
-                      <span>Version {segment.version}</span>
-                    </div>
-                    <Textarea
-                      className='mt-3'
-                      value={draft.text}
-                      maxLength={20_000}
-                      aria-label={`Correction for segment ${segment.ordinal + 1}`}
-                      onChange={(event) =>
-                        onCorrectionChange(segment.id, {
-                          text: event.target.value,
-                          approved: false,
-                        })
-                      }
-                      disabled={Boolean(correctionPending)}
-                    />
-                    <Input
-                      className='mt-3'
-                      value={draft.reason}
-                      maxLength={1000}
-                      aria-label={`Correction reason for segment ${segment.ordinal + 1}`}
-                      placeholder='Optional reason'
-                      onChange={(event) =>
-                        onCorrectionChange(segment.id, {
-                          reason: event.target.value,
-                          approved: false,
-                        })
-                      }
-                      disabled={Boolean(correctionPending)}
-                    />
-                    <label className='mt-3 flex items-start gap-2 text-sm'>
-                      <input
-                        type='checkbox'
-                        checked={draft.approved}
+              {visibleSegments
+                .slice(currentPage * pageSize, (currentPage + 1) * pageSize)
+                .map((segment) => {
+                  const draft = corrections[segment.id] ?? {
+                    text: segment.text,
+                    reason: '',
+                    approved: false,
+                  }
+                  const changed = draft.text.trim() !== segment.text.trim()
+                  const canSave =
+                    reviewGateOpen &&
+                    (changed || segment.qualityStatus === 'SUSPICIOUS')
+                  const correctionHint =
+                    !changed && segment.qualityStatus !== 'SUSPICIOUS'
+                      ? 'Edit the transcript text above before approving this correction.'
+                      : 'Approval is required before saving this correction.'
+                  return (
+                    <div key={segment.id} className='rounded-lg border p-4'>
+                      <div className='flex flex-wrap justify-between gap-2 text-xs text-muted-foreground'>
+                        <span>
+                          Segment {segment.ordinal + 1} ·{' '}
+                          {formatMilliseconds(segment.startMs)}–
+                          {formatMilliseconds(segment.endMs)}
+                        </span>
+                        <span>
+                          {segment.speakerLabel ?? 'Speaker unassigned'}
+                        </span>
+                        <span>
+                          {segment.qualityStatus} · version {segment.version}
+                        </span>
+                      </div>
+                      <Textarea
+                        className='mt-3'
+                        value={draft.text}
+                        maxLength={20_000}
+                        aria-label={`Correction for segment ${segment.ordinal + 1}`}
                         onChange={(event) =>
                           onCorrectionChange(segment.id, {
-                            approved: event.target.checked,
+                            text: event.target.value,
+                            approved: false,
                           })
                         }
-                        disabled={!changed || Boolean(correctionPending)}
+                        readOnly={!reviewGateOpen}
+                        disabled={
+                          pending ||
+                          Boolean(correctionPending) ||
+                          reviewPending ||
+                          admissionPending
+                        }
                       />
-                      <span>I reviewed and approve this exact correction.</span>
-                    </label>
-                    <Button
-                      type='button'
-                      className='mt-3'
-                      size='sm'
-                      onClick={() => onSaveCorrection(segment.id)}
-                      disabled={
-                        !changed ||
-                        !draft.approved ||
-                        Boolean(correctionPending)
-                      }
-                    >
-                      {correctionPending === segment.id
-                        ? 'Saving correction...'
-                        : 'Approve and save this correction'}
-                    </Button>
-                  </div>
-                )
-              })}
+                      <Input
+                        className='mt-3'
+                        value={draft.reason}
+                        maxLength={1000}
+                        aria-label={`Correction reason for segment ${segment.ordinal + 1}`}
+                        placeholder='Optional reason'
+                        onChange={(event) =>
+                          onCorrectionChange(segment.id, {
+                            reason: event.target.value,
+                            approved: false,
+                          })
+                        }
+                        disabled={
+                          !reviewGateOpen ||
+                          pending ||
+                          Boolean(correctionPending) ||
+                          reviewPending ||
+                          admissionPending
+                        }
+                      />
+                      <label className='mt-3 flex items-start gap-2 text-sm'>
+                        <input
+                          type='checkbox'
+                          checked={draft.approved}
+                          aria-describedby={`correction-help-${segment.id}`}
+                          onChange={(event) =>
+                            onCorrectionChange(segment.id, {
+                              approved: event.target.checked,
+                            })
+                          }
+                          disabled={
+                            !canSave ||
+                            pending ||
+                            Boolean(correctionPending) ||
+                            reviewPending ||
+                            admissionPending
+                          }
+                        />
+                        <span>
+                          I reviewed and approve this exact correction.
+                        </span>
+                      </label>
+                      <p
+                        id={`correction-help-${segment.id}`}
+                        className='mt-2 text-xs text-muted-foreground'
+                      >
+                        {correctionHint}
+                      </p>
+                      <Button
+                        type='button'
+                        className='mt-3'
+                        size='sm'
+                        onClick={() => onSaveCorrection(segment.id)}
+                        disabled={
+                          !canSave ||
+                          !draft.approved ||
+                          pending ||
+                          Boolean(correctionPending) ||
+                          reviewPending ||
+                          admissionPending
+                        }
+                      >
+                        {correctionPending === segment.id
+                          ? 'Saving correction...'
+                          : 'Approve and save this correction'}
+                      </Button>
+                    </div>
+                  )
+                })}
             </div>
             {correctionMessage && (
               <p className='text-sm text-emerald-700'>{correctionMessage}</p>
@@ -1292,7 +1832,12 @@ function TranscriptCard({
                     onChange={(event) =>
                       onTranscriptAcknowledged(event.target.checked)
                     }
-                    disabled={Boolean(correctionPending) || reviewPending}
+                    disabled={
+                      hasDrafts ||
+                      pending ||
+                      Boolean(correctionPending) ||
+                      reviewPending
+                    }
                   />
                   <span>
                     I reviewed the complete transcript and the visible
@@ -1305,6 +1850,8 @@ function TranscriptCard({
                   onClick={onAcknowledgeReview}
                   disabled={
                     !transcriptAcknowledged ||
+                    hasDrafts ||
+                    pending ||
                     Boolean(correctionPending) ||
                     reviewPending
                   }
@@ -1332,7 +1879,12 @@ function TranscriptCard({
                     type='button'
                     className='mt-3'
                     onClick={onAdmitMeetingIntelligence}
-                    disabled={admissionPending}
+                    disabled={
+                      hasDrafts ||
+                      pending ||
+                      Boolean(correctionPending) ||
+                      admissionPending
+                    }
                   >
                     {admissionPending
                       ? 'Admitting Meeting Intelligence...'
@@ -1350,6 +1902,105 @@ function TranscriptCard({
         )}
       </CardContent>
     </Card>
+  )
+}
+
+function SpeakerMappings({
+  meetingId,
+  organizer,
+  readOnly,
+  disabled,
+  onSave,
+}: {
+  meetingId: string
+  organizer: OperatorSession['user']
+  readOnly: boolean
+  disabled: boolean
+  onSave: (clusterId: string, userId: string | null) => Promise<void>
+}) {
+  const [clusters, setClusters] = useState<SpeakerCluster[] | null>(null)
+  const [members, setMembers] = useState<MemberOption[]>([])
+  const [choice, setChoice] = useState<Record<string, string>>({})
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const load = async () => {
+    const [current, options] = await Promise.all([
+      fetchSpeakerClusters(meetingId),
+      readOnly ? Promise.resolve([]) : meetingMembers(meetingId, organizer),
+    ])
+    setClusters(current)
+    setMembers(options)
+    setChoice({})
+  }
+  const apply = async (operation: () => Promise<void>) => {
+    setBusy(true)
+    setError(null)
+    try {
+      await operation()
+      await load()
+    } catch (failure) {
+      setError(readableError(failure))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <div className='space-y-2 rounded-lg border p-3'>
+      <Button
+        variant='outline'
+        size='sm'
+        onClick={() => void apply(async () => {})}
+        disabled={busy || disabled}
+      >
+        Review speaker mappings
+      </Button>
+      {clusters?.map((speaker) => {
+        const selection = choice[speaker.id] ?? speaker.userId ?? ''
+        return (
+          <div
+            key={speaker.id}
+            className='flex flex-wrap items-center gap-2 text-sm'
+          >
+            <span>
+              {speaker.label}
+              {speaker.displayName ? ` — ${speaker.displayName}` : ''}
+            </span>
+            {!readOnly && (
+              <>
+                <select
+                  className='rounded border bg-background px-2 py-1'
+                  aria-label={`Identity for ${speaker.label}`}
+                  value={selection}
+                  onChange={(event) =>
+                    setChoice({ ...choice, [speaker.id]: event.target.value })
+                  }
+                >
+                  <option value=''>Unassigned</option>
+                  {members.map((member) => (
+                    <option key={member.userId} value={member.userId}>
+                      {member.displayName}
+                    </option>
+                  ))}
+                </select>
+                <Button
+                  variant='outline'
+                  size='sm'
+                  disabled={
+                    busy || disabled || selection === (speaker.userId ?? '')
+                  }
+                  onClick={() =>
+                    void apply(() => onSave(speaker.id, selection || null))
+                  }
+                >
+                  Save mapping
+                </Button>
+              </>
+            )}
+          </div>
+        )
+      })}
+      {error && <p className='text-sm text-destructive'>{error}</p>}
+    </div>
   )
 }
 
@@ -1400,11 +2051,18 @@ function ResultsCard({
             required before result review.
           </p>
         )}
+        {error && <p className='text-sm text-destructive'>{error}</p>}
         {results && (
           <>
             <section className='space-y-3'>
               <div className='flex flex-wrap items-center justify-between gap-2'>
                 <h3 className='font-semibold'>Summary</h3>
+                <span className='text-xs text-muted-foreground'>
+                  Version {results.summary.summary.versionNumber}
+                  {results.summary.isCurrent === false
+                    ? ' · Not the selected Summary'
+                    : ' · Selected Summary'}
+                </span>
                 <span className='text-xs text-muted-foreground'>
                   Prompt contract:{' '}
                   {OPERATOR_MI_SUMMARY_CONTRACT.extractionPromptVersion}
@@ -1435,7 +2093,6 @@ function ResultsCard({
               pending={proposalPending}
               onAction={onProposalAction}
             />
-            {error && <p className='text-sm text-destructive'>{error}</p>}
             {proposalError && (
               <p className='text-sm text-destructive'>{proposalError}</p>
             )}
@@ -1491,6 +2148,14 @@ function ProposalSection({
                 : (item as ActionItemReview).actionItem.title
             const actionPrefix =
               kind === 'decision' ? 'decision' : 'action-item'
+            const decision =
+              kind === 'decision'
+                ? (item as DecisionReview).decision
+                : undefined
+            const task =
+              kind === 'action-item'
+                ? (item as ActionItemReview).actionItem
+                : undefined
             return (
               <div key={id} className='rounded-lg border p-4'>
                 <div className='flex flex-wrap items-center justify-between gap-2'>
@@ -1502,7 +2167,26 @@ function ProposalSection({
                 <p className='mt-2 text-sm leading-6 whitespace-pre-wrap'>
                   {content}
                 </p>
-                {status === 'PROPOSED' && (
+                {decision && (
+                  <>
+                    <p className='text-xs text-muted-foreground'>
+                      {decision.evidenceSegmentIds.length} cited transcript
+                      segments
+                      {decision.isStale ? ' · Stale evidence' : ''}
+                    </p>
+                    <Provenance
+                      producer={decision.aiProducer}
+                      warnings={decision.aiWarnings}
+                    />
+                  </>
+                )}
+                {task?.details && (
+                  <p className='text-sm whitespace-pre-wrap'>{task.details}</p>
+                )}
+                {task?.dueDate && (
+                  <p className='text-sm'>Due: {task.dueDate}</p>
+                )}
+                {status === 'PROPOSED' && !decision?.isStale && (
                   <div className='mt-3 flex flex-wrap gap-2'>
                     <Button
                       type='button'
@@ -1556,9 +2240,22 @@ function Provenance({
           ? `${producer.provider ?? 'provider unavailable'} / ${producer.model} / ${producer.promptVersion}`
           : 'not returned by Core'}
       </p>
-      {warnings.length > 0 && <p>Warnings: {warnings.join(', ')}</p>}
+      {warnings.length > 0 && (
+        <p>Warnings: {warnings.map(resultWarningLabel).join(' ')}</p>
+      )}
     </div>
   )
+}
+
+function resultWarningLabel(code: string) {
+  switch (code) {
+    case 'GROUNDING_CLAIM_DISCARDED':
+      return 'Unsupported or conflicting claims were omitted.'
+    case 'GROUNDING_CLAIM_REPAIRED':
+      return 'Evidence citation boundaries were repaired and revalidated.'
+    default:
+      return code
+  }
 }
 
 function EvidenceRow({ label, value }: { label: string; value: string }) {

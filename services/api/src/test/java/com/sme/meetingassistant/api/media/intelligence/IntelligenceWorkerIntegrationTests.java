@@ -64,6 +64,12 @@ class IntelligenceWorkerIntegrationTests {
         properties.getIntelligence().setEnabled(true);
         properties.getIntelligence().setDispatchEnabled(true);
         properties.getIntelligence().setEnabledStages(IntelligenceWorkerCapability.ORDER);
+        properties.getIntelligence().setSummaryAttemptCeiling(1);
+        properties.getIntelligence().setDecisionAttemptCeiling(1);
+        properties.getIntelligence().setActionItemAttemptCeiling(2);
+        properties.getIntelligence().setAggregateAttemptCeiling(4);
+        properties.getIntelligence().setReservedTokenCeiling(161970);
+        properties.getIntelligence().setEstimatedCostCeilingUsd(new BigDecimal("0.15"));
         when(capability.canDispatch(anyString())).thenReturn(true);
         when(capability.storageId()).thenReturn("meeting-media");
         when(diarizationCapability.storageId()).thenReturn("meeting-media");
@@ -385,8 +391,23 @@ class IntelligenceWorkerIntegrationTests {
         worker.reserveAttempt(job,reserveCommand(summary,owner,7431,32768,
             new BigDecimal("0.0342542"),UUID.randomUUID()),PEER);
         var second=reserveCommand(summary,owner,1,1,new BigDecimal("0.0000012"),UUID.randomUUID());
+        properties.getIntelligence().setSummaryAttemptCeiling(16);
+        properties.getIntelligence().setAggregateAttemptCeiling(44);
         assertThatThrownBy(()->worker.reserveAttempt(job,second,PEER))
             .hasMessage("WORKER_BUDGET_EXHAUSTED");
+    }
+
+    @Test void newerJobPolicyCanReserveMultiplePhysicalSummaryCalls() {
+        properties.getIntelligence().setSummaryAttemptCeiling(16);
+        properties.getIntelligence().setAggregateAttemptCeiling(44);
+        properties.getIntelligence().setReservedTokenCeiling(2_000_000);
+        admit("GENERATING_SUMMARY");finalizeSource();
+        var summary=command("GENERATING_SUMMARY");
+        var owner=owner(summary,worker.claim(job,summary,PEER));
+        for (int i=1;i<=3;i++) {
+            var reserve=reserveCommand(summary,owner,10_000,8192,new BigDecimal("0.010192"),UUID.randomUUID());
+            assertThat(worker.reserveAttempt(job,reserve,PEER)).containsEntry("aggregateReservedAttempts",i);
+        }
     }
     @Test void providerAttemptReservationIsReplayedAcrossDeliveryRedelivery() {
         admit("GENERATING_SUMMARY");finalizeSource();
@@ -436,7 +457,9 @@ class IntelligenceWorkerIntegrationTests {
             jdbc.update("INSERT INTO "+schema+".users SELECT * FROM public.users WHERE id=?",actor);
             jdbc.update("INSERT INTO "+schema+".meetings SELECT * FROM public.meetings WHERE id=?",meeting);
             jdbc.update("INSERT INTO "+schema+".meeting_media SELECT * FROM public.meeting_media WHERE id=?",media);
-            jdbc.update("INSERT INTO "+schema+".processing_jobs SELECT * FROM public.processing_jobs WHERE id=?",job);
+            String jobColumns="id,meeting_id,source_media_id,requested_by_user_id,status,job_type,diarization_planned";
+            jdbc.update("INSERT INTO "+schema+".processing_jobs ("+jobColumns+") SELECT "+jobColumns
+                +" FROM public.processing_jobs WHERE id=?",job);
             if(derived) jdbc.update("UPDATE "+schema+".processing_jobs SET job_type='DERIVED_STAGE_PROCESSING' WHERE id=?",job);
             jdbc.update("INSERT INTO "+schema+".processing_stage_runs SELECT * FROM public.processing_stage_runs WHERE processing_job_id=?"
                 +(derived?" AND stage_code='GENERATING_SUMMARY'":""),job);

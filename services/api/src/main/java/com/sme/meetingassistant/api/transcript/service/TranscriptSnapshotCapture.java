@@ -45,11 +45,13 @@ public class TranscriptSnapshotCapture {
                 "Transcript snapshot exceeds the approved size bound.");
         }
         return new Captured(current.id(), current.sourceMediaId(), current.processingJobId(),
-            current.contentRevision(), current.status(), bytes);
+            current.contentRevision(), current.status(), TranscriptCorrectionDigest.sha256(current.segments().stream()
+                .map(s -> new TranscriptCorrectionDigest.SegmentDigest(s.ordinal(), s.startMs(), s.endMs(), s.text())).toList()),
+            bytes);
     }
 
     public record Captured(UUID transcriptId, UUID mediaId, UUID originJobId,
-            long contentRevision, String status, byte[] bytes) {
+            long contentRevision, String status, String correctionDigest, byte[] bytes) {
         public Captured { bytes = bytes.clone(); }
         @Override public byte[] bytes() { return bytes.clone(); }
     }

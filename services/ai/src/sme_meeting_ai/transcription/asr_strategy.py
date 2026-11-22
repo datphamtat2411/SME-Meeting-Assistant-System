@@ -408,7 +408,7 @@ class AsrStrategyRunner:
         supplemental = recovery["max_total_attempts"]
         chunked_calls = len(chunked.chunks) + supplemental
         budget = min(settings.audio_asr_max_total_calls,
-                     settings.audio_asr_adaptive_max_total_calls if self._adaptive else 65793)
+                     settings.audio_asr_adaptive_max_total_calls if selected is AsrStrategy.WHOLE_FILE else 65793)
         if selected is AsrStrategy.WHOLE_FILE and chunked_calls == budget:
             # Native plus its full fallback cannot fit, but chunked alone can.
             selected = self._selected = AsrStrategy.CHUNKED
@@ -501,7 +501,11 @@ class AsrStrategyRunner:
         baseline = self._execute_plan(audio, "chunked")
         self._decoder_rechecks = sum(max(0, len(r.decoding_attempts) - 1) for r in baseline)
         if self._fallback_used:
-            failure = next((item.failure for item in baseline if item.failure is not None), None)
+            failure = next((item.failure for item in baseline if item.failure in {
+                AsrErrorCategory.AUTHENTICATION, AsrErrorCategory.VALIDATION
+            }), None)
+            if failure is None and all(item.failure is not None and not item.retryable for item in baseline):
+                failure = baseline[0].failure
             if failure is not None:
                 raise AsrError(failure)
         return AsrStrategyExecutionResult(self._selected, self.plan, baseline, self.telemetry)

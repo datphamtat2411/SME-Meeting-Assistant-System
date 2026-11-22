@@ -8,6 +8,7 @@ from sme_meeting_ai.integrations.core_api import uuid_string
 
 from .contracts import canonical_json, identifier, valid_text
 from .errors import require
+from .grounding import DISCARDED
 
 MAX_HANDOFF_BYTES = 4 * 1024 * 1024
 _FIELDS = {"candidateKey", "title", "details", "suggestedDueDate", "evidenceSegmentIds"}
@@ -28,8 +29,10 @@ def prepare_action_item_request(candidate, claim, snapshot):
         and not set(producer) - {"model", "promptVersion", "provider"}
         and identifier(producer["model"], r"[A-Za-z0-9][A-Za-z0-9_./:-]{0,159}")
         and identifier(producer["promptVersion"]), "MALFORMED_OUTPUT")
-    require(isinstance(candidate["result"], dict) and set(candidate["result"]) == {"candidates"}, "MALFORMED_OUTPUT")
-    items = candidate["result"]["candidates"]
+    result = candidate["result"]
+    require(isinstance(result, dict) and set(result) in ({"candidates"}, {"candidates", "warnings"}), "MALFORMED_OUTPUT")
+    require("warnings" not in result or result["warnings"] == [DISCARDED], "MALFORMED_OUTPUT")
+    items = result["candidates"]
     require(isinstance(items, list) and len(items) <= 200, "CONTEXT_BUDGET")
     allowed = {s["id"] for s in snapshot["transcript"]["segments"]}
     keys = set()
@@ -59,6 +62,8 @@ def prepare_action_item_request(candidate, claim, snapshot):
     body = dict(contractVersion="1.0", eventId=claim.eventId, stageRunId=claim.executionStageRunId,
         claimToken=claim.claimToken.get_secret_value(), source=dict(snapshotId=source.snapshotId,
             transcriptId=source.transcriptId, contentRevision=source.contentRevision, sha256=source.sha256), candidates=items)
+    if "warnings" in result:
+        body["groundingWarning"] = DISCARDED
     raw = canonical_json(body).encode("utf-8")
     require(len(raw) <= MAX_HANDOFF_BYTES, "CONTEXT_BUDGET")
     return raw

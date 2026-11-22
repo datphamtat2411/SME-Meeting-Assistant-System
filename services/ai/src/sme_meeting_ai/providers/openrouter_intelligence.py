@@ -141,7 +141,7 @@ class OpenRouterIntelligenceAdapter:
         s = self._settings
         self._check(request)
         require(s.meeting_intelligence_inference_enabled, "INFERENCE_DISABLED")
-        require(s.meeting_intelligence_max_attempts == 1, "CONFIGURATION")
+        require(s.meeting_intelligence_max_attempts in (1, 2), "CONFIGURATION")
         if s.meeting_intelligence_worker_enabled:
             gate = getattr(request, "provider_attempts", None)
             require(gate is not None and callable(getattr(gate, "reserve", None))
@@ -217,18 +217,26 @@ class OpenRouterIntelligenceAdapter:
         async with httpx.AsyncClient(timeout=s.meeting_intelligence_provider_timeout_seconds,
                 trust_env=False, follow_redirects=False, transport=self._transport,
                 limits=httpx.Limits(max_connections=1, max_keepalive_connections=1)) as client:
-            # The effective MI policy is one physical request.  Reservation is
-            # intentionally immediately before transport, not at stage claim.
-            for attempt in range(1, 2):
+            gate = request.provider_attempts
+            maximum = s.meeting_intelligence_max_attempts if gate is not None else 1
+            failures = []
+            for attempt in range(1, maximum + 1):
                 self._check(request)
-                gate = getattr(request, "provider_attempts", None)
+                if attempt > 1 and request.retry_budget is not None:
+                    request.retry_budget.reserve(request)
                 reservation = gate.reserve(request) if gate is not None else None
                 try:
                     result = await self._controlled_attempt(client, request, payload, key)
                 except _AttemptError as error:
                     if gate is not None:
                         gate.report(reservation, category=error.category)
-                    category, retryable = error.category, error.retryable
+                    if not error.retryable or attempt == maximum:
+                        raise IntelligenceError(error.category) from None
+                    failures.append(error.category)
+                    delay = 1 if error.category == "RATE_LIMIT" else 0.25
+                    if time.monotonic() + delay >= request.deadline:
+                        raise IntelligenceError("DEADLINE")
+                    await asyncio.sleep(delay)
                 except IntelligenceError as error:
                     if gate is not None:
                         gate.report(reservation, category=error.category)
@@ -237,13 +245,8 @@ class OpenRouterIntelligenceAdapter:
                     if gate is not None:
                         gate.report(reservation, result=result)
                     self._check(request)
-                    return replace(result, duration_seconds=time.monotonic() - started, attempts=1,
-                                   failed_attempt_categories=())
-                self._check(request)
-                # ``retryable`` is retained only for sanitized classification;
-                # the MI acceptance never retries a physical provider attempt.
-                del retryable
-                raise IntelligenceError(category)
+                    return replace(result, duration_seconds=time.monotonic() - started, attempts=attempt,
+                                   failed_attempt_categories=tuple(failures))
         raise IntelligenceError("PROVIDER")
 
     async def _controlled_attempt(self, client, request, payload, key):

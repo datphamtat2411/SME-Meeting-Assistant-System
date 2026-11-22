@@ -32,12 +32,12 @@ public class MediaProperties {
         private String storageId = "";
         private List<String> enabledStages = new ArrayList<>();
         // Core-persisted bounds for one explicitly approved MI acceptance.
-        private int summaryAttemptCeiling = 1;
-        private int decisionAttemptCeiling = 1;
-        private int actionItemAttemptCeiling = 2;
-        private int aggregateAttemptCeiling = 4;
-        private long reservedTokenCeiling = 161970;
-        private BigDecimal estimatedCostCeilingUsd = new BigDecimal("0.15");
+        private int summaryAttemptCeiling = 16;
+        private int decisionAttemptCeiling = 16;
+        private int actionItemAttemptCeiling = 12;
+        private int aggregateAttemptCeiling = 44;
+        private long reservedTokenCeiling = 2_000_000;
+        private BigDecimal estimatedCostCeilingUsd = new BigDecimal("0.75");
         private BigDecimal inputCostPerMillionUsd = new BigDecimal("0.20");
         private BigDecimal outputCostPerMillionUsd = new BigDecimal("1.00");
         public boolean isEnabled() { return enabled; }
@@ -68,6 +68,21 @@ public class MediaProperties {
         public void setInputCostPerMillionUsd(BigDecimal value) { inputCostPerMillionUsd=value; }
         public BigDecimal getOutputCostPerMillionUsd() { return outputCostPerMillionUsd; }
         public void setOutputCostPerMillionUsd(BigDecimal value) { outputCostPerMillionUsd=value; }
+
+        public boolean validBudget() {
+            return summaryAttemptCeiling>=1 && summaryAttemptCeiling<=64
+                && decisionAttemptCeiling>=1 && decisionAttemptCeiling<=64
+                && actionItemAttemptCeiling>=1 && actionItemAttemptCeiling<=64
+                && aggregateAttemptCeiling>=1 && aggregateAttemptCeiling<=192
+                && reservedTokenCeiling>=1 && reservedTokenCeiling<=4_000_000
+                && positiveMoney(estimatedCostCeilingUsd, 20)
+                && positiveMoney(inputCostPerMillionUsd, 100) && positiveMoney(outputCostPerMillionUsd, 100);
+        }
+
+        private static boolean positiveMoney(BigDecimal value, int maximum) {
+            return value!=null && value.signum()>0 && value.stripTrailingZeros().scale()<=18
+                && value.compareTo(BigDecimal.valueOf(maximum))<=0;
+        }
     }
 
     public static class KnowledgeIndexing {
@@ -152,7 +167,8 @@ public class MediaProperties {
         private long maxDurationMs;
         private String ffprobePath;
         private Duration probeTimeout = Duration.ofSeconds(30);
-        private Duration uploadUrlTtl = Duration.ofMinutes(15);
+        private Duration sourceTransferTimeout = Duration.ofMinutes(8);
+        private Duration uploadUrlTtl = Duration.ofMinutes(30);
         private Duration downloadUrlTtl = Duration.ofMinutes(5);
         public List<String> getAllowedExtensions() { return allowedExtensions; }
         public void setAllowedExtensions(List<String> value) { allowedExtensions = value; }
@@ -166,6 +182,8 @@ public class MediaProperties {
         public void setFfprobePath(String value) { ffprobePath = value; }
         public Duration getProbeTimeout() { return probeTimeout; }
         public void setProbeTimeout(Duration value) { probeTimeout = value; }
+        public Duration getSourceTransferTimeout() { return sourceTransferTimeout; }
+        public void setSourceTransferTimeout(Duration value) { sourceTransferTimeout = value; }
         public Duration getUploadUrlTtl() { return uploadUrlTtl; }
         public void setUploadUrlTtl(Duration value) { uploadUrlTtl = value; }
         public Duration getDownloadUrlTtl() { return downloadUrlTtl; }

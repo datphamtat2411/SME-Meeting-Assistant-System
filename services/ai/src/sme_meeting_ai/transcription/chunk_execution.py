@@ -63,6 +63,7 @@ class AsrDecodeAttempt:
 
 
 class AsrRecheckOutcome(StrEnum):
+    RETRIED = "retried"
     REPLACED = "replaced"
     REPLAY_REPLACED = "replay-replaced"
     CORROBORATED = "corroborated"
@@ -80,18 +81,22 @@ class AsrChunkResult:
     failure: AsrErrorCategory | None = None
     decoding_attempts: tuple[AsrDecodeAttempt, ...] = ()
     recheck_outcome: AsrRecheckOutcome | None = None
+    retryable: bool = False
 
 
 class _RecheckBudget:
-    def __init__(self, maximum):
+    def __init__(self, maximum, transient_limit=0):
         self.remaining = maximum
+        self.transient_remaining = transient_limit
         self.lock = Lock()
 
-    def reserve(self):
+    def reserve(self, *, transient=False):
         with self.lock:
-            if self.remaining <= 0:
+            if self.remaining <= 0 or transient and self.transient_remaining <= 0:
                 return False
             self.remaining -= 1
+            if transient:
+                self.transient_remaining -= 1
             return True
 
 
@@ -328,6 +333,7 @@ def _decode_chunk(
     audio_chunk = None
     candidate = None
     cancellation = None
+    retryable = False
     try:
         audio_chunk = _extract_audio(chunk, audio, payload_limit)
         failure = AsrErrorCategory.PROVIDER
@@ -340,9 +346,11 @@ def _decode_chunk(
     except AsrError as error:
         if isinstance(error.category, AsrErrorCategory):
             failure = error.category
+            retryable = error.retryable
         traceback.clear_frames(error.__traceback__)
     except TimeoutError as error:
         failure = AsrErrorCategory.TIMEOUT
+        retryable = True
         traceback.clear_frames(error.__traceback__)
     except MemoryError as error:
         failure = AsrErrorCategory.RESOURCE
@@ -361,7 +369,7 @@ def _decode_chunk(
         # and extraction frames before handing whole-execution cancellation back.
         traceback.clear_frames(cancellation.__traceback__)
         raise cancellation.with_traceback(None)
-    return AsrChunkResult(chunk=chunk, failure=failure)
+    return AsrChunkResult(chunk=chunk, failure=failure, retryable=retryable)
 
 
 def _execute_chunk(
@@ -371,6 +379,15 @@ def _execute_chunk(
     original = retry = value = None
     try:
         original = _decode_chunk(chunk, audio, transcriber, payload_limit)
+        if (original.retryable and recheck_budget is not None and recheck_budget.reserve(transient=True)):
+            # Retry the exact request once. The shared supplemental ceiling also
+            # counts it against acoustic recovery; do not recheck its wording again here.
+            time.sleep(1 if original.failure is AsrErrorCategory.RATE_LIMIT else 0.25)
+            retry = _decode_chunk(chunk, audio, transcriber, payload_limit)
+            return replace(retry, decoding_attempts=(
+                AsrDecodeAttempt(chunk.request_interval, False, original.failure),
+                AsrDecodeAttempt(chunk.request_interval, retry.failure is None, retry.failure),
+            ), recheck_outcome=AsrRecheckOutcome.RETRIED)
         if (original.failure is not None or recheck_budget is None
                 or chunk.core_interval == chunk.request_interval):
             return original
@@ -445,7 +462,11 @@ def execute_asr_chunks(
     pending = set()
     chunks = iter(plan.chunks)
     results = {}
-    rechecks = _RecheckBudget(settings.audio_asr_recovery_max_total_attempts)
+    supplemental_limit = settings.audio_asr_recovery_max_total_attempts
+    transient_limit = (max(1, supplemental_limit // 2)
+                       if settings.audio_asr_retry_transient_chunks
+                       and plan.provenance.planner_version != "whole-file-v1" else 0)
+    rechecks = _RecheckBudget(supplemental_limit, transient_limit)
     try:
         for _ in range(min(concurrency, len(plan.chunks))):
             pending.add(executor.submit(_execute_chunk, next(chunks), normalized_audio, transcriber, payload_limit, rechecks))

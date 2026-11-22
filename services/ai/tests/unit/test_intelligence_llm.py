@@ -62,7 +62,7 @@ def test_strict_request_separation_provenance_usage_and_safe_reprs(caplog):
         assert body["response_format"]["json_schema"]["strict"] is True
         assert body["provider"] == {"require_parameters": True, "allow_fallbacks": False}
         assert "models" not in body and "tools" not in body and "plugins" not in body
-        assert body["max_tokens"] == 32768
+        assert body["max_tokens"] == config().meeting_intelligence_max_output_tokens
         system, user = body["messages"]
         assert system["role"] == "system" and "untrusted" in system["content"].lower()
         assert "Chúng ta" not in system["content"]
@@ -176,6 +176,29 @@ def test_transient_attempt_is_visible_in_success_provenance():
         with pytest.raises(IntelligenceError, match="PROVIDER"):
             adapter.complete(request())
     assert len(calls) == 1
+
+
+def test_only_a_new_durable_reservation_can_retry_transient_http():
+    attempts = []
+    class Gate:
+        def reserve(self, _request):
+            reservation = object()
+            attempts.append([reservation])
+            return reservation
+
+        def report(self, reservation, *, result=None, category=None):
+            assert attempts[-1][0] is reservation
+            attempts[-1].append(category or result)
+
+    conf = config(meeting_intelligence_max_attempts=2)
+    gate = Gate()
+    def send(_request):
+        return httpx.Response(503) if len(attempts) == 1 else httpx.Response(200, json=envelope())
+    with OpenRouterIntelligenceAdapter(conf, transport=httpx.MockTransport(send)) as adapter:
+        result = adapter.complete(replace(request(conf), provider_attempts=gate))
+    assert len(attempts) == 2 and attempts[0][0] is not attempts[1][0]
+    assert attempts[0][1] == "PROVIDER"
+    assert result.attempts == 2 and result.failed_attempt_categories == ("PROVIDER",)
 
 
 @pytest.mark.parametrize("exception,category", [(httpx.ReadTimeout,"TIMEOUT"), (httpx.ConnectError,"TRANSPORT")])
@@ -389,12 +412,38 @@ def test_provider_attempt_is_reported_failed_without_retry():
         order.append("transport")
         return httpx.Response(503)
 
-    req = replace(request(), provider_attempts=Gate())
-    with OpenRouterIntelligenceAdapter(config(), transport=httpx.MockTransport(provider)) as adapter:
+    conf = config(meeting_intelligence_max_attempts=1)
+    req = replace(request(conf), provider_attempts=Gate())
+    with OpenRouterIntelligenceAdapter(conf, transport=httpx.MockTransport(provider)) as adapter:
         with pytest.raises(IntelligenceError, match="PROVIDER"):
             adapter.complete(req)
 
     assert order == ["reserve", "transport", "report-PROVIDER"]
+
+
+def test_transient_retry_requires_new_durable_reservation_and_stops_when_exhausted():
+    events = []
+
+    class Gate:
+        def reserve(self, _):
+            events.append("reserve")
+            if events.count("reserve") == 2:
+                raise IntelligenceError("CONTEXT_BUDGET")
+            return "attempt-1"
+
+        def report(self, reservation, *, result=None, category=None):
+            assert reservation == "attempt-1" and result is None
+            events.append(category)
+
+    def provider(_):
+        events.append("transport")
+        return httpx.Response(503)
+
+    with OpenRouterIntelligenceAdapter(config(), transport=httpx.MockTransport(provider)) as adapter:
+        with pytest.raises(IntelligenceError, match="CONTEXT_BUDGET"):
+            adapter.complete(replace(request(), provider_attempts=Gate()))
+
+    assert events == ["reserve", "transport", "PROVIDER", "reserve"]
 
 
 def test_enabled_worker_requires_durable_provider_attempt_capability():

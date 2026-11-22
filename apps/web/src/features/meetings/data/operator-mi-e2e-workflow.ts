@@ -103,7 +103,7 @@ const processingJobSchema = z.object({
   id: identifierSchema,
   meetingId: identifierSchema,
   sourceMediaId: identifierSchema,
-  jobType: z.literal('OFFLINE_MEETING_PROCESSING'),
+  jobType: z.enum(['OFFLINE_MEETING_PROCESSING', 'DERIVED_STAGE_PROCESSING']),
   status: z.enum([
     'PENDING',
     'QUEUED',
@@ -231,6 +231,7 @@ const decisionSchema = z.object({
   rejectedAt: nullableDateTimeSchema,
   rejectedByUserId: nullableIdentifierSchema,
   aiUncertainty: z.string().nullable(),
+  processingJobId: nullableIdentifierSchema.optional(),
   aiWarnings: z.array(z.string()),
   aiProducer: aiProducerSchema.optional(),
 })
@@ -304,7 +305,7 @@ export type ActionItemReview = {
 }
 
 export type MeetingIntelligenceReview = {
-  summary: SummaryReview
+  summary: { summary: SummaryResult; etag?: string; isCurrent?: boolean }
   decisions: DecisionReview[]
   actionItems: ActionItemReview[]
 }
@@ -396,6 +397,62 @@ function mediaBodySize(body: Blob | ArrayBuffer): number {
 
 function normalizeContentType(contentType: string): string {
   return contentType.split(';', 1)[0]?.trim().toLowerCase() ?? ''
+}
+
+const uploadMimes: Readonly<Record<string, readonly string[]>> = {
+  wav: ['audio/wav', 'audio/x-wav', 'audio/wave', 'audio/vnd.wave'],
+  mp3: ['audio/mpeg', 'audio/mp3', 'audio/x-mp3', 'audio/x-mpeg'],
+  m4a: [
+    'audio/mp4',
+    'audio/m4a',
+    'audio/x-m4a',
+    'video/mp4',
+    'application/mp4',
+  ],
+}
+const maxSourceBytes = 1024 ** 3
+
+export function audioUploadProblem(
+  filename: string,
+  type: string,
+  size: number
+): string | null {
+  const extension = /\.(wav|mp3|m4a)$/i
+    .exec(filename.trim())?.[1]
+    ?.toLowerCase()
+  if (!extension) return 'Choose a WAV, MP3, or AAC M4A recording.'
+  const mime = normalizeContentType(type)
+  if (
+    mime &&
+    mime !== 'application/octet-stream' &&
+    !uploadMimes[extension]?.includes(mime)
+  ) {
+    return 'The browser reported a media type that does not match the filename.'
+  }
+  if (!Number.isSafeInteger(size) || size <= 0)
+    return 'Choose a non-empty recording.'
+  if (size > maxSourceBytes)
+    return 'The recording exceeds the 1 GiB upload limit.'
+  return null
+}
+
+function signedMediaUrl(value: string): string {
+  const url = new URL(value)
+  if (
+    !['https:', 'http:'].includes(url.protocol) ||
+    url.username ||
+    url.password ||
+    url.hash
+  ) {
+    throw invalidInput('Core did not return a valid HTTP storage capability.')
+  }
+  if (
+    import.meta.env.DEV &&
+    url.origin === import.meta.env.VITE_LOCAL_MEDIA_STORAGE_ORIGIN
+  ) {
+    return `/__local-media${url.pathname}${url.search}`
+  }
+  return value
 }
 
 /**
@@ -501,18 +558,18 @@ async function createMediaUploadIntent(
 ): Promise<z.infer<typeof uploadIntentSchema>> {
   const path = `${meetingPath(meetingId)}/media/uploads`
   requireIdempotencyKey(idempotencyKey, 'media upload idempotency key')
-  const contentType = normalizeContentType(input.contentType)
-  if (
-    !input.originalFilename.trim() ||
-    !contentType ||
-    !Number.isSafeInteger(input.expectedSizeBytes) ||
-    input.expectedSizeBytes <= 0 ||
-    mediaBodySize(input.body) !== input.expectedSizeBytes
-  ) {
+  const problem = audioUploadProblem(
+    input.originalFilename,
+    input.contentType,
+    input.expectedSizeBytes
+  )
+  if (problem) throw invalidInput(problem)
+  if (mediaBodySize(input.body) !== input.expectedSizeBytes)
     throw invalidInput(
-      'Media filename, content type, body, and expected size must agree.'
+      'Recording size does not match the declared upload size.'
     )
-  }
+  const contentType =
+    normalizeContentType(input.contentType) || 'application/octet-stream'
 
   const response = await coreApi.post<unknown>(
     path,
@@ -544,7 +601,8 @@ function defaultUploadTransport(url: string, init: RequestInit) {
 async function putMediaCapability(
   intent: z.infer<typeof uploadIntentSchema>,
   input: MediaUploadInput,
-  uploadTransport: SignedUploadTransport
+  uploadTransport: SignedUploadTransport,
+  signal?: AbortSignal
 ): Promise<void> {
   if (intent.status === 'AVAILABLE') return
   if (intent.status !== 'PENDING_UPLOAD' || !intent.uploadUrl) {
@@ -558,13 +616,14 @@ async function putMediaCapability(
 
   let result: Response
   try {
-    result = await uploadTransport(intent.uploadUrl, {
+    result = await uploadTransport(signedMediaUrl(intent.uploadUrl), {
       method: 'PUT',
       credentials: 'omit',
       redirect: 'error',
       referrerPolicy: 'no-referrer',
       headers: { 'Content-Type': intent.requiredContentType },
       body: input.body,
+      ...(signal && { signal }),
     })
   } catch (error) {
     throw new CoreApiError({
@@ -608,7 +667,8 @@ export async function uploadAndFinalizeMeetingMedia(
   await putMediaCapability(
     intent,
     input,
-    options.uploadTransport ?? defaultUploadTransport
+    options.uploadTransport ?? defaultUploadTransport,
+    options.signal
   )
 
   const response = await coreApi.post<unknown>(
@@ -621,7 +681,34 @@ export async function uploadAndFinalizeMeetingMedia(
   )
   if (finalized.status !== 'AVAILABLE') {
     throw new CoreApiError({
-      message: `Media finalization returned ${finalized.status}.`,
+      message:
+        new Map([
+          [
+            'MEDIA_FORMAT_UNSUPPORTED',
+            'The audio container or codec does not match the filename. Use WAV, MP3, or AAC in M4A.',
+          ],
+          [
+            'MEDIA_UNREADABLE',
+            'Core could not read this recording. Verify the file and export it again.',
+          ],
+          [
+            'MEDIA_DURATION_EXCEEDED',
+            'The recording exceeds the configured duration limit.',
+          ],
+          [
+            'MEDIA_SIZE_INVALID',
+            'The uploaded recording does not match the declared size.',
+          ],
+          [
+            'MEDIA_AUDIO_TRACK_REQUIRED',
+            'The recording must contain an audio track.',
+          ],
+          [
+            'MEDIA_CONTENT_TYPE_MISMATCH',
+            'The signed upload media type did not match.',
+          ],
+        ]).get(finalized.failureCode ?? '') ??
+        `Media finalization returned ${finalized.status}.`,
       code: finalized.failureCode ?? 'MEDIA_FINALIZATION_FAILED',
       kind: 'http',
     })
@@ -666,6 +753,7 @@ export async function admitOperatorProcessingJob(
     signal
   )
   if (
+    job.jobType !== 'OFFLINE_MEETING_PROCESSING' ||
     job.meetingId !== meetingId ||
     job.sourceMediaId !== mediaId ||
     job.requestedByUserId !== expectedUserId
@@ -777,11 +865,106 @@ export async function fetchProcessingJob(
     `/processing-jobs/${encodeURIComponent(jobId)}`,
     requestOptions(signal)
   )
-  return readWithSchema(
+  const job = readWithSchema(
     { data: response, meta: {} },
     processingJobSchema,
     'Core API returned a malformed processing job response.'
   )
+  if (job.id !== jobId)
+    throw malformedResponse('Core did not return the requested processing job.')
+  return job
+}
+
+export async function fetchReviewAudio(
+  meetingId: string,
+  mediaId: string
+): Promise<string> {
+  requireSameOriginCoreApi()
+  requireIdentifier(mediaId, 'media ID')
+  const response = await coreApi.post<unknown>(
+    `${meetingPath(meetingId)}/media/${encodeURIComponent(mediaId)}/access-url`
+  )
+  return signedMediaUrl(
+    readWithSchema(
+      { data: response, meta: {} },
+      z.object({ url: z.string().url() }),
+      'Core API returned a malformed recording capability.'
+    ).url
+  )
+}
+
+const speakerSchema = z.object({
+  id: identifierSchema,
+  label: z.string(),
+  userId: nullableIdentifierSchema,
+  displayName: z.string().nullable(),
+})
+export type SpeakerCluster = z.infer<typeof speakerSchema>
+
+export async function fetchSpeakerClusters(
+  meetingId: string
+): Promise<SpeakerCluster[]> {
+  requireSameOriginCoreApi()
+  return readWithSchema(
+    {
+      data: await coreApi.get(`${meetingPath(meetingId)}/speaker-clusters`),
+      meta: {},
+    },
+    z.array(speakerSchema),
+    'Core API returned malformed speaker clusters.'
+  )
+}
+
+export async function mapSpeakerCluster(
+  meetingId: string,
+  clusterId: string,
+  etag: string,
+  userId: string | null
+) {
+  requireSameOriginCoreApi()
+  requireIdentifier(clusterId, 'speaker cluster ID')
+  requireIfMatch(etag)
+  await coreApi.patch(
+    `${meetingPath(meetingId)}/speaker-clusters/${encodeURIComponent(clusterId)}`,
+    { userId },
+    headerOptions('If-Match', etag)
+  )
+}
+
+export async function regenerateReviewedIntelligence(
+  evidence: FinalizedTranscriptEvidence,
+  idempotencyKey: string
+) {
+  requireSameOriginCoreApi()
+  const transcript = evidence.transcript
+  requireIdentifier(transcript.processingJobId, 'processing job ID')
+  requireIdempotencyKey(idempotencyKey, 'regeneration idempotency key')
+  const response = await coreApi.post<unknown>(
+    `/processing-jobs/${encodeURIComponent(transcript.processingJobId)}/meeting-intelligence/regenerate`,
+    {
+      transcriptId: transcript.id,
+      contentRevision: transcript.contentRevision,
+      correctionDigest: evidence.digest,
+    },
+    headerOptions('Idempotency-Key', idempotencyKey)
+  )
+  const derived = readWithSchema(
+    { data: response, meta: {} },
+    processingJobSchema,
+    'Core API returned a malformed processing job response.'
+  )
+  if (
+    derived.jobType !== 'DERIVED_STAGE_PROCESSING' ||
+    derived.id === transcript.processingJobId ||
+    derived.reprocessOfJobId !== transcript.processingJobId ||
+    derived.meetingId !== transcript.meetingId ||
+    derived.sourceMediaId !== transcript.sourceMediaId
+  ) {
+    throw malformedResponse(
+      'Core did not return MI-only work bound to the original reviewed recording.'
+    )
+  }
+  return derived
 }
 
 export async function fetchMeetingTranscript(
@@ -1032,6 +1215,78 @@ export async function readMeetingIntelligenceResults(
   return { summary, decisions, actionItems }
 }
 
+/** Use the generated version for this run, without replacing the selected Summary. */
+export async function readRunIntelligenceResults(
+  job: Pick<ProcessingJob, 'meetingId' | 'id'>,
+  signal?: AbortSignal
+): Promise<MeetingIntelligenceReview> {
+  requireSameOriginCoreApi()
+  const path = meetingPath(job.meetingId)
+  const versionSchema = summarySchema.extend({ isCurrent: z.boolean() })
+
+  async function readMatching<T>(
+    url: string,
+    size: number,
+    schema: z.ZodType<T>,
+    match: (item: T) => boolean
+  ) {
+    const matches: T[] = []
+    for (let page = 0; page < 100; page++) {
+      const response = await coreApi.getWithMeta<unknown>(
+        `${url}${url.includes('?') ? '&' : '?'}page=${page}&size=${size}`,
+        requestOptions(signal)
+      )
+      matches.push(
+        ...readWithSchema(
+          response,
+          z.array(schema),
+          'Core returned a malformed result page.'
+        ).filter(match)
+      )
+      const pagination = z
+        .object({ hasNext: z.boolean() })
+        .safeParse(response.meta.pagination)
+      if (!pagination.success)
+        throw malformedResponse('Core did not return result pagination.')
+      if (!pagination.data.hasNext) return matches
+    }
+    throw malformedResponse(
+      'The result history exceeds the bounded review window.'
+    )
+  }
+
+  const byRun = (item: {
+    meetingId: string
+    processingJobId?: string | null
+  }) => item.meetingId === job.meetingId && item.processingJobId === job.id
+  const [versions, decisions, actionItems] = await Promise.all([
+    readMatching(`${path}/summary/versions`, 20, versionSchema, byRun),
+    readMatching(`${path}/decisions`, 100, decisionSchema, byRun),
+    readMatching(
+      `/action-items?meetingId=${encodeURIComponent(job.meetingId)}`,
+      100,
+      actionItemSchema,
+      byRun
+    ),
+  ])
+  const summary = versions.find((version) => !version.isStale)
+  if (!summary)
+    throw malformedResponse(
+      'No current-source Summary version was found for this run.'
+    )
+  return {
+    summary: { summary, isCurrent: summary.isCurrent },
+    decisions: decisions.map((decision) => ({
+      decision,
+      etag: decisionEtag(decision),
+    })),
+    actionItems: actionItems.map((actionItem) => ({
+      actionItem,
+      etag: actionItemEtag(actionItem),
+    })),
+  }
+}
+
 async function reviewDecision(
   meetingId: string,
   decisionId: string,
@@ -1076,6 +1331,38 @@ export function rejectDecision(
   signal?: AbortSignal
 ) {
   return reviewDecision(meetingId, decisionId, 'reject', ifMatch, signal)
+}
+
+export async function assignProposedActionItem(
+  actionItemId: string,
+  ifMatch: string,
+  assigneeUserId: string
+): Promise<ActionItemReview> {
+  requireSameOriginCoreApi()
+  requireIdentifier(actionItemId, 'Action Item ID')
+  requireIdentifier(assigneeUserId, 'assignee ID')
+  requireIfMatch(ifMatch)
+  const response = await coreApi.patchWithMetaAndEtag<unknown>(
+    `/action-items/${encodeURIComponent(actionItemId)}`,
+    { assigneeUserId },
+    headerOptions('If-Match', ifMatch)
+  )
+  const { data: actionItem, etag } = readWithSchemaAndEtag(
+    response,
+    actionItemSchema,
+    'Core API returned a malformed Action Item assignment.',
+    'Core API did not return the updated Action Item ETag.'
+  )
+  if (
+    actionItem.id !== actionItemId ||
+    actionItem.assigneeUserId !== assigneeUserId ||
+    actionItem.status !== 'PROPOSED'
+  ) {
+    throw malformedResponse(
+      'Core did not assign the selected user to this proposal.'
+    )
+  }
+  return { actionItem, etag }
 }
 
 async function reviewActionItem(

@@ -11,6 +11,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.time.Duration;
 import java.util.Map;
+import software.amazon.awssdk.awscore.AwsRequestOverrideConfiguration;
 import software.amazon.awssdk.core.sync.RequestBody;
 import jakarta.annotation.PreDestroy;
 import org.springframework.stereotype.Component;
@@ -37,12 +38,18 @@ import org.apache.http.conn.DnsResolver;
 @Component
 public class S3ObjectStorageAdapter implements ObjectStorage {
     private final MediaProperties.Storage properties;
+    private final Duration sourceTransferTimeout;
     private final S3Client client;
     private final S3Presigner presigner;
     private final S3Presigner exportPresigner;
 
     public S3ObjectStorageAdapter(MediaProperties properties) {
         this.properties = properties.getStorage();
+        this.sourceTransferTimeout = properties.getUpload().getSourceTransferTimeout();
+        if (sourceTransferTimeout == null || sourceTransferTimeout.isZero() || sourceTransferTimeout.isNegative()
+                || sourceTransferTimeout.compareTo(Duration.ofMinutes(10)) > 0) {
+            throw new IllegalStateException("Source transfer timeout must be within ten minutes.");
+        }
         var endpoint = URI.create(this.properties.getEndpoint());
         String connectHost = blankToNull(this.properties.getConnectHost());
         String tlsServerName = blankToNull(this.properties.getTlsServerName());
@@ -199,6 +206,44 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
     }
 
     @Override
+    public boolean downloadSourceTo(String objectKey, Path destination, long expectedBytes) throws IOException {
+        ExportObjectKeyPolicy.denyGenericMediaOperation(objectKey);
+        if (expectedBytes <= 0) throw new IllegalArgumentException("Positive source size required.");
+        long started = System.nanoTime();
+        var request = GetObjectRequest.builder().bucket(properties.getBucket()).key(objectKey)
+            .overrideConfiguration(sourceTransferConfiguration()).build();
+        try (var input = client.getObject(request);
+                var output = Files.newOutputStream(destination, StandardOpenOption.WRITE,
+                    StandardOpenOption.TRUNCATE_EXISTING)) {
+            boolean completed = false;
+            try {
+                var response = input.response();
+                if (response.contentLength() == null || response.contentLength() != expectedBytes
+                        || response.contentEncoding() != null) return false;
+                byte[] buffer = new byte[128 * 1024];
+                long remaining = expectedBytes;
+                while (remaining > 0) {
+                    int count = input.read(buffer, 0, (int) Math.min(remaining, buffer.length));
+                    if (System.nanoTime() - started >= sourceTransferTimeout.toNanos())
+                        throw new IOException("Source transfer timed out.");
+                    if (count < 0) return false;
+                    output.write(buffer, 0, count);
+                    remaining -= count;
+                }
+                completed = input.read() == -1;
+                return completed;
+            } finally {
+                // Abort an unconsumed response; close must not drain an oversized source.
+                if (!completed) input.abort();
+            }
+        }
+    }
+
+    private AwsRequestOverrideConfiguration sourceTransferConfiguration() {
+        return AwsRequestOverrideConfiguration.builder().apiCallTimeout(this.sourceTransferTimeout).build();
+    }
+
+    @Override
     public byte[] readBounded(String objectKey, int maximum) throws IOException {
         if (maximum < 1 || maximum > ExportObjectKeyPolicy.maximumReadBytes(objectKey)) {
             throw new IllegalArgumentException("Invalid result read limit.");
@@ -218,14 +263,24 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
 
     @Override
     public boolean putAcceptedIfAbsent(String objectKey, Path validatedFile, String sha256) {
+        return putValidatedIfAbsent(objectKey, validatedFile, sha256, null);
+    }
+
+    @Override
+    public boolean putAcceptedSourceIfAbsent(String objectKey, Path validatedFile, String sha256,
+            String contentType) {
+        return putValidatedIfAbsent(objectKey, validatedFile, sha256, contentType);
+    }
+
+    private boolean putValidatedIfAbsent(String objectKey, Path validatedFile, String sha256, String contentType) {
         ExportObjectKeyPolicy.denyGenericMediaOperation(objectKey);
         var request = PutObjectRequest.builder()
             .bucket(this.properties.getBucket()).key(objectKey)
             .ifNoneMatch("*")
-            .metadata(Map.of("sha256", sha256))
-            .build();
+            .metadata(Map.of("sha256", sha256));
+        if (contentType != null) request.contentType(contentType).overrideConfiguration(sourceTransferConfiguration());
         try {
-            this.client.putObject(request, RequestBody.fromFile(validatedFile));
+            this.client.putObject(request.build(), RequestBody.fromFile(validatedFile));
             return true;
         } catch (S3Exception exception) {
             if (exception.statusCode() == 412) return false;

@@ -232,6 +232,7 @@ class ModelRequest:
     # Opaque Core-backed capability installed only for the live MI worker.
     # It is deliberately not serializable and never enters the provider payload.
     provider_attempts: object | None = field(default=None, repr=False)
+    retry_budget: object | None = field(default=None, repr=False, compare=False)
 
 
 def payload_for(model: str, reasoning_effort: str, task: TaskSpec, evidence_json: str, output_budget: int) -> dict:

@@ -83,16 +83,7 @@ public class IntelligenceWorkerRepository {
             """,job,limits.summaryAttempts(),limits.decisionAttempts(),limits.actionItemAttempts(),
             limits.aggregateAttempts(),limits.reservedTokens(),limits.estimatedCost(),
             limits.inputCost(),limits.outputCost());
-        var budget=budget(job);
-        if(budget.summaryCeiling()!=limits.summaryAttempts()
-            || budget.decisionCeiling()!=limits.decisionAttempts()
-            || budget.actionItemCeiling()!=limits.actionItemAttempts()
-            || budget.aggregateCeiling()!=limits.aggregateAttempts()
-            || budget.tokenCeiling()!=limits.reservedTokens()
-            || budget.costCeiling().compareTo(limits.estimatedCost())!=0
-            || budget.inputCost().compareTo(limits.inputCost())!=0
-            || budget.outputCost().compareTo(limits.outputCost())!=0)
-            throw WorkerException.conflict("WORKER_BUDGET_CONFIGURATION_CONFLICT");
+        // Changes to deployment policy do not refill or invalidate an existing job ledger.
     }
     public Budget budget(UUID job) {
         return jdbc.query("""

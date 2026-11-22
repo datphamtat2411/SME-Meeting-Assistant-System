@@ -17,7 +17,7 @@ from .test_chunk_planning import result_factory as result_factory  # noqa: F401
 @pytest.mark.parametrize("approved", [20, 42, 43, 256])
 def test_long_recording_uses_actual_27_chunk_plan_and_fails_before_spending(result_factory, approved):
     config = Settings(_env_file=None, service_name="test-ai", service_identity="ai-core",
-                      audio_asr_max_total_calls=approved)
+                      audio_asr_max_total_calls=approved, audio_asr_recovery_max_total_attempts=16)
     preprocessing = result_factory(8476374)
     provider = Provider()
     runner = AsrStrategyRunner(provider, config)

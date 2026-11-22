@@ -21,6 +21,14 @@ public interface ObjectStorage {
     }
     StoredObject head(String objectKey);
     void downloadTo(String objectKey, Path destination) throws IOException;
+    /** Stream an exact-length source; false means the object changed or did not match the intent. */
+    default boolean downloadSourceTo(String objectKey, Path destination, long expectedBytes) throws IOException {
+        throw new UnsupportedOperationException("Bounded source storage is not installed.");
+    }
+    default boolean putAcceptedSourceIfAbsent(String objectKey, Path validatedFile, String sha256,
+            String contentType) {
+        throw new UnsupportedOperationException("Accepted source storage is not installed.");
+    }
     /** Bounded private read. Implementations enforce the namespace-specific limit during streaming. */
     default byte[] readBounded(String objectKey, int maximum) throws IOException {
         throw new UnsupportedOperationException("Bounded result storage is not installed.");

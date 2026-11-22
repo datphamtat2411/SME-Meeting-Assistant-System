@@ -526,6 +526,22 @@ def test_summary_keeps_personal_assignment_acceptance_out_of_group_agreement():
     assert error.value.diagnostic.rule == "AGREEMENT_UNSUPPORTED"
 
 
+def test_grounded_summary_survives_an_independently_unsupported_agreement():
+    context = stage(snapshot(("Đã kiểm thử API thanh toán.", "Tôi đồng ý nhận việc cập nhật lịch.")))
+
+    def callback(request):
+        first, second = _all_window_units(request)
+        return _evidence_output(request, [
+            _unit(first["text"], "FACT", [_reference(first)]),
+            _unit(second["text"], "AGREEMENT", [_reference(second)]),
+        ])
+
+    result = SummaryProcessor(settings(), ScriptedAdapter(callback))(context)["result"]
+    assert "GROUNDING_CLAIM_DISCARDED" in result["warnings"]
+    assert "Đã kiểm thử API thanh toán" in result["content"]
+    assert "Kết quả được thống nhất" not in result["content"]
+
+
 def test_summary_does_not_promote_mere_acknowledgment_to_agreement():
     statement = "Quang xác nhận đã nghe phần báo cáo."
     context = stage(snapshot((statement,)))
@@ -572,9 +588,9 @@ def test_summary_agreement_citation_must_include_approval_phrase():
             ]),
         ])
 
-    with pytest.raises(IntelligenceError) as narrow_error:
-        SummaryProcessor(settings(), ScriptedAdapter(narrow_callback))(context)
-    assert narrow_error.value.diagnostic.rule == "AGREEMENT_UNSUPPORTED"
+    repaired = SummaryProcessor(settings(), ScriptedAdapter(narrow_callback))(context)["result"]
+    assert "GROUNDING_CLAIM_REPAIRED" in repaired["warnings"]
+    assert "Kết quả được thống nhất" in repaired["content"]
 
     def complete_callback(request):
         evidence = _all_window_units(request)[0]
@@ -799,9 +815,10 @@ def test_final_synthesis_rejects_invalid_references_and_unresolved_agreement_pro
         item = evidence[-1]
         return _evidence_output(request, [_unit(item["text"], "REJECTION", [_reference(item)])])
 
-    with pytest.raises(IntelligenceError, match="GROUNDING_FAILURE") as conflict_error:
-        SummaryProcessor(_hierarchical_settings(), ScriptedAdapter(conflict_callback))(context)
-    assert conflict_error.value.diagnostic.rule == "AGREEMENT_CONTRADICTED"
+    resolved = SummaryProcessor(_hierarchical_settings(), ScriptedAdapter(conflict_callback))(context)["result"]
+    assert "Kết quả được thống nhất" not in resolved["content"]
+    assert "nhóm bác bỏ triển khai API" in resolved["content"]
+    assert "GROUNDING_CLAIM_DISCARDED" in resolved["warnings"]
 
     def invalid_reference_callback(request):
         if request.task.schema.name == "summary_window_evidence":
@@ -813,8 +830,9 @@ def test_final_synthesis_rejects_invalid_references_and_unresolved_agreement_pro
             return output
         return _responsive_output(request)
 
-    with pytest.raises(IntelligenceError, match="INVALID_REFERENCE"):
-        SummaryProcessor(_hierarchical_settings(), ScriptedAdapter(invalid_reference_callback))(context)
+    result = SummaryProcessor(_hierarchical_settings(), ScriptedAdapter(invalid_reference_callback))(context)["result"]
+    assert "GROUNDING_CLAIM_DISCARDED" in result["warnings"]
+    assert "API" in result["content"]
 
 
 def test_invalid_final_schema_and_overlong_rendering_fail_closed():

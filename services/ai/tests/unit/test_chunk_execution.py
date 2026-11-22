@@ -177,7 +177,7 @@ def test_exact_first_middle_last_wav_and_silence_are_preserved(handoff, monkeypa
         assert result.timeline_segments == (AsrTimelineSegment(
             result.candidate.segments[0], result.chunk.request_interval,
         ),)
-    assert transcriber.calls == [chunk.chunk_id for chunk in plan.chunks]
+    assert sorted(transcriber.calls) == [chunk.chunk_id for chunk in plan.chunks]
     assert audio.path.read_bytes() == original
     assert not caplog.records
 
@@ -549,7 +549,7 @@ def test_executor_resources_released_on_provider_failure_and_cancellation(handof
         assert len(futures) == 3
     else:
         with pytest.raises(cancel):
-            execute_asr_chunks(plan, audio, Transcriber(transcribe), settings())
+            execute_asr_chunks(plan, audio, Transcriber(transcribe), settings(audio_asr_max_concurrent_chunks=1))
         assert len(futures) == 1  # No work submitted after cancellation.
     assert executors and all(not thread.is_alive() for e in executors for thread in e._threads)
     assert all(future.done() or future.cancelled() for future in futures)

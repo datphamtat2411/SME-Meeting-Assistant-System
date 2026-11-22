@@ -201,6 +201,17 @@ class ActionItemProposalSinkIntegrationTests {
     }
 
     @Test
+    void partialGroundingRecoveryLeavesProposalUnconfirmedAndPersistsStageWarning() {
+        assertThat(handoff.handoff(claim(),source,candidates(),true)).isEqualTo(new Receipt(false,1));
+        assertThat(receiptCount()).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+            SELECT status||':'||error_code FROM processing_stage_runs WHERE id=?
+            """,String.class,stage)).isEqualTo("SUCCEEDED_WITH_WARNING:GROUNDING_CLAIM_DISCARDED");
+        assertThat(jdbc.queryForObject("SELECT status FROM action_items WHERE id=?",String.class,soleItem()))
+            .isEqualTo("PROPOSED");
+    }
+
+    @Test
     void historicalSnapshotCanProduceStaleProposalWithoutOfficialAssignment() {
         jdbc.update("UPDATE transcripts SET content_revision=4 WHERE id=?",transcript);
         assertThat(handoff.handoff(claim(),source,candidates())).isEqualTo(new Receipt(false,1));

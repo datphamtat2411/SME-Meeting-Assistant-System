@@ -181,7 +181,9 @@ public class IntelligenceResultAcceptance {
 
         // Critical: if the Media lease expired, was superseded, or the job
         // stopped running, this throws and rolls back receipt + every row.
-        media.completeStage(claim,"SUCCEEDED",null,null);
+        String groundingWarning = AiQualityMetadata.stageGroundingWarning(payload.warnings());
+        media.completeStage(claim, groundingWarning == null ? "SUCCEEDED" : "SUCCEEDED_WITH_WARNING",
+            groundingWarning, null);
         audit.resultAccepted(stage.meetingId(),receiptId,stage.jobId(),claim.stageRunId(),
             source.transcript(),source.revision(),payload.resultType(),written);
         metrics.committed("ai_result_ingestion", "ACCEPTED");

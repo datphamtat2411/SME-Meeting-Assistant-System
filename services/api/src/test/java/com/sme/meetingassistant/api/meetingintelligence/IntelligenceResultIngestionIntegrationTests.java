@@ -168,6 +168,7 @@ class IntelligenceResultIngestionIntegrationTests {
         mvc.perform(get(url).principal(organizer))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.data[0].status").value("PROPOSED"))
+            .andExpect(jsonPath("$.data[0].processingJobId").value(job.toString()))
             .andExpect(jsonPath("$.data[0].evidenceSegmentIds[0]")
                 .value(segment.toString()));
 
@@ -209,6 +210,24 @@ class IntelligenceResultIngestionIntegrationTests {
             SELECT count(*) FROM audit_events WHERE meeting_id=?
                 AND action_code='MI_AI_RESULT_ACCEPTED'
             """,Integer.class,meeting)).isEqualTo(1);
+    }
+
+    @Test
+    void recoveredSummaryWarningsAreStoredInReceiptAndExposedToOrganizer() throws Exception {
+        StageClaim stage=claim("SUMMARY",1);
+        String result = """
+            {"content":"Supported evidence", "warnings":["GROUNDING_CLAIM_DISCARDED","GROUNDING_CLAIM_REPAIRED"]}
+            """;
+        ingest.ingest(stage,expose(stage,envelope("SUMMARY",stage,result)));
+        assertThat(jdbc.queryForObject("""
+            SELECT array_to_string(result_warning_codes,',')
+            FROM meeting_intelligence_result_receipts WHERE stage_run_id=?
+            """,String.class,stage.stageRunId())).isEqualTo("GROUNDING_CLAIM_DISCARDED,GROUNDING_CLAIM_REPAIRED");
+        mvc.perform(get("/api/v1/meetings/"+meeting+"/summary").principal(()->actor.toString()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.qualityStatus").value("READY_WITH_WARNINGS"))
+            .andExpect(jsonPath("$.data.aiWarnings[0]").value("GROUNDING_CLAIM_DISCARDED"))
+            .andExpect(jsonPath("$.data.aiWarnings[1]").value("GROUNDING_CLAIM_REPAIRED"));
     }
 
 

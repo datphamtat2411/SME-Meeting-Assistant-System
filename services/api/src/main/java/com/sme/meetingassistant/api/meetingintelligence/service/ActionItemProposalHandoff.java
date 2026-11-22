@@ -61,6 +61,12 @@ public class ActionItemProposalHandoff {
     @Transactional
     public ActionItemProposalSink.Receipt handoff(StageClaim claim, SourceReference source,
             List<ActionItemProposalSink.Candidate> candidates) {
+        return handoff(claim, source, candidates, false);
+    }
+
+    @Transactional
+    public ActionItemProposalSink.Receipt handoff(StageClaim claim, SourceReference source,
+            List<ActionItemProposalSink.Candidate> candidates, boolean groundingWarning) {
         if (claim == null || claim.stageRunId() == null || claim.claimToken() == null
                 || source == null || source.snapshotId() == null
                 || source.transcriptId() == null || source.contentRevision() < 0
@@ -142,7 +148,8 @@ public class ActionItemProposalHandoff {
         // stage fails the live-claim check before reaching this method.
         // The DB transaction also rolls back newly written proposals if
         // Media's final stage fencing rejects completion.
-        media.completeStage(claim, "SUCCEEDED", null, null);
+        media.completeStage(claim, groundingWarning ? "SUCCEEDED_WITH_WARNING" : "SUCCEEDED",
+            groundingWarning ? AiQualityMetadata.CLAIM_DISCARDED : null, null);
         return receipt;
     }
 

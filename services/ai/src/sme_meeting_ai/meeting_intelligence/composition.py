@@ -1,6 +1,6 @@
 """Explicit opt-in composition for injected T02 processors; no registration."""
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from threading import Event
 
 from sme_meeting_ai.core.config import Settings
@@ -45,7 +45,7 @@ class PreparedContext:
 
     def execute_request(self, adapter: ModelAdapter, request: ModelRequest) -> ModelResult:
         self.budget.reserve(request)
-        result = adapter.complete(request)
+        result = adapter.complete(replace(request, retry_budget=self.budget))
         check_authority(self.deadline, self.cancelled)
         return result
 

@@ -19,10 +19,7 @@ public record IntelligenceResultPayload(
     long contentRevision, UUID inputSnapshotId, String sourceSha256,
     String summary, List<Candidate> candidates, List<String> warnings, Producer producer
 ) {
-    private static final Set<String> WARNING_CODES = Set.of(
-        "INCOMPLETE_COVERAGE", "UNRESOLVED_EVIDENCE", "SUSPICIOUS_EVIDENCE",
-        "SOURCE_QUALITY_WARNING"
-    );
+    private static final Set<String> WARNING_CODES = AiQualityMetadata.ALLOWED;
     public record Candidate(String key, String content, List<UUID> evidenceSegmentIds,
                             String uncertainty) { }
     public record Producer(String provider, String model, String promptVersion) { }
@@ -70,7 +67,7 @@ public record IntelligenceResultPayload(
         }
         List<String> warnings = new ArrayList<>();
         Set<String> uniqueWarnings = new HashSet<>();
-        for (Object w : list(result.get("warnings"),4)) {
+        for (Object w : list(result.get("warnings"),WARNING_CODES.size())) {
             String code = string(w,1,40);
             if (!WARNING_CODES.contains(code) || !uniqueWarnings.add(code)) invalid();
             warnings.add(code);

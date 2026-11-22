@@ -27,7 +27,7 @@ import org.springframework.stereotype.Repository;
 @Repository
 public class DecisionRepository {
     private static final String SELECT = """
-        SELECT d.id, d.meeting_id, d.content, d.status, d.source_type,
+        SELECT d.id, d.meeting_id, d.content, d.status, d.source_type, d.processing_job_id,
                d.transcript_id, d.content_revision, d.version, d.created_at,
                d.created_by_user_id, d.confirmed_at, d.confirmed_by_user_id,
                d.rejected_at, d.rejected_by_user_id, d.ai_uncertainty,
@@ -156,7 +156,8 @@ public class DecisionRepository {
             rs.getString("ai_uncertainty"),
             AiQualityMetadata.fromCsv(rs.getString("ai_warning_codes")),
             AiProducerView.nullable(rs.getString("producer_provider"),
-                rs.getString("producer_model"),rs.getString("producer_prompt_version")));
+                 rs.getString("producer_model"),rs.getString("producer_prompt_version")),
+             rs.getObject("processing_job_id", UUID.class));
     }
 
     private static Long nullableRevision(ResultSet rs, String name) throws SQLException {
@@ -182,7 +183,7 @@ public class DecisionRepository {
             evidence.getOrDefault(s.id(), List.of()), s.transcriptId(), s.contentRevision(),
             s.stale(), s.version(), s.createdAt(), s.createdBy(),
             s.confirmedAt(), s.confirmedBy(), s.rejectedAt(), s.rejectedBy(),
-            s.aiUncertainty(),s.aiWarnings(),s.aiProducer())).toList();
+             s.aiUncertainty(),s.aiWarnings(),s.aiProducer(),s.processingJobId())).toList();
     }
 
     private record State(
@@ -191,5 +192,5 @@ public class DecisionRepository {
         OffsetDateTime createdAt, UUID createdBy,
         OffsetDateTime confirmedAt, UUID confirmedBy,
         OffsetDateTime rejectedAt, UUID rejectedBy,
-        String aiUncertainty,List<String> aiWarnings,AiProducerView aiProducer) {}
+        String aiUncertainty,List<String> aiWarnings,AiProducerView aiProducer,UUID processingJobId) {}
 }

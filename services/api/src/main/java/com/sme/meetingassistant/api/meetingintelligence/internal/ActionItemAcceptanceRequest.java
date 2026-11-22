@@ -4,14 +4,22 @@ import com.sme.meetingassistant.api.actionitem.service.ActionItemProposalSink.Ca
 import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle.StageClaim;
 import com.sme.meetingassistant.api.media.worker.WorkerJson;
 import com.sme.meetingassistant.api.meetingintelligence.service.ActionItemProposalHandoff.SourceReference;
+import com.sme.meetingassistant.api.meetingintelligence.service.AiQualityMetadata;
 import java.time.LocalDate;
 import java.util.*;
 import tools.jackson.databind.JsonNode;
 
 /** Exact, versioned machine DTO. No business authority or storage location fields. */
-public record ActionItemAcceptanceRequest(UUID eventId,StageClaim claim,SourceReference source,List<Candidate> candidates) {
+public record ActionItemAcceptanceRequest(UUID eventId,StageClaim claim,SourceReference source,
+        List<Candidate> candidates, boolean groundingWarning) {
     public static ActionItemAcceptanceRequest parse(JsonNode input) {
-        WorkerJson.fields(input,"contractVersion","eventId","stageRunId","claimToken","source","candidates");
+        boolean hasWarning = input != null && input.has("groundingWarning");
+        if (hasWarning) {
+            WorkerJson.fields(input,"contractVersion","eventId","stageRunId","claimToken","source","candidates","groundingWarning");
+            WorkerJson.choice(input,"groundingWarning",AiQualityMetadata.CLAIM_DISCARDED);
+        } else {
+            WorkerJson.fields(input,"contractVersion","eventId","stageRunId","claimToken","source","candidates");
+        }
         WorkerJson.choice(input,"contractVersion","1.0");
         UUID event=WorkerJson.uuid(input,"eventId");
         var claim=new StageClaim(WorkerJson.uuid(input,"stageRunId"),WorkerJson.uuid(input,"claimToken"));
@@ -47,6 +55,6 @@ public record ActionItemAcceptanceRequest(UUID eventId,StageClaim claim,SourceRe
             WorkerJson.require(new HashSet<>(evidence).size()==evidence.size());
             candidates.add(new Candidate(key,title,details,due,evidence));
         }
-        return new ActionItemAcceptanceRequest(event,claim,source,List.copyOf(candidates));
+        return new ActionItemAcceptanceRequest(event,claim,source,List.copyOf(candidates),hasWarning);
     }
 }

@@ -6,6 +6,7 @@ import {
   OPERATOR_MI_SUMMARY_CONTRACT,
   acknowledgeTranscriptReview,
   actionItemEtag,
+  assignProposedActionItem,
   admitOperatorMeetingIntelligence,
   admitOperatorProcessingJob,
   admitProcessingJob,
@@ -17,7 +18,10 @@ import {
   fetchMeetingTranscript,
   fetchProcessingJob,
   isSameOriginCoreApi,
+  mapSpeakerCluster,
   readMeetingIntelligenceResults,
+  readRunIntelligenceResults,
+  regenerateReviewedIntelligence,
   rejectActionItem,
   rejectDecision,
   transcriptSegmentEtag,
@@ -475,6 +479,67 @@ describe('operator MI E2E workflow adapter', () => {
     expect(postSpy).toHaveBeenCalledTimes(2)
   })
 
+  it('uses the Core-signed AAC M4A MIME when the browser has no type', async () => {
+    const post = vi
+      .spyOn(coreApi, 'post')
+      .mockResolvedValueOnce({
+        mediaId: media.id,
+        status: 'PENDING_UPLOAD',
+        uploadUrl: 'https://storage.example.invalid/capability',
+        expiresAt: media.availableAt,
+        requiredContentType: 'audio/mp4',
+      })
+      .mockResolvedValueOnce({
+        ...media,
+        originalFilename: 'meeting.M4A',
+        contentType: 'audio/mp4',
+      })
+    const upload = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 200 }))
+    await uploadAndFinalizeMeetingMedia(
+      media.meetingId,
+      {
+        originalFilename: 'meeting.M4A',
+        contentType: '',
+        expectedSizeBytes: 3,
+        body: new Blob(['abc']),
+      },
+      'unsigned-mime-m4a',
+      { uploadTransport: upload }
+    )
+    expect(post).toHaveBeenNthCalledWith(
+      1,
+      '/meetings/meeting%2F1/media/uploads',
+      expect.objectContaining({ contentType: 'application/octet-stream' }),
+      expect.anything()
+    )
+    expect(upload).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        credentials: 'omit',
+        headers: { 'Content-Type': 'audio/mp4' },
+      })
+    )
+  })
+
+  it('rejects an incompatible declared MIME before requesting a signed PUT', async () => {
+    const post = vi.spyOn(coreApi, 'post')
+    await expect(
+      uploadAndFinalizeMeetingMedia(
+        media.meetingId,
+        {
+          originalFilename: 'meeting.wav',
+          contentType: 'audio/mpeg',
+          expectedSizeBytes: 3,
+          body: new Blob(['abc']),
+        },
+        'bad-mime'
+      )
+    ).rejects.toThrow('media type')
+    expect(post).not.toHaveBeenCalled()
+  })
+
   it('retains transcript and processing ETags and sends approved corrections with If-Match', async () => {
     const transcriptGetSpy = vi
       .spyOn(coreApi, 'getWithMetaAndEtag')
@@ -608,6 +673,98 @@ describe('operator MI E2E workflow adapter', () => {
     )
   })
 
+  it('maps a speaker using the exact transcript ETag and admits MI-only work against the original revision', async () => {
+    const patch = vi.spyOn(coreApi, 'patch').mockResolvedValue(null)
+    const derived = {
+      ...job,
+      id: 'derived-1',
+      jobType: 'DERIVED_STAGE_PROCESSING',
+      reprocessOfJobId: job.id,
+    }
+    const post = vi.spyOn(coreApi, 'post').mockResolvedValue(derived)
+    await mapSpeakerCluster(
+      job.meetingId,
+      'speaker-1',
+      '"t-transcript-1-0"',
+      null
+    )
+    expect(patch).toHaveBeenCalledWith(
+      '/meetings/meeting%2F1/speaker-clusters/speaker-1',
+      { userId: null },
+      { headers: { 'If-Match': '"t-transcript-1-0"' } }
+    )
+    const digest = 'a'.repeat(64)
+    await expect(
+      regenerateReviewedIntelligence(
+        { transcript, etag: '"t-transcript-1-0"', digest, coverage },
+        'mi-regeneration-1'
+      )
+    ).resolves.toEqual(derived)
+    expect(post).toHaveBeenCalledExactlyOnceWith(
+      '/processing-jobs/job-1/meeting-intelligence/regenerate',
+      {
+        transcriptId: transcript.id,
+        contentRevision: transcript.contentRevision,
+        correctionDigest: digest,
+      },
+      { headers: { 'Idempotency-Key': 'mi-regeneration-1' } }
+    )
+  })
+
+  it('reads a regenerated version without activating it or offering proposals from the original job', async () => {
+    const get = vi.spyOn(coreApi, 'getWithMeta').mockImplementation(
+      async (path) =>
+        ({
+          data: path.includes('/summary/versions')
+            ? [
+                { ...summary, isCurrent: true },
+                {
+                  ...summary,
+                  id: 'new-summary',
+                  versionNumber: 2,
+                  processingJobId: 'derived-1',
+                  isCurrent: false,
+                },
+              ]
+            : path.includes('/decisions')
+              ? [
+                  { ...decision, processingJobId: job.id },
+                  {
+                    ...decision,
+                    id: 'new-decision',
+                    processingJobId: 'derived-1',
+                  },
+                ]
+              : [
+                  { ...actionItem, processingJobId: job.id },
+                  {
+                    ...actionItem,
+                    id: 'new-task',
+                    processingJobId: 'derived-1',
+                  },
+                ],
+          meta: { pagination: { hasNext: false } },
+        }) as never
+    )
+    const post = vi.spyOn(coreApi, 'post')
+    const result = await readRunIntelligenceResults({
+      meetingId: job.meetingId,
+      id: 'derived-1',
+    })
+    expect(result.summary).toMatchObject({
+      summary: { id: 'new-summary' },
+      isCurrent: false,
+    })
+    expect(result.decisions.map(({ decision }) => decision.id)).toEqual([
+      'new-decision',
+    ])
+    expect(result.actionItems.map(({ actionItem }) => actionItem.id)).toEqual([
+      'new-task',
+    ])
+    expect(get).toHaveBeenCalledTimes(3)
+    expect(post).not.toHaveBeenCalled()
+  })
+
   it('reviews Summary, Decision, and Action Item results without making proposal decisions', async () => {
     const summarySpy = vi
       .spyOn(coreApi, 'getWithMetaAndEtag')
@@ -700,5 +857,32 @@ describe('operator MI E2E workflow adapter', () => {
       undefined,
       { headers: { 'If-Match': '"a-action-1-2"' } }
     )
+  })
+
+  it('assigns only the human-selected user with If-Match and does not confirm the proposal', async () => {
+    const assigned = {
+      ...actionItem,
+      assigneeUserId: identity.userId,
+      version: actionItem.version + 1,
+    }
+    const patch = vi.spyOn(coreApi, 'patchWithMetaAndEtag').mockResolvedValue({
+      data: assigned,
+      meta: {},
+      etag: actionItemEtag(assigned),
+    })
+    const post = vi.spyOn(coreApi, 'postWithMetaAndEtag')
+    await expect(
+      assignProposedActionItem(
+        actionItem.id,
+        actionItemEtag(actionItem),
+        identity.userId
+      )
+    ).resolves.toEqual({ actionItem: assigned, etag: actionItemEtag(assigned) })
+    expect(patch).toHaveBeenCalledExactlyOnceWith(
+      `/action-items/${actionItem.id}`,
+      { assigneeUserId: identity.userId },
+      { headers: { 'If-Match': actionItemEtag(actionItem) } }
+    )
+    expect(post).not.toHaveBeenCalled()
   })
 })

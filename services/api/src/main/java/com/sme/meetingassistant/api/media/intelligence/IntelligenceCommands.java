@@ -42,8 +42,8 @@ public final class IntelligenceCommands {
         version(n);
         return new AttemptReserve(uuid(n,"eventId"),uuid(n,"executionStageRunId"),uuid(n,"claimToken"),
             uuid(n,"attemptId"),choice(n,"executionStageCode","GENERATING_SUMMARY","EXTRACTING_DECISIONS","EXTRACTING_ACTION_ITEMS"),
-            number(n,"estimatedInputTokens",1,161970),number(n,"outputTokenCeiling",1,161970),
-            number(n,"reservedTokens",1,161970),decimal(n,"estimatedCostUsd"));
+            number(n,"estimatedInputTokens",1,272000),number(n,"outputTokenCeiling",1,128000),
+            number(n,"reservedTokens",1,400000),decimal(n,"estimatedCostUsd"));
     }
     public static AttemptReport attemptReport(JsonNode n) {
         fields(n,"contractVersion","eventId","executionStageRunId","claimToken","attemptId",

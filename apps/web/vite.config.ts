@@ -5,6 +5,7 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { tanstackRouter } from '@tanstack/router-plugin/vite'
 import { playwright } from '@vitest/browser-playwright'
+import { localMediaProxy } from './config/local-media-proxy'
 
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
@@ -20,22 +21,27 @@ export default defineConfig(({ mode }) => {
       }),
       react(),
       tailwindcss(),
+      ...(env.VITE_LOCAL_MEDIA_STORAGE_ORIGIN
+        ? [
+            localMediaProxy(
+              env.VITE_LOCAL_MEDIA_STORAGE_ORIGIN,
+              env.LOCAL_MEDIA_STORAGE_CA_FILE
+            ),
+          ]
+        : []),
     ],
     resolve: {
       alias: {
         '@': path.resolve(__dirname, './src'),
       },
     },
-    server: proxyTarget
-      ? {
-          proxy: {
-            '/api': {
-              target: proxyTarget,
-              changeOrigin: false,
-            },
-          },
-        }
-      : undefined,
+    server: {
+      proxy: {
+        ...(proxyTarget && {
+          '/api': { target: proxyTarget, changeOrigin: false },
+        }),
+      },
+    },
     test: {
       silent: 'passed-only',
       unstubEnvs: true,

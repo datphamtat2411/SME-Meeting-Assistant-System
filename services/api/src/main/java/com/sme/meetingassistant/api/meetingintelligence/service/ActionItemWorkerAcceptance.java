@@ -19,7 +19,13 @@ public class ActionItemWorkerAcceptance {
     @Transactional
     public ActionItemProposalSink.Receipt accept(UUID event,StageClaim claim,
             ActionItemProposalHandoff.SourceReference source,List<ActionItemProposalSink.Candidate> candidates,String peer) {
+        return accept(event, claim, source, candidates, peer, false);
+    }
+    @Transactional
+    public ActionItemProposalSink.Receipt accept(UUID event,StageClaim claim,
+            ActionItemProposalHandoff.SourceReference source,List<ActionItemProposalSink.Candidate> candidates,String peer,
+            boolean groundingWarning) {
         worker.requireActionItemOwner(event,claim,source.snapshotId(),peer);
-        return handoff.handoff(claim,source,candidates);
+        return handoff.handoff(claim,source,candidates,groundingWarning);
     }
 }
