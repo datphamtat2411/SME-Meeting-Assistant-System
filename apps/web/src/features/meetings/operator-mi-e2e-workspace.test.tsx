@@ -207,10 +207,14 @@ describe('OperatorMiE2eWorkspace', () => {
       })
     )
     await expect
-      .element(screen.getByLabelText('Correction for segment 1', { exact: true }))
+      .element(
+        screen.getByLabelText('Correction for segment 1', { exact: true })
+      )
       .toBeInTheDocument()
     await expect
-      .element(screen.getByLabelText('Correction for segment 30', { exact: true }))
+      .element(
+        screen.getByLabelText('Correction for segment 30', { exact: true })
+      )
       .not.toBeInTheDocument()
     await userEvent.click(
       screen.getByRole('button', { name: 'Next transcript page' })
@@ -319,10 +323,11 @@ describe('OperatorMiE2eWorkspace', () => {
     const approval = screen.getByRole('checkbox').nth(4)
     await expect
       .element(
-        screen.getByText(
-          'Edit the transcript text above before approving this correction.',
-          { exact: true }
-        )
+        screen
+          .getByText(
+            'Edit the transcript text above before approving this correction.',
+            { exact: true }
+          )
           .nth(3)
       )
       .toBeInTheDocument()
@@ -350,15 +355,10 @@ describe('OperatorMiE2eWorkspace', () => {
       .toBeInTheDocument()
     expect(
       workflowMocks.applyApprovedTranscriptCorrection
-    ).toHaveBeenCalledWith(
-      meeting.id,
-      'segment-3',
-      '"s-segment-3-0"',
-      {
-        text: correctedText,
-        reason: null,
-        operatorApproved: true,
-      }
-    )
+    ).toHaveBeenCalledWith(meeting.id, 'segment-3', '"s-segment-3-0"', {
+      text: correctedText,
+      reason: null,
+      operatorApproved: true,
+    })
   })
 })

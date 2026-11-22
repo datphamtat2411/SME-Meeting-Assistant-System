@@ -10,8 +10,8 @@ from .contracts import canonical_json, identifier, valid_text
 from .errors import require
 from .grounding import (
     DISCARDED,
-    REPAIRED,
     GROUNDING_DIAGNOSTIC_VERSION,
+    REPAIRED,
     RESULT_WARNING_CODES,
     validate_diagnostic_counts,
     validate_diagnostic_payloads,

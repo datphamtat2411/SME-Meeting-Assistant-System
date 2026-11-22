@@ -181,11 +181,14 @@ public class TranscriptRepository implements ProcessingTranscriptEvidence {
             SELECT EXISTS (
               SELECT 1 FROM processing_jobs candidate
               JOIN processing_jobs newer ON newer.meeting_id=candidate.meeting_id
-              WHERE candidate.id=? AND candidate.meeting_id=?
-                AND newer.id<>candidate.id
-                AND (newer.reprocess_of_job_id=candidate.id
-                  OR newer.created_at>candidate.created_at
-                  OR (newer.created_at=candidate.created_at AND newer.id>candidate.id))
+                WHERE candidate.id=? AND candidate.meeting_id=?
+                  AND newer.id<>candidate.id
+                  AND (newer.reprocess_of_job_id=candidate.id
+                    OR (
+                      candidate.reprocess_of_job_id IS DISTINCT FROM newer.id
+                      AND (newer.created_at>candidate.created_at
+                        OR (newer.created_at=candidate.created_at AND newer.id>candidate.id))
+                    ))
             )
             """, Boolean.class, result.processingJobId(), result.meetingId()));
         boolean promote = !newerJobExists

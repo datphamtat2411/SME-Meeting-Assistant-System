@@ -25,9 +25,9 @@ from .errors import (
 from .evidence import EvidenceSource
 from .grounding import (
     DISCARDED,
+    GROUNDING_DIAGNOSTIC_VERSION,
     REPAIRED,
     RESULT_WARNING_CODES,
-    GROUNDING_DIAGNOSTIC_VERSION,
     GroundingChanges,
     diagnostic_counts,
 )

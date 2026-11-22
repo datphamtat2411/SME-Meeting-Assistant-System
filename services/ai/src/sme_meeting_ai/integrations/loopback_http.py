@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 import httpcore
-import httpx
 from httpx._transports.default import AsyncHTTPTransport, HTTPTransport
 
 

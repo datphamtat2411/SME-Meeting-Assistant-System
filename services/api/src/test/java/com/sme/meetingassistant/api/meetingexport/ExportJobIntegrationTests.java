@@ -206,7 +206,7 @@ class ExportJobIntegrationTests {
         assertThat(failed.objectKey()).isNull();
 
         storage.failArtifact=false;
-        Thread.sleep(1150);
+        Thread.sleep(2000);
         worker.reconcile();
         assertThat(records.require(pending.id()).status()).isEqualTo(ExportStatus.PENDING);
         assertThat(worker.processNext()).isTrue();

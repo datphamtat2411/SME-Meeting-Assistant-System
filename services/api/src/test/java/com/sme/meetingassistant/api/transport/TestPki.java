@@ -2,13 +2,21 @@ package com.sme.meetingassistant.api.transport;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 
 /** Ephemeral isolated PKI. Never used for shared development enrollment. */
 public final class TestPki {
+    private static final DateTimeFormatter OPENSSL_TIME =
+        DateTimeFormatter.ofPattern("yyMMddHHmmss'Z'").withZone(ZoneOffset.UTC);
+
     public static void create(Path dir) throws Exception {
         run(dir, "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2",
+            "-not_before", validityStart(),
             "-subj", "/CN=Isolated test CA", "-keyout", "ca.key", "-out", "ca.crt");
         run(dir, "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2",
+            "-not_before", validityStart(),
             "-subj", "/CN=Untrusted test CA", "-keyout", "rogue-ca.key", "-out", "rogue-ca.crt");
         issue(dir, "server", "DNS:localhost", "serverAuth", "ca", false);
         issue(dir, "worker", "URI:urn:sme:service:ai-worker", "clientAuth", "ca", false);
@@ -31,7 +39,8 @@ public final class TestPki {
             + "keyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=" + eku + "\nsubjectAltName=" + san + "\n");
         if (!expired) {
             run(dir, "openssl", "x509", "-req", "-in", name + ".csr", "-CA", ca + ".crt", "-CAkey", ca + ".key",
-                "-CAcreateserial", "-days", "1", "-extfile", name + ".ext", "-out", name + ".crt");
+                "-CAcreateserial", "-days", "1", "-not_before", validityStart(),
+                "-extfile", name + ".ext", "-out", name + ".crt");
         } else {
             Files.writeString(dir.resolve("index"), "");
             Files.writeString(dir.resolve("ca.cnf"), "[ca]\ndefault_ca=test\n[test]\ndatabase=index\nnew_certs_dir=.\n"
@@ -40,6 +49,10 @@ public final class TestPki {
                 "-keyfile", ca + ".key", "-startdate", "20200101000000Z", "-enddate", "20200102000000Z",
                 "-extfile", name + ".ext", "-in", name + ".csr", "-out", name + ".crt", "-notext");
         }
+    }
+
+    private static String validityStart() {
+        return OPENSSL_TIME.format(Instant.now().minusSeconds(60));
     }
 
     static void run(Path directory, String... command) throws Exception {

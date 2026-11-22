@@ -122,7 +122,7 @@ class Warning(WireModel):
     startSample: Count | None
     endSample: Count | None
     sourceChunkIds: list[Annotated[Token, Field(max_length=128)]] = Field(max_length=64)
-    phase: Literal["initial", "final", "attempt"] | None
+    phase: Literal["initial", "final", "attempt", "decode"] | None
 
     @model_validator(mode="after")
     def registry(self):

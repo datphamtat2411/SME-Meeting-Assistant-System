@@ -5,10 +5,15 @@ import pytest
 from intelligence_support import settings, snapshot, stage
 
 from sme_meeting_ai.integrations.intelligence import ExecutionBudget
-from sme_meeting_ai.meeting_intelligence.composition import CallCapacity, InferenceBudget
+from sme_meeting_ai.meeting_intelligence.composition import (
+    CallCapacity,
+    InferenceBudget,
+)
 from sme_meeting_ai.meeting_intelligence.errors import IntelligenceError
-from sme_meeting_ai.workers.intelligence import DurableProviderAttemptLedger, plan_downstream
-
+from sme_meeting_ai.workers.intelligence import (
+    DurableProviderAttemptLedger,
+    plan_downstream,
+)
 
 STAGES = ("GENERATING_SUMMARY", "EXTRACTING_DECISIONS", "EXTRACTING_ACTION_ITEMS")
 

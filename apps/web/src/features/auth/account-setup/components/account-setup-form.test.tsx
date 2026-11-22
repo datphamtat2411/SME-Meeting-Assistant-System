@@ -40,7 +40,9 @@ describe('AccountSetupForm', () => {
     await userEvent.click(submitButton)
 
     await expect
-      .element(screen.getByText(/^Password must be at least 15 characters long\.$/i))
+      .element(
+        screen.getByText(/^Password must be at least 15 characters long\.$/i)
+      )
       .toBeInTheDocument()
     expect(completeAccountSetup).not.toHaveBeenCalled()
   })

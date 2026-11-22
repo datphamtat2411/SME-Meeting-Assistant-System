@@ -109,6 +109,17 @@ def test_production_tls_wiring_is_required_and_has_no_plaintext_listener(
 
 
 @pytest.mark.parametrize("environment", ["production", "staging"])
+def test_missing_production_tls_is_rejected_before_server_construction(
+    selected, monkeypatch, capsys, environment,
+):
+    selected.environment = environment
+    monkeypatch.setattr(entrypoint.uvicorn, "Server", lambda config: pytest.fail("started"))
+
+    assert entrypoint.main() == 1
+    assert capsys.readouterr().err == "http.runtime.failed\n"
+
+
+@pytest.mark.parametrize("environment", ["production", "staging"])
 def test_launcher_application_fails_closed_before_readiness(
     selected, monkeypatch, capsys, environment,
 ):

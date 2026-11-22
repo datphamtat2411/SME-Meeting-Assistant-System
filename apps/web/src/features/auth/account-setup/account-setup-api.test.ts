@@ -1,8 +1,4 @@
-import {
-  AxiosHeaders,
-  type AxiosAdapter,
-  type AxiosResponse,
-} from 'axios'
+import { AxiosHeaders, type AxiosAdapter, type AxiosResponse } from 'axios'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { coreApiAxios, resetCsrfToken } from '@/lib/core-api'
 import { completeAccountSetup } from './account-setup-api'

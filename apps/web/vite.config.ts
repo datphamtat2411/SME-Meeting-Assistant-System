@@ -1,11 +1,11 @@
 /// <reference types="vitest/config" />
-import { readFileSync } from 'node:fs'
 import path from 'path'
 import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { tanstackRouter } from '@tanstack/router-plugin/vite'
 import { playwright } from '@vitest/browser-playwright'
+import { readFileSync } from 'node:fs'
 import { localMediaProxy } from './config/local-media-proxy'
 
 // https://vite.dev/config/

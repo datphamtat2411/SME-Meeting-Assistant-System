@@ -155,22 +155,32 @@ class RabbitConsumer:
                 or endpoint.port is None
             ):
                 raise ValueError
-            # aio-pika's make_url ignores login/password kwargs when URL is set.
-            # Build through its keyword form so external credentials really reach
-            # the transport, retaining TLS, explicit ports and encoded vhosts.
+            # Put credentials and the vhost in the URL. Private transport
+            # routing kwargs must not be handed to aio-pika.make_url: that
+            # function turns every remaining kwarg into URL query values.
+            broker_url = aio_pika.connection.make_url(
+                host=endpoint.hostname,
+                port=endpoint.port or 5671,
+                login=self.settings.rabbitmq_username.get_secret_value(),
+                password=self.settings.rabbitmq_password.get_secret_value(),
+                virtualhost=unquote(endpoint.path[1:]) if endpoint.path not in ("", "/") else "/",
+                ssl=True,
+            )
+            connection_kwargs = dict(
+                ssl_context=context,
+                timeout=self.settings.rabbitmq_connect_timeout_seconds,
+            )
+            if self.settings.rabbitmq_connect_host:
+                connection_kwargs.update(
+                    connection_class=_LoopbackRabbitConnection,
+                    connect_host=self.settings.rabbitmq_connect_host,
+                    server_hostname=self.settings.rabbitmq_tls_server_name or endpoint.hostname,
+                )
+            else:
+                connection_kwargs["connection_class"] = AioPikaConnection
             async with asyncio.timeout(self.settings.rabbitmq_connect_timeout_seconds):
                 self.connection = await aio_pika.connect(
-                    host=endpoint.hostname,
-                    port=endpoint.port or 5671, ssl=True,
-                    virtualhost=unquote(endpoint.path[1:]) if endpoint.path not in ("", "/") else "/",
-                    login=self.settings.rabbitmq_username.get_secret_value(),
-                    password=self.settings.rabbitmq_password.get_secret_value(), ssl_context=context,
-                    connection_class=_LoopbackRabbitConnection
-                    if self.settings.rabbitmq_connect_host
-                    else AioPikaConnection,
-                    connect_host=self.settings.rabbitmq_connect_host or endpoint.hostname,
-                    server_hostname=self.settings.rabbitmq_tls_server_name or endpoint.hostname,
-                    timeout=self.settings.rabbitmq_connect_timeout_seconds,
+                    broker_url, **connection_kwargs,
                 )
                 self.channel = await self.connection.channel()
                 await self.channel.set_qos(prefetch_count=self.prefetch)

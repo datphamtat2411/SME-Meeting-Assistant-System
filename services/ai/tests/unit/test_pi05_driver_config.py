@@ -1,7 +1,6 @@
 """PI-05 driver configuration is bounded and never starts live work in unit tests."""
 
 import pytest
-
 from integration import test_pi05_live as driver
 
 

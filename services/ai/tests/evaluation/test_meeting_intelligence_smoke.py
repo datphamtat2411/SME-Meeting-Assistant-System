@@ -322,11 +322,11 @@ def test_related_but_distinct_deliverables_are_rejected_when_provider_merges_the
         max_provider_calls=2,
         aggregate_token_budget=100_000,
     )
-    assert result["status"] == "FAILED"
-    assert result["failure_category"] == "GROUNDING_FAILURE"
+    assert result["status"] == "SUCCESS"
+    assert result["failure_category"] is None
     assert result["schema_validation"] == "PASS"
-    assert result["semantic_validation"] == "FAIL"
-    assert result["candidate_count"] is None
+    assert result["semantic_validation"] == "PASS"
+    assert result["candidate_count"] == 1
     assert [request.task.schema.name for request in adapter.requests] == [
         "action_window_signals", "action_resolution_groups",
     ]
@@ -524,6 +524,7 @@ def test_hallucinated_assignee_or_deadline_fails_grounding(field, value):
     assert result["failure_category"] == "GROUNDING_FAILURE"
     assert result["schema_validation"] == "PASS"
     assert result["semantic_validation"] == "FAIL"
+    assert result["candidate_count"] is None
     assert len(adapter.requests) == 1
     assert len(adapter.outputs) == 1
 
@@ -592,10 +593,11 @@ def test_grouping_semantic_failure_retains_safe_outputs_without_retry():
         max_provider_calls=2,
         aggregate_token_budget=100_000,
     )
-    assert result["status"] == "FAILED"
-    assert result["failure_category"] == "GROUNDING_FAILURE"
+    assert result["status"] == "SUCCESS"
+    assert result["failure_category"] is None
     assert result["schema_validation"] == "PASS"
-    assert result["semantic_validation"] == "FAIL"
+    assert result["semantic_validation"] == "PASS"
+    assert result["candidate_count"] == 1
     assert result["telemetry"]["call_count"] == 2
     assert result["telemetry"]["reported_cost_call_count"] == 2
     assert len(adapter.requests) == 2

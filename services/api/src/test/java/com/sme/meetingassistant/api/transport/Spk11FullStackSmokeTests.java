@@ -80,6 +80,7 @@ class Spk11FullStackSmokeTests {
     @Autowired CachingConnectionFactory connectionFactory;
     RabbitAdmin admin;
     UUID actor,meeting,media,job,stage,event,transcript;
+    TranscriptResult finalized;
     List<Map<String,Object>> upstream;
 
     static JsonNode readFixture() {
@@ -140,7 +141,8 @@ class Spk11FullStackSmokeTests {
         var correction=lifecycle.startStage(job,"CONTEXTUAL_CORRECTION",null,null);
         lifecycle.completeStage(correction,"SUCCEEDED",null,"{\"contextScope\":\"WHOLE_MEETING\",\"outputSha256\":\""+TranscriptCorrectionDigest.sha256(result(correction.stageRunId()))+"\",\"promptVersion\":\"spk11\"}");
         var finalizer=lifecycle.startStage(job,"FINALIZING_TRANSCRIPT",null,null);
-        finalization.finalizeTranscript(finalizer,result(finalizer.stageRunId()));
+        finalized=result(finalizer.stageRunId());
+        finalization.finalizeTranscript(finalizer,finalized);
         transcript=jdbc.queryForObject("SELECT id FROM transcripts WHERE processing_job_id=?",UUID.class,job);
         dispatch();upstream=upstream();
         assertThat(worker.status(job,event).get("state")).isEqualTo("AVAILABLE");
@@ -155,6 +157,23 @@ class Spk11FullStackSmokeTests {
             s.path("endMs").asLong(),s.path("text").asText(),"ACCEPTED",null,producer,null));
         return new TranscriptResult(meeting,media,job,producer,"vi",3000L,Status.READY,segments,
             List.of(new CoverageResult(100,2900,"COVERED",false,0,null)),List.of());
+    }
+
+    void admitTranscriptReview(TranscriptResult finalized) throws Exception {
+        String body="{\"transcriptId\":\""+transcript+"\",\"contentRevision\":"+revision()
+            +",\"correctionDigest\":\""+TranscriptCorrectionDigest.sha256(finalized)+"\"}";
+        var acknowledgement=mvc.perform(post("/api/v1/processing-jobs/"+job+"/transcript-review/acknowledge")
+            .principal(()->actor.toString()).header("Idempotency-Key",UUID.randomUUID().toString())
+            .contentType(MediaType.APPLICATION_JSON).content(body)).andReturn().getResponse();
+        assertThat(acknowledgement.getStatus()).as("Transcript review acknowledgement").isEqualTo(200);
+        String reviewId=WorkerJson.MAPPER.readTree(acknowledgement.getContentAsString())
+            .at("/data/reviewId").asText();
+        assertThat(reviewId).isNotBlank();
+        String admissionBody=body.substring(0,body.length()-1)+",\"reviewId\":\""+reviewId+"\"}";
+        var admission=mvc.perform(post("/api/v1/processing-jobs/"+job+"/meeting-intelligence/admit")
+            .principal(()->actor.toString()).header("Idempotency-Key",UUID.randomUUID().toString())
+            .contentType(MediaType.APPLICATION_JSON).content(admissionBody)).andReturn().getResponse();
+        assertThat(admission.getStatus()).as("Transcript review admission").isEqualTo(202);
     }
 
     void dispatch() {
@@ -190,6 +209,7 @@ class Spk11FullStackSmokeTests {
         assertThat(transcripts.speakers(meeting)).extracting(s->s.label()).containsExactlyInAnyOrderElementsOf(labels);
         List<String> assignments=new ArrayList<>();expected.path("assignments").forEach(n->assignments.add(n.isNull()?null:n.asText()));
         assertThat(transcripts.current(meeting).orElseThrow().segments()).extracting(s->s.speakerLabel()).containsExactlyElementsOf(assignments);
+        admitTranscriptReview(finalized);
         assertThat(clusters()).isEqualTo(labels.size());assertThat(content()).isEqualTo(before);
         assertThat(upstream()).isEqualTo(upstream);
         assertThat(stageStatus()).isEqualTo("SUCCEEDED");assertThat(jobStatus()).isEqualTo("COMPLETED");
@@ -229,6 +249,7 @@ class Spk11FullStackSmokeTests {
         assertThat(stageStatus()).isEqualTo("FAILED");assertThat(content()).isEqualTo(before);assertThat(clusters()).isZero();
         assertThat(transcripts.current(meeting).orElseThrow().status()).isEqualTo("READY");
         assertThat(worker.status(job,event)).containsEntry("state","FAILURE_RECORDED");
+        admitTranscriptReview(finalized);
         var indexing=lifecycle.startStage(job,"INDEXING",null,null);lifecycle.completeStage(indexing,"SUCCEEDED",null,null);lifecycle.completeJob(job);
         assertThat(jobStatus()).isEqualTo("COMPLETED_WITH_WARNINGS");
     }
@@ -367,7 +388,7 @@ class Spk11FullStackSmokeTests {
         // A real PostgreSQL error after projection, receipt and stage-success writes,
         // at the resulting terminal job transition in the same transaction.
         jdbc.execute("CREATE FUNCTION spk11_acceptance_fault() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'SPK11 injected acceptance fault'; END $$");
-        jdbc.execute("CREATE TRIGGER spk11_acceptance_fault AFTER UPDATE OF status ON processing_jobs FOR EACH ROW WHEN (NEW.status IN ('COMPLETED','COMPLETED_WITH_WARNINGS')) EXECUTE FUNCTION spk11_acceptance_fault()");
+        jdbc.execute("CREATE TRIGGER spk11_acceptance_fault AFTER UPDATE OF status ON processing_jobs FOR EACH ROW WHEN (NEW.status IN ('WAITING_FOR_REVIEW','COMPLETED','COMPLETED_WITH_WARNINGS')) EXECUTE FUNCTION spk11_acceptance_fault()");
         try {
             try(var process=process("two",null,Map.of())) {assertThat(process.finished().path("acks").asInt()).isZero();}
             assertThat(worker.status(job,event)).containsEntry("state","RESULT_VERIFIED").containsEntry("acknowledge",false);

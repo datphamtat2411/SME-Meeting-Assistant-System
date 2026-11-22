@@ -255,7 +255,7 @@ class DiarizationMetricsIntegrationTests extends DiarizationIntegrationFixture {
             INSERT INTO processing_diarization_dispatches(stage_run_id,processing_job_id,meeting_id,source_media_id,
                 source_revision,transcript_id,transcript_revision,event_id,created_at)
             SELECT x.stage_id,d.processing_job_id,d.meeting_id,d.source_media_id,d.source_revision,
-                d.transcript_id,d.transcript_revision,x.event_id,transaction_timestamp()-interval '49 hours'
+                d.transcript_id,d.transcript_revision,x.event_id,transaction_timestamp()-interval '50 hours'
             FROM spk12_plan_seed x CROSS JOIN processing_diarization_dispatches d WHERE d.event_id=?
             """,event);
         jdbc.update("""
@@ -275,7 +275,7 @@ class DiarizationMetricsIntegrationTests extends DiarizationIntegrationFixture {
             SELECT x.verification_id,v.processing_job_id,x.event_id,x.stage_id,x.stage_id,x.command_id,v.source_revision,
                 v.transcript_id,v.transcript_revision,v.result_sha256,v.storage_id,
                 'processing/' || v.processing_job_id || '/diarization/results/' || x.stage_id || '.json',v.size_bytes,
-                transaction_timestamp()-interval '49 hours'
+                transaction_timestamp()-interval '50 hours'
             FROM spk12_plan_seed x CROSS JOIN diarization_worker_verifications v WHERE v.event_id=?
             """,event);
         jdbc.update("""
@@ -370,7 +370,17 @@ class DiarizationMetricsIntegrationTests extends DiarizationIntegrationFixture {
                         "outbox_events","transcripts","processing_diarization_dispatches","diarization_worker_claims",
                         "diarization_worker_commands","diarization_worker_verifications"))
                 {
-                    String columns=String.join(",",jdbc.queryForList("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name=? AND is_generated='NEVER' ORDER BY ordinal_position",String.class,table));
+                    String columns=String.join(",",jdbc.queryForList("""
+                        SELECT source.column_name
+                        FROM information_schema.columns source
+                        JOIN information_schema.columns target
+                          ON target.table_schema=? AND target.table_name=source.table_name
+                         AND target.column_name=source.column_name
+                         AND target.is_generated='NEVER'
+                        WHERE source.table_schema='public' AND source.table_name=?
+                          AND source.is_generated='NEVER'
+                        ORDER BY source.ordinal_position
+                        """,String.class,schema,table));
                     jdbc.execute("INSERT INTO "+schema+"."+table+" ("+columns+") SELECT "+columns+" FROM public."+table);
                 }
             });

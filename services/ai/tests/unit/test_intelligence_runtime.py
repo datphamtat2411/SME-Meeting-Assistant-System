@@ -11,6 +11,7 @@ from pydantic import SecretStr
 from sme_meeting_ai.core.config import Settings
 from sme_meeting_ai.integrations.core_api import CoreError
 from sme_meeting_ai.integrations.intelligence import (
+    ExecutionBudget,
     IntelligenceCoreClient,
     IntelligenceEvent,
 )
@@ -79,6 +80,19 @@ def test_provider_attempt_control_contract_reserves_and_reports_without_acceptan
             executionStageRunId=item.executionStageRunId,
             executionStageCode=item.executionStageCode,
             claimToken=SecretStr(str(uuid4())),
+            budget=ExecutionBudget(
+                remainingStages=("GENERATING_SUMMARY",),
+                remainingStageAttempts={"GENERATING_SUMMARY": 16},
+                aggregateAttemptCeiling=44,
+                aggregateReservedAttempts=0,
+                reservedTokenCeiling=161970,
+                aggregateReservedTokens=0,
+                estimatedCostCeilingUsd="0.15",
+                aggregateEstimatedCostUsd="0",
+                aggregateReportedCostUsd="0",
+                inputCostPerMillionUsd="0.2",
+                outputCostPerMillionUsd="1",
+            ),
         )
         request = SimpleNamespace(
             window=SimpleNamespace(estimated_input_tokens=7431),

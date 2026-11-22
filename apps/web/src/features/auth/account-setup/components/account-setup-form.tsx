@@ -4,10 +4,7 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useNavigate } from '@tanstack/react-router'
 import { Loader2, ShieldCheck } from 'lucide-react'
-import {
-  normalizeCoreApiError,
-  type CoreApiError,
-} from '@/lib/core-api'
+import { normalizeCoreApiError, type CoreApiError } from '@/lib/core-api'
 import { cn } from '@/lib/utils'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -59,7 +56,9 @@ export function AccountSetupForm({
   if (!token) {
     return (
       <Alert variant='destructive'>
-        <AlertDescription>This setup link is missing or invalid.</AlertDescription>
+        <AlertDescription>
+          This setup link is missing or invalid.
+        </AlertDescription>
       </Alert>
     )
   }

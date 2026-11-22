@@ -27,9 +27,15 @@ from sme_meeting_ai.integrations.object_storage import ObjectStorage, StorageErr
 from sme_meeting_ai.meeting_intelligence.action_item_contract import (
     prepare_action_item_request,
 )
-from sme_meeting_ai.meeting_intelligence.action_items import build_action_item_processor, prepare_action_items
+from sme_meeting_ai.meeting_intelligence.action_items import (
+    build_action_item_processor,
+    prepare_action_items,
+)
 from sme_meeting_ai.meeting_intelligence.composition import CallCapacity
-from sme_meeting_ai.meeting_intelligence.decision import build_decision_processor, prepare_decisions
+from sme_meeting_ai.meeting_intelligence.decision import (
+    build_decision_processor,
+    prepare_decisions,
+)
 from sme_meeting_ai.meeting_intelligence.errors import IntelligenceError, require
 from sme_meeting_ai.meeting_intelligence.processor import StageContext
 from sme_meeting_ai.meeting_intelligence.result import ResultError, serialize_result

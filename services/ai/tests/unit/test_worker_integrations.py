@@ -16,6 +16,7 @@ from sme_meeting_ai.integrations.core_api import (
     CoreError,
     SourceDescriptor,
 )
+from sme_meeting_ai.integrations.loopback_http import _LoopbackSyncBackend
 from sme_meeting_ai.integrations.messaging import (
     MessageError,
     _LoopbackTlsTransportFactory,
@@ -26,7 +27,6 @@ from sme_meeting_ai.integrations.object_storage import (
     StorageError,
     _LoopbackUrlLib3Session,
 )
-from sme_meeting_ai.integrations.loopback_http import _LoopbackSyncBackend
 
 
 def event_body(retry=False):

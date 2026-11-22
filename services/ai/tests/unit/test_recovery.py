@@ -449,6 +449,7 @@ def test_hard_budgets_preserve_exact_unresolved_speech(handoff, override, reason
 def test_timeout_reservation_includes_all_elapsed_time(handoff, monkeypatch):
     preprocessing, plan, configuration = handoff()
     materialize(preprocessing)
+    configuration = configuration.model_copy(update={"audio_asr_recovery_max_wall_time_seconds": 300})
     clock = [0.0]
     monkeypatch.setattr(recovery.time, "monotonic", lambda: clock[0])
 

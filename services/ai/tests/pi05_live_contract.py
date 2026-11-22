@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import re
-from datetime import datetime
 import os
-from pathlib import Path
+import re
 import stat
+from datetime import datetime
+from pathlib import Path
 from uuid import UUID
 
 # Every required observation must have the named component and actual outcome.
