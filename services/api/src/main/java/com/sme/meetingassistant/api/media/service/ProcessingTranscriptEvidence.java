@@ -11,12 +11,22 @@ import java.util.UUID;
 public interface ProcessingTranscriptEvidence {
     record Evidence(UUID finalizationStageId, String status, boolean suspicious) {}
 
+    /** Immutable current transcript identity used by the Core review gate. */
+    record Review(UUID processingJobId, UUID sourceMediaId, UUID transcriptId,
+            long contentRevision, String status, String correctionDigest) {}
+
     /** Identity-only publication evidence; no transcript text or storage capability. */
     record DiarizationSource(UUID transcriptId, UUID finalizationStageId,
             long contentRevision, boolean current) {}
 
     /** Serialize source reads with publication and human review, before taking the Job lock. */
     void lockDiarizationSource(UUID jobId);
+
+    /** Serialize review proof reads with transcript publication and human edits. */
+    void lockTranscriptReview(UUID jobId);
+
+    /** Current canonical review identity; no provider payload or transcript text leaves Transcript. */
+    Optional<Review> currentTranscriptReview(UUID jobId);
 
     Optional<DiarizationSource> diarizationSource(UUID jobId);
 

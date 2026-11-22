@@ -29,6 +29,12 @@ class DiarizationWorkerIntegrationTests extends DiarizationIntegrationFixture {
         assertThat(data.get("executionStageRunId")).isEqualTo(stage);
     }
 
+    @Test void transcriptDurationPaddingIsCappedToAcceptedMediaDuration() {
+        jdbc.update("UPDATE transcripts SET duration_ms=10058 WHERE id=?", transcript);
+        claim();
+        assertThat(worker.snapshot(job, owner).durationMs()).isEqualTo(10000L);
+    }
+
     @ParameterizedTest
     @ValueSource(strings={"missing","null","\"1\"","true","false","1.0","1.5","0","-1","2","[]","{}","999999999999999999999"})
     void hardCodedClaimVersionCannotAuthorizeInvalidPersistedNotification(String version) {

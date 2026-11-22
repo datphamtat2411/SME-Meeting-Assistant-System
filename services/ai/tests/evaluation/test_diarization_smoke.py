@@ -24,6 +24,7 @@ from . import diarization_smoke as smoke
 @pytest.fixture
 def settings():
     return Settings(service_name="smoke-test", service_identity="ai-core", _env_file=None,
+                    audio_max_duration_seconds=3600,
                     diarization_worker_provider_approved=True, REPLICATE_API_TOKEN="test-private-token")
 
 

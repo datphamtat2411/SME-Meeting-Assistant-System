@@ -627,7 +627,7 @@ def test_sparse_embedding_contract_rejects_duplicate_or_zero_values():
         SparseEmbedding(indices=(1,), values=(0.0,))
 
 
-def test_rag_settings_are_explicit_and_fail_closed_for_unsafe_runtime_choices():
+def test_rag_settings_are_explicit_and_fail_closed_for_unsafe_runtime_choices(tmp_path):
     defaults = Settings(service_name="test-ai", service_identity="ai-core", _env_file=None)
     assert defaults.rag_model_id == "BAAI/bge-m3"
     assert defaults.rag_model_revision == load_bge_m3_manifest().revision
@@ -649,9 +649,49 @@ def test_rag_settings_are_explicit_and_fail_closed_for_unsafe_runtime_choices():
             _env_file=None,
             rag_qdrant_url="http://qdrant.internal:6333",
         )
+    with pytest.raises(ValidationError):
+        Settings(
+            service_name="test-ai",
+            service_identity="ai-core",
+            _env_file=None,
+            rag_qdrant_url="https://127.0.0.1:6333",
+        )
     assert Settings(
         service_name="test-ai",
         service_identity="ai-core",
         _env_file=None,
         rag_qdrant_url="https://qdrant.internal",
+        rag_qdrant_ca_file=tmp_path / "qdrant-ca.crt",
     ).rag_qdrant_url == "https://qdrant.internal"
+
+
+def test_qdrant_runtime_passes_the_run_ca_to_the_https_client(monkeypatch, tmp_path):
+    import sme_meeting_ai.rag.qdrant as qdrant_module
+
+    compatibility = EmbeddingCompatibility(
+        model_id="BAAI/bge-m3",
+        model_revision="a" * 40,
+        tokenizer_id="tokenizer",
+        index_generation_id="generation",
+        index_configuration_sha256="b" * 64,
+    )
+    captured = {}
+
+    def client(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(qdrant_module, "QdrantClient", client)
+    ca_file = tmp_path / "qdrant-issuer-ca.crt"
+    ca_file.write_text("test-only", encoding="ascii")
+
+    QdrantVectorStore(
+        QdrantConfig(
+            url="https://127.0.0.1:6333",
+            collection_name="run-scoped",
+            ca_file=str(ca_file),
+        ),
+        compatibility=compatibility,
+    )
+
+    assert captured["verify"] == str(ca_file)

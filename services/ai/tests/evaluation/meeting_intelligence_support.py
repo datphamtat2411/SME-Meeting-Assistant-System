@@ -1000,9 +1000,11 @@ def validate_processor_candidate(feature: str, candidate: dict, snapshot: dict, 
 
 def _safe_record(record: dict) -> dict:
     allowed = {
-        "fixture_id", "feature", "status", "failure_category", "empty_result", "quality_status", "metrics",
-        "provenance", "telemetry", "critical_failures", "source", "evaluation_id", "duration_ns", "warnings",
-        "reference_reviewed",
+        "fixture_id", "feature", "status", "failure_category", "failure_reason", "empty_result",
+        "quality_status", "metrics", "provenance", "telemetry", "schema_validation",
+        "canonical_validation", "semantic_validation", "candidate_count", "smoke_semantic_validation",
+        "smoke_semantic_failure_reasons", "smoke_candidate_count", "critical_failures", "source",
+        "evaluation_id", "duration_ns", "warnings", "reference_reviewed",
     }
     return {key: value for key, value in record.items() if key in allowed}
 

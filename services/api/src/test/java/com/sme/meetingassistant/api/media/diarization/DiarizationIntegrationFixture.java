@@ -45,6 +45,8 @@ abstract class DiarizationIntegrationFixture {
     DiarizationCommands.Claim request;
     DiarizationCommands.Owner owner;
 
+    protected boolean preReviewDiarization() { return false; }
+
     @BeforeEach void fixture() {
         properties.getProcessing().setMaxRetries(2);
         when(capability.storageId()).thenReturn("meeting-media");
@@ -56,7 +58,12 @@ abstract class DiarizationIntegrationFixture {
               expected_size_bytes,size_bytes,duration_ms,sha256,uploaded_by_user_id,available_at)
             VALUES (?,?,'UPLOAD','AVAILABLE',?,?,'audio/wav',1024,1024,10000,?,?,CURRENT_TIMESTAMP)
             """,media,meeting,"meetings/"+meeting+"/sources/"+media,"meetings/"+meeting+"/pending/"+media,"a".repeat(64),actor);
-        jdbc.update("INSERT INTO processing_jobs(id,meeting_id,source_media_id,requested_by_user_id,status,diarization_planned) VALUES (?,?,?,?,'PENDING',TRUE)",job,meeting,media,actor);
+        jdbc.update("""
+            INSERT INTO processing_jobs(
+              id,meeting_id,source_media_id,requested_by_user_id,status,diarization_planned,
+              transcript_review_required,diarization_before_review)
+            VALUES (?,?,?,?,'PENDING',TRUE,?,?)
+            """,job,meeting,media,actor,preReviewDiarization(),preReviewDiarization());
         stage=UUID.randomUUID();
         jdbc.update("INSERT INTO processing_stage_runs(id,processing_job_id,stage_code,attempt_number,status) VALUES (?,?,'DIARIZING',1,'PENDING')",stage,job);
         var asr=lifecycle.startStage(job,"TRANSCRIPTION",null,null); lifecycle.completeStage(asr,"SUCCEEDED",null,null);

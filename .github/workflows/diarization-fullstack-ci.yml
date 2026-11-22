@@ -98,4 +98,6 @@ jobs:
           retention-days: 14
           path: |
             services/api/target/spk11-gate/results.json
-            services/api/target/surefire-reports/TEST-com.sme.meetingassistant.api.transport.Spk11FullStackSmokeTests.xml
+            services/api/target/spk11-gate/failure-summary.json
+            services/api/target/spk11-gate/core-verify.log
+            services/api/target/surefire-reports/TEST-*.xml

@@ -46,8 +46,11 @@ public class DiarizationWorkerService {
         var snapshot=transcripts.diarizationTiming(d.job(),d.meeting(),d.media(),d.transcript(),d.revision(),DiarizationResultContract.MAX_ASSIGNMENTS)
             .orElseThrow(()->WorkerException.conflict("DIARIZATION_SOURCE_STALE"));
         var source=repository.source(d,capability.storageId());
-        if(snapshot.durationMs()>source.get("durationMs").longValue()) throw WorkerException.conflict("DIARIZATION_SOURCE_STALE");
-        return snapshot;
+        long mediaDurationMs=source.get("durationMs").longValue();
+        if(snapshot.segments().stream().anyMatch(segment -> segment.endMs()>mediaDurationMs))
+            throw WorkerException.conflict("DIARIZATION_SOURCE_STALE");
+        return new TimingSnapshot(snapshot.transcriptId(),snapshot.transcriptRevision(),
+            Math.min(snapshot.durationMs(),mediaDurationMs),snapshot.segments());
     }
     private void source(Delivery d,Claim c) {
         var current=repository.source(d,capability.storageId());

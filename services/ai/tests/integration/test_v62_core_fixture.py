@@ -36,7 +36,22 @@ FIXTURE_DIR = os.environ.get("V62_FIXTURE_DIR")
 
 def test_v62_core_fixture_matches_production_composition(composition, v61_workflow):
     h = composition
-    h.settings = h.settings.model_copy(update={"transcript_correction_mode": "v62_edits"})
+    h.settings = h.settings.model_copy(update={
+        "transcript_correction_mode": "v62_edits",
+        # This fixture is a byte-stable historical Core contract. Keep its
+        # injected execution independent from current production capacity
+        # defaults; production settings remain exercised by composition tests.
+        "audio_asr_adaptive_max_total_calls": 32,
+        "audio_asr_max_concurrent_chunks": 1,
+        "audio_asr_max_total_calls": 256,
+        "audio_asr_recovery_max_total_attempts": 16,
+        "audio_asr_recovery_max_total_request_samples": 2_400_000,
+        "audio_asr_recovery_max_wall_time_seconds": 300,
+        "audio_asr_retry_transient_chunks": False,
+        "audio_max_duration_seconds": 3600,
+        "audio_max_input_bytes": 536_870_912,
+        "audio_max_output_bytes": 134_217_728,
+    })
     flow = v61_workflow(source_id=MEDIA, texts=("nhóm bàn về chày chuỗi rồi nói và mã JWT hôm nay", "cuộc họp giữ nguyên nội dung"))
 
     async def generate():

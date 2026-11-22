@@ -170,6 +170,13 @@ public class AccountSetupService {
         int consumed = jdbc.update("UPDATE account_setup_tokens SET used_at = ? WHERE id = ? AND used_at IS NULL",
             now, tokenId);
         if (consumed != 1) throw new IllegalStateException("Setup token was concurrently consumed");
+        // Mark the command-only bootstrap complete without changing the
+        // ordinary account lifecycle or exposing any setup credential.
+        jdbc.update("""
+            UPDATE initial_administrator_bootstrap
+               SET state='COMPLETED', completed_at=?
+             WHERE id=1 AND user_id=? AND state='ISSUED' AND completed_at IS NULL
+            """, now, account.getId());
     }
 
     private static void invalid() {

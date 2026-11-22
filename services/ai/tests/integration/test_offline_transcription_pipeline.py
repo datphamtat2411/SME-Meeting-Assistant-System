@@ -129,6 +129,11 @@ def workflow(tmp_path, monkeypatch):
         source.path.write_bytes(b"original media remains recoverable")
         work = root / "work"
         work.mkdir()
+        # Keep injected pipeline cases deterministic while production retains
+        # its configured concurrency, transient retry, and recovery budgets.
+        overrides.setdefault("audio_asr_max_concurrent_chunks", 1)
+        overrides.setdefault("audio_asr_retry_transient_chunks", False)
+        overrides.setdefault("audio_asr_recovery_max_total_attempts", 16)
         config = Settings(
             service_name="test-ai", service_identity="ai-core", _env_file=None,
             audio_temp_dir=work, audio_speech_map_boundary_padding_samples=0,

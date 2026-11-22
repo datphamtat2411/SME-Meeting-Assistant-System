@@ -6,11 +6,16 @@ import com.sme.meetingassistant.api.media.dto.FinalizeMediaResponse;
 import com.sme.meetingassistant.api.media.dto.MediaUploadIntentResponse;
 import com.sme.meetingassistant.api.media.dto.ProcessingJobResponse;
 import com.sme.meetingassistant.api.media.dto.RetryProcessingJobRequest;
+import com.sme.meetingassistant.api.media.dto.AdmitMeetingIntelligenceRequest;
+import com.sme.meetingassistant.api.media.dto.TranscriptReviewRequest;
+import com.sme.meetingassistant.api.media.dto.TranscriptReviewResponse;
 import com.sme.meetingassistant.api.media.repository.MediaRepository;
 import com.sme.meetingassistant.api.media.repository.MediaRepository.Job;
 import com.sme.meetingassistant.api.media.repository.MediaRepository.Media;
+import com.sme.meetingassistant.api.media.repository.MediaRepository.TranscriptReview;
 import com.sme.meetingassistant.api.media.storage.ObjectStorage;
 import com.sme.meetingassistant.api.media.validation.MediaInspection;
+import com.sme.meetingassistant.api.media.validation.UploadAudioFormat;
 import com.sme.meetingassistant.api.media.validation.MediaInspector;
 import com.sme.meetingassistant.api.meeting.service.MeetingMediaAccess;
 import com.sme.meetingassistant.api.userorganization.service.AuthenticatedUserId;
@@ -49,12 +54,23 @@ public class MediaProcessingService {
     private final com.sme.meetingassistant.api.media.worker.TranscriptionWorkerCapability workerCapability;
     private final ProcessingTranscriptEvidence transcriptEvidence;
     private final com.sme.meetingassistant.api.media.intelligence.IntelligenceWorkerCapability intelligenceCapability;
+    private final ProcessingJobLifecycle lifecycle;
 
     public MediaProcessingService(MediaRepository repository, ObjectStorage storage, MediaInspector inspector,
             MeetingMediaAccess meetingAccess, AuthenticatedUserId authenticatedUser, MediaProperties properties,
             com.sme.meetingassistant.api.media.worker.TranscriptionWorkerCapability workerCapability,
             ProcessingTranscriptEvidence transcriptEvidence) {
-        this(repository,storage,inspector,meetingAccess,authenticatedUser,properties,workerCapability,transcriptEvidence,null);
+        this(repository,storage,inspector,meetingAccess,authenticatedUser,properties,workerCapability,
+            transcriptEvidence,null,null);
+    }
+
+    public MediaProcessingService(MediaRepository repository,ObjectStorage storage,MediaInspector inspector,
+            MeetingMediaAccess meetingAccess,AuthenticatedUserId authenticatedUser,MediaProperties properties,
+            com.sme.meetingassistant.api.media.worker.TranscriptionWorkerCapability workerCapability,
+            ProcessingTranscriptEvidence transcriptEvidence,
+            com.sme.meetingassistant.api.media.intelligence.IntelligenceWorkerCapability intelligenceCapability) {
+        this(repository,storage,inspector,meetingAccess,authenticatedUser,properties,workerCapability,
+            transcriptEvidence,intelligenceCapability,null);
     }
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -62,7 +78,8 @@ public class MediaProcessingService {
             MeetingMediaAccess meetingAccess,AuthenticatedUserId authenticatedUser,MediaProperties properties,
             com.sme.meetingassistant.api.media.worker.TranscriptionWorkerCapability workerCapability,
             ProcessingTranscriptEvidence transcriptEvidence,
-            com.sme.meetingassistant.api.media.intelligence.IntelligenceWorkerCapability intelligenceCapability) {
+            com.sme.meetingassistant.api.media.intelligence.IntelligenceWorkerCapability intelligenceCapability,
+            ProcessingJobLifecycle lifecycle) {
         this.repository = repository;
         this.storage = storage;
         this.inspector = inspector;
@@ -72,6 +89,7 @@ public class MediaProcessingService {
         this.workerCapability = workerCapability;
         this.transcriptEvidence = transcriptEvidence;
         this.intelligenceCapability=intelligenceCapability;
+        this.lifecycle=lifecycle;
     }
 
     @Transactional
@@ -82,8 +100,7 @@ public class MediaProcessingService {
         validateIdempotencyKey(idempotencyKey);
         String filename = sanitizeFilename(request.originalFilename());
         String extension = extension(filename);
-        String contentType = request.contentType().split(";", 2)[0].trim().toLowerCase(Locale.ROOT);
-        validateUploadMetadata(extension, contentType, request.expectedSizeBytes());
+        String contentType = validateUploadMetadata(extension, request.contentType(), request.expectedSizeBytes());
         String fingerprint = fingerprint(request.sourceType() + "\n" + filename + "\n" + contentType + "\n"
             + request.expectedSizeBytes());
         String operation = UPLOAD_OPERATION + ":" + meetingId;
@@ -131,7 +148,7 @@ public class MediaProcessingService {
         String acceptedKey = acceptedKey(meetingId, mediaId);
         try {
             ValidatedSource validated = acceptedObjectExists(acceptedKey)
-                ? inspectAcceptedObject(acceptedKey, current.expectedSizeBytes())
+                ? inspectAcceptedObject(acceptedKey, current)
                 : validateAndPromote(current, acceptedKey);
             // Reauthorize after slow storage/probing I/O: account and meeting state can change.
             this.meetingAccess.requireUploadAllowed(meetingId, actor);
@@ -174,12 +191,15 @@ public class MediaProcessingService {
         Path snapshot = null;
         try {
             snapshot = Files.createTempFile("meeting-media-", ".upload");
-            this.storage.downloadTo(media.objectKey(), snapshot);
+            if (!this.storage.downloadSourceTo(media.objectKey(), snapshot, media.expectedSizeBytes())) {
+                throw new InvalidMediaException("MEDIA_SIZE_INVALID");
+            }
             // Pending bytes may change after HEAD via a still-valid signed PUT.
-            ValidatedSource source = inspectSnapshot(snapshot, media.expectedSizeBytes());
-            if (!this.storage.putAcceptedIfAbsent(acceptedKey, snapshot, source.sha256())) {
+            ValidatedSource source = inspectSnapshot(snapshot, media);
+            var format = UploadAudioFormat.forExtension(extension(media.originalFilename()));
+            if (!this.storage.putAcceptedSourceIfAbsent(acceptedKey, snapshot, source.sha256(), format.contentType())) {
                 // A previous finalized snapshot won the create-only PUT.
-                return inspectAcceptedObject(acceptedKey, media.expectedSizeBytes());
+                return inspectAcceptedObject(acceptedKey, media);
             }
             ObjectStorage.StoredObject accepted = this.storage.head(acceptedKey);
             if (accepted.sizeBytes() != source.sizeBytes()) {
@@ -205,12 +225,14 @@ public class MediaProcessingService {
         }
     }
 
-    private ValidatedSource inspectAcceptedObject(String acceptedKey, long expectedBytes) {
+    private ValidatedSource inspectAcceptedObject(String acceptedKey, Media media) {
         Path snapshot = null;
         try {
             snapshot = Files.createTempFile("meeting-media-accepted-", ".upload");
-            this.storage.downloadTo(acceptedKey, snapshot);
-            return inspectSnapshot(snapshot, expectedBytes);
+            if (!this.storage.downloadSourceTo(acceptedKey, snapshot, media.expectedSizeBytes())) {
+                throw new InvalidMediaException("MEDIA_SIZE_INVALID");
+            }
+            return inspectSnapshot(snapshot, media);
         } catch (IOException failure) {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
                 "Accepted media verification is unavailable.");
@@ -219,9 +241,9 @@ public class MediaProcessingService {
         }
     }
 
-    private ValidatedSource inspectSnapshot(Path snapshot, long expectedBytes) throws IOException {
+    private ValidatedSource inspectSnapshot(Path snapshot, Media media) throws IOException {
         long actualBytes = Files.size(snapshot);
-        if (actualBytes <= 0 || actualBytes != expectedBytes
+        if (actualBytes <= 0 || actualBytes != media.expectedSizeBytes()
                 || actualBytes > this.properties.getUpload().getMaxSizeBytes()) {
             throw new InvalidMediaException("MEDIA_SIZE_INVALID");
         }
@@ -239,7 +261,8 @@ public class MediaProcessingService {
         if (inspection.durationMs() <= 0 || inspection.durationMs() > this.properties.getUpload().getMaxDurationMs()) {
             throw new InvalidMediaException("MEDIA_DURATION_EXCEEDED");
         }
-        if (!detectedFormatAllowed(inspection.detectedFormat())) {
+        var format = UploadAudioFormat.forExtension(extension(media.originalFilename()));
+        if (format == null || !format.isMime(media.contentType()) || !format.matches(inspection)) {
             throw new InvalidMediaException("MEDIA_FORMAT_UNSUPPORTED");
         }
         return new ValidatedSource(actualBytes, inspection.durationMs(), sha256(snapshot));
@@ -363,7 +386,7 @@ public class MediaProcessingService {
         String fingerprint = fingerprint(mediaId + "\n" + reprocessOfJobId);
         Job job = new Job(UUID.randomUUID(), meetingId, mediaId, "OFFLINE_MEETING_PROCESSING", "PENDING", actor,
             null, 0, null, null, null, null, null, null,
-            OffsetDateTime.now(), OffsetDateTime.now(), reprocessOfJobId, false);
+            OffsetDateTime.now(), OffsetDateTime.now(), reprocessOfJobId, false).withTranscriptReviewRequired();
         // Every admission takes the same row lock before inserting idempotency.
         this.repository.lockAdmissionUser(actor);
         UUID claimedId = claimIdempotency(actor, operation, idempotencyKey, fingerprint, job.id());
@@ -424,6 +447,94 @@ public class MediaProcessingService {
         if (properties.getProcessing().isDiarizationEnabled()) plan.add("DIARIZING");
         plan.addAll(stages);
         return List.copyOf(plan);
+    }
+
+    @Transactional
+    public TranscriptReviewResponse acknowledgeTranscriptReview(UUID jobId,
+            TranscriptReviewRequest request, String idempotencyKey) {
+        UUID actor = this.authenticatedUser.requireUserId();
+        Job target = job(jobId);
+        this.meetingAccess.requireProcessingAllowed(target.meetingId(), actor);
+        validateIdempotencyKey(idempotencyKey);
+        validateTranscriptReviewRequest(request);
+        String digest = normalizeDigest(request.correctionDigest());
+        String operation = "TRANSCRIPT_REVIEW_ACK:" + jobId;
+        String fingerprint = fingerprint(request.transcriptId() + "\n"
+            + request.contentRevision() + "\n" + digest);
+
+        this.repository.lockAdmissionUser(actor);
+        this.transcriptEvidence.lockTranscriptReview(jobId);
+        target = this.repository.lockJobForOfflineSource(jobId).orElseThrow(MediaProcessingService::notFound);
+
+        UUID proposedReviewId = UUID.randomUUID();
+        MediaRepository.IdempotencyClaim claim;
+        try {
+            claim = this.repository.claimIdempotencyWithStatus(actor, operation, idempotencyKey,
+                fingerprint, proposedReviewId);
+        } catch (MediaRepository.IdempotencyConflictException conflict) {
+            throw conflict("The Idempotency-Key was already used for a different transcript review.");
+        }
+        if (!claim.claimed()) {
+            return this.repository.transcriptReview(claim.resourceId())
+                .map(MediaProcessingService::reviewResponse)
+                .orElseThrow(() -> conflict("The transcript review replay is unavailable."));
+        }
+
+        requireReviewWaiting(target);
+        ProcessingTranscriptEvidence.Review current = currentReview(target, request, digest);
+        TranscriptReview review = this.repository.insertTranscriptReview(proposedReviewId,
+            target.id(), target.meetingId(), current.transcriptId(), current.contentRevision(),
+            current.correctionDigest(), current.status(), actor);
+        if (!review.id().equals(proposedReviewId)) {
+            this.repository.updateIdempotencyResource(actor, operation, idempotencyKey, review.id());
+        }
+        return reviewResponse(review);
+    }
+
+    @Transactional
+    public ProcessingJobResponse admitMeetingIntelligence(UUID jobId,
+            AdmitMeetingIntelligenceRequest request, String idempotencyKey) {
+        UUID actor = this.authenticatedUser.requireUserId();
+        Job target = job(jobId);
+        this.meetingAccess.requireProcessingAllowed(target.meetingId(), actor);
+        validateIdempotencyKey(idempotencyKey);
+        validateAdmissionRequest(request);
+        String digest = normalizeDigest(request.correctionDigest());
+        String operation = "MI_ADMISSION:" + jobId;
+        String fingerprint = fingerprint(request.reviewId() + "\n" + request.transcriptId() + "\n"
+            + request.contentRevision() + "\n" + digest);
+
+        this.repository.lockAdmissionUser(actor);
+        this.transcriptEvidence.lockTranscriptReview(jobId);
+        target = this.repository.lockJobForOfflineSource(jobId).orElseThrow(MediaProcessingService::notFound);
+        MediaRepository.IdempotencyClaim claim;
+        try {
+            claim = this.repository.claimIdempotencyWithStatus(actor, operation, idempotencyKey,
+                fingerprint, jobId);
+        } catch (MediaRepository.IdempotencyConflictException conflict) {
+            throw conflict("The Idempotency-Key was already used for a different MI admission.");
+        }
+        if (!claim.claimed()) return toResponse(job(jobId));
+
+        TranscriptReview review = this.repository.transcriptReview(request.reviewId())
+            .orElseThrow(() -> conflict("The transcript review does not exist."));
+        if (!review.processingJobId().equals(jobId)
+                || !review.meetingId().equals(target.meetingId())
+                || !review.transcriptId().equals(request.transcriptId())
+                || review.contentRevision() != request.contentRevision()
+                || !review.correctionDigest().equals(digest)) {
+            throw staleReview();
+        }
+        requireReviewWaiting(target);
+        currentReview(target, request.transcriptId(), request.contentRevision(), digest);
+        if (this.lifecycle == null) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+                "Meeting Intelligence admission is not installed.");
+        }
+        this.repository.admitTranscriptReview(jobId, review.id(), actor);
+        if (!this.repository.diarizationBeforeReview(jobId)) this.lifecycle.dispatchPlannedDiarization(jobId);
+        this.lifecycle.advanceJob(jobId);
+        return toResponse(job(jobId));
     }
 
     @Transactional(readOnly = true)
@@ -498,13 +609,15 @@ public class MediaProcessingService {
         int maxRetries = properties.getProcessing().getMaxRetries();
         if (maxRetries < 0) throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
             "Processing retry policy is invalid.");
-        if (!List.of("RUNNING", "COMPLETED_WITH_WARNINGS").contains(target.status())
+        boolean preReview = repository.diarizationBeforeReview(target.id());
+        if (!(preReview ? "WAITING_FOR_REVIEW".equals(target.status())
+                : List.of("RUNNING", "COMPLETED_WITH_WARNINGS").contains(target.status()))
                 || target.retryCount() >= maxRetries
                 || !repository.hasRetryableFailedStage(target.id(), "DIARIZING")) {
             throw conflict("The requested diarization attempt is not eligible for retry.");
         }
         // A reopened job must respect the same meeting/user capacity as new admissions.
-        if (!"RUNNING".equals(target.status())) {
+        if (!preReview && !"RUNNING".equals(target.status())) {
             if (repository.activeJobsForMeeting(target.meetingId()) > 0)
                 throw conflict("Another processing job is already active for this meeting.");
             if (repository.activeJobsForUser(target.requestedBy()) >= positiveLimit(
@@ -523,7 +636,7 @@ public class MediaProcessingService {
         return toResponse(job(target.id()));
     }
 
-    private void validateUploadMetadata(String extension, String contentType, long expectedBytes) {
+    private String validateUploadMetadata(String extension, String contentType, long expectedBytes) {
         var upload = this.properties.getUpload();
         if (upload.getMaxSizeBytes() <= 0 || upload.getMaxDurationMs() <= 0
                 || upload.getAllowedExtensions() == null || upload.getAllowedExtensions().isEmpty()
@@ -534,26 +647,84 @@ public class MediaProcessingService {
         if (expectedBytes <= 0 || expectedBytes > upload.getMaxSizeBytes()) {
             throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE, "Media size exceeds the configured limit.");
         }
-        if (upload.getAllowedExtensions().stream().map(MediaProcessingService::normalizeExtension)
+        var format = UploadAudioFormat.forExtension(extension);
+        if (format == null || !format.acceptsDeclaration(contentType)
+                || upload.getAllowedExtensions().stream().map(MediaProcessingService::normalizeExtension)
                 .noneMatch(extension::equals)
-                || upload.getAllowedContentTypes().stream().map(v -> v.toLowerCase(Locale.ROOT))
-                    .noneMatch(contentType::equals)) {
-            throw new ResponseStatusException(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Media type is not supported.");
+                || upload.getAllowedContentTypes().stream().noneMatch(format::isMime)) {
+            throw new ResponseStatusException(HttpStatus.UNSUPPORTED_MEDIA_TYPE,
+                "Upload a WAV, MP3, or M4A audio file with a matching media type.");
+        }
+        return format.contentType();
+    }
+
+    private static void requireReviewWaiting(Job target) {
+        if (!target.transcriptReviewRequired()
+                || !"OFFLINE_MEETING_PROCESSING".equals(target.jobType())
+                || !"WAITING_FOR_REVIEW".equals(target.status())) {
+            throw conflict("The processing job is not waiting for transcript review.");
         }
     }
 
-    private boolean detectedFormatAllowed(String ffprobeFormats) {
-        List<String> allowed = this.properties.getUpload().getAllowedExtensions().stream()
-            .map(MediaProcessingService::normalizeExtension).toList();
-        return java.util.Arrays.stream(ffprobeFormats.toLowerCase(Locale.ROOT).split(","))
-            .map(MediaProcessingService::normalizeExtension).anyMatch(allowed::contains);
+    private ProcessingTranscriptEvidence.Review currentReview(Job target,
+            TranscriptReviewRequest request, String digest) {
+        return currentReview(target, request.transcriptId(), request.contentRevision(), digest);
+    }
+
+    private ProcessingTranscriptEvidence.Review currentReview(Job target, UUID transcriptId,
+            long contentRevision, String digest) {
+        ProcessingTranscriptEvidence.Review current = this.transcriptEvidence.currentTranscriptReview(target.id())
+            .orElseThrow(MediaProcessingService::staleReview);
+        if (!target.sourceMediaId().equals(current.sourceMediaId())
+                || !transcriptId.equals(current.transcriptId())
+                || contentRevision != current.contentRevision()
+                || !digest.equals(current.correctionDigest())) {
+            throw staleReview();
+        }
+        return current;
+    }
+
+    private static TranscriptReviewResponse reviewResponse(TranscriptReview review) {
+        return new TranscriptReviewResponse(review.id(), review.processingJobId(), review.meetingId(),
+            review.transcriptId(), review.contentRevision(), review.correctionDigest(),
+            review.transcriptStatus(), review.acknowledgedByUserId(), review.acknowledgedAt(),
+            review.admittedByUserId(), review.admittedAt());
+    }
+
+    private static void validateTranscriptReviewRequest(TranscriptReviewRequest request) {
+        if (request == null || request.transcriptId() == null || request.contentRevision() < 0) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
+                "A transcript identity and non-negative revision are required.");
+        }
+        normalizeDigest(request.correctionDigest());
+    }
+
+    private static void validateAdmissionRequest(AdmitMeetingIntelligenceRequest request) {
+        if (request == null || request.reviewId() == null || request.transcriptId() == null
+                || request.contentRevision() < 0) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
+                "A transcript review proof is required for Meeting Intelligence admission.");
+        }
+        normalizeDigest(request.correctionDigest());
+    }
+
+    private static String normalizeDigest(String digest) {
+        if (digest == null || !digest.matches("[0-9a-fA-F]{64}")) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
+                "A SHA-256 transcript correction digest is required.");
+        }
+        return digest.toLowerCase(Locale.ROOT);
+    }
+
+    private static ResponseStatusException staleReview() {
+        return conflict("The transcript changed after this review proof was created.");
     }
 
     private MediaUploadIntentResponse uploadResponse(Media media) {
         if (!"PENDING_UPLOAD".equals(media.status())) {
             return new MediaUploadIntentResponse(media.id(), media.status(), null, null, media.contentType());
         }
-        Duration ttl = cappedTtl(this.properties.getUpload().getUploadUrlTtl(), Duration.ofMinutes(15));
+        Duration ttl = cappedTtl(this.properties.getUpload().getUploadUrlTtl(), Duration.ofMinutes(30));
         String url;
         try {
             url = this.storage.createUploadCapability(media.objectKey(), media.contentType(),

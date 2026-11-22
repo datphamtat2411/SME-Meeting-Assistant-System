@@ -3,12 +3,15 @@ package com.sme.meetingassistant.api.media.storage;
 import com.sme.meetingassistant.api.media.MediaProperties;
 import com.sme.meetingassistant.api.transport.PemTls;
 import java.io.IOException;
+import java.net.InetAddress;
 import java.net.URI;
+import java.net.UnknownHostException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.time.Duration;
 import java.util.Map;
+import software.amazon.awssdk.awscore.AwsRequestOverrideConfiguration;
 import software.amazon.awssdk.core.sync.RequestBody;
 import jakarta.annotation.PreDestroy;
 import org.springframework.stereotype.Component;
@@ -30,17 +33,40 @@ import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest;
 import software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignRequest;
+import org.apache.http.conn.DnsResolver;
 
 @Component
 public class S3ObjectStorageAdapter implements ObjectStorage {
     private final MediaProperties.Storage properties;
+    private final Duration sourceTransferTimeout;
     private final S3Client client;
     private final S3Presigner presigner;
     private final S3Presigner exportPresigner;
 
     public S3ObjectStorageAdapter(MediaProperties properties) {
         this.properties = properties.getStorage();
+        this.sourceTransferTimeout = properties.getUpload().getSourceTransferTimeout();
+        if (sourceTransferTimeout == null || sourceTransferTimeout.isZero() || sourceTransferTimeout.isNegative()
+                || sourceTransferTimeout.compareTo(Duration.ofMinutes(10)) > 0) {
+            throw new IllegalStateException("Source transfer timeout must be within ten minutes.");
+        }
         var endpoint = URI.create(this.properties.getEndpoint());
+        String connectHost = blankToNull(this.properties.getConnectHost());
+        String tlsServerName = blankToNull(this.properties.getTlsServerName());
+        if (tlsServerName != null && !tlsServerName.equalsIgnoreCase(endpoint.getHost())) {
+            throw new IllegalStateException("S3 TLS identity must match the endpoint host.");
+        }
+        if (connectHost != null && !"127.0.0.1".equals(connectHost)) {
+            throw new IllegalStateException("S3 isolated connection destination must be loopback.");
+        }
+        if (connectHost != null
+                && (!"storage.internal".equalsIgnoreCase(endpoint.getHost())
+                    || !"storage.internal".equalsIgnoreCase(tlsServerName))) {
+            throw new IllegalStateException("Isolated S3 routing must preserve storage.internal.");
+        }
+        if ("storage.internal".equalsIgnoreCase(endpoint.getHost()) && connectHost == null) {
+            throw new IllegalStateException("S3 storage.internal requires an explicit loopback destination.");
+        }
         // Validate the trusted public origin before allocating any SDK clients.
         URI external = validatedPublicDownloadOrigin(this.properties.getPublicDownloadEndpoint());
         boolean hasAccessKey = this.properties.getAccessKey() != null && !this.properties.getAccessKey().isBlank();
@@ -51,7 +77,10 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
         var builder = S3Client.builder().endpointOverride(endpoint).region(Region.of(this.properties.getRegion()))
             .credentialsProvider(credentialsProvider()).serviceConfiguration(serviceConfig);
         if (this.properties.getCaFile() != null && !this.properties.getCaFile().isBlank()) {
-            builder.httpClientBuilder(verifiedHttps(this.properties.getEndpoint(), Path.of(this.properties.getCaFile())));
+            builder.httpClientBuilder(verifiedHttps(
+                this.properties.getEndpoint(), Path.of(this.properties.getCaFile()), connectHost));
+        } else if (connectHost != null) {
+            throw new IllegalStateException("Isolated S3 routing requires an explicit CA bundle.");
         }
         this.client = builder.build();
         this.presigner = S3Presigner.builder().endpointOverride(endpoint).region(Region.of(this.properties.getRegion()))
@@ -64,6 +93,10 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
                 .credentialsProvider(credentialsProvider())
                 .serviceConfiguration(serviceConfig).build();
         }
+    }
+
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value;
     }
 
     private static URI validatedPublicDownloadOrigin(String configured) {
@@ -87,16 +120,37 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
 
     /** Dedicated SDK trust, preserving Apache's hostname verification. No global JVM truststore changes. */
     public static software.amazon.awssdk.http.apache.ApacheHttpClient.Builder verifiedHttps(String endpoint, Path ca) {
+        return verifiedHttps(endpoint, ca, null);
+    }
+
+    /** Dedicated trust plus a process-local loopback resolver for an isolated endpoint. */
+    public static software.amazon.awssdk.http.apache.ApacheHttpClient.Builder verifiedHttps(
+            String endpoint, Path ca, String connectHost) {
         URI uri = URI.create(endpoint);
         if (!"https".equals(uri.getScheme()) || uri.getHost() == null || uri.getUserInfo() != null
                 || uri.getQuery() != null || uri.getFragment() != null) {
             throw new IllegalStateException("Explicit S3 trust requires an HTTPS endpoint");
         }
+        if (connectHost != null && !"127.0.0.1".equals(connectHost)) {
+            throw new IllegalStateException("Explicit S3 routing requires a loopback destination");
+        }
         try {
             var trust = PemTls.trustManager(ca);
-            return software.amazon.awssdk.http.apache.ApacheHttpClient.builder()
+            var builder = software.amazon.awssdk.http.apache.ApacheHttpClient.builder()
                 .connectionTimeout(Duration.ofSeconds(3)).socketTimeout(Duration.ofSeconds(15))
                 .tlsTrustManagersProvider(() -> new javax.net.ssl.TrustManager[]{trust});
+            if (connectHost != null) {
+                builder.dnsResolver(new DnsResolver() {
+                    @Override
+                    public InetAddress[] resolve(String host) throws UnknownHostException {
+                        if (!uri.getHost().equalsIgnoreCase(host)) {
+                            throw new UnknownHostException("Unexpected S3 endpoint host");
+                        }
+                        return new InetAddress[]{InetAddress.getByName(connectHost)};
+                    }
+                });
+            }
+            return builder;
         } catch (Exception e) { throw new IllegalStateException("Invalid S3 TLS trust configuration"); }
     }
 
@@ -152,6 +206,44 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
     }
 
     @Override
+    public boolean downloadSourceTo(String objectKey, Path destination, long expectedBytes) throws IOException {
+        ExportObjectKeyPolicy.denyGenericMediaOperation(objectKey);
+        if (expectedBytes <= 0) throw new IllegalArgumentException("Positive source size required.");
+        long started = System.nanoTime();
+        var request = GetObjectRequest.builder().bucket(properties.getBucket()).key(objectKey)
+            .overrideConfiguration(sourceTransferConfiguration()).build();
+        try (var input = client.getObject(request);
+                var output = Files.newOutputStream(destination, StandardOpenOption.WRITE,
+                    StandardOpenOption.TRUNCATE_EXISTING)) {
+            boolean completed = false;
+            try {
+                var response = input.response();
+                if (response.contentLength() == null || response.contentLength() != expectedBytes
+                        || response.contentEncoding() != null) return false;
+                byte[] buffer = new byte[128 * 1024];
+                long remaining = expectedBytes;
+                while (remaining > 0) {
+                    int count = input.read(buffer, 0, (int) Math.min(remaining, buffer.length));
+                    if (System.nanoTime() - started >= sourceTransferTimeout.toNanos())
+                        throw new IOException("Source transfer timed out.");
+                    if (count < 0) return false;
+                    output.write(buffer, 0, count);
+                    remaining -= count;
+                }
+                completed = input.read() == -1;
+                return completed;
+            } finally {
+                // Abort an unconsumed response; close must not drain an oversized source.
+                if (!completed) input.abort();
+            }
+        }
+    }
+
+    private AwsRequestOverrideConfiguration sourceTransferConfiguration() {
+        return AwsRequestOverrideConfiguration.builder().apiCallTimeout(this.sourceTransferTimeout).build();
+    }
+
+    @Override
     public byte[] readBounded(String objectKey, int maximum) throws IOException {
         if (maximum < 1 || maximum > ExportObjectKeyPolicy.maximumReadBytes(objectKey)) {
             throw new IllegalArgumentException("Invalid result read limit.");
@@ -171,14 +263,24 @@ public class S3ObjectStorageAdapter implements ObjectStorage {
 
     @Override
     public boolean putAcceptedIfAbsent(String objectKey, Path validatedFile, String sha256) {
+        return putValidatedIfAbsent(objectKey, validatedFile, sha256, null);
+    }
+
+    @Override
+    public boolean putAcceptedSourceIfAbsent(String objectKey, Path validatedFile, String sha256,
+            String contentType) {
+        return putValidatedIfAbsent(objectKey, validatedFile, sha256, contentType);
+    }
+
+    private boolean putValidatedIfAbsent(String objectKey, Path validatedFile, String sha256, String contentType) {
         ExportObjectKeyPolicy.denyGenericMediaOperation(objectKey);
         var request = PutObjectRequest.builder()
             .bucket(this.properties.getBucket()).key(objectKey)
             .ifNoneMatch("*")
-            .metadata(Map.of("sha256", sha256))
-            .build();
+            .metadata(Map.of("sha256", sha256));
+        if (contentType != null) request.contentType(contentType).overrideConfiguration(sourceTransferConfiguration());
         try {
-            this.client.putObject(request, RequestBody.fromFile(validatedFile));
+            this.client.putObject(request.build(), RequestBody.fromFile(validatedFile));
             return true;
         } catch (S3Exception exception) {
             if (exception.statusCode() == 412) return false;

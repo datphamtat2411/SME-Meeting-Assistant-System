@@ -1,0 +1,2294 @@
+import { useRef, useState } from 'react'
+import {
+  AlertCircle,
+  CheckCircle2,
+  FileAudio,
+  FileCheck2,
+  RefreshCw,
+  ShieldCheck,
+} from 'lucide-react'
+import { normalizeCoreApiError } from '@/lib/core-api'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
+import { Button } from '@/components/ui/button'
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
+import { Header } from '@/components/layout/header'
+import { HeaderActions } from '@/components/layout/header-actions'
+import { Main } from '@/components/layout/main'
+import { fetchMeetingParticipants } from './data/detail-api'
+import {
+  OPERATOR_MI_SUMMARY_CONTRACT,
+  acknowledgeTranscriptReview,
+  admitOperatorMeetingIntelligence,
+  admitOperatorProcessingJob,
+  applyApprovedTranscriptCorrection,
+  audioUploadProblem,
+  assignProposedActionItem,
+  confirmActionItem,
+  confirmDecision,
+  createSyntheticMeeting,
+  fetchFinalizedTranscriptEvidence,
+  fetchProcessingJob,
+  fetchReviewAudio,
+  fetchSpeakerClusters,
+  mapSpeakerCluster,
+  regenerateReviewedIntelligence,
+  rejectActionItem,
+  rejectDecision,
+  readRunIntelligenceResults,
+  transcriptSegmentEtag,
+  uploadAndFinalizeMeetingMedia,
+  verifyOperatorSession,
+  type ActionItemReview,
+  type DecisionReview,
+  type FinalizedMedia,
+  type FinalizedTranscriptEvidence,
+  type MeetingIntelligenceReview,
+  type OperatorSession,
+  type ProcessingJob,
+  type SyntheticMeetingResult,
+  type TranscriptReviewAcknowledgement,
+  type SpeakerCluster,
+} from './data/operator-mi-e2e-workflow'
+
+export const EXPECTED_OPERATOR_USER_ID = '46a30219-3c9f-498d-94fa-d6558f200714'
+const EXPECTED_OPERATOR_DISPLAY_NAME = 'E2E-04 Local Test'
+
+const defaultMeetingTitle = 'Synthetic Vietnamese MI E2E meeting'
+const defaultMeetingDescription =
+  'One bounded operator-assisted Vietnamese meeting for MI evaluation.'
+
+type CorrectionDraft = {
+  text: string
+  reason: string
+  approved: boolean
+}
+
+type ProposalAction = {
+  kind: 'decision' | 'action-item'
+  id: string
+  action: 'confirm' | 'reject'
+}
+
+type MemberOption = { userId: string; displayName: string }
+
+async function meetingMembers(
+  meetingId: string,
+  operator: OperatorSession['user']
+): Promise<MemberOption[]> {
+  const participants = await fetchMeetingParticipants(meetingId)
+  return [
+    { userId: operator.userId, displayName: operator.displayName },
+    ...participants
+      .filter(
+        ({ removedAt, userId }) => !removedAt && userId !== operator.userId
+      )
+      .map(({ userId, displayName }) => ({
+        userId,
+        displayName: displayName ?? userId,
+      })),
+  ]
+}
+
+type WorkflowError = {
+  step: string
+  message: string
+} | null
+
+export function OperatorMiE2eWorkspace() {
+  const [session, setSession] = useState<OperatorSession | null>(null)
+  const [sessionPending, setSessionPending] = useState(false)
+  const [sessionError, setSessionError] = useState<string | null>(null)
+
+  const [title, setTitle] = useState(defaultMeetingTitle)
+  const [description, setDescription] = useState(defaultMeetingDescription)
+  const [creationStarted, setCreationStarted] = useState(false)
+  const [creationPending, setCreationPending] = useState(false)
+  const [creationError, setCreationError] = useState<string | null>(null)
+  const [meetingResult, setMeetingResult] =
+    useState<SyntheticMeetingResult | null>(null)
+  const creationKey = useRef<string | null>(null)
+  const [meetingApprovalOpen, setMeetingApprovalOpen] = useState(false)
+
+  const [mediaFile, setMediaFile] = useState<File | null>(null)
+  const [mediaAttempted, setMediaAttempted] = useState(false)
+  const [mediaPending, setMediaPending] = useState(false)
+  const [mediaError, setMediaError] = useState<string | null>(null)
+  const [media, setMedia] = useState<FinalizedMedia | null>(null)
+  const mediaKey = useRef<string | null>(null)
+
+  const [jobAttempted, setJobAttempted] = useState(false)
+  const [jobPending, setJobPending] = useState(false)
+  const [jobError, setJobError] = useState<string | null>(null)
+  const [job, setJob] = useState<ProcessingJob | null>(null)
+  const jobKey = useRef<string | null>(null)
+  const regenerationKey = useRef<string | null>(null)
+  const [regenerationOpen, setRegenerationOpen] = useState(false)
+  const [existingJobId, setExistingJobId] = useState('')
+
+  const [transcriptPending, setTranscriptPending] = useState(false)
+  const [transcriptError, setTranscriptError] = useState<string | null>(null)
+  const [transcript, setTranscript] =
+    useState<FinalizedTranscriptEvidence | null>(null)
+  const [transcriptReview, setTranscriptReview] =
+    useState<TranscriptReviewAcknowledgement | null>(null)
+  const [transcriptAcknowledged, setTranscriptAcknowledged] = useState(false)
+  const [reviewPending, setReviewPending] = useState(false)
+  const [reviewError, setReviewError] = useState<string | null>(null)
+  const [admissionPending, setAdmissionPending] = useState(false)
+  const [admissionError, setAdmissionError] = useState<string | null>(null)
+  const reviewKey = useRef<string | null>(null)
+  const admissionKey = useRef<string | null>(null)
+  const [corrections, setCorrections] = useState<
+    Record<string, CorrectionDraft>
+  >({})
+  const [correctionPending, setCorrectionPending] = useState<string | null>(
+    null
+  )
+  const [correctionMessage, setCorrectionMessage] = useState<string | null>(
+    null
+  )
+
+  const [resultsPending, setResultsPending] = useState(false)
+  const [resultsError, setResultsError] = useState<string | null>(null)
+  const [results, setResults] = useState<MeetingIntelligenceReview | null>(null)
+  const [proposalAction, setProposalAction] = useState<ProposalAction | null>(
+    null
+  )
+  const [proposalPending, setProposalPending] = useState<string | null>(null)
+  const [proposalError, setProposalError] = useState<string | null>(null)
+  const [assignee, setAssignee] = useState('')
+  const [assigneeOptions, setAssigneeOptions] = useState<MemberOption[]>([])
+
+  const [workflowError, setWorkflowError] = useState<WorkflowError>(null)
+
+  const operatorMatchesExpected =
+    session?.user.userId === EXPECTED_OPERATOR_USER_ID
+  const meetingId = job?.meetingId ?? meetingResult?.meeting.meeting.id
+  const mediaId = media?.id
+  const jobIsTerminal =
+    job?.status === 'COMPLETED' ||
+    job?.status === 'COMPLETED_WITH_WARNINGS' ||
+    job?.status === 'FAILED'
+  const jobIsWaitingForTranscriptReview = job?.status === 'WAITING_FOR_REVIEW'
+  const canCreate =
+    operatorMatchesExpected &&
+    !meetingResult &&
+    !job &&
+    !creationStarted &&
+    !creationPending
+  const canUpload =
+    Boolean(
+      meetingId &&
+      mediaFile &&
+      !audioUploadProblem(mediaFile.name, mediaFile.type, mediaFile.size)
+    ) &&
+    operatorMatchesExpected &&
+    !job &&
+    !media &&
+    !mediaAttempted &&
+    !mediaPending
+  const canAdmitJob =
+    Boolean(meetingId && mediaId && operatorMatchesExpected) &&
+    !job &&
+    !jobAttempted &&
+    !jobPending
+  const canRegenerate = Boolean(
+    jobIsTerminal &&
+    transcript &&
+    operatorMatchesExpected &&
+    !jobPending &&
+    !transcriptPending &&
+    !resultsPending &&
+    !proposalPending
+  )
+
+  const selectedActionItem =
+    proposalAction?.kind === 'action-item'
+      ? results?.actionItems.find(
+          ({ actionItem }) => actionItem.id === proposalAction.id
+        )
+      : undefined
+  const needsAssignee = Boolean(
+    selectedActionItem &&
+    proposalAction?.action === 'confirm' &&
+    !selectedActionItem.actionItem.assigneeUserId
+  )
+
+  const verifySession = async () => {
+    setSessionPending(true)
+    setSessionError(null)
+    setWorkflowError(null)
+    try {
+      setSession(await verifyOperatorSession(EXPECTED_OPERATOR_USER_ID))
+    } catch (error) {
+      const message = readableError(error)
+      setSession(null)
+      setSessionError(message)
+      setWorkflowError({ step: 'Session verification', message })
+    } finally {
+      setSessionPending(false)
+    }
+  }
+
+  const createMeetingRequest = async () => {
+    if (!operatorMatchesExpected || job || meetingResult || creationPending)
+      return
+    setCreationStarted(true)
+    setCreationPending(true)
+    setCreationError(null)
+    setWorkflowError(null)
+    const key = creationKey.current ?? createIdempotencyKey('meeting')
+    creationKey.current = key
+    try {
+      const created = await createSyntheticMeeting(
+        { title, description },
+        key,
+        EXPECTED_OPERATOR_USER_ID
+      )
+      setSession(created.session)
+      setMeetingResult(created)
+      setCreationError(null)
+    } catch (error) {
+      const message = readableError(error)
+      setCreationError(
+        `${message} No replacement meeting key was generated. A replay, if offered, uses the same frozen request.`
+      )
+      setWorkflowError({ step: 'Meeting creation', message })
+    } finally {
+      setCreationPending(false)
+      setMeetingApprovalOpen(false)
+    }
+  }
+
+  const uploadMedia = async () => {
+    if (!meetingId || !mediaFile || !canUpload) return
+    setMediaAttempted(true)
+    setMediaPending(true)
+    setMediaError(null)
+    setWorkflowError(null)
+    const key = mediaKey.current ?? createIdempotencyKey('media')
+    mediaKey.current = key
+    try {
+      const finalized = await uploadAndFinalizeMeetingMedia(
+        meetingId,
+        {
+          originalFilename: mediaFile.name,
+          contentType: mediaFile.type,
+          expectedSizeBytes: mediaFile.size,
+          body: mediaFile,
+        },
+        key
+      )
+      setMedia(finalized)
+    } catch (error) {
+      const message = readableError(error)
+      setMediaError(
+        `${message} No upload or finalization retry was sent by this helper.`
+      )
+      setWorkflowError({ step: 'Media upload and finalization', message })
+    } finally {
+      setMediaPending(false)
+    }
+  }
+
+  const admitJob = async () => {
+    if (!meetingId || !mediaId || !session || !canAdmitJob) return
+    setJobAttempted(true)
+    setJobPending(true)
+    setJobError(null)
+    setWorkflowError(null)
+    const key = jobKey.current ?? createIdempotencyKey('job')
+    jobKey.current = key
+    try {
+      setJob(
+        await admitOperatorProcessingJob(
+          meetingId,
+          mediaId,
+          key,
+          session.user.userId
+        )
+      )
+    } catch (error) {
+      const message = readableError(error)
+      setJobError(
+        `${message} Processing-job retry is intentionally unavailable here.`
+      )
+      setWorkflowError({ step: 'Processing-job admission', message })
+    } finally {
+      setJobPending(false)
+    }
+  }
+
+  const refreshJob = async () => {
+    if (!job) return
+    setJobPending(true)
+    setJobError(null)
+    try {
+      const current = await fetchProcessingJob(job.id)
+      if (
+        current.meetingId !== job.meetingId ||
+        current.sourceMediaId !== job.sourceMediaId
+      ) {
+        throw new Error('Core returned a job for a different meeting or media.')
+      }
+      setJob(current)
+    } catch (error) {
+      setJobError(readableError(error))
+    } finally {
+      setJobPending(false)
+    }
+  }
+
+  const openExistingRun = async () => {
+    if (
+      !operatorMatchesExpected ||
+      job ||
+      jobPending ||
+      creationPending ||
+      mediaPending ||
+      !existingJobId.trim()
+    )
+      return
+    setJobPending(true)
+    setJobError(null)
+    try {
+      setJob(await fetchProcessingJob(existingJobId.trim()))
+    } catch (error) {
+      setJobError(readableError(error))
+    } finally {
+      setJobPending(false)
+    }
+  }
+
+  const loadTranscript = async (savedSegmentId?: string) => {
+    if (!meetingId || (!jobIsWaitingForTranscriptReview && !jobIsTerminal))
+      return false
+    setTranscriptPending(true)
+    setTranscriptError(null)
+    setCorrectionMessage(null)
+    setTranscriptAcknowledged(false)
+    try {
+      const evidence = await fetchFinalizedTranscriptEvidence(meetingId, 'vi')
+      if (
+        job &&
+        (evidence.transcript.meetingId !== meetingId ||
+          evidence.transcript.sourceMediaId !== job.sourceMediaId ||
+          evidence.transcript.processingJobId !==
+            (job.reprocessOfJobId && job.jobType === 'DERIVED_STAGE_PROCESSING'
+              ? job.reprocessOfJobId
+              : job.id))
+      ) {
+        throw new Error(
+          'The current transcript does not belong to the selected run.'
+        )
+      }
+      setTranscript(evidence)
+      const previousVersions = new Map(
+        transcript?.transcript.segments.map(({ id, version }) => [id, version])
+      )
+      setCorrections((drafts) =>
+        Object.fromEntries(
+          evidence.transcript.segments.flatMap(({ id, version }) =>
+            id !== savedSegmentId &&
+            previousVersions.get(id) === version &&
+            drafts[id]
+              ? [[id, drafts[id]]]
+              : []
+          )
+        )
+      )
+      setTranscriptReview((current) =>
+        current &&
+        current.transcriptId === evidence.transcript.id &&
+        current.contentRevision === evidence.transcript.contentRevision &&
+        current.correctionDigest === evidence.digest
+          ? current
+          : null
+      )
+      return true
+    } catch (error) {
+      setTranscript(null)
+      setTranscriptReview(null)
+      setTranscriptError(readableError(error))
+      return false
+    } finally {
+      setTranscriptPending(false)
+    }
+  }
+
+  const updateCorrection = (
+    segmentId: string,
+    update: Partial<CorrectionDraft>
+  ) => {
+    setTranscriptAcknowledged(false)
+    setCorrections((current) => ({
+      ...current,
+      [segmentId]: {
+        text:
+          current[segmentId]?.text ??
+          transcript?.transcript.segments.find((s) => s.id === segmentId)
+            ?.text ??
+          '',
+        reason: current[segmentId]?.reason ?? '',
+        approved: current[segmentId]?.approved ?? false,
+        ...update,
+      },
+    }))
+  }
+
+  const saveCorrection = async (segmentId: string) => {
+    if (
+      !meetingId ||
+      !transcript ||
+      !jobIsWaitingForTranscriptReview ||
+      correctionPending ||
+      transcriptPending
+    )
+      return
+    const segment = transcript.transcript.segments.find(
+      (candidate) => candidate.id === segmentId
+    )
+    const draft = corrections[segmentId]
+    if (!segment || !draft?.approved || !draft.text.trim()) return
+    if (
+      draft.text.trim() === segment.text.trim() &&
+      segment.qualityStatus !== 'SUSPICIOUS'
+    )
+      return
+
+    setCorrectionPending(segmentId)
+    setTranscriptError(null)
+    setCorrectionMessage(null)
+    try {
+      await applyApprovedTranscriptCorrection(
+        meetingId,
+        segmentId,
+        transcriptSegmentEtag(segment),
+        {
+          text: draft.text,
+          reason: draft.reason.trim() || null,
+          operatorApproved: true,
+        }
+      )
+      setTranscriptReview(null)
+      setTranscriptAcknowledged(false)
+      setReviewError(null)
+      setAdmissionError(null)
+      reviewKey.current = null
+      admissionKey.current = null
+      if (await loadTranscript(segmentId)) {
+        setCorrectionMessage(
+          'The approved correction was saved and the finalized transcript was read back.'
+        )
+      }
+    } catch (error) {
+      setTranscriptError(readableError(error))
+    } finally {
+      setCorrectionPending(null)
+    }
+  }
+
+  const regenerate = async () => {
+    if (!transcript || !canRegenerate) return
+    setRegenerationOpen(false)
+    setJobPending(true)
+    setJobError(null)
+    const key = regenerationKey.current ?? createIdempotencyKey('regenerate-mi')
+    regenerationKey.current = key
+    try {
+      setJob(await regenerateReviewedIntelligence(transcript, key))
+      regenerationKey.current = null
+      setResults(null)
+    } catch (error) {
+      setJobError(readableError(error))
+    } finally {
+      setJobPending(false)
+    }
+  }
+
+  const saveSpeakerMapping = async (
+    clusterId: string,
+    userId: string | null
+  ) => {
+    if (!meetingId || !transcript || !jobIsWaitingForTranscriptReview) return
+    setCorrectionPending(clusterId)
+    try {
+      await mapSpeakerCluster(meetingId, clusterId, transcript.etag, userId)
+      reviewKey.current = null
+      admissionKey.current = null
+      setTranscriptReview(null)
+      setTranscriptAcknowledged(false)
+      await loadTranscript()
+    } finally {
+      setCorrectionPending(null)
+    }
+  }
+
+  const acknowledgeReview = async () => {
+    if (
+      !job ||
+      !transcript ||
+      !session ||
+      job.status !== 'WAITING_FOR_REVIEW' ||
+      reviewPending ||
+      correctionPending ||
+      transcriptPending ||
+      !transcriptAcknowledged
+    )
+      return
+    setReviewPending(true)
+    setReviewError(null)
+    setAdmissionError(null)
+    setWorkflowError(null)
+    const key =
+      reviewKey.current ?? createIdempotencyKey('transcript-review-ack')
+    reviewKey.current = key
+    try {
+      setTranscriptReview(
+        await acknowledgeTranscriptReview(
+          job.id,
+          transcript,
+          key,
+          session.user.userId
+        )
+      )
+    } catch (error) {
+      const message = readableError(error)
+      setReviewError(message)
+      setWorkflowError({ step: 'Transcript review acknowledgement', message })
+    } finally {
+      setReviewPending(false)
+    }
+  }
+
+  const admitMeetingIntelligence = async () => {
+    if (
+      !job ||
+      !transcriptReview ||
+      !session ||
+      job.status !== 'WAITING_FOR_REVIEW' ||
+      admissionPending ||
+      correctionPending ||
+      transcriptPending
+    )
+      return
+    setAdmissionPending(true)
+    setAdmissionError(null)
+    setWorkflowError(null)
+    const key =
+      admissionKey.current ?? createIdempotencyKey('meeting-intelligence')
+    admissionKey.current = key
+    try {
+      setJob(
+        await admitOperatorMeetingIntelligence(
+          job.id,
+          transcriptReview,
+          key,
+          session.user.userId
+        )
+      )
+    } catch (error) {
+      const message = readableError(error)
+      setAdmissionError(message)
+      setWorkflowError({ step: 'Meeting Intelligence admission', message })
+    } finally {
+      setAdmissionPending(false)
+    }
+  }
+
+  const readResults = async () => {
+    if (!job || !transcript || !jobIsTerminal || job.status === 'FAILED') return
+    setResultsPending(true)
+    setResultsError(null)
+    setWorkflowError(null)
+    try {
+      const result = await readRunIntelligenceResults(job)
+      if (
+        result.summary.summary.transcriptId !== transcript.transcript.id ||
+        result.summary.summary.contentRevision !==
+          transcript.transcript.contentRevision
+      ) {
+        throw new Error(
+          'The Summary does not match the loaded transcript revision.'
+        )
+      }
+      setResults(result)
+    } catch (error) {
+      const message = readableError(error)
+      setResultsError(message)
+      setWorkflowError({ step: 'Reading MI results', message })
+    } finally {
+      setResultsPending(false)
+    }
+  }
+
+  const openProposal = (action: ProposalAction) => {
+    setAssignee('')
+    setProposalError(null)
+    setProposalAction(action)
+    if (
+      !meetingId ||
+      !session ||
+      action.kind !== 'action-item' ||
+      action.action !== 'confirm' ||
+      !results?.actionItems.some(
+        ({ actionItem }) =>
+          actionItem.id === action.id && !actionItem.assigneeUserId
+      )
+    )
+      return
+    setAssigneeOptions([
+      { userId: session.user.userId, displayName: session.user.displayName },
+    ])
+    void meetingMembers(meetingId, session.user)
+      .then(setAssigneeOptions)
+      .catch(() => {
+        setProposalError(
+          'Other participants could not be loaded. Only the verified organizer is listed.'
+        )
+      })
+  }
+
+  const performProposalAction = async () => {
+    if (
+      !proposalAction ||
+      !results ||
+      !meetingId ||
+      proposalPending ||
+      (needsAssignee &&
+        !assigneeOptions.some((option) => option.userId === assignee))
+    )
+      return
+    const actionKey = `${proposalAction.kind}:${proposalAction.id}:${proposalAction.action}`
+    setProposalPending(actionKey)
+    setProposalError(null)
+    try {
+      if (proposalAction.kind === 'decision') {
+        const current = results.decisions.find(
+          (item) => item.decision.id === proposalAction.id
+        )
+        if (!current) return
+        const updated =
+          proposalAction.action === 'confirm'
+            ? await confirmDecision(
+                meetingId,
+                current.decision.id,
+                current.etag
+              )
+            : await rejectDecision(meetingId, current.decision.id, current.etag)
+        setResults((previous) =>
+          previous
+            ? {
+                ...previous,
+                decisions: previous.decisions.map((item) =>
+                  item.decision.id === updated.decision.id ? updated : item
+                ),
+              }
+            : previous
+        )
+      } else {
+        let current = results.actionItems.find(
+          (item) => item.actionItem.id === proposalAction.id
+        )
+        if (!current) return
+        const saveResult = (updated: ActionItemReview) =>
+          setResults((previous) =>
+            previous
+              ? {
+                  ...previous,
+                  actionItems: previous.actionItems.map((item) =>
+                    item.actionItem.id === updated.actionItem.id
+                      ? updated
+                      : item
+                  ),
+                }
+              : previous
+          )
+        if (needsAssignee) {
+          current = await assignProposedActionItem(
+            current.actionItem.id,
+            current.etag,
+            assignee
+          )
+          saveResult(current)
+        }
+        const updated =
+          proposalAction.action === 'confirm'
+            ? await confirmActionItem(current.actionItem.id, current.etag)
+            : await rejectActionItem(current.actionItem.id, current.etag)
+        saveResult(updated)
+      }
+    } catch (error) {
+      setProposalError(readableError(error))
+    } finally {
+      setProposalPending(null)
+      setProposalAction(null)
+    }
+  }
+
+  return (
+    <>
+      <Header fixed>
+        <HeaderActions />
+      </Header>
+      <Main className='flex flex-1 flex-col gap-6'>
+        <div>
+          <p className='text-sm font-medium text-primary'>
+            Level 3B.5 operator workflow
+          </p>
+          <h1 className='mt-1 text-2xl font-bold tracking-tight sm:text-3xl'>
+            Vietnamese MI E2E workflow
+          </h1>
+          <p className='mt-2 max-w-3xl text-muted-foreground'>
+            Upload and review a recording, track the real processing stages, and
+            inspect the resulting proposals before making any decision.
+          </p>
+        </div>
+
+        <Alert>
+          <ShieldCheck />
+          <AlertTitle>Operator review required</AlertTitle>
+          <AlertDescription>
+            The operator owns this normal Web session and every approval. Core
+            requests use HttpOnly cookies plus the existing CSRF mechanism.
+            Signed storage capabilities are used only to upload or play the
+            selected recording.
+          </AlertDescription>
+        </Alert>
+
+        {workflowError && (
+          <Alert variant='destructive'>
+            <AlertCircle />
+            <AlertTitle>{workflowError.step}</AlertTitle>
+            <AlertDescription>{workflowError.message}</AlertDescription>
+          </Alert>
+        )}
+
+        <SessionCard
+          session={session}
+          pending={sessionPending}
+          error={sessionError}
+          onVerify={() => void verifySession()}
+        />
+
+        <MeetingCard
+          title={title}
+          description={description}
+          setTitle={setTitle}
+          setDescription={setDescription}
+          disabled={creationStarted || Boolean(meetingResult || job)}
+          canCreate={canCreate}
+          pending={creationPending}
+          error={creationError}
+          meeting={meetingResult}
+          approvalOpen={meetingApprovalOpen}
+          onApprovalOpenChange={setMeetingApprovalOpen}
+          onApprove={() => void createMeetingRequest()}
+          onReplay={() => void createMeetingRequest()}
+        />
+
+        <MediaCard
+          meetingId={job ? undefined : meetingId}
+          file={mediaFile}
+          onFileChange={setMediaFile}
+          canUpload={canUpload}
+          attempted={mediaAttempted}
+          pending={mediaPending}
+          error={mediaError}
+          media={media}
+          onUpload={() => void uploadMedia()}
+        />
+
+        <ProcessingCard
+          job={job}
+          canAdmit={canAdmitJob}
+          attempted={jobAttempted}
+          pending={jobPending}
+          error={jobError}
+          onAdmit={() => void admitJob()}
+          onRefresh={() => void refreshJob()}
+          existingJobId={existingJobId}
+          onExistingJobId={setExistingJobId}
+          onOpenExisting={() => void openExistingRun()}
+          canOpenExisting={
+            operatorMatchesExpected &&
+            !job &&
+            !jobPending &&
+            !creationPending &&
+            !mediaPending
+          }
+          onRegenerate={() => setRegenerationOpen(true)}
+          canRegenerate={canRegenerate}
+        />
+
+        <TranscriptCard
+          key={transcript?.transcript.id ?? 'unloaded'}
+          job={job}
+          evidence={transcript}
+          pending={transcriptPending}
+          error={transcriptError}
+          correctionMessage={correctionMessage}
+          review={transcriptReview}
+          transcriptAcknowledged={transcriptAcknowledged}
+          reviewPending={reviewPending}
+          reviewError={reviewError}
+          admissionPending={admissionPending}
+          admissionError={admissionError}
+          corrections={corrections}
+          correctionPending={correctionPending}
+          meetingId={meetingId}
+          organizer={session?.user}
+          onSaveSpeakerMapping={saveSpeakerMapping}
+          onReview={() => void loadTranscript()}
+          onTranscriptAcknowledged={setTranscriptAcknowledged}
+          onAcknowledgeReview={() => void acknowledgeReview()}
+          onAdmitMeetingIntelligence={() => void admitMeetingIntelligence()}
+          onCorrectionChange={updateCorrection}
+          onSaveCorrection={(segmentId) => void saveCorrection(segmentId)}
+        />
+
+        <ResultsCard
+          job={job}
+          evidence={transcript}
+          results={results}
+          pending={resultsPending}
+          error={resultsError}
+          proposalError={proposalError}
+          proposalPending={proposalPending}
+          onRead={() => void readResults()}
+          onProposalAction={openProposal}
+        />
+      </Main>
+
+      <AlertDialog open={regenerationOpen} onOpenChange={setRegenerationOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Regenerate Meeting Intelligence?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Core must verify the original admitted review for this exact
+              revision. This starts a separate Summary, Decision, and Action
+              Item run with its own inference budget. It does not retranscribe
+              the audio or replace the selected Summary or existing proposals.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void regenerate()}>
+              Start MI-only regeneration
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={Boolean(proposalAction)}
+        onOpenChange={(open) => {
+          if (!open && !proposalPending) setProposalAction(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Approve proposal action</AlertDialogTitle>
+            <AlertDialogDescription>
+              This is a separate Core mutation. The helper will not confirm or
+              reject anything until you approve this exact action.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {needsAssignee && (
+            <label className='grid gap-2 text-sm'>
+              Assign this action item to
+              <select
+                value={assignee}
+                onChange={(event) => setAssignee(event.target.value)}
+                className='rounded border bg-background px-2 py-1'
+                disabled={Boolean(proposalPending)}
+              >
+                <option value=''>Choose a person</option>
+                {assigneeOptions.map(({ userId, displayName }) => (
+                  <option key={userId} value={userId}>
+                    {displayName}
+                  </option>
+                ))}
+              </select>
+              Core records your selection before confirming. The AI has not
+              assigned anyone.
+            </label>
+          )}
+          {proposalError && (
+            <p role='alert' className='text-sm text-destructive'>
+              {proposalError}
+            </p>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={Boolean(proposalPending)}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => void performProposalAction()}
+              disabled={
+                Boolean(proposalPending) || (needsAssignee && !assignee)
+              }
+            >
+              {proposalPending ? 'Submitting...' : 'Approve this action'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
+  )
+}
+
+function SessionCard({
+  session,
+  pending,
+  error,
+  onVerify,
+}: {
+  session: OperatorSession | null
+  pending: boolean
+  error: string | null
+  onVerify: () => void
+}) {
+  return (
+    <Card>
+      <CardHeader className='border-b'>
+        <CardTitle className='flex items-center gap-2'>
+          <ShieldCheck className='size-4 text-primary' />
+          1. Verify the browser session
+        </CardTitle>
+        <CardDescription>
+          Refreshes the normal Web identity through <code>/auth/me</code>.
+          Browser secrets remain in the browser.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className='space-y-4 pt-6'>
+        {session ? (
+          <div className='rounded-lg border bg-muted/30 p-4 text-sm'>
+            <div className='flex items-center gap-2 font-medium'>
+              <CheckCircle2 className='size-4 text-emerald-600' />
+              Authenticated identity verified
+            </div>
+            <dl className='mt-3 grid gap-2 sm:grid-cols-2'>
+              <EvidenceRow
+                label='Display name'
+                value={session.user.displayName}
+              />
+              <EvidenceRow label='Role' value={session.user.globalRole} />
+              <EvidenceRow label='Account' value={session.user.accountStatus} />
+              <EvidenceRow
+                label='Client'
+                value={session.user.session.clientType}
+              />
+              <EvidenceRow
+                label='User ID'
+                value={shortIdentifier(session.user.userId)}
+              />
+            </dl>
+            {session.user.userId !== EXPECTED_OPERATOR_USER_ID && (
+              <p className='mt-3 text-sm text-destructive'>
+                This is not the expected E2E-04 operator. Creation is blocked.
+              </p>
+            )}
+          </div>
+        ) : (
+          <p className='text-sm text-muted-foreground'>
+            Expected operator: {EXPECTED_OPERATOR_DISPLAY_NAME} (
+            {shortIdentifier(EXPECTED_OPERATOR_USER_ID)}).
+          </p>
+        )}
+        {error && <p className='text-sm text-destructive'>{error}</p>}
+        <Button type='button' onClick={onVerify} disabled={pending}>
+          <RefreshCw className={pending ? 'animate-spin' : undefined} />
+          {pending
+            ? 'Verifying...'
+            : session
+              ? 'Refresh Web session'
+              : 'Verify Web session'}
+        </Button>
+      </CardContent>
+    </Card>
+  )
+}
+
+function MeetingCard({
+  title,
+  description,
+  setTitle,
+  setDescription,
+  disabled,
+  canCreate,
+  pending,
+  error,
+  meeting,
+  approvalOpen,
+  onApprovalOpenChange,
+  onApprove,
+  onReplay,
+}: {
+  title: string
+  description: string
+  setTitle: (value: string) => void
+  setDescription: (value: string) => void
+  disabled: boolean
+  canCreate: boolean
+  pending: boolean
+  error: string | null
+  meeting: SyntheticMeetingResult | null
+  approvalOpen: boolean
+  onApprovalOpenChange: (open: boolean) => void
+  onApprove: () => void
+  onReplay: () => void
+}) {
+  return (
+    <Card>
+      <CardHeader className='border-b'>
+        <CardTitle>2. Create exactly one synthetic meeting</CardTitle>
+        <CardDescription>
+          Reuses the existing Core meeting-create operation. Organizer and
+          creator are read back from Core; no organizer ID is supplied by the
+          browser.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className='space-y-4 pt-6'>
+        <label className='grid gap-1.5 text-sm font-medium'>
+          Synthetic title
+          <Input
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+            disabled={disabled}
+          />
+        </label>
+        <label className='grid gap-1.5 text-sm font-medium'>
+          Description
+          <Textarea
+            value={description}
+            onChange={(event) => setDescription(event.target.value)}
+            disabled={disabled}
+            rows={3}
+          />
+        </label>
+
+        {meeting ? (
+          <div className='rounded-lg border bg-muted/30 p-4 text-sm'>
+            <div className='flex items-center gap-2 font-medium'>
+              <CheckCircle2 className='size-4 text-emerald-600' />
+              Organizer verified
+            </div>
+            <dl className='mt-3 grid gap-2 sm:grid-cols-3'>
+              <EvidenceRow
+                label='Meeting'
+                value={shortIdentifier(meeting.meeting.meeting.id)}
+              />
+              <EvidenceRow
+                label='Status'
+                value={meeting.meeting.meeting.status}
+              />
+              <EvidenceRow
+                label='Organizer'
+                value={shortIdentifier(meeting.detail.meeting.organizerUserId)}
+              />
+            </dl>
+          </div>
+        ) : (
+          <Button
+            type='button'
+            onClick={() => onApprovalOpenChange(true)}
+            disabled={!canCreate}
+          >
+            {pending ? 'Creating...' : 'Create exactly one synthetic meeting'}
+          </Button>
+        )}
+
+        {error && (
+          <Alert variant='destructive'>
+            <AlertCircle />
+            <AlertTitle>Meeting creation needs operator review</AlertTitle>
+            <AlertDescription className='space-y-2'>
+              <p>{error}</p>
+              <Button
+                type='button'
+                variant='outline'
+                size='sm'
+                onClick={onReplay}
+                disabled={pending}
+              >
+                Replay the exact create request
+              </Button>
+            </AlertDescription>
+          </Alert>
+        )}
+
+        <AlertDialog open={approvalOpen} onOpenChange={onApprovalOpenChange}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Approve meeting creation</AlertDialogTitle>
+              <AlertDialogDescription>
+                Core will create one DRAFT meeting as the authenticated
+                operator. The idempotency key is kept only in this page state.
+                Approve only if this is the one intended synthetic meeting.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={pending}>Cancel</AlertDialogCancel>
+              <AlertDialogAction onClick={onApprove} disabled={pending}>
+                {pending ? 'Creating...' : 'I approve meeting creation'}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      </CardContent>
+    </Card>
+  )
+}
+
+function MediaCard({
+  meetingId,
+  file,
+  onFileChange,
+  canUpload,
+  attempted,
+  pending,
+  error,
+  media,
+  onUpload,
+}: {
+  meetingId?: string
+  file: File | null
+  onFileChange: (file: File | null) => void
+  canUpload: boolean
+  attempted: boolean
+  pending: boolean
+  error: string | null
+  media: FinalizedMedia | null
+  onUpload: () => void
+}) {
+  const fileProblem =
+    file && audioUploadProblem(file.name, file.type, file.size)
+  return (
+    <Card>
+      <CardHeader className='border-b'>
+        <CardTitle className='flex items-center gap-2'>
+          <FileAudio className='size-4 text-primary' />
+          3. Upload and finalize one media source
+        </CardTitle>
+        <CardDescription>
+          Upload WAV, MP3, or AAC M4A, up to 90 minutes and 1 GiB. Core verifies
+          the recording before processing.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className='space-y-4 pt-6'>
+        {!meetingId && (
+          <p className='text-sm text-muted-foreground'>
+            Create and verify the meeting first.
+          </p>
+        )}
+        <label className='grid gap-1.5 text-sm font-medium'>
+          Synthetic Vietnamese audio
+          <Input
+            type='file'
+            accept='.wav,.mp3,.m4a,audio/wav,audio/mpeg,audio/mp4'
+            disabled={!meetingId || attempted}
+            onChange={(event) => onFileChange(event.target.files?.[0] ?? null)}
+          />
+        </label>
+        {file && (
+          <p className='text-sm text-muted-foreground'>
+            Selected {file.name} · {file.size} bytes ·{' '}
+            {file.type || 'format will be verified by Core'}
+          </p>
+        )}
+        {fileProblem && (
+          <p role='alert' className='text-sm text-destructive'>
+            {fileProblem}
+          </p>
+        )}
+        <Button type='button' onClick={onUpload} disabled={!canUpload}>
+          {pending ? 'Uploading and finalizing...' : 'Upload and finalize once'}
+        </Button>
+        {attempted && !media && !pending && !error && (
+          <p className='text-sm text-muted-foreground'>
+            The single upload/finalization attempt is in progress or awaiting an
+            authoritative result.
+          </p>
+        )}
+        {media && (
+          <div className='rounded-lg border bg-muted/30 p-4 text-sm'>
+            <div className='flex items-center gap-2 font-medium'>
+              <CheckCircle2 className='size-4 text-emerald-600' />
+              Media finalized as AVAILABLE
+            </div>
+            <dl className='mt-3 grid gap-2 sm:grid-cols-2'>
+              <EvidenceRow label='Media' value={shortIdentifier(media.id)} />
+              <EvidenceRow
+                label='Meeting'
+                value={shortIdentifier(media.meetingId)}
+              />
+              <EvidenceRow
+                label='Size'
+                value={`${media.sizeBytes ?? 0} bytes`}
+              />
+              <EvidenceRow
+                label='SHA-256'
+                value={media.sha256 ?? 'Unavailable'}
+              />
+            </dl>
+          </div>
+        )}
+        {error && <p className='text-sm text-destructive'>{error}</p>}
+      </CardContent>
+    </Card>
+  )
+}
+
+function ProcessingCard({
+  job,
+  canAdmit,
+  attempted,
+  pending,
+  error,
+  onAdmit,
+  onRefresh,
+  existingJobId,
+  onExistingJobId,
+  onOpenExisting,
+  canOpenExisting,
+  onRegenerate,
+  canRegenerate,
+}: {
+  job: ProcessingJob | null
+  canAdmit: boolean
+  attempted: boolean
+  pending: boolean
+  error: string | null
+  onAdmit: () => void
+  onRefresh: () => void
+  existingJobId: string
+  onExistingJobId: (value: string) => void
+  onOpenExisting: () => void
+  canOpenExisting: boolean
+  onRegenerate: () => void
+  canRegenerate: boolean
+}) {
+  return (
+    <Card>
+      <CardHeader className='border-b'>
+        <CardTitle>4. Admit one transcription processing job</CardTitle>
+        <CardDescription>
+          Core performs audio transcription and pauses at the durable transcript
+          review boundary. Meeting Intelligence is admitted only after the
+          operator acknowledges the current transcript below.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className='space-y-4 pt-6'>
+        {!job && !attempted && (
+          <p className='text-sm text-muted-foreground'>
+            Finalize media first. Only one admission is available in this page.
+          </p>
+        )}
+        <Button type='button' onClick={onAdmit} disabled={!canAdmit}>
+          {pending ? 'Admitting...' : 'Admit one processing job'}
+        </Button>
+        {!job && (
+          <div className='flex flex-wrap gap-2'>
+            <Input
+              className='max-w-md'
+              aria-label='Existing processing job ID'
+              value={existingJobId}
+              onChange={(event) => onExistingJobId(event.target.value)}
+              placeholder='Existing processing job ID'
+            />
+            <Button
+              variant='outline'
+              onClick={onOpenExisting}
+              disabled={!canOpenExisting || !existingJobId.trim()}
+            >
+              Open existing run
+            </Button>
+          </div>
+        )}
+        {job && (
+          <div className='rounded-lg border bg-muted/30 p-4 text-sm'>
+            <dl className='grid gap-2 sm:grid-cols-3'>
+              <EvidenceRow label='Job' value={job.id} />
+              <EvidenceRow label='Status' value={job.status} />
+              <EvidenceRow
+                label='Requested by'
+                value={shortIdentifier(job.requestedByUserId)}
+              />
+            </dl>
+            {job.status === 'WAITING_FOR_REVIEW' && (
+              <Alert className='mt-4'>
+                <FileCheck2 />
+                <AlertTitle>Transcript review required</AlertTitle>
+                <AlertDescription>
+                  Core has completed transcription and is waiting for the
+                  operator review. Downstream Meeting Intelligence has not been
+                  admitted.
+                </AlertDescription>
+              </Alert>
+            )}
+            {job.warningSummary && (
+              <Alert className='mt-4'>
+                <AlertCircle />
+                <AlertTitle>Processing warning</AlertTitle>
+                <AlertDescription>{job.warningSummary}</AlertDescription>
+              </Alert>
+            )}
+            <Button
+              type='button'
+              variant='outline'
+              size='sm'
+              className='mt-4'
+              onClick={onRefresh}
+              disabled={pending}
+            >
+              <RefreshCw className={pending ? 'animate-spin' : undefined} />
+              Refresh job status
+            </Button>
+            {job.status === 'FAILED' && (
+              <p className='mt-3 text-sm text-destructive'>
+                {job.errorSummary || 'The processing job failed.'}
+              </p>
+            )}
+            <ul className='mt-4 space-y-1' aria-label='Processing stages'>
+              {job.stageRuns.map((stage) => (
+                <li key={stage.id}>
+                  {stage.stageCode} · {stage.status} · attempt{' '}
+                  {stage.attemptNumber}
+                  {stage.errorCode
+                    ? ` · ${resultWarningLabel(stage.errorCode)}`
+                    : ''}
+                </li>
+              ))}
+            </ul>
+            {canRegenerate && (
+              <Button className='mt-4' variant='outline' onClick={onRegenerate}>
+                Regenerate Meeting Intelligence from reviewed transcript
+              </Button>
+            )}
+          </div>
+        )}
+        {error && <p className='text-sm text-destructive'>{error}</p>}
+      </CardContent>
+    </Card>
+  )
+}
+
+function TranscriptCard({
+  job,
+  evidence,
+  pending,
+  error,
+  correctionMessage,
+  review,
+  transcriptAcknowledged,
+  reviewPending,
+  reviewError,
+  admissionPending,
+  admissionError,
+  corrections,
+  correctionPending,
+  meetingId,
+  organizer,
+  onSaveSpeakerMapping,
+  onReview,
+  onTranscriptAcknowledged,
+  onAcknowledgeReview,
+  onAdmitMeetingIntelligence,
+  onCorrectionChange,
+  onSaveCorrection,
+}: {
+  job: ProcessingJob | null
+  evidence: FinalizedTranscriptEvidence | null
+  pending: boolean
+  error: string | null
+  correctionMessage: string | null
+  review: TranscriptReviewAcknowledgement | null
+  transcriptAcknowledged: boolean
+  reviewPending: boolean
+  reviewError: string | null
+  admissionPending: boolean
+  admissionError: string | null
+  corrections: Record<string, CorrectionDraft>
+  correctionPending: string | null
+  meetingId?: string
+  organizer?: OperatorSession['user']
+  onSaveSpeakerMapping: (
+    clusterId: string,
+    userId: string | null
+  ) => Promise<void>
+  onReview: () => void
+  onTranscriptAcknowledged: (checked: boolean) => void
+  onAcknowledgeReview: () => void
+  onAdmitMeetingIntelligence: () => void
+  onCorrectionChange: (
+    segmentId: string,
+    update: Partial<CorrectionDraft>
+  ) => void
+  onSaveCorrection: (segmentId: string) => void
+}) {
+  const ready =
+    job?.status === 'WAITING_FOR_REVIEW' ||
+    job?.status === 'COMPLETED' ||
+    job?.status === 'COMPLETED_WITH_WARNINGS' ||
+    job?.status === 'FAILED'
+  const reviewGateOpen = job?.status === 'WAITING_FOR_REVIEW'
+  const [page, setPage] = useState(0)
+  const [warningPage, setWarningPage] = useState(0)
+  const [onlyFlagged, setOnlyFlagged] = useState(false)
+  const [recording, setRecording] = useState<string | null>(null)
+  const [recordingError, setRecordingError] = useState<string | null>(null)
+  const segments = evidence?.transcript.segments ?? []
+  const pageSize = 25
+  const visibleSegments = onlyFlagged
+    ? segments.filter((segment) => segment.qualityStatus !== 'ACCEPTED')
+    : segments
+  const lastPage = Math.max(0, Math.ceil(visibleSegments.length / pageSize) - 1)
+  const currentPage = Math.max(0, Math.min(page, lastPage))
+  const hasDrafts = segments.some(
+    (segment) =>
+      corrections[segment.id]?.text.trim() !== segment.text.trim() &&
+      Boolean(corrections[segment.id])
+  )
+  const coverageWarnings =
+    evidence?.coverage.filter(
+      (region) => region.coverageStatus !== 'COVERED' || region.recovered
+    ) ?? []
+  const lastWarningPage = Math.max(
+    0,
+    Math.ceil(coverageWarnings.length / 10) - 1
+  )
+  const currentWarningPage = Math.min(warningPage, lastWarningPage)
+  const loadRecording = async () => {
+    if (!meetingId || !evidence) return
+    setRecordingError(null)
+    try {
+      setRecording(
+        await fetchReviewAudio(meetingId, evidence.transcript.sourceMediaId)
+      )
+    } catch (failure) {
+      setRecordingError(readableError(failure))
+    }
+  }
+  return (
+    <Card>
+      <CardHeader className='border-b'>
+        <CardTitle className='flex items-center gap-2'>
+          <FileCheck2 className='size-4 text-primary' />
+          5. Review and finalize the Vietnamese transcript
+        </CardTitle>
+        <CardDescription>
+          Each correction is an independent operator approval using the current
+          segment version ETag. After every approval, the helper reads back the
+          finalized revision and digest.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className='space-y-4 pt-6'>
+        {!evidence && (
+          <Button type='button' onClick={onReview} disabled={!ready || pending}>
+            {pending
+              ? 'Reading transcript...'
+              : 'Review finalized Vietnamese transcript'}
+          </Button>
+        )}
+        {!evidence && error && (
+          <p className='text-sm text-destructive'>{error}</p>
+        )}
+        {!ready && !evidence && (
+          <p className='text-sm text-muted-foreground'>
+            Wait for Core to report WAITING_FOR_REVIEW; this page does not poll
+            automatically.
+          </p>
+        )}
+        {evidence && (
+          <>
+            <div className='rounded-lg border bg-muted/30 p-4 text-sm'>
+              <dl className='grid gap-2 sm:grid-cols-4'>
+                <EvidenceRow
+                  label='Language'
+                  value={evidence.transcript.languageCode}
+                />
+                <EvidenceRow
+                  label='Status'
+                  value={evidence.transcript.status}
+                />
+                <EvidenceRow
+                  label='Content revision'
+                  value={String(evidence.transcript.contentRevision)}
+                />
+                <EvidenceRow label='ETag' value={evidence.etag} />
+              </dl>
+              <div className='mt-3'>
+                <EvidenceRow
+                  label='Correction digest'
+                  value={evidence.digest}
+                />
+              </div>
+            </div>
+            <div className='space-y-2'>
+              <Button
+                variant='outline'
+                size='sm'
+                onClick={() => void loadRecording()}
+              >
+                {recording
+                  ? 'Refresh recording link'
+                  : 'Load recording for playback'}
+              </Button>
+              {recording && (
+                <audio
+                  aria-label='Source recording'
+                  controls
+                  preload='metadata'
+                  crossOrigin='anonymous'
+                  src={recording}
+                  onError={() =>
+                    setRecordingError(
+                      'The recording could not be loaded. Refresh the link to try again.'
+                    )
+                  }
+                />
+              )}
+              {recordingError && (
+                <p className='text-sm text-destructive'>{recordingError}</p>
+              )}
+            </div>
+            {meetingId &&
+              organizer &&
+              segments.some((segment) => segment.speakerClusterId) && (
+                <SpeakerMappings
+                  meetingId={meetingId}
+                  organizer={organizer}
+                  readOnly={!reviewGateOpen}
+                  disabled={
+                    pending ||
+                    Boolean(correctionPending) ||
+                    reviewPending ||
+                    admissionPending
+                  }
+                  onSave={onSaveSpeakerMapping}
+                />
+              )}
+            {(evidence.transcript.status === 'READY_WITH_WARNINGS' ||
+              coverageWarnings.length > 0 ||
+              Boolean(job?.warningSummary)) && (
+              <Alert>
+                <AlertCircle />
+                <AlertTitle>Transcript warnings remain visible</AlertTitle>
+                <AlertDescription className='space-y-2'>
+                  {job?.warningSummary && <p>{job.warningSummary}</p>}
+                  {evidence.transcript.status === 'READY_WITH_WARNINGS' && (
+                    <p>
+                      Core marked this transcript READY_WITH_WARNINGS. Review
+                      the text and coverage before acknowledging it.
+                    </p>
+                  )}
+                  {coverageWarnings.length > 0 && (
+                    <ul className='list-disc pl-5'>
+                      {coverageWarnings
+                        .slice(
+                          currentWarningPage * 10,
+                          (currentWarningPage + 1) * 10
+                        )
+                        .map((region) => (
+                          <li key={region.id}>
+                            {region.coverageStatus} ·{' '}
+                            {formatMilliseconds(region.startMs)}–
+                            {formatMilliseconds(region.endMs)}
+                            {region.recovered ? ' · recovered' : ''}
+                            <Button
+                              variant='link'
+                              size='sm'
+                              onClick={() => {
+                                const index = segments.findIndex(
+                                  (segment) => segment.endMs > region.startMs
+                                )
+                                setOnlyFlagged(false)
+                                setPage(
+                                  Math.floor(
+                                    (index < 0 ? segments.length - 1 : index) /
+                                      pageSize
+                                  )
+                                )
+                              }}
+                            >
+                              Show nearby segments
+                            </Button>
+                          </li>
+                        ))}
+                    </ul>
+                  )}
+                  {lastWarningPage > 0 && (
+                    <div className='flex items-center gap-2'>
+                      <Button
+                        size='sm'
+                        variant='outline'
+                        disabled={currentWarningPage === 0}
+                        onClick={() => setWarningPage(currentWarningPage - 1)}
+                      >
+                        Previous warnings
+                      </Button>
+                      <span>
+                        {currentWarningPage + 1} / {lastWarningPage + 1}
+                      </span>
+                      <Button
+                        size='sm'
+                        variant='outline'
+                        disabled={currentWarningPage === lastWarningPage}
+                        onClick={() => setWarningPage(currentWarningPage + 1)}
+                      >
+                        Next warnings
+                      </Button>
+                    </div>
+                  )}
+                </AlertDescription>
+              </Alert>
+            )}
+            <div className='flex flex-wrap items-center gap-2'>
+              <label className='flex items-center gap-2 text-sm'>
+                <input
+                  type='checkbox'
+                  checked={onlyFlagged}
+                  onChange={(event) => {
+                    setOnlyFlagged(event.target.checked)
+                    setPage(0)
+                  }}
+                />{' '}
+                Flagged segments only
+              </label>
+              <span role='status' className='text-sm text-muted-foreground'>
+                {visibleSegments.length
+                  ? `${currentPage * pageSize + 1}–${Math.min((currentPage + 1) * pageSize, visibleSegments.length)} of ${visibleSegments.length}`
+                  : 'No flagged segments'}
+              </span>
+              <Button
+                variant='outline'
+                size='sm'
+                disabled={currentPage === 0}
+                onClick={() => setPage(currentPage - 1)}
+              >
+                Previous transcript page
+              </Button>
+              <Button
+                variant='outline'
+                size='sm'
+                disabled={currentPage === lastPage}
+                onClick={() => setPage(currentPage + 1)}
+              >
+                Next transcript page
+              </Button>
+            </div>
+            <div className='space-y-4'>
+              {visibleSegments
+                .slice(currentPage * pageSize, (currentPage + 1) * pageSize)
+                .map((segment) => {
+                  const draft = corrections[segment.id] ?? {
+                    text: segment.text,
+                    reason: '',
+                    approved: false,
+                  }
+                  const changed = draft.text.trim() !== segment.text.trim()
+                  const canSave =
+                    reviewGateOpen &&
+                    (changed || segment.qualityStatus === 'SUSPICIOUS')
+                  const correctionHint =
+                    !changed && segment.qualityStatus !== 'SUSPICIOUS'
+                      ? 'Edit the transcript text above before approving this correction.'
+                      : 'Approval is required before saving this correction.'
+                  return (
+                    <div key={segment.id} className='rounded-lg border p-4'>
+                      <div className='flex flex-wrap justify-between gap-2 text-xs text-muted-foreground'>
+                        <span>
+                          Segment {segment.ordinal + 1} ·{' '}
+                          {formatMilliseconds(segment.startMs)}–
+                          {formatMilliseconds(segment.endMs)}
+                        </span>
+                        <span>
+                          {segment.speakerLabel ?? 'Speaker unassigned'}
+                        </span>
+                        <span>
+                          {segment.qualityStatus} · version {segment.version}
+                        </span>
+                      </div>
+                      <Textarea
+                        className='mt-3'
+                        value={draft.text}
+                        maxLength={20_000}
+                        aria-label={`Correction for segment ${segment.ordinal + 1}`}
+                        onChange={(event) =>
+                          onCorrectionChange(segment.id, {
+                            text: event.target.value,
+                            approved: false,
+                          })
+                        }
+                        readOnly={!reviewGateOpen}
+                        disabled={
+                          pending ||
+                          Boolean(correctionPending) ||
+                          reviewPending ||
+                          admissionPending
+                        }
+                      />
+                      <Input
+                        className='mt-3'
+                        value={draft.reason}
+                        maxLength={1000}
+                        aria-label={`Correction reason for segment ${segment.ordinal + 1}`}
+                        placeholder='Optional reason'
+                        onChange={(event) =>
+                          onCorrectionChange(segment.id, {
+                            reason: event.target.value,
+                            approved: false,
+                          })
+                        }
+                        disabled={
+                          !reviewGateOpen ||
+                          pending ||
+                          Boolean(correctionPending) ||
+                          reviewPending ||
+                          admissionPending
+                        }
+                      />
+                      <label className='mt-3 flex items-start gap-2 text-sm'>
+                        <input
+                          type='checkbox'
+                          checked={draft.approved}
+                          aria-describedby={`correction-help-${segment.id}`}
+                          onChange={(event) =>
+                            onCorrectionChange(segment.id, {
+                              approved: event.target.checked,
+                            })
+                          }
+                          disabled={
+                            !canSave ||
+                            pending ||
+                            Boolean(correctionPending) ||
+                            reviewPending ||
+                            admissionPending
+                          }
+                        />
+                        <span>
+                          I reviewed and approve this exact correction.
+                        </span>
+                      </label>
+                      <p
+                        id={`correction-help-${segment.id}`}
+                        className='mt-2 text-xs text-muted-foreground'
+                      >
+                        {correctionHint}
+                      </p>
+                      <Button
+                        type='button'
+                        className='mt-3'
+                        size='sm'
+                        onClick={() => onSaveCorrection(segment.id)}
+                        disabled={
+                          !canSave ||
+                          !draft.approved ||
+                          pending ||
+                          Boolean(correctionPending) ||
+                          reviewPending ||
+                          admissionPending
+                        }
+                      >
+                        {correctionPending === segment.id
+                          ? 'Saving correction...'
+                          : 'Approve and save this correction'}
+                      </Button>
+                    </div>
+                  )
+                })}
+            </div>
+            {correctionMessage && (
+              <p className='text-sm text-emerald-700'>{correctionMessage}</p>
+            )}
+            {error && <p className='text-sm text-destructive'>{error}</p>}
+            {reviewGateOpen && !review && (
+              <div className='rounded-lg border bg-muted/30 p-4'>
+                <label className='flex items-start gap-2 text-sm'>
+                  <input
+                    type='checkbox'
+                    checked={transcriptAcknowledged}
+                    onChange={(event) =>
+                      onTranscriptAcknowledged(event.target.checked)
+                    }
+                    disabled={
+                      hasDrafts ||
+                      pending ||
+                      Boolean(correctionPending) ||
+                      reviewPending
+                    }
+                  />
+                  <span>
+                    I reviewed the complete transcript and the visible
+                    transcription warnings, including any coverage warnings.
+                  </span>
+                </label>
+                <Button
+                  type='button'
+                  className='mt-3'
+                  onClick={onAcknowledgeReview}
+                  disabled={
+                    !transcriptAcknowledged ||
+                    hasDrafts ||
+                    pending ||
+                    Boolean(correctionPending) ||
+                    reviewPending
+                  }
+                >
+                  {reviewPending
+                    ? 'Saving review acknowledgement...'
+                    : 'Acknowledge reviewed transcript'}
+                </Button>
+                {reviewError && (
+                  <p className='mt-3 text-sm text-destructive'>{reviewError}</p>
+                )}
+              </div>
+            )}
+            {review && (
+              <div className='rounded-lg border bg-muted/30 p-4 text-sm'>
+                <div className='font-medium text-emerald-700'>
+                  Transcript revision acknowledged in Core
+                </div>
+                <p className='mt-2'>
+                  Review {shortIdentifier(review.reviewId)} is bound to revision{' '}
+                  {review.contentRevision} and digest {review.correctionDigest}.
+                </p>
+                {reviewGateOpen && (
+                  <Button
+                    type='button'
+                    className='mt-3'
+                    onClick={onAdmitMeetingIntelligence}
+                    disabled={
+                      hasDrafts ||
+                      pending ||
+                      Boolean(correctionPending) ||
+                      admissionPending
+                    }
+                  >
+                    {admissionPending
+                      ? 'Admitting Meeting Intelligence...'
+                      : 'Admit Meeting Intelligence'}
+                  </Button>
+                )}
+                {admissionError && (
+                  <p className='mt-3 text-sm text-destructive'>
+                    {admissionError}
+                  </p>
+                )}
+              </div>
+            )}
+          </>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function SpeakerMappings({
+  meetingId,
+  organizer,
+  readOnly,
+  disabled,
+  onSave,
+}: {
+  meetingId: string
+  organizer: OperatorSession['user']
+  readOnly: boolean
+  disabled: boolean
+  onSave: (clusterId: string, userId: string | null) => Promise<void>
+}) {
+  const [clusters, setClusters] = useState<SpeakerCluster[] | null>(null)
+  const [members, setMembers] = useState<MemberOption[]>([])
+  const [choice, setChoice] = useState<Record<string, string>>({})
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const load = async () => {
+    const [current, options] = await Promise.all([
+      fetchSpeakerClusters(meetingId),
+      readOnly ? Promise.resolve([]) : meetingMembers(meetingId, organizer),
+    ])
+    setClusters(current)
+    setMembers(options)
+    setChoice({})
+  }
+  const apply = async (operation: () => Promise<void>) => {
+    setBusy(true)
+    setError(null)
+    try {
+      await operation()
+      await load()
+    } catch (failure) {
+      setError(readableError(failure))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <div className='space-y-2 rounded-lg border p-3'>
+      <Button
+        variant='outline'
+        size='sm'
+        onClick={() => void apply(async () => {})}
+        disabled={busy || disabled}
+      >
+        Review speaker mappings
+      </Button>
+      {clusters?.map((speaker) => {
+        const selection = choice[speaker.id] ?? speaker.userId ?? ''
+        return (
+          <div
+            key={speaker.id}
+            className='flex flex-wrap items-center gap-2 text-sm'
+          >
+            <span>
+              {speaker.label}
+              {speaker.displayName ? ` — ${speaker.displayName}` : ''}
+            </span>
+            {!readOnly && (
+              <>
+                <select
+                  className='rounded border bg-background px-2 py-1'
+                  aria-label={`Identity for ${speaker.label}`}
+                  value={selection}
+                  onChange={(event) =>
+                    setChoice({ ...choice, [speaker.id]: event.target.value })
+                  }
+                >
+                  <option value=''>Unassigned</option>
+                  {members.map((member) => (
+                    <option key={member.userId} value={member.userId}>
+                      {member.displayName}
+                    </option>
+                  ))}
+                </select>
+                <Button
+                  variant='outline'
+                  size='sm'
+                  disabled={
+                    busy || disabled || selection === (speaker.userId ?? '')
+                  }
+                  onClick={() =>
+                    void apply(() => onSave(speaker.id, selection || null))
+                  }
+                >
+                  Save mapping
+                </Button>
+              </>
+            )}
+          </div>
+        )
+      })}
+      {error && <p className='text-sm text-destructive'>{error}</p>}
+    </div>
+  )
+}
+
+function ResultsCard({
+  job,
+  evidence,
+  results,
+  pending,
+  error,
+  proposalError,
+  proposalPending,
+  onRead,
+  onProposalAction,
+}: {
+  job: ProcessingJob | null
+  evidence: FinalizedTranscriptEvidence | null
+  results: MeetingIntelligenceReview | null
+  pending: boolean
+  error: string | null
+  proposalError: string | null
+  proposalPending: string | null
+  onRead: () => void
+  onProposalAction: (action: ProposalAction) => void
+}) {
+  const ready =
+    evidence &&
+    (job?.status === 'COMPLETED' || job?.status === 'COMPLETED_WITH_WARNINGS')
+  return (
+    <Card>
+      <CardHeader className='border-b'>
+        <CardTitle>6. Read and evaluate generated Vietnamese results</CardTitle>
+        <CardDescription>
+          Summary, Decision, and Action Item projections are read-only until the
+          operator separately approves a proposal action.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className='space-y-5 pt-6'>
+        {!results && (
+          <Button type='button' onClick={onRead} disabled={!ready || pending}>
+            {pending
+              ? 'Reading results...'
+              : 'Read Summary, Decisions, and Action Items'}
+          </Button>
+        )}
+        {!ready && !results && (
+          <p className='text-sm text-muted-foreground'>
+            Finalized Vietnamese transcript and a terminal successful job are
+            required before result review.
+          </p>
+        )}
+        {error && <p className='text-sm text-destructive'>{error}</p>}
+        {results && (
+          <>
+            <section className='space-y-3'>
+              <div className='flex flex-wrap items-center justify-between gap-2'>
+                <h3 className='font-semibold'>Summary</h3>
+                <span className='text-xs text-muted-foreground'>
+                  Version {results.summary.summary.versionNumber}
+                  {results.summary.isCurrent === false
+                    ? ' · Not the selected Summary'
+                    : ' · Selected Summary'}
+                </span>
+                <span className='text-xs text-muted-foreground'>
+                  Prompt contract:{' '}
+                  {OPERATOR_MI_SUMMARY_CONTRACT.extractionPromptVersion}
+                </span>
+              </div>
+              <div className='rounded-lg border bg-muted/30 p-4 text-sm leading-6 whitespace-pre-wrap'>
+                {results.summary.summary.content}
+              </div>
+              <Provenance
+                producer={results.summary.summary.aiProducer}
+                warnings={results.summary.summary.aiWarnings}
+              />
+            </section>
+
+            <ProposalSection
+              title='Decision proposals'
+              emptyLabel='No Decision proposals returned.'
+              items={results.decisions}
+              kind='decision'
+              pending={proposalPending}
+              onAction={onProposalAction}
+            />
+            <ProposalSection
+              title='Action Item proposals'
+              emptyLabel='No Action Item proposals returned.'
+              items={results.actionItems}
+              kind='action-item'
+              pending={proposalPending}
+              onAction={onProposalAction}
+            />
+            {proposalError && (
+              <p className='text-sm text-destructive'>{proposalError}</p>
+            )}
+            <Alert>
+              <ShieldCheck />
+              <AlertTitle>Proposal authority remains separate</AlertTitle>
+              <AlertDescription>
+                No proposal was confirmed or rejected by reading these results.
+                Each action above requires a new operator approval.
+              </AlertDescription>
+            </Alert>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function ProposalSection({
+  title,
+  emptyLabel,
+  items,
+  kind,
+  pending,
+  onAction,
+}: {
+  title: string
+  emptyLabel: string
+  items: DecisionReview[] | ActionItemReview[]
+  kind: 'decision' | 'action-item'
+  pending: string | null
+  onAction: (action: ProposalAction) => void
+}) {
+  return (
+    <section className='space-y-3'>
+      <h3 className='font-semibold'>{title}</h3>
+      {!items.length ? (
+        <p className='text-sm text-muted-foreground'>{emptyLabel}</p>
+      ) : (
+        <div className='space-y-3'>
+          {items.map((item) => {
+            const id =
+              kind === 'decision'
+                ? (item as DecisionReview).decision.id
+                : (item as ActionItemReview).actionItem.id
+            const status =
+              kind === 'decision'
+                ? (item as DecisionReview).decision.status
+                : (item as ActionItemReview).actionItem.status
+            const content =
+              kind === 'decision'
+                ? (item as DecisionReview).decision.content
+                : (item as ActionItemReview).actionItem.title
+            const actionPrefix =
+              kind === 'decision' ? 'decision' : 'action-item'
+            const decision =
+              kind === 'decision'
+                ? (item as DecisionReview).decision
+                : undefined
+            const task =
+              kind === 'action-item'
+                ? (item as ActionItemReview).actionItem
+                : undefined
+            return (
+              <div key={id} className='rounded-lg border p-4'>
+                <div className='flex flex-wrap items-center justify-between gap-2'>
+                  <span className='text-xs text-muted-foreground'>
+                    {shortIdentifier(id)}
+                  </span>
+                  <span className='text-xs font-medium'>{status}</span>
+                </div>
+                <p className='mt-2 text-sm leading-6 whitespace-pre-wrap'>
+                  {content}
+                </p>
+                {decision && (
+                  <>
+                    <p className='text-xs text-muted-foreground'>
+                      {decision.evidenceSegmentIds.length} cited transcript
+                      segments
+                      {decision.isStale ? ' · Stale evidence' : ''}
+                    </p>
+                    <Provenance
+                      producer={decision.aiProducer}
+                      warnings={decision.aiWarnings}
+                    />
+                  </>
+                )}
+                {task?.details && (
+                  <p className='text-sm whitespace-pre-wrap'>{task.details}</p>
+                )}
+                {task?.dueDate && (
+                  <p className='text-sm'>Due: {task.dueDate}</p>
+                )}
+                {status === 'PROPOSED' && !decision?.isStale && (
+                  <div className='mt-3 flex flex-wrap gap-2'>
+                    <Button
+                      type='button'
+                      size='sm'
+                      onClick={() => onAction({ kind, id, action: 'confirm' })}
+                      disabled={Boolean(pending)}
+                    >
+                      Confirm this proposal
+                    </Button>
+                    <Button
+                      type='button'
+                      variant='outline'
+                      size='sm'
+                      onClick={() => onAction({ kind, id, action: 'reject' })}
+                      disabled={Boolean(pending)}
+                    >
+                      Reject this proposal
+                    </Button>
+                  </div>
+                )}
+                <p className='mt-2 text-xs text-muted-foreground'>
+                  Evidence and provenance remain visible for Vietnamese human
+                  evaluation; this control is not a bulk action.
+                </p>
+                <span className='sr-only'>{actionPrefix}</span>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </section>
+  )
+}
+
+function Provenance({
+  producer,
+  warnings,
+}: {
+  producer?: {
+    provider: string | null
+    model: string
+    promptVersion: string
+  } | null
+  warnings: string[]
+}) {
+  return (
+    <div className='text-xs text-muted-foreground'>
+      <p>
+        Producer:{' '}
+        {producer
+          ? `${producer.provider ?? 'provider unavailable'} / ${producer.model} / ${producer.promptVersion}`
+          : 'not returned by Core'}
+      </p>
+      {warnings.length > 0 && (
+        <p>Warnings: {warnings.map(resultWarningLabel).join(' ')}</p>
+      )}
+    </div>
+  )
+}
+
+function resultWarningLabel(code: string) {
+  switch (code) {
+    case 'GROUNDING_CLAIM_DISCARDED':
+      return 'Unsupported or conflicting claims were omitted.'
+    case 'GROUNDING_CLAIM_REPAIRED':
+      return 'Evidence citation boundaries were repaired and revalidated.'
+    default:
+      return code
+  }
+}
+
+function EvidenceRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className='flex min-w-0 items-start justify-between gap-3'>
+      <dt className='text-muted-foreground'>{label}</dt>
+      <dd className='max-w-[70%] text-end font-medium break-all'>{value}</dd>
+    </div>
+  )
+}
+
+function readableError(error: unknown): string {
+  const normalized = normalizeCoreApiError(error)
+  return normalized.message || 'The Core API operation could not be verified.'
+}
+
+function createIdempotencyKey(prefix: string): string {
+  if (
+    typeof globalThis.crypto !== 'undefined' &&
+    typeof globalThis.crypto.randomUUID === 'function'
+  ) {
+    return `${prefix}-${globalThis.crypto.randomUUID()}`
+  }
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+function shortIdentifier(value: string): string {
+  return value.length > 12 ? `${value.slice(0, 8)}…` : value
+}
+
+function formatMilliseconds(value: number): string {
+  const totalSeconds = Math.floor(value / 1000)
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+}

@@ -5,6 +5,7 @@ on:
     branches:
       - develop
       - 'ai/**'
+      - 'api/**'
       - 'integration/**'
     paths:
       - 'services/ai/**'

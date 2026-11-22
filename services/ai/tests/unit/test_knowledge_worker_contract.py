@@ -12,6 +12,7 @@ from sme_meeting_ai.integrations.core_api import (
     CoreError,
     KnowledgeCoreApiClient,
     KnowledgeSnapshotResponse,
+    KnowledgeWritePermit,
 )
 from sme_meeting_ai.integrations.knowledge_indexing import decode_notification
 from sme_meeting_ai.rag import (
@@ -20,6 +21,8 @@ from sme_meeting_ai.rag import (
     CanonicalSourceIdentity,
     SnapshotMetadata,
     SourceRevision,
+    SummaryProjection,
+    SummarySnapshot,
     validate_snapshot,
 )
 from sme_meeting_ai.rag.tokenizer import bge_m3_index_generation
@@ -146,6 +149,58 @@ def test_serialized_action_item_with_empty_evidence_array_uses_json_validation(m
     assert seen == [raw]
     assert parsed.content.evidence_segment_ids == ()
     assert isinstance(parsed.content.evidence_segment_ids, tuple)
+
+
+def serialized_summary_snapshot(warnings):
+    meeting_id, source_id, snapshot_id = (str(uuid4()) for _ in range(3))
+    snapshot = SummarySnapshot(
+        contractVersion="1.0",
+        snapshotType="SUMMARY",
+        metadata=SnapshotMetadata(
+            snapshotId=snapshot_id,
+            meetingId=meeting_id,
+            sourceIdentity=CanonicalSourceIdentity(
+                sourceType="SUMMARY", sourceId=source_id, meetingId=meeting_id,
+            ),
+            sourceRevision=SourceRevision(number=1),
+        ),
+        content=SummaryProjection(
+            id=source_id, meetingId=meeting_id, versionNumber=1, content="Meeting summary.",
+            sourceType="AI_GENERATED", qualityStatus="READY_WITH_WARNINGS",
+            isCurrent=True, isApproved=True, isStale=False,
+        ),
+    )
+    payload = snapshot.model_dump(mode="json", by_alias=True)
+    payload["content"]["aiWarnings"] = warnings
+    return snapshot, json.dumps(payload, separators=(",", ":")).encode()
+
+
+@pytest.mark.parametrize(("warnings", "expected"), [
+    (["{}"], ()),
+    (["{INCOMPLETE_COVERAGE}"], ("INCOMPLETE_COVERAGE",)),
+    (["{INCOMPLETE_COVERAGE", "UNRESOLVED_EVIDENCE}"], ("INCOMPLETE_COVERAGE", "UNRESOLVED_EVIDENCE")),
+    (["INCOMPLETE_COVERAGE", "UNRESOLVED_EVIDENCE"], ("INCOMPLETE_COVERAGE", "UNRESOLVED_EVIDENCE")),
+])
+def test_worker_accepts_canonical_and_legacy_summary_warnings(warnings, expected):
+    snapshot, raw = serialized_summary_snapshot(warnings)
+    event, parsed = run_worker_snapshot(snapshot, raw)
+
+    assert parsed.content.ai_warnings == expected
+    assert parsed.metadata.integrity.sha256 == event.snapshot.sha256
+    assert parsed.metadata.integrity.size_bytes == len(raw)
+
+
+@pytest.mark.parametrize("warnings", [
+    ["{INCOMPLETE_COVERAGE", "{UNRESOLVED_EVIDENCE}"],
+    ["{UNRESOLVED_EVIDENCE"],
+    ["{NOT A WARNING}"],
+    "{INCOMPLETE_COVERAGE}",
+])
+def test_worker_rejects_other_malformed_summary_warning_encodings(warnings):
+    snapshot, raw = serialized_summary_snapshot(warnings)
+
+    with pytest.raises(KnowledgeWorkerFailure, match="^SNAPSHOT_CONTRACT_INVALID$"):
+        run_worker_snapshot(snapshot, raw)
 
 
 @pytest.mark.parametrize(
@@ -375,3 +430,80 @@ def test_claim_request_omits_optional_source_revision_fields():
     asyncio.run(client.claim(event, claim_request_id=uuid4()))
 
     assert client.body["sourceRevision"] == {"number": event.source_revision.number}
+
+
+def test_permit_protocol_reserves_spends_and_completes_one_execution_identity():
+    event = knowledge_event()
+    claim_token = str(uuid4())
+    permit_id = str(uuid4())
+
+    class CaptureClient(KnowledgeCoreApiClient):
+        async def request_knowledge(self, _event, operation, body=None, **_options):
+            self.calls.append((operation, body))
+            if operation == "permit":
+                return SimpleNamespace(
+                    permitId=permit_id,
+                    state="RESERVED",
+                    mutationExecutionId=body["mutationExecutionId"],
+                )
+            if operation.endswith("/start"):
+                return SimpleNamespace(
+                    permitId=permit_id,
+                    state="RUNNING",
+                    mutationExecutionId=body["mutationExecutionId"],
+                )
+            return SimpleNamespace(
+                permitId=permit_id,
+                state="SUCCEEDED",
+                mutationExecutionId=body["mutationExecutionId"],
+            )
+
+    client = CaptureClient.__new__(CaptureClient)
+    client.calls = []
+    claim = SimpleNamespace(
+        claimToken=SimpleNamespace(get_secret_value=lambda: claim_token),
+    )
+
+    permit = asyncio.run(client.acquire_write_permit(event, claim))
+    started = asyncio.run(client.start_write_permit(event, claim, permit))
+    asyncio.run(client.complete_write_permit(
+        event, claim, started, state="SUCCEEDED", outcome_code="NONE",
+    ))
+
+    assert [operation for operation, _ in client.calls] == [
+        "permit", f"permit/{permit_id}/start", f"permit/{permit_id}/complete",
+    ]
+    _, acquired = client.calls[0]
+    _, start = client.calls[1]
+    _, complete = client.calls[2]
+    assert acquired["generationId"] == event.index_generation.generation_id
+    assert acquired["mutationExecutionId"]
+    assert start["mutationExecutionId"] == acquired["mutationExecutionId"]
+    assert complete["mutationExecutionId"] == acquired["mutationExecutionId"]
+
+
+def test_cancelled_permit_is_a_terminal_pre_start_stale_reservation():
+    execution_id = str(uuid4())
+    payload = {
+        "contractVersion": "1.0",
+        "eventId": str(uuid4()),
+        "permitId": str(uuid4()),
+        "generationId": "rag-t02-bge-m3-v1",
+        "generationEpoch": 4,
+        "operation": "UPSERT",
+        "state": "CANCELLED",
+        "mutationExecutionId": execution_id,
+        "createdAt": "2026-10-31T12:00:00Z",
+        "reservedAt": "2026-10-31T12:00:01Z",
+        "completedAt": "2026-10-31T12:00:02Z",
+        "outcomeCode": "WORKER_PERMIT_STALE",
+    }
+
+    permit = KnowledgeWritePermit.model_validate(payload)
+
+    assert permit.state == "CANCELLED"
+    assert permit.startedAt is None
+
+    invalid = {**payload, "startedAt": "2026-10-31T12:00:02Z"}
+    with pytest.raises(ValueError):
+        KnowledgeWritePermit.model_validate(invalid)

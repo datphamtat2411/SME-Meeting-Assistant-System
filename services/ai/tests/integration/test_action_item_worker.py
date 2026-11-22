@@ -82,7 +82,22 @@ def test_action_branch_reconciles_and_reuses_prepared_bytes(mode):
             if mode in {"auth", "reject"}:
                 assert core.accepts == 1
             body = json.loads(batches[0])
-            assert set(body) == {"contractVersion", "eventId", "stageRunId", "claimToken", "source", "candidates"}
+            expected = {"contractVersion", "eventId", "stageRunId", "claimToken", "source", "candidates",
+                        "diagnosticsVersion", "diagnosticCounts"}
+            if mode != "empty":
+                expected.add("diagnostics")
+            assert set(body) == expected
+            diagnostics = body.get("diagnostics", [])
+            counts = {
+                "version": "1.0",
+                "accepted": sum(item["disposition"] == "ACCEPTED" for item in diagnostics),
+                "rejected": sum(item["disposition"] == "REJECTED" for item in diagnostics),
+                "discarded": sum(item["disposition"] == "DISCARDED" for item in diagnostics),
+                "repaired": sum(item["disposition"] == "REPAIRED" for item in diagnostics),
+                "total": len(diagnostics),
+            }
+            assert body["diagnosticsVersion"] == "1.0"
+            assert body["diagnosticCounts"] == counts
             assert len(body["candidates"]) == (0 if mode == "empty" else 1)
         finally:
             await worker.aclose()

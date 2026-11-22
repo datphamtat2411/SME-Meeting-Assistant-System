@@ -88,7 +88,7 @@ def test_artifact_exact_timeline_provenance_and_ownership(setup_audio):
         assert artifact.provenance.source_id == source.source_id
         assert artifact.provenance.normalizer_version
         assert artifact.provenance.decoder_version == "7.1-test"
-        assert artifact.provenance.effective_configuration["max_output_bytes"] == 134217728
+        assert artifact.provenance.effective_configuration["max_output_bytes"] == settings.audio_max_output_bytes
         assert artifact.provenance.target_format["sample_rate_hz"] == 16000
         path = artifact.path
     artifact.close()
@@ -134,6 +134,12 @@ def test_rejects_invalid_or_ambiguous_actual_streams(setup_audio, data):
     assert caught.value.category == "VALIDATION"
     assert list(work.iterdir()) == []
 
+
+def test_an_audio_file_can_have_cover_art_without_an_extra_playable_stream(setup_audio):
+    source, settings, _ = setup_audio
+    data = probe_data()
+    data["streams"].append({"codec_type": "video", "codec_name": "mjpeg", "disposition": {"attached_pic": 1}})
+    assert AudioNormalizer(settings, runner=FakeRunner(data)).probe(source).codec == "pcm_s16le"
 
 @pytest.mark.parametrize("kind", ["missing", "directory", "symlink", "fifo", "empty", "unreadable"])
 def test_rejects_invalid_local_sources_before_subprocess(setup_audio, kind):

@@ -156,4 +156,42 @@ class IntelligenceResultMultilineContractTests {
         assertThatThrownBy(()->IntelligenceResultPayload.parse(
             json.writeValueAsBytes(root),json)).isInstanceOf(IllegalArgumentException.class);
     }
+
+    @Test
+    void optionalGroundingDiagnosticsRemainBoundedAndContentFree() {
+        Map<String,Object> root=json.readValue(envelope("SUMMARY","Nội dung"),Map.class);
+        @SuppressWarnings("unchecked")
+        Map<String,Object> result=(Map<String,Object>)root.get("result");
+        Map<String,Object> evidence=new java.util.LinkedHashMap<>();
+        evidence.put("sourceSnapshotId",SOURCE.toString());
+        evidence.put("transcriptId",TRANSCRIPT.toString());
+        evidence.put("contentRevision",3);
+        evidence.put("sourceSha256","a".repeat(64));
+        evidence.put("references",List.of(Map.of(
+            "segmentId",EVIDENCE.toString(),"charStart",0,"charEnd",12)));
+        evidence.put("modelCategory","AGREEMENT");
+        evidence.put("statementSha256","b".repeat(64));
+        evidence.put("statementCharLength",12);
+        evidence.put("evidenceSha256","c".repeat(64));
+        evidence.put("evidenceCharLength",12);
+        evidence.put("affirmativeMarker",false);
+        evidence.put("negativeMarker",false);
+        evidence.put("assessment","UNSUPPORTED_MODEL_CLASSIFICATION");
+        result.put("warnings",List.of("GROUNDING_CLAIM_DISCARDED"));
+        result.put("diagnostics",List.of(Map.of(
+            "disposition","DISCARDED",
+            "reason","GROUNDING_FAILURE",
+            "rule","AGREEMENT_UNSUPPORTED",
+            "itemIndex",0,
+            "evidence",evidence)));
+
+        var parsed=IntelligenceResultPayload.parse(json.writeValueAsBytes(root),json);
+        assertThat(parsed.diagnostics()).hasSize(1);
+        assertThat(parsed.diagnostics().getFirst().rule()).isEqualTo("AGREEMENT_UNSUPPORTED");
+        assertThat(parsed.diagnostics().getFirst().evidence().references()).hasSize(1);
+
+        evidence.put("statementSha256","private-content");
+        assertThatThrownBy(()->IntelligenceResultPayload.parse(
+            json.writeValueAsBytes(root),json)).isInstanceOf(IllegalArgumentException.class);
+    }
 }

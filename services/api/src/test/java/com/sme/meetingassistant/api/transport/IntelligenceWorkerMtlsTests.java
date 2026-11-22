@@ -27,10 +27,11 @@ class IntelligenceWorkerMtlsTests {
     @TempDir Path pki;
     @Test void explicitInfrastructureConfigurationEnablesOnlyDeclaredStagesAndSupportsDispatchPause() throws Exception {
         TestPki.create(pki);
-        var p=new com.sme.meetingassistant.api.media.MediaProperties();var i=p.getIntelligence();var s=p.getStorage();
-        i.setEnabled(true);i.setDispatchEnabled(true);i.setInfrastructureVerified(true);i.setStorageId("meeting-media");
-        i.setEnabledStages(List.of("GENERATING_SUMMARY"));
-        s.setEndpoint("https://storage.internal:9443");s.setBucket("meeting-media");s.setRegion("us-east-1");s.setCaFile(pki.resolve("ca.crt").toString());
+         var p=new com.sme.meetingassistant.api.media.MediaProperties();var i=p.getIntelligence();var s=p.getStorage();
+         i.setEnabled(true);i.setDispatchEnabled(true);i.setInfrastructureVerified(true);i.setStorageId("meeting-media");
+         i.setEnabledStages(List.of("GENERATING_SUMMARY"));
+         p.getProcessing().setRequiredDownstreamStages(List.of("GENERATING_SUMMARY"));
+         s.setEndpoint("https://storage.internal:9443");s.setBucket("meeting-media");s.setRegion("us-east-1");s.setCaFile(pki.resolve("ca.crt").toString());
         p.getOutbox().setExchange("meeting.processing");p.getOutbox().setRoutingKey("processing.job.queued");
         var env=new org.springframework.mock.env.MockEnvironment().withProperty("app.transport.private.enabled","true")
             .withProperty("app.mi.internal-result.enabled","true").withProperty("spring.rabbitmq.ssl.enabled","true")
@@ -41,10 +42,36 @@ class IntelligenceWorkerMtlsTests {
         assertThat(capability.canDispatch("GENERATING_SUMMARY")).isTrue();assertThat(capability.canDispatch("EXTRACTING_DECISIONS")).isFalse();
         i.setDispatchEnabled(false);assertThat(new IntelligenceWorkerCapability(env,p).canDispatch("GENERATING_SUMMARY")).isFalse();
         assertThatCode(()->capability.requireStage("GENERATING_SUMMARY")).doesNotThrowAnyException();
-        p.getOutbox().setIntelligenceRoutingKey("processing.job.queued");
-        assertThatThrownBy(()->new IntelligenceWorkerCapability(env,p)).isInstanceOf(IllegalStateException.class);
-    }
-    @Test void fourOperationsRequirePrivateMiIdentityAndNeverTrustPublicJwtOrIdentityHeaders() throws Exception {
+         p.getOutbox().setIntelligenceRoutingKey("processing.job.queued");
+         assertThatThrownBy(()->new IntelligenceWorkerCapability(env,p)).isInstanceOf(IllegalStateException.class);
+     }
+     @Test void enabledAndAdmittedIntelligenceStagesMustUseTheSameCanonicalOrderedSelection() throws Exception {
+         TestPki.create(pki);
+         var p=new com.sme.meetingassistant.api.media.MediaProperties();var i=p.getIntelligence();var s=p.getStorage();
+         i.setEnabled(true);i.setDispatchEnabled(true);i.setInfrastructureVerified(true);i.setStorageId("meeting-media");
+         i.setEnabledStages(List.of("GENERATING_SUMMARY","EXTRACTING_DECISIONS","EXTRACTING_ACTION_ITEMS"));
+         p.getProcessing().setRequiredDownstreamStages(List.of(
+             "GENERATING_SUMMARY","EXTRACTING_DECISIONS","EXTRACTING_ACTION_ITEMS"));
+         p.getProcessing().setActionItemHandoffEnabled(true);
+         s.setEndpoint("https://storage.internal:9443");s.setBucket("meeting-media");s.setRegion("us-east-1");s.setCaFile(pki.resolve("ca.crt").toString());
+         p.getOutbox().setExchange("meeting.processing");p.getOutbox().setRoutingKey("processing.job.queued");
+         var env=new org.springframework.mock.env.MockEnvironment().withProperty("app.transport.private.enabled","true")
+             .withProperty("app.mi.internal-result.enabled","true").withProperty("spring.rabbitmq.ssl.enabled","true")
+             .withProperty("spring.rabbitmq.ssl.validate-server-certificate","true").withProperty("spring.rabbitmq.ssl.verify-hostname","true")
+             .withProperty("spring.rabbitmq.publisher-confirm-type","correlated").withProperty("spring.rabbitmq.publisher-returns","true")
+             .withProperty("spring.rabbitmq.template.mandatory","true").withProperty("app.media.messaging.topology","external-quorum");
+         assertThatCode(()->new IntelligenceWorkerCapability(env,p)).doesNotThrowAnyException();
+         p.getProcessing().setRequiredDownstreamStages(List.of("GENERATING_SUMMARY","EXTRACTING_DECISIONS"));
+         assertThatThrownBy(()->new IntelligenceWorkerCapability(env,p))
+             .isInstanceOf(IllegalStateException.class)
+             .hasMessage("Invalid Meeting Intelligence worker capability configuration");
+         p.getProcessing().setRequiredDownstreamStages(List.of(
+             "EXTRACTING_DECISIONS","GENERATING_SUMMARY","EXTRACTING_ACTION_ITEMS"));
+         assertThatThrownBy(()->new IntelligenceWorkerCapability(env,p))
+             .isInstanceOf(IllegalStateException.class)
+             .hasMessage("Invalid Meeting Intelligence worker capability configuration");
+     }
+     @Test void fourOperationsRequirePrivateMiIdentityAndNeverTrustPublicJwtOrIdentityHeaders() throws Exception {
         TestPki.create(pki);var factory=new TomcatServletWebServerFactory(0);
         var connector=PrivateConnector.configure(factory,new PrivateConnector.Settings(true,"127.0.0.1",0,"localhost",
             pki.resolve("server.crt"),pki.resolve("server.key"),pki.resolve("ca.crt"),pki.resolve("ca.crt")));

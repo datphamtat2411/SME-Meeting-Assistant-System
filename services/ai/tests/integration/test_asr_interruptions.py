@@ -92,7 +92,7 @@ def test_music_silence_resume_preserves_uncertain_onset_critical_words_and_absol
     assert any(i.start_sample <= onset < i.end_sample for i in processed.speech_map.uncertain_intervals)
     assert any(i.start_sample <= onset + 20 * 512 < i.end_sample for i in processed.speech_map.speech_intervals)
     assert sum(c.core_interval.end_sample - c.core_interval.start_sample for c in plan.chunks) == end
-    assert calls[1].start_sample == onset
+    assert sorted(c.start_sample for c in calls[:2]) == [0, onset]
     assert alignment.metrics.total_core_samples == end
     assert not caplog.records
 

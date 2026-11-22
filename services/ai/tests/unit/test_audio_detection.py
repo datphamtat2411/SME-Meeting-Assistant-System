@@ -251,7 +251,7 @@ def test_deadline_expires_during_inference_without_publishing(audio, monkeypatch
 
 
 @pytest.mark.parametrize("field,value", [
-    ("audio_max_input_bytes", 10), ("audio_max_duration_seconds", 0.01),
+    ("audio_max_output_bytes", 10), ("audio_max_duration_seconds", 0.01),
     ("audio_evidence_max_bytes", 1),
 ])
 def test_limits_fail_without_returning_truncated_evidence(audio, field, value):

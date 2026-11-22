@@ -1,0 +1,295 @@
+# PI-05 — System E2E Acceptance & Evidence
+
+## Purpose
+PI-05 closes the product-integration acceptance matrix for Core meeting operations,
+transcript corrections, human-governed intelligence, action items, knowledge,
+Assistant, exports and failure recovery. **Passing deterministic CI does not mean
+cross-process real-infrastructure E2E has passed.**
+
+## Evidence levels
+- **DETERMINISTIC_POSTGRES:** Real Spring MVC, authorization, PostgreSQL/Flyway,
+  transactions, outbox state, concurrent locking and business APIs. Only
+  explicitly identified outbound dependencies are controlled (AI inference,
+  object-store presigning, vector audit in focused tests).
+- **LIVE_INFRASTRUCTURE:** Real separately running Core, AI, PostgreSQL, RabbitMQ
+  TLS, Qdrant, object storage and mTLS with approved BGE-M3/reranker artifacts.
+  Each must be executed on an isolated disposable environment, not production.
+- **NOT_RUN / BLOCKED / FAIL / PASS** are distinct. A skipped pytest, an unprovisioned
+  model, an unavailable harness or an unexecuted workflow is never a PASS.
+
+## CI deterministic scenario matrix
+The new dedicated CI workflow uses exact test-method outcomes from Surefire XML,
+not class presence or a developer-edited checkbox. It refuses missing, skipped,
+failed and duplicated testcase evidence, even for testcases outside the nominated matrix;
+CI removes stale Surefire reports before execution. The manifest is uploaded as
+`pi05-deterministic-evidence` with original JUnit XML.
+`python3 -m unittest discover -s services/api/scripts -p 'test_pi05_collect_evidence.py'`
+checks the evidence parser's negative cases.
+
+| ID | Scenario | Required integration evidence |
+| --- | --- | --- |
+| PI05-001 | Membership revocation across Assistant and export | HTTP/PG shared meeting authorization and revocation during inference |
+| PI05-002 | Transcript correction propagation | Summary/Decision knowledge invalidation, historical citation redaction, revision races |
+| PI05-003 | Room hard conflict | Real concurrent HTTP reservation and cancellation/reuse |
+| PI05-004 | Proposal vs official truth | Cross-stage fencing and human confirmation |
+| PI05-005 | Export freshness and protected capability | Revocation, immutable historical fingerprint and safe retry |
+| PI05-006 | Assistant idempotency/TOCTOU/admission | Durable replay, verified citation at commit, PostgreSQL user/meeting/global admission and quota contention |
+| PI05-007 | Knowledge inventory/recovery | Missing work, orphan vectors, failed cleanup replay |
+| PI05-008 | Generation promotion | DB readiness, clean inventory, checkpoint resume |
+| PI05-009 | Worker and broker recovery | Durable lease replay and media stage fencing |
+
+### PI-04 cursor regression contract
+
+The deterministic PI05-007/PI05-008 evidence must use the same inventory cursor
+contract at both service boundaries. Accepted values are omitted/`null`, ASCII
+unsigned decimal offsets `0..18446744073709551615`, exactly 32 hexadecimal
+UUID characters, or canonical 36-character hyphenated UUIDs. Decimal values
+and UUIDs are normalized before transport and checkpoint persistence. A
+32-digit decimal-looking value is the 32-hex UUID form; it is not parsed as an
+overflowing integer.
+
+AI rejects malformed request cursors with HTTP 422 before Qdrant access.
+`INVENTORY_STALLED` is the only provider category mapped to HTTP 503
+`inventory_cursor_cycle`; Core decodes it as `CURSOR_CYCLE` and reconciliation
+persists `VECTOR_CURSOR_CYCLE`. Malformed Qdrant-generated offsets and invalid
+inventory payloads (`INVENTORY_CURSOR_INVALID` and `INVENTORY_INVALID`) retain
+HTTP 503 `inventory_integrity_failure` and `VECTOR_AUDIT_INVALID`. Temporary
+Qdrant failures remain the existing HTTP 503 unavailable response and
+`VECTOR_AUDIT_UNAVAILABLE`; generation mismatch remains HTTP 409. Core rejects
+invalid persisted checkpoints before HTTP transport and rejects invalid or
+repeated canonical `nextCursor` values before updating PostgreSQL. Accepted
+non-terminal cursors are durably unique per run in V58; both immediate
+self-loops and historical repeats use the stable, non-retryable
+`VECTOR_CURSOR_CYCLE`. V59 adds `LEGACY_UNVERIFIED` and
+`TRACKED_FROM_START` provenance; unverified runs fail closed with
+`VECTOR_HISTORY_UNVERIFIED`. The internal reconciliation classifications are
+`VECTOR_CURSOR_INVALID`, `VECTOR_AUDIT_INVALID`, `VECTOR_CURSOR_CYCLE`,
+`VECTOR_HISTORY_UNVERIFIED`, `VECTOR_AUDIT_UNAVAILABLE`, and
+`VECTOR_GENERATION_MISMATCH`; no public response includes exception text,
+collection identifiers, or storage details.
+
+### Generation and worker fencing
+
+PI05-007 and PI05-008 evidence must identify the V53 baseline and forward-only
+V54, V55, V56, V58 and V59 migrations. Candidate readiness is fenced by the
+generation write epoch and seal; `certificationUsable` is true only for a
+current, completed, clean, unrepaired dry-run certification whose run is
+`TRACKED_FROM_START`. A completed legacy run remains diagnostic evidence only,
+even when its inventory and seal/epoch fields look clean. Qdrant mutation evidence must show a single
+permit execution identity moving `RESERVED -> RUNNING -> SUCCEEDED/FAILED`,
+with the physical mutation completed before the terminal Core acknowledgement.
+`OPEN`, reused, stale-epoch, and stale-seal permits are not valid authorization.
+Summary selection changes are independently fenced by `selection_epoch` and
+must never reuse immutable snapshot bytes from another selection epoch.
+
+The V51 cursor column is not rewritten. V58 adds durable cursor history and
+backfills only a valid current legacy checkpoint into canonical history; because
+that cannot prove full transition coverage, V59 marks every existing run
+`LEGACY_UNVERIFIED`, including completed runs and runs created after V58 but
+before V59. The migration preserves checkpoints, counters, findings, history,
+timestamps and identities. New application-created runs explicitly establish
+`TRACKED_FROM_START`; uncontrolled direct inserts default to unverified.
+Unverified runs cannot resume, claim, accept a late page, or qualify
+activation, while completed legacy rows remain available for diagnostics.
+A malformed trusted legacy value remains unchanged and fails closed as
+`VECTOR_CURSOR_INVALID`, never restarting at page zero. A valid page updates
+the history, cursor and accepted scan count in one transaction. An invalid or
+cyclic page leaves the last accepted cursor/count, completion flag, findings
+and generation-promotion evidence unchanged. `null` is the terminal cursor,
+not a history entry.
+
+Cycle detection is not snapshot isolation or proof that Qdrant remained
+unchanged during a scan. Concurrent Qdrant writes can still cause omissions or
+duplicates between pages. Release-grade acceptance requires a quiescent or
+otherwise validated inventory window; a cyclic run must be preserved for
+diagnosis and cannot be resumed merely to obtain a green result or qualify a
+candidate generation.
+
+An unverified legacy run is preserved for diagnostics but cannot resume,
+advance a claim, accept a late remote result, or provide certification
+evidence. Active or incomplete legacy runs fail with
+`VECTOR_HISTORY_UNVERIFIED`; completed legacy runs retain their status and
+historical evidence but remain ineligible for `certificationUsable`. Recovery
+requires a fresh reconciliation from the legitimate initial cursor and a
+normal clean certification. This conservative V59 classification is required
+because V58 could not reconstruct every prior cursor transition.
+
+## Execution
+```bash
+cd services/api
+./mvnw -B -ntp -Dtest=Pi05CrossModuleAcceptanceTests,CrossModuleRevisionConsistencyIntegrationTests,AssistantHttpIntegrationTests,AssistantAdmissionIntegrationTests,AssistantAdmissionPropertiesTests,KnowledgeIndexingWorkerIntegrationTests,AiCoreKnowledgeVectorAuditContractTests,MeetingRoomLifecycleIntegrationTests,ActionItemProposalHandoffIntegrationTests,IntelligenceResultIngestionIntegrationTests,ExportAccessHttpIntegrationTests,ExportJobIntegrationTests,OutboxLeaseIntegrationTests,ProcessingStageFencingIntegrationTests,TranscriptReviewRevisionGuardIntegrationTests test
+python3 scripts/pi05_collect_evidence.py --reports target/surefire-reports --output target/pi05-evidence.json --strict
+```
+
+## Live scenarios still required
+1. PI05-L01 full source media → transcript → intelligence → Qdrant → Assistant
+2. PI05-L02 revision replacement and retrieval returning only current authorized sources
+3. PI05-L03 participant/role revocation while AI inference is in progress
+4. PI05-L04 RabbitMQ duplicate, nack and redelivery recovery without business duplicates
+5. PI05-L05 expired lease and restarted real worker recovery
+6. PI05-L06 temporary Qdrant outage, failed reconciliation, resumed repair
+7. PI05-L07 full missing-work and orphan-point inventory, including malformed generation
+8. PI05-L08 failed generation candidate, safe activation, rollback to prior collection
+9. PI05-L09 transcript edit makes export stale, and revoked client cannot obtain a new signed URL
+10. PI05-L10 concurrent room conflict, cancellation, notification delivery and recovery
+
+Every live scenario must retain Git SHA, run ID, isolated environment identifier,
+Core/AI version, vector generation and collection, source/revision, worker event
+IDs, PostgreSQL/Flyway migration, observed Qdrant counts, actual request/response
+statuses, and sanitized failure evidence. Secrets, transcripts, audio, prompts and
+signed URLs MUST NOT be copied into evidence artifacts.
+
+## Current acceptance boundary
+This document defines the gate. The task is not declared live-accepted until
+all ten scenarios have independently verifiable, real-infrastructure PASS records.
+The existing T06 five live cases remain NOT_RUN until the real isolated harness
+runs; PI-05 CI cannot retroactively change that historical fact.
+
+
+## Opt-in real-process PI-05 driver
+`services/ai/tests/integration/test_pi05_live.py` defines ten isolated,
+destructive-capable live acceptance scenarios. Unlike the earlier T06 boolean
+harness, each scenario must return a typed `contractVersion=1.0` record pinned
+to the run UUID, exact commit and Qdrant generation, with independently
+correlatable per-step request IDs, component-specific observed outcomes,
+timezone-aware observation times and SHA-256 proof references. Incomplete
+evidence and arbitrary `status=PASS` responses are rejected by unit tests.
+That contract remains external-harness dependent: returned digests are still
+subject to operator review of isolated service logs.
+
+For an already-provisioned approved **disposable isolated** environment:
+```bash
+cd services/ai
+AI_RUN_PI05_LIVE=1 AI_PI05_ENVIRONMENT_KIND=DISPOSABLE \
+AI_PI05_HARNESS_URL=https://localhost:9443 \
+AI_PI05_RUN_ID=<new-uuid> \
+AI_PI05_SOURCE_COMMIT=<40-hex-git-sha> \
+AI_PI05_GENERATION_ID=<approved-generation> \
+AI_PI05_COLLECTION_NAME=<isolated-collection> \
+AI_PI05_CA_FILE=/secure/ca.pem \
+AI_PI05_CERT_FILE=/secure/client.pem \
+AI_PI05_KEY_FILE=/secure/client-key.pem \
+AI_PI05_EVIDENCE_DIR=/secure/pi05-evidence \
+AI_PI05_PROOF_DIR=/secure/pi05-independent-proofs \
+AI_PI05_SCENARIO_TIMEOUT_SECONDS=1800 \
+uv run pytest -m live_infrastructure tests/integration/test_pi05_live.py -q -rs
+```
+The example is a command template, not evidence that the external harness or
+models have been provisioned. Until a real run reports verifiable outcomes,
+all PI05-L01..L10 remain **NOT_RUN**. Both directories must already exist and
+must not be symlinks; the proof directory holds independently collected receipts,
+not generated placeholder evidence. The optional scenario HTTP timeout is an
+integer from 60 through 14400 seconds (default 60); select a bounded value suited
+to the approved real-processing budget. This is an HTTP I/O inactivity timeout,
+not a total scenario deadline; the harness must enforce its own processing and
+cost budgets. It does not alter acceptance assertions.
+
+The live response schema rejects arbitrary/extra fields, foreign builds, schema versions before V51, repeated request IDs, repeated proof hashes, unknown service boundaries and any unrecognized outcome. The driver retains sanitized per-scenario JSON in a pre-existing evidence directory using exclusive file creation, never silently overwriting a previous run. This evidence is **not** generated by deterministic CI.
+
+## PI-05-006 admission evidence
+
+PI05-006 is deterministic PostgreSQL acceptance, not live deployment
+acceptance. The workflow runs the following exact testcase identities, and the
+collector requires one successful Surefire testcase result for every identity.
+The Java class is shown in full through its executable method identity; a test
+class result alone is not sufficient.
+
+### Idempotency and evidence freshness
+
+| Acceptance claim | Required testcase |
+| --- | --- |
+| Repeated successful requests return the durable result without duplicate turns or out-of-scope delivery | `AssistantHttpIntegrationTests.successfulSubmissionIsDurableIdempotentAndScopeBound` |
+| A source revision change is rejected at result acceptance rather than persisted as grounded evidence | `AssistantHttpIntegrationTests.sourceRevisionChangeBetweenVerificationAndCommitFailsClosed` |
+| A completed replay is returned without waiting for global admission | `AssistantAdmissionIntegrationTests.completedReplayDoesNotWaitForGlobalAdmissionLock` |
+| A live same-key replay is handled without waiting for global admission | `AssistantAdmissionIntegrationTests.busyRequestDoesNotWaitForGlobalAdmissionLock` |
+
+### Per-user quota
+
+| Acceptance claim | Required testcase |
+| --- | --- |
+| Ten conversations cannot bypass the configured two-active-turn per-user limit | `AssistantAdmissionIntegrationTests.tenConcurrentConversationsForOneUserNeverHoldMoreThanTwoTurns` |
+| Rolling ASK quota is bounded, an accepted replay is idempotent, and a rejected request creates no turn | `AssistantAdmissionIntegrationTests.askQuotaIsRollingIdempotentAndRejectedRequestDoesNotCreateTurn` |
+
+### User, meeting and global concurrency
+
+| Acceptance claim | Required testcase |
+| --- | --- |
+| Competing users cannot exceed global active capacity | `AssistantAdmissionIntegrationTests.competingUsersCannotExceedGlobalActiveCapacity` |
+| Meeting active capacity is enforced before global capacity | `AssistantAdmissionIntegrationTests.sameMeetingCapacityIsEnforcedBeforeGlobalCapacity` |
+
+### Shared PostgreSQL coordination
+
+| Acceptance claim | Required testcase |
+| --- | --- |
+| Independent admission guard instances coordinate at the shared PostgreSQL capacity boundary | `AssistantAdmissionIntegrationTests.independentGuardInstancesSharePostgresCapacityAtTheBoundary` |
+
+This is explicitly **shared-PostgreSQL coordination between independent
+guard instances**. The test does not claim a real multi-process deployment;
+that remains part of live infrastructure acceptance.
+
+### Head-of-line contention
+
+| Acceptance claim | Required testcase |
+| --- | --- |
+| A blocked conversation does not hold unrelated users behind the global lock | `AssistantAdmissionIntegrationTests.conversationContentionDoesNotCreateGlobalHeadOfLineBlocking` |
+| A blocked conversation for one user does not hold another conversation of the same user behind the global lock | `AssistantAdmissionIntegrationTests.sameUserConversationContentionDoesNotCreateGlobalHeadOfLineBlocking` |
+
+### Lease reclaim and stale-token fencing
+
+| Acceptance claim | Required testcase |
+| --- | --- |
+| Expired same-key reclaim reuses the original ASK quota event | `AssistantAdmissionIntegrationTests.expiredReclaimReusesTheExistingQuotaEvent` |
+| A stale claim cannot finalize a turn after reclaim | `AssistantAdmissionIntegrationTests.staleClaimCannotFinalizeAfterReclaim` |
+
+### Atomic rollback
+
+| Acceptance claim | Required testcase |
+| --- | --- |
+| Failed new-turn admission leaves no durable turn, message or ASK quota event | `AssistantAdmissionIntegrationTests.rolledBackTurnAdmissionLeavesNoDurableWork` |
+
+### Lock timeout
+
+| Acceptance claim | Required testcase |
+| --- | --- |
+| Admission lock timeout returns safe HTTP 503 without partial admission or AI invocation | `AssistantAdmissionIntegrationTests.admissionLockTimeoutReturns503WithoutPartialAdmission` |
+
+### Conversation creation quota
+
+| Acceptance claim | Required testcase |
+| --- | --- |
+| Conversation creation quota is transactional and uses the canonical HTTP 429 contract | `AssistantAdmissionIntegrationTests.conversationCreationQuotaIsTransactionalAndUsesCanonical429Contract` |
+
+The collector derives each identity from the `classname` and `name` fields in
+Surefire XML. A missing identity is `NOT_RUN`, a failed/error testcase is
+`FAIL`, and a skipped testcase is `BLOCKED`; duplicate identities are
+contradictory evidence and invalidate the suite. PI05-006 is `PASS` only when
+all identities above have exactly one successful result, and strict collection
+also requires `suite.allPassed=true` for every observed testcase, including
+testcases outside PI05-006.
+
+The separate `PI05-L01` through `PI05-L10` records remain
+`LIVE_INFRASTRUCTURE` and `NOT_RUN` until an isolated real Core/AI/PostgreSQL/
+RabbitMQ/Qdrant/object-storage execution supplies independently verifiable
+evidence. A green deterministic PostgreSQL matrix cannot promote a live
+scenario to `PASS`.
+
+## PI-05 evidence hardening review
+- When live mode is explicitly enabled, missing isolation designation, harness, mTLS credentials or pinned run provenance now fail the test instead of silently skipping. Disabled live mode remains NOT_RUN.
+- Each proof SHA-256 must match an independently captured, size-bounded JSON receipt in `AI_PI05_PROOF_DIR`, with matching run/request/step/component/outcome/time fields. A harness-supplied hash without its receipt is insufficient. This detects missing or tampered proofs but still requires an operator to review the underlying service log provenance; a dishonest harness alone cannot certify reality.
+- CI refuses a contradictory Surefire suite declaration, any failing/skipped/duplicated testcase (including outside the named acceptance matrix), and stale reports from earlier builds.
+- Ten full live scenarios require a provisioned harness and separately running infrastructure; none are claimed PASS merely by implementing this contract.
+
+## Requirement alignment: human authority in PI05-L01
+
+BR-AI-001..003, FEAT-DEC-CONFIRM-001 and FEAT-ACT-CONFIRM-001 distinguish
+AI proposals from human-confirmed official business state. L01 therefore
+requires both `intelligence-proposal=CORE/PROPOSED` and
+`human-decision-confirmed=CORE/CONFIRMED` as separate observed steps before
+Assistant grounding. A Core AI result-acceptance receipt alone is not proof
+of user confirmation. This is an acceptance-contract correction, not a claim
+that any live data has been observed.
+
+PI05-L01 additionally checks the CORE-observed causal order:
+proposal must precede human confirmation, and confirmation must precede the
+CORE Assistant grounded-answer observation. A list of correctly named outcomes
+with impossible ordering is rejected rather than interpreted as completion.

@@ -2,10 +2,15 @@ package com.sme.meetingassistant.api.transport;
 
 import java.net.URI;
 import java.nio.file.Path;
+import javax.net.ssl.SSLSocketFactory;
+import org.springframework.boot.amqp.autoconfigure.ConnectionFactoryCustomizer;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.web.server.WebServerFactoryCustomizer;
 import org.springframework.boot.tomcat.servlet.TomcatServletWebServerFactory;
+import org.springframework.amqp.rabbit.connection.CachingConnectionFactory;
+import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
@@ -15,6 +20,7 @@ import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.SecurityFilterChain;
 
 @Configuration(proxyBeanMethods = false)
+@ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 public class SecureTransportConfiguration {
     static Path path(Environment env, String name) {
         String value = env.getProperty(name);
@@ -99,6 +105,52 @@ public class SecureTransportConfiguration {
         return new AiCoreTransport(URI.create(env.getRequiredProperty("app.transport.ai.base-url")),
             path(env, "app.transport.ai.server-ca"), path(env, "app.transport.ai.certificate"), clientKey,
             path(env, "app.transport.ai.issuer-ca"));
+    }
+
+    @Bean
+    ConnectionFactoryCustomizer isolatedRabbitLoopbackRoute(Environment env) {
+        String connectHost = env.getProperty("RABBITMQ_CONNECT_HOST");
+        if (connectHost == null || connectHost.isBlank()) return factory -> { };
+        String serverName = env.getRequiredProperty("RABBITMQ_TLS_SERVER_NAME");
+        if (!"127.0.0.1".equals(connectHost)
+                || !"rabbitmq.internal".equals(serverName)
+                || !"rabbitmq.internal".equals(env.getProperty("spring.rabbitmq.host"))) {
+            throw new IllegalStateException("Isolated RabbitMQ routing must preserve rabbitmq.internal");
+        }
+        return factory -> {
+            if (!factory.isSSL() || !(factory.getSocketFactory() instanceof SSLSocketFactory ssl)) {
+                throw new IllegalStateException("Isolated RabbitMQ routing requires verified TLS");
+            }
+            // Rabbit's native client resolves the configured host before it
+            // asks the socket factory to connect. Keep the configured
+            // rabbitmq.internal name as the TLS identity, but make the TCP
+            // destination literal so isolated host launches never depend on
+            // external DNS.
+            factory.setHost(connectHost);
+            factory.setSocketFactory(new LoopbackTlsSocketFactory(ssl, connectHost, serverName, 3_000));
+            factory.enableHostnameVerification();
+        };
+    }
+
+    @Bean
+    static BeanPostProcessor isolatedRabbitAddressListRoute(Environment env) {
+        String connectHost = env.getProperty("RABBITMQ_CONNECT_HOST");
+        if (connectHost == null || connectHost.isBlank()) return new BeanPostProcessor() { };
+        int port = env.getProperty("RABBITMQ_PORT", Integer.class, 5671);
+        return new BeanPostProcessor() {
+            @Override
+            public Object postProcessAfterInitialization(Object bean, String beanName) {
+                if (bean instanceof CachingConnectionFactory caching) {
+                    // Boot applies RabbitProperties again to the Spring
+                    // wrapper after native connection customizers run.
+                    // Replace only the final TCP address; the native socket
+                    // factory retains rabbitmq.internal as TLS/SNI identity.
+                    caching.setAddresses(connectHost + ":" + port);
+                    caching.getRabbitConnectionFactory().setHost(connectHost);
+                }
+                return bean;
+            }
+        };
     }
 
     @Bean

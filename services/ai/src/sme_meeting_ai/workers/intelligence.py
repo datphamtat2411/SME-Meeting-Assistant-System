@@ -6,8 +6,11 @@ import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from contextlib import AsyncExitStack, ExitStack
+from dataclasses import dataclass, field, replace
 from datetime import datetime
+from decimal import Decimal
 from uuid import uuid4
 
 from sme_meeting_ai.integrations.core_api import CoreError, strict_json
@@ -24,9 +27,16 @@ from sme_meeting_ai.integrations.object_storage import ObjectStorage, StorageErr
 from sme_meeting_ai.meeting_intelligence.action_item_contract import (
     prepare_action_item_request,
 )
-from sme_meeting_ai.meeting_intelligence.action_items import build_action_item_processor
-from sme_meeting_ai.meeting_intelligence.decision import build_decision_processor
-from sme_meeting_ai.meeting_intelligence.errors import IntelligenceError
+from sme_meeting_ai.meeting_intelligence.action_items import (
+    build_action_item_processor,
+    prepare_action_items,
+)
+from sme_meeting_ai.meeting_intelligence.composition import CallCapacity
+from sme_meeting_ai.meeting_intelligence.decision import (
+    build_decision_processor,
+    prepare_decisions,
+)
+from sme_meeting_ai.meeting_intelligence.errors import IntelligenceError, require
 from sme_meeting_ai.meeting_intelligence.processor import StageContext
 from sme_meeting_ai.meeting_intelligence.result import ResultError, serialize_result
 from sme_meeting_ai.meeting_intelligence.source import (
@@ -109,9 +119,129 @@ class LeaseGuard:
 
 
 class WorkFailure(Exception):
-    def __init__(self, phase, category):
-        self.phase, self.category = phase, category
+    def __init__(self, phase, category, diagnostic=None):
+        self.phase, self.category, self.diagnostic = phase, category, diagnostic
         super().__init__("INTELLIGENCE_WORK_FAILED")
+
+
+@dataclass(frozen=True)
+class DurableProviderReservation:
+    attempt_id: str
+    request: object = field(repr=False)
+
+
+class DurableProviderAttemptLedger:
+    """Synchronous capability used by provider threads for Core-backed accounting.
+
+    The provider adapter runs in a worker thread while the authenticated Core
+    client belongs to the coordinator event loop.  Each bridge call therefore
+    submits one bounded coroutine to that loop and waits only until the stage
+    deadline.  The attempt identifier is generated once and is reused by Core
+    transport retries, making reservation/report operations idempotent across
+    response loss, process restart and broker redelivery.
+    """
+
+    def __init__(self, loop, core, event, claim):
+        self.loop, self.core, self.event, self.claim = loop, core, event, claim
+        self.budget = claim.budget
+        self.usage = self.budget
+        self.downstream: dict[str, CallCapacity] = {}
+
+    def check_capacity(self, current: CallCapacity) -> None:
+        """Keep known current and future work affordable before a physical call."""
+        budget, usage = self.budget, self.usage
+        require(budget is not None and usage is not None, "CONFIGURATION")
+        current_stage = budget.remainingStages[0]
+        consumed = usage.aggregateReservedAttempts - budget.aggregateReservedAttempts
+        for stage, work in self.downstream.items():
+            require(work.calls <= budget.remainingStageAttempts[stage], "CONTEXT_BUDGET")
+        total = sum(self.downstream.values(), current)
+        headroom = Decimal(budget.estimatedCostCeilingUsd) - max(
+            Decimal(usage.aggregateEstimatedCostUsd), Decimal(usage.aggregateReportedCostUsd),
+        )
+        require(
+            consumed + current.calls <= budget.remainingStageAttempts[current_stage]
+            and usage.aggregateReservedAttempts + total.calls <= budget.aggregateAttemptCeiling
+            and usage.aggregateReservedTokens + total.tokens <= budget.reservedTokenCeiling
+            and budget.cost(total.input_tokens, total.output_tokens) <= headroom,
+            "CONTEXT_BUDGET",
+        )
+
+    def _observe(self, response):
+        self.usage = response
+
+    @staticmethod
+    def _category(error):
+        if isinstance(error, CoreError):
+            if error.code in {"WORKER_BUDGET_EXHAUSTED", "WORKER_BUDGET_NOT_FOUND"}:
+                return "CONTEXT_BUDGET"
+            if error.code in {"WORKER_CONTRACT_UNSUPPORTED", "WORKER_RESPONSE_INVALID",
+                              "WORKER_BUDGET_CONFIGURATION_CONFLICT", "WORKER_ATTEMPT_NOT_FOUND",
+                              "WORKER_USAGE_INVALID", "WORKER_COMMAND_CONFLICT",
+                              "WORKER_IDENTITY_CONFLICT"}:
+                return "CONFIGURATION"
+            if error.status in (401, 403):
+                return "AUTHENTICATION"
+            if error.code in {"WORKER_LEASE_LOST", "WORKER_ATTEMPT_BUSY"}:
+                return "CANCELLED"
+        return "RESOURCE"
+
+    def _call(self, operation, deadline):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            operation.close()
+            raise IntelligenceError("DEADLINE")
+        future = asyncio.run_coroutine_threadsafe(operation, self.loop)
+        try:
+            return future.result(timeout=remaining)
+        except FutureTimeout:
+            future.cancel()
+            raise IntelligenceError("DEADLINE") from None
+        except IntelligenceError:
+            raise
+        except Exception as error:
+            raise IntelligenceError(self._category(error)) from None
+
+    def reserve(self, request):
+        check_deadline = request.deadline
+        if request.cancelled.is_set():
+            raise IntelligenceError("CANCELLED")
+        attempt_id = str(uuid4())
+        response = self._call(
+            self.core.reserve_provider_attempt(
+                self.event, self.claim, request, attempt_id, deadline=check_deadline,
+            ),
+            check_deadline,
+        )
+        if response.attemptId != attempt_id or response.executionStageRunId != self.claim.executionStageRunId:
+            raise IntelligenceError("INTEGRITY")
+        self._observe(response)
+        return DurableProviderReservation(attempt_id, request)
+
+    def report(self, reservation, *, result=None, category=None):
+        if not isinstance(reservation, DurableProviderReservation):
+            raise IntelligenceError("CONFIGURATION")
+        request = reservation.request
+        usage = getattr(result, "usage", None)
+        response = self._call(
+            self.core.report_provider_attempt(
+                self.event, self.claim, reservation.attempt_id,
+                outcome="SUCCEEDED" if result is not None else "FAILED",
+                input_tokens=getattr(usage, "input_tokens", None),
+                output_tokens=getattr(usage, "output_tokens", None),
+                total_tokens=getattr(usage, "total_tokens", None),
+                reasoning_tokens=getattr(usage, "reasoning_tokens", None),
+                reported_cost=getattr(usage, "reported_cost", None),
+                failure_category=_worker_category(category) if category is not None else None,
+                deadline=request.deadline,
+            ),
+            request.deadline,
+        )
+        if response.attemptId != reservation.attempt_id:
+            raise IntelligenceError("INTEGRITY")
+        self._observe(response)
+        if response.budgetExceeded:
+            raise IntelligenceError("CONTEXT_BUDGET")
 
 
 def validate_provider_credentials(settings):
@@ -133,7 +263,7 @@ def _worker_category(category):
     if category in {"INVALID_SOURCE", "INVALID_REFERENCE", "GROUNDING_FAILURE"}:
         return "VALIDATION"
     if category in {"CONTEXT_BUDGET", "DEADLINE"}:
-        return "TIMEOUT" if category == "DEADLINE" else "RESOURCE"
+        return "TIMEOUT" if category == "DEADLINE" else "CONFIGURATION"
     if category in {"UNSUPPORTED_SCHEMA", "UNSUPPORTED_PARAMETERS", "INFERENCE_DISABLED"}:
         return "CONFIGURATION"
     if category in {"SCHEMA_MISMATCH", "INCOMPLETE_OUTPUT", "REFUSAL"}:
@@ -156,6 +286,16 @@ def production_processors(settings, adapter=None):
     return processors
 
 
+def plan_downstream(context, settings, ledger):
+    require(ledger.budget is not None, "CONFIGURATION")
+    planners = {"EXTRACTING_DECISIONS": prepare_decisions, "EXTRACTING_ACTION_ITEMS": prepare_action_items}
+    ledger.downstream = {
+        stage: planners[stage](replace(context, stage_code=stage, provider_attempts=None),
+                               settings).budget.pending_work
+        for stage in ledger.budget.remainingStages[1:]
+    }
+
+
 class IntelligenceWorker:
     def __init__(self, settings, core, storage, processors):
         self.settings, self.core, self.storage, self.processors = settings, core, storage, dict(processors)
@@ -165,18 +305,23 @@ class IntelligenceWorker:
         self.pending, self.fences = set(), set()
         self.closed = False
 
-    def prepare(self, claim, guard, deadline):
+    def prepare(self, event, claim, guard, deadline, loop):
         with correlation_scope(new_correlation_context(request_id=claim.eventId,
                                                        job_id=claim.processingJobId)):
-            return self._prepare(claim, guard, deadline)
+            return self._prepare(event, claim, guard, deadline, loop)
 
-    def _prepare(self, claim, guard, deadline):
+    def _prepare(self, event, claim, guard, deadline, loop):
         phase = "SOURCE_DOWNLOAD"
         try:
             raw = self.storage.get_intelligence_snapshot(claim.source, guard.fence)
             snapshot = verify_snapshot(raw, claim)
             if guard.fence.is_set():
                 raise WorkFailure("INTERRUPTED", "CANCELLED")
+            provider_attempts = None
+            if (getattr(self.settings, "meeting_intelligence_worker_enabled", False)
+                    and callable(getattr(self.core, "reserve_provider_attempt", None))
+                    and hasattr(self.settings, "meeting_intelligence_reserved_token_ceiling")):
+                provider_attempts = DurableProviderAttemptLedger(loop, self.core, event, claim)
             if claim.executionStageCode == "EXTRACTING_ACTION_ITEMS":
                 phase = "INFERENCE"
                 processor = self.processors.get(claim.executionStageCode)
@@ -184,7 +329,9 @@ class IntelligenceWorker:
                     raise WorkFailure(phase, "CONFIGURATION")
                 context = StageContext(claim.processingJobId, claim.executionStageRunId, claim.executionStageCode,
                     claim.meetingId, claim.source.snapshotId, claim.source.sha256, claim.source.transcriptId,
-                    claim.source.contentRevision, snapshot, deadline, guard.fence)
+                    claim.source.contentRevision, snapshot, deadline, guard.fence, provider_attempts)
+                if provider_attempts is not None:
+                    plan_downstream(context, self.settings, provider_attempts)
                 candidate = processor(context)
                 if guard.fence.is_set() or time.monotonic() >= deadline:
                     raise WorkFailure("INTERRUPTED", "CANCELLED")
@@ -212,7 +359,9 @@ class IntelligenceWorker:
                 raise WorkFailure(phase, "CONFIGURATION")
             context = StageContext(claim.processingJobId, claim.executionStageRunId, claim.executionStageCode,
                 claim.meetingId, claim.source.snapshotId, claim.source.sha256, claim.source.transcriptId,
-                claim.source.contentRevision, snapshot, deadline, guard.fence)
+                claim.source.contentRevision, snapshot, deadline, guard.fence, provider_attempts)
+            if provider_attempts is not None:
+                plan_downstream(context, self.settings, provider_attempts)
             candidate = processor(context)
             if guard.fence.is_set() or time.monotonic() >= deadline:
                 raise WorkFailure("INTERRUPTED", "CANCELLED")
@@ -230,7 +379,7 @@ class IntelligenceWorker:
         except SourceIntegrityError:
             raise WorkFailure("SOURCE_DOWNLOAD", "INTEGRITY") from None
         except IntelligenceError as error:
-            raise WorkFailure(phase, _worker_category(error.category)) from None
+            raise WorkFailure(phase, _worker_category(error.category), error.diagnostic) from None
         except ResultError:
             raise WorkFailure("RESULT_VALIDATION", "MALFORMED_OUTPUT") from None
         except StorageError as error:
@@ -318,15 +467,36 @@ class IntelligenceWorker:
                     raise CoreError(0, "WORKER_RESPONSE_INVALID")
                 guard = LeaseGuard(self.core, event, claim, loop.time() - started, maximum)
                 self.fences.add(guard.fence)
-                future = self.executor.submit(self.prepare, claim, guard, time.monotonic() + maximum - loop.time())
+                future = self.executor.submit(
+                    self.prepare, event, claim, guard,
+                    time.monotonic() + maximum - loop.time(), loop,
+                )
                 self.pending.add(future)
                 wrapped = asyncio.wrap_future(future)
                 wrapped.add_done_callback(lambda f: f.exception() if not f.cancelled() else None)
                 try:
                     digest = await guard.protect(asyncio.shield(wrapped))
                 except WorkFailure as error:
+                    diagnostic = error.diagnostic
                     log_event(logger, logging.WARNING,
-                              f"worker.intelligence.failure.{error.phase.lower()}.{error.category.lower()}")
+                              f"worker.intelligence.failure.{error.phase.lower()}.{error.category.lower()}",
+                              validation_reason=(
+                                  diagnostic.reason if diagnostic is not None else None
+                              ),
+                              validation_rule=(
+                                  diagnostic.rule if diagnostic is not None else None
+                              ),
+                              validation_item_index=(
+                                  diagnostic.item_index if diagnostic is not None else None
+                              ),
+                              processing_phase=error.phase,
+                              stage_code=claim.executionStageCode,
+                              stage_run_id=claim.executionStageRunId,
+                              job_id=claim.processingJobId,
+                              validation_evidence=(
+                                  diagnostic.evidence if diagnostic is not None else None
+                              ),
+                    )
                     if error.category in ("AUTHENTICATION", "CONFIGURATION"):
                         self.stop_intake.set()
                     if error.phase == "RESULT_STORAGE" and error.category in ("TIMEOUT", "TRANSPORT", "RESOURCE"):

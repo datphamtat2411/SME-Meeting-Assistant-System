@@ -3,10 +3,15 @@ import io
 import json
 import logging
 from datetime import datetime, timedelta
+from hashlib import sha256
 
 import pytest
 
 from sme_meeting_ai.core.config import Settings
+from sme_meeting_ai.meeting_intelligence.errors import (
+    ValidationEvidence,
+    ValidationReference,
+)
 from sme_meeting_ai.observability import (
     JsonFormatter,
     configure_logging,
@@ -43,7 +48,8 @@ def test_structured_output_has_fixed_fields_utc_timestamp_and_current_context(ca
     )
     with correlation_scope(context):
         log_event(logger, logging.WARNING, "processing.started")
-    data = json.loads(capsys.readouterr().out)
+    output = capsys.readouterr().out
+    data = json.loads(output)
     assert data.keys() == {
         "timestamp", "severity", "event", "service", "trace_id", "span_id",
         "trace_flags", "parent_span_id", "request_id", "job_id",
@@ -63,7 +69,8 @@ def test_no_context_and_no_optional_ids_are_valid(capsys):
     log_event(logger, logging.INFO, "runtime.ready")
     with correlation_scope(new_correlation_context()):
         log_event(logger, logging.INFO, "runtime.ready")
-    first, second = map(json.loads, capsys.readouterr().out.splitlines())
+    output = capsys.readouterr().out
+    first, second = map(json.loads, output.splitlines())
     assert first.keys() == {"timestamp", "severity", "event", "service"}
     assert second.keys() == first.keys() | {"trace_id", "span_id", "trace_flags"}
 
@@ -74,13 +81,106 @@ def test_provider_telemetry_is_numeric_and_allowlisted(capsys):
               input_tokens=100, output_tokens=30, total_tokens=130,
               reasoning_tokens=10, reserved_tokens=4096, attempts=2,
               upload_bytes=0)
-    data = json.loads(capsys.readouterr().out)
+    output = capsys.readouterr().out
+    data = json.loads(output)
     assert data["input_tokens"] == 100
     assert data["output_tokens"] == 30
     assert data["total_tokens"] == 130
     assert data["reasoning_tokens"] == 10
     assert data["reserved_tokens"] == 4096
     assert data["attempts"] == 2
+
+
+def test_validation_diagnostics_are_allowlisted_and_content_free(capsys):
+    configure_logging(settings())
+    log_event(
+        logging.getLogger("sme_meeting_ai"),
+        logging.WARNING,
+        "worker.intelligence.failure.inference.validation",
+        validation_reason="GROUNDING_FAILURE",
+        validation_rule="UNSUPPORTED_NUMBER",
+        validation_item_index=3,
+    )
+    log_event(
+        logging.getLogger("sme_meeting_ai"),
+        logging.WARNING,
+        "worker.intelligence.failure.inference.validation",
+        validation_reason="GROUNDING_FAILURE",
+        validation_rule="private transcript",
+        validation_item_index=-1,
+    )
+    output = capsys.readouterr().out
+    first, second = map(json.loads, output.splitlines())
+    assert first["validation_reason"] == "GROUNDING_FAILURE"
+    assert first["validation_rule"] == "UNSUPPORTED_NUMBER"
+    assert first["validation_item_index"] == 3
+    assert second == {
+        "timestamp": second["timestamp"],
+        "severity": "WARNING",
+        "event": "worker.intelligence.failure.inference.validation",
+        "service": "test-ai",
+        "validation_reason": "GROUNDING_FAILURE",
+    }
+    assert "private transcript" not in output
+
+
+def test_validation_evidence_logs_reconstructable_ranges_without_statement_text(capsys):
+    configure_logging(settings())
+    statement = "private transcript statement"
+    evidence_text = "private cited transcript"
+    evidence = ValidationEvidence(
+        source_snapshot_id="00000000-0000-0000-0000-000000000001",
+        transcript_id="00000000-0000-0000-0000-000000000002",
+        content_revision=3,
+        source_sha256="a" * 64,
+        references=(ValidationReference(
+            "00000000-0000-0000-0000-000000000003", 4, 18,
+        ),),
+        model_category="AGREEMENT",
+        statement_sha256=sha256(statement.encode()).hexdigest(),
+        statement_char_length=len(statement),
+        evidence_sha256=sha256(evidence_text.encode()).hexdigest(),
+        evidence_char_length=len(evidence_text),
+        affirmative_marker=False,
+        negative_marker=False,
+        assessment="INCOMPLETE_CITATION",
+    )
+
+    log_event(
+        logging.getLogger("sme_meeting_ai"),
+        logging.WARNING,
+        "worker.intelligence.failure.inference.validation",
+        validation_reason="GROUNDING_FAILURE",
+        validation_rule="AGREEMENT_UNSUPPORTED",
+        validation_item_index=3,
+        processing_phase="RESULT_VALIDATION",
+        stage_code="GENERATING_SUMMARY",
+        stage_run_id="00000000-0000-0000-0000-000000000004",
+        job_id="00000000-0000-0000-0000-000000000005",
+        validation_evidence=evidence,
+    )
+
+    output = capsys.readouterr().out
+    data = json.loads(output)
+    assert data["processing_phase"] == "RESULT_VALIDATION"
+    assert data["stage_code"] == "GENERATING_SUMMARY"
+    assert data["stage_run_id"] == "00000000-0000-0000-0000-000000000004"
+    assert data["job_id"] == "00000000-0000-0000-0000-000000000005"
+    assert data["validation_source_snapshot_id"] == evidence.source_snapshot_id
+    assert data["validation_transcript_id"] == evidence.transcript_id
+    assert data["validation_content_revision"] == 3
+    assert data["validation_model_category"] == "AGREEMENT"
+    assert data["validation_references"] == [{
+        "segment_id": "00000000-0000-0000-0000-000000000003",
+        "char_start": 4,
+        "char_end": 18,
+    }]
+    assert data["validation_assessment"] == "INCOMPLETE_CITATION"
+    assert data["validation_statement_sha256"] == evidence.statement_sha256
+    assert data["validation_evidence_sha256"] == evidence.evidence_sha256
+    assert statement not in output
+    assert evidence_text not in output
+    assert "statement" not in data
 
 
 def test_repeated_configuration_emits_once_updates_settings_and_preserves_other_handlers(capsys):

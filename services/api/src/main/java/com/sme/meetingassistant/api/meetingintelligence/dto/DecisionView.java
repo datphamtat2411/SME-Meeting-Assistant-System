@@ -24,7 +24,8 @@ public record DecisionView(
     UUID rejectedByUserId,
     String aiUncertainty,
     List<String> aiWarnings,
-    AiProducerView aiProducer
+    AiProducerView aiProducer,
+    UUID processingJobId
 ) {
     public DecisionView {
         evidenceSegmentIds = evidenceSegmentIds == null ? List.of() : List.copyOf(evidenceSegmentIds);
@@ -41,6 +42,6 @@ public record DecisionView(
         this(id,meetingId,content,status,sourceType,evidenceSegmentIds,
             transcriptId,contentRevision,isStale,version,createdAt,createdByUserId,
             confirmedAt,confirmedByUserId,rejectedAt,rejectedByUserId,
-            null,List.of(),null);
+             null,List.of(),null,null);
     }
 }

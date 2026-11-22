@@ -14,10 +14,17 @@ from .contracts import (
     valid_text,
 )
 from .errors import IntelligenceError, check_authority, require
+from .grounding import (
+    GROUNDING_DIAGNOSTIC_VERSION,
+    GroundingChanges,
+    diagnostic_counts,
+)
 from .processor import StageContext
 
-ACTION_PROMPT_VERSION = "action-items-v1"
+ACTION_PROMPT_VERSION = "action-items-v2"
+ACTION_GROUP_PROMPT_VERSION = "action-resolution-v2"
 _STATES = ["SUGGESTED", "ASSIGNED", "COMMITTED", "REVISED", "CANCELLED", "UNRESOLVED", "CONDITIONAL", "HISTORICAL"]
+_BLOCKING_STATES = {"CANCELLED", "UNRESOLVED", "CONDITIONAL", "REVISED"}
 _NEGATIVE = re.compile(r"không cần|khỏi cần|hủy|huỷ|bỏ việc|đừng|cancel|không làm nữa", re.I)
 _UNCERTAIN = re.compile(r"\?|hay là|nên |có lẽ|chưa chốt|chưa thống nhất|nếu |nếu như|có thể|not agreed", re.I)
 _HISTORY = re.compile(r"tuần trước|hôm qua|đã (?:gửi|hoàn thành|làm xong|kiểm tra)|historical|already completed", re.I)
@@ -74,7 +81,12 @@ Gộp lặp lại/overlap, giao việc rồi hủy, sửa phạm vi/hạn/ngư�
 Không gộp chỉ vì cùng chữ API; API đăng nhập và API thanh toán là hai việc khác. Hai deliverable
 được giao riêng vẫn riêng. Đại từ 'việc này' chỉ liên kết khi nguồn chứng minh cùng đầu việc;
 mâu thuẫn trách nhiệm không được tự chọn người thắng. Giữ tất cả trạng thái âm để bộ chọn cục bộ
-giải quyết theo thứ tự nguồn, không thứ tự JSON. Không dùng Summary hoặc Decision. Trả đúng JSON.
+giải quyết theo thứ tự nguồn, không thứ tự JSON. Nếu deliverable khác nhau thì mặc định tạo nhóm
+riêng, kể cả khi cùng dự án/chủ đề, là bước trước/sau, hoặc hành động sau bao hàm từ của hành động
+trước. Chỉ gộp khác deliverable khi tín hiệu sau là REVISED, bằng chứng nêu rõ sửa/đổi/thay/chuyển
+và chỉ ra deliverable trước; ASSIGNED, COMMITTED hoặc HISTORICAL khác deliverable không phải là
+revision. Khi không chứng minh được cùng một nghĩa vụ, giữ các nhóm singleton thay vì ép gộp.
+Không dùng Summary hoặc Decision. Trả đúng JSON.
 """.strip()
 
 
@@ -145,32 +157,48 @@ def _validated_output(result, request, source):
     return output
 
 
-def _signals(output, window, source):
+def _signals(output, window, source, changes):
     records = []
     by_id = {segment.segment_id: segment.ordinal for segment in source.segments}
     for item in output["signals"]:
-        refs = tuple(sorted((r["segment_id"], r["char_start"], r["char_end"]) for r in item["evidence"]))
-        require(len(set(refs)) == len(refs), "INVALID_REFERENCE")
-        quotes = []
-        for segment, start, end in refs:
-            unit = source.resolve(segment, start, end)
-            require(any(segment == u.segment_id and u.char_start <= start < end <= u.char_end
-                for u in window.units), "INVALID_REFERENCE")
-            quotes.append(unit.text)
-        text = " ".join(quotes)
-        for field in ("action", "deliverable", "mentioned_party", "deadline_expression", "qualification"):
-            require(not item[field] or any(_contains(quote, item[field]) for quote in quotes), "GROUNDING_FAILURE")
-            require(not _INJECTION.search(item[field]), "GROUNDING_FAILURE")
-        explicit_due_date(item["deadline_expression"])
-        if item["signal_type"] == "REVISED":
-            require(_REVISION.search(text) is not None, "GROUNDING_FAILURE")
-        if item["signal_type"] == "CANCELLED":
-            require(_NEGATIVE.search(text) is not None, "GROUNDING_FAILURE")
-        data = {k: item[k].strip() if isinstance(item[k], str) else item[k] for k in item if k != "evidence"}
-        require(data["action"] and data["deliverable"], "GROUNDING_FAILURE")
-        records.append(ActionSignal(digest([data, refs]), **data, evidence=refs,
-            position=min((by_id[s], start) for s, start, _ in refs)))
+        try:
+            record = _validate_signal(item, window, source, by_id)
+            records.append(record)
+            changes.accept_claim(
+                statement=f"{record.action} {record.deliverable}".strip(),
+                references=record.evidence,
+                model_category="ACTION_ITEM",
+                assessment="SUPPORTED",
+            )
+        except IntelligenceError as error:
+            if item["signal_type"] in _BLOCKING_STATES:
+                raise  # Never resurrect a prior action by dropping a potentially material later signal.
+            changes.discard(error)
     return records
+
+
+def _validate_signal(item, window, source, by_id):
+    refs = tuple(sorted((r["segment_id"], r["char_start"], r["char_end"]) for r in item["evidence"]))
+    require(len(set(refs)) == len(refs), "INVALID_REFERENCE")
+    quotes = []
+    for segment, start, end in refs:
+        unit = source.resolve(segment, start, end)
+        require(any(segment == u.segment_id and u.char_start <= start < end <= u.char_end
+            for u in window.units), "INVALID_REFERENCE")
+        quotes.append(unit.text)
+    text = " ".join(quotes)
+    for field in ("action", "deliverable", "mentioned_party", "deadline_expression", "qualification"):
+        require(not item[field] or any(_contains(quote, item[field]) for quote in quotes), "GROUNDING_FAILURE")
+        require(not _INJECTION.search(item[field]), "GROUNDING_FAILURE")
+    explicit_due_date(item["deadline_expression"])
+    if item["signal_type"] == "REVISED":
+        require(_REVISION.search(text) is not None, "GROUNDING_FAILURE")
+    if item["signal_type"] == "CANCELLED":
+        require(_NEGATIVE.search(text) is not None, "GROUNDING_FAILURE")
+    data = {k: item[k].strip() if isinstance(item[k], str) else item[k] for k in item if k != "evidence"}
+    require(data["action"] and data["deliverable"], "GROUNDING_FAILURE")
+    return ActionSignal(digest([data, refs]), **data, evidence=refs,
+        position=min((by_id[s], start) for s, start, _ in refs))
 
 
 def _text(record, source):
@@ -201,7 +229,27 @@ def _group_valid(records, source):
     for record in concrete[1:]:
         if _norm(record.deliverable) != _norm(first.deliverable):
             require(record.signal_type == "REVISED" and _REVISION.search(_text(record, source))
-                and _contains(_text(record, source), first.deliverable), "GROUNDING_FAILURE")
+                 and _contains(_text(record, source), first.deliverable), "GROUNDING_FAILURE")
+
+
+def _groups_split_by_invalidation(groups, source):
+    """A provider may not split a known later invalidation out of its action group."""
+    signals = [(index, record) for index, group in enumerate(groups) for record in group]
+    invalid = set()
+    for index, blocker in signals:
+        if blocker.signal_type not in _BLOCKING_STATES:
+            continue
+        text = _text(blocker, source)
+        for earlier_index, earlier in signals:
+            if (earlier_index != index and earlier.position < blocker.position
+                    and earlier.signal_type in {"ASSIGNED", "COMMITTED", "REVISED"}
+                    and (_norm(earlier.deliverable) == _norm(blocker.deliverable)
+                         or _contains(text, earlier.deliverable))):
+                invalid.add(earlier_index)
+                # An isolated revision is not a new commitment.
+                if blocker.signal_type == "REVISED":
+                    invalid.add(index)
+    return invalid
 
 
 def _select(groups, source, maximum):
@@ -273,7 +321,7 @@ class ActionItemProcessor:
     def __call__(self, context: StageContext):
         check_authority(context.deadline, context.cancelled)
         require(context.stage_code == "EXTRACTING_ACTION_ITEMS", "CONFIGURATION")
-        prepared = prepare_context(context, extraction_task(), self.settings)
+        prepared = prepare_action_items(context, self.settings)
         source = prepared.plan.source
         require(source.has_usable_evidence, "INVALID_SOURCE")
         calls, tokens, producer = 0, 0, None
@@ -285,8 +333,7 @@ class ActionItemProcessor:
             tokens += request.window.estimated_input_tokens
             require(calls <= self.settings.meeting_intelligence_action_item_max_model_calls
                 and tokens <= self.settings.meeting_intelligence_max_total_context_tokens, "CONTEXT_BUDGET")
-            result = self.adapter.complete(request)
-            check_authority(context.deadline, context.cancelled)
+            result = prepared.execute_request(self.adapter, request)
             output = _validated_output(result, request, source)
             current = (result.requested_model, result.provider)
             require(producer is None or producer == current, "INTEGRITY")
@@ -294,31 +341,86 @@ class ActionItemProcessor:
             return output
 
         records = {}
+        changes = GroundingChanges(stage=context.stage_code, source=source)
         for window in prepared.plan.windows:
             output = call(prepared.request(window.index))
-            for record in _signals(output, window, source):
+            for record in _signals(output, window, source, changes):
                 records[record.signal_id] = record
             require(len(records) <= self.settings.meeting_intelligence_action_item_max_signals
                 and sum(len(r.evidence) for r in records.values())
                 <= self.settings.meeting_intelligence_action_item_max_evidence_references, "CONTEXT_BUDGET")
+        changes.require_usable(records)
         ordered = sorted(records.values(), key=lambda r: (r.position, r.signal_id))
         groups = [[r] for r in ordered]
         if len(ordered) > 1:
             payload = canonical_json(dict(data_classification="validated_derived_action_evidence",
                 source=asdict(source.identity), signals=[r.derived(source) for r in ordered]))
-            task = TaskSpec(_GROUP_PROMPT, "action-resolution-v1", _GROUP_SCHEMA)
+            task = TaskSpec(_GROUP_PROMPT, ACTION_GROUP_PROMPT_VERSION, _GROUP_SCHEMA)
             # Single bounded global pass. Never truncate input or silently discard
             # material signals to make synthesis fit a provider's budget.
             request = prepared.derived_request(task, payload, "resolution-1")
+            prepared.plan_requests((request,), self.settings.meeting_intelligence_action_item_max_model_calls - calls)
             output = call(request)
-            ids = [value for group in output["groups"] for value in group]
-            require(len(ids) == len(records) and set(ids) == set(records), "GROUNDING_FAILURE")
-            groups = [[records[value] for value in group] for group in output["groups"]]
-        candidates = _select(groups, source, self.settings.meeting_intelligence_action_item_max_candidates)
+            try:
+                ids = [value for group in output["groups"] for value in group]
+                require(len(ids) == len(records) and set(ids) == set(records), "GROUNDING_FAILURE")
+                groups = [[records[value] for value in group] for group in output["groups"]]
+            except IntelligenceError as error:
+                # Grouping is advisory. If the provider returned a non-empty
+                # partition that cannot be reconciled with the already
+                # validated signals, preserve those signals independently.
+                # An empty grouping remains a fail-closed incomplete result.
+                if not output["groups"]:
+                    raise
+                changes.discard(error)
+                groups = [[record] for record in ordered]
+        candidates = []
+        maximum = self.settings.meeting_intelligence_action_item_max_candidates
+        invalid_groups = _groups_split_by_invalidation(groups, source)
+        if invalid_groups:
+            changes.discard(IntelligenceError("GROUNDING_FAILURE"))
+        for index, group in enumerate(groups):
+            if index in invalid_groups:
+                continue
+            try:
+                candidates.extend(_select([group], source, maximum))
+            except IntelligenceError as error:
+                changes.discard(error)
+                # A valid response envelope can still contain an unsafe merge
+                # of independent deliverables. Preserve independently
+                # validated signals rather than turning the whole batch into
+                # an empty result.
+                for record in group:
+                    try:
+                        candidates.extend(_select([[record]], source, maximum))
+                    except IntelligenceError as singleton_error:
+                        changes.discard(singleton_error)
+        changes.require_usable(candidates if changes.discarded else records)
+        require(len(candidates) <= maximum
+                and len({c["candidateKey"] for c in candidates}) == len(candidates), "CONTEXT_BUDGET")
+        candidates.sort(key=lambda c: c["candidateKey"])
         require(producer is not None, "MALFORMED_OUTPUT")
         check_authority(context.deadline, context.cancelled)
+        result = dict(candidates=candidates)
+        if changes.discarded or changes.repaired:
+            result["warnings"] = list(changes.flags())
+        diagnostics = changes.diagnostic_payloads()
+        if diagnostics:
+            result["diagnostics"] = list(diagnostics)
+        result["diagnosticsVersion"] = GROUNDING_DIAGNOSTIC_VERSION
+        result["diagnosticCounts"] = {
+            "version": GROUNDING_DIAGNOSTIC_VERSION,
+            **diagnostic_counts(diagnostics),
+        }
         return dict(producer=dict(model=producer[0], provider=producer[1], promptVersion=ACTION_PROMPT_VERSION),
-                    result=dict(candidates=candidates))
+                    result=result)
+
+
+def prepare_action_items(context, settings):
+    prepared = prepare_context(context, extraction_task(), settings)
+    prepared.plan_extraction(settings.meeting_intelligence_action_item_max_model_calls,
+                             TaskSpec(_GROUP_PROMPT, ACTION_GROUP_PROMPT_VERSION, _GROUP_SCHEMA))
+    return prepared
 
 
 def build_action_item_processor(settings, adapter):

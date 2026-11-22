@@ -72,6 +72,8 @@ The five skipped scenarios are environmental live-test blockers, not successful 
 - The current Core reconciliation iterates known indexing work; it does not yet demonstrate discovery of every canonical source missing an indexing-work row.
 - The AI vector audit checks requested source identities; it does not yet demonstrate discovery of every orphan Qdrant point that has no matching Core identity.
 - Full missing-work/orphan-point discovery is therefore not yet demonstrated. Treat both capabilities as outstanding functional coverage until implementation and tests prove otherwise.
+
+**PI-04 implementation update (not historical T06 evidence):** the current branch now implements a Core canonical-source/UPSERT-work union scan, a bounded authenticated AI/Qdrant inventory endpoint, separate durable source/vector reconciliation checkpoints, and a manual-review finding for identities with points but no matching Core UPSERT work. This does not retroactively satisfy T06's five NOT RUN live scenarios. Reconciliation runs created before Flyway V51 retain `inventoryComplete=false` even if their historical `state=COMPLETED`; new runs set it true only after both inventory phases. Vector scans are not Qdrant snapshots under concurrent writes, so final acceptance requires a controlled/quiescent run or follow-up reconciliation and explicit evidence. No broad destructive cleanup is authorized. Current integration code requires its latest CI gates to pass before deterministic acceptance.
 - The live reconciliation scenario must prove inventory completeness across canonical Core sources, Core indexing work, and AI/Qdrant points rather than only proving a requested-identity count.
 
 ## 6. Findings and Residual Risks

@@ -6,7 +6,7 @@ import sys
 import uvicorn
 
 from sme_meeting_ai.assistant.runtime import build_assistant_service
-from sme_meeting_ai.core.config import ConfigurationError, load_settings
+from sme_meeting_ai.core.config import ConfigurationError, Environment, load_settings
 from sme_meeting_ai.rag.runtime import (
     RetrievalRuntime,
     build_qdrant_audit_store,
@@ -29,6 +29,8 @@ def main() -> int:
     audit_store = None
     try:
         tls_context = load_tls_context(settings)
+        if settings.environment in {Environment.STAGING, Environment.PRODUCTION} and tls_context is None:
+            raise ConfigurationError("TLS configuration unavailable")
         identity_source = MTLSIdentitySource() if tls_context is not None else None
         assistant_service = None
         if settings.assistant_enabled:

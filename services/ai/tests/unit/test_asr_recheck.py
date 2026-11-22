@@ -109,3 +109,28 @@ def test_recheck_cancellation_keeps_identity_and_stops_further_calls(handoff):
         execute_asr_chunks(plan, audio, Provider(), settings(audio_asr_max_concurrent_chunks=1))
     assert caught.value is cancellation
     assert len(calls) == 2
+
+
+def test_one_transient_retry_uses_exact_audio_without_repeating_terminal_failures(handoff):
+    plan, audio, _ = handoff
+    calls = {}
+
+    class Provider:
+        def transcribe(self, payload):
+            history = calls.setdefault(payload.chunk_id, [])
+            history.append(payload.payload)
+            if payload.chunk_id == plan.chunks[0].chunk_id and len(history) == 1:
+                raise AsrError(AsrErrorCategory.TIMEOUT)
+            if payload.chunk_id == plan.chunks[1].chunk_id:
+                raise AsrError(AsrErrorCategory.VALIDATION)
+            return candidate(payload)
+
+    output = execute_asr_chunks(plan, audio, Provider(), settings(
+        audio_asr_retry_transient_chunks=True, audio_asr_recovery_max_total_attempts=3))
+    first, rejected, last = output
+    assert first.failure is None and first.timeline_segments[0].interval == first.chunk.request_interval
+    assert [attempt.selected for attempt in first.decoding_attempts] == [False, True]
+    assert len(calls[first.chunk.chunk_id]) == 2
+    assert calls[first.chunk.chunk_id][0] == calls[first.chunk.chunk_id][1]
+    assert rejected.failure is AsrErrorCategory.VALIDATION and len(calls[rejected.chunk.chunk_id]) == 1
+    assert last.failure is None

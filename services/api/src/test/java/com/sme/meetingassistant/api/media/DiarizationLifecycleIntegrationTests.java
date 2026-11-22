@@ -6,6 +6,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 
 import com.sme.meetingassistant.api.integration.TranscriptFinalizationService;
 import com.sme.meetingassistant.api.media.repository.MediaRepository;
+import com.sme.meetingassistant.api.media.repository.MediaRepository.Job;
 import com.sme.meetingassistant.api.media.repository.MediaRepository.ProcessingLifecycleConflictException;
 import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle;
 import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle.StageClaim;
@@ -17,6 +18,8 @@ import com.sme.meetingassistant.api.transcript.repository.TranscriptRepository;
 import com.sme.meetingassistant.api.transcript.service.TranscriptCorrectionDigest;
 import com.sme.meetingassistant.api.transcript.service.TranscriptIngestion.*;
 import java.security.Principal;
+import java.time.OffsetDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
@@ -122,8 +125,24 @@ class DiarizationLifecycleIntegrationTests {
 
     private void finalizeTranscript() throws Exception {
         admit();
+        finalizeAdmittedTranscript();
+    }
+
+    private void finalizeAdmittedTranscript() {
         TranscriptResult accepted = prepareFinalization(false);
         finalization.finalizeTranscript(finalizer, accepted);
+    }
+
+    /** These scenarios exercise admitted jobs from before the explicit review gate. */
+    private void finalizeLegacyTranscript() {
+        job = UUID.randomUUID();
+        var now = OffsetDateTime.now();
+        var legacy = new Job(job, meeting, media, "OFFLINE_MEETING_PROCESSING", "PENDING", actor,
+            null, 0, null, null, null, null, null, null, now, now);
+        var plan = new ArrayList<>(properties.getProcessing().getRequiredDownstreamStages());
+        if (properties.getProcessing().isDiarizationEnabled()) plan.addFirst("DIARIZING");
+        transactions.executeWithoutResult(tx -> repository.insertJobAndOutbox(legacy, UUID.randomUUID(), plan));
+        finalizeAdmittedTranscript();
     }
 
     private StageClaim prepareClaim() { prepareFinalization(false); return finalizer; }
@@ -134,6 +153,24 @@ class DiarizationLifecycleIntegrationTests {
     private long stages(String code) { return jdbc.queryForObject("SELECT count(*) FROM processing_stage_runs WHERE processing_job_id=? AND stage_code=?", Long.class, job, code); }
 
     @Test
+    void optionalDiarizationSettlesBeforeReviewAndNeverAdmitsIntelligence() throws Exception {
+        admit();
+        var result = prepareFinalization(false);
+        com.sme.meetingassistant.api.support.CorrectedTranscriptFixture.record(jdbc, result);
+        finalization.finalizeTranscript(finalizer, result);
+        assertThat(status()).isEqualTo("RUNNING");
+        assertThat(dispatches()).isEqualTo(1);
+        var before = transcripts.current(meeting).orElseThrow();
+        lifecycle.failStage(start(), "DIARIZATION_FAILED", null, false);
+        assertThat(status()).isEqualTo("WAITING_FOR_REVIEW");
+        assertThat(transcripts.current(meeting).orElseThrow()).isEqualTo(before);
+        assertThat(jdbc.queryForObject("SELECT warning_summary FROM processing_jobs WHERE id=?", String.class, job))
+            .contains("DIARIZING");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM processing_job_transcript_reviews WHERE processing_job_id=?",
+            Integer.class, job)).isZero();
+    }
+
+    @Test
     void defaultOffAndAdmissionDecisionIsDurableAcrossConfigurationChanges() throws Exception {
         assertThat(new MediaProperties().getProcessing().isDiarizationEnabled()).isFalse();
         properties.getProcessing().setDiarizationEnabled(false);
@@ -142,7 +179,7 @@ class DiarizationLifecycleIntegrationTests {
         assertThat(admit()).isEqualTo(first);
         assertThat(stages("DIARIZING")).isZero();
         finalization.finalizeTranscript(prepareClaim(), result(finalizer.stageRunId(), false));
-        assertThat(status()).isEqualTo("COMPLETED");
+        assertThat(status()).isEqualTo("WAITING_FOR_REVIEW");
         assertThat(dispatches()).isZero();
         assertThatThrownBy(this::start).isInstanceOf(ProcessingLifecycleConflictException.class);
         assertThatThrownBy(() -> jdbc.update("UPDATE processing_jobs SET diarization_planned=TRUE WHERE id=?", job))
@@ -180,7 +217,7 @@ class DiarizationLifecycleIntegrationTests {
     @Test
     void derivedSummaryAdmissionNeverPlansDiarization() throws Exception {
         properties.getProcessing().setDiarizationEnabled(false);
-        finalizeTranscript();
+        finalizeLegacyTranscript();
         UUID derived = UUID.randomUUID();
         properties.getProcessing().setDiarizationEnabled(true);
         transactions.executeWithoutResult(tx -> repository.insertDerivedSummaryJobAndOutbox(
@@ -273,7 +310,7 @@ class DiarizationLifecycleIntegrationTests {
     @Test
     void pendingAndRunningDiarizationBlockCompletionAndAllDownstreamClaims() throws Exception {
         properties.getProcessing().setRequiredDownstreamStages(List.of("INDEXING"));
-        finalizeTranscript();
+        finalizeLegacyTranscript();
         assertThat(lifecycle.hasPendingPipelineStages(job)).isTrue();
         assertThatThrownBy(() -> lifecycle.completeJob(job)).isInstanceOf(ProcessingLifecycleConflictException.class);
         for (String code : List.of("GENERATING_SUMMARY", "EXTRACTING_DECISIONS", "INDEXING"))
@@ -294,7 +331,7 @@ class DiarizationLifecycleIntegrationTests {
     @Test
     void optionalFailureRemainsFailedAndDownstreamContinuesWithoutChangingTranscript() throws Exception {
         properties.getProcessing().setRequiredDownstreamStages(List.of("INDEXING"));
-        finalizeTranscript();
+        finalizeLegacyTranscript();
         var original = transcripts.current(meeting).orElseThrow();
         StageClaim diarization = start();
         lifecycle.failStage(diarization, "DIARIZATION_FAILED", "secret provider text", true);
@@ -313,7 +350,7 @@ class DiarizationLifecycleIntegrationTests {
     @Test
     void requiredFailureStillFailsJobAfterOptionalFailure() throws Exception {
         properties.getProcessing().setRequiredDownstreamStages(List.of("INDEXING"));
-        finalizeTranscript();
+        finalizeLegacyTranscript();
         lifecycle.failStage(start(), "DIARIZATION_FAILED", null, true);
         lifecycle.failStage(lifecycle.startStage(job, "INDEXING", null, null), "INDEXING_FAILED", null, true);
         assertThat(status()).isEqualTo("FAILED");
@@ -323,7 +360,7 @@ class DiarizationLifecycleIntegrationTests {
 
     @Test
     void retryReopensWarningJobAppendsAttemptAndFreshBindingWithIdempotentAdmission() throws Exception {
-        finalizeTranscript();
+        finalizeLegacyTranscript();
         StageClaim failed = start();
         lifecycle.failStage(failed, "DIARIZATION_FAILED", null, true);
         assertThat(status()).isEqualTo("COMPLETED_WITH_WARNINGS");
@@ -378,7 +415,7 @@ class DiarizationLifecycleIntegrationTests {
     @Test
     void isolatedRetryCannotCompeteWithActiveStage() throws Exception {
         properties.getProcessing().setRequiredDownstreamStages(List.of("INDEXING"));
-        finalizeTranscript();
+        finalizeLegacyTranscript();
         lifecycle.failStage(start(), "DIARIZATION_FAILED", null, true);
         StageClaim indexing = lifecycle.startStage(job, "INDEXING", null, null);
         assertThat(retry("conflicting", "DIARIZING")).isEqualTo(409);
@@ -406,7 +443,7 @@ class DiarizationLifecycleIntegrationTests {
 
     @Test
     void retryCannotReopenJobWhileAnotherJobOccupiesMeeting() throws Exception {
-        finalizeTranscript();
+        finalizeLegacyTranscript();
         lifecycle.failStage(start(), "DIARIZATION_FAILED", null, true);
         jdbc.update("""
             INSERT INTO processing_jobs(id,meeting_id,source_media_id,requested_by_user_id,status,reprocess_of_job_id)
@@ -443,7 +480,7 @@ class DiarizationLifecycleIntegrationTests {
 
     @Test
     void stalePinnedTranscriptAndSourceCannotStartOrCompleteAttempt() throws Exception {
-        finalizeTranscript();
+        finalizeLegacyTranscript();
         var originalEvent = event();
         jdbc.update("UPDATE transcripts SET content_revision=1 WHERE processing_job_id=?", job);
         assertThatThrownBy(this::start).isInstanceOf(ProcessingLifecycleConflictException.class);
@@ -462,7 +499,7 @@ class DiarizationLifecycleIntegrationTests {
 
     @Test
     void expiredDiarizationOwnerFailsOptionallyAndCannotRegainAuthority() throws Exception {
-        finalizeTranscript();
+        finalizeLegacyTranscript();
         StageClaim expired = start();
         jdbc.update("UPDATE processing_stage_runs SET lease_expires_at=clock_timestamp()-INTERVAL '1 second' WHERE id=?", expired.stageRunId());
         assertThatThrownBy(() -> lifecycle.completeStage(expired, "SUCCEEDED", null, null)).isInstanceOf(ProcessingLifecycleConflictException.class);

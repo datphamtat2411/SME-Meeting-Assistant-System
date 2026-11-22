@@ -14,15 +14,22 @@ public final class WorkerOperations {
     private static final Pattern DIARIZATION_COMMAND = Pattern.compile(DIARIZATION + "(claim|snapshot|renew|complete|fail)");
     private static final Pattern DIARIZATION_DELIVERY = Pattern.compile(DIARIZATION + "deliveries/" + UUID);
     private static final String INTELLIGENCE="/internal/v1/worker/processing-jobs/"+UUID+"/intelligence/";
-    private static final Pattern INTELLIGENCE_COMMAND=Pattern.compile(INTELLIGENCE+"(claim|renew|fail)");
+    private static final Pattern INTELLIGENCE_COMMAND=Pattern.compile(INTELLIGENCE+"(claim|renew|fail|attempts/reserve|attempts/report)");
     private static final Pattern INTELLIGENCE_DELIVERY=Pattern.compile(INTELLIGENCE+"deliveries/"+UUID);
-    private static final Set<String> INTELLIGENCE_GRANTS=Set.of("intelligence.claim","intelligence.renew","intelligence.fail","intelligence.read-delivery");
+    private static final Set<String> INTELLIGENCE_GRANTS=Set.of("intelligence.claim","intelligence.renew","intelligence.fail",
+        "intelligence.attempts-reserve","intelligence.attempts-report","intelligence.read-delivery");
     private static final String KNOWLEDGE="/internal/v1/worker/knowledge-indexing/deliveries/" + UUID + "/";
-    private static final Pattern KNOWLEDGE_COMMAND=Pattern.compile(KNOWLEDGE+"(claim|renew|snapshot|result)");
+    private static final Pattern KNOWLEDGE_COMMAND=Pattern.compile(KNOWLEDGE+"(claim|renew|snapshot|result|permit)");
+    private static final Pattern KNOWLEDGE_PERMIT_START=Pattern.compile(
+        KNOWLEDGE+"permit/"+UUID+"/start");
+    private static final Pattern KNOWLEDGE_PERMIT_COMPLETE=Pattern.compile(
+        KNOWLEDGE+"permit/"+UUID+"/complete");
     private static final Pattern KNOWLEDGE_DELIVERY=Pattern.compile(
         "/internal/v1/worker/knowledge-indexing/deliveries/" + UUID);
     private static final Set<String> KNOWLEDGE_GRANTS=Set.of("knowledge.claim","knowledge.renew",
-        "knowledge.snapshot","knowledge.result","knowledge.read-delivery",
+        "knowledge.snapshot","knowledge.result","knowledge.permit","knowledge.permit-start",
+        "knowledge.permit-complete",
+        "knowledge.read-delivery",
         "knowledge.source-verification");
     private static final Set<String> GRANTS = Set.of("transcription.claim", "transcription.read-delivery",
         "transcription.renew", "transcription.complete", "transcription.fail",
@@ -36,10 +43,18 @@ public final class WorkerOperations {
         if ("POST".equals(method) && diarization.matches()) return "diarization." + diarization.group(1);
         if ("GET".equals(method) && DIARIZATION_DELIVERY.matcher(path).matches()) return "diarization.read-delivery";
         var intelligence=INTELLIGENCE_COMMAND.matcher(path);
-        if("POST".equals(method) && intelligence.matches()) return "intelligence."+intelligence.group(1);
+        if("POST".equals(method) && intelligence.matches()) {
+            return "intelligence."+intelligence.group(1).replace("/","-");
+        }
         if("GET".equals(method) && INTELLIGENCE_DELIVERY.matcher(path).matches()) return "intelligence.read-delivery";
         var knowledge=KNOWLEDGE_COMMAND.matcher(path);
-        if("POST".equals(method) && knowledge.matches()) return "knowledge." + knowledge.group(1);
+          if("POST".equals(method) && knowledge.matches()) return "knowledge." + knowledge.group(1);
+          if("POST".equals(method) && KNOWLEDGE_PERMIT_START.matcher(path).matches()) {
+              return "knowledge.permit-start";
+          }
+         if("POST".equals(method) && KNOWLEDGE_PERMIT_COMPLETE.matcher(path).matches()) {
+             return "knowledge.permit-complete";
+         }
         if("GET".equals(method) && KNOWLEDGE_DELIVERY.matcher(path).matches()) return "knowledge.read-delivery";
         if("POST".equals(method)
                 && "/internal/v1/worker/knowledge-indexing/source-verification".equals(path)) {

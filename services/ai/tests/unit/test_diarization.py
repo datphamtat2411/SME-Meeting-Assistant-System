@@ -321,8 +321,10 @@ def test_polling_and_optional_exact_count(tmp_path, monkeypatch, initial_status)
             return httpx.Response(201, json={"urls": {"get": "https://api.replicate.com/v1/files/abc"}})
         if request.method == "POST":
             assert json.loads(request.content)["input"]["num_speakers"] == 2
+            assert request.headers["cancel-after"] == "300s"
             return httpx.Response(201, json={"id": "prediction1", "status": initial_status})
         if request.url.host == "api.replicate.com":
+            assert request.extensions["timeout"]["read"] <= 12
             if calls.count("/v1/predictions/prediction1") == 1:
                 return httpx.Response(200, json={"id": "prediction1", "status": "processing"})
             return httpx.Response(200, json={"status": "succeeded", "output": "https://replicate.delivery/output"})
@@ -332,7 +334,65 @@ def test_polling_and_optional_exact_count(tmp_path, monkeypatch, initial_status)
     assert adapter.diarize(path, num_speakers=2).turns == ()
     assert calls == ["/v1/files", "/v1/predictions", "/v1/predictions/prediction1",
                      "/v1/predictions/prediction1", "/output"]
-    assert waits == [15, 15]
+    assert waits == [5, 5]
+
+
+def test_queued_prediction_is_polled_without_duplicate_submission(tmp_path, monkeypatch):
+    path = tmp_path / "audio.wav"
+    path.write_bytes(b"audio")
+    calls = []
+    waits = []
+    states = iter(["queued", "starting", "processing", "succeeded"])
+
+    async def wait(seconds):
+        waits.append(seconds)
+
+    monkeypatch.setattr(replicate_diarization.asyncio, "sleep", wait)
+
+    def handler(request):
+        calls.append(request.url.path)
+        if request.url.path == "/v1/files":
+            return httpx.Response(201, json={"urls": {"get": "https://api.replicate.com/v1/files/abc"}})
+        if request.method == "POST":
+            return httpx.Response(201, json={"id": "prediction1", "status": "queued"})
+        if request.url.host == "replicate.delivery":
+            return httpx.Response(200, content=payload())
+        status = next(states)
+        body = {"id": "prediction1", "status": status}
+        if status == "succeeded":
+            body["output"] = "https://replicate.delivery/output"
+        return httpx.Response(200, json=body)
+
+    adapter = ReplicateDiarizationAdapter(settings(REPLICATE_API_TOKEN=SECRET),
+                                          transport=httpx.MockTransport(handler))
+    assert adapter.diarize(path).turns == ()
+    assert calls == ["/v1/files", "/v1/predictions",
+                     "/v1/predictions/prediction1", "/v1/predictions/prediction1",
+                     "/v1/predictions/prediction1", "/v1/predictions/prediction1", "/output"]
+    assert calls.count("/v1/predictions") == 1
+    assert waits == [5, 5, 5, 5]
+
+
+def test_queued_prediction_deadline_is_bounded_without_resubmission(tmp_path):
+    path = tmp_path / "audio.wav"
+    path.write_bytes(b"audio")
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.path)
+        if request.url.path == "/v1/files":
+            return httpx.Response(201, json={"urls": {"get": "https://api.replicate.com/v1/files/abc"}})
+        return httpx.Response(201, json={"id": "prediction1", "status": "queued"})
+
+    adapter = ReplicateDiarizationAdapter(
+        settings(REPLICATE_API_TOKEN=SECRET, diarization_timeout_seconds=0.02),
+        transport=httpx.MockTransport(handler),
+    )
+    with pytest.raises(DiarizationError) as exc:
+        adapter.diarize(path)
+    assert exc.value.category == DiarizationErrorCategory.TIMEOUT
+    assert calls == ["/v1/files", "/v1/predictions"]
+    assert calls.count("/v1/predictions") == 1
 
 
 @pytest.mark.parametrize("kind", ["directory", "missing", "empty", "oversized", "fifo"])
@@ -400,6 +460,7 @@ def test_descriptor_closed_when_local_setup_fails(tmp_path, monkeypatch, failure
 @pytest.mark.parametrize(("status", "category"), [
     ("failed", DiarizationErrorCategory.PROVIDER),
     ("canceled", DiarizationErrorCategory.PROVIDER),
+    ("aborted", DiarizationErrorCategory.PROVIDER),
     ("unexpected", DiarizationErrorCategory.MALFORMED_OUTPUT),
     (None, DiarizationErrorCategory.MALFORMED_OUTPUT),
 ])
@@ -446,7 +507,7 @@ def test_polling_rate_limit_retries_bounded(tmp_path, monkeypatch):
     assert exc.value.category == DiarizationErrorCategory.RATE_LIMIT
     assert "private-provider-diagnostic" not in "".join(traceback.format_exception(exc.value))
     assert calls == ["/v1/files", "/v1/predictions"] + ["/v1/predictions/abc"] * 3
-    assert waits == [15, 3, 3]
+    assert waits == [5, 3, 3]
 
 
 @pytest.mark.parametrize("status,category", [(400, "validation"), (422, "validation"),

@@ -55,48 +55,41 @@ require Android, Flutter, Node.js, RabbitMQ, Qdrant, or the AI service.
 
 ## 3. Local PostgreSQL Setup
 
-Run these commands from the repository root. They use the existing Compose
-file, `infra/local/postgres/compose.yaml`, and keep the password out of tracked
-files:
+Copy `infra/local/postgres/.env.example` to
+`infra/local/postgres/.env`, fill the local bootstrap values, and keep the
+password out of tracked files. The canonical file is consumed by both Compose
+and the Core launch mapping:
 
 ```bash
-export POSTGRES_DB=meeting_assistant
-export POSTGRES_USER=meeting_assistant
-
-read -rsp "Local PostgreSQL password: " POSTGRES_PASSWORD
-echo
-export POSTGRES_PASSWORD
-
-docker compose -f infra/local/postgres/compose.yaml up -d --wait
-docker compose -f infra/local/postgres/compose.yaml ps
+cp infra/local/postgres/.env.example infra/local/postgres/.env
+# Also complete services/api/.env, services/ai/.env, and the secure/web
+# canonical files before using the repository-wide workflow.
+./dev.sh doctor
+./dev.sh up
 ```
 
-Compose requires all three `POSTGRES_*` variables. The database is published as
-`127.0.0.1:5433` on the developer's host and forwards to PostgreSQL's
+Compose requires all three `POSTGRES_*` variables. The database is published
+as `127.0.0.1:5433` on the developer's host and forwards to PostgreSQL's
 container port `5432`. It is therefore reachable from the API running on the
-host, but is not exposed on all network interfaces.
+host, but is not exposed on all network interfaces. `./dev.sh down` preserves
+the Compose volume.
 
-Keep these variables available in the shell that will launch the API. Do not
-commit passwords. The root `.gitignore` ignores `.env` and `.env.*`, but Spring
-Boot does not automatically read a Docker Compose `.env` file; the API process
-must receive its own datasource variables explicitly.
+Do not commit passwords. The root `.gitignore` ignores `.env` and `.env.*`.
+Spring Boot does not automatically read the PostgreSQL dotenv file; `run-core.sh`
+maps only `DB_URL`, `DB_USERNAME`, and `DB_PASSWORD` into its process.
 
 ## 4. Core API Configuration
 
 Compose variables initialize the PostgreSQL container. Spring Boot uses a
-separate set of variables to connect to that container. In the same shell after
-starting PostgreSQL, run:
+separate set of variables to connect to that container. `run-core.sh` derives
+the datasource mapping without exposing PostgreSQL bootstrap names to Core:
 
 ```bash
-export DB_URL="jdbc:postgresql://127.0.0.1:5433/${POSTGRES_DB}"
-export DB_USERNAME="$POSTGRES_USER"
-export DB_PASSWORD="$POSTGRES_PASSWORD"
-
-export APP_ENVIRONMENT=development
-export APP_HTTP_SECURITY_CORS_ALLOWED_ORIGINS=http://localhost:3000
+./run-core.sh
 ```
 
-The exported values are passed to the application process that runs Maven.
+The API and PostgreSQL canonical files provide the values; the mapped values
+are passed only to the Maven process.
 Credentialed CORS is enabled by default, so the allowed origin must be an
 explicit origin rather than empty or `*`. Change the local origin only when the
 browser client is actually served from a different origin.
@@ -149,6 +142,38 @@ a distinct `APP_AUTH_RECOVERY_SIGNING_KEY`, an approved HTTPS
 Do not enable either transport simply to bypass initial account provisioning;
 there is no public registration endpoint. See
 `docs/SECURITY_AUTH_RATE_LIMIT_AND_KEY_ROTATION.md` for rollout conditions.
+
+### First administrator bootstrap
+
+There is no public first-administrator endpoint and ordinary Core startup never
+performs bootstrap. After an operator has explicitly authorized initialization,
+the repository-root command below starts a dedicated **non-web** Spring
+application:
+
+```bash
+./bootstrap-initial-administrator.sh admin@example.com "Local Administrator"
+```
+
+The command:
+
+1. locks the database's one-time bootstrap marker;
+2. refuses to proceed if an active administrator already exists;
+3. creates exactly one `PENDING_SETUP` administrator without an organization
+   scope or meeting-content grant; and
+4. queues the existing single-use account-setup invitation.
+
+It accepts no password, does not print a setup token, and stores only the
+existing setup-token verifier hash. The recipient completes setup through the
+normal account-setup page and chooses the password there. Repeating the command
+is idempotent for the already-issued marker; it does not create another account
+or token. A pre-existing pending administrator also blocks the operation.
+
+Before running it, configure the normal account-setup signing key, approved
+HTTPS setup URL, sender, and transactional email delivery in the private local
+environment. Do not run the command without explicit operator authorization,
+and do not use PostgreSQL role updates or a direct password write as a
+substitute. `ADMINISTRATOR` remains an organizational-management role; meeting
+content authorization is evaluated separately.
 
 For direct local HTTP, leave HSTS disabled, which is the application default.
 Only enable `APP_HTTP_SECURITY_HSTS_ENABLED` after verifying an HTTPS setup.
@@ -260,10 +285,10 @@ not the default development shutdown workflow.
 | --- | --- |
 | `java` is unavailable or the version is wrong | Install or select JDK 21, then re-run `java -version`. |
 | Docker daemon is unavailable | Start Docker Engine or Docker Desktop and verify access with `docker info`. On WSL2, check Docker Desktop WSL integration or the Docker Engine configuration. |
-| Compose reports missing variables | Set `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD` in the shell before running `docker compose ... up`. |
+| Compose reports missing variables | Fill `infra/local/postgres/.env` and run `./dev.sh doctor`; do not add a second PostgreSQL dotenv file. |
 | Host port `5433` is already allocated | Identify the conflicting container or local process before changing configuration. Stop the conflict where appropriate; if the mapping is intentionally changed, use the matching host port in `DB_URL`. |
 | PostgreSQL authentication fails | Confirm `DB_USERNAME` and `DB_PASSWORD` match the credentials used when the existing PostgreSQL volume was initialized. |
-| `DB_URL` or datasource settings are missing | Export `DB_URL`, `DB_USERNAME`, and `DB_PASSWORD` in the same shell that launches Maven. |
+| `DB_URL` or datasource settings are missing | Confirm the PostgreSQL canonical file contains non-empty bootstrap values and launch Core through `./run-core.sh`. |
 | Runtime environment validation fails | Set a non-empty `APP_ENVIRONMENT`, normally `development` for local HTTP. |
 | CORS configuration validation fails | Set an explicit approved origin, such as `APP_HTTP_SECURITY_CORS_ALLOWED_ORIGINS=http://localhost:3000`; do not use an empty or wildcard origin with credentialed CORS. |
 | Startup rejects RS256 keys or issuer/audience | Provide matching RSA private/public PEM files (2048+ bits), a unique `APP_AUTH_JWT_KEY_ID`, `APP_AUTH_JWT_ISSUER` and `APP_AUTH_JWT_AUDIENCE`; these are required even with login transport disabled. |

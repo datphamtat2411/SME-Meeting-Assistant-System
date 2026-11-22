@@ -15,6 +15,7 @@ import com.sme.meetingassistant.api.meetingintelligence.service.IntelligenceResu
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
 import com.sme.meetingassistant.api.transcript.service.TranscriptCorrectionDigest;
 import com.sme.meetingassistant.api.transcript.service.TranscriptIngestion.*;
+import java.math.BigDecimal;
 import java.nio.file.*;
 import java.time.OffsetDateTime;
 import java.util.*;
@@ -63,6 +64,12 @@ class IntelligenceWorkerIntegrationTests {
         properties.getIntelligence().setEnabled(true);
         properties.getIntelligence().setDispatchEnabled(true);
         properties.getIntelligence().setEnabledStages(IntelligenceWorkerCapability.ORDER);
+        properties.getIntelligence().setSummaryAttemptCeiling(1);
+        properties.getIntelligence().setDecisionAttemptCeiling(1);
+        properties.getIntelligence().setActionItemAttemptCeiling(2);
+        properties.getIntelligence().setAggregateAttemptCeiling(4);
+        properties.getIntelligence().setReservedTokenCeiling(161970);
+        properties.getIntelligence().setEstimatedCostCeilingUsd(new BigDecimal("0.15"));
         when(capability.canDispatch(anyString())).thenReturn(true);
         when(capability.storageId()).thenReturn("meeting-media");
         when(diarizationCapability.storageId()).thenReturn("meeting-media");
@@ -122,6 +129,17 @@ class IntelligenceWorkerIntegrationTests {
             "producer",Map.of("model","test-executor","promptVersion","v1"),"result",WorkerJson.MAPPER.readTree(result)));
         blobs.put("processing/"+job+"/intelligence/results/"+owner.executionStageRunId()+".json",bytes);
         assertThat(ingestion.ingest(new StageClaim(owner.executionStageRunId(),owner.claimToken()),WorkerJson.sha256(bytes)).replay()).isFalse();
+    }
+    IntelligenceCommands.AttemptReserve reserveCommand(IntelligenceCommands.Claim claim,
+            IntelligenceCommands.Owner owner,long input,long output,BigDecimal cost,UUID attempt) {
+        return new IntelligenceCommands.AttemptReserve(claim.eventId(),claim.executionStageRunId(),
+            owner.claimToken(),attempt,claim.executionStageCode(),input,output,input+output,cost);
+    }
+    IntelligenceCommands.AttemptReport reportCommand(IntelligenceCommands.Claim claim,
+            IntelligenceCommands.Owner owner,UUID attempt,long input,long output,BigDecimal cost) {
+        return new IntelligenceCommands.AttemptReport(claim.eventId(),claim.executionStageRunId(),
+            owner.claimToken(),attempt,claim.executionStageCode(),"SUCCEEDED",input,output,input+output,
+            0L,cost,null);
     }
 
     @Test void finalizedSourceDispatchesOrderedSubsetAndCanonicalFinalAcceptanceCompletesJob() {
@@ -308,6 +326,131 @@ class IntelligenceWorkerIntegrationTests {
         assertThat(count("processing_intelligence_dispatches")).isEqualTo(1);
         assertThat(worker.status(job,c.eventId())).containsEntry("state","RUNNING");
     }
+    @Test void providerAttemptBudgetIsDurableIdempotentAndAggregateBounded() {
+        properties.getProcessing().setActionItemHandoffEnabled(true);
+        admit("GENERATING_SUMMARY","EXTRACTING_DECISIONS","EXTRACTING_ACTION_ITEMS");
+        finalizeSource();
+
+        var summary=command("GENERATING_SUMMARY");
+        var summaryData=worker.claim(job,summary,PEER);
+        var summaryBudget=(Map<?,?>)summaryData.get("budget");
+        assertThat(summaryBudget.get("remainingStages")).isEqualTo(
+            List.of("GENERATING_SUMMARY","EXTRACTING_DECISIONS","EXTRACTING_ACTION_ITEMS"));
+        assertThat(summaryBudget.get("remainingStageAttempts")).isEqualTo(Map.of(
+            "GENERATING_SUMMARY",1,"EXTRACTING_DECISIONS",1,"EXTRACTING_ACTION_ITEMS",2));
+        assertThat(summaryBudget.get("aggregateReservedAttempts")).isEqualTo(0);
+        var summaryOwner=owner(summary,summaryData);
+        UUID summaryAttempt=UUID.randomUUID();
+        var summaryReserve=reserveCommand(summary,summaryOwner,7431,32768,
+            new BigDecimal("0.0342542"),summaryAttempt);
+        var first=worker.reserveAttempt(job,summaryReserve,PEER);
+        assertThat(first).containsEntry("replay",false)
+            .containsEntry("aggregateReservedAttempts",1)
+            .containsEntry("aggregateReservedTokens",40199L)
+            .containsEntry("aggregateEstimatedCostUsd","0.0342542");
+        assertThat(worker.reserveAttempt(job,summaryReserve,PEER)).containsEntry("replay",true)
+            .containsEntry("aggregateReservedAttempts",1);
+        var summaryReport=reportCommand(summary,summaryOwner,summaryAttempt,7431,32768,
+            new BigDecimal("0.001"));
+        assertThat(worker.reportAttempt(job,summaryReport,PEER)).containsEntry("replay",false)
+            .containsEntry("aggregateReportedCostUsd","0.001");
+        assertThat(worker.reportAttempt(job,summaryReport,PEER)).containsEntry("replay",true)
+            .containsEntry("aggregateReportedCostUsd","0.001");
+        accept(summaryOwner,"GENERATING_SUMMARY");
+
+        var decision=command("EXTRACTING_DECISIONS");
+        var decisionData=worker.claim(job,decision,PEER);
+        var decisionBudget=(Map<?,?>)decisionData.get("budget");
+        assertThat(decisionBudget.get("remainingStages")).isEqualTo(
+            List.of("EXTRACTING_DECISIONS","EXTRACTING_ACTION_ITEMS"));
+        assertThat(decisionBudget.get("aggregateReservedAttempts")).isEqualTo(1);
+        assertThat(decisionBudget.get("aggregateReservedTokens")).isEqualTo(40199L);
+        assertThat(decisionBudget.get("inputCostPerMillionUsd")).isEqualTo("0.2");
+        var decisionOwner=owner(decision,decisionData);
+        UUID decisionAttempt=UUID.randomUUID();
+        var decisionReserve=reserveCommand(decision,decisionOwner,7946,32768,
+            new BigDecimal("0.0343572"),decisionAttempt);
+        worker.reserveAttempt(job,decisionReserve,PEER);
+        worker.reportAttempt(job,reportCommand(decision,decisionOwner,decisionAttempt,7946,32768,
+            new BigDecimal("0.002")),PEER);
+        accept(decisionOwner,"EXTRACTING_DECISIONS");
+
+        var action=command("EXTRACTING_ACTION_ITEMS");
+        var actionData=worker.claim(job,action,PEER);
+        var actionOwner=owner(action,actionData);
+        UUID actionAttemptOne=UUID.randomUUID(),actionAttemptTwo=UUID.randomUUID();
+        var actionReserveOne=reserveCommand(action,actionOwner,7750,32768,
+            new BigDecimal("0.034318"),actionAttemptOne);
+        var actionReserveTwo=reserveCommand(action,actionOwner,7771,32768,
+            new BigDecimal("0.0343222"),actionAttemptTwo);
+        worker.reserveAttempt(job,actionReserveOne,PEER);
+        worker.reportAttempt(job,reportCommand(action,actionOwner,actionAttemptOne,7750,32768,
+            new BigDecimal("0.003")),PEER);
+        var aggregate=worker.reserveAttempt(job,actionReserveTwo,PEER);
+        assertThat(aggregate).containsEntry("aggregateReservedAttempts",4)
+            .containsEntry("aggregateReservedTokens",161970L)
+            .containsEntry("aggregateEstimatedCostUsd","0.1372516");
+        worker.reportAttempt(job,reportCommand(action,actionOwner,actionAttemptTwo,7771,32768,
+            new BigDecimal("0.004")),PEER);
+        assertThat(worker.reportAttempt(job,reportCommand(action,actionOwner,actionAttemptTwo,7771,32768,
+            new BigDecimal("0.004")),PEER)).containsEntry("replay",true)
+            .containsEntry("aggregateReportedCostUsd","0.01");
+    }
+    @Test void providerAttemptBudgetRejectsASecondSummaryAttempt() {
+        admit("GENERATING_SUMMARY");finalizeSource();
+        var summary=command("GENERATING_SUMMARY");
+        var owner=owner(summary,worker.claim(job,summary,PEER));
+        worker.reserveAttempt(job,reserveCommand(summary,owner,7431,32768,
+            new BigDecimal("0.0342542"),UUID.randomUUID()),PEER);
+        var second=reserveCommand(summary,owner,1,1,new BigDecimal("0.0000012"),UUID.randomUUID());
+        properties.getIntelligence().setSummaryAttemptCeiling(16);
+        properties.getIntelligence().setAggregateAttemptCeiling(44);
+        assertThatThrownBy(()->worker.reserveAttempt(job,second,PEER))
+            .hasMessage("WORKER_BUDGET_EXHAUSTED");
+    }
+
+    @Test void newerJobPolicyCanReserveMultiplePhysicalSummaryCalls() {
+        properties.getIntelligence().setSummaryAttemptCeiling(16);
+        properties.getIntelligence().setAggregateAttemptCeiling(44);
+        properties.getIntelligence().setReservedTokenCeiling(2_000_000);
+        admit("GENERATING_SUMMARY");finalizeSource();
+        var summary=command("GENERATING_SUMMARY");
+        var owner=owner(summary,worker.claim(job,summary,PEER));
+        for (int i=1;i<=3;i++) {
+            var reserve=reserveCommand(summary,owner,10_000,8192,new BigDecimal("0.010192"),UUID.randomUUID());
+            assertThat(worker.reserveAttempt(job,reserve,PEER)).containsEntry("aggregateReservedAttempts",i);
+        }
+    }
+    @Test void providerAttemptReservationIsReplayedAcrossDeliveryRedelivery() {
+        admit("GENERATING_SUMMARY");finalizeSource();
+        var summary=command("GENERATING_SUMMARY");
+        var firstOwner=owner(summary,worker.claim(job,summary,PEER));
+        UUID attempt=UUID.randomUUID();
+        var reserve=reserveCommand(summary,firstOwner,7431,32768,
+            new BigDecimal("0.0342542"),attempt);
+        assertThat(worker.reserveAttempt(job,reserve,PEER)).containsEntry("replay",false);
+
+        var redeliveredOwner=owner(summary,worker.claim(job,summary,PEER));
+        assertThat(redeliveredOwner.claimToken()).isEqualTo(firstOwner.claimToken());
+        assertThat(worker.reserveAttempt(job,
+            reserveCommand(summary,redeliveredOwner,7431,32768,
+                new BigDecimal("0.0342542"),attempt),PEER))
+            .containsEntry("replay",true)
+            .containsEntry("aggregateReservedAttempts",1)
+            .containsEntry("aggregateReservedTokens",40199L);
+    }
+    @Test void providerAttemptReportRejectsUsageBeyondReservedTokens() {
+        admit("GENERATING_SUMMARY");finalizeSource();
+        var summary=command("GENERATING_SUMMARY");
+        var owner=owner(summary,worker.claim(job,summary,PEER));
+        UUID attempt=UUID.randomUUID();
+        worker.reserveAttempt(job,reserveCommand(summary,owner,7431,32768,
+            new BigDecimal("0.0342542"),attempt),PEER);
+        var invalid=new IntelligenceCommands.AttemptReport(summary.eventId(),summary.executionStageRunId(),
+            owner.claimToken(),attempt,summary.executionStageCode(),"SUCCEEDED",null,null,161971L,null,null,null);
+        assertThatThrownBy(()->worker.reportAttempt(job,invalid,PEER))
+            .hasMessage("WORKER_USAGE_INVALID");
+    }
     @Test void recoveryRestoresMissingEligibleDispatchButNeverSkipsFailedWork() {
         when(capability.canDispatch(anyString())).thenReturn(false);
         admit("GENERATING_SUMMARY","EXTRACTING_DECISIONS");finalizeSource();assertThat(count("processing_intelligence_dispatches")).isZero();
@@ -326,7 +469,9 @@ class IntelligenceWorkerIntegrationTests {
             jdbc.update("INSERT INTO "+schema+".users SELECT * FROM public.users WHERE id=?",actor);
             jdbc.update("INSERT INTO "+schema+".meetings SELECT * FROM public.meetings WHERE id=?",meeting);
             jdbc.update("INSERT INTO "+schema+".meeting_media SELECT * FROM public.meeting_media WHERE id=?",media);
-            jdbc.update("INSERT INTO "+schema+".processing_jobs SELECT * FROM public.processing_jobs WHERE id=?",job);
+            String jobColumns="id,meeting_id,source_media_id,requested_by_user_id,status,job_type,diarization_planned";
+            jdbc.update("INSERT INTO "+schema+".processing_jobs ("+jobColumns+") SELECT "+jobColumns
+                +" FROM public.processing_jobs WHERE id=?",job);
             if(derived) jdbc.update("UPDATE "+schema+".processing_jobs SET job_type='DERIVED_STAGE_PROCESSING' WHERE id=?",job);
             jdbc.update("INSERT INTO "+schema+".processing_stage_runs SELECT * FROM public.processing_stage_runs WHERE processing_job_id=?"
                 +(derived?" AND stage_code='GENERATING_SUMMARY'":""),job);

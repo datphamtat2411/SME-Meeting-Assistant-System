@@ -1,9 +1,6 @@
 import { z } from 'zod'
 import { createFileRoute, redirect, useRouter } from '@tanstack/react-router'
-import {
-  isSessionLossConfirmed,
-  prepareRequestRecoveryRetry,
-} from '@/lib/request-recovery'
+import { prepareRequestRecoveryRetry } from '@/lib/request-recovery'
 import {
   getAuthLifecycleState,
   isAuthLifecycleBlocking,
@@ -30,7 +27,7 @@ export const Route = createFileRoute('/(auth)/sign-in')({
 
     try {
       currentUser = await loadCurrentUser(context.queryClient, {
-        recoveryDisabled: isSessionLossConfirmed(),
+        recoveryDisabled: true,
       })
     } catch (error) {
       const failure = classifySessionFailure(error)

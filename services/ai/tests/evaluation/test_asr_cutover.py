@@ -9,6 +9,7 @@ from dataclasses import replace
 from fractions import Fraction
 
 import pytest
+from pydantic import SecretStr
 
 from .asr_cutover import (
     REQUIRED_CONDITIONS,
@@ -322,7 +323,9 @@ def live_controls(h, tmp_path):
     from .test_asr_strategy_comparison import live_assets
 
     root, config, output = live_assets(h, tmp_path)
+    h.settings = h.settings.model_copy(update={"openrouter_api_key": SecretStr("contract-secret")})
     h.settings = h.settings.model_copy(update={"audio_asr_chunk_max_chunks": 2,
+                                             "audio_asr_max_concurrent_chunks": 1,
                                              "audio_asr_recovery_max_total_attempts": 1,
                                              "audio_asr_recovery_max_total_request_samples": 100000})
     matrix = json.loads(config.read_text())

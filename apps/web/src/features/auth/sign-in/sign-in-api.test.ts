@@ -38,6 +38,16 @@ function successEnvelope<T>(data: T) {
   }
 }
 
+function errorEnvelope(code: string, message = 'Request was rejected.') {
+  return {
+    success: false,
+    code,
+    message,
+    data: null,
+    meta: {},
+  }
+}
+
 describe('signIn', () => {
   beforeEach(() => {
     resetCsrfToken()
@@ -101,6 +111,121 @@ describe('signIn', () => {
     ).rejects.toBeInstanceOf(CoreApiError)
 
     expect(requestCount).toBe(1)
+  })
+
+  it('does not submit credentials when the CSRF bootstrap omits its proof', async () => {
+    const requestConfigs: Array<Parameters<AxiosAdapter>[0]> = []
+    coreApiAxios.defaults.adapter = async (config) => {
+      requestConfigs.push(config)
+      return makeResponse(config, successEnvelope({}))
+    }
+
+    await expect(
+      signIn({ email: 'user@example.com', password: 'password' })
+    ).rejects.toMatchObject({
+      code: 'MALFORMED_RESPONSE',
+      kind: 'malformed',
+    })
+
+    expect(requestConfigs.map(({ url }) => url)).toEqual(['/auth/csrf'])
+  })
+
+  it('propagates canonical CSRF denial from login without session recovery', async () => {
+    const requestConfigs: Array<Parameters<AxiosAdapter>[0]> = []
+    coreApiAxios.defaults.adapter = async (config) => {
+      requestConfigs.push(config)
+      if (config.url === '/auth/csrf') {
+        return makeResponse(
+          config,
+          successEnvelope({ csrfToken: 'pre-login-csrf' })
+        )
+      }
+
+      throw new AxiosError(
+        'Request failed with status 403',
+        'ERR_BAD_REQUEST',
+        config,
+        undefined,
+        makeResponse(config, errorEnvelope('AUTHZ_FORBIDDEN'), 403)
+      )
+    }
+
+    await expect(
+      signIn({ email: 'user@example.com', password: 'password' })
+    ).rejects.toMatchObject({
+      status: 403,
+      code: 'AUTHZ_FORBIDDEN',
+      kind: 'http',
+    })
+
+    expect(requestConfigs.map(({ url }) => url)).toEqual([
+      '/auth/csrf',
+      '/auth/login',
+    ])
+  })
+
+  it.each([
+    [401, 'AUTH_REQUIRED'],
+    [429, 'RATE_LIMIT_EXCEEDED'],
+  ] as const)(
+    'preserves the canonical login failure for HTTP %s',
+    async (status, code) => {
+      const requestConfigs: Array<Parameters<AxiosAdapter>[0]> = []
+      coreApiAxios.defaults.adapter = async (config) => {
+        requestConfigs.push(config)
+        if (config.url === '/auth/csrf') {
+          return makeResponse(
+            config,
+            successEnvelope({ csrfToken: 'pre-login-csrf' })
+          )
+        }
+
+        throw new AxiosError(
+          `Request failed with status ${status}`,
+          'ERR_BAD_REQUEST',
+          config,
+          undefined,
+          makeResponse(config, errorEnvelope(code), status)
+        )
+      }
+
+      await expect(
+        signIn({ email: 'user@example.com', password: 'password' })
+      ).rejects.toMatchObject({
+        status,
+        code,
+        kind: 'http',
+      })
+      expect(requestConfigs.map(({ url }) => url)).toEqual([
+        '/auth/csrf',
+        '/auth/login',
+      ])
+    }
+  )
+
+  it('normalizes a network failure during login without retrying credentials', async () => {
+    const requestConfigs: Array<Parameters<AxiosAdapter>[0]> = []
+    coreApiAxios.defaults.adapter = async (config) => {
+      requestConfigs.push(config)
+      if (config.url === '/auth/csrf') {
+        return makeResponse(
+          config,
+          successEnvelope({ csrfToken: 'pre-login-csrf' })
+        )
+      }
+      throw new AxiosError('Network Error', 'ERR_NETWORK', config)
+    }
+
+    await expect(
+      signIn({ email: 'user@example.com', password: 'password' })
+    ).rejects.toMatchObject({
+      code: 'NETWORK_ERROR',
+      kind: 'network',
+    })
+    expect(requestConfigs.map(({ url }) => url)).toEqual([
+      '/auth/csrf',
+      '/auth/login',
+    ])
   })
 
   it('forces a fresh pre-login CSRF proof after session loss', async () => {

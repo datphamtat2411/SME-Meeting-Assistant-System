@@ -2,9 +2,13 @@ package com.sme.meetingassistant.api.media.controller;
 
 import com.sme.meetingassistant.api.common.ApiResponse;
 import com.sme.meetingassistant.api.common.ApiResponseFactory;
+import com.sme.meetingassistant.api.integration.ReviewedIntelligenceRegeneration;
 import com.sme.meetingassistant.api.media.dto.CreateProcessingJobRequest;
 import com.sme.meetingassistant.api.media.dto.ProcessingJobResponse;
 import com.sme.meetingassistant.api.media.dto.RetryProcessingJobRequest;
+import com.sme.meetingassistant.api.media.dto.AdmitMeetingIntelligenceRequest;
+import com.sme.meetingassistant.api.media.dto.TranscriptReviewRequest;
+import com.sme.meetingassistant.api.media.dto.TranscriptReviewResponse;
 import com.sme.meetingassistant.api.media.service.MediaProcessingService;
 import jakarta.validation.Valid;
 import java.net.URI;
@@ -25,10 +29,13 @@ import org.springframework.web.bind.annotation.RestController;
 public class ProcessingJobController {
     private final MediaProcessingService service;
     private final ApiResponseFactory responses;
+    private final ReviewedIntelligenceRegeneration regeneration;
 
-    public ProcessingJobController(MediaProcessingService service, ApiResponseFactory responses) {
+    public ProcessingJobController(MediaProcessingService service, ApiResponseFactory responses,
+            ReviewedIntelligenceRegeneration regeneration) {
         this.service = service;
         this.responses = responses;
+        this.regeneration = regeneration;
     }
 
     @PostMapping("/meetings/{meetingId}/processing-jobs")
@@ -60,5 +67,33 @@ public class ProcessingJobController {
         return ResponseEntity.status(HttpStatus.ACCEPTED)
             .location(URI.create("/api/v1/processing-jobs/" + job.id()))
             .body(this.responses.success("Processing retry accepted.", job));
+    }
+
+    @PostMapping("/processing-jobs/{jobId}/transcript-review/acknowledge")
+    public ApiResponse<TranscriptReviewResponse> acknowledgeTranscriptReview(
+            @PathVariable UUID jobId,
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @Valid @RequestBody TranscriptReviewRequest request) {
+        return this.responses.success(this.service.acknowledgeTranscriptReview(jobId, request, idempotencyKey));
+    }
+
+    @PostMapping("/processing-jobs/{jobId}/meeting-intelligence/admit")
+    public ResponseEntity<ApiResponse<ProcessingJobResponse>> admitMeetingIntelligence(
+            @PathVariable UUID jobId,
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @Valid @RequestBody AdmitMeetingIntelligenceRequest request) {
+        ProcessingJobResponse job = this.service.admitMeetingIntelligence(jobId, request, idempotencyKey);
+        return ResponseEntity.status(HttpStatus.ACCEPTED)
+            .location(URI.create("/api/v1/processing-jobs/" + job.id()))
+            .body(this.responses.success("Meeting Intelligence admission accepted.", job));
+    }
+
+    @PostMapping("/processing-jobs/{jobId}/meeting-intelligence/regenerate")
+    public ResponseEntity<ApiResponse<ProcessingJobResponse>> regenerateMeetingIntelligence(
+            @PathVariable UUID jobId, @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @Valid @RequestBody TranscriptReviewRequest request) {
+        var job = regeneration.regenerate(jobId, request, idempotencyKey);
+        return ResponseEntity.accepted().location(URI.create("/api/v1/processing-jobs/" + job.id()))
+            .body(responses.success("Meeting Intelligence regeneration accepted.", job));
     }
 }

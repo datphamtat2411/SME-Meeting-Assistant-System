@@ -194,10 +194,12 @@ class OpenRouterWhisperAdapter:
 
     def transcribe_request(self, request: AsrTranscriptionRequest) -> AsrCandidate:
         """Make exactly one request after local validation; discard failure context."""
+        retryable = None
         try:
             return self._transcribe(request)
         except AsrError as error:
             category = error.category
+            retryable = error.retryable
         except httpx.TimeoutException:
             category = AsrErrorCategory.TIMEOUT
         except httpx.HTTPError:
@@ -207,7 +209,7 @@ class OpenRouterWhisperAdapter:
         except (ValueError, TypeError, KeyError, OverflowError, RecursionError):
             category = AsrErrorCategory.MALFORMED_OUTPUT
         # Outside every handler: no hidden request/response-bearing exception chain.
-        raise AsrError(category)
+        raise AsrError(category, retryable=retryable)
 
     def _transcribe(self, request: AsrTranscriptionRequest) -> AsrCandidate:
         if not isinstance(request, AsrTranscriptionRequest):
@@ -257,7 +259,8 @@ class OpenRouterWhisperAdapter:
         ) as response:
             if not response.is_success:
                 # Never read an error body or use raise_for_status diagnostics.
-                raise AsrError(_STATUS_CATEGORIES.get(response.status_code, AsrErrorCategory.PROVIDER))
+                raise AsrError(_STATUS_CATEGORIES.get(response.status_code, AsrErrorCategory.PROVIDER),
+                               retryable=response.status_code in {408, 429, 500, 502, 503, 504, 524})
             body = bytearray()
             for part in response.iter_bytes():
                 if time.monotonic() > deadline:

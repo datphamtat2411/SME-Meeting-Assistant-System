@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import logging
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from uuid import uuid4
@@ -13,6 +14,11 @@ from sme_meeting_ai.integrations.intelligence import (
     IntelligenceStatus,
 )
 from sme_meeting_ai.integrations.object_storage import StorageError
+from sme_meeting_ai.meeting_intelligence.errors import (
+    IntelligenceError,
+    ValidationEvidence,
+    ValidationReference,
+)
 from sme_meeting_ai.meeting_intelligence.result import ResultError, serialize_result
 from sme_meeting_ai.meeting_intelligence.source import (
     SourceIntegrityError,
@@ -99,6 +105,53 @@ def test_result_serialization_binds_identity_and_is_deterministic():
     payload = json.loads(first)
     assert payload["source"]["sha256"] == claim.source.sha256
     assert payload["stageRunId"] == claim.executionStageRunId
+
+
+def test_result_serialization_accepts_only_bounded_content_free_grounding_diagnostics():
+    claim, data, _ = snapshot()
+    claim.executionStageCode = "GENERATING_SUMMARY"
+    claim.executionStageRunId = str(uuid4())
+    claim.source.snapshotId = str(uuid4())
+    diagnostic = {
+        "disposition": "DISCARDED",
+        "reason": "GROUNDING_FAILURE",
+        "rule": "AGREEMENT_UNSUPPORTED",
+        "itemIndex": 0,
+        "evidence": {
+            "sourceSnapshotId": claim.source.snapshotId,
+            "transcriptId": claim.source.transcriptId,
+            "contentRevision": claim.source.contentRevision,
+            "sourceSha256": claim.source.sha256,
+            "references": [{
+                "segmentId": data["transcript"]["segments"][0]["id"],
+                "charStart": 0,
+                "charEnd": 12,
+            }],
+            "modelCategory": "AGREEMENT",
+            "statementSha256": hashlib.sha256(b"statement").hexdigest(),
+            "statementCharLength": 9,
+            "evidenceSha256": hashlib.sha256(b"evidence").hexdigest(),
+            "evidenceCharLength": 8,
+            "affirmativeMarker": False,
+            "negativeMarker": False,
+            "assessment": "UNSUPPORTED_MODEL_CLASSIFICATION",
+        },
+    }
+    candidate = {
+        "producer": {"model": "test", "promptVersion": "1"},
+        "result": {
+            "content": "Tóm tắt",
+            "warnings": ["GROUNDING_CLAIM_DISCARDED"],
+            "diagnostics": [diagnostic],
+        },
+    }
+
+    payload = json.loads(serialize_result(candidate, claim, data))
+    assert payload["result"]["diagnostics"] == [diagnostic]
+
+    diagnostic["evidence"]["statementSha256"] = "private-content"
+    with pytest.raises(ResultError):
+        serialize_result(candidate, claim, data)
 
 
 def test_decision_evidence_must_belong_to_verified_snapshot():
@@ -201,6 +254,7 @@ def lifecycle():
 
         def __init__(self):
             self.body = json.dumps(body).encode()
+            self.claim = owned
 
         async def ack(self):
             self.acked = True
@@ -211,6 +265,7 @@ def lifecycle():
     class Core:
         state = "AVAILABLE"
         accepts = claims = failures = 0
+        failure_body = None
         lose_response = False
 
         async def lookup(self, event, **kwargs):
@@ -236,6 +291,7 @@ def lifecycle():
         async def request(self, event, operation, body, **kwargs):
             assert operation == "fail"
             self.failures += 1
+            self.failure_body = body
             self.state = "FAILURE_RECORDED"
             return await self.lookup(event)
 
@@ -274,7 +330,7 @@ def lifecycle():
     return settings, Core(), Storage(), Delivery(), candidate
 
 
-def test_coordinator_acceptance_and_duplicate_delivery():
+def test_coordinator_acceptance_and_duplicate_delivery(caplog):
     async def run():
         settings, core, storage, delivery, candidate = lifecycle()
         calls = []
@@ -287,11 +343,109 @@ def test_coordinator_acceptance_and_duplicate_delivery():
             settings, core, storage, {"GENERATING_SUMMARY": processor}
         )
         try:
-            await worker.handle(delivery)
-            assert delivery.acked and core.accepts == 1 and len(calls) == 1
-            duplicate = type(delivery)()
-            await worker.handle(duplicate)
-            assert duplicate.acked and core.accepts == 1 and core.claims == 1
+            with caplog.at_level(logging.WARNING, logger="sme_meeting_ai.workers.intelligence"):
+                await worker.handle(delivery)
+                assert delivery.acked and core.accepts == 1 and len(calls) == 1
+                duplicate = type(delivery)()
+                await worker.handle(duplicate)
+                assert duplicate.acked and core.accepts == 1 and core.claims == 1
+            assert not any(
+                getattr(getattr(record, "_sme_meeting_ai_event", None), "name", "")
+                .startswith("worker.intelligence.failure.")
+                for record in caplog.records
+            )
+        finally:
+            await worker.aclose()
+
+    asyncio.run(run())
+
+
+def test_summary_validation_diagnostic_is_logged_but_core_receives_only_validation(caplog):
+    async def run():
+        settings, core, storage, delivery, _ = lifecycle()
+
+        def processor(context):
+            raise IntelligenceError(
+                "GROUNDING_FAILURE", rule="UNSUPPORTED_NUMBER", item_index=3
+            )
+
+        worker = IntelligenceWorker(
+            settings, core, storage, {"GENERATING_SUMMARY": processor}
+        )
+        try:
+            with caplog.at_level(logging.WARNING, logger="sme_meeting_ai.workers.intelligence"):
+                await worker.handle(delivery)
+            assert delivery.acked
+            assert storage.artifact is None
+            assert core.accepts == 0 and core.failures == 1
+            assert core.failure_body["category"] == "VALIDATION"
+            assert "validation_reason" not in core.failure_body
+            record = next(
+                record for record in caplog.records
+                if getattr(getattr(record, "_sme_meeting_ai_event", None), "name", None)
+                == "worker.intelligence.failure.inference.validation"
+            )
+            assert record._sme_validation_reason == "GROUNDING_FAILURE"
+            assert record._sme_validation_rule == "UNSUPPORTED_NUMBER"
+            assert record._sme_validation_item_index == 3
+            assert record.msg == ""
+        finally:
+            await worker.aclose()
+
+    asyncio.run(run())
+
+
+def test_summary_validation_diagnostic_carries_bounded_evidence_to_logs(caplog):
+    async def run():
+        settings, core, storage, delivery, _ = lifecycle()
+        evidence = ValidationEvidence(
+            source_snapshot_id=str(uuid4()),
+            transcript_id=str(uuid4()),
+            content_revision=3,
+            source_sha256="a" * 64,
+            references=(ValidationReference(str(uuid4()), 2, 12),),
+            model_category="AGREEMENT",
+            statement_sha256=hashlib.sha256(b"private statement").hexdigest(),
+            statement_char_length=len("private statement"),
+            evidence_sha256=hashlib.sha256(b"private evidence").hexdigest(),
+            evidence_char_length=len("private evidence"),
+            affirmative_marker=False,
+            negative_marker=False,
+            assessment="UNSUPPORTED_MODEL_CLASSIFICATION",
+        )
+
+        def processor(context):
+            raise IntelligenceError(
+                "GROUNDING_FAILURE",
+                rule="AGREEMENT_UNSUPPORTED",
+                item_index=3,
+                evidence=evidence,
+            )
+
+        worker = IntelligenceWorker(
+            settings, core, storage, {"GENERATING_SUMMARY": processor}
+        )
+        try:
+            with caplog.at_level(logging.WARNING, logger="sme_meeting_ai.workers.intelligence"):
+                await worker.handle(delivery)
+            record = next(
+                record for record in caplog.records
+                if getattr(getattr(record, "_sme_meeting_ai_event", None), "name", None)
+                == "worker.intelligence.failure.inference.validation"
+            )
+            assert record._sme_validation_reason == "GROUNDING_FAILURE"
+            assert record._sme_validation_rule == "AGREEMENT_UNSUPPORTED"
+            assert record._sme_validation_item_index == 3
+            assert record._sme_processing_phase == "INFERENCE"
+            assert record._sme_stage_code == "GENERATING_SUMMARY"
+            assert record._sme_stage_run_id == delivery.claim.executionStageRunId
+            assert record._sme_job_id == delivery.claim.processingJobId
+            assert record._sme_validation_evidence["validation_assessment"] == (
+                "UNSUPPORTED_MODEL_CLASSIFICATION"
+            )
+            assert "private" not in repr(record._sme_validation_evidence)
+            assert core.failure_body["category"] == "VALIDATION"
+            assert "validation_evidence" not in core.failure_body
         finally:
             await worker.aclose()
 
@@ -448,9 +602,11 @@ def test_valid_existing_result_recovered_without_processor_reexecution():
             await worker.handle(delivery)
             core.state = "AVAILABLE"
             replay = type(delivery)()
-            worker.processors.clear()
-            await worker.handle(replay)
+            await worker.aclose()
+            restarted = IntelligenceWorker(settings, core, storage, {})
+            await restarted.handle(replay)
             assert replay.acked and core.accepts == 2 and core.failures == 0
+            await restarted.aclose()
         finally:
             await worker.aclose()
 

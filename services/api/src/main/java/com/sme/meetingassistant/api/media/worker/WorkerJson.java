@@ -3,6 +3,7 @@ package com.sme.meetingassistant.api.media.worker;
 import java.nio.ByteBuffer;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
+import java.math.BigDecimal;
 import java.security.MessageDigest;
 import java.util.HexFormat;
 import java.util.Set;
@@ -65,6 +66,26 @@ public final class WorkerJson {
         var v=n.get(name);
         require(v!=null && v.isIntegralNumber() && v.canConvertToLong());
         long value=v.longValue(); require(value>=min && value<=max); return value;
+    }
+    public static Long nullableNumber(JsonNode n,String name,long min,long max) {
+        var v=n.get(name); if(v==null || v.isNull()) return null;
+        return number(n,name,min,max);
+    }
+    public static BigDecimal decimal(JsonNode n,String name) {
+        var v=n.get(name);
+        require(v!=null && (v.isTextual() || v.isNumber()));
+        String text=v.isTextual()?string(n,name,80):v.toString();
+        require(text.matches("(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,24})?"));
+        try {
+            var value=new BigDecimal(text);
+            require(value.scale()<=24 && value.signum()>=0
+                && value.compareTo(new BigDecimal("1000000000000"))<=0);
+            return value;
+        } catch(NumberFormatException invalid) {throw invalid();}
+    }
+    public static BigDecimal nullableDecimal(JsonNode n,String name) {
+        var v=n.get(name); if(v==null || v.isNull()) return null;
+        return decimal(n,name);
     }
     public static boolean bool(JsonNode n,String name) {
         var v=n.get(name); require(v!=null && v.isBoolean()); return v.booleanValue();

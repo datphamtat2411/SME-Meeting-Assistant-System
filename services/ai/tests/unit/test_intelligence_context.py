@@ -241,7 +241,7 @@ def test_preparation_checks_authority_inside_work(monkeypatch):
 
 
 @pytest.mark.parametrize("options", [
-    {"meeting_intelligence_max_input_tokens": 99999},
+    {"meeting_intelligence_max_input_tokens": 123_000},
     {"meeting_intelligence_max_attempts": 3},
     {"meeting_intelligence_overlap_units": 9},
     {"meeting_intelligence_max_response_bytes": 0},

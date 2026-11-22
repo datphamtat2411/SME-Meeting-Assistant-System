@@ -18,6 +18,9 @@ class StageContext:
     snapshot: dict = field(repr=False)
     deadline: float
     cancelled: Event = field(repr=False)
+    # The live worker may provide a durable provider-attempt capability.  Test
+    # and offline processors leave it unset; it is never part of wire payloads.
+    provider_attempts: object | None = field(default=None, repr=False)
 
 
 class StageProcessor(Protocol):

@@ -3,7 +3,8 @@
 import asyncio
 import base64
 import re
-from typing import Literal
+from decimal import Decimal, localcontext
+from typing import Annotated, Literal
 from uuid import uuid4
 
 import httpx
@@ -26,7 +27,9 @@ QUEUE = "meeting.processing.intelligence"
 ROUTE = "processing.intelligence.requested"
 EVENT_TYPE = "PROCESSING_INTELLIGENCE_STAGE_REQUESTED"
 Stage = Literal["GENERATING_SUMMARY", "EXTRACTING_DECISIONS", "EXTRACTING_ACTION_ITEMS"]
+STAGE_ORDER = ("GENERATING_SUMMARY", "EXTRACTING_DECISIONS", "EXTRACTING_ACTION_ITEMS")
 TERMINAL = frozenset(("RESULT_ACCEPTED", "FAILURE_RECORDED", "SUPERSEDED"))
+Money = Annotated[str, Field(pattern=r"^(?:0|[1-9][0-9]*)(?:\.[0-9]{1,24})?$")]
 
 
 class IntelligenceEvent(WireModel):
@@ -131,6 +134,40 @@ class IntelligenceLease(Identity):
     renewAfterSeconds: int = Field(gt=0, le=86400)
 
 
+class ExecutionBudget(WireModel):
+    remainingStages: tuple[Stage, ...]
+    remainingStageAttempts: dict[Stage, Count]
+    aggregateAttemptCeiling: Count
+    aggregateReservedAttempts: Count
+    reservedTokenCeiling: Count
+    aggregateReservedTokens: Count
+    estimatedCostCeilingUsd: Money
+    aggregateEstimatedCostUsd: Money
+    aggregateReportedCostUsd: Money
+    inputCostPerMillionUsd: Money
+    outputCostPerMillionUsd: Money
+
+    @field_validator("remainingStages", mode="before")
+    @classmethod
+    def freeze_stage_order(cls, value):
+        return tuple(value) if isinstance(value, list) else value
+
+    @model_validator(mode="after")
+    def validate_stages(self):
+        if (not self.remainingStages
+                or self.remainingStages != tuple(s for s in STAGE_ORDER if s in self.remainingStageAttempts)
+                or self.aggregateReservedAttempts > self.aggregateAttemptCeiling
+                or self.aggregateReservedTokens > self.reservedTokenCeiling):
+            raise ValueError("Invalid execution budget")
+        return self
+
+    def cost(self, input_tokens: int, output_tokens: int) -> Decimal:
+        with localcontext() as context:
+            context.prec = 80
+            return (input_tokens * Decimal(self.inputCostPerMillionUsd)
+                    + output_tokens * Decimal(self.outputCostPerMillionUsd)) / 1_000_000
+
+
 class IntelligenceClaim(IntelligenceLease):
     eventType: Literal["PROCESSING_INTELLIGENCE_STAGE_REQUESTED"]
     eventSchemaVersion: Literal[1]
@@ -139,10 +176,13 @@ class IntelligenceClaim(IntelligenceLease):
     claimToken: SecretStr = Field(repr=False)
     source: Source = Field(repr=False)
     resultSlot: ResultSlot | None = Field(default=None, repr=False)
+    budget: ExecutionBudget | None = Field(default=None, repr=False)
 
     @model_validator(mode="after")
     def validate_binding(self):
         uuid_string(self.claimToken.get_secret_value())
+        if self.budget is not None and self.budget.remainingStages[0] != self.executionStageCode:
+            raise ValueError("Invalid execution budget stage")
         prefix = f"processing/{self.processingJobId}/intelligence/"
         if self.source.objectKey != f"{prefix}source/{self.source.snapshotId}.json":
             raise ValueError("Invalid snapshot location")
@@ -155,6 +195,25 @@ class IntelligenceClaim(IntelligenceLease):
               or self.resultSlot.storageId != self.source.storageId):
             raise ValueError("Invalid result slot")
         return self
+
+
+class ProviderAttemptResult(Identity):
+    attemptId: Uuid
+    outcome: Literal["RESERVED", "SUCCEEDED", "FAILED"]
+    estimatedInputTokens: Count
+    outputTokenCeiling: Count
+    reservedTokens: Count
+    estimatedCostUsd: Money
+    reportedCostUsd: Money | None
+    replay: bool
+    budgetExceeded: bool
+    aggregateReservedAttempts: Count
+    aggregateReservedTokens: Count
+    aggregateEstimatedCostUsd: Money
+    aggregateReportedCostUsd: Money
+    reservedTokenCeiling: Count
+    estimatedCostCeilingUsd: Money
+    providerAccountLimitEnforced: Literal[False]
 
 
 class AcceptedResult(WireModel):
@@ -204,8 +263,12 @@ class IntelligenceCoreClient(CoreApiClient):
         payload = data["data"]
         if payload.get("contractVersion") != "1.0":
             raise CoreError(422, "WORKER_CONTRACT_UNSUPPORTED")
-        model = (IntelligenceClaim if operation == "claim" and "claimToken" in payload
-                 else IntelligenceLease if operation == "renew" else IntelligenceStatus)
+        model = (
+            IntelligenceClaim if operation == "claim" and "claimToken" in payload
+            else IntelligenceLease if operation == "renew"
+            else ProviderAttemptResult if operation in {"attempts/reserve", "attempts/report"}
+            else IntelligenceStatus
+        )
         result = model.model_validate(payload)
         if (result.processingJobId != event.processingJobId or result.eventId != event.eventId
                 or result.executionStageRunId != event.executionStageRunId
@@ -218,6 +281,67 @@ class IntelligenceCoreClient(CoreApiClient):
             eventSchemaVersion=event.schemaVersion, executionStageRunId=event.executionStageRunId,
             executionStageCode=event.executionStageCode, claimRequestId=str(uuid4()))
         return await self.request(event, "claim", command, deadline=deadline)
+
+    @staticmethod
+    def _estimated_cost(budget, input_tokens, output_tokens) -> str:
+        value = budget.cost(input_tokens, output_tokens)
+        rendered = format(value, "f")
+        if "." in rendered:
+            rendered = rendered.rstrip("0").rstrip(".")
+        return rendered or "0"
+
+    async def reserve_provider_attempt(self, event, claim, request, attempt_id, *, deadline=None):
+        if claim.budget is None:
+            raise CoreError(422, "WORKER_BUDGET_CONFIGURATION_CONFLICT")
+        reserved = request.window.estimated_input_tokens + request.output_budget
+        body = dict(
+            contractVersion="1.0",
+            eventId=event.eventId,
+            executionStageRunId=claim.executionStageRunId,
+            claimToken=claim.claimToken.get_secret_value(),
+            attemptId=attempt_id,
+            executionStageCode=claim.executionStageCode,
+            estimatedInputTokens=request.window.estimated_input_tokens,
+            outputTokenCeiling=request.output_budget,
+            reservedTokens=reserved,
+            estimatedCostUsd=self._estimated_cost(
+                claim.budget, request.window.estimated_input_tokens, request.output_budget,
+            ),
+        )
+        return await self.request(event, "attempts/reserve", body, deadline=deadline)
+
+    async def report_provider_attempt(
+        self, event, claim, attempt_id, *, outcome, input_tokens, output_tokens,
+        total_tokens, reasoning_tokens, reported_cost, failure_category=None, deadline=None,
+    ):
+        def money(value):
+            if value is None:
+                return None
+            with localcontext() as context:
+                context.prec = 80
+                rendered = format(
+                    Decimal(value.numerator) / Decimal(value.denominator), "f",
+                )
+                if "." in rendered:
+                    rendered = rendered.rstrip("0").rstrip(".")
+            return rendered or "0"
+
+        body = dict(
+            contractVersion="1.0",
+            eventId=event.eventId,
+            executionStageRunId=claim.executionStageRunId,
+            claimToken=claim.claimToken.get_secret_value(),
+            attemptId=attempt_id,
+            executionStageCode=claim.executionStageCode,
+            outcome=outcome,
+            inputTokens=input_tokens,
+            outputTokens=output_tokens,
+            totalTokens=total_tokens,
+            reasoningTokens=reasoning_tokens,
+            reportedCostUsd=money(reported_cost),
+            failureCategory=failure_category,
+        )
+        return await self.request(event, "attempts/report", body, deadline=deadline)
 
     async def accept(self, event, claim_token, digest, *, deadline=None):
         uuid_string(claim_token)

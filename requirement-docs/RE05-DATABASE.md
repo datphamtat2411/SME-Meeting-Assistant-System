@@ -1661,7 +1661,7 @@ A conversation's historical reference to a meeting MUST NOT expand the user's cu
 | `conversation_id` | UUID FK | No | Parent conversation |
 | `role` | VARCHAR(24) | No | `USER`, `ASSISTANT`, `SYSTEM_EVENT` baseline |
 | `content` | TEXT | No | Message text or safe event text |
-| `answer_status` | VARCHAR(32) | Yes | `GROUNDED`, `INSUFFICIENT_EVIDENCE`, `FAILED` for assistant messages |
+| `answer_status` | VARCHAR(32) | Yes | `GROUNDED`, `PARTIAL`, `INSUFFICIENT_EVIDENCE`, `FAILED` for assistant messages |
 | `model_metadata` | JSONB | Yes | Non-authoritative model/provider metadata |
 | `created_at` | TIMESTAMPTZ | No | Message time |
 
@@ -1681,8 +1681,51 @@ Purpose: trace an AI answer back to authorized canonical source records.
 | `source_type` | VARCHAR(32) | No | Canonical source type |
 | `source_id` | UUID | No | Canonical source ID |
 | `meeting_id` | UUID FK | No | Meeting scope |
-| `rank` | INTEGER | Yes | Retrieval/display ranking |
+| `source_revision` | BIGINT | No | Authoritative revision number at citation acceptance time |
+| `citation_id` | VARCHAR(8) | No | Citation identifier within an answer |
+| `retrieval_chunk_id` | VARCHAR(128) | No | Evidence chunk identity for traceability |
+| `claim_ids` | JSONB | No | Answer claim identifiers supported by this citation |
+| `citation_payload` | JSONB | No | Validated minimal citation provenance, not a permission grant |
+| `rank` | INTEGER | No | Retrieval/display ranking |
 | `created_at` | TIMESTAMPTZ | No | Link creation time |
+
+### PI-02 durable turn admission and source safety
+
+V1 implements strict **single-meeting** conversation scope only. A caller must supply a
+currently readable meeting; null/global scope is never silently promoted into a
+broader knowledge authorization. Other modes require explicit design and migration.
+
+The `assistant_turns` table durably binds one user message to one final Assistant
+message with a caller-scoped idempotency key, request digest, claim token/lease,
+scope version and processing state. Per-conversation uniqueness prevents simultaneous
+processing turns. Claim fencing prevents an expired worker result from overwriting
+the accepted turn; inference runs outside PostgreSQL transactions.
+
+`assistant_messages.answer_claims`, `answer_diagnostics`, `request_id`, `scope_id`
+and `scope_version` support bounded provenance acceptance. `PARTIAL` is a distinct
+supported-but-incomplete answer state: never coerce it to another answer status.
+
+Citations preserve exact source revisions and validated claim linkage. Historical
+answers must pass current meeting authorization and authoritative source verification.
+If ANY cited revision is no longer eligible/current, withhold the entire answer.
+
+## 23.4 `assistant_admission_events`
+
+Core resource-abuse protection uses a dedicated PostgreSQL event table rather
+than authentication-abuse records. Each row contains an owning `user_id`, a
+bounded event type (`ASK` or `CONVERSATION_CREATE`), one foreign-key reference
+to the successful Assistant turn or conversation, and `occurred_at`. It MUST
+NOT contain question text, conversation transcripts, prompts, provider output,
+or tokens. The event and its referenced business row are inserted in the same
+transaction, so a rolled-back admission leaves no quota charge.
+
+The `(user_id, event_type, occurred_at)` index supports rolling-window checks;
+the timestamp index supports retention maintenance. Events older than the
+largest configured window may be deleted. The application prunes the current
+user opportunistically and operations SHOULD periodically remove older rows for
+inactive users. Active inference capacity is intentionally not stored here: it
+is derived from leased `assistant_turns` rows so crashes and expired claims
+cannot leave a counter out of sync.
 
 ### DB-AST-004 — Source traceability is preservable
 

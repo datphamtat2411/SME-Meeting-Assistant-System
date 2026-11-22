@@ -30,6 +30,14 @@ class IntelligenceWorkerContractTests {
             assertThat(WorkerOperations.allowed("urn:sme:service:ai-worker",grant)).isFalse();
         }
         assertThat(WorkerOperations.operation("POST",base+"complete")).isNull();
+        assertThat(WorkerOperations.operation("POST",base+"attempts/reserve"))
+            .isEqualTo("intelligence.attempts-reserve");
+        assertThat(WorkerOperations.operation("POST",base+"attempts/report"))
+            .isEqualTo("intelligence.attempts-report");
+        assertThat(WorkerOperations.allowed("urn:sme:service:mi-worker",
+            "intelligence.attempts-reserve")).isTrue();
+        assertThat(WorkerOperations.allowed("urn:sme:service:ai-worker",
+            "intelligence.attempts-report")).isFalse();
         assertThat(WorkerOperations.operation("GET",base+"deliveries/"+UUID.randomUUID())).isEqualTo("intelligence.read-delivery");
     }
     @Test void capabilityAndDispatchDefaultOffAndInvalidEnablementFailsClosed() {
@@ -39,6 +47,29 @@ class IntelligenceWorkerContractTests {
         assertThatThrownBy(()->capability.requireStage("GENERATING_SUMMARY")).isInstanceOf(RuntimeException.class);
         properties.getIntelligence().setEnabled(true);
         assertThatThrownBy(()->new IntelligenceWorkerCapability(env,properties)).isInstanceOf(IllegalStateException.class);
+    }
+    @Test void providerAttemptReportRequiresAnOutcomeCompatibleFailureCategory() {
+        var event=UUID.randomUUID();var stage=UUID.randomUUID();var claim=UUID.randomUUID();var attempt=UUID.randomUUID();
+        var success=WorkerJson.MAPPER.createObjectNode()
+            .put("contractVersion","1.0").put("eventId",event.toString())
+            .put("executionStageRunId",stage.toString()).put("claimToken",claim.toString())
+            .put("attemptId",attempt.toString()).put("executionStageCode","GENERATING_SUMMARY")
+            .put("outcome","SUCCEEDED").put("inputTokens",7431).put("outputTokens",32768)
+            .put("totalTokens",40199).putNull("reasoningTokens").put("reportedCostUsd","0.0342542")
+            .putNull("failureCategory");
+        assertThat(IntelligenceCommands.attemptReport(success).outcome()).isEqualTo("SUCCEEDED");
+        assertThatThrownBy(() -> IntelligenceCommands.attemptReport(
+            success.deepCopy().put("failureCategory","PROVIDER")))
+            .isInstanceOf(RuntimeException.class);
+        assertThatThrownBy(() -> IntelligenceCommands.attemptReport(
+            success.deepCopy().put("outcome","FAILED").putNull("failureCategory")))
+            .isInstanceOf(RuntimeException.class);
+        assertThatThrownBy(() -> IntelligenceCommands.attemptReport(
+            success.deepCopy().putNull("outputTokens")))
+            .isInstanceOf(RuntimeException.class);
+        assertThatThrownBy(() -> IntelligenceCommands.attemptReport(
+            success.deepCopy().put("totalTokens",40198)))
+            .isInstanceOf(RuntimeException.class);
     }
     @Test void provisionerCreatesDedicatedRouteWithoutWideningExistingWorkerCredentials() throws Exception {
         var process=new ProcessBuilder("python3","-c","""

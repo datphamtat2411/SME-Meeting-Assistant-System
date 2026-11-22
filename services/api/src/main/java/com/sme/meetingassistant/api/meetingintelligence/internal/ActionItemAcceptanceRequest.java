@@ -4,14 +4,38 @@ import com.sme.meetingassistant.api.actionitem.service.ActionItemProposalSink.Ca
 import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle.StageClaim;
 import com.sme.meetingassistant.api.media.worker.WorkerJson;
 import com.sme.meetingassistant.api.meetingintelligence.service.ActionItemProposalHandoff.SourceReference;
+import com.sme.meetingassistant.api.meetingintelligence.service.AiQualityMetadata;
+import com.sme.meetingassistant.api.meetingintelligence.service.IntelligenceResultPayload;
+import com.sme.meetingassistant.api.meetingintelligence.service.IntelligenceResultPayload.GroundingDiagnostic;
+import com.sme.meetingassistant.api.meetingintelligence.service.IntelligenceResultPayload.GroundingDiagnosticCounts;
 import java.time.LocalDate;
 import java.util.*;
 import tools.jackson.databind.JsonNode;
 
 /** Exact, versioned machine DTO. No business authority or storage location fields. */
-public record ActionItemAcceptanceRequest(UUID eventId,StageClaim claim,SourceReference source,List<Candidate> candidates) {
+public record ActionItemAcceptanceRequest(UUID eventId,StageClaim claim,SourceReference source,
+        List<Candidate> candidates, boolean groundingWarning, String groundingWarningCode,
+        List<GroundingDiagnostic> diagnostics, String diagnosticsVersion,
+        GroundingDiagnosticCounts diagnosticCounts) {
     public static ActionItemAcceptanceRequest parse(JsonNode input) {
-        WorkerJson.fields(input,"contractVersion","eventId","stageRunId","claimToken","source","candidates");
+        boolean hasWarning = input != null && input.has("groundingWarning");
+        boolean hasDiagnostics = input != null && input.has("diagnostics");
+        boolean hasDiagnosticMetadata = input != null
+            && (input.has("diagnosticsVersion") || input.has("diagnosticCounts"));
+        List<String> fields = new ArrayList<>(List.of(
+            "contractVersion","eventId","stageRunId","claimToken","source","candidates"));
+        if (hasWarning) fields.add("groundingWarning");
+        if (hasDiagnostics) fields.add("diagnostics");
+        if (hasDiagnosticMetadata) {
+            fields.add("diagnosticsVersion");
+            fields.add("diagnosticCounts");
+        }
+        WorkerJson.fields(input,fields.toArray(String[]::new));
+        String warningCode = null;
+        if (hasWarning) {
+            warningCode = WorkerJson.choice(input,"groundingWarning",
+                AiQualityMetadata.CLAIM_DISCARDED,AiQualityMetadata.CLAIM_REPAIRED);
+        }
         WorkerJson.choice(input,"contractVersion","1.0");
         UUID event=WorkerJson.uuid(input,"eventId");
         var claim=new StageClaim(WorkerJson.uuid(input,"stageRunId"),WorkerJson.uuid(input,"claimToken"));
@@ -47,6 +71,38 @@ public record ActionItemAcceptanceRequest(UUID eventId,StageClaim claim,SourceRe
             WorkerJson.require(new HashSet<>(evidence).size()==evidence.size());
             candidates.add(new Candidate(key,title,details,due,evidence));
         }
-        return new ActionItemAcceptanceRequest(event,claim,source,List.copyOf(candidates));
+        List<GroundingDiagnostic> diagnostics = hasDiagnostics
+            ? IntelligenceResultPayload.parseDiagnostics(input.get("diagnostics")) : List.of();
+        String diagnosticsVersion = null;
+        GroundingDiagnosticCounts diagnosticCounts = null;
+        WorkerJson.require(
+            diagnostics.stream().noneMatch(diagnostic -> diagnostic.diagnosticVersion() != null)
+                || hasDiagnosticMetadata);
+        if (hasDiagnosticMetadata) {
+            WorkerJson.choice(input,"diagnosticsVersion","1.0");
+            var counts = input.get("diagnosticCounts");
+            WorkerJson.fields(counts,"version","accepted","rejected","discarded","repaired","total");
+            WorkerJson.choice(counts,"version","1.0");
+            int accepted = (int)WorkerJson.number(counts,"accepted",0,32);
+            int rejected = (int)WorkerJson.number(counts,"rejected",0,32);
+            int discarded = (int)WorkerJson.number(counts,"discarded",0,32);
+            int repaired = (int)WorkerJson.number(counts,"repaired",0,32);
+            int total = (int)WorkerJson.number(counts,"total",0,32);
+            WorkerJson.require(total == accepted + rejected + discarded + repaired);
+            WorkerJson.require(diagnostics.size() == total);
+            WorkerJson.require(diagnostics.stream().filter(d -> "ACCEPTED".equals(d.disposition())).count()
+                == accepted);
+            WorkerJson.require(diagnostics.stream().filter(d -> "REJECTED".equals(d.disposition())).count()
+                == rejected);
+            WorkerJson.require(diagnostics.stream().filter(d -> "DISCARDED".equals(d.disposition())).count()
+                == discarded);
+            WorkerJson.require(diagnostics.stream().filter(d -> "REPAIRED".equals(d.disposition())).count()
+                == repaired);
+            diagnosticsVersion = "1.0";
+            diagnosticCounts = new GroundingDiagnosticCounts(
+                diagnosticsVersion,accepted,rejected,discarded,repaired,total);
+        }
+        return new ActionItemAcceptanceRequest(event,claim,source,List.copyOf(candidates),
+            hasWarning,warningCode,List.copyOf(diagnostics),diagnosticsVersion,diagnosticCounts);
     }
 }

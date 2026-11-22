@@ -12,11 +12,13 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.ActiveProfiles;
 
 /** T06: outbox dispatch decision and job status must commit atomically. */
 @ActiveProfiles("test")
-@SpringBootTest
+@SpringBootTest(properties = "test.processing-dispatch.isolated-context=true")
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 @Import(PostgresTestConfiguration.class)
 class ProcessingDispatchStateIntegrationTests {
     @Autowired MediaRepository repository;

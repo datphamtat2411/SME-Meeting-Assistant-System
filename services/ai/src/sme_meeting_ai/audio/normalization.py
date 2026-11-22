@@ -229,12 +229,18 @@ class AudioNormalizer:
                 self._tool("ffprobe"), "-v", "error", "-max_alloc", "67108864",
                 "-protocol_whitelist", "file", "-format_whitelist", _FORMATS,
                 "-show_entries",
-                "format=format_name,duration:stream=index,codec_type,codec_name,sample_rate,channels,channel_layout,duration",
+                "format=format_name,duration:stream=index,codec_type,codec_name,sample_rate,channels,channel_layout,duration"
+                ":stream_disposition=attached_pic",
                 "-of", "json", path,
             ], timeout_seconds=self._settings.audio_probe_timeout_seconds, pass_fds=pass_fds)
             data = json.loads(raw)
             streams = data["streams"]
-            if not isinstance(streams, list) or len(streams) != 1:
+            if not isinstance(streams, list):
+                raise ValueError
+            streams = [stream for stream in streams if not (
+                stream.get("codec_type") == "video" and stream.get("disposition", {}).get("attached_pic") == 1
+            )]
+            if len(streams) != 1:
                 raise ValueError
             stream = streams[0]
             container = data["format"]["format_name"]
@@ -266,7 +272,7 @@ class AudioNormalizer:
             )
         except AudioProcessingError as error:
             category = error.category if error.category != "DECODING" else category
-        except (ValueError, KeyError, TypeError, OverflowError, RecursionError):
+        except (ValueError, KeyError, TypeError, AttributeError, OverflowError, RecursionError):
             pass
         raise AudioProcessingError(category)
 

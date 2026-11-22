@@ -57,6 +57,7 @@ def mtls_server(test_pki):
         "AI_SERVICE_NAME": "tls-test", "AI_SERVICE_IDENTITY": "ai-core",
         "AI_ENVIRONMENT": "production", "AI_HTTP_HOST": "127.0.0.1",
         "AI_HTTP_PORT": str(port), "AI_HTTP_SHUTDOWN_TIMEOUT_SECONDS": "2",
+        "AI_SETTINGS_ENV_FILE": "",
         "AI_TLS_CERT_FILE": str(test_pki / "server.crt"),
         "AI_TLS_KEY_FILE": str(test_pki / "server.key"),
         "AI_TLS_CLIENT_CA_FILE": str(test_pki / "ca.crt"),

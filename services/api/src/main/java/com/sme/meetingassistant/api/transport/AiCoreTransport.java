@@ -35,10 +35,17 @@ public final class AiCoreTransport implements AutoCloseable {
     }
 
     public HttpResponse<String> post(String path, String body) throws IOException, InterruptedException {
-        if (body == null || body.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 256 * 1024) {
+        return post(path, body, Duration.ofSeconds(15));
+    }
+    /** Bounded Assistant deadline; same authenticated HTTPS/mTLS origin and payload cap. */
+    public HttpResponse<String> post(String path, String body, Duration timeout)
+            throws IOException, InterruptedException {
+        if (timeout == null || timeout.compareTo(Duration.ofSeconds(1)) < 0
+                || timeout.compareTo(Duration.ofSeconds(60)) > 0)
+            throw new IllegalArgumentException("Invalid bounded AI request timeout");
+        if (body == null || body.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 256 * 1024)
             throw new IllegalArgumentException("AI request body is outside the supported bound");
-        }
-        return client.send(request(path).header("Content-Type", "application/json")
+        return client.send(request(path).timeout(timeout).header("Content-Type", "application/json")
             .POST(HttpRequest.BodyPublishers.ofString(body)).build(), HttpResponse.BodyHandlers.ofString());
     }
 

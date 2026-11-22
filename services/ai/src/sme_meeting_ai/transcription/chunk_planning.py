@@ -674,12 +674,18 @@ class SpeechAwareAsrChunkPlanner:
         chunks, decisions = [], []
         start = 0
         start_reason = ChunkBoundaryReason.TIMELINE_START
+        # In long recordings, avoid spending a request on each closely spaced
+        # restart. Prefer restarts after the normal search window opens; earlier
+        # gaps are still read and can be chosen by the bounded ordinary planner.
+        restart_progress = (configuration["target_core_samples"] - configuration["boundary_search_samples"]
+                            if sample_count > 300 * _RATE else 1)
         frames = _AcousticFrontier(result, protected, uncertain)
         try:
             while start < sample_count:
                 if len(chunks) >= configuration["max_chunks"]:
                     raise AudioProcessingError("RESOURCE")
-                while interruption_index < len(interruptions) and interruptions[interruption_index][0] <= start:
+                while (interruption_index < len(interruptions)
+                        and interruptions[interruption_index][0] < start + restart_progress):
                     interruption_index += 1
                 restart = (interruptions[interruption_index] if interruption_index < len(interruptions)
                            and interruptions[interruption_index][0] - start <= maximum else None)

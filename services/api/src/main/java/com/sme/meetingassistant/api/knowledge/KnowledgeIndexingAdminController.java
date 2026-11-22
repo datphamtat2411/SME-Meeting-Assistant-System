@@ -78,12 +78,24 @@ public class KnowledgeIndexingAdminController {
         return ok(service.activate(generationId));
     }
 
+    @PostMapping("/generations/{generationId}/seal")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> seal(@PathVariable String generationId) {
+        authorization.requireAdministrator();
+        return ok(service.seal(generationId));
+    }
+
+    @PostMapping("/generations/{generationId}/unseal")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> unseal(@PathVariable String generationId) {
+        authorization.requireAdministrator();
+        return ok(service.unseal(generationId));
+    }
+
     @PostMapping("/reconciliation")
     public ResponseEntity<ApiResponse<Map<String, Object>>> reconcile(
             @Valid @RequestBody ReconciliationRequest request) {
         var actor = authorization.requireAdministrator();
         return ok(service.startReconciliation(request.generationId(), request.batchSize(), request.dryRun(),
-            actor.getId()));
+            request.certificationMode(), actor.getId()));
     }
 
     @GetMapping("/reconciliation/{runId}")
@@ -120,5 +132,6 @@ public class KnowledgeIndexingAdminController {
 
     public record ReconciliationRequest(
             @NotBlank @Pattern(regexp = "[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}") String generationId,
-            @Min(1) @Max(500) int batchSize, boolean dryRun) { }
+            @Min(1) @Max(500) int batchSize, boolean dryRun,
+            @Pattern(regexp = "OPERATIONAL|CERTIFICATION") String certificationMode) { }
 }
