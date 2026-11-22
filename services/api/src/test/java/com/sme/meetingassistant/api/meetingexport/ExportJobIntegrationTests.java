@@ -206,7 +206,7 @@ class ExportJobIntegrationTests {
         assertThat(failed.objectKey()).isNull();
 
         storage.failArtifact=false;
-        Thread.sleep(2000);
+        awaitRetryEligibility(pending.id());
         worker.reconcile();
         assertThat(records.require(pending.id()).status()).isEqualTo(ExportStatus.PENDING);
         assertThat(worker.processNext()).isTrue();
@@ -215,6 +215,46 @@ class ExportJobIntegrationTests {
         assertThat(ready.generationAttempt()).isEqualTo(2);
         assertThat(ready.claimToken()).isNull();
         assertThat(ready.snapshotObjectKey()).isNotNull();
+    }
+
+    private void awaitRetryEligibility(UUID exportId) throws InterruptedException {
+        int maxAttempts = 2;
+        int retryBaseSeconds = 1;
+        long deadline = System.nanoTime()
+                + java.util.concurrent.TimeUnit.SECONDS.toNanos(10);
+        Map<String, Object> diagnostics = Map.of();
+        while (System.nanoTime() < deadline) {
+            var rows = jdbc.queryForList("""
+                SELECT clock_timestamp() AS db_clock, e.status, e.updated_at,
+                       e.last_error_code, e.generation_attempt,
+                       (i.export_id IS NOT NULL) AS intake_exists,
+                       (e.generation_attempt < ?) AS attempts_available,
+                       (e.last_error_code IN
+                           ('EXPORT_STORAGE_UNAVAILABLE','EXPORT_LEASE_EXPIRED'))
+                           AS transient_error,
+                       (e.updated_at <= clock_timestamp() -
+                           ((? * (1 << LEAST(e.generation_attempt-1, 10)))
+                             * INTERVAL '1 second')) AS retry_due,
+                       (e.status='FAILED'
+                        AND e.generation_attempt < ?
+                        AND e.last_error_code IN
+                            ('EXPORT_STORAGE_UNAVAILABLE','EXPORT_LEASE_EXPIRED')
+                        AND i.export_id IS NOT NULL
+                        AND e.updated_at <= clock_timestamp() -
+                            ((? * (1 << LEAST(e.generation_attempt-1, 10)))
+                              * INTERVAL '1 second')) AS retry_eligible
+                  FROM meeting_exports e
+                  LEFT JOIN meeting_export_intakes i ON i.export_id=e.id
+                 WHERE e.id=?
+                """, maxAttempts, retryBaseSeconds, maxAttempts,
+                    retryBaseSeconds, exportId);
+            if (rows.size() == 1) {
+                diagnostics = rows.getFirst();
+                if (Boolean.TRUE.equals(diagnostics.get("retry_eligible"))) return;
+            }
+            Thread.sleep(50L);
+        }
+        throw new AssertionError("Export retry did not become eligible: " + diagnostics);
     }
 
     @Test
