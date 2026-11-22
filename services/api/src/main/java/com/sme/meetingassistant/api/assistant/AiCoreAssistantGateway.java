@@ -3,12 +3,14 @@ package com.sme.meetingassistant.api.assistant;
 import com.sme.meetingassistant.api.transport.AiCoreTransport;
 import java.net.http.HttpResponse;
 import java.time.Duration;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 /** Reuses dedicated outbound mTLS service identity and HTTPS-only origin validation. */
 @Component
-@ConditionalOnBean(AiCoreTransport.class)
+@ConditionalOnProperty(name = "app.transport.ai.enabled", havingValue = "true")
+@ConditionalOnProperty(name = "app.initial-administrator-bootstrap.enabled",
+    havingValue = "false", matchIfMissing = true)
 final class AiCoreAssistantGateway implements AssistantAiGateway {
     private final AiCoreTransport transport;
     AiCoreAssistantGateway(AiCoreTransport transport) { this.transport=transport; }

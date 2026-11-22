@@ -1,5 +1,6 @@
 package com.sme.meetingassistant.api.media.intelligence;
 
+import com.sme.meetingassistant.api.media.MediaProperties;
 import com.sme.meetingassistant.api.media.worker.WorkerException;
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
@@ -16,8 +17,6 @@ public class IntelligenceWorkerRepository {
         UUID event,UUID stage,String code,int schema,int attempt,int latest,String status,UUID token,
         OffsetDateTime expires,boolean live,String error,boolean retryable,String publication) {}
     public record Claim(UUID request,String fingerprint,String peer,UUID snapshot,UUID failureCommand,String failureFingerprint) {}
-    public record BudgetLimits(int summaryAttempts,int decisionAttempts,int actionItemAttempts,int aggregateAttempts,
-        long reservedTokens,BigDecimal estimatedCost,BigDecimal inputCost,BigDecimal outputCost) {}
     public record Budget(UUID job,int summaryCeiling,int decisionCeiling,int actionItemCeiling,int aggregateCeiling,
         long tokenCeiling,BigDecimal costCeiling,BigDecimal inputCost,BigDecimal outputCost,
         int reservedAttempts,int summaryAttempts,int decisionAttempts,int actionItemAttempts,
@@ -72,7 +71,9 @@ public class IntelligenceWorkerRepository {
         jdbc.update("UPDATE processing_intelligence_claims SET failure_command_id=?,failure_fingerprint=? WHERE event_id=? AND failure_command_id IS NULL",
             command.commandId(),IntelligenceCommands.fingerprint(command),event);
     }
-    public void ensureBudget(UUID job,BudgetLimits limits) {
+    public void ensureBudget(UUID job,MediaProperties.Intelligence limits) {
+        if (!limits.validBudget())
+            throw WorkerException.conflict("WORKER_BUDGET_CONFIGURATION_CONFLICT");
         jdbc.update("""
             INSERT INTO processing_intelligence_budgets(processing_job_id,summary_attempt_ceiling,
               decision_attempt_ceiling,action_item_attempt_ceiling,aggregate_attempt_ceiling,
@@ -80,10 +81,17 @@ public class IntelligenceWorkerRepository {
               output_cost_per_million_usd)
             VALUES (?,?,?,?,?,?,?,?,?)
             ON CONFLICT (processing_job_id) DO NOTHING
-            """,job,limits.summaryAttempts(),limits.decisionAttempts(),limits.actionItemAttempts(),
-            limits.aggregateAttempts(),limits.reservedTokens(),limits.estimatedCost(),
-            limits.inputCost(),limits.outputCost());
+            """,job,limits.getSummaryAttemptCeiling(),limits.getDecisionAttemptCeiling(),limits.getActionItemAttemptCeiling(),
+            limits.getAggregateAttemptCeiling(),limits.getReservedTokenCeiling(),limits.getEstimatedCostCeilingUsd(),
+            limits.getInputCostPerMillionUsd(),limits.getOutputCostPerMillionUsd());
         // Changes to deployment policy do not refill or invalidate an existing job ledger.
+    }
+    public List<String> remainingStages(UUID job) {
+        var active = jdbc.queryForList("""
+            SELECT DISTINCT stage_code FROM processing_stage_runs
+            WHERE processing_job_id=? AND status IN ('PENDING','RUNNING')
+            """, String.class, job);
+        return IntelligenceWorkerCapability.ORDER.stream().filter(active::contains).toList();
     }
     public Budget budget(UUID job) {
         return jdbc.query("""

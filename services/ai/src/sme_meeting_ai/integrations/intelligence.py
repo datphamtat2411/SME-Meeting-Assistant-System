@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import re
+from decimal import Decimal, localcontext
 from typing import Annotated, Literal
 from uuid import uuid4
 
@@ -26,6 +27,7 @@ QUEUE = "meeting.processing.intelligence"
 ROUTE = "processing.intelligence.requested"
 EVENT_TYPE = "PROCESSING_INTELLIGENCE_STAGE_REQUESTED"
 Stage = Literal["GENERATING_SUMMARY", "EXTRACTING_DECISIONS", "EXTRACTING_ACTION_ITEMS"]
+STAGE_ORDER = ("GENERATING_SUMMARY", "EXTRACTING_DECISIONS", "EXTRACTING_ACTION_ITEMS")
 TERMINAL = frozenset(("RESULT_ACCEPTED", "FAILURE_RECORDED", "SUPERSEDED"))
 Money = Annotated[str, Field(pattern=r"^(?:0|[1-9][0-9]*)(?:\.[0-9]{1,24})?$")]
 
@@ -132,6 +134,40 @@ class IntelligenceLease(Identity):
     renewAfterSeconds: int = Field(gt=0, le=86400)
 
 
+class ExecutionBudget(WireModel):
+    remainingStages: tuple[Stage, ...]
+    remainingStageAttempts: dict[Stage, Count]
+    aggregateAttemptCeiling: Count
+    aggregateReservedAttempts: Count
+    reservedTokenCeiling: Count
+    aggregateReservedTokens: Count
+    estimatedCostCeilingUsd: Money
+    aggregateEstimatedCostUsd: Money
+    aggregateReportedCostUsd: Money
+    inputCostPerMillionUsd: Money
+    outputCostPerMillionUsd: Money
+
+    @field_validator("remainingStages", mode="before")
+    @classmethod
+    def freeze_stage_order(cls, value):
+        return tuple(value) if isinstance(value, list) else value
+
+    @model_validator(mode="after")
+    def validate_stages(self):
+        if (not self.remainingStages
+                or self.remainingStages != tuple(s for s in STAGE_ORDER if s in self.remainingStageAttempts)
+                or self.aggregateReservedAttempts > self.aggregateAttemptCeiling
+                or self.aggregateReservedTokens > self.reservedTokenCeiling):
+            raise ValueError("Invalid execution budget")
+        return self
+
+    def cost(self, input_tokens: int, output_tokens: int) -> Decimal:
+        with localcontext() as context:
+            context.prec = 80
+            return (input_tokens * Decimal(self.inputCostPerMillionUsd)
+                    + output_tokens * Decimal(self.outputCostPerMillionUsd)) / 1_000_000
+
+
 class IntelligenceClaim(IntelligenceLease):
     eventType: Literal["PROCESSING_INTELLIGENCE_STAGE_REQUESTED"]
     eventSchemaVersion: Literal[1]
@@ -140,10 +176,13 @@ class IntelligenceClaim(IntelligenceLease):
     claimToken: SecretStr = Field(repr=False)
     source: Source = Field(repr=False)
     resultSlot: ResultSlot | None = Field(default=None, repr=False)
+    budget: ExecutionBudget | None = Field(default=None, repr=False)
 
     @model_validator(mode="after")
     def validate_binding(self):
         uuid_string(self.claimToken.get_secret_value())
+        if self.budget is not None and self.budget.remainingStages[0] != self.executionStageCode:
+            raise ValueError("Invalid execution budget stage")
         prefix = f"processing/{self.processingJobId}/intelligence/"
         if self.source.objectKey != f"{prefix}source/{self.source.snapshotId}.json":
             raise ValueError("Invalid snapshot location")
@@ -244,19 +283,16 @@ class IntelligenceCoreClient(CoreApiClient):
         return await self.request(event, "claim", command, deadline=deadline)
 
     @staticmethod
-    def _estimated_cost(settings, input_tokens, output_tokens) -> str:
-        from decimal import Decimal
-
-        value = (
-            Decimal(input_tokens) * settings.meeting_intelligence_input_cost_per_million_usd
-            + Decimal(output_tokens) * settings.meeting_intelligence_output_cost_per_million_usd
-        ) / Decimal(1_000_000)
+    def _estimated_cost(budget, input_tokens, output_tokens) -> str:
+        value = budget.cost(input_tokens, output_tokens)
         rendered = format(value, "f")
         if "." in rendered:
             rendered = rendered.rstrip("0").rstrip(".")
         return rendered or "0"
 
     async def reserve_provider_attempt(self, event, claim, request, attempt_id, *, deadline=None):
+        if claim.budget is None:
+            raise CoreError(422, "WORKER_BUDGET_CONFIGURATION_CONFLICT")
         reserved = request.window.estimated_input_tokens + request.output_budget
         body = dict(
             contractVersion="1.0",
@@ -269,7 +305,7 @@ class IntelligenceCoreClient(CoreApiClient):
             outputTokenCeiling=request.output_budget,
             reservedTokens=reserved,
             estimatedCostUsd=self._estimated_cost(
-                self.settings, request.window.estimated_input_tokens, request.output_budget,
+                claim.budget, request.window.estimated_input_tokens, request.output_budget,
             ),
         )
         return await self.request(event, "attempts/reserve", body, deadline=deadline)
@@ -278,8 +314,6 @@ class IntelligenceCoreClient(CoreApiClient):
         self, event, claim, attempt_id, *, outcome, input_tokens, output_tokens,
         total_tokens, reasoning_tokens, reported_cost, failure_category=None, deadline=None,
     ):
-        from decimal import Decimal, localcontext
-
         def money(value):
             if value is None:
                 return None

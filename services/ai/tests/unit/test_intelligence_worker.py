@@ -107,6 +107,53 @@ def test_result_serialization_binds_identity_and_is_deterministic():
     assert payload["stageRunId"] == claim.executionStageRunId
 
 
+def test_result_serialization_accepts_only_bounded_content_free_grounding_diagnostics():
+    claim, data, _ = snapshot()
+    claim.executionStageCode = "GENERATING_SUMMARY"
+    claim.executionStageRunId = str(uuid4())
+    claim.source.snapshotId = str(uuid4())
+    diagnostic = {
+        "disposition": "DISCARDED",
+        "reason": "GROUNDING_FAILURE",
+        "rule": "AGREEMENT_UNSUPPORTED",
+        "itemIndex": 0,
+        "evidence": {
+            "sourceSnapshotId": claim.source.snapshotId,
+            "transcriptId": claim.source.transcriptId,
+            "contentRevision": claim.source.contentRevision,
+            "sourceSha256": claim.source.sha256,
+            "references": [{
+                "segmentId": data["transcript"]["segments"][0]["id"],
+                "charStart": 0,
+                "charEnd": 12,
+            }],
+            "modelCategory": "AGREEMENT",
+            "statementSha256": hashlib.sha256(b"statement").hexdigest(),
+            "statementCharLength": 9,
+            "evidenceSha256": hashlib.sha256(b"evidence").hexdigest(),
+            "evidenceCharLength": 8,
+            "affirmativeMarker": False,
+            "negativeMarker": False,
+            "assessment": "UNSUPPORTED_MODEL_CLASSIFICATION",
+        },
+    }
+    candidate = {
+        "producer": {"model": "test", "promptVersion": "1"},
+        "result": {
+            "content": "Tóm tắt",
+            "warnings": ["GROUNDING_CLAIM_DISCARDED"],
+            "diagnostics": [diagnostic],
+        },
+    }
+
+    payload = json.loads(serialize_result(candidate, claim, data))
+    assert payload["result"]["diagnostics"] == [diagnostic]
+
+    diagnostic["evidence"]["statementSha256"] = "private-content"
+    with pytest.raises(ResultError):
+        serialize_result(candidate, claim, data)
+
+
 def test_decision_evidence_must_belong_to_verified_snapshot():
     claim, data, _ = snapshot()
     claim.executionStageCode = "EXTRACTING_DECISIONS"

@@ -143,6 +143,38 @@ Do not enable either transport simply to bypass initial account provisioning;
 there is no public registration endpoint. See
 `docs/SECURITY_AUTH_RATE_LIMIT_AND_KEY_ROTATION.md` for rollout conditions.
 
+### First administrator bootstrap
+
+There is no public first-administrator endpoint and ordinary Core startup never
+performs bootstrap. After an operator has explicitly authorized initialization,
+the repository-root command below starts a dedicated **non-web** Spring
+application:
+
+```bash
+./bootstrap-initial-administrator.sh admin@example.com "Local Administrator"
+```
+
+The command:
+
+1. locks the database's one-time bootstrap marker;
+2. refuses to proceed if an active administrator already exists;
+3. creates exactly one `PENDING_SETUP` administrator without an organization
+   scope or meeting-content grant; and
+4. queues the existing single-use account-setup invitation.
+
+It accepts no password, does not print a setup token, and stores only the
+existing setup-token verifier hash. The recipient completes setup through the
+normal account-setup page and chooses the password there. Repeating the command
+is idempotent for the already-issued marker; it does not create another account
+or token. A pre-existing pending administrator also blocks the operation.
+
+Before running it, configure the normal account-setup signing key, approved
+HTTPS setup URL, sender, and transactional email delivery in the private local
+environment. Do not run the command without explicit operator authorization,
+and do not use PostgreSQL role updates or a direct password write as a
+substitute. `ADMINISTRATOR` remains an organizational-management role; meeting
+content authorization is evaluated separately.
+
 For direct local HTTP, leave HSTS disabled, which is the application default.
 Only enable `APP_HTTP_SECURITY_HSTS_ENABLED` after verifying an HTTPS setup.
 Do not use the `test` Spring profile to run the normal local API; that profile

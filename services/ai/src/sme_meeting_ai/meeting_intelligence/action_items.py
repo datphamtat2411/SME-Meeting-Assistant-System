@@ -14,7 +14,11 @@ from .contracts import (
     valid_text,
 )
 from .errors import IntelligenceError, check_authority, require
-from .grounding import GroundingChanges
+from .grounding import (
+    GROUNDING_DIAGNOSTIC_VERSION,
+    GroundingChanges,
+    diagnostic_counts,
+)
 from .processor import StageContext
 
 ACTION_PROMPT_VERSION = "action-items-v2"
@@ -158,7 +162,14 @@ def _signals(output, window, source, changes):
     by_id = {segment.segment_id: segment.ordinal for segment in source.segments}
     for item in output["signals"]:
         try:
-            records.append(_validate_signal(item, window, source, by_id))
+            record = _validate_signal(item, window, source, by_id)
+            records.append(record)
+            changes.accept_claim(
+                statement=f"{record.action} {record.deliverable}".strip(),
+                references=record.evidence,
+                model_category="ACTION_ITEM",
+                assessment="SUPPORTED",
+            )
         except IntelligenceError as error:
             if item["signal_type"] in _BLOCKING_STATES:
                 raise  # Never resurrect a prior action by dropping a potentially material later signal.
@@ -310,7 +321,7 @@ class ActionItemProcessor:
     def __call__(self, context: StageContext):
         check_authority(context.deadline, context.cancelled)
         require(context.stage_code == "EXTRACTING_ACTION_ITEMS", "CONFIGURATION")
-        prepared = prepare_context(context, extraction_task(), self.settings)
+        prepared = prepare_action_items(context, self.settings)
         source = prepared.plan.source
         require(source.has_usable_evidence, "INVALID_SOURCE")
         calls, tokens, producer = 0, 0, None
@@ -330,7 +341,7 @@ class ActionItemProcessor:
             return output
 
         records = {}
-        changes = GroundingChanges()
+        changes = GroundingChanges(stage=context.stage_code, source=source)
         for window in prepared.plan.windows:
             output = call(prepared.request(window.index))
             for record in _signals(output, window, source, changes):
@@ -348,6 +359,7 @@ class ActionItemProcessor:
             # Single bounded global pass. Never truncate input or silently discard
             # material signals to make synthesis fit a provider's budget.
             request = prepared.derived_request(task, payload, "resolution-1")
+            prepared.plan_requests((request,), self.settings.meeting_intelligence_action_item_max_model_calls - calls)
             output = call(request)
             try:
                 ids = [value for group in output["groups"] for value in group]
@@ -390,10 +402,25 @@ class ActionItemProcessor:
         require(producer is not None, "MALFORMED_OUTPUT")
         check_authority(context.deadline, context.cancelled)
         result = dict(candidates=candidates)
-        if changes.discarded:
+        if changes.discarded or changes.repaired:
             result["warnings"] = list(changes.flags())
+        diagnostics = changes.diagnostic_payloads()
+        if diagnostics:
+            result["diagnostics"] = list(diagnostics)
+        result["diagnosticsVersion"] = GROUNDING_DIAGNOSTIC_VERSION
+        result["diagnosticCounts"] = {
+            "version": GROUNDING_DIAGNOSTIC_VERSION,
+            **diagnostic_counts(diagnostics),
+        }
         return dict(producer=dict(model=producer[0], provider=producer[1], promptVersion=ACTION_PROMPT_VERSION),
                     result=result)
+
+
+def prepare_action_items(context, settings):
+    prepared = prepare_context(context, extraction_task(), settings)
+    prepared.plan_extraction(settings.meeting_intelligence_action_item_max_model_calls,
+                             TaskSpec(_GROUP_PROMPT, ACTION_GROUP_PROMPT_VERSION, _GROUP_SCHEMA))
+    return prepared
 
 
 def build_action_item_processor(settings, adapter):

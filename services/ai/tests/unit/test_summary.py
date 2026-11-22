@@ -536,10 +536,37 @@ def test_grounded_summary_survives_an_independently_unsupported_agreement():
             _unit(second["text"], "AGREEMENT", [_reference(second)]),
         ])
 
-    result = SummaryProcessor(settings(), ScriptedAdapter(callback))(context)["result"]
+    processed = SummaryProcessor(settings(), ScriptedAdapter(callback))(context)
+    result = processed["result"]
     assert "GROUNDING_CLAIM_DISCARDED" in result["warnings"]
     assert "Đã kiểm thử API thanh toán" in result["content"]
     assert "Kết quả được thống nhất" not in result["content"]
+    diagnostic = result["diagnostics"][0]
+    assert diagnostic["disposition"] == "DISCARDED"
+    assert diagnostic["reason"] == "GROUNDING_FAILURE"
+    assert diagnostic["rule"] == "AGREEMENT_UNSUPPORTED"
+    assert diagnostic["itemIndex"] == 1
+    evidence = diagnostic["evidence"]
+    assert evidence["sourceSnapshotId"] == context.source_snapshot_id
+    assert evidence["transcriptId"] == context.transcript_id
+    assert evidence["contentRevision"] == context.content_revision
+    assert evidence["references"][0]["segmentId"] == uid(101)
+    assert evidence["assessment"] == "UNSUPPORTED_MODEL_CLASSIFICATION"
+    assert "Đã kiểm thử API thanh toán" not in json.dumps(diagnostic, ensure_ascii=False)
+    claims = [
+        item for item in result["diagnostics"]
+        if item.get("diagnosticVersion") == "1.0"
+    ]
+    assert {item["disposition"] for item in claims} == {"ACCEPTED", "REJECTED"}
+    assert {item["reason"] for item in claims} == {"SUPPORTED", "UNSUPPORTED"}
+    assert result["diagnosticCounts"] == {
+        "version": "1.0",
+        "accepted": 1,
+        "rejected": 1,
+        "discarded": 1,
+        "repaired": 0,
+        "total": 3,
+    }
 
 
 def test_summary_does_not_promote_mere_acknowledgment_to_agreement():
@@ -591,6 +618,8 @@ def test_summary_agreement_citation_must_include_approval_phrase():
     repaired = SummaryProcessor(settings(), ScriptedAdapter(narrow_callback))(context)["result"]
     assert "GROUNDING_CLAIM_REPAIRED" in repaired["warnings"]
     assert "Kết quả được thống nhất" in repaired["content"]
+    assert repaired["diagnostics"][0]["disposition"] == "REPAIRED"
+    assert repaired["diagnostics"][0]["rule"] == "AGREEMENT_UNSUPPORTED"
 
     def complete_callback(request):
         evidence = _all_window_units(request)[0]
@@ -654,6 +683,42 @@ def test_overlapping_windows_are_deduplicated_before_final_synthesis():
     statements = [record["statement"] for record in synthesis_payloads[-1]["records"]]
     assert len(statements) == len(set(statements))
     assert candidate["result"]["content"].count("API gateway") == len(set(statements))
+
+
+def test_two_extractions_cannot_spend_an_immutable_two_call_synthesis_budget():
+    from dataclasses import replace
+
+    from sme_meeting_ai.meeting_intelligence.summary import prepare_summary
+
+    conf = settings(meeting_intelligence_max_input_tokens=11000,
+                    meeting_intelligence_context_window_tokens=12500,
+                    meeting_intelligence_max_output_tokens=1200,
+                    meeting_intelligence_overlap_units=0)
+    context = stage(snapshot(tuple(f"Lượt {i}: API gateway và CI/CD cần kiểm thử." for i in range(13))))
+    assert len(prepare_summary(context, conf).plan.windows) == 2
+
+    class ImmutableLimit:
+        def check_capacity(self, estimate):
+            if estimate.calls > 2:
+                raise IntelligenceError("CONTEXT_BUDGET")
+
+    def bounded_output(request):
+        if request.task.schema.name == "summary_window_evidence":
+            evidence = _all_window_units(request)[0]
+            return _evidence_output(request, [
+                _unit("API gateway và CI/CD cần kiểm thử", "FACT", [_reference(evidence)]),
+            ])
+        return _responsive_output(request)
+
+    adapter = ScriptedAdapter(bounded_output)
+    with pytest.raises(IntelligenceError, match="CONTEXT_BUDGET"):
+        SummaryProcessor(conf, adapter)(replace(context, provider_attempts=ImmutableLimit()))
+    assert not adapter.requests
+
+    SummaryProcessor(conf, adapter)(context)
+    assert [r.task.schema.name for r in adapter.requests] == [
+        "summary_window_evidence", "summary_window_evidence", "summary_synthesis",
+    ]
 
 
 def test_proposal_is_not_rendered_as_an_agreement():

@@ -349,7 +349,8 @@ public class KnowledgeIndexingProducer {
             candidate.sourceType(), candidate.sourceId(), candidate.revision(), candidate.selectionEpoch());
         if (!existing.isEmpty()) {
             Snapshot stored = existing.getFirst();
-            if (!snapshotSha.equals(stored.sha256()) || snapshotSize != stored.sizeBytes()) {
+            if (!matchesSnapshot(stored, snapshotSha, snapshotSize)
+                    && !matchesLegacySummarySnapshot(stored, candidate)) {
                 throw new IllegalStateException("Canonical knowledge revision has conflicting snapshot bytes.");
             }
             return stored;
@@ -368,10 +369,21 @@ public class KnowledgeIndexingProducer {
             """, (rs, row) -> new Snapshot(rs.getObject("id", UUID.class),
                 rs.getString("sha256"), rs.getLong("size_bytes")),
             candidate.sourceType(), candidate.sourceId(), candidate.revision(), candidate.selectionEpoch());
-        if (!snapshotSha.equals(stored.sha256()) || snapshotSize != stored.sizeBytes()) {
+        if (!matchesSnapshot(stored, snapshotSha, snapshotSize)
+                && !matchesLegacySummarySnapshot(stored, candidate)) {
             throw new IllegalStateException("Canonical knowledge revision has conflicting snapshot bytes.");
         }
         return stored;
+    }
+
+    private static boolean matchesSnapshot(Snapshot stored, String sha, long size) {
+        return size == stored.sizeBytes() && sha.equals(stored.sha256());
+    }
+
+    private static boolean matchesLegacySummarySnapshot(Snapshot stored, Candidate candidate) {
+        byte[] legacy = candidate.legacySummaryBytes();
+        // Accept only the exact old serialization of this same canonical revision and epoch.
+        return legacy != null && matchesSnapshot(stored, digest(legacy), legacy.length);
     }
 
     private KnowledgeIndexingEvent event(Candidate candidate, Snapshot snapshot,
@@ -448,7 +460,8 @@ public class KnowledgeIndexingProducer {
         List<SummaryRow> rows = jdbc.query("""
             SELECT s.id,s.meeting_id,s.version_number,s.content,s.source_type,s.quality_status,
                    s.is_current,s.processing_job_id,s.transcript_id,s.content_revision,s.selection_epoch,
-                   s.ai_warning_codes,current_source.id AS current_transcript_id,
+                   array_to_string(s.ai_warning_codes,',') AS ai_warning_codes,
+                   s.ai_warning_codes AS legacy_ai_warning_codes,current_source.id AS current_transcript_id,
                    current_source.content_revision AS current_transcript_revision,
                    current_source.status AS current_transcript_status
               FROM meeting_summary_versions s
@@ -461,6 +474,7 @@ public class KnowledgeIndexingProducer {
                 rs.getBoolean("is_current"), rs.getObject("processing_job_id", UUID.class),
                 rs.getObject("transcript_id", UUID.class), nullableLong(rs, "content_revision"),
                 rs.getLong("selection_epoch"), rs.getString("ai_warning_codes"),
+                rs.getString("legacy_ai_warning_codes"),
                 rs.getObject("current_transcript_id", UUID.class), nullableLong(rs, "current_transcript_revision"),
                 rs.getString("current_transcript_status")), meetingId, sourceId);
         if (rows.size() != 1) return null;
@@ -491,8 +505,10 @@ public class KnowledgeIndexingProducer {
         content.put("aiWarnings", csv(row.aiWarningCodes()));
         Map<String, Object> snapshot = snapshot("SUMMARY", row.meetingId(), row.id(), row.versionNumber(),
             row.selectionEpoch(), content);
+        byte[] canonical = bytes(snapshot);
+        content.put("aiWarnings", csv(row.legacyAiWarningCodes()));
         return new Candidate("SUMMARY", row.id(), row.meetingId(), row.versionNumber(),
-            row.selectionEpoch(), bytes(snapshot));
+            row.selectionEpoch(), canonical, bytes(snapshot));
     }
 
     private Candidate decision(UUID sourceId, UUID meetingId) {
@@ -699,11 +715,19 @@ public class KnowledgeIndexingProducer {
     }
 
     private record Candidate(String sourceType, UUID sourceId, UUID meetingId, long revision,
-            long selectionEpoch, byte[] snapshotBytes) {
+            long selectionEpoch, byte[] snapshotBytes, byte[] legacySummaryBytes) {
+        private Candidate(String sourceType, UUID sourceId, UUID meetingId, long revision,
+                long selectionEpoch, byte[] snapshotBytes) {
+            this(sourceType, sourceId, meetingId, revision, selectionEpoch, snapshotBytes, null);
+        }
         private Candidate {
             snapshotBytes = snapshotBytes.clone();
+            legacySummaryBytes = legacySummaryBytes == null ? null : legacySummaryBytes.clone();
         }
         @Override public byte[] snapshotBytes() { return snapshotBytes.clone(); }
+        @Override public byte[] legacySummaryBytes() {
+            return legacySummaryBytes == null ? null : legacySummaryBytes.clone();
+        }
     }
 
     private record Snapshot(UUID id, String sha256, long sizeBytes) { }
@@ -726,6 +750,7 @@ public class KnowledgeIndexingProducer {
     private record SummaryRow(UUID id, UUID meetingId, int versionNumber, String content,
             String sourceType, String qualityStatus, boolean isCurrent, UUID processingJobId,
             UUID transcriptId, Long contentRevision, long selectionEpoch, String aiWarningCodes,
+            String legacyAiWarningCodes,
             UUID currentTranscriptId, Long currentTranscriptRevision, String currentTranscriptStatus) { }
     private record DecisionRow(UUID id, UUID meetingId, String content, String status,
             String sourceType, UUID transcriptId, Long contentRevision, long version,

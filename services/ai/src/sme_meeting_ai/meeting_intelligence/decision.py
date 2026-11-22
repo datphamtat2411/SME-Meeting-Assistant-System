@@ -17,7 +17,12 @@ from .contracts import (
 )
 from .errors import IntelligenceError, check_authority, require
 from .evidence import EvidenceSource
-from .grounding import RESULT_WARNING_CODES, GroundingChanges
+from .grounding import (
+    GROUNDING_DIAGNOSTIC_VERSION,
+    RESULT_WARNING_CODES,
+    GroundingChanges,
+    diagnostic_counts,
+)
 from .processor import StageContext
 
 DECISION_PROMPT_VERSION = "decision-v1"
@@ -392,9 +397,19 @@ def _validate_signal_output(result, request, source, *, ranges=None, allowed_ref
     output = request.task.schema.parse(canonical_json(result.output))
     _source_identity_matches(output, source)
     signals = []
-    for item in output["signals"]:
+    for item_index, item in enumerate(output["signals"]):
         try:
-            signals.append(_validate_signal(item, source, ranges, allowed_references))
+            signal = _validate_signal(item, source, ranges, allowed_references)
+            signals.append(signal)
+            if changes is not None:
+                changes.accept_claim(
+                    statement=f"{signal.proposition} {signal.scope}".strip(),
+                    references=signal.evidence,
+                    model_category=signal.status,
+                    item_index=item_index,
+                    assessment="SUPPORTED",
+                    affirmative_marker=signal.status in {"ACCEPTED", "REVISED", "CONDITIONAL"},
+                )
         except IntelligenceError as error:
             # Dropping an unreadable invalidation/revision could resurrect an
             # earlier decision. There is no safe partial extraction in that case.
@@ -570,6 +585,8 @@ def _resolve_cross_window(
         payload = _derived_payload(source, current, f"synthesis-{depth}")
         if (len(current) <= _DERIVED_SIGNAL_MAXIMUM
                 and _input_fits(prepared, synthesis, payload)):
+            prepared.plan_requests((prepared.derived_request(synthesis, payload, f"synthesis-{depth}"),),
+                                   settings.meeting_intelligence_decision_max_model_calls - calls[0])
             result, request = _call_derived(
                 prepared, adapter, synthesis, payload, f"synthesis-{depth}", calls,
                 settings.meeting_intelligence_decision_max_model_calls,
@@ -589,12 +606,17 @@ def _resolve_cross_window(
         if depth == settings.meeting_intelligence_decision_max_synthesis_depth:
             raise IntelligenceError("CONTEXT_BUDGET")
         batches = _pack_signals(prepared, reduction, source, current, f"reduction-{depth + 1}")
+        pending = [(f"reduction-{depth + 1}-{index}", batch) for index, batch in enumerate(batches)]
+        prepared.plan_requests((
+            prepared.derived_request(reduction, _derived_payload(source, batch, level), level)
+            for level, batch in pending
+        ), settings.meeting_intelligence_decision_max_model_calls - calls[0], synthesis)
         reduced: list[DecisionSignal] = []
-        for batch_index, batch in enumerate(batches):
+        for level, batch in pending:
             check_authority(prepared.deadline, prepared.cancelled)
-            batch_json = _derived_payload(source, batch, f"reduction-{depth + 1}-{batch_index}")
+            batch_json = _derived_payload(source, batch, level)
             result, request = _call_derived(
-                prepared, adapter, reduction, batch_json, f"reduction-{depth + 1}-{batch_index}", calls,
+                prepared, adapter, reduction, batch_json, level, calls,
                 settings.meeting_intelligence_decision_max_model_calls,
             )
             require(producer == Producer(result.requested_model, result.provider), "INTEGRITY")
@@ -806,12 +828,11 @@ class DecisionProcessor:
     def __call__(self, context: StageContext) -> dict:
         check_authority(context.deadline, context.cancelled)
         require(context.stage_code == "EXTRACTING_DECISIONS", "CONFIGURATION")
-        task = extraction_task()
-        prepared = prepare_context(context, task, self.settings)
+        prepared = prepare_decisions(context, self.settings)
         source = prepared.plan.source
         require(source.has_usable_evidence, "INVALID_SOURCE")
         calls = [0]
-        changes = GroundingChanges()
+        changes = GroundingChanges(stage=context.stage_code, source=source)
         records: list[DecisionSignal] = []
         producer: Producer | None = None
         for window in prepared.plan.windows:
@@ -841,20 +862,38 @@ class DecisionProcessor:
             source, consolidated, self.settings.meeting_intelligence_decision_max_candidates,
         )
         check_authority(context.deadline, context.cancelled)
-        return self._candidate(producer, candidates, changes.flags(source.quality_flags))
+        flags = changes.flags(source.quality_flags)
+        return self._candidate(producer, candidates, flags,
+                               changes.diagnostic_payloads(flags))
 
     @staticmethod
-    def _candidate(producer: Producer | None, candidates: tuple[dict, ...], quality_flags: tuple[str, ...]) -> dict:
+    def _candidate(producer: Producer | None, candidates: tuple[dict, ...], quality_flags: tuple[str, ...],
+                   diagnostics: tuple[dict, ...] = ()) -> dict:
         require(producer is not None, "MALFORMED_OUTPUT")
         warnings = [warning for warning in _WARNING_ORDER if warning in quality_flags]
+        result = {"candidates": list(candidates), "warnings": warnings}
+        if diagnostics:
+            result["diagnostics"] = list(diagnostics)
+        result["diagnosticsVersion"] = GROUNDING_DIAGNOSTIC_VERSION
+        result["diagnosticCounts"] = {
+            "version": GROUNDING_DIAGNOSTIC_VERSION,
+            **diagnostic_counts(diagnostics),
+        }
         return {
             "producer": {
                 "model": producer.model,
                 "promptVersion": DECISION_PROMPT_VERSION,
                 "provider": producer.provider,
             },
-            "result": {"candidates": list(candidates), "warnings": warnings},
+            "result": result,
         }
+
+
+def prepare_decisions(context: StageContext, settings) -> PreparedContext:
+    prepared = prepare_context(context, extraction_task(), settings)
+    prepared.plan_extraction(settings.meeting_intelligence_decision_max_model_calls,
+                             synthesis_task() if len(prepared.plan.windows) > 1 else None)
+    return prepared
 
 
 def build_decision_processor(settings, adapter: ModelAdapter) -> DecisionProcessor:

@@ -232,6 +232,20 @@ def test_unsupported_adoption_does_not_erase_an_independent_decision():
     assert len(result["candidates"]) == 1
     assert "Redis" in result["candidates"][0]["content"]
     assert "GROUNDING_CLAIM_DISCARDED" in result["warnings"]
+    claims = [
+        item for item in result["diagnostics"]
+        if item.get("diagnosticVersion") == "1.0"
+    ]
+    assert {item["disposition"] for item in claims} == {"ACCEPTED", "REJECTED"}
+    assert {item["reason"] for item in claims} == {"SUPPORTED", "UNSUPPORTED"}
+    assert result["diagnosticCounts"] == {
+        "version": "1.0",
+        "accepted": 1,
+        "rejected": 1,
+        "discarded": 1,
+        "repaired": 0,
+        "total": 3,
+    }
 
 
 def test_cross_window_resolution_cannot_relabel_a_retraction_as_discussion():

@@ -14,6 +14,9 @@ import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle;
 import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle.StageClaim;
 import com.sme.meetingassistant.api.meetingintelligence.service.ActionItemProposalHandoff;
 import com.sme.meetingassistant.api.meetingintelligence.service.ActionItemProposalHandoff.SourceReference;
+import com.sme.meetingassistant.api.meetingintelligence.service.IntelligenceResultPayload.GroundingDiagnostic;
+import com.sme.meetingassistant.api.meetingintelligence.service.IntelligenceResultPayload.GroundingEvidence;
+import com.sme.meetingassistant.api.meetingintelligence.service.IntelligenceResultPayload.GroundingReference;
 import com.sme.meetingassistant.api.support.PostgresTestConfiguration;
 import java.time.LocalDate;
 import java.util.Map;
@@ -209,6 +212,41 @@ class ActionItemProposalSinkIntegrationTests {
             """,String.class,stage)).isEqualTo("SUCCEEDED_WITH_WARNING:GROUNDING_CLAIM_DISCARDED");
         assertThat(jdbc.queryForObject("SELECT status FROM action_items WHERE id=?",String.class,soleItem()))
             .isEqualTo("PROPOSED");
+    }
+
+    @Test
+    void actionItemGroundingDiagnosticsAttachToTheCanonicalBatchReceipt() {
+        var diagnostic = new GroundingDiagnostic("DISCARDED", "GROUNDING_FAILURE",
+            "CLAIM_NOT_GROUNDED", 0, new GroundingEvidence(snapshot, transcript, 3,
+                "a".repeat(64), List.of(new GroundingReference(segment, 0, 20)),
+                "ACTION_ITEM", "b".repeat(64), 12, "c".repeat(64), 20,
+                false, false, "UNSUPPORTED_MODEL_CLASSIFICATION"));
+
+        assertThat(handoff.handoff(claim(), source, candidates(),
+            "GROUNDING_CLAIM_DISCARDED", List.of(diagnostic)))
+            .isEqualTo(new Receipt(false, 1));
+        UUID receiptId=jdbc.queryForObject("""
+            SELECT id FROM action_item_batch_receipts WHERE stage_run_id=?
+            """,UUID.class,stage);
+        assertThat(jdbc.queryForObject("""
+            SELECT result.disposition||':'||result.reason||':'||result.rule
+              FROM meeting_intelligence_grounding_diagnostics result
+             WHERE result.action_item_batch_receipt_id=?
+            """,String.class,receiptId))
+            .isEqualTo("DISCARDED:GROUNDING_FAILURE:CLAIM_NOT_GROUNDED");
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM meeting_intelligence_grounding_diagnostic_references
+             WHERE diagnostic_id IN (
+                 SELECT id FROM meeting_intelligence_grounding_diagnostics
+                  WHERE action_item_batch_receipt_id=?
+             )
+            """,Integer.class,receiptId)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+            SELECT to_jsonb(d)::text
+              FROM meeting_intelligence_grounding_diagnostics d
+             WHERE d.action_item_batch_receipt_id=?
+            """,String.class,receiptId))
+            .doesNotContain("Submit the quarterly report", "\"content\"");
     }
 
     @Test

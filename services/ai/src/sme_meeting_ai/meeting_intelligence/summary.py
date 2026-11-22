@@ -23,7 +23,14 @@ from .errors import (
     require,
 )
 from .evidence import EvidenceSource
-from .grounding import DISCARDED, REPAIRED, RESULT_WARNING_CODES, GroundingChanges
+from .grounding import (
+    DISCARDED,
+    REPAIRED,
+    RESULT_WARNING_CODES,
+    GROUNDING_DIAGNOSTIC_VERSION,
+    GroundingChanges,
+    diagnostic_counts,
+)
 from .processor import StageContext
 
 SUMMARY_PROMPT_VERSION = "summary-v1"
@@ -541,7 +548,17 @@ def _validate_record_output(
     records = []
     for item_index, unit in enumerate(output["units"]):
         try:
-            records.append(_validate_record(unit, source, item_index, ranges, allowed))
+            record = _validate_record(unit, source, item_index, ranges, allowed)
+            records.append(record)
+            if changes is not None:
+                changes.accept_claim(
+                    statement=record.statement,
+                    references=record.evidence,
+                    model_category=record.category,
+                    item_index=item_index,
+                    assessment="SUPPORTED",
+                    affirmative_marker=record.category == "AGREEMENT",
+                )
         except IntelligenceError as error:
             if changes is None or ranges is not None and unit["category"] in {"REJECTION", "CORRECTION", "DISAGREEMENT"}:
                 raise
@@ -549,7 +566,7 @@ def _validate_record_output(
             if repaired is None:
                 changes.discard(error)
             else:
-                changes.repaired = True
+                changes.repair(error)
                 records.append(repaired)
     return tuple(records)
 
@@ -669,11 +686,15 @@ def _reduce_records(prepared: PreparedContext, adapter: ModelAdapter, source: Ev
         if depth == settings.meeting_intelligence_summary_max_synthesis_depth:
             raise IntelligenceError("CONTEXT_BUDGET")
         batches = _pack_records(prepared, reduction, source, current, f"reduction-{depth + 1}")
+        pending = [(f"reduction-{depth + 1}-{index}", batch) for index, batch in enumerate(batches)]
+        prepared.plan_requests((
+            prepared.derived_request(reduction, _derived_payload(source, batch, level), level)
+            for level, batch in pending
+        ), settings.meeting_intelligence_summary_max_model_calls - calls[0], synthesis)
         reduced: list[EvidenceRecord] = []
-        for batch_index, batch in enumerate(batches):
-            evidence_json = _derived_payload(source, batch, f"reduction-{depth + 1}-{batch_index}")
-            result, window = _call_derived(prepared, adapter, reduction, evidence_json,
-                                           f"reduction-{depth + 1}-{batch_index}", calls,
+        for level, batch in pending:
+            evidence_json = _derived_payload(source, batch, level)
+            result, window = _call_derived(prepared, adapter, reduction, evidence_json, level, calls,
                                            settings.meeting_intelligence_summary_max_model_calls)
             require(producer == Producer(result.requested_model, result.provider), "INTEGRITY")
             output = _validate_record_output(result, type("Request", (), {
@@ -779,6 +800,19 @@ def _validate_synthesis(output: dict, source: EvidenceSource, records: tuple[Evi
             except IntelligenceError as error:
                 changes.discard(error)
             else:
+                changes.accept_claim(
+                    statement=claim["text"],
+                    references=tuple(
+                        EvidenceReference(
+                            item["segment_id"], item["char_start"], item["char_end"],
+                        )
+                        for item in claim["evidence"]
+                    ),
+                    model_category=claim["category"],
+                    item_index=next_index,
+                    assessment="SUPPORTED",
+                    affirmative_marker=claim["category"] == "AGREEMENT",
+                )
                 sections[section].append(claim)
             next_index += 1
 
@@ -919,12 +953,11 @@ class SummaryProcessor:
 
     def __call__(self, context: StageContext) -> dict:
         check_authority(context.deadline, context.cancelled)
-        task = extraction_task()
-        prepared = prepare_context(context, task, self.settings)
+        prepared = prepare_summary(context, self.settings)
         source = prepared.plan.source
         require(source.has_usable_evidence, "INVALID_SOURCE")
         calls = [0]
-        changes = GroundingChanges()
+        changes = GroundingChanges(stage=context.stage_code, source=source)
         records: list[EvidenceRecord] = []
         producer: Producer | None = None
         for window in prepared.plan.windows:
@@ -952,11 +985,13 @@ class SummaryProcessor:
             content = _render_sections(source, sections, flags)
             if len(content) <= self.settings.meeting_intelligence_summary_target_chars:
                 check_authority(context.deadline, context.cancelled)
-                return self._candidate(producer, content, flags)
+                return self._candidate(producer, content, flags, changes.diagnostic_payloads(flags))
 
         synthesis_records = _reduce_records(prepared, self.adapter, source, consolidated, calls, self.settings, producer, changes)
         synthesis = synthesis_task(self.settings.meeting_intelligence_summary_target_chars)
         evidence_json = _derived_payload(source, synthesis_records, "synthesis-final")
+        prepared.plan_requests((prepared.derived_request(synthesis, evidence_json, "synthesis-final"),),
+                               self.settings.meeting_intelligence_summary_max_model_calls - calls[0])
         result, window = _call_derived(prepared, self.adapter, synthesis, evidence_json, "synthesis-final",
                                        calls, self.settings.meeting_intelligence_summary_max_model_calls)
         require(producer == Producer(result.requested_model, result.provider), "INTEGRITY")
@@ -970,17 +1005,33 @@ class SummaryProcessor:
         content = _render_sections(source, sections, flags)
         require(0 < len(content) <= 20000, "RESOURCE")
         check_authority(context.deadline, context.cancelled)
-        return self._candidate(producer, content, flags)
+        return self._candidate(producer, content, flags, changes.diagnostic_payloads(flags))
 
     @staticmethod
-    def _candidate(producer: Producer | None, content: str, quality_flags: tuple[str, ...]) -> dict:
+    def _candidate(producer: Producer | None, content: str, quality_flags: tuple[str, ...],
+                   diagnostics: tuple[dict, ...] = ()) -> dict:
         require(producer is not None and valid_text(content, 20000), "MALFORMED_OUTPUT")
         warnings = [warning for warning in _WARNING_ORDER if warning in quality_flags]
+        result = {"content": content, "warnings": warnings}
+        if diagnostics:
+            result["diagnostics"] = list(diagnostics)
+        result["diagnosticsVersion"] = GROUNDING_DIAGNOSTIC_VERSION
+        result["diagnosticCounts"] = {
+            "version": GROUNDING_DIAGNOSTIC_VERSION,
+            **diagnostic_counts(diagnostics),
+        }
         return {
             "producer": {"model": producer.model, "promptVersion": SUMMARY_PROMPT_VERSION,
                          "provider": producer.provider},
-            "result": {"content": content, "warnings": warnings},
+            "result": result,
         }
+
+
+def prepare_summary(context: StageContext, settings) -> PreparedContext:
+    prepared = prepare_context(context, extraction_task(), settings)
+    prepared.plan_extraction(settings.meeting_intelligence_summary_max_model_calls,
+                             synthesis_task(settings.meeting_intelligence_summary_target_chars))
+    return prepared
 
 
 def build_summary_processor(settings, adapter: ModelAdapter) -> SummaryProcessor:

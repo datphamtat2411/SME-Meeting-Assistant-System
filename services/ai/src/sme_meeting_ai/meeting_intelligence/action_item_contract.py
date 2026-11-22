@@ -8,7 +8,14 @@ from sme_meeting_ai.integrations.core_api import uuid_string
 
 from .contracts import canonical_json, identifier, valid_text
 from .errors import require
-from .grounding import DISCARDED
+from .grounding import (
+    DISCARDED,
+    REPAIRED,
+    GROUNDING_DIAGNOSTIC_VERSION,
+    RESULT_WARNING_CODES,
+    validate_diagnostic_counts,
+    validate_diagnostic_payloads,
+)
 
 MAX_HANDOFF_BYTES = 4 * 1024 * 1024
 _FIELDS = {"candidateKey", "title", "details", "suggestedDueDate", "evidenceSegmentIds"}
@@ -30,8 +37,33 @@ def prepare_action_item_request(candidate, claim, snapshot):
         and identifier(producer["model"], r"[A-Za-z0-9][A-Za-z0-9_./:-]{0,159}")
         and identifier(producer["promptVersion"]), "MALFORMED_OUTPUT")
     result = candidate["result"]
-    require(isinstance(result, dict) and set(result) in ({"candidates"}, {"candidates", "warnings"}), "MALFORMED_OUTPUT")
-    require("warnings" not in result or result["warnings"] == [DISCARDED], "MALFORMED_OUTPUT")
+    require(isinstance(result, dict) and set(result) <= {
+        "candidates", "warnings", "diagnostics", "diagnosticsVersion", "diagnosticCounts",
+    }
+        and "candidates" in result, "MALFORMED_OUTPUT")
+    if "warnings" in result:
+        require(isinstance(result["warnings"], list)
+            and len(result["warnings"]) <= len(RESULT_WARNING_CODES)
+            and len(set(result["warnings"])) == len(result["warnings"])
+            and set(result["warnings"]) <= set(RESULT_WARNING_CODES), "MALFORMED_OUTPUT")
+    diagnostics = validate_diagnostic_payloads(result.get("diagnostics", ()))
+    has_diagnostic_metadata = (
+        "diagnosticsVersion" in result or "diagnosticCounts" in result
+    )
+    require(
+        not any("diagnosticVersion" in diagnostic for diagnostic in diagnostics)
+        or has_diagnostic_metadata,
+        "MALFORMED_OUTPUT",
+    )
+    if has_diagnostic_metadata:
+        require(
+            result.get("diagnosticsVersion") == GROUNDING_DIAGNOSTIC_VERSION
+            and "diagnosticCounts" in result,
+            "MALFORMED_OUTPUT",
+        )
+        counts = validate_diagnostic_counts(result["diagnosticCounts"], diagnostics)
+    else:
+        counts = None
     items = result["candidates"]
     require(isinstance(items, list) and len(items) <= 200, "CONTEXT_BUDGET")
     allowed = {s["id"] for s in snapshot["transcript"]["segments"]}
@@ -63,7 +95,15 @@ def prepare_action_item_request(candidate, claim, snapshot):
         claimToken=claim.claimToken.get_secret_value(), source=dict(snapshotId=source.snapshotId,
             transcriptId=source.transcriptId, contentRevision=source.contentRevision, sha256=source.sha256), candidates=items)
     if "warnings" in result:
-        body["groundingWarning"] = DISCARDED
+        if DISCARDED in result["warnings"]:
+            body["groundingWarning"] = DISCARDED
+        elif REPAIRED in result["warnings"]:
+            body["groundingWarning"] = REPAIRED
+    if "diagnostics" in result:
+        body["diagnostics"] = list(diagnostics)
+    if counts is not None:
+        body["diagnosticsVersion"] = GROUNDING_DIAGNOSTIC_VERSION
+        body["diagnosticCounts"] = counts
     raw = canonical_json(body).encode("utf-8")
     require(len(raw) <= MAX_HANDOFF_BYTES, "CONTEXT_BUDGET")
     return raw

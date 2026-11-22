@@ -154,6 +154,20 @@ def test_invalid_owner_is_discarded_without_erasing_an_independent_task():
     result = ActionItemProcessor(settings(), scripted(fixture))(action_stage(fixture))["result"]
     assert [item["title"] for item in result["candidates"]] == ["kiểm tra API đăng nhập"]
     assert result["warnings"] == ["GROUNDING_CLAIM_DISCARDED"]
+    claims = [
+        item for item in result["diagnostics"]
+        if item.get("diagnosticVersion") == "1.0"
+    ]
+    assert {item["disposition"] for item in claims} == {"ACCEPTED", "REJECTED"}
+    assert {item["reason"] for item in claims} == {"SUPPORTED", "UNSUPPORTED"}
+    assert result["diagnosticCounts"] == {
+        "version": "1.0",
+        "accepted": 1,
+        "rejected": 1,
+        "discarded": 1,
+        "repaired": 0,
+        "total": 3,
+    }
 
 
 def test_invalid_nonempty_grouping_falls_back_to_validated_singletons():

@@ -333,6 +333,12 @@ class IntelligenceWorkerIntegrationTests {
 
         var summary=command("GENERATING_SUMMARY");
         var summaryData=worker.claim(job,summary,PEER);
+        var summaryBudget=(Map<?,?>)summaryData.get("budget");
+        assertThat(summaryBudget.get("remainingStages")).isEqualTo(
+            List.of("GENERATING_SUMMARY","EXTRACTING_DECISIONS","EXTRACTING_ACTION_ITEMS"));
+        assertThat(summaryBudget.get("remainingStageAttempts")).isEqualTo(Map.of(
+            "GENERATING_SUMMARY",1,"EXTRACTING_DECISIONS",1,"EXTRACTING_ACTION_ITEMS",2));
+        assertThat(summaryBudget.get("aggregateReservedAttempts")).isEqualTo(0);
         var summaryOwner=owner(summary,summaryData);
         UUID summaryAttempt=UUID.randomUUID();
         var summaryReserve=reserveCommand(summary,summaryOwner,7431,32768,
@@ -354,6 +360,12 @@ class IntelligenceWorkerIntegrationTests {
 
         var decision=command("EXTRACTING_DECISIONS");
         var decisionData=worker.claim(job,decision,PEER);
+        var decisionBudget=(Map<?,?>)decisionData.get("budget");
+        assertThat(decisionBudget.get("remainingStages")).isEqualTo(
+            List.of("EXTRACTING_DECISIONS","EXTRACTING_ACTION_ITEMS"));
+        assertThat(decisionBudget.get("aggregateReservedAttempts")).isEqualTo(1);
+        assertThat(decisionBudget.get("aggregateReservedTokens")).isEqualTo(40199L);
+        assertThat(decisionBudget.get("inputCostPerMillionUsd")).isEqualTo("0.2");
         var decisionOwner=owner(decision,decisionData);
         UUID decisionAttempt=UUID.randomUUID();
         var decisionReserve=reserveCommand(decision,decisionOwner,7946,32768,

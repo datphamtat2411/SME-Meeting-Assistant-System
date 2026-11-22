@@ -1,6 +1,7 @@
 package com.sme.meetingassistant.api.media.service;
 
 import com.sme.meetingassistant.api.media.MediaProperties;
+import com.sme.meetingassistant.api.media.intelligence.IntelligenceWorkerRepository;
 import com.sme.meetingassistant.api.media.repository.MediaRepository;
 import com.sme.meetingassistant.api.media.repository.MediaRepository.JobAdmissionConflictException;
 import com.sme.meetingassistant.api.media.repository.MediaRepository.IdempotencyConflictException;
@@ -26,10 +27,12 @@ public class DerivedSummaryJobAdmission {
     private final MediaRepository repository;
     private final MediaProperties properties;
     private final com.sme.meetingassistant.api.media.intelligence.IntelligenceWorkerCapability capability;
+    private final IntelligenceWorkerRepository budgets;
     public DerivedSummaryJobAdmission(MediaRepository repository,MediaProperties properties,
-            com.sme.meetingassistant.api.media.intelligence.IntelligenceWorkerCapability capability) {
+            com.sme.meetingassistant.api.media.intelligence.IntelligenceWorkerCapability capability,
+            IntelligenceWorkerRepository budgets) {
         this.repository=repository;this.properties=properties;
-        this.capability=capability;
+        this.capability=capability;this.budgets=budgets;
     }
 
     public void requireWorkerReady() {
@@ -75,11 +78,25 @@ public class DerivedSummaryJobAdmission {
         try {
             repository.insertDerivedSummaryJobAndOutbox(proposedId,meetingId,mediaId,actor,
                 originJobId,UUID.randomUUID());
+            snapshotBudget(proposedId);
         } catch(JobAdmissionConflictException duplicate) {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                 "Another processing job already occupies the meeting.");
         }
         return new Result(proposedId,true);
+    }
+
+    @Transactional(propagation=Propagation.MANDATORY)
+    public void admitReviewed(UUID jobId, MediaRepository.Job origin, UUID actor, UUID reviewId) {
+        requireCapacity(actor, origin.meetingId());
+        repository.insertReviewedIntelligenceJob(jobId,origin,actor,reviewId);
+        snapshotBudget(jobId);
+    }
+
+    private void snapshotBudget(UUID jobId) {
+        if (!properties.getIntelligence().validBudget())
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"Intelligence budget is not configured.");
+        budgets.ensureBudget(jobId,properties.getIntelligence());
     }
 
     @Transactional(propagation=Propagation.MANDATORY)

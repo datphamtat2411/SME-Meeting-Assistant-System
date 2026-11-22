@@ -244,7 +244,9 @@ class Settings(BaseSettings):
     meeting_intelligence_model: str = Field(default="openai/gpt-6-luna", pattern=r"^[A-Za-z0-9][A-Za-z0-9_./:-]{0,159}$")
     meeting_intelligence_reasoning_effort: ReasoningEffort = "high"
     meeting_intelligence_context_window_tokens: int = Field(default=131072, ge=1, le=400000, strict=True)
-    meeting_intelligence_max_input_tokens: int = Field(default=24000, ge=1, le=272000, strict=True)
+    # Keep productive capacity under Core's physical-call ceilings without
+    # enlarging those ceilings or the total input-plus-output reservation.
+    meeting_intelligence_max_input_tokens: int = Field(default=48000, ge=1, le=272000, strict=True)
     meeting_intelligence_max_output_tokens: int = Field(default=8192, ge=1, le=128000, strict=True)
     meeting_intelligence_overlap_units: int = Field(default=1, ge=0, le=8, strict=True)
     meeting_intelligence_max_windows: int = Field(default=64, ge=1, le=1024, strict=True)

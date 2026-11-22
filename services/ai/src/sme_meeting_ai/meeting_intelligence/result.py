@@ -4,7 +4,12 @@ import json
 import re
 from uuid import UUID
 
-from .grounding import RESULT_WARNING_CODES
+from .grounding import (
+    GROUNDING_DIAGNOSTIC_VERSION,
+    RESULT_WARNING_CODES,
+    validate_diagnostic_counts,
+    validate_diagnostic_payloads,
+)
 
 
 class ResultError(Exception):
@@ -38,13 +43,47 @@ def serialize_result(candidate, claim, snapshot):
         if (len(warnings) > len(RESULT_WARNING_CODES) or len(set(warnings)) != len(warnings)
                 or any(w not in RESULT_WARNING_CODES for w in warnings)):
             raise ValueError
+        diagnostics = validate_diagnostic_payloads(result.get("diagnostics", ()))
+        has_diagnostic_metadata = (
+            "diagnosticsVersion" in result or "diagnosticCounts" in result
+        )
+        has_claim_diagnostics = any(
+            "diagnosticVersion" in diagnostic for diagnostic in diagnostics
+        )
+        if has_claim_diagnostics and not has_diagnostic_metadata:
+            raise ValueError
+        if has_diagnostic_metadata:
+            if (set(result) - {
+                    "content", "candidates", "warnings", "diagnostics",
+                    "diagnosticsVersion", "diagnosticCounts",
+                }
+                    or result.get("diagnosticsVersion") != GROUNDING_DIAGNOSTIC_VERSION
+                    or "diagnosticCounts" not in result):
+                raise ValueError
+            counts = validate_diagnostic_counts(result["diagnosticCounts"], diagnostics)
+        else:
+            counts = None
+        if set(result) - {
+                "content", "candidates", "warnings", "diagnostics",
+                "diagnosticsVersion", "diagnosticCounts",
+            }:
+            raise ValueError
         if claim.executionStageCode == "GENERATING_SUMMARY":
-            if set(result) != {"content", "warnings"}:
+            if set(result) - {
+                    "content", "warnings", "diagnostics",
+                    "diagnosticsVersion", "diagnosticCounts",
+                } or "content" not in result:
                 raise ValueError
             _text(result["content"], 20000, content=True)
             kind = "SUMMARY"
         elif claim.executionStageCode == "EXTRACTING_DECISIONS":
-            if set(result) != {"candidates", "warnings"} or not isinstance(result["candidates"], list) or len(result["candidates"]) > 500:
+            if (set(result) - {
+                        "candidates", "warnings", "diagnostics",
+                        "diagnosticsVersion", "diagnosticCounts",
+                    }
+                    or "candidates" not in result
+                    or not isinstance(result["candidates"], list)
+                    or len(result["candidates"]) > 500):
                 raise ValueError
             valid_ids = {UUID(segment["id"]) for segment in snapshot["transcript"]["segments"]}
             keys = set()
@@ -66,10 +105,16 @@ def serialize_result(candidate, claim, snapshot):
         else:
             raise ValueError
         source = claim.source
+        result_payload = dict(result)
+        if "diagnostics" in result:
+            result_payload["diagnostics"] = list(diagnostics)
+        if counts is not None:
+            result_payload["diagnosticsVersion"] = GROUNDING_DIAGNOSTIC_VERSION
+            result_payload["diagnosticCounts"] = counts
         payload = dict(schemaVersion="1.0", resultType=kind, processingJobId=claim.processingJobId,
             stageRunId=claim.executionStageRunId, source=dict(transcriptId=source.transcriptId,
             contentRevision=source.contentRevision, inputSnapshotId=source.snapshotId, sha256=source.sha256),
-            producer=producer, result=result)
+            producer=producer, result=result_payload)
         raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
         if len(raw) > 4 * 1024 * 1024:
             raise ValueError

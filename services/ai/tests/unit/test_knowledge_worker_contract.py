@@ -21,6 +21,8 @@ from sme_meeting_ai.rag import (
     CanonicalSourceIdentity,
     SnapshotMetadata,
     SourceRevision,
+    SummaryProjection,
+    SummarySnapshot,
     validate_snapshot,
 )
 from sme_meeting_ai.rag.tokenizer import bge_m3_index_generation
@@ -147,6 +149,58 @@ def test_serialized_action_item_with_empty_evidence_array_uses_json_validation(m
     assert seen == [raw]
     assert parsed.content.evidence_segment_ids == ()
     assert isinstance(parsed.content.evidence_segment_ids, tuple)
+
+
+def serialized_summary_snapshot(warnings):
+    meeting_id, source_id, snapshot_id = (str(uuid4()) for _ in range(3))
+    snapshot = SummarySnapshot(
+        contractVersion="1.0",
+        snapshotType="SUMMARY",
+        metadata=SnapshotMetadata(
+            snapshotId=snapshot_id,
+            meetingId=meeting_id,
+            sourceIdentity=CanonicalSourceIdentity(
+                sourceType="SUMMARY", sourceId=source_id, meetingId=meeting_id,
+            ),
+            sourceRevision=SourceRevision(number=1),
+        ),
+        content=SummaryProjection(
+            id=source_id, meetingId=meeting_id, versionNumber=1, content="Meeting summary.",
+            sourceType="AI_GENERATED", qualityStatus="READY_WITH_WARNINGS",
+            isCurrent=True, isApproved=True, isStale=False,
+        ),
+    )
+    payload = snapshot.model_dump(mode="json", by_alias=True)
+    payload["content"]["aiWarnings"] = warnings
+    return snapshot, json.dumps(payload, separators=(",", ":")).encode()
+
+
+@pytest.mark.parametrize(("warnings", "expected"), [
+    (["{}"], ()),
+    (["{INCOMPLETE_COVERAGE}"], ("INCOMPLETE_COVERAGE",)),
+    (["{INCOMPLETE_COVERAGE", "UNRESOLVED_EVIDENCE}"], ("INCOMPLETE_COVERAGE", "UNRESOLVED_EVIDENCE")),
+    (["INCOMPLETE_COVERAGE", "UNRESOLVED_EVIDENCE"], ("INCOMPLETE_COVERAGE", "UNRESOLVED_EVIDENCE")),
+])
+def test_worker_accepts_canonical_and_legacy_summary_warnings(warnings, expected):
+    snapshot, raw = serialized_summary_snapshot(warnings)
+    event, parsed = run_worker_snapshot(snapshot, raw)
+
+    assert parsed.content.ai_warnings == expected
+    assert parsed.metadata.integrity.sha256 == event.snapshot.sha256
+    assert parsed.metadata.integrity.size_bytes == len(raw)
+
+
+@pytest.mark.parametrize("warnings", [
+    ["{INCOMPLETE_COVERAGE", "{UNRESOLVED_EVIDENCE}"],
+    ["{UNRESOLVED_EVIDENCE"],
+    ["{NOT A WARNING}"],
+    "{INCOMPLETE_COVERAGE}",
+])
+def test_worker_rejects_other_malformed_summary_warning_encodings(warnings):
+    snapshot, raw = serialized_summary_snapshot(warnings)
+
+    with pytest.raises(KnowledgeWorkerFailure, match="^SNAPSHOT_CONTRACT_INVALID$"):
+        run_worker_snapshot(snapshot, raw)
 
 
 @pytest.mark.parametrize(

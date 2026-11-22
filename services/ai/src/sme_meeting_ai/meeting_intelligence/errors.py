@@ -34,12 +34,36 @@ VALIDATION_RULES = frozenset({
 MAX_VALIDATION_ITEM_INDEX = 10_000
 MAX_VALIDATION_REFERENCES = 16
 MAX_VALIDATION_REFERENCE_OFFSET = 8_388_608
+MAX_GROUNDING_DIAGNOSTICS = 32
+MAX_VALIDATION_STATEMENT_CHARS = 2_000
+MAX_VALIDATION_EVIDENCE_CHARS = 8_388_608
 VALIDATION_EVIDENCE_ASSESSMENTS = frozenset({
     "SUPPORTED",
     "NEGATIVE_OR_TENTATIVE",
     "INCOMPLETE_CITATION",
     "POSSIBLE_VALIDATOR_FALSE_NEGATIVE",
     "UNSUPPORTED_MODEL_CLASSIFICATION",
+})
+
+# Claim-audit records are deliberately separate from the exception vocabulary
+# above.  The latter describes why a processor could not continue; these
+# values describe the bounded, content-free disposition of an individual
+# model claim.
+CLAIM_AUDIT_REASONS = frozenset({
+    "SUPPORTED",
+    "UNSUPPORTED",
+    "INVALID_REFERENCE",
+    "MISSING_REFERENCE",
+    "STALE",
+    "CONTRADICTED",
+    "UNCERTAIN",
+    "REVISION_MISMATCH",
+    "GROUNDING_FAILURE",
+})
+CLAIM_AUDIT_STAGES = frozenset({
+    "GENERATING_SUMMARY",
+    "EXTRACTING_DECISIONS",
+    "EXTRACTING_ACTION_ITEMS",
 })
 
 

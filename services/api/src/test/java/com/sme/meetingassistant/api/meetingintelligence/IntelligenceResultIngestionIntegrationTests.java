@@ -113,6 +113,49 @@ class IntelligenceResultIngestionIntegrationTests {
     private String summary(String text) {
         return "{\"content\":\""+text+"\",\"warnings\":[]}";
     }
+    private String groundingDiagnostic() {
+        return """
+            {"disposition":"DISCARDED","reason":"GROUNDING_FAILURE",
+             "rule":"AGREEMENT_UNSUPPORTED","itemIndex":0,
+             "evidence":{"sourceSnapshotId":"%s","transcriptId":"%s",
+               "contentRevision":2,"sourceSha256":"%s",
+               "references":[{"segmentId":"%s","charStart":0,"charEnd":12},
+                 {"segmentId":"%s","charStart":0,"charEnd":8}],
+               "modelCategory":"AGREEMENT","statementSha256":"%s",
+               "statementCharLength":9,"evidenceSha256":"%s",
+               "evidenceCharLength":8,"affirmativeMarker":false,
+               "negativeMarker":false,"assessment":"UNSUPPORTED_MODEL_CLASSIFICATION"}}
+            """.formatted(snapshot,transcript,SOURCE_SHA,segment,segment,
+                "b".repeat(64),"c".repeat(64));
+    }
+    private String summaryWithGroundingDiagnostic(String text) {
+        return "{\"content\":\""+text+"\",\"warnings\":[\"GROUNDING_CLAIM_DISCARDED\"],"
+            +"\"diagnostics\":["+groundingDiagnostic()+"]}";
+    }
+    private String structuredClaimSummary() {
+        return """
+            {"content":"PRIVATE_STRUCTURED_SUMMARY_MARKER","warnings":[],
+             "diagnosticsVersion":"1.0",
+             "diagnosticCounts":{"version":"1.0","accepted":1,"rejected":0,
+                 "discarded":0,"repaired":0,"total":1},
+             "diagnostics":[{
+                 "diagnosticVersion":"1.0","stage":"GENERATING_SUMMARY",
+                 "disposition":"ACCEPTED","reason":"SUPPORTED",
+                 "rule":"CLAIM_RECORD_GROUNDING","itemIndex":0,
+                 "fingerprint":"%s","warningCodes":[],
+                 "evidence":{
+                     "sourceSnapshotId":"%s","transcriptId":"%s",
+                     "contentRevision":2,"sourceSha256":"%s",
+                     "references":[{"segmentId":"%s","charStart":0,"charEnd":12}],
+                     "modelCategory":"CLAIM","statementSha256":"%s",
+                     "statementCharLength":9,"evidenceSha256":"%s",
+                     "evidenceCharLength":8,"affirmativeMarker":true,
+                     "negativeMarker":false,"assessment":"SUPPORTED"
+                 }
+             }]}
+            """.formatted("d".repeat(64),snapshot,transcript,SOURCE_SHA,segment,
+                "e".repeat(64),"f".repeat(64));
+    }
     private String decisions(String candidates) {
         return "{\"candidates\":["+candidates+"],\"warnings\":[]}";
     }
@@ -143,6 +186,11 @@ class IntelligenceResultIngestionIntegrationTests {
         return jdbc.queryForObject("""
             SELECT count(*) FROM meeting_intelligence_result_receipts WHERE processing_job_id=?
             """, Integer.class,job);
+    }
+    private int diagnosticCount() {
+        return jdbc.queryForObject("""
+            SELECT count(*) FROM meeting_intelligence_grounding_diagnostics WHERE meeting_id=?
+            """, Integer.class,meeting);
     }
     private String stageStatus(StageClaim claim) {
         return jdbc.queryForObject("SELECT status FROM processing_stage_runs WHERE id=?",
@@ -406,7 +454,7 @@ class IntelligenceResultIngestionIntegrationTests {
     void lateAuditFailureRollsBackReceiptStageSummaryAndAllowsCleanRetry() throws Exception {
         var stage=claim("SUMMARY",1);
         String digest=expose(stage,envelope("SUMMARY",stage,
-            summary("Rollback must be atomic")));
+            summaryWithGroundingDiagnostic("Rollback must be atomic")));
         org.mockito.Mockito.doThrow(new IllegalStateException("injected-late-audit-failure"))
             .when(audit).resultAccepted(
                 org.mockito.ArgumentMatchers.any(UUID.class),
@@ -423,6 +471,7 @@ class IntelligenceResultIngestionIntegrationTests {
         assertThat(stageStatus(stage)).isEqualTo("RUNNING");
         assertThat(receiptCount()).isZero();
         assertThat(count("meeting_summary_versions")).isZero();
+        assertThat(diagnosticCount()).isZero();
         assertThat(jdbc.queryForObject("""
             SELECT count(*) FROM audit_events WHERE meeting_id=?
                 AND action_code='MI_AI_RESULT_ACCEPTED'
@@ -431,7 +480,89 @@ class IntelligenceResultIngestionIntegrationTests {
         var accepted=ingest.ingest(stage,digest);
         assertThat(accepted.replay()).isFalse();
         assertThat(receiptCount()).isEqualTo(1);
-        assertThat(stageStatus(stage)).isEqualTo("SUCCEEDED");
+        assertThat(diagnosticCount()).isEqualTo(1);
+        assertThat(stageStatus(stage)).isEqualTo("SUCCEEDED_WITH_WARNING");
+    }
+
+    @Test
+    void acceptedGroundingDiagnosticsAreContentFreeAndExactReplayIsIdempotent() throws Exception {
+        var stage=claim("SUMMARY",1);
+        String digest=expose(stage,envelope("SUMMARY",stage,
+            summaryWithGroundingDiagnostic("PRIVATE_SUMMARY_PROSE_MARKER")));
+
+        assertThat(ingest.ingest(stage,digest).replay()).isFalse();
+        UUID diagnosticId=jdbc.queryForObject("""
+            SELECT id FROM meeting_intelligence_grounding_diagnostics
+             WHERE meeting_id=?
+            """,UUID.class,meeting);
+        assertThat(jdbc.queryForObject("""
+            SELECT disposition||':'||reason||':'||rule||':'||item_index
+              FROM meeting_intelligence_grounding_diagnostics WHERE id=?
+            """,String.class,diagnosticId))
+            .isEqualTo("DISCARDED:GROUNDING_FAILURE:AGREEMENT_UNSUPPORTED:0");
+        assertThat(jdbc.queryForObject("""
+            SELECT source_snapshot_id FROM meeting_intelligence_grounding_diagnostics WHERE id=?
+            """,UUID.class,diagnosticId)).isEqualTo(snapshot);
+        assertThat(jdbc.queryForObject("""
+            SELECT statement_sha256 FROM meeting_intelligence_grounding_diagnostics WHERE id=?
+            """,String.class,diagnosticId)).isEqualTo("b".repeat(64));
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM meeting_intelligence_grounding_diagnostic_references
+             WHERE diagnostic_id=?
+            """,Integer.class,diagnosticId)).isEqualTo(2);
+        String persisted=jdbc.queryForObject("""
+            SELECT to_jsonb(d)::text
+              FROM meeting_intelligence_grounding_diagnostics d WHERE d.id=?
+            """,String.class,diagnosticId);
+        assertThat(persisted).doesNotContain("PRIVATE_SUMMARY_PROSE_MARKER", "Agreed action", "\"content\"");
+
+        assertThat(ingest.ingest(stage,digest).replay()).isTrue();
+        assertThat(diagnosticCount()).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM meeting_intelligence_grounding_diagnostic_references r
+             JOIN meeting_intelligence_grounding_diagnostics d ON d.id=r.diagnostic_id
+             WHERE d.meeting_id=?
+            """,Integer.class,meeting)).isEqualTo(2);
+    }
+
+    @Test
+    void structuredClaimDiagnosticsPersistVersionedMetadataAndReplayExactly() throws Exception {
+        var stage=claim("SUMMARY",1);
+        String digest=expose(stage,envelope("SUMMARY",stage,structuredClaimSummary()));
+
+        assertThat(ingest.ingest(stage,digest).replay()).isFalse();
+        UUID diagnosticId=jdbc.queryForObject("""
+            SELECT id FROM meeting_intelligence_grounding_diagnostics
+             WHERE meeting_id=?
+            """,UUID.class,meeting);
+        assertThat(jdbc.queryForObject("""
+            SELECT disposition||':'||reason||':'||diagnostic_version||':'||stage_code
+                ||':'||fingerprint||':'||array_to_string(warning_codes,',')
+              FROM meeting_intelligence_grounding_diagnostics WHERE id=?
+            """,String.class,diagnosticId))
+            .isEqualTo("ACCEPTED:SUPPORTED:1.0:GENERATING_SUMMARY:"+"d".repeat(64)+":");
+        assertThat(jdbc.queryForObject("""
+            SELECT accepted_count||':'||rejected_count||':'||total_count
+              FROM meeting_intelligence_grounding_diagnostic_reconciliations
+             WHERE result_receipt_id=(
+                 SELECT id FROM meeting_intelligence_result_receipts
+                  WHERE processing_job_id=?)
+            """,String.class,job)).isEqualTo("1:0:1");
+        String persisted=jdbc.queryForObject("""
+            SELECT to_jsonb(d)::text
+              FROM meeting_intelligence_grounding_diagnostics d WHERE d.id=?
+            """,String.class,diagnosticId);
+        assertThat(persisted).doesNotContain("PRIVATE_STRUCTURED_SUMMARY_MARKER",
+            "\"content\"");
+
+        assertThat(ingest.ingest(stage,digest).replay()).isTrue();
+        assertThat(diagnosticCount()).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM meeting_intelligence_grounding_diagnostic_reconciliations
+             WHERE result_receipt_id=(
+                 SELECT id FROM meeting_intelligence_result_receipts
+                  WHERE processing_job_id=?)
+            """,Integer.class,job)).isEqualTo(1);
     }
 
     @Test

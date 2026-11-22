@@ -91,6 +91,25 @@ _ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,79}$")
 _MAX_STALE_PERMIT_REACQUISITIONS = 1
 
 
+def _decode_snapshot(raw: bytes) -> KnowledgeSnapshot:
+    payload = strict_json(raw, 8 * 1024 * 1024)
+    if isinstance(payload, dict) and payload.get("snapshotType") == "SUMMARY":
+        content = payload.get("content")
+        warnings = content.get("aiWarnings") if isinstance(content, dict) else None
+        # Older Core split a PostgreSQL array literal on commas. Decode only
+        # that exact shape; keep the original bytes for integrity and receipts.
+        if isinstance(warnings, list) and 1 <= len(warnings) <= 32 and all(
+            isinstance(code, str) for code in warnings
+        ) and warnings[0].startswith("{") and warnings[-1].endswith("}"):
+            decoded = list(warnings)
+            decoded[0] = decoded[0][1:]
+            decoded[-1] = decoded[-1][:-1]
+            if decoded == [""] or all(_ERROR_CODE.fullmatch(code) for code in decoded):
+                content["aiWarnings"] = [] if decoded == [""] else decoded
+                raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+    return validate_snapshot(raw)
+
+
 class KnowledgeWorkerFailure(Exception):
     """A bounded failure that can be represented by the Core result contract."""
 
@@ -296,8 +315,7 @@ class KnowledgeIndexingWorker:
         ):
             raise KnowledgeWorkerFailure("SNAPSHOT_INTEGRITY_INVALID", retryable=False)
         try:
-            strict_json(response.bytes, 8 * 1024 * 1024)
-            snapshot = validate_snapshot(response.bytes)
+            snapshot = _decode_snapshot(response.bytes)
         except (UnicodeDecodeError, ValueError, TypeError, RecursionError, ValidationError, KnowledgeContractError):
             raise KnowledgeWorkerFailure("SNAPSHOT_CONTRACT_INVALID", retryable=False) from None
         metadata = snapshot.metadata

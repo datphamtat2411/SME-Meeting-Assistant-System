@@ -8,8 +8,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
 from contextlib import AsyncExitStack, ExitStack
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
+from decimal import Decimal
 from uuid import uuid4
 
 from sme_meeting_ai.integrations.core_api import CoreError, strict_json
@@ -26,9 +27,10 @@ from sme_meeting_ai.integrations.object_storage import ObjectStorage, StorageErr
 from sme_meeting_ai.meeting_intelligence.action_item_contract import (
     prepare_action_item_request,
 )
-from sme_meeting_ai.meeting_intelligence.action_items import build_action_item_processor
-from sme_meeting_ai.meeting_intelligence.decision import build_decision_processor
-from sme_meeting_ai.meeting_intelligence.errors import IntelligenceError
+from sme_meeting_ai.meeting_intelligence.action_items import build_action_item_processor, prepare_action_items
+from sme_meeting_ai.meeting_intelligence.composition import CallCapacity
+from sme_meeting_ai.meeting_intelligence.decision import build_decision_processor, prepare_decisions
+from sme_meeting_ai.meeting_intelligence.errors import IntelligenceError, require
 from sme_meeting_ai.meeting_intelligence.processor import StageContext
 from sme_meeting_ai.meeting_intelligence.result import ResultError, serialize_result
 from sme_meeting_ai.meeting_intelligence.source import (
@@ -135,6 +137,32 @@ class DurableProviderAttemptLedger:
 
     def __init__(self, loop, core, event, claim):
         self.loop, self.core, self.event, self.claim = loop, core, event, claim
+        self.budget = claim.budget
+        self.usage = self.budget
+        self.downstream: dict[str, CallCapacity] = {}
+
+    def check_capacity(self, current: CallCapacity) -> None:
+        """Keep known current and future work affordable before a physical call."""
+        budget, usage = self.budget, self.usage
+        require(budget is not None and usage is not None, "CONFIGURATION")
+        current_stage = budget.remainingStages[0]
+        consumed = usage.aggregateReservedAttempts - budget.aggregateReservedAttempts
+        for stage, work in self.downstream.items():
+            require(work.calls <= budget.remainingStageAttempts[stage], "CONTEXT_BUDGET")
+        total = sum(self.downstream.values(), current)
+        headroom = Decimal(budget.estimatedCostCeilingUsd) - max(
+            Decimal(usage.aggregateEstimatedCostUsd), Decimal(usage.aggregateReportedCostUsd),
+        )
+        require(
+            consumed + current.calls <= budget.remainingStageAttempts[current_stage]
+            and usage.aggregateReservedAttempts + total.calls <= budget.aggregateAttemptCeiling
+            and usage.aggregateReservedTokens + total.tokens <= budget.reservedTokenCeiling
+            and budget.cost(total.input_tokens, total.output_tokens) <= headroom,
+            "CONTEXT_BUDGET",
+        )
+
+    def _observe(self, response):
+        self.usage = response
 
     @staticmethod
     def _category(error):
@@ -155,6 +183,7 @@ class DurableProviderAttemptLedger:
     def _call(self, operation, deadline):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
+            operation.close()
             raise IntelligenceError("DEADLINE")
         future = asyncio.run_coroutine_threadsafe(operation, self.loop)
         try:
@@ -180,6 +209,7 @@ class DurableProviderAttemptLedger:
         )
         if response.attemptId != attempt_id or response.executionStageRunId != self.claim.executionStageRunId:
             raise IntelligenceError("INTEGRITY")
+        self._observe(response)
         return DurableProviderReservation(attempt_id, request)
 
     def report(self, reservation, *, result=None, category=None):
@@ -203,6 +233,7 @@ class DurableProviderAttemptLedger:
         )
         if response.attemptId != reservation.attempt_id:
             raise IntelligenceError("INTEGRITY")
+        self._observe(response)
         if response.budgetExceeded:
             raise IntelligenceError("CONTEXT_BUDGET")
 
@@ -249,6 +280,16 @@ def production_processors(settings, adapter=None):
     return processors
 
 
+def plan_downstream(context, settings, ledger):
+    require(ledger.budget is not None, "CONFIGURATION")
+    planners = {"EXTRACTING_DECISIONS": prepare_decisions, "EXTRACTING_ACTION_ITEMS": prepare_action_items}
+    ledger.downstream = {
+        stage: planners[stage](replace(context, stage_code=stage, provider_attempts=None),
+                               settings).budget.pending_work
+        for stage in ledger.budget.remainingStages[1:]
+    }
+
+
 class IntelligenceWorker:
     def __init__(self, settings, core, storage, processors):
         self.settings, self.core, self.storage, self.processors = settings, core, storage, dict(processors)
@@ -283,6 +324,8 @@ class IntelligenceWorker:
                 context = StageContext(claim.processingJobId, claim.executionStageRunId, claim.executionStageCode,
                     claim.meetingId, claim.source.snapshotId, claim.source.sha256, claim.source.transcriptId,
                     claim.source.contentRevision, snapshot, deadline, guard.fence, provider_attempts)
+                if provider_attempts is not None:
+                    plan_downstream(context, self.settings, provider_attempts)
                 candidate = processor(context)
                 if guard.fence.is_set() or time.monotonic() >= deadline:
                     raise WorkFailure("INTERRUPTED", "CANCELLED")
@@ -311,6 +354,8 @@ class IntelligenceWorker:
             context = StageContext(claim.processingJobId, claim.executionStageRunId, claim.executionStageCode,
                 claim.meetingId, claim.source.snapshotId, claim.source.sha256, claim.source.transcriptId,
                 claim.source.contentRevision, snapshot, deadline, guard.fence, provider_attempts)
+            if provider_attempts is not None:
+                plan_downstream(context, self.settings, provider_attempts)
             candidate = processor(context)
             if guard.fence.is_set() or time.monotonic() >= deadline:
                 raise WorkFailure("INTERRUPTED", "CANCELLED")

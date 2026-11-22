@@ -767,6 +767,12 @@ def test_openrouter_assistant_enforces_structured_output_and_tracks_usage():
     assert result.provenance.total_tokens == 70
     assert seen[0]["provider"] == {"require_parameters": True, "allow_fallbacks": False}
     assert seen[0]["response_format"]["type"] == "json_schema"
+    wire_schema = seen[0]["response_format"]["json_schema"]
+    assert wire_schema["strict"] is True
+    for definition in (wire_schema["schema"], wire_schema["schema"]["$defs"]["AnswerUnit"]):
+        assert set(definition["required"]) == set(definition["properties"])
+        assert definition["additionalProperties"] is False
+        assert all("default" not in field for field in definition["properties"].values())
     evidence_payload = json.loads(seen[0]["messages"][1]["content"])["evidence"][0]
     assert "source_identity" not in evidence_payload
     assert "source_references" not in evidence_payload

@@ -89,6 +89,25 @@ def _status_category(status: int) -> tuple[str, bool]:
     return "PROVIDER", status in _TRANSIENT_STATUS
 
 
+def _grounded_answer_schema() -> dict[str, object]:
+    """OpenRouter strict output requires every field, including empty arrays."""
+    schema = GeneratedAnswer.model_json_schema(by_alias=True)
+
+    def require_explicit_fields(node):
+        if isinstance(node, dict):
+            node.pop("default", None)
+            if node.get("type") == "object" and "properties" in node:
+                node["required"] = list(node["properties"])
+            for value in node.values():
+                require_explicit_fields(value)
+        elif isinstance(node, list):
+            for value in node:
+                require_explicit_fields(value)
+
+    require_explicit_fields(schema)
+    return schema
+
+
 class OpenRouterAssistantAdapter:
     """One managed async client, bounded retries, and no detached provider tasks."""
 
@@ -300,7 +319,7 @@ class OpenRouterAssistantAdapter:
             system=GROUNDING_SYSTEM_INSTRUCTIONS,
             user=user,
             schema_name="sme_assistant_grounded_answer_v1",
-            schema=GeneratedAnswer.model_json_schema(by_alias=True),
+            schema=_grounded_answer_schema(),
             model=self.config.model,
             output_budget=self.config.max_output_tokens,
             reasoning_effort=self.config.reasoning_effort,

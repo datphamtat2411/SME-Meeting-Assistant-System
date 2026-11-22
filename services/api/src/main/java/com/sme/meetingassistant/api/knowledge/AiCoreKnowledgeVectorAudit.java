@@ -8,14 +8,14 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 /** Core-side client for the AI-owned, read-only Qdrant reconciliation boundary. */
 @Component
-@ConditionalOnBean(AiCoreTransport.class)
+@ConditionalOnProperty(name = "app.transport.ai.enabled", havingValue = "true")
 public class AiCoreKnowledgeVectorAudit implements KnowledgeVectorAudit {
     private static final String PATH = "/internal/v1/knowledge-indexing/reconciliation";
     private static final int MAX_JSON_BYTES = 256 * 1024;

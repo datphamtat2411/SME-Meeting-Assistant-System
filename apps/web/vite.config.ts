@@ -1,4 +1,5 @@
 /// <reference types="vitest/config" />
+import { readFileSync } from 'node:fs'
 import path from 'path'
 import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
@@ -11,6 +12,14 @@ import { localMediaProxy } from './config/local-media-proxy'
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   const proxyTarget = env.VITE_CORE_API_PROXY_TARGET
+  const httpsKeyFile = env.WEB_DEV_HTTPS_KEY_FILE
+  const httpsCertFile = env.WEB_DEV_HTTPS_CERT_FILE
+
+  if ((httpsKeyFile && !httpsCertFile) || (!httpsKeyFile && httpsCertFile)) {
+    throw new Error(
+      'WEB_DEV_HTTPS_KEY_FILE and WEB_DEV_HTTPS_CERT_FILE must be configured together'
+    )
+  }
 
   return {
     plugins: [
@@ -36,6 +45,14 @@ export default defineConfig(({ mode }) => {
       },
     },
     server: {
+      ...(httpsKeyFile && httpsCertFile
+        ? {
+            https: {
+              key: readFileSync(httpsKeyFile),
+              cert: readFileSync(httpsCertFile),
+            },
+          }
+        : {}),
       proxy: {
         ...(proxyTarget && {
           '/api': { target: proxyTarget, changeOrigin: false },

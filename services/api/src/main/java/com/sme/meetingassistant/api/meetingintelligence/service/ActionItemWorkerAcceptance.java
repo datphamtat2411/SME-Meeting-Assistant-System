@@ -3,6 +3,8 @@ package com.sme.meetingassistant.api.meetingintelligence.service;
 import com.sme.meetingassistant.api.actionitem.service.ActionItemProposalSink;
 import com.sme.meetingassistant.api.media.intelligence.IntelligenceWorkerService;
 import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle.StageClaim;
+import com.sme.meetingassistant.api.meetingintelligence.service.IntelligenceResultPayload.GroundingDiagnostic;
+import com.sme.meetingassistant.api.meetingintelligence.service.IntelligenceResultPayload.GroundingDiagnosticCounts;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
@@ -25,7 +27,21 @@ public class ActionItemWorkerAcceptance {
     public ActionItemProposalSink.Receipt accept(UUID event,StageClaim claim,
             ActionItemProposalHandoff.SourceReference source,List<ActionItemProposalSink.Candidate> candidates,String peer,
             boolean groundingWarning) {
+        return accept(event,claim,source,candidates,peer,
+            groundingWarning ? AiQualityMetadata.CLAIM_DISCARDED : null,List.of());
+    }
+    @Transactional
+    public ActionItemProposalSink.Receipt accept(UUID event,StageClaim claim,
+            ActionItemProposalHandoff.SourceReference source,List<ActionItemProposalSink.Candidate> candidates,String peer,
+            String groundingWarning, List<GroundingDiagnostic> diagnostics) {
+        return accept(event,claim,source,candidates,peer,groundingWarning,diagnostics,null);
+    }
+    @Transactional
+    public ActionItemProposalSink.Receipt accept(UUID event,StageClaim claim,
+            ActionItemProposalHandoff.SourceReference source,List<ActionItemProposalSink.Candidate> candidates,String peer,
+            String groundingWarning, List<GroundingDiagnostic> diagnostics,
+            GroundingDiagnosticCounts diagnosticCounts) {
         worker.requireActionItemOwner(event,claim,source.snapshotId(),peer);
-        return handoff.handoff(claim,source,candidates,groundingWarning);
+        return handoff.handoff(claim,source,candidates,groundingWarning,diagnostics,diagnosticCounts);
     }
 }

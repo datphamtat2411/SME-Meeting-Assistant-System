@@ -27,16 +27,19 @@ public class IntelligenceResultAcceptance {
     private final MeetingIntelligenceAudit audit;
     private final MeetingIntelligenceMetrics metrics;
     private final KnowledgeIndexingProducer knowledge;
+    private final GroundingDiagnosticPersistence diagnosticPersistence;
 
     public IntelligenceResultAcceptance(JdbcTemplate jdbc, ProcessingJobLifecycle media,
             TranscriptSourceGuard transcript, MeetingIntelligenceAudit audit,
-            MeetingIntelligenceMetrics metrics, KnowledgeIndexingProducer knowledge) {
+            MeetingIntelligenceMetrics metrics, KnowledgeIndexingProducer knowledge,
+            GroundingDiagnosticPersistence diagnosticPersistence) {
         this.jdbc = jdbc;
         this.media = media;
         this.transcript = transcript;
         this.audit = audit;
         this.metrics = metrics;
         this.knowledge = knowledge;
+        this.diagnosticPersistence = diagnosticPersistence;
     }
 
     public record Acceptance(boolean replay, int writtenRows) { }
@@ -127,7 +130,11 @@ public class IntelligenceResultAcceptance {
             payload.resultType(),source.id(),source.transcript(),source.revision(),
             artifact.sha256(),artifact.objectKey(),artifact.sizeBytes(),
             payload.producer().model(),payload.producer().promptVersion(),
-            payload.producer().provider(),AiQualityMetadata.pgArray(payload.warnings()));
+             payload.producer().provider(),AiQualityMetadata.pgArray(payload.warnings()));
+        diagnosticPersistence.persistForResult(stage.meetingId(), receiptId,
+            new GroundingDiagnosticPersistence.Source(source.id(), source.transcript(),
+                source.revision(), source.sha()), payload.diagnostics(),
+            payload.diagnosticCounts());
 
         int written;
         if ("SUMMARY".equals(payload.resultType())) {

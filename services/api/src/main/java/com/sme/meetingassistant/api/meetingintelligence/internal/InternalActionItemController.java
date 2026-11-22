@@ -41,7 +41,7 @@ public class InternalActionItemController {
         if(request.getContentLengthLong()>MAX_BYTES) throw new WorkerException(413,"PAYLOAD_TOO_LARGE");
         var input=ActionItemAcceptanceRequest.parse(WorkerJson.parse(request.getInputStream().readNBytes(MAX_BYTES+1),MAX_BYTES));
         var receipt=acceptance.accept(input.eventId(),input.claim(),input.source(),input.candidates(),peer,
-            input.groundingWarning());
+            input.groundingWarningCode(),input.diagnostics(),input.diagnosticCounts());
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(responses.success(new Accepted("1.0",
             input.eventId(),input.claim().stageRunId(),input.source().snapshotId(),receipt.replay(),receipt.newProposals())));
     }

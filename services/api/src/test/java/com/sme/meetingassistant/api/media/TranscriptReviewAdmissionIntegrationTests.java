@@ -216,6 +216,11 @@ class TranscriptReviewAdmissionIntegrationTests {
             String.class, child)).containsExactlyInAnyOrder("GENERATING_SUMMARY", "EXTRACTING_DECISIONS", "EXTRACTING_ACTION_ITEMS");
         assertThat(jdbc.queryForList("SELECT event_type FROM outbox_events WHERE aggregate_id=?", String.class, child))
             .containsExactly("PROCESSING_INTELLIGENCE_STAGE_REQUESTED");
+        assertThat(jdbc.queryForObject("""
+            SELECT reserved_attempts FROM processing_intelligence_budgets WHERE processing_job_id=?
+            """, Integer.class, child)).isZero();
+        mvc.perform(post(path).principal(as(organizer)).header("Idempotency-Key", "another-regeneration")
+            .contentType(MediaType.APPLICATION_JSON).content(body)).andExpect(status().isConflict());
         assertThat(jdbc.queryForObject("SELECT count(*) FROM processing_job_transcript_reviews WHERE processing_job_id=?",
             Integer.class, child)).isZero();
         mvc.perform(post(path).principal(as(organizer)).header("Idempotency-Key", "regenerate")

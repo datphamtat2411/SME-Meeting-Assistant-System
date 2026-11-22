@@ -63,12 +63,14 @@ public class IntelligenceWorkerTransactions {
         } else {
             var claim=lifecycle.startIntelligenceWorkerStage(job,d.stage(),d.code());
             if(!claim.stageRunId().equals(d.stage())) throw WorkerException.conflict("WORKER_IDENTITY_CONFLICT");
-            repository.ensureBudget(job,limits());
+            // Existing dispatches may predate admission-time budgeting.
+            repository.ensureBudget(job,properties.getIntelligence());
             repository.insertClaim(d,command,peer,source.snapshotId());
         }
         d=repository.delivery(job,d.event());
         var response=base(d);response.put("eventType","PROCESSING_INTELLIGENCE_STAGE_REQUESTED");response.put("eventSchemaVersion",d.schema());
         response.put("meetingId",d.meeting());response.put("sourceMediaId",d.media());response.put("claimToken",d.token());response.putAll(lease(d));
+        response.put("budget", claimBudget(job, repository.budget(job)));
         response.put("source",Map.of("snapshotId",source.snapshotId(),"storageId",capability.storageId(),"objectKey",source.objectKey(),
             "sha256",source.sha256(),"sizeBytes",source.sizeBytes(),"transcriptId",source.transcriptId(),"contentRevision",source.contentRevision(),"schemaVersion",1));
         if(!"EXTRACTING_ACTION_ITEMS".equals(d.code())) response.put("resultSlot",Map.of("storageId",capability.storageId(),
@@ -113,7 +115,6 @@ public class IntelligenceWorkerTransactions {
         if(!d.code().equals(command.executionStageCode())) throw WorkerException.conflict("WORKER_IDENTITY_CONFLICT");
         capability.requireStage(d.code());
         owner(d,command.owner(),peer,true);
-        repository.ensureBudget(job,limits());
         var budget=repository.budget(job);
         var fingerprint=IntelligenceCommands.fingerprint(command);
         var existing=repository.providerAttempt(command.attemptId());
@@ -159,7 +160,6 @@ public class IntelligenceWorkerTransactions {
         if(!d.code().equals(command.executionStageCode())) throw WorkerException.conflict("WORKER_IDENTITY_CONFLICT");
         capability.requireStage(d.code());
         owner(d,command.owner(),peer,true);
-        repository.ensureBudget(job,limits());
         var a=repository.providerAttempt(command.attemptId())
             .orElseThrow(()->WorkerException.conflict("WORKER_ATTEMPT_NOT_FOUND"));
         if(!a.job().equals(job) || !a.event().equals(command.eventId())
@@ -188,14 +188,23 @@ public class IntelligenceWorkerTransactions {
         var c=owner(d,new IntelligenceCommands.Owner(event,claim.stageRunId(),claim.claimToken()),peer,true);
         if(!c.snapshot().equals(snapshot)) throw WorkerException.conflict("WORKER_IDENTITY_CONFLICT");
     }
-    private IntelligenceWorkerRepository.BudgetLimits limits() {
-        var p=properties.getIntelligence();
-        if (!p.validBudget())
-            throw WorkerException.conflict("WORKER_BUDGET_CONFIGURATION_CONFLICT");
-        return new IntelligenceWorkerRepository.BudgetLimits(p.getSummaryAttemptCeiling(),
-            p.getDecisionAttemptCeiling(),p.getActionItemAttemptCeiling(),p.getAggregateAttemptCeiling(),
-            p.getReservedTokenCeiling(),p.getEstimatedCostCeilingUsd(),p.getInputCostPerMillionUsd(),
-            p.getOutputCostPerMillionUsd());
+    private Map<String,Object> claimBudget(UUID job, Budget b) {
+        var stages = repository.remainingStages(job);
+        var available = Map.of("GENERATING_SUMMARY", b.summaryCeiling()-b.summaryAttempts(),
+            "EXTRACTING_DECISIONS", b.decisionCeiling()-b.decisionAttempts(),
+            "EXTRACTING_ACTION_ITEMS", b.actionItemCeiling()-b.actionItemAttempts());
+        Map<String,Integer> remaining = new LinkedHashMap<>();
+        stages.forEach(stage -> remaining.put(stage, available.get(stage)));
+        return Map.ofEntries(
+            Map.entry("remainingStages",stages),Map.entry("remainingStageAttempts",remaining),
+            Map.entry("aggregateAttemptCeiling",b.aggregateCeiling()),
+            Map.entry("aggregateReservedAttempts",b.reservedAttempts()),
+            Map.entry("reservedTokenCeiling",b.tokenCeiling()),Map.entry("aggregateReservedTokens",b.reservedTokens()),
+            Map.entry("estimatedCostCeilingUsd",money(b.costCeiling())),
+            Map.entry("aggregateEstimatedCostUsd",money(b.estimatedCost())),
+            Map.entry("aggregateReportedCostUsd",money(b.reportedCost())),
+            Map.entry("inputCostPerMillionUsd",money(b.inputCost())),
+            Map.entry("outputCostPerMillionUsd",money(b.outputCost())));
     }
     private void validateUsage(IntelligenceWorkerRepository.ProviderAttempt a,IntelligenceCommands.AttemptReport c) {
         boolean complete=c.inputTokens()!=null && c.outputTokens()!=null && c.totalTokens()!=null;

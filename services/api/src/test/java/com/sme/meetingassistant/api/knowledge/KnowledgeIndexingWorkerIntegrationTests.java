@@ -37,6 +37,7 @@ import static org.mockito.Mockito.doReturn;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
 
 @ActiveProfiles("test")
 @SpringBootTest(properties = "app.media.processing.stage-lease-sweep-enabled=false")
@@ -143,6 +144,10 @@ class KnowledgeIndexingWorkerIntegrationTests {
         completePermit(eventId, "UPSERT", token, certificate, "SUCCEEDED", "NONE");
         var accepted = worker.result(eventId, result, certificate);
         assertThat(accepted).containsEntry("state", "INDEXED").containsEntry("acknowledge", true);
+        // A normal receipt certifies the fenced worker operation and reported
+        // chunk count. Remote vector inventory is reserved for reconciliation
+        // and generation certification, not every successful write.
+        verifyNoInteractions(vectorAudit);
 
         var replay = worker.result(eventId, result, certificate);
         assertThat(replay).containsEntry("state", "INDEXED").containsEntry("acknowledge", true)
@@ -681,7 +686,7 @@ class KnowledgeIndexingWorkerIntegrationTests {
 
     @Test
     @Transactional
-    void summarySelectionEpochCreatesAFreshImmutableIndexSnapshot() {
+    void summarySelectionEpochPreservesLegacySnapshotAndWritesCanonicalWarningsForNewSnapshot() {
         UUID actor = UUID.randomUUID();
         UUID meeting = UUID.randomUUID();
         UUID media = UUID.randomUUID();
@@ -736,18 +741,41 @@ class KnowledgeIndexingWorkerIntegrationTests {
         jdbc.update("""
             INSERT INTO meeting_summary_versions(id,meeting_id,version_number,content,
                 source_type,processing_job_id,result_receipt_id,transcript_id,
-                content_revision,quality_status,is_current)
-            VALUES (?,?,1,'Selection epoch summary','AI_GENERATED',?,?,?,0,'READY',TRUE)
+                content_revision,quality_status,is_current,ai_warning_codes)
+            VALUES (?,?,1,'Selection epoch summary','AI_GENERATED',?,?,?,0,'READY_WITH_WARNINGS',TRUE,
+                ARRAY['INCOMPLETE_COVERAGE','UNRESOLVED_EVIDENCE'])
             """, summary, meeting, job, receipt, transcript);
 
         enableKnowledgeIndexing();
+        Object candidate = org.springframework.test.util.ReflectionTestUtils.invokeMethod(
+            producer, "summary", summary, meeting);
+        byte[] candidateBytes = org.springframework.test.util.ReflectionTestUtils.invokeMethod(
+            candidate, "snapshotBytes");
+        var legacyPayload = objectMapper.readTree(candidateBytes);
+        UUID legacyId = UUID.fromString(legacyPayload.path("metadata").path("snapshotId").asString());
+        var legacyWarnings = (tools.jackson.databind.node.ArrayNode) legacyPayload.path("content").path("aiWarnings");
+        legacyWarnings.removeAll().add("{INCOMPLETE_COVERAGE").add("UNRESOLVED_EVIDENCE}");
+        byte[] legacyBytes = objectMapper.writeValueAsBytes(legacyPayload);
+        String legacyDigest = com.sme.meetingassistant.api.media.worker.WorkerJson.sha256(legacyBytes);
+        jdbc.update("""
+            INSERT INTO knowledge_source_snapshots(id,meeting_id,source_type,source_id,source_revision,payload,sha256,size_bytes)
+            VALUES (?,?,'SUMMARY',?,1,?,?,?)
+            """, legacyId, meeting, summary, legacyBytes, legacyDigest, legacyBytes.length);
+
         var first = producer.request("SUMMARY", summary, meeting).orElseThrow();
+        assertThat(first.snapshotId()).isEqualTo(legacyId);
+        assertThat(first.snapshotSha256()).isEqualTo(legacyDigest);
         jdbc.update("UPDATE meeting_summary_versions SET is_current=FALSE WHERE id=?", summary);
         jdbc.update("UPDATE meeting_summary_versions SET is_current=TRUE,selection_epoch=1 WHERE id=?", summary);
 
         var second = producer.request("SUMMARY", summary, meeting).orElseThrow();
         assertThat(second.sourceRevision()).isEqualTo(first.sourceRevision());
         assertThat(second.snapshotId()).isNotEqualTo(first.snapshotId());
+        byte[] canonicalBytes = jdbc.queryForObject("SELECT payload FROM knowledge_source_snapshots WHERE id=?",
+            byte[].class, second.snapshotId());
+        assertThat(objectMapper.readTree(canonicalBytes).path("content").path("aiWarnings"))
+            .extracting(tools.jackson.databind.JsonNode::asString)
+            .containsExactly("INCOMPLETE_COVERAGE", "UNRESOLVED_EVIDENCE");
         assertThat(jdbc.queryForObject("""
             SELECT COUNT(*) FROM knowledge_source_snapshots
              WHERE source_type='SUMMARY' AND source_id=? AND source_revision=?

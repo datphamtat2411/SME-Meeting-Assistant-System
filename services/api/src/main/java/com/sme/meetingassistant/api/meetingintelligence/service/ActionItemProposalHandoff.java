@@ -9,6 +9,7 @@ import com.sme.meetingassistant.api.media.service.ProcessingJobLifecycle.StageCl
 import com.sme.meetingassistant.api.transcript.service.TranscriptSourceGuard;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.HttpStatus;
@@ -17,6 +18,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 import tools.jackson.databind.ObjectMapper;
+import com.sme.meetingassistant.api.meetingintelligence.service.IntelligenceResultPayload.GroundingDiagnostic;
+import com.sme.meetingassistant.api.meetingintelligence.service.IntelligenceResultPayload.GroundingDiagnosticCounts;
 
 /**
  * MI-10: strictly internal handoff to the *Action Items-owned* canonical
@@ -32,24 +35,35 @@ public class ActionItemProposalHandoff {
     private final ObjectProvider<ActionItemProposalSink> sinks;
     private final ObjectMapper mapper;
     private final MediaProperties properties;
+    private final GroundingDiagnosticPersistence diagnosticPersistence;
 
     /** Kept for isolated legacy port tests with the feature intentionally disabled. */
     public ActionItemProposalHandoff(JdbcTemplate jdbc, ProcessingJobLifecycle media,
             TranscriptSourceGuard transcripts, ObjectProvider<ActionItemProposalSink> sinks,
             ObjectMapper mapper) {
-        this(jdbc,media,transcripts,sinks,mapper,new MediaProperties());
+        this(jdbc,media,transcripts,sinks,mapper,new MediaProperties(),
+            new GroundingDiagnosticPersistence(jdbc,transcripts));
+    }
+
+    public ActionItemProposalHandoff(JdbcTemplate jdbc, ProcessingJobLifecycle media,
+            TranscriptSourceGuard transcripts, ObjectProvider<ActionItemProposalSink> sinks,
+            ObjectMapper mapper, MediaProperties properties) {
+        this(jdbc,media,transcripts,sinks,mapper,properties,
+            new GroundingDiagnosticPersistence(jdbc,transcripts));
     }
 
     @Autowired
     public ActionItemProposalHandoff(JdbcTemplate jdbc, ProcessingJobLifecycle media,
             TranscriptSourceGuard transcripts, ObjectProvider<ActionItemProposalSink> sinks,
-            ObjectMapper mapper, MediaProperties properties) {
+            ObjectMapper mapper, MediaProperties properties,
+            GroundingDiagnosticPersistence diagnosticPersistence) {
         this.jdbc = jdbc;
         this.media = media;
         this.transcripts = transcripts;
         this.sinks = sinks;
         this.mapper = mapper;
         this.properties = properties;
+        this.diagnosticPersistence = diagnosticPersistence;
     }
 
     /**
@@ -61,17 +75,36 @@ public class ActionItemProposalHandoff {
     @Transactional
     public ActionItemProposalSink.Receipt handoff(StageClaim claim, SourceReference source,
             List<ActionItemProposalSink.Candidate> candidates) {
-        return handoff(claim, source, candidates, false);
+        return handoff(claim, source, candidates, null, List.of());
     }
 
     @Transactional
     public ActionItemProposalSink.Receipt handoff(StageClaim claim, SourceReference source,
             List<ActionItemProposalSink.Candidate> candidates, boolean groundingWarning) {
+        return handoff(claim, source, candidates,
+            groundingWarning ? AiQualityMetadata.CLAIM_DISCARDED : null, List.of());
+    }
+
+    @Transactional
+    public ActionItemProposalSink.Receipt handoff(StageClaim claim, SourceReference source,
+            List<ActionItemProposalSink.Candidate> candidates, String groundingWarning,
+            List<GroundingDiagnostic> diagnostics) {
+        return handoff(claim, source, candidates, groundingWarning, diagnostics, null);
+    }
+
+    @Transactional
+    public ActionItemProposalSink.Receipt handoff(StageClaim claim, SourceReference source,
+            List<ActionItemProposalSink.Candidate> candidates, String groundingWarning,
+            List<GroundingDiagnostic> diagnostics, GroundingDiagnosticCounts diagnosticCounts) {
         if (claim == null || claim.stageRunId() == null || claim.claimToken() == null
                 || source == null || source.snapshotId() == null
                 || source.transcriptId() == null || source.contentRevision() < 0
                 || source.sha256() == null || !source.sha256().matches("[0-9a-f]{64}")) {
             throw new IllegalArgumentException("Trusted source and Media stage claim are required.");
+        }
+        if (groundingWarning != null && !Set.of(AiQualityMetadata.CLAIM_DISCARDED,
+                AiQualityMetadata.CLAIM_REPAIRED).contains(groundingWarning)) {
+            throw new IllegalArgumentException("Invalid Action Item grounding warning.");
         }
         if (!properties.getProcessing().isActionItemHandoffEnabled()) {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
@@ -142,14 +175,33 @@ public class ActionItemProposalHandoff {
         if (!sink.hasAcceptedBatch(stage.jobId(),claim.stageRunId())) {
             throw new IllegalStateException("Action Items sink did not persist batch acceptance.");
         }
+        if (diagnosticCounts != null || diagnostics != null && !diagnostics.isEmpty()) {
+            UUID batchReceiptId = jdbc.queryForObject("""
+                SELECT id FROM action_item_batch_receipts
+                 WHERE processing_job_id=? AND stage_run_id=?
+                """, UUID.class, stage.jobId(), claim.stageRunId());
+            if (batchReceiptId == null) {
+                throw new IllegalStateException("Action Items sink did not expose its acceptance receipt.");
+            }
+            if (diagnosticCounts == null) {
+                diagnosticPersistence.persistForActionItemBatch(stage.meetingId(), batchReceiptId,
+                    new GroundingDiagnosticPersistence.Source(source.snapshotId(), source.transcriptId(),
+                        source.contentRevision(), source.sha256()), diagnostics);
+            } else {
+                diagnosticPersistence.persistForActionItemBatch(stage.meetingId(), batchReceiptId,
+                    new GroundingDiagnosticPersistence.Source(source.snapshotId(), source.transcriptId(),
+                        source.contentRevision(), source.sha256()), diagnostics == null
+                            ? List.of() : diagnostics, diagnosticCounts);
+            }
+        }
         // A replay can happen when the owning Action Items sink already
         // accepted the batch but this stage still awaits final completion.
         // Completing with the same live claim is safe; a fully completed
         // stage fails the live-claim check before reaching this method.
         // The DB transaction also rolls back newly written proposals if
         // Media's final stage fencing rejects completion.
-        media.completeStage(claim, groundingWarning ? "SUCCEEDED_WITH_WARNING" : "SUCCEEDED",
-            groundingWarning ? AiQualityMetadata.CLAIM_DISCARDED : null, null);
+        media.completeStage(claim, groundingWarning == null ? "SUCCEEDED" : "SUCCEEDED_WITH_WARNING",
+            groundingWarning, null);
         return receipt;
     }
 

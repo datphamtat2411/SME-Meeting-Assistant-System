@@ -9,7 +9,7 @@ public final class AiQualityMetadata {
         "UNRESOLVED_EVIDENCE","SUSPICIOUS_EVIDENCE","SOURCE_QUALITY_WARNING",
         "GROUNDING_CLAIM_DISCARDED","GROUNDING_CLAIM_REPAIRED");
     public static final String CLAIM_DISCARDED = "GROUNDING_CLAIM_DISCARDED";
-    static final String CLAIM_REPAIRED = "GROUNDING_CLAIM_REPAIRED";
+    public static final String CLAIM_REPAIRED = "GROUNDING_CLAIM_REPAIRED";
 
     static String stageGroundingWarning(List<String> warnings) {
         if (warnings.contains(CLAIM_DISCARDED)) return CLAIM_DISCARDED;

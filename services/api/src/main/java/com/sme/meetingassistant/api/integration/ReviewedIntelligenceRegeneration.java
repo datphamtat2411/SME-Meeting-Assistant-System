@@ -96,10 +96,9 @@ public class ReviewedIntelligenceRegeneration {
                     if (!current.sourceMediaId().equals(source.mediaId()) || !current.transcriptId().equals(source.transcriptId())
                             || current.contentRevision()!=source.contentRevision() || !digest.equals(current.correctionDigest())
                             || !reviewId.equals(requireReview(locked, request, digest))) throw stale();
-                    derived.requireCapacity(actor, origin.meetingId());
-                    if (media.findMedia(origin.sourceMediaId()).filter(m -> "AVAILABLE".equals(m.status())).isEmpty())
-                        throw stale();
-                    media.insertReviewedIntelligenceJob(jobId, locked, actor, reviewId);
+                     if (media.findMedia(origin.sourceMediaId()).filter(m -> "AVAILABLE".equals(m.status())).isEmpty())
+                         throw stale();
+                     derived.admitReviewed(jobId, locked, actor, reviewId);
                     jdbc.update("""
                         INSERT INTO meeting_intelligence_source_snapshots
                             (id,meeting_id,source_media_id,processing_job_id,transcript_id,

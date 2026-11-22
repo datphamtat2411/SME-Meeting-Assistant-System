@@ -75,6 +75,11 @@ class PrivateMetricsConfigurationTests {
             assertThat(client.send(HttpRequest.newBuilder(URI.create("http://localhost:"+server.getPort()+"/internal/monitoring/prometheus")).GET().build(),HttpResponse.BodyHandlers.ofString()).statusCode()).isEqualTo(403);
         } finally {server.stop();server.destroy();}
     }
+    @Test void secureTransportConfigurationIsAbsentFromNonWebBootstrapContexts() {
+        new ApplicationContextRunner().withUserConfiguration(SecureTransportConfiguration.class).run(context -> {
+            assertThat(context).hasNotFailed().doesNotHaveBean(SecureTransportConfiguration.class);
+        });
+    }
     @ParameterizedTest @ValueSource(strings={"0.0.0.0","::","8.8.8.8","localhost",""})
     void exporterRequiresAnExplicitPrivateNetworkBind(String address) {
         var env=new MockEnvironment().withProperty("app.monitoring.private.enabled","true")

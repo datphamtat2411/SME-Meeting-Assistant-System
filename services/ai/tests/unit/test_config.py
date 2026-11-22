@@ -937,7 +937,7 @@ def test_meeting_intelligence_defaults_match_gpt6_high_reasoning_rollout():
         "meeting_intelligence_model": "openai/gpt-6-luna",
         "meeting_intelligence_reasoning_effort": "high",
         "meeting_intelligence_context_window_tokens": 131072,
-        "meeting_intelligence_max_input_tokens": 24000,
+        "meeting_intelligence_max_input_tokens": 48000,
         "meeting_intelligence_max_output_tokens": 8192,
         "meeting_intelligence_max_total_inference_tokens": 2000000,
         "meeting_intelligence_provider_timeout_seconds": 120,

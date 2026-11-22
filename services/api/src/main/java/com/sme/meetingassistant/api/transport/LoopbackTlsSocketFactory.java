@@ -78,6 +78,17 @@ public final class LoopbackTlsSocketFactory extends SSLSocketFactory {
                 && socket.getInetAddress().isLoopbackAddress();
     }
 
+    @Override
+    public Socket createSocket() throws IOException {
+        try {
+            // Rabbit's frame handler creates an unconnected TLS socket and
+            // connects it to the resolved address itself.
+            return configure((SSLSocket) delegate.createSocket());
+        } catch (ClassCastException error) {
+            throw new IOException("TLS provider returned a non-TLS socket", error);
+        }
+    }
+
     private SSLSocket layer(Socket socket, String requested, int port, boolean autoClose)
             throws IOException {
         requireRequestedPeer(requested);
