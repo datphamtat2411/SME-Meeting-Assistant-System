@@ -17,6 +17,7 @@ export interface CalendarPageAggregate {
   loadedCount: number
   totalCount: number | undefined
   hasMore: boolean
+  isInconsistent: boolean
 }
 
 function calendarMeetingSearch(
@@ -92,10 +93,23 @@ export function aggregateCalendarPages(
 
   const meetings = [...uniqueMeetings.values()].sort(compareMeetings)
   const lastPage = pages?.[pages.length - 1]
+  const totalCount = lastPage?.pagination.totalElements
+  const hasMore = lastPage?.pagination.hasNext ?? false
+  const reportedTotalsDisagree = Boolean(
+    totalCount !== undefined &&
+    pages?.some((page) => page.pagination.totalElements !== totalCount)
+  )
+
   return {
     meetings,
     loadedCount: meetings.length,
-    totalCount: lastPage?.pagination.totalElements,
-    hasMore: lastPage?.pagination.hasNext ?? false,
+    totalCount,
+    hasMore,
+    isInconsistent: Boolean(
+      lastPage &&
+      !hasMore &&
+      (reportedTotalsDisagree ||
+        (totalCount !== undefined && meetings.length !== totalCount))
+    ),
   }
 }

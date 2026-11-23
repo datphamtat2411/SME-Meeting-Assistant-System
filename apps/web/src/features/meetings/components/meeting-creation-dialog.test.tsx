@@ -92,6 +92,32 @@ function ControlledMeetingDialog() {
   )
 }
 
+function ContextualMeetingDialog({
+  initialScheduleDate = '2026-11-17',
+  onCommitted,
+}: {
+  initialScheduleDate?: string
+  onCommitted?: (meeting: {
+    meetingId: string
+    status: 'DRAFT' | 'SCHEDULED'
+  }) => void
+}) {
+  const [open, setOpen] = useState(false)
+  return (
+    <>
+      <button type='button' onClick={() => setOpen(true)}>
+        Open contextual meeting
+      </button>
+      <MeetingCreationDialog
+        open={open}
+        onOpenChange={setOpen}
+        initialScheduleDate={initialScheduleDate}
+        onCommitted={onCommitted}
+      />
+    </>
+  )
+}
+
 function createQueryClient() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -171,6 +197,129 @@ describe('MeetingCreationDialog', () => {
       expect.objectContaining({ status: 'DRAFT', meetingId: 'meeting-1' })
     )
     expect(onOpenChange).toHaveBeenCalledWith(false)
+  })
+
+  it('prefills only local dates on a fresh contextual open and preserves edited dates', async () => {
+    mockRoomQueries()
+    const queryClient = createQueryClient()
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <ContextualMeetingDialog />
+      </QueryClientProvider>
+    )
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Open contextual meeting' })
+    )
+    await expect
+      .element(screen.getByLabelText('Date', { exact: true }))
+      .toHaveValue('2026-11-17')
+    await expect
+      .element(screen.getByLabelText('End date'))
+      .toHaveValue('2026-11-17')
+    await expect.element(screen.getByLabelText('Start time')).toHaveValue('')
+    await expect.element(screen.getByLabelText('End time')).toHaveValue('')
+
+    await userEvent.fill(
+      screen.getByLabelText('Date', { exact: true }),
+      '2026-11-19'
+    )
+    await screen.rerender(
+      <QueryClientProvider client={queryClient}>
+        <ContextualMeetingDialog initialScheduleDate='2026-11-18' />
+      </QueryClientProvider>
+    )
+    await expect
+      .element(screen.getByLabelText('Date', { exact: true }))
+      .toHaveValue('2026-11-19')
+  })
+
+  it('keeps date-only prefill out of draft payloads and requires a full schedule interval', async () => {
+    mockRoomQueries()
+    const createSpy = vi
+      .spyOn(coreApi, 'postWithMetaAndEtag')
+      .mockResolvedValue({ data: draftMeeting, meta: {}, etag: 'draft-etag' })
+    const postSpy = vi.spyOn(coreApi, 'post')
+    const onCommitted = vi.fn()
+    const screen = await render(
+      <QueryClientProvider client={createQueryClient()}>
+        <ContextualMeetingDialog onCommitted={onCommitted} />
+      </QueryClientProvider>
+    )
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Open contextual meeting' })
+    )
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Title' }),
+      'Contextual draft'
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Save Draft' }))
+    await expect
+      .element(screen.getByRole('button', { name: 'Open contextual meeting' }))
+      .toBeInTheDocument()
+    expect(onCommitted).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'DRAFT', meetingId: 'meeting-1' })
+    )
+    expect(createSpy).toHaveBeenCalledWith(
+      '/meetings',
+      { title: 'Contextual draft' },
+      expect.anything()
+    )
+    expect(createSpy.mock.calls[0]?.[1]).not.toHaveProperty('scheduledStartAt')
+    expect(createSpy.mock.calls[0]?.[1]).not.toHaveProperty('scheduledEndAt')
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Open contextual meeting' })
+    )
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Title' }),
+      'Incomplete schedule'
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Create & Schedule' })
+    )
+    await expect
+      .element(
+        screen.getByText(
+          'A complete date and time interval is required to schedule.'
+        )
+      )
+      .toBeInTheDocument()
+    expect(postSpy).not.toHaveBeenCalled()
+    expect(createSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('ignores an invalid contextual local date and preserves ordinary dialog defaults', async () => {
+    mockRoomQueries()
+    function InvalidContextDialog() {
+      const [open, setOpen] = useState(false)
+      return (
+        <>
+          <button type='button' onClick={() => setOpen(true)}>
+            Open without a valid date
+          </button>
+          <MeetingCreationDialog
+            open={open}
+            onOpenChange={setOpen}
+            initialScheduleDate='2026-02-30'
+          />
+        </>
+      )
+    }
+    const screen = await render(
+      <QueryClientProvider client={createQueryClient()}>
+        <InvalidContextDialog />
+      </QueryClientProvider>
+    )
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Open without a valid date' })
+    )
+    await expect
+      .element(screen.getByLabelText('Date', { exact: true }))
+      .toHaveValue('')
+    await expect.element(screen.getByLabelText('End date')).toHaveValue('')
   })
 
   it('selects returned candidates, preserves them across searches, and submits their IDs', async () => {

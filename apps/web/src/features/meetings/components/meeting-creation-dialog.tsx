@@ -74,6 +74,25 @@ import {
 } from './meeting-scheduling-controls'
 import { SelectedRoomSchedulePreview } from './selected-room-schedule-preview'
 
+function isValidLocalDateKey(value: unknown): value is string {
+  if (typeof value !== 'string') return false
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
+  if (!match) return false
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  if (year < 1 || year > 9999 || month < 1 || month > 12) return false
+
+  const date = new Date(0)
+  date.setFullYear(year, month - 1, day)
+  date.setHours(0, 0, 0, 0)
+  return (
+    date.getFullYear() === year &&
+    date.getMonth() === month - 1 &&
+    date.getDate() === day
+  )
+}
+
 const meetingFormSchema = z
   .object({
     title: z.string().trim().min(1, 'Title is required.').max(255),
@@ -84,12 +103,19 @@ const meetingFormSchema = z
     endTime: z.string(),
     roomId: z.string(),
     participantIds: z.array(z.string()),
+    dateOnlyPrefill: z.boolean(),
   })
   .superRefine((values, context) => {
+    const hasDateOnlyPrefill =
+      values.dateOnlyPrefill &&
+      !values.startTime &&
+      !values.endTime &&
+      isValidLocalDateKey(values.date) &&
+      values.endDate === values.date
     const hasScheduleInput = Boolean(
       values.date || values.endDate || values.startTime || values.endTime
     )
-    if (!hasScheduleInput) return
+    if (!hasScheduleInput || hasDateOnlyPrefill) return
 
     if (!values.date) {
       context.addIssue({
@@ -182,6 +208,7 @@ type SchedulingCandidate = Readonly<{
 export type MeetingCreationDialogProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
+  initialScheduleDate?: string
   onCommitted?: (meeting: CommittedMeeting) => void
 }
 
@@ -194,11 +221,13 @@ const initialFormValues: MeetingFormValues = {
   endTime: '',
   roomId: '',
   participantIds: [],
+  dateOnlyPrefill: false,
 }
 
 export function MeetingCreationDialog({
   open,
   onOpenChange,
+  initialScheduleDate,
   onCommitted,
 }: MeetingCreationDialogProps) {
   const queryClient = useQueryClient()
@@ -224,7 +253,7 @@ export function MeetingCreationDialog({
   const [creationIntent, setCreationIntent] =
     useState<MeetingCreationIntent | null>(null)
   const idempotencyKey = useRef<string | null>(null)
-  const wasOpen = useRef(open)
+  const wasOpen = useRef(false)
   const operationInFlight = useRef(false)
   const resetOnClose = useRef(false)
   const notifiedTransitions = useRef(new Set<string>())
@@ -310,7 +339,29 @@ export function MeetingCreationDialog({
   )
 
   useEffect(() => {
-    if (!open && wasOpen.current) {
+    if (open && !wasOpen.current) {
+      if (
+        isValidLocalDateKey(initialScheduleDate) &&
+        phase === 'idle' &&
+        !creationIntent &&
+        !draftRecovery &&
+        !pendingScheduleCandidate &&
+        !operationInFlight.current
+      ) {
+        form.setValue('date', initialScheduleDate, {
+          shouldDirty: false,
+          shouldValidate: false,
+        })
+        form.setValue('endDate', initialScheduleDate, {
+          shouldDirty: false,
+          shouldValidate: false,
+        })
+        form.setValue('dateOnlyPrefill', true, {
+          shouldDirty: false,
+          shouldValidate: false,
+        })
+      }
+    } else if (!open && wasOpen.current) {
       if (resetOnClose.current || !retainWorkflowOnClose) {
         form.reset(initialFormValues)
         setPhase('idle')
@@ -334,7 +385,16 @@ export function MeetingCreationDialog({
       }
     }
     wasOpen.current = open
-  }, [form, open, retainWorkflowOnClose])
+  }, [
+    creationIntent,
+    draftRecovery,
+    form,
+    initialScheduleDate,
+    open,
+    pendingScheduleCandidate,
+    phase,
+    retainWorkflowOnClose,
+  ])
 
   useEffect(() => {
     if (!isUnresolvedPhase(phase) && !creationIntent) return
@@ -1082,7 +1142,15 @@ export function MeetingCreationDialog({
               )}
             />
 
-            <MeetingScheduleFields />
+            <MeetingScheduleFields
+              onDateInputChange={() => {
+                if (!form.getValues('dateOnlyPrefill')) return
+                form.setValue('dateOnlyPrefill', false, {
+                  shouldDirty: false,
+                  shouldValidate: true,
+                })
+              }}
+            />
 
             <FormField
               control={form.control}

@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import {
   createMemoryHistory,
   createRootRoute,
@@ -8,9 +9,10 @@ import {
   RouterProvider,
   useRouterState,
 } from '@tanstack/react-router'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
+import { coreApi } from '@/lib/core-api'
 import {
   calendarMonthKey,
   isCalendarSearchCanonical,
@@ -66,7 +68,6 @@ function CalendarRouterHarness() {
         month={state.month}
         view={state.view}
         filters={state.filters}
-        rooms={[]}
         onNavigateMonth={(offset) =>
           update({
             month: calendarMonthKey(shiftCalendarMonth(state.month, offset)),
@@ -101,12 +102,40 @@ function createCalendarRouter(initialEntry: string) {
   return { router, history }
 }
 
+async function renderCalendarRouter(
+  router: ReturnType<typeof createCalendarRouter>['router']
+) {
+  return render(
+    <QueryClientProvider
+      client={
+        new QueryClient({
+          defaultOptions: { queries: { retry: false } },
+        })
+      }
+    >
+      <RouterProvider router={router} />
+    </QueryClientProvider>
+  )
+}
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
+
 describe('Calendar router state', () => {
   it('restores a direct link and validated state after back navigation', async () => {
+    vi.spyOn(coreApi, 'getWithMeta').mockResolvedValue({
+      data: {
+        id: '11111111-1111-4111-8111-111111111111',
+        name: 'Room A',
+        location: null,
+      },
+      meta: {},
+    })
     const { router, history } = createCalendarRouter(
       '/calendar?month=2026-12&view=agenda&relationship=participant&status=CANCELLED&roomId=11111111-1111-4111-8111-111111111111&q=%20roadmap%20'
     )
-    const screen = await render(<RouterProvider router={router} />)
+    const screen = await renderCalendarRouter(router)
 
     await expect
       .element(screen.getByTestId('calendar-router-state'))
@@ -135,7 +164,7 @@ describe('Calendar router state', () => {
     const { router } = createCalendarRouter(
       '/calendar?month=2026-13&view=week&relationship=organization&status=PROCESSING&roomId=%20%20&q=%20%20'
     )
-    const screen = await render(<RouterProvider router={router} />)
+    const screen = await renderCalendarRouter(router)
     const expectedMonth = calendarMonthKey(new Date())
 
     await expect

@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
@@ -73,6 +74,7 @@ const readyState = (
   loadedCount: 1,
   totalCount: 1,
   complete: true,
+  isInconsistent: false,
   canLoadMore: false,
   isRefreshing: false,
   isLoadingMore: false,
@@ -82,6 +84,22 @@ const readyState = (
 
 const localInstant = (year: number, month: number, day: number, hour: number) =>
   new Date(year, month - 1, day, hour).toISOString()
+
+async function renderToolbar(
+  props: React.ComponentProps<typeof CalendarToolbar>
+) {
+  return render(
+    <QueryClientProvider
+      client={
+        new QueryClient({
+          defaultOptions: { queries: { retry: false } },
+        })
+      }
+    >
+      <CalendarToolbar {...props} />
+    </QueryClientProvider>
+  )
+}
 
 const segment = (
   meeting: MeetingListItem,
@@ -106,7 +124,6 @@ describe('Calendar toolbar', () => {
     month: new Date(2026, 11, 1),
     view: 'month' as const,
     filters: { relationship: 'all' as const },
-    rooms: [],
     onNavigateMonth: vi.fn(),
     onToday: vi.fn(),
     onViewChange: vi.fn(),
@@ -120,7 +137,7 @@ describe('Calendar toolbar', () => {
       onToday: vi.fn(),
       onViewChange: vi.fn(),
     }
-    const screen = await render(<CalendarToolbar {...props} />)
+    const screen = await renderToolbar(props)
 
     await expect.element(screen.getByRole('heading')).toHaveTextContent(
       new Date(2026, 11, 1).toLocaleDateString(undefined, {
@@ -137,26 +154,16 @@ describe('Calendar toolbar', () => {
     expect(props.onViewChange).toHaveBeenCalledWith('agenda')
   })
 
-  it('emits relationship, status, room, and reset filter changes', async () => {
+  it('emits relationship and reset filter changes without discarding URL-owned filters', async () => {
     const props = {
       ...baseProps,
       filters: {
         relationship: 'organizer' as const,
         status: 'CANCELLED' as const,
-        roomId: 'room-legacy',
       },
-      rooms: [
-        { id: 'room-legacy', name: 'Archived Room', location: 'Floor 1' },
-      ],
       onFiltersChange: vi.fn(),
     }
-    const screen = await render(<CalendarToolbar {...props} />)
-
-    await userEvent.click(screen.getByRole('combobox', { name: 'Room' }))
-    await expect
-      .element(screen.getByRole('option', { name: 'Archived Room' }))
-      .toBeInTheDocument()
-    await userEvent.keyboard('{Escape}')
+    const screen = await renderToolbar(props)
     await userEvent.click(
       screen.getByRole('combobox', { name: 'Relationship' })
     )
@@ -179,7 +186,7 @@ describe('Calendar toolbar', () => {
       ...baseProps,
       onFiltersChange: vi.fn(),
     }
-    const screen = await render(<CalendarToolbar {...props} />)
+    const screen = await renderToolbar(props)
 
     await userEvent.click(screen.getByRole('combobox', { name: 'Status' }))
     await userEvent.click(screen.getByRole('option', { name: 'Cancelled' }))
@@ -391,5 +398,33 @@ describe('Calendar agenda view', () => {
     await expect
       .element(failed.getByText('No meetings scheduled this month'))
       .not.toBeInTheDocument()
+  })
+
+  it('explains inconsistent exhausted pagination and offers a fresh reload', async () => {
+    const onRetry = vi.fn()
+    const screen = await render(
+      <CalendarAgendaView
+        month={new Date(2026, 10, 1)}
+        segments={[]}
+        state={readyState({
+          loadedCount: 1,
+          totalCount: 2,
+          complete: false,
+          isInconsistent: true,
+          onRetry,
+        })}
+      />
+    )
+
+    await expect
+      .element(screen.getByText(/pagination ended/))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('No meetings scheduled this month'))
+      .not.toBeInTheDocument()
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Reload Calendar meetings' })
+    )
+    expect(onRetry).toHaveBeenCalledOnce()
   })
 })

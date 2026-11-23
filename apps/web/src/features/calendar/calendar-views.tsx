@@ -164,6 +164,38 @@ function CalendarDataNotice({ state }: { state: CalendarDataPresentation }) {
     )
   }
 
+  if (state.isInconsistent) {
+    return (
+      <div
+        role='alert'
+        className='rounded-lg border border-amber-500/30 bg-amber-500/5 p-4'
+      >
+        <p className='text-sm'>
+          Calendar pagination ended after the Core API reported{' '}
+          {state.totalCount ?? 'an unknown number of'} meetings, but only{' '}
+          {state.loadedCount} unique meetings were returned. Loaded meetings
+          remain visible, but this calendar may be incomplete.
+        </p>
+        {Boolean(state.refreshError) && (
+          <p className='mt-2 text-sm'>
+            The latest refresh also failed; previously loaded meetings are
+            retained.
+          </p>
+        )}
+        {state.onRetry && (
+          <Button
+            className='mt-3'
+            size='sm'
+            variant='outline'
+            onClick={() => void state.onRetry?.()}
+          >
+            Reload Calendar meetings
+          </Button>
+        )}
+      </div>
+    )
+  }
+
   if (state.refreshError) {
     return (
       <div

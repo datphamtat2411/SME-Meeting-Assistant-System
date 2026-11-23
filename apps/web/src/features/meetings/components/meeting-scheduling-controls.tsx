@@ -35,7 +35,11 @@ import type { MeetingPagination, RoomFilterOption } from '../data/list-api'
 import type { ScheduleCheckResult } from '../data/meeting-creation-api'
 import { type MeetingScheduleFormValues } from '../data/meeting-scheduling-utils'
 
-export function MeetingScheduleFields() {
+export function MeetingScheduleFields({
+  onDateInputChange,
+}: {
+  onDateInputChange?: () => void
+}) {
   const { control, getValues, setValue } =
     useFormContext<MeetingScheduleFormValues>()
 
@@ -56,6 +60,7 @@ export function MeetingScheduleFields() {
                     const previousDate = getValues('date')
                     const currentEndDate = getValues('endDate')
                     field.onChange(event)
+                    onDateInputChange?.()
                     if (!currentEndDate || currentEndDate === previousDate) {
                       setValue('endDate', event.target.value, {
                         shouldDirty: true,
@@ -77,7 +82,14 @@ export function MeetingScheduleFields() {
             <FormItem>
               <FormLabel>End date</FormLabel>
               <FormControl>
-                <Input {...field} type='date' />
+                <Input
+                  {...field}
+                  type='date'
+                  onChange={(event) => {
+                    field.onChange(event)
+                    onDateInputChange?.()
+                  }}
+                />
               </FormControl>
               <FormMessage />
             </FormItem>

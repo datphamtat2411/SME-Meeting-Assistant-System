@@ -1,206 +1,227 @@
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import {
-  CalendarDays,
-  ChevronLeft,
-  ChevronRight,
-  Clock3,
-  MapPin,
-  Users,
-} from 'lucide-react'
-import { Badge } from '@/components/ui/badge'
+import { Plus } from 'lucide-react'
+import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Header } from '@/components/layout/header'
 import { HeaderActions } from '@/components/layout/header-actions'
 import { Main } from '@/components/layout/main'
+import { MeetingCreationDialog } from '@/features/meetings/components/meeting-creation-dialog'
 import {
-  RequestEmpty,
-  RequestError,
-  RequestLoading,
-} from '@/components/request-state'
-import {
-  calendarMeetingsQuery,
-  groupCalendarDaySegments,
-  projectCalendarMonth,
-} from './calendar-api'
+  useCalendarController,
+  type CalendarController,
+} from './calendar-controller'
+import { calendarDataPresentationFromController } from './calendar-presentation'
+import { CalendarToolbar } from './calendar-toolbar'
+import { CalendarAgendaView, CalendarMonthView } from './calendar-views'
 
-/* eslint-disable react-refresh/only-export-components -- This feature entry point exposes reusable hooks and views for SC-05 composition. */
+const selectedDateFormat = new Intl.DateTimeFormat(undefined, {
+  weekday: 'long',
+  month: 'long',
+  day: 'numeric',
+  year: 'numeric',
+})
 
-const dateFormat = new Intl.DateTimeFormat(undefined, { dateStyle: 'full' })
-const timeFormat = new Intl.DateTimeFormat(undefined, { timeStyle: 'short' })
+function parseLocalCalendarDay(dayKey: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dayKey)
+  if (!match) return undefined
+
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  const date = new Date(0)
+  date.setFullYear(year, month - 1, day)
+  date.setHours(0, 0, 0, 0)
+  if (
+    date.getFullYear() !== year ||
+    date.getMonth() !== month - 1 ||
+    date.getDate() !== day
+  ) {
+    return undefined
+  }
+  return date
+}
 
 export function CalendarPage() {
-  const [month, setMonth] = useState(
-    () => new Date(new Date().getFullYear(), new Date().getMonth(), 1)
-  )
-  const [page, setPage] = useState(1)
-  const query = useQuery(calendarMeetingsQuery(month, page))
-  const projection = projectCalendarMonth(query.data?.meetings ?? [], month)
-  const groups = groupCalendarDaySegments(projection.segments)
-  function move(delta: number) {
-    setMonth((m) => new Date(m.getFullYear(), m.getMonth() + delta, 1))
-    setPage(1)
+  const calendar = useCalendarController()
+  const [isCreateOpen, setIsCreateOpen] = useState(false)
+  const [initialScheduleDate, setInitialScheduleDate] = useState<
+    string | undefined
+  >()
+
+  function openCreation(date?: string) {
+    setInitialScheduleDate(date)
+    setIsCreateOpen(true)
   }
+
+  function handleCreationOpenChange(open: boolean) {
+    setIsCreateOpen(open)
+    if (!open) setInitialScheduleDate(undefined)
+  }
+
+  function handleMeetingCommitted({
+    status,
+  }: {
+    meetingId: string
+    status: 'DRAFT' | 'SCHEDULED'
+  }) {
+    if (status === 'SCHEDULED') {
+      toast.success('Meeting scheduled', {
+        description:
+          'Calendar data was refreshed without changing your selected month or filters.',
+      })
+      return
+    }
+    toast.success('Meeting saved as draft', {
+      description:
+        'Your Calendar view is unchanged. A draft without a valid schedule may not appear in the calendar.',
+    })
+  }
+
+  return (
+    <>
+      <CalendarPageContent
+        key={calendar.monthKey}
+        calendar={calendar}
+        onNewMeeting={openCreation}
+      />
+      <MeetingCreationDialog
+        open={isCreateOpen}
+        onOpenChange={handleCreationOpenChange}
+        initialScheduleDate={initialScheduleDate}
+        onCommitted={handleMeetingCommitted}
+      />
+    </>
+  )
+}
+
+function CalendarPageContent({
+  calendar,
+  onNewMeeting,
+}: {
+  calendar: CalendarController
+  onNewMeeting: (date?: string) => void
+}) {
+  const [selectedDayKey, setSelectedDayKey] = useState<string>()
+  const selectedDayDate = selectedDayKey
+    ? parseLocalCalendarDay(selectedDayKey)
+    : undefined
+  const presentation = calendarDataPresentationFromController(calendar)
+
+  function selectDay(dayKey: string) {
+    const date = parseLocalCalendarDay(dayKey)
+    if (!date || !dayKey.startsWith(`${calendar.monthKey}-`)) {
+      setSelectedDayKey(undefined)
+      return
+    }
+    setSelectedDayKey(dayKey)
+  }
+
+  function navigateMonth(offset: number) {
+    setSelectedDayKey(undefined)
+    calendar.navigateMonth(offset)
+  }
+
+  function goToToday() {
+    setSelectedDayKey(undefined)
+    calendar.goToToday()
+  }
+
+  const viewProps = {
+    month: calendar.month,
+    segments: calendar.projection.segments,
+    state: presentation,
+    omissionCount: calendar.projection.omissions.length,
+    selectedDayKey,
+    onDaySelect: selectDay,
+  }
+
   return (
     <>
       <Header fixed>
         <HeaderActions />
       </Header>
-      <Main className='space-y-6'>
-        <div className='flex flex-wrap items-end justify-between gap-4'>
+
+      <Main className='flex flex-1 flex-col gap-4 sm:gap-6'>
+        <div className='flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between'>
           <div>
             <p className='text-sm font-medium text-primary'>Meeting schedule</p>
-            <h1 className='text-3xl font-bold'>Calendar</h1>
-            <p className='text-muted-foreground'>
-              Meeting times shown in your browser timezone.
+            <h1 className='mt-1 text-2xl font-bold tracking-tight sm:text-3xl'>
+              Calendar
+            </h1>
+            <p className='mt-2 max-w-2xl text-muted-foreground'>
+              Review when meetings happen and open any meeting workspace from
+              the schedule.
             </p>
           </div>
-          <Button asChild variant='outline'>
-            <Link to='/meetings'>Manage meetings</Link>
-          </Button>
+          <div className='flex flex-wrap gap-2'>
+            <Button asChild variant='outline'>
+              <Link to='/meetings'>Manage meetings</Link>
+            </Button>
+            <Button
+              type='button'
+              aria-describedby={
+                selectedDayKey ? 'calendar-new-meeting-date' : undefined
+              }
+              onClick={() => onNewMeeting(selectedDayKey)}
+            >
+              <Plus aria-hidden='true' />
+              New Meeting
+            </Button>
+          </div>
         </div>
-        <Card>
-          <CardHeader className='flex flex-row flex-wrap items-center justify-between gap-3'>
-            <CardTitle className='flex items-center gap-2'>
-              <CalendarDays className='size-5' />
-              {month.toLocaleDateString(undefined, {
-                month: 'long',
-                year: 'numeric',
-              })}
-            </CardTitle>
-            <div className='flex gap-2'>
-              <Button
-                variant='outline'
-                size='sm'
-                onClick={() => move(-1)}
-                aria-label='Previous month'
-              >
-                <ChevronLeft className='size-4' />
-              </Button>
-              <Button
-                variant='outline'
-                size='sm'
-                onClick={() => {
-                  setMonth(
-                    new Date(new Date().getFullYear(), new Date().getMonth(), 1)
-                  )
-                  setPage(1)
-                }}
-              >
-                Today
-              </Button>
-              <Button
-                variant='outline'
-                size='sm'
-                onClick={() => move(1)}
-                aria-label='Next month'
-              >
-                <ChevronRight className='size-4' />
-              </Button>
-            </div>
-          </CardHeader>
-          <CardContent className='space-y-6'>
-            {query.isPending ? (
-              <RequestLoading />
-            ) : query.isError ? (
-              <RequestError
-                error={query.error}
-                retry={() => void query.refetch()}
-              />
-            ) : groups.length === 0 ? (
-              <RequestEmpty title='No scheduled meetings this month' />
-            ) : (
-              groups.map(([day, segments]) => (
-                <section key={day} className='space-y-3'>
-                  <h2 className='border-b pb-2 font-semibold'>
-                    {dateFormat.format(new Date(segments[0]!.segmentStartAt))}
-                  </h2>
-                  <div className='grid gap-3 md:grid-cols-2'>
-                    {segments.map((segment) => (
-                      <Link
-                        key={`${segment.meeting.id}:${segment.dayKey}`}
-                        to='/meetings/$meetingId'
-                        params={{ meetingId: segment.meeting.id }}
-                        className='rounded-lg border p-4 transition-colors hover:bg-accent'
-                      >
-                        <div className='flex items-center justify-between gap-3'>
-                          <h3 className='font-semibold'>
-                            {segment.meeting.title}
-                          </h3>
-                          <Badge variant='outline'>
-                            {segment.meeting.status.replace(/_/g, ' ')}
-                          </Badge>
-                        </div>
-                        <div className='mt-3 flex flex-wrap gap-3 text-sm text-muted-foreground'>
-                          <span className='flex items-center gap-1'>
-                            <Clock3 className='size-4' />
-                            {timeFormat.format(
-                              new Date(segment.segmentStartAt)
-                            )}{' '}
-                            –{' '}
-                            {timeFormat.format(new Date(segment.segmentEndAt))}
-                          </span>
-                          {segment.continuesFromPreviousDay && (
-                            <span>Continues from previous day</span>
-                          )}
-                          {segment.continuesIntoNextDay && (
-                            <span>Continues into next day</span>
-                          )}
-                          <span className='flex items-center gap-1'>
-                            <MapPin className='size-4' />
-                            {segment.meeting.display.roomName || 'No room'}
-                          </span>
-                          <span className='flex items-center gap-1'>
-                            <Users className='size-4' />
-                            {segment.meeting.display.participantCount}
-                          </span>
-                        </div>
-                      </Link>
-                    ))}
-                  </div>
-                </section>
-              ))
-            )}
-            {query.data && (
-              <div className='flex items-center justify-between text-sm text-muted-foreground'>
-                <span>{query.data.pagination.totalElements} meetings</span>
-                <div className='flex gap-2'>
-                  <Button
-                    size='sm'
-                    variant='outline'
-                    disabled={!query.data.pagination.hasPrevious}
-                    onClick={() => setPage((p) => p - 1)}
-                  >
-                    Previous
-                  </Button>
-                  <span className='py-2'>Page {page}</span>
-                  <Button
-                    size='sm'
-                    variant='outline'
-                    disabled={!query.data.pagination.hasNext}
-                    onClick={() => setPage((p) => p + 1)}
-                  >
-                    Next
-                  </Button>
-                </div>
-              </div>
-            )}
-          </CardContent>
-        </Card>
+
+        {selectedDayKey && selectedDayDate && (
+          <p
+            id='calendar-new-meeting-date'
+            role='status'
+            className='flex flex-wrap items-center gap-x-2 text-sm text-muted-foreground'
+          >
+            New meetings will use {selectedDateFormat.format(selectedDayDate)}{' '}
+            as their start and end dates; no times are prefilled.
+            <Button
+              type='button'
+              variant='link'
+              size='sm'
+              className='h-auto p-0'
+              onClick={() => setSelectedDayKey(undefined)}
+            >
+              Clear date selection
+            </Button>
+          </p>
+        )}
+
+        <CalendarToolbar
+          month={calendar.month}
+          view={calendar.view}
+          filters={calendar.filters}
+          onNavigateMonth={navigateMonth}
+          onToday={goToToday}
+          onViewChange={calendar.setView}
+          onFiltersChange={calendar.updateFilters}
+        />
+
+        {calendar.view === 'month' ? (
+          <CalendarMonthView {...viewProps} />
+        ) : (
+          <CalendarAgendaView {...viewProps} />
+        )}
       </Main>
     </>
   )
 }
 
+/* eslint-disable react-refresh/only-export-components -- This feature entry point also exposes the composed Calendar building blocks for focused integration tests. */
 export {
-  mergeCalendarRoomOptions,
   useCalendarController,
   useCalendarMeetingData,
   type CalendarController,
 } from './calendar-controller'
 export { CalendarToolbar, type CalendarToolbarProps } from './calendar-toolbar'
+export {
+  CalendarRoomFilter,
+  type CalendarRoomFilterProps,
+} from './calendar-room-filter'
 export {
   CalendarAgendaView,
   CalendarMeetingEntry,

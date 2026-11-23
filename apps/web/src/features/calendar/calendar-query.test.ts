@@ -146,7 +146,7 @@ describe('Calendar meeting query', () => {
     expect(requestSignal).toBe(controller.signal)
   })
 
-  it('deduplicates by canonical meeting identity and retains pagination completeness', () => {
+  it('deduplicates by canonical meeting identity and marks exhausted count mismatches inconsistent', () => {
     const firstPage: MeetingListResponse = {
       meetings: [
         meeting('meeting-2', '2026-11-02T10:00:00.000Z'),
@@ -176,6 +176,41 @@ describe('Calendar meeting query', () => {
       loadedCount: 4,
       totalCount: 201,
       hasMore: false,
+      isInconsistent: true,
+    })
+  })
+
+  it('detects changing server totals after pagination is exhausted', () => {
+    const firstPage: MeetingListResponse = {
+      meetings: [meeting('meeting-1', '2026-11-01T10:00:00.000Z')],
+      pagination: pagination(0, 2, true),
+    }
+    const finalPage: MeetingListResponse = {
+      meetings: [meeting('meeting-2', '2026-11-02T10:00:00.000Z')],
+      pagination: pagination(1, 1, false),
+    }
+
+    expect(aggregateCalendarPages([firstPage, finalPage])).toMatchObject({
+      loadedCount: 2,
+      totalCount: 1,
+      hasMore: false,
+      isInconsistent: true,
+    })
+  })
+
+  it('does not mark a matching exhausted result inconsistent', () => {
+    const result = aggregateCalendarPages([
+      {
+        meetings: [meeting('meeting-1', '2026-11-01T10:00:00.000Z')],
+        pagination: pagination(0, 1, false),
+      },
+    ])
+
+    expect(result).toMatchObject({
+      loadedCount: 1,
+      totalCount: 1,
+      hasMore: false,
+      isInconsistent: false,
     })
   })
 

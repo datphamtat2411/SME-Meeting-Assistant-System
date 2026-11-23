@@ -18,6 +18,7 @@ export type CalendarDataPresentation =
       loadedCount: number
       totalCount?: number
       complete: boolean
+      isInconsistent: boolean
       canLoadMore: boolean
       isRefreshing: boolean
       isLoadingMore: boolean
@@ -58,6 +59,7 @@ export function calendarDataPresentationFromController(
     loadedCount: controller.loadedCount,
     totalCount: controller.totalCount,
     complete: controller.completeness === 'complete',
+    isInconsistent: controller.isInconsistent,
     canLoadMore: controller.hasMore,
     isRefreshing: controller.isRefreshing,
     isLoadingMore: controller.isLoadingMore,

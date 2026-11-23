@@ -5,10 +5,7 @@ import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
 import { CoreApiError, coreApi } from '@/lib/core-api'
 import type { MeetingListItem } from '@/features/meetings/data/list-api'
-import {
-  mergeCalendarRoomOptions,
-  useCalendarMeetingData,
-} from './calendar-controller'
+import { useCalendarMeetingData } from './calendar-controller'
 
 const meeting = (index: number): MeetingListItem => {
   const minute = String(index % 60).padStart(2, '0')
@@ -66,6 +63,11 @@ function CalendarDataProbe({ q }: { q?: string }) {
     <div>
       <p>{`${data.loadedCount}/${data.totalCount ?? 'unknown'}`}</p>
       <p>{data.completeness}</p>
+      {data.isInconsistent && (
+        <button onClick={() => void data.retry()}>
+          Reload Calendar meetings
+        </button>
+      )}
       {data.isInitialLoading && <p>initial loading</p>}
       {data.isRefreshing && <p>refreshing</p>}
       {data.pageError && <p>page failed</p>}
@@ -188,20 +190,27 @@ describe('Calendar data controller', () => {
     expect(request).toHaveBeenCalledTimes(3)
   })
 
-  it('keeps a selected room identifiable when it is absent from discovery results', () => {
-    expect(
-      mergeCalendarRoomOptions(
-        [{ id: 'room-current', name: 'Current room', location: null }],
-        'room-archived'
-      )
-    ).toEqual([
-      {
-        id: 'room-archived',
-        name: 'Room room-archived',
-        location: null,
-      },
-      { id: 'room-current', name: 'Current room', location: null },
-    ])
+  it('reports exhausted pagination count mismatches and retries with a fresh query', async () => {
+    let attempts = 0
+    const request = vi
+      .spyOn(coreApi, 'getWithMeta')
+      .mockImplementation(async () => {
+        attempts += 1
+        return attempts === 1
+          ? apiPage(0, [meeting(0)], 2)
+          : apiPage(0, [meeting(0)], 1)
+      })
+    const screen = await renderProbe()
+
+    await expect.element(screen.getByText('1/2')).toBeInTheDocument()
+    await expect.element(screen.getByText('inconsistent')).toBeInTheDocument()
+    expect(request).toHaveBeenCalledTimes(1)
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Reload Calendar meetings' })
+    )
+    await expect.element(screen.getByText('1/1')).toBeInTheDocument()
+    await expect.element(screen.getByText('complete')).toBeInTheDocument()
+    expect(request).toHaveBeenCalledTimes(2)
   })
 
   it('distinguishes forbidden access from an empty authorized result', async () => {

@@ -1,12 +1,7 @@
 import { useCallback, useEffect, useMemo } from 'react'
-import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
+import { useInfiniteQuery } from '@tanstack/react-query'
 import { getRouteApi } from '@tanstack/react-router'
 import { normalizeCoreApiError } from '@/lib/core-api'
-import {
-  roomFilterOptionByIdQueryOptions,
-  roomFilterQueryOptions,
-  type RoomFilterOption,
-} from '@/features/meetings/data/list-api'
 import { groupCalendarDaySegments, projectCalendarMonth } from './calendar-api'
 import {
   aggregateCalendarPages,
@@ -110,9 +105,12 @@ export function useCalendarMeetingData({
     loadedCount: aggregate.loadedCount,
     totalCount: aggregate.totalCount,
     hasMore: aggregate.hasMore,
-    completeness: aggregate.hasMore
-      ? ('partial' as const)
-      : ('complete' as const),
+    isInconsistent: aggregate.isInconsistent,
+    completeness: aggregate.isInconsistent
+      ? ('inconsistent' as const)
+      : aggregate.hasMore
+        ? ('partial' as const)
+        : ('complete' as const),
     isInitialLoading: query.isPending && !data,
     isRefreshing: Boolean(data) && query.isFetching && !isFetchingNextPage,
     isLoadingMore: isFetchingNextPage,
@@ -126,29 +124,6 @@ export function useCalendarMeetingData({
   }
 }
 
-export function mergeCalendarRoomOptions(
-  rooms: readonly RoomFilterOption[],
-  selectedRoomId?: string,
-  selectedRoom?: RoomFilterOption
-): readonly RoomFilterOption[] {
-  if (!selectedRoomId || rooms.some((room) => room.id === selectedRoomId)) {
-    return rooms
-  }
-
-  return [
-    ...(selectedRoom?.id === selectedRoomId
-      ? [selectedRoom]
-      : [
-          {
-            id: selectedRoomId,
-            name: `Room ${selectedRoomId}`,
-            location: null,
-          },
-        ]),
-    ...rooms,
-  ]
-}
-
 export function useCalendarController() {
   const search = calendarRoute.useSearch()
   const navigate = calendarRoute.useNavigate()
@@ -157,19 +132,6 @@ export function useCalendarController() {
     month: state.month,
     filters: state.filters,
   })
-  const roomsQuery = useQuery(roomFilterQueryOptions({ pageSize: 100 }))
-  const selectedRoomQuery = useQuery(
-    roomFilterOptionByIdQueryOptions(state.filters.roomId)
-  )
-  const rooms = useMemo(
-    () =>
-      mergeCalendarRoomOptions(
-        roomsQuery.data?.options ?? [],
-        state.filters.roomId,
-        selectedRoomQuery.data
-      ),
-    [roomsQuery.data?.options, selectedRoomQuery.data, state.filters.roomId]
-  )
 
   const updateSearch = useCallback(
     (patch: Partial<CalendarSearch>, replace = false) => {
@@ -244,10 +206,6 @@ export function useCalendarController() {
     filters: state.filters,
     hasActiveFilters: hasCalendarFilters(state.filters),
     ...data,
-    rooms,
-    isLoadingRooms: roomsQuery.isPending,
-    roomOptionsError: roomsQuery.error,
-    retryRoomOptions: () => roomsQuery.refetch(),
     navigateMonth,
     goToToday,
     setView,

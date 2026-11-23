@@ -13,8 +13,8 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   meetingLifecycleStatuses,
   type MeetingLifecycleStatus,
-  type RoomFilterOption,
 } from '@/features/meetings/data/list-api'
+import { CalendarRoomFilter } from './calendar-room-filter'
 import type {
   CalendarFilters,
   CalendarRelationship,
@@ -33,8 +33,6 @@ export interface CalendarToolbarProps {
   month: Date
   view: CalendarView
   filters: CalendarFilters
-  rooms: readonly RoomFilterOption[]
-  isLoadingRooms?: boolean
   onNavigateMonth: (offset: number) => void
   onToday: () => void
   onViewChange: (view: CalendarView) => void
@@ -48,8 +46,6 @@ export function CalendarToolbar({
   month,
   view,
   filters,
-  rooms,
-  isLoadingRooms = false,
   onNavigateMonth,
   onToday,
   onViewChange,
@@ -85,19 +81,6 @@ export function CalendarToolbar({
     Boolean(filters.roomId) ||
     Boolean(filters.q) ||
     Boolean(keyword.trim())
-  const roomOptions = rooms.some((room) => room.id === filters.roomId)
-    ? rooms
-    : filters.roomId
-      ? [
-          {
-            id: filters.roomId,
-            name: `Room ${filters.roomId}`,
-            location: null,
-          },
-          ...rooms,
-        ]
-      : rooms
-
   function resetFilters() {
     setKeywordDraft({ committed: committedKeyword, value: '' })
     onFiltersChange({
@@ -216,30 +199,10 @@ export function CalendarToolbar({
           </Select>
         </label>
 
-        <label className='space-y-1.5 text-sm font-medium'>
-          <span>Room</span>
-          <Select
-            value={filters.roomId ?? 'all'}
-            onValueChange={(value) =>
-              onFiltersChange({ roomId: value === 'all' ? undefined : value })
-            }
-          >
-            <SelectTrigger aria-label='Room' className='w-full'>
-              <SelectValue
-                placeholder={isLoadingRooms ? 'Loading rooms…' : 'All rooms'}
-              />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value='all'>All rooms</SelectItem>
-              {roomOptions.map((room) => (
-                <SelectItem key={room.id} value={room.id}>
-                  {room.name}
-                  {room.location ? ` · ${room.location}` : ''}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </label>
+        <CalendarRoomFilter
+          roomId={filters.roomId}
+          onRoomChange={(roomId) => onFiltersChange({ roomId })}
+        />
 
         <label className='space-y-1.5 text-sm font-medium'>
           <span>Keyword</span>
