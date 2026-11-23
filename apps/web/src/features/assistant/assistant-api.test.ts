@@ -2,10 +2,14 @@ import { QueryClient } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { CoreApiError, coreApi } from '@/lib/core-api'
 import {
+  ASSISTANT_PAGE_SIZE,
   assistantConversationDetailQueryOptions,
+  assistantConversationHistoryQueryOptions,
+  assistantConversationsInfiniteQueryOptions,
   assistantConversationsQueryOptions,
   createAssistantConversation,
   fetchAssistantConversations,
+  fetchAssistantConversationDetail,
   findAssistantTurnMessage,
   parseAssistantConversationDetailResponse,
   parseAssistantConversationsResponse,
@@ -149,7 +153,14 @@ describe('Assistant Core API adapter', () => {
     await expect(
       assistantConversationDetailQueryOptions(conversationId).queryFn?.({
         client: new QueryClient(),
-        queryKey: ['assistant', 'conversation', conversationId],
+        queryKey: [
+          'assistant',
+          'conversation',
+          conversationId,
+          'page',
+          0,
+          ASSISTANT_PAGE_SIZE,
+        ],
         signal,
         meta: undefined,
       })
@@ -175,6 +186,117 @@ describe('Assistant Core API adapter', () => {
       meetingId,
       title: 'Project questions',
     })
+  })
+
+  it('requests zero-based conversation pages and treats empty or partial pages as terminal', async () => {
+    const olderConversation = {
+      ...conversation,
+      id: '77777777-7777-4777-8777-777777777777',
+    }
+    const get = vi
+      .spyOn(coreApi, 'getWithMeta')
+      .mockResolvedValueOnce(success([conversation]))
+      .mockResolvedValueOnce(success([]))
+      .mockResolvedValueOnce(success([olderConversation]))
+
+    await expect(fetchAssistantConversations({ page: 0 })).resolves.toEqual([
+      conversation,
+    ])
+    await expect(fetchAssistantConversations({ page: 1 })).resolves.toEqual([])
+    await expect(fetchAssistantConversations({ page: 2 })).resolves.toEqual([
+      olderConversation,
+    ])
+
+    expect(get.mock.calls.map((call) => call[1]?.params)).toEqual([
+      { page: 0, size: ASSISTANT_PAGE_SIZE },
+      { page: 1, size: ASSISTANT_PAGE_SIZE },
+      { page: 2, size: ASSISTANT_PAGE_SIZE },
+    ])
+
+    const options = assistantConversationsInfiniteQueryOptions(2)
+    expect(
+      options.getNextPageParam?.([conversation], [[conversation]], 0, [0])
+    ).toBeUndefined()
+    expect(options.getNextPageParam?.([], [[]], 1, [0])).toBeUndefined()
+    expect(
+      options.getNextPageParam?.(
+        [conversation, olderConversation],
+        [[conversation, olderConversation]],
+        0,
+        [0]
+      )
+    ).toBe(1)
+  })
+
+  it('fetches detail pages with the Core page contract and preserves in-page chronology', async () => {
+    const olderUserMessage = {
+      ...detail.messages[0]!,
+      id: '77777777-7777-4777-8777-777777777777',
+      content: 'Earlier question',
+      createdAt: '2026-11-22T09:58:00Z',
+    }
+    const firstPage: AssistantConversationDetail = {
+      ...detail,
+      size: 2,
+    }
+    const olderPage: AssistantConversationDetail = {
+      ...detail,
+      messages: [olderUserMessage, groundedMessage],
+      page: 1,
+      size: 2,
+      hasMore: true,
+    }
+    const get = vi
+      .spyOn(coreApi, 'getWithMeta')
+      .mockResolvedValueOnce(success(firstPage))
+      .mockResolvedValueOnce(success(olderPage))
+    const signal = new AbortController().signal
+
+    await expect(
+      fetchAssistantConversationDetail(conversationId, {
+        page: 0,
+        size: 2,
+        signal,
+      })
+    ).resolves.toEqual(firstPage)
+    await expect(
+      fetchAssistantConversationDetail(conversationId, {
+        page: 1,
+        size: 2,
+        signal,
+      })
+    ).resolves.toEqual(olderPage)
+
+    expect(get.mock.calls.map((call) => call[1])).toEqual([
+      { params: { page: 0, size: 2 }, signal },
+      { params: { page: 1, size: 2 }, signal },
+    ])
+    expect(olderPage.messages.map((message) => message.createdAt)).toEqual([
+      '2026-11-22T09:58:00Z',
+      '2026-11-22T10:01:00Z',
+    ])
+
+    const historyOptions = assistantConversationHistoryQueryOptions(
+      conversationId,
+      2
+    )
+    expect(historyOptions.initialPageParam).toBe(0)
+    expect(
+      historyOptions.getNextPageParam?.(
+        olderPage,
+        [detail, olderPage],
+        1,
+        [0, 1]
+      )
+    ).toBe(2)
+    expect(
+      historyOptions.getNextPageParam?.(
+        { ...olderPage, hasMore: false },
+        [detail, { ...olderPage, hasMore: false }],
+        1,
+        [0, 1]
+      )
+    ).toBeUndefined()
   })
 
   it('requires and forwards one caller-held idempotency key unchanged', async () => {
@@ -220,7 +342,28 @@ describe('Assistant Core API adapter', () => {
     expect(post).not.toHaveBeenCalled()
   })
 
-  it('finds only the assistant message causally following the accepted user turn', () => {
+  it('matches the exact assistant message ID without substituting a different response', () => {
+    const laterAssistant = {
+      ...groundedMessage,
+      id: '77777777-7777-4777-8777-777777777777',
+    }
+    const withUnrelatedAnswer = {
+      ...detail,
+      messages: [detail.messages[0]!, laterAssistant],
+    }
+
+    expect(
+      findAssistantTurnMessage(withUnrelatedAnswer, {
+        userMessageId,
+        assistantMessageId,
+      })
+    ).toBeUndefined()
+    expect(
+      findAssistantTurnMessage(detail, { userMessageId, assistantMessageId })
+    ).toEqual(groundedMessage)
+  })
+
+  it('uses only an immediate Assistant response after the accepted user message', () => {
     const processingDetail = {
       ...detail,
       messages: detail.messages.slice(0, 1),
@@ -242,20 +385,96 @@ describe('Assistant Core API adapter', () => {
     expect(findAssistantTurnMessage(detail, processingTurn)).toEqual(
       groundedMessage
     )
+
+    const laterTurnUser = {
+      ...detail.messages[0]!,
+      id: '77777777-7777-4777-8777-777777777777',
+      content: 'A different user turn',
+      createdAt: '2026-11-22T10:00:45Z',
+    }
+    const unrelatedLaterAnswer = {
+      ...groundedMessage,
+      id: '88888888-8888-4888-8888-888888888888',
+      createdAt: '2026-11-22T10:01:00Z',
+    }
+    expect(
+      findAssistantTurnMessage(
+        {
+          ...detail,
+          messages: [detail.messages[0]!, laterTurnUser, unrelatedLaterAnswer],
+        },
+        processingTurn
+      )
+    ).toBeUndefined()
+    expect(
+      findAssistantTurnMessage(
+        { ...detail, messages: [laterTurnUser, unrelatedLaterAnswer] },
+        processingTurn
+      )
+    ).toBeUndefined()
+    expect(
+      findAssistantTurnMessage(
+        { ...detail, page: 1, messages: [detail.messages[0]!] },
+        processingTurn
+      )
+    ).toBeUndefined()
+  })
+
+  it('rejects malformed paginated list and history DTOs', () => {
+    expect(() =>
+      parseAssistantConversationsResponse(success({ items: [conversation] }))
+    ).toThrowError(CoreApiError)
+    expect(() =>
+      parseAssistantConversationDetailResponse(success({ ...detail, page: -1 }))
+    ).toThrowError(CoreApiError)
+    expect(() =>
+      parseAssistantConversationDetailResponse(success({ ...detail, size: 0 }))
+    ).toThrowError(CoreApiError)
+    expect(() =>
+      parseAssistantConversationDetailResponse(
+        success({ ...detail, hasMore: 1 })
+      )
+    ).toThrowError(CoreApiError)
+  })
+
+  it('rejects a detail response that does not identify the requested page', async () => {
+    vi.spyOn(coreApi, 'getWithMeta').mockResolvedValue(
+      success({ ...detail, page: 1 })
+    )
+
+    await expect(
+      fetchAssistantConversationDetail(conversationId, { page: 0 })
+    ).rejects.toMatchObject({
+      kind: 'malformed',
+      code: 'MALFORMED_RESPONSE',
+    })
   })
 
   it('keeps query reads non-mutating and disables automatic retries', () => {
     const listOptions = assistantConversationsQueryOptions()
     const detailOptions =
       assistantConversationDetailQueryOptions(conversationId)
+    const historyOptions =
+      assistantConversationHistoryQueryOptions(conversationId)
 
     expect(listOptions.queryKey).toEqual(['assistant', 'conversations', 0, 50])
     expect(detailOptions.queryKey).toEqual([
       'assistant',
       'conversation',
       conversationId,
+      'page',
+      0,
+      ASSISTANT_PAGE_SIZE,
+    ])
+    expect(historyOptions.queryKey).toEqual([
+      'assistant',
+      'conversation',
+      conversationId,
+      'history',
+      ASSISTANT_PAGE_SIZE,
     ])
     expect(listOptions.retry).toBe(false)
     expect(detailOptions.retry).toBe(false)
+    expect(historyOptions.retry).toBe(false)
   })
 })

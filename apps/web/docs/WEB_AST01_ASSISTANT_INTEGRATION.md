@@ -3,6 +3,15 @@
 Date: 2026-11-23  
 Branch: `web/integration-rush`
 
+## Committed baseline
+
+The WEB-AST-01 implementation described by this report is represented by
+reviewed source commit
+`08376aaf01854ac3d8d4e51d2332c760c761c75c` on
+`web/integration-rush`. The earlier handoff note below stating that the
+worktree remained uncommitted is superseded by that commit. WEB-AST-02
+corrections are subsequent local changes and are not part of this baseline.
+
 ## Outcome
 
 The Web Assistant page now uses the existing cookie/CSRF-aware `coreApi`
@@ -87,4 +96,6 @@ Passed:
 - `pnpm run build`
 - Protected Web manifest check — 20 checked, 0 mismatches.
 
-The worktree remains uncommitted and no Git write operation was performed.
+The WEB-AST-01 implementation is committed at the baseline SHA above. No Git
+write operation was performed for this report update or the subsequent
+WEB-AST-02 corrective work.

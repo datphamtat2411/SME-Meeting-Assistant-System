@@ -1,3 +1,4 @@
+import { StrictMode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
@@ -7,6 +8,8 @@ import { AssistantPage } from './index'
 
 const meetingId = '11111111-1111-4111-8111-111111111111'
 const conversationId = '22222222-2222-4222-8222-222222222222'
+const otherMeetingId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+const otherConversationId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
 const userMessageId = '33333333-3333-4333-8333-333333333333'
 const assistantMessageId = '44444444-4444-4444-8444-444444444444'
 const sourceId = '55555555-5555-4555-8555-555555555555'
@@ -93,6 +96,17 @@ const conversation = {
   createdAt: '2026-11-22T09:05:00Z',
   updatedAt: '2026-11-22T09:05:00Z',
 }
+const otherMeeting = {
+  ...meeting,
+  id: otherMeetingId,
+  title: 'Other meeting',
+}
+const otherConversation = {
+  ...conversation,
+  id: otherConversationId,
+  meetingId: otherMeetingId,
+  title: 'Other meeting questions',
+}
 
 const groundedAssistantMessage = {
   id: assistantMessageId,
@@ -140,6 +154,24 @@ const baseDetail = {
   page: 0,
   size: 50,
   hasMore: false,
+}
+
+function messageDto(
+  id: string,
+  role: 'USER' | 'ASSISTANT',
+  content: string,
+  createdAt: string
+) {
+  return {
+    id,
+    role,
+    content,
+    answerStatus: role === 'USER' ? null : ('GROUNDED' as const),
+    visibility: 'VISIBLE' as const,
+    claims: [],
+    citations: [],
+    createdAt,
+  }
 }
 
 function insufficientDetail() {
@@ -190,44 +222,115 @@ function coreError(
   })
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (error: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
+function acceptedTurn(
+  state: 'PROCESSING' | 'COMPLETED' = 'COMPLETED',
+  acceptedAssistantMessageId: string | null = assistantMessageId
+) {
+  return {
+    turnId: '99999999-9999-4999-8999-999999999999',
+    state,
+    userMessageId,
+    assistantMessageId: acceptedAssistantMessageId,
+    answerStatus: state === 'COMPLETED' ? 'GROUNDED' : null,
+    answer: state === 'COMPLETED' ? 'Accepted answer' : null,
+    claims: state === 'COMPLETED' ? groundedAssistantMessage.claims : [],
+    citations: state === 'COMPLETED' ? groundedAssistantMessage.citations : [],
+  }
+}
+
 function setupReads(
   options: {
     conversations?: unknown
+    conversationPages?: Record<number, unknown>
+    onConversations?: (readCount: number, page: number) => unknown
     detail?: unknown
-    onDetail?: (readCount: number) => unknown
+    detailPages?: Record<string, Record<number, unknown>>
+    detailsById?: Record<string, unknown>
+    onDetail?: (
+      readCount: number,
+      page: number,
+      currentConversationId: string
+    ) => unknown
   } = {}
 ) {
   let detailReads = 0
+  let conversationReads = 0
   const get = vi
     .spyOn(coreApi, 'getWithMeta')
-    .mockImplementation(async (url) => {
+    .mockImplementation(async (url, config) => {
       if (url === '/meetings') {
-        return { data: [meeting], meta: meetingListMeta } as never
+        return {
+          data: options.detailsById ? [meeting, otherMeeting] : [meeting],
+          meta: {
+            pagination: {
+              ...meetingListMeta.pagination,
+              totalElements: options.detailsById ? 2 : 1,
+            },
+          },
+        } as never
       }
       if (url === '/assistant/conversations') {
-        if (
-          options.conversations !== undefined &&
-          !Array.isArray(options.conversations)
-        ) {
-          throw options.conversations
+        conversationReads += 1
+        const currentPage = Number(config?.params?.page ?? 0)
+        const value =
+          options.onConversations?.(conversationReads, currentPage) ??
+          options.conversationPages?.[currentPage] ??
+          options.conversations ??
+          (options.detailsById
+            ? [conversation, otherConversation]
+            : [conversation])
+        if (!Array.isArray(value)) {
+          throw value
         }
         return {
-          data: options.conversations ?? [conversation],
+          data: value,
           meta: {},
         } as never
       }
-      if (url === `/assistant/conversations/${conversationId}`) {
+      if (url.startsWith('/assistant/conversations/')) {
         detailReads += 1
+        const currentConversationId = decodeURIComponent(
+          url.slice('/assistant/conversations/'.length)
+        )
+        const currentPage = Number(config?.params?.page ?? 0)
         const value =
-          options.onDetail?.(detailReads) ?? options.detail ?? baseDetail
+          (await options.onDetail?.(
+            detailReads,
+            currentPage,
+            currentConversationId
+          )) ??
+          options.detailPages?.[currentConversationId]?.[currentPage] ??
+          options.detailsById?.[currentConversationId] ??
+          options.detail ??
+          (currentConversationId === otherConversationId
+            ? {
+                ...baseDetail,
+                conversation: otherConversation,
+                messages: [],
+              }
+            : baseDetail)
         return { data: value, meta: {} } as never
       }
       throw new Error(`Unexpected GET ${url}`)
     })
-  return { get, getDetailReads: () => detailReads }
+  return {
+    get,
+    getDetailReads: () => detailReads,
+    getConversationReads: () => conversationReads,
+  }
 }
 
-async function renderPage() {
+async function renderPage(options: { strict?: boolean } = {}) {
   return render(
     <QueryClientProvider
       client={
@@ -236,14 +339,20 @@ async function renderPage() {
         })
       }
     >
-      <AssistantPage />
+      {options.strict ? (
+        <StrictMode>
+          <AssistantPage />
+        </StrictMode>
+      ) : (
+        <AssistantPage />
+      )}
     </QueryClientProvider>
   )
 }
 
 async function selectMeeting(screen: Awaited<ReturnType<typeof render>>) {
   await userEvent.click(
-    screen.getByRole('button', { name: 'Use meeting for Assistant' })
+    screen.getByRole('button', { name: 'Use meeting for Assistant' }).first()
   )
 }
 
@@ -304,6 +413,590 @@ describe('AssistantPage', () => {
     await expect
       .element(screen.getByText('Conversation is ready for questions.'))
       .toBeVisible()
+  })
+
+  it('does not open a conversation created for a meeting after selection changes', async () => {
+    const createdConversation = {
+      ...conversation,
+      id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      title: 'Created for Product planning',
+    }
+    const creation = deferred<typeof createdConversation>()
+    const { getConversationReads } = setupReads({
+      detailsById: {
+        [conversationId]: baseDetail,
+        [otherConversationId]: {
+          ...baseDetail,
+          conversation: otherConversation,
+          messages: [],
+        },
+      },
+      onConversations: (readCount) =>
+        readCount > 1
+          ? [conversation, otherConversation, createdConversation]
+          : undefined,
+    })
+    const post = vi.spyOn(coreApi, 'post').mockImplementation(async (url) => {
+      if (url === '/assistant/conversations') return creation.promise as never
+      throw new Error(`Unexpected POST ${url}`)
+    })
+    const screen = await renderPage()
+
+    await userEvent.selectOptions(
+      screen.getByRole('combobox', { name: 'Assistant meeting' }),
+      meetingId
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Create conversation' })
+    )
+    await expect.poll(() => post.mock.calls.length).toBe(1)
+
+    await userEvent.selectOptions(
+      screen.getByRole('combobox', { name: 'Assistant meeting' }),
+      otherMeetingId
+    )
+    creation.resolve(createdConversation)
+
+    await expect.poll(() => getConversationReads()).toBeGreaterThan(1)
+    await expect
+      .element(screen.getByText('Other meeting questions'))
+      .toBeVisible()
+    await expect
+      .element(screen.getByText('Created for Product planning'))
+      .not.toBeInTheDocument()
+
+    await userEvent.selectOptions(
+      screen.getByRole('combobox', { name: 'Assistant meeting' }),
+      meetingId
+    )
+    await expect
+      .element(screen.getByText('Created for Product planning'))
+      .toBeVisible()
+    expect(post).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps a newer conversation draft when an older submission resolves', async () => {
+    const submission = deferred<ReturnType<typeof acceptedTurn>>()
+    const acceptedAssistantMessageId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const acceptedDetail = {
+      ...baseDetail,
+      messages: [
+        baseDetail.messages[0],
+        {
+          ...groundedAssistantMessage,
+          id: acceptedAssistantMessageId,
+          content: 'Question A authoritative answer',
+        },
+      ],
+    }
+    let questionAAccepted = false
+    setupReads({
+      detailsById: {
+        [conversationId]: baseDetail,
+        [otherConversationId]: {
+          ...baseDetail,
+          conversation: otherConversation,
+          messages: [],
+        },
+      },
+      onDetail: (_readCount, _page, currentConversationId) =>
+        currentConversationId === conversationId && questionAAccepted
+          ? acceptedDetail
+          : undefined,
+    })
+    const post = vi.spyOn(coreApi, 'post').mockImplementation(async (url) => {
+      if (url.endsWith('/messages')) return submission.promise as never
+      throw new Error(`Unexpected POST ${url}`)
+    })
+    const screen = await renderPage()
+    await openConversation(screen)
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Assistant question' }),
+      'Question A'
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Ask Assistant' }))
+    await expect.poll(() => post.mock.calls.length).toBe(1)
+
+    await userEvent.selectOptions(
+      screen.getByRole('combobox', { name: 'Assistant meeting' }),
+      otherMeetingId
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Open conversation' })
+    )
+    const currentQuestion = screen.getByRole('textbox', {
+      name: 'Assistant question',
+    })
+    await userEvent.fill(currentQuestion, 'Question B draft')
+
+    questionAAccepted = true
+    submission.resolve(acceptedTurn('COMPLETED', acceptedAssistantMessageId))
+    await expect
+      .poll(() => (currentQuestion.element() as HTMLTextAreaElement).value)
+      .toBe('Question B draft')
+    await expect
+      .element(screen.getByText('The launch date is Friday.'))
+      .not.toBeInTheDocument()
+    expect(post).toHaveBeenCalledTimes(1)
+
+    await userEvent.selectOptions(
+      screen.getByRole('combobox', { name: 'Assistant meeting' }),
+      meetingId
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Open conversation' })
+    )
+    await expect
+      .element(screen.getByText('Question A authoritative answer'))
+      .toBeVisible()
+  })
+
+  it('does not show an old submission error in a newer conversation and keeps it usable', async () => {
+    const submission = deferred<ReturnType<typeof acceptedTurn>>()
+    setupReads({
+      detailsById: {
+        [conversationId]: baseDetail,
+        [otherConversationId]: {
+          ...baseDetail,
+          conversation: otherConversation,
+          messages: [],
+        },
+      },
+    })
+    const post = vi.spyOn(coreApi, 'post').mockImplementation(async (url) => {
+      if (url.endsWith('/messages')) {
+        if (post.mock.calls.length === 1) return submission.promise as never
+        return acceptedTurn('PROCESSING', null) as never
+      }
+      throw new Error(`Unexpected POST ${url}`)
+    })
+    const screen = await renderPage()
+    await openConversation(screen)
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Assistant question' }),
+      'Question A'
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Ask Assistant' }))
+    await expect.poll(() => post.mock.calls.length).toBe(1)
+
+    await userEvent.selectOptions(
+      screen.getByRole('combobox', { name: 'Assistant meeting' }),
+      otherMeetingId
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Open conversation' })
+    )
+    submission.reject(coreError(503, 'Question A failed'))
+
+    await expect
+      .element(screen.getByText('Assistant is currently unavailable.'))
+      .not.toBeInTheDocument()
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Assistant question' }),
+      'Question B'
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Ask Assistant' }))
+    await expect.poll(() => post.mock.calls.length).toBe(2)
+    expect(post.mock.calls[1]?.[0]).toBe(
+      `/assistant/conversations/${otherConversationId}/messages`
+    )
+  })
+
+  it('ignores a delayed stale polling result after navigating away', async () => {
+    const pendingRead = deferred<unknown>()
+    const { getDetailReads } = setupReads({
+      detailsById: {
+        [conversationId]: baseDetail,
+        [otherConversationId]: {
+          ...baseDetail,
+          conversation: otherConversation,
+          messages: [],
+        },
+      },
+      onDetail: (readCount, _page, currentConversationId) => {
+        if (currentConversationId === conversationId && readCount > 1) {
+          return pendingRead.promise
+        }
+        return undefined
+      },
+    })
+    const post = vi.spyOn(coreApi, 'post').mockImplementation(async (url) => {
+      if (url.endsWith('/messages')) {
+        return acceptedTurn('PROCESSING', null) as never
+      }
+      throw new Error(`Unexpected POST ${url}`)
+    })
+    const screen = await renderPage()
+    await openConversation(screen)
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Assistant question' }),
+      'Question A'
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Ask Assistant' }))
+    await expect
+      .element(screen.getByText('Core is processing this question.'))
+      .toBeVisible()
+    await expect.poll(() => getDetailReads()).toBeGreaterThan(1)
+
+    await userEvent.selectOptions(
+      screen.getByRole('combobox', { name: 'Assistant meeting' }),
+      otherMeetingId
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Open conversation' })
+    )
+    const currentQuestion = screen.getByRole('textbox', {
+      name: 'Assistant question',
+    })
+    await userEvent.fill(currentQuestion, 'Question B draft')
+    pendingRead.resolve(baseDetail)
+
+    await expect
+      .poll(() => (currentQuestion.element() as HTMLTextAreaElement).value)
+      .toBe('Question B draft')
+    expect(post).toHaveBeenCalledTimes(1)
+
+    await userEvent.selectOptions(
+      screen.getByRole('combobox', { name: 'Assistant meeting' }),
+      meetingId
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Open conversation' })
+    )
+    await expect
+      .element(screen.getByText('Core is processing this question.'))
+      .toBeVisible()
+    expect(post).toHaveBeenCalledTimes(1)
+  })
+
+  it('loads older conversation pages and opens an older authorized conversation', async () => {
+    const firstPage = Array.from({ length: 50 }, (_, index) => ({
+      ...conversation,
+      id: `a0000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+      title: `Conversation on first page ${index + 1}`,
+    }))
+    const olderConversation = {
+      ...conversation,
+      id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      title: 'Older authorized conversation',
+    }
+    const olderDetail = {
+      ...baseDetail,
+      conversation: olderConversation,
+      messages: [],
+    }
+    const { get } = setupReads({
+      conversationPages: { 0: firstPage, 1: [olderConversation] },
+      detailPages: { [olderConversation.id]: { 0: olderDetail } },
+    })
+    const screen = await renderPage()
+    await userEvent.selectOptions(
+      screen.getByRole('combobox', { name: 'Assistant meeting' }),
+      meetingId
+    )
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Load older conversations' })
+    )
+    await expect
+      .element(screen.getByText('Older authorized conversation'))
+      .toBeVisible()
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Open conversation' }).last()
+    )
+
+    await expect
+      .element(screen.getByText('Older authorized conversation').last())
+      .toBeVisible()
+    expect(
+      get.mock.calls.some(
+        ([url, config]) =>
+          url === `/assistant/conversations/${olderConversation.id}` &&
+          config?.params?.page === 0
+      )
+    ).toBe(true)
+    expect(
+      screen.getByRole('button', { name: 'Load older conversations' })
+    ).not.toBeInTheDocument()
+  })
+
+  it('keeps conversation cards after an older list-page failure and retries explicitly', async () => {
+    const firstPage = Array.from({ length: 50 }, (_, index) => ({
+      ...conversation,
+      id: `a0000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+      title: `Conversation on first page ${index + 1}`,
+    }))
+    const olderConversation = {
+      ...conversation,
+      id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      title: 'Conversation after retry',
+    }
+    let olderAttempts = 0
+    setupReads({
+      onConversations: (_readCount, pageNumber) => {
+        if (pageNumber === 0) return firstPage
+        olderAttempts += 1
+        if (olderAttempts === 1) {
+          throw coreError(422, 'Older conversations unavailable')
+        }
+        return [firstPage[0]!, olderConversation]
+      },
+    })
+    const screen = await renderPage()
+    await userEvent.selectOptions(
+      screen.getByRole('combobox', { name: 'Assistant meeting' }),
+      meetingId
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Load older conversations' })
+    )
+
+    await expect
+      .element(
+        screen.getByText('Conversation on first page 1', { exact: true })
+      )
+      .toBeVisible()
+    await expect
+      .element(screen.getByText('Older conversations unavailable'))
+      .toBeVisible()
+    await userEvent.click(
+      screen.getByRole('button', {
+        name: 'Retry loading older conversations',
+      })
+    )
+    await expect
+      .element(screen.getByText('Conversation after retry'))
+      .toBeVisible()
+    await expect
+      .element(
+        screen.getByText('Conversation on first page 1', { exact: true })
+      )
+      .toBeVisible()
+  })
+
+  it('prepends older history chronologically and stops when Core has no more pages', async () => {
+    const olderUser = messageDto(
+      '77777777-7777-4777-8777-777777777777',
+      'USER',
+      'Older question',
+      '2026-11-22T09:00:00Z'
+    )
+    const olderAssistant = messageDto(
+      '88888888-8888-4888-8888-888888888888',
+      'ASSISTANT',
+      'Older answer',
+      '2026-11-22T09:01:00Z'
+    )
+    const newestUser = messageDto(
+      '99999999-9999-4999-8999-999999999999',
+      'USER',
+      'Newest question',
+      '2026-11-22T10:00:00Z'
+    )
+    const newestAssistant = {
+      ...messageDto(
+        assistantMessageId,
+        'ASSISTANT',
+        'Newest answer',
+        '2026-11-22T10:01:00Z'
+      ),
+      claims: groundedAssistantMessage.claims,
+      citations: groundedAssistantMessage.citations,
+    }
+    const pageZero = {
+      ...baseDetail,
+      messages: [newestUser, newestAssistant],
+      page: 0,
+      hasMore: true,
+    }
+    const olderPage = {
+      ...baseDetail,
+      messages: [olderUser, olderAssistant],
+      page: 1,
+      hasMore: false,
+    }
+    setupReads({
+      detailPages: { [conversationId]: { 0: pageZero, 1: olderPage } },
+    })
+    const screen = await renderPage()
+    await openConversation(screen)
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Load older messages' })
+    )
+
+    await expect.element(screen.getByText('Older question')).toBeVisible()
+    await expect.element(screen.getByText('Newest answer')).toBeVisible()
+    const articles = Array.from(
+      screen
+        .getByLabelText('Conversation history')
+        .element()
+        .querySelectorAll('article')
+    )
+    expect(articles.map((article) => article.textContent)).toEqual([
+      expect.stringContaining('Older question'),
+      expect.stringContaining('Older answer'),
+      expect.stringContaining('Newest question'),
+      expect.stringContaining('Newest answer'),
+    ])
+    expect(
+      screen.getByRole('button', { name: 'Load older messages' })
+    ).not.toBeInTheDocument()
+  })
+
+  it('preserves loaded history after an older-page failure and retries without duplicate IDs', async () => {
+    const olderUser = messageDto(
+      '77777777-7777-4777-8777-777777777777',
+      'USER',
+      'Older question survives',
+      '2026-11-22T09:00:00Z'
+    )
+    const newestAssistant = {
+      ...groundedAssistantMessage,
+      content: 'Newest answer remains',
+    }
+    const pageZero = {
+      ...baseDetail,
+      messages: [newestAssistant],
+      page: 0,
+      hasMore: true,
+    }
+    const olderPage = {
+      ...baseDetail,
+      messages: [
+        olderUser,
+        { ...newestAssistant, content: 'Stale duplicate should be dropped' },
+      ],
+      page: 1,
+      hasMore: false,
+    }
+    let olderAttempts = 0
+    setupReads({
+      onDetail: (_readCount, page) => {
+        if (page === 1) {
+          olderAttempts += 1
+          if (olderAttempts === 1)
+            throw coreError(422, 'Older page unavailable')
+          return olderPage
+        }
+        return pageZero
+      },
+    })
+    const screen = await renderPage()
+    await openConversation(screen)
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Load older messages' })
+    )
+
+    await expect
+      .element(screen.getByText('Newest answer remains'))
+      .toBeVisible()
+    await expect
+      .element(screen.getByText('Older page unavailable'))
+      .toBeVisible()
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Retry loading older messages' })
+    )
+    await expect
+      .element(screen.getByText('Older question survives'))
+      .toBeVisible()
+
+    const history = screen.getByLabelText('Conversation history').element()
+    expect(history.querySelectorAll('article')).toHaveLength(2)
+    expect(
+      screen.getByText('Stale duplicate should be dropped')
+    ).not.toBeInTheDocument()
+  })
+
+  it('does not complete a processing turn from an unrelated later user and assistant pair', async () => {
+    const unrelatedUser = messageDto(
+      '77777777-7777-4777-8777-777777777777',
+      'USER',
+      'A later user turn',
+      '2026-11-22T10:02:00Z'
+    )
+    const unrelatedAssistant = messageDto(
+      '88888888-8888-4888-8888-888888888888',
+      'ASSISTANT',
+      'An unrelated later answer',
+      '2026-11-22T10:03:00Z'
+    )
+    const laterTurnDetail = {
+      ...baseDetail,
+      messages: [baseDetail.messages[0], unrelatedUser, unrelatedAssistant],
+    }
+    const { getDetailReads } = setupReads({
+      onDetail: (readCount) =>
+        readCount > 1 ? laterTurnDetail : processingDetail(),
+    })
+    const post = vi.spyOn(coreApi, 'post').mockImplementation(async (url) => {
+      if (url.endsWith('/messages')) {
+        return acceptedTurn('PROCESSING', null) as never
+      }
+      throw new Error(`Unexpected POST ${url}`)
+    })
+    const screen = await renderPage()
+    await openConversation(screen)
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Assistant question' }),
+      'Accepted question'
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Ask Assistant' }))
+
+    await expect.poll(() => getDetailReads()).toBeGreaterThan(1)
+    await expect
+      .element(screen.getByText('Core is processing this question.'))
+      .toBeVisible()
+    expect(post).toHaveBeenCalledTimes(1)
+  })
+
+  it('clears processing only after the exact accepted assistant message appears', async () => {
+    const exactMessageId = '77777777-7777-4777-8777-777777777777'
+    const exactAnswer = {
+      ...groundedAssistantMessage,
+      id: exactMessageId,
+      content: 'Exact accepted answer',
+    }
+    const completedDetail = {
+      ...baseDetail,
+      messages: [baseDetail.messages[0], exactAnswer],
+    }
+    const { getDetailReads } = setupReads({
+      onDetail: (readCount) =>
+        readCount > 1 ? completedDetail : processingDetail(),
+    })
+    const post = vi.spyOn(coreApi, 'post').mockImplementation(async (url) => {
+      if (url.endsWith('/messages')) {
+        return acceptedTurn('PROCESSING', exactMessageId) as never
+      }
+      throw new Error(`Unexpected POST ${url}`)
+    })
+    const screen = await renderPage()
+    await openConversation(screen)
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Assistant question' }),
+      'Accepted question'
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Ask Assistant' }))
+
+    await expect.poll(() => getDetailReads()).toBeGreaterThan(1)
+    await expect
+      .element(screen.getByText('Exact accepted answer'))
+      .toBeVisible()
+    await expect
+      .element(screen.getByText('Core is processing this question.'))
+      .not.toBeInTheDocument()
+    expect(post).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps StrictMode mount and navigation read-only', async () => {
+    setupReads()
+    const post = vi.spyOn(coreApi, 'post').mockResolvedValue(conversation)
+    const screen = await renderPage({ strict: true })
+    await expect
+      .element(screen.getByText('Product planning').last())
+      .toBeVisible()
+    await selectMeeting(screen)
+    expect(post).not.toHaveBeenCalled()
   })
 
   it('submits a question through Core and displays authoritative grounded claims and citations', async () => {

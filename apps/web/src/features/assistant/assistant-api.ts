@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { queryOptions } from '@tanstack/react-query'
+import { infiniteQueryOptions, queryOptions } from '@tanstack/react-query'
 import { CoreApiError, coreApi, type ApiResponseData } from '@/lib/core-api'
 
 const assistantAnswerStatuses = [
@@ -88,6 +88,7 @@ export type AssistantConversationDetail = z.infer<
 export type AssistantTurn = z.infer<typeof turnSchema>
 
 const conversationsPath = '/assistant/conversations'
+export const ASSISTANT_PAGE_SIZE = 50
 
 function malformedAssistantResponse(
   message: string,
@@ -151,7 +152,7 @@ export async function fetchAssistantConversations(
   options: AssistantConversationListOptions = {}
 ): Promise<AssistantConversation[]> {
   const page = options.page ?? 0
-  const size = options.size ?? 50
+  const size = options.size ?? ASSISTANT_PAGE_SIZE
   const response = await coreApi.getWithMeta<unknown>(conversationsPath, {
     params: { page, size },
     ...(options.signal ? { signal: options.signal } : {}),
@@ -163,11 +164,32 @@ export function assistantConversationsQueryOptions(
   options: Pick<AssistantConversationListOptions, 'page' | 'size'> = {}
 ) {
   const page = options.page ?? 0
-  const size = options.size ?? 50
+  const size = options.size ?? ASSISTANT_PAGE_SIZE
   return queryOptions({
     queryKey: ['assistant', 'conversations', page, size] as const,
     queryFn: ({ signal }: { signal: AbortSignal }) =>
       fetchAssistantConversations({ page, size, signal }),
+    retry: false,
+  })
+}
+
+export function assistantConversationsInfiniteQueryOptions(
+  size = ASSISTANT_PAGE_SIZE
+) {
+  return infiniteQueryOptions({
+    queryKey: ['assistant', 'conversations', 'pages', size] as const,
+    initialPageParam: 0,
+    queryFn: ({
+      pageParam,
+      signal,
+    }: {
+      pageParam: number
+      signal: AbortSignal
+    }) => fetchAssistantConversations({ page: pageParam, size, signal }),
+    getNextPageParam: (
+      lastPage: AssistantConversation[],
+      allPages: AssistantConversation[][]
+    ) => (lastPage.length === size ? allPages.length : undefined),
     retry: false,
   })
 }
@@ -190,26 +212,84 @@ export async function createAssistantConversation(
 
 export async function fetchAssistantConversationDetail(
   conversationId: string,
-  options: { signal?: AbortSignal } = {}
+  options: { page?: number; size?: number; signal?: AbortSignal } = {}
 ): Promise<AssistantConversationDetail> {
+  const page = options.page ?? 0
+  const size = options.size ?? ASSISTANT_PAGE_SIZE
   const response = await coreApi.getWithMeta<unknown>(
     `${conversationsPath}/${encodeURIComponent(conversationId)}`,
-    options.signal
-      ? { params: { page: 0, size: 50 }, signal: options.signal }
-      : {
-          params: { page: 0, size: 50 },
-        }
+    {
+      params: { page, size },
+      ...(options.signal ? { signal: options.signal } : {}),
+    }
   )
-  return parseAssistantConversationDetailResponse(response)
+  const detail = parseAssistantConversationDetailResponse(response)
+  if (detail.page !== page || detail.size !== size) {
+    throw malformedAssistantResponse(
+      'Core API returned Assistant history for a different page.',
+      {
+        requestedPage: page,
+        requestedSize: size,
+        detailPage: detail.page,
+        detailSize: detail.size,
+      }
+    )
+  }
+  return detail
 }
 
 export function assistantConversationDetailQueryOptions(
-  conversationId?: string
+  conversationId?: string,
+  page = 0,
+  size = ASSISTANT_PAGE_SIZE
 ) {
   return queryOptions({
-    queryKey: ['assistant', 'conversation', conversationId] as const,
+    queryKey: [
+      'assistant',
+      'conversation',
+      conversationId,
+      'page',
+      page,
+      size,
+    ] as const,
     queryFn: ({ signal }: { signal: AbortSignal }) =>
-      fetchAssistantConversationDetail(conversationId as string, { signal }),
+      fetchAssistantConversationDetail(conversationId as string, {
+        page,
+        size,
+        signal,
+      }),
+    enabled: Boolean(conversationId),
+    retry: false,
+  })
+}
+
+export function assistantConversationHistoryQueryOptions(
+  conversationId?: string,
+  size = ASSISTANT_PAGE_SIZE
+) {
+  return infiniteQueryOptions({
+    queryKey: [
+      'assistant',
+      'conversation',
+      conversationId,
+      'history',
+      size,
+    ] as const,
+    initialPageParam: 0,
+    queryFn: ({
+      pageParam,
+      signal,
+    }: {
+      pageParam: number
+      signal: AbortSignal
+    }) =>
+      fetchAssistantConversationDetail(conversationId as string, {
+        page: pageParam,
+        size,
+        signal,
+      }),
+    getNextPageParam: (lastPage: AssistantConversationDetail) =>
+      lastPage.hasMore ? lastPage.page + 1 : undefined,
     enabled: Boolean(conversationId),
     retry: false,
   })
@@ -275,14 +355,33 @@ export function findAssistantTurnMessage(
 ): AssistantMessage | undefined {
   if (turn.assistantMessageId) {
     return detail.messages.find(
-      (message) => message.id === turn.assistantMessageId
+      (message) =>
+        message.id === turn.assistantMessageId && message.role === 'ASSISTANT'
     )
   }
   const userIndex = detail.messages.findIndex(
     (message) => message.id === turn.userMessageId
   )
   if (userIndex < 0) return undefined
-  return detail.messages
-    .slice(userIndex + 1)
-    .find((message) => message.role === 'ASSISTANT')
+  const userMessage = detail.messages[userIndex]
+  const nextMessage = detail.messages[userIndex + 1]
+  if (
+    !userMessage ||
+    !nextMessage ||
+    nextMessage.role !== 'ASSISTANT' ||
+    nextMessage.answerStatus === null
+  ) {
+    return undefined
+  }
+  const userTimestamp = Date.parse(userMessage.createdAt)
+  const assistantTimestamp = Date.parse(nextMessage.createdAt)
+  if (
+    !Number.isFinite(userTimestamp) ||
+    !Number.isFinite(assistantTimestamp) ||
+    assistantTimestamp < userTimestamp ||
+    (assistantTimestamp === userTimestamp && userMessage.id >= nextMessage.id)
+  ) {
+    return undefined
+  }
+  return nextMessage
 }

@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -6,7 +7,13 @@ import {
   type FormEvent,
   type ReactNode,
 } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  type InfiniteData,
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Bot, LoaderCircle, RefreshCw, Search, ShieldAlert } from 'lucide-react'
 import { CoreApiError, normalizeCoreApiError } from '@/lib/core-api'
@@ -27,9 +34,9 @@ import {
 import { meetingListQueryOptions } from '@/features/meetings/data/list-api'
 import {
   assistantConversationDetailQueryOptions,
-  assistantConversationsQueryOptions,
+  assistantConversationHistoryQueryOptions,
+  assistantConversationsInfiniteQueryOptions,
   createAssistantConversation,
-  fetchAssistantConversationDetail,
   findAssistantTurnMessage,
   newAssistantIdempotencyKey,
   submitAssistantQuestion,
@@ -41,16 +48,69 @@ import {
 
 const POLL_INTERVAL_MS = 750
 const MAX_POLL_ATTEMPTS = 40
+const MAX_TURN_HISTORY_PAGES = 10
 
 type Submission = {
+  meetingId: string
   conversationId: string
   question: string
   idempotencyKey: string
 }
 
-type ProcessingTurn = {
-  conversationId: string
+type AssistantUiScope = {
+  generation: number
+  meetingId?: string
+  conversationId?: string
+}
+
+type CreateOperation = {
+  operationId: number
+  scope: AssistantUiScope
+  meetingId: string
+  title?: string
+}
+
+type QuestionOperation = {
+  operationId: number
+  scope: AssistantUiScope
+  submission: Submission
+}
+
+type AcceptedTurnCache = {
+  submission: Submission
   turn: AssistantTurn
+}
+
+type ProcessingTurn = {
+  scope: AssistantUiScope
+  conversationId: string
+  submission: Submission
+  turn: AssistantTurn
+}
+
+type ConversationListQuery = {
+  data?: InfiniteData<AssistantConversation[]>
+  isPending: boolean
+  isError: boolean
+  error: unknown
+  refetch: () => Promise<unknown>
+  hasNextPage: boolean
+  isFetchingNextPage: boolean
+  isFetchNextPageError: boolean
+  fetchNextPage: () => Promise<unknown>
+}
+
+type ConversationHistoryQuery = {
+  data?: InfiniteData<AssistantConversationDetail>
+  isPending: boolean
+  isFetching: boolean
+  isError: boolean
+  error: unknown
+  refetch: () => Promise<unknown>
+  hasNextPage: boolean
+  isFetchingNextPage: boolean
+  isFetchNextPageError: boolean
+  fetchNextPage: () => Promise<unknown>
 }
 
 export function AssistantPage() {
@@ -74,124 +134,217 @@ export function AssistantPage() {
   const [pollingStopped, setPollingStopped] = useState(false)
   const [pollingError, setPollingError] = useState<unknown>()
   const [pollingAttempts, setPollingAttempts] = useState(0)
-  const submissionInFlightRef = useRef(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [isCreating, setIsCreating] = useState(false)
+  const [createError, setCreateError] = useState<unknown>()
+  const [historyRefreshError, setHistoryRefreshError] = useState<unknown>()
+  const [isRefreshingHistory, setIsRefreshingHistory] = useState(false)
+
+  const scopeRef = useRef<AssistantUiScope>({ generation: 0 })
+  const createOperationRef = useRef<number | undefined>(undefined)
+  const questionOperationRef = useRef<number | undefined>(undefined)
+  const refreshOperationRef = useRef<number | undefined>(undefined)
+  const createSequenceRef = useRef(0)
+  const questionSequenceRef = useRef(0)
+  const refreshSequenceRef = useRef(0)
 
   const meetingsQuery = useQuery(
     meetingListQueryOptions({ q, page, pageSize: 20, sort: 'createdAt,desc' })
   )
-  const conversationsQuery = useQuery(assistantConversationsQueryOptions())
-  const detailQuery = useQuery(
-    assistantConversationDetailQueryOptions(selectedConversationId)
+  const conversationsQuery = useInfiniteQuery(
+    assistantConversationsInfiniteQueryOptions()
+  )
+  const detailQuery = useInfiniteQuery(
+    assistantConversationHistoryQueryOptions(selectedConversationId)
   )
 
   const selectedMeeting = meetingsQuery.data?.meetings.find(
     (meeting) => meeting.id === selectedMeetingId
   )
+  const allConversations = useMemo(
+    () => uniqueConversations(conversationsQuery.data?.pages ?? []),
+    [conversationsQuery.data]
+  )
   const selectedConversations = useMemo(
     () =>
-      (conversationsQuery.data ?? []).filter(
+      allConversations.filter(
         (conversation) => conversation.meetingId === selectedMeetingId
       ),
-    [conversationsQuery.data, selectedMeetingId]
+    [allConversations, selectedMeetingId]
   )
 
   const createMutation = useMutation({
-    mutationFn: async () => {
-      if (!selectedMeetingId) {
-        throw new CoreApiError({
-          message: 'Select an authorized meeting first.',
-          code: 'ASSISTANT_MEETING_REQUIRED',
-          kind: 'http',
-        })
-      }
-      return createAssistantConversation(
-        selectedMeetingId,
-        conversationTitle || undefined
+    mutationFn: (operation: CreateOperation) =>
+      createAssistantConversation(operation.meetingId, operation.title),
+    onSuccess: (conversation, operation) => {
+      queryClient.setQueryData(
+        ['assistant', 'conversation', conversation.id, 'summary'],
+        conversation
       )
-    },
-    onSuccess: (conversation) => {
+      void queryClient.invalidateQueries({
+        queryKey: ['assistant', 'conversations'],
+      })
+      if (conversation.meetingId !== operation.meetingId) {
+        if (isCurrentScope(operation.scope)) {
+          setCreateError(
+            new CoreApiError({
+              message: 'Core returned a conversation for a different meeting.',
+              code: 'MALFORMED_RESPONSE',
+              kind: 'malformed',
+            })
+          )
+        }
+        return
+      }
+      if (!isCurrentScope(operation.scope)) return
+      scopeRef.current = {
+        ...operation.scope,
+        generation: operation.scope.generation + 1,
+        conversationId: conversation.id,
+      }
       setSelectedConversationId(conversation.id)
       setConversationTitle('')
+      setQuestion('')
       setSubmission(undefined)
       submissionRef.current = undefined
       setSubmissionError(undefined)
       setProcessingTurn(undefined)
-      void queryClient.invalidateQueries({
-        queryKey: ['assistant', 'conversations'],
-      })
+      setCreateError(undefined)
+    },
+    onError: (error, operation) => {
+      if (isCurrentScope(operation.scope)) setCreateError(error)
+    },
+    onSettled: (_data, _error, operation) => {
+      if (createOperationRef.current !== operation.operationId) return
+      createOperationRef.current = undefined
+      setIsCreating(false)
     },
   })
 
   const questionMutation = useMutation({
-    mutationFn: (current: Submission) =>
+    mutationFn: (operation: QuestionOperation) =>
       submitAssistantQuestion(
-        current.conversationId,
-        current.question,
-        current.idempotencyKey
+        operation.submission.conversationId,
+        operation.submission.question,
+        operation.submission.idempotencyKey
       ),
   })
 
-  useEffect(() => {
-    if (
-      !processingTurn ||
-      processingTurn.conversationId !== selectedConversationId ||
-      pollingStopped
-    ) {
-      return
-    }
+  const isCurrentScope = useCallback((expected: AssistantUiScope) => {
+    const current = scopeRef.current
+    return (
+      current.generation === expected.generation &&
+      current.meetingId === expected.meetingId &&
+      current.conversationId === expected.conversationId
+    )
+  }, [])
 
-    let cancelled = false
-    let timer: number | undefined
-    let attempts = 0
+  const cacheHistoryPages = useCallback(
+    (
+      currentConversationId: string,
+      incomingPages: AssistantConversationDetail[]
+    ) => {
+      const historyOptions = assistantConversationHistoryQueryOptions(
+        currentConversationId
+      )
+      queryClient.setQueryData<
+        InfiniteData<AssistantConversationDetail, number>
+      >(historyOptions.queryKey, (cached) => {
+        const byPage = new Map<number, AssistantConversationDetail>(
+          (cached?.pages ?? []).map((detail) => [detail.page, detail])
+        )
+        for (const detail of incomingPages) byPage.set(detail.page, detail)
+        const pages = [...byPage.values()].sort(
+          (left, right) => left.page - right.page
+        )
+        const seenMessageIds = new Set<string>()
+        const deduplicatedPages = pages.map((detail) => ({
+          ...detail,
+          messages: detail.messages.filter((message) => {
+            if (seenMessageIds.has(message.id)) return false
+            seenMessageIds.add(message.id)
+            return true
+          }),
+        }))
+        return {
+          pages: deduplicatedPages,
+          pageParams: deduplicatedPages.map((detail) => detail.page),
+        }
+      })
+    },
+    [queryClient]
+  )
 
-    const poll = async () => {
-      if (cancelled) return
-      try {
-        const detail = await queryClient.fetchQuery({
-          ...assistantConversationDetailQueryOptions(
-            processingTurn.conversationId
-          ),
-          queryFn: ({ signal }: { signal: AbortSignal }) =>
-            fetchAssistantConversationDetail(processingTurn.conversationId, {
-              signal,
-            }),
-        })
-        if (cancelled) return
-        if (findAssistantTurnMessage(detail, processingTurn.turn)) {
-          setProcessingTurn(undefined)
-          setPollingStopped(false)
-          setPollingError(undefined)
-          setPollingAttempts(0)
-          setQuestion('')
-          setSubmission(undefined)
-          submissionRef.current = undefined
-          return
-        }
-        attempts += 1
-        setPollingAttempts(attempts)
-        if (attempts >= MAX_POLL_ATTEMPTS) {
-          setPollingStopped(true)
-          return
-        }
-      } catch (error) {
-        if (cancelled) return
-        setPollingError(error)
-        setPollingStopped(true)
-        return
+  const fetchNewestHistory = useCallback(
+    async (currentConversationId: string) => {
+      const newest = await queryClient.fetchQuery({
+        ...assistantConversationDetailQueryOptions(currentConversationId, 0),
+        staleTime: 0,
+      })
+      cacheHistoryPages(currentConversationId, [newest])
+      return newest
+    },
+    [cacheHistoryPages, queryClient]
+  )
+
+  const finishProcessingTurn = useCallback(
+    (accepted: ProcessingTurn) => {
+      if (!isCurrentScope(accepted.scope)) return
+      const latestKey = [
+        'assistant',
+        'turn',
+        accepted.conversationId,
+        'latest-accepted',
+      ] as const
+      const latest = queryClient.getQueryData<AcceptedTurnCache>(latestKey)
+      if (
+        latest?.submission.idempotencyKey === accepted.submission.idempotencyKey
+      ) {
+        queryClient.removeQueries({ queryKey: latestKey, exact: true })
       }
-      timer = window.setTimeout(poll, POLL_INTERVAL_MS)
-    }
+      setProcessingTurn(undefined)
+      setPollingStopped(false)
+      setPollingError(undefined)
+      setPollingAttempts(0)
+      if (
+        submissionRef.current?.idempotencyKey ===
+        accepted.submission.idempotencyKey
+      ) {
+        setQuestion('')
+        setSubmission(undefined)
+        submissionRef.current = undefined
+      }
+    },
+    [isCurrentScope, queryClient]
+  )
 
-    timer = window.setTimeout(poll, POLL_INTERVAL_MS)
-    return () => {
-      cancelled = true
-      if (timer !== undefined) window.clearTimeout(timer)
+  const createConversation = () => {
+    const currentScope = scopeRef.current
+    if (!currentScope.meetingId) return
+    const operation: CreateOperation = {
+      operationId: ++createSequenceRef.current,
+      scope: { ...currentScope },
+      meetingId: currentScope.meetingId,
+      title: conversationTitle || undefined,
     }
-  }, [pollingStopped, processingTurn, queryClient, selectedConversationId])
+    createOperationRef.current = operation.operationId
+    setCreateError(undefined)
+    setIsCreating(true)
+    createMutation.mutate(operation)
+  }
 
-  function clearConversationState() {
-    setSelectedConversationId(undefined)
+  function clearConversationState(
+    meetingId?: string,
+    conversationId?: string
+  ): AssistantUiScope {
+    const nextScope: AssistantUiScope = {
+      generation: scopeRef.current.generation + 1,
+      meetingId,
+      conversationId,
+    }
+    scopeRef.current = nextScope
+    setSelectedMeetingId(meetingId)
+    setSelectedConversationId(conversationId)
     setConversationTitle('')
     setQuestion('')
     setQuestionValidationError(undefined)
@@ -202,19 +355,49 @@ export function AssistantPage() {
     setPollingStopped(false)
     setPollingError(undefined)
     setPollingAttempts(0)
+    setHistoryRefreshError(undefined)
+    setIsRefreshingHistory(false)
+    setIsSubmitting(false)
+    setIsCreating(false)
+    setCreateError(undefined)
+    createOperationRef.current = undefined
+    questionOperationRef.current = undefined
+    refreshOperationRef.current = undefined
     createMutation.reset()
     questionMutation.reset()
+    return nextScope
   }
 
   function selectMeeting(meetingId: string) {
-    clearConversationState()
-    setSelectedMeetingId(meetingId || undefined)
+    clearConversationState(meetingId || undefined)
   }
 
   function openConversation(conversation: AssistantConversation) {
-    clearConversationState()
-    setSelectedMeetingId(conversation.meetingId)
-    setSelectedConversationId(conversation.id)
+    const scope = clearConversationState(
+      conversation.meetingId,
+      conversation.id
+    )
+    const accepted = queryClient.getQueryData<AcceptedTurnCache>([
+      'assistant',
+      'turn',
+      conversation.id,
+      'latest-accepted',
+    ])
+    if (
+      accepted?.turn.state === 'PROCESSING' &&
+      accepted.submission.meetingId === conversation.meetingId &&
+      accepted.submission.conversationId === conversation.id
+    ) {
+      submissionRef.current = accepted.submission
+      setSubmission(accepted.submission)
+      setQuestion(accepted.submission.question)
+      setProcessingTurn({
+        scope,
+        conversationId: conversation.id,
+        submission: accepted.submission,
+        turn: accepted.turn,
+      })
+    }
   }
 
   async function submitQuestion(
@@ -222,7 +405,14 @@ export function AssistantPage() {
     retrySameQuestion = false
   ) {
     event?.preventDefault()
-    if (!selectedConversationId || submissionInFlightRef.current) return
+    const activeScope = { ...scopeRef.current }
+    if (
+      !activeScope.meetingId ||
+      !activeScope.conversationId ||
+      questionOperationRef.current !== undefined
+    ) {
+      return
+    }
 
     const normalizedQuestion = question.trim()
     if (!retrySameQuestion && !normalizedQuestion) {
@@ -237,18 +427,27 @@ export function AssistantPage() {
     }
 
     const previous = submissionRef.current
+    const previousMatchesScope =
+      previous?.meetingId === activeScope.meetingId &&
+      previous.conversationId === activeScope.conversationId
     const current =
-      retrySameQuestion && previous
+      retrySameQuestion && previousMatchesScope && previous
         ? previous
-        : previous?.conversationId === selectedConversationId &&
+        : previousMatchesScope &&
             previous.question === normalizedQuestion &&
             submissionError
           ? previous
           : {
-              conversationId: selectedConversationId,
+              meetingId: activeScope.meetingId,
+              conversationId: activeScope.conversationId,
               question: normalizedQuestion,
               idempotencyKey: newAssistantIdempotencyKey(),
             }
+    const operation: QuestionOperation = {
+      operationId: ++questionSequenceRef.current,
+      scope: activeScope,
+      submission: current,
+    }
 
     submissionRef.current = current
     setSubmission(current)
@@ -257,68 +456,251 @@ export function AssistantPage() {
     setPollingError(undefined)
     setPollingStopped(false)
     setPollingAttempts(0)
-    submissionInFlightRef.current = true
+    questionOperationRef.current = operation.operationId
     setIsSubmitting(true)
     try {
-      const turn = await questionMutation.mutateAsync(current)
+      const turn = await questionMutation.mutateAsync(operation)
+      const acceptedTurnCache: AcceptedTurnCache = {
+        turn,
+        submission: current,
+      }
+      queryClient.setQueryData(
+        [
+          'assistant',
+          'turn',
+          current.conversationId,
+          'by-idempotency-key',
+          current.idempotencyKey,
+        ],
+        acceptedTurnCache
+      )
+      queryClient.setQueryData(
+        ['assistant', 'turn', current.conversationId, 'latest-accepted'],
+        acceptedTurnCache
+      )
+      void queryClient.invalidateQueries({
+        queryKey: assistantConversationHistoryQueryOptions(
+          current.conversationId
+        ).queryKey,
+        refetchType: 'none',
+      })
+
       if (turn.state === 'PROCESSING') {
-        setProcessingTurn({ conversationId: current.conversationId, turn })
+        if (isCurrentScope(operation.scope)) {
+          setProcessingTurn({
+            scope: operation.scope,
+            conversationId: current.conversationId,
+            submission: current,
+            turn,
+          })
+        }
         return
       }
       if (turn.state === 'STALE_SOURCE') {
-        setSubmissionError(
-          new CoreApiError({
-            status: 409,
-            message: 'Assistant evidence is no longer current.',
-            code: 'ASSISTANT_SOURCE_STALE',
-            kind: 'http',
-          })
-        )
+        if (isCurrentScope(operation.scope)) {
+          setSubmissionError(
+            new CoreApiError({
+              status: 409,
+              message: 'Assistant evidence is no longer current.',
+              code: 'ASSISTANT_SOURCE_STALE',
+              kind: 'http',
+            })
+          )
+        }
         return
       }
       if (turn.state === 'FAILED') {
-        setSubmissionError(
-          new CoreApiError({
-            status: 503,
-            message: 'Assistant answer is unavailable.',
-            code: 'ASSISTANT_UNAVAILABLE',
-            kind: 'server',
-          })
-        )
+        if (isCurrentScope(operation.scope)) {
+          setSubmissionError(
+            new CoreApiError({
+              status: 503,
+              message: 'Assistant answer is unavailable.',
+              code: 'ASSISTANT_UNAVAILABLE',
+              kind: 'server',
+            })
+          )
+        }
         return
       }
-      await queryClient.refetchQueries({
-        queryKey: ['assistant', 'conversation', current.conversationId],
-      })
+      await fetchNewestHistory(current.conversationId)
+      if (!isCurrentScope(operation.scope)) return
       setQuestion('')
       setSubmission(undefined)
       submissionRef.current = undefined
     } catch (error) {
-      setSubmissionError(error)
+      if (isCurrentScope(operation.scope)) setSubmissionError(error)
     } finally {
-      submissionInFlightRef.current = false
-      setIsSubmitting(false)
+      if (questionOperationRef.current === operation.operationId) {
+        questionOperationRef.current = undefined
+        setIsSubmitting(false)
+      }
     }
   }
 
   async function refreshConversation() {
-    const accepted = processingTurn
-    const refreshed = await detailQuery.refetch()
+    const currentScope = { ...scopeRef.current }
+    if (!currentScope.conversationId) return
+    const operationId = ++refreshSequenceRef.current
+    refreshOperationRef.current = operationId
+    setHistoryRefreshError(undefined)
+    setIsRefreshingHistory(true)
+    try {
+      const newest = await fetchNewestHistory(currentScope.conversationId)
+      if (!isCurrentScope(currentScope)) return
+      const accepted =
+        processingTurn &&
+        isCurrentScope(processingTurn.scope) &&
+        processingTurn.conversationId === currentScope.conversationId
+          ? processingTurn
+          : undefined
+      const pages = queryClient.getQueryData<
+        InfiniteData<AssistantConversationDetail, number>
+      >(
+        assistantConversationHistoryQueryOptions(currentScope.conversationId)
+          .queryKey
+      )?.pages ?? [newest]
+      if (
+        accepted &&
+        pages.some((detail) => findAssistantTurnMessage(detail, accepted.turn))
+      ) {
+        finishProcessingTurn(accepted)
+      }
+    } catch (error) {
+      if (isCurrentScope(currentScope)) setHistoryRefreshError(error)
+    } finally {
+      if (refreshOperationRef.current === operationId) {
+        refreshOperationRef.current = undefined
+        setIsRefreshingHistory(false)
+      }
+    }
+  }
+
+  useEffect(() => {
     if (
-      !accepted ||
-      !refreshed.data ||
-      !findAssistantTurnMessage(refreshed.data, accepted.turn)
+      !processingTurn ||
+      !isCurrentScope(processingTurn.scope) ||
+      pollingStopped
     ) {
       return
     }
-    setProcessingTurn(undefined)
-    setPollingStopped(false)
-    setPollingError(undefined)
-    setPollingAttempts(0)
-    setQuestion('')
-    setSubmission(undefined)
-    submissionRef.current = undefined
-  }
+
+    const accepted = processingTurn
+    let cancelled = false
+    let timer: number | undefined
+    let attempts = 0
+    const observedPages = new Map<number, AssistantConversationDetail>()
+
+    const poll = async () => {
+      if (cancelled || !isCurrentScope(accepted.scope)) return
+      try {
+        const newestOptions = assistantConversationDetailQueryOptions(
+          accepted.conversationId,
+          0
+        )
+        const newest = await queryClient.fetchQuery({
+          ...newestOptions,
+          staleTime: 0,
+        })
+        if (cancelled || !isCurrentScope(accepted.scope)) return
+        observedPages.set(0, newest)
+        cacheHistoryPages(accepted.conversationId, [newest])
+
+        const cachedPages =
+          queryClient.getQueryData<
+            InfiniteData<AssistantConversationDetail, number>
+          >(
+            assistantConversationHistoryQueryOptions(accepted.conversationId)
+              .queryKey
+          )?.pages ?? []
+        for (const detail of cachedPages) {
+          if (detail.page > 0 && !observedPages.has(detail.page)) {
+            observedPages.set(detail.page, detail)
+          }
+        }
+
+        const matchingPage = [...observedPages.values()]
+          .sort((left, right) => left.page - right.page)
+          .find((detail) => findAssistantTurnMessage(detail, accepted.turn))
+        if (matchingPage) {
+          cacheHistoryPages(accepted.conversationId, [
+            ...observedPages.values(),
+          ])
+          finishProcessingTurn(accepted)
+          return
+        }
+
+        const targetIsKnown = [...observedPages.values()].some((detail) =>
+          accepted.turn.assistantMessageId
+            ? detail.messages.some(
+                (message) => message.id === accepted.turn.assistantMessageId
+              )
+            : detail.messages.some(
+                (message) => message.id === accepted.turn.userMessageId
+              )
+        )
+        if (!targetIsKnown) {
+          const scannedPageNumbers = [...observedPages.keys()]
+          const lastPageNumber = Math.max(...scannedPageNumbers)
+          const lastPage = observedPages.get(lastPageNumber)
+          const nextPage = lastPageNumber + 1
+          if (lastPage?.hasMore && nextPage <= MAX_TURN_HISTORY_PAGES) {
+            const olderOptions = assistantConversationDetailQueryOptions(
+              accepted.conversationId,
+              nextPage
+            )
+            const older = await queryClient.fetchQuery({
+              ...olderOptions,
+              staleTime: 0,
+            })
+            if (cancelled || !isCurrentScope(accepted.scope)) return
+            observedPages.set(nextPage, older)
+            const olderMatch = findAssistantTurnMessage(older, accepted.turn)
+            if (olderMatch) {
+              cacheHistoryPages(accepted.conversationId, [
+                ...observedPages.values(),
+              ])
+              finishProcessingTurn(accepted)
+              return
+            }
+          }
+        }
+
+        attempts += 1
+        setPollingAttempts(attempts)
+        if (attempts >= MAX_POLL_ATTEMPTS) {
+          setPollingStopped(true)
+          return
+        }
+      } catch (error) {
+        if (cancelled || !isCurrentScope(accepted.scope)) return
+        setPollingError(error)
+        setPollingStopped(true)
+        return
+      }
+      timer = window.setTimeout(poll, POLL_INTERVAL_MS)
+    }
+
+    timer = window.setTimeout(poll, POLL_INTERVAL_MS)
+    return () => {
+      cancelled = true
+      if (timer !== undefined) window.clearTimeout(timer)
+      void queryClient.cancelQueries({
+        queryKey: [
+          'assistant',
+          'conversation',
+          accepted.conversationId,
+          'page',
+        ],
+      })
+    }
+  }, [
+    cacheHistoryPages,
+    finishProcessingTurn,
+    isCurrentScope,
+    pollingStopped,
+    processingTurn,
+    queryClient,
+  ])
 
   function submitSearch(event: FormEvent) {
     event.preventDefault()
@@ -328,11 +710,10 @@ export function AssistantPage() {
 
   const questionCount = [...question].length
   const selectedConversation =
-    conversationsQuery.data?.find(
+    allConversations.find(
       (conversation) => conversation.id === selectedConversationId
-    ) ?? detailQuery.data?.conversation
-  const isQuestionBusy =
-    questionMutation.isPending || isSubmitting || Boolean(processingTurn)
+    ) ?? detailQuery.data?.pages[0]?.conversation
+  const isQuestionBusy = isSubmitting || Boolean(processingTurn)
 
   return (
     <>
@@ -358,7 +739,7 @@ export function AssistantPage() {
           selectedMeetingId={selectedMeetingId}
           selectedMeetingTitle={selectedMeeting?.title}
           conversations={selectedConversations}
-          allConversations={conversationsQuery.data ?? []}
+          allConversations={allConversations}
           conversationsQuery={conversationsQuery}
           selectedConversationId={selectedConversationId}
           selectedConversation={selectedConversation}
@@ -366,10 +747,18 @@ export function AssistantPage() {
           onMeetingChange={selectMeeting}
           onConversationOpen={openConversation}
           onConversationTitleChange={setConversationTitle}
-          onCreate={() => createMutation.mutate()}
-          createPending={createMutation.isPending}
-          createError={createMutation.error}
+          onCreate={createConversation}
+          createPending={isCreating}
+          createError={createError}
+          onLoadOlderConversations={() =>
+            void conversationsQuery.fetchNextPage()
+          }
           detailQuery={detailQuery}
+          historyRefreshError={historyRefreshError}
+          historyRefreshing={isRefreshingHistory}
+          onLoadOlderMessages={() =>
+            void detailQuery.fetchNextPage({ cancelRefetch: false })
+          }
           question={question}
           questionCount={questionCount}
           questionValidationError={questionValidationError}
@@ -501,7 +890,11 @@ function AssistantConversationCard({
   onCreate,
   createPending,
   createError,
+  onLoadOlderConversations,
   detailQuery,
+  historyRefreshError,
+  historyRefreshing,
+  onLoadOlderMessages,
   question,
   questionCount,
   questionValidationError,
@@ -523,7 +916,7 @@ function AssistantConversationCard({
   selectedMeetingTitle?: string
   conversations: AssistantConversation[]
   allConversations: AssistantConversation[]
-  conversationsQuery: ReturnType<typeof useQuery<AssistantConversation[]>>
+  conversationsQuery: ConversationListQuery
   selectedConversationId?: string
   selectedConversation?: AssistantConversation
   conversationTitle: string
@@ -533,7 +926,11 @@ function AssistantConversationCard({
   onCreate: () => void
   createPending: boolean
   createError: unknown
-  detailQuery: ReturnType<typeof useQuery<AssistantConversationDetail>>
+  onLoadOlderConversations: () => void
+  detailQuery: ConversationHistoryQuery
+  historyRefreshError: unknown
+  historyRefreshing: boolean
+  onLoadOlderMessages: () => void
   question: string
   questionCount: number
   questionValidationError?: string
@@ -562,9 +959,9 @@ function AssistantConversationCard({
         </p>
       </CardHeader>
       <CardContent className='space-y-5'>
-        {conversationsQuery.isPending ? (
+        {conversationsQuery.isPending && !conversationsQuery.data ? (
           <RequestLoading label='Loading Assistant conversations…' />
-        ) : conversationsQuery.isError ? (
+        ) : conversationsQuery.isError && !conversationsQuery.data ? (
           <AssistantError
             error={conversationsQuery.error}
             onRetry={() => void conversationsQuery.refetch()}
@@ -672,6 +1069,27 @@ function AssistantConversationCard({
                   }
                 />
               )}
+              {conversationsQuery.isFetchNextPageError && (
+                <AssistantError
+                  error={conversationsQuery.error}
+                  onRetry={onLoadOlderConversations}
+                />
+              )}
+              {conversationsQuery.hasNextPage && (
+                <Button
+                  type='button'
+                  variant='outline'
+                  disabled={conversationsQuery.isFetchingNextPage}
+                  onClick={onLoadOlderConversations}
+                >
+                  {conversationsQuery.isFetchingNextPage && (
+                    <LoaderCircle className='size-4 animate-spin' />
+                  )}
+                  {conversationsQuery.isFetchNextPageError
+                    ? 'Retry loading older conversations'
+                    : 'Load older conversations'}
+                </Button>
+              )}
             </div>
 
             {createError && <AssistantError error={createError} />}
@@ -695,21 +1113,35 @@ function AssistantConversationCard({
                 size='sm'
                 variant='outline'
                 onClick={onRefresh}
-                disabled={detailQuery.isFetching}
+                disabled={detailQuery.isFetching || historyRefreshing}
               >
                 <RefreshCw className='size-4' /> Refresh history
               </Button>
             </div>
-            {detailQuery.isPending ? (
+            {detailQuery.isPending && !detailQuery.data ? (
               <RequestLoading label='Loading conversation history…' />
-            ) : detailQuery.isError ? (
+            ) : detailQuery.isError && !detailQuery.data ? (
               <AssistantError
                 error={detailQuery.error}
                 onRetry={() => void detailQuery.refetch()}
               />
             ) : detailQuery.data ? (
-              <ConversationHistory detail={detailQuery.data} />
+              <ConversationHistory
+                messages={chronologicalHistoryMessages(detailQuery.data.pages)}
+                hasMore={Boolean(detailQuery.hasNextPage)}
+                loadingOlder={detailQuery.isFetchingNextPage}
+                olderPageError={
+                  detailQuery.isFetchNextPageError
+                    ? detailQuery.error
+                    : undefined
+                }
+                onLoadOlder={onLoadOlderMessages}
+              />
             ) : null}
+            {historyRefreshError !== undefined &&
+              historyRefreshError !== null && (
+                <AssistantError error={historyRefreshError} />
+              )}
 
             {(processingTurn || pollingStopped) && (
               <Alert>
@@ -793,28 +1225,78 @@ function questionMutationLabel(
   return 'Ask Assistant'
 }
 
-function ConversationHistory({
-  detail,
-}: {
-  detail: AssistantConversationDetail
-}) {
-  if (!detail.messages.length) {
-    return (
-      <RequestEmpty
-        title='Conversation is ready for questions.'
-        description='Core has not recorded any messages in this conversation yet.'
-      />
-    )
+function uniqueConversations(
+  pages: AssistantConversation[][]
+): AssistantConversation[] {
+  const seen = new Set<string>()
+  return pages.flat().filter((conversation) => {
+    if (seen.has(conversation.id)) return false
+    seen.add(conversation.id)
+    return true
+  })
+}
+
+function chronologicalHistoryMessages(
+  pages: AssistantConversationDetail[]
+): AssistantMessage[] {
+  const newestCopyById = new Map<string, AssistantMessage>()
+  for (const page of pages) {
+    for (const message of page.messages) {
+      if (!newestCopyById.has(message.id)) {
+        newestCopyById.set(message.id, message)
+      }
+    }
   }
+
+  const seen = new Set<string>()
+  return [...pages].reverse().flatMap((page) =>
+    page.messages.flatMap((message) => {
+      if (seen.has(message.id)) return []
+      seen.add(message.id)
+      return [newestCopyById.get(message.id) ?? message]
+    })
+  )
+}
+
+function ConversationHistory({
+  messages,
+  hasMore,
+  loadingOlder,
+  olderPageError,
+  onLoadOlder,
+}: {
+  messages: AssistantMessage[]
+  hasMore: boolean
+  loadingOlder: boolean
+  olderPageError: unknown
+  onLoadOlder: () => void
+}) {
   return (
     <div className='space-y-3' aria-label='Conversation history'>
-      {detail.messages.map((message) => (
+      {!messages.length && (
+        <RequestEmpty
+          title='Conversation is ready for questions.'
+          description='Core has not recorded any messages in this conversation yet.'
+        />
+      )}
+      {messages.map((message) => (
         <AssistantMessageCard key={message.id} message={message} />
       ))}
-      {detail.hasMore && (
-        <p className='text-xs text-muted-foreground'>
-          Older messages are available through the Core history pagination.
-        </p>
+      {olderPageError !== undefined && olderPageError !== null && (
+        <AssistantError error={olderPageError} />
+      )}
+      {hasMore && (
+        <Button
+          type='button'
+          variant='outline'
+          disabled={loadingOlder}
+          onClick={onLoadOlder}
+        >
+          {loadingOlder && <LoaderCircle className='size-4 animate-spin' />}
+          {olderPageError
+            ? 'Retry loading older messages'
+            : 'Load older messages'}
+        </Button>
       )}
     </div>
   )
