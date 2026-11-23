@@ -406,145 +406,42 @@ describe('MeetingWorkspacePage', () => {
       .not.toBeInTheDocument()
   })
 
-  it('passes the canonical active membership count to room availability', async () => {
-    const availabilityRequests: Array<Record<string, string>> = []
-    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
-      data: editableMeeting,
-      meta: {},
-      etag: 'draft-etag',
+  it('previews an edit with the authorized meeting ID and no client membership snapshot', async () => {
+    const checkSpy = vi.spyOn(coreApi, 'post').mockResolvedValue({
+      previewOnly: true,
+      canSchedule: true,
+      roomConflict: false,
+      room: {
+        roomId: 'room-1',
+        active: true,
+        available: true,
+        capacity: 8,
+        participantCount: 3,
+        capacityExceeded: false,
+      },
+      warnings: [],
     })
-    vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url, config) => {
-      if (url === '/meetings/meeting-1/participants') {
-        return { data: activeOrganizerAndParticipants, meta: {} }
-      }
-      if (url === '/rooms/availability') {
-        availabilityRequests.push(config?.params as Record<string, string>)
-        return {
-          data: [],
-          meta: { pagination: availabilityPagination },
-        }
-      }
-      if (url === '/rooms/room-1') {
-        return {
-          data: { id: 'room-1', name: 'Boardroom', location: 'HQ' },
-          meta: {},
-        }
-      }
-      return { data: { id: 'current-user', name: 'Current User' }, meta: {} }
-    })
-
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    })
-    queryClient.setQueryData(currentUserQueryKey, {
-      userId: 'current-user',
-      displayName: 'Current User',
-    })
-    const screen = await render(
-      <QueryClientProvider client={queryClient}>
-        <MeetingWorkspacePage meetingId='meeting-1' />
-      </QueryClientProvider>
-    )
+    const getSpy = vi.spyOn(coreApi, 'getWithMeta')
+    const { screen } = await renderEditableWorkspace()
 
     await userEvent.click(screen.getByRole('button', { name: 'Edit meeting' }))
     await expect
-      .element(screen.getByRole('heading', { name: 'Edit meeting' }))
+      .element(screen.getByText(/Boardroom appears available/i))
       .toBeInTheDocument()
-    await expect.poll(() => availabilityRequests.length).toBe(1)
-    expect(availabilityRequests[0]).toMatchObject({ participantCount: '3' })
-  })
-
-  it('uses a count of one for an organizer-only meeting', async () => {
-    const availabilityRequests: Array<Record<string, string>> = []
-    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
-      data: editableMeeting,
-      meta: {},
-      etag: 'draft-etag',
-    })
-    vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url, config) => {
-      if (url === '/meetings/meeting-1/participants') {
-        return { data: [activeOrganizerAndParticipants[0]], meta: {} }
-      }
-      if (url === '/rooms/availability') {
-        availabilityRequests.push(config?.params as Record<string, string>)
-        return {
-          data: [],
-          meta: { pagination: availabilityPagination },
-        }
-      }
-      if (url === '/rooms/room-1') {
-        return {
-          data: { id: 'room-1', name: 'Boardroom', location: 'HQ' },
-          meta: {},
-        }
-      }
-      return { data: { id: 'current-user', name: 'Current User' }, meta: {} }
-    })
-
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    })
-    queryClient.setQueryData(currentUserQueryKey, {
-      userId: 'current-user',
-      displayName: 'Current User',
-    })
-    const screen = await render(
-      <QueryClientProvider client={queryClient}>
-        <MeetingWorkspacePage meetingId='meeting-1' />
-      </QueryClientProvider>
+    expect(checkSpy).toHaveBeenCalledWith(
+      '/meeting-schedule-checks',
+      expect.objectContaining({
+        meetingId: 'meeting-1',
+        roomId: 'room-1',
+        start: expect.any(String),
+        end: expect.any(String),
+      }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
     )
-
-    await userEvent.click(screen.getByRole('button', { name: 'Edit meeting' }))
-    await expect.poll(() => availabilityRequests.length).toBe(1)
-    expect(availabilityRequests[0]).toMatchObject({ participantCount: '1' })
-  })
-
-  it('omits participant count when the participant lookup fails', async () => {
-    const availabilityRequests: Array<Record<string, string>> = []
-    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
-      data: editableMeeting,
-      meta: {},
-      etag: 'draft-etag',
-    })
-    vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url, config) => {
-      if (url === '/meetings/meeting-1/participants') {
-        throw new CoreApiError({
-          message: 'Participant lookup failed',
-          kind: 'network',
-        })
-      }
-      if (url === '/rooms/availability') {
-        availabilityRequests.push(config?.params as Record<string, string>)
-        return {
-          data: [],
-          meta: { pagination: availabilityPagination },
-        }
-      }
-      if (url === '/rooms/room-1') {
-        return {
-          data: { id: 'room-1', name: 'Boardroom', location: 'HQ' },
-          meta: {},
-        }
-      }
-      return { data: { id: 'current-user', name: 'Current User' }, meta: {} }
-    })
-
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    })
-    queryClient.setQueryData(currentUserQueryKey, {
-      userId: 'current-user',
-      displayName: 'Current User',
-    })
-    const screen = await render(
-      <QueryClientProvider client={queryClient}>
-        <MeetingWorkspacePage meetingId='meeting-1' />
-      </QueryClientProvider>
-    )
-
-    await userEvent.click(screen.getByRole('button', { name: 'Edit meeting' }))
-    await expect.poll(() => availabilityRequests.length).toBe(1)
-    expect(availabilityRequests[0]).not.toHaveProperty('participantCount')
+    expect(checkSpy.mock.calls[0]?.[1]).not.toHaveProperty('participantUserIds')
+    expect(
+      getSpy.mock.calls.some(([url]) => url === '/rooms/availability')
+    ).toBe(false)
   })
 
   it('shows confirmed DRAFT metadata success after the edit dialog closes', async () => {

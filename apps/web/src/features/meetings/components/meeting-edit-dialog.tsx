@@ -77,13 +77,12 @@ import {
   getSchedulingFingerprint,
   type ScheduleValues,
 } from '../data/meeting-scheduling-utils'
-import { roomAvailabilityQueryOptions } from '../data/room-availability-api'
 import {
   MeetingRoomLookup,
   MeetingScheduleFields,
-  RoomAvailabilityNotice,
   SchedulePreviewNotice,
 } from './meeting-scheduling-controls'
+import { SelectedRoomSchedulePreview } from './selected-room-schedule-preview'
 
 const meetingEditFormSchema = z
   .object({
@@ -204,7 +203,6 @@ export type MeetingEditDialogProps = {
   meeting: EditableMeetingView
   etag: string
   currentUserId?: string
-  participantCount?: number
   onCommitted?: (commit: MeetingEditCommit) => void
 }
 
@@ -214,7 +212,6 @@ export function MeetingEditDialog({
   meeting,
   etag,
   currentUserId,
-  participantCount,
   onCommitted,
 }: MeetingEditDialogProps) {
   const queryClient = useQueryClient()
@@ -275,15 +272,6 @@ export function MeetingEditDialog({
     endTime,
     roomId,
   })
-  const availabilityQuery = useQuery({
-    ...roomAvailabilityQueryOptions({
-      start: schedule?.start ?? '',
-      end: schedule?.end ?? '',
-      participantCount,
-    }),
-    enabled: open && Boolean(schedule),
-  })
-
   const [roomLookupOpen, setRoomLookupOpen] = useState(false)
   const [roomLookupSearch, setRoomLookupSearch] = useState('')
   const [roomLookupPage, setRoomLookupPage] = useState(1)
@@ -1023,8 +1011,8 @@ export function MeetingEditDialog({
                       selectedUnavailable={roomUnavailable}
                     />
                     <FormDescription>
-                      Room availability is advisory. Core API rechecks the
-                      reservation when the change is committed.
+                      The selected-room preview is advisory. Core API rechecks
+                      the reservation when the change is committed.
                     </FormDescription>
                     <FormMessage />
                   </FormItem>
@@ -1039,14 +1027,22 @@ export function MeetingEditDialog({
                 </span>
               </div>
 
-              {schedule && (
-                <RoomAvailabilityNotice
-                  query={availabilityQuery}
-                  room={availabilityQuery.data?.rooms.find(
-                    (room) => room.id === roomId
-                  )}
-                />
-              )}
+              {open &&
+                phase === 'idle' &&
+                !editingBlocked &&
+                isEditableMeeting(workingMeeting) &&
+                schedule &&
+                roomId && (
+                  <SelectedRoomSchedulePreview
+                    input={{
+                      meetingId: workingMeeting.id,
+                      roomId,
+                      start: schedule.start,
+                      end: schedule.end,
+                    }}
+                    roomName={selectedRoom?.name}
+                  />
+                )}
 
               {visibleScheduleCheck && (
                 <SchedulePreviewNotice

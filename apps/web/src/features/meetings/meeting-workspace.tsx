@@ -249,10 +249,6 @@ function MeetingWorkspace({
   const canEdit =
     currentUser?.userId === meeting.organizerUserId &&
     (meeting.status === 'DRAFT' || meeting.status === 'SCHEDULED')
-  const participantCount = participants.data
-    ? classifyParticipantMemberships(participants.data).active.length
-    : undefined
-
   const handleMeetingEdited = (commit: MeetingEditCommit) => {
     const key = `${commit.meetingId}:${commit.etag}:${commit.outcome}`
     if (notifiedEditCommits.current.has(key)) return
@@ -293,7 +289,6 @@ function MeetingWorkspace({
           meeting={meeting as EditableMeetingView}
           etag={etag}
           currentUserId={currentUser?.userId}
-          participantCount={participantCount}
           onCommitted={handleMeetingEdited}
         />
       )}

@@ -20,7 +20,11 @@ import {
   RequestError,
   RequestLoading,
 } from '@/components/request-state'
-import { calendarMeetingsQuery, groupCalendarMeetings } from './calendar-api'
+import {
+  calendarMeetingsQuery,
+  groupCalendarDaySegments,
+  projectCalendarMonth,
+} from './calendar-api'
 
 const dateFormat = new Intl.DateTimeFormat(undefined, { dateStyle: 'full' })
 const timeFormat = new Intl.DateTimeFormat(undefined, { timeStyle: 'short' })
@@ -31,7 +35,8 @@ export function CalendarPage() {
   )
   const [page, setPage] = useState(1)
   const query = useQuery(calendarMeetingsQuery(month, page))
-  const groups = groupCalendarMeetings(query.data?.meetings ?? [])
+  const projection = projectCalendarMonth(query.data?.meetings ?? [], month)
+  const groups = groupCalendarDaySegments(projection.segments)
   function move(delta: number) {
     setMonth((m) => new Date(m.getFullYear(), m.getMonth() + delta, 1))
     setPage(1)
@@ -105,45 +110,49 @@ export function CalendarPage() {
             ) : groups.length === 0 ? (
               <RequestEmpty title='No scheduled meetings this month' />
             ) : (
-              groups.map(([day, meetings]) => (
+              groups.map(([day, segments]) => (
                 <section key={day} className='space-y-3'>
                   <h2 className='border-b pb-2 font-semibold'>
-                    {dateFormat.format(new Date(meetings[0].scheduledStartAt!))}
+                    {dateFormat.format(new Date(segments[0]!.segmentStartAt))}
                   </h2>
                   <div className='grid gap-3 md:grid-cols-2'>
-                    {meetings.map((meeting) => (
+                    {segments.map((segment) => (
                       <Link
-                        key={meeting.id}
+                        key={`${segment.meeting.id}:${segment.dayKey}`}
                         to='/meetings/$meetingId'
-                        params={{ meetingId: meeting.id }}
+                        params={{ meetingId: segment.meeting.id }}
                         className='rounded-lg border p-4 transition-colors hover:bg-accent'
                       >
                         <div className='flex items-center justify-between gap-3'>
-                          <h3 className='font-semibold'>{meeting.title}</h3>
+                          <h3 className='font-semibold'>
+                            {segment.meeting.title}
+                          </h3>
                           <Badge variant='outline'>
-                            {meeting.status.replace(/_/g, ' ')}
+                            {segment.meeting.status.replace(/_/g, ' ')}
                           </Badge>
                         </div>
                         <div className='mt-3 flex flex-wrap gap-3 text-sm text-muted-foreground'>
                           <span className='flex items-center gap-1'>
                             <Clock3 className='size-4' />
                             {timeFormat.format(
-                              new Date(meeting.scheduledStartAt!)
+                              new Date(segment.segmentStartAt)
                             )}{' '}
                             –{' '}
-                            {meeting.scheduledEndAt
-                              ? timeFormat.format(
-                                  new Date(meeting.scheduledEndAt)
-                                )
-                              : '—'}
+                            {timeFormat.format(new Date(segment.segmentEndAt))}
                           </span>
+                          {segment.continuesFromPreviousDay && (
+                            <span>Continues from previous day</span>
+                          )}
+                          {segment.continuesIntoNextDay && (
+                            <span>Continues into next day</span>
+                          )}
                           <span className='flex items-center gap-1'>
                             <MapPin className='size-4' />
-                            {meeting.display.roomName || 'No room'}
+                            {segment.meeting.display.roomName || 'No room'}
                           </span>
                           <span className='flex items-center gap-1'>
                             <Users className='size-4' />
-                            {meeting.display.participantCount}
+                            {segment.meeting.display.participantCount}
                           </span>
                         </div>
                       </Link>

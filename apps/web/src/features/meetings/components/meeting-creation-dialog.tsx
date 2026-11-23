@@ -66,14 +66,13 @@ import {
   getSchedulingFingerprint,
   type ScheduleValues,
 } from '../data/meeting-scheduling-utils'
-import { roomAvailabilityQueryOptions } from '../data/room-availability-api'
 import { MeetingParticipantLookup } from './meeting-participant-lookup'
 import {
   MeetingRoomLookup,
   MeetingScheduleFields,
-  RoomAvailabilityNotice,
   SchedulePreviewNotice,
 } from './meeting-scheduling-controls'
+import { SelectedRoomSchedulePreview } from './selected-room-schedule-preview'
 
 const meetingFormSchema = z
   .object({
@@ -218,6 +217,8 @@ export function MeetingCreationDialog({
   >(null)
   const [pendingScheduleCandidate, setPendingScheduleCandidate] =
     useState<SchedulingCandidate | null>(null)
+  const [pendingDraftScheduleRetry, setPendingDraftScheduleRetry] =
+    useState(false)
   const [showWarningDetails, setShowWarningDetails] = useState(false)
   const [draftRecovery, setDraftRecovery] = useState<DraftRecovery | null>(null)
   const [creationIntent, setCreationIntent] =
@@ -258,16 +259,6 @@ export function MeetingCreationDialog({
     roomId,
     participantIds,
   })
-  const participantCount = 1 + (participantIds?.length ?? 0)
-  const availabilityQuery = useQuery({
-    ...roomAvailabilityQueryOptions({
-      start: schedule?.start ?? '',
-      end: schedule?.end ?? '',
-      participantCount,
-    }),
-    enabled: open && Boolean(schedule),
-  })
-
   const [roomLookupOpen, setRoomLookupOpen] = useState(false)
   const [roomLookupSearch, setRoomLookupSearch] = useState('')
   const [roomLookupPage, setRoomLookupPage] = useState(1)
@@ -295,9 +286,6 @@ export function MeetingCreationDialog({
     .filter((candidate): candidate is MeetingParticipantCandidate =>
       Boolean(candidate)
     )
-  const roomSignal = availabilityQuery.data?.rooms.find(
-    (room) => room.id === roomId
-  )
   const busy = isBusyPhase(phase)
   const workflowLocked = Boolean(creationIntent || draftRecovery) || busy
   const organizerUnavailable = open && !currentUser
@@ -332,6 +320,7 @@ export function MeetingCreationDialog({
         setScheduleCheck(null)
         setScheduleCheckFingerprint(null)
         setPendingScheduleCandidate(null)
+        setPendingDraftScheduleRetry(false)
         setShowWarningDetails(false)
         setDraftRecovery(null)
         setCreationIntent(null)
@@ -500,6 +489,9 @@ export function MeetingCreationDialog({
     setDraftRecovery(null)
     setPhase('scheduled_confirmed')
     setFlow(null)
+    setPendingDraftScheduleRetry(false)
+    setScheduleCheck(null)
+    setScheduleCheckFingerprint(null)
     operationInFlight.current = false
     resetOnClose.current = true
     handleOpenChange(false)
@@ -600,6 +592,7 @@ export function MeetingCreationDialog({
     recovery: DraftRecovery,
     intent?: MeetingCreationIntent
   ) => {
+    setPendingDraftScheduleRetry(false)
     const kind = classifyMeetingMutationError(error)
     if (
       kind === 'network' ||
@@ -619,7 +612,7 @@ export function MeetingCreationDialog({
     operationInFlight.current = false
   }
 
-  const scheduleExistingDraft = async () => {
+  const scheduleExistingDraft = async (afterWarningReview = false) => {
     if (
       !draftRecovery ||
       draftRecovery.status !== 'draft' ||
@@ -627,6 +620,18 @@ export function MeetingCreationDialog({
       operationInFlight.current
     )
       return
+    if (
+      afterWarningReview &&
+      (phase !== 'awaiting_warning_review' ||
+        !pendingDraftScheduleRetry ||
+        !scheduleCheck ||
+        schedulePreviewStale ||
+        !scheduleCheckFingerprint ||
+        scheduleCheckFingerprint !== currentScheduleFingerprint)
+    ) {
+      return
+    }
+    if (!afterWarningReview && phase === 'awaiting_warning_review') return
     if (creationIntent && !intentActorMatchesCurrentSession(creationIntent)) {
       setDraftRecovery({ ...draftRecovery, status: 'uncertain' })
       setErrorMessage(formatSessionChangedMessage())
@@ -634,6 +639,69 @@ export function MeetingCreationDialog({
       setFlow('schedule')
       return
     }
+
+    if (!afterWarningReview) {
+      if (
+        !creationIntent ||
+        creationIntent.flow !== 'schedule' ||
+        JSON.stringify(
+          buildCreateMeetingPayload(toCreateMeetingInput(form.getValues()))
+        ) !== creationIntent.serializedPayload
+      ) {
+        setErrorMessage(
+          'The saved draft retains its original scheduling intent. Restore those meeting details before retrying the schedule.'
+        )
+        return
+      }
+
+      operationInFlight.current = true
+      setErrorMessage(null)
+      setFlow('schedule')
+      setScheduleCheck(null)
+      setScheduleCheckFingerprint(currentScheduleFingerprint)
+      setPendingScheduleCandidate(null)
+      setPendingDraftScheduleRetry(false)
+      setPhase('checking')
+      try {
+        const preview = await checkMeetingSchedule(
+          buildScheduleCheckPayload({
+            roomId: creationIntent.payload.roomId,
+            start: draftRecovery.schedule.start,
+            end: draftRecovery.schedule.end,
+            participantUserIds: [...creationIntent.participantUserIds],
+          })
+        )
+        setScheduleCheck(preview)
+        if (
+          !preview.previewOnly ||
+          !preview.canSchedule ||
+          preview.roomConflict
+        ) {
+          setErrorMessage(
+            preview.roomConflict
+              ? 'The selected room is no longer available for this interval. The existing draft was preserved.'
+              : 'The Core API did not approve this schedule preview. The existing draft was preserved.'
+          )
+          setPhase('draft_confirmed')
+          operationInFlight.current = false
+          return
+        }
+        if (preview.warnings.length > 0) {
+          setPendingDraftScheduleRetry(true)
+          setPhase('awaiting_warning_review')
+          operationInFlight.current = false
+          return
+        }
+      } catch (error) {
+        setScheduleCheckFingerprint(null)
+        setPendingDraftScheduleRetry(false)
+        setFailure(error, 'Checking the meeting schedule')
+        setFlow('schedule')
+        return
+      }
+    }
+
+    setPendingDraftScheduleRetry(false)
     operationInFlight.current = true
     setErrorMessage(null)
     setFlow('schedule')
@@ -937,12 +1005,23 @@ export function MeetingCreationDialog({
   const confirmScheduleWarnings = () => {
     if (
       phase !== 'awaiting_warning_review' ||
-      !pendingScheduleCandidate ||
       !scheduleCheck ||
-      currentScheduleFingerprint !== pendingScheduleCandidate.fingerprint ||
+      !scheduleCheckFingerprint ||
+      currentScheduleFingerprint !== scheduleCheckFingerprint ||
       operationInFlight.current
     )
       return
+
+    if (pendingDraftScheduleRetry) {
+      void scheduleExistingDraft(true)
+      return
+    }
+    if (
+      !pendingScheduleCandidate ||
+      currentScheduleFingerprint !== pendingScheduleCandidate.fingerprint
+    ) {
+      return
+    }
     operationInFlight.current = true
     void submitScheduleCreation(pendingScheduleCandidate)
   }
@@ -1036,8 +1115,8 @@ export function MeetingCreationDialog({
                     selectedUnavailable={roomUnavailable}
                   />
                   <FormDescription>
-                    Room availability is an advisory snapshot. Core API rechecks
-                    the reservation when scheduling.
+                    The selected-room preview is advisory. Core API rechecks the
+                    reservation when scheduling.
                   </FormDescription>
                   <FormMessage />
                 </FormItem>
@@ -1098,12 +1177,21 @@ export function MeetingCreationDialog({
               </Alert>
             )}
 
-            {schedule && (
-              <RoomAvailabilityNotice
-                query={availabilityQuery}
-                room={roomSignal}
-              />
-            )}
+            {open &&
+              !workflowLocked &&
+              phase !== 'awaiting_warning_review' &&
+              schedule &&
+              roomId && (
+                <SelectedRoomSchedulePreview
+                  input={{
+                    roomId,
+                    start: schedule.start,
+                    end: schedule.end,
+                    participantUserIds: participantIds ?? [],
+                  }}
+                  roomName={selectedRoom?.name}
+                />
+              )}
 
             {visibleScheduleCheck && (
               <SchedulePreviewNotice

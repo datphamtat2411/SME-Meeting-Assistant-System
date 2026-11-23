@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { queryOptions } from '@tanstack/react-query'
 import {
   CoreApiError,
   coreApi,
@@ -357,6 +358,19 @@ export async function checkMeetingSchedule(
     withSignal(signal)
   )
   return parseScheduleCheckResponse({ data: response, meta: {} })
+}
+
+export function meetingScheduleCheckQueryOptions(input: ScheduleCheckInput) {
+  const payload = buildScheduleCheckPayload(input)
+  return queryOptions({
+    queryKey: ['meeting-schedule-checks', 'preview', payload] as const,
+    queryFn: ({ signal }: { signal: AbortSignal }) =>
+      checkMeetingSchedule(payload, signal),
+    retry: false,
+    staleTime: 0,
+    refetchOnMount: 'always',
+    refetchOnWindowFocus: false,
+  })
 }
 
 export async function scheduleMeeting(

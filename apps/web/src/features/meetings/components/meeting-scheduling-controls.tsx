@@ -6,8 +6,6 @@ import {
   ChevronRight,
   Clock3,
   MapPin,
-  RefreshCw,
-  Users,
 } from 'lucide-react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -33,11 +31,9 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover'
-import { Skeleton } from '@/components/ui/skeleton'
 import type { MeetingPagination, RoomFilterOption } from '../data/list-api'
 import type { ScheduleCheckResult } from '../data/meeting-creation-api'
 import { type MeetingScheduleFormValues } from '../data/meeting-scheduling-utils'
-import type { RoomAvailability } from '../data/room-availability-api'
 
 export function MeetingScheduleFields() {
   const { control, getValues, setValue } =
@@ -299,79 +295,6 @@ export function MeetingRoomLookup({
       </PopoverContent>
     </Popover>
   )
-}
-
-export function RoomAvailabilityNotice({
-  query,
-  room,
-}: {
-  query: {
-    isPending: boolean
-    isError: boolean
-    refetch: () => unknown
-  }
-  room?: RoomAvailability
-}) {
-  if (query.isPending) {
-    return (
-      <div
-        role='status'
-        className='flex items-center gap-2 text-xs text-muted-foreground'
-      >
-        <Skeleton className='h-4 w-4 rounded-full' />
-        Checking advisory room availability...
-      </div>
-    )
-  }
-  if (query.isError) {
-    return (
-      <Alert>
-        <AlertCircle />
-        <AlertTitle>Room availability is unavailable</AlertTitle>
-        <AlertDescription>
-          <p>
-            This advisory lookup failed. The schedule check and backend
-            reservation outcome remain authoritative.
-          </p>
-          <Button
-            type='button'
-            variant='outline'
-            size='sm'
-            onClick={() => void query.refetch()}
-          >
-            <RefreshCw />
-            Try again
-          </Button>
-        </AlertDescription>
-      </Alert>
-    )
-  }
-  if (!room) return null
-  if (!room.available) {
-    return (
-      <Alert>
-        <AlertCircle />
-        <AlertTitle>Room currently appears unavailable</AlertTitle>
-        <AlertDescription>
-          This is an advisory snapshot only. The schedule check and backend
-          reservation remain authoritative.
-        </AlertDescription>
-      </Alert>
-    )
-  }
-  if (room.capacityExceeded) {
-    return (
-      <Alert>
-        <Users />
-        <AlertTitle>Capacity advisory</AlertTitle>
-        <AlertDescription>
-          The selected room&apos;s configured capacity is below the current
-          participant count. This warning does not block scheduling.
-        </AlertDescription>
-      </Alert>
-    )
-  }
-  return null
 }
 
 export function SchedulePreviewNotice({

@@ -32,6 +32,7 @@ import {
   RequestLoading,
 } from '@/components/request-state'
 import { currentUserQueryOptions } from '@/features/auth/session/current-user'
+import { meetingListQueryKey } from '@/features/meetings/data/meeting-cache'
 import {
   createRoom,
   deactivateRoom,
@@ -105,6 +106,9 @@ export function RoomsPage() {
       toast.success('Room saved')
       setOpen(false)
       void qc.invalidateQueries({ queryKey: ['rooms'] })
+      if (selected) {
+        void qc.invalidateQueries({ queryKey: meetingListQueryKey })
+      }
     },
     onError: (error) =>
       toast.error('Room could not be saved', {
@@ -128,7 +132,10 @@ export function RoomsPage() {
       const fresh = await roomDetail(room.id)
       await deactivateRoom(room.id, fresh.etag)
       toast.success('Room deactivated')
-      await qc.invalidateQueries({ queryKey: ['rooms'] })
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ['rooms'] }),
+        qc.invalidateQueries({ queryKey: meetingListQueryKey }),
+      ])
     } catch (error) {
       toast.error('Unable to deactivate room', {
         description: error instanceof Error ? error.message : undefined,

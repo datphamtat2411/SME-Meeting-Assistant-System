@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { CDPSession } from '@vitest/browser-playwright'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { cdp, userEvent } from 'vitest/browser'
 import { CoreApiError, coreApi } from '@/lib/core-api'
@@ -58,10 +58,16 @@ const utcTimeZone = 'UTC'
 const vietnamTimeZone = 'Asia/Ho_Chi_Minh'
 
 async function setBrowserTimeZone(timeZone: string) {
-  await (cdp() as unknown as CDPSession).send('Emulation.setTimezoneOverride', {
-    timezoneId: timeZone,
-  })
+  const session = cdp() as unknown as CDPSession
+  await session.send('Emulation.setTimezoneOverride', { timezoneId: '' })
+  await session.send('Emulation.setTimezoneOverride', { timezoneId: timeZone })
 }
+
+afterEach(async () => {
+  await (cdp() as unknown as CDPSession).send('Emulation.setTimezoneOverride', {
+    timezoneId: '',
+  })
+})
 
 function localDateInTimeZone(timeZone: string, value: string) {
   const parts = Object.fromEntries(
@@ -81,17 +87,19 @@ function createQueryClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } })
 }
 
-function mockRoomQueries() {
-  vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url) => {
+function mockRoomQueries(hideSelectedRoomFromDirectory = false) {
+  return vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url) => {
     if (url === '/rooms/availability') {
       return { data: [], meta: { pagination } }
     }
     if (url === '/rooms') {
       return {
-        data: [
-          { id: 'room-1', name: 'Boardroom', location: 'HQ' },
-          { id: 'room-2', name: 'Studio', location: 'HQ' },
-        ],
+        data: hideSelectedRoomFromDirectory
+          ? [{ id: 'room-2', name: 'Studio', location: 'HQ' }]
+          : [
+              { id: 'room-1', name: 'Boardroom', location: 'HQ' },
+              { id: 'room-2', name: 'Studio', location: 'HQ' },
+            ],
         meta: { pagination },
       }
     }
@@ -180,6 +188,52 @@ describe('MeetingEditDialog', () => {
     await expect
       .element(screen.getByLabelText('End date'))
       .toHaveValue('2026-09-01')
+  })
+
+  it('checks the selected room against this meeting even when it is absent from the directory page', async () => {
+    const getSpy = mockRoomQueries(true)
+    const checkSpy = vi.spyOn(coreApi, 'post').mockResolvedValue({
+      previewOnly: true,
+      canSchedule: true,
+      roomConflict: false,
+      room: {
+        roomId: 'room-1',
+        active: true,
+        available: true,
+        capacity: 8,
+        participantCount: 4,
+        capacityExceeded: false,
+      },
+      warnings: [],
+    })
+    const screen = await render(
+      <QueryClientProvider client={createQueryClient()}>
+        <MeetingEditDialog
+          open
+          onOpenChange={vi.fn()}
+          meeting={scheduledMeeting}
+          etag='etag-current'
+        />
+      </QueryClientProvider>
+    )
+
+    await expect
+      .element(screen.getByText(/Boardroom appears available/i))
+      .toBeInTheDocument()
+    expect(checkSpy).toHaveBeenCalledWith(
+      '/meeting-schedule-checks',
+      {
+        meetingId: 'meeting-1',
+        roomId: 'room-1',
+        start: scheduledMeeting.scheduledStartAt,
+        end: scheduledMeeting.scheduledEndAt,
+      },
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    )
+    expect(checkSpy.mock.calls[0]?.[1]).not.toHaveProperty('participantUserIds')
+    expect(
+      getSpy.mock.calls.some(([url]) => url === '/rooms/availability')
+    ).toBe(false)
   })
 
   it('prefills an overnight meeting with different local dates', async () => {
@@ -643,7 +697,6 @@ describe('MeetingEditDialog', () => {
       },
       undefined
     )
-    expect(previewSpy.mock.calls[0]?.[1]).not.toHaveProperty('roomId', 'room-1')
     expect(patchSpy).toHaveBeenCalledWith(
       '/meetings/meeting-1',
       { scheduledStartAt: start, scheduledEndAt: end, roomId: 'room-2' },
@@ -698,7 +751,9 @@ describe('MeetingEditDialog', () => {
     await expect
       .element(screen.getByText('Meeting changes saved'))
       .toBeInTheDocument()
-    expect(previewSpy.mock.calls[0]?.[1]).not.toHaveProperty('roomId')
+    expect(
+      previewSpy.mock.calls[previewSpy.mock.calls.length - 1]?.[1]
+    ).not.toHaveProperty('roomId')
     expect(patchSpy).toHaveBeenCalledWith(
       '/meetings/meeting-1',
       { scheduledStartAt: start, scheduledEndAt: end, roomId: null },

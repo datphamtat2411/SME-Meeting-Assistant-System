@@ -101,27 +101,29 @@ function createQueryClient() {
 }
 
 function mockRoomQueries() {
-  vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url, config) => {
-    if (url === '/rooms/availability') {
-      return {
-        data: [],
-        meta: {
-          pagination: { ...pagination, totalElements: 0, totalPages: 0 },
-        },
+  return vi
+    .spyOn(coreApi, 'getWithMeta')
+    .mockImplementation(async (url, config) => {
+      if (url === '/rooms/availability') {
+        return {
+          data: [],
+          meta: {
+            pagination: { ...pagination, totalElements: 0, totalPages: 0 },
+          },
+        }
       }
-    }
-    if (url === '/users/meeting-candidates') {
-      const query = String(config?.params?.q ?? '')
+      if (url === '/users/meeting-candidates') {
+        const query = String(config?.params?.q ?? '')
+        return {
+          data: query.includes('second') ? [secondCandidate] : [candidate],
+          meta: { pagination },
+        }
+      }
       return {
-        data: query.includes('second') ? [secondCandidate] : [candidate],
+        data: [{ id: 'room-1', name: 'Boardroom', location: 'HQ' }],
         meta: { pagination },
       }
-    }
-    return {
-      data: [{ id: 'room-1', name: 'Boardroom', location: 'HQ' }],
-      meta: { pagination },
-    }
-  })
+    })
 }
 
 describe('MeetingCreationDialog', () => {
@@ -216,6 +218,79 @@ describe('MeetingCreationDialog', () => {
     )
   })
 
+  it('previews the selected room and proposed participants without creating a meeting', async () => {
+    const getSpy = mockRoomQueries()
+    const checkSpy = vi.spyOn(coreApi, 'post').mockResolvedValue({
+      previewOnly: true,
+      canSchedule: true,
+      roomConflict: false,
+      room: {
+        roomId: 'room-1',
+        active: true,
+        available: true,
+        capacity: 2,
+        participantCount: 3,
+        capacityExceeded: true,
+      },
+      warnings: [
+        { code: 'CAPACITY_ADVISORY_EXCEEDED', userId: null },
+        { code: 'PARTICIPANT_OVERLAP', userId: 'user-2' },
+      ],
+    })
+    const createSpy = vi.spyOn(coreApi, 'postWithMetaAndEtag')
+    const screen = await render(
+      <QueryClientProvider client={createQueryClient()}>
+        <MeetingCreationDialog open onOpenChange={vi.fn()} />
+      </QueryClientProvider>
+    )
+
+    await userEvent.fill(
+      screen.getByLabelText('Date', { exact: true }),
+      '2026-09-01'
+    )
+    await userEvent.fill(screen.getByLabelText('Start time'), '09:00')
+    await userEvent.fill(screen.getByLabelText('End time'), '10:00')
+    await userEvent.click(
+      screen.getByRole('combobox', { name: 'Meeting room' })
+    )
+    await userEvent.click(screen.getByRole('option', { name: /Boardroom/ }))
+    await userEvent.click(
+      screen.getByRole('combobox', { name: 'Participants' })
+    )
+    await userEvent.fill(
+      screen.getByPlaceholder('Search active participants...'),
+      'candidate'
+    )
+    await userEvent.click(
+      screen.getByRole('option', { name: /Candidate User/ })
+    )
+
+    await expect
+      .element(screen.getByText(/Boardroom appears available/i))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('Room capacity advisory.'))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('Participant schedule overlap warning.'))
+      .toBeInTheDocument()
+    expect(checkSpy).toHaveBeenCalledWith(
+      '/meeting-schedule-checks',
+      expect.objectContaining({
+        roomId: 'room-1',
+        start: expect.any(String),
+        end: expect.any(String),
+        participantUserIds: ['user-2'],
+      }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    )
+    expect(checkSpy.mock.calls[0]?.[1]).not.toHaveProperty('meetingId')
+    expect(
+      getSpy.mock.calls.some(([url]) => url === '/rooms/availability')
+    ).toBe(false)
+    expect(createSpy).not.toHaveBeenCalled()
+  })
+
   it('previews before one create, schedules with the returned ETag, and reports committed status', async () => {
     mockRoomQueries()
     const postSpy = vi.spyOn(coreApi, 'postWithMetaAndEtag')
@@ -304,7 +379,7 @@ describe('MeetingCreationDialog', () => {
         meta: {},
         etag: 'scheduled-etag',
       })
-    vi.spyOn(coreApi, 'post').mockResolvedValue({
+    const previewSpy = vi.spyOn(coreApi, 'post').mockResolvedValue({
       previewOnly: true,
       canSchedule: true,
       roomConflict: false,
@@ -344,8 +419,85 @@ describe('MeetingCreationDialog', () => {
     await expect
       .element(screen.getByText('Meeting scheduled'))
       .toBeInTheDocument()
+    expect(previewSpy).toHaveBeenCalledTimes(2)
+    expect(previewSpy.mock.calls[1]?.[1]).not.toHaveProperty('meetingId')
     expect(
       postSpy.mock.calls.filter(([url]) => url === '/meetings')
+    ).toHaveLength(1)
+  })
+
+  it('rechecks a recovered draft and blocks retry when the room has since conflicted', async () => {
+    mockRoomQueries()
+    const mutationSpy = vi.spyOn(coreApi, 'postWithMetaAndEtag')
+    mutationSpy
+      .mockResolvedValueOnce({
+        data: scheduledDraft,
+        meta: {},
+        etag: 'draft-etag',
+      })
+      .mockRejectedValueOnce(
+        new CoreApiError({
+          status: 409,
+          message: 'Room conflict',
+          kind: 'http',
+        })
+      )
+    const previewSpy = vi.spyOn(coreApi, 'post')
+    previewSpy
+      .mockResolvedValueOnce({
+        previewOnly: true,
+        canSchedule: true,
+        roomConflict: false,
+        room: null,
+        warnings: [],
+      })
+      .mockResolvedValueOnce({
+        previewOnly: true,
+        canSchedule: false,
+        roomConflict: true,
+        room: null,
+        warnings: [],
+      })
+    const screen = await render(
+      <QueryClientProvider client={createQueryClient()}>
+        <MeetingCreationDialog open onOpenChange={vi.fn()} />
+      </QueryClientProvider>
+    )
+
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Title' }),
+      'Recovered conflict'
+    )
+    await userEvent.fill(
+      screen.getByLabelText('Date', { exact: true }),
+      '2026-09-01'
+    )
+    await userEvent.fill(screen.getByLabelText('Start time'), '09:00')
+    await userEvent.fill(screen.getByLabelText('End time'), '10:00')
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Create & Schedule' })
+    )
+    await expect
+      .element(screen.getByText('Draft created, not scheduled'))
+      .toBeInTheDocument()
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Retry schedule' })
+    )
+
+    await expect
+      .element(
+        screen.getByText(
+          'The selected room is no longer available for this interval. The existing draft was preserved.'
+        )
+      )
+      .toBeInTheDocument()
+    expect(previewSpy).toHaveBeenCalledTimes(2)
+    expect(previewSpy.mock.calls[1]?.[1]).not.toHaveProperty('meetingId')
+    expect(
+      mutationSpy.mock.calls.filter(([url]) =>
+        url.includes('/meetings/meeting-1/schedule')
+      )
     ).toHaveLength(1)
   })
 
@@ -745,7 +897,7 @@ describe('MeetingCreationDialog', () => {
         meta: {},
         etag: 'scheduled-etag',
       })
-    vi.spyOn(coreApi, 'post').mockResolvedValue({
+    const previewSpy = vi.spyOn(coreApi, 'post').mockResolvedValue({
       previewOnly: true,
       canSchedule: true,
       roomConflict: false,
@@ -787,6 +939,8 @@ describe('MeetingCreationDialog', () => {
     await expect
       .element(screen.getByText('Meeting scheduled'))
       .toBeInTheDocument()
+    expect(previewSpy).toHaveBeenCalledTimes(2)
+    expect(previewSpy.mock.calls[1]?.[1]).not.toHaveProperty('meetingId')
     expect(
       postSpy.mock.calls.filter(([url]) => url === '/meetings')
     ).toHaveLength(1)
