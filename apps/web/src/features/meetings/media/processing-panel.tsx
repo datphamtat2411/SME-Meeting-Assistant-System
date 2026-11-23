@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
+import { CoreApiError } from '@/lib/core-api'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -24,6 +25,10 @@ import {
   retryProcessing,
 } from './processing-api'
 
+function isUncertainProcessingError(error: unknown): boolean {
+  return error instanceof CoreApiError && error.recoveryOutcome === 'uncertain'
+}
+
 export function ProcessingPanel({ meetingId }: { meetingId: string }) {
   const qc = useQueryClient()
   const media = useQuery(meetingMediaQuery(meetingId))
@@ -40,6 +45,12 @@ export function ProcessingPanel({ meetingId }: { meetingId: string }) {
   const retryOperations = useRef(
     new Map<string, { idempotencyKey: string; stageCode?: string }>()
   )
+  const [uncertainAdmissionMediaId, setUncertainAdmissionMediaId] = useState<
+    string | null
+  >(null)
+  const [uncertainRetryOperations, setUncertainRetryOperations] = useState<
+    Set<string>
+  >(() => new Set())
   useEffect(() => {
     for (const job of jobs.data ?? []) {
       if (
@@ -75,13 +86,30 @@ export function ProcessingPanel({ meetingId }: { meetingId: string }) {
       if (admissionOperation.current?.mediaId === variables.selectedMediaId) {
         admissionOperation.current = null
       }
+      setUncertainAdmissionMediaId((current) =>
+        current === variables.selectedMediaId ? null : current
+      )
       toast.success('Processing job queued')
       refresh()
     },
-    onError: (e) =>
-      toast.error('Processing request rejected', {
-        description: e instanceof Error ? e.message : undefined,
-      }),
+    onError: (e, variables) => {
+      const uncertain = isUncertainProcessingError(e)
+      if (uncertain) {
+        setUncertainAdmissionMediaId(variables.selectedMediaId)
+      }
+      toast.error(
+        uncertain
+          ? 'Processing request outcome is uncertain'
+          : 'Processing request rejected',
+        {
+          description: uncertain
+            ? 'Refresh the job list to check the server state. Do not start a different operation until this outcome is understood.'
+            : e instanceof Error
+              ? e.message
+              : undefined,
+        }
+      )
+    },
   })
   const retry = useMutation({
     mutationFn: ({
@@ -97,13 +125,31 @@ export function ProcessingPanel({ meetingId }: { meetingId: string }) {
       retryOperations.current.delete(
         `${variables.jobId}:${variables.stageCode ?? ''}`
       )
+      setUncertainRetryOperations((current) => {
+        const next = new Set(current)
+        next.delete(`${variables.jobId}:${variables.stageCode ?? ''}`)
+        return next
+      })
       toast.success('Processing retry accepted')
       refresh()
     },
-    onError: (e) =>
-      toast.error('Retry rejected', {
-        description: e instanceof Error ? e.message : undefined,
-      }),
+    onError: (e, variables) => {
+      const uncertain = isUncertainProcessingError(e)
+      if (uncertain) {
+        setUncertainRetryOperations((current) => {
+          const next = new Set(current)
+          next.add(`${variables.jobId}:${variables.stageCode ?? ''}`)
+          return next
+        })
+      }
+      toast.error(uncertain ? 'Retry outcome is uncertain' : 'Retry rejected', {
+        description: uncertain
+          ? 'Check the current job before deciding what to do next. Do not start an independent retry until this outcome is understood.'
+          : e instanceof Error
+            ? e.message
+            : undefined,
+      })
+    },
   })
   const available = media.data?.filter((m) => m.status === 'AVAILABLE') ?? []
 
@@ -126,7 +172,14 @@ export function ProcessingPanel({ meetingId }: { meetingId: string }) {
   }
 
   function submitProcessing() {
-    if (!mediaId || create.isPending || retry.isPending) return
+    if (
+      !mediaId ||
+      create.isPending ||
+      retry.isPending ||
+      (uncertainAdmissionMediaId !== null &&
+        uncertainAdmissionMediaId !== mediaId)
+    )
+      return
     const selectedMediaId = mediaId
     create.mutate({
       selectedMediaId,
@@ -178,11 +231,22 @@ export function ProcessingPanel({ meetingId }: { meetingId: string }) {
               </SelectContent>
             </Select>
             <Button
-              disabled={!mediaId || create.isPending}
+              disabled={
+                !mediaId ||
+                create.isPending ||
+                (uncertainAdmissionMediaId !== null &&
+                  uncertainAdmissionMediaId !== mediaId)
+              }
               onClick={submitProcessing}
             >
               Start processing
             </Button>
+            {uncertainAdmissionMediaId && (
+              <p role='status' className='w-full text-sm text-amber-600'>
+                Processing request outcome is uncertain. Refresh the job list
+                before starting a different operation.
+              </p>
+            )}
           </div>
         )}
         {jobs.isPending ? (
@@ -210,6 +274,12 @@ export function ProcessingPanel({ meetingId }: { meetingId: string }) {
                 {job.errorCode && (
                   <p className='text-xs text-destructive'>
                     {job.errorCode}: {job.errorSummary || 'Processing failed'}
+                  </p>
+                )}
+                {uncertainRetryOperations.has(`${job.id}:`) && (
+                  <p role='status' className='text-sm text-amber-600'>
+                    Retry outcome is uncertain. Check the current job before
+                    deciding what to do next.
                   </p>
                 )}
                 {job.stageRuns.length > 0 && (

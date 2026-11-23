@@ -70,18 +70,13 @@ function isUncertain(error: unknown): boolean {
 
 async function reconcileAdmission(
   meetingId: string,
-  mediaId: string,
-  reprocessOfJobId: string | undefined,
   cause: unknown
-): Promise<ProcessingJob> {
+): Promise<never> {
   try {
-    const jobs = await listProcessingJobs(meetingId)
-    const match = jobs.find(
-      (job) =>
-        job.sourceMediaId === mediaId &&
-        (job.reprocessOfJobId ?? undefined) === reprocessOfJobId
-    )
-    if (match) return match
+    // A normal job read does not expose the initiating idempotency key.
+    // Refresh the server view for observability, but never infer that any
+    // returned job belongs to the timed-out mutation.
+    await listProcessingJobs(meetingId)
   } catch {
     // A failed read-back leaves the mutation outcome unresolved.
   }
@@ -98,8 +93,9 @@ async function reconcileAdmission(
 
 async function reconcileRetry(jobId: string, cause: unknown) {
   try {
-    const job = await getProcessingJob(jobId)
-    if (job.status !== 'FAILED' || !job.retryable) return job
+    // A job read has no operation correlation for the timed-out retry.
+    // Status, retry count, and stage changes may predate this request.
+    await getProcessingJob(jobId)
   } catch {
     // A failed read-back leaves the mutation outcome unresolved.
   }
@@ -176,7 +172,7 @@ export async function requestProcessing(
     return job
   } catch (error) {
     if (!isUncertain(error)) throw error
-    return reconcileAdmission(meetingId, mediaId, reprocessOfJobId, error)
+    return reconcileAdmission(meetingId, error)
   }
 }
 export async function retryProcessing(

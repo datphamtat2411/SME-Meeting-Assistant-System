@@ -123,3 +123,103 @@ executed for this task.
 
 The remaining blocker is an environment/authorization prerequisite, not a
 replacement mock or an unimplemented Web contract.
+
+## 6. Corrective follow-up — React lifecycle and processing reconciliation
+
+The corrective review began from INT-05 commit
+`f78898287813d25f036a02d94d713d237e37177e`.
+
+### 6.1 Findings and root causes
+
+- **Recording lifecycle:** `RecordingPanel` initialized its mounted ref as
+  active, then effect cleanup marked it inactive without restoring that state
+  during React StrictMode effect setup. Permission results and recorder
+  callbacks also used shared mutable stream/recorder refs, so stale work could
+  affect a newer recording.
+- **Processing reconciliation:** ordinary Core processing-job reads do not
+  expose the initiating idempotency key. Matching media/reprocess fields, job
+  status, retryability, retry count, or stage changes therefore could not prove
+  that a timed-out admission or retry was the specific operation that
+  succeeded.
+
+### 6.2 Corrective behavior
+
+- Recording effect setup now establishes an active lifecycle generation and
+  cleanup invalidates it. Microphone permission requests carry both lifecycle
+  and request identities; stale results release their tracks without creating
+  a recorder. Each recorder owns its stream and captured chunks, callbacks
+  verify ownership before changing state, and stream release is idempotent.
+  StrictMode replay, genuine unmount, startup failure, recorder error, and
+  late callbacks cannot create an abandoned active recorder or upload
+  automatically. AAC-in-M4A declarations and explicit Submit behavior are
+  unchanged.
+- A direct Core admission/retry response remains confirmed success. After an
+  uncertain response, the Web may read the current job view for
+  observability, but it never attributes any returned job or state to the
+  timed-out idempotency key. Admission returns
+  `PROCESSING_ADMISSION_UNCERTAIN`; retry returns
+  `PROCESSING_RETRY_UNCERTAIN`; neither path posts a second mutation.
+- Processing UI success toasts are reserved for resolved mutation responses.
+  Uncertain admission/retry outcomes receive distinct messages, retain their
+  caller-held operation keys, keep current jobs visible, and block a different
+  admission until the uncertain operation is understood.
+
+### 6.3 Corrective regression evidence
+
+The historical INT-05 baseline above remains **48 tests**; it is not rewritten
+to claim coverage that did not exist at that time. The corrective recording and
+processing run added or revised 30 focused tests:
+
+```text
+pnpm exec vitest run --browser.headless \
+  src/features/meetings/media/recording-panel.test.tsx \
+  src/features/meetings/media/processing-api.test.ts \
+  src/features/meetings/media/processing-panel.test.tsx
+PASS — 3 files, 30 tests
+```
+
+The complete affected INT-05 media regression suite also passed:
+
+```text
+pnpm exec vitest run --browser.headless \
+  src/features/meetings/media/media-api.test.ts \
+  src/features/meetings/media/processing-api.test.ts \
+  src/features/meetings/media/processing-panel.test.tsx \
+  src/features/meetings/media/recording-panel.test.tsx \
+  src/features/meetings/media/upload-panel.test.tsx
+PASS — 5 files, 68 tests
+```
+
+The corrective tests cover StrictMode effect replay, stale permission
+resolution, genuine unmount and late callbacks, recorder startup failure,
+pre-existing/multiple/unrelated admission jobs, unchanged and changed retry
+states, failed read-back, no duplicate POST, stable operation keys, and
+truthful confirmed/uncertain processing-panel feedback.
+
+```text
+pnpm run lint
+PASS
+
+pnpm run format:check
+PASS
+
+pnpm run build
+PASS — TypeScript and Vite production build
+```
+
+### 6.4 Corrective acceptance classification
+
+| Corrective criterion | Result |
+| --- | --- |
+| StrictMode recording lifecycle | **PASS** deterministic |
+| Recording resource ownership and stale async cleanup | **PASS** deterministic |
+| Processing admission reconciliation | **PASS** deterministic — unsupported inference remains uncertain |
+| Processing retry reconciliation | **PASS** deterministic — unsupported inference remains uncertain |
+| Caller-held idempotency and duplicate prevention | **PASS** deterministic |
+| Truthful processing UI feedback | **PASS** deterministic |
+| Existing signed media/upload/playback behavior | **PASS** — 68-test affected regression |
+| Protected-source integrity | **PASS** — 20 checked, 0 mismatches |
+| Live signed PUT/finalize/GET acceptance | **BLOCKED** — approved INT-04 identity and media fixtures remain unavailable |
+
+No Core, storage, infrastructure, transport, authentication, or protected
+Product Integration source was changed. No live media mutation was performed.

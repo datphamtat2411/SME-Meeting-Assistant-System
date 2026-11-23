@@ -55,8 +55,11 @@ export function RecordingPanel({ meetingId }: { meetingId: string }) {
   const qc = useQueryClient()
   const recorder = useRef<MediaRecorder | null>(null)
   const stream = useRef<MediaStream | null>(null)
-  const chunks = useRef<Blob[]>([])
-  const mounted = useRef(true)
+  const releasedStreams = useRef(new WeakSet<MediaStream>())
+  const mounted = useRef(false)
+  const lifecycleGeneration = useRef(0)
+  const permissionRequestGeneration = useRef(0)
+  const activePermissionRequest = useRef<number | null>(null)
   const operation = useRef<{ file: File; idempotencyKey: string } | null>(null)
   const [recording, setRecording] = useState(false)
   const [audio, setAudio] = useState<File | null>(null)
@@ -65,22 +68,40 @@ export function RecordingPanel({ meetingId }: { meetingId: string }) {
   const [uncertainMediaId, setUncertainMediaId] = useState<string | null>(null)
   const [checkingStatus, setCheckingStatus] = useState(false)
 
-  function stopTracks() {
-    stream.current?.getTracks().forEach((track) => track.stop())
-    stream.current = null
+  function isLifecycleActive(generation: number): boolean {
+    return mounted.current && lifecycleGeneration.current === generation
   }
 
-  useEffect(
-    () => () => {
+  function releaseStream(target: MediaStream | null | undefined) {
+    if (!target) return
+    if (!releasedStreams.current.has(target)) {
+      target.getTracks().forEach((track) => track.stop())
+      releasedStreams.current.add(target)
+    }
+    if (stream.current === target) {
+      stream.current = null
+    }
+  }
+
+  useEffect(() => {
+    mounted.current = true
+    const generation = ++lifecycleGeneration.current
+    return () => {
+      if (lifecycleGeneration.current !== generation) return
       mounted.current = false
-      if (recorder.current?.state === 'recording') recorder.current.stop()
-      stopTracks()
-    },
-    []
-  )
+      lifecycleGeneration.current += 1
+      permissionRequestGeneration.current += 1
+      activePermissionRequest.current = null
+      const currentRecorder = recorder.current
+      if (currentRecorder && currentRecorder.state !== 'inactive') {
+        currentRecorder.stop()
+      }
+      releaseStream(stream.current)
+    }
+  }, [])
 
   async function begin() {
-    if (recording || busy) return
+    if (recording || busy || activePermissionRequest.current !== null) return
     const mimeType = supportedRecordingMimeType()
     if (!mimeType) {
       toast.error(
@@ -95,18 +116,25 @@ export function RecordingPanel({ meetingId }: { meetingId: string }) {
       return
     }
 
-    let media: MediaStream
+    const generation = lifecycleGeneration.current
+    const requestGeneration = ++permissionRequestGeneration.current
+    activePermissionRequest.current = requestGeneration
+    let media: MediaStream | undefined
     try {
       media = await navigator.mediaDevices.getUserMedia({ audio: true })
-      if (!mounted.current) {
-        media.getTracks().forEach((track) => track.stop())
+      if (
+        !isLifecycleActive(generation) ||
+        activePermissionRequest.current !== requestGeneration
+      ) {
+        releaseStream(media)
         return
       }
+      activePermissionRequest.current = null
       let instance: MediaRecorder
       try {
         instance = new MediaRecorder(media, { mimeType })
       } catch (error) {
-        media.getTracks().forEach((track) => track.stop())
+        releaseStream(media)
         toast.error(
           'This browser cannot start the supported AAC-in-M4A recorder. Use the supported-file upload panel instead.',
           { description: error instanceof Error ? error.message : undefined }
@@ -115,34 +143,44 @@ export function RecordingPanel({ meetingId }: { meetingId: string }) {
       }
 
       stream.current = media
-      chunks.current = []
+      const recordedChunks: Blob[] = []
       setAudio(null)
       setUncertainMediaId(null)
       setUploadPhase(null)
       operation.current = null
       recorder.current = instance
       instance.ondataavailable = (event) => {
-        if (event.data.size) chunks.current.push(event.data)
-      }
-      instance.onerror = () => {
-        stopTracks()
-        recorder.current = null
-        if (mounted.current) {
-          setRecording(false)
-          toast.error(
-            'The browser recorder failed. Use the supported-file upload panel instead.'
-          )
+        if (
+          recorder.current === instance &&
+          stream.current === media &&
+          isLifecycleActive(generation) &&
+          event.data.size
+        ) {
+          recordedChunks.push(event.data)
         }
       }
+      instance.onerror = () => {
+        const ownsRecorder =
+          recorder.current === instance && stream.current === media
+        releaseStream(media)
+        if (recorder.current === instance) recorder.current = null
+        if (!ownsRecorder || !isLifecycleActive(generation)) return
+        setRecording(false)
+        toast.error(
+          'The browser recorder failed. Use the supported-file upload panel instead.'
+        )
+      }
       instance.onstop = () => {
+        const ownsRecorder =
+          recorder.current === instance && stream.current === media
         const producedMime = normalizedMimeType(instance.mimeType || mimeType)
         const blob =
           producedMime === 'audio/mp4'
-            ? new Blob(chunks.current, { type: 'audio/mp4' })
+            ? new Blob(recordedChunks, { type: 'audio/mp4' })
             : null
-        stopTracks()
-        recorder.current = null
-        if (!mounted.current) return
+        releaseStream(media)
+        if (recorder.current === instance) recorder.current = null
+        if (!ownsRecorder || !isLifecycleActive(generation)) return
         if (!blob?.size) {
           setRecording(false)
           toast.error(
@@ -161,14 +199,21 @@ export function RecordingPanel({ meetingId }: { meetingId: string }) {
         instance.start(1000)
         setRecording(true)
       } catch (error) {
-        stopTracks()
-        recorder.current = null
+        releaseStream(media)
+        if (recorder.current === instance) recorder.current = null
+        if (!isLifecycleActive(generation)) return
+        setRecording(false)
         toast.error('Recording could not be started', {
           description: error instanceof Error ? error.message : undefined,
         })
       }
     } catch (error) {
-      stopTracks()
+      const isCurrentRequest =
+        isLifecycleActive(generation) &&
+        activePermissionRequest.current === requestGeneration
+      releaseStream(media)
+      if (!isCurrentRequest) return
+      activePermissionRequest.current = null
       toast.error('Microphone access failed', {
         description: error instanceof Error ? error.message : undefined,
       })
