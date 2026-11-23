@@ -10,6 +10,20 @@ import 'package:sme_meeting_assistant/main.dart';
 
 import 'support/http_test_support.dart';
 
+const _testApiUri = 'https://api.example.test/api/v1';
+
+Future<void> _writeRefreshCredential(CredentialStorage storage, String token) =>
+    TokenStore(
+      storage: storage,
+      baseUri: Uri.parse(_testApiUri),
+    ).storeLoginCredential(token);
+
+Future<String?> _readRefreshCredential(CredentialStorage storage) async =>
+    (await TokenStore(
+      storage: storage,
+      baseUri: Uri.parse(_testApiUri),
+    ).read()).refreshToken;
+
 void main() {
   testWidgets('shows a safe configuration failure', (tester) async {
     await tester.pumpWidget(
@@ -29,7 +43,7 @@ void main() {
     tester,
   ) async {
     final credentials = InMemoryCredentialStorage();
-    await credentials.write(key: 'sme.mobile.refresh', value: 'refresh-0');
+    await _writeRefreshCredential(credentials, 'refresh-0');
     final identityRequested = Completer<void>();
     final identityResponse = Completer<http.StreamedResponse>();
     final client = _authClient(
@@ -81,7 +95,7 @@ void main() {
     tester,
   ) async {
     final credentials = InMemoryCredentialStorage();
-    await credentials.write(key: 'sme.mobile.refresh', value: 'refresh-0');
+    await _writeRefreshCredential(credentials, 'refresh-0');
     final harness = _Harness.create(
       _authClient(refreshStatus: 429),
       credentials,
@@ -102,7 +116,7 @@ void main() {
     tester,
   ) async {
     final credentials = InMemoryCredentialStorage();
-    await credentials.write(key: 'sme.mobile.refresh', value: 'refresh-0');
+    await _writeRefreshCredential(credentials, 'refresh-0');
     final harness = _Harness.create(
       _authClient(refreshStatus: 401),
       credentials,
@@ -122,7 +136,7 @@ void main() {
       find.text('Phiên đăng nhập đã hết hiệu lực. Vui lòng đăng nhập lại.'),
       findsOneWidget,
     );
-    expect(await credentials.read(key: 'sme.mobile.refresh'), isNull);
+    expect(await _readRefreshCredential(credentials), isNull);
   });
 
   testWidgets('blocks normal login after secure-storage read failure', (
@@ -141,6 +155,7 @@ void main() {
     );
     expect(find.byType(StartupFailureView), findsOneWidget);
     expect(find.text('Đăng nhập hệ thống'), findsNothing);
+    expect(find.text('Thử truy cập lại'), findsOneWidget);
     expect(
       find.textContaining(
         'Không thể truy cập thông tin đăng nhập được bảo vệ.',
@@ -153,7 +168,7 @@ void main() {
     tester,
   ) async {
     final credentials = InMemoryCredentialStorage();
-    await credentials.write(key: 'sme.mobile.refresh', value: 'refresh-0');
+    await _writeRefreshCredential(credentials, 'refresh-0');
     final logoutRequested = Completer<void>();
     final logoutResponse = Completer<http.StreamedResponse>();
     final client = _authClient(
@@ -228,7 +243,7 @@ RecordingHttpClient _authClient({
     if (refreshStatus != null) {
       return jsonResponse(
         refreshStatus,
-        errorEnvelope('AUTH_RATE_LIMITED', 'Try again later.'),
+        errorEnvelope('RATE_LIMIT_EXCEEDED', 'Try again later.'),
       );
     }
     expect(request.headers['Authorization'], 'Bearer refresh-0');

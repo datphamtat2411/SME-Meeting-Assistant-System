@@ -10,11 +10,13 @@ import 'api_response_decoder.dart';
 import 'api_transport.dart';
 import 'credential_storage.dart';
 import 'signed_upload_transport.dart';
+import 'token_store.dart';
 
 export 'api_response.dart';
 export 'api_transport.dart';
 export 'credential_storage.dart';
 export 'signed_upload_transport.dart';
+export 'token_store.dart';
 
 part 'auth_errors.dart';
 part 'auth_models.dart';
@@ -44,6 +46,7 @@ class ApiClient extends ChangeNotifier {
   final ApiResponseDecoder _responseDecoder = const ApiResponseDecoder();
   late final CoreApiRequestExecutor _requestExecutor;
   late final AuthRepository _authRepository;
+  late final TokenStore _tokenStore;
   late final AuthSessionCoordinator sessionCoordinator;
   bool _disposed = false;
 
@@ -72,9 +75,10 @@ class ApiClient extends ChangeNotifier {
       decoder: _responseDecoder,
     );
     _authRepository = AuthRepository(requests: _requestExecutor);
+    _tokenStore = TokenStore(storage: credentialStorage, baseUri: baseUri);
     sessionCoordinator = AuthSessionCoordinator(
       repository: _authRepository,
-      credentialStorage: credentialStorage,
+      tokenStore: _tokenStore,
       now: now,
     )..addListener(_forwardSessionChanges);
   }

@@ -91,6 +91,16 @@ class _AuthPageState extends State<AuthPage> {
   Widget build(BuildContext context) {
     final login = mode == _AuthMode.login;
     final recovery = mode == _AuthMode.recovery;
+    final sessionFailure = widget.api.sessionState.failure;
+    final reauthenticationMessage = switch (sessionFailure?.machineCode) {
+      'LEGACY_CREDENTIAL_RETIRED' =>
+        'Vui lòng đăng nhập lại cho máy chủ đang được cấu hình.',
+      'REFRESH_ROTATION_PENDING' ||
+      'STORED_CREDENTIAL_UNUSABLE' ||
+      'STORED_CREDENTIAL_UNSAFE' ||
+      'REFRESH_ROTATION_OUTCOME_UNKNOWN' => sessionFailure?.message ?? 'Phiên đã lưu không thể được sử dụng an toàn. Vui lòng đăng nhập lại.',
+      _ => 'Phiên đăng nhập đã hết hiệu lực. Vui lòng đăng nhập lại.',
+    };
     final title = switch (mode) {
       _AuthMode.login => 'Đăng nhập hệ thống',
       _AuthMode.recovery => 'Quên mật khẩu',
@@ -131,9 +141,9 @@ class _AuthPageState extends State<AuthPage> {
                   const SizedBox(height: 26),
                   if (widget.api.sessionState.phase ==
                       AuthSessionPhase.reauthenticationRequired) ...[
-                    const ContentCard(
+                    ContentCard(
                       child: Text(
-                        'Phiên đăng nhập đã hết hiệu lực. Vui lòng đăng nhập lại.',
+                        reauthenticationMessage,
                         textAlign: TextAlign.center,
                       ),
                     ),

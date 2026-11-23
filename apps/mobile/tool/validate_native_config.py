@@ -118,6 +118,57 @@ def validate_android() -> None:
                 fail("Android application label must be SME Meeting Assistant")
             if android_attribute(application, "usesCleartextTraffic") == "true":
                 fail("Android cleartext traffic must not be enabled in the main manifest")
+            if android_attribute(application, "allowBackup") != "true":
+                fail("Android must keep backup enabled with targeted secure-storage exclusions")
+            if android_attribute(application, "fullBackupContent") != "@xml/backup_rules":
+                fail("Android legacy backup rules must be configured")
+            if android_attribute(application, "dataExtractionRules") != "@xml/data_extraction_rules":
+                fail("Android cloud/device-transfer rules must be configured")
+
+    secure_storage = read("lib/core/credential_storage.dart")
+    for required in (
+        "resetOnError: false",
+        "KeyCipherAlgorithm.RSA_ECB_OAEPwithSHA_256andMGF1Padding",
+        "StorageCipherAlgorithm.AES_GCM_NoPadding",
+        "KeychainAccessibility.unlocked_this_device",
+        "synchronizable: false",
+    ):
+        if required not in secure_storage:
+            fail(f"secure credential configuration is missing {required}")
+
+    expected_exclusions = {
+        "FlutterSecureStorage.xml",
+        "FlutterSecureKeyStorage.xml",
+        "FlutterSecureStorageConfiguration:FlutterSecureStorage.xml",
+        "FlutterSecureStorageConfiguration.xml",
+    }
+    backup_rules = parse_xml("android/app/src/main/res/xml/backup_rules.xml")
+    if backup_rules is not None:
+        exclusions = {
+            element.attrib.get("path")
+            for element in backup_rules.findall("exclude")
+            if element.attrib.get("domain") == "sharedpref"
+        }
+        if exclusions != expected_exclusions:
+            fail("Android legacy backup rules must exclude all secure-storage files")
+
+    extraction_rules = parse_xml(
+        "android/app/src/main/res/xml/data_extraction_rules.xml"
+    )
+    if extraction_rules is not None:
+        for rule_name in ("cloud-backup", "device-transfer"):
+            section = extraction_rules.find(rule_name)
+            exclusions = (
+                {
+                    element.attrib.get("path")
+                    for element in section.findall("exclude")
+                    if element.attrib.get("domain") == "sharedpref"
+                }
+                if section is not None
+                else set()
+            )
+            if exclusions != expected_exclusions:
+                fail(f"Android {rule_name} must exclude all secure-storage files")
 
     if debug is not None:
         application = debug.find("application")

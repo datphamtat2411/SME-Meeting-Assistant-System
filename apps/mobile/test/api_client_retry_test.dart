@@ -83,7 +83,13 @@ void main() {
       expect(client.pathCalls('/malformed'), 1);
       expect(client.pathCalls('/auth/refresh'), 0);
       expect(api.signedIn, isTrue);
-      expect(await credentials.read(key: 'sme.mobile.refresh'), 'refresh-1');
+      expect(
+        (await TokenStore(
+          storage: credentials,
+          baseUri: Uri.parse('https://api.example.test/api/v1'),
+        ).read()).refreshToken,
+        'refresh-1',
+      );
     },
   );
 

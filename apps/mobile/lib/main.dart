@@ -143,9 +143,12 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
 
   Widget _recoverableSessionView(AuthSessionState session) {
     if (session.failure?.category == AuthFailureCategory.credentialStorage) {
-      return const StartupFailureView(
+      return StartupFailureView(
         title: 'Không thể truy cập phiên bảo mật',
         message: 'Không thể truy cập thông tin đăng nhập được bảo vệ. Vui lòng thử lại sau.',
+        onRetry: session.canRetryCredentialStorage
+            ? api.retrySessionRestore
+            : null,
       );
     }
     if (session.canRetrySessionRestore) {
@@ -183,11 +186,13 @@ class StartupProgressView extends StatelessWidget {
 class StartupFailureView extends StatelessWidget {
   final String title;
   final String message;
+  final VoidCallback? onRetry;
 
   const StartupFailureView({
     super.key,
     this.title = 'Không thể khởi tạo ứng dụng',
     this.message = 'Vui lòng đóng ứng dụng và thử lại.',
+    this.onRetry,
   });
 
   @override
@@ -207,6 +212,14 @@ class StartupFailureView extends StatelessWidget {
             ),
             const SizedBox(height: 10),
             Text(message, textAlign: TextAlign.center),
+            if (onRetry != null) ...[
+              const SizedBox(height: 16),
+              FilledButton.icon(
+                onPressed: onRetry,
+                icon: const Icon(Icons.refresh),
+                label: const Text('Thử truy cập lại'),
+              ),
+            ],
           ],
         ),
       ),

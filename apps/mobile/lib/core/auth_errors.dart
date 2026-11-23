@@ -17,6 +17,8 @@ enum AuthFailureCategory {
   temporaryServiceFailure,
   invalidResponse,
   credentialStorage,
+  unsafeCredential,
+  rotationOutcomeUnknown,
   unexpected,
 }
 
@@ -61,12 +63,30 @@ class AuthFailureClassifier {
     apiFailure: failure,
   );
 
-  AuthSessionFailure credentialStorageFailure(Object error) =>
+  AuthSessionFailure credentialStorageFailure(Object error) {
+    final operation = error is TokenStoreException ? error.operation : null;
+    final operationName = operation?.name.toUpperCase();
+    return AuthSessionFailure._(
+      category: AuthFailureCategory.credentialStorage,
+      message: 'Secure credential storage is unavailable.',
+      code: operationName == null
+          ? 'CREDENTIAL_STORAGE_FAILURE'
+          : 'CREDENTIAL_STORAGE_${operationName}_FAILED',
+    );
+  }
+
+  AuthSessionFailure unsafeStoredCredential(String code, String message) =>
       AuthSessionFailure._(
-        category: AuthFailureCategory.credentialStorage,
-        message: 'Secure credential storage is unavailable.',
-        code: 'CREDENTIAL_STORAGE_FAILURE',
+        category: AuthFailureCategory.unsafeCredential,
+        message: message,
+        code: code,
       );
+
+  AuthSessionFailure rotationOutcomeUnknown() => AuthSessionFailure._(
+    category: AuthFailureCategory.rotationOutcomeUnknown,
+    message: 'The saved session could not be safely continued. Please sign in again.',
+    code: 'REFRESH_ROTATION_OUTCOME_UNKNOWN',
+  );
 }
 
 @immutable

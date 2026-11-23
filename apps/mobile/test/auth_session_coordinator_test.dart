@@ -7,6 +7,20 @@ import 'package:sme_meeting_assistant/core/api_client.dart';
 
 import 'support/http_test_support.dart';
 
+final Uri _apiBaseUri = Uri.parse('https://api.example.test/api/v1');
+
+Future<void> _writeRefreshCredential(CredentialStorage storage, String token) =>
+    TokenStore(
+      storage: storage,
+      baseUri: _apiBaseUri,
+    ).storeLoginCredential(token);
+
+Future<String?> _readRefreshCredential(CredentialStorage storage) async =>
+    (await TokenStore(
+      storage: storage,
+      baseUri: _apiBaseUri,
+    ).read()).refreshToken;
+
 void main() {
   test(
     'sign-in transitions through verification before authenticated state',
@@ -89,7 +103,7 @@ void main() {
     'startup restoration uses repository and reaches a verified session',
     () async {
       final credentials = InMemoryCredentialStorage();
-      await credentials.write(key: 'sme.mobile.refresh', value: 'refresh-0');
+      await _writeRefreshCredential(credentials, 'refresh-0');
       final client = _AuthenticationClient();
       final api = ApiClient(
         baseUri: Uri.parse('https://api.example.test/api/v1'),
@@ -110,7 +124,7 @@ void main() {
       ]);
       expect(client.paths, <String>['/api/v1/auth/refresh', '/api/v1/auth/me']);
       expect(api.sessionCoordinator.state.isAuthenticated, isTrue);
-      expect(await credentials.read(key: 'sme.mobile.refresh'), 'refresh-1');
+      expect(await _readRefreshCredential(credentials), 'refresh-1');
     },
   );
 
@@ -118,7 +132,7 @@ void main() {
     'recoverable refresh failures retain credentials and structured errors',
     () async {
       final credentials = InMemoryCredentialStorage();
-      await credentials.write(key: 'sme.mobile.refresh', value: 'refresh-0');
+      await _writeRefreshCredential(credentials, 'refresh-0');
       final api = ApiClient(
         baseUri: Uri.parse('https://api.example.test/api/v1'),
         httpClient: _AuthenticationClient(refreshStatus: 429),
@@ -145,7 +159,7 @@ void main() {
         'failure-request-id',
       );
       expect(api.hasRecoverableSession, isTrue);
-      expect(await credentials.read(key: 'sme.mobile.refresh'), 'refresh-0');
+      expect(await _readRefreshCredential(credentials), 'refresh-0');
       expect(api.signedIn, isFalse);
     },
   );
@@ -177,7 +191,7 @@ void main() {
       );
       expect(api.sessionCoordinator.state.identity, isNull);
       expect(api.identity, isNull);
-      expect(await credentials.read(key: 'sme.mobile.refresh'), isNull);
+      expect(await _readRefreshCredential(credentials), isNull);
     },
   );
 
@@ -261,7 +275,7 @@ void main() {
         '/api/v1/auth/me',
       ]);
       expect(api.signedIn, isTrue);
-      expect(await credentials.read(key: 'sme.mobile.refresh'), 'refresh-2');
+      expect(await _readRefreshCredential(credentials), 'refresh-2');
     },
   );
 
@@ -290,7 +304,7 @@ void main() {
         hasLength(1),
       );
       expect(api.sessionCoordinator.state.isAuthenticated, isTrue);
-      expect(await credentials.read(key: 'sme.mobile.refresh'), 'refresh-2');
+      expect(await _readRefreshCredential(credentials), 'refresh-2');
     },
   );
 
@@ -328,7 +342,7 @@ void main() {
         AuthSessionPhase.reauthenticationRequired,
       );
       expect(api.sessionCoordinator.state.identity, isNull);
-      expect(await credentials.read(key: 'sme.mobile.refresh'), isNull);
+      expect(await _readRefreshCredential(credentials), isNull);
     },
   );
 
@@ -354,7 +368,7 @@ void main() {
         '/api/v1/auth/me',
       ]);
       expect(api.sessionCoordinator.state.isAuthenticated, isTrue);
-      expect(await credentials.read(key: 'sme.mobile.refresh'), 'refresh-2');
+      expect(await _readRefreshCredential(credentials), 'refresh-2');
     },
   );
 
@@ -379,7 +393,7 @@ void main() {
       api.sessionCoordinator.state.phase,
       AuthSessionPhase.unauthenticated,
     );
-    expect(await credentials.read(key: 'sme.mobile.refresh'), isNull);
+    expect(await _readRefreshCredential(credentials), isNull);
 
     await api.signIn('user@example.test', 'correct-password');
 
@@ -457,17 +471,14 @@ void main() {
     );
     await expectLater(api.retrySessionRestore(), throwsStateError);
     expect(api.sessionCoordinator.state.identity, same(originalIdentity));
-    expect(await credentials.read(key: 'sme.mobile.refresh'), 'refresh-0');
+    expect(await _readRefreshCredential(credentials), 'refresh-0');
     expect(
       client.paths.where((path) => path.endsWith('/auth/login')),
       hasLength(1),
     );
 
     final recoveringCredentials = InMemoryCredentialStorage();
-    await recoveringCredentials.write(
-      key: 'sme.mobile.refresh',
-      value: 'refresh-0',
-    );
+    await _writeRefreshCredential(recoveringCredentials, 'refresh-0');
     final recoveringClient = _AuthenticationClient(refreshStatus: 429);
     final recoveringApi = ApiClient(
       baseUri: Uri.parse('https://api.example.test/api/v1'),
@@ -484,10 +495,7 @@ void main() {
       recoveringApi.sessionCoordinator.state.canRetrySessionRestore,
       isTrue,
     );
-    expect(
-      await recoveringCredentials.read(key: 'sme.mobile.refresh'),
-      'refresh-0',
-    );
+    expect(await _readRefreshCredential(recoveringCredentials), 'refresh-0');
     await recoveringApi.discardLocalSession();
     await recoveringApi.signIn('other@example.test', 'password');
     expect(recoveringApi.signedIn, isTrue);
@@ -528,7 +536,9 @@ class _AuthenticationClient extends RecordingHttpClient {
         return streamedResponse(
           refreshStatus!,
           body: utf8.encode(
-            jsonEncode(errorEnvelope('AUTH_RATE_LIMITED', 'Try again later.')),
+            jsonEncode(
+              errorEnvelope('RATE_LIMIT_EXCEEDED', 'Try again later.'),
+            ),
           ),
           headers: const <String, String>{
             'x-request-id': 'failure-request-id',
