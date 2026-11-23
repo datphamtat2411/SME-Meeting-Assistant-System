@@ -174,17 +174,26 @@ def validate_android() -> None:
         if application is not None and android_attribute(application, "usesCleartextTraffic") == "true":
             fail("Android profile manifest must not enable debug cleartext traffic")
 
-    validate_merged_manifest()
-
-
 def secure_storage_backup_files() -> set[str]:
     lockfile = read("pubspec.lock")
-    if not re.search(
-        r"(?ms)^  flutter_secure_storage:\n(?:(?!^  [A-Za-z0-9_]+:).*\n)*?"
-        r"^    version: \"11\.2\.0\"$",
-        lockfile,
-    ):
+    lockfile_lines = lockfile.splitlines()
+    package_start = next(
+        (
+            index
+            for index, line in enumerate(lockfile_lines)
+            if line == "  flutter_secure_storage:"
+        ),
+        None,
+    )
+    package_lines = []
+    if package_start is not None:
+        for line in lockfile_lines[package_start + 1 :]:
+            if re.fullmatch(r"  [A-Za-z0-9_]+:", line):
+                break
+            package_lines.append(line)
+    if '    version: "11.2.0"' not in package_lines:
         fail("flutter_secure_storage must remain pinned to 11.2.0")
+        return set()
 
     config_path = ROOT / ".dart_tool/package_config.json"
     try:
@@ -234,7 +243,7 @@ def secure_storage_backup_files() -> set[str]:
     ]
     default_key = re.search(r':\s*"([^"]+)"\s*;', key_name_source)
     namespaced_config = re.search(
-        r'return\s+"([^"]+)"\s*\+\s*sharedPreferencesName',
+        r'return\s+"([^"]+):"\s*\+\s*sharedPreferencesName',
         namespace_text,
     )
     legacy_config = re.search(
@@ -285,54 +294,6 @@ def secure_storage_backup_files() -> set[str]:
     return {f"{name}.xml" for name in expected_names.values()}
 
 
-def validate_merged_manifest() -> None:
-    gradlew = ROOT / "android/gradlew"
-    try:
-        result = subprocess.run(
-            [str(gradlew), "-p", str(ROOT / "android"), ":app:processDebugManifest"],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except OSError as error:
-        fail(f"could not validate the merged Android manifest: {error}")
-        return
-    if result.returncode != 0:
-        details = (result.stderr or result.stdout).strip().splitlines()
-        fail(
-            "Android processDebugManifest failed: "
-            + (details[-1] if details else "Gradle returned a failure")
-        )
-        return
-
-    candidates = (
-        ROOT
-        / "build/app/intermediates/merged_manifests/debug/processDebugManifest/AndroidManifest.xml",
-        ROOT
-        / "build/app/intermediates/merged_manifest/debug/processDebugMainManifest/AndroidManifest.xml",
-    )
-    manifest_path = next((path for path in candidates if path.is_file()), None)
-    if manifest_path is None:
-        fail("Gradle did not produce a merged debug Android manifest")
-        return
-    try:
-        merged = ET.fromstring(manifest_path.read_text())
-    except (ET.ParseError, OSError) as error:
-        fail(f"merged Android manifest is invalid: {error}")
-        return
-    application = merged.find("application")
-    if application is None:
-        fail("merged Android manifest is missing application")
-        return
-    if android_attribute(application, "allowBackup") != "true":
-        fail("merged Android manifest must retain targeted secure-storage backups")
-    if android_attribute(application, "fullBackupContent") != "@xml/backup_rules":
-        fail("merged Android manifest is missing legacy backup exclusions")
-    if android_attribute(application, "dataExtractionRules") != "@xml/data_extraction_rules":
-        fail("merged Android manifest is missing cloud/device-transfer exclusions")
-
-
 def validate_bootstrap() -> None:
     bootstrap = read("tool/bootstrap.sh")
     if "flutter create" in bootstrap.lower():
@@ -356,8 +317,13 @@ def validate_ignored_signing_files() -> None:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
+            timeout=10,
         )
+    except subprocess.TimeoutExpired:
+        fail("timed out while checking that android/key.properties is untracked")
+        result = None
     except OSError:
+        fail("could not verify whether android/key.properties is tracked")
         result = None
     if result is not None and result.returncode == 0:
         fail("android/key.properties must not be tracked")
@@ -370,12 +336,12 @@ def main() -> int:
     validate_ignored_signing_files()
 
     if errors:
-        print("Android configuration validation: FAIL")
+        print("Static Android configuration validation: FAIL")
         for error in errors:
             print(f"- {error}")
         return 1
 
-    print("Android configuration validation: PASS")
+    print("Static Android configuration validation: PASS")
     return 0
 
 

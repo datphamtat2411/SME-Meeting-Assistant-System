@@ -124,6 +124,18 @@ class ApiClient extends ChangeNotifier {
 
   Future<void> signOut() => sessionCoordinator.signOut();
 
+  /// Requests password recovery without acquiring or changing session state.
+  Future<ApiResult> requestPasswordRecovery(String email) =>
+      _authRepository.requestPasswordRecovery(email);
+
+  /// Resets a password with a single-use recovery token, without session auth.
+  Future<ApiResult> resetPassword(String token, String password) =>
+      _authRepository.resetPassword(token, password);
+
+  /// Completes invitation-based account setup without session authentication.
+  Future<ApiResult> completeAccountSetup(String token, String password) =>
+      _authRepository.completeAccountSetup(token, password);
+
   Future<ApiResult> get(String path, {Map<String, String>? query}) =>
       _request('GET', path, query: query);
 

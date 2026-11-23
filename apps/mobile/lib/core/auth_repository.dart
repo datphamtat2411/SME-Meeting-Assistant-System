@@ -1,6 +1,6 @@
 part of 'api_client.dart';
 
-/// Owns the four Mobile authentication endpoints and their typed contracts.
+/// Owns Mobile authentication endpoint contracts and request routing.
 ///
 /// It intentionally has no credentials, persistence, session state, or UI
 /// dependencies. Requests go directly through the shared low-level executor.
@@ -11,6 +11,24 @@ class AuthRepository {
   const AuthRepository._(this._requests);
 
   final CoreApiRequestExecutor _requests;
+
+  Future<ApiResult> requestPasswordRecovery(String email) =>
+      _requests.sendPublicAuthentication(
+        PublicAuthenticationOperation.passwordRecovery,
+        body: <String, dynamic>{'email': email.trim()},
+      );
+
+  Future<ApiResult> resetPassword(String token, String password) =>
+      _requests.sendPublicAuthentication(
+        PublicAuthenticationOperation.passwordReset,
+        body: <String, dynamic>{'token': token.trim(), 'password': password},
+      );
+
+  Future<ApiResult> completeAccountSetup(String token, String password) =>
+      _requests.sendPublicAuthentication(
+        PublicAuthenticationOperation.accountSetup,
+        body: <String, dynamic>{'token': token.trim(), 'password': password},
+      );
 
   Future<AuthTokenResponse> login(String email, String password) async {
     final response = await _requests.send(

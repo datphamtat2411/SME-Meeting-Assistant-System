@@ -37,6 +37,31 @@ class CoreApiRequestExecutor {
       throw normalizeTransportFailure(failure);
     }
 
+    return _decode(response);
+  }
+
+  /// Executes only one of the fixed public authentication operations.
+  ///
+  /// Unlike [send], this path has no arbitrary URL, authorization, or headers
+  /// parameter. The transport applies the ordinary Core API timeout,
+  /// validation, response, and error handling without session credentials.
+  Future<ApiResult> sendPublicAuthentication(
+    PublicAuthenticationOperation operation, {
+    required Object body,
+  }) async {
+    final CoreApiResponse response;
+    try {
+      response = await transport.sendPublicAuthentication(
+        operation,
+        body: body,
+      );
+    } on TransportFailure catch (failure) {
+      throw normalizeTransportFailure(failure);
+    }
+    return _decode(response);
+  }
+
+  ApiResult _decode(CoreApiResponse response) {
     return decoder.decode(
       statusCode: response.statusCode,
       headers: response.headers,

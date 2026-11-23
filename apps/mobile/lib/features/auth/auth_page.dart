@@ -43,19 +43,14 @@ class _AuthPageState extends State<AuthPage> {
         case _AuthMode.login:
           await widget.api.signIn(email.text, password.text);
         case _AuthMode.recovery:
-          await widget.api.post('/auth/password-recovery', {
-            'email': email.text.trim(),
-          });
+          await widget.api.requestPasswordRecovery(email.text);
           if (mounted)
             setState(
               () => outcome =
                   'Nếu tài khoản hợp lệ, email khôi phục sẽ được gửi.',
             );
         case _AuthMode.reset:
-          await widget.api.post('/auth/password-reset', {
-            'token': token.text.trim(),
-            'password': password.text,
-          });
+          await widget.api.resetPassword(token.text, password.text);
           if (mounted) {
             setState(() {
               mode = _AuthMode.login;
@@ -63,10 +58,7 @@ class _AuthPageState extends State<AuthPage> {
             });
           }
         case _AuthMode.setup:
-          await widget.api.post('/auth/account-setup', {
-            'token': token.text.trim(),
-            'password': password.text,
-          });
+          await widget.api.completeAccountSetup(token.text, password.text);
           if (mounted) {
             setState(() {
               mode = _AuthMode.login;

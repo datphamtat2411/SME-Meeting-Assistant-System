@@ -69,8 +69,12 @@ jobs:
           java-version: '17'
           cache: gradle
           cache-dependency-path: |
+            apps/mobile/pubspec.lock
             apps/mobile/android/gradle/wrapper/gradle-wrapper.properties
             apps/mobile/android/settings.gradle.kts
+            apps/mobile/android/build.gradle.kts
+            apps/mobile/android/app/build.gradle.kts
+            apps/mobile/android/gradle.properties
 
       - name: Verify effective Flutter, Dart, Java, Android SDK, and Gradle
         run: |
@@ -89,21 +93,22 @@ jobs:
           [[ -n "$sdk_root" && -d "$sdk_root" ]] ||
             { echo "The runner Android SDK is not available." >&2; exit 1; }
           echo "Android SDK: $sdk_root"
-          gradle_output="$(cd android && ./gradlew --version)"
-          printf '%s\n' "$gradle_output"
-          grep -Fq 'Gradle 9.5.0' <<< "$gradle_output" ||
+          gradle_version_file="$RUNNER_TEMP/mobile-gradle-version.txt"
+          (cd android && ./gradlew --version --console=plain) |
+            tee "$gradle_version_file"
+          grep -Fq 'Gradle 9.5.0' "$gradle_version_file" ||
             { echo "The Android Gradle Wrapper did not resolve Gradle 9.5.0." >&2; exit 1; }
-          grep -Eq 'JVM: +17([.]|$)' <<< "$gradle_output" ||
+          grep -Eq 'JVM: +17([.]|$)' "$gradle_version_file" ||
             { echo "Gradle is not running on JDK 17." >&2; exit 1; }
 
       - name: Resolve committed Flutter dependencies
         run: flutter pub get --enforce-lockfile
 
-      - name: Validate native Android configuration
-        run: python3 tool/validate_native_config.py
+      - name: Test Android native verification diagnostics
+        run: python3 -m unittest tool.test_android_native_verification
 
-      - name: Run Android credential durability tests
-        run: ./android/gradlew -p android :app:testDebugUnitTest
+      - name: Validate static native Android configuration
+        run: python3 tool/validate_native_config.py
 
       - name: Check dependency and native configuration drift
         run: |
@@ -130,10 +135,24 @@ jobs:
             --coverage \
             --coverage-path=coverage/lcov.info
 
+      - name: Verify merged manifest and Android credential durability
+        run: python3 tool/run_android_native_verification.py
+
       - name: Build Android debug APK
         run: >-
           flutter build apk --debug
           --dart-define=API_BASE_URL=https://api.mobile-ci.invalid/api/v1
+
+      - name: Upload Android native verification diagnostics
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: mobile-android-native-diagnostics
+          path: |
+            apps/mobile/build/app/test-results/testDebugUnitTest/*.xml
+            apps/mobile/build/reports/profile/*.html
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Upload test report and coverage
         if: ${{ !cancelled() }}

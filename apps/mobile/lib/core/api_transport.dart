@@ -49,6 +49,20 @@ class TransportFailure implements Exception {
   String toString() => message;
 }
 
+/// The only Core API operations that may use the public authentication policy.
+///
+/// The endpoint and HTTP method are selected by the transport, rather than
+/// accepting an arbitrary path or a caller-controlled authentication bypass.
+enum PublicAuthenticationOperation {
+  passwordRecovery('/auth/password-recovery'),
+  passwordReset('/auth/password-reset'),
+  accountSetup('/auth/account-setup');
+
+  const PublicAuthenticationOperation(this.path);
+
+  final String path;
+}
+
 /// HTTP transport for requests whose destination is the configured Core API.
 ///
 /// This class owns request construction and network failure normalization only.
@@ -88,12 +102,41 @@ class CoreApiTransport {
     Object? body,
     Map<String, String>? headers,
     String? authorization,
+  }) => _send(
+    method,
+    endpointPath,
+    query: query,
+    body: body,
+    headers: headers,
+    authorization: authorization,
+    includeAuthTransport: true,
+  );
+
+  /// Sends one allowlisted, state-changing public auth operation.
+  ///
+  /// It intentionally accepts neither a path, authorization value, nor
+  /// caller-supplied headers. Public auth requests do not carry the mobile auth
+  /// transport marker because these endpoints do not require it.
+  Future<CoreApiResponse> sendPublicAuthentication(
+    PublicAuthenticationOperation operation, {
+    required Object body,
+  }) => _send('POST', operation.path, body: body, includeAuthTransport: false);
+
+  Future<CoreApiResponse> _send(
+    String method,
+    String endpointPath, {
+    Map<String, String>? query,
+    Object? body,
+    Map<String, String>? headers,
+    String? authorization,
+    required bool includeAuthTransport,
   }) async {
     final uri = _buildUri(endpointPath, query);
     final requestHeaders = _buildHeaders(
       body: body,
       headers: headers,
       authorization: authorization,
+      includeAuthTransport: includeAuthTransport,
     );
     final request = _buildRequest(method, uri, requestHeaders, body);
 
@@ -192,10 +235,11 @@ class CoreApiTransport {
     required Object? body,
     required Map<String, String>? headers,
     required String? authorization,
+    required bool includeAuthTransport,
   }) {
     final result = <String, String>{
       'Accept': 'application/json',
-      'X-Auth-Transport': 'mobile',
+      if (includeAuthTransport) 'X-Auth-Transport': 'mobile',
       if (body != null) 'Content-Type': 'application/json',
       if (authorization != null) 'Authorization': authorization,
     };
