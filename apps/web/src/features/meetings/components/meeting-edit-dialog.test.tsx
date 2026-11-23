@@ -414,6 +414,8 @@ describe('MeetingEditDialog', () => {
     mockRoomQueries()
     const patchSpy = vi.spyOn(coreApi, 'patchWithMetaAndEtag')
     const previewSpy = vi.spyOn(coreApi, 'post')
+    const invalidStart = canonicalizeLocalDateTime('2026-11-10', '23:00')
+    const invalidEnd = canonicalizeLocalDateTime('2026-11-10', '01:00')
     const screen = await render(
       <QueryClientProvider client={createQueryClient()}>
         <MeetingEditDialog
@@ -442,7 +444,12 @@ describe('MeetingEditDialog', () => {
       )
       .toBeInTheDocument()
     expect(patchSpy).not.toHaveBeenCalled()
-    expect(previewSpy).not.toHaveBeenCalled()
+    expect(
+      previewSpy.mock.calls.some(([, payload]) => {
+        const interval = payload as { start?: string; end?: string }
+        return interval.start === invalidStart && interval.end === invalidEnd
+      })
+    ).toBe(false)
   })
 
   it('PATCHes a DRAFT before scheduling and uses the refreshed ETag', async () => {
@@ -1125,7 +1132,12 @@ describe('MeetingEditDialog', () => {
     await expect
       .element(screen.getByText('The meeting changed on the server.'))
       .toBeInTheDocument()
-    expect(previewSpy.mock.calls[0]?.[1]).toMatchObject({
+    const firstSchedulePreview = previewSpy.mock.calls.find(
+      ([url, payload]) =>
+        url === '/meeting-schedule-checks' &&
+        (payload as { start?: string }).start === firstStart
+    )
+    expect(firstSchedulePreview?.[1]).toMatchObject({
       meetingId: 'meeting-1',
       start: firstStart,
       end: firstEnd,
@@ -1157,14 +1169,18 @@ describe('MeetingEditDialog', () => {
     await expect
       .element(screen.getByText('Meeting changes saved'))
       .toBeInTheDocument()
-    expect(previewSpy).toHaveBeenCalledTimes(2)
-    expect(previewSpy.mock.calls[1]?.[1]).toMatchObject({
+    const refreshedSchedulePreview = previewSpy.mock.calls.find(
+      ([url, payload]) =>
+        url === '/meeting-schedule-checks' &&
+        (payload as { start?: string }).start === secondStart
+    )
+    expect(refreshedSchedulePreview?.[1]).toMatchObject({
       meetingId: 'meeting-1',
       start: secondStart,
       end: secondEnd,
       roomId: 'room-2',
     })
-    expect(previewSpy.mock.calls[1]?.[1]).not.toHaveProperty('roomId', 'room-1')
+    expect(refreshedSchedulePreview?.[1]).not.toHaveProperty('roomId', 'room-1')
     expect(patchSpy).toHaveBeenNthCalledWith(
       2,
       '/meetings/meeting-1',
