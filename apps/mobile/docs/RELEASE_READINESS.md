@@ -18,10 +18,11 @@ The bootstrap script validates the pinned Flutter 3.50.1/Dart 3.14.0 and JDK
 17, enforces `pubspec.lock`, and checks the committed Android configuration. It
 does not generate or overwrite native runner files. The iOS project remains
 preserved for deferred support, but is not built or validated by this workflow.
-An Android emulator can use http://10.0.2.2:8080/api/v1 for local development. A
-physical phone needs a routable host or tunnel address. Production must use
-HTTPS. Provide a running and authorized Core API; the app does not contain an
-offline mock server.
+`API_BASE_URL` is mandatory for every run. An Android emulator can use
+`http://10.0.2.2:8080/api/v1` for debug-only local development. A physical phone
+needs a routable private-LAN host or tunnel address. Profile and release builds
+must use HTTPS. Provide a running and authorized Core API; the app does not
+contain an offline mock server.
 
 GitHub Actions publishes the debug Android APK as an artifact of successful
 Mobile Flutter build runs. A debug APK is not a release signing, store submission,

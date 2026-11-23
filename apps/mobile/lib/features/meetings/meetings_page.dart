@@ -53,7 +53,9 @@ class _MeetingsPageState extends State<MeetingsPage> {
     return List.of(loaded);
   }
 
-  void reload() => setState(() => future = fetch(0));
+  void reload() => setState(() {
+    future = fetch(0);
+  });
   void loadMore() => setState(() => future = fetch(page + 1));
 
   Future<void> create() async {

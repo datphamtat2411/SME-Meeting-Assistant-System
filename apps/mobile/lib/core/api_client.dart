@@ -3,10 +3,11 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
-import 'app_config.dart';
+import 'credential_storage.dart';
+
+export 'credential_storage.dart';
 
 class ApiFailure implements Exception {
   final int status;
@@ -48,15 +49,24 @@ List<Map<String, dynamic>> objectsOf(dynamic value) {
 /// Access credentials never leave process memory. The refresh credential is
 /// rotated on every refresh and persisted in OS-backed secure storage.
 class ApiClient extends ChangeNotifier {
-  final http.Client _http = http.Client();
-  final FlutterSecureStorage _secure = const FlutterSecureStorage();
+  final Uri baseUri;
+  final http.Client _http;
+  final CredentialStorage _secure;
   String? _accessToken;
   String? _refreshToken;
   DateTime? _accessExpiry;
   Future<void>? _refreshFuture;
+  bool _disposed = false;
   bool ready = false;
   String? sessionRestoreError;
   Map<String, dynamic>? identity;
+
+  ApiClient({
+    required this.baseUri,
+    required http.Client httpClient,
+    required CredentialStorage credentialStorage,
+  }) : _http = httpClient,
+       _secure = credentialStorage;
 
   bool get hasRecoverableSession =>
       _refreshToken != null && identity == null && sessionRestoreError != null;
@@ -84,7 +94,7 @@ class ApiClient extends ChangeNotifier {
       await _forget();
     } finally {
       ready = true;
-      notifyListeners();
+      _notifyListeners();
     }
   }
 
@@ -95,7 +105,7 @@ class ApiClient extends ChangeNotifier {
     if (_refreshToken == null) return;
     ready = false;
     sessionRestoreError = null;
-    notifyListeners();
+    _notifyListeners();
     try {
       await _renew();
       await loadIdentity();
@@ -109,19 +119,20 @@ class ApiClient extends ChangeNotifier {
       await _forget();
     } finally {
       ready = true;
-      notifyListeners();
+      _notifyListeners();
     }
   }
 
   Future<void> discardLocalSession() async {
     await _forget();
     sessionRestoreError = null;
-    notifyListeners();
+    _notifyListeners();
   }
 
   Future<void> signIn(String email, String password) async {
     final result = await _request(
-      'POST', '/auth/login',
+      'POST',
+      '/auth/login',
       body: {'email': email.trim(), 'password': password},
       auth: false,
     );
@@ -139,9 +150,13 @@ class ApiClient extends ChangeNotifier {
     final result = await get('/auth/me');
     identity = objectOf(result.data);
     if (identity?['userId'] == null) {
-      throw const ApiFailure(0, 'INVALID_RESPONSE', 'Invalid account response.');
+      throw const ApiFailure(
+        0,
+        'INVALID_RESPONSE',
+        'Invalid account response.',
+      );
     }
-    notifyListeners();
+    _notifyListeners();
   }
 
   Future<void> signOut() async {
@@ -158,31 +173,42 @@ class ApiClient extends ChangeNotifier {
     _accessExpiry = null;
     identity = null;
     await _secure.delete(key: 'sme.mobile.refresh');
-    notifyListeners();
+    _notifyListeners();
   }
 
   Future<void> _adoptTokens(dynamic raw) async {
     final values = objectOf(raw);
     final access = values['accessToken'];
     final refresh = values['refreshToken'];
-    if (access is! String || access.isEmpty ||
-        refresh is! String || refresh.isEmpty) {
-      throw const ApiFailure(0, 'INVALID_RESPONSE', 'Invalid mobile token response.');
+    if (access is! String ||
+        access.isEmpty ||
+        refresh is! String ||
+        refresh.isEmpty) {
+      throw const ApiFailure(
+        0,
+        'INVALID_RESPONSE',
+        'Invalid mobile token response.',
+      );
     }
     _accessToken = access;
     _refreshToken = refresh;
     final expires = (values['expiresIn'] as num?)?.toInt() ?? 600;
-    _accessExpiry = DateTime.now().add(Duration(seconds: expires > 60 ? expires - 30 : expires));
+    _accessExpiry = DateTime.now().add(
+      Duration(seconds: expires > 60 ? expires - 30 : expires),
+    );
     await _secure.write(key: 'sme.mobile.refresh', value: refresh);
   }
 
   Future<void> _renew() async {
     final token = _refreshToken;
-    if (token == null) throw const ApiFailure(401, 'AUTH_SESSION_EXPIRED', 'Session expired.');
+    if (token == null)
+      throw const ApiFailure(401, 'AUTH_SESSION_EXPIRED', 'Session expired.');
     try {
       final result = await _request(
-        'POST', '/auth/refresh',
-        auth: false, authorization: 'Bearer ' + token,
+        'POST',
+        '/auth/refresh',
+        auth: false,
+        authorization: 'Bearer ' + token,
       );
       await _adoptTokens(result.data);
     } on ApiFailure catch (failure) {
@@ -209,19 +235,24 @@ class ApiClient extends ChangeNotifier {
   Future<ApiResult> get(String path, {Map<String, String>? query}) =>
       _request('GET', path, query: query);
 
-  Future<ApiResult> post(String path, Map<String, dynamic> body,
-      {Map<String, String>? headers}) =>
-      _request('POST', path, body: body, headers: headers);
+  Future<ApiResult> post(
+    String path,
+    Map<String, dynamic> body, {
+    Map<String, String>? headers,
+  }) => _request('POST', path, body: body, headers: headers);
 
-  Future<ApiResult> patch(String path, Map<String, dynamic> body,
-      {Map<String, String>? headers}) =>
-      _request('PATCH', path, body: body, headers: headers);
+  Future<ApiResult> patch(
+    String path,
+    Map<String, dynamic> body, {
+    Map<String, String>? headers,
+  }) => _request('PATCH', path, body: body, headers: headers);
 
   Future<ApiResult> delete(String path, {Map<String, String>? headers}) =>
       _request('DELETE', path, headers: headers);
 
   Future<ApiResult> _request(
-    String method, String path, {
+    String method,
+    String path, {
     Map<String, String>? query,
     Map<String, dynamic>? body,
     Map<String, String>? headers,
@@ -229,13 +260,15 @@ class ApiClient extends ChangeNotifier {
     String? authorization,
     bool allowRetry = true,
   }) async {
-    if (auth && _refreshToken != null &&
+    if (auth &&
+        _refreshToken != null &&
         (_accessToken == null ||
-          (_accessExpiry != null && DateTime.now().isAfter(_accessExpiry!)))) {
+            (_accessExpiry != null &&
+                DateTime.now().isAfter(_accessExpiry!)))) {
       await _refreshOnce();
     }
-    final uri = AppConfig.baseUri.replace(
-      path: AppConfig.baseUri.path.replaceFirst(RegExp(r'/$'), '') + path,
+    final uri = baseUri.replace(
+      path: baseUri.path.replaceFirst(RegExp(r'/$'), '') + path,
       queryParameters: query?.isEmpty == true ? null : query,
     );
     final requestHeaders = <String, String>{
@@ -243,7 +276,8 @@ class ApiClient extends ChangeNotifier {
       'X-Auth-Transport': 'mobile',
       if (body != null) 'Content-Type': 'application/json',
       if (authorization != null) 'Authorization': authorization,
-      if (auth && _accessToken != null) 'Authorization': 'Bearer ' + _accessToken!,
+      if (auth && _accessToken != null)
+        'Authorization': 'Bearer ' + _accessToken!,
       ...?headers,
     };
     http.Response response;
@@ -252,55 +286,98 @@ class ApiClient extends ChangeNotifier {
         ..followRedirects = false
         ..headers.addAll(requestHeaders);
       if (body != null) request.body = jsonEncode(body);
-      final streamed = await _http.send(request).timeout(const Duration(seconds: 25));
+      final streamed = await _http
+          .send(request)
+          .timeout(const Duration(seconds: 25));
       response = await http.Response.fromStream(streamed)
           .timeout(const Duration(seconds: 45));
     } on TimeoutException {
-      throw const ApiFailure(0, 'NETWORK_TIMEOUT', 'Request timed out. Try again.');
+      throw const ApiFailure(
+        0,
+        'NETWORK_TIMEOUT',
+        'Request timed out. Try again.',
+      );
     } on SocketException {
-      throw const ApiFailure(0, 'NETWORK_UNAVAILABLE', 'Cannot reach Core API.');
+      throw const ApiFailure(
+        0,
+        'NETWORK_UNAVAILABLE',
+        'Cannot reach Core API.',
+      );
     } on http.ClientException {
       throw const ApiFailure(0, 'NETWORK_ERROR', 'Network request failed.');
     }
-    if (auth && response.statusCode == 401 && allowRetry && _refreshToken != null) {
+    if (auth &&
+        response.statusCode == 401 &&
+        allowRetry &&
+        _refreshToken != null) {
       await _refreshOnce();
-      return _request(method, path, query: query, body: body, headers: headers,
-          allowRetry: false);
+      return _request(
+        method,
+        path,
+        query: query,
+        body: body,
+        headers: headers,
+        allowRetry: false,
+      );
     }
     if (response.statusCode >= 300 && response.statusCode < 400) {
-      throw const ApiFailure(0, 'UNEXPECTED_REDIRECT',
-          'API attempted an unexpected redirect.');
+      throw const ApiFailure(
+        0,
+        'UNEXPECTED_REDIRECT',
+        'API attempted an unexpected redirect.',
+      );
     }
     if (auth && response.statusCode == 401 && !allowRetry) {
       await _forget();
-      throw const ApiFailure(401, 'AUTH_SESSION_EXPIRED',
-          'Phiên đăng nhập đã hết hạn. Hãy đăng nhập lại.');
+      throw const ApiFailure(
+        401,
+        'AUTH_SESSION_EXPIRED',
+        'Phiên đăng nhập đã hết hạn. Hãy đăng nhập lại.',
+      );
     }
     dynamic envelope;
     try {
       envelope = jsonDecode(utf8.decode(response.bodyBytes));
     } catch (_) {
-      throw ApiFailure(response.statusCode, 'INVALID_RESPONSE',
-          'Server returned a non-JSON response.');
+      throw ApiFailure(
+        response.statusCode,
+        'INVALID_RESPONSE',
+        'Server returned a non-JSON response.',
+      );
     }
     final result = objectOf(envelope);
-    if (response.statusCode < 200 || response.statusCode >= 300 ||
+    if (response.statusCode < 200 ||
+        response.statusCode >= 300 ||
         result['success'] != true) {
-      throw ApiFailure(response.statusCode,
-          (result['code'] ?? 'API_ERROR').toString(),
-          (result['message'] ?? 'The operation could not be completed.').toString());
+      throw ApiFailure(
+        response.statusCode,
+        (result['code'] ?? 'API_ERROR').toString(),
+        (result['message'] ?? 'The operation could not be completed.')
+            .toString(),
+      );
     }
-    return ApiResult(result['data'], objectOf(result['meta']),
-        response.headers['etag']);
+    return ApiResult(
+      result['data'],
+      objectOf(result['meta']),
+      response.headers['etag'],
+    );
   }
 
   /// A signed upload capability is not an API bearer endpoint. Never attach
   /// session tokens, cookies or extra headers to object-storage requests.
-  Future<void> uploadSigned(String signedUrl, File file, String contentType,
-      {void Function(int sent, int total)? onProgress}) async {
+  Future<void> uploadSigned(
+    String signedUrl,
+    File file,
+    String contentType, {
+    void Function(int sent, int total)? onProgress,
+  }) async {
     final uri = Uri.parse(signedUrl);
     if (uri.scheme != 'https' && !(kDebugMode && uri.scheme == 'http')) {
-      throw const ApiFailure(0, 'INSECURE_UPLOAD', 'Upload URL must use HTTPS.');
+      throw const ApiFailure(
+        0,
+        'INSECURE_UPLOAD',
+        'Upload URL must use HTTPS.',
+      );
     }
     final length = await file.length();
     final request = http.StreamedRequest('PUT', uri)
@@ -310,25 +387,40 @@ class ApiClient extends ChangeNotifier {
     try {
       final future = _http.send(request);
       var sent = 0;
-      await request.sink.addStream(file.openRead().map((chunk) {
-        sent += chunk.length;
-        onProgress?.call(sent, length);
-        return chunk;
-      }));
+      await request.sink.addStream(
+        file.openRead().map((chunk) {
+          sent += chunk.length;
+          onProgress?.call(sent, length);
+          return chunk;
+        }),
+      );
       await request.sink.close();
       final response = await future.timeout(const Duration(minutes: 10));
       if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw ApiFailure(response.statusCode, 'UPLOAD_FAILED', 'Audio upload failed.');
+        throw ApiFailure(
+          response.statusCode,
+          'UPLOAD_FAILED',
+          'Audio upload failed.',
+        );
       }
       await response.stream.drain<void>();
     } on SocketException {
-      throw const ApiFailure(0, 'UPLOAD_NETWORK_ERROR', 'Audio upload connection lost.');
+      throw const ApiFailure(
+        0,
+        'UPLOAD_NETWORK_ERROR',
+        'Audio upload connection lost.',
+      );
     }
   }
 
   @override
   void dispose() {
-    _http.close();
+    // The application composition root owns and closes the shared client.
+    _disposed = true;
     super.dispose();
+  }
+
+  void _notifyListeners() {
+    if (!_disposed) notifyListeners();
   }
 }

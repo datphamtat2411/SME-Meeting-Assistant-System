@@ -21,7 +21,9 @@ class _ProfilePageState extends State<ProfilePage> {
 
   @override
   void initState() { super.initState(); reload(); }
-  void reload() => setState(() => profile = widget.api.get('/me/profile'));
+  void reload() => setState(() {
+    profile = widget.api.get('/me/profile');
+  });
 
   Future<void> editName(ApiResult current) async {
     final name = TextEditingController(

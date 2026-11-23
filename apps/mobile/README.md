@@ -30,12 +30,13 @@ fvm flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8080/api/v1
   configuration. It never runs `flutter create` or overwrites native source.
 - Use `python3 tool/validate_native_config.py` for the focused Android
   configuration check.
-- The default URL is `http://10.0.2.2:8080/api/v1` for an Android emulator in **debug builds only**. Replace it with your machine's reachable LAN IP when testing on a real device; use HTTPS whenever possible.
+- There is no implicit API URL. `API_BASE_URL` must be supplied for every run. `http://10.0.2.2:8080/api/v1` is an allowed **debug-only** value for an Android emulator; replace it with your machine's reachable private LAN IP when testing on a real device, or use HTTPS.
 - Android `RECORD_AUDIO` and `INTERNET` permissions are committed in the main manifest. Cleartext HTTP is enabled only by the debug manifest; release has no unrestricted cleartext exception.
 - The iOS project and source remain intact for future support, but iOS
   development, builds, tests, and validation are deferred unless explicitly
   requested.
 - Release builds require an explicit **HTTPS** `API_BASE_URL`. Backend must enable `app.auth.transport.enabled` and expose the relevant modules.
+- Profile and release builds reject HTTP. Debug HTTP is restricted to loopback, Android emulator host access, and private local-network addresses.
 - `fvm flutter analyze lib` / `fvm flutter build apk --debug` verify source and platform compilation after setup. GitHub Actions publishes a debug APK artifact from each successful CI run. A debug APK is not release-signing or store-readiness evidence.
 
 ### Android release signing
