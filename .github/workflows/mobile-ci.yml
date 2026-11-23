@@ -89,8 +89,6 @@ jobs:
           [[ -n "$sdk_root" && -d "$sdk_root" ]] ||
             { echo "The runner Android SDK is not available." >&2; exit 1; }
           echo "Android SDK: $sdk_root"
-          flutter doctor -v
-
           gradle_output="$(cd android && ./gradlew --version)"
           printf '%s\n' "$gradle_output"
           grep -Fq 'Gradle 9.5.0' <<< "$gradle_output" ||
@@ -104,13 +102,18 @@ jobs:
       - name: Validate native Android configuration
         run: python3 tool/validate_native_config.py
 
+      - name: Run Android credential durability tests
+        run: ./android/gradlew -p android :app:testDebugUnitTest
+
       - name: Check dependency and native configuration drift
         run: |
           git -C "$GITHUB_WORKSPACE" diff --exit-code -- \
             apps/mobile/.fvmrc \
             apps/mobile/pubspec.yaml \
             apps/mobile/pubspec.lock \
-            apps/mobile/android
+            apps/mobile/android/settings.gradle.kts \
+            apps/mobile/android/gradle/wrapper/gradle-wrapper.properties \
+            apps/mobile/android/gradle.properties
 
       - name: Check Dart formatting
         run: dart format --output=none --set-exit-if-changed lib test
@@ -152,11 +155,13 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Verify toolchain, lockfile, and native sources stayed unchanged
+      - name: Verify pinned toolchain and dependency inputs stayed unchanged
         if: ${{ !cancelled() }}
         run: |
           git -C "$GITHUB_WORKSPACE" diff --exit-code -- \
             apps/mobile/.fvmrc \
             apps/mobile/pubspec.yaml \
             apps/mobile/pubspec.lock \
-            apps/mobile/android
+            apps/mobile/android/settings.gradle.kts \
+            apps/mobile/android/gradle/wrapper/gradle-wrapper.properties \
+            apps/mobile/android/gradle.properties

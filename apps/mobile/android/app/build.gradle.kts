@@ -35,6 +35,10 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+dependencies {
+    testImplementation("junit:junit:4.13.2")
+}
+
 android {
     namespace = "vn.sme.meetingassistant.sme_meeting_assistant"
     compileSdk = flutter.compileSdkVersion

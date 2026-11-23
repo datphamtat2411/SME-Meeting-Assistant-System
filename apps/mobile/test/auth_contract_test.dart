@@ -209,11 +209,22 @@ void main() {
         ApiFailure.invalidResponseCode,
         'Malformed response.',
       );
-      const temporary = ApiFailure(
+      const network = ApiFailure(
         0,
         'NETWORK_UNAVAILABLE',
         'Cannot reach server.',
         isTransportFailure: true,
+      );
+      const timeout = ApiFailure(
+        0,
+        'NETWORK_TIMEOUT',
+        'The request timed out.',
+        isTransportFailure: true,
+      );
+      const temporaryBackend = ApiFailure(
+        503,
+        'SERVICE_UNAVAILABLE',
+        'Try again later.',
       );
 
       expect(
@@ -237,7 +248,15 @@ void main() {
         AuthFailureCategory.invalidResponse,
       );
       expect(
-        classifier.classify(temporary, AuthEndpoint.refresh),
+        classifier.classify(network, AuthEndpoint.refresh),
+        AuthFailureCategory.networkFailure,
+      );
+      expect(
+        classifier.classify(timeout, AuthEndpoint.refresh),
+        AuthFailureCategory.requestTimeout,
+      );
+      expect(
+        classifier.classify(temporaryBackend, AuthEndpoint.refresh),
         AuthFailureCategory.temporaryServiceFailure,
       );
       expect(rateLimited.requestId, 'rate-request-id');

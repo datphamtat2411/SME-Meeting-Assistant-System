@@ -75,7 +75,11 @@ class _AuthPageState extends State<AuthPage> {
           }
       }
     } catch (error) {
-      if (mounted) showFailure(context, error);
+      if (mounted &&
+          (mode != _AuthMode.login ||
+              widget.api.sessionState.failure == null)) {
+        showFailure(context, error);
+      }
     } finally {
       if (mounted) setState(() => busy = false);
     }
@@ -92,15 +96,9 @@ class _AuthPageState extends State<AuthPage> {
     final login = mode == _AuthMode.login;
     final recovery = mode == _AuthMode.recovery;
     final sessionFailure = widget.api.sessionState.failure;
-    final reauthenticationMessage = switch (sessionFailure?.machineCode) {
-      'LEGACY_CREDENTIAL_RETIRED' =>
-        'Vui lòng đăng nhập lại cho máy chủ đang được cấu hình.',
-      'REFRESH_ROTATION_PENDING' ||
-      'STORED_CREDENTIAL_UNUSABLE' ||
-      'STORED_CREDENTIAL_UNSAFE' ||
-      'REFRESH_ROTATION_OUTCOME_UNKNOWN' => sessionFailure?.message ?? 'Phiên đã lưu không thể được sử dụng an toàn. Vui lòng đăng nhập lại.',
-      _ => 'Phiên đăng nhập đã hết hiệu lực. Vui lòng đăng nhập lại.',
-    };
+    final reauthenticationMessage =
+        sessionFailure?.message ??
+        'Phiên đăng nhập đã hết hiệu lực. Vui lòng đăng nhập lại.';
     final title = switch (mode) {
       _AuthMode.login => 'Đăng nhập hệ thống',
       _AuthMode.recovery => 'Quên mật khẩu',
@@ -148,6 +146,18 @@ class _AuthPageState extends State<AuthPage> {
                       ),
                     ),
                     const SizedBox(height: 12),
+                  ],
+                  if (login &&
+                      sessionFailure != null &&
+                      widget.api.sessionState.phase !=
+                          AuthSessionPhase.reauthenticationRequired) ...[
+                    ContentCard(
+                      child: Text(
+                        _loginFailureMessage(widget.api.sessionState),
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
                   ],
                   ContentCard(
                     child: Form(
@@ -280,5 +290,23 @@ class _AuthPageState extends State<AuthPage> {
         ),
       ),
     );
+  }
+
+  String _loginFailureMessage(AuthSessionState session) {
+    final failure = session.failure!;
+    if (failure.category != AuthFailureCategory.rateLimited) {
+      return failure.message;
+    }
+    final retryNotBefore = session.retryNotBefore;
+    final remaining = retryNotBefore?.difference(DateTime.now());
+    if (remaining != null && remaining > Duration.zero) {
+      final seconds =
+          remaining.inSeconds + (remaining.inMilliseconds % 1000 == 0 ? 0 : 1);
+      return '${failure.message} Vui lòng chờ ít nhất $seconds giây trước khi thử lại.';
+    }
+    final retryAfter = failure.retryAfter;
+    return retryAfter == null
+        ? failure.message
+        : '${failure.message} Thời hạn do máy chủ cung cấp: $retryAfter.';
   }
 }

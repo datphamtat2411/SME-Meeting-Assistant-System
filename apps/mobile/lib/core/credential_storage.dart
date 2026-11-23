@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 const FlutterSecureStorage _platformCredentialStorage = FlutterSecureStorage(
@@ -21,12 +23,55 @@ abstract interface class CredentialStorage {
   Future<void> write({required String key, required String value});
 
   Future<void> delete({required String key});
+
+  /// Confirms that prior secure-storage writes have reached durable storage.
+  Future<void> confirmDurable();
+}
+
+abstract interface class CredentialDurability {
+  Future<void> confirmDurable();
+}
+
+/// Android confirmation for the encrypted SharedPreferences files used by the
+/// pinned flutter_secure_storage implementation.
+class AndroidCredentialDurability implements CredentialDurability {
+  const AndroidCredentialDurability({this.channel = _channel});
+
+  static const MethodChannel _channel = MethodChannel(
+    'vn.sme.meetingassistant.sme_meeting_assistant/credential_durability',
+  );
+  static const String methodName = 'confirmSecureStorageDurability';
+
+  final MethodChannel channel;
+
+  @override
+  Future<void> confirmDurable() async {
+    if (defaultTargetPlatform != TargetPlatform.android) return;
+    try {
+      await channel.invokeMethod<void>(methodName);
+    } on PlatformException {
+      throw const CredentialDurabilityException();
+    } on MissingPluginException {
+      throw const CredentialDurabilityException();
+    }
+  }
+}
+
+class CredentialDurabilityException implements Exception {
+  const CredentialDurabilityException();
+
+  @override
+  String toString() => 'Secure credential durability could not be confirmed.';
 }
 
 class SecureCredentialStorage implements CredentialStorage {
   final FlutterSecureStorage storage;
+  final CredentialDurability durability;
 
-  const SecureCredentialStorage({this.storage = _platformCredentialStorage});
+  const SecureCredentialStorage({
+    this.storage = _platformCredentialStorage,
+    this.durability = const AndroidCredentialDurability(),
+  });
 
   @override
   Future<String?> read({required String key}) => storage.read(key: key);
@@ -37,6 +82,9 @@ class SecureCredentialStorage implements CredentialStorage {
 
   @override
   Future<void> delete({required String key}) => storage.delete(key: key);
+
+  @override
+  Future<void> confirmDurable() => durability.confirmDurable();
 }
 
 class InMemoryCredentialStorage implements CredentialStorage {
@@ -54,4 +102,7 @@ class InMemoryCredentialStorage implements CredentialStorage {
   Future<void> delete({required String key}) async {
     _values.remove(key);
   }
+
+  @override
+  Future<void> confirmDurable() async {}
 }

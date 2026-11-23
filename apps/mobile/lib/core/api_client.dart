@@ -94,7 +94,9 @@ class ApiClient extends ChangeNotifier {
     AuthSessionPhase.recoverableFailure ||
     AuthSessionPhase.reauthenticationRequired => true,
   };
-  bool get hasRecoverableSession => sessionState.canRetrySessionRestore;
+  bool get hasRecoverableSession =>
+      sessionState.canRetrySessionRestore ||
+      sessionState.canRetryIdentityVerification;
   String? get sessionRestoreError => sessionState.sessionRestoreError;
   Map<String, dynamic>? get identity =>
       sessionState.identity?.toCompatibilityMap();
@@ -107,6 +109,9 @@ class ApiClient extends ChangeNotifier {
 
   Future<void> retrySessionRestore() =>
       sessionCoordinator.retrySessionRestore();
+
+  Future<void> retryIdentityVerification() =>
+      sessionCoordinator.retryIdentityVerification();
 
   Future<void> discardLocalSession() =>
       sessionCoordinator.discardLocalSession();

@@ -24,16 +24,22 @@ class AuthSessionState {
     this.identity,
     this.failure,
     this.canRetrySessionRestore = false,
+    this.canRetryIdentityVerification = false,
     this.canRetryCredentialStorage = false,
+    this.retryNotBefore,
   }) {
     if ((phase == AuthSessionPhase.authenticated) != (identity != null) ||
         identity != null && !identity!.isEligibleMobileIdentity ||
         canRetrySessionRestore &&
             (phase != AuthSessionPhase.recoverableFailure ||
                 failure?.category == AuthFailureCategory.credentialStorage) ||
+        canRetryIdentityVerification &&
+            phase != AuthSessionPhase.recoverableFailure ||
         canRetryCredentialStorage &&
             (phase != AuthSessionPhase.recoverableFailure ||
-                failure?.category != AuthFailureCategory.credentialStorage)) {
+                failure?.category != AuthFailureCategory.credentialStorage) ||
+        retryNotBefore != null &&
+            failure?.category != AuthFailureCategory.rateLimited) {
       throw StateError('Invalid authentication session state.');
     }
   }
@@ -42,12 +48,16 @@ class AuthSessionState {
   final AuthIdentity? identity;
   final AuthSessionFailure? failure;
   final bool canRetrySessionRestore;
+  final bool canRetryIdentityVerification;
   final bool canRetryCredentialStorage;
+  final DateTime? retryNotBefore;
 
   bool get isAuthenticated => phase == AuthSessionPhase.authenticated;
   bool get isInitializing => phase == AuthSessionPhase.initializing;
   String? get sessionRestoreError =>
-      canRetrySessionRestore ? failure?.message : null;
+      canRetrySessionRestore || canRetryIdentityVerification
+      ? failure?.message
+      : null;
 }
 
 /// The sole owner of session state and all in-memory Mobile credentials.
@@ -109,7 +119,7 @@ class AuthSessionCoordinator extends ChangeNotifier {
       case TokenStoreCredentialState.legacyRetired:
         _requireReauthenticationForUnsafeCredential(
           'LEGACY_CREDENTIAL_RETIRED',
-          'Please sign in again for this API deployment.',
+          'Thông tin đăng nhập cũ đã được gỡ bỏ. Vui lòng đăng nhập lại cho máy chủ hiện tại.',
         );
       case TokenStoreCredentialState.committed:
         _refreshToken = stored.refreshToken;
@@ -127,7 +137,7 @@ class AuthSessionCoordinator extends ChangeNotifier {
       case TokenStoreCredentialState.rotationPending:
         _requireReauthenticationForUnsafeCredential(
           'REFRESH_ROTATION_PENDING',
-          'The saved session cannot be safely reused. Please sign in again.',
+          'Phiên đã bị gián đoạn khi gia hạn nên không thể dùng lại an toàn. Vui lòng đăng nhập lại.',
         );
       case TokenStoreCredentialState.malformed ||
           TokenStoreCredentialState.unsupportedVersion ||
@@ -135,7 +145,7 @@ class AuthSessionCoordinator extends ChangeNotifier {
           TokenStoreCredentialState.invalidCredential:
         _requireReauthenticationForUnsafeCredential(
           'STORED_CREDENTIAL_UNUSABLE',
-          'The saved session cannot be safely used. Please sign in again.',
+          'Phiên đã lưu không thể được sử dụng an toàn. Vui lòng đăng nhập lại.',
         );
     }
   }
@@ -163,6 +173,10 @@ class AuthSessionCoordinator extends ChangeNotifier {
   }
 
   Future<void> retrySessionRestore() async {
+    if (_state.canRetryIdentityVerification) {
+      await retryIdentityVerification();
+      return;
+    }
     if (_state.phase != AuthSessionPhase.recoverableFailure ||
         (!_state.canRetrySessionRestore && !_state.canRetryCredentialStorage)) {
       throw StateError('There is no recoverable session to restore.');
@@ -200,7 +214,7 @@ class AuthSessionCoordinator extends ChangeNotifier {
                     failure ??
                     _classifier.unsafeStoredCredential(
                       'SESSION_INVALIDATED',
-                      'Please sign in again.',
+                      'Phiên đăng nhập đã hết hiệu lực. Vui lòng đăng nhập lại.',
                     ),
               ),
             );
@@ -218,6 +232,7 @@ class AuthSessionCoordinator extends ChangeNotifier {
     if (!_state.canRetrySessionRestore || _refreshToken == null) {
       throw StateError('There is no safely reusable session to restore.');
     }
+    _ensureRetryWindowOpen();
     _setState(AuthSessionState._(phase: AuthSessionPhase.initializing));
     try {
       await _restoreStoredSession();
@@ -232,9 +247,31 @@ class AuthSessionCoordinator extends ChangeNotifier {
     }
   }
 
+  Future<void> retryIdentityVerification() async {
+    if (_state.phase != AuthSessionPhase.recoverableFailure ||
+        !_state.canRetryIdentityVerification ||
+        _accessToken == null) {
+      throw StateError('There is no identity verification to retry.');
+    }
+    _ensureRetryWindowOpen();
+    _setState(AuthSessionState._(phase: AuthSessionPhase.verifyingIdentity));
+    try {
+      final identity = await _retrieveIdentity();
+      _setState(
+        AuthSessionState._(
+          phase: AuthSessionPhase.authenticated,
+          identity: identity,
+        ),
+      );
+    } catch (error) {
+      await _handleRestoreFailure(error, AuthEndpoint.identity);
+    }
+  }
+
   Future<void> discardLocalSession() async {
     if (_state.phase != AuthSessionPhase.recoverableFailure ||
-        !_state.canRetrySessionRestore) {
+        (!_state.canRetrySessionRestore &&
+            !_state.canRetryIdentityVerification)) {
       throw StateError('There is no recoverable session to discard.');
     }
     _setState(AuthSessionState._(phase: AuthSessionPhase.signingOut));
@@ -254,6 +291,7 @@ class AuthSessionCoordinator extends ChangeNotifier {
 
   Future<void> signIn(String email, String password) async {
     _ensureCanSignIn();
+    _ensureRetryWindowOpen();
     _setState(AuthSessionState._(phase: AuthSessionPhase.signingIn));
     try {
       final tokens = await _repository.login(email, password);
@@ -447,9 +485,11 @@ class AuthSessionCoordinator extends ChangeNotifier {
               );
             } else if (_refreshToken == null) {
               _requireReauthenticationWithoutDeleting(
-                failure.category == AuthFailureCategory.unsafeCredential
+                failure.category == AuthFailureCategory.unsafeCredential ||
+                        failure.category ==
+                            AuthFailureCategory.rotationOutcomeUnknown
                     ? failure
-                    : _classifier.rotationOutcomeUnknown(),
+                    : _classifier.rotationOutcomeUnknown(cause: failure),
               );
             }
             Error.throwWithStackTrace(error, stackTrace);
@@ -492,11 +532,24 @@ class AuthSessionCoordinator extends ChangeNotifier {
         }
       } else {
         _clearMemoryCredentials();
+        if (_classifier.classify(failure, AuthEndpoint.refresh) ==
+            AuthFailureCategory.sessionInvalidated) {
+          rethrow;
+        }
+        throw AuthSessionException(
+          _classifier.rotationOutcomeUnknown(
+            cause: _failureFor(failure, AuthEndpoint.refresh),
+          ),
+        );
       }
       rethrow;
-    } catch (_) {
+    } catch (error) {
       _clearMemoryCredentials();
-      rethrow;
+      throw AuthSessionException(
+        _classifier.rotationOutcomeUnknown(
+          cause: _failureFor(error, AuthEndpoint.refresh),
+        ),
+      );
     }
 
     if (tokens.refreshToken == refreshToken) {
@@ -548,11 +601,16 @@ class AuthSessionCoordinator extends ChangeNotifier {
       );
       return;
     }
+    if (failure.category == AuthFailureCategory.rotationOutcomeUnknown ||
+        failure.category == AuthFailureCategory.unsafeCredential) {
+      _requireReauthenticationWithoutDeleting(failure);
+      return;
+    }
     if (endpoint == AuthEndpoint.refresh && _refreshToken == null) {
       _requireReauthenticationWithoutDeleting(
         failure.category == AuthFailureCategory.unsafeCredential
             ? failure
-            : _classifier.rotationOutcomeUnknown(),
+            : _classifier.rotationOutcomeUnknown(cause: failure),
       );
       return;
     }
@@ -560,7 +618,11 @@ class AuthSessionCoordinator extends ChangeNotifier {
       AuthSessionState._(
         phase: AuthSessionPhase.recoverableFailure,
         failure: failure,
-        canRetrySessionRestore: _refreshToken != null,
+        canRetrySessionRestore:
+            endpoint == AuthEndpoint.refresh && _refreshToken != null,
+        canRetryIdentityVerification:
+            endpoint == AuthEndpoint.identity && _accessToken != null,
+        retryNotBefore: _retryDeadline(failure),
       ),
     );
   }
@@ -579,6 +641,7 @@ class AuthSessionCoordinator extends ChangeNotifier {
         AuthSessionState._(
           phase: AuthSessionPhase.unauthenticated,
           failure: failure,
+          retryNotBefore: _retryDeadline(failure),
         ),
       );
       return;
@@ -588,6 +651,7 @@ class AuthSessionCoordinator extends ChangeNotifier {
         phase: AuthSessionPhase.recoverableFailure,
         failure: failure,
         canRetrySessionRestore: _refreshToken != null,
+        retryNotBefore: _retryDeadline(failure),
       ),
     );
   }
@@ -597,7 +661,7 @@ class AuthSessionCoordinator extends ChangeNotifier {
     if (error is TokenStoreStateException) {
       return _classifier.unsafeStoredCredential(
         'STORED_CREDENTIAL_UNSAFE',
-        'The saved session cannot be safely used. Please sign in again.',
+        'Phiên đã lưu không thể được sử dụng an toàn. Vui lòng đăng nhập lại.',
       );
     }
     if (error is ApiFailure) {
@@ -608,7 +672,7 @@ class AuthSessionCoordinator extends ChangeNotifier {
     }
     return AuthSessionFailure._(
       category: AuthFailureCategory.unexpected,
-      message: 'Authentication could not be completed.',
+      message: 'Không thể hoàn tất thao tác xác thực. Vui lòng thử lại.',
       code: 'UNEXPECTED_AUTH_FAILURE',
     );
   }
@@ -663,6 +727,21 @@ class AuthSessionCoordinator extends ChangeNotifier {
         failure: _classifier.unsafeStoredCredential(code, message),
       ),
     );
+  }
+
+  DateTime? _retryDeadline(AuthSessionFailure failure) {
+    if (failure.category != AuthFailureCategory.rateLimited) return null;
+    final now = _now();
+    final delay = failure.apiFailure?.retryAfterDuration(now: now);
+    return delay == null ? null : now.add(delay);
+  }
+
+  void _ensureRetryWindowOpen() {
+    final retryNotBefore = _state.retryNotBefore;
+    if (retryNotBefore != null && _now().isBefore(retryNotBefore)) {
+      final failure = _state.failure;
+      if (failure != null) throw AuthSessionException(failure);
+    }
   }
 
   void _setStorageFailure(

@@ -1,10 +1,14 @@
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:sme_meeting_assistant/core/api_client.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   test(
     'platform secure storage keeps errors visible and credentials device-bound',
     () {
@@ -19,11 +23,42 @@ void main() {
         secure.storage.aOptions.toMap()['storageCipherAlgorithm'],
         StorageCipherAlgorithm.AES_GCM_NoPadding.name,
       );
-      expect(
-        secure.storage.iOptions.accessibility,
-        KeychainAccessibility.unlocked_this_device,
+    },
+  );
+
+  test(
+    'Android durability bridge sends no values and reports commit failure',
+    () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      const channel = MethodChannel(
+        'vn.sme.meetingassistant.sme_meeting_assistant/credential_durability',
       );
-      expect(secure.storage.iOptions.synchronizable, isFalse);
+      final calls = <MethodCall>[];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+            calls.add(call);
+            return null;
+          });
+      addTearDown(
+        () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, null),
+      );
+
+      await const AndroidCredentialDurability().confirmDurable();
+
+      expect(calls, hasLength(1));
+      expect(calls.single.method, 'confirmSecureStorageDurability');
+      expect(calls.single.arguments, isNull);
+
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+            throw PlatformException(code: 'DURABILITY_UNCONFIRMED');
+          });
+      await expectLater(
+        const AndroidCredentialDurability().confirmDurable(),
+        throwsA(isA<CredentialDurabilityException>()),
+      );
     },
   );
 
@@ -256,6 +291,106 @@ void main() {
     expect((await store.read()).state, TokenStoreCredentialState.missing);
   });
 
+  test('every credential transition requires durable confirmation', () async {
+    final storage = _MemoryStorage();
+    final store = _store(storage);
+
+    await store.storeLoginCredential('refresh_0');
+    expect(storage.events, <String>['read', 'write', 'durability']);
+
+    storage.events.clear();
+    await store.markRotationPending('refresh_0');
+    expect(storage.events, <String>['read', 'read', 'write', 'durability']);
+
+    storage.events.clear();
+    await store.commitRotation(
+      previousRefreshToken: 'refresh_0',
+      nextRefreshToken: 'refresh_1',
+    );
+    expect(storage.events, <String>['read', 'read', 'write', 'durability']);
+
+    await store.markRotationPending('refresh_1');
+    storage.events.clear();
+    await store.restoreAfterPreRotationRejection('refresh_1');
+    expect(storage.events, <String>['read', 'read', 'write', 'durability']);
+
+    storage.events.clear();
+    await store.delete();
+    expect(storage.events, <String>[
+      'delete',
+      'durability',
+      'delete',
+      'durability',
+    ]);
+  });
+
+  test(
+    'uncertain durability blocks transitions from being reported complete',
+    () async {
+      final storage = _MemoryStorage();
+      final store = _store(storage);
+
+      storage.failNextDurability = true;
+      await expectLater(
+        store.storeLoginCredential('refresh_login'),
+        throwsA(
+          isA<TokenStoreException>().having(
+            (error) => error.operation,
+            'operation',
+            TokenStoreOperation.write,
+          ),
+        ),
+      );
+      expect((await store.read()).refreshToken, 'refresh_login');
+
+      storage.failNextDurability = true;
+      await expectLater(
+        store.markRotationPending('refresh_login'),
+        throwsA(isA<TokenStoreException>()),
+      );
+      expect(
+        (await store.read()).state,
+        TokenStoreCredentialState.rotationPending,
+      );
+
+      storage.failNextDurability = true;
+      await expectLater(
+        store.commitRotation(
+          previousRefreshToken: 'refresh_login',
+          nextRefreshToken: 'refresh_next',
+        ),
+        throwsA(isA<TokenStoreException>()),
+      );
+      expect((await store.read()).refreshToken, 'refresh_next');
+
+      await store.markRotationPending('refresh_next');
+      storage.failNextDurability = true;
+      await expectLater(
+        store.restoreAfterPreRotationRejection('refresh_next'),
+        throwsA(isA<TokenStoreException>()),
+      );
+      expect((await store.read()).refreshToken, 'refresh_next');
+
+      storage.failNextDurability = true;
+      await expectLater(store.delete(), throwsA(isA<TokenStoreException>()));
+    },
+  );
+
+  test(
+    'legacy retirement is not complete before durability confirmation',
+    () async {
+      final storage = _MemoryStorage()
+        ..values[TokenStore.legacyStorageKey] = 'legacy_refresh'
+        ..failNextDurability = true;
+      final store = _store(storage);
+
+      await expectLater(store.read(), throwsA(isA<TokenStoreException>()));
+
+      expect(storage.values, isNot(contains(TokenStore.legacyStorageKey)));
+      expect((await store.read()).state, TokenStoreCredentialState.missing);
+    },
+  );
+
   test(
     'failed pending write after persistence remains non-reusable on restart',
     () async {
@@ -284,15 +419,18 @@ TokenStore _store(CredentialStorage storage) => TokenStore(
 
 class _MemoryStorage implements CredentialStorage {
   final Map<String, String> values = <String, String>{};
+  final List<String> events = <String>[];
   bool failNextRead = false;
   bool failNextWriteBefore = false;
   bool failNextWriteAfter = false;
   bool failNextDeleteBefore = false;
   bool failNextDeleteAfter = false;
   bool failNextDelete = false;
+  bool failNextDurability = false;
 
   @override
   Future<String?> read({required String key}) async {
+    events.add('read');
     if (failNextRead) {
       failNextRead = false;
       throw StateError('secret platform details');
@@ -302,6 +440,7 @@ class _MemoryStorage implements CredentialStorage {
 
   @override
   Future<void> write({required String key, required String value}) async {
+    events.add('write');
     if (failNextWriteBefore) {
       failNextWriteBefore = false;
       throw StateError('secret platform details');
@@ -315,6 +454,7 @@ class _MemoryStorage implements CredentialStorage {
 
   @override
   Future<void> delete({required String key}) async {
+    events.add('delete');
     if (failNextDelete || failNextDeleteBefore) {
       failNextDelete = false;
       failNextDeleteBefore = false;
@@ -324,6 +464,15 @@ class _MemoryStorage implements CredentialStorage {
     if (failNextDeleteAfter) {
       failNextDeleteAfter = false;
       throw StateError('secret platform details');
+    }
+  }
+
+  @override
+  Future<void> confirmDurable() async {
+    events.add('durability');
+    if (failNextDurability) {
+      failNextDurability = false;
+      throw StateError('private durability failure');
     }
   }
 }

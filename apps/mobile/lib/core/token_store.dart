@@ -135,16 +135,8 @@ class TokenStore {
 
   /// Idempotently removes both deployment-scoped and obsolete legacy records.
   Future<void> delete() async {
-    try {
-      await _storage.delete(key: storageKey);
-    } catch (_) {
-      throw const TokenStoreException(TokenStoreOperation.delete);
-    }
-    try {
-      await _storage.delete(key: legacyStorageKey);
-    } catch (_) {
-      throw const TokenStoreException(TokenStoreOperation.delete);
-    }
+    await _deleteAndConfirm(storageKey);
+    await _deleteAndConfirm(legacyStorageKey);
   }
 
   Future<bool> _retireLegacyCredential() async {
@@ -156,12 +148,17 @@ class TokenStore {
     }
     if (legacy == null) return false;
 
+    await _deleteAndConfirm(legacyStorageKey);
+    return true;
+  }
+
+  Future<void> _deleteAndConfirm(String key) async {
     try {
-      await _storage.delete(key: legacyStorageKey);
+      await _storage.delete(key: key);
+      await _storage.confirmDurable();
     } catch (_) {
       throw const TokenStoreException(TokenStoreOperation.delete);
     }
-    return true;
   }
 
   Future<_ParsedTokenRecord> _readScopedRecordAfterLegacyRetirement() async {
@@ -194,6 +191,7 @@ class TokenStore {
     });
     try {
       await _storage.write(key: storageKey, value: value);
+      await _storage.confirmDurable();
     } catch (_) {
       throw const TokenStoreException(TokenStoreOperation.write);
     }

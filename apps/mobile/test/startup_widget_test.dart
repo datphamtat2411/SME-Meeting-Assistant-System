@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
 
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:sme_meeting_assistant/core/api_client.dart';
@@ -107,9 +109,65 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(harness.api.sessionState.phase, AuthSessionPhase.recoverableFailure);
-    expect(find.text('Không thể khôi phục phiên đăng nhập'), findsOneWidget);
+    expect(find.text('Không thể tiếp tục phiên đăng nhập'), findsOneWidget);
     expect(find.text('Đăng nhập hệ thống'), findsNothing);
     expect(find.text('Thử kết nối lại'), findsOneWidget);
+  });
+
+  testWidgets('temporary identity failure offers a safe verification retry', (
+    tester,
+  ) async {
+    final credentials = InMemoryCredentialStorage();
+    await _writeRefreshCredential(credentials, 'refresh-0');
+    final client = _authClient(identityFailures: 1);
+    final harness = _Harness.create(client, credentials);
+
+    await tester.pumpWidget(
+      MeetingAssistantApp(dependencies: harness.dependencies),
+    );
+    await tester.pumpAndSettle();
+
+    expect(harness.api.sessionState.canRetryIdentityVerification, isTrue);
+    expect(find.textContaining('Không thể xác minh danh tính'), findsOneWidget);
+    expect(find.text('Thử xác minh lại'), findsOneWidget);
+    expect(find.text('Đăng nhập hệ thống'), findsNothing);
+
+    await tester.tap(find.text('Thử xác minh lại'));
+    await tester.pumpAndSettle();
+
+    expect(harness.api.sessionState.isAuthenticated, isTrue);
+    expect(find.text('Tổng quan'), findsOneWidget);
+    expect(
+      client.requests.where(
+        (request) => request.url.path.endsWith('/auth/refresh'),
+      ),
+      hasLength(1),
+    );
+  });
+
+  testWidgets('login rejection displays a localized recoverable error', (
+    tester,
+  ) async {
+    final harness = _Harness.create(
+      _authClient(loginStatus: 401),
+      InMemoryCredentialStorage(),
+    );
+
+    await tester.pumpWidget(
+      MeetingAssistantApp(dependencies: harness.dependencies),
+    );
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byType(TextFormField).at(0),
+      'user@example.test',
+    );
+    await tester.enterText(find.byType(TextFormField).at(1), 'wrong-password');
+    await tester.tap(find.widgetWithText(FilledButton, 'Đăng nhập'));
+    await tester.pumpAndSettle();
+
+    expect(harness.api.sessionState.phase, AuthSessionPhase.unauthenticated);
+    expect(find.text('Email hoặc mật khẩu không chính xác.'), findsOneWidget);
+    expect(find.text('Đăng nhập hệ thống'), findsOneWidget);
   });
 
   testWidgets('routes an invalidated stored session to reauthentication', (
@@ -232,51 +290,91 @@ class _Harness {
 
 RecordingHttpClient _authClient({
   int? refreshStatus,
+  int identityFailures = 0,
+  int? loginStatus,
   Completer<void>? identityRequested,
   Completer<http.StreamedResponse>? identityResponse,
   Completer<void>? logoutRequested,
   Completer<http.StreamedResponse>? logoutResponse,
-}) => RecordingHttpClient((request) async {
-  final path = request.url.path;
-  expect(request.headers['X-Auth-Transport'], 'mobile');
-  if (path.endsWith('/auth/refresh')) {
-    if (refreshStatus != null) {
+}) {
+  return RecordingHttpClient((request) async {
+    final path = request.url.path;
+    expect(request.headers['X-Auth-Transport'], 'mobile');
+    if (path.endsWith('/auth/refresh')) {
+      if (refreshStatus != null) {
+        if (refreshStatus == 429) {
+          return streamedResponse(
+            refreshStatus,
+            body: utf8.encode(
+              jsonEncode(
+                errorEnvelope('RATE_LIMIT_EXCEEDED', 'Try again later.'),
+              ),
+            ),
+            headers: const <String, String>{
+              'content-type': 'application/json',
+              'retry-after': '30',
+            },
+          );
+        }
+        return jsonResponse(
+          refreshStatus,
+          errorEnvelope('RATE_LIMIT_EXCEEDED', 'Try again later.'),
+        );
+      }
+      expect(request.headers['Authorization'], 'Bearer refresh-0');
       return jsonResponse(
-        refreshStatus,
-        errorEnvelope('RATE_LIMIT_EXCEEDED', 'Try again later.'),
+        200,
+        successEnvelope(_tokens('access-1', 'refresh-1')),
       );
     }
-    expect(request.headers['Authorization'], 'Bearer refresh-0');
-    return jsonResponse(200, successEnvelope(_tokens('access-1', 'refresh-1')));
-  }
-  if (path.endsWith('/auth/me')) {
-    expect(
-      request.headers['Authorization'],
-      'Bearer ${_accessToken('access-1')}',
-    );
-    if (identityRequested != null && !identityRequested.isCompleted) {
-      identityRequested.complete();
+    if (path.endsWith('/auth/me')) {
+      expect(
+        request.headers['Authorization'],
+        'Bearer ${_accessToken('access-1')}',
+      );
+      if (identityRequested != null && !identityRequested.isCompleted) {
+        identityRequested.complete();
+      }
+      if (identityResponse != null) return identityResponse.future;
+      if (identityFailures > 0) {
+        identityFailures--;
+        return jsonResponse(
+          503,
+          errorEnvelope('SERVICE_UNAVAILABLE', 'Try again later.'),
+        );
+      }
+      return jsonResponse(200, successEnvelope(_identity()));
     }
-    if (identityResponse != null) return identityResponse.future;
-    return jsonResponse(200, successEnvelope(_identity()));
-  }
-  if (path.endsWith('/auth/login')) {
-    expect(request.headers['Authorization'], isNull);
-    return jsonResponse(200, successEnvelope(_tokens('access-1', 'refresh-1')));
-  }
-  if (path.endsWith('/auth/logout')) {
-    expect(
-      request.headers['Authorization'],
-      'Bearer ${_accessToken('access-1')}',
-    );
-    if (logoutRequested != null && !logoutRequested.isCompleted) {
-      logoutRequested.complete();
+    if (path.endsWith('/auth/login')) {
+      expect(request.headers['Authorization'], isNull);
+      if (loginStatus != null) {
+        return jsonResponse(
+          loginStatus,
+          errorEnvelope(
+            loginStatus == 401 ? 'AUTH_REQUIRED' : 'SERVICE_UNAVAILABLE',
+            'Authentication failed.',
+          ),
+        );
+      }
+      return jsonResponse(
+        200,
+        successEnvelope(_tokens('access-1', 'refresh-1')),
+      );
     }
-    if (logoutResponse != null) return logoutResponse.future;
-    return jsonResponse(200, successEnvelope(null));
-  }
-  return jsonResponse(200, successEnvelope(<String, dynamic>{}));
-});
+    if (path.endsWith('/auth/logout')) {
+      expect(
+        request.headers['Authorization'],
+        'Bearer ${_accessToken('access-1')}',
+      );
+      if (logoutRequested != null && !logoutRequested.isCompleted) {
+        logoutRequested.complete();
+      }
+      if (logoutResponse != null) return logoutResponse.future;
+      return jsonResponse(200, successEnvelope(null));
+    }
+    return jsonResponse(200, successEnvelope(<String, dynamic>{}));
+  });
+}
 
 Map<String, dynamic> _tokens(String access, String refresh) =>
     <String, dynamic>{
@@ -319,4 +417,7 @@ class _FailingReadStorage implements CredentialStorage {
 
   @override
   Future<void> delete({required String key}) async {}
+
+  @override
+  Future<void> confirmDurable() async {}
 }

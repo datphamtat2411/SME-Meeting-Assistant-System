@@ -129,6 +129,158 @@ void main() {
   );
 
   test(
+    'identity verification retry reuses a durably persisted login session',
+    () async {
+      final credentials = InMemoryCredentialStorage();
+      final client = _RecoverableIdentityClient();
+      final api = ApiClient(
+        baseUri: _apiBaseUri,
+        httpClient: client,
+        credentialStorage: credentials,
+      );
+      addTearDown(api.dispose);
+      await api.initialize();
+
+      await expectLater(
+        api.signIn('user@example.test', 'password'),
+        throwsA(
+          isA<ApiFailure>().having((failure) => failure.status, 'status', 503),
+        ),
+      );
+
+      expect(api.sessionState.phase, AuthSessionPhase.recoverableFailure);
+      expect(api.sessionState.canRetryIdentityVerification, isTrue);
+      expect(api.sessionState.canRetrySessionRestore, isFalse);
+      expect(await _readRefreshCredential(credentials), 'refresh-1');
+
+      await api.retryIdentityVerification();
+
+      expect(api.sessionState.isAuthenticated, isTrue);
+      expect(client.paths, <String>[
+        '/api/v1/auth/login',
+        '/api/v1/auth/me',
+        '/api/v1/auth/me',
+      ]);
+      expect(await _readRefreshCredential(credentials), 'refresh-1');
+    },
+  );
+
+  test(
+    'restored credential retries identity without an unnecessary rotation',
+    () async {
+      final credentials = InMemoryCredentialStorage();
+      await _writeRefreshCredential(credentials, 'refresh-0');
+      final client = _RecoverableIdentityClient();
+      final api = ApiClient(
+        baseUri: _apiBaseUri,
+        httpClient: client,
+        credentialStorage: credentials,
+      );
+      addTearDown(api.dispose);
+
+      await api.initialize();
+
+      expect(api.sessionState.canRetryIdentityVerification, isTrue);
+      expect(await _readRefreshCredential(credentials), 'refresh-1');
+      await api.retryIdentityVerification();
+
+      expect(api.sessionState.isAuthenticated, isTrue);
+      expect(client.paths, <String>[
+        '/api/v1/auth/refresh',
+        '/api/v1/auth/me',
+        '/api/v1/auth/me',
+      ]);
+      expect(await _readRefreshCredential(credentials), 'refresh-1');
+    },
+  );
+
+  test('login Retry-After is surfaced and blocks early submissions', () async {
+    var now = DateTime.utc(2026, 11, 23, 12);
+    final client = _RateLimitedLoginClient();
+    final api = ApiClient(
+      baseUri: _apiBaseUri,
+      httpClient: client,
+      credentialStorage: InMemoryCredentialStorage(),
+      now: () => now,
+    );
+    addTearDown(api.dispose);
+    await api.initialize();
+
+    await expectLater(
+      api.signIn('user@example.test', 'password'),
+      throwsA(
+        isA<ApiFailure>().having((failure) => failure.status, 'status', 429),
+      ),
+    );
+    expect(api.sessionState.failure?.retryAfter, '30');
+    expect(
+      api.sessionState.retryNotBefore,
+      now.add(const Duration(seconds: 30)),
+    );
+
+    await expectLater(
+      api.signIn('user@example.test', 'password'),
+      throwsA(
+        isA<AuthSessionException>().having(
+          (error) => error.failure.category,
+          'category',
+          AuthFailureCategory.rateLimited,
+        ),
+      ),
+    );
+    expect(client.loginRequests, 1);
+
+    now = now.add(const Duration(seconds: 30));
+    await api.signIn('user@example.test', 'password');
+    expect(client.loginRequests, 2);
+    expect(api.sessionState.isAuthenticated, isTrue);
+  });
+
+  test(
+    'refresh Retry-After blocks safe restoration until its deadline',
+    () async {
+      var now = DateTime.utc(2026, 11, 23, 12);
+      final credentials = InMemoryCredentialStorage();
+      await _writeRefreshCredential(credentials, 'refresh-0');
+      final client = _RecoverableIdentityClient(
+        identityFailures: 0,
+        rateLimitRefreshes: 1,
+      );
+      final api = ApiClient(
+        baseUri: _apiBaseUri,
+        httpClient: client,
+        credentialStorage: credentials,
+        now: () => now,
+      );
+      addTearDown(api.dispose);
+
+      await api.initialize();
+
+      expect(api.sessionState.canRetrySessionRestore, isTrue);
+      expect(api.sessionState.failure?.retryAfter, '45');
+      expect(
+        api.sessionState.retryNotBefore,
+        now.add(const Duration(seconds: 45)),
+      );
+      await expectLater(
+        api.retrySessionRestore(),
+        throwsA(isA<AuthSessionException>()),
+      );
+      expect(client.paths, <String>['/api/v1/auth/refresh']);
+
+      now = now.add(const Duration(seconds: 45));
+      await api.retrySessionRestore();
+
+      expect(api.sessionState.isAuthenticated, isTrue);
+      expect(client.paths, <String>[
+        '/api/v1/auth/refresh',
+        '/api/v1/auth/refresh',
+        '/api/v1/auth/me',
+      ]);
+    },
+  );
+
+  test(
     'recoverable refresh failures retain credentials and structured errors',
     () async {
       final credentials = InMemoryCredentialStorage();
@@ -502,6 +654,98 @@ void main() {
   });
 }
 
+class _RecoverableIdentityClient extends RecordingHttpClient {
+  _RecoverableIdentityClient({
+    this.identityFailures = 1,
+    this.rateLimitRefreshes = 0,
+  }) : super((_) async => throw StateError('handler initialized below'));
+
+  final List<String> paths = <String>[];
+  int identityFailures;
+  int rateLimitRefreshes;
+  int identityRequests = 0;
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    requests.add(request);
+    final path = request.url.path;
+    paths.add(path);
+    if (path.endsWith('/auth/login')) {
+      return jsonResponse(
+        200,
+        successEnvelope(_tokens(_accessTokenForGeneration(1), 'refresh-1')),
+      );
+    }
+    if (path.endsWith('/auth/refresh')) {
+      expect(request.headers['Authorization'], 'Bearer refresh-0');
+      if (rateLimitRefreshes > 0) {
+        rateLimitRefreshes--;
+        return streamedResponse(
+          429,
+          body: utf8.encode(
+            jsonEncode(errorEnvelope('RATE_LIMIT_EXCEEDED', 'Try later.')),
+          ),
+          headers: const <String, String>{
+            'content-type': 'application/json',
+            'retry-after': '45',
+          },
+        );
+      }
+      return jsonResponse(
+        200,
+        successEnvelope(_tokens(_accessTokenForGeneration(2), 'refresh-1')),
+      );
+    }
+    if (path.endsWith('/auth/me')) {
+      identityRequests++;
+      if (identityFailures > 0) {
+        identityFailures--;
+        return jsonResponse(
+          503,
+          errorEnvelope('SERVICE_UNAVAILABLE', 'Try again later.'),
+        );
+      }
+      return jsonResponse(200, successEnvelope(_identity()));
+    }
+    throw StateError('Unexpected auth request $path');
+  }
+}
+
+class _RateLimitedLoginClient extends RecordingHttpClient {
+  _RateLimitedLoginClient()
+    : super((_) async => throw StateError('handler initialized below'));
+
+  int loginRequests = 0;
+  final List<String> paths = <String>[];
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    requests.add(request);
+    final path = request.url.path;
+    paths.add(path);
+    if (path.endsWith('/auth/login')) {
+      loginRequests++;
+      if (loginRequests == 1) {
+        return streamedResponse(
+          429,
+          body: utf8.encode(
+            jsonEncode(errorEnvelope('RATE_LIMIT_EXCEEDED', 'Try later.')),
+          ),
+          headers: const <String, String>{
+            'content-type': 'application/json',
+            'retry-after': '30',
+          },
+        );
+      }
+      return jsonResponse(200, successEnvelope(_tokens()));
+    }
+    if (path.endsWith('/auth/me')) {
+      return jsonResponse(200, successEnvelope(_identity()));
+    }
+    throw StateError('Unexpected auth request $path');
+  }
+}
+
 class _AuthenticationClient extends RecordingHttpClient {
   _AuthenticationClient({
     this.identityChange,
@@ -621,6 +865,9 @@ class _FailingReadStorage implements CredentialStorage {
 
   @override
   Future<void> delete({required String key}) async {}
+
+  @override
+  Future<void> confirmDurable() async {}
 }
 
 class _InitialIdentityUnauthorizedClient extends RecordingHttpClient {

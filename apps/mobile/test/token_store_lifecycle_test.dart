@@ -97,6 +97,78 @@ void main() {
   });
 
   test(
+    'failed pending durability confirmation blocks refresh dispatch',
+    () async {
+      final storage = _FaultStorage();
+      final store = await _storedToken(storage);
+      storage.durabilityCalls = 0;
+      storage.failOnDurabilityNumber = 1;
+      final client = _LifecycleClient();
+      final api = ApiClient(
+        baseUri: _baseUri,
+        httpClient: client,
+        credentialStorage: storage,
+      );
+      addTearDown(api.dispose);
+
+      await api.initialize();
+
+      expect(client.paths, isEmpty);
+      expect(
+        api.sessionState.failure?.category,
+        AuthFailureCategory.credentialStorage,
+      );
+      expect(api.sessionState.canRetryCredentialStorage, isTrue);
+      expect(
+        (await store.read()).state,
+        TokenStoreCredentialState.rotationPending,
+      );
+
+      await api.retrySessionRestore();
+
+      expect(api.sessionState.phase, AuthSessionPhase.reauthenticationRequired);
+      expect(client.paths, isEmpty);
+    },
+  );
+
+  test(
+    'rotated credential is not used until its durability confirmation succeeds',
+    () async {
+      final storage = _FaultStorage();
+      final store = await _storedToken(storage);
+      storage.durabilityCalls = 0;
+      storage.failOnDurabilityNumber = 2;
+      final client = _LifecycleClient();
+      final api = ApiClient(
+        baseUri: _baseUri,
+        httpClient: client,
+        credentialStorage: storage,
+      );
+      addTearDown(api.dispose);
+
+      await api.initialize();
+
+      expect(client.paths, <String>['/api/v1/auth/refresh']);
+      expect(
+        api.sessionState.failure?.category,
+        AuthFailureCategory.credentialStorage,
+      );
+      expect(api.sessionState.isAuthenticated, isFalse);
+      expect((await store.read()).refreshToken, 'refresh_1');
+
+      await api.retrySessionRestore();
+
+      expect(api.sessionState.isAuthenticated, isTrue);
+      expect(client.refreshCredentials, <String?>['refresh_0', 'refresh_1']);
+      expect(client.paths, <String>[
+        '/api/v1/auth/refresh',
+        '/api/v1/auth/refresh',
+        '/api/v1/auth/me',
+      ]);
+    },
+  );
+
+  test(
     'a second application instance restores using the committed rotation',
     () async {
       final storage = _FaultStorage();
@@ -477,7 +549,9 @@ class _FaultStorage extends InMemoryCredentialStorage {
   bool failNextWriteBefore = false;
   bool failNextDelete = false;
   int writeCalls = 0;
+  int durabilityCalls = 0;
   int? failOnWriteNumber;
+  int? failOnDurabilityNumber;
   bool failAfterPersistence = false;
 
   @override
@@ -512,6 +586,16 @@ class _FaultStorage extends InMemoryCredentialStorage {
       throw StateError('private storage detail');
     }
     await super.delete(key: key);
+  }
+
+  @override
+  Future<void> confirmDurable() async {
+    durabilityCalls++;
+    if (failOnDurabilityNumber == durabilityCalls) {
+      failOnDurabilityNumber = null;
+      throw StateError('private durability failure');
+    }
+    await super.confirmDurable();
   }
 }
 

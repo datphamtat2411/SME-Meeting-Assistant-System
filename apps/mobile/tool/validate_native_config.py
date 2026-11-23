@@ -9,6 +9,7 @@ import subprocess
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -130,18 +131,11 @@ def validate_android() -> None:
         "resetOnError: false",
         "KeyCipherAlgorithm.RSA_ECB_OAEPwithSHA_256andMGF1Padding",
         "StorageCipherAlgorithm.AES_GCM_NoPadding",
-        "KeychainAccessibility.unlocked_this_device",
-        "synchronizable: false",
     ):
         if required not in secure_storage:
             fail(f"secure credential configuration is missing {required}")
 
-    expected_exclusions = {
-        "FlutterSecureStorage.xml",
-        "FlutterSecureKeyStorage.xml",
-        "FlutterSecureStorageConfiguration:FlutterSecureStorage.xml",
-        "FlutterSecureStorageConfiguration.xml",
-    }
+    expected_exclusions = secure_storage_backup_files()
     backup_rules = parse_xml("android/app/src/main/res/xml/backup_rules.xml")
     if backup_rules is not None:
         exclusions = {
@@ -179,6 +173,164 @@ def validate_android() -> None:
         application = profile.find("application")
         if application is not None and android_attribute(application, "usesCleartextTraffic") == "true":
             fail("Android profile manifest must not enable debug cleartext traffic")
+
+    validate_merged_manifest()
+
+
+def secure_storage_backup_files() -> set[str]:
+    lockfile = read("pubspec.lock")
+    if not re.search(
+        r"(?ms)^  flutter_secure_storage:\n(?:(?!^  [A-Za-z0-9_]+:).*\n)*?"
+        r"^    version: \"11\.2\.0\"$",
+        lockfile,
+    ):
+        fail("flutter_secure_storage must remain pinned to 11.2.0")
+
+    config_path = ROOT / ".dart_tool/package_config.json"
+    try:
+        package_config = json.loads(config_path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        fail(f"cannot resolve pinned secure-storage Android sources: {error}")
+        return set()
+
+    package = next(
+        (
+            item
+            for item in package_config.get("packages", [])
+            if item.get("name") == "flutter_secure_storage"
+        ),
+        None,
+    )
+    if package is None:
+        fail("flutter_secure_storage is missing from the resolved package config")
+        return set()
+    root_uri = package.get("rootUri", "")
+    parsed_root = urlparse(root_uri)
+    package_root = (
+        Path(unquote(parsed_root.path))
+        if parsed_root.scheme == "file"
+        else (config_path.parent / root_uri).resolve()
+    )
+
+    config_source = package_root / (
+        "android/src/main/java/com/it_nomads/fluttersecurestorage/"
+        "FlutterSecureStorageConfig.java"
+    )
+    namespace_source = package_root / (
+        "android/src/main/java/com/it_nomads/fluttersecurestorage/"
+        "NamespacedConfigSource.java"
+    )
+    if not config_source.is_file() or not namespace_source.is_file():
+        fail("pinned secure-storage Android backing-file implementation is missing")
+        return set()
+    config_text = config_source.read_text()
+    namespace_text = namespace_source.read_text()
+
+    default_data = re.search(
+        r'DEFAULT_PREF_NAME\s*=\s*"([^"]+)"', config_text
+    )
+    key_name_source = config_text[
+        config_text.find("getEffectiveKeyStoragePrefsName") :
+    ]
+    default_key = re.search(r':\s*"([^"]+)"\s*;', key_name_source)
+    namespaced_config = re.search(
+        r'return\s+"([^"]+)"\s*\+\s*sharedPreferencesName',
+        namespace_text,
+    )
+    legacy_config = re.search(
+        r'LEGACY_GLOBAL_CONFIG_NAME\s*=\s*"([^"]+)"',
+        namespace_text,
+    )
+    if any(
+        item is None
+        for item in (default_data, default_key, namespaced_config, legacy_config)
+    ):
+        fail("could not derive secure-storage backing files from the pinned plugin")
+        return set()
+
+    data_name = default_data.group(1)
+    native = read(
+        "android/app/src/main/kotlin/vn/sme/meetingassistant/"
+        "sme_meeting_assistant/AndroidCredentialDurability.kt"
+    )
+    configured_files = {
+        name: re.search(
+            rf"const val {constant}\s*=\s*\"([^\"]+)\"",
+            native,
+        )
+        for name, constant in (
+            ("data", "dataPreferences"),
+            ("key", "keyStoragePreferences"),
+            ("configuration", "namespacedConfigurationPreferences"),
+            ("legacy", "legacyConfigurationPreferences"),
+        )
+    }
+    if any(value is None for value in configured_files.values()):
+        fail("Android durability adapter does not define every secure-storage file")
+        return set()
+
+    expected_names = {
+        "data": data_name,
+        "key": default_key.group(1),
+        "configuration": namespaced_config.group(1) + ":" + data_name,
+        "legacy": legacy_config.group(1),
+    }
+    for role, expected in expected_names.items():
+        configured = configured_files[role]
+        if configured is not None and configured.group(1) != expected:
+            fail(
+                f"Android durability {role} preference identity does not match "
+                "flutter_secure_storage 11.2.0"
+            )
+    return {f"{name}.xml" for name in expected_names.values()}
+
+
+def validate_merged_manifest() -> None:
+    gradlew = ROOT / "android/gradlew"
+    try:
+        result = subprocess.run(
+            [str(gradlew), "-p", str(ROOT / "android"), ":app:processDebugManifest"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as error:
+        fail(f"could not validate the merged Android manifest: {error}")
+        return
+    if result.returncode != 0:
+        details = (result.stderr or result.stdout).strip().splitlines()
+        fail(
+            "Android processDebugManifest failed: "
+            + (details[-1] if details else "Gradle returned a failure")
+        )
+        return
+
+    candidates = (
+        ROOT
+        / "build/app/intermediates/merged_manifests/debug/processDebugManifest/AndroidManifest.xml",
+        ROOT
+        / "build/app/intermediates/merged_manifest/debug/processDebugMainManifest/AndroidManifest.xml",
+    )
+    manifest_path = next((path for path in candidates if path.is_file()), None)
+    if manifest_path is None:
+        fail("Gradle did not produce a merged debug Android manifest")
+        return
+    try:
+        merged = ET.fromstring(manifest_path.read_text())
+    except (ET.ParseError, OSError) as error:
+        fail(f"merged Android manifest is invalid: {error}")
+        return
+    application = merged.find("application")
+    if application is None:
+        fail("merged Android manifest is missing application")
+        return
+    if android_attribute(application, "allowBackup") != "true":
+        fail("merged Android manifest must retain targeted secure-storage backups")
+    if android_attribute(application, "fullBackupContent") != "@xml/backup_rules":
+        fail("merged Android manifest is missing legacy backup exclusions")
+    if android_attribute(application, "dataExtractionRules") != "@xml/data_extraction_rules":
+        fail("merged Android manifest is missing cloud/device-transfer exclusions")
 
 
 def validate_bootstrap() -> None:

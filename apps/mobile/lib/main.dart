@@ -145,13 +145,14 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
     if (session.failure?.category == AuthFailureCategory.credentialStorage) {
       return StartupFailureView(
         title: 'Không thể truy cập phiên bảo mật',
-        message: 'Không thể truy cập thông tin đăng nhập được bảo vệ. Vui lòng thử lại sau.',
+        message: session.failure?.message ?? 'Không thể truy cập thông tin đăng nhập được bảo vệ. Vui lòng thử lại.',
         onRetry: session.canRetryCredentialStorage
             ? api.retrySessionRestore
             : null,
       );
     }
-    if (session.canRetrySessionRestore) {
+    if (session.canRetrySessionRestore ||
+        session.canRetryIdentityVerification) {
       return SessionRestoreFailureView(api: api);
     }
     return AuthPage(api: api);
@@ -246,23 +247,27 @@ class SessionRestoreFailureView extends StatelessWidget {
                 const Icon(Icons.wifi_off_outlined, size: 46),
                 const SizedBox(height: 16),
                 const Text(
-                  'Không thể khôi phục phiên đăng nhập',
+                  'Không thể tiếp tục phiên đăng nhập',
                   textAlign: TextAlign.center,
                   style: TextStyle(fontSize: 19, fontWeight: FontWeight.w700),
                 ),
                 const SizedBox(height: 9),
                 Text(
-                  api.sessionRestoreError ?? 'Không kết nối được với máy chủ.',
+                  _recoveryMessage(api.sessionState),
                   textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 16),
                 FilledButton.icon(
-                  onPressed: api.retrySessionRestore,
+                  onPressed: () => _retry(context),
                   icon: const Icon(Icons.refresh),
-                  label: const Text('Thử kết nối lại'),
+                  label: Text(
+                    api.sessionState.canRetryIdentityVerification
+                        ? 'Thử xác minh lại'
+                        : 'Thử kết nối lại',
+                  ),
                 ),
                 TextButton(
-                  onPressed: api.discardLocalSession,
+                  onPressed: () => _discard(context),
                   child: const Text('Sử dụng tài khoản khác'),
                 ),
               ],
@@ -272,6 +277,60 @@ class SessionRestoreFailureView extends StatelessWidget {
       ),
     ),
   );
+
+  Future<void> _retry(BuildContext context) async {
+    try {
+      if (api.sessionState.canRetryIdentityVerification) {
+        await api.retryIdentityVerification();
+      } else {
+        await api.retrySessionRestore();
+      }
+    } catch (_) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(_recoveryMessage(api.sessionState))),
+      );
+    }
+  }
+
+  Future<void> _discard(BuildContext context) async {
+    try {
+      await api.discardLocalSession();
+    } catch (_) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            api.sessionState.failure?.message ??
+                'Không thể gỡ phiên đã lưu. Vui lòng thử lại.',
+          ),
+        ),
+      );
+    }
+  }
+}
+
+String _recoveryMessage(AuthSessionState state) {
+  final failure = state.failure;
+  if (failure == null) return 'Không thể kết nối đến máy chủ.';
+  if (failure.category != AuthFailureCategory.rateLimited) {
+    if (state.canRetryIdentityVerification) {
+      return 'Không thể xác minh danh tính với máy chủ. ${failure.message} Phiên bảo mật đã được giữ lại; hãy thử xác minh lại.';
+    }
+    return failure.message;
+  }
+
+  final retryNotBefore = state.retryNotBefore;
+  final remaining = retryNotBefore?.difference(DateTime.now());
+  if (remaining != null && remaining > Duration.zero) {
+    final seconds =
+        remaining.inSeconds + (remaining.inMilliseconds % 1000 == 0 ? 0 : 1);
+    return '${failure.message} Vui lòng chờ ít nhất $seconds giây trước khi thử lại.';
+  }
+  final retryAfter = failure.retryAfter;
+  return retryAfter == null
+      ? failure.message
+      : '${failure.message} Thời hạn do máy chủ cung cấp: $retryAfter.';
 }
 
 class AppShell extends StatefulWidget {
