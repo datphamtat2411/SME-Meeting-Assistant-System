@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../core/api_client.dart';
 import '../../core/date_labels.dart';
 import '../../core/models.dart';
+import '../../core/paged_collection.dart';
 import '../../core/widgets.dart';
 
 class ActionItemCreateSheet extends StatefulWidget {
@@ -29,7 +30,14 @@ class _ActionItemCreateSheetState extends State<ActionItemCreateSheet> {
     assigneeId = widget.api.userId;
     meetings = widget.api
         .get('/meetings', query: {'page': '0', 'size': '100'})
-        .then((r) => r.objectArrayData().map(Meeting.fromJson).toList());
+        .then(
+          (response) => PagedCollection<Meeting>.fromResult(
+            response,
+            (raw) => Meeting.fromListJson(raw, response: response),
+            requestedPage: 0,
+            requestedSize: 100,
+          ).items,
+        );
   }
 
   @override
@@ -64,8 +72,18 @@ class _ActionItemCreateSheetState extends State<ActionItemCreateSheet> {
                             '/users/meeting-candidates',
                             query: {'q': search.text.trim(), 'size': '20'},
                           );
-                          if (dialog.mounted)
-                            update(() => found = data.objectArrayData());
+                          if (dialog.mounted) {
+                            final page =
+                                PagedCollection<
+                                  Map<String, dynamic>
+                                >.fromResult(
+                                  data,
+                                  (raw) => raw,
+                                  requestedPage: 0,
+                                  requestedSize: 20,
+                                );
+                            update(() => found = page.items);
+                          }
                         } catch (e) {
                           if (dialog.mounted) showFailure(dialog, e);
                         }

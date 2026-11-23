@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 
 import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
+import '../../core/meeting_models.dart';
 import '../../core/models.dart';
+import '../../core/paged_collection.dart';
 import '../../core/widgets.dart';
 import 'schedule_preview.dart';
 
@@ -24,14 +26,21 @@ class _MeetingFormState extends State<MeetingForm> {
   String? roomId;
   final Map<String, String> members = {};
   bool saving = false;
-  late Future<List<Map<String, dynamic>>> rooms;
+  late Future<List<MeetingRoom>> rooms;
 
   @override
   void initState() {
     super.initState();
     rooms = widget.api
         .get('/rooms', query: {'size': '100'})
-        .then((value) => value.objectArrayData());
+        .then(
+          (response) => PagedCollection<MeetingRoom>.fromResult(
+            response,
+            (raw) => MeetingRoom.fromJson(raw, response: response),
+            requestedPage: 0,
+            requestedSize: 100,
+          ).items,
+        );
   }
 
   @override
@@ -82,7 +91,12 @@ class _MeetingFormState extends State<MeetingForm> {
         query: {'q': query, 'size': '20'},
       );
       if (!mounted) return;
-      final candidates = response.objectArrayData();
+      final candidates = PagedCollection<Map<String, dynamic>>.fromResult(
+        response,
+        (raw) => raw,
+        requestedPage: 0,
+        requestedSize: 20,
+      ).items;
       await showDialog<void>(
         context: context,
         builder: (dialogContext) => AlertDialog(
@@ -205,7 +219,7 @@ class _MeetingFormState extends State<MeetingForm> {
                   label: Text('Kết thúc: ' + dateLabel(end.toIso8601String())),
                 ),
                 const SizedBox(height: 14),
-                FutureBuilder<List<Map<String, dynamic>>>(
+                FutureBuilder<List<MeetingRoom>>(
                   future: rooms,
                   builder: (context, snap) {
                     if (!snap.hasData)
@@ -221,11 +235,11 @@ class _MeetingFormState extends State<MeetingForm> {
                           child: Text('Không chọn phòng'),
                         ),
                         ...snap.data!
-                            .where((r) => r['status'] == 'ACTIVE')
+                            .where((room) => room.status == 'ACTIVE')
                             .map(
-                              (r) => DropdownMenuItem(
-                                value: textValue(r['id']),
-                                child: Text(textValue(r['name'])),
+                              (room) => DropdownMenuItem(
+                                value: room.id,
+                                child: Text(room.name),
                               ),
                             ),
                       ],

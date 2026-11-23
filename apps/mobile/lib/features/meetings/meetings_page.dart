@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
 import '../../core/models.dart';
+import '../../core/paged_collection.dart';
 import '../../core/widgets.dart';
 import 'meeting_detail_page.dart';
 import 'meeting_form.dart';
@@ -22,9 +23,7 @@ class _MeetingsPageState extends State<MeetingsPage> {
   String? status;
   bool calendar = false;
   DateTime selectedDate = DateTime.now();
-  int page = 0;
-  bool hasNext = false;
-  final List<Meeting> loaded = [];
+  final PageWindow<Meeting> window = PageWindow<Meeting>();
 
   @override
   void initState() {
@@ -38,30 +37,33 @@ class _MeetingsPageState extends State<MeetingsPage> {
     super.dispose();
   }
 
-  Future<List<Meeting>> fetch(int nextPage) async {
+  Future<List<Meeting>> fetchNext() async {
+    final request = window.beginRequest();
     final response = await widget.api.get(
       '/meetings',
       query: {
-        'page': nextPage.toString(),
+        'page': request.page.toString(),
         'size': '20',
         'sort': 'scheduledStartAt,asc',
         if (status != null) 'status': status!,
         if (search.text.trim().isNotEmpty) 'q': search.text.trim(),
       },
     );
-    final items = response.objectArrayData().map(Meeting.fromJson).toList();
-    final pagination = objectOf(response.meta['pagination']);
-    hasNext = pagination['hasNext'] == true;
-    if (nextPage == 0) loaded.clear();
-    loaded.addAll(items);
-    page = nextPage;
-    return List.of(loaded);
+    final page = PagedCollection<Meeting>.fromResult(
+      response,
+      (raw) => Meeting.fromListJson(raw, response: response),
+      requestedPage: request.page,
+      requestedSize: 20,
+    );
+    window.accept(page, request: request);
+    return window.items;
   }
 
   void reload() => setState(() {
-    future = fetch(0);
+    window.reset();
+    future = fetchNext();
   });
-  void loadMore() => setState(() => future = fetch(page + 1));
+  void loadMore() => setState(() => future = fetchNext());
 
   Future<void> create() async {
     final changed = await showModalBottomSheet<bool>(
@@ -248,11 +250,11 @@ class _MeetingsPageState extends State<MeetingsPage> {
                                   StatePill(m.status),
                                 ],
                               ),
-                              if (m.description.isNotEmpty)
+                              if (m.description?.isNotEmpty == true)
                                 Padding(
                                   padding: const EdgeInsets.only(top: 6),
                                   child: Text(
-                                    m.description,
+                                    m.description!,
                                     maxLines: 2,
                                     overflow: TextOverflow.ellipsis,
                                     style: const TextStyle(
@@ -306,7 +308,7 @@ class _MeetingsPageState extends State<MeetingsPage> {
                         ),
                       ),
                     ),
-                if (hasNext)
+                if (window.hasMore)
                   OutlinedButton(
                     onPressed: loadMore,
                     child: const Text('Tải thêm cuộc họp'),

@@ -125,54 +125,90 @@ class ApiResult {
     this.headers = const <String, String>{},
   });
 
-  Map<String, dynamic> objectData() =>
-      requireJsonObject(data, requestId: requestId);
+  Map<String, dynamic> objectData() => requireJsonObject(data, response: this);
 
-  List<dynamic> arrayData() => requireJsonArray(data, requestId: requestId);
+  List<dynamic> arrayData() => requireJsonArray(data, response: this);
 
   List<Map<String, dynamic>> objectArrayData() =>
-      requireJsonObjectArray(data, requestId: requestId);
+      requireJsonObjectArray(data, response: this);
+
+  /// Builds a safe shape-validation failure with the originating response
+  /// context. This is deliberately distinct from transport failures.
+  ApiFailure invalidDataFailure() => ApiFailure(
+    hasResponseContext ? statusCode : 0,
+    ApiFailure.invalidResponseCode,
+    'The server returned an invalid response.',
+    requestId: requestId,
+    responseRequestId: responseRequestId,
+    timestamp: timestamp,
+    headers: headers,
+  );
+
+  bool get hasResponseContext =>
+      requestId != null ||
+      responseRequestId != null ||
+      timestamp != null ||
+      headers.isNotEmpty ||
+      meta.containsKey('requestId') ||
+      meta.containsKey('timestamp');
 
   /// Returns a nullable endpoint value after checking its non-null type.
   T? nullableData<T>() {
     if (data == null) return null;
     if (data is T) return data as T;
-    throw _invalidPayloadShape(requestId);
+    throw invalidDataFailure();
   }
 }
 
 /// Requires a JSON object and reports a structured invalid-response failure
 /// rather than manufacturing an empty map.
-Map<String, dynamic> requireJsonObject(dynamic value, {String? requestId}) {
+Map<String, dynamic> requireJsonObject(
+  dynamic value, {
+  String? requestId,
+  ApiResult? response,
+}) {
   if (value is Map<String, dynamic>) return value;
   if (value is Map && value.keys.every((key) => key is String)) {
     return value.map((key, item) => MapEntry(key as String, item));
   }
-  throw _invalidPayloadShape(requestId);
+  throw _invalidPayloadShape(requestId: requestId, response: response);
 }
 
 /// Requires a JSON array without changing a valid empty array.
-List<dynamic> requireJsonArray(dynamic value, {String? requestId}) {
+List<dynamic> requireJsonArray(
+  dynamic value, {
+  String? requestId,
+  ApiResult? response,
+}) {
   if (value is List) return value;
-  throw _invalidPayloadShape(requestId);
+  throw _invalidPayloadShape(requestId: requestId, response: response);
 }
 
 /// Requires an array containing only JSON objects.
 List<Map<String, dynamic>> requireJsonObjectArray(
   dynamic value, {
   String? requestId,
+  ApiResult? response,
 }) {
-  final items = requireJsonArray(value, requestId: requestId);
+  final items = requireJsonArray(
+    value,
+    requestId: requestId,
+    response: response,
+  );
   final result = <Map<String, dynamic>>[];
   for (final item in items) {
-    result.add(requireJsonObject(item, requestId: requestId));
+    result.add(
+      requireJsonObject(item, requestId: requestId, response: response),
+    );
   }
   return List<Map<String, dynamic>>.unmodifiable(result);
 }
 
-ApiFailure _invalidPayloadShape(String? requestId) => ApiFailure(
-  0,
-  ApiFailure.invalidResponseCode,
-  'The server returned an invalid response.',
-  requestId: requestId,
-);
+ApiFailure _invalidPayloadShape({String? requestId, ApiResult? response}) =>
+    response?.invalidDataFailure() ??
+    ApiFailure(
+      0,
+      ApiFailure.invalidResponseCode,
+      'The server returned an invalid response.',
+      requestId: requestId,
+    );

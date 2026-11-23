@@ -4,6 +4,7 @@ import '../../core/api_client.dart';
 import '../../core/command_actions.dart';
 import '../../core/meeting_models.dart';
 import '../../core/models.dart';
+import '../../core/paged_collection.dart';
 import '../../core/widgets.dart';
 
 class MeetingParticipants extends StatefulWidget {
@@ -33,7 +34,12 @@ class _MeetingParticipantsState extends State<MeetingParticipants> {
     _future = widget.api
         .get('/meetings/' + widget.meeting.id + '/participants')
         .then(
-          (r) => r.objectArrayData().map(MeetingParticipant.fromJson).toList(),
+          (response) => response
+              .objectArrayData()
+              .map(
+                (raw) => MeetingParticipant.fromJson(raw, response: response),
+              )
+              .toList(),
         );
   });
 
@@ -94,7 +100,16 @@ class _MeetingParticipantsState extends State<MeetingParticipants> {
                                 );
                                 if (dialog.mounted)
                                   update(
-                                    () => candidates = r.objectArrayData(),
+                                    () => candidates =
+                                        PagedCollection<
+                                              Map<String, dynamic>
+                                            >.fromResult(
+                                              r,
+                                              (raw) => raw,
+                                              requestedPage: 0,
+                                              requestedSize: 20,
+                                            )
+                                            .items,
                                   );
                               } catch (e) {
                                 if (dialog.mounted) showFailure(dialog, e);
@@ -114,8 +129,16 @@ class _MeetingParticipantsState extends State<MeetingParticipants> {
                         '/users/meeting-candidates',
                         query: {'q': q.trim(), 'size': '20'},
                       );
-                      if (dialog.mounted)
-                        update(() => candidates = r.objectArrayData());
+                      if (dialog.mounted) {
+                        final page =
+                            PagedCollection<Map<String, dynamic>>.fromResult(
+                              r,
+                              (raw) => raw,
+                              requestedPage: 0,
+                              requestedSize: 20,
+                            );
+                        update(() => candidates = page.items);
+                      }
                     } catch (e) {
                       if (dialog.mounted) showFailure(dialog, e);
                     } finally {
@@ -212,7 +235,7 @@ class _MeetingParticipantsState extends State<MeetingParticipants> {
                   leading: const CircleAvatar(
                     child: Icon(Icons.person_outline),
                   ),
-                  title: Text(person.displayName),
+                  title: Text(person.displayName ?? 'Thành viên'),
                   subtitle: Text(
                     person.userId == widget.meeting.organizerId
                         ? 'Người tổ chức'

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../core/api_client.dart';
 import '../../core/command_actions.dart';
 import '../../core/models.dart';
+import '../../core/paged_collection.dart';
 import '../../core/widgets.dart';
 
 class SummaryHistoryPanel extends StatefulWidget {
@@ -34,7 +35,14 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
     current = widget.api.get(path);
     versions = widget.api
         .get(path + '/versions', query: {'page': '0', 'size': '50'})
-        .then((r) => r.objectArrayData());
+        .then(
+          (response) => PagedCollection<Map<String, dynamic>>.fromResult(
+            response,
+            (raw) => raw,
+            requestedPage: 0,
+            requestedSize: 50,
+          ).items,
+        );
   });
 
   Future<void> edit(ApiResult response) async {

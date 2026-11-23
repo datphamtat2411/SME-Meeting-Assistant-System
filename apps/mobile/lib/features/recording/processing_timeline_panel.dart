@@ -23,7 +23,7 @@ class ProcessingTimelinePanel extends StatefulWidget {
 
 class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
     with WidgetsBindingObserver {
-  late Future<List<Map<String, dynamic>>> future;
+  late Future<List<ProcessingJob>> future;
   Timer? timer;
   bool retrying = false;
 
@@ -59,7 +59,12 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
     setState(() {
       future = widget.api
           .get('/meetings/' + widget.meetingId + '/processing-jobs')
-          .then((r) => r.objectArrayData());
+          .then(
+            (response) => response
+                .objectArrayData()
+                .map((raw) => ProcessingJob.fromJson(raw, response: response))
+                .toList(),
+          );
     });
   }
 
@@ -89,9 +94,7 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
   }
 
   @override
-  Widget build(
-    BuildContext context,
-  ) => AsyncContent<List<Map<String, dynamic>>>(
+  Widget build(BuildContext context) => AsyncContent<List<ProcessingJob>>(
     future: future,
     retry: reload,
     builder: (jobs) => RefreshIndicator(
@@ -107,9 +110,7 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
             subtitle: 'Trạng thái từ Core API, tự làm mới khi màn hình mở.',
           ),
           if (jobs.isEmpty) const MessagePanel(title: 'Chưa có tác vụ xử lý'),
-          ...jobs.map((raw) {
-            final id = textValue(raw['id']);
-            final steps = objectsOf(raw['stageRuns']);
+          ...jobs.map((item) {
             return ContentCard(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -120,19 +121,19 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
                       const SizedBox(width: 9),
                       Expanded(
                         child: Text(
-                          textValue(raw['currentStage'], 'AI processing'),
+                          item.currentStage ?? 'AI processing',
                           style: const TextStyle(fontWeight: FontWeight.w700),
                         ),
                       ),
-                      StatePill(textValue(raw['status'])),
+                      StatePill(item.status),
                     ],
                   ),
                   const SizedBox(height: 9),
                   Text(
-                    'Job ID: ' + id,
+                    'Job ID: ' + item.id,
                     style: const TextStyle(fontSize: 11, color: Palette.muted),
                   ),
-                  ...steps.map(
+                  ...item.stageRuns.map(
                     (step) => Padding(
                       padding: const EdgeInsets.only(top: 5),
                       child: Row(
@@ -144,9 +145,7 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
                           ),
                           Expanded(
                             child: Text(
-                              textValue(step['stage']) +
-                                  ' · ' +
-                                  textValue(step['status']),
+                              step.stageCode + ' · ' + step.status,
                               style: const TextStyle(fontSize: 12),
                             ),
                           ),
@@ -154,27 +153,27 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
                       ),
                     ),
                   ),
-                  if (raw['warningSummary'] != null)
+                  if (item.warningSummary != null)
                     Padding(
                       padding: const EdgeInsets.only(top: 8),
                       child: Text(
-                        textValue(raw['warningSummary']),
+                        item.warningSummary!,
                         style: const TextStyle(color: Palette.amber),
                       ),
                     ),
-                  if (raw['errorSummary'] != null)
+                  if (item.errorSummary != null)
                     Padding(
                       padding: const EdgeInsets.only(top: 8),
                       child: Text(
-                        textValue(raw['errorSummary']),
+                        item.errorSummary!,
                         style: const TextStyle(color: Palette.red),
                       ),
                     ),
-                  if (raw['retryable'] == true)
+                  if (item.retryable)
                     Align(
                       alignment: Alignment.centerRight,
                       child: TextButton(
-                        onPressed: retrying ? null : () => retry(id),
+                        onPressed: retrying ? null : () => retry(item.id),
                         child: const Text('Thử lại xử lý'),
                       ),
                     ),

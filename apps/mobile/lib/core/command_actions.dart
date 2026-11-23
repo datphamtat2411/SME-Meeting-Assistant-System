@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+
 import 'api_client.dart';
 import 'widgets.dart';
 
@@ -23,7 +24,8 @@ Future<bool> confirmCommand(
           style: destructive
               ? FilledButton.styleFrom(
                   backgroundColor: Theme.of(dialogContext).colorScheme.error,
-                  foregroundColor: Theme.of(dialogContext).colorScheme.onError)
+                  foregroundColor: Theme.of(dialogContext).colorScheme.onError,
+                )
               : null,
           onPressed: () => Navigator.pop(dialogContext, true),
           child: Text(confirmLabel),
@@ -48,8 +50,14 @@ Future<bool> runCommand(
     return false;
   } catch (_) {
     if (context.mounted) {
-      showFailure(context, const ApiFailure(
-          0, 'UNEXPECTED_FAILURE', 'Không thể thực hiện thao tác.'));
+      showFailure(
+        context,
+        const ApiFailure(
+          0,
+          'UNEXPECTED_FAILURE',
+          'Không thể thực hiện thao tác.',
+        ),
+      );
     }
     return false;
   }
@@ -58,8 +66,15 @@ Future<bool> runCommand(
 String requireEtag(ApiResult response) {
   final tag = response.etag;
   if (tag == null || tag.isEmpty) {
-    throw const ApiFailure(0, 'VERSION_MISSING',
-        'Không nhận được phiên bản dữ liệu. Vui lòng tải lại.');
+    throw ApiFailure(
+      response.statusCode,
+      'VERSION_MISSING',
+      'Không nhận được phiên bản dữ liệu. Vui lòng tải lại.',
+      requestId: response.requestId,
+      responseRequestId: response.responseRequestId,
+      timestamp: response.timestamp,
+      headers: response.headers,
+    );
   }
   return tag;
 }

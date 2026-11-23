@@ -64,7 +64,10 @@ class _RecordingPageState extends State<RecordingPage> {
     jobs = widget.api
         .get('/meetings/' + widget.meetingId + '/processing-jobs')
         .then(
-          (value) => value.objectArrayData().map(ProcessingJob.new).toList(),
+          (response) => response
+              .objectArrayData()
+              .map((raw) => ProcessingJob.fromJson(raw, response: response))
+              .toList(),
         );
   });
 
@@ -263,13 +266,18 @@ class _RecordingPageState extends State<RecordingPage> {
           'Media has not been accepted.',
         );
       }
-      final accepted = (await widget.api.post(
+      final accepted = await widget.api.post(
         path + '/processing-jobs',
         {'mediaId': mediaId},
         headers: {'Idempotency-Key': key()},
-      )).objectData();
+      );
       if (mounted) {
-        setState(() => job = ProcessingJob(accepted));
+        setState(
+          () => job = ProcessingJob.fromJson(
+            accepted.objectData(),
+            response: accepted,
+          ),
+        );
         showSuccess(context, 'Đã gửi ghi âm. AI đang xử lý bất đồng bộ.');
         reloadJobs();
       }
@@ -289,7 +297,12 @@ class _RecordingPageState extends State<RecordingPage> {
         headers: {'Idempotency-Key': key()},
       );
       if (mounted) {
-        setState(() => job = ProcessingJob(response.objectData()));
+        setState(
+          () => job = ProcessingJob.fromJson(
+            response.objectData(),
+            response: response,
+          ),
+        );
         reloadJobs();
       }
     } catch (error) {
@@ -450,25 +463,30 @@ class _RecordingPageState extends State<RecordingPage> {
             const SizedBox(width: 8),
             Expanded(
               child: Text(
-                item.stage.isEmpty ? 'Xử lý cuộc họp' : item.stage,
+                item.currentStage?.isNotEmpty == true
+                    ? item.currentStage!
+                    : 'Xử lý cuộc họp',
                 style: const TextStyle(fontWeight: FontWeight.w700),
               ),
             ),
             StatePill(item.status),
           ],
         ),
-        if (item.warning.isNotEmpty)
+        if (item.warningSummary?.isNotEmpty == true)
           Padding(
             padding: const EdgeInsets.only(top: 8),
             child: Text(
-              item.warning,
+              item.warningSummary!,
               style: const TextStyle(color: Palette.amber),
             ),
           ),
-        if (item.error.isNotEmpty)
+        if (item.errorSummary?.isNotEmpty == true)
           Padding(
             padding: const EdgeInsets.only(top: 8),
-            child: Text(item.error, style: const TextStyle(color: Palette.red)),
+            child: Text(
+              item.errorSummary!,
+              style: const TextStyle(color: Palette.red),
+            ),
           ),
         if (item.retryable)
           Align(

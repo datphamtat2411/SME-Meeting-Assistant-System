@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../core/api_client.dart';
 import '../../core/command_actions.dart';
 import '../../core/models.dart';
+import '../../core/paged_collection.dart';
 import '../../core/widgets.dart';
 
 class SpeakerMappingPanel extends StatefulWidget {
@@ -81,8 +82,16 @@ class _SpeakerMappingPanelState extends State<SpeakerMappingPanel> {
                         '/users/meeting-candidates',
                         query: {'q': value.trim(), 'size': '20'},
                       );
-                      if (dialog.mounted)
-                        update(() => found = response.objectArrayData());
+                      if (dialog.mounted) {
+                        final page =
+                            PagedCollection<Map<String, dynamic>>.fromResult(
+                              response,
+                              (raw) => raw,
+                              requestedPage: 0,
+                              requestedSize: 20,
+                            );
+                        update(() => found = page.items);
+                      }
                     } catch (error) {
                       if (dialog.mounted) showFailure(dialog, error);
                     }

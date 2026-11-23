@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../core/api_client.dart';
 import '../../core/meeting_models.dart';
 import '../../core/models.dart';
+import '../../core/paged_collection.dart';
 
 class RoomAvailabilityField extends StatefulWidget {
   const RoomAvailabilityField({
@@ -25,7 +26,7 @@ class RoomAvailabilityField extends StatefulWidget {
 }
 
 class _RoomAvailabilityFieldState extends State<RoomAvailabilityField> {
-  late Future<List<Map<String, dynamic>>> _rooms;
+  late Future<List<AvailableRoom>> _rooms;
 
   @override
   void initState() {
@@ -53,82 +54,86 @@ class _RoomAvailabilityFieldState extends State<RoomAvailabilityField> {
           query: {
             'start': dateIso(widget.start),
             'end': dateIso(widget.end),
+            'page': '0',
             'size': '100',
             if (widget.participantCount != null)
               'participantCount': widget.participantCount.toString(),
           },
         )
-        .then((r) => r.objectArrayData());
+        .then(
+          (response) => PagedCollection<AvailableRoom>.fromResult(
+            response,
+            (raw) => AvailableRoom.fromJson(raw, response: response),
+            requestedPage: 0,
+            requestedSize: 100,
+          ).items,
+        );
   }
 
   @override
-  Widget build(BuildContext context) =>
-      FutureBuilder<List<Map<String, dynamic>>>(
-        future: _rooms,
-        builder: (context, snapshot) {
-          if (snapshot.hasError) {
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text('Không thể kiểm tra tình trạng phòng.'),
-                TextButton.icon(
-                  onPressed: () => setState(_load),
-                  icon: const Icon(Icons.refresh),
-                  label: const Text('Thử lại'),
-                ),
-              ],
-            );
-          }
-          if (!snapshot.hasData) return const LinearProgressIndicator();
-          final rooms = snapshot.data!;
-          final matching = rooms
-              .where((r) => r['id'] == widget.selectedId)
-              .toList();
-          // A scheduled meeting can occupy its own room; keep it selectable,
-          // but show a clear advisory warning instead of silently clearing it.
-          final validId = widget.selectedId == null || matching.isNotEmpty
-              ? widget.selectedId
-              : null;
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              DropdownButtonFormField<String>(
-                key: ValueKey(validId),
-                initialValue: validId ?? '',
-                isExpanded: true,
-                decoration: const InputDecoration(labelText: 'Phòng họp'),
-                items: [
-                  const DropdownMenuItem(
-                    value: '',
-                    child: Text('Không sử dụng phòng'),
-                  ),
-                  ...rooms.map((r) {
-                    final room = MeetingRoom.fromJson(r);
-                    final available = r['available'] == true;
-                    final isSelected = room.id == widget.selectedId;
-                    return DropdownMenuItem(
-                      value: room.id,
-                      enabled: available || isSelected,
-                      child: Text(
-                        room.name + (available ? ' · Trống' : ' · Bận'),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    );
-                  }),
-                ],
-                onChanged: (value) =>
-                    widget.onChanged(value == '' ? null : value),
+  Widget build(BuildContext context) => FutureBuilder<List<AvailableRoom>>(
+    future: _rooms,
+    builder: (context, snapshot) {
+      if (snapshot.hasError) {
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Không thể kiểm tra tình trạng phòng.'),
+            TextButton.icon(
+              onPressed: () => setState(_load),
+              icon: const Icon(Icons.refresh),
+              label: const Text('Thử lại'),
+            ),
+          ],
+        );
+      }
+      if (!snapshot.hasData) return const LinearProgressIndicator();
+      final rooms = snapshot.data!;
+      final matching = rooms
+          .where((room) => room.id == widget.selectedId)
+          .toList();
+      // A scheduled meeting can occupy its own room; keep it selectable,
+      // but show a clear advisory warning instead of silently clearing it.
+      final validId = widget.selectedId == null || matching.isNotEmpty
+          ? widget.selectedId
+          : null;
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          DropdownButtonFormField<String>(
+            key: ValueKey(validId),
+            initialValue: validId ?? '',
+            isExpanded: true,
+            decoration: const InputDecoration(labelText: 'Phòng họp'),
+            items: [
+              const DropdownMenuItem(
+                value: '',
+                child: Text('Không sử dụng phòng'),
               ),
-              if (matching.isNotEmpty && matching.first['available'] != true)
-                const Padding(
-                  padding: EdgeInsets.only(top: 6),
+              ...rooms.map((room) {
+                final isSelected = room.id == widget.selectedId;
+                return DropdownMenuItem(
+                  value: room.id,
+                  enabled: room.available || isSelected,
                   child: Text(
-                    'Phòng có lịch trùng; máy chủ sẽ kiểm tra lại khi lưu.',
-                    style: TextStyle(fontSize: 12),
+                    room.name + (room.available ? ' · Trống' : ' · Bận'),
+                    overflow: TextOverflow.ellipsis,
                   ),
-                ),
+                );
+              }),
             ],
-          );
-        },
+            onChanged: (value) => widget.onChanged(value == '' ? null : value),
+          ),
+          if (matching.isNotEmpty && !matching.first.available)
+            const Padding(
+              padding: EdgeInsets.only(top: 6),
+              child: Text(
+                'Phòng có lịch trùng; máy chủ sẽ kiểm tra lại khi lưu.',
+                style: TextStyle(fontSize: 12),
+              ),
+            ),
+        ],
       );
+    },
+  );
 }

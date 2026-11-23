@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
 import '../../core/models.dart';
+import '../../core/paged_collection.dart';
 import '../../core/widgets.dart';
 import '../meetings/meeting_detail_page.dart';
 
@@ -39,16 +40,16 @@ class _CalendarPageState extends State<CalendarPage> {
   Future<_CalendarFeed> _fetchForRelationship(String? relationship) async {
     final start = DateTime(month.year, month.month).toUtc().toIso8601String();
     final end = DateTime(month.year, month.month + 1).toUtc().toIso8601String();
-    final all = <Meeting>[];
-    var hasMore = false;
+    final window = PageWindow<Meeting>();
 
     // Load every page within a bounded query budget; never silently claim
     // a truncated calendar is complete.
     for (var page = 0; page < 30; page++) {
+      final request = window.beginRequest();
       final response = await widget.api.get(
         '/meetings',
         query: {
-          'page': '$page',
+          'page': '${request.page}',
           'size': '100',
           'sort': 'scheduledStartAt,asc',
           'from': start,
@@ -56,11 +57,16 @@ class _CalendarPageState extends State<CalendarPage> {
           if (relationship != null) 'relationship': relationship,
         },
       );
-      all.addAll(response.objectArrayData().map(Meeting.fromJson));
-      hasMore = objectOf(response.meta['pagination'])['hasNext'] == true;
-      if (!hasMore) break;
+      final result = PagedCollection<Meeting>.fromResult(
+        response,
+        (raw) => Meeting.fromListJson(raw, response: response),
+        requestedPage: request.page,
+        requestedSize: 100,
+      );
+      window.accept(result, request: request);
+      if (!window.hasMore) break;
     }
-    return _CalendarFeed(all, hasMore);
+    return _CalendarFeed(window.items, window.hasMore);
   }
 
   Future<_CalendarFeed> _load() async {
@@ -120,10 +126,13 @@ class _CalendarPageState extends State<CalendarPage> {
                   meeting.status != 'CANCELLED',
             )
             .toList();
-        dated.sort(
-          (a, b) =>
-              (a.scheduledStartAt ?? '').compareTo(b.scheduledStartAt ?? ''),
-        );
+        dated.sort((a, b) {
+          final first = a.scheduledStartAt;
+          final second = b.scheduledStartAt;
+          if (first == null) return second == null ? 0 : 1;
+          if (second == null) return -1;
+          return first.compareTo(second);
+        });
         final visible = selectedDate == null
             ? dated
             : dated.where((meeting) {
@@ -260,19 +269,20 @@ class _CalendarPageState extends State<CalendarPage> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Row(
-                          children: [
-                            Expanded(
-                              child: Text(
-                                meeting.title,
-                                style: Theme.of(context).textTheme.titleMedium
-                                    ?.copyWith(fontWeight: FontWeight.w700),
+                        if (meeting.participantCount != null)
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  meeting.title,
+                                  style: Theme.of(context).textTheme.titleMedium
+                                      ?.copyWith(fontWeight: FontWeight.w700),
+                                ),
                               ),
-                            ),
-                            const SizedBox(width: 8),
-                            StatePill(meeting.status),
-                          ],
-                        ),
+                              const SizedBox(width: 8),
+                              StatePill(meeting.status),
+                            ],
+                          ),
                         const SizedBox(height: 10),
                         Row(
                           children: [
@@ -323,8 +333,7 @@ class _CalendarPageState extends State<CalendarPage> {
                             ),
                             const SizedBox(width: 8),
                             Text(
-                              meeting.participantCount.toString() +
-                                  ' người tham gia',
+                              '${meeting.participantCount} người tham gia',
                               style: const TextStyle(color: Palette.muted),
                             ),
                           ],

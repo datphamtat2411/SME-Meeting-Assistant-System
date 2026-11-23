@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 
 import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
-import '../../core/command_actions.dart';
 import '../../core/meeting_models.dart';
+import '../../core/paged_collection.dart';
 import '../../core/widgets.dart';
 
 class DecisionsReviewPanel extends StatefulWidget {
@@ -34,16 +34,25 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
           query: {'page': '0', 'size': '100'},
         )
         .then(
-          (r) => r.objectArrayData().map(MeetingDecision.fromJson).toList(),
+          (response) => PagedCollection<MeetingDecision>.fromResult(
+            response,
+            (raw) => MeetingDecision.fromJson(raw, response: response),
+            requestedPage: 0,
+            requestedSize: 100,
+          ).items,
         );
   });
 
   Future<void> edit({MeetingDecision? decision}) async {
-    final ctrl = TextEditingController(text: decision?.content ?? '');
+    if (decision != null) {
+      if (mounted) showFailure(context, _missingDecisionEtag);
+      return;
+    }
+    final ctrl = TextEditingController();
     final ok = await showDialog<bool>(
       context: context,
       builder: (dialog) => AlertDialog(
-        title: Text(decision == null ? 'Tạo quyết định' : 'Sửa quyết định'),
+        title: const Text('Tạo quyết định'),
         content: SizedBox(
           width: 480,
           child: TextField(
@@ -71,51 +80,9 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
     setState(() => busy = true);
     try {
       final url = '/meetings/' + widget.meetingId + '/decisions';
-      if (decision == null) {
-        await widget.api.post(url, {
-          'content': value,
-          'evidenceSegmentIds': [],
-        });
-      } else {
-        await widget.api.patch(
-          url + '/' + decision.id,
-          {'content': value},
-          headers: {'If-Match': decision.etag},
-        );
-      }
+      await widget.api.post(url, {'content': value, 'evidenceSegmentIds': []});
       if (mounted) {
         showSuccess(context, 'Đã lưu quyết định.');
-        reload();
-      }
-    } catch (error) {
-      if (mounted) showFailure(context, error);
-    } finally {
-      if (mounted) setState(() => busy = false);
-    }
-  }
-
-  Future<void> review(MeetingDecision decision, bool confirm) async {
-    if (!await confirmCommand(
-      context,
-      title: confirm ? 'Xác nhận quyết định?' : 'Từ chối đề xuất?',
-      description: 'Hành động này thay đổi trạng thái quyết định chính thức.',
-      destructive: !confirm,
-      confirmLabel: confirm ? 'Xác nhận' : 'Từ chối',
-    ))
-      return;
-    setState(() => busy = true);
-    try {
-      await widget.api.post(
-        '/meetings/' +
-            widget.meetingId +
-            '/decisions/' +
-            decision.id +
-            (confirm ? '/confirm' : '/reject'),
-        {},
-        headers: {'If-Match': decision.etag},
-      );
-      if (mounted) {
-        showSuccess(context, 'Đã cập nhật quyết định.');
         reload();
       }
     } catch (error) {
@@ -176,17 +143,17 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
                         Wrap(
                           children: [
                             TextButton.icon(
-                              onPressed: busy ? null : () => edit(decision: d),
+                              onPressed: null,
                               icon: const Icon(Icons.edit_outlined),
                               label: const Text('Sửa'),
                             ),
                             if (d.status == 'PROPOSED') ...[
                               TextButton(
-                                onPressed: busy ? null : () => review(d, true),
+                                onPressed: null,
                                 child: const Text('Xác nhận'),
                               ),
                               TextButton(
-                                onPressed: busy ? null : () => review(d, false),
+                                onPressed: null,
                                 child: const Text(
                                   'Từ chối',
                                   style: TextStyle(color: Palette.red),
@@ -194,6 +161,11 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
                               ),
                             ],
                           ],
+                        ),
+                        const Text(
+                          'API danh sách chưa cung cấp ETag cho từng quyết định; '
+                          'các thay đổi bị khóa để tránh gửi phiên bản đoán.',
+                          style: TextStyle(fontSize: 12, color: Palette.muted),
                         ),
                       ],
                     ),
@@ -207,3 +179,9 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
     ],
   );
 }
+
+const _missingDecisionEtag = ApiFailure(
+  0,
+  'MISSING_ETAG',
+  'Không thể thay đổi quyết định vì Core API chưa cung cấp ETag hiện hành.',
+);

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
+import '../../core/command_actions.dart';
 import '../../core/models.dart';
 import '../../core/widgets.dart';
 import '../recording/recording_page.dart';
@@ -37,21 +38,17 @@ class _MeetingDetailPageState extends State<MeetingDetailPage> {
   void reload() => setState(
     () => future = widget.api
         .get('/meetings/' + widget.meetingId)
-        .then((value) => Meeting.fromJson(value.objectData())),
+        .then(
+          (response) =>
+              Meeting.fromJson(response.objectData(), response: response),
+        ),
   );
 
   Future<void> command(String action) async {
     setState(() => busy = true);
     try {
       final fresh = await widget.api.get('/meetings/' + widget.meetingId);
-      final etag = fresh.etag;
-      if (etag == null) {
-        throw const ApiFailure(
-          0,
-          'MISSING_ETAG',
-          'Meeting version is not available.',
-        );
-      }
+      final etag = requireEtag(fresh);
       await widget.api.post(
         '/meetings/' + widget.meetingId + '/' + action,
         action == 'cancel' ? {'reason': 'Cancelled from mobile'} : {},
@@ -120,9 +117,9 @@ class _MeetingDetailPageState extends State<MeetingDetailPage> {
             StatePill(meeting.status),
             const SizedBox(height: 16),
             Text(
-              meeting.description.isEmpty
+              meeting.description == null || meeting.description!.isEmpty
                   ? 'Chưa có mô tả'
-                  : meeting.description,
+                  : meeting.description!,
             ),
             const Divider(height: 26),
             _line(Icons.event, 'Bắt đầu', dateLabel(meeting.scheduledStartAt)),
