@@ -102,6 +102,85 @@ void main() {
 
       expect(() => response.objectArrayData(), throwsA(_invalidPayload));
     });
+
+    test(
+      'retains originating HTTP status and response correlation context',
+      () {
+        final response = _decode(
+          decoder,
+          206,
+          <dynamic>[
+            <String, dynamic>{'id': 'ok'},
+            null,
+          ],
+          headers: const <String, String>{
+            'X-Request-Id': 'response-request-789',
+          },
+        );
+
+        expect(
+          () => response.objectArrayData(),
+          throwsA(
+            isA<ApiFailure>()
+                .having(
+                  (failure) => failure.code,
+                  'code',
+                  ApiFailure.invalidResponseCode,
+                )
+                .having((failure) => failure.status, 'status', 206)
+                .having((failure) => failure.requestId, 'requestId', _requestId)
+                .having(
+                  (failure) => failure.responseRequestId,
+                  'responseRequestId',
+                  'response-request-789',
+                )
+                .having((failure) => failure.timestamp, 'timestamp', _timestamp)
+                .having(
+                  (failure) => failure.headers['X-Request-Id'],
+                  'response header',
+                  'response-request-789',
+                )
+                .having(
+                  (failure) => failure.isTransportFailure,
+                  'transport failure',
+                  isFalse,
+                ),
+          ),
+        );
+      },
+    );
+
+    test(
+      'uses local status semantics when no HTTP response context exists',
+      () {
+        const result = ApiResult(<dynamic>[], <String, dynamic>{}, null);
+
+        expect(
+          () => result.objectData(),
+          throwsA(
+            isA<ApiFailure>()
+                .having(
+                  (failure) => failure.code,
+                  'code',
+                  ApiFailure.invalidResponseCode,
+                )
+                .having((failure) => failure.status, 'status', 0)
+                .having((failure) => failure.requestId, 'requestId', isNull)
+                .having(
+                  (failure) => failure.responseRequestId,
+                  'responseRequestId',
+                  isNull,
+                )
+                .having((failure) => failure.timestamp, 'timestamp', isNull)
+                .having(
+                  (failure) => failure.isTransportFailure,
+                  'transport',
+                  isFalse,
+                ),
+          ),
+        );
+      },
+    );
   });
 
   group('ApiResponseDecoder error responses', () {
@@ -350,7 +429,14 @@ void main() {
 
 final _invalidPayload = isA<ApiFailure>()
     .having((failure) => failure.code, 'code', 'INVALID_RESPONSE')
-    .having((failure) => failure.status, 'status', 0);
+    .having((failure) => failure.status, 'status', 200)
+    .having((failure) => failure.requestId, 'requestId', _requestId)
+    .having((failure) => failure.timestamp, 'timestamp', _timestamp)
+    .having(
+      (failure) => failure.isTransportFailure,
+      'transport failure',
+      isFalse,
+    );
 
 ApiResult _decode(
   ApiResponseDecoder decoder,
