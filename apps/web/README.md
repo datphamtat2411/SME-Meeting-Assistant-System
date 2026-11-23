@@ -32,6 +32,12 @@ WEB_DEV_HTTPS_CERT_FILE=/absolute/path/to/web-dev.crt
 # Optional local-only signed-media adapter.
 VITE_LOCAL_MEDIA_STORAGE_ORIGIN=https://storage.internal:9443
 LOCAL_MEDIA_STORAGE_CA_FILE=/absolute/path/to/storage-ca.crt
+
+# Optional explicit browser-reachable media origin for direct signed PUT/GET.
+# VITE_MEDIA_STORAGE_PUBLIC_ORIGIN=https://storage.example.com
+
+# Optional client-side ceiling; it must not exceed Core's configured limit.
+# VITE_MEDIA_MAX_UPLOAD_BYTES=1073741824
 ```
 
 `WEB_DEV_HTTPS_KEY_FILE`, `WEB_DEV_HTTPS_CERT_FILE`, and
@@ -136,8 +142,11 @@ signed media paths and uses the configured CA to verify the
 loopback, but the signed storage host is preserved. Missing CA material,
 non-loopback Web binding, non-HTTPS storage origin, unsupported methods/types,
 oversized requests, and upstream redirects fail closed. The normal Rush media
-compatibility flow does not yet complete local capability rewriting or the
-full media workflow; that boundary remains INT-05.
+compatibility flow resolves only the configured local origin through this
+adapter, or an explicitly configured public origin directly. It supports WAV,
+MP3, and AAC in M4A; Core remains authoritative for the actual codec and
+container. Signed capabilities are held only for the active operation and are
+not persisted.
 
 For a `TRUSTED_HTTPS_ACCEPTANCE` runtime observation, record the redacted Web
 URL and verify in the browser that `location.protocol === 'https:'`, the

@@ -33,6 +33,13 @@ export function ProcessingPanel({ meetingId }: { meetingId: string }) {
   })
   const [mediaId, setMediaId] = useState('')
   const completed = useRef(new Set<string>())
+  const admissionOperation = useRef<{
+    mediaId: string
+    idempotencyKey: string
+  } | null>(null)
+  const retryOperations = useRef(
+    new Map<string, { idempotencyKey: string; stageCode?: string }>()
+  )
   useEffect(() => {
     for (const job of jobs.data ?? []) {
       if (
@@ -54,8 +61,20 @@ export function ProcessingPanel({ meetingId }: { meetingId: string }) {
     invalidateMeetingArtifacts(qc, meetingId, { transcript: true })
   }
   const create = useMutation({
-    mutationFn: () => requestProcessing(meetingId, mediaId),
-    onSuccess: () => {
+    mutationFn: ({
+      selectedMediaId,
+      idempotencyKey,
+    }: {
+      selectedMediaId: string
+      idempotencyKey: string
+    }) =>
+      requestProcessing(meetingId, selectedMediaId, undefined, {
+        idempotencyKey,
+      }),
+    onSuccess: (_, variables) => {
+      if (admissionOperation.current?.mediaId === variables.selectedMediaId) {
+        admissionOperation.current = null
+      }
       toast.success('Processing job queued')
       refresh()
     },
@@ -65,8 +84,19 @@ export function ProcessingPanel({ meetingId }: { meetingId: string }) {
       }),
   })
   const retry = useMutation({
-    mutationFn: (id: string) => retryProcessing(id),
-    onSuccess: () => {
+    mutationFn: ({
+      jobId,
+      stageCode,
+      idempotencyKey,
+    }: {
+      jobId: string
+      stageCode?: string
+      idempotencyKey: string
+    }) => retryProcessing(jobId, stageCode, { idempotencyKey }),
+    onSuccess: (_, variables) => {
+      retryOperations.current.delete(
+        `${variables.jobId}:${variables.stageCode ?? ''}`
+      )
       toast.success('Processing retry accepted')
       refresh()
     },
@@ -76,6 +106,43 @@ export function ProcessingPanel({ meetingId }: { meetingId: string }) {
       }),
   })
   const available = media.data?.filter((m) => m.status === 'AVAILABLE') ?? []
+
+  function createKey(selectedMediaId: string): string {
+    if (admissionOperation.current?.mediaId === selectedMediaId) {
+      return admissionOperation.current.idempotencyKey
+    }
+    const idempotencyKey = crypto.randomUUID()
+    admissionOperation.current = { mediaId: selectedMediaId, idempotencyKey }
+    return idempotencyKey
+  }
+
+  function retryKey(jobId: string, stageCode?: string): string {
+    const operationId = `${jobId}:${stageCode ?? ''}`
+    const existing = retryOperations.current.get(operationId)
+    if (existing) return existing.idempotencyKey
+    const idempotencyKey = crypto.randomUUID()
+    retryOperations.current.set(operationId, { idempotencyKey, stageCode })
+    return idempotencyKey
+  }
+
+  function submitProcessing() {
+    if (!mediaId || create.isPending || retry.isPending) return
+    const selectedMediaId = mediaId
+    create.mutate({
+      selectedMediaId,
+      idempotencyKey: createKey(selectedMediaId),
+    })
+  }
+
+  function submitRetry(jobId: string, stageCode?: string) {
+    if (retry.isPending || create.isPending) return
+    retry.mutate({
+      jobId,
+      stageCode,
+      idempotencyKey: retryKey(jobId, stageCode),
+    })
+  }
+
   return (
     <Card>
       <CardHeader>
@@ -94,7 +161,11 @@ export function ProcessingPanel({ meetingId }: { meetingId: string }) {
         )}
         {available.length > 0 && (
           <div className='flex flex-wrap items-center gap-2'>
-            <Select value={mediaId} onValueChange={setMediaId}>
+            <Select
+              value={mediaId}
+              onValueChange={setMediaId}
+              disabled={create.isPending || retry.isPending}
+            >
               <SelectTrigger className='max-w-sm min-w-48'>
                 <SelectValue placeholder='Select finalized source' />
               </SelectTrigger>
@@ -108,7 +179,7 @@ export function ProcessingPanel({ meetingId }: { meetingId: string }) {
             </Select>
             <Button
               disabled={!mediaId || create.isPending}
-              onClick={() => create.mutate()}
+              onClick={submitProcessing}
             >
               Start processing
             </Button>
@@ -160,8 +231,8 @@ export function ProcessingPanel({ meetingId }: { meetingId: string }) {
                   <Button
                     size='sm'
                     variant='outline'
-                    disabled={retry.isPending}
-                    onClick={() => retry.mutate(job.id)}
+                    disabled={retry.isPending || create.isPending}
+                    onClick={() => submitRetry(job.id)}
                   >
                     Retry job
                   </Button>
