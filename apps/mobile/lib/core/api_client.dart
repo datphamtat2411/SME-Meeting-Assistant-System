@@ -1,9 +1,10 @@
-import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
+import 'api_request_executor.dart';
+import 'api_model_validation.dart';
 import 'api_response.dart';
 import 'api_response_decoder.dart';
 import 'api_transport.dart';
@@ -14,6 +15,11 @@ export 'api_response.dart';
 export 'api_transport.dart';
 export 'credential_storage.dart';
 export 'signed_upload_transport.dart';
+
+part 'auth_errors.dart';
+part 'auth_models.dart';
+part 'auth_repository.dart';
+part 'auth_session_coordinator.dart';
 
 Map<String, dynamic> objectOf(dynamic value) {
   if (value is Map<String, dynamic>) return value;
@@ -26,24 +32,20 @@ List<Map<String, dynamic>> objectsOf(dynamic value) {
   return value.map(objectOf).toList(growable: false);
 }
 
-/// The Core API owns all business truth. The client handles transport only.
+/// Feature-facing API compatibility facade.
 ///
-/// Access credentials never leave process memory. The refresh credential is
-/// rotated on every refresh and persisted in OS-backed secure storage.
+/// Authentication state and credentials belong exclusively to
+/// [sessionCoordinator]. General API calls continue to use the shared Core API
+/// transport and retain the established retry and signed-upload behavior.
 class ApiClient extends ChangeNotifier {
   final Uri baseUri;
   final CoreApiTransport _coreTransport;
   final SignedUploadTransport _signedUploadTransport;
   final ApiResponseDecoder _responseDecoder = const ApiResponseDecoder();
-  final CredentialStorage _secure;
-  String? _accessToken;
-  String? _refreshToken;
-  DateTime? _accessExpiry;
-  Future<void>? _refreshFuture;
+  late final CoreApiRequestExecutor _requestExecutor;
+  late final AuthRepository _authRepository;
+  late final AuthSessionCoordinator sessionCoordinator;
   bool _disposed = false;
-  bool ready = false;
-  String? sessionRestoreError;
-  Map<String, dynamic>? identity;
 
   ApiClient({
     required this.baseUri,
@@ -63,175 +65,43 @@ class ApiClient extends ChangeNotifier {
          httpClient: httpClient,
          timeout: uploadTimeout,
          androidDebugOverride: androidDebugOverride,
-       ),
-       _secure = credentialStorage;
-
-  bool get hasRecoverableSession =>
-      _refreshToken != null && identity == null && sessionRestoreError != null;
-
-  bool get signedIn => _accessToken != null && identity != null;
-  String get userId => (identity?['userId'] ?? '').toString();
-  String get displayName => (identity?['displayName'] ?? '').toString();
-  String get email => (identity?['email'] ?? '').toString();
-
-  Future<void> initialize() async {
-    try {
-      _refreshToken = await _secure.read(key: 'sme.mobile.refresh');
-      if (_refreshToken != null) {
-        await _renew();
-        await loadIdentity();
-      }
-      sessionRestoreError = null;
-    } on ApiFailure catch (failure) {
-      if (_isTemporary(failure)) {
-        sessionRestoreError = failure.message;
-      } else {
-        await _forget();
-      }
-    } catch (_) {
-      await _forget();
-    } finally {
-      ready = true;
-      _notifyListeners();
-    }
-  }
-
-  bool _isTemporary(ApiFailure failure) =>
-      failure.status == 0 || failure.status >= 500;
-
-  Future<void> retrySessionRestore() async {
-    if (_refreshToken == null) return;
-    ready = false;
-    sessionRestoreError = null;
-    _notifyListeners();
-    try {
-      await _renew();
-      await loadIdentity();
-    } on ApiFailure catch (failure) {
-      if (_isTemporary(failure)) {
-        sessionRestoreError = failure.message;
-      } else {
-        await _forget();
-      }
-    } catch (_) {
-      await _forget();
-    } finally {
-      ready = true;
-      _notifyListeners();
-    }
-  }
-
-  Future<void> discardLocalSession() async {
-    await _forget();
-    sessionRestoreError = null;
-    _notifyListeners();
-  }
-
-  Future<void> signIn(String email, String password) async {
-    final result = await _request(
-      'POST',
-      '/auth/login',
-      body: {'email': email.trim(), 'password': password},
-      auth: false,
+       ) {
+    _requestExecutor = CoreApiRequestExecutor(
+      transport: _coreTransport,
+      decoder: _responseDecoder,
     );
-    await _adoptTokens(result.objectData(), requestId: result.requestId);
-    sessionRestoreError = null;
-    try {
-      await loadIdentity();
-    } catch (_) {
-      await _forget();
-      rethrow;
-    }
+    _authRepository = AuthRepository(requests: _requestExecutor);
+    sessionCoordinator = AuthSessionCoordinator(
+      repository: _authRepository,
+      credentialStorage: credentialStorage,
+    )..addListener(_forwardSessionChanges);
   }
 
-  Future<void> loadIdentity() async {
-    final result = await get('/auth/me');
-    identity = result.objectData();
-    if (identity?['userId'] == null) {
-      throw const ApiFailure(
-        0,
-        'INVALID_RESPONSE',
-        'Invalid account response.',
-      );
-    }
-    _notifyListeners();
-  }
+  AuthSessionState get sessionState => sessionCoordinator.state;
+  bool get ready => !sessionState.isInitializing;
+  bool get hasRecoverableSession => sessionState.canRetrySessionRestore;
+  String? get sessionRestoreError => sessionState.sessionRestoreError;
+  Map<String, dynamic>? get identity =>
+      sessionState.identity?.toCompatibilityMap();
+  bool get signedIn => sessionState.isAuthenticated;
+  String get userId => sessionState.identity?.userId.value ?? '';
+  String get displayName => sessionState.identity?.displayName ?? '';
+  String get email => sessionState.identity?.email ?? '';
 
-  Future<void> signOut() async {
-    try {
-      if (_accessToken != null) await post('/auth/logout', const {});
-    } finally {
-      await _forget();
-    }
-  }
+  Future<void> initialize() => sessionCoordinator.initialize();
 
-  Future<void> _forget() async {
-    _accessToken = null;
-    _refreshToken = null;
-    _accessExpiry = null;
-    identity = null;
-    await _secure.delete(key: 'sme.mobile.refresh');
-    _notifyListeners();
-  }
+  Future<void> retrySessionRestore() =>
+      sessionCoordinator.retrySessionRestore();
 
-  Future<void> _adoptTokens(
-    Map<String, dynamic> values, {
-    String? requestId,
-  }) async {
-    final access = values['accessToken'];
-    final refresh = values['refreshToken'];
-    if (access is! String ||
-        access.isEmpty ||
-        refresh is! String ||
-        refresh.isEmpty) {
-      throw ApiFailure(
-        0,
-        'INVALID_RESPONSE',
-        'Invalid mobile token response.',
-        requestId: requestId,
-      );
-    }
-    _accessToken = access;
-    _refreshToken = refresh;
-    final expires = (values['expiresIn'] as num?)?.toInt() ?? 600;
-    _accessExpiry = DateTime.now().add(
-      Duration(seconds: expires > 60 ? expires - 30 : expires),
-    );
-    await _secure.write(key: 'sme.mobile.refresh', value: refresh);
-  }
+  Future<void> discardLocalSession() =>
+      sessionCoordinator.discardLocalSession();
 
-  Future<void> _renew() async {
-    final token = _refreshToken;
-    if (token == null)
-      throw const ApiFailure(401, 'AUTH_SESSION_EXPIRED', 'Session expired.');
-    try {
-      final result = await _request(
-        'POST',
-        '/auth/refresh',
-        auth: false,
-        authorization: 'Bearer ' + token,
-      );
-      await _adoptTokens(result.objectData(), requestId: result.requestId);
-    } on ApiFailure catch (failure) {
-      // Preserve refresh credentials when transport temporarily disappears.
-      // Rejected or replayed credentials must still fail closed.
-      if (!_isTemporary(failure)) await _forget();
-      rethrow;
-    } catch (_) {
-      await _forget();
-      rethrow;
-    }
-  }
+  Future<void> signIn(String email, String password) =>
+      sessionCoordinator.signIn(email, password);
 
-  Future<void> _refreshOnce() {
-    final running = _refreshFuture;
-    if (running != null) return running;
-    final future = _renew();
-    _refreshFuture = future;
-    return future.whenComplete(() {
-      if (identical(_refreshFuture, future)) _refreshFuture = null;
-    });
-  }
+  Future<void> loadIdentity() => sessionCoordinator.loadIdentity();
+
+  Future<void> signOut() => sessionCoordinator.signOut();
 
   Future<ApiResult> get(String path, {Map<String, String>? query}) =>
       _request('GET', path, query: query);
@@ -257,78 +127,48 @@ class ApiClient extends ChangeNotifier {
     Map<String, String>? query,
     Map<String, dynamic>? body,
     Map<String, String>? headers,
-    bool auth = true,
-    String? authorization,
     bool allowRetry = true,
   }) async {
-    if (auth &&
-        _refreshToken != null &&
-        (_accessToken == null ||
-            (_accessExpiry != null &&
-                DateTime.now().isAfter(_accessExpiry!)))) {
-      await _refreshOnce();
-    }
-
-    final controlledAuthorization =
-        authorization ??
-        (auth && _accessToken != null ? 'Bearer ' + _accessToken! : null);
-    CoreApiResponse response;
+    await sessionCoordinator._refreshIfNeeded();
     try {
-      response = await _coreTransport.send(
+      return await _requestExecutor.send(
         method,
         path,
         query: query,
         body: body,
         headers: headers,
-        authorization: controlledAuthorization,
+        authorization: sessionCoordinator._authorization,
       );
-    } on TransportFailure catch (failure) {
-      final requestId = _headerValue(failure.responseHeaders, 'x-request-id');
-      throw ApiFailure(
-        failure.status,
-        failure.code,
-        failure.message,
-        requestId: requestId,
-        responseRequestId: requestId,
-        retryAfter: _headerValue(failure.responseHeaders, 'retry-after'),
-        headers: failure.responseHeaders,
-        isTransportFailure: true,
+    } on ApiFailure catch (failure) {
+      final classification = const AuthFailureClassifier().classify(
+        failure,
+        AuthEndpoint.protectedRequest,
       );
-    }
+      if (classification != AuthFailureCategory.sessionInvalidated) rethrow;
 
-    if (auth &&
-        response.statusCode == 401 &&
-        allowRetry &&
-        _refreshToken != null) {
-      await _refreshOnce();
-      if (method.toUpperCase() == 'GET') {
-        return _request(
-          method,
-          path,
-          query: query,
-          body: body,
-          headers: headers,
-          allowRetry: false,
-        );
-      }
-    }
-    if (auth && response.statusCode == 401 && !allowRetry) {
-      try {
-        return _responseDecoder.decode(
-          statusCode: response.statusCode,
-          headers: response.headers,
-          bodyBytes: response.bodyBytes,
-        );
-      } on ApiFailure {
-        await _forget();
+      if (allowRetry &&
+          sessionCoordinator.state.isAuthenticated &&
+          sessionCoordinator._hasRefreshToken) {
+        await sessionCoordinator._refreshAfterUnauthorized();
+        if (method.toUpperCase() == 'GET') {
+          return _request(
+            method,
+            path,
+            query: query,
+            body: body,
+            headers: headers,
+            allowRetry: false,
+          );
+        }
         rethrow;
       }
+
+      if (sessionCoordinator.state.isAuthenticated &&
+          (!allowRetry || !sessionCoordinator._hasRefreshToken)) {
+        await sessionCoordinator._handleProtectedFailure(failure);
+      }
+      rethrow;
     }
-    return _responseDecoder.decode(
-      statusCode: response.statusCode,
-      headers: response.headers,
-      bodyBytes: response.bodyBytes,
-    );
   }
 
   /// A signed upload capability is not an API bearer endpoint. Never attach
@@ -347,35 +187,20 @@ class ApiClient extends ChangeNotifier {
         onProgress: onProgress,
       );
     } on TransportFailure catch (failure) {
-      final requestId = _headerValue(failure.responseHeaders, 'x-request-id');
-      throw ApiFailure(
-        failure.status,
-        failure.code,
-        failure.message,
-        requestId: requestId,
-        responseRequestId: requestId,
-        retryAfter: _headerValue(failure.responseHeaders, 'retry-after'),
-        headers: failure.responseHeaders,
-        isTransportFailure: true,
-      );
+      throw normalizeTransportFailure(failure);
     }
+  }
+
+  void _forwardSessionChanges() {
+    if (!_disposed) notifyListeners();
   }
 
   @override
   void dispose() {
-    // The application composition root owns and closes the shared client.
     _disposed = true;
+    sessionCoordinator
+      ..removeListener(_forwardSessionChanges)
+      ..dispose();
     super.dispose();
-  }
-
-  void _notifyListeners() {
-    if (!_disposed) notifyListeners();
-  }
-
-  static String? _headerValue(Map<String, String> headers, String name) {
-    for (final entry in headers.entries) {
-      if (entry.key.toLowerCase() == name) return entry.value;
-    }
-    return null;
   }
 }

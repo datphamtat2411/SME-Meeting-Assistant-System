@@ -48,11 +48,42 @@ void main() {
     expect(client.pathCalls('/protected'), 2);
     expect(client.pathCalls('/auth/refresh'), 1);
     expect(client.authorizationFor('/protected'), <String>[
-      'Bearer access-1',
-      'Bearer access-2',
+      'Bearer ${_accessToken(1)}',
+      'Bearer ${_accessToken(2)}',
     ]);
     expect(api.signedIn, isTrue);
   });
+
+  test(
+    'does not refresh or discard credentials for a malformed 401 response',
+    () async {
+      final client = AuthScenarioClient();
+      final credentials = InMemoryCredentialStorage();
+      final api = ApiClient(
+        baseUri: Uri.parse('https://api.example.test/api/v1'),
+        httpClient: client,
+        credentialStorage: credentials,
+      );
+      addTearDown(api.dispose);
+      await api.signIn('user@example.test', 'password');
+
+      await expectLater(
+        api.get('/malformed'),
+        throwsA(
+          isA<ApiFailure>().having(
+            (failure) => failure.invalidResponse,
+            'invalid response',
+            isTrue,
+          ),
+        ),
+      );
+
+      expect(client.pathCalls('/malformed'), 1);
+      expect(client.pathCalls('/auth/refresh'), 0);
+      expect(api.signedIn, isTrue);
+      expect(await credentials.read(key: 'sme.mobile.refresh'), 'refresh-1');
+    },
+  );
 
   test('refreshes a mutation credential without replaying or discarding the session', () async {
     final client = AuthScenarioClient();
@@ -80,7 +111,7 @@ void main() {
 
     await api.get('/after-mutation');
     expect(client.authorizationFor('/after-mutation'), <String>[
-      'Bearer access-2',
+      'Bearer ${_accessToken(2)}',
     ]);
   });
 }
@@ -97,24 +128,10 @@ class AuthScenarioClient extends http.BaseClient {
     switch (path) {
       case '/api/v1/auth/login':
         expect(request.headers['Authorization'], isNull);
-        return jsonResponse(
-          200,
-          successEnvelope(<String, dynamic>{
-            'accessToken': 'access-1',
-            'refreshToken': 'refresh-1',
-            'expiresIn': 600,
-          }),
-        );
+        return jsonResponse(200, successEnvelope(_tokens(1, 'refresh-1')));
       case '/api/v1/auth/me':
-        expect(request.headers['Authorization'], 'Bearer access-1');
-        return jsonResponse(
-          200,
-          successEnvelope(<String, dynamic>{
-            'userId': 'user-1',
-            'displayName': 'Test User',
-            'email': 'user@example.test',
-          }),
-        );
+        expect(request.headers['Authorization'], 'Bearer ${_accessToken(1)}');
+        return jsonResponse(200, successEnvelope(_validIdentity()));
       case '/api/v1/auth/refresh':
         refreshCount++;
         expect(
@@ -123,11 +140,12 @@ class AuthScenarioClient extends http.BaseClient {
         );
         return jsonResponse(
           200,
-          successEnvelope(<String, dynamic>{
-            'accessToken': refreshCount == 1 ? 'access-2' : 'access-3',
-            'refreshToken': refreshCount == 1 ? 'refresh-2' : 'refresh-3',
-            'expiresIn': 600,
-          }),
+          successEnvelope(
+            _tokens(
+              refreshCount + 1,
+              refreshCount == 1 ? 'refresh-2' : 'refresh-3',
+            ),
+          ),
         );
       case '/api/v1/protected':
         protectedCount++;
@@ -142,14 +160,16 @@ class AuthScenarioClient extends http.BaseClient {
           successEnvelope(<String, dynamic>{'value': 'fresh'}),
         );
       case '/api/v1/mutate':
-        expect(request.headers['Authorization'], 'Bearer access-1');
+        expect(request.headers['Authorization'], 'Bearer ${_accessToken(1)}');
         return jsonResponse(
           401,
           errorEnvelope('AUTH_REQUIRED', 'Token expired.'),
         );
       case '/api/v1/after-mutation':
-        expect(request.headers['Authorization'], 'Bearer access-2');
+        expect(request.headers['Authorization'], 'Bearer ${_accessToken(2)}');
         return jsonResponse(200, successEnvelope(<String, dynamic>{}));
+      case '/api/v1/malformed':
+        return jsonResponse(401, <String, dynamic>{'invalid': 'envelope'});
     }
     throw StateError('Unexpected request path $path');
   }
@@ -162,6 +182,37 @@ class AuthScenarioClient extends http.BaseClient {
       .map((request) => request.headers['Authorization'])
       .toList(growable: false);
 }
+
+Map<String, dynamic> _validIdentity() => <String, dynamic>{
+  'userId': 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+  'email': 'user@example.test',
+  'displayName': 'Test User',
+  'globalRole': 'EMPLOYEE',
+  'accountStatus': 'ACTIVE',
+  'primaryOrgUnitId': null,
+  'directoryManagementScope': <String, dynamic>{
+    'allUnits': false,
+    'unitIds': <String>[],
+  },
+  'session': <String, dynamic>{
+    'id': 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    'clientType': 'MOBILE',
+    'createdAt': '2026-11-22T10:00:00Z',
+    'lastSeenAt': null,
+    'absoluteExpiresAt': '2026-12-22T10:00:00Z',
+  },
+};
+
+String _accessToken(int generation) =>
+    'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln$generation';
+
+Map<String, dynamic> _tokens(int generation, String refresh) =>
+    <String, dynamic>{
+      'accessToken': _accessToken(generation),
+      'refreshToken': refresh,
+      'tokenType': 'Bearer',
+      'expiresIn': 600,
+    };
 
 class UnavailableHttpClient extends http.BaseClient {
   @override

@@ -147,6 +147,10 @@ class FakeApiClient extends ApiClient {
   final String? restoreErrorValue;
   final NoNetworkHttpClient client;
   int initializeCalls = 0;
+  bool readyValue = false;
+
+  @override
+  bool get ready => readyValue;
 
   @override
   bool get signedIn => signedInValue;
@@ -167,7 +171,7 @@ class FakeApiClient extends ApiClient {
   Future<void> initialize() async {
     initializeCalls++;
     await onInitialize?.call();
-    ready = true;
+    readyValue = true;
     notifyListeners();
   }
 
