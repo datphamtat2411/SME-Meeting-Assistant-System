@@ -7,15 +7,27 @@
 .pub/
 build/
 coverage/
+doc/api/
+
+# IDE and editor files
 *.iml
+*.ipr
+*.iws
 .idea/
 .vscode/
-android/local.properties
-android/key.properties
-android/.gradle/
-ios/Flutter/Generated.xcconfig
-ios/Flutter/flutter_export_environment.sh
-ios/Pods/
-ios/.symlinks/
-ios/Runner.xcworkspace/xcuserdata/
+
+# Temporary files and local logs
+*.class
+*.log
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
 .DS_Store
+
+# Local environment files
+.envrc
+
+# Android and iOS generated files and platform-local settings are maintained
+# in the platform-specific .gitignore files.

@@ -1,0 +1,23 @@
+# Gradle and native build caches
+/.gradle/
+/.kotlin/
+/captures/
+.cxx/
+
+# Flutter-generated plugin registration
+GeneratedPluginRegistrant.java
+
+# Machine-local Android SDK settings
+/local.properties
+
+# Signing credentials and private key material
+# Remember to never publicly share your keystore.
+# See https://flutter.dev/to/reference-keystore
+key.properties
+**/*.keystore
+**/*.jks
+**/*.p12
+**/*.pfx
+**/*.pem
+**/*.p8
+**/*.key
