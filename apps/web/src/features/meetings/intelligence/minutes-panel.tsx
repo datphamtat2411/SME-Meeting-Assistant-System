@@ -8,13 +8,19 @@ import { minutesQuery } from './minutes-api'
 
 export function MinutesPanel({ meetingId }: { meetingId: string }) {
   const query = useQuery(minutesQuery(meetingId))
+  const proposalsIncluded = query.data?.proposalsIncluded === true
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Official meeting minutes</CardTitle>
+        <CardTitle>
+          {proposalsIncluded
+            ? 'Meeting minutes snapshot'
+            : 'Official meeting minutes'}
+        </CardTitle>
         <p className='text-sm text-muted-foreground'>
-          Only confirmed decisions and official action items are included.
-          Unreviewed AI proposals are excluded.
+          {proposalsIncluded
+            ? 'Core reported that this snapshot contains unconfirmed AI proposals and it cannot be treated as official minutes.'
+            : 'Only confirmed decisions and official action items are included. Unreviewed AI proposals are excluded.'}
         </p>
       </CardHeader>
       <CardContent className='space-y-4'>
@@ -27,6 +33,15 @@ export function MinutesPanel({ meetingId }: { meetingId: string }) {
           />
         ) : (
           <>
+            {proposalsIncluded && (
+              <p
+                role='alert'
+                className='rounded border border-amber-300 p-2 text-sm text-amber-700'
+              >
+                This snapshot contains unconfirmed AI proposals and is not
+                official minutes.
+              </p>
+            )}
             <div className='flex flex-wrap items-center gap-2'>
               <Badge
                 variant={

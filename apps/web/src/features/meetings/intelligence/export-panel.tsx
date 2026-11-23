@@ -78,6 +78,7 @@ export function ExportPanel({ meetingId }: { meetingId: string }) {
         description: e instanceof Error ? e.message : undefined,
       }),
   })
+  const proposalsIncluded = minutes.data?.proposalsIncluded === true
   return (
     <Card>
       <CardHeader>
@@ -103,7 +104,9 @@ export function ExportPanel({ meetingId }: { meetingId: string }) {
               size='sm'
               variant='outline'
               disabled={
-                create.isPending || minutes.data?.completeness !== 'COMPLETE'
+                create.isPending ||
+                minutes.data?.completeness !== 'COMPLETE' ||
+                proposalsIncluded
               }
               onClick={() => create.mutate('MARKDOWN')}
             >
@@ -112,7 +115,9 @@ export function ExportPanel({ meetingId }: { meetingId: string }) {
             <Button
               size='sm'
               disabled={
-                create.isPending || minutes.data?.completeness !== 'COMPLETE'
+                create.isPending ||
+                minutes.data?.completeness !== 'COMPLETE' ||
+                proposalsIncluded
               }
               onClick={() => create.mutate('PDF')}
             >
@@ -136,6 +141,12 @@ export function ExportPanel({ meetingId }: { meetingId: string }) {
           <p className='text-sm text-amber-700'>
             Minutes are {minutes.data.completeness}. Review missing or stale
             content first.
+          </p>
+        )}
+        {proposalsIncluded && (
+          <p className='text-sm text-amber-700'>
+            Minutes contain unconfirmed AI proposals and are not eligible for
+            export.
           </p>
         )}
         {minutes.isError && (

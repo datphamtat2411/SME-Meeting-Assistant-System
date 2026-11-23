@@ -11,6 +11,10 @@ import { RecordingPanel } from './media/recording-panel'
 import { UploadPanel } from './media/upload-panel'
 
 export function MeetingTools({ meetingId }: { meetingId: string }) {
+  return <MeetingToolsForMeeting key={meetingId} meetingId={meetingId} />
+}
+
+function MeetingToolsForMeeting({ meetingId }: { meetingId: string }) {
   return (
     <section className='space-y-4'>
       <div>
@@ -18,6 +22,11 @@ export function MeetingTools({ meetingId }: { meetingId: string }) {
         <p className='text-sm text-muted-foreground'>
           Source media, asynchronous processing and human-reviewed results
           remain distinct.
+        </p>
+        <p className='mt-2 text-sm text-muted-foreground'>
+          This workspace does not acknowledge transcript review or admit Meeting
+          Intelligence automatically; those human gates remain explicit and
+          Core-authorized.
         </p>
       </div>
       <Tabs defaultValue='media' className='w-full'>

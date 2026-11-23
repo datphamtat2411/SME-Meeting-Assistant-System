@@ -54,9 +54,13 @@ export function ProcessingPanel({ meetingId }: { meetingId: string }) {
   useEffect(() => {
     for (const job of jobs.data ?? []) {
       if (
-        ['COMPLETED', 'SUCCEEDED', 'FAILED', 'PARTIAL_SUCCESS'].includes(
-          job.status
-        ) &&
+        [
+          'COMPLETED',
+          'COMPLETED_WITH_WARNINGS',
+          'SUCCEEDED',
+          'FAILED',
+          'PARTIAL_SUCCESS',
+        ].includes(job.status) &&
         !completed.current.has(job.id)
       ) {
         completed.current.add(job.id)

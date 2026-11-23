@@ -311,7 +311,7 @@ function MeetingWorkspace({
           (participant) =>
             participant.userId === currentUser?.userId &&
             participant.removedAt == null
-        )) && <MeetingTools meetingId={meeting.id} />}
+        )) && <MeetingTools key={meeting.id} meetingId={meeting.id} />}
     </>
   )
 }
