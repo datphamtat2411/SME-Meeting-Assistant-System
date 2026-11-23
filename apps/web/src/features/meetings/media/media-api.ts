@@ -24,6 +24,26 @@ const uploadIntentSchema = z.object({
   expiresAt: z.string(),
   requiredContentType: z.string(),
 })
+function readUploadIntent(value: unknown): z.infer<typeof uploadIntentSchema> {
+  const parsed = uploadIntentSchema.safeParse(value)
+  if (!parsed.success) {
+    throw new Error('Core returned an invalid media upload capability.')
+  }
+  return parsed.data
+}
+function secureCapabilityUrl(value: string): string {
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    throw new Error('Core returned an invalid or insecure storage capability.')
+  }
+  if (url.protocol !== 'https:' || url.username || url.password || url.hash) {
+    throw new Error('Core returned an invalid or insecure storage capability.')
+  }
+  // Return the original capability so its signed query is not normalized.
+  return value
+}
 const path = (meetingId: string) =>
   '/meetings/' + encodeURIComponent(meetingId) + '/media'
 export function meetingMediaQuery(meetingId: string) {
@@ -43,7 +63,7 @@ export async function uploadMeetingFile(
 ) {
   if (file.size <= 0) throw new Error('Choose a non-empty audio recording.')
   const contentType = file.type || 'application/octet-stream'
-  const intent = uploadIntentSchema.parse(
+  const intent = readUploadIntent(
     await coreApi.post<unknown>(
       path(meetingId) + '/uploads',
       {
@@ -57,13 +77,22 @@ export async function uploadMeetingFile(
   )
   // The short-lived S3 capability is never sent to Core API or persisted in browser storage.
   // Do not attach session cookies or CSRF headers to third-party object storage.
-  const response = await fetch(intent.uploadUrl, {
-    method: 'PUT',
-    body: file,
-    credentials: 'omit',
-    headers: { 'Content-Type': intent.requiredContentType },
-    referrerPolicy: 'no-referrer',
-  })
+  const uploadUrl = secureCapabilityUrl(intent.uploadUrl)
+  let response: Response
+  try {
+    response = await fetch(uploadUrl, {
+      method: 'PUT',
+      body: file,
+      credentials: 'omit',
+      redirect: 'error',
+      headers: { 'Content-Type': intent.requiredContentType },
+      referrerPolicy: 'no-referrer',
+    })
+  } catch {
+    throw new Error(
+      'Object storage upload could not be completed. The file was not finalized.'
+    )
+  }
   if (!response.ok)
     throw new Error(
       'Object storage upload failed (' +

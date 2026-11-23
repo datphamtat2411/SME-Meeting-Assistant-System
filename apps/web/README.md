@@ -14,23 +14,69 @@ cd apps/web
 corepack enable
 pnpm install --frozen-lockfile
 cp .env.example .env.local
-pnpm dev
 ```
 
-For local development, edit `.env.local`:
+The default `pnpm dev` mode is an HTTP development mode. It is useful for
+ordinary UI work, but it is **not** the secure integration runtime. For the
+approved local HTTPS runtime, edit `.env.local` with the browser-visible
+same-origin setting and the server-side transport settings below:
 
 ```ini
 VITE_CORE_API_BASE_URL=/api/v1
-VITE_CORE_API_PROXY_TARGET=http://localhost:8080
+VITE_CORE_API_PROXY_TARGET=http://127.0.0.1:8080
+
+# Server-only Vite HTTPS inputs; the files must already exist.
+WEB_DEV_HTTPS_KEY_FILE=/absolute/path/to/web-dev.key
+WEB_DEV_HTTPS_CERT_FILE=/absolute/path/to/web-dev.crt
+
+# Optional local-only signed-media adapter.
+VITE_LOCAL_MEDIA_STORAGE_ORIGIN=https://storage.internal:9443
+LOCAL_MEDIA_STORAGE_CA_FILE=/absolute/path/to/storage-ca.crt
 ```
 
-Set the proxy target to the actual Core API reachable **from the Vite
-process** (important for WSL2/Docker). The Vite proxy preserves same-origin
-browser cookies. In production, reverse-proxy `/api/v1` to the Core API on the
-same trusted HTTPS origin. Do not expose internal worker/admin ports or storage
-credentials to the client. If using a different origin, configure appropriate
-Core API CORS, credential cookie and CSRF policies on the server; changing a
-Vite environment variable alone does not establish secure cross-origin auth.
+`WEB_DEV_HTTPS_KEY_FILE`, `WEB_DEV_HTTPS_CERT_FILE`, and
+`LOCAL_MEDIA_STORAGE_CA_FILE` are server-only paths. The existing
+`VITE_CORE_API_PROXY_TARGET` name is retained for Vite configuration
+compatibility, but its value must be an approved loopback Core listener and
+must never contain credentials. Do not place private keys, CA material,
+cookies, signed URLs, or service credentials in any `VITE_*` variable.
+
+Start the secure runtime on loopback:
+
+```bash
+pnpm dev --host 127.0.0.1
+```
+
+The Web certificate must be trusted by the test browser and include the exact
+requested Web hostname. Open the matching `https://` URL; never disable
+certificate warnings or validation. Both HTTPS variables are required
+together. An incomplete pair or unreadable/invalid certificate fails during
+Vite startup. Leaving them unset intentionally starts HTTP development mode
+and must be recorded as **not a secure integration runtime**.
+
+The browser sees only `/api/v1`; Vite proxies that path to the configured Core
+listener while preserving the existing cookie/CSRF transport. Set the target
+to the Core API reachable **from the Vite process** (important for
+WSL2/Docker). Do not expose internal worker/admin ports or storage credentials
+to the client. In production, reverse-proxy `/api/v1` to Core on the same
+trusted HTTPS origin rather than introducing a browser-visible Core origin.
+
+When the optional local media settings are present, Vite enables the
+development-only `/__local-media` adapter. It accepts only the documented
+signed media paths and uses the configured CA to verify the
+`storage.internal` HTTPS identity. The physical connection may resolve to
+loopback, but the signed storage host is preserved. Missing CA material,
+non-loopback Web binding, non-HTTPS storage origin, unsupported methods/types,
+oversized requests, and upstream redirects fail closed. The normal Rush media
+compatibility flow does not yet complete local capability rewriting or the
+full media workflow; that boundary remains INT-05.
+
+For a runtime observation, record the redacted Web URL and verify in the
+browser that `location.protocol === 'https:'`, the certificate is trusted,
+`window.isSecureContext === true`, Core requests remain same-origin
+`/api/v1`, and the console/network panel has no mixed-content request. An
+unauthorized Core response may prove reachability only; do not use real
+credentials or destructive media mutations for this transport check.
 
 ```bash
 pnpm lint
