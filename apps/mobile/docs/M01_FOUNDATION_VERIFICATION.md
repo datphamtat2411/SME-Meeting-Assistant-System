@@ -1,15 +1,14 @@
 # M01 Mobile Foundation verification report
 
-**Outcome: locally verified; hosted CI acceptance is NOT VERIFIED.**
+**Outcome: local verification and hosted clean-runner CI both PASS.**
 
 ## Revision and toolchain
 
-- Repository `HEAD` at verification start: `342c8aaf3ff5fc8f548dbea3e9e532fbe2c02576`
+- Foundation implementation commit: `d3ee1193a1bf8f642cd9c696311f0a761f989c44`
   on `mobile/module-app-foundation`.
-- The implementation and this report are in the working tree based on that
-  revision. They are not committed, so the final implementation commit SHA is
-  **NOT AVAILABLE**. The base SHA is not represented as containing these
-  changes.
+- Parent commit: `342c8aaf3ff5fc8f548dbea3e9e532fbe2c02576`.
+- The successful GitHub Actions run below executed against the exact
+  implementation commit.
 - Flutter 3.50.1 stable (`ae9b586f34`); bundled Dart 3.14.0.
 - OpenJDK 17.0.21.1; Android SDK 36.0.0, platform `android-36`, Build Tools
   36.0.0.
@@ -34,7 +33,7 @@ and JDK 17 explicitly selected:
 | Android debug APK | **PASS** | `flutter build apk --debug --dart-define=API_BASE_URL=https://api.mobile-ci.invalid/api/v1` |
 | Tracked pin/lock/native drift | **PASS** | `git diff --exit-code` for `.fvmrc`, `pubspec.yaml`, `pubspec.lock`, and `android/` was clean |
 | Workflow syntax/structure | **PASS (local parse only)** | PyYAML parsed the workflow and expected job/trigger structure |
-| GitHub Actions clean-runner execution | **NOT VERIFIED** | No workflow run was available |
+| GitHub Actions clean-runner execution | **PASS** | [Run 45169922564](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/actions/runs/45169922564) on commit `d3ee1193a1bf8f642cd9c696311f0a761f989c44` |
 
 The machine-readable test report is
 `apps/mobile/build/ci-evidence/flutter-test.json`. The debug APK is
@@ -76,12 +75,15 @@ validates native settings, checks formatting and analysis, runs all Flutter
 tests with JSON/LCOV evidence, builds an unsigned debug APK, and uploads
 evidence/APK artifacts with 14-day retention.
 
-- GitHub Actions result: **NOT VERIFIED**. A push/pull request or manual run
-  with repository Actions access is required. No run URL exists.
-- GitHub artifacts: **NOT AVAILABLE**. The local test report and APK above were
-  not uploaded.
-- Local YAML parsing does not establish GitHub runner compatibility or a
-  passing required status check.
+- GitHub Actions result: **PASS**. [Run 45169922564](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/actions/runs/45169922564)
+  completed successfully in 7m 2s on the exact implementation commit above.
+- Published artifact `mobile-test-evidence` (artifact ID `14816452788`,
+  13,321-byte archive) contains the JSON test report and LCOV coverage.
+- Published artifact `mobile-android-debug-apk` (artifact ID `14816791802`,
+  82,532,979-byte archive) contains the debug APK.
+- Both artifacts were available at report time and have 14-day retention.
+  Retrieve them from the linked Actions run. They are verification artifacts,
+  not production release artifacts.
 
 ## Warnings and limitations
 
@@ -102,8 +104,8 @@ evidence/APK artifacts with 14-day retention.
 
 ## Reintegration recommendation
 
-**Not yet for unconditional reintegration.** The Mobile foundation passes its
-local gates and is ready for code review, but M01 must not be called fully
-verified until these changes are committed and the new workflow passes on that
-exact commit. The hosted CI result is the remaining required foundation gate;
-live backend, device, and release acceptance remain separate follow-up gates.
+**M01 foundation is ready for reintegration** into the development workflow:
+local gates and the hosted clean-runner workflow passed on the identified
+implementation commit. This is not live backend integration, physical-device
+acceptance, iOS validation, or production release readiness; those remain
+separate follow-up gates.

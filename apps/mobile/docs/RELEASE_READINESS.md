@@ -4,7 +4,7 @@ Mobile is in an Android-first foundation phase. This checklist separates
 automated foundation evidence from backend integration, device acceptance, and
 production release readiness. See
 [`M01_FOUNDATION_VERIFICATION.md`](M01_FOUNDATION_VERIFICATION.md) for the
-current local results and the explicitly unverified GitHub Actions gate.
+current local results and the successful hosted GitHub Actions foundation run.
 
 ## Verified foundation capabilities
 
