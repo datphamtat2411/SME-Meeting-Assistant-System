@@ -61,6 +61,26 @@ WSL2/Docker). Do not expose internal worker/admin ports or storage credentials
 to the client. In production, reverse-proxy `/api/v1` to Core on the same
 trusted HTTPS origin rather than introducing a browser-visible Core origin.
 
+For an isolated Chromium/Playwright check, trust only the existing approved
+public Development CA root in a task-owned NSS database. Do not import private
+keys, modify the global trust store, create a replacement CA, or use a browser
+certificate-error bypass:
+
+```bash
+TRUST_HOME="$(mktemp -d)"
+mkdir -m 700 -p "$TRUST_HOME/.pki/nssdb"
+certutil -N -d sql:"$TRUST_HOME/.pki/nssdb" --empty-password
+certutil -A -d sql:"$TRUST_HOME/.pki/nssdb" \
+  -n "Approved Development CA" -t "C,," -a \
+  -i /absolute/path/to/approved-development-root-ca.crt
+HOME="$TRUST_HOME" <normal-Chromium-or-Playwright-command>
+```
+
+Launch the browser with normal certificate validation and use the hostname
+covered by the certificate SAN (for example, `https://localhost:5173` when
+the certificate contains `DNS:localhost`). Never use
+`--ignore-certificate-errors` or Playwright `ignoreHTTPSErrors`.
+
 When the optional local media settings are present, Vite enables the
 development-only `/__local-media` adapter. It accepts only the documented
 signed media paths and uses the configured CA to verify the
