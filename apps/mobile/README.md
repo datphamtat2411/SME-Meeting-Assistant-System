@@ -2,23 +2,60 @@
 
 The production-facing mobile client of the SME Meeting Assistant monorepo, built feature-first around authentication, meeting schedules, recordings, transcripts, meeting intelligence, action items, Assistant and personal preferences.
 
-## Prerequisites and first-time platform bootstrap
+## Prerequisites and deterministic setup
 
-Flutter >= 3.47, Dart >= 3.10, Android SDK (or Xcode for iOS), a physical device or emulator, and an accessible Spring Boot Core API. No backend secrets belong in the app.
+Install FVM, JDK 17, the Android SDK, and a physical Android device or
+emulator. The project pin in `.fvmrc` is authoritative: Flutter 3.50.1 with its
+bundled Dart 3.14.0. No backend secrets belong in the app. Normal Android
+development must not require Xcode or CocoaPods.
 
-This package started as a README-only directory. **Native Android/iOS runner files are generated locally**, not committed, so that platform templates match the installed Flutter SDK. Bootstrap once:
+The Android build is pinned to AGP 9.3.1, Gradle 9.5.0, Kotlin Gradle Plugin
+2.4.20, and Java 17. The existing AGP legacy-compatibility flags remain
+intentional until a separate migration.
+
+From a clean checkout:
 
 ```bash
 cd apps/mobile
+command -v fvm >/dev/null || dart pub global activate fvm
+export PATH="$HOME/.pub-cache/bin:$PATH"
 bash tool/bootstrap.sh
-flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8080/api/v1
+fvm flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8080/api/v1
 ```
 
+- Add the Dart pub-cache `bin` directory to `PATH` if the newly installed
+  `fvm` command is not found.
+- `tool/bootstrap.sh` validates FVM, Flutter/Dart, and JDK 17, installs the
+  pinned SDK when needed, enforces `pubspec.lock`, and validates Android
+  configuration. It never runs `flutter create` or overwrites native source.
+- Use `python3 tool/validate_native_config.py` for the focused Android
+  configuration check.
 - The default URL is `http://10.0.2.2:8080/api/v1` for an Android emulator in **debug builds only**. Replace it with your machine's reachable LAN IP when testing on a real device; use HTTPS whenever possible.
-- The bootstrap script automatically configures Android RECORD_AUDIO/INTERNET permissions and allows cleartext HTTP **only in the debug manifest**; never enable cleartext in release.
-- iOS physical devices require the usual Apple signing and HTTPS/ATS configuration.
+- Android `RECORD_AUDIO` and `INTERNET` permissions are committed in the main manifest. Cleartext HTTP is enabled only by the debug manifest; release has no unrestricted cleartext exception.
+- The iOS project and source remain intact for future support, but iOS
+  development, builds, tests, and validation are deferred unless explicitly
+  requested.
 - Release builds require an explicit **HTTPS** `API_BASE_URL`. Backend must enable `app.auth.transport.enabled` and expose the relevant modules.
-- `flutter analyze lib` / `flutter build apk --debug` verify source and platform compilation after bootstrap. GitHub Actions publishes a debug APK artifact from each successful CI run. No test cases are committed.
+- `fvm flutter analyze lib` / `fvm flutter build apk --debug` verify source and platform compilation after setup. GitHub Actions publishes a debug APK artifact from each successful CI run. A debug APK is not release-signing or store-readiness evidence.
+
+### Android release signing
+
+Debug builds do not need release credentials. A release build requires all four
+values from ignored `android/key.properties` (relative `storeFile` paths are
+relative to `android/`) or from protected environment variables:
+
+```text
+storeFile=release-key.jks
+storePassword=...
+keyAlias=...
+keyPassword=...
+```
+
+The equivalent environment variables are
+`ANDROID_RELEASE_STORE_FILE`, `ANDROID_RELEASE_STORE_PASSWORD`,
+`ANDROID_RELEASE_KEY_ALIAS`, and `ANDROID_RELEASE_KEY_PASSWORD`. Missing or
+incomplete inputs fail the release build; the build never falls back to the
+debug certificate. Never commit keystores or signing credentials.
 
 ## Modules and entry points
 

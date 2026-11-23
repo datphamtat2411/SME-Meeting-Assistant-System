@@ -9,15 +9,19 @@ business behavior and from work that still needs end-to-end validation.
 From the repository root:
 
     cd apps/mobile
+    fvm install
     bash tool/bootstrap.sh
-    flutter analyze lib
-    flutter run --dart-define=API_BASE_URL=https://YOUR-API-HOST/api/v1
+    fvm flutter analyze lib
+    fvm flutter run --dart-define=API_BASE_URL=https://YOUR-API-HOST/api/v1
 
-The bootstrap script generates Android/iOS runner templates for the selected
-Flutter SDK and configures the device microphone permission. An Android emulator
-can use http://10.0.2.2:8080/api/v1 for local development. A physical phone
-needs a routable host or tunnel address. Production must use HTTPS. Provide a
-running and authorized Core API; the app does not contain an offline mock server.
+The bootstrap script validates the pinned Flutter 3.50.1/Dart 3.14.0 and JDK
+17, enforces `pubspec.lock`, and checks the committed Android configuration. It
+does not generate or overwrite native runner files. The iOS project remains
+preserved for deferred support, but is not built or validated by this workflow.
+An Android emulator can use http://10.0.2.2:8080/api/v1 for local development. A
+physical phone needs a routable host or tunnel address. Production must use
+HTTPS. Provide a running and authorized Core API; the app does not contain an
+offline mock server.
 
 GitHub Actions publishes the debug Android APK as an artifact of successful
 Mobile Flutter build runs. A debug APK is not a release signing, store submission,
@@ -79,8 +83,8 @@ to display durable job state and warnings.
    must work end to end; validate source access and citations.
 6. Review TLS, credential rotation, device storage, PII retention, audio consent
    policy, audit logging, and accessibility with stakeholders.
-7. Perform device and iOS compilation/signing checks. CI currently confirms
-   Flutter analyze + Android debug APK, not iOS release certification.
+7. Perform the required physical Android device and release-signing checks. iOS
+   compilation/signing is deferred and only performed when explicitly requested.
 8. Run formal acceptance and regression validation before real user rollout.
 
 No additional test cases were committed, as requested in the original scope.

@@ -1,3 +1,34 @@
+import java.util.Properties
+
+val releaseSigningProperties = Properties().apply {
+    val propertiesFile = rootProject.file("key.properties")
+    if (propertiesFile.isFile) {
+        propertiesFile.inputStream().use(::load)
+    }
+}
+
+fun String?.nonBlank(): String? = this?.trim()?.takeIf { it.isNotEmpty() }
+
+fun releaseSigningValue(propertyName: String, environmentName: String): String? =
+    System.getenv(environmentName).nonBlank()
+        ?: releaseSigningProperties.getProperty(propertyName).nonBlank()
+
+val releaseStoreFilePath =
+    releaseSigningValue("storeFile", "ANDROID_RELEASE_STORE_FILE")
+val releaseStorePassword =
+    releaseSigningValue("storePassword", "ANDROID_RELEASE_STORE_PASSWORD")
+val releaseKeyAlias =
+    releaseSigningValue("keyAlias", "ANDROID_RELEASE_KEY_ALIAS")
+val releaseKeyPassword =
+    releaseSigningValue("keyPassword", "ANDROID_RELEASE_KEY_PASSWORD")
+val releaseKeystoreFile = releaseStoreFilePath?.let(rootProject::file)
+val releaseSigningValuesPresent = listOf(
+    releaseStoreFilePath,
+    releaseStorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword,
+).all { it != null }
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
@@ -14,11 +45,19 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
+    signingConfigs {
+        if (releaseSigningValuesPresent) {
+            create("release") {
+                keyAlias = requireNotNull(releaseKeyAlias)
+                keyPassword = requireNotNull(releaseKeyPassword)
+                storeFile = requireNotNull(releaseKeystoreFile)
+                storePassword = requireNotNull(releaseStorePassword)
+            }
+        }
+    }
+
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "vn.sme.meetingassistant.sme_meeting_assistant"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         // Uses the version code from pubspec.yaml. When using split APKs, 1000 * ABI_VERSION
@@ -31,10 +70,16 @@ android {
 
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            if (releaseSigningValuesPresent) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
+    }
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
     }
 }
 
@@ -46,4 +91,41 @@ kotlin {
 
 flutter {
     source = "../.."
+}
+
+val validateReleaseSigning = tasks.register("validateReleaseSigning") {
+    doLast {
+        val missingInputs = mutableListOf<String>().apply {
+            if (releaseStoreFilePath == null) {
+                add("storeFile or ANDROID_RELEASE_STORE_FILE")
+            }
+            if (releaseStorePassword == null) {
+                add("storePassword or ANDROID_RELEASE_STORE_PASSWORD")
+            }
+            if (releaseKeyAlias == null) {
+                add("keyAlias or ANDROID_RELEASE_KEY_ALIAS")
+            }
+            if (releaseKeyPassword == null) {
+                add("keyPassword or ANDROID_RELEASE_KEY_PASSWORD")
+            }
+        }
+        if (releaseKeystoreFile != null && !releaseKeystoreFile.isFile) {
+            missingInputs += "keystore file at ${releaseKeystoreFile.path}"
+        }
+        if (missingInputs.isNotEmpty()) {
+            throw GradleException(
+                "Release signing is required. Configure android/key.properties or " +
+                    "ANDROID_RELEASE_* environment variables; missing/invalid: " +
+                    missingInputs.joinToString(", "),
+            )
+        }
+    }
+}
+
+tasks.configureEach {
+    if (name.contains("Release", ignoreCase = true) &&
+        name != validateReleaseSigning.name
+    ) {
+        dependsOn(validateReleaseSigning)
+    }
 }
