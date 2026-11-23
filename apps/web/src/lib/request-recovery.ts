@@ -212,8 +212,17 @@ const EXCLUDED_PATHS = [
   '/auth/login',
   '/auth/refresh',
   '/auth/logout',
+  '/auth/password-recovery',
+  '/auth/password-reset',
+  '/auth/account-setup',
 ]
-const AUTH_LIFECYCLE_EXEMPT_PATHS = ['/auth/csrf', '/auth/logout']
+const AUTH_LIFECYCLE_EXEMPT_PATHS = [
+  '/auth/csrf',
+  '/auth/logout',
+  '/auth/password-recovery',
+  '/auth/password-reset',
+  '/auth/account-setup',
+]
 
 let defaultCoordinator: RequestRecoveryCoordinator | undefined
 

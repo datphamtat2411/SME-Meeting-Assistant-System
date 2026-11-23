@@ -1,80 +1,71 @@
-import { useState } from 'react'
-import { z } from 'zod'
-import { useForm } from 'react-hook-form'
-import { zodResolver } from '@hookform/resolvers/zod'
-import { useNavigate } from '@tanstack/react-router'
-import { ArrowRight, Loader2 } from 'lucide-react'
+import { useState, type FormEvent } from 'react'
 import { toast } from 'sonner'
-import { sleep, cn } from '@/lib/utils'
+import { normalizeCoreApiError } from '@/lib/core-api'
+import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
-import {
-  Form,
-  FormControl,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormMessage,
-} from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
-
-const formSchema = z.object({
-  email: z.email({
-    error: (iss) => (iss.input === '' ? 'Please enter your email.' : undefined),
-  }),
-})
+import { Label } from '@/components/ui/label'
+import { requestPasswordRecovery } from '../../account-flows-api'
 
 export function ForgotPasswordForm({
   className,
   ...props
-}: React.HTMLAttributes<HTMLFormElement>) {
-  const navigate = useNavigate()
-  const [isLoading, setIsLoading] = useState(false)
-
-  const form = useForm<z.infer<typeof formSchema>>({
-    resolver: zodResolver(formSchema),
-    defaultValues: { email: '' },
-  })
-
-  function onSubmit(data: z.infer<typeof formSchema>) {
-    setIsLoading(true)
-
-    toast.promise(sleep(2000), {
-      loading: 'Sending email...',
-      success: () => {
-        setIsLoading(false)
-        form.reset()
-        navigate({ to: '/otp' })
-        return `Email sent to ${data.email}`
-      },
-      error: 'Error',
-    })
+}: React.ComponentProps<'form'>) {
+  const [email, setEmail] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [submitted, setSubmitted] = useState(false)
+  const [unavailable, setUnavailable] = useState(false)
+  async function submit(e: FormEvent) {
+    e.preventDefault()
+    setBusy(true)
+    try {
+      await requestPasswordRecovery(email)
+      setSubmitted(true)
+    } catch (error) {
+      const failure = normalizeCoreApiError(error)
+      if (failure.status === 404) setUnavailable(true)
+      toast.error(
+        failure.status === 404
+          ? 'Password recovery is not enabled on this server.'
+          : 'Request could not be sent',
+        {
+          description: error instanceof Error ? error.message : undefined,
+        }
+      )
+    } finally {
+      setBusy(false)
+    }
   }
-
+  if (submitted)
+    return (
+      <p role='status' className='rounded-lg border p-4 text-sm'>
+        If an eligible account exists for that email, password reset
+        instructions will be sent. Check your inbox.
+      </p>
+    )
   return (
-    <Form {...form}>
-      <form
-        onSubmit={form.handleSubmit(onSubmit)}
-        className={cn('grid gap-2', className)}
-        {...props}
-      >
-        <FormField
-          control={form.control}
-          name='email'
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>Email</FormLabel>
-              <FormControl>
-                <Input placeholder='name@example.com' {...field} />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
+    <form onSubmit={submit} className={cn('space-y-4', className)} {...props}>
+      <div className='space-y-1'>
+        <Label htmlFor='recover-email'>Organization email</Label>
+        <Input
+          id='recover-email'
+          type='email'
+          required
+          autoComplete='email'
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder='name@company.com'
         />
-        <Button className='mt-2' disabled={isLoading}>
-          Continue
-          {isLoading ? <Loader2 className='animate-spin' /> : <ArrowRight />}
-        </Button>
-      </form>
-    </Form>
+      </div>
+      {unavailable && (
+        <p role='alert' className='text-sm text-destructive'>
+          The recovery endpoint is unavailable on the current deployment.
+          Contact your administrator.
+        </p>
+      )}
+      <Button disabled={busy || unavailable || !email.trim()}>
+        {busy ? 'Requesting…' : 'Send recovery link'}
+      </Button>
+    </form>
   )
 }
