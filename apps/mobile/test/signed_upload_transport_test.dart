@@ -183,16 +183,18 @@ void main() {
         final file = File('${directory.path}/audio.bin');
         await file.writeAsBytes(<int>[1, 2, 3]);
         var shouldTimeout = false;
-        final client = UploadRecordingClient((request) async {
+        final timeoutResponse = Completer<http.StreamedResponse>();
+        final client = UploadRecordingClient((request) {
           if (shouldTimeout) {
-            await Future<void>.delayed(const Duration(milliseconds: 50));
-            return streamedUploadResponse(200);
+            return timeoutResponse.future;
           }
-          throw const SocketException('private upload details');
+          return Future<http.StreamedResponse>.error(
+            const SocketException('private upload details'),
+          );
         });
         final transport = SignedUploadTransport(
           httpClient: client,
-          timeout: const Duration(milliseconds: 1),
+          timeout: const Duration(seconds: 1),
           androidDebugOverride: false,
         );
 

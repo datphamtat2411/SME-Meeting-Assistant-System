@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -336,6 +337,93 @@ void main() {
     },
   );
 
+  test('403, unavailable backend, timeout, and malformed refresh outcomes stay pending', () async {
+    final cases =
+        <
+          ({
+            String name,
+            AuthFailureCategory category,
+            AuthFailureCategory? underlying,
+            int? status,
+            bool timeout,
+            bool malformed,
+          })
+        >[
+          (
+            name: 'forbidden',
+            category: AuthFailureCategory.authorizationDenied,
+            underlying: null,
+            status: 403,
+            timeout: false,
+            malformed: false,
+          ),
+          (
+            name: 'service unavailable',
+            category: AuthFailureCategory.rotationOutcomeUnknown,
+            underlying: AuthFailureCategory.temporaryServiceFailure,
+            status: 503,
+            timeout: false,
+            malformed: false,
+          ),
+          (
+            name: 'timeout',
+            category: AuthFailureCategory.rotationOutcomeUnknown,
+            underlying: AuthFailureCategory.requestTimeout,
+            status: null,
+            timeout: true,
+            malformed: false,
+          ),
+          (
+            name: 'malformed response',
+            category: AuthFailureCategory.rotationOutcomeUnknown,
+            underlying: AuthFailureCategory.invalidResponse,
+            status: null,
+            timeout: false,
+            malformed: true,
+          ),
+        ];
+
+    for (final testCase in cases) {
+      final storage = _FaultStorage();
+      final store = await _storedToken(storage);
+      final client = _LifecycleClient(
+        refreshStatus: testCase.status,
+        timeoutOnRefresh: testCase.timeout,
+        malformedRefresh: testCase.malformed,
+      );
+      final api = ApiClient(
+        baseUri: _baseUri,
+        httpClient: client,
+        credentialStorage: storage,
+      );
+      addTearDown(api.dispose);
+
+      await api.initialize();
+
+      final failure = api.sessionState.failure!;
+      expect(
+        api.sessionState.phase,
+        AuthSessionPhase.reauthenticationRequired,
+        reason: testCase.name,
+      );
+      expect(failure.category, testCase.category, reason: testCase.name);
+      expect(
+        failure.underlyingCategory,
+        testCase.underlying,
+        reason: testCase.name,
+      );
+      if (testCase.status != null) {
+        expect(failure.status, testCase.status, reason: testCase.name);
+      }
+      expect(
+        (await store.read()).state,
+        TokenStoreCredentialState.rotationPending,
+        reason: testCase.name,
+      );
+      expect(client.refreshCredentials, <String?>['refresh_0']);
+    }
+  });
+
   test('rotation commit failure leaves pending; retry reads rather than reuses old token', () async {
     final storage = _FaultStorage();
     final store = await _storedToken(storage);
@@ -487,6 +575,9 @@ class _LifecycleClient extends RecordingHttpClient {
     this.onRefresh,
     this.onIdentity,
     this.throwOnRefresh = false,
+    this.timeoutOnRefresh = false,
+    this.malformedRefresh = false,
+    this.refreshStatus,
     this.rateLimitRefreshes = 0,
     this.rateLimitCode = 'RATE_LIMIT_EXCEEDED',
   }) : super((_) async => throw StateError('handler initialized below'));
@@ -494,6 +585,9 @@ class _LifecycleClient extends RecordingHttpClient {
   final Future<void> Function()? onRefresh;
   final Future<void> Function()? onIdentity;
   final bool throwOnRefresh;
+  final bool timeoutOnRefresh;
+  final bool malformedRefresh;
+  final int? refreshStatus;
   int rateLimitRefreshes;
   final String rateLimitCode;
   final List<String> paths = <String>[];
@@ -517,6 +611,24 @@ class _LifecycleClient extends RecordingHttpClient {
       await onRefresh?.call();
       if (throwOnRefresh) {
         throw const SocketException('private transport detail');
+      }
+      if (timeoutOnRefresh) {
+        throw TimeoutException('private timeout detail');
+      }
+      if (refreshStatus != null) {
+        return jsonResponse(
+          refreshStatus!,
+          errorEnvelope(
+            refreshStatus == 403 ? 'AUTHZ_FORBIDDEN' : 'SERVICE_UNAVAILABLE',
+            'Try again later.',
+          ),
+        );
+      }
+      if (malformedRefresh) {
+        return jsonResponse(
+          200,
+          successEnvelope(<String, dynamic>{'accessToken': 'malformed'}),
+        );
       }
       if (rateLimitRefreshes > 0) {
         rateLimitRefreshes--;

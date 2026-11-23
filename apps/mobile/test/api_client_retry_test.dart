@@ -15,6 +15,9 @@ void main() {
         httpClient: UnavailableHttpClient(),
         credentialStorage: InMemoryCredentialStorage(),
       );
+      addTearDown(api.dispose);
+      await api.initialize();
+      await api.signIn('user@example.test', 'password');
 
       await expectLater(
         api.get('/unavailable'),
@@ -225,8 +228,15 @@ Map<String, dynamic> _tokens(int generation, String refresh) =>
 
 class UnavailableHttpClient extends http.BaseClient {
   @override
-  Future<http.StreamedResponse> send(http.BaseRequest request) =>
-      Future<http.StreamedResponse>.error(
-        const SocketException('private network details'),
-      );
+  Future<http.StreamedResponse> send(http.BaseRequest request) {
+    if (request.url.path.endsWith('/auth/login')) {
+      return jsonResponse(200, successEnvelope(_tokens(1, 'refresh-1')));
+    }
+    if (request.url.path.endsWith('/auth/me')) {
+      return jsonResponse(200, successEnvelope(_validIdentity()));
+    }
+    return Future<http.StreamedResponse>.error(
+      const SocketException('private network details'),
+    );
+  }
 }

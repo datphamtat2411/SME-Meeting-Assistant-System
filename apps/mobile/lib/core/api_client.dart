@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -147,9 +148,14 @@ class ApiClient extends ChangeNotifier {
     Map<String, String>? query,
     Map<String, dynamic>? body,
     Map<String, String>? headers,
-    bool allowRetry = true,
   }) async {
-    await sessionCoordinator._refreshIfNeeded();
+    final coordinator = sessionCoordinator;
+    final epoch = coordinator._lifecycleEpoch;
+    final credential = coordinator._credentialForDispatch(
+      await coordinator._credentialForProtectedRequest(expectedEpoch: epoch),
+      requireVerifiedSession: true,
+    );
+    final requestEpoch = credential.epoch;
     try {
       return await _requestExecutor.send(
         method,
@@ -157,39 +163,59 @@ class ApiClient extends ChangeNotifier {
         query: query,
         body: body,
         headers: headers,
-        authorization: sessionCoordinator._authorization,
+        authorization: credential.authorization,
       );
     } on ApiFailure catch (failure) {
-      final classification = const AuthFailureClassifier().classify(
-        failure,
-        AuthEndpoint.protectedRequest,
-      );
-      if (classification != AuthFailureCategory.sessionInvalidated) rethrow;
+      if (!_isAuthentication401(failure)) rethrow;
+      if (!coordinator._isCurrentEpoch(requestEpoch)) rethrow;
 
-      if (allowRetry &&
-          sessionCoordinator.state.isAuthenticated &&
-          sessionCoordinator._hasRefreshToken) {
-        await sessionCoordinator._refreshAfterUnauthorized();
-        if (method.toUpperCase() == 'GET') {
-          return _request(
-            method,
-            path,
-            query: query,
-            body: body,
-            headers: headers,
-            allowRetry: false,
+      final current = coordinator._snapshotForEpoch(requestEpoch);
+      if (current == null) rethrow;
+      final recovered = current.generation > credential.generation
+          ? current
+          : await coordinator._recoverAfterUnauthorized(
+              expectedEpoch: requestEpoch,
+              usedGeneration: credential.generation,
+            );
+
+      if (method.toUpperCase() != 'GET') {
+        // Mutations are never replayed, even when a credential rotation
+        // succeeds. Preserve the original API failure for deliberate retry.
+        rethrow;
+      }
+
+      final replayCredential = coordinator._credentialForDispatch(
+        recovered,
+        requireVerifiedSession: true,
+      );
+      try {
+        return await _requestExecutor.send(
+          method,
+          path,
+          query: query,
+          body: body,
+          headers: headers,
+          authorization: replayCredential.authorization,
+        );
+      } on ApiFailure catch (retryFailure) {
+        if (_isAuthentication401(retryFailure)) {
+          await coordinator._handleProtectedFailure(
+            retryFailure,
+            expectedEpoch: requestEpoch,
+            usedGeneration: replayCredential.generation,
           );
         }
         rethrow;
       }
-
-      if (sessionCoordinator.state.isAuthenticated &&
-          (!allowRetry || !sessionCoordinator._hasRefreshToken)) {
-        await sessionCoordinator._handleProtectedFailure(failure);
-      }
-      rethrow;
     }
   }
+
+  bool _isAuthentication401(ApiFailure failure) =>
+      const AuthFailureClassifier().classify(
+        failure,
+        AuthEndpoint.protectedRequest,
+      ) ==
+      AuthFailureCategory.sessionInvalidated;
 
   /// A signed upload capability is not an API bearer endpoint. Never attach
   /// session tokens, cookies or extra headers to object-storage requests.

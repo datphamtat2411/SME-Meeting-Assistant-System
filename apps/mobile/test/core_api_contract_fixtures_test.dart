@@ -109,6 +109,19 @@ void main() {
     final client = FixtureHttpClient(<FixtureHttpResponse>[
       FixtureHttpResponse(
         statusCode: 200,
+        body: _successEnvelope(<String, dynamic>{
+          'accessToken': 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln1',
+          'refreshToken': 'refresh_0',
+          'tokenType': 'Bearer',
+          'expiresIn': 600,
+        }),
+      ),
+      FixtureHttpResponse(
+        statusCode: 200,
+        body: _successEnvelope(_fixtureIdentity()),
+      ),
+      FixtureHttpResponse(
+        statusCode: 200,
         body: await _fixture('meeting_detail_success.json'),
         headers: const <String, String>{
           'etag': _meetingEtag,
@@ -129,6 +142,8 @@ void main() {
       credentialStorage: InMemoryCredentialStorage(),
     );
     addTearDown(api.dispose);
+    await api.initialize();
+    await api.signIn('user@example.test', 'password');
 
     final current = await api.get('/meetings/$_meetingId');
     expect(current.etag, _meetingEtag);
@@ -156,10 +171,10 @@ void main() {
       ),
     );
 
-    expect(client.requests, hasLength(2));
-    expect(client.requests[0].headers['X-Auth-Transport'], 'mobile');
-    expect(client.requests[1].headers['X-Auth-Transport'], 'mobile');
-    expect(client.requests[1].headers['If-Match'], _meetingEtag);
+    expect(client.requests, hasLength(4));
+    expect(client.requests[2].headers['X-Auth-Transport'], 'mobile');
+    expect(client.requests[3].headers['X-Auth-Transport'], 'mobile');
+    expect(client.requests[3].headers['If-Match'], _meetingEtag);
   });
 
   test(
@@ -182,6 +197,37 @@ Future<Map<String, dynamic>> _fixture(String name) async {
   final content = await File('test/fixtures/core_api/$name').readAsString();
   return jsonDecode(content) as Map<String, dynamic>;
 }
+
+Map<String, dynamic> _successEnvelope(dynamic data) => <String, dynamic>{
+  'success': true,
+  'code': 'SUCCESS',
+  'message': 'Request completed.',
+  'data': data,
+  'meta': <String, dynamic>{
+    'requestId': _requestId,
+    'timestamp': '2026-11-24T12:00:00Z',
+  },
+};
+
+Map<String, dynamic> _fixtureIdentity() => <String, dynamic>{
+  'userId': 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+  'email': 'user@example.test',
+  'displayName': 'Test User',
+  'globalRole': 'EMPLOYEE',
+  'accountStatus': 'ACTIVE',
+  'primaryOrgUnitId': null,
+  'directoryManagementScope': <String, dynamic>{
+    'allUnits': false,
+    'unitIds': <String>[],
+  },
+  'session': <String, dynamic>{
+    'id': 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    'clientType': 'MOBILE',
+    'createdAt': '2026-11-22T10:00:00Z',
+    'lastSeenAt': null,
+    'absoluteExpiresAt': '2026-12-22T10:00:00Z',
+  },
+};
 
 ApiResult _decode(
   ApiResponseDecoder decoder,

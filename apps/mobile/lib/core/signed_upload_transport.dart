@@ -68,19 +68,21 @@ class SignedUploadTransport {
       ..headers['Content-Type'] = contentType;
 
     var requestClosed = false;
+    Future<void>? bodyWrite;
+    Future<void>? requestClose;
     try {
       final responseFuture = httpClient.send(request);
       var sent = 0;
-      await request.sink
-          .addStream(
-            file.openRead().map((chunk) {
-              sent += chunk.length;
-              onProgress?.call(sent, length);
-              return chunk;
-            }),
-          )
-          .timeout(timeout);
-      await request.sink.close().timeout(timeout);
+      bodyWrite = request.sink.addStream(
+        file.openRead().map((chunk) {
+          sent += chunk.length;
+          onProgress?.call(sent, length);
+          return chunk;
+        }),
+      );
+      await bodyWrite.timeout(timeout);
+      requestClose = request.sink.close();
+      await requestClose.timeout(timeout);
       requestClosed = true;
 
       final response = await responseFuture.timeout(timeout);
@@ -143,14 +145,34 @@ class SignedUploadTransport {
       throw TransportFailure(0, 'UPLOAD_NETWORK_ERROR', 'Audio upload failed.');
     } finally {
       if (!requestClosed) {
-        try {
-          await request.sink.close();
-        } on Exception {
-          // The shared client remains owned by the composition root. Closing
-          // the request sink is the only cleanup available to this transport.
-        }
+        _closeUploadRequestWhenSafe(request, bodyWrite, requestClose);
       }
     }
+  }
+
+  void _closeUploadRequestWhenSafe(
+    http.StreamedRequest request,
+    Future<void>? bodyWrite,
+    Future<void>? requestClose,
+  ) {
+    Future<void> closeSafely() {
+      try {
+        return (requestClose ?? request.sink.close()).catchError((Object _) {});
+      } on Object {
+        return Future<void>.value();
+      }
+    }
+
+    if (bodyWrite == null) {
+      unawaited(closeSafely());
+      return;
+    }
+    unawaited(
+      bodyWrite.then<void>(
+        (_) => closeSafely(),
+        onError: (Object _, StackTrace __) => closeSafely(),
+      ),
+    );
   }
 
   Uri _parseAndValidateUrl(String signedUrl) {
