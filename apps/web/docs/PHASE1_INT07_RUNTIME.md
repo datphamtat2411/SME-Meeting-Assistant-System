@@ -2,8 +2,14 @@
 
 Date: 2026-11-23  
 Branch: `web/integration-rush`  
-Starting/working-tree `HEAD`: `3ca21cdbf6f837528f88a58283ec93627f968f6e`  
-Final source SHA: not available; changes are intentionally uncommitted.
+Historical local verification worktree: `3ca21cdbf6f837528f88a58283ec93627f968f6e`
+Final committed INT-07 source SHA: `68ee26e7a14c0338a3ca1369d57a78fd4a354f8f`
+Final committed source tree: `4b361326b0e428c881eb4945d74b741ff09dc64f`
+
+The local route/runtime execution was recorded before the INT-07 changes were
+committed. The committed source now has an exact hosted Web CI result. This
+documentation reconciliation is intentionally uncommitted and does not change
+the production Web source verified by that run.
 
 ## Outcome
 
@@ -11,7 +17,7 @@ The Web runtime is locally stable across the Phase 1 generated route surface.
 The new browser matrix uses the generated TanStack Router tree, real feature
 components, fresh `QueryClient` instances, and controlled Core-boundary
 fixtures. It does not replace product features with route-only mocks or claim
-live Core, media storage, MI, RAG, or hosted-CI acceptance.
+live Core, media storage, MI, or RAG acceptance.
 
 No production Web source defect required a correction during INT-07. The
 implementation change is focused browser coverage plus this evidence report;
@@ -94,14 +100,26 @@ Node Web runtime was therefore not locally active.
 
 ## G6/G7 and CI classification
 
-- **G6 — PASS with environment caveat.** Local generated-route, navigation,
-  failure-state, static, build, and complete browser evidence passed. The
-  browser-install command’s OS dependency step is an environment limitation,
-  not a Web test failure.
-- **G7 — PENDING / NOT RUN.** The required hosted jobs
-  `Web / static checks` and `Web / browser tests` in
-  `.github/workflows/web-ci.yml` have not run for a final source SHA. No
-  hosted result or exact-SHA CI acceptance is claimed.
+- **G6 — PASS for deterministic route/UI/runtime scope, with the recorded
+  local environment caveat.** Local generated-route, navigation, failure-state,
+  static, build, and complete browser evidence passed. The browser-install
+  command’s OS dependency step is an environment limitation, not a Web test
+  failure. G6 does not prove deployed Core, storage, worker, AI, or RAG
+  behavior.
+- **G7 — PASS for exact committed SHA.** Hosted Web CI run
+  [`45152922102`](https://github.com/datphamtat2411/SME-Meeting-Assistant-System/actions/runs/45152922102)
+  checked head SHA
+  `68ee26e7a14c0338a3ca1369d57a78fd4a354f8f`. Both required jobs completed
+  successfully:
+
+  | Hosted job | Result |
+  | --- | --- |
+  | `Web / static checks` | **PASS** |
+  | `Web / browser tests` | **PASS** |
+
+  Hosted CI selected the pinned Node version from `apps/web/.node-version`.
+  Its browser-install step completed successfully, including the Linux
+  dependencies that the local helper could not install.
 
 ## Protected-source integrity
 
@@ -112,21 +130,22 @@ working tree:
 - Blob mismatches: 0
 - Identity checks: all `same`
 - Production source changes outside the assigned Web test/report scope: none
+- The protected operator route, workspace, workflow adapter, Core transport,
+  generated route tree, and related Product Integration files remain unchanged.
 
 ## Deferred backlog
 
-- Run hosted `Web / static checks` and `Web / browser tests` for the final
-  source SHA.
 - Re-run the Web checks under Node `26.13.0` when that runtime is available.
 - Install Chromium/Linux dependencies in a privileged CI or developer
   environment where `sudo` can run non-interactively.
 - Keep live authenticated Core, signed-media storage, operator MI, historical
   MI/RAG, and any real backend acceptance as separate evidence gates; the
-  controlled fixtures in this report do not satisfy them.
+  controlled fixtures in this report do not satisfy them. The hosted run closes
+  deterministic G7 for `68ee26e7…`; it does not close any live backend gate.
 
 ## INT-08 handoff
 
-INT-08 is not started by this task. It may consume the stabilized generated
-route/runtime evidence and the deferred hosted/live gates above, but it must
-not treat compatibility template routes or controlled Core fixtures as
-backend, AI, media, or registration acceptance.
+INT-08 consumes the stabilized generated route/runtime evidence and the exact
+hosted G7 result above. It must not treat compatibility template routes,
+controlled Core fixtures, or deterministic Web CI as backend, AI, media,
+operator MI, RAG, or authenticated-session acceptance.

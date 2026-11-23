@@ -218,9 +218,12 @@ character frontend length check is _not_ a replacement for server validation.
   separate reviewed read models. A transcript correction or review mutation
   invalidates the current Minutes and export-ready caches.
 - `/assistant` currently provides meeting metadata search through the
-  **authorized meetings API**. The `develop` Core API has no public
-  conversation/ask/RAG endpoint; Web must not call internal worker or
-  AI services directly or invent citations and answers.
+  **authorized meetings API**. Core source also contains a Core-owned Assistant
+  conversation boundary (`/api/v1/assistant/conversations`), but that capability
+  is separately feature-gated and depends on an enabled authenticated AI
+  transport, current RAG readiness, and Core authorization. The current Rush Web
+  page does not consume that conversation contract; Web must not call internal
+  worker or AI services directly or invent citations and answers.
 
 ## Official minutes and durable exports
 
