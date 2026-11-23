@@ -55,6 +55,7 @@ class ApiClient extends ChangeNotifier {
     Duration apiResponseTimeout = const Duration(seconds: 45),
     Duration uploadTimeout = const Duration(minutes: 10),
     bool? androidDebugOverride,
+    DateTime Function()? now,
   }) : _coreTransport = CoreApiTransport(
          baseUri: baseUri,
          httpClient: httpClient,
@@ -74,11 +75,21 @@ class ApiClient extends ChangeNotifier {
     sessionCoordinator = AuthSessionCoordinator(
       repository: _authRepository,
       credentialStorage: credentialStorage,
+      now: now,
     )..addListener(_forwardSessionChanges);
   }
 
   AuthSessionState get sessionState => sessionCoordinator.state;
-  bool get ready => !sessionState.isInitializing;
+  bool get ready => switch (sessionState.phase) {
+    AuthSessionPhase.initializing ||
+    AuthSessionPhase.signingIn ||
+    AuthSessionPhase.verifyingIdentity ||
+    AuthSessionPhase.signingOut => false,
+    AuthSessionPhase.unauthenticated ||
+    AuthSessionPhase.authenticated ||
+    AuthSessionPhase.recoverableFailure ||
+    AuthSessionPhase.reauthenticationRequired => true,
+  };
   bool get hasRecoverableSession => sessionState.canRetrySessionRestore;
   String? get sessionRestoreError => sessionState.sessionRestoreError;
   Map<String, dynamic>? get identity =>

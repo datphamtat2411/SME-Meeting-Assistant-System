@@ -105,7 +105,17 @@ class AuthSessionCoordinator extends ChangeNotifier {
     }
 
     _refreshToken = storedRefreshToken;
-    await _restoreStoredSession();
+    try {
+      await _restoreStoredSession();
+    } catch (error) {
+      _setState(
+        AuthSessionState._(
+          phase: AuthSessionPhase.recoverableFailure,
+          failure: _failureFor(error, AuthEndpoint.refresh),
+          canRetrySessionRestore: _refreshToken != null,
+        ),
+      );
+    }
   }
 
   Future<void> _restoreStoredSession() async {
@@ -118,7 +128,7 @@ class AuthSessionCoordinator extends ChangeNotifier {
     }
 
     try {
-      final identity = await _repository.currentIdentity(_accessToken!);
+      final identity = await _retrieveIdentity();
       _setState(
         AuthSessionState._(
           phase: AuthSessionPhase.authenticated,
@@ -131,12 +141,30 @@ class AuthSessionCoordinator extends ChangeNotifier {
   }
 
   Future<void> retrySessionRestore() async {
-    if (_refreshToken == null) return;
+    if (_state.phase != AuthSessionPhase.recoverableFailure ||
+        !_state.canRetrySessionRestore ||
+        _refreshToken == null) {
+      throw StateError('There is no recoverable session to restore.');
+    }
     _setState(AuthSessionState._(phase: AuthSessionPhase.initializing));
-    await _restoreStoredSession();
+    try {
+      await _restoreStoredSession();
+    } catch (error) {
+      _setState(
+        AuthSessionState._(
+          phase: AuthSessionPhase.recoverableFailure,
+          failure: _failureFor(error, AuthEndpoint.refresh),
+          canRetrySessionRestore: _refreshToken != null,
+        ),
+      );
+    }
   }
 
   Future<void> discardLocalSession() async {
+    if (_state.phase != AuthSessionPhase.recoverableFailure ||
+        !_state.canRetrySessionRestore) {
+      throw StateError('There is no recoverable session to discard.');
+    }
     _setState(AuthSessionState._(phase: AuthSessionPhase.signingOut));
     _clearMemoryCredentials();
     try {
@@ -154,6 +182,7 @@ class AuthSessionCoordinator extends ChangeNotifier {
   }
 
   Future<void> signIn(String email, String password) async {
+    _ensureCanSignIn();
     _setState(AuthSessionState._(phase: AuthSessionPhase.signingIn));
     try {
       final tokens = await _repository.login(email, password);
@@ -165,7 +194,7 @@ class AuthSessionCoordinator extends ChangeNotifier {
 
     _setState(AuthSessionState._(phase: AuthSessionPhase.verifyingIdentity));
     try {
-      final identity = await _repository.currentIdentity(_accessToken!);
+      final identity = await _retrieveIdentity();
       _setState(
         AuthSessionState._(
           phase: AuthSessionPhase.authenticated,
@@ -179,16 +208,12 @@ class AuthSessionCoordinator extends ChangeNotifier {
   }
 
   Future<void> loadIdentity() async {
-    if (_accessToken == null) {
-      throw const ApiFailure(401, 'AUTH_SESSION_EXPIRED', 'Session expired.');
+    if (!_state.isAuthenticated) {
+      throw StateError('Identity reload requires a verified session.');
     }
 
-    final wasAuthenticated = _state.isAuthenticated;
-    if (!wasAuthenticated) {
-      _setState(AuthSessionState._(phase: AuthSessionPhase.verifyingIdentity));
-    }
     try {
-      final identity = await _repository.currentIdentity(_accessToken!);
+      final identity = await _retrieveIdentity();
       _setState(
         AuthSessionState._(
           phase: AuthSessionPhase.authenticated,
@@ -197,22 +222,76 @@ class AuthSessionCoordinator extends ChangeNotifier {
       );
     } catch (error) {
       final failure = _failureFor(error, AuthEndpoint.identity);
-      if (failure.category == AuthFailureCategory.sessionInvalidated) {
+      if (failure.category == AuthFailureCategory.sessionInvalidated &&
+          _state.phase != AuthSessionPhase.reauthenticationRequired) {
         await _requireReauthentication(failure);
-      } else if (!wasAuthenticated) {
-        _setState(
-          AuthSessionState._(
-            phase: AuthSessionPhase.recoverableFailure,
-            failure: failure,
-            canRetrySessionRestore: _refreshToken != null,
-          ),
-        );
       }
       rethrow;
     }
   }
 
+  Future<AuthIdentity> _retrieveIdentity() async {
+    final accessToken = _accessToken;
+    if (accessToken == null) {
+      throw const ApiFailure(401, 'AUTH_SESSION_EXPIRED', 'Session expired.');
+    }
+
+    final expiry = _accessExpiry;
+    if (expiry == null || !_now().isBefore(expiry)) {
+      if (_refreshToken == null) {
+        throw const ApiFailure(401, 'AUTH_SESSION_EXPIRED', 'Session expired.');
+      }
+      await _refreshForProtectedRequest();
+    }
+
+    try {
+      return await _repository.currentIdentity(_accessToken!);
+    } on ApiFailure catch (failure) {
+      final classification = _classifier.classify(
+        failure,
+        AuthEndpoint.identity,
+      );
+      if (classification != AuthFailureCategory.sessionInvalidated ||
+          _refreshToken == null) {
+        rethrow;
+      }
+
+      await _refreshAfterUnauthorized();
+      return _repository.currentIdentity(_accessToken!);
+    }
+  }
+
+  void _ensureCanSignIn() {
+    if (_accessToken != null || _refreshToken != null) {
+      throw StateError(
+        'Discard or finish the existing session before signing in.',
+      );
+    }
+
+    final failure = _state.failure;
+    final storageBlocked =
+        failure?.category == AuthFailureCategory.credentialStorage;
+    final permitted = switch (_state.phase) {
+      AuthSessionPhase.unauthenticated ||
+      AuthSessionPhase.reauthenticationRequired => !storageBlocked,
+      AuthSessionPhase.recoverableFailure => !storageBlocked,
+      AuthSessionPhase.initializing ||
+      AuthSessionPhase.signingIn ||
+      AuthSessionPhase.verifyingIdentity ||
+      AuthSessionPhase.authenticated ||
+      AuthSessionPhase.signingOut => false,
+    };
+    if (!permitted) {
+      throw StateError(
+        'Sign-in is unavailable while the current session is changing.',
+      );
+    }
+  }
+
   Future<void> signOut() async {
+    if (!_state.isAuthenticated) {
+      throw StateError('Sign-out requires an authenticated session.');
+    }
     final accessToken = _accessToken;
     _setState(AuthSessionState._(phase: AuthSessionPhase.signingOut));
     Object? logoutError;
@@ -383,6 +462,11 @@ class AuthSessionCoordinator extends ChangeNotifier {
   }
 
   Future<void> _requireReauthentication(AuthSessionFailure failure) async {
+    if (_state.phase == AuthSessionPhase.reauthenticationRequired &&
+        _accessToken == null &&
+        _refreshToken == null) {
+      return;
+    }
     _clearMemoryCredentials();
     AuthSessionFailure? cleanupFailure;
     try {

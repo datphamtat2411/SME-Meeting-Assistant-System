@@ -129,6 +129,16 @@ class _AuthPageState extends State<AuthPage> {
                     style: TextStyle(color: Palette.muted),
                   ),
                   const SizedBox(height: 26),
+                  if (widget.api.sessionState.phase ==
+                      AuthSessionPhase.reauthenticationRequired) ...[
+                    const ContentCard(
+                      child: Text(
+                        'Phiên đăng nhập đã hết hiệu lực. Vui lòng đăng nhập lại.',
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                  ],
                   ContentCard(
                     child: Form(
                       key: form,

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'core/api_client.dart';
@@ -85,23 +87,12 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
     api,
     appearance,
   ]);
-  bool _sessionInitializationFailed = false;
 
   @override
   void initState() {
     super.initState();
-    _initializeSession();
+    unawaited(api.initialize());
     appearance.initialize();
-  }
-
-  Future<void> _initializeSession() async {
-    try {
-      await api.initialize();
-    } catch (_) {
-      if (mounted) {
-        setState(() => _sessionInitializationFailed = true);
-      }
-    }
   }
 
   void changeTheme(ThemeMode next) => appearance.setMode(next);
@@ -122,41 +113,67 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
     themeMode: appearance.mode,
     home: AnimatedBuilder(
       animation: applicationState,
-      builder: (_, __) {
-        if (_sessionInitializationFailed) {
-          return const StartupFailureView();
-        }
-        if (!api.ready) {
-          return const StartupProgressView();
-        }
-        if (api.hasRecoverableSession) {
-          return SessionRestoreFailureView(api: api);
-        }
-        if (!api.signedIn) return AuthPage(api: api);
-        return AppShell(
-          api: api,
-          themeMode: appearance.mode,
-          onThemeChanged: changeTheme,
-        );
-      },
+      builder: (_, __) => _sessionHome(),
     ),
   );
+
+  Widget _sessionHome() {
+    final session = api.sessionState;
+    return switch (session.phase) {
+      AuthSessionPhase.initializing => const StartupProgressView(),
+      AuthSessionPhase.verifyingIdentity => const StartupProgressView(
+        message: 'Đang xác minh danh tính...',
+      ),
+      AuthSessionPhase.signingIn => const StartupProgressView(
+        message: 'Đang đăng nhập...',
+      ),
+      AuthSessionPhase.signingOut => const StartupProgressView(
+        message: 'Đang đăng xuất...',
+      ),
+      AuthSessionPhase.unauthenticated ||
+      AuthSessionPhase.reauthenticationRequired => AuthPage(api: api),
+      AuthSessionPhase.recoverableFailure => _recoverableSessionView(session),
+      AuthSessionPhase.authenticated => AppShell(
+        api: api,
+        themeMode: appearance.mode,
+        onThemeChanged: changeTheme,
+      ),
+    };
+  }
+
+  Widget _recoverableSessionView(AuthSessionState session) {
+    if (session.failure?.category == AuthFailureCategory.credentialStorage) {
+      return const StartupFailureView(
+        title: 'Không thể truy cập phiên bảo mật',
+        message: 'Không thể truy cập thông tin đăng nhập được bảo vệ. Vui lòng thử lại sau.',
+      );
+    }
+    if (session.canRetrySessionRestore) {
+      return SessionRestoreFailureView(api: api);
+    }
+    return AuthPage(api: api);
+  }
 }
 
 class StartupProgressView extends StatelessWidget {
-  const StartupProgressView({super.key});
+  final String message;
+
+  const StartupProgressView({
+    super.key,
+    this.message = 'Đang khôi phục phiên đăng nhập...',
+  });
 
   @override
-  Widget build(BuildContext context) => const Scaffold(
+  Widget build(BuildContext context) => Scaffold(
     body: Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          CircularProgressIndicator(),
-          SizedBox(height: 16),
-          Text('Đang khởi tạo ứng dụng'),
-          SizedBox(height: 6),
-          Text('Đang khôi phục phiên đăng nhập...'),
+          const CircularProgressIndicator(),
+          const SizedBox(height: 16),
+          const Text('Đang khởi tạo ứng dụng'),
+          const SizedBox(height: 6),
+          Text(message),
         ],
       ),
     ),
@@ -164,28 +181,32 @@ class StartupProgressView extends StatelessWidget {
 }
 
 class StartupFailureView extends StatelessWidget {
-  const StartupFailureView({super.key});
+  final String title;
+  final String message;
+
+  const StartupFailureView({
+    super.key,
+    this.title = 'Không thể khởi tạo ứng dụng',
+    this.message = 'Vui lòng đóng ứng dụng và thử lại.',
+  });
 
   @override
-  Widget build(BuildContext context) => const Scaffold(
+  Widget build(BuildContext context) => Scaffold(
     body: Center(
       child: Padding(
-        padding: EdgeInsets.all(24),
+        padding: const EdgeInsets.all(24),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.error_outline, size: 48),
-            SizedBox(height: 16),
+            const Icon(Icons.error_outline, size: 48),
+            const SizedBox(height: 16),
             Text(
-              'Không thể khởi tạo ứng dụng',
+              title,
               textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
             ),
-            SizedBox(height: 10),
-            Text(
-              'Vui lòng đóng ứng dụng và thử lại.',
-              textAlign: TextAlign.center,
-            ),
+            const SizedBox(height: 10),
+            Text(message, textAlign: TextAlign.center),
           ],
         ),
       ),

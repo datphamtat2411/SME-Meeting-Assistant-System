@@ -41,6 +41,7 @@ void main() {
       credentialStorage: InMemoryCredentialStorage(),
     );
 
+    await api.initialize();
     await api.signIn('user@example.test', 'password');
     final result = await api.get('/protected');
 
@@ -65,6 +66,7 @@ void main() {
         credentialStorage: credentials,
       );
       addTearDown(api.dispose);
+      await api.initialize();
       await api.signIn('user@example.test', 'password');
 
       await expectLater(
@@ -93,6 +95,7 @@ void main() {
       credentialStorage: InMemoryCredentialStorage(),
     );
 
+    await api.initialize();
     await api.signIn('user@example.test', 'password');
 
     await expectLater(
