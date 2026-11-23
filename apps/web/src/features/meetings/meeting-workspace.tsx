@@ -47,10 +47,14 @@ import {
 import {
   organizerFilterOptionByIdQueryOptions,
   roomFilterOptionByIdQueryOptions,
-  type MeetingListResponse,
   type OrganizerFilterOption,
   type RoomFilterOption,
 } from './data/list-api'
+import {
+  meetingListQueryKey,
+  updateMeetingListCacheData,
+  type MeetingListCacheData,
+} from './data/meeting-cache'
 import { formatMeetingSchedule as formatSchedule } from './data/meeting-schedule-format'
 import type { MeetingParticipantRefresh } from './data/participant-management-api'
 import { MeetingTools } from './meeting-tools'
@@ -116,34 +120,9 @@ export function MeetingWorkspacePage({ meetingId }: { meetingId: string }) {
   useEffect(() => {
     if (!meeting) return
 
-    queryClient.setQueriesData<MeetingListResponse>(
-      { queryKey: ['meetings', 'list'] },
-      (cachedList) => {
-        if (!cachedList) return cachedList
-
-        return {
-          ...cachedList,
-          meetings: cachedList.meetings.map((listMeeting) =>
-            listMeeting.id === meeting.id
-              ? {
-                  ...listMeeting,
-                  title: meeting.title,
-                  description: meeting.description,
-                  organizerUserId: meeting.organizerUserId,
-                  roomId: meeting.roomId,
-                  scheduledStartAt: meeting.scheduledStartAt,
-                  scheduledEndAt: meeting.scheduledEndAt,
-                  status: meeting.status,
-                  startedAt: meeting.startedAt,
-                  endedAt: meeting.endedAt,
-                  cancelledAt: meeting.cancelledAt,
-                  createdAt: meeting.createdAt,
-                  updatedAt: meeting.updatedAt,
-                }
-              : listMeeting
-          ),
-        }
-      }
+    queryClient.setQueriesData<MeetingListCacheData>(
+      { queryKey: meetingListQueryKey },
+      (cachedData) => updateMeetingListCacheData(cachedData, meeting)
     )
   }, [meeting, queryClient])
 

@@ -1,3 +1,4 @@
+import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
 import type { MeetingStatus } from '../data'
 import type { MeetingLifecycleStatus } from '../data/list-api'
@@ -18,17 +19,20 @@ function isCanonicalStatus(
 
 export function MeetingStatusBadge({
   status,
+  className,
 }: {
   status: MeetingStatusBadgeStatus
+  className?: string
 }) {
   const canonical = isCanonicalStatus(status)
 
   return (
     <Badge
       variant='outline'
-      className={
-        canonical ? canonicalStyles[status] : meetingStatusStyles[status]
-      }
+      className={cn(
+        canonical ? canonicalStyles[status] : meetingStatusStyles[status],
+        className
+      )}
     >
       {canonical ? canonicalLabels[status] : meetingStatusLabels[status]}
     </Badge>

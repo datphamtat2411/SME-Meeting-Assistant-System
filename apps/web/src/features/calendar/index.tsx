@@ -26,6 +26,8 @@ import {
   projectCalendarMonth,
 } from './calendar-api'
 
+/* eslint-disable react-refresh/only-export-components -- This feature entry point exposes reusable hooks and views for SC-05 composition. */
+
 const dateFormat = new Intl.DateTimeFormat(undefined, { dateStyle: 'full' })
 const timeFormat = new Intl.DateTimeFormat(undefined, { timeStyle: 'short' })
 
@@ -191,3 +193,21 @@ export function CalendarPage() {
     </>
   )
 }
+
+export {
+  mergeCalendarRoomOptions,
+  useCalendarController,
+  useCalendarMeetingData,
+  type CalendarController,
+} from './calendar-controller'
+export { CalendarToolbar, type CalendarToolbarProps } from './calendar-toolbar'
+export {
+  CalendarAgendaView,
+  CalendarMeetingEntry,
+  CalendarMonthView,
+  type CalendarViewProps,
+} from './calendar-views'
+export {
+  calendarDataPresentationFromController,
+  type CalendarDataPresentation,
+} from './calendar-presentation'

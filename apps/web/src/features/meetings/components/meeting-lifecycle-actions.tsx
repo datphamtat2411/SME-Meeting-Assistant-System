@@ -12,8 +12,10 @@ import {
   type MeetingDetailResponse,
   type MeetingView,
 } from '../data/detail-api'
-import type { MeetingListResponse } from '../data/list-api'
-import { affectsRoomAvailability as compareReservation } from '../data/meeting-cache'
+import {
+  meetingDetailQueryKey,
+  synchronizeMeetingCaches,
+} from '../data/meeting-cache'
 import {
   cancelMeeting,
   classifyMeetingLifecycleError,
@@ -65,61 +67,16 @@ type LifecycleIntent = {
   reason?: string
 }
 
-const meetingListQueryKey = ['meetings', 'list'] as const
-const roomAvailabilityQueryKey = ['rooms', 'availability'] as const
-
-function meetingDetailQueryKey(meetingId: string) {
-  return ['meetings', 'detail', meetingId] as const
-}
-
 function synchronizeLifecycleCaches(
   queryClient: QueryClient,
   detail: MeetingDetailResponse,
   previousMeeting: MeetingView | undefined,
   invalidateDetail: boolean
 ) {
-  queryClient.setQueryData(meetingDetailQueryKey(detail.meeting.id), detail)
-  queryClient.setQueriesData<MeetingListResponse>(
-    { queryKey: meetingListQueryKey },
-    (cachedList) => {
-      if (!cachedList) return cachedList
-
-      let changed = false
-      const meetings = cachedList.meetings.map((listMeeting) => {
-        if (listMeeting.id !== detail.meeting.id) return listMeeting
-
-        changed = true
-        return {
-          ...listMeeting,
-          title: detail.meeting.title,
-          description: detail.meeting.description,
-          organizerUserId: detail.meeting.organizerUserId,
-          roomId: detail.meeting.roomId,
-          scheduledStartAt: detail.meeting.scheduledStartAt,
-          scheduledEndAt: detail.meeting.scheduledEndAt,
-          status: detail.meeting.status,
-          startedAt: detail.meeting.startedAt,
-          endedAt: detail.meeting.endedAt,
-          cancelledAt: detail.meeting.cancelledAt,
-          createdAt: detail.meeting.createdAt,
-          updatedAt: detail.meeting.updatedAt,
-        }
-      })
-
-      return changed ? { ...cachedList, meetings } : cachedList
-    }
-  )
-
-  if (invalidateDetail) {
-    void queryClient.invalidateQueries({
-      queryKey: meetingDetailQueryKey(detail.meeting.id),
-      refetchType: 'none',
-    })
-  }
-  void queryClient.invalidateQueries({ queryKey: meetingListQueryKey })
-  if (compareReservation(previousMeeting, detail.meeting)) {
-    void queryClient.invalidateQueries({ queryKey: roomAvailabilityQueryKey })
-  }
+  synchronizeMeetingCaches(queryClient, detail, previousMeeting, {
+    invalidateDetail,
+    detailRefetchType: 'none',
+  })
 }
 
 type LifecycleFeedback = {
