@@ -1,41 +1,19 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
+import 'api_response.dart';
+import 'api_response_decoder.dart';
 import 'api_transport.dart';
 import 'credential_storage.dart';
 import 'signed_upload_transport.dart';
 
+export 'api_response.dart';
 export 'api_transport.dart';
 export 'credential_storage.dart';
 export 'signed_upload_transport.dart';
-
-class ApiFailure implements Exception {
-  final int status;
-  final String code;
-  final String message;
-
-  const ApiFailure(this.status, this.code, this.message);
-
-  bool get unauthorized => status == 401;
-  bool get missing => status == 404;
-  bool get conflict => status == 409 || status == 412;
-  bool get permissionDenied => status == 403;
-
-  @override
-  String toString() => message;
-}
-
-class ApiResult {
-  final dynamic data;
-  final Map<String, dynamic> meta;
-  final String? etag;
-
-  const ApiResult(this.data, this.meta, this.etag);
-}
 
 Map<String, dynamic> objectOf(dynamic value) {
   if (value is Map<String, dynamic>) return value;
@@ -56,6 +34,7 @@ class ApiClient extends ChangeNotifier {
   final Uri baseUri;
   final CoreApiTransport _coreTransport;
   final SignedUploadTransport _signedUploadTransport;
+  final ApiResponseDecoder _responseDecoder = const ApiResponseDecoder();
   final CredentialStorage _secure;
   String? _accessToken;
   String? _refreshToken;
@@ -155,7 +134,7 @@ class ApiClient extends ChangeNotifier {
       body: {'email': email.trim(), 'password': password},
       auth: false,
     );
-    await _adoptTokens(result.data);
+    await _adoptTokens(result.objectData(), requestId: result.requestId);
     sessionRestoreError = null;
     try {
       await loadIdentity();
@@ -167,7 +146,7 @@ class ApiClient extends ChangeNotifier {
 
   Future<void> loadIdentity() async {
     final result = await get('/auth/me');
-    identity = objectOf(result.data);
+    identity = result.objectData();
     if (identity?['userId'] == null) {
       throw const ApiFailure(
         0,
@@ -195,18 +174,21 @@ class ApiClient extends ChangeNotifier {
     _notifyListeners();
   }
 
-  Future<void> _adoptTokens(dynamic raw) async {
-    final values = objectOf(raw);
+  Future<void> _adoptTokens(
+    Map<String, dynamic> values, {
+    String? requestId,
+  }) async {
     final access = values['accessToken'];
     final refresh = values['refreshToken'];
     if (access is! String ||
         access.isEmpty ||
         refresh is! String ||
         refresh.isEmpty) {
-      throw const ApiFailure(
+      throw ApiFailure(
         0,
         'INVALID_RESPONSE',
         'Invalid mobile token response.',
+        requestId: requestId,
       );
     }
     _accessToken = access;
@@ -229,7 +211,7 @@ class ApiClient extends ChangeNotifier {
         auth: false,
         authorization: 'Bearer ' + token,
       );
-      await _adoptTokens(result.data);
+      await _adoptTokens(result.objectData(), requestId: result.requestId);
     } on ApiFailure catch (failure) {
       // Preserve refresh credentials when transport temporarily disappears.
       // Rejected or replayed credentials must still fail closed.
@@ -301,7 +283,17 @@ class ApiClient extends ChangeNotifier {
         authorization: controlledAuthorization,
       );
     } on TransportFailure catch (failure) {
-      throw ApiFailure(failure.status, failure.code, failure.message);
+      final requestId = _headerValue(failure.responseHeaders, 'x-request-id');
+      throw ApiFailure(
+        failure.status,
+        failure.code,
+        failure.message,
+        requestId: requestId,
+        responseRequestId: requestId,
+        retryAfter: _headerValue(failure.responseHeaders, 'retry-after'),
+        headers: failure.responseHeaders,
+        isTransportFailure: true,
+      );
     }
 
     if (auth &&
@@ -321,38 +313,21 @@ class ApiClient extends ChangeNotifier {
       }
     }
     if (auth && response.statusCode == 401 && !allowRetry) {
-      await _forget();
-      throw const ApiFailure(
-        401,
-        'AUTH_SESSION_EXPIRED',
-        'Phiên đăng nhập đã hết hạn. Hãy đăng nhập lại.',
-      );
+      try {
+        return _responseDecoder.decode(
+          statusCode: response.statusCode,
+          headers: response.headers,
+          bodyBytes: response.bodyBytes,
+        );
+      } on ApiFailure {
+        await _forget();
+        rethrow;
+      }
     }
-    dynamic envelope;
-    try {
-      envelope = jsonDecode(utf8.decode(response.bodyBytes));
-    } catch (_) {
-      throw ApiFailure(
-        response.statusCode,
-        'INVALID_RESPONSE',
-        'Server returned a non-JSON response.',
-      );
-    }
-    final result = objectOf(envelope);
-    if (response.statusCode < 200 ||
-        response.statusCode >= 300 ||
-        result['success'] != true) {
-      throw ApiFailure(
-        response.statusCode,
-        (result['code'] ?? 'API_ERROR').toString(),
-        (result['message'] ?? 'The operation could not be completed.')
-            .toString(),
-      );
-    }
-    return ApiResult(
-      result['data'],
-      objectOf(result['meta']),
-      response.headers['etag'],
+    return _responseDecoder.decode(
+      statusCode: response.statusCode,
+      headers: response.headers,
+      bodyBytes: response.bodyBytes,
     );
   }
 
@@ -372,7 +347,17 @@ class ApiClient extends ChangeNotifier {
         onProgress: onProgress,
       );
     } on TransportFailure catch (failure) {
-      throw ApiFailure(failure.status, failure.code, failure.message);
+      final requestId = _headerValue(failure.responseHeaders, 'x-request-id');
+      throw ApiFailure(
+        failure.status,
+        failure.code,
+        failure.message,
+        requestId: requestId,
+        responseRequestId: requestId,
+        retryAfter: _headerValue(failure.responseHeaders, 'retry-after'),
+        headers: failure.responseHeaders,
+        isTransportFailure: true,
+      );
     }
   }
 
@@ -385,5 +370,12 @@ class ApiClient extends ChangeNotifier {
 
   void _notifyListeners() {
     if (!_disposed) notifyListeners();
+  }
+
+  static String? _headerValue(Map<String, String> headers, String name) {
+    for (final entry in headers.entries) {
+      if (entry.key.toLowerCase() == name) return entry.value;
+    }
+    return null;
   }
 }

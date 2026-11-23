@@ -14,10 +14,12 @@ class PagedCollection<T> {
   final int? totalElements;
 
   factory PagedCollection.fromResult(
-      ApiResult response, T Function(Map<String, dynamic>) decode) {
+    ApiResult response,
+    T Function(Map<String, dynamic>) decode,
+  ) {
     final pagination = objectOf(response.meta['pagination']);
     return PagedCollection(
-      items: objectsOf(response.data).map(decode).toList(growable: false),
+      items: response.objectArrayData().map(decode).toList(growable: false),
       page: (pagination['page'] as num?)?.toInt() ?? 0,
       hasNext: pagination['hasNext'] == true,
       totalElements: (pagination['totalElements'] as num?)?.toInt(),

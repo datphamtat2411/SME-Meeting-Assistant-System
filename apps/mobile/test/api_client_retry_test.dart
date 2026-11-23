@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -5,6 +6,32 @@ import 'package:http/http.dart' as http;
 import 'package:sme_meeting_assistant/core/api_client.dart';
 
 void main() {
+  test(
+    'preserves transport failure classification without an HTTP response',
+    () async {
+      final api = ApiClient(
+        baseUri: Uri.parse('https://api.example.test/api/v1'),
+        httpClient: UnavailableHttpClient(),
+        credentialStorage: InMemoryCredentialStorage(),
+      );
+
+      await expectLater(
+        api.get('/unavailable'),
+        throwsA(
+          isA<ApiFailure>()
+              .having((failure) => failure.status, 'status', 0)
+              .having((failure) => failure.code, 'code', 'NETWORK_UNAVAILABLE')
+              .having(
+                (failure) => failure.transportFailure,
+                'transport',
+                isTrue,
+              )
+              .having((failure) => failure.invalidResponse, 'invalid', isFalse),
+        ),
+      );
+    },
+  );
+
   test('refreshes once and replays a GET after a 401', () async {
     final client = AuthScenarioClient();
     final api = ApiClient(
@@ -69,69 +96,59 @@ class AuthScenarioClient extends http.BaseClient {
     switch (path) {
       case '/api/v1/auth/login':
         expect(request.headers['Authorization'], isNull);
-        return jsonResponse(200, <String, dynamic>{
-          'success': true,
-          'data': <String, dynamic>{
+        return jsonResponse(
+          200,
+          successEnvelope(<String, dynamic>{
             'accessToken': 'access-1',
             'refreshToken': 'refresh-1',
             'expiresIn': 600,
-          },
-          'meta': <String, dynamic>{},
-        });
+          }),
+        );
       case '/api/v1/auth/me':
         expect(request.headers['Authorization'], 'Bearer access-1');
-        return jsonResponse(200, <String, dynamic>{
-          'success': true,
-          'data': <String, dynamic>{
+        return jsonResponse(
+          200,
+          successEnvelope(<String, dynamic>{
             'userId': 'user-1',
             'displayName': 'Test User',
             'email': 'user@example.test',
-          },
-          'meta': <String, dynamic>{},
-        });
+          }),
+        );
       case '/api/v1/auth/refresh':
         refreshCount++;
         expect(
           request.headers['Authorization'],
           refreshCount == 1 ? 'Bearer refresh-1' : 'Bearer refresh-2',
         );
-        return jsonResponse(200, <String, dynamic>{
-          'success': true,
-          'data': <String, dynamic>{
+        return jsonResponse(
+          200,
+          successEnvelope(<String, dynamic>{
             'accessToken': refreshCount == 1 ? 'access-2' : 'access-3',
             'refreshToken': refreshCount == 1 ? 'refresh-2' : 'refresh-3',
             'expiresIn': 600,
-          },
-          'meta': <String, dynamic>{},
-        });
+          }),
+        );
       case '/api/v1/protected':
         protectedCount++;
         if (protectedCount == 1) {
-          return jsonResponse(401, <String, dynamic>{
-            'success': false,
-            'code': 'AUTH_REQUIRED',
-            'message': 'Token expired.',
-          });
+          return jsonResponse(
+            401,
+            errorEnvelope('AUTH_REQUIRED', 'Token expired.'),
+          );
         }
-        return jsonResponse(200, <String, dynamic>{
-          'success': true,
-          'data': <String, dynamic>{'value': 'fresh'},
-          'meta': <String, dynamic>{},
-        });
+        return jsonResponse(
+          200,
+          successEnvelope(<String, dynamic>{'value': 'fresh'}),
+        );
       case '/api/v1/mutate':
         expect(request.headers['Authorization'], 'Bearer access-1');
-        return jsonResponse(401, <String, dynamic>{
-          'success': false,
-          'code': 'AUTH_REQUIRED',
-          'message': 'Token expired.',
-        });
+        return jsonResponse(
+          401,
+          errorEnvelope('AUTH_REQUIRED', 'Token expired.'),
+        );
       case '/api/v1/after-mutation':
         expect(request.headers['Authorization'], 'Bearer access-2');
-        return jsonResponse(200, <String, dynamic>{
-          'success': true,
-          'data': <String, dynamic>{},
-          'meta': <String, dynamic>{},
-        });
+        return jsonResponse(200, successEnvelope(<String, dynamic>{}));
     }
     throw StateError('Unexpected request path $path');
   }
@@ -145,6 +162,14 @@ class AuthScenarioClient extends http.BaseClient {
       .toList(growable: false);
 }
 
+class UnavailableHttpClient extends http.BaseClient {
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) =>
+      Future<http.StreamedResponse>.error(
+        const SocketException('private network details'),
+      );
+}
+
 Future<http.StreamedResponse> jsonResponse(
   int statusCode,
   Map<String, dynamic> value,
@@ -153,3 +178,25 @@ Future<http.StreamedResponse> jsonResponse(
   statusCode,
   headers: const <String, String>{'content-type': 'application/json'},
 );
+
+Map<String, dynamic> successEnvelope(dynamic data) => <String, dynamic>{
+  'success': true,
+  'code': 'SUCCESS',
+  'message': 'Request completed successfully.',
+  'data': data,
+  'meta': commonMeta,
+};
+
+Map<String, dynamic> errorEnvelope(String code, String message) =>
+    <String, dynamic>{
+      'success': false,
+      'code': code,
+      'message': message,
+      'data': null,
+      'meta': commonMeta,
+    };
+
+const commonMeta = <String, dynamic>{
+  'requestId': 'test-request-id',
+  'timestamp': '2026-11-23T12:00:00Z',
+};
