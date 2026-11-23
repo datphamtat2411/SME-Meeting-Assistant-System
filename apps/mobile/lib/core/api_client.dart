@@ -5,9 +5,13 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
+import 'api_transport.dart';
 import 'credential_storage.dart';
+import 'signed_upload_transport.dart';
 
+export 'api_transport.dart';
 export 'credential_storage.dart';
+export 'signed_upload_transport.dart';
 
 class ApiFailure implements Exception {
   final int status;
@@ -50,7 +54,8 @@ List<Map<String, dynamic>> objectsOf(dynamic value) {
 /// rotated on every refresh and persisted in OS-backed secure storage.
 class ApiClient extends ChangeNotifier {
   final Uri baseUri;
-  final http.Client _http;
+  final CoreApiTransport _coreTransport;
+  final SignedUploadTransport _signedUploadTransport;
   final CredentialStorage _secure;
   String? _accessToken;
   String? _refreshToken;
@@ -65,7 +70,21 @@ class ApiClient extends ChangeNotifier {
     required this.baseUri,
     required http.Client httpClient,
     required CredentialStorage credentialStorage,
-  }) : _http = httpClient,
+    Duration apiDispatchTimeout = const Duration(seconds: 25),
+    Duration apiResponseTimeout = const Duration(seconds: 45),
+    Duration uploadTimeout = const Duration(minutes: 10),
+    bool? androidDebugOverride,
+  }) : _coreTransport = CoreApiTransport(
+         baseUri: baseUri,
+         httpClient: httpClient,
+         dispatchTimeout: apiDispatchTimeout,
+         responseTimeout: apiResponseTimeout,
+       ),
+       _signedUploadTransport = SignedUploadTransport(
+         httpClient: httpClient,
+         timeout: uploadTimeout,
+         androidDebugOverride: androidDebugOverride,
+       ),
        _secure = credentialStorage;
 
   bool get hasRecoverableSession =>
@@ -267,65 +286,39 @@ class ApiClient extends ChangeNotifier {
                 DateTime.now().isAfter(_accessExpiry!)))) {
       await _refreshOnce();
     }
-    final uri = baseUri.replace(
-      path: baseUri.path.replaceFirst(RegExp(r'/$'), '') + path,
-      queryParameters: query?.isEmpty == true ? null : query,
-    );
-    final requestHeaders = <String, String>{
-      'Accept': 'application/json',
-      'X-Auth-Transport': 'mobile',
-      if (body != null) 'Content-Type': 'application/json',
-      if (authorization != null) 'Authorization': authorization,
-      if (auth && _accessToken != null)
-        'Authorization': 'Bearer ' + _accessToken!,
-      ...?headers,
-    };
-    http.Response response;
+
+    final controlledAuthorization =
+        authorization ??
+        (auth && _accessToken != null ? 'Bearer ' + _accessToken! : null);
+    CoreApiResponse response;
     try {
-      final request = http.Request(method, uri)
-        ..followRedirects = false
-        ..headers.addAll(requestHeaders);
-      if (body != null) request.body = jsonEncode(body);
-      final streamed = await _http
-          .send(request)
-          .timeout(const Duration(seconds: 25));
-      response = await http.Response.fromStream(streamed)
-          .timeout(const Duration(seconds: 45));
-    } on TimeoutException {
-      throw const ApiFailure(
-        0,
-        'NETWORK_TIMEOUT',
-        'Request timed out. Try again.',
-      );
-    } on SocketException {
-      throw const ApiFailure(
-        0,
-        'NETWORK_UNAVAILABLE',
-        'Cannot reach Core API.',
-      );
-    } on http.ClientException {
-      throw const ApiFailure(0, 'NETWORK_ERROR', 'Network request failed.');
-    }
-    if (auth &&
-        response.statusCode == 401 &&
-        allowRetry &&
-        _refreshToken != null) {
-      await _refreshOnce();
-      return _request(
+      response = await _coreTransport.send(
         method,
         path,
         query: query,
         body: body,
         headers: headers,
-        allowRetry: false,
+        authorization: controlledAuthorization,
       );
+    } on TransportFailure catch (failure) {
+      throw ApiFailure(failure.status, failure.code, failure.message);
     }
-    if (response.statusCode >= 300 && response.statusCode < 400) {
-      throw const ApiFailure(
-        0,
-        'UNEXPECTED_REDIRECT',
-        'API attempted an unexpected redirect.',
-      );
+
+    if (auth &&
+        response.statusCode == 401 &&
+        allowRetry &&
+        _refreshToken != null) {
+      await _refreshOnce();
+      if (method.toUpperCase() == 'GET') {
+        return _request(
+          method,
+          path,
+          query: query,
+          body: body,
+          headers: headers,
+          allowRetry: false,
+        );
+      }
     }
     if (auth && response.statusCode == 401 && !allowRetry) {
       await _forget();
@@ -371,45 +364,15 @@ class ApiClient extends ChangeNotifier {
     String contentType, {
     void Function(int sent, int total)? onProgress,
   }) async {
-    final uri = Uri.parse(signedUrl);
-    if (uri.scheme != 'https' && !(kDebugMode && uri.scheme == 'http')) {
-      throw const ApiFailure(
-        0,
-        'INSECURE_UPLOAD',
-        'Upload URL must use HTTPS.',
-      );
-    }
-    final length = await file.length();
-    final request = http.StreamedRequest('PUT', uri)
-      ..followRedirects = false
-      ..contentLength = length
-      ..headers['Content-Type'] = contentType;
     try {
-      final future = _http.send(request);
-      var sent = 0;
-      await request.sink.addStream(
-        file.openRead().map((chunk) {
-          sent += chunk.length;
-          onProgress?.call(sent, length);
-          return chunk;
-        }),
+      await _signedUploadTransport.upload(
+        signedUrl,
+        file,
+        contentType,
+        onProgress: onProgress,
       );
-      await request.sink.close();
-      final response = await future.timeout(const Duration(minutes: 10));
-      if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw ApiFailure(
-          response.statusCode,
-          'UPLOAD_FAILED',
-          'Audio upload failed.',
-        );
-      }
-      await response.stream.drain<void>();
-    } on SocketException {
-      throw const ApiFailure(
-        0,
-        'UPLOAD_NETWORK_ERROR',
-        'Audio upload connection lost.',
-      );
+    } on TransportFailure catch (failure) {
+      throw ApiFailure(failure.status, failure.code, failure.message);
     }
   }
 
