@@ -124,3 +124,45 @@ live observations because no session was established.
 
 The live blockers are recorded rather than replaced with mocks or synthetic
 success claims. INT-04 stops here as required.
+
+## 7. Follow-up — local HTTPS exception policy
+
+The project owner has authorized a local-development-only certificate-warning
+exception for isolated functional testing. This follow-up does not change the
+original INT-04 result above and does not modify the verified INT-03 evidence.
+
+| Scope | Classification |
+| --- | --- |
+| Deterministic authentication compatibility | **PASS** |
+| Local certificate-warning functional testing | **DOCUMENTED / AUTHORIZED FOR FUNCTIONAL TESTING** |
+| Live authenticated acceptance | **BLOCKED** pending an approved synthetic identity and actual execution |
+| Trusted HTTPS security acceptance | **PASS** under the recorded INT-03 evidence; not established by the local exception |
+
+- `LOCAL_FUNCTIONAL_TLS_EXCEPTION` is **DOCUMENTED / AUTHORIZED FOR
+  FUNCTIONAL TESTING**. Future local UI, routing, frontend interaction,
+  frontend-to-Core, and local authentication checks may proceed through the
+  intended loopback browser warning, or use an explicitly opted-in temporary
+  Playwright context with `ignoreHTTPSErrors: true`, when the README's
+  isolation and disposable-identity conditions are satisfied.
+- `TRUSTED_HTTPS_ACCEPTANCE` remains mandatory for certificate-chain and
+  hostname acceptance, transport-security acceptance, release readiness, and
+  production claims. The existing INT-03 trusted Chromium result remains
+  **PASS** within its recorded environment and scope. The local exception does
+  not establish trusted TLS and cannot be used as security evidence.
+- For future local functional INT-04 checks, `ERR_CERT_AUTHORITY_INVALID`
+  alone is not a blocker when the authorized exception applies. A real Core
+  API, correct same-origin routing, secure cookie/CSRF behavior, backend
+  responses, and an explicitly approved disposable identity remain mandatory.
+- The current live authenticated result remains **BLOCKED** independently of
+  certificate trust because no approved synthetic identity was available.
+  Login, authenticated `/auth/me`, refresh, and authenticated logout must not
+  be marked **PASS** without execution against an authorized real Core
+  session. Do not create accounts, provision administrators, bypass
+  authentication, or weaken Core security to resolve this blocker.
+
+The policy is discoverable from `apps/web/README.md` and
+`apps/web/docs/TESTING.md`. It does not require future agents to reproduce the
+full INT-03 trust-store setup for ordinary local functional work, but TLS
+security verification must continue to use that trusted procedure. Record
+unattempted checks as `NOT_RUN`; retain `BLOCKED` for unavailable prerequisites
+such as the missing approved identity.

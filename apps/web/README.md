@@ -47,12 +47,15 @@ Start the secure runtime on loopback:
 pnpm dev --host 127.0.0.1
 ```
 
-The Web certificate must be trusted by the test browser and include the exact
-requested Web hostname. Open the matching `https://` URL; never disable
-certificate warnings or validation. Both HTTPS variables are required
-together. An incomplete pair or unreadable/invalid certificate fails during
-Vite startup. Leaving them unset intentionally starts HTTP development mode
-and must be recorded as **not a secure integration runtime**.
+### HTTPS verification modes
+
+For **trusted HTTPS and security acceptance**
+(`TRUSTED_HTTPS_ACCEPTANCE`), the Web certificate must be trusted by the test
+browser and include the exact requested Web hostname. Open the matching
+`https://` URL with normal certificate validation. Both HTTPS variables are
+required together. An incomplete pair or unreadable/invalid certificate fails
+during Vite startup. Leaving them unset intentionally starts HTTP development
+mode and must be recorded as **not a secure integration runtime**.
 
 The browser sees only `/api/v1`; Vite proxies that path to the configured Core
 listener while preserving the existing cookie/CSRF transport. Set the target
@@ -61,10 +64,10 @@ WSL2/Docker). Do not expose internal worker/admin ports or storage credentials
 to the client. In production, reverse-proxy `/api/v1` to Core on the same
 trusted HTTPS origin rather than introducing a browser-visible Core origin.
 
-For an isolated Chromium/Playwright check, trust only the existing approved
-public Development CA root in a task-owned NSS database. Do not import private
-keys, modify the global trust store, create a replacement CA, or use a browser
-certificate-error bypass:
+For `TRUSTED_HTTPS_ACCEPTANCE`, an isolated Chromium/Playwright check must trust
+only the existing approved public Development CA root in a task-owned NSS
+database. Do not import private keys, modify the global trust store, create a
+replacement CA, or use a browser certificate-error bypass:
 
 ```bash
 TRUST_HOME="$(mktemp -d)"
@@ -78,8 +81,53 @@ HOME="$TRUST_HOME" <normal-Chromium-or-Playwright-command>
 
 Launch the browser with normal certificate validation and use the hostname
 covered by the certificate SAN (for example, `https://localhost:5173` when
-the certificate contains `DNS:localhost`). Never use
+the certificate contains `DNS:localhost`). For this mode, never use
 `--ignore-certificate-errors` or Playwright `ignoreHTTPSErrors`.
+
+### Local functional testing with an untrusted development certificate
+
+For isolated local development, a deliberate certificate-warning exception is
+permitted for ordinary functional work. A browser warning does not by itself
+block local UI, navigation, frontend interaction, frontend-to-Core behavior,
+or local authentication checks. Label every result from this mode
+`LOCAL_FUNCTIONAL_TLS_EXCEPTION`.
+
+Use this exception only when all of the following are true:
+
+- the Web app is running on the intended loopback development origin, normally
+  `https://localhost:5173`;
+- the developer has confirmed that the target is the intended local server;
+- the environment is isolated from production and shared sensitive resources;
+- no real user credentials, production cookies, or production data are used;
+- local authentication uses only an explicitly approved disposable test
+  identity; and
+- the purpose is functional development, not TLS security acceptance.
+
+For manual Chromium testing:
+
+1. Start the existing local Web application.
+2. Open the intended local HTTPS URL.
+3. If Chromium displays a certificate warning, select **Advanced**.
+4. Select **Proceed to localhost (unsafe)** if the browser provides that
+   option.
+5. Continue the ordinary local functional test.
+6. Record the evidence as `LOCAL_FUNCTIONAL_TLS_EXCEPTION` and state that
+   certificate trust was not verified.
+
+This procedure does not make the certificate trusted. If the browser does not
+provide a permitted way to proceed, do not circumvent browser-enforced
+restrictions. Never use this exception for unfamiliar or remote HTTPS
+websites.
+
+For an explicitly opted-in, temporary, isolated Playwright functional run, a
+task-owned browser context may use a local-only option such as
+`ignoreHTTPSErrors: true`. Prefer an ephemeral invocation or an uncommitted
+task-owned verification harness. Do not commit this option as a global
+Playwright configuration, Vitest browser default, CI setting, or production
+application option. It must never replace trusted HTTPS tests or be reported
+as certificate-chain validation. Future agents do not need to install
+`certutil`, create an NSS database, or regenerate certificates merely to
+perform ordinary local UI tests under this explicitly authorized mode.
 
 When the optional local media settings are present, Vite enables the
 development-only `/__local-media` adapter. It accepts only the documented
@@ -91,12 +139,13 @@ oversized requests, and upstream redirects fail closed. The normal Rush media
 compatibility flow does not yet complete local capability rewriting or the
 full media workflow; that boundary remains INT-05.
 
-For a runtime observation, record the redacted Web URL and verify in the
-browser that `location.protocol === 'https:'`, the certificate is trusted,
-`window.isSecureContext === true`, Core requests remain same-origin
-`/api/v1`, and the console/network panel has no mixed-content request. An
-unauthorized Core response may prove reachability only; do not use real
-credentials or destructive media mutations for this transport check.
+For a `TRUSTED_HTTPS_ACCEPTANCE` runtime observation, record the redacted Web
+URL and verify in the browser that `location.protocol === 'https:'`, the
+certificate is trusted, `window.isSecureContext === true`, Core requests
+remain same-origin `/api/v1`, and the console/network panel has no
+mixed-content request. An unauthorized Core response may prove reachability
+only; do not use real credentials or destructive media mutations for this
+transport check.
 
 ```bash
 pnpm lint
