@@ -36,10 +36,13 @@ abstract final class AppTheme {
         surfaceTintColor: Colors.transparent,
       ),
       cardTheme: CardThemeData(
-        color: scheme.surface, elevation: 0,
+        color: scheme.surface,
+        elevation: 0,
         surfaceTintColor: Colors.transparent,
         shape: RoundedRectangleBorder(
-          side: BorderSide(color: dark ? const Color(0xFF334155) : Palette.border),
+          side: BorderSide(
+            color: dark ? const Color(0xFF334155) : Palette.border,
+          ),
           borderRadius: BorderRadius.circular(14),
         ),
       ),
@@ -48,20 +51,30 @@ abstract final class AppTheme {
         fillColor: scheme.surface,
         border: OutlineInputBorder(borderRadius: BorderRadius.circular(11)),
         enabledBorder: OutlineInputBorder(
-          borderSide: BorderSide(color: dark ? const Color(0xFF475569) : Palette.border),
-          borderRadius: BorderRadius.circular(11)),
-        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+          borderSide: BorderSide(
+            color: dark ? const Color(0xFF475569) : Palette.border,
+          ),
+          borderRadius: BorderRadius.circular(11),
+        ),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 14,
+          vertical: 13,
+        ),
       ),
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(
           minimumSize: const Size(0, 46),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(11)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(11),
+          ),
         ),
       ),
       outlinedButtonTheme: OutlinedButtonThemeData(
         style: OutlinedButton.styleFrom(
           minimumSize: const Size(0, 44),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(11)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(11),
+          ),
         ),
       ),
       dividerColor: dark ? const Color(0xFF334155) : Palette.border,

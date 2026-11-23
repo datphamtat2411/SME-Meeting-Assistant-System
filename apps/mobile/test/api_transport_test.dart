@@ -1,10 +1,11 @@
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:sme_meeting_assistant/core/api_transport.dart';
+
+import 'support/http_test_support.dart';
 
 void main() {
   group('CoreApiTransport', () {
@@ -259,28 +260,4 @@ void main() {
       expect(client.requests, hasLength(1));
     });
   });
-}
-
-Future<http.StreamedResponse> streamedResponse(
-  int statusCode, {
-  List<int> body = const <int>[],
-  Map<String, String> headers = const <String, String>{},
-}) async => http.StreamedResponse(
-  Stream<List<int>>.value(body),
-  statusCode,
-  headers: headers,
-);
-
-class RecordingHttpClient extends http.BaseClient {
-  RecordingHttpClient(this.handler);
-
-  final Future<http.StreamedResponse> Function(http.BaseRequest request)
-  handler;
-  final List<http.BaseRequest> requests = <http.BaseRequest>[];
-
-  @override
-  Future<http.StreamedResponse> send(http.BaseRequest request) {
-    requests.add(request);
-    return handler(request);
-  }
 }

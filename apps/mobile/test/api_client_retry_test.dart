@@ -1,9 +1,10 @@
 import 'dart:io';
-import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:sme_meeting_assistant/core/api_client.dart';
+
+import 'support/http_test_support.dart';
 
 void main() {
   test(
@@ -169,34 +170,3 @@ class UnavailableHttpClient extends http.BaseClient {
         const SocketException('private network details'),
       );
 }
-
-Future<http.StreamedResponse> jsonResponse(
-  int statusCode,
-  Map<String, dynamic> value,
-) async => http.StreamedResponse(
-  Stream<List<int>>.value(utf8.encode(jsonEncode(value))),
-  statusCode,
-  headers: const <String, String>{'content-type': 'application/json'},
-);
-
-Map<String, dynamic> successEnvelope(dynamic data) => <String, dynamic>{
-  'success': true,
-  'code': 'SUCCESS',
-  'message': 'Request completed successfully.',
-  'data': data,
-  'meta': commonMeta,
-};
-
-Map<String, dynamic> errorEnvelope(String code, String message) =>
-    <String, dynamic>{
-      'success': false,
-      'code': code,
-      'message': message,
-      'data': null,
-      'meta': commonMeta,
-    };
-
-const commonMeta = <String, dynamic>{
-  'requestId': 'test-request-id',
-  'timestamp': '2026-11-23T12:00:00Z',
-};

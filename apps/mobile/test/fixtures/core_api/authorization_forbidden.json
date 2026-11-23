@@ -1,0 +1,10 @@
+{
+  "success": false,
+  "code": "AUTHZ_FORBIDDEN",
+  "message": "Access to this resource is forbidden.",
+  "data": null,
+  "meta": {
+    "requestId": "55555555-5555-4555-8555-555555555555",
+    "timestamp": "2026-11-23T12:04:00Z"
+  }
+}

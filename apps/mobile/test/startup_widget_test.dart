@@ -2,12 +2,13 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:http/http.dart' as http;
 import 'package:sme_meeting_assistant/core/api_client.dart';
 import 'package:sme_meeting_assistant/core/app_config.dart';
 import 'package:sme_meeting_assistant/core/app_dependencies.dart';
 import 'package:sme_meeting_assistant/core/appearance_preferences.dart';
 import 'package:sme_meeting_assistant/main.dart';
+
+import 'support/http_test_support.dart';
 
 void main() {
   testWidgets('shows a safe configuration failure', (tester) async {
@@ -125,7 +126,7 @@ class FakeApiClient extends ApiClient {
     signedInValue: signedIn,
     recoverableSessionValue: recoverableSession,
     restoreErrorValue: restoreError,
-    client: TrackingHttpClient(),
+    client: NoNetworkHttpClient(),
   );
 
   FakeApiClient._({
@@ -144,7 +145,7 @@ class FakeApiClient extends ApiClient {
   final bool signedInValue;
   final bool recoverableSessionValue;
   final String? restoreErrorValue;
-  final TrackingHttpClient client;
+  final NoNetworkHttpClient client;
   int initializeCalls = 0;
 
   @override
@@ -173,20 +174,4 @@ class FakeApiClient extends ApiClient {
   @override
   Future<ApiResult> get(String path, {Map<String, String>? query}) async =>
       const ApiResult(<String, dynamic>{}, <String, dynamic>{}, null);
-}
-
-class TrackingHttpClient extends http.BaseClient {
-  int closeCalls = 0;
-
-  @override
-  Future<http.StreamedResponse> send(http.BaseRequest request) {
-    return Future<http.StreamedResponse>.error(
-      UnsupportedError('No network is used by this test.'),
-    );
-  }
-
-  @override
-  void close() {
-    closeCalls++;
-  }
 }

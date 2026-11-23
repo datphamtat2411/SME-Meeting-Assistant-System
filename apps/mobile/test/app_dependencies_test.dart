@@ -1,12 +1,13 @@
-import 'package:http/http.dart' as http;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sme_meeting_assistant/core/api_client.dart';
 import 'package:sme_meeting_assistant/core/app_dependencies.dart';
 import 'package:sme_meeting_assistant/core/appearance_preferences.dart';
 
+import 'support/http_test_support.dart';
+
 void main() {
   test('the dependency holder closes owned resources exactly once', () {
-    final client = TrackingHttpClient();
+    final client = NoNetworkHttpClient();
     final api = TrackingApiClient(client);
     final dependencies = AppDependencies(
       api: api,
@@ -23,7 +24,7 @@ void main() {
   });
 
   test('the production composition factory injects its dependencies', () {
-    final client = TrackingHttpClient();
+    final client = NoNetworkHttpClient();
     final credentials = InMemoryCredentialStorage();
     final preferences = InMemoryAppearancePreferences();
     final dependencies = AppDependencies.create(
@@ -44,26 +45,10 @@ void main() {
   });
 }
 
-class TrackingHttpClient extends http.BaseClient {
-  int closeCalls = 0;
-
-  @override
-  Future<http.StreamedResponse> send(http.BaseRequest request) {
-    return Future<http.StreamedResponse>.error(
-      UnsupportedError('No network is used by this test.'),
-    );
-  }
-
-  @override
-  void close() {
-    closeCalls++;
-  }
-}
-
 class TrackingApiClient extends ApiClient {
   int disposeCalls = 0;
 
-  TrackingApiClient(http.Client client)
+  TrackingApiClient(NoNetworkHttpClient client)
     : super(
         baseUri: Uri.parse('https://api.example.test/api/v1'),
         httpClient: client,

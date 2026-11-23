@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+
 import '../../core/api_client.dart';
 import 'transcript_review_panel.dart';
 import 'speaker_mapping_panel.dart';
@@ -33,20 +34,30 @@ class _ResultsPanelState extends State<ResultsPanel> {
       SpeakerMappingPanel(api: widget.api, meetingId: widget.meetingId),
       MinutesPanel(api: widget.api, meetingId: widget.meetingId),
     ];
-    return Column(children: [
-      SingleChildScrollView(scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        child: Row(children: [
-          for (var i = 0; i < tabs.length; i++)
-            Padding(padding: const EdgeInsets.only(right: 6),
-              child: ChoiceChip(
-                avatar: Icon(tabs[i].$2, size: 17),
-                label: Text(tabs[i].$1),
-                selected: selected == i,
-                onSelected: (_) => setState(() => selected = i),
-              )),
-        ])),
-      Expanded(child: IndexedStack(index: selected, children: pages)),
-    ]);
+    return Column(
+      children: [
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          child: Row(
+            children: [
+              for (var i = 0; i < tabs.length; i++)
+                Padding(
+                  padding: const EdgeInsets.only(right: 6),
+                  child: ChoiceChip(
+                    avatar: Icon(tabs[i].$2, size: 17),
+                    label: Text(tabs[i].$1),
+                    selected: selected == i,
+                    onSelected: (_) => setState(() => selected = i),
+                  ),
+                ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: IndexedStack(index: selected, children: pages),
+        ),
+      ],
+    );
   }
 }

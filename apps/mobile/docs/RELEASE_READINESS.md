@@ -1,91 +1,113 @@
-# Mobile delivery and integration readiness
+# Mobile integration readiness
 
-This is the execution map for the Flutter app shipped in the mobile/rush-mobile
-branch. It distinguishes implemented client capabilities from server-owned
-business behavior and from work that still needs end-to-end validation.
+Mobile is in an Android-first foundation phase. This checklist separates
+automated foundation evidence from backend integration, device acceptance, and
+production release readiness. See
+[`M01_FOUNDATION_VERIFICATION.md`](M01_FOUNDATION_VERIFICATION.md) for the
+current local results and the explicitly unverified GitHub Actions gate.
 
-## How to run
+## Verified foundation capabilities
 
-From the repository root:
+The locally verified foundation currently includes:
 
-    cd apps/mobile
-    fvm install
-    bash tool/bootstrap.sh
-    fvm flutter analyze lib
-    fvm flutter run --dart-define=API_BASE_URL=https://YOUR-API-HOST/api/v1
+- The project-pinned Flutter/Dart SDK, JDK 17, Android SDK, Gradle wrapper, and
+  committed Android plugin configuration.
+- Lockfile-enforced Flutter dependency resolution and the fail-closed native
+  Android configuration validator.
+- Startup/configuration states, dependency ownership/disposal, in-memory
+  credential and appearance storage seams, and asynchronous theme updates.
+- Core API transport identity and protected-header checks, redirect rejection,
+  network/timeout handling, safe response decoding, request correlation,
+  structured errors, Retry-After, and ETag behavior.
+- Signed object-storage uploads that stream bytes without Core API credentials,
+  cookies, or the mobile auth-transport header.
+- Shared model validation, detail/list projections, date semantics, strict
+  pagination metadata, ordered page accumulation, and stale/duplicate response
+  handling.
+- Core API fixture compatibility for Common API envelopes, representative
+  meeting DTOs, pagination, validation/authentication/authorization failures,
+  and server-issued conditional-request behavior.
+- A local Android debug APK build without release signing credentials.
 
-The bootstrap script validates the pinned Flutter 3.50.1/Dart 3.14.0 and JDK
-17, enforces `pubspec.lock`, and checks the committed Android configuration. It
-does not generate or overwrite native runner files. The iOS project remains
-preserved for deferred support, but is not built or validated by this workflow.
-`API_BASE_URL` is mandatory for every run. An Android emulator can use
-`http://10.0.2.2:8080/api/v1` for debug-only local development. A physical phone
-needs a routable private-LAN host or tunnel address. Profile and release builds
-must use HTTPS. Provide a running and authorized Core API; the app does not
-contain an offline mock server.
+Passing fixture tests establishes compatibility with the fixture contracts,
+not with a live service. Foundation unit/widget/contract tests and the debug
+build do not require a backend, credentials, secure-storage plugins, emulator,
+or device.
 
-GitHub Actions publishes the debug Android APK as an artifact of successful
-Mobile Flutter build runs. A debug APK is not a release signing, store submission,
-or real-device acceptance result.
+## Integration prerequisites
 
-## Functional integration map
+Before live integration, provide:
 
-| Feature area | Mobile behavior | Required API |
-| --- | --- | --- |
-| Foundation | Responsive navigation, page states, light/dark, safe error reporting | Core API |
-| Auth/session | Email sign-in, refresh rotation, session restore retry, logout, setup and recovery forms | auth endpoints; auth transport feature enabled |
-| Profile | Self profile update with ETag, notification email flags, locale and timezone | me/profile, me/preferences |
-| Meetings | Search/filter/list/calendar, create, edit, lifecycle, attendee list/edit | meetings, users/meeting-candidates |
-| Room booking | Availability suggestions and non-binding conflict previews | rooms/availability, meeting-schedule-checks |
-| Recordings | Explicit microphone start/stop, file selection, recoverable local drafts, signed upload progress | media uploads/finalize, object storage |
-| Processing | Async job admissions, retry, stage information and automatic status polling | processing-jobs |
-| Results | Transcript corrections, speaker mapping, summary version control, regenerate admission, decision review | transcript, speaker-clusters, summary, decisions |
-| Minutes | Canonical official minutes, quality warnings, official actions | meetings/{id}/minutes |
-| Action items | Paginated filters, assignee lookup, manual create/edit, lifecycle transitions | action-items, meeting-candidates |
-| Assistant | Conversation selection, message display, citation list and protected request UI | assistant/conversations (not yet present in checked Core backend) |
+- A reachable development Core API with the required Mobile authentication
+  transport enabled, compatible endpoint contracts, and authorized test
+  accounts/roles.
+- A valid `API_BASE_URL`; use a routable private development host for a physical
+  phone or the Android emulator host address for a local API.
+- Android USB debugging and a device/network path to the development host for
+  real-device acceptance.
+- A development object-storage configuration that can issue usable,
+  short-lived signed upload URLs, plus non-sensitive representative test data.
+- Development data covering meeting permissions, pagination, conflicts, media
+  upload, transcript/result review, and room availability as applicable.
 
-Server authorization is authoritative for every call. The mobile UI never
-converts AI proposals into official decisions/actions without authorized
-server commands. A 202 processing response is only admission; the app continues
-to display durable job state and warnings.
+No live backend, credentials, signed URLs, meeting content, or audio are
+downloaded or required by the Mobile CI job.
 
-## API and data integrity
+## Deferred feature-module validation
 
-- Public Core API envelope uses success/code/message/data/meta and
-  meta.pagination for zero-based paginated lists.
-- Strong If-Match is passed for meeting, action-item, summary, speaker and
-  transcript changes. Conflicts must be refetched rather than overwritten.
-- Mobile X-Auth-Transport is set only for Core API calls. Bearer access stays
-  in process memory; rotating refresh credentials use platform secure storage.
-  A transient network outage during restore does not erase those credentials.
-- Media upload URLs are short-lived capabilities: direct PUT sends only the
-  specified Content-Type, never bearer tokens or cookies.
-- Local microphone recordings are preserved in the app documents directory;
-  a bounded encrypted index records their private paths for recoverability.
-  This is **not** an encrypted audio vault. Device encryption and appropriate
-  endpoint data-handling policies remain necessary.
-- Times submitted to Core API are offset-qualified UTC ISO 8601 instants;
-  visual labels are localized to the current device time zone.
-- The currently checked backend does not expose Assistant conversation
-  endpoints. Mobile must show an unsupported state; AI responses and evidence
-  must never be faked. Some export/recovery features remain backend gated.
+These checks are separate from the M01 foundation gate:
 
-## Before treating this as production-ready
+- M02 authentication/session lifecycle edge cases with an authorized live API,
+  including refresh rotation, recovery, and logout behavior.
+- Physical microphone permission grant/denial/revocation, recording lifecycle,
+  interrupted capture, and local draft recovery.
+- Long-running and interrupted uploads, signed URL expiry, file-format
+  validation, and background/resume behavior against development object
+  storage.
+- Live meeting scheduling, room availability/conflicts, roles, attendee
+  changes, and server-side ETag revision behavior.
+- AI processing admission/status, transcript review, summary/decision
+  workflows, action-item transitions, and their authorization/provenance rules.
+- Assistant end-to-end behavior. The checked Core API has public conversation
+  endpoints, but Mobile currently sends an empty conversation-create payload
+  instead of the required `meetingId`, and sends `content` instead of the
+  required message `question`. Reconcile these contracts before treating the
+  Mobile Assistant as integrated; never display fabricated AI output.
 
-1. Test on a physical Android device with live backend, network loss and
-   microphone permission denied/revoked; verify retained recording recovery.
-2. Validate live Spring Boot user role/meeting policies, action-item transitions,
-   ETag revisions, pagination, participant assignments and schedule conflicts.
-3. Test long recordings (size cap, network interruption, signed upload expiry,
-   corrupted format, background handling) against the configured S3 adapter.
-4. Verify transcript speaker and correction permissions, Summary state,
-   provenance, AI quality warnings and official Minutes consistency.
-5. Complete and expose the authenticated Assistant API if that product feature
-   must work end to end; validate source access and citations.
-6. Review TLS, credential rotation, device storage, PII retention, audio consent
-   policy, audit logging, and accessibility with stakeholders.
-7. Perform the required physical Android device and release-signing checks. iOS
-   compilation/signing is deferred and only performed when explicitly requested.
-8. Run formal acceptance and regression validation before real user rollout.
+## Known server-owned concurrency-token limitations
 
-No additional test cases were committed, as requested in the original scope.
+Do not infer or synthesize ETags from model versions or identifiers.
+
+- The Decisions list endpoint returns paginated `DecisionView` records but does
+  not attach an individual ETag to each item. The API requires `If-Match` for
+  edit/confirm/reject operations. Mobile keeps those actions disabled until the
+  read contract provides a current server-issued token.
+- The transcript read endpoint returns one ETag for the transcript. Segment
+  correction requires a segment-specific ETag, which is not provided by the
+  current read projection. Mobile keeps segment editing disabled rather than
+  deriving a token from the segment `version`.
+- Other conditional mutations must continue to fail closed when a response
+  lacks its server-issued ETag. HTTP 412/428 remain server outcomes, not a
+  signal to invent or retry a token.
+
+## Non-blocking Android compatibility warnings
+
+- The pinned debug build succeeds but Flutter warns that the resolved
+  `record_android` plugin applies Kotlin Gradle Plugin directly and may need a
+  future migration for Flutter's built-in Kotlin support. No plugin/toolchain
+  upgrade was made for this warning.
+- On the local WSL2 host, `flutter doctor -v` reports missing `ninja` and
+  `pkg-config` only for optional Linux desktop development. Its Android
+  toolchain check passes; those desktop tools are not needed for Android CI.
+
+## Deferred platforms and release checks
+
+- Android is the only actively developed and verified platform. iOS source and
+  native project files are preserved, but iOS development, builds, tests, and
+  CI validation are deferred.
+- CI builds an unsigned debug APK only. Release signing, production API
+  configuration, store packaging, security/privacy review, accessibility
+  acceptance, operational monitoring, and rollout approval are not verified by
+  the debug build.
+- Physical-device acceptance and full-system/live-backend end-to-end testing
+  remain separate required gates before production readiness.

@@ -1,0 +1,48 @@
+{
+  "success": true,
+  "code": "SUCCESS",
+  "message": "Request completed successfully.",
+  "data": [
+    {
+      "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "title": "Weekly operations review",
+      "description": null,
+      "organizerUserId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "roomId": null,
+      "scheduledStartAt": "2026-11-24T09:00:00Z",
+      "scheduledEndAt": "2026-11-24T09:45:00Z",
+      "status": "SCHEDULED",
+      "startedAt": null,
+      "endedAt": null,
+      "cancelledAt": null,
+      "cancellationReason": null,
+      "createdByUserId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "createdAt": "2026-11-20T10:15:00Z",
+      "updatedAt": "2026-11-20T10:15:00Z",
+      "display": {
+        "organizerName": "Lan Nguyen",
+        "roomName": null,
+        "roomLocation": null,
+        "participantCount": 1,
+        "participantPreview": [
+          {
+            "userId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            "displayName": "Lan Nguyen"
+          }
+        ]
+      }
+    }
+  ],
+  "meta": {
+    "requestId": "22222222-2222-4222-8222-222222222222",
+    "timestamp": "2026-11-23T12:01:00Z",
+    "pagination": {
+      "page": 0,
+      "size": 20,
+      "totalElements": 1,
+      "totalPages": 1,
+      "hasNext": false,
+      "hasPrevious": false
+    }
+  }
+}
