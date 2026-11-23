@@ -1,0 +1,30 @@
+# INT-01 protected Product Integration Web manifest
+# Deterministic format:
+#   path|develop_blob_oid|integration_checkpoint_blob_oid|develop_delta_status|identity_check
+# Paths are repository-relative and sorted bytewise.
+# develop tree: 85ec885cbd1c38f4e1a17d95fc89f9b387f0f14e
+# integration checkpoint tree: acd2c80a5c2732e19dbf8cb3e36bf246ab68f544
+# common merge-base tree used to derive develop_delta_status:
+#   4b9656705053781f36aa09b4321483f21d59375d
+# Expected rows: 20 (12 added, 8 modified relative to the merge base).
+# Every identity_check must be "same".
+apps/web/.env.example|9fa20f7702797c5249b3a1f52f47094533a22dc4|9fa20f7702797c5249b3a1f52f47094533a22dc4|M|same
+apps/web/config/local-media-proxy.ts|28424c750d6c7996ac0f87ea888b6915aee8691c|28424c750d6c7996ac0f87ea888b6915aee8691c|A|same
+apps/web/src/features/auth/account-setup/account-setup-api.test.ts|c12e78c7f53ef1970f24c44eef0fefc97b77303d|c12e78c7f53ef1970f24c44eef0fefc97b77303d|A|same
+apps/web/src/features/auth/account-setup/account-setup-api.ts|9ef58947de8c950225d08bcc5c09af67cc5642ec|9ef58947de8c950225d08bcc5c09af67cc5642ec|A|same
+apps/web/src/features/auth/account-setup/components/account-setup-form.test.tsx|ef3390e1365970f3d4d4793ed9b305ebee7f5a02|ef3390e1365970f3d4d4793ed9b305ebee7f5a02|A|same
+apps/web/src/features/auth/account-setup/components/account-setup-form.tsx|661fb5dccd87a4368bb68ef0a2a2ae0adb77b1eb|661fb5dccd87a4368bb68ef0a2a2ae0adb77b1eb|A|same
+apps/web/src/features/auth/account-setup/index.tsx|6fb6365e03ba348443d6b2b931f4a8349b9f341a|6fb6365e03ba348443d6b2b931f4a8349b9f341a|A|same
+apps/web/src/features/auth/sign-in/components/user-auth-form.test.tsx|92aedc32c5bd7f773ca65dd4115d1d567820eb4c|92aedc32c5bd7f773ca65dd4115d1d567820eb4c|M|same
+apps/web/src/features/auth/sign-in/sign-in-api.test.ts|7d33cb053c5e2b1ef64a24f1dab7143bb6ba4576|7d33cb053c5e2b1ef64a24f1dab7143bb6ba4576|M|same
+apps/web/src/features/meetings/data/operator-mi-e2e-workflow.test.ts|fedaed6580bd2804d22230e2a91425ca7e865374|fedaed6580bd2804d22230e2a91425ca7e865374|A|same
+apps/web/src/features/meetings/data/operator-mi-e2e-workflow.ts|a0bf65352f708030694b0e47b60f1e438d01addc|a0bf65352f708030694b0e47b60f1e438d01addc|A|same
+apps/web/src/features/meetings/operator-mi-e2e-workspace.test.tsx|8832ae6d848908cd2657155c0ec25900807c0378|8832ae6d848908cd2657155c0ec25900807c0378|A|same
+apps/web/src/features/meetings/operator-mi-e2e-workspace.tsx|2d632a5e57e74ff31a945cab2a439115beb36446|2d632a5e57e74ff31a945cab2a439115beb36446|A|same
+apps/web/src/lib/core-api.ts|d277feecb59c0e69ed4b86ab16cc8076bfbb6f4d|d277feecb59c0e69ed4b86ab16cc8076bfbb6f4d|M|same
+apps/web/src/routeTree.gen.ts|91966c82094c514cec359ae9b3c93032cd928d04|91966c82094c514cec359ae9b3c93032cd928d04|M|same
+apps/web/src/routes/(auth)/account-setup.tsx|a6511a493eabc5a29c7c9cf6fa57d938a35a7d98|a6511a493eabc5a29c7c9cf6fa57d938a35a7d98|A|same
+apps/web/src/routes/(auth)/sign-in.tsx|0af6e6551056a37123bb0fe74df2e683fb6a34cb|0af6e6551056a37123bb0fe74df2e683fb6a34cb|M|same
+apps/web/src/routes/_authenticated/meetings/operator-mi-e2e.tsx|c7a0a638f8e192d4441caa01c7ae617b1bb776e3|c7a0a638f8e192d4441caa01c7ae617b1bb776e3|A|same
+apps/web/src/routes/auth-session.integration.test.tsx|a66fcb8efffcb3e813c272635b493e6682502020|a66fcb8efffcb3e813c272635b493e6682502020|M|same
+apps/web/vite.config.ts|a638122b8e578fd95a2ef852ce319f41e57d2097|a638122b8e578fd95a2ef852ce319f41e57d2097|M|same
