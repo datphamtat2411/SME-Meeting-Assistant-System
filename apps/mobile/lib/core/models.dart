@@ -21,11 +21,34 @@ String dateLabel(dynamic value, {bool time = true}) {
 
 String dateIso(DateTime value) => value.toUtc().toIso8601String();
 
+enum MeetingStatus {
+  draft('DRAFT'),
+  scheduled('SCHEDULED'),
+  inProgress('IN_PROGRESS'),
+  ended('ENDED'),
+  cancelled('CANCELLED');
+
+  const MeetingStatus(this.wireValue);
+
+  final String wireValue;
+
+  static MeetingStatus fromWireValue(String value, {ApiResult? response}) =>
+      switch (value) {
+        'DRAFT' => MeetingStatus.draft,
+        'SCHEDULED' => MeetingStatus.scheduled,
+        'IN_PROGRESS' => MeetingStatus.inProgress,
+        'ENDED' => MeetingStatus.ended,
+        'CANCELLED' => MeetingStatus.cancelled,
+        _ => _invalidMeetingStatus(response),
+      };
+}
+
 class Meeting {
   final String id;
   final String title;
   final String? description;
   final String status;
+  final MeetingStatus? lifecycleStatus;
   final DateTime? scheduledStartAt;
   final DateTime? scheduledEndAt;
   final DateTime? startedAt;
@@ -44,6 +67,7 @@ class Meeting {
     required this.title,
     required this.description,
     required this.status,
+    this.lifecycleStatus,
     required this.scheduledStartAt,
     required this.scheduledEndAt,
     required this.startedAt,
@@ -61,6 +85,18 @@ class Meeting {
   factory Meeting.fromJson(Map<String, dynamic> json, {ApiResult? response}) =>
       _decode(json, response: response, requireDisplay: false);
 
+  /// Canonical repository decoder. It validates any supplied display object
+  /// for shape but keeps list-only metadata outside the meeting representation.
+  factory Meeting.fromCanonicalJson(
+    Map<String, dynamic> json, {
+    ApiResult? response,
+  }) => _decode(
+    json,
+    response: response,
+    requireDisplay: false,
+    attachDisplay: false,
+  );
+
   factory Meeting.fromListJson(
     Map<String, dynamic> json, {
     ApiResult? response,
@@ -70,30 +106,38 @@ class Meeting {
     Map<String, dynamic> json, {
     ApiResult? response,
     required bool requireDisplay,
+    bool attachDisplay = true,
   }) {
     final displayJson = requireDisplay
         ? requiredObject(json, 'display', response: response)
         : optionalObject(json, 'display', response: response);
+    final lifecycleStatus = MeetingStatus.fromWireValue(
+      requiredString(json, 'status', response: response, nonEmpty: true),
+      response: response,
+    );
+    final scheduledStartAt = optionalTimestamp(
+      json,
+      'scheduledStartAt',
+      response: response,
+    );
+    final scheduledEndAt = optionalTimestamp(
+      json,
+      'scheduledEndAt',
+      response: response,
+    );
+    if ((scheduledStartAt == null) != (scheduledEndAt == null) ||
+        (scheduledStartAt != null &&
+            !scheduledStartAt.isBefore(scheduledEndAt!))) {
+      invalidApiData(response: response);
+    }
     return Meeting(
       id: requiredIdentifier(json, 'id', response: response),
       title: requiredString(json, 'title', response: response, nonEmpty: true),
       description: optionalString(json, 'description', response: response),
-      status: requiredString(
-        json,
-        'status',
-        response: response,
-        nonEmpty: true,
-      ),
-      scheduledStartAt: optionalTimestamp(
-        json,
-        'scheduledStartAt',
-        response: response,
-      ),
-      scheduledEndAt: optionalTimestamp(
-        json,
-        'scheduledEndAt',
-        response: response,
-      ),
+      status: lifecycleStatus.wireValue,
+      lifecycleStatus: lifecycleStatus,
+      scheduledStartAt: scheduledStartAt,
+      scheduledEndAt: scheduledEndAt,
       startedAt: optionalTimestamp(json, 'startedAt', response: response),
       endedAt: optionalTimestamp(json, 'endedAt', response: response),
       cancelledAt: optionalTimestamp(json, 'cancelledAt', response: response),
@@ -115,16 +159,46 @@ class Meeting {
       ),
       createdAt: requiredTimestamp(json, 'createdAt', response: response),
       updatedAt: requiredTimestamp(json, 'updatedAt', response: response),
-      display: displayJson == null
+      display: !attachDisplay || displayJson == null
           ? null
           : MeetingDisplay.fromJson(displayJson, response: response),
     );
   }
 
+  /*
+   * The compatibility constructor remains public because older Mobile
+   * consumers historically constructed Meeting values directly. All decoded
+   * server representations go through _decode and have a valid lifecycle.
+   */
   String? get organizerName => display?.organizerName;
   String? get roomName => display?.roomName;
   String? get roomLocation => display?.roomLocation;
   int? get participantCount => display?.participantCount;
+}
+
+/// A list row keeps page-scoped display metadata separate from the canonical
+/// meeting representation used by detail and versioned mutations.
+class MeetingListProjection {
+  const MeetingListProjection({required this.meeting, required this.display});
+
+  final Meeting meeting;
+  final MeetingDisplay display;
+
+  factory MeetingListProjection.fromJson(
+    Map<String, dynamic> json, {
+    ApiResult? response,
+  }) {
+    final displayJson = requiredObject(json, 'display', response: response);
+    return MeetingListProjection(
+      meeting: Meeting._decode(
+        json,
+        response: response,
+        requireDisplay: true,
+        attachDisplay: false,
+      ),
+      display: MeetingDisplay.fromJson(displayJson, response: response),
+    );
+  }
 }
 
 /// List-only meeting display data is kept separate from the canonical detail
@@ -184,6 +258,9 @@ class ParticipantPreview {
     displayName: optionalString(raw, 'displayName', response: response),
   );
 }
+
+Never _invalidMeetingStatus(ApiResult? response) =>
+    invalidApiData(response: response);
 
 class ActionItem {
   final String id;

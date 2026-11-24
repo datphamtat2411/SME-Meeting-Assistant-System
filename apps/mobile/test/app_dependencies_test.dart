@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sme_meeting_assistant/core/api_client.dart';
 import 'package:sme_meeting_assistant/core/app_dependencies.dart';
 import 'package:sme_meeting_assistant/core/appearance_preferences.dart';
+import 'package:sme_meeting_assistant/features/meetings/meeting_repository.dart';
 
 import 'support/http_test_support.dart';
 
@@ -20,6 +21,8 @@ void main() {
 
     expect(api.disposeCalls, 1);
     expect(client.closeCalls, 1);
+    expect(dependencies.meetings, isA<MeetingRepository>());
+    expect(dependencies.meetingInvalidation.isDisposed, isTrue);
     expect(dependencies.isDisposed, isTrue);
   });
 
@@ -39,6 +42,7 @@ void main() {
       Uri.parse('https://api.example.test/api/v1'),
     );
     expect(dependencies.appearancePreferences, same(preferences));
+    expect(dependencies.meetings, isA<MeetingRepository>());
 
     dependencies.dispose();
     expect(client.closeCalls, 1);

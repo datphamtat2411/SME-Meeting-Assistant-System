@@ -3,6 +3,9 @@ import 'package:http/http.dart' as http;
 import 'api_client.dart';
 import 'appearance_preferences.dart';
 
+import 'package:sme_meeting_assistant/features/meetings/meeting_invalidation.dart';
+import 'package:sme_meeting_assistant/features/meetings/meeting_repository.dart';
+
 /// The application-scoped dependency holder and resource owner.
 ///
 /// The HTTP client is created once, passed to the API service, and closed here.
@@ -11,13 +14,18 @@ class AppDependencies {
   final ApiClient api;
   final AppearancePreferences appearancePreferences;
   final http.Client httpClient;
+  late final MeetingInvalidationSignal meetingInvalidation;
+  late final MeetingRepository meetings;
   bool _disposed = false;
 
   AppDependencies({
     required this.api,
     required this.appearancePreferences,
     required this.httpClient,
-  });
+  }) {
+    meetingInvalidation = MeetingInvalidationSignal(api);
+    meetings = MeetingRepository(api: api, invalidation: meetingInvalidation);
+  }
 
   factory AppDependencies.create({
     required Uri apiBaseUri,
@@ -49,6 +57,7 @@ class AppDependencies {
   void dispose() {
     if (_disposed) return;
     _disposed = true;
+    meetingInvalidation.dispose();
     try {
       api.dispose();
     } finally {

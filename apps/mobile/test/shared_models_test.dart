@@ -17,15 +17,27 @@ void main() {
       expect(meeting.scheduledStartAt, isNull);
     });
 
-    test('keeps unknown server statuses and compatible additional fields', () {
-      final meeting = Meeting.fromJson({
-        ..._meetingJson(),
-        'status': 'NEW_SERVER_STATE',
-        'futureDisplayField': {'active': true},
-      });
-
-      expect(meeting.status, 'NEW_SERVER_STATE');
-    });
+    test(
+      'rejects unknown lifecycle states without changing the string API',
+      () {
+        final meeting = Meeting.fromJson(_meetingJson());
+        expect(meeting.status, 'DRAFT');
+        expect(meeting.lifecycleStatus, MeetingStatus.draft);
+        expect(
+          () => Meeting.fromJson({
+            ..._meetingJson(),
+            'status': 'NEW_SERVER_STATE',
+          }),
+          throwsA(
+            isA<ApiFailure>().having(
+              (failure) => failure.invalidResponse,
+              'invalidResponse',
+              isTrue,
+            ),
+          ),
+        );
+      },
+    );
 
     test('decodes a meeting list projection and preserves a zero count', () {
       final meeting = Meeting.fromListJson({
@@ -42,6 +54,30 @@ void main() {
       expect(meeting.roomName, 'Main room');
       expect(meeting.participantCount, 0);
       expect(meeting.display!.participantPreview, isEmpty);
+    });
+
+    test('keeps list display metadata separate in the typed projection', () {
+      final projection = MeetingListProjection.fromJson({
+        ..._meetingJson(),
+        'display': {
+          'organizerName': 'Lan Nguyen',
+          'roomName': null,
+          'roomLocation': null,
+          'participantCount': 1,
+          'participantPreview': [
+            {'userId': 'user-1', 'displayName': 'Lan Nguyen'},
+          ],
+        },
+      });
+
+      expect(projection.meeting.status, 'DRAFT');
+      expect(projection.meeting.display, isNull);
+      expect(projection.display.organizerName, 'Lan Nguyen');
+      expect(projection.display.participantCount, 1);
+      expect(
+        () => MeetingListProjection.fromJson(_meetingJson()),
+        throwsA(isA<ApiFailure>()),
+      );
     });
 
     test(
@@ -63,6 +99,13 @@ void main() {
         );
         expect(
           () => Meeting.fromJson({..._meetingJson(), 'id': '  '}),
+          throwsA(isA<ApiFailure>()),
+        );
+        expect(
+          () => Meeting.fromJson({
+            ..._meetingJson(),
+            'scheduledStartAt': '2026-11-23T10:00:00Z',
+          }),
           throwsA(isA<ApiFailure>()),
         );
       },
@@ -310,10 +353,12 @@ void main() {
       final first = Meeting.fromJson({
         ..._meetingJson(),
         'scheduledStartAt': '2026-11-23T12:00:00+02:00',
+        'scheduledEndAt': '2026-11-23T13:00:00+02:00',
       });
       final second = Meeting.fromJson({
         ..._meetingJson(),
         'scheduledStartAt': '2026-11-23T10:00:00Z',
+        'scheduledEndAt': '2026-11-23T11:00:00Z',
       });
 
       expect(
