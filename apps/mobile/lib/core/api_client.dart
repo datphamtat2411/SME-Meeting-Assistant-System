@@ -42,6 +42,7 @@ List<Map<String, dynamic>> objectsOf(dynamic value) {
 /// transport and retain the established retry and signed-upload behavior.
 class ApiClient extends ChangeNotifier {
   final Uri baseUri;
+  final CredentialStorage credentialStorage;
   final CoreApiTransport _coreTransport;
   final SignedUploadTransport _signedUploadTransport;
   final ApiResponseDecoder _responseDecoder = const ApiResponseDecoder();
@@ -70,7 +71,8 @@ class ApiClient extends ChangeNotifier {
          httpClient: httpClient,
          timeout: uploadTimeout,
          androidDebugOverride: androidDebugOverride,
-       ) {
+       ),
+       credentialStorage = credentialStorage {
     _requestExecutor = CoreApiRequestExecutor(
       transport: _coreTransport,
       decoder: _responseDecoder,

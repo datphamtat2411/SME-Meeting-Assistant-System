@@ -67,12 +67,10 @@ void main() {
         find.byType(TextFormField).first,
         'Planning review',
       );
-      await tester.tap(find.byType(SwitchListTile));
-      await tester.pumpAndSettle();
       await tester.ensureVisible(
-        find.widgetWithText(FilledButton, 'Tạo cuộc họp'),
+        find.widgetWithText(OutlinedButton, 'Lưu bản nháp'),
       );
-      await tester.tap(find.widgetWithText(FilledButton, 'Tạo cuộc họp'));
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Lưu bản nháp'));
       await tester.pumpAndSettle();
 
       expect(

@@ -1,14 +1,17 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:sme_meeting_assistant/core/api_client.dart';
 import 'package:sme_meeting_assistant/core/app_dependencies.dart';
 import 'package:sme_meeting_assistant/core/app_theme.dart';
 import 'package:sme_meeting_assistant/core/models.dart';
 import 'package:sme_meeting_assistant/core/widgets.dart';
+import 'package:sme_meeting_assistant/features/meetings/meeting_detail_controller.dart';
+import 'package:sme_meeting_assistant/features/meetings/meeting_edit_sheet.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_foundation.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_participants.dart';
-import 'package:sme_meeting_assistant/features/meetings/meeting_edit_sheet.dart';
-import 'package:sme_meeting_assistant/features/recording/recording_page.dart';
 import 'package:sme_meeting_assistant/features/recording/processing_timeline_panel.dart';
+import 'package:sme_meeting_assistant/features/recording/recording_page.dart';
 import 'package:sme_meeting_assistant/features/results/results_panel.dart';
 
 class MeetingDetailPage extends StatefulWidget {
@@ -27,111 +30,208 @@ class MeetingDetailPage extends StatefulWidget {
 }
 
 class _MeetingDetailPageState extends State<MeetingDetailPage> {
-  late Future<MeetingSnapshot> _future;
+  late final MeetingDetailController _controller;
   int _tab = 0;
-  bool _busy = false;
 
   @override
   void initState() {
     super.initState();
-    _reload();
-  }
-
-  void _reload() {
-    setState(
-      () => _future = widget.dependencies.meetings.detail(widget.meetingId),
+    _controller = MeetingDetailController(
+      meetings: widget.dependencies.meetings,
+      membership: widget.dependencies.meetingMembership,
+      rooms: widget.dependencies.roomScheduling,
+      invalidation: widget.dependencies.meetingInvalidation,
+      meetingId: widget.meetingId,
     );
+    unawaited(_controller.initialize());
   }
 
-  Future<void> _command(
-    MeetingSnapshot snapshot,
-    MeetingOperation operation,
-  ) async {
-    if (_busy) return;
-    setState(() => _busy = true);
-    try {
-      switch (operation) {
-        case MeetingOperation.schedule:
-          await widget.dependencies.meetings.schedule(
-            snapshot,
-            const MeetingScheduleInput(),
-          );
-        case MeetingOperation.start:
-          await widget.dependencies.meetings.start(snapshot);
-        case MeetingOperation.end:
-          await widget.dependencies.meetings.end(snapshot);
-        case MeetingOperation.cancel:
-          await widget.dependencies.meetings.cancel(
-            snapshot,
-            const MeetingCancelInput(reason: 'Cancelled from mobile'),
-          );
-        case MeetingOperation.edit || MeetingOperation.manageParticipants:
-          return;
-      }
-      if (mounted) {
-        showSuccess(context, 'Đã cập nhật cuộc họp.');
-        _reload();
-      }
-    } catch (error) {
-      if (mounted) showFailure(context, error);
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  Future<void> _confirmCancel(MeetingSnapshot snapshot) async {
-    final proceed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Hủy cuộc họp?'),
-        content: const Text(
-          'Hành động sẽ giữ lịch sử nhưng giải phóng lịch phòng.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text('Quay lại'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('Xác nhận hủy'),
-          ),
-        ],
-      ),
-    );
-    if (proceed == true && mounted) {
-      await _command(snapshot, MeetingOperation.cancel);
-    }
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
   }
 
   Future<void> _edit(MeetingSnapshot snapshot) async {
-    final updated = await showModalBottomSheet<bool>(
-      context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
-      builder: (_) => MeetingEditSheet(
-        dependencies: widget.dependencies,
-        snapshot: snapshot,
-      ),
-    );
-    if (updated == true && mounted) _reload();
+    if (!_controller.beginMutation(MeetingDetailMutation.editing)) return;
+    try {
+      final updated = await showModalBottomSheet<MeetingSnapshot>(
+        context: context,
+        isScrollControlled: true,
+        showDragHandle: true,
+        builder: (_) => MeetingEditSheet(
+          dependencies: widget.dependencies,
+          snapshot: snapshot,
+        ),
+      );
+      if (updated != null && mounted) {
+        _controller.acceptMembershipSnapshot(updated);
+      }
+    } finally {
+      if (mounted) _controller.endMutation();
+    }
   }
 
-  Widget _overview(MeetingSnapshot snapshot) {
+  Future<void> _lifecycle(
+    MeetingSnapshot snapshot,
+    MeetingLifecycleCommand command,
+  ) async {
+    final input = await _confirmLifecycle(snapshot, command);
+    if (input == null || !mounted) return;
+    final result = await _controller.runLifecycle(
+      command: command,
+      confirmedContext: snapshot,
+      cancellationReason: input.cancellationReason,
+    );
+    if (!mounted) return;
+    switch (result.status) {
+      case MeetingLifecycleResultStatus.confirmed ||
+          MeetingLifecycleResultStatus.observed:
+        showSuccess(context, result.message);
+      case MeetingLifecycleResultStatus.rejected ||
+          MeetingLifecycleResultStatus.blocked:
+        if (result.failure != null) {
+          showFailure(context, result.failure!);
+        } else {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text(result.message)));
+        }
+      case MeetingLifecycleResultStatus.unknown:
+        if (result.failure != null) {
+          showFailure(context, result.failure!);
+        } else {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text(result.message)));
+        }
+    }
+  }
+
+  Future<_LifecycleConfirmation?> _confirmLifecycle(
+    MeetingSnapshot snapshot,
+    MeetingLifecycleCommand command,
+  ) async {
+    final meeting = snapshot.meeting;
+    final title = switch (command) {
+      MeetingLifecycleCommand.schedule => 'Xác nhận lên lịch?',
+      MeetingLifecycleCommand.start => 'Bắt đầu cuộc họp?',
+      MeetingLifecycleCommand.end => 'Kết thúc cuộc họp?',
+      MeetingLifecycleCommand.cancel => 'Hủy cuộc họp?',
+    };
+    final detail = switch (command) {
+      MeetingLifecycleCommand.schedule =>
+        'Gửi yêu cầu lên lịch ${dateLabel(meeting.scheduledStartAt)} tại ${_controller.state.roomDisplayName}. Phòng chỉ được xác nhận khi máy chủ phản hồi thành công.',
+      MeetingLifecycleCommand.start =>
+        'Cuộc họp sẽ chuyển sang trạng thái đang diễn ra.',
+      MeetingLifecycleCommand.end =>
+        'Cuộc họp sẽ chuyển sang trạng thái đã kết thúc.',
+      MeetingLifecycleCommand.cancel =>
+        'Cuộc họp được giữ lại làm lịch sử. Bạn có thể nhập lý do hủy.',
+    };
+    if (command != MeetingLifecycleCommand.cancel) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: Text(title),
+          content: Text('$detail\n\nTrạng thái hiện tại: ${meeting.status}.'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Quay lại'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Xác nhận'),
+            ),
+          ],
+        ),
+      );
+      return confirmed == true ? const _LifecycleConfirmation() : null;
+    }
+
+    final reason = TextEditingController();
+    try {
+      final confirmed = await showDialog<String?>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: Text(title),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('$detail\n\nTrạng thái hiện tại: ${meeting.status}.'),
+              const SizedBox(height: 12),
+              TextField(
+                controller: reason,
+                maxLength: 500,
+                maxLines: 3,
+                decoration: const InputDecoration(
+                  labelText: 'Lý do hủy (không bắt buộc)',
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Quay lại'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, reason.text),
+              child: const Text('Xác nhận hủy'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed == null) return null;
+      return _LifecycleConfirmation(cancellationReason: confirmed);
+    } finally {
+      reason.dispose();
+    }
+  }
+
+  Widget _overview(MeetingDetailState state, MeetingSnapshot snapshot) {
     final meeting = snapshot.meeting;
     final capabilities = MeetingCapabilityPolicy.evaluate(
       callerId: widget.api.userId,
       meeting: meeting,
     );
+    final busy =
+        state.activeMutation != null ||
+        state.needsRevalidation ||
+        state.phase != MeetingDetailPhase.ready;
+    final validInterval = MeetingScheduleDraft(
+      start: meeting.scheduledStartAt,
+      end: meeting.scheduledEndAt,
+    ).validatedInterval;
     return ListView(
       padding: const EdgeInsets.all(18),
       children: [
         SectionHeading(meeting.title, subtitle: 'Thông tin cuộc họp'),
+        if (state.message != null)
+          MessagePanel(
+            icon: state.phase == MeetingDetailPhase.recoveryRequired
+                ? Icons.sync_problem_outlined
+                : Icons.info_outline,
+            title: state.phase == MeetingDetailPhase.recoveryRequired
+                ? 'Cần xác nhận trạng thái'
+                : 'Thông tin cập nhật',
+            description: state.message!,
+            onRetry: state.phase == MeetingDetailPhase.recoveryRequired
+                ? _controller.refresh
+                : null,
+          ),
+        if (state.failure != null)
+          MessagePanel(
+            icon: Icons.cloud_off_outlined,
+            title: 'Không thể làm mới cuộc họp',
+            description: _failureMessage(state.failure),
+            onRetry: _controller.refresh,
+          ),
         if (capabilities.canEdit)
           Padding(
             padding: const EdgeInsets.only(bottom: 10),
             child: OutlinedButton.icon(
-              onPressed: _busy ? null : () => _edit(snapshot),
+              onPressed: busy ? null : () => _edit(snapshot),
               icon: const Icon(Icons.edit_outlined),
               label: const Text('Chỉnh sửa cuộc họp'),
             ),
@@ -161,57 +261,96 @@ class _MeetingDetailPageState extends State<MeetingDetailPage> {
               _line(
                 Icons.meeting_room_outlined,
                 'Phòng họp',
-                meeting.roomName ??
-                    (meeting.roomId == null
-                        ? 'Chưa chọn phòng'
-                        : meeting.roomId!),
+                state.roomDisplayName,
               ),
               _line(
                 Icons.person_outline,
                 'Người tổ chức',
-                meeting.organizerName ?? meeting.organizerId,
+                state.organizerDisplayName,
               ),
+              _line(
+                Icons.people_outline,
+                'Người tham gia',
+                state.participantsLoaded
+                    ? '${state.activeParticipantCount} đang hoạt động'
+                    : 'Thông tin tạm thời chưa khả dụng',
+              ),
+              if (meeting.startedAt != null)
+                _line(
+                  Icons.play_arrow,
+                  'Đã bắt đầu',
+                  dateLabel(meeting.startedAt),
+                ),
+              if (meeting.endedAt != null)
+                _line(Icons.stop, 'Đã kết thúc', dateLabel(meeting.endedAt)),
+              if (meeting.cancelledAt != null) ...[
+                _line(
+                  Icons.cancel_outlined,
+                  'Đã hủy',
+                  dateLabel(meeting.cancelledAt),
+                ),
+                if (meeting.cancellationReason != null &&
+                    meeting.cancellationReason!.trim().isNotEmpty)
+                  _line(
+                    Icons.notes_outlined,
+                    'Lý do hủy',
+                    meeting.cancellationReason!,
+                  ),
+              ],
+              if (state.metadataFailure != null)
+                const Padding(
+                  padding: EdgeInsets.only(top: 8),
+                  child: Text(
+                    'Một số thông tin liên quan chưa thể tải; dữ liệu cuộc họp vẫn do máy chủ xác nhận.',
+                    style: TextStyle(color: Palette.muted, fontSize: 12),
+                  ),
+                ),
             ],
           ),
         ),
-        if (!_busy) ...[
-          if (capabilities.canSchedule)
-            FilledButton.icon(
-              onPressed:
-                  meeting.scheduledStartAt == null ||
-                      meeting.scheduledEndAt == null
-                  ? null
-                  : () => _command(snapshot, MeetingOperation.schedule),
-              icon: const Icon(Icons.event_available),
-              label: Text(
-                meeting.scheduledStartAt == null
-                    ? 'Đặt thời gian trước khi xác nhận'
-                    : 'Xác nhận lịch',
-              ),
+        if (state.activeMutation != null)
+          const Center(
+            child: Padding(
+              padding: EdgeInsets.all(16),
+              child: CircularProgressIndicator(),
             ),
-          if (capabilities.canStart) ...[
-            FilledButton.icon(
-              onPressed: () => _command(snapshot, MeetingOperation.start),
-              icon: const Icon(Icons.play_arrow),
-              label: const Text('Bắt đầu cuộc họp'),
+          ),
+        if (capabilities.canSchedule)
+          FilledButton.icon(
+            onPressed: busy || validInterval == null
+                ? null
+                : () => _lifecycle(snapshot, MeetingLifecycleCommand.schedule),
+            icon: const Icon(Icons.event_available),
+            label: Text(
+              validInterval == null
+                  ? 'Đặt thời gian trước khi xác nhận'
+                  : 'Xác nhận lịch',
             ),
-            if (capabilities.canCancel) ...[
-              const SizedBox(height: 8),
-              OutlinedButton.icon(
-                onPressed: () => _confirmCancel(snapshot),
-                icon: const Icon(Icons.cancel_outlined),
-                label: const Text('Hủy cuộc họp'),
-              ),
-            ],
-          ],
-          if (capabilities.canEnd)
-            FilledButton.icon(
-              onPressed: () => _command(snapshot, MeetingOperation.end),
-              icon: const Icon(Icons.stop),
-              label: const Text('Kết thúc cuộc họp'),
-            ),
-        ] else
-          const Center(child: CircularProgressIndicator()),
+          ),
+        if (capabilities.canStart)
+          FilledButton.icon(
+            onPressed: busy
+                ? null
+                : () => _lifecycle(snapshot, MeetingLifecycleCommand.start),
+            icon: const Icon(Icons.play_arrow),
+            label: const Text('Bắt đầu cuộc họp'),
+          ),
+        if (capabilities.canEnd)
+          FilledButton.icon(
+            onPressed: busy
+                ? null
+                : () => _lifecycle(snapshot, MeetingLifecycleCommand.end),
+            icon: const Icon(Icons.stop),
+            label: const Text('Kết thúc cuộc họp'),
+          ),
+        if (capabilities.canCancel)
+          OutlinedButton.icon(
+            onPressed: busy
+                ? null
+                : () => _lifecycle(snapshot, MeetingLifecycleCommand.cancel),
+            icon: const Icon(Icons.cancel_outlined),
+            label: const Text('Hủy cuộc họp'),
+          ),
         const SizedBox(height: 16),
         const MessagePanel(
           icon: Icons.shield_outlined,
@@ -244,59 +383,110 @@ class _MeetingDetailPageState extends State<MeetingDetailPage> {
   );
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(
-      title: const Text('Chi tiết cuộc họp'),
-      actions: [
-        IconButton(
-          tooltip: 'Làm mới',
-          onPressed: _reload,
-          icon: const Icon(Icons.refresh),
-        ),
-      ],
-    ),
-    body: AsyncContent<MeetingSnapshot>(
-      future: _future,
-      retry: _reload,
-      builder: (snapshot) => Column(
-        children: [
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.all(12),
-            child: SegmentedButton<int>(
-              segments: const [
-                ButtonSegment(value: 0, label: Text('Tổng quan')),
-                ButtonSegment(value: 1, label: Text('Biên bản AI')),
-                ButtonSegment(value: 2, label: Text('Ghi âm')),
-                ButtonSegment(value: 3, label: Text('Thành viên')),
-                ButtonSegment(value: 4, label: Text('Xử lý')),
-              ],
-              selected: {_tab},
-              onSelectionChanged: (value) => setState(() => _tab = value.first),
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: _controller,
+    builder: (context, _) {
+      final state = _controller.state;
+      if (state.accessRevoked) {
+        return Scaffold(
+          appBar: AppBar(title: const Text('Chi tiết cuộc họp')),
+          body: const MessagePanel(
+            icon: Icons.lock_outline,
+            title: 'Không thể truy cập cuộc họp',
+            description: 'Quyền truy cập đã thay đổi. Dữ liệu được xóa.',
+          ),
+        );
+      }
+      final snapshot = state.snapshot;
+      return Scaffold(
+        appBar: AppBar(
+          title: const Text('Chi tiết cuộc họp'),
+          actions: [
+            IconButton(
+              tooltip: 'Làm mới',
+              onPressed: state.activeMutation == null
+                  ? _controller.refresh
+                  : null,
+              icon: const Icon(Icons.refresh),
             ),
-          ),
-          Expanded(
-            child: switch (_tab) {
-              0 => _overview(snapshot),
-              1 => ResultsPanel(api: widget.api, meetingId: widget.meetingId),
-              2 => RecordingPage(
-                api: widget.api,
-                meetingId: widget.meetingId,
-                enabled: snapshot.meeting.status != 'CANCELLED',
+          ],
+        ),
+        body: snapshot == null
+            ? state.isLoading
+                  ? const Center(child: CircularProgressIndicator())
+                  : MessagePanel(
+                      icon: Icons.cloud_off_outlined,
+                      title: 'Không thể tải cuộc họp',
+                      description: _failureMessage(state.failure),
+                      onRetry: _controller.refresh,
+                    )
+            : Column(
+                children: [
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.all(12),
+                    child: SegmentedButton<int>(
+                      segments: const [
+                        ButtonSegment(value: 0, label: Text('Tổng quan')),
+                        ButtonSegment(value: 1, label: Text('Biên bản AI')),
+                        ButtonSegment(value: 2, label: Text('Ghi âm')),
+                        ButtonSegment(value: 3, label: Text('Thành viên')),
+                        ButtonSegment(value: 4, label: Text('Xử lý')),
+                      ],
+                      selected: {_tab},
+                      onSelectionChanged: state.activeMutation == null
+                          ? (value) => setState(() => _tab = value.first)
+                          : null,
+                    ),
+                  ),
+                  Expanded(
+                    child: switch (_tab) {
+                      0 => _overview(state, snapshot),
+                      1 => ResultsPanel(
+                        api: widget.api,
+                        meetingId: widget.meetingId,
+                      ),
+                      2 => RecordingPage(
+                        api: widget.api,
+                        meetingId: widget.meetingId,
+                        enabled: snapshot.meeting.status != 'CANCELLED',
+                      ),
+                      3 => MeetingParticipants(
+                        key: ValueKey(
+                          'membership-${snapshot.meeting.id.toLowerCase()}',
+                        ),
+                        dependencies: widget.dependencies,
+                        snapshot: snapshot,
+                        initialRecords: state.participantsLoaded
+                            ? state.participants
+                            : null,
+                        onSnapshotChanged: _controller.acceptMembershipSnapshot,
+                        onRecordsChanged: _controller.acceptMembershipRecords,
+                        onAccessRevoked: _controller.membershipAccessRevoked,
+                        canStartAggregateMutation: () =>
+                            _controller.state.canStartAggregateMutation,
+                        acquireAggregateMutation: () => _controller
+                            .beginMutation(MeetingDetailMutation.membership),
+                        releaseAggregateMutation: _controller.endMutation,
+                      ),
+                      _ => ProcessingTimelinePanel(
+                        api: widget.api,
+                        meetingId: snapshot.meeting.id,
+                      ),
+                    },
+                  ),
+                ],
               ),
-              3 => MeetingParticipants(
-                key: ValueKey('membership-${snapshot.etag}'),
-                dependencies: widget.dependencies,
-                snapshot: snapshot,
-              ),
-              _ => ProcessingTimelinePanel(
-                api: widget.api,
-                meetingId: snapshot.meeting.id,
-              ),
-            },
-          ),
-        ],
-      ),
-    ),
+      );
+    },
   );
+
+  String _failureMessage(Object? error) =>
+      error is ApiFailure ? error.message : 'Đã xảy ra lỗi không mong muốn.';
+}
+
+class _LifecycleConfirmation {
+  const _LifecycleConfirmation({this.cancellationReason});
+
+  final String? cancellationReason;
 }

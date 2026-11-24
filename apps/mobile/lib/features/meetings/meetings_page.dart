@@ -55,13 +55,18 @@ class _MeetingsPageState extends State<MeetingsPage> {
   );
 
   Future<void> _create() async {
-    final created = await showModalBottomSheet<bool>(
+    final result = await showModalBottomSheet<MeetingFormResult>(
       context: context,
       isScrollControlled: true,
       showDragHandle: true,
       builder: (_) => MeetingForm(dependencies: widget.dependencies),
     );
-    if (created == true && mounted) await _controller.refresh();
+    if (!mounted || result == null) return;
+    if (result.inspectMeetings) {
+      await _controller.refresh();
+      return;
+    }
+    if (result.meetingId != null) await _openDetail(result.meetingId!);
   }
 
   Future<void> _openDetail(String meetingId) async {

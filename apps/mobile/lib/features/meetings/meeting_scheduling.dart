@@ -349,7 +349,19 @@ class RoomSchedulingRepository {
       intent.toRequestBody(),
     );
     api.requireCurrentAuthenticatedSession(sessionScope);
-    return SchedulePreview.fromJson(response.objectData(), response: response);
+    final preview = SchedulePreview.fromJson(
+      response.objectData(),
+      response: response,
+    );
+    if (!preview.previewOnly ||
+        (intent.roomId == null && preview.room != null) ||
+        (intent.roomId != null &&
+            preview.room?.roomId.toLowerCase() !=
+                intent.roomId!.toLowerCase()) ||
+        (preview.roomConflict && preview.room?.available == true)) {
+      throw response.invalidDataFailure();
+    }
+    return preview;
   }
 }
 

@@ -16,10 +16,24 @@ class MeetingParticipants extends StatefulWidget {
     super.key,
     required this.dependencies,
     required this.snapshot,
+    this.initialRecords,
+    this.onSnapshotChanged,
+    this.onRecordsChanged,
+    this.onAccessRevoked,
+    this.canStartAggregateMutation,
+    this.acquireAggregateMutation,
+    this.releaseAggregateMutation,
   });
 
   final AppDependencies dependencies;
   final MeetingSnapshot snapshot;
+  final List<MeetingParticipant>? initialRecords;
+  final MeetingMembershipSnapshotCallback? onSnapshotChanged;
+  final MeetingMembershipRecordsCallback? onRecordsChanged;
+  final VoidCallback? onAccessRevoked;
+  final bool Function()? canStartAggregateMutation;
+  final bool Function()? acquireAggregateMutation;
+  final VoidCallback? releaseAggregateMutation;
 
   @override
   State<MeetingParticipants> createState() => _MeetingParticipantsState();
@@ -34,6 +48,13 @@ class _MeetingParticipantsState extends State<MeetingParticipants> {
     _controller = MeetingMembershipController(
       repository: widget.dependencies.meetingMembership,
       snapshot: widget.snapshot,
+      initialRecords: widget.initialRecords,
+      onSnapshotChanged: widget.onSnapshotChanged,
+      onRecordsChanged: widget.onRecordsChanged,
+      onAccessRevoked: widget.onAccessRevoked,
+      canStartAggregateMutation: widget.canStartAggregateMutation,
+      acquireAggregateMutation: widget.acquireAggregateMutation,
+      releaseAggregateMutation: widget.releaseAggregateMutation,
     );
     unawaited(_controller.initialize());
   }
@@ -46,11 +67,13 @@ class _MeetingParticipantsState extends State<MeetingParticipants> {
 
   Future<void> _addMember() async {
     if (!_controller.canManageParticipants) return;
+    final original = _controller.state.snapshot;
+    if (original == null) return;
     final selected = await showParticipantPicker(
       context,
       repository: widget.dependencies.participantCandidates,
-      sessionScope: widget.snapshot.sessionScope,
-      organizerId: widget.snapshot.meeting.organizerId,
+      sessionScope: original.sessionScope,
+      organizerId: original.meeting.organizerId,
       activeParticipantIds: _controller.state.activeParticipants.map(
         (participant) => participant.userId,
       ),
@@ -58,6 +81,7 @@ class _MeetingParticipantsState extends State<MeetingParticipants> {
       title: 'Mời nhân viên',
     );
     if (selected == null || selected.isEmpty || !mounted) return;
+    if (!await _confirmUpdatedContext(original, 'thêm người tham gia')) return;
     await _handleMutation(
       await _controller.addParticipant(selected.single.id),
       successMessage: 'Đã thêm người tham gia.',
@@ -66,6 +90,8 @@ class _MeetingParticipantsState extends State<MeetingParticipants> {
 
   Future<void> _remove(MeetingParticipant participant) async {
     if (!_controller.canManageParticipants) return;
+    final original = _controller.state.snapshot;
+    if (original == null) return;
     final proceed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -86,10 +112,50 @@ class _MeetingParticipantsState extends State<MeetingParticipants> {
       ),
     );
     if (proceed != true || !mounted) return;
+    if (!await _confirmUpdatedContext(original, 'xóa thành viên')) return;
     await _handleMutation(
       await _controller.removeParticipant(participant.userId),
       successMessage: 'Đã xóa người tham gia.',
     );
+  }
+
+  Future<bool> _confirmUpdatedContext(
+    MeetingSnapshot original,
+    String action,
+  ) async {
+    var reviewed = original;
+    while (mounted) {
+      final latest = _controller.state.snapshot;
+      if (latest == null || _controller.state.accessRevoked) return false;
+      if (latest.etag == reviewed.etag &&
+          latest.meeting.lifecycleStatus == reviewed.meeting.lifecycleStatus) {
+        return true;
+      }
+      final confirmed =
+          await showDialog<bool>(
+            context: context,
+            builder: (dialogContext) => AlertDialog(
+              title: const Text('Cuộc họp đã thay đổi'),
+              content: Text(
+                'Trạng thái hiện tại: ${latest.meeting.status}. Hãy xác nhận lại thao tác $action trên phiên bản mới nhất.',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext, false),
+                  child: const Text('Quay lại'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(dialogContext, true),
+                  child: const Text('Xác nhận phiên bản mới'),
+                ),
+              ],
+            ),
+          ) ==
+          true;
+      if (!confirmed || !mounted) return false;
+      reviewed = latest;
+    }
+    return false;
   }
 
   Future<void> _handleMutation(
@@ -135,6 +201,7 @@ class _MeetingParticipantsState extends State<MeetingParticipants> {
     animation: _controller,
     builder: (context, _) {
       final state = _controller.state;
+      final activeSnapshot = state.snapshot ?? widget.snapshot;
       if (state.accessRevoked) {
         return const MessagePanel(
           icon: Icons.lock_outline,
@@ -211,10 +278,11 @@ class _MeetingParticipantsState extends State<MeetingParticipants> {
               (participant) => _participantCard(
                 participant,
                 active: true,
+                organizerId: activeSnapshot.meeting.organizerId,
                 canRemove:
                     _controller.canManageParticipants &&
                     participant.userId.toLowerCase() !=
-                        widget.snapshot.meeting.organizerId.toLowerCase(),
+                        activeSnapshot.meeting.organizerId.toLowerCase(),
               ),
             ),
             if (historical.isNotEmpty) ...[
@@ -223,6 +291,7 @@ class _MeetingParticipantsState extends State<MeetingParticipants> {
                 (participant) => _participantCard(
                   participant,
                   active: false,
+                  organizerId: activeSnapshot.meeting.organizerId,
                   canRemove: false,
                 ),
               ),
@@ -236,6 +305,7 @@ class _MeetingParticipantsState extends State<MeetingParticipants> {
   Widget _participantCard(
     MeetingParticipant participant, {
     required bool active,
+    required String organizerId,
     required bool canRemove,
   }) => ContentCard(
     child: ListTile(
@@ -245,8 +315,7 @@ class _MeetingParticipantsState extends State<MeetingParticipants> {
       ),
       title: Text(participant.displayName ?? 'Thành viên'),
       subtitle: Text(
-        participant.userId.toLowerCase() ==
-                widget.snapshot.meeting.organizerId.toLowerCase()
+        participant.userId.toLowerCase() == organizerId.toLowerCase()
             ? 'Người tổ chức'
             : active
             ? 'Đang tham gia · thêm ${dateLabel(participant.addedAt)}'

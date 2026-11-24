@@ -505,6 +505,8 @@ class MeetingCalendarController extends ChangeNotifier {
   int? _expectedTotalPages;
   int _generation = 0;
   int _seenInvalidationRevision = 0;
+  Future<void>? _batchOperation;
+  int? _batchGeneration;
   bool _disposed = false;
 
   MeetingCalendarState get state => _state;
@@ -590,13 +592,45 @@ class MeetingCalendarController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> _loadBatch({required bool refresh}) async {
+  Future<void> _loadBatch({required bool refresh}) {
+    final generation = _generation;
+    if (_batchOperation != null && _batchGeneration == generation) {
+      return _batchOperation!;
+    }
+    final completer = Completer<void>();
+    final operation = completer.future;
+    _batchGeneration = generation;
+    _batchOperation = operation;
+    unawaited(
+      _runBatch(refresh: refresh, generation: generation).then(
+        (_) {
+          if (_batchGeneration == generation) {
+            _batchOperation = null;
+            _batchGeneration = null;
+          }
+          completer.complete();
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          if (_batchGeneration == generation) {
+            _batchOperation = null;
+            _batchGeneration = null;
+          }
+          completer.completeError(error, stackTrace);
+        },
+      ),
+    );
+    return operation;
+  }
+
+  Future<void> _runBatch({
+    required bool refresh,
+    required int generation,
+  }) async {
     final scope = _sessionScope;
     if (_disposed || scope == null) return;
-    final generation = _generation;
     final range = CalendarMonthRange.fromDate(_state.month);
     _state = _copy(
-      isLoading: !refresh && _state.entries.isEmpty,
+      isLoading: !refresh,
       isRefreshing: refresh,
       clearFailure: true,
     );
@@ -636,8 +670,8 @@ class MeetingCalendarController extends ChangeNotifier {
         final changed = totalsChanged || duplicate;
         _state = _copy(
           entries: stableChronologicalMeetings(_entriesById.values),
-          isLoading: false,
-          isRefreshing: false,
+          isLoading: true,
+          isRefreshing: refresh,
           hasMore: _window.hasMore && !changed,
           incomplete: _window.hasMore || changed,
           collectionChanged: changed,
@@ -666,6 +700,11 @@ class MeetingCalendarController extends ChangeNotifier {
         failure: error,
       );
       notifyListeners();
+    } finally {
+      if (_owns(generation, scope)) {
+        _state = _copy(isLoading: false, isRefreshing: false);
+        notifyListeners();
+      }
     }
   }
 

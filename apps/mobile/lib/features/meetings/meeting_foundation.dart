@@ -139,6 +139,33 @@ class MeetingInterval {
   }
 }
 
+/// Editable scheduling values may be incomplete while the user is changing
+/// either endpoint. Only [validatedInterval] is suitable for an API request.
+class MeetingScheduleDraft {
+  const MeetingScheduleDraft({required this.start, required this.end});
+
+  factory MeetingScheduleDraft.fromInterval(MeetingInterval? interval) =>
+      MeetingScheduleDraft(start: interval?.start, end: interval?.end);
+
+  final DateTime? start;
+  final DateTime? end;
+
+  MeetingInterval? get validatedInterval {
+    if (start == null || end == null || !start!.isBefore(end!)) return null;
+    return MeetingInterval(start: start!, end: end!);
+  }
+
+  String? get validationMessage {
+    if (start == null || end == null) {
+      return 'Chọn đủ thời gian bắt đầu và kết thúc.';
+    }
+    if (!start!.isBefore(end!)) {
+      return 'Thời gian kết thúc phải sau thời gian bắt đầu.';
+    }
+    return null;
+  }
+}
+
 /// A calendar day without a timezone or time-of-day interpretation.
 class CalendarDate {
   const CalendarDate._(this.year, this.month, this.day);

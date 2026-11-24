@@ -55,6 +55,7 @@ enum RoomSelectionPhase { idle, loading, loaded, loadingMore, failed }
 class RoomSelectionState {
   const RoomSelectionState({
     required this.searchInput,
+    required this.appliedSearch,
     required this.rooms,
     required this.phase,
     required this.hasMore,
@@ -63,6 +64,7 @@ class RoomSelectionState {
   });
 
   final String searchInput;
+  final String? appliedSearch;
   final List<RoomChoice> rooms;
   final RoomSelectionPhase phase;
   final bool hasMore;
@@ -78,6 +80,7 @@ class RoomSelectionController extends ChangeNotifier {
     this.participantCount,
   }) : _state = const RoomSelectionState(
          searchInput: '',
+         appliedSearch: null,
          rooms: <RoomChoice>[],
          phase: RoomSelectionPhase.idle,
          hasMore: false,
@@ -117,6 +120,7 @@ class RoomSelectionController extends ChangeNotifier {
     _totalPages = null;
     _state = RoomSelectionState(
       searchInput: value ?? _state.searchInput,
+      appliedSearch: _normalizeSearch(value ?? _state.searchInput),
       rooms: const <RoomChoice>[],
       phase: RoomSelectionPhase.loading,
       hasMore: true,
@@ -187,12 +191,12 @@ class RoomSelectionController extends ChangeNotifier {
   Future<void> _loadPage(PageRequestToken token, int generation) async {
     try {
       final PagedCollection<RoomChoice> page;
-      final query = _state.searchInput.trim();
+      final query = _state.appliedSearch;
       if (interval case final activeInterval?) {
         final result = await repository.availability(
           RoomAvailabilityQuery(
             interval: activeInterval,
-            search: query.isEmpty ? null : query,
+            search: query,
             participantCount: participantCount,
             page: token.page,
             size: roomPageSize,
@@ -210,11 +214,7 @@ class RoomSelectionController extends ChangeNotifier {
         );
       } else {
         final result = await repository.catalog(
-          RoomCatalogQuery(
-            search: query.isEmpty ? null : query,
-            page: token.page,
-            size: roomPageSize,
-          ),
+          RoomCatalogQuery(search: query, page: token.page, size: roomPageSize),
           sessionScope: sessionScope,
         );
         page = PagedCollection<RoomChoice>(
@@ -244,6 +244,7 @@ class RoomSelectionController extends ChangeNotifier {
       }.values.toList(growable: false);
       _state = RoomSelectionState(
         searchInput: _state.searchInput,
+        appliedSearch: _state.appliedSearch,
         rooms: List<RoomChoice>.unmodifiable(rooms),
         phase: RoomSelectionPhase.loaded,
         hasMore: _window.hasMore && !changed && !duplicate,
@@ -260,10 +261,12 @@ class RoomSelectionController extends ChangeNotifier {
 
   RoomSelectionState _copy({
     String? searchInput,
+    String? appliedSearch,
     RoomSelectionPhase? phase,
     Object? failure,
   }) => RoomSelectionState(
     searchInput: searchInput ?? _state.searchInput,
+    appliedSearch: appliedSearch ?? _state.appliedSearch,
     rooms: _state.rooms,
     phase: phase ?? _state.phase,
     hasMore: _state.hasMore,
@@ -286,6 +289,7 @@ class RoomSelectionController extends ChangeNotifier {
     _operations.clear();
     _state = const RoomSelectionState(
       searchInput: '',
+      appliedSearch: null,
       rooms: <RoomChoice>[],
       phase: RoomSelectionPhase.idle,
       hasMore: false,
@@ -514,21 +518,31 @@ class _RoomPickerDialogState extends State<RoomPickerDialog> {
 class MeetingScheduleFields extends StatelessWidget {
   const MeetingScheduleFields({
     super.key,
-    required this.interval,
-    required this.onChanged,
+    this.interval,
+    this.onChanged,
+    this.draft,
+    this.onDraftChanged,
+    this.allowUnscheduled = true,
   });
 
+  /// Compatibility input for callers that already hold a validated interval.
   final MeetingInterval? interval;
-  final ValueChanged<MeetingInterval?> onChanged;
+  final ValueChanged<MeetingInterval?>? onChanged;
+  final MeetingScheduleDraft? draft;
+  final ValueChanged<MeetingScheduleDraft?>? onDraftChanged;
+  final bool allowUnscheduled;
 
   Future<void> _choose(
     BuildContext context, {
     required bool chooseStart,
+    required MeetingScheduleDraft currentDraft,
   }) async {
+    final currentInterval = currentDraft.validatedInterval;
     final current = chooseStart
-        ? interval?.startLocal ?? DateTime.now().add(const Duration(hours: 1))
-        : interval?.endLocal ??
-              (interval?.startLocal ?? DateTime.now()).add(
+        ? currentDraft.start?.toLocal() ??
+              DateTime.now().add(const Duration(hours: 1))
+        : currentDraft.end?.toLocal() ??
+              (currentDraft.start?.toLocal() ?? DateTime.now()).add(
                 const Duration(hours: 1),
               );
     final day = await showDatePicker(
@@ -550,63 +564,93 @@ class MeetingScheduleFields extends StatelessWidget {
       time.hour,
       time.minute,
     );
-    var start = interval?.startLocal;
-    var end = interval?.endLocal;
-    if (chooseStart) {
-      start = selected;
-      if (end == null || !end.isAfter(start)) {
-        end = start.add(const Duration(hours: 1));
-      }
-    } else {
-      end = selected;
-      if (start == null || !end.isAfter(start)) {
-        start = end.subtract(const Duration(hours: 1));
-      }
+    final next = MeetingScheduleDraft(
+      start: chooseStart ? selected : currentDraft.start,
+      end: chooseStart ? currentDraft.end : selected,
+    );
+    if (onDraftChanged != null) {
+      onDraftChanged!(next);
+      return;
     }
-    onChanged(MeetingInterval(start: start, end: end));
+
+    // Legacy callers accept only validated values. Never move the opposite
+    // endpoint to make an invalid interval appear valid.
+    final validated = next.validatedInterval;
+    if (validated != null) {
+      onChanged?.call(validated);
+    } else if (currentInterval != null) {
+      onChanged?.call(currentInterval);
+    }
   }
 
   @override
-  Widget build(BuildContext context) => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      SwitchListTile.adaptive(
-        contentPadding: EdgeInsets.zero,
-        title: const Text('Đặt thời gian cuộc họp'),
-        subtitle: Text(
-          interval == null
-              ? 'Có thể để lịch chưa xác định.'
-              : 'Giờ được gửi lên Core API theo UTC.',
+  Widget build(BuildContext context) {
+    final activeDraft =
+        draft ??
+        (onDraftChanged == null && interval != null
+            ? MeetingScheduleDraft.fromInterval(interval)
+            : null);
+    final enabled = activeDraft != null;
+    final displayDraft =
+        activeDraft ?? const MeetingScheduleDraft(start: null, end: null);
+    final validation = activeDraft?.validationMessage;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        SwitchListTile.adaptive(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Đặt thời gian cuộc họp'),
+          subtitle: Text(
+            enabled
+                ? 'Giờ được gửi lên Core API theo UTC.'
+                : 'Có thể để lịch chưa xác định.',
+          ),
+          value: enabled,
+          onChanged: (allowUnscheduled || enabled)
+              ? (turnOn) {
+                  if (!turnOn) {
+                    onDraftChanged?.call(null);
+                    onChanged?.call(null);
+                    return;
+                  }
+                  final start = DateTime.now().add(const Duration(hours: 1));
+                  final initialized = MeetingScheduleDraft(
+                    start: start,
+                    end: start.add(const Duration(hours: 1)),
+                  );
+                  onDraftChanged?.call(initialized);
+                  onChanged?.call(initialized.validatedInterval);
+                }
+              : null,
         ),
-        value: interval != null,
-        onChanged: (enabled) {
-          if (!enabled) {
-            onChanged(null);
-          } else if (interval == null) {
-            final start = DateTime.now().add(const Duration(hours: 1));
-            onChanged(
-              MeetingInterval(
-                start: start,
-                end: start.add(const Duration(hours: 1)),
+        if (enabled) ...[
+          OutlinedButton.icon(
+            onPressed: () =>
+                _choose(context, chooseStart: true, currentDraft: displayDraft),
+            icon: const Icon(Icons.event),
+            label: Text('Bắt đầu · ${dateLabel(displayDraft.start)}'),
+          ),
+          OutlinedButton.icon(
+            onPressed: () => _choose(
+              context,
+              chooseStart: false,
+              currentDraft: displayDraft,
+            ),
+            icon: const Icon(Icons.schedule),
+            label: Text('Kết thúc · ${dateLabel(displayDraft.end)}'),
+          ),
+          if (validation != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                validation,
+                style: const TextStyle(color: Palette.red, fontSize: 12),
               ),
-            );
-          }
-        },
-      ),
-      if (interval != null) ...[
-        OutlinedButton.icon(
-          onPressed: () => _choose(context, chooseStart: true),
-          icon: const Icon(Icons.event),
-          label: Text('Bắt đầu · ${dateLabel(interval!.start)}'),
-        ),
-        OutlinedButton.icon(
-          onPressed: () => _choose(context, chooseStart: false),
-          icon: const Icon(Icons.schedule),
-          label: Text('Kết thúc · ${dateLabel(interval!.end)}'),
-        ),
+            ),
+        ],
       ],
-    ],
-  );
+    );
+  }
 }
 
 class SchedulePreviewCard extends StatefulWidget {
@@ -615,11 +659,15 @@ class SchedulePreviewCard extends StatefulWidget {
     required this.repository,
     required this.sessionScope,
     required this.intent,
+    this.participantDisplayNames = const <String, String>{},
+    this.previewController,
   });
 
   final RoomSchedulingRepository repository;
   final AuthenticatedSessionScope sessionScope;
   final ScheduleIntent? intent;
+  final Map<String, String> participantDisplayNames;
+  final SchedulePreviewController? previewController;
 
   @override
   State<SchedulePreviewCard> createState() => _SchedulePreviewCardState();
@@ -627,14 +675,18 @@ class SchedulePreviewCard extends StatefulWidget {
 
 class _SchedulePreviewCardState extends State<SchedulePreviewCard> {
   late final SchedulePreviewController _controller;
+  late final bool _ownsController;
 
   @override
   void initState() {
     super.initState();
-    _controller = SchedulePreviewController(
-      repository: widget.repository,
-      sessionScope: widget.sessionScope,
-    )..setIntent(widget.intent);
+    _ownsController = widget.previewController == null;
+    _controller =
+        widget.previewController ??
+        (SchedulePreviewController(
+          repository: widget.repository,
+          sessionScope: widget.sessionScope,
+        )..setIntent(widget.intent));
   }
 
   @override
@@ -647,7 +699,7 @@ class _SchedulePreviewCardState extends State<SchedulePreviewCard> {
 
   @override
   void dispose() {
-    _controller.dispose();
+    if (_ownsController) _controller.dispose();
     super.dispose();
   }
 
@@ -703,7 +755,8 @@ class _SchedulePreviewCardState extends State<SchedulePreviewCard> {
                 'Bản xem trước đã cũ. Hãy kiểm tra lại với các giá trị hiện tại.',
                 style: TextStyle(color: Palette.amber),
               ),
-            if (preview != null) ...[
+            if (preview != null &&
+                state.phase == SchedulePreviewPhase.current) ...[
               Row(
                 children: [
                   Icon(
@@ -728,7 +781,7 @@ class _SchedulePreviewCardState extends State<SchedulePreviewCard> {
                 (warning) => Padding(
                   padding: const EdgeInsets.only(top: 4),
                   child: Text(
-                    '• ${warning.code}${warning.userId == null ? '' : ' · ${_shortId(warning.userId!)}'}',
+                    '• ${_warningMessage(warning, widget.participantDisplayNames)}',
                     style: const TextStyle(color: Palette.amber, fontSize: 12),
                   ),
                 ),
@@ -746,5 +799,29 @@ class _SchedulePreviewCardState extends State<SchedulePreviewCard> {
   );
 }
 
+String _warningMessage(
+  ScheduleWarning warning,
+  Map<String, String> participantDisplayNames,
+) {
+  switch (warning.code) {
+    case 'PARTICIPANT_OVERLAP':
+      final name = warning.userId == null
+          ? null
+          : participantDisplayNames[warning.userId!.toLowerCase()];
+      return name == null || name.trim().isEmpty
+          ? 'Người tham gia có lịch họp trùng.'
+          : '$name có lịch họp trùng.';
+    case 'CAPACITY_ADVISORY_EXCEEDED':
+      return 'Số người tham gia vượt sức chứa tham khảo của phòng.';
+    default:
+      return 'Cảnh báo từ máy chủ: ${warning.code}';
+  }
+}
+
 String _shortId(String value) =>
     value.length <= 8 ? value : '${value.substring(0, 8)}…';
+
+String? _normalizeSearch(String value) {
+  final trimmed = value.trim();
+  return trimmed.isEmpty ? null : trimmed;
+}

@@ -4,6 +4,7 @@ import 'api_client.dart';
 import 'appearance_preferences.dart';
 
 import 'package:sme_meeting_assistant/features/meetings/meeting_invalidation.dart';
+import 'package:sme_meeting_assistant/features/meetings/meeting_creation.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_membership.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_repository.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_scheduling.dart';
@@ -22,6 +23,7 @@ class AppDependencies {
   late final RoomSchedulingRepository roomScheduling;
   late final ParticipantCandidateRepository participantCandidates;
   late final MeetingMembershipRepository meetingMembership;
+  late final MeetingCreationRecoveryStore meetingCreationRecovery;
   bool _disposed = false;
 
   AppDependencies({
@@ -30,6 +32,10 @@ class AppDependencies {
     required this.httpClient,
   }) {
     meetingInvalidation = MeetingInvalidationSignal(api);
+    meetingCreationRecovery = MeetingCreationRecoveryStore(
+      storage: api.credentialStorage,
+      deployment: api.baseUri,
+    );
     meetings = MeetingRepository(api: api, invalidation: meetingInvalidation);
     roomScheduling = RoomSchedulingRepository(api);
     participantCandidates = ParticipantCandidateRepository(api);
