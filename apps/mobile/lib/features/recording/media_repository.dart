@@ -55,7 +55,7 @@ class MediaRepository {
     String meetingId,
     MediaUploadRequest request, {
     required String idempotencyKey,
-    AuthenticatedSessionScope? sessionScope,
+    required AuthenticatedSessionScope sessionScope,
   }) async {
     _validateMeetingId(meetingId);
     _validateIdempotencyKey(idempotencyKey);
@@ -93,7 +93,7 @@ class MediaRepository {
   Future<MediaRecord> finalizeUpload(
     String meetingId,
     String mediaId, {
-    AuthenticatedSessionScope? sessionScope,
+    required AuthenticatedSessionScope sessionScope,
   }) async {
     _validateMeetingId(meetingId);
     _validateIdentifier(mediaId, 'mediaId');
@@ -131,7 +131,7 @@ class MediaRepository {
 
   Future<List<MediaRecord>> listMedia(
     String meetingId, {
-    AuthenticatedSessionScope? sessionScope,
+    required AuthenticatedSessionScope sessionScope,
   }) async {
     _validateMeetingId(meetingId);
     final scope = _captureSession(sessionScope);
@@ -165,7 +165,7 @@ class MediaRepository {
   Future<MediaRecord> getMedia(
     String meetingId,
     String mediaId, {
-    AuthenticatedSessionScope? sessionScope,
+    required AuthenticatedSessionScope sessionScope,
   }) async {
     _validateMeetingId(meetingId);
     _validateIdentifier(mediaId, 'mediaId');
@@ -202,7 +202,7 @@ class MediaRepository {
   Future<MediaAccessCapability> createAccessCapability(
     String meetingId,
     String mediaId, {
-    AuthenticatedSessionScope? sessionScope,
+    required AuthenticatedSessionScope sessionScope,
   }) async {
     _validateMeetingId(meetingId);
     _validateIdentifier(mediaId, 'mediaId');
@@ -280,13 +280,12 @@ class MediaRepository {
   }
 
   AuthenticatedSessionScope _captureSession(
-    AuthenticatedSessionScope? expected,
+    AuthenticatedSessionScope expected,
   ) {
-    final scope = expected ?? api.authenticatedSessionScope;
-    if (scope == null || !api.isCurrentAuthenticatedSession(scope)) {
+    if (!api.isCurrentAuthenticatedSession(expected)) {
       throw _sessionFailure(MediaMutationOutcome.notDispatched);
     }
-    return scope;
+    return expected;
   }
 
   void _requireMeetingSession(

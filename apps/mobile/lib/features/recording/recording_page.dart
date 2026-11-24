@@ -99,6 +99,11 @@ class _RecordingPageState extends State<RecordingPage> {
 
   Future<void> loadDrafts() async {
     try {
+      await draftStore.recover(
+        widget.meetingId,
+        api: widget.api,
+        session: sessionScope,
+      );
       final drafts = await draftStore.list(
         widget.meetingId,
         api: widget.api,
@@ -584,6 +589,8 @@ class _RecordingPageState extends State<RecordingPage> {
           sourceMediaId: finalized.id,
         );
       }
+      _requireCapability(MeetingOperation.admitProcessing);
+      widget.api.requireCurrentAuthenticatedSession(sessionScope);
       final accepted = await processingRepository.admit(
         widget.meetingId,
         ProcessingAdmissionRequest(mediaId: finalized.id),
@@ -724,6 +731,8 @@ class _RecordingPageState extends State<RecordingPage> {
           targetJobId: candidate.id,
         );
       }
+      _requireCapability(MeetingOperation.retryProcessing);
+      widget.api.requireCurrentAuthenticatedSession(sessionScope);
       final response = await processingRepository.retry(
         candidate.id,
         idempotencyKey: retryKey,
@@ -953,11 +962,13 @@ class _RecordingPageState extends State<RecordingPage> {
               style: const TextStyle(color: Palette.red),
             ),
           ),
-        if (item.retryable)
+        if (item.retryable && _allows(MeetingOperation.retryProcessing))
           Align(
             alignment: Alignment.centerRight,
             child: TextButton(
-              onPressed: busy ? null : () => retryJob(item),
+              onPressed: busy || !_allows(MeetingOperation.retryProcessing)
+                  ? null
+                  : () => retryJob(item),
               child: const Text('Thử lại'),
             ),
           ),

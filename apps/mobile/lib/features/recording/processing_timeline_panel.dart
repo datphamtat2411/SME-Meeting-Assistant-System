@@ -132,6 +132,8 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
           targetJobId: candidate.id,
         );
       }
+      _requireCapability(MeetingOperation.retryProcessing);
+      widget.api.requireCurrentAuthenticatedSession(scope);
       final accepted = await processingRepository.retry(
         candidate.id,
         idempotencyKey: key,

@@ -26,6 +26,7 @@ void main() {
       await api.initialize();
       await api.signIn('user@example.test', 'password');
       final repository = MediaRepository(api: api);
+      final scope = api.requireAuthenticatedSessionScope();
 
       final intent = await repository.createUploadIntent(
         _meetingId,
@@ -36,6 +37,7 @@ void main() {
           expectedSizeBytes: 3,
         ),
         idempotencyKey: 'upload-key',
+        sessionScope: scope,
       );
       expect(intent.mediaId, _mediaId);
       expect(intent.hasUploadCapability, isTrue);
@@ -48,7 +50,11 @@ void main() {
         'upload-key',
       );
 
-      final rejected = await repository.finalizeUpload(_meetingId, _mediaId);
+      final rejected = await repository.finalizeUpload(
+        _meetingId,
+        _mediaId,
+        sessionScope: scope,
+      );
       expect(rejected.status, MediaStatus.rejected);
       expect(rejected.accepted, isFalse);
       expect(rejected.failureCode, 'MEDIA_FORMAT_UNSUPPORTED');
@@ -66,6 +72,7 @@ void main() {
     addTearDown(api.dispose);
     await api.initialize();
     await api.signIn('user@example.test', 'password');
+    final scope = api.requireAuthenticatedSessionScope();
 
     await expectLater(
       MediaRepository(api: api).createUploadIntent(
@@ -77,6 +84,7 @@ void main() {
           expectedSizeBytes: 3,
         ),
         idempotencyKey: 'upload-key',
+        sessionScope: scope,
       ),
       throwsA(
         isA<MediaRepositoryFailure>()

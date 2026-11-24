@@ -9,7 +9,7 @@ import 'package:path/path.dart' as path_utils;
 class LocalMediaDatabase {
   LocalMediaDatabase._(this.database, this.path);
 
-  static const int schemaVersion = 4;
+  static const int schemaVersion = 5;
   static const String defaultDatabaseName = 'sme_mobile_media.db';
 
   final sqflite.Database database;
@@ -116,15 +116,12 @@ class LocalMediaDatabase {
         confirmed_checkpoint TEXT NOT NULL DEFAULT 'INTENT_NOT_CONFIRMED'
           CHECK (confirmed_checkpoint IN (
             'INTENT_NOT_CONFIRMED', 'INTENT_CONFIRMED',
-            'BINARY_TRANSFER_CONFIRMED', 'FINALIZATION_CONFIRMED',
-            'REMOTE_RECONCILIATION_REQUIRED', 'FAILED'
+             'BINARY_TRANSFER_CONFIRMED', 'FINALIZATION_CONFIRMED'
           )),
         confirmed_bytes INTEGER NOT NULL DEFAULT 0
           CHECK (
             confirmed_bytes >= 0 AND (
-              confirmed_checkpoint IN (
-                'FAILED', 'REMOTE_RECONCILIATION_REQUIRED'
-              ) OR (
+              (
                 confirmed_checkpoint IN (
                   'INTENT_NOT_CONFIRMED', 'INTENT_CONFIRMED'
                 ) AND confirmed_bytes = 0
@@ -175,12 +172,11 @@ class LocalMediaDatabase {
         reprocess_of_job_id TEXT,
         stage_code TEXT,
          confirmed_checkpoint TEXT NOT NULL DEFAULT 'ADMISSION_NOT_CONFIRMED'
-           CHECK (confirmed_checkpoint IN (
-             'ADMISSION_NOT_CONFIRMED', 'ADMISSION_CONFIRMED',
-             'RETRY_NOT_CONFIRMED', 'RETRY_CONFIRMED',
-             'REPROCESS_NOT_CONFIRMED', 'REPROCESS_CONFIRMED',
-             'REMOTE_RECONCILIATION_REQUIRED', 'FAILED'
-           )),
+            CHECK (confirmed_checkpoint IN (
+              'ADMISSION_NOT_CONFIRMED', 'ADMISSION_CONFIRMED',
+              'RETRY_NOT_CONFIRMED', 'RETRY_CONFIRMED',
+              'REPROCESS_NOT_CONFIRMED', 'REPROCESS_CONFIRMED'
+            )),
          attempt_count INTEGER NOT NULL DEFAULT 0
            CHECK (attempt_count >= 0),
          attempt_outcome TEXT NOT NULL DEFAULT 'NONE' CHECK (attempt_outcome IN (
@@ -313,8 +309,8 @@ class LocalMediaDatabase {
     if (oldVersion < 3 && newVersion >= 3) {
       await _rebuildSchemaForV3(db);
     }
-    if (oldVersion < 4 && newVersion >= 4) {
-      await _correctHistoricalV3Operations(db);
+    if (oldVersion < 5 && newVersion >= 5) {
+      await _normalizeHistoricalOperations(db);
     }
     if (oldVersion > newVersion) {
       throw StateError('Local media database downgrade is not supported.');
@@ -414,9 +410,7 @@ class LocalMediaDatabase {
             )),
            confirmed_bytes INTEGER NOT NULL DEFAULT 0 CHECK (
              confirmed_bytes >= 0 AND (
-               confirmed_checkpoint IN (
-                 'FAILED', 'REMOTE_RECONCILIATION_REQUIRED'
-               ) OR (
+               (
                  confirmed_checkpoint IN (
                    'INTENT_NOT_CONFIRMED', 'INTENT_CONFIRMED'
                  ) AND confirmed_bytes = 0
@@ -492,8 +486,7 @@ class LocalMediaDatabase {
              CHECK (confirmed_checkpoint IN (
                'ADMISSION_NOT_CONFIRMED', 'ADMISSION_CONFIRMED',
                'RETRY_NOT_CONFIRMED', 'RETRY_CONFIRMED',
-               'REPROCESS_NOT_CONFIRMED', 'REPROCESS_CONFIRMED',
-               'REMOTE_RECONCILIATION_REQUIRED', 'FAILED'
+               'REPROCESS_NOT_CONFIRMED', 'REPROCESS_CONFIRMED'
              )),
            attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
            attempt_outcome TEXT NOT NULL DEFAULT 'NONE' CHECK (attempt_outcome IN (
@@ -604,11 +597,12 @@ class LocalMediaDatabase {
     ''');
   }
 
-  /// V3 introduced separate attempt outcome fields but copied legacy failure
-  /// checkpoints as if they were confirmed progress. Correct that state in a
-  /// forward migration so both fresh v2 upgrades and already-opened v3
-  /// databases receive the same non-destructive interpretation.
-  static Future<void> _correctHistoricalV3Operations(
+  /// V5 separates confirmed workflow progress from the result of the latest
+  /// attempt. V4 could copy FAILED and REMOTE_RECONCILIATION_REQUIRED into
+  /// the confirmed checkpoint, and could derive success from an earlier
+  /// checkpoint while erasing a later failure. Normalize those rows without
+  /// changing immutable request identity or discarding durable evidence.
+  static Future<void> _normalizeHistoricalOperations(
     sqflite.DatabaseExecutor db,
   ) async {
     await db.execute(
@@ -618,49 +612,52 @@ class LocalMediaDatabase {
     for (final row in uploadRows) {
       final checkpoint = row['confirmed_checkpoint'] as String?;
       final remoteMediaId = row['remote_media_id'] as String?;
-      final expectedBytes = _integer(row['expected_size_bytes']);
-      final oldBytes = _integer(row['confirmed_bytes']);
-      var nextCheckpoint = checkpoint;
-      var nextBytes = oldBytes;
-      var outcome = row['attempt_outcome'] as String? ?? 'NONE';
-      var recoveryRequired = _integer(row['recovery_required']) == 1;
-
-      if (checkpoint == 'FAILED' ||
-          checkpoint == 'REMOTE_RECONCILIATION_REQUIRED') {
-        final hasRemoteEvidence =
-            remoteMediaId != null && remoteMediaId.isNotEmpty;
-        final hasTransferEvidence = oldBytes != null && oldBytes > 0;
-        final safeBytes = oldBytes ?? 0;
-        nextCheckpoint = hasRemoteEvidence || hasTransferEvidence
-            ? 'REMOTE_RECONCILIATION_REQUIRED'
-            : 'INTENT_NOT_CONFIRMED';
-        nextBytes = hasRemoteEvidence || hasTransferEvidence
-            ? safeBytes.clamp(0, expectedBytes ?? safeBytes).toInt()
-            : 0;
-        outcome = checkpoint == 'REMOTE_RECONCILIATION_REQUIRED'
-            ? 'UNCERTAIN'
-            : 'FAILED';
-        recoveryRequired = true;
-      } else if (checkpoint == 'INTENT_CONFIRMED' ||
-          checkpoint == 'BINARY_TRANSFER_CONFIRMED' ||
-          checkpoint == 'FINALIZATION_CONFIRMED') {
-        final hasValidTransferEvidence =
-            expectedBytes != null && oldBytes == expectedBytes;
-        if (checkpoint == 'INTENT_CONFIRMED' || hasValidTransferEvidence) {
-          outcome = 'SUCCEEDED';
-        } else {
-          nextCheckpoint = remoteMediaId != null && remoteMediaId.isNotEmpty
-              ? 'REMOTE_RECONCILIATION_REQUIRED'
-              : 'INTENT_NOT_CONFIRMED';
-          nextBytes =
-              oldBytes?.clamp(0, expectedBytes ?? oldBytes).toInt() ?? 0;
-          outcome = 'UNCERTAIN';
-          recoveryRequired = true;
-        }
-      } else {
-        nextBytes = 0;
+      final expectedBytes = _integer(row['expected_size_bytes']) ?? 0;
+      final oldBytes = _integer(row['confirmed_bytes']) ?? 0;
+      final hasRemoteIdentity = remoteMediaId?.trim().isNotEmpty == true;
+      final hasAcknowledgedTransfer =
+          expectedBytes > 0 && oldBytes == expectedBytes;
+      var nextCheckpoint = switch (checkpoint) {
+        'FINALIZATION_CONFIRMED' => 'FINALIZATION_CONFIRMED',
+        'BINARY_TRANSFER_CONFIRMED' =>
+          hasAcknowledgedTransfer
+              ? 'BINARY_TRANSFER_CONFIRMED'
+              : hasRemoteIdentity
+              ? 'INTENT_CONFIRMED'
+              : 'INTENT_NOT_CONFIRMED',
+        'INTENT_CONFIRMED' => 'INTENT_CONFIRMED',
+        _ =>
+          hasAcknowledgedTransfer
+              ? 'BINARY_TRANSFER_CONFIRMED'
+              : hasRemoteIdentity
+              ? 'INTENT_CONFIRMED'
+              : 'INTENT_NOT_CONFIRMED',
+      };
+      var nextBytes =
+          nextCheckpoint == 'BINARY_TRANSFER_CONFIRMED' ||
+              nextCheckpoint == 'FINALIZATION_CONFIRMED'
+          ? expectedBytes
+          : 0;
+      final existingOutcome = row['attempt_outcome'] as String?;
+      var outcome = existingOutcome;
+      if (outcome == null ||
+          !_validOutcome(outcome) ||
+          (outcome == 'NONE' && checkpoint != 'INTENT_NOT_CONFIRMED')) {
+        outcome = switch (checkpoint) {
+          'FAILED' => 'FAILED',
+          'REMOTE_RECONCILIATION_REQUIRED' => 'UNCERTAIN',
+          'INTENT_CONFIRMED' ||
+          'BINARY_TRANSFER_CONFIRMED' ||
+          'FINALIZATION_CONFIRMED' => 'SUCCEEDED',
+          _ => 'NONE',
+        };
       }
-
+      var recoveryRequired = _integer(row['recovery_required']) == 1;
+      if (checkpoint == 'FAILED' ||
+          checkpoint == 'REMOTE_RECONCILIATION_REQUIRED' ||
+          outcome == 'UNCERTAIN') {
+        recoveryRequired = true;
+      }
       await db.update(
         'upload_operations',
         <String, Object?>{
@@ -680,9 +677,6 @@ class LocalMediaDatabase {
       final checkpoint = row['confirmed_checkpoint'] as String?;
       var targetJobId = row['target_job_id'] as String?;
       var resultingJobId = row['resulting_job_id'] as String?;
-      var nextCheckpoint = checkpoint;
-      var outcome = row['attempt_outcome'] as String? ?? 'NONE';
-      var recoveryRequired = _integer(row['recovery_required']) == 1;
       final confirmedCheckpoint = switch (type) {
         'RETRY' => 'RETRY_CONFIRMED',
         'REPROCESS' => 'REPROCESS_CONFIRMED',
@@ -705,18 +699,39 @@ class LocalMediaDatabase {
         targetJobId = null;
       }
 
-      if (checkpoint == 'FAILED' ||
-          checkpoint == 'REMOTE_RECONCILIATION_REQUIRED') {
-        if (resultingJobId == null) nextCheckpoint = pendingCheckpoint;
-        outcome = checkpoint == 'REMOTE_RECONCILIATION_REQUIRED'
+      final hasResultingJob = resultingJobId?.trim().isNotEmpty == true;
+      var nextCheckpoint = checkpoint == confirmedCheckpoint && hasResultingJob
+          ? confirmedCheckpoint
+          : checkpoint == confirmedCheckpoint && type == 'ADMISSION'
+          ? confirmedCheckpoint
+          : pendingCheckpoint;
+      final existingOutcome = row['attempt_outcome'] as String?;
+      var outcome = existingOutcome;
+      if (outcome == null ||
+          !_validOutcome(outcome) ||
+          (outcome == 'NONE' && checkpoint != pendingCheckpoint)) {
+        outcome = checkpoint == 'FAILED'
+            ? 'FAILED'
+            : checkpoint == 'REMOTE_RECONCILIATION_REQUIRED'
             ? 'UNCERTAIN'
-            : 'FAILED';
-        recoveryRequired = true;
-      } else if (checkpoint == confirmedCheckpoint) {
-        outcome = 'SUCCEEDED';
-      } else if (checkpoint == pendingCheckpoint) {
-        outcome = 'NONE';
+            : checkpoint == confirmedCheckpoint && hasResultingJob
+            ? 'SUCCEEDED'
+            : checkpoint == confirmedCheckpoint
+            ? 'UNCERTAIN'
+            : 'NONE';
       }
+      var recoveryRequired = _integer(row['recovery_required']) == 1;
+      if (checkpoint == 'FAILED' ||
+          checkpoint == 'REMOTE_RECONCILIATION_REQUIRED' ||
+          nextCheckpoint == pendingCheckpoint ||
+          nextCheckpoint == confirmedCheckpoint && !hasResultingJob ||
+          outcome == 'UNCERTAIN') {
+        recoveryRequired = true;
+      }
+      // A resulting job is only valid with a positively confirmed operation.
+      // Keep the original retry/reprocess target and provenance; do not turn
+      // a failed admission into a fabricated resulting job.
+      if (nextCheckpoint != confirmedCheckpoint) resultingJobId = null;
 
       await db.update(
         'processing_operations',
@@ -733,6 +748,16 @@ class LocalMediaDatabase {
     }
     await _createProcessingTargetTrigger(db);
   }
+
+  static bool _validOutcome(String value) => const <String>{
+    'NONE',
+    'SUCCEEDED',
+    'REJECTED',
+    'FAILED',
+    'INTERRUPTED',
+    'CANCELLED',
+    'UNCERTAIN',
+  }.contains(value);
 
   static int? _integer(Object? value) {
     if (value is int) return value;

@@ -563,9 +563,9 @@ void main() {
           originalFilename: asset.originalFilename,
           contentType: asset.contentType,
           expectedSizeBytes: 3,
-          remoteMediaId: 'm' * 32,
-          checkpoint: UploadOperationCheckpoint.failed,
-          confirmedBytes: 3,
+          remoteMediaId: null,
+          checkpoint: UploadOperationCheckpoint.intentNotConfirmed,
+          confirmedBytes: 0,
           attemptCount: 1,
           attemptOutcome: OperationAttemptOutcome.none,
           recoveryRequired: false,
@@ -577,7 +577,22 @@ void main() {
           version: 0,
         ),
       );
-      await database.database.execute('PRAGMA user_version = 3');
+      // Seed a row using the v4 representation. ignore_check_constraints is
+      // limited to this fixture because v5 deliberately rejects these
+      // obsolete checkpoint values for ordinary writes.
+      await database.database.execute('PRAGMA ignore_check_constraints = ON');
+      await database.database.update(
+        'upload_operations',
+        <String, Object?>{
+          'remote_media_id': 'm' * 32,
+          'confirmed_checkpoint': 'FAILED',
+          'confirmed_bytes': 3,
+        },
+        where: 'id = ?',
+        whereArgs: <Object?>['k' * 32],
+      );
+      await database.database.execute('PRAGMA ignore_check_constraints = OFF');
+      await database.database.execute('PRAGMA user_version = 4');
       await database.close();
 
       final upgraded = await LocalMediaDatabase.open(
@@ -593,11 +608,344 @@ void main() {
           ))!;
       expect(
         operation.checkpoint,
-        UploadOperationCheckpoint.remoteReconciliationRequired,
+        UploadOperationCheckpoint.binaryTransferConfirmed,
       );
       expect(operation.confirmedBytes, 3);
       expect(operation.attemptOutcome, OperationAttemptOutcome.failed);
       expect(operation.recoveryRequired, isTrue);
     },
   );
+
+  test('schema v5 normalizes historical upload and processing evidence '
+      'without erasing attempt outcomes', () async {
+    final directory = await Directory.systemTemp.createTemp('sme-media-v5-');
+    addTearDown(() => directory.delete(recursive: true));
+    final databasePath = '${directory.path}/media.db';
+    final database = await LocalMediaDatabase.open(
+      databasePath: databasePath,
+      databaseFactory: databaseFactoryFfi,
+    );
+    final persistence = LocalMediaPersistence(database);
+    final now = DateTime.utc(2026, 11, 24, 12);
+    final asset = LocalMediaAsset(
+      id: 'v' * 32,
+      deploymentScope: 'deployment-a',
+      ownerUserId: 'user-a',
+      meetingId: 'meeting-v5',
+      sourceType: LocalMediaSourceType.recording,
+      managedRelativePath: 'assets/${'v' * 32}.audio',
+      stagedRelativePath: 'staging/${'v' * 32}.part',
+      originalFilename: 'meeting.wav',
+      contentType: 'audio/wav',
+      sizeBytes: 3,
+      durationMs: null,
+      sha256: 'a' * 64,
+      lifecycle: LocalMediaLifecycle.ready,
+      sourceProvenance: 'v5-source',
+      quarantineReason: null,
+      createdAt: now,
+      updatedAt: now,
+      readyAt: now,
+      version: 0,
+    );
+    await persistence.insertAsset(asset);
+    await database.database.execute(
+      'DROP TRIGGER IF EXISTS trg_processing_target_job_immutable',
+    );
+    await database.database.execute('PRAGMA ignore_check_constraints = ON');
+
+    Future<void> seedUpload(
+      String id,
+      String key, {
+      required String checkpoint,
+      required String? remoteMediaId,
+      required int confirmedBytes,
+      required String outcome,
+      required bool recoveryRequired,
+    }) async {
+      await persistence.insertUploadOperation(
+        UploadOperation(
+          id: id,
+          assetId: asset.id,
+          deploymentScope: asset.deploymentScope,
+          ownerUserId: asset.ownerUserId,
+          meetingId: asset.meetingId!,
+          idempotencyKey: key,
+          requestFingerprint: '$id-fingerprint',
+          sourceType: asset.sourceType,
+          originalFilename: asset.originalFilename,
+          contentType: asset.contentType,
+          expectedSizeBytes: 3,
+          remoteMediaId: null,
+          checkpoint: UploadOperationCheckpoint.intentNotConfirmed,
+          confirmedBytes: 0,
+          attemptCount: 1,
+          attemptOutcome: OperationAttemptOutcome.none,
+          recoveryRequired: false,
+          lastFailureCode: null,
+          lastFailureStatus: null,
+          lastFailureMessage: null,
+          createdAt: now,
+          updatedAt: now,
+          version: 0,
+        ),
+      );
+      await database.database.update(
+        'upload_operations',
+        <String, Object?>{
+          'confirmed_checkpoint': checkpoint,
+          'remote_media_id': remoteMediaId,
+          'confirmed_bytes': confirmedBytes,
+          'attempt_outcome': outcome,
+          'recovery_required': recoveryRequired ? 1 : 0,
+        },
+        where: 'id = ?',
+        whereArgs: <Object?>[id],
+      );
+    }
+
+    await seedUpload(
+      '1' * 32,
+      'failed-with-remote',
+      checkpoint: 'FAILED',
+      remoteMediaId: 'm' * 32,
+      confirmedBytes: 0,
+      outcome: 'FAILED',
+      recoveryRequired: false,
+    );
+    await seedUpload(
+      '2' * 32,
+      'ambiguous-full-transfer',
+      checkpoint: 'REMOTE_RECONCILIATION_REQUIRED',
+      remoteMediaId: null,
+      confirmedBytes: 3,
+      outcome: 'UNCERTAIN',
+      recoveryRequired: true,
+    );
+    await seedUpload(
+      '3' * 32,
+      'insufficient-evidence',
+      checkpoint: 'FAILED',
+      remoteMediaId: null,
+      confirmedBytes: 0,
+      outcome: 'NONE',
+      recoveryRequired: false,
+    );
+    await seedUpload(
+      '4' * 32,
+      'failed-finalization',
+      checkpoint: 'FINALIZATION_CONFIRMED',
+      remoteMediaId: 'n' * 32,
+      confirmedBytes: 3,
+      outcome: 'FAILED',
+      recoveryRequired: true,
+    );
+    await seedUpload(
+      '5' * 32,
+      'uncertain-confirmed',
+      checkpoint: 'INTENT_CONFIRMED',
+      remoteMediaId: 'o' * 32,
+      confirmedBytes: 0,
+      outcome: 'UNCERTAIN',
+      recoveryRequired: true,
+    );
+
+    Future<void> seedProcessing(
+      String id,
+      String key, {
+      required ProcessingOperationType type,
+      required String checkpoint,
+      String? targetJobId,
+      String? resultingJobId,
+      String? reprocessOfJobId,
+      required String outcome,
+    }) async {
+      await persistence.insertProcessingOperation(
+        ProcessingOperation(
+          id: id,
+          deploymentScope: asset.deploymentScope,
+          ownerUserId: asset.ownerUserId,
+          meetingId: asset.meetingId!,
+          idempotencyKey: key,
+          requestFingerprint: '$id-fingerprint',
+          operationType: type,
+          sourceMediaId: 'source-media',
+          targetJobId: targetJobId,
+          resultingJobId: null,
+          reprocessOfJobId: reprocessOfJobId,
+          stageCode: 'TRANSCRIBE',
+          checkpoint: switch (type) {
+            ProcessingOperationType.admission =>
+              ProcessingOperationCheckpoint.admissionNotConfirmed,
+            ProcessingOperationType.retry =>
+              ProcessingOperationCheckpoint.retryNotConfirmed,
+            ProcessingOperationType.reprocess =>
+              ProcessingOperationCheckpoint.reprocessNotConfirmed,
+          },
+          attemptCount: 1,
+          attemptOutcome: OperationAttemptOutcome.none,
+          recoveryRequired: false,
+          lastFailureCode: null,
+          lastFailureStatus: null,
+          lastFailureMessage: null,
+          createdAt: now,
+          updatedAt: now,
+          version: 0,
+        ),
+      );
+      await database.database.update(
+        'processing_operations',
+        <String, Object?>{
+          'confirmed_checkpoint': checkpoint,
+          'target_job_id': targetJobId,
+          'resulting_job_id': resultingJobId,
+          'reprocess_of_job_id': reprocessOfJobId,
+          'attempt_outcome': outcome,
+        },
+        where: 'id = ?',
+        whereArgs: <Object?>[id],
+      );
+    }
+
+    await seedProcessing(
+      '6' * 32,
+      'historical-admission',
+      type: ProcessingOperationType.admission,
+      checkpoint: 'ADMISSION_CONFIRMED',
+      targetJobId: 'job-admission',
+      outcome: 'FAILED',
+    );
+    await seedProcessing(
+      '7' * 32,
+      'historical-retry',
+      type: ProcessingOperationType.retry,
+      checkpoint: 'FAILED',
+      targetJobId: 'job-retry-target',
+      outcome: 'FAILED',
+    );
+    await seedProcessing(
+      '8' * 32,
+      'historical-reprocess',
+      type: ProcessingOperationType.reprocess,
+      checkpoint: 'REPROCESS_CONFIRMED',
+      reprocessOfJobId: 'job-original',
+      outcome: 'NONE',
+    );
+    await database.database.execute('PRAGMA ignore_check_constraints = OFF');
+    await database.database.execute('PRAGMA user_version = 4');
+    await database.close();
+
+    final upgraded = await LocalMediaDatabase.open(
+      databasePath: databasePath,
+      databaseFactory: databaseFactoryFfi,
+    );
+    final upgradedPersistence = LocalMediaPersistence(upgraded);
+    addTearDown(upgraded.close);
+
+    final failedWithRemote = (await upgradedPersistence.findUploadOperation(
+      deploymentScope: 'deployment-a',
+      ownerUserId: 'user-a',
+      idempotencyKey: 'failed-with-remote',
+    ))!;
+    expect(
+      failedWithRemote.checkpoint,
+      UploadOperationCheckpoint.intentConfirmed,
+    );
+    expect(failedWithRemote.attemptOutcome, OperationAttemptOutcome.failed);
+    expect(failedWithRemote.remoteMediaId, 'm' * 32);
+    expect(failedWithRemote.recoveryRequired, isTrue);
+
+    final fullTransfer = (await upgradedPersistence.findUploadOperation(
+      deploymentScope: 'deployment-a',
+      ownerUserId: 'user-a',
+      idempotencyKey: 'ambiguous-full-transfer',
+    ))!;
+    expect(
+      fullTransfer.checkpoint,
+      UploadOperationCheckpoint.binaryTransferConfirmed,
+    );
+    expect(fullTransfer.confirmedBytes, 3);
+    expect(fullTransfer.attemptOutcome, OperationAttemptOutcome.uncertain);
+
+    final insufficient = (await upgradedPersistence.findUploadOperation(
+      deploymentScope: 'deployment-a',
+      ownerUserId: 'user-a',
+      idempotencyKey: 'insufficient-evidence',
+    ))!;
+    expect(
+      insufficient.checkpoint,
+      UploadOperationCheckpoint.intentNotConfirmed,
+    );
+    expect(insufficient.attemptOutcome, OperationAttemptOutcome.failed);
+    expect(insufficient.recoveryRequired, isTrue);
+
+    final failedFinalization = (await upgradedPersistence.findUploadOperation(
+      deploymentScope: 'deployment-a',
+      ownerUserId: 'user-a',
+      idempotencyKey: 'failed-finalization',
+    ))!;
+    expect(
+      failedFinalization.checkpoint,
+      UploadOperationCheckpoint.finalizationConfirmed,
+    );
+    expect(failedFinalization.attemptOutcome, OperationAttemptOutcome.failed);
+
+    final uncertainConfirmed = (await upgradedPersistence.findUploadOperation(
+      deploymentScope: 'deployment-a',
+      ownerUserId: 'user-a',
+      idempotencyKey: 'uncertain-confirmed',
+    ))!;
+    expect(
+      uncertainConfirmed.attemptOutcome,
+      OperationAttemptOutcome.uncertain,
+    );
+    expect(uncertainConfirmed.recoveryRequired, isTrue);
+
+    final admission = (await upgradedPersistence.findProcessingOperation(
+      deploymentScope: 'deployment-a',
+      ownerUserId: 'user-a',
+      idempotencyKey: 'historical-admission',
+    ))!;
+    expect(admission.targetJobId, isNull);
+    expect(admission.resultingJobId, 'job-admission');
+    expect(admission.attemptOutcome, OperationAttemptOutcome.failed);
+
+    final retry = (await upgradedPersistence.findProcessingOperation(
+      deploymentScope: 'deployment-a',
+      ownerUserId: 'user-a',
+      idempotencyKey: 'historical-retry',
+    ))!;
+    expect(retry.targetJobId, 'job-retry-target');
+    expect(retry.checkpoint, ProcessingOperationCheckpoint.retryNotConfirmed);
+    expect(retry.attemptOutcome, OperationAttemptOutcome.failed);
+    expect(retry.recoveryRequired, isTrue);
+
+    final reprocess = (await upgradedPersistence.findProcessingOperation(
+      deploymentScope: 'deployment-a',
+      ownerUserId: 'user-a',
+      idempotencyKey: 'historical-reprocess',
+    ))!;
+    expect(
+      reprocess.checkpoint,
+      ProcessingOperationCheckpoint.reprocessNotConfirmed,
+    );
+    expect(reprocess.reprocessOfJobId, 'job-original');
+    expect(reprocess.attemptOutcome, OperationAttemptOutcome.uncertain);
+    expect(reprocess.recoveryRequired, isTrue);
+
+    final reopened = await LocalMediaDatabase.open(
+      databasePath: databasePath,
+      databaseFactory: databaseFactoryFfi,
+    );
+    addTearDown(reopened.close);
+    final reopenedOperation = (await LocalMediaPersistence(reopened)
+        .findUploadOperation(
+          deploymentScope: 'deployment-a',
+          ownerUserId: 'user-a',
+          idempotencyKey: 'ambiguous-full-transfer',
+        ))!;
+    expect(reopenedOperation.checkpoint, fullTransfer.checkpoint);
+    expect(reopenedOperation.attemptOutcome, fullTransfer.attemptOutcome);
+    expect(reopenedOperation.version, fullTransfer.version);
+  });
 }

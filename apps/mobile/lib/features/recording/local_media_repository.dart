@@ -51,6 +51,10 @@ class LocalMediaRepository {
   final DateTime Function() _now;
   Future<void> _lifecycleTail = Future<void>.value();
   Future<void> _migrationTail = Future<void>.value();
+  final Map<String, Future<LocalMediaRecoveryReport>> _recoveryInFlight =
+      <String, Future<LocalMediaRecoveryReport>>{};
+  final Map<String, LocalMediaRecoveryReport> _completedRecoveries =
+      <String, LocalMediaRecoveryReport>{};
   final Set<String> _activeAssetIds = <String>{};
   bool _disposed = false;
 
@@ -163,13 +167,50 @@ class LocalMediaRepository {
     }
     final file = (await _storage()).fileFor(persisted.managedRelativePath);
     try {
-      if (!await file.exists() || await file.length() != persisted.sizeBytes) {
+      if (!await file.exists()) {
+        await _markUnavailable(persisted, missing: true);
+        throw const LocalMediaUnavailableException();
+      }
+      if (await file.length() != persisted.sizeBytes) {
+        await _markUnavailable(persisted);
         throw const LocalMediaUnavailableException();
       }
     } on FileSystemException {
+      await _markUnavailable(persisted);
       throw const LocalMediaUnavailableException();
     }
     return file;
+  }
+
+  Future<void> _markUnavailable(
+    LocalMediaAsset expected, {
+    bool missing = false,
+  }) async {
+    await _withLifecycleLock(() async {
+      final current = await (await _persistence()).findAsset(
+        id: expected.id,
+        deploymentScope: expected.deploymentScope,
+        ownerUserId: expected.ownerUserId,
+      );
+      if (current == null ||
+          current.version != expected.version ||
+          _activeAssetIds.contains(current.id) ||
+          !current.isReady) {
+        return;
+      }
+      await (await _persistence()).updateAsset(
+        current.copyWith(
+          lifecycle: missing
+              ? LocalMediaLifecycle.missing
+              : LocalMediaLifecycle.unavailable,
+          quarantineReason: missing
+              ? 'MANAGED_FILE_MISSING'
+              : 'MANAGED_FILE_UNAVAILABLE',
+          updatedAt: _utcNow(),
+        ),
+        expectedVersion: current.version,
+      );
+    });
   }
 
   Future<LocalMediaAsset> findReadyAsset({
@@ -260,7 +301,7 @@ class LocalMediaRepository {
   Future<File> stagingFileFor({
     required AuthenticatedSessionScope scope,
     required LocalMediaAsset asset,
-  }) async {
+  }) => _withLifecycleLock(() async {
     _requireAssetOwner(asset, scope);
     final persisted = await (await _persistence()).findAsset(
       id: asset.id,
@@ -279,9 +320,12 @@ class LocalMediaRepository {
         persisted.lifecycle != LocalMediaLifecycle.staged) {
       throw const LocalMediaUnavailableException();
     }
+    // Registration and destination lookup are one lifecycle-critical section.
+    // The section ends before the recorder starts, so it does not lock a
+    // recording for its full duration.
     _activeAssetIds.add(persisted.id);
     return (await _storage()).fileFor(persisted.stagedRelativePath!);
-  }
+  });
 
   Future<LocalMediaAsset> confirmFileCompletion({
     required AuthenticatedSessionScope scope,
@@ -443,7 +487,74 @@ class LocalMediaRepository {
   Future<LocalMediaRecoveryReport> reconcile({
     required AuthenticatedSessionScope scope,
     String? meetingId,
-  }) => _withLifecycleLock(() async {
+  }) => _withLifecycleLock(
+    () => _reconcileUnlocked(scope: scope, meetingId: meetingId),
+  );
+
+  /// Activates local recovery for one authenticated workspace scope.
+  ///
+  /// Recovery is deliberately explicit rather than being part of routine
+  /// listing. A successful scope is memoized for the lifetime of this
+  /// repository, while incomplete or failed work remains retryable. Concurrent
+  /// callers share the same execution and never compete over filesystem
+  /// mutations.
+  Future<LocalMediaRecoveryReport> recoverLocalState({
+    required AuthenticatedSessionScope scope,
+    String? meetingId,
+    CredentialStorage? storage,
+    bool retry = false,
+  }) {
+    _requireScope(scope.deploymentScope, scope.userId);
+    final key =
+        '${scope.deploymentScope}\u0000${scope.userId}\u0000${meetingId ?? ''}';
+    final inFlight = _recoveryInFlight[key];
+    if (inFlight != null) return inFlight;
+    final completed = _completedRecoveries[key];
+    if (completed != null && !retry)
+      return Future<LocalMediaRecoveryReport>.value(completed);
+
+    final future = _withLifecycleLock(
+      () => _withMigrationLock(() async {
+        final migration = await _migrateLegacyMetadataUnlocked(
+          storage: storage ?? legacyStorage,
+          scope: scope,
+        );
+        final report = await _reconcileUnlocked(
+          scope: scope,
+          meetingId: meetingId,
+        );
+        // A migration left in STARTED state because a source file was
+        // temporarily unavailable must be retried on a later workspace entry.
+        if (migration?.state != LocalMediaMigrationState.started) {
+          _completedRecoveries[key] = report;
+        } else {
+          _completedRecoveries.remove(key);
+        }
+        return report;
+      }),
+    );
+    _recoveryInFlight[key] = future;
+    unawaited(
+      future.then<void>(
+        (_) {
+          if (identical(_recoveryInFlight[key], future)) {
+            _recoveryInFlight.remove(key);
+          }
+        },
+        onError: (Object _, StackTrace __) {
+          if (identical(_recoveryInFlight[key], future)) {
+            _recoveryInFlight.remove(key);
+          }
+        },
+      ),
+    );
+    return future;
+  }
+
+  Future<LocalMediaRecoveryReport> _reconcileUnlocked({
+    required AuthenticatedSessionScope scope,
+    String? meetingId,
+  }) async {
     final persistence = await _persistence();
     final storage = await _storage();
     final assets = await persistence.listAssets(
@@ -511,7 +622,7 @@ class LocalMediaRepository {
       interrupted: interrupted,
       orphaned: orphaned,
     );
-  });
+  }
 
   Future<int> cleanupStaleStaging({
     required AuthenticatedSessionScope scope,
@@ -793,7 +904,21 @@ class LocalMediaRepository {
     CredentialStorage? storage,
     String legacyStorageKey = 'sme.mobile.recordings.v1',
     AuthenticatedSessionScope? scope,
-  }) => _withMigrationLock(() async {
+  }) => _withLifecycleLock(
+    () => _withMigrationLock(
+      () => _migrateLegacyMetadataUnlocked(
+        storage: storage,
+        legacyStorageKey: legacyStorageKey,
+        scope: scope,
+      ),
+    ),
+  );
+
+  Future<LocalMediaMigrationRecord?> _migrateLegacyMetadataUnlocked({
+    CredentialStorage? storage,
+    String legacyStorageKey = 'sme.mobile.recordings.v1',
+    AuthenticatedSessionScope? scope,
+  }) async {
     final sourceStorage = storage ?? legacyStorage;
     if (sourceStorage == null) return null;
     LocalMediaMigrationRecord? result;
@@ -818,7 +943,7 @@ class LocalMediaRepository {
       }
     }
     return result;
-  });
+  }
 
   static String legacyStorageKeyForScope(AuthenticatedSessionScope scope) {
     final ownerDigest = sha256

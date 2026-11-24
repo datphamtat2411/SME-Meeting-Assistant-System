@@ -860,6 +860,14 @@ class LocalMediaPersistence {
   }
 
   static void _validateUploadOperationState(UploadOperation operation) {
+    if (operation.checkpoint ==
+            UploadOperationCheckpoint.remoteReconciliationRequired ||
+        operation.checkpoint == UploadOperationCheckpoint.failed) {
+      throw ArgumentError(
+        'Failure and reconciliation states are attempt outcomes, not '
+        'confirmed checkpoints.',
+      );
+    }
     if (operation.expectedSizeBytes <= 0 ||
         operation.confirmedBytes < 0 ||
         operation.confirmedBytes > operation.expectedSizeBytes ||
@@ -870,14 +878,9 @@ class LocalMediaPersistence {
         operation.checkpoint ==
             UploadOperationCheckpoint.binaryTransferConfirmed ||
         operation.checkpoint == UploadOperationCheckpoint.finalizationConfirmed;
-    final isUnconfirmedFailure =
-        operation.checkpoint ==
-            UploadOperationCheckpoint.remoteReconciliationRequired ||
-        operation.checkpoint == UploadOperationCheckpoint.failed;
-    if (!isUnconfirmedFailure &&
-        ((isConfirmedTransfer &&
-                operation.confirmedBytes != operation.expectedSizeBytes) ||
-            (!isConfirmedTransfer && operation.confirmedBytes != 0))) {
+    if ((isConfirmedTransfer &&
+            operation.confirmedBytes != operation.expectedSizeBytes) ||
+        (!isConfirmedTransfer && operation.confirmedBytes != 0)) {
       throw ArgumentError(
         'Upload bytes may only be confirmed after the binary transfer.',
       );
@@ -902,12 +905,15 @@ class LocalMediaPersistence {
         ProcessingOperationCheckpoint.reprocessConfirmed,
       ),
     };
-    final isFailureCheckpoint =
-        operation.checkpoint ==
+    if (operation.checkpoint ==
             ProcessingOperationCheckpoint.remoteReconciliationRequired ||
-        operation.checkpoint == ProcessingOperationCheckpoint.failed;
-    if (!isFailureCheckpoint &&
-        operation.checkpoint != expectedCheckpoints.$1 &&
+        operation.checkpoint == ProcessingOperationCheckpoint.failed) {
+      throw ArgumentError(
+        'Failure and reconciliation states are attempt outcomes, not '
+        'confirmed checkpoints.',
+      );
+    }
+    if (operation.checkpoint != expectedCheckpoints.$1 &&
         operation.checkpoint != expectedCheckpoints.$2) {
       throw ArgumentError(
         'The processing checkpoint does not match the operation type.',

@@ -4,10 +4,368 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
+import 'package:http/io_client.dart';
 import 'package:sme_meeting_assistant/core/api_transport.dart';
 import 'package:sme_meeting_assistant/core/signed_upload_transport.dart';
 
 void main() {
+  group('SignedUploadTransport native IOClient', () {
+    test(
+      'successfully transfers the complete request to a local HttpServer',
+      () async {
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        addTearDown(() => server.close(force: true));
+        final client = IOClient();
+        addTearDown(client.close);
+        final requestSeen = Completer<Map<String, Object?>>();
+        server.listen((request) async {
+          var length = 0;
+          await for (final chunk in request) {
+            length += chunk.length;
+          }
+          requestSeen.complete(<String, Object?>{
+            'method': request.method,
+            'contentType': request.headers.contentType?.mimeType,
+            'contentLength': request.headers.contentLength,
+            'length': length,
+            'authorization': request.headers.value('authorization'),
+            'cookie': request.headers.value('cookie'),
+          });
+          await request.response.close();
+        });
+
+        final directory = await Directory.systemTemp.createTemp(
+          'sme-native-upload-success-',
+        );
+        addTearDown(() => directory.delete(recursive: true));
+        final file = File('${directory.path}/audio.wav')
+          ..writeAsBytesSync(List<int>.generate(8192, (index) => index % 251));
+        final transport = SignedUploadTransport(
+          httpClient: client,
+          androidDebugOverride: true,
+        );
+        final response = await transport.upload(
+          'http://127.0.0.1:${server.port}/signed-upload',
+          file,
+          'audio/wav',
+          expectedLength: await file.length(),
+          expiresAt: DateTime.now().toUtc().add(const Duration(minutes: 5)),
+        );
+
+        expect(response.statusCode, 200);
+        expect(await requestSeen.future, <String, Object?>{
+          'method': 'PUT',
+          'contentType': 'audio/wav',
+          'contentLength': 8192,
+          'length': 8192,
+          'authorization': null,
+          'cookie': null,
+        });
+      },
+    );
+
+    test(
+      'cancels a paused native request without consuming the whole source',
+      () async {
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        addTearDown(() => server.close(force: true));
+        final client = IOClient();
+        addTearDown(client.close);
+        final firstBodyChunk = Completer<void>();
+        late StreamSubscription<List<int>> subscription;
+        var received = 0;
+        server.listen((request) {
+          subscription = request.listen((chunk) {
+            received += chunk.length;
+            if (!firstBodyChunk.isCompleted) {
+              firstBodyChunk.complete();
+              subscription.pause();
+            }
+          }, onError: (_) {});
+        });
+
+        final directory = await Directory.systemTemp.createTemp(
+          'sme-native-upload-backpressure-',
+        );
+        addTearDown(() => directory.delete(recursive: true));
+        final file = File('${directory.path}/large.bin')
+          ..writeAsBytesSync(
+            List<int>.generate(8 * 1024 * 1024, (index) => index % 251),
+          );
+        final token = UploadCancellationToken();
+        final progress = <int>[];
+        final transport = SignedUploadTransport(
+          httpClient: client,
+          timeout: const Duration(seconds: 5),
+          inactivityTimeout: const Duration(seconds: 5),
+          androidDebugOverride: true,
+        );
+        final upload = transport.upload(
+          'http://127.0.0.1:${server.port}/paused',
+          file,
+          'audio/wav',
+          expectedLength: await file.length(),
+          expiresAt: DateTime.now().toUtc().add(const Duration(minutes: 5)),
+          cancellationToken: token,
+          onProgress: (sent, _) => progress.add(sent),
+        );
+        await firstBodyChunk.future.timeout(const Duration(seconds: 2));
+        token.cancel();
+
+        await expectLater(
+          upload.timeout(const Duration(seconds: 2)),
+          throwsA(
+            isA<TransportFailure>()
+                .having((failure) => failure.code, 'code', 'UPLOAD_CANCELLED')
+                .having(
+                  (failure) => failure.remoteOutcomeAmbiguous,
+                  'remoteOutcomeAmbiguous',
+                  isTrue,
+                ),
+          ),
+        );
+        expect(received, lessThan(await file.length()));
+        expect(progress, isNotEmpty);
+        expect(progress.last, lessThan(await file.length()));
+      },
+    );
+
+    test('cancels while native response headers are withheld', () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => server.close(force: true));
+      final client = IOClient();
+      addTearDown(client.close);
+      final consumed = Completer<void>();
+      late HttpResponse response;
+      server.listen((request) async {
+        await request.drain<void>();
+        consumed.complete();
+        response = request.response;
+      });
+
+      final directory = await Directory.systemTemp.createTemp(
+        'sme-native-upload-headers-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      final file = File('${directory.path}/audio.bin')
+        ..writeAsBytesSync(
+          List<int>.generate(64 * 1024, (index) => index % 251),
+        );
+      final token = UploadCancellationToken();
+      final transport = SignedUploadTransport(
+        httpClient: client,
+        timeout: const Duration(seconds: 5),
+        inactivityTimeout: const Duration(seconds: 5),
+        androidDebugOverride: true,
+      );
+      final upload = transport.upload(
+        'http://127.0.0.1:${server.port}/headers',
+        file,
+        'audio/wav',
+        expectedLength: await file.length(),
+        expiresAt: DateTime.now().toUtc().add(const Duration(minutes: 5)),
+        cancellationToken: token,
+      );
+      await consumed.future.timeout(const Duration(seconds: 2));
+      token.cancel();
+      await expectLater(
+        upload.timeout(const Duration(seconds: 2)),
+        throwsA(
+          isA<TransportFailure>()
+              .having((failure) => failure.code, 'code', 'UPLOAD_CANCELLED')
+              .having(
+                (failure) => failure.remoteOutcomeAmbiguous,
+                'remoteOutcomeAmbiguous',
+                isTrue,
+              ),
+        ),
+      );
+      await response.close();
+    });
+
+    test('cancels while consuming a native response body', () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => server.close(force: true));
+      final client = IOClient();
+      addTearDown(client.close);
+      final responseStarted = Completer<void>();
+      server.listen((request) async {
+        await request.drain<void>();
+        final response = request.response;
+        response.statusCode = 200;
+        response.headers.chunkedTransferEncoding = true;
+        response.write('first response chunk');
+        await response.flush();
+        responseStarted.complete();
+        await Future<void>.delayed(const Duration(seconds: 5));
+        await response.close();
+      });
+
+      final directory = await Directory.systemTemp.createTemp(
+        'sme-native-upload-response-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      final file = File('${directory.path}/audio.bin')
+        ..writeAsBytesSync(<int>[1, 2, 3]);
+      final token = UploadCancellationToken();
+      final transport = SignedUploadTransport(
+        httpClient: client,
+        timeout: const Duration(seconds: 5),
+        inactivityTimeout: const Duration(seconds: 5),
+        androidDebugOverride: true,
+      );
+      final upload = transport.upload(
+        'http://127.0.0.1:${server.port}/body',
+        file,
+        'audio/wav',
+        expectedLength: 3,
+        expiresAt: DateTime.now().toUtc().add(const Duration(minutes: 5)),
+        cancellationToken: token,
+      );
+      await responseStarted.future.timeout(const Duration(seconds: 2));
+      token.cancel();
+      await expectLater(
+        upload.timeout(const Duration(seconds: 2)),
+        throwsA(
+          isA<TransportFailure>()
+              .having((failure) => failure.code, 'code', 'UPLOAD_CANCELLED')
+              .having(
+                (failure) => failure.remoteOutcomeAmbiguous,
+                'remoteOutcomeAmbiguous',
+                isTrue,
+              ),
+        ),
+      );
+    });
+
+    test(
+      'enforces native inactivity and overall deadlines independently',
+      () async {
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        addTearDown(() => server.close(force: true));
+        final client = IOClient();
+        addTearDown(client.close);
+        final requestCount = <int>[0];
+        server.listen((request) async {
+          requestCount[0]++;
+          if (requestCount[0] == 1) {
+            final subscription = request.listen((_) {});
+            await Future<void>.delayed(const Duration(seconds: 2));
+            await subscription.cancel();
+          } else {
+            await request.drain<void>();
+          }
+        });
+
+        final directory = await Directory.systemTemp.createTemp(
+          'sme-native-upload-deadline-',
+        );
+        addTearDown(() => directory.delete(recursive: true));
+        final file = File('${directory.path}/audio.bin')
+          ..writeAsBytesSync(List<int>.filled(1024 * 1024, 7));
+        final inactivityTransport = SignedUploadTransport(
+          httpClient: client,
+          timeout: const Duration(seconds: 4),
+          inactivityTimeout: const Duration(milliseconds: 80),
+          androidDebugOverride: true,
+        );
+        await expectLater(
+          inactivityTransport.upload(
+            'http://127.0.0.1:${server.port}/inactivity',
+            file,
+            'audio/wav',
+            expectedLength: await file.length(),
+            expiresAt: DateTime.now().toUtc().add(const Duration(minutes: 5)),
+          ),
+          throwsA(
+            isA<TransportFailure>().having(
+              (failure) => failure.code,
+              'code',
+              'UPLOAD_INACTIVITY_TIMEOUT',
+            ),
+          ),
+        );
+
+        final overallTransport = SignedUploadTransport(
+          httpClient: client,
+          timeout: const Duration(milliseconds: 80),
+          inactivityTimeout: const Duration(seconds: 2),
+          androidDebugOverride: true,
+        );
+        await expectLater(
+          overallTransport.upload(
+            'http://127.0.0.1:${server.port}/overall',
+            file,
+            'audio/wav',
+            expectedLength: await file.length(),
+            expiresAt: DateTime.now().toUtc().add(const Duration(minutes: 5)),
+          ),
+          throwsA(
+            isA<TransportFailure>().having(
+              (failure) => failure.code,
+              'code',
+              'UPLOAD_TIMEOUT',
+            ),
+          ),
+        );
+      },
+    );
+
+    test('leaves the shared native client usable after cancellation', () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => server.close(force: true));
+      final client = IOClient();
+      addTearDown(client.close);
+      final requestStarted = Completer<void>();
+      server.listen((request) async {
+        if (request.uri.path == '/upload') {
+          requestStarted.complete();
+          try {
+            await request.drain<void>();
+          } catch (_) {}
+          return;
+        }
+        request.response
+          ..statusCode = 200
+          ..write('healthy');
+        await request.response.close();
+      });
+
+      final directory = await Directory.systemTemp.createTemp(
+        'sme-native-upload-client-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      final file = File('${directory.path}/audio.bin')
+        ..writeAsBytesSync(List<int>.filled(256 * 1024, 3));
+      final token = UploadCancellationToken();
+      final transport = SignedUploadTransport(
+        httpClient: client,
+        timeout: const Duration(seconds: 5),
+        inactivityTimeout: const Duration(seconds: 5),
+        androidDebugOverride: true,
+      );
+      final upload = transport.upload(
+        'http://127.0.0.1:${server.port}/upload',
+        file,
+        'audio/wav',
+        expectedLength: await file.length(),
+        expiresAt: DateTime.now().toUtc().add(const Duration(minutes: 5)),
+        cancellationToken: token,
+      );
+      await requestStarted.future.timeout(const Duration(seconds: 2));
+      token.cancel();
+      await expectLater(
+        upload.timeout(const Duration(seconds: 2)),
+        throwsA(isA<TransportFailure>()),
+      );
+      final health = await client
+          .get(Uri.parse('http://127.0.0.1:${server.port}/health'))
+          .timeout(const Duration(seconds: 2));
+      expect(health.statusCode, 200);
+      expect(health.body, 'healthy');
+    });
+  });
+
   group('SignedUploadTransport', () {
     test('streams file bytes with only signed-upload headers and progress', () async {
       final directory = await Directory.systemTemp.createTemp(

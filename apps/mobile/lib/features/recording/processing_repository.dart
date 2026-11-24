@@ -35,7 +35,7 @@ class ProcessingRepository {
     String meetingId,
     ProcessingAdmissionRequest request, {
     required String idempotencyKey,
-    AuthenticatedSessionScope? sessionScope,
+    required AuthenticatedSessionScope sessionScope,
   }) async {
     _validateId(meetingId, 'meetingId');
     _validateIdempotencyKey(idempotencyKey);
@@ -56,7 +56,7 @@ class ProcessingRepository {
 
   Future<List<ProcessingJobRecord>> list(
     String meetingId, {
-    AuthenticatedSessionScope? sessionScope,
+    required AuthenticatedSessionScope sessionScope,
   }) async {
     _validateId(meetingId, 'meetingId');
     final scope = _captureSession(sessionScope);
@@ -82,7 +82,7 @@ class ProcessingRepository {
 
   Future<ProcessingJobRecord> get(
     String jobId, {
-    AuthenticatedSessionScope? sessionScope,
+    required AuthenticatedSessionScope sessionScope,
   }) async {
     _validateId(jobId, 'jobId');
     final scope = _captureSession(sessionScope);
@@ -105,7 +105,7 @@ class ProcessingRepository {
     String jobId, {
     required String idempotencyKey,
     String? stageCode,
-    AuthenticatedSessionScope? sessionScope,
+    required AuthenticatedSessionScope sessionScope,
   }) async {
     _validateId(jobId, 'jobId');
     _validateIdempotencyKey(idempotencyKey);
@@ -148,10 +148,9 @@ class ProcessingRepository {
   }
 
   AuthenticatedSessionScope _captureSession(
-    AuthenticatedSessionScope? expected,
+    AuthenticatedSessionScope expected,
   ) {
-    final scope = expected ?? api.authenticatedSessionScope;
-    if (scope == null || !api.isCurrentAuthenticatedSession(scope)) {
+    if (!api.isCurrentAuthenticatedSession(expected)) {
       throw MediaRepositoryFailure(
         const ApiFailure(
           401,
@@ -162,7 +161,7 @@ class ProcessingRepository {
         mutationOutcome: MediaMutationOutcome.notDispatched,
       );
     }
-    return scope;
+    return expected;
   }
 
   void _requireSession(

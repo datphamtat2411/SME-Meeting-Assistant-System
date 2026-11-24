@@ -298,6 +298,179 @@ void main() {
       expect(api.sessionState.identity!.userId.value, _userB);
     },
   );
+
+  test('workspace recovery is scoped, single-flight, retryable, and protects writers', () async {
+    final storage = _DelayedDraftIndexStorage();
+    final api = _api(_DraftAuthClient(<String>[_userA]), storage: storage);
+    addTearDown(api.dispose);
+    final directory = await Directory.systemTemp.createTemp(
+      'sme-recording-recovery-',
+    );
+    addTearDown(() => directory.delete(recursive: true));
+    final database = await LocalMediaDatabase.open(
+      databasePath: '${directory.path}/media.db',
+      databaseFactory: databaseFactoryFfi,
+    );
+    addTearDown(database.close);
+    final managedStorage = ManagedMediaStorage(
+      root: Directory('${directory.path}/managed'),
+    );
+    final repository = LocalMediaRepository(
+      persistence: LocalMediaPersistence(database),
+      storage: managedStorage,
+      legacyStorage: storage,
+    );
+    addTearDown(repository.dispose);
+
+    await api.initialize();
+    await api.signIn('user-a@example.test', 'password');
+    final scope = api.authenticatedSessionScope!;
+
+    storage.delayNextDraftIndexRead = true;
+    final first = repository.recoverLocalState(
+      scope: scope,
+      meetingId: 'meeting-recovery',
+      storage: storage,
+    );
+    await storage.draftIndexReadStarted.future;
+    final second = repository.recoverLocalState(
+      scope: scope,
+      meetingId: 'meeting-recovery',
+      storage: storage,
+    );
+    expect(identical(first, second), isTrue);
+    storage.releaseDraftIndexRead.complete();
+    await Future.wait(<Future<LocalMediaRecoveryReport>>[first, second]);
+
+    final sourcePath = '${directory.path}/recovered.wav';
+    await storage.write(
+      key: LocalMediaRepository.legacyStorageKeyForScope(scope),
+      value: jsonEncode(<Map<String, dynamic>>[
+        <String, dynamic>{
+          'deploymentScope': scope.deploymentScope,
+          'userId': scope.userId,
+          'meetingId': 'meeting-recovery',
+          'path': sourcePath,
+          'name': 'recovered.wav',
+          'createdAt': '2026-11-24T12:00:00Z',
+        },
+      ]),
+    );
+    // The missing legacy source leaves migration STARTED rather than
+    // permanently completing recovery.
+    await repository.recoverLocalState(
+      scope: scope,
+      meetingId: 'meeting-recovery',
+      storage: storage,
+      retry: true,
+    );
+    await File(sourcePath).writeAsBytes(<int>[1, 2, 3]);
+    await repository.recoverLocalState(
+      scope: scope,
+      meetingId: 'meeting-recovery',
+      storage: storage,
+    );
+    expect(
+      (await repository.listAssets(
+        scope: scope,
+        meetingId: 'meeting-recovery',
+      )).single.isReady,
+      isTrue,
+    );
+
+    final reserved = await repository.reserveAsset(
+      scope: scope,
+      meetingId: 'meeting-recovery',
+      sourceType: LocalMediaSourceType.recording,
+      originalFilename: 'active.wav',
+      contentType: 'audio/wav',
+    );
+    final staging = await repository.stagingFileFor(
+      scope: scope,
+      asset: reserved,
+    );
+    await staging.writeAsBytes(<int>[9, 8, 7]);
+    await repository.recoverLocalState(
+      scope: scope,
+      meetingId: 'meeting-recovery',
+      storage: storage,
+      retry: true,
+    );
+    final active = await LocalMediaPersistence(database).findAsset(
+      id: reserved.id,
+      deploymentScope: scope.deploymentScope,
+      ownerUserId: scope.userId,
+    );
+    expect(active!.lifecycle, LocalMediaLifecycle.creating);
+    expect(await staging.exists(), isTrue);
+    await repository.recordInterruption(scope: scope, assetId: reserved.id);
+  });
+
+  test(
+    'routine managed listing checks size without hashing ready files',
+    () async {
+      final storage = InMemoryCredentialStorage();
+      final api = _api(_DraftAuthClient(<String>[_userA]), storage: storage);
+      addTearDown(api.dispose);
+      final directory = await Directory.systemTemp.createTemp(
+        'sme-recording-listing-integrity-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      final database = await LocalMediaDatabase.open(
+        databasePath: '${directory.path}/media.db',
+        databaseFactory: databaseFactoryFfi,
+      );
+      addTearDown(database.close);
+      final managedStorage = _CountingManagedMediaStorage(
+        root: Directory('${directory.path}/managed'),
+      );
+      final repository = LocalMediaRepository(
+        persistence: LocalMediaPersistence(database),
+        storage: managedStorage,
+      );
+      addTearDown(repository.dispose);
+
+      await api.initialize();
+      await api.signIn('user-a@example.test', 'password');
+      final scope = api.authenticatedSessionScope!;
+      final validSource = File('${directory.path}/valid.wav')
+        ..writeAsBytesSync(<int>[1, 2, 3]);
+      final missingSource = File('${directory.path}/missing.wav')
+        ..writeAsBytesSync(<int>[4, 5, 6]);
+      final valid = await repository.rememberSourceFile(
+        scope: scope,
+        meetingId: 'meeting-listing',
+        source: validSource,
+        sourceType: LocalMediaSourceType.recording,
+        originalFilename: 'valid.wav',
+        contentType: 'audio/wav',
+      );
+      final missing = await repository.rememberSourceFile(
+        scope: scope,
+        meetingId: 'meeting-listing',
+        source: missingSource,
+        sourceType: LocalMediaSourceType.recording,
+        originalFilename: 'missing.wav',
+        contentType: 'audio/wav',
+      );
+      await managedStorage.fileFor(missing.managedRelativePath).delete();
+      managedStorage.inspectCount = 0;
+
+      final listed = await RecordingDrafts(
+        storage: storage,
+        repository: repository,
+      ).list('meeting-listing', api: api);
+      expect(listed.single.assetId, valid.id);
+      expect(managedStorage.inspectCount, 0);
+      expect(
+        (await repository.listAssets(
+          scope: scope,
+          meetingId: 'meeting-listing',
+        )).singleWhere((asset) => asset.id == missing.id).lifecycle,
+        LocalMediaLifecycle.missing,
+      );
+    },
+  );
 }
 
 ApiClient _api(
@@ -354,6 +527,18 @@ class _DelayedDraftIndexStorage extends InMemoryCredentialStorage {
       await releaseDraftIndexRead.future;
     }
     return super.read(key: key);
+  }
+}
+
+class _CountingManagedMediaStorage extends ManagedMediaStorage {
+  _CountingManagedMediaStorage({required super.root});
+
+  int inspectCount = 0;
+
+  @override
+  Future<LocalMediaFileIntegrity> inspectFile(String relativePath) {
+    inspectCount++;
+    return super.inspectFile(relativePath);
   }
 }
 

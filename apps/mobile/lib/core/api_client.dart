@@ -374,6 +374,13 @@ class ApiClient extends ChangeNotifier {
     UploadCancellationToken? cancellationToken,
   }) async {
     if (session != null) requireCurrentAuthenticatedSession(session);
+    if (cancellationToken?.isCancelled == true) {
+      throw TransportFailure(
+        0,
+        'UPLOAD_CANCELLED',
+        'Audio upload was cancelled.',
+      );
+    }
     final transferCancellation = UploadCancellationToken();
     void cancelForSessionChange() {
       if (session != null && !isCurrentAuthenticatedSession(session)) {
@@ -383,6 +390,9 @@ class ApiClient extends ChangeNotifier {
 
     sessionCoordinator.addListener(cancelForSessionChange);
     if (cancellationToken != null) {
+      if (cancellationToken.isCancelled) {
+        transferCancellation.cancel();
+      }
       unawaited(
         cancellationToken.whenCancelled.then<void>(
           (_) => transferCancellation.cancel(),

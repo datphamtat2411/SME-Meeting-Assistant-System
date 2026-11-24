@@ -8,15 +8,12 @@
     <exclude domain="sharedpref" path="FlutterSecureStorageConfiguration.xml" />
     <!-- Local media bytes and resumable operation metadata are device-bound. -->
     <exclude domain="file" path="sme-media" />
-    <exclude domain="file" path="app_flutter/sme-media" />
     <exclude domain="database" path="sme_mobile_media.db" />
     <exclude domain="database" path="sme_mobile_media.db-wal" />
     <exclude domain="database" path="sme_mobile_media.db-shm" />
     <exclude domain="database" path="sme_mobile_media.db-journal" />
-    <!-- Legacy recorder/import locations used before managed media storage. -->
-    <!-- Android backup rules do not support filename-prefix matching. Legacy
-         recordings lived in Flutter's application-documents directory, so
-         exclude that application-owned directory rather than pretending that
-         sme-meeting- is a wildcard. -->
-    <exclude domain="file" path="app_flutter" />
+    <!-- path_provider's application documents directory is
+         <app-data>/app_flutter. The root domain is relative to <app-data>;
+         the file domain is relative to files/. -->
+    <exclude domain="root" path="app_flutter" />
 </full-backup-content>

@@ -187,10 +187,13 @@ class CoreApiTransport {
         abortTrigger,
       );
       responseClaimed = true;
+      final responsePhaseStarted = stopwatch.elapsed;
       final bodyBytes = await _readResponseBody(
         streamed,
         _remaining(stopwatch, responseLimit, timeoutPolicy?.overallTimeout),
         abortTrigger,
+        responsePhaseStarted: responsePhaseStarted,
+        stopwatch: stopwatch,
       );
       final response = CoreApiResponse(
         statusCode: streamed.statusCode,
@@ -275,18 +278,39 @@ class CoreApiTransport {
   Future<List<int>> _readResponseBody(
     http.StreamedResponse response,
     Duration timeout,
-    Completer<void> abortTrigger,
-  ) async {
+    Completer<void> abortTrigger, {
+    required Duration responsePhaseStarted,
+    required Stopwatch stopwatch,
+  }) async {
     final builder = BytesBuilder(copy: false);
-    final subscription = response.stream.listen(builder.add);
+    StreamSubscription<List<int>>? subscription;
     try {
-      await _awaitPhase(subscription.asFuture<void>(), timeout, abortTrigger);
+      final activeSubscription = response.stream.listen(builder.add);
+      subscription = activeSubscription;
+      await _awaitPhase(
+        activeSubscription.asFuture<void>(),
+        timeout,
+        abortTrigger,
+      );
       return builder.takeBytes();
     } finally {
-      try {
-        await subscription.cancel().timeout(timeout);
-      } catch (_) {
-        // The terminal request failure is already established.
+      if (subscription != null) {
+        final remaining = timeout - (stopwatch.elapsed - responsePhaseStarted);
+        final safeCleanup = subscription.cancel().then<void>(
+          (_) {},
+          onError: (Object _, StackTrace __) {},
+        );
+        if (remaining <= Duration.zero) {
+          unawaited(safeCleanup);
+        } else {
+          try {
+            await safeCleanup.timeout(remaining);
+          } catch (_) {
+            // The terminal request failure is already established.
+          }
+        }
+      } else {
+        unawaited(_disposeResponse(response));
       }
     }
   }

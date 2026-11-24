@@ -6,12 +6,11 @@
         <exclude domain="sharedpref" path="FlutterSecureStorageConfiguration:FlutterSecureStorage.xml" />
         <exclude domain="sharedpref" path="FlutterSecureStorageConfiguration.xml" />
         <exclude domain="file" path="sme-media" />
-        <exclude domain="file" path="app_flutter/sme-media" />
         <exclude domain="database" path="sme_mobile_media.db" />
         <exclude domain="database" path="sme_mobile_media.db-wal" />
         <exclude domain="database" path="sme_mobile_media.db-shm" />
         <exclude domain="database" path="sme_mobile_media.db-journal" />
-        <exclude domain="file" path="app_flutter" />
+        <exclude domain="root" path="app_flutter" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref" path="FlutterSecureStorage.xml" />
@@ -19,11 +18,10 @@
         <exclude domain="sharedpref" path="FlutterSecureStorageConfiguration:FlutterSecureStorage.xml" />
         <exclude domain="sharedpref" path="FlutterSecureStorageConfiguration.xml" />
         <exclude domain="file" path="sme-media" />
-        <exclude domain="file" path="app_flutter/sme-media" />
         <exclude domain="database" path="sme_mobile_media.db" />
         <exclude domain="database" path="sme_mobile_media.db-wal" />
         <exclude domain="database" path="sme_mobile_media.db-shm" />
         <exclude domain="database" path="sme_mobile_media.db-journal" />
-        <exclude domain="file" path="app_flutter" />
+        <exclude domain="root" path="app_flutter" />
     </device-transfer>
 </data-extraction-rules>

@@ -109,7 +109,10 @@ class SignedUploadTransport {
       );
     }
     if (cancellationToken?.isCancelled == true) {
-      throw _abortFailure(_UploadAbortReason.cancelled);
+      throw _abortFailure(
+        _UploadAbortReason.cancelled,
+        remoteOutcomeAmbiguous: false,
+      );
     }
 
     // Capability and source admission are repeated after all asynchronous
@@ -124,7 +127,10 @@ class SignedUploadTransport {
     }
     _validateCapabilityExpiry(expiresAt);
     if (cancellationToken?.isCancelled == true) {
-      throw _abortFailure(_UploadAbortReason.cancelled);
+      throw _abortFailure(
+        _UploadAbortReason.cancelled,
+        remoteOutcomeAmbiguous: false,
+      );
     }
 
     final abortTrigger = Completer<void>();
@@ -135,6 +141,8 @@ class SignedUploadTransport {
     Timer? overallTimer;
     Timer? inactivityTimer;
     var sent = 0;
+    http.StreamedResponse? claimedResponse;
+    var responseConsumed = false;
     final stopwatch = Stopwatch()..start();
 
     void abort(_UploadAbortReason reason) {
@@ -221,8 +229,14 @@ class SignedUploadTransport {
         abortTrigger.future,
       );
       responseClaimed = true;
+      claimedResponse = response;
       if (abortReason != _UploadAbortReason.none) {
-        throw _abortFailure(abortReason);
+        await _boundedCleanup(_disposeResponse(response), stopwatch);
+        responseConsumed = true;
+        throw _abortFailure(
+          abortReason,
+          remoteOutcomeAmbiguous: dispatchStarted,
+        );
       }
 
       await _consumeResponse(
@@ -231,8 +245,12 @@ class SignedUploadTransport {
         stopwatch: stopwatch,
         onActivity: activity,
       );
+      responseConsumed = true;
       if (abortReason != _UploadAbortReason.none) {
-        throw _abortFailure(abortReason);
+        throw _abortFailure(
+          abortReason,
+          remoteOutcomeAmbiguous: dispatchStarted,
+        );
       }
 
       final responseHeaders = Map<String, String>.from(response.headers);
@@ -261,7 +279,10 @@ class SignedUploadTransport {
       rethrow;
     } on _UploadFileChanged {
       if (abortReason != _UploadAbortReason.none) {
-        throw _abortFailure(abortReason);
+        throw _abortFailure(
+          abortReason,
+          remoteOutcomeAmbiguous: dispatchStarted,
+        );
       }
       throw TransportFailure(
         0,
@@ -274,16 +295,21 @@ class SignedUploadTransport {
         abortReason == _UploadAbortReason.none
             ? _UploadAbortReason.overallTimeout
             : abortReason,
+        remoteOutcomeAmbiguous: dispatchStarted,
       );
     } on _UploadAborted {
       throw _abortFailure(
         abortReason == _UploadAbortReason.none
             ? _UploadAbortReason.overallTimeout
             : abortReason,
+        remoteOutcomeAmbiguous: dispatchStarted,
       );
     } on TimeoutException {
       abort(_UploadAbortReason.overallTimeout);
-      throw _abortFailure(_UploadAbortReason.overallTimeout);
+      throw _abortFailure(
+        _UploadAbortReason.overallTimeout,
+        remoteOutcomeAmbiguous: dispatchStarted,
+      );
     } on HandshakeException {
       throw TransportFailure(
         0,
@@ -314,7 +340,10 @@ class SignedUploadTransport {
       );
     } on Exception {
       if (abortReason != _UploadAbortReason.none) {
-        throw _abortFailure(abortReason);
+        throw _abortFailure(
+          abortReason,
+          remoteOutcomeAmbiguous: dispatchStarted,
+        );
       }
       throw TransportFailure(
         0,
@@ -337,6 +366,9 @@ class SignedUploadTransport {
           ),
         );
       }
+      if (claimedResponse != null && !responseConsumed) {
+        unawaited(_disposeResponse(claimedResponse));
+      }
       stopwatch.stop();
     }
   }
@@ -347,17 +379,22 @@ class SignedUploadTransport {
     required Stopwatch stopwatch,
     required void Function() onActivity,
   }) async {
-    final subscription = response.stream.listen((_) => onActivity());
+    StreamSubscription<List<int>>? subscription;
     try {
-      await _awaitWithAbort(subscription.asFuture<void>(), abortTrigger);
+      final activeSubscription = response.stream.listen((_) => onActivity());
+      subscription = activeSubscription;
+      await _awaitWithAbort(activeSubscription.asFuture<void>(), abortTrigger);
     } finally {
-      await _boundedCleanup(subscription.cancel(), stopwatch);
+      if (subscription != null) {
+        await _boundedCleanup(subscription.cancel(), stopwatch);
+      }
     }
   }
 
   Future<void> _disposeResponse(http.StreamedResponse response) async {
-    final subscription = response.stream.listen((_) {});
+    StreamSubscription<List<int>>? subscription;
     try {
+      subscription = response.stream.listen((_) {});
       await subscription.cancel();
     } catch (_) {
       // A late response is already outside the attempt's terminal outcome.
@@ -369,9 +406,16 @@ class SignedUploadTransport {
     Stopwatch stopwatch,
   ) async {
     final remaining = timeout - stopwatch.elapsed;
-    if (remaining <= Duration.zero) return;
+    final safeCleanup = cleanup.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace __) {},
+    );
+    if (remaining <= Duration.zero) {
+      unawaited(safeCleanup);
+      return;
+    }
     try {
-      await cleanup.timeout(remaining);
+      await safeCleanup.timeout(remaining);
     } catch (_) {
       // Cleanup cannot replace an established upload outcome.
     }
@@ -461,14 +505,17 @@ class SignedUploadTransport {
     throw TransportFailure(0, 'INSECURE_UPLOAD', 'Upload URL must use HTTPS.');
   }
 
-  TransportFailure _abortFailure(_UploadAbortReason reason) {
+  TransportFailure _abortFailure(
+    _UploadAbortReason reason, {
+    required bool remoteOutcomeAmbiguous,
+  }) {
     switch (reason) {
       case _UploadAbortReason.cancelled:
         return TransportFailure(
           0,
           'UPLOAD_CANCELLED',
           'Audio upload was cancelled.',
-          remoteOutcomeAmbiguous: true,
+          remoteOutcomeAmbiguous: remoteOutcomeAmbiguous,
         );
       case _UploadAbortReason.inactivityTimeout:
         return TransportFailure(

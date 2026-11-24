@@ -48,8 +48,6 @@ class RecordingDrafts {
     api.requireCurrentAuthenticatedSession(scope);
     final repository = _repository;
     if (repository != null) {
-      await repository.migrateLegacyMetadata(storage: _storage, scope: scope);
-      api.requireCurrentAuthenticatedSession(scope);
       final assets = await repository.listAssets(
         scope: scope,
         meetingId: meetingId,
@@ -57,11 +55,19 @@ class RecordingDrafts {
       final drafts = <RecordingDraft>[];
       for (final asset in assets) {
         if (!asset.isReady) continue;
-        final mediaFile = await repository.lightweightFileFor(
-          scope: scope,
-          asset: asset,
-        );
-        if (!await mediaFile.exists()) continue;
+        final File mediaFile;
+        try {
+          mediaFile = await repository.lightweightFileFor(
+            scope: scope,
+            asset: asset,
+          );
+        } on LocalMediaUnavailableException {
+          // One unavailable asset must not hide other valid recordings. The
+          // repository records the explicit missing/unavailable state.
+          continue;
+        } on FileSystemException {
+          continue;
+        }
         api.requireCurrentAuthenticatedSession(scope);
         drafts.add(
           RecordingDraft(
@@ -107,6 +113,34 @@ class RecordingDrafts {
     drafts.sort((a, b) => b.createdAt.compareTo(a.createdAt));
     api.requireCurrentAuthenticatedSession(scope);
     return drafts;
+  }
+
+  /// Activates scoped local recovery once for a workspace entry. Routine
+  /// listing intentionally does not call this because it must remain
+  /// metadata-and-size only.
+  Future<LocalMediaRecoveryReport?> recover(
+    String meetingId, {
+    required ApiClient api,
+    AuthenticatedSessionScope? session,
+    bool retry = false,
+  }) async {
+    final activeSession = api.requireAuthenticatedSessionScope();
+    final scope = session ?? activeSession;
+    api.requireCurrentAuthenticatedSession(scope);
+    final repository = _repository;
+    if (repository == null) {
+      await _retireLegacyIndex();
+      api.requireCurrentAuthenticatedSession(scope);
+      return null;
+    }
+    final report = await repository.recoverLocalState(
+      scope: scope,
+      meetingId: meetingId,
+      storage: _storage,
+      retry: retry,
+    );
+    api.requireCurrentAuthenticatedSession(scope);
+    return report;
   }
 
   /// Stores metadata only under the verified account scope captured when the

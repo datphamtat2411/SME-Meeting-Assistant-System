@@ -137,14 +137,25 @@ def validate_android() -> None:
 
     expected_exclusions = secure_storage_backup_files()
     backup_rules = parse_xml("android/app/src/main/res/xml/backup_rules.xml")
+    expected_backup_exclusions = {
+        *{("sharedpref", path) for path in expected_exclusions},
+        ("file", "sme-media"),
+        ("root", "app_flutter"),
+        ("database", "sme_mobile_media.db"),
+        ("database", "sme_mobile_media.db-wal"),
+        ("database", "sme_mobile_media.db-shm"),
+        ("database", "sme_mobile_media.db-journal"),
+    }
     if backup_rules is not None:
         exclusions = {
-            element.attrib.get("path")
+            (element.attrib.get("domain"), element.attrib.get("path"))
             for element in backup_rules.findall("exclude")
-            if element.attrib.get("domain") == "sharedpref"
         }
-        if exclusions != expected_exclusions:
-            fail("Android legacy backup rules must exclude all secure-storage files")
+        if exclusions != expected_backup_exclusions:
+            fail(
+                "Android legacy backup rules must map app_flutter to the root "
+                "domain and retain managed-media, database, and credential exclusions"
+            )
 
     extraction_rules = parse_xml(
         "android/app/src/main/res/xml/data_extraction_rules.xml"
@@ -154,15 +165,19 @@ def validate_android() -> None:
             section = extraction_rules.find(rule_name)
             exclusions = (
                 {
-                    element.attrib.get("path")
+                    (element.attrib.get("domain"), element.attrib.get("path"))
                     for element in section.findall("exclude")
-                    if element.attrib.get("domain") == "sharedpref"
                 }
                 if section is not None
                 else set()
             )
-            if exclusions != expected_exclusions:
-                fail(f"Android {rule_name} must exclude all secure-storage files")
+            if exclusions != expected_backup_exclusions:
+                fail(
+                    f"Android {rule_name} must map app_flutter to the root "
+                    "domain and retain managed-media, database, and credential exclusions"
+                )
+
+    validate_path_provider_documents_mapping()
 
     if debug is not None:
         application = debug.find("application")
@@ -292,6 +307,57 @@ def secure_storage_backup_files() -> set[str]:
                 "flutter_secure_storage 11.2.0"
             )
     return {f"{name}.xml" for name in expected_names.values()}
+
+
+def validate_path_provider_documents_mapping() -> None:
+    """Confirm the pinned Android path provider uses Context.getDir('flutter')."""
+    lockfile = read("pubspec.lock")
+    if "  path_provider_android:" not in lockfile:
+        fail("path_provider_android is missing from the lockfile")
+        return
+    config_path = ROOT / ".dart_tool/package_config.json"
+    try:
+        package_config = json.loads(config_path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        fail(f"cannot resolve pinned path-provider Android sources: {error}")
+        return
+    package = next(
+        (
+            item
+            for item in package_config.get("packages", [])
+            if item.get("name") == "path_provider_android"
+        ),
+        None,
+    )
+    if package is None:
+        fail("path_provider_android is missing from the resolved package config")
+        return
+    root_uri = package.get("rootUri", "")
+    parsed_root = urlparse(root_uri)
+    package_root = (
+        Path(unquote(parsed_root.path))
+        if parsed_root.scheme == "file"
+        else (config_path.parent / root_uri).resolve()
+    )
+    source = package_root / "lib/src/path_provider_android_real.dart"
+    try:
+        source_text = source.read_text()
+    except OSError as error:
+        fail(f"cannot read pinned path-provider Android source: {error}")
+        return
+    documents_source = re.search(
+        r"getApplicationDocumentsPath\(\).*?(?=Future<|\Z)",
+        source_text,
+        flags=re.DOTALL,
+    )
+    if documents_source is None or not (
+        re.search(r"['\"]flutter['\"]", documents_source.group(0))
+        and re.search(r"\.getDir\(", documents_source.group(0))
+    ):
+        fail(
+            "pinned path_provider_android must resolve application documents "
+            "through Context.getDir('flutter')"
+        )
 
 
 def validate_bootstrap() -> None:
