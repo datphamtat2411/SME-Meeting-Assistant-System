@@ -85,6 +85,14 @@ class ApiClient extends ChangeNotifier {
   }
 
   AuthSessionState get sessionState => sessionCoordinator.state;
+  AuthenticatedSessionScope? get authenticatedSessionScope =>
+      sessionCoordinator.authenticatedSessionScope;
+  AuthenticatedSessionScope requireAuthenticatedSessionScope() =>
+      sessionCoordinator.requireAuthenticatedSessionScope();
+  bool isCurrentAuthenticatedSession(AuthenticatedSessionScope scope) =>
+      sessionCoordinator.isCurrentAuthenticatedSession(scope);
+  void requireCurrentAuthenticatedSession(AuthenticatedSessionScope scope) =>
+      sessionCoordinator.requireCurrentAuthenticatedSession(scope);
   bool get ready => switch (sessionState.phase) {
     AuthSessionPhase.initializing ||
     AuthSessionPhase.signingIn ||
@@ -122,7 +130,7 @@ class ApiClient extends ChangeNotifier {
 
   Future<void> loadIdentity() => sessionCoordinator.loadIdentity();
 
-  Future<void> signOut() => sessionCoordinator.signOut();
+  Future<AuthLogoutOutcome> signOut() => sessionCoordinator.signOut();
 
   /// Requests password recovery without acquiring or changing session state.
   Future<ApiResult> requestPasswordRecovery(String email) =>
@@ -169,17 +177,20 @@ class ApiClient extends ChangeNotifier {
     );
     final requestEpoch = credential.epoch;
     try {
-      return await _requestExecutor.send(
+      return await _sendForSession(
+        coordinator,
+        credential,
         method,
         path,
         query: query,
         body: body,
         headers: headers,
-        authorization: credential.authorization,
       );
     } on ApiFailure catch (failure) {
+      if (!_coordinatorStillOwnsRequest(coordinator, credential)) {
+        throw coordinator._sessionChanged();
+      }
       if (!_isAuthentication401(failure)) rethrow;
-      if (!coordinator._isCurrentEpoch(requestEpoch)) rethrow;
 
       final current = coordinator._snapshotForEpoch(requestEpoch);
       if (current == null) rethrow;
@@ -193,6 +204,9 @@ class ApiClient extends ChangeNotifier {
       if (method.toUpperCase() != 'GET') {
         // Mutations are never replayed, even when a credential rotation
         // succeeds. Preserve the original API failure for deliberate retry.
+        if (!_coordinatorStillOwnsRequest(coordinator, credential)) {
+          throw coordinator._sessionChanged();
+        }
         rethrow;
       }
 
@@ -201,13 +215,14 @@ class ApiClient extends ChangeNotifier {
         requireVerifiedSession: true,
       );
       try {
-        return await _requestExecutor.send(
+        return await _sendForSession(
+          coordinator,
+          replayCredential,
           method,
           path,
           query: query,
           body: body,
           headers: headers,
-          authorization: replayCredential.authorization,
         );
       } on ApiFailure catch (retryFailure) {
         if (_isAuthentication401(retryFailure)) {
@@ -216,11 +231,59 @@ class ApiClient extends ChangeNotifier {
             expectedEpoch: requestEpoch,
             usedGeneration: replayCredential.generation,
           );
+          if (!_coordinatorStillOwnsRequest(coordinator, credential)) {
+            throw coordinator._sessionChanged();
+          }
         }
         rethrow;
       }
     }
   }
+
+  Future<ApiResult> _sendForSession(
+    AuthSessionCoordinator coordinator,
+    _SessionCredentialSnapshot credential,
+    String method,
+    String path, {
+    Map<String, String>? query,
+    Map<String, dynamic>? body,
+    Map<String, String>? headers,
+  }) async {
+    final dispatchCredential = coordinator._credentialForDispatch(
+      credential,
+      requireVerifiedSession: true,
+    );
+    try {
+      final response = await _requestExecutor.send(
+        method,
+        path,
+        query: query,
+        body: body,
+        headers: headers,
+        authorization: dispatchCredential.authorization,
+      );
+      if (!_coordinatorStillOwnsRequest(coordinator, credential)) {
+        throw coordinator._sessionChanged();
+      }
+      coordinator._credentialForDispatch(
+        dispatchCredential,
+        requireVerifiedSession: true,
+      );
+      return response;
+    } catch (error, stackTrace) {
+      if (!_coordinatorStillOwnsRequest(coordinator, credential)) {
+        Error.throwWithStackTrace(coordinator._sessionChanged(), stackTrace);
+      }
+      rethrow;
+    }
+  }
+
+  bool _coordinatorStillOwnsRequest(
+    AuthSessionCoordinator coordinator,
+    _SessionCredentialSnapshot credential,
+  ) =>
+      coordinator._isCurrentEpoch(credential.epoch) &&
+      coordinator._state.isAuthenticated;
 
   bool _isAuthentication401(ApiFailure failure) =>
       const AuthFailureClassifier().classify(

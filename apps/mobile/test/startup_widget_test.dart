@@ -257,6 +257,132 @@ void main() {
     expect(harness.api.sessionState.phase, AuthSessionPhase.unauthenticated);
     expect(find.text('Đăng nhập hệ thống'), findsOneWidget);
   });
+
+  testWidgets('failed credential deletion blocks login until safe retry', (
+    tester,
+  ) async {
+    final credentials = _FailingDeleteStorage();
+    await _writeRefreshCredential(credentials, 'refresh-0');
+    final client = _authClient();
+    final harness = _Harness.create(client, credentials);
+
+    await tester.pumpWidget(
+      MeetingAssistantApp(dependencies: harness.dependencies),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Tổng quan'), findsOneWidget);
+
+    await expectLater(
+      harness.api.signOut(),
+      throwsA(
+        isA<AuthSessionException>().having(
+          (error) => error.failure.category,
+          'category',
+          AuthFailureCategory.credentialStorage,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Tổng quan'), findsNothing);
+    expect(find.text('Đăng nhập hệ thống'), findsNothing);
+    expect(find.text('Không thể xác nhận xóa phiên bảo mật'), findsOneWidget);
+    expect(find.text('Thử xóa phiên đã lưu lại'), findsOneWidget);
+    await expectLater(
+      harness.api.signIn('other@example.test', 'password'),
+      throwsStateError,
+    );
+    expect(
+      client.requests.where(
+        (request) => request.url.path.endsWith('/auth/logout'),
+      ),
+      hasLength(1),
+    );
+
+    await tester.tap(find.text('Thử xóa phiên đã lưu lại'));
+    await tester.pumpAndSettle();
+
+    expect(harness.api.sessionState.phase, AuthSessionPhase.unauthenticated);
+    expect(find.text('Đăng nhập hệ thống'), findsOneWidget);
+    expect(find.text('Đã đăng xuất khỏi thiết bị.'), findsOneWidget);
+    expect(
+      client.requests.where(
+        (request) => request.url.path.endsWith('/auth/logout'),
+      ),
+      hasLength(1),
+    );
+
+    await harness.api.signIn('other@example.test', 'password');
+    await tester.pumpAndSettle();
+    expect(find.text('Tổng quan'), findsOneWidget);
+  });
+
+  testWidgets(
+    'unconfirmed remote logout is reported without claiming success',
+    (tester) async {
+      final credentials = InMemoryCredentialStorage();
+      final client = _authClient(logoutStatus: 503);
+      final harness = _Harness.create(client, credentials);
+      await tester.pumpWidget(
+        MeetingAssistantApp(dependencies: harness.dependencies),
+      );
+      await tester.pumpAndSettle();
+      await harness.api.signIn('user@example.test', 'password');
+      await tester.pumpAndSettle();
+
+      final outcome = await harness.api.signOut();
+      await tester.pumpAndSettle();
+
+      expect(outcome, AuthLogoutOutcome.remoteRevocationUnconfirmed);
+      expect(
+        harness.api.sessionState.failure?.category,
+        AuthFailureCategory.logoutUnconfirmed,
+      );
+      expect(
+        find.text(
+          'Thiết bị đã đăng xuất, nhưng máy chủ chưa xác nhận việc thu hồi phiên.',
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('Đã đăng xuất khỏi thiết bị.'), findsNothing);
+      expect(find.text('Tổng quan'), findsNothing);
+    },
+  );
+
+  testWidgets('a fresh authenticated shell is created after logout and login', (
+    tester,
+  ) async {
+    final credentials = InMemoryCredentialStorage();
+    await _writeRefreshCredential(credentials, 'refresh-0');
+    final harness = _Harness.create(_authClient(), credentials);
+
+    await tester.pumpWidget(
+      MeetingAssistantApp(dependencies: harness.dependencies),
+    );
+    await tester.pumpAndSettle();
+    tester
+        .widget<NavigationRail>(find.byType(NavigationRail))
+        .onDestinationSelected!(3);
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<NavigationRail>(find.byType(NavigationRail)).selectedIndex,
+      3,
+    );
+
+    await harness.api.signOut();
+    await tester.pumpAndSettle();
+    expect(find.text('Đăng nhập hệ thống'), findsOneWidget);
+
+    await harness.api.signIn('user@example.test', 'password');
+    await tester.pumpAndSettle();
+
+    expect(find.text('Tổng quan'), findsOneWidget);
+    expect(
+      tester.widget<NavigationRail>(find.byType(NavigationRail)).selectedIndex,
+      0,
+    );
+    expect(find.text('Đăng nhập hệ thống'), findsNothing);
+  });
 }
 
 class _Harness {
@@ -292,6 +418,7 @@ RecordingHttpClient _authClient({
   int? refreshStatus,
   int identityFailures = 0,
   int? loginStatus,
+  int? logoutStatus,
   Completer<void>? identityRequested,
   Completer<http.StreamedResponse>? identityResponse,
   Completer<void>? logoutRequested,
@@ -370,6 +497,12 @@ RecordingHttpClient _authClient({
         logoutRequested.complete();
       }
       if (logoutResponse != null) return logoutResponse.future;
+      if (logoutStatus != null) {
+        return jsonResponse(
+          logoutStatus,
+          errorEnvelope('SERVICE_UNAVAILABLE', 'Logout unavailable.'),
+        );
+      }
       return jsonResponse(200, successEnvelope(null));
     }
     return jsonResponse(200, successEnvelope(<String, dynamic>{}));
@@ -420,4 +553,17 @@ class _FailingReadStorage implements CredentialStorage {
 
   @override
   Future<void> confirmDurable() async {}
+}
+
+class _FailingDeleteStorage extends InMemoryCredentialStorage {
+  bool failNextScopedDelete = true;
+
+  @override
+  Future<void> delete({required String key}) {
+    if (failNextScopedDelete && key.startsWith('sme.mobile.token.v1.')) {
+      failNextScopedDelete = false;
+      return Future<void>.error(StateError('private storage details'));
+    }
+    return super.delete(key: key);
+  }
 }

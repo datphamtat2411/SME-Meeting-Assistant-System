@@ -15,6 +15,34 @@ class _SessionCredentialSnapshot {
   String get authorization => 'Bearer $accessToken';
 }
 
+@immutable
+class AuthenticatedSessionScope {
+  const AuthenticatedSessionScope._({
+    required this.userId,
+    required this.deploymentScope,
+    required this.lifecycleEpoch,
+  });
+
+  final String userId;
+  final String deploymentScope;
+  final int lifecycleEpoch;
+
+  @override
+  bool operator ==(Object other) =>
+      other is AuthenticatedSessionScope &&
+      other.userId == userId &&
+      other.deploymentScope == deploymentScope &&
+      other.lifecycleEpoch == lifecycleEpoch;
+
+  @override
+  int get hashCode => Object.hash(userId, deploymentScope, lifecycleEpoch);
+}
+
+enum AuthLogoutOutcome {
+  remoteRevocationConfirmed,
+  remoteRevocationUnconfirmed,
+}
+
 enum AuthSessionPhase {
   initializing,
   unauthenticated,
@@ -42,6 +70,7 @@ class AuthSessionState {
     this.canRetryIdentityVerification = false,
     this.canRetryCredentialStorage = false,
     this.retryNotBefore,
+    this.notice,
   }) {
     if ((phase == AuthSessionPhase.authenticated) != (identity != null) ||
         identity != null && !identity!.isEligibleMobileIdentity ||
@@ -66,6 +95,7 @@ class AuthSessionState {
   final bool canRetryIdentityVerification;
   final bool canRetryCredentialStorage;
   final DateTime? retryNotBefore;
+  final String? notice;
 
   bool get isAuthenticated => phase == AuthSessionPhase.authenticated;
   bool get isInitializing => phase == AuthSessionPhase.initializing;
@@ -97,6 +127,7 @@ class AuthSessionCoordinator extends ChangeNotifier {
   String? _refreshToken;
   DateTime? _accessExpiry;
   Future<void>? _refreshFuture;
+  Completer<void>? _refreshInvalidation;
   int? _refreshEpoch;
   Object? _lastRefreshError;
   int? _lastRefreshErrorEpoch;
@@ -108,15 +139,43 @@ class AuthSessionCoordinator extends ChangeNotifier {
   bool _disposed = false;
   _StorageRecoveryAction? _storageRecoveryAction;
   AuthSessionFailure? _failureAfterStorageRecovery;
+  AuthSessionFailure? _logoutFailureAfterStorageRecovery;
 
   AuthSessionState get state => _state;
+  int get lifecycleEpoch => _lifecycleEpoch;
+
+  AuthenticatedSessionScope? get authenticatedSessionScope {
+    final identity = _state.identity;
+    if (!_state.isAuthenticated || identity == null) return null;
+    return AuthenticatedSessionScope._(
+      userId: identity.userId.value,
+      deploymentScope: _tokenStore.scopeDigest,
+      lifecycleEpoch: _lifecycleEpoch,
+    );
+  }
+
+  AuthenticatedSessionScope requireAuthenticatedSessionScope() {
+    final scope = authenticatedSessionScope;
+    if (scope == null) throw _sessionChanged();
+    return scope;
+  }
+
+  bool isCurrentAuthenticatedSession(AuthenticatedSessionScope scope) =>
+      _isCurrentEpoch(scope.lifecycleEpoch) &&
+      _state.isAuthenticated &&
+      _state.identity?.userId.value == scope.userId &&
+      _tokenStore.scopeDigest == scope.deploymentScope;
+
+  void requireCurrentAuthenticatedSession(AuthenticatedSessionScope scope) {
+    if (!isCurrentAuthenticatedSession(scope)) throw _sessionChanged();
+  }
 
   bool _isCurrentEpoch(int epoch) => !_disposed && _lifecycleEpoch == epoch;
 
   AuthSessionException _sessionChanged() => AuthSessionException(
     AuthSessionFailure._(
       category: AuthFailureCategory.sessionInvalidated,
-      message: 'The authentication session changed. Please try again.',
+      message: 'Phiên đăng nhập đã thay đổi. Vui lòng thử lại.',
       code: 'AUTH_SESSION_CHANGED',
     ),
   );
@@ -250,11 +309,18 @@ class AuthSessionCoordinator extends ChangeNotifier {
               await _tokenStore.delete();
             });
             if (!_isCurrentEpoch(epoch)) return;
+            final logoutFailure = _logoutFailureAfterStorageRecovery;
             _storageRecoveryAction = null;
-            _failureAfterStorageRecovery = null;
+            _logoutFailureAfterStorageRecovery = null;
             _clearMemoryCredentials();
             _setState(
-              AuthSessionState._(phase: AuthSessionPhase.unauthenticated),
+              AuthSessionState._(
+                phase: AuthSessionPhase.unauthenticated,
+                failure: logoutFailure,
+                notice: logoutFailure == null
+                    ? 'Đã đăng xuất khỏi thiết bị.'
+                    : null,
+              ),
             );
           case _StorageRecoveryAction.completeReauthentication:
             await _withTokenStoreLock(() async {
@@ -421,8 +487,13 @@ class AuthSessionCoordinator extends ChangeNotifier {
       requireVerifiedSession: false,
     );
     try {
-      return await _repository.currentIdentity(credential.accessToken);
+      final identity = await _repository.currentIdentity(
+        credential.accessToken,
+      );
+      _requireCurrentEpoch(expectedEpoch);
+      return identity;
     } on ApiFailure catch (failure) {
+      if (!_isCurrentEpoch(expectedEpoch)) throw _sessionChanged();
       final classification = _classifier.classify(
         failure,
         AuthEndpoint.identity,
@@ -445,8 +516,13 @@ class AuthSessionCoordinator extends ChangeNotifier {
         requireVerifiedSession: false,
       );
       try {
-        return await _repository.currentIdentity(retryCredential.accessToken);
+        final identity = await _repository.currentIdentity(
+          retryCredential.accessToken,
+        );
+        _requireCurrentEpoch(expectedEpoch);
+        return identity;
       } on ApiFailure catch (retryFailure) {
+        if (!_isCurrentEpoch(expectedEpoch)) throw _sessionChanged();
         if (_classifier.classify(retryFailure, AuthEndpoint.identity) ==
             AuthFailureCategory.sessionInvalidated) {
           await _handleProtectedFailure(
@@ -487,7 +563,7 @@ class AuthSessionCoordinator extends ChangeNotifier {
     }
   }
 
-  Future<void> signOut() async {
+  Future<AuthLogoutOutcome> signOut() async {
     if (!_state.isAuthenticated) {
       throw StateError('Sign-out requires an authenticated session.');
     }
@@ -495,49 +571,49 @@ class AuthSessionCoordinator extends ChangeNotifier {
     final epoch = ++_lifecycleEpoch;
     _clearMemoryCredentials();
     _setState(AuthSessionState._(phase: AuthSessionPhase.signingOut));
-    Object? logoutError;
-    try {
-      if (accessToken != null) await _repository.logout(accessToken);
-    } catch (error) {
-      logoutError = error;
-    }
-
-    AuthSessionFailure? cleanupFailure;
+    // Make interrupted logout non-restorable before waiting on network I/O.
     Object? cleanupError;
     try {
       await _withTokenStoreLock(_tokenStore.delete);
       _storageRecoveryAction = null;
     } catch (error) {
       cleanupError = error;
-      cleanupFailure = _classifier.credentialStorageFailure(error);
     }
 
-    if (cleanupFailure != null) {
+    Object? logoutError;
+    try {
+      if (accessToken != null) await _repository.logout(accessToken);
+    } catch (error) {
+      logoutError = error;
+    }
+    final logoutFailure = logoutError == null
+        ? null
+        : _classifier.logoutUnconfirmed(logoutError);
+    _logoutFailureAfterStorageRecovery = logoutFailure;
+
+    if (cleanupError != null) {
+      final cleanupFailure = _classifier.credentialStorageFailure(cleanupError);
       _setStorageFailure(
-        cleanupError!,
+        cleanupError,
         recoveryAction: _StorageRecoveryAction.completeLogout,
         expectedEpoch: epoch,
       );
       throw AuthSessionException(cleanupFailure);
     }
 
-    if (!_isCurrentEpoch(epoch)) {
-      if (logoutError != null) {
-        Error.throwWithStackTrace(logoutError, StackTrace.current);
-      }
-      return;
+    _logoutFailureAfterStorageRecovery = null;
+    if (_isCurrentEpoch(epoch)) {
+      _setState(
+        AuthSessionState._(
+          phase: AuthSessionPhase.unauthenticated,
+          failure: logoutFailure,
+          notice: logoutFailure == null ? 'Đã đăng xuất khỏi thiết bị.' : null,
+        ),
+      );
     }
-    final logoutFailure = logoutError == null
-        ? null
-        : _failureFor(logoutError, AuthEndpoint.logout);
-    _setState(
-      AuthSessionState._(
-        phase: AuthSessionPhase.unauthenticated,
-        failure: logoutFailure,
-      ),
-    );
-    if (logoutError != null)
-      Error.throwWithStackTrace(logoutError, StackTrace.current);
+    return logoutFailure == null
+        ? AuthLogoutOutcome.remoteRevocationConfirmed
+        : AuthLogoutOutcome.remoteRevocationUnconfirmed;
   }
 
   Future<_SessionCredentialSnapshot> _credentialForProtectedRequest({
@@ -648,7 +724,9 @@ class AuthSessionCoordinator extends ChangeNotifier {
       return Future<void>.error(_sessionChanged());
     }
     final running = _refreshFuture;
-    if (running != null && _refreshEpoch == expectedEpoch) return running;
+    if (running != null && _refreshEpoch == expectedEpoch) {
+      return _waitForRefreshInvalidation(running, expectedEpoch);
+    }
     if (_refreshToken == null) return Future<void>.error(_sessionChanged());
     if (_lastRefreshError != null &&
         _lastRefreshErrorEpoch == expectedEpoch &&
@@ -666,6 +744,7 @@ class AuthSessionCoordinator extends ChangeNotifier {
     }
 
     late final Future<void> observedFuture;
+    _refreshInvalidation = Completer<void>();
     final refreshGeneration = _accessGeneration;
     observedFuture = _renewTokens(expectedEpoch)
         .then<void>(
@@ -726,11 +805,24 @@ class AuthSessionCoordinator extends ChangeNotifier {
           if (identical(_refreshFuture, observedFuture)) {
             _refreshFuture = null;
             _refreshEpoch = null;
+            _refreshInvalidation = null;
           }
         });
     _refreshFuture = observedFuture;
     _refreshEpoch = expectedEpoch;
-    return observedFuture;
+    return _waitForRefreshInvalidation(observedFuture, expectedEpoch);
+  }
+
+  Future<void> _waitForRefreshInvalidation(
+    Future<void> refresh,
+    int expectedEpoch,
+  ) {
+    final invalidation = _refreshInvalidation;
+    if (invalidation == null || _refreshEpoch != expectedEpoch) return refresh;
+    return Future.any<void>(<Future<void>>[
+      refresh,
+      invalidation.future.then<void>((_) => throw _sessionChanged()),
+    ]);
   }
 
   Future<void> _renewTokens(int expectedEpoch) async {
@@ -1075,9 +1167,19 @@ class AuthSessionCoordinator extends ChangeNotifier {
   }
 
   void _clearMemoryCredentials() {
+    if (_refreshEpoch != null && _refreshEpoch != _lifecycleEpoch) {
+      final invalidation = _refreshInvalidation;
+      if (invalidation != null && !invalidation.isCompleted) {
+        invalidation.complete();
+      }
+      _refreshFuture = null;
+      _refreshEpoch = null;
+      _refreshInvalidation = null;
+    }
     _accessToken = null;
     _refreshToken = null;
     _accessExpiry = null;
+    _accessGeneration = 0;
     _clearLastRefreshError();
   }
 

@@ -91,16 +91,8 @@ class _ProfilePageState extends State<ProfilePage> {
       return;
     try {
       await widget.api.signOut();
-    } catch (_) {
-      if (mounted)
-        showFailure(
-          context,
-          const ApiFailure(
-            0,
-            'LOGOUT_UNCONFIRMED',
-            'Thiết bị đã xóa phiên, nhưng chưa xác nhận được trạng thái máy chủ.',
-          ),
-        );
+    } catch (error) {
+      if (mounted) showFailure(context, error);
     }
   }
 

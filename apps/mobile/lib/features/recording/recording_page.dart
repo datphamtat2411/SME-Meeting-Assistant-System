@@ -32,8 +32,10 @@ class RecordingPage extends StatefulWidget {
 class _RecordingPageState extends State<RecordingPage> {
   final AudioRecorder recorder = AudioRecorder();
   final RecordingDrafts draftStore = RecordingDrafts();
+  late final AuthenticatedSessionScope sessionScope;
   List<RecordingDraft> savedRecordings = [];
   bool capturing = false;
+  bool startingCapture = false;
   bool busy = false;
   double? uploadProgress;
   File? file;
@@ -47,42 +49,59 @@ class _RecordingPageState extends State<RecordingPage> {
   @override
   void initState() {
     super.initState();
+    sessionScope = widget.api.requireAuthenticatedSessionScope();
     reloadJobs();
     loadDrafts();
   }
 
   Future<void> loadDrafts() async {
     try {
-      final drafts = await draftStore.list(widget.meetingId);
-      if (mounted) setState(() => savedRecordings = drafts);
+      final drafts = await draftStore.list(
+        widget.meetingId,
+        api: widget.api,
+        session: sessionScope,
+      );
+      if (mounted && widget.api.isCurrentAuthenticatedSession(sessionScope)) {
+        setState(() => savedRecordings = drafts);
+      }
     } catch (error) {
-      if (mounted) showFailure(context, error);
+      if (mounted && widget.api.isCurrentAuthenticatedSession(sessionScope)) {
+        showFailure(context, error);
+      }
     }
   }
 
-  void reloadJobs() => setState(() {
-    jobs = widget.api
-        .get('/meetings/' + widget.meetingId + '/processing-jobs')
-        .then(
-          (response) => response
-              .objectArrayData()
-              .map((raw) => ProcessingJob.fromJson(raw, response: response))
-              .toList(),
-        );
-  });
+  void reloadJobs() {
+    if (!widget.api.isCurrentAuthenticatedSession(sessionScope)) return;
+    setState(() {
+      jobs = widget.api
+          .get('/meetings/' + widget.meetingId + '/processing-jobs')
+          .then(
+            (response) => response
+                .objectArrayData()
+                .map((raw) => ProcessingJob.fromJson(raw, response: response))
+                .toList(),
+          );
+    });
+  }
 
   @override
   void dispose() {
     timer?.cancel();
-    if (capturing) {
+    if (capturing || startingCapture) {
       unawaited(
         recorder
             .stop()
             .then((path) async {
               if (path != null) {
-                await draftStore.remember(widget.meetingId, File(path));
+                await draftStore.remember(
+                  widget.meetingId,
+                  File(path),
+                  session: sessionScope,
+                );
               }
             })
+            .catchError((Object _) {})
             .whenComplete(() => recorder.dispose()),
       );
     } else {
@@ -94,6 +113,7 @@ class _RecordingPageState extends State<RecordingPage> {
   Future<void> begin() async {
     if (!widget.enabled || busy || capturing) return;
     try {
+      widget.api.requireCurrentAuthenticatedSession(sessionScope);
       if (!await recorder.hasPermission()) {
         throw const ApiFailure(
           0,
@@ -101,22 +121,49 @@ class _RecordingPageState extends State<RecordingPage> {
           'Cần quyền micro để ghi âm.',
         );
       }
+      widget.api.requireCurrentAuthenticatedSession(sessionScope);
       final folder = await getApplicationDocumentsDirectory();
+      widget.api.requireCurrentAuthenticatedSession(sessionScope);
       final path =
           folder.path +
           '/sme-meeting-' +
           DateTime.now().millisecondsSinceEpoch.toString() +
           '.wav';
-      await recorder.start(
-        const RecordConfig(
-          encoder: AudioEncoder.wav,
-          sampleRate: 16000,
-          numChannels: 1,
-        ),
-        path: path,
-      );
+      startingCapture = true;
+      try {
+        await recorder.start(
+          const RecordConfig(
+            encoder: AudioEncoder.wav,
+            sampleRate: 16000,
+            numChannels: 1,
+          ),
+          path: path,
+        );
+      } catch (_) {
+        startingCapture = false;
+        rethrow;
+      }
+      if (!mounted) {
+        startingCapture = false;
+        return;
+      }
+      if (!widget.api.isCurrentAuthenticatedSession(sessionScope)) {
+        startingCapture = false;
+        final stoppedPath = await recorder.stop();
+        if (stoppedPath != null) {
+          await draftStore.remember(
+            widget.meetingId,
+            File(stoppedPath),
+            session: sessionScope,
+          );
+        }
+        return;
+      }
+      startingCapture = false;
       timer = Timer.periodic(const Duration(seconds: 1), (_) {
-        if (mounted) setState(() => elapsed++);
+        if (mounted && widget.api.isCurrentAuthenticatedSession(sessionScope)) {
+          setState(() => elapsed++);
+        }
       });
       if (mounted)
         setState(() {
@@ -128,7 +175,9 @@ class _RecordingPageState extends State<RecordingPage> {
           sourceType = 'RECORDING';
         });
     } catch (error) {
-      if (mounted) showFailure(context, error);
+      if (mounted && widget.api.isCurrentAuthenticatedSession(sessionScope)) {
+        showFailure(context, error);
+      }
     }
   }
 
@@ -137,28 +186,37 @@ class _RecordingPageState extends State<RecordingPage> {
     try {
       final path = await recorder.stop();
       if (path != null) {
-        await draftStore.remember(widget.meetingId, File(path));
+        await draftStore.remember(
+          widget.meetingId,
+          File(path),
+          session: sessionScope,
+        );
         await loadDrafts();
       }
-      if (mounted)
+      if (mounted && widget.api.isCurrentAuthenticatedSession(sessionScope)) {
         setState(() {
           capturing = false;
           file = path == null ? null : File(path);
           selectedName = path == null ? null : File(path).uri.pathSegments.last;
           sourceType = 'RECORDING';
         });
+      }
     } catch (error) {
-      if (mounted) showFailure(context, error);
+      if (mounted && widget.api.isCurrentAuthenticatedSession(sessionScope)) {
+        showFailure(context, error);
+      }
     }
   }
 
   Future<void> pick() async {
     try {
+      widget.api.requireCurrentAuthenticatedSession(sessionScope);
       final result = await FilePicker.pickFile(
         type: FileType.custom,
         allowedExtensions: ['mp3', 'wav', 'm4a'],
       );
       if (result == null) return;
+      widget.api.requireCurrentAuthenticatedSession(sessionScope);
       File selected;
       if (result.path != null) {
         selected = File(result.path!);
@@ -185,6 +243,7 @@ class _RecordingPageState extends State<RecordingPage> {
         await sink.close();
       }
       if (mounted) {
+        widget.api.requireCurrentAuthenticatedSession(sessionScope);
         setState(() {
           file = selected;
           selectedName = result.name;
@@ -193,7 +252,9 @@ class _RecordingPageState extends State<RecordingPage> {
         });
       }
     } catch (error) {
-      if (mounted) showFailure(context, error);
+      if (mounted && widget.api.isCurrentAuthenticatedSession(sessionScope)) {
+        showFailure(context, error);
+      }
     }
   }
 
@@ -211,13 +272,18 @@ class _RecordingPageState extends State<RecordingPage> {
 
   Future<void> upload() async {
     final selected = file;
-    if (selected == null || busy) return;
+    if (selected == null ||
+        busy ||
+        !widget.api.isCurrentAuthenticatedSession(sessionScope)) {
+      return;
+    }
     setState(() {
       busy = true;
       uploadProgress = 0;
     });
     try {
       final size = await selected.length();
+      widget.api.requireCurrentAuthenticatedSession(sessionScope);
       if (size == 0)
         throw const ApiFailure(422, 'EMPTY_AUDIO', 'File ghi âm trống.');
       final mime = contentType(selected);
@@ -232,6 +298,7 @@ class _RecordingPageState extends State<RecordingPage> {
         },
         headers: {'Idempotency-Key': key()},
       )).objectData();
+      widget.api.requireCurrentAuthenticatedSession(sessionScope);
       final mediaId = textValue(intent['mediaId']);
       final signedUrl = textValue(intent['uploadUrl']);
       if (mediaId.isEmpty || signedUrl.isEmpty) {
@@ -246,7 +313,11 @@ class _RecordingPageState extends State<RecordingPage> {
         selected,
         textValue(intent['requiredContentType'], mime),
         onProgress: (sent, total) {
-          if (!mounted || total == 0) return;
+          if (!mounted ||
+              !widget.api.isCurrentAuthenticatedSession(sessionScope) ||
+              total == 0) {
+            return;
+          }
           final ratio = sent / total;
           if (uploadProgress == null ||
               (uploadProgress! - ratio).abs() >= 0.01 ||
@@ -255,6 +326,7 @@ class _RecordingPageState extends State<RecordingPage> {
           }
         },
       );
+      widget.api.requireCurrentAuthenticatedSession(sessionScope);
       final finalized = (await widget.api.post(
         path + '/media/' + mediaId + '/finalize',
         {},
@@ -266,12 +338,13 @@ class _RecordingPageState extends State<RecordingPage> {
           'Media has not been accepted.',
         );
       }
+      widget.api.requireCurrentAuthenticatedSession(sessionScope);
       final accepted = await widget.api.post(
         path + '/processing-jobs',
         {'mediaId': mediaId},
         headers: {'Idempotency-Key': key()},
       );
-      if (mounted) {
+      if (mounted && widget.api.isCurrentAuthenticatedSession(sessionScope)) {
         setState(
           () => job = ProcessingJob.fromJson(
             accepted.objectData(),
@@ -282,13 +355,18 @@ class _RecordingPageState extends State<RecordingPage> {
         reloadJobs();
       }
     } catch (error) {
-      if (mounted) showFailure(context, error);
+      if (mounted && widget.api.isCurrentAuthenticatedSession(sessionScope)) {
+        showFailure(context, error);
+      }
     } finally {
-      if (mounted) setState(() => busy = false);
+      if (mounted && widget.api.isCurrentAuthenticatedSession(sessionScope)) {
+        setState(() => busy = false);
+      }
     }
   }
 
   Future<void> retryJob(ProcessingJob candidate) async {
+    if (!widget.api.isCurrentAuthenticatedSession(sessionScope)) return;
     setState(() => busy = true);
     try {
       final response = await widget.api.post(
@@ -296,7 +374,7 @@ class _RecordingPageState extends State<RecordingPage> {
         {},
         headers: {'Idempotency-Key': key()},
       );
-      if (mounted) {
+      if (mounted && widget.api.isCurrentAuthenticatedSession(sessionScope)) {
         setState(
           () => job = ProcessingJob.fromJson(
             response.objectData(),
@@ -306,9 +384,13 @@ class _RecordingPageState extends State<RecordingPage> {
         reloadJobs();
       }
     } catch (error) {
-      if (mounted) showFailure(context, error);
+      if (mounted && widget.api.isCurrentAuthenticatedSession(sessionScope)) {
+        showFailure(context, error);
+      }
     } finally {
-      if (mounted) setState(() => busy = false);
+      if (mounted && widget.api.isCurrentAuthenticatedSession(sessionScope)) {
+        setState(() => busy = false);
+      }
     }
   }
 
@@ -388,6 +470,11 @@ class _RecordingPageState extends State<RecordingPage> {
                 onPressed: busy || capturing
                     ? null
                     : () {
+                        if (!widget.api.isCurrentAuthenticatedSession(
+                          sessionScope,
+                        )) {
+                          return;
+                        }
                         setState(() {
                           file = File(draft.path);
                           selectedName = draft.name;

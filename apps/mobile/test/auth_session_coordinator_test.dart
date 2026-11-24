@@ -320,7 +320,11 @@ void main() {
     'logout uses the auth repository and clears the local session',
     () async {
       final credentials = InMemoryCredentialStorage();
-      final client = _AuthenticationClient();
+      final client = _AuthenticationClient(
+        onLogout: () async {
+          expect(await _readRefreshCredential(credentials), isNull);
+        },
+      );
       final api = ApiClient(
         baseUri: Uri.parse('https://api.example.test/api/v1'),
         httpClient: client,
@@ -343,6 +347,36 @@ void main() {
       );
       expect(api.sessionCoordinator.state.identity, isNull);
       expect(api.identity, isNull);
+      expect(await _readRefreshCredential(credentials), isNull);
+    },
+  );
+
+  test(
+    'remote logout failure is reported as unconfirmed after local cleanup',
+    () async {
+      final credentials = InMemoryCredentialStorage();
+      final client = _AuthenticationClient(logoutStatus: 503);
+      final api = ApiClient(
+        baseUri: _apiBaseUri,
+        httpClient: client,
+        credentialStorage: credentials,
+      );
+      addTearDown(api.dispose);
+      await api.initialize();
+      await api.signIn('user@example.test', 'password');
+
+      final outcome = await api.signOut();
+
+      expect(outcome, AuthLogoutOutcome.remoteRevocationUnconfirmed);
+      expect(
+        client.paths.where((path) => path.endsWith('/auth/logout')),
+        hasLength(1),
+      );
+      expect(api.sessionState.phase, AuthSessionPhase.unauthenticated);
+      expect(
+        api.sessionState.failure?.category,
+        AuthFailureCategory.logoutUnconfirmed,
+      );
       expect(await _readRefreshCredential(credentials), isNull);
     },
   );
@@ -750,11 +784,15 @@ class _AuthenticationClient extends RecordingHttpClient {
   _AuthenticationClient({
     this.identityChange,
     this.refreshStatus,
+    this.logoutStatus,
+    this.onLogout,
     this.loginFailures = 0,
   }) : super((_) async => throw StateError('handler initialized below'));
 
   final Map<String, dynamic> Function()? identityChange;
   final int? refreshStatus;
+  final int? logoutStatus;
+  final Future<void> Function()? onLogout;
   int loginFailures;
   final List<String> paths = <String>[];
 
@@ -811,6 +849,13 @@ class _AuthenticationClient extends RecordingHttpClient {
     }
     if (path.endsWith('/auth/logout')) {
       expect(request.headers['Authorization'], 'Bearer ${_accessToken()}');
+      await onLogout?.call();
+      if (logoutStatus != null) {
+        return jsonResponse(
+          logoutStatus!,
+          errorEnvelope('SERVICE_UNAVAILABLE', 'Logout unavailable.'),
+        );
+      }
       return jsonResponse(200, successEnvelope(null));
     }
     throw StateError('Unexpected auth request $path');

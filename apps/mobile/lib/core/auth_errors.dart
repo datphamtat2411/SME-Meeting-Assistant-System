@@ -13,6 +13,7 @@ enum AuthFailureCategory {
   authenticationRejected,
   sessionInvalidated,
   authorizationDenied,
+  logoutUnconfirmed,
   rateLimited,
   networkFailure,
   requestTimeout,
@@ -75,6 +76,7 @@ class AuthFailureClassifier {
           'Phiên đăng nhập đã hết hiệu lực. Vui lòng đăng nhập lại.',
         AuthFailureCategory.authorizationDenied =>
           'Tài khoản chưa được cấp quyền truy cập.',
+        AuthFailureCategory.logoutUnconfirmed => 'Thiết bị đã đăng xuất, nhưng máy chủ chưa xác nhận việc thu hồi phiên.',
         AuthFailureCategory.rateLimited =>
           'Máy chủ đang giới hạn yêu cầu. Vui lòng chờ trước khi thử lại.',
         AuthFailureCategory.networkFailure => 'Không thể kết nối đến máy chủ. Hãy kiểm tra kết nối mạng và thử lại.',
@@ -101,12 +103,21 @@ class AuthFailureClassifier {
     final operationName = operation?.name.toUpperCase();
     return AuthSessionFailure._(
       category: AuthFailureCategory.credentialStorage,
-      message: 'Không thể truy cập thông tin đăng nhập được bảo vệ.',
+      message: operation == TokenStoreOperation.delete
+          ? 'Không thể xác nhận xóa phiên bảo mật. Truy cập đã bị chặn; hãy thử xóa phiên đã lưu lại trước khi đăng nhập.'
+          : 'Không thể truy cập thông tin đăng nhập được bảo vệ.',
       code: operationName == null
           ? 'CREDENTIAL_STORAGE_FAILURE'
           : 'CREDENTIAL_STORAGE_${operationName}_FAILED',
     );
   }
+
+  AuthSessionFailure logoutUnconfirmed(Object error) => AuthSessionFailure._(
+    category: AuthFailureCategory.logoutUnconfirmed,
+    message: 'Thiết bị đã đăng xuất, nhưng máy chủ chưa xác nhận việc thu hồi phiên.',
+    apiFailure: error is ApiFailure ? error : null,
+    code: 'LOGOUT_UNCONFIRMED',
+  );
 
   AuthSessionFailure unsafeStoredCredential(String code, String message) =>
       AuthSessionFailure._(

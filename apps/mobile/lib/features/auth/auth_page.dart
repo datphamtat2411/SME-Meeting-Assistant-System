@@ -129,6 +129,15 @@ class _AuthPageState extends State<AuthPage> {
                     style: TextStyle(color: Palette.muted),
                   ),
                   const SizedBox(height: 26),
+                  if (widget.api.sessionState.notice != null) ...[
+                    ContentCard(
+                      child: Text(
+                        widget.api.sessionState.notice!,
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                  ],
                   if (widget.api.sessionState.phase ==
                       AuthSessionPhase.reauthenticationRequired) ...[
                     ContentCard(

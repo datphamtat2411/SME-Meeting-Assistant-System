@@ -134,6 +134,7 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
       AuthSessionPhase.reauthenticationRequired => AuthPage(api: api),
       AuthSessionPhase.recoverableFailure => _recoverableSessionView(session),
       AuthSessionPhase.authenticated => AppShell(
+        key: ValueKey(api.authenticatedSessionScope),
         api: api,
         themeMode: appearance.mode,
         onThemeChanged: changeTheme,
@@ -143,12 +144,19 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
 
   Widget _recoverableSessionView(AuthSessionState session) {
     if (session.failure?.category == AuthFailureCategory.credentialStorage) {
+      final cleanupFailed =
+          session.failure?.machineCode == 'CREDENTIAL_STORAGE_DELETE_FAILED';
       return StartupFailureView(
-        title: 'Không thể truy cập phiên bảo mật',
+        title: cleanupFailed
+            ? 'Không thể xác nhận xóa phiên bảo mật'
+            : 'Không thể truy cập phiên bảo mật',
         message: session.failure?.message ?? 'Không thể truy cập thông tin đăng nhập được bảo vệ. Vui lòng thử lại.',
         onRetry: session.canRetryCredentialStorage
             ? api.retrySessionRestore
             : null,
+        retryLabel: cleanupFailed
+            ? 'Thử xóa phiên đã lưu lại'
+            : 'Thử truy cập lại',
       );
     }
     if (session.canRetrySessionRestore ||
@@ -188,12 +196,14 @@ class StartupFailureView extends StatelessWidget {
   final String title;
   final String message;
   final VoidCallback? onRetry;
+  final String retryLabel;
 
   const StartupFailureView({
     super.key,
     this.title = 'Không thể khởi tạo ứng dụng',
     this.message = 'Vui lòng đóng ứng dụng và thử lại.',
     this.onRetry,
+    this.retryLabel = 'Thử truy cập lại',
   });
 
   @override
@@ -218,7 +228,7 @@ class StartupFailureView extends StatelessWidget {
               FilledButton.icon(
                 onPressed: onRetry,
                 icon: const Icon(Icons.refresh),
-                label: const Text('Thử truy cập lại'),
+                label: Text(retryLabel),
               ),
             ],
           ],

@@ -169,15 +169,19 @@ void main() {
       now = now.add(const Duration(seconds: 40));
 
       final pendingRequest = api.get('/protected');
+      final pendingRequestFailure = expectLater(
+        pendingRequest,
+        throwsA(isA<AuthSessionException>()),
+      );
       await client.refreshStarted.future;
       await api.signOut();
+      await pendingRequestFailure;
       expect(
         (await TokenStore(storage: storage, baseUri: _apiBaseUri).read()).state,
         TokenStoreCredentialState.missing,
       );
 
       client.completeRefresh();
-      await expectLater(pendingRequest, throwsA(isA<AuthSessionException>()));
 
       expect(api.sessionState.phase, AuthSessionPhase.unauthenticated);
       expect(
