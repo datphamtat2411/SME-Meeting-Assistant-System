@@ -128,6 +128,52 @@ describe('calendar domain projection', () => {
     ])
   })
 
+  it('projects a December-to-January occurrence into each month without changing its interval', async () => {
+    await setBrowserTimeZone('UTC')
+    const crossYear = meeting(
+      'cross-year',
+      '2026-12-31T23:00:00.000Z',
+      '2027-01-01T01:00:00.000Z'
+    )
+
+    const december = projectCalendarMonth([crossYear], new Date(2026, 11, 1))
+    const january = projectCalendarMonth([crossYear], new Date(2027, 0, 1))
+
+    expect(december.segments).toMatchObject([
+      {
+        dayKey: '2026-12-31',
+        meeting: crossYear,
+        originalStartAt: '2026-12-31T23:00:00.000Z',
+        originalEndAt: '2027-01-01T01:00:00.000Z',
+        segmentStartAt: '2026-12-31T23:00:00.000Z',
+        segmentEndAt: '2027-01-01T00:00:00.000Z',
+        continuesFromPreviousDay: false,
+        continuesIntoNextDay: true,
+      },
+    ])
+    expect(january.segments).toMatchObject([
+      {
+        dayKey: '2027-01-01',
+        meeting: crossYear,
+        originalStartAt: '2026-12-31T23:00:00.000Z',
+        originalEndAt: '2027-01-01T01:00:00.000Z',
+        segmentStartAt: '2027-01-01T00:00:00.000Z',
+        segmentEndAt: '2027-01-01T01:00:00.000Z',
+        continuesFromPreviousDay: true,
+        continuesIntoNextDay: false,
+      },
+    ])
+
+    const endingAtNewYear = meeting(
+      'cross-year-midnight-end',
+      '2026-12-31T23:30:00.000Z',
+      '2027-01-01T00:00:00.000Z'
+    )
+    expect(
+      projectCalendarMonth([endingAtNewYear], new Date(2027, 0, 1)).segments
+    ).toEqual([])
+  })
+
   it('uses 23-hour spring-forward and 25-hour fall-back civil days', async () => {
     await setBrowserTimeZone('America/New_York')
 

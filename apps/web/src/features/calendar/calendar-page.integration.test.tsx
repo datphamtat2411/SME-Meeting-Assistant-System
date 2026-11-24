@@ -5,10 +5,11 @@ import {
   RouterProvider,
 } from '@tanstack/react-router'
 import { routeTree } from '@/routeTree.gen'
+import '@/styles/index.css'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
-import { userEvent } from 'vitest/browser'
-import { coreApi, resetCsrfToken } from '@/lib/core-api'
+import { page, userEvent } from 'vitest/browser'
+import { CoreApiError, coreApi, resetCsrfToken } from '@/lib/core-api'
 import { DirectionProvider } from '@/context/direction-provider'
 import { FontProvider } from '@/context/font-provider'
 import { ThemeProvider } from '@/context/theme-provider'
@@ -146,10 +147,11 @@ async function renderCalendar(initialPath: string) {
   return { router, history, queryClient, screen }
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.restoreAllMocks()
   resetCsrfToken()
   resetAuthLifecycleAfterSignIn()
+  await page.viewport(1440, 900)
 })
 
 describe('integrated Calendar route', () => {
@@ -407,5 +409,176 @@ describe('integrated Calendar route', () => {
       relationship: 'organizer',
     })
     expect(scheduled).toBe(true)
+  })
+
+  it('shows the session-specific Calendar state after a 401 response', async () => {
+    vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
+      if (url === '/auth/me') return user
+      throw new Error(`Unexpected Core API read ${url}`)
+    })
+    vi.spyOn(coreApi, 'getWithMeta').mockRejectedValue(
+      new CoreApiError({
+        message: 'Authentication required',
+        status: 401,
+        code: 'AUTH_REQUIRED',
+        kind: 'http',
+      })
+    )
+
+    const { screen } = await renderCalendar('/calendar?month=2027-11')
+
+    await expect
+      .element(screen.getByRole('alert'))
+      .toHaveTextContent(
+        'Your session is not authorized to load Calendar meetings.'
+      )
+    await expect
+      .element(screen.getByRole('heading', { name: 'Calendar' }))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('No meetings scheduled this month'))
+      .not.toBeInTheDocument()
+  })
+
+  it.each([
+    [1440, 900],
+    [768, 1024],
+    [390, 844],
+  ])(
+    'keeps Month and Agenda usable without horizontal overflow at %sx%s',
+    async (width, height) => {
+      await page.viewport(width, height)
+      vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
+        if (url === '/auth/me') return user
+        throw new Error(`Unexpected Core API read ${url}`)
+      })
+      vi.spyOn(coreApi, 'getWithMeta').mockResolvedValue(
+        meetingListResponse([])
+      )
+
+      const { screen } = await renderCalendar('/calendar?month=2027-11')
+      const assertNoHorizontalOverflow = () => {
+        expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(
+          window.innerWidth
+        )
+      }
+
+      await expect.element(screen.getByRole('table')).toBeInTheDocument()
+      assertNoHorizontalOverflow()
+
+      await userEvent.click(screen.getByRole('tab', { name: 'Agenda' }))
+      await expect
+        .element(screen.getByText('No meetings scheduled this month'))
+        .toBeInTheDocument()
+      assertNoHorizontalOverflow()
+    }
+  )
+
+  it('supports Calendar month and view navigation using the keyboard alone', async () => {
+    await page.viewport(1440, 900)
+    vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
+      if (url === '/auth/me') return user
+      throw new Error(`Unexpected Core API read ${url}`)
+    })
+    vi.spyOn(coreApi, 'getWithMeta').mockResolvedValue(meetingListResponse([]))
+    const { router, screen } = await renderCalendar(
+      '/calendar?month=2027-11&relationship=participant&status=CANCELLED&q=roadmap'
+    )
+
+    await expect.element(screen.getByRole('table')).toBeInTheDocument()
+
+    for (let index = 0; index < 40; index += 1) {
+      if (
+        document.activeElement?.getAttribute('aria-label') === 'Previous month'
+      ) {
+        break
+      }
+      await userEvent.tab()
+    }
+    expect(document.activeElement?.getAttribute('aria-label')).toBe(
+      'Previous month'
+    )
+    await userEvent.keyboard('{Enter}')
+    await expect
+      .poll(() => router.state.location.search)
+      .toMatchObject({
+        month: '2027-10',
+        relationship: 'participant',
+        status: 'CANCELLED',
+        q: 'roadmap',
+      })
+
+    for (let index = 0; index < 40; index += 1) {
+      if (
+        document.activeElement?.getAttribute('role') === 'tab' &&
+        document.activeElement.textContent?.trim() === 'Month'
+      ) {
+        break
+      }
+      await userEvent.tab()
+    }
+    expect(document.activeElement?.textContent?.trim()).toBe('Month')
+    await userEvent.keyboard('{ArrowRight}')
+    await expect
+      .element(screen.getByRole('tab', { name: 'Agenda' }))
+      .toHaveAttribute('aria-selected', 'true')
+    await expect
+      .poll(() => router.state.location.search)
+      .toMatchObject({
+        month: '2027-10',
+        view: 'agenda',
+        relationship: 'participant',
+        status: 'CANCELLED',
+        q: 'roadmap',
+      })
+  })
+
+  it('restores URL-owned Calendar state after a fresh application mount', async () => {
+    const path =
+      '/calendar?month=2027-11&view=agenda&relationship=participant&status=CANCELLED&q=roadmap'
+    const listCalls: Array<Record<string, string>> = []
+    vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
+      if (url === '/auth/me') return user
+      throw new Error(`Unexpected Core API read ${url}`)
+    })
+    vi.spyOn(coreApi, 'getWithMeta').mockImplementation(
+      async (_url, config) => {
+        listCalls.push(config?.params as Record<string, string>)
+        return meetingListResponse([])
+      }
+    )
+
+    const firstMount = await renderCalendar(path)
+    await expect
+      .element(firstMount.screen.getByRole('tab', { name: 'Agenda' }))
+      .toHaveAttribute('aria-selected', 'true')
+    await expect
+      .element(
+        firstMount.screen.getByText(
+          'No meetings match these filters this month.'
+        )
+      )
+      .toBeInTheDocument()
+    await firstMount.screen.unmount()
+
+    const refreshedMount = await renderCalendar(path)
+    await expect
+      .element(refreshedMount.screen.getByRole('tab', { name: 'Agenda' }))
+      .toHaveAttribute('aria-selected', 'true')
+    await expect
+      .element(
+        refreshedMount.screen.getByText(
+          'No meetings match these filters this month.'
+        )
+      )
+      .toBeInTheDocument()
+    expect(listCalls).toHaveLength(2)
+    expect(listCalls[1]).toMatchObject({
+      from: listCalls[0]!.from,
+      to: listCalls[0]!.to,
+      relationship: 'PARTICIPANT',
+      status: 'CANCELLED',
+      q: 'roadmap',
+    })
   })
 })

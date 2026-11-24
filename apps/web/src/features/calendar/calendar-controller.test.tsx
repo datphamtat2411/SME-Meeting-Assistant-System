@@ -122,6 +122,43 @@ afterEach(() => {
 })
 
 describe('Calendar data controller', () => {
+  it.each([
+    { count: 100, expectedPages: 1 },
+    { count: 101, expectedPages: 2 },
+  ])(
+    'completes an exact $count-meeting result with the expected pages',
+    async ({ count, expectedPages }) => {
+      const records = Array.from({ length: count }, (_, index) =>
+        meeting(index)
+      )
+      const request = vi
+        .spyOn(coreApi, 'getWithMeta')
+        .mockImplementation(async (_url, config) => {
+          const page = Number((config?.params as Record<string, string>).page)
+          return apiPage(
+            page,
+            records.slice(page * 100, (page + 1) * 100),
+            records.length
+          )
+        })
+      const screen = await renderProbe()
+
+      await expect
+        .element(screen.getByText(`${count}/${count}`))
+        .toBeInTheDocument()
+      await expect.element(screen.getByText('complete')).toBeInTheDocument()
+      expect(request).toHaveBeenCalledTimes(expectedPages)
+      expect(
+        request.mock.calls.map(([, config]) => {
+          const params = config?.params as Record<string, string>
+          return params.page
+        })
+      ).toEqual(
+        Array.from({ length: expectedPages }, (_, index) => String(index))
+      )
+    }
+  )
+
   it('automatically accumulates all pages for a 201-meeting month', async () => {
     const records = Array.from({ length: 201 }, (_, index) => meeting(index))
     const request = vi
@@ -225,6 +262,24 @@ describe('Calendar data controller', () => {
 
     await expect
       .element(screen.getByText('unauthorized 403'))
+      .toBeInTheDocument()
+    await expect.element(screen.getByText('initial failed')).toBeInTheDocument()
+    await expect.element(screen.getByText('0/unknown')).toBeInTheDocument()
+  })
+
+  it('reports an expired session as unauthorized for Calendar data', async () => {
+    vi.spyOn(coreApi, 'getWithMeta').mockRejectedValue(
+      new CoreApiError({
+        message: 'Authentication required',
+        status: 401,
+        code: 'AUTH_REQUIRED',
+        kind: 'http',
+      })
+    )
+    const screen = await renderProbe()
+
+    await expect
+      .element(screen.getByText('unauthorized 401'))
       .toBeInTheDocument()
     await expect.element(screen.getByText('initial failed')).toBeInTheDocument()
     await expect.element(screen.getByText('0/unknown')).toBeInTheDocument()
