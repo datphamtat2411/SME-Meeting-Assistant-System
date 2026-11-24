@@ -22,7 +22,13 @@ import {
   type Transcript,
 } from './transcript-api'
 
-export function TranscriptPanel({ meetingId }: { meetingId: string }) {
+export function TranscriptPanel({
+  meetingId,
+  canCorrectTranscript,
+}: {
+  meetingId: string
+  canCorrectTranscript: boolean
+}) {
   const qc = useQueryClient()
   const transcript = useQuery(transcriptQuery(meetingId))
   const coverage = useQuery({
@@ -113,19 +119,21 @@ export function TranscriptPanel({ meetingId }: { meetingId: string }) {
                         </strong>
                         <Badge variant='outline'>{segment.qualityStatus}</Badge>
                       </div>
-                      <Button
-                        size='sm'
-                        variant='ghost'
-                        onClick={() => {
-                          setEditing(segment)
-                          setText(segment.text)
-                          setReason('')
-                        }}
-                      >
-                        Correct
-                      </Button>
+                      {canCorrectTranscript && (
+                        <Button
+                          size='sm'
+                          variant='ghost'
+                          onClick={() => {
+                            setEditing(segment)
+                            setText(segment.text)
+                            setReason('')
+                          }}
+                        >
+                          Correct
+                        </Button>
+                      )}
                     </div>
-                    {editing?.id === segment.id ? (
+                    {canCorrectTranscript && editing?.id === segment.id ? (
                       <form
                         onSubmit={(e) => {
                           e.preventDefault()

@@ -27,7 +27,15 @@ const allowed: Record<
   DONE: [{ label: 'Reopen', command: 'reopen' }],
   CANCELLED: [{ label: 'Reopen', command: 'reopen' }],
 }
-export function ActionCommands({ item }: { item: ActionItem }) {
+export function ActionCommands({
+  item,
+  currentUserId,
+  canManageActionItems,
+}: {
+  item: ActionItem
+  currentUserId?: string
+  canManageActionItems?: boolean
+}) {
   const qc = useQueryClient()
   const mutation = useMutation({
     mutationFn: (
@@ -42,9 +50,22 @@ export function ActionCommands({ item }: { item: ActionItem }) {
         description: error instanceof Error ? error.message : undefined,
       }),
   })
+  const unrestrictedLegacySurface =
+    currentUserId === undefined && canManageActionItems === undefined
+  const isOfficial =
+    item.sourceType === 'MANUAL' || item.confirmedByUserId !== null
+  const isAssignee = isOfficial && item.assigneeUserId === currentUserId
+  const visibleCommands = allowed[item.status].filter(({ command }) => {
+    if (unrestrictedLegacySurface || canManageActionItems) return true
+    if (!isAssignee) return false
+    return !['confirm', 'reject', 'cancel'].includes(command)
+  })
+
+  if (!visibleCommands.length) return null
+
   return (
     <div className='flex flex-wrap gap-1'>
-      {allowed[item.status].map((x) => (
+      {visibleCommands.map((x) => (
         <Button
           key={x.command}
           size='sm'

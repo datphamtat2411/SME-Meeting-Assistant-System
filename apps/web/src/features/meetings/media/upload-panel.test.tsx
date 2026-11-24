@@ -38,7 +38,7 @@ function queryClient() {
 function renderPanel() {
   return render(
     <QueryClientProvider client={queryClient()}>
-      <UploadPanel meetingId={meetingId} />
+      <UploadPanel meetingId={meetingId} canSubmitMedia />
     </QueryClientProvider>
   )
 }

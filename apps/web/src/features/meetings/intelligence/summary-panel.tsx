@@ -20,7 +20,15 @@ import {
   summaryVersionsQuery,
 } from './summary-api'
 
-export function SummaryPanel({ meetingId }: { meetingId: string }) {
+export function SummaryPanel({
+  meetingId,
+  canEdit,
+  canRegenerate,
+}: {
+  meetingId: string
+  canEdit: boolean
+  canRegenerate: boolean
+}) {
   const qc = useQueryClient()
   const summary = useQuery(summaryQuery(meetingId))
   const versions = useQuery({
@@ -104,7 +112,7 @@ export function SummaryPanel({ meetingId }: { meetingId: string }) {
                 {warning}
               </p>
             ))}
-            {editing ? (
+            {canEdit && editing ? (
               <form
                 onSubmit={(e) => {
                   e.preventDefault()
@@ -135,25 +143,31 @@ export function SummaryPanel({ meetingId }: { meetingId: string }) {
               </p>
             )}
             <div className='flex flex-wrap gap-2'>
-              <Button
-                size='sm'
-                variant='outline'
-                disabled={editing}
-                onClick={() => {
-                  setContent(summary.data.content)
-                  setEditing(true)
-                }}
-              >
-                Edit summary
-              </Button>
-              <Button
-                size='sm'
-                variant='secondary'
-                disabled={regenerate.isPending}
-                onClick={() => regenerate.mutate()}
-              >
-                Regenerate
-              </Button>
+              <>
+                {canEdit && (
+                  <Button
+                    size='sm'
+                    variant='outline'
+                    disabled={editing}
+                    onClick={() => {
+                      setContent(summary.data.content)
+                      setEditing(true)
+                    }}
+                  >
+                    Edit summary
+                  </Button>
+                )}
+                {canRegenerate && (
+                  <Button
+                    size='sm'
+                    variant='secondary'
+                    disabled={regenerate.isPending}
+                    onClick={() => regenerate.mutate()}
+                  >
+                    Regenerate
+                  </Button>
+                )}
+              </>
             </div>
             {versions.data && versions.data.items.length > 1 && (
               <div className='space-y-2 border-t pt-3'>
@@ -169,7 +183,7 @@ export function SummaryPanel({ meetingId }: { meetingId: string }) {
                     </span>
                     {version.isCurrent ? (
                       <Badge>Current</Badge>
-                    ) : (
+                    ) : canEdit ? (
                       <Button
                         size='sm'
                         variant='outline'
@@ -178,7 +192,7 @@ export function SummaryPanel({ meetingId }: { meetingId: string }) {
                       >
                         Restore
                       </Button>
-                    )}
+                    ) : null}
                   </div>
                 ))}
               </div>

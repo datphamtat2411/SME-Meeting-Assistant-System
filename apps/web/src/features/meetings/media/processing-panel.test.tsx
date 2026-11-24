@@ -97,7 +97,7 @@ function renderPanel() {
         })
       }
     >
-      <ProcessingPanel meetingId={meetingId} />
+      <ProcessingPanel meetingId={meetingId} canManageProcessing />
     </QueryClientProvider>
   )
 }

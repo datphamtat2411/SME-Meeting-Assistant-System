@@ -19,7 +19,13 @@ import {
 } from './decision-api'
 import { invalidateMeetingArtifacts } from './query-invalidation'
 
-export function DecisionsPanel({ meetingId }: { meetingId: string }) {
+export function DecisionsPanel({
+  meetingId,
+  canManageDecisions,
+}: {
+  meetingId: string
+  canManageDecisions: boolean
+}) {
   const qc = useQueryClient()
   const query = useQuery(decisionsQuery(meetingId))
   const [editing, setEditing] = useState<Decision | null>(null)
@@ -77,17 +83,19 @@ export function DecisionsPanel({ meetingId }: { meetingId: string }) {
             AI proposals require explicit human confirmation.
           </p>
         </div>
-        <Button
-          size='sm'
-          variant='outline'
-          onClick={() => {
-            setEditing(null)
-            setContent('')
-            setCreating(true)
-          }}
-        >
-          Add decision
-        </Button>
+        {canManageDecisions && (
+          <Button
+            size='sm'
+            variant='outline'
+            onClick={() => {
+              setEditing(null)
+              setContent('')
+              setCreating(true)
+            }}
+          >
+            Add decision
+          </Button>
+        )}
       </CardHeader>
       <CardContent className='space-y-3'>
         {query.isPending ? (
@@ -117,44 +125,48 @@ export function DecisionsPanel({ meetingId }: { meetingId: string }) {
               {item.aiUncertainty && (
                 <p className='text-xs text-amber-600'>{item.aiUncertainty}</p>
               )}
-              <div className='flex flex-wrap gap-2'>
-                {item.status === 'PROPOSED' && (
-                  <>
-                    <Button
-                      size='sm'
-                      disabled={review.isPending}
-                      onClick={() =>
-                        review.mutate({ item, command: 'confirm' })
-                      }
-                    >
-                      Confirm
-                    </Button>
-                    <Button
-                      size='sm'
-                      variant='outline'
-                      disabled={review.isPending}
-                      onClick={() => review.mutate({ item, command: 'reject' })}
-                    >
-                      Reject
-                    </Button>
-                  </>
-                )}
-                <Button
-                  size='sm'
-                  variant='ghost'
-                  onClick={() => {
-                    setEditing(item)
-                    setCreating(false)
-                    setContent(item.content)
-                  }}
-                >
-                  Edit
-                </Button>
-              </div>
+              {canManageDecisions && (
+                <div className='flex flex-wrap gap-2'>
+                  {item.status === 'PROPOSED' && (
+                    <>
+                      <Button
+                        size='sm'
+                        disabled={review.isPending}
+                        onClick={() =>
+                          review.mutate({ item, command: 'confirm' })
+                        }
+                      >
+                        Confirm
+                      </Button>
+                      <Button
+                        size='sm'
+                        variant='outline'
+                        disabled={review.isPending}
+                        onClick={() =>
+                          review.mutate({ item, command: 'reject' })
+                        }
+                      >
+                        Reject
+                      </Button>
+                    </>
+                  )}
+                  <Button
+                    size='sm'
+                    variant='ghost'
+                    onClick={() => {
+                      setEditing(item)
+                      setCreating(false)
+                      setContent(item.content)
+                    }}
+                  >
+                    Edit
+                  </Button>
+                </div>
+              )}
             </div>
           ))
         )}
-        {(editing || creating) && (
+        {canManageDecisions && (editing || creating) && (
           <form onSubmit={submit} className='space-y-2 rounded-lg border p-3'>
             <h4 className='font-medium'>
               {editing ? 'Edit decision' : 'New decision'}

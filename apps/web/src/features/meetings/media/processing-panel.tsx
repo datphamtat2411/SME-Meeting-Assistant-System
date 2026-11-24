@@ -29,7 +29,13 @@ function isUncertainProcessingError(error: unknown): boolean {
   return error instanceof CoreApiError && error.recoveryOutcome === 'uncertain'
 }
 
-export function ProcessingPanel({ meetingId }: { meetingId: string }) {
+export function ProcessingPanel({
+  meetingId,
+  canManageProcessing,
+}: {
+  meetingId: string
+  canManageProcessing: boolean
+}) {
   const qc = useQueryClient()
   const media = useQuery(meetingMediaQuery(meetingId))
   const jobs = useQuery({
@@ -216,7 +222,7 @@ export function ProcessingPanel({ meetingId }: { meetingId: string }) {
             retry={() => void media.refetch()}
           />
         )}
-        {available.length > 0 && (
+        {canManageProcessing && available.length > 0 && (
           <div className='flex flex-wrap items-center gap-2'>
             <Select
               value={mediaId}
@@ -301,7 +307,7 @@ export function ProcessingPanel({ meetingId }: { meetingId: string }) {
                     ))}
                   </div>
                 )}
-                {job.retryable && (
+                {canManageProcessing && job.retryable && (
                   <Button
                     size='sm'
                     variant='outline'

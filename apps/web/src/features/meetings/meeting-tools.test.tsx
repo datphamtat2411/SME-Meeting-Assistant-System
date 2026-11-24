@@ -4,7 +4,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
 import { CoreApiError, coreApi } from '@/lib/core-api'
+import type { AuthContext } from '@/features/auth/session/current-user'
+import type { MeetingView } from './data/detail-api'
 import { MeetingTools } from './meeting-tools'
+import { deriveMeetingWorkspaceCapabilities } from './meeting-workspace-capabilities'
+import { MeetingWorkspaceProvider } from './meeting-workspace-context'
+import type { MeetingWorkspaceSection } from './meeting-workspace-navigation'
 
 vi.mock('@tanstack/react-router', () => ({
   Link: ({
@@ -17,7 +22,8 @@ vi.mock('@tanstack/react-router', () => ({
 
 const meetingA = '11111111-1111-4111-8111-111111111111'
 const meetingB = '22222222-2222-4222-8222-222222222222'
-const transcriptId = '33333333-3333-4333-8333-333333333333'
+const organizerId = '33333333-3333-4333-8333-333333333333'
+const transcriptId = '44444444-4444-4444-8444-444444444444'
 
 const emptyPagination = {
   page: 0,
@@ -39,7 +45,7 @@ const minutes = {
     id: meetingA,
     title: 'Meeting A',
     description: null,
-    organizerUserId: meetingA,
+    organizerUserId: organizerId,
     status: 'ENDED',
     scheduledStartAt: null,
     scheduledEndAt: null,
@@ -71,12 +77,41 @@ const minutes = {
   },
 }
 
-function notFound(message: string) {
-  return new CoreApiError({
-    message,
-    status: 404,
-    kind: 'http',
-  })
+const identity: AuthContext = {
+  userId: organizerId,
+  email: 'organizer@example.com',
+  displayName: 'Meeting organizer',
+  globalRole: 'EMPLOYEE',
+  accountStatus: 'ACTIVE',
+  primaryOrgUnitId: null,
+  directoryManagementScope: { allUnits: false, unitIds: [] },
+  session: {
+    id: '55555555-5555-4555-8555-555555555555',
+    clientType: 'WEB',
+    createdAt: '2026-11-23T00:00:00Z',
+    lastSeenAt: null,
+    absoluteExpiresAt: '2026-11-24T00:00:00Z',
+  },
+}
+
+function meeting(id: string): MeetingView {
+  return {
+    id,
+    title: `Meeting ${id === meetingA ? 'A' : 'B'}`,
+    description: null,
+    organizerUserId: organizerId,
+    roomId: null,
+    scheduledStartAt: null,
+    scheduledEndAt: null,
+    status: 'IN_PROGRESS',
+    startedAt: '2026-11-23T09:00:00Z',
+    endedAt: null,
+    cancelledAt: null,
+    cancellationReason: null,
+    createdByUserId: organizerId,
+    createdAt: '2026-11-23T08:00:00Z',
+    updatedAt: '2026-11-23T09:00:00Z',
+  }
 }
 
 function createQueryClient() {
@@ -85,14 +120,49 @@ function createQueryClient() {
   })
 }
 
+function workspaceValue(meetingId: string) {
+  const currentMeeting = meeting(meetingId)
+  const membership = {
+    status: 'success' as const,
+    data: [],
+    isFetching: false,
+  }
+  return {
+    meetingId,
+    identity,
+    meeting: currentMeeting,
+    etag: 'workspace-etag',
+    membership,
+    participants: [],
+    capabilities: deriveMeetingWorkspaceCapabilities({
+      identity,
+      identityCanReadProtectedData: true,
+      meeting: currentMeeting,
+      membership,
+    }),
+  }
+}
+
 function installReadOnlyCore() {
   const mediaReads: string[] = []
   const getSpy = vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
     mediaReads.push(url)
     if (/\/media$/.test(url)) return []
     if (/\/processing-jobs$/.test(url)) return []
-    if (/\/transcript$/.test(url)) throw notFound('Transcript is not ready.')
-    if (/\/summary$/.test(url)) throw notFound('Summary is not ready.')
+    if (/\/transcript$/.test(url)) {
+      throw new CoreApiError({
+        message: 'Transcript is not ready.',
+        status: 404,
+        kind: 'http',
+      })
+    }
+    if (/\/summary$/.test(url)) {
+      throw new CoreApiError({
+        message: 'Summary is not ready.',
+        status: 404,
+        kind: 'http',
+      })
+    }
     if (/\/speaker-clusters$/.test(url)) return []
     if (/\/minutes$/.test(url)) return minutes
     throw new Error(`Unexpected GET ${url}`)
@@ -134,6 +204,20 @@ function installReadOnlyCore() {
   }
 }
 
+function renderTools(
+  section: Exclude<MeetingWorkspaceSection, 'overview'>,
+  meetingId = meetingA
+) {
+  const queryClient = createQueryClient()
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <MeetingWorkspaceProvider value={workspaceValue(meetingId)}>
+        <MeetingTools meetingId={meetingId} section={section} />
+      </MeetingWorkspaceProvider>
+    </QueryClientProvider>
+  )
+}
+
 function MeetingToolsHarness() {
   const [meetingId, setMeetingId] = useState(meetingA)
   return (
@@ -141,18 +225,24 @@ function MeetingToolsHarness() {
       <button type='button' onClick={() => setMeetingId(meetingB)}>
         Switch meeting
       </button>
-      <MeetingTools meetingId={meetingId} />
+      <MeetingWorkspaceProvider value={workspaceValue(meetingId)}>
+        <MeetingTools
+          key={meetingId}
+          meetingId={meetingId}
+          section='recording'
+        />
+      </MeetingWorkspaceProvider>
     </>
   )
 }
 
-describe('MeetingTools coexistence boundary', () => {
+describe('MeetingTools section composition', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
   })
 
-  it('mounts and switches tabs with scoped reads only, without recording or mutations', async () => {
+  it('mounts the recording section with only meeting-scoped reads and no mutation or capture', async () => {
     const { mediaReads, mutationSpies } = installReadOnlyCore()
     const getUserMedia = vi.fn()
     Object.defineProperty(navigator, 'mediaDevices', {
@@ -163,7 +253,9 @@ describe('MeetingTools coexistence boundary', () => {
     const screen = await render(
       <StrictMode>
         <QueryClientProvider client={createQueryClient()}>
-          <MeetingTools meetingId={meetingA} />
+          <MeetingWorkspaceProvider value={workspaceValue(meetingA)}>
+            <MeetingTools meetingId={meetingA} section='recording' />
+          </MeetingWorkspaceProvider>
         </QueryClientProvider>
       </StrictMode>
     )
@@ -171,47 +263,15 @@ describe('MeetingTools coexistence boundary', () => {
     await expect
       .element(screen.getByText('No source files uploaded'))
       .toBeInTheDocument()
-    await userEvent.click(screen.getByRole('tab', { name: 'Processing' }))
     await expect
       .element(screen.getByText('No processing jobs'))
-      .toBeInTheDocument()
-    await userEvent.click(screen.getByRole('tab', { name: 'Transcript' }))
-    await expect
-      .element(screen.getByText('Transcript not available yet'))
-      .toBeInTheDocument()
-    await userEvent.click(screen.getByRole('tab', { name: 'Speakers' }))
-    await expect
-      .element(screen.getByText('No speakers detected'))
-      .toBeInTheDocument()
-    await userEvent.click(screen.getByRole('tab', { name: 'Summary' }))
-    await expect
-      .element(screen.getByText('No summary available'))
-      .toBeInTheDocument()
-    await userEvent.click(screen.getByRole('tab', { name: 'Decisions' }))
-    await expect
-      .element(screen.getByText('No decisions recorded'))
-      .toBeInTheDocument()
-    await userEvent.click(screen.getByRole('tab', { name: 'Action items' }))
-    await expect
-      .element(screen.getByText('No action items for this meeting'))
-      .toBeInTheDocument()
-    await userEvent.click(screen.getByRole('tab', { name: 'Minutes' }))
-    await expect
-      .element(screen.getByText('Official meeting minutes'))
-      .toBeInTheDocument()
-    await userEvent.click(screen.getByRole('tab', { name: 'Export' }))
-    await expect
-      .element(screen.getByRole('button', { name: 'Generate PDF' }))
       .toBeInTheDocument()
 
     expect(getUserMedia).not.toHaveBeenCalled()
     expect(mediaReads).toEqual(
       expect.arrayContaining([
         `/meetings/${meetingA}/media`,
-        `/meetings/${meetingA}/transcript`,
-        `/meetings/${meetingA}/speaker-clusters`,
-        `/meetings/${meetingA}/summary`,
-        `/meetings/${meetingA}/minutes`,
+        `/meetings/${meetingA}/processing-jobs`,
       ])
     )
     expect(mediaReads.every((url) => url.includes(meetingA))).toBe(true)
@@ -220,7 +280,25 @@ describe('MeetingTools coexistence boundary', () => {
     }
   })
 
-  it('remounts tab-local operation state when the meeting identity changes', async () => {
+  it.each([
+    ['transcript', 'Transcript not available yet'],
+    ['intelligence', 'No summary available'],
+    ['action-items', 'No action items for this meeting'],
+  ] as const)(
+    'mounts the %s section using its existing feature panels',
+    async (section, expectedText) => {
+      const { mediaReads, mutationSpies } = installReadOnlyCore()
+      const screen = await renderTools(section)
+
+      await expect.element(screen.getByText(expectedText)).toBeInTheDocument()
+      expect(mediaReads.every((url) => url.includes(meetingA))).toBe(true)
+      for (const spy of Object.values(mutationSpies)) {
+        expect(spy).not.toHaveBeenCalled()
+      }
+    }
+  )
+
+  it('remounts recording-local operation state when the meeting identity changes', async () => {
     const { mediaReads, mutationSpies } = installReadOnlyCore()
     const queryClient = createQueryClient()
     const screen = await render(

@@ -58,7 +58,7 @@ describe('ProcessingPanel INT-06 terminal state composition', () => {
 
     const screen = await render(
       <QueryClientProvider client={queryClient}>
-        <ProcessingPanel meetingId={meetingId} />
+        <ProcessingPanel meetingId={meetingId} canManageProcessing />
       </QueryClientProvider>
     )
 

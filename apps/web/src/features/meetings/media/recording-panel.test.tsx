@@ -38,7 +38,7 @@ function queryClient() {
 function renderPanel(strict = false) {
   const panel = (
     <QueryClientProvider client={queryClient()}>
-      <RecordingPanel meetingId={meetingId} />
+      <RecordingPanel meetingId={meetingId} canRecordAudio canSubmitMedia />
     </QueryClientProvider>
   )
   return render(strict ? <StrictMode>{panel}</StrictMode> : panel)

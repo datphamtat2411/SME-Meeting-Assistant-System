@@ -51,7 +51,15 @@ function phaseLabel(phase: MediaUploadPhase | null): string | null {
   }
 }
 
-export function RecordingPanel({ meetingId }: { meetingId: string }) {
+export function RecordingPanel({
+  meetingId,
+  canRecordAudio,
+  canSubmitMedia,
+}: {
+  meetingId: string
+  canRecordAudio: boolean
+  canSubmitMedia: boolean
+}) {
   const qc = useQueryClient()
   const recorder = useRef<MediaRecorder | null>(null)
   const stream = useRef<MediaStream | null>(null)
@@ -302,6 +310,8 @@ export function RecordingPanel({ meetingId }: { meetingId: string }) {
     setUploadPhase(null)
   }
 
+  if (!canRecordAudio) return null
+
   return (
     <Card>
       <CardHeader>
@@ -341,7 +351,7 @@ export function RecordingPanel({ meetingId }: { meetingId: string }) {
               declaration)
             </span>
             <Button
-              disabled={busy || !!uncertainMediaId}
+              disabled={!canSubmitMedia || busy || !!uncertainMediaId}
               onClick={() => void upload()}
             >
               <Upload className='size-4' />

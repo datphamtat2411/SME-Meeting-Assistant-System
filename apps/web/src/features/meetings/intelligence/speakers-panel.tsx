@@ -13,18 +13,26 @@ import { meetingParticipantCandidateQueryOptions } from '@/features/meetings/dat
 import { invalidateMeetingArtifacts } from './query-invalidation'
 import { mapSpeaker, speakerClustersQuery } from './transcript-api'
 
-export function SpeakersPanel({ meetingId }: { meetingId: string }) {
+export function SpeakersPanel({
+  meetingId,
+  canMapSpeakers,
+}: {
+  meetingId: string
+  canMapSpeakers: boolean
+}) {
   const qc = useQueryClient()
   const speakers = useQuery(speakerClustersQuery(meetingId))
   const [searchInput, setSearchInput] = useState('')
   const [search, setSearch] = useState('')
-  const candidates = useQuery(
-    meetingParticipantCandidateQueryOptions({
-      q: search,
-      page: 1,
-      pageSize: 20,
-    })
-  )
+  const candidateOptions = meetingParticipantCandidateQueryOptions({
+    q: search,
+    page: 1,
+    pageSize: 20,
+  })
+  const candidates = useQuery({
+    ...candidateOptions,
+    enabled: canMapSpeakers && candidateOptions.enabled,
+  })
   const [selected, setSelected] = useState<string | null>(null)
   const mutation = useMutation({
     mutationFn: (payload: { speakerId: string; userId: string | null }) =>
@@ -68,33 +76,38 @@ export function SpeakersPanel({ meetingId }: { meetingId: string }) {
                     {speaker.displayName ?? 'Identity not confirmed'}
                   </p>
                 </div>
-                <div className='flex gap-2'>
-                  <Button
-                    size='sm'
-                    variant='outline'
-                    onClick={() =>
-                      setSelected((id) =>
-                        id === speaker.id ? null : speaker.id
-                      )
-                    }
-                  >
-                    Map
-                  </Button>
-                  {speaker.userId && (
+                {canMapSpeakers && (
+                  <div className='flex gap-2'>
                     <Button
-                      disabled={mutation.isPending}
-                      variant='ghost'
                       size='sm'
+                      variant='outline'
                       onClick={() =>
-                        mutation.mutate({ speakerId: speaker.id, userId: null })
+                        setSelected((id) =>
+                          id === speaker.id ? null : speaker.id
+                        )
                       }
                     >
-                      Unmap
+                      Map
                     </Button>
-                  )}
-                </div>
+                    {speaker.userId && (
+                      <Button
+                        disabled={mutation.isPending}
+                        variant='ghost'
+                        size='sm'
+                        onClick={() =>
+                          mutation.mutate({
+                            speakerId: speaker.id,
+                            userId: null,
+                          })
+                        }
+                      >
+                        Unmap
+                      </Button>
+                    )}
+                  </div>
+                )}
               </div>
-              {selected === speaker.id && (
+              {canMapSpeakers && selected === speaker.id && (
                 <div className='mt-3 space-y-2'>
                   <form
                     className='flex gap-2'

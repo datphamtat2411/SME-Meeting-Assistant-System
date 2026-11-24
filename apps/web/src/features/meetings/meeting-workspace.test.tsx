@@ -265,7 +265,7 @@ describe('MeetingWorkspacePage', () => {
       defaultOptions: { queries: { retry: false } },
     })
     queryClient.setQueryData(currentUserQueryKey, {
-      userId: 'current-user',
+      userId: 'user-1',
       displayName: 'Current User',
     })
     const screen = await render(
@@ -320,6 +320,10 @@ describe('MeetingWorkspacePage', () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     })
+    queryClient.setQueryData(currentUserQueryKey, {
+      userId: 'current-user',
+      displayName: 'Current User',
+    })
     const screen = await render(
       <QueryClientProvider client={queryClient}>
         <MeetingWorkspacePage meetingId='secret-meeting' />
@@ -333,6 +337,251 @@ describe('MeetingWorkspacePage', () => {
       .element(screen.getByRole('button', { name: 'Retry' }))
       .toBeInTheDocument()
     expect(participantSpy).not.toHaveBeenCalled()
+  })
+
+  it('allows an active participant to read meeting content without organizer-only recording operations', async () => {
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+      data: detail,
+      meta: {},
+      etag: 'etag-current',
+    })
+    vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url) => {
+      if (url === '/meetings/meeting-1/participants') {
+        return {
+          data: [{ ...participants[0], userId: 'current-user' }],
+          meta: {},
+        }
+      }
+      return { data: [], meta: { pagination: availabilityPagination } }
+    })
+    const protectedReads: string[] = []
+    vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
+      protectedReads.push(url)
+      if (url.endsWith('/media') || url.endsWith('/processing-jobs')) return []
+      throw new Error(`Unexpected protected read ${url}`)
+    })
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    queryClient.setQueryData(currentUserQueryKey, {
+      userId: 'current-user',
+      displayName: 'Current User',
+      globalRole: 'EMPLOYEE',
+    })
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <MeetingWorkspacePage meetingId='meeting-1' section='recording' />
+      </QueryClientProvider>
+    )
+
+    await expect
+      .element(screen.getByText('No source files uploaded'))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('No processing jobs'))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: 'Start recording' }))
+      .not.toBeInTheDocument()
+    await expect
+      .element(screen.getByLabelText('Select WAV, MP3, or AAC audio file'))
+      .not.toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: 'Start processing' }))
+      .not.toBeInTheDocument()
+    expect(protectedReads).toContain('/meetings/meeting-1/media')
+    expect(protectedReads).toContain('/meetings/meeting-1/processing-jobs')
+  })
+
+  it('does not request protected workspace data when active membership cannot be verified', async () => {
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+      data: detail,
+      meta: {},
+      etag: 'etag-current',
+    })
+    vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url) => {
+      if (url === '/meetings/meeting-1/participants') {
+        throw new CoreApiError({
+          message: 'Membership unavailable',
+          status: 403,
+          kind: 'http',
+        })
+      }
+      return { data: [], meta: { pagination: availabilityPagination } }
+    })
+    const protectedRead = vi.spyOn(coreApi, 'get')
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    queryClient.setQueryData(currentUserQueryKey, {
+      userId: 'current-user',
+      displayName: 'Current User',
+      globalRole: 'ADMINISTRATOR',
+    })
+
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <MeetingWorkspacePage meetingId='meeting-1' section='transcript' />
+      </QueryClientProvider>
+    )
+
+    await expect
+      .element(screen.getByRole('tab', { name: 'Transcript' }))
+      .toBeDisabled()
+    await expect
+      .element(screen.getByText(/verify.*meeting membership|access.*content/i))
+      .toBeInTheDocument()
+    expect(protectedRead).not.toHaveBeenCalled()
+  })
+
+  it('clears the previous identity workspace before loading another identity', async () => {
+    const detailSpy = vi
+      .spyOn(coreApi, 'getWithMetaAndEtag')
+      .mockResolvedValueOnce({
+        data: detail,
+        meta: {},
+        etag: 'etag-first',
+      })
+      .mockRejectedValueOnce(
+        new CoreApiError({
+          message: 'Meeting not found',
+          status: 404,
+          kind: 'http',
+        })
+      )
+    vi.spyOn(coreApi, 'getWithMeta').mockResolvedValue({
+      data: [{ ...participants[0], userId: 'current-user' }],
+      meta: {},
+    })
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    queryClient.setQueryData(currentUserQueryKey, {
+      userId: 'current-user',
+      displayName: 'Current User',
+    })
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <MeetingWorkspacePage meetingId='meeting-1' />
+      </QueryClientProvider>
+    )
+
+    await expect
+      .element(screen.getByRole('heading', { name: detail.title }))
+      .toBeInTheDocument()
+
+    queryClient.setQueryData(currentUserQueryKey, {
+      userId: 'another-user',
+      displayName: 'Another User',
+      globalRole: 'ADMINISTRATOR',
+    })
+
+    await expect
+      .element(screen.getByText('Meeting not found or unavailable'))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('heading', { name: detail.title }))
+      .not.toBeInTheDocument()
+    expect(detailSpy).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows ended lifecycle separately from unconfirmed media, processing, and results', async () => {
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+      data: detail,
+      meta: {},
+      etag: 'etag-ended',
+    })
+    vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url) => {
+      if (url === '/meetings/meeting-1/participants') {
+        return {
+          data: [{ ...participants[0], userId: 'current-user' }],
+          meta: {},
+        }
+      }
+      return {
+        data: [],
+        meta: { pagination: availabilityPagination },
+      }
+    })
+    vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
+      if (url.endsWith('/media') || url.endsWith('/processing-jobs')) return []
+      if (url.endsWith('/minutes')) {
+        return {
+          schemaVersion: 1,
+          assembledAt: '2026-11-25T12:00:00Z',
+          sourceFingerprint: 'a'.repeat(64),
+          completeness: 'PARTIAL',
+          proposalsIncluded: false,
+          warnings: [],
+          meeting: {
+            id: '66666666-6666-4666-8666-666666666666',
+            title: detail.title,
+            description: detail.description,
+            organizerUserId: '77777777-7777-4777-8777-777777777777',
+            status: 'ENDED',
+            scheduledStartAt: detail.scheduledStartAt,
+            scheduledEndAt: detail.scheduledEndAt,
+            startedAt: detail.startedAt,
+            endedAt: detail.endedAt,
+          },
+          summary: {
+            availability: 'MISSING',
+            id: null,
+            versionNumber: null,
+            content: null,
+            sourceType: null,
+            qualityStatus: null,
+            transcriptId: null,
+            contentRevision: null,
+            selectionEpoch: 0,
+            isStale: false,
+            aiWarnings: [],
+          },
+          confirmedDecisions: [],
+          officialActionItems: [],
+          transcript: {
+            availability: 'MISSING',
+            id: null,
+            versionNumber: null,
+            status: null,
+            unresolvedSegments: 0,
+            unresolvedCoverageRegions: 0,
+          },
+        }
+      }
+      throw new Error(`Unexpected protected read ${url}`)
+    })
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    queryClient.setQueryData(currentUserQueryKey, {
+      userId: 'current-user',
+      displayName: 'Current User',
+    })
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <MeetingWorkspacePage meetingId='meeting-1' />
+      </QueryClientProvider>
+    )
+
+    await expect.element(screen.getByText('Completed')).toBeInTheDocument()
+    await expect
+      .element(screen.getByText('No source media'))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('Processing not started'))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('Transcript not available'))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('No summary available'))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('Intelligence ready'))
+      .not.toBeInTheDocument()
   })
 
   it('shows the edit action only when the current user is the organizer of an editable meeting', async () => {

@@ -13,7 +13,15 @@ import { actionItemsQuery } from './action-api'
 import { ActionCommands } from './action-commands'
 import { ActionForm } from './action-form'
 
-export function MeetingActionsPanel({ meetingId }: { meetingId: string }) {
+export function MeetingActionsPanel({
+  meetingId,
+  currentUserId,
+  canManageActionItems,
+}: {
+  meetingId: string
+  currentUserId: string
+  canManageActionItems: boolean
+}) {
   const [page, setPage] = useState(0)
   const [open, setOpen] = useState(false)
   const actions = useQuery(
@@ -39,9 +47,11 @@ export function MeetingActionsPanel({ meetingId }: { meetingId: string }) {
               official task progress.
             </p>
           </div>
-          <Button size='sm' onClick={() => setOpen(true)}>
-            <Plus className='size-4' /> Add action
-          </Button>
+          {canManageActionItems && (
+            <Button size='sm' onClick={() => setOpen(true)}>
+              <Plus className='size-4' /> Add action
+            </Button>
+          )}
         </CardHeader>
         <CardContent className='space-y-4'>
           {actions.isPending ? (
@@ -84,7 +94,11 @@ export function MeetingActionsPanel({ meetingId }: { meetingId: string }) {
                     {item.assigneeUserId && <span>Assigned</span>}
                   </div>
                   <div className='mt-3'>
-                    <ActionCommands item={item} />
+                    <ActionCommands
+                      item={item}
+                      currentUserId={currentUserId}
+                      canManageActionItems={canManageActionItems}
+                    />
                   </div>
                 </section>
               ))}
@@ -116,12 +130,14 @@ export function MeetingActionsPanel({ meetingId }: { meetingId: string }) {
           )}
         </CardContent>
       </Card>
-      <ActionForm
-        key={open ? 'new-' + meetingId : 'closed'}
-        open={open}
-        onOpenChange={setOpen}
-        meetingId={meetingId}
-      />
+      {canManageActionItems && (
+        <ActionForm
+          key={open ? 'new-' + meetingId : 'closed'}
+          open={open}
+          onOpenChange={setOpen}
+          meetingId={meetingId}
+        />
+      )}
     </>
   )
 }

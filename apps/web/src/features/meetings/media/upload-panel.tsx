@@ -52,7 +52,13 @@ function errorMessage(error: unknown): string | undefined {
   return error instanceof Error ? error.message : undefined
 }
 
-export function UploadPanel({ meetingId }: { meetingId: string }) {
+export function UploadPanel({
+  meetingId,
+  canSubmitMedia,
+}: {
+  meetingId: string
+  canSubmitMedia: boolean
+}) {
   const qc = useQueryClient()
   const fileInput = useRef<HTMLInputElement>(null)
   const operation = useRef<{
@@ -216,62 +222,66 @@ export function UploadPanel({ meetingId }: { meetingId: string }) {
         </p>
       </CardHeader>
       <CardContent className='space-y-4'>
-        <div className='flex flex-wrap items-center gap-3 rounded-lg border p-3'>
-          <input
-            ref={fileInput}
-            type='file'
-            accept='.wav,.mp3,.m4a,audio/wav,audio/mpeg,audio/mp4'
-            disabled={mutation.isPending || checkingStatus}
-            onChange={(event) => selectFile(event.target.files?.[0] ?? null)}
-            aria-label='Select WAV, MP3, or AAC M4A audio file'
-            className='max-w-full text-sm'
-          />
-          {file && (
-            <span className='max-w-full truncate text-sm' title={file.name}>
-              {file.name}
-            </span>
-          )}
-          <Button
-            disabled={!file || mutation.isPending || !!uncertainMediaId}
-            onClick={submit}
-          >
-            <UploadCloud className='size-4' />
-            {mutation.isPending ? 'Uploading…' : 'Upload and finalize'}
-          </Button>
-          {uncertainMediaId && (
-            <>
-              <Button
-                variant='outline'
-                disabled={checkingStatus}
-                onClick={() => void checkUncertainStatus()}
-              >
-                {checkingStatus ? 'Checking…' : 'Check upload status'}
-              </Button>
-              <Button
-                variant='ghost'
-                disabled={checkingStatus}
-                onClick={startNewOperation}
-              >
-                Start a new upload
-              </Button>
-            </>
-          )}
-        </div>
-        {fileError && (
+        {canSubmitMedia && (
+          <div className='flex flex-wrap items-center gap-3 rounded-lg border p-3'>
+            <input
+              ref={fileInput}
+              type='file'
+              accept='.wav,.mp3,.m4a,audio/wav,audio/mpeg,audio/mp4'
+              disabled={mutation.isPending || checkingStatus}
+              onChange={(event) => selectFile(event.target.files?.[0] ?? null)}
+              aria-label='Select WAV, MP3, or AAC M4A audio file'
+              className='max-w-full text-sm'
+            />
+            {file && (
+              <span className='max-w-full truncate text-sm' title={file.name}>
+                {file.name}
+              </span>
+            )}
+            <Button
+              disabled={!file || mutation.isPending || !!uncertainMediaId}
+              onClick={submit}
+            >
+              <UploadCloud className='size-4' />
+              {mutation.isPending ? 'Uploading…' : 'Upload and finalize'}
+            </Button>
+            {uncertainMediaId && (
+              <>
+                <Button
+                  variant='outline'
+                  disabled={checkingStatus}
+                  onClick={() => void checkUncertainStatus()}
+                >
+                  {checkingStatus ? 'Checking…' : 'Check upload status'}
+                </Button>
+                <Button
+                  variant='ghost'
+                  disabled={checkingStatus}
+                  onClick={startNewOperation}
+                >
+                  Start a new upload
+                </Button>
+              </>
+            )}
+          </div>
+        )}
+        {fileError && canSubmitMedia && (
           <p role='alert' className='text-sm text-destructive'>
             {fileError}
           </p>
         )}
-        {phaseText && (
+        {phaseText && canSubmitMedia && (
           <p role='status' className='text-sm text-muted-foreground'>
             {phaseText}
           </p>
         )}
-        <p className='text-xs text-muted-foreground'>
-          Supported declarations are WAV, MP3, and AAC in M4A. The browser
-          declaration is checked here; Core remains authoritative for the actual
-          container and codec.
-        </p>
+        {canSubmitMedia && (
+          <p className='text-xs text-muted-foreground'>
+            Supported declarations are WAV, MP3, and AAC in M4A. The browser
+            declaration is checked here; Core remains authoritative for the
+            actual container and codec.
+          </p>
+        )}
         {query.isPending ? (
           <RequestLoading />
         ) : query.isError ? (

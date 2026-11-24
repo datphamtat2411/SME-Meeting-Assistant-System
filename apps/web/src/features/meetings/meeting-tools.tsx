@@ -1,4 +1,3 @@
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { MeetingActionsPanel } from '@/features/action-items/meeting-actions-panel'
 import { DecisionsPanel } from './intelligence/decisions-panel'
 import { ExportPanel } from './intelligence/export-panel'
@@ -9,67 +8,156 @@ import { TranscriptPanel } from './intelligence/transcript-panel'
 import { ProcessingPanel } from './media/processing-panel'
 import { RecordingPanel } from './media/recording-panel'
 import { UploadPanel } from './media/upload-panel'
+import { useMeetingWorkspace } from './meeting-workspace-context'
+import type { MeetingWorkspaceSection } from './meeting-workspace-navigation'
 
-export function MeetingTools({ meetingId }: { meetingId: string }) {
-  return <MeetingToolsForMeeting key={meetingId} meetingId={meetingId} />
+export function MeetingTools({
+  meetingId,
+  section,
+}: {
+  meetingId: string
+  section: Exclude<MeetingWorkspaceSection, 'overview'>
+}) {
+  const { identity, capabilities } = useMeetingWorkspace()
+
+  if (section === 'recording') {
+    if (!capabilities.canReadMeetingContent) return <WorkspaceAccessMessage />
+    return (
+      <div className='space-y-5'>
+        <FeatureSectionHeading
+          title='Recording & source media'
+          description='Capture or add a source recording, review available files, and open processing details when needed.'
+        />
+        {!capabilities.canSubmitMedia && (
+          <ReadOnlyNote>
+            Source media is available to review. Only the meeting organizer can
+            add a recording or request processing.
+          </ReadOnlyNote>
+        )}
+        <RecordingPanel
+          meetingId={meetingId}
+          canRecordAudio={capabilities.canRecordAudio}
+          canSubmitMedia={capabilities.canSubmitMedia}
+        />
+        <UploadPanel
+          meetingId={meetingId}
+          canSubmitMedia={capabilities.canSubmitMedia}
+        />
+        <ProcessingPanel
+          meetingId={meetingId}
+          canManageProcessing={
+            capabilities.canAdmitProcessing || capabilities.canRecoverProcessing
+          }
+        />
+      </div>
+    )
+  }
+
+  if (section === 'transcript') {
+    if (!capabilities.canReadMeetingContent) return <WorkspaceAccessMessage />
+    return (
+      <div className='space-y-5'>
+        <FeatureSectionHeading
+          title='Transcript & speakers'
+          description='Review the available transcript and its speaker identities. Results appear only when Core confirms they exist.'
+        />
+        {!capabilities.canCorrectTranscript && (
+          <ReadOnlyNote>
+            You can review this transcript. Corrections and speaker mapping are
+            organizer operations.
+          </ReadOnlyNote>
+        )}
+        <TranscriptPanel
+          meetingId={meetingId}
+          canCorrectTranscript={capabilities.canCorrectTranscript}
+        />
+        <SpeakersPanel
+          meetingId={meetingId}
+          canMapSpeakers={capabilities.canMapSpeakers}
+        />
+      </div>
+    )
+  }
+
+  if (section === 'intelligence') {
+    if (!capabilities.canReadIntelligence) return <WorkspaceAccessMessage />
+    return (
+      <div className='space-y-5'>
+        <FeatureSectionHeading
+          title='Meeting intelligence'
+          description='Review confirmed meeting results and their current source state. AI proposals remain distinct from approved records.'
+        />
+        {!capabilities.canMutateIntelligence && (
+          <ReadOnlyNote>
+            You can review available results. Editing, review, and regeneration
+            operations are available to the meeting organizer.
+          </ReadOnlyNote>
+        )}
+        <SummaryPanel
+          meetingId={meetingId}
+          canEdit={capabilities.canMutateIntelligence}
+          canRegenerate={capabilities.canAdmitProcessing}
+        />
+        <DecisionsPanel
+          meetingId={meetingId}
+          canManageDecisions={capabilities.canMutateIntelligence}
+        />
+        <MinutesPanel meetingId={meetingId} />
+        <ExportPanel meetingId={meetingId} />
+      </div>
+    )
+  }
+
+  if (section === 'action-items') {
+    if (!capabilities.canReadActionItems) return <WorkspaceAccessMessage />
+    return (
+      <div className='space-y-5'>
+        <FeatureSectionHeading
+          title='Action items'
+          description='Track official work and review eligible proposals. Assignment and scoped management permissions are enforced by Core.'
+        />
+        <MeetingActionsPanel
+          meetingId={meetingId}
+          currentUserId={identity.userId}
+          canManageActionItems={capabilities.canManageActionItems}
+        />
+      </div>
+    )
+  }
+
+  return null
 }
 
-function MeetingToolsForMeeting({ meetingId }: { meetingId: string }) {
+function FeatureSectionHeading({
+  title,
+  description,
+}: {
+  title: string
+  description: string
+}) {
   return (
-    <section className='space-y-4'>
-      <div>
-        <h2 className='text-xl font-bold'>Meeting intelligence workspace</h2>
-        <p className='text-sm text-muted-foreground'>
-          Source media, asynchronous processing and human-reviewed results
-          remain distinct.
-        </p>
-        <p className='mt-2 text-sm text-muted-foreground'>
-          This workspace does not acknowledge transcript review or admit Meeting
-          Intelligence automatically; those human gates remain explicit and
-          Core-authorized.
-        </p>
-      </div>
-      <Tabs defaultValue='media' className='w-full'>
-        <TabsList className='flex h-auto flex-wrap justify-start gap-1'>
-          <TabsTrigger value='media'>Recording & media</TabsTrigger>
-          <TabsTrigger value='processing'>Processing</TabsTrigger>
-          <TabsTrigger value='transcript'>Transcript</TabsTrigger>
-          <TabsTrigger value='speakers'>Speakers</TabsTrigger>
-          <TabsTrigger value='summary'>Summary</TabsTrigger>
-          <TabsTrigger value='decisions'>Decisions</TabsTrigger>
-          <TabsTrigger value='actions'>Action items</TabsTrigger>
-          <TabsTrigger value='minutes'>Minutes</TabsTrigger>
-          <TabsTrigger value='export'>Export</TabsTrigger>
-        </TabsList>
-        <TabsContent value='media' className='mt-4 space-y-4'>
-          <RecordingPanel meetingId={meetingId} />
-          <UploadPanel meetingId={meetingId} />
-        </TabsContent>
-        <TabsContent value='processing' className='mt-4'>
-          <ProcessingPanel meetingId={meetingId} />
-        </TabsContent>
-        <TabsContent value='transcript' className='mt-4'>
-          <TranscriptPanel meetingId={meetingId} />
-        </TabsContent>
-        <TabsContent value='speakers' className='mt-4'>
-          <SpeakersPanel meetingId={meetingId} />
-        </TabsContent>
-        <TabsContent value='summary' className='mt-4'>
-          <SummaryPanel meetingId={meetingId} />
-        </TabsContent>
-        <TabsContent value='decisions' className='mt-4'>
-          <DecisionsPanel meetingId={meetingId} />
-        </TabsContent>
-        <TabsContent value='actions' className='mt-4'>
-          <MeetingActionsPanel meetingId={meetingId} />
-        </TabsContent>
-        <TabsContent value='minutes' className='mt-4'>
-          <MinutesPanel meetingId={meetingId} />
-        </TabsContent>
-        <TabsContent value='export' className='mt-4'>
-          <ExportPanel meetingId={meetingId} />
-        </TabsContent>
-      </Tabs>
-    </section>
+    <div className='space-y-1'>
+      <h2 className='text-xl font-semibold tracking-tight'>{title}</h2>
+      <p className='max-w-3xl text-sm text-muted-foreground'>{description}</p>
+    </div>
+  )
+}
+
+function ReadOnlyNote({ children }: { children: React.ReactNode }) {
+  return (
+    <p className='rounded-lg border border-dashed px-4 py-3 text-sm text-muted-foreground'>
+      {children}
+    </p>
+  )
+}
+
+function WorkspaceAccessMessage() {
+  return (
+    <div
+      role='status'
+      className='rounded-lg border border-dashed px-4 py-6 text-sm text-muted-foreground'
+    >
+      Meeting membership must be verified before this section can be opened.
+    </div>
   )
 }
