@@ -192,6 +192,40 @@ void main() {
   );
 
   test(
+    'logout during pending-record durability prevents refresh dispatch',
+    () async {
+      var now = _start;
+      final storage = _RotationPendingGateCredentialStorage();
+      final client = _ControlledAuthClient();
+      final api = _api(client, storage: storage, now: () => now);
+      addTearDown(api.dispose);
+      await _signIn(api);
+      now = now.add(const Duration(seconds: 40));
+
+      final pendingRequestFailure = expectLater(
+        api.get('/protected'),
+        throwsA(isA<AuthSessionException>()),
+      );
+      await storage.rotationPendingStarted.future;
+
+      final signOut = api.signOut();
+      expect(api.sessionState.phase, AuthSessionPhase.signingOut);
+      expect(client.refreshCalls, 0);
+
+      storage.allowRotationPending.complete();
+      await signOut;
+      await pendingRequestFailure;
+
+      expect(client.pathCalls('/auth/refresh'), 0);
+      expect(
+        (await TokenStore(storage: storage, baseUri: _apiBaseUri).read()).state,
+        TokenStoreCredentialState.missing,
+      );
+      expect(api.sessionState.phase, AuthSessionPhase.unauthenticated);
+    },
+  );
+
+  test(
     'session deletion wins when termination races durable rotation commit',
     () async {
       var now = _start;
@@ -481,6 +515,22 @@ class _CommitGateCredentialStorage extends InMemoryCredentialStorage {
     if (_durabilityCalls == 3) {
       rotationCommitStarted.complete();
       await allowRotationCommit.future;
+    }
+    await super.confirmDurable();
+  }
+}
+
+class _RotationPendingGateCredentialStorage extends InMemoryCredentialStorage {
+  final Completer<void> rotationPendingStarted = Completer<void>();
+  final Completer<void> allowRotationPending = Completer<void>();
+  int _durabilityCalls = 0;
+
+  @override
+  Future<void> confirmDurable() async {
+    _durabilityCalls++;
+    if (_durabilityCalls == 2) {
+      rotationPendingStarted.complete();
+      await allowRotationPending.future;
     }
     await super.confirmDurable();
   }

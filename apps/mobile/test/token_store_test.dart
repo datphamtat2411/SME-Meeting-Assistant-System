@@ -135,6 +135,77 @@ void main() {
   );
 
   test(
+    'logout intent is scoped, durable, credential-free, and retired last',
+    () async {
+      final storage = _MemoryStorage();
+      final store = _store(storage);
+      await store.storeLoginCredential('refresh_0');
+
+      await store.persistLogoutIntent();
+
+      final marker = jsonDecode(
+        storage.values[store.logoutIntentStorageKey]!,
+      ) as Map<String, dynamic>;
+      expect(marker, <String, dynamic>{
+        'version': 1,
+        'state': 'logoutPending',
+        'scope': store.scopeDigest,
+      });
+      expect(jsonEncode(marker), isNot(contains('refresh_0')));
+      expect(jsonEncode(marker), isNot(contains('accessToken')));
+      final pending = await _store(storage).read();
+      expect(pending.state, TokenStoreCredentialState.logoutPending);
+      expect(pending.refreshToken, isNull);
+      await expectLater(
+        store.markRotationPending('refresh_0'),
+        throwsA(isA<TokenStoreStateException>()),
+      );
+      await expectLater(
+        store.storeLoginCredential('refresh_other'),
+        throwsA(isA<TokenStoreStateException>()),
+      );
+      expect(
+        jsonDecode(storage.values[store.storageKey]!)['refreshToken'],
+        'refresh_0',
+      );
+
+      final deletion = await store.deleteForLogout();
+
+      expect(
+        (await _store(storage).read()).state,
+        TokenStoreCredentialState.logoutPending,
+      );
+      expect(storage.values, contains(store.logoutIntentStorageKey));
+      await store.clearLogoutIntent(deletion);
+
+      expect(
+        (await _store(storage).read()).state,
+        TokenStoreCredentialState.missing,
+      );
+      expect(storage.values, isNot(contains(store.logoutIntentStorageKey)));
+      await store.persistLogoutIntent();
+      final retiredReceipt = await store.deleteForLogout();
+      await store.clearLogoutIntent(retiredReceipt);
+      await expectLater(
+        store.clearLogoutIntent(retiredReceipt),
+        throwsA(isA<TokenStoreStateException>()),
+      );
+    },
+  );
+
+  test('malformed logout intent fails closed as pending cleanup', () async {
+    final storage = _MemoryStorage();
+    final store = _store(storage);
+    await store.storeLoginCredential('refresh_0');
+    storage.values[store.logoutIntentStorageKey] = '{"version":99}';
+
+    final result = await _store(storage).read();
+
+    expect(result.state, TokenStoreCredentialState.logoutIntentUnusable);
+    expect(result.refreshToken, isNull);
+  });
+
+  test(
     'separate deployment scopes cannot read or replace each other',
     () async {
       final storage = _MemoryStorage();
@@ -149,6 +220,18 @@ void main() {
       expect((await production.read()).refreshToken, 'prod_refresh');
       expect((await staging.read()).refreshToken, 'stage_refresh');
       expect(production.storageKey, isNot(staging.storageKey));
+
+      await production.persistLogoutIntent();
+
+      expect(
+        (await production.read()).state,
+        TokenStoreCredentialState.logoutPending,
+      );
+      expect((await staging.read()).refreshToken, 'stage_refresh');
+      expect(
+        production.logoutIntentStorageKey,
+        isNot(staging.logoutIntentStorageKey),
+      );
     },
   );
 
@@ -296,23 +379,41 @@ void main() {
     final store = _store(storage);
 
     await store.storeLoginCredential('refresh_0');
-    expect(storage.events, <String>['read', 'write', 'durability']);
+    expect(storage.events, <String>['read', 'read', 'write', 'durability']);
 
     storage.events.clear();
     await store.markRotationPending('refresh_0');
-    expect(storage.events, <String>['read', 'read', 'write', 'durability']);
+    expect(storage.events, <String>[
+      'read',
+      'read',
+      'read',
+      'write',
+      'durability',
+    ]);
 
     storage.events.clear();
     await store.commitRotation(
       previousRefreshToken: 'refresh_0',
       nextRefreshToken: 'refresh_1',
     );
-    expect(storage.events, <String>['read', 'read', 'write', 'durability']);
+    expect(storage.events, <String>[
+      'read',
+      'read',
+      'read',
+      'write',
+      'durability',
+    ]);
 
     await store.markRotationPending('refresh_1');
     storage.events.clear();
     await store.restoreAfterPreRotationRejection('refresh_1');
-    expect(storage.events, <String>['read', 'read', 'write', 'durability']);
+    expect(storage.events, <String>[
+      'read',
+      'read',
+      'read',
+      'write',
+      'durability',
+    ]);
 
     storage.events.clear();
     await store.delete();

@@ -10,6 +10,8 @@ enum TokenStoreCredentialState {
   missing,
   committed,
   rotationPending,
+  logoutPending,
+  logoutIntentUnusable,
   malformed,
   unsupportedVersion,
   wrongDeployment,
@@ -63,6 +65,7 @@ class TokenStore {
   static const String legacyStorageKey = 'sme.mobile.refresh';
   static const int recordVersion = 1;
   static const String _keyPrefix = 'sme.mobile.token.v1.';
+  static const String _logoutIntentKeyPrefix = 'sme.mobile.logout.v1.';
 
   static final RegExp _refreshTokenPattern = RegExp(r'^[A-Za-z0-9_-]+$');
 
@@ -71,8 +74,12 @@ class TokenStore {
 
   String get scopeDigest => _scopeDigest;
   String get storageKey => '$_keyPrefix$_scopeDigest';
+  String get logoutIntentStorageKey => '$_logoutIntentKeyPrefix$_scopeDigest';
 
   Future<TokenStoreReadResult> read() async {
+    final logoutIntent = await _readLogoutIntentState();
+    if (logoutIntent != null) return TokenStoreReadResult._(logoutIntent);
+
     final retiredLegacy = await _retireLegacyCredential();
     final record = await _readScopedRecord();
     if (record.state == TokenStoreCredentialState.missing && retiredLegacy) {
@@ -93,7 +100,38 @@ class TokenStore {
   Future<void> storeLoginCredential(String refreshToken) async {
     _validateRefreshToken(refreshToken);
     await _retireLegacyCredential();
+    await _requireNoLogoutIntent();
     await _writeRecord(state: 'committed', refreshToken: refreshToken);
+  }
+
+  /// Durably marks this deployment as terminating before credential cleanup.
+  ///
+  /// The tombstone contains only its version, state, and deployment scope. It
+  /// intentionally has no credential payload and takes precedence over every
+  /// refresh-token record during startup.
+  Future<void> persistLogoutIntent() async {
+    final value = jsonEncode(<String, Object>{
+      'version': recordVersion,
+      'state': 'logoutPending',
+      'scope': _scopeDigest,
+    });
+    try {
+      await _storage.write(key: logoutIntentStorageKey, value: value);
+      await _storage.confirmDurable();
+    } catch (_) {
+      throw const TokenStoreException(TokenStoreOperation.write);
+    }
+  }
+
+  /// Removes a logout tombstone after refresh credentials were durably deleted.
+  Future<void> clearLogoutIntent(
+    LogoutCredentialDeletionReceipt confirmation,
+  ) async {
+    if (!identical(confirmation._tokenStore, this) || confirmation._consumed) {
+      throw const TokenStoreStateException();
+    }
+    confirmation._consumed = true;
+    await _deleteAndConfirm(logoutIntentStorageKey);
   }
 
   /// Makes the existing credential non-reusable before a refresh request.
@@ -134,7 +172,21 @@ class TokenStore {
   }
 
   /// Idempotently removes both deployment-scoped and obsolete legacy records.
+  ///
+  /// This does not remove a logout intent. Logout callers must confirm this
+  /// deletion before separately retiring the tombstone.
   Future<void> delete() async {
+    await _deleteCredentialRecords();
+  }
+
+  /// Deletes credentials and returns a one-use proof that both durable
+  /// deletions completed. The proof is required to retire the logout marker.
+  Future<LogoutCredentialDeletionReceipt> deleteForLogout() async {
+    await _deleteCredentialRecords();
+    return LogoutCredentialDeletionReceipt._(this);
+  }
+
+  Future<void> _deleteCredentialRecords() async {
     await _deleteAndConfirm(storageKey);
     await _deleteAndConfirm(legacyStorageKey);
   }
@@ -162,8 +214,44 @@ class TokenStore {
   }
 
   Future<_ParsedTokenRecord> _readScopedRecordAfterLegacyRetirement() async {
+    await _requireNoLogoutIntent();
     await _retireLegacyCredential();
     return _readScopedRecord();
+  }
+
+  Future<void> _requireNoLogoutIntent() async {
+    if (await _readLogoutIntentState() != null) {
+      throw const TokenStoreStateException();
+    }
+  }
+
+  Future<TokenStoreCredentialState?> _readLogoutIntentState() async {
+    final String? raw;
+    try {
+      raw = await _storage.read(key: logoutIntentStorageKey);
+    } catch (_) {
+      throw const TokenStoreException(TokenStoreOperation.read);
+    }
+    if (raw == null) return null;
+
+    final Object? decoded;
+    try {
+      decoded = jsonDecode(raw);
+    } on FormatException {
+      return TokenStoreCredentialState.logoutIntentUnusable;
+    }
+    if (decoded is! Map<String, dynamic>) {
+      return TokenStoreCredentialState.logoutIntentUnusable;
+    }
+    const requiredKeys = <String>{'version', 'state', 'scope'};
+    if (decoded.keys.length != requiredKeys.length ||
+        !decoded.keys.toSet().containsAll(requiredKeys) ||
+        decoded['version'] != recordVersion ||
+        decoded['state'] != 'logoutPending' ||
+        decoded['scope'] != _scopeDigest) {
+      return TokenStoreCredentialState.logoutIntentUnusable;
+    }
+    return TokenStoreCredentialState.logoutPending;
   }
 
   Future<_ParsedTokenRecord> _readScopedRecord() async {
@@ -287,6 +375,13 @@ class TokenStore {
     }
     return '$scheme://$hostForAuthority:$effectivePort$path';
   }
+}
+
+class LogoutCredentialDeletionReceipt {
+  LogoutCredentialDeletionReceipt._(this._tokenStore);
+
+  final TokenStore _tokenStore;
+  bool _consumed = false;
 }
 
 class _ParsedTokenRecord {

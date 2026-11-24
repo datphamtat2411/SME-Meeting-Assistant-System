@@ -222,6 +222,64 @@ void main() {
     );
   });
 
+  testWidgets('interrupted logout blocks login until marker cleanup succeeds', (
+    tester,
+  ) async {
+    final credentials = _FailingDeleteStorage();
+    final store = TokenStore(
+      storage: credentials,
+      baseUri: Uri.parse(_testApiUri),
+    );
+    await store.storeLoginCredential('refresh-0');
+    await store.persistLogoutIntent();
+    final client = _authClient();
+    final harness = _Harness.create(client, credentials);
+
+    await tester.pumpWidget(
+      MeetingAssistantApp(dependencies: harness.dependencies),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      harness.api.sessionState.failure?.machineCode,
+      'LOGOUT_RECOVERY_CLEANUP_FAILED',
+    );
+    expect(
+      find.text(
+        'Phiên đăng xuất trước đó chưa được dọn dẹp hoàn tất. Vui lòng thử xóa thông tin phiên đã lưu.',
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('Đăng nhập hệ thống'), findsNothing);
+    expect(find.text('Thử xóa phiên đã lưu lại'), findsOneWidget);
+    await expectLater(
+      harness.api.signIn('other@example.test', 'password'),
+      throwsStateError,
+    );
+    expect(
+      client.requests.where(
+        (request) =>
+            request.url.path.endsWith('/auth/refresh') ||
+            request.url.path.endsWith('/auth/me'),
+      ),
+      isEmpty,
+    );
+
+    await tester.tap(find.text('Thử xóa phiên đã lưu lại'));
+    await tester.pumpAndSettle();
+
+    expect(harness.api.sessionState.phase, AuthSessionPhase.unauthenticated);
+    expect(find.text('Đăng nhập hệ thống'), findsOneWidget);
+    expect(
+      client.requests.where(
+        (request) =>
+            request.url.path.endsWith('/auth/refresh') ||
+            request.url.path.endsWith('/auth/me'),
+      ),
+      isEmpty,
+    );
+  });
+
   testWidgets('signing out hides protected content before logout completes', (
     tester,
   ) async {

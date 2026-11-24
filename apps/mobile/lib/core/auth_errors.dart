@@ -112,7 +112,19 @@ class AuthFailureClassifier {
     );
   }
 
-  AuthSessionFailure logoutUnconfirmed(Object error) => AuthSessionFailure._(
+  AuthSessionFailure interruptedLogoutCleanupFailure() => AuthSessionFailure._(
+    category: AuthFailureCategory.credentialStorage,
+    message: 'Phiên đăng xuất trước đó chưa được dọn dẹp hoàn tất. Vui lòng thử xóa thông tin phiên đã lưu.',
+    code: 'LOGOUT_RECOVERY_CLEANUP_FAILED',
+  );
+
+  AuthSessionFailure logoutDurabilityUnconfirmed() => AuthSessionFailure._(
+    category: AuthFailureCategory.credentialStorage,
+    message: 'Không thể ghi nhận an toàn yêu cầu đăng xuất hoặc xác nhận xóa phiên. Trạng thái đăng xuất sau khi đóng ứng dụng không thể được bảo đảm. Vui lòng thử xóa lại.',
+    code: 'LOGOUT_DURABILITY_UNGUARANTEED',
+  );
+
+  AuthSessionFailure logoutUnconfirmed(Object? error) => AuthSessionFailure._(
     category: AuthFailureCategory.logoutUnconfirmed,
     message: 'Thiết bị đã đăng xuất, nhưng máy chủ chưa xác nhận việc thu hồi phiên.',
     apiFailure: error is ApiFailure ? error : null,

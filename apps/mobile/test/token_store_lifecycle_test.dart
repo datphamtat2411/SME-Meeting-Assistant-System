@@ -234,6 +234,387 @@ void main() {
     },
   );
 
+  test(
+    'restart with a durable logout intent cleans locally before restoration',
+    () async {
+      final storage = _FaultStorage();
+      final store = await _storedToken(storage);
+      await store.persistLogoutIntent();
+      final client = _LifecycleClient();
+      final api = ApiClient(
+        baseUri: _baseUri,
+        httpClient: client,
+        credentialStorage: storage,
+      );
+      addTearDown(api.dispose);
+
+      await api.initialize();
+
+      expect(api.sessionState.phase, AuthSessionPhase.unauthenticated);
+      expect(api.sessionState.isAuthenticated, isFalse);
+      expect(client.paths, isEmpty);
+      expect((await store.read()).state, TokenStoreCredentialState.missing);
+      expect(await storage.read(key: store.logoutIntentStorageKey), isNull);
+    },
+  );
+
+  test(
+    'restart after credential deletion but before marker cleanup stays local',
+    () async {
+      final storage = _FaultStorage();
+      final store = await _storedToken(storage);
+      await store.persistLogoutIntent();
+      await store.delete();
+      expect(await storage.read(key: store.logoutIntentStorageKey), isNotNull);
+      expect(await storage.read(key: store.storageKey), isNull);
+
+      final client = _LifecycleClient();
+      final api = ApiClient(
+        baseUri: _baseUri,
+        httpClient: client,
+        credentialStorage: storage,
+      );
+      addTearDown(api.dispose);
+
+      await api.initialize();
+
+      expect(api.sessionState.phase, AuthSessionPhase.unauthenticated);
+      expect(client.paths, isEmpty);
+      expect((await store.read()).state, TokenStoreCredentialState.missing);
+    },
+  );
+
+  test('restart during remote logout recovers locally without refresh or logout replay', () async {
+    final storage = _FaultStorage();
+    final firstClient = _LifecycleClient(
+      logoutStarted: Completer<void>(),
+      logoutResponse: Completer<http.StreamedResponse>(),
+    );
+    final firstApi = ApiClient(
+      baseUri: _baseUri,
+      httpClient: firstClient,
+      credentialStorage: storage,
+    );
+    await firstApi.initialize();
+    await firstApi.signIn('user@example.test', 'password');
+
+    final signOut = firstApi.signOut();
+    await firstClient.logoutStarted!.future;
+    final store = TokenStore(storage: storage, baseUri: _baseUri);
+    expect(await storage.read(key: store.logoutIntentStorageKey), isNotNull);
+    expect(await storage.read(key: store.storageKey), isNull);
+
+    final restartedClient = _LifecycleClient();
+    final restartedApi = ApiClient(
+      baseUri: _baseUri,
+      httpClient: restartedClient,
+      credentialStorage: storage,
+    );
+    addTearDown(restartedApi.dispose);
+    await restartedApi.initialize();
+
+    expect(restartedApi.sessionState.phase, AuthSessionPhase.unauthenticated);
+    expect(restartedClient.paths, isEmpty);
+    expect((await store.read()).state, TokenStoreCredentialState.missing);
+
+    firstClient.logoutResponse!.complete(
+      jsonResponse(
+        503,
+        errorEnvelope('SERVICE_UNAVAILABLE', 'Logout unavailable.'),
+      ),
+    );
+    expect(await signOut, AuthLogoutOutcome.remoteRevocationUnconfirmed);
+    expect(
+      firstClient.paths.where((path) => path.endsWith('/auth/logout')),
+      hasLength(1),
+    );
+    expect(restartedClient.paths, isEmpty);
+  });
+
+  test(
+    'local deletion and remote logout failures remain pending across restart',
+    () async {
+      final storage = _FaultStorage();
+      final client = _LifecycleClient(logoutStatus: 503);
+      final api = ApiClient(
+        baseUri: _baseUri,
+        httpClient: client,
+        credentialStorage: storage,
+      );
+      await api.initialize();
+      await api.signIn('user@example.test', 'password');
+      storage.failNextDelete = true;
+
+      await expectLater(api.signOut(), throwsA(isA<AuthSessionException>()));
+      final store = TokenStore(storage: storage, baseUri: _baseUri);
+      expect(api.sessionState.isAuthenticated, isFalse);
+      expect(
+        api.sessionState.failure?.category,
+        AuthFailureCategory.credentialStorage,
+      );
+      expect(
+        (await store.read()).state,
+        TokenStoreCredentialState.logoutPending,
+      );
+      expect(
+        client.paths.where((path) => path.endsWith('/auth/logout')),
+        hasLength(1),
+      );
+      api.dispose();
+
+      final restartedClient = _LifecycleClient();
+      final restartedApi = ApiClient(
+        baseUri: _baseUri,
+        httpClient: restartedClient,
+        credentialStorage: storage,
+      );
+      addTearDown(restartedApi.dispose);
+      await restartedApi.initialize();
+
+      expect(restartedApi.sessionState.phase, AuthSessionPhase.unauthenticated);
+      expect(restartedClient.paths, isEmpty);
+      expect((await store.read()).state, TokenStoreCredentialState.missing);
+    },
+  );
+
+  test(
+    'deletion interrupted after storage mutation leaves intent for restart',
+    () async {
+      final storage = _FaultStorage();
+      final client = _LifecycleClient(logoutStatus: 503);
+      final api = ApiClient(
+        baseUri: _baseUri,
+        httpClient: client,
+        credentialStorage: storage,
+      );
+      addTearDown(api.dispose);
+      await api.initialize();
+      await api.signIn('user@example.test', 'password');
+      final store = TokenStore(storage: storage, baseUri: _baseUri);
+      storage
+        ..failDeleteForKey = store.storageKey
+        ..failDeleteAfterPersistence = true;
+
+      await expectLater(api.signOut(), throwsA(isA<AuthSessionException>()));
+
+      expect(await storage.read(key: store.storageKey), isNull);
+      expect(
+        (await store.read()).state,
+        TokenStoreCredentialState.logoutPending,
+      );
+      expect(
+        client.paths.where((path) => path.endsWith('/auth/logout')),
+        hasLength(1),
+      );
+
+      final restartedClient = _LifecycleClient();
+      final restartedApi = ApiClient(
+        baseUri: _baseUri,
+        httpClient: restartedClient,
+        credentialStorage: storage,
+      );
+      addTearDown(restartedApi.dispose);
+      await restartedApi.initialize();
+
+      expect(restartedApi.sessionState.phase, AuthSessionPhase.unauthenticated);
+      expect(restartedClient.paths, isEmpty);
+      expect((await store.read()).state, TokenStoreCredentialState.missing);
+    },
+  );
+
+  test(
+    'marker write failure falls back to confirmed credential deletion',
+    () async {
+      final storage = _FaultStorage();
+      final client = _LifecycleClient();
+      final api = ApiClient(
+        baseUri: _baseUri,
+        httpClient: client,
+        credentialStorage: storage,
+      );
+      addTearDown(api.dispose);
+      await api.initialize();
+      await api.signIn('user@example.test', 'password');
+      storage.failNextWriteBefore = true;
+
+      expect(await api.signOut(), AuthLogoutOutcome.remoteRevocationConfirmed);
+
+      expect(api.sessionState.phase, AuthSessionPhase.unauthenticated);
+      expect(
+        (await TokenStore(storage: storage, baseUri: _baseUri).read()).state,
+        TokenStoreCredentialState.missing,
+      );
+      expect(
+        client.paths.where((path) => path.endsWith('/auth/logout')),
+        hasLength(1),
+      );
+    },
+  );
+
+  test(
+    'marker write with unconfirmed durability still blocks restart restoration',
+    () async {
+      final storage = _FaultStorage();
+      final client = _LifecycleClient();
+      final api = ApiClient(
+        baseUri: _baseUri,
+        httpClient: client,
+        credentialStorage: storage,
+      );
+      addTearDown(api.dispose);
+      await api.initialize();
+      await api.signIn('user@example.test', 'password');
+      storage
+        ..failOnWriteNumber = storage.writeCalls + 1
+        ..failAfterPersistence = true
+        ..failNextDelete = true;
+
+      await expectLater(api.signOut(), throwsA(isA<AuthSessionException>()));
+
+      final store = TokenStore(storage: storage, baseUri: _baseUri);
+      expect(
+        (await store.read()).state,
+        TokenStoreCredentialState.logoutPending,
+      );
+
+      final restartedClient = _LifecycleClient();
+      final restartedApi = ApiClient(
+        baseUri: _baseUri,
+        httpClient: restartedClient,
+        credentialStorage: storage,
+      );
+      addTearDown(restartedApi.dispose);
+      await restartedApi.initialize();
+
+      expect(restartedApi.sessionState.phase, AuthSessionPhase.unauthenticated);
+      expect(restartedClient.paths, isEmpty);
+      expect((await store.read()).state, TokenStoreCredentialState.missing);
+    },
+  );
+
+  test(
+    'remote revocation failure remains visible after local cleanup retry',
+    () async {
+      final storage = _FaultStorage();
+      final client = _LifecycleClient(logoutStatus: 503);
+      final api = ApiClient(
+        baseUri: _baseUri,
+        httpClient: client,
+        credentialStorage: storage,
+      );
+      addTearDown(api.dispose);
+      await api.initialize();
+      await api.signIn('user@example.test', 'password');
+      storage.failNextDelete = true;
+
+      await expectLater(api.signOut(), throwsA(isA<AuthSessionException>()));
+      await api.retrySessionRestore();
+
+      expect(api.sessionState.phase, AuthSessionPhase.unauthenticated);
+      expect(
+        api.sessionState.failure?.category,
+        AuthFailureCategory.logoutUnconfirmed,
+      );
+      expect(api.sessionState.failure?.machineCode, 'LOGOUT_UNCONFIRMED');
+      expect(
+        (await TokenStore(storage: storage, baseUri: _baseUri).read()).state,
+        TokenStoreCredentialState.missing,
+      );
+      expect(
+        client.paths.where((path) => path.endsWith('/auth/logout')),
+        hasLength(1),
+      );
+    },
+  );
+
+  test(
+    'intent-write plus credential-delete failure reports durability limitation',
+    () async {
+      final storage = _FaultStorage();
+      final client = _LifecycleClient();
+      final api = ApiClient(
+        baseUri: _baseUri,
+        httpClient: client,
+        credentialStorage: storage,
+      );
+      await api.initialize();
+      await api.signIn('user@example.test', 'password');
+      storage.failNextWriteBefore = true;
+      storage.failNextDelete = true;
+
+      await expectLater(api.signOut(), throwsA(isA<AuthSessionException>()));
+
+      expect(api.sessionState.isAuthenticated, isFalse);
+      expect(
+        api.sessionState.failure?.machineCode,
+        'LOGOUT_DURABILITY_UNGUARANTEED',
+      );
+      expect(api.sessionState.canRetryCredentialStorage, isTrue);
+      expect(
+        (await TokenStore(storage: storage, baseUri: _baseUri).read()).state,
+        TokenStoreCredentialState.committed,
+        reason: 'Neither durable intent nor credential deletion was confirmed.',
+      );
+      await expectLater(
+        api.signIn('other@example.test', 'password'),
+        throwsStateError,
+      );
+
+      await api.retrySessionRestore();
+
+      expect(api.sessionState.phase, AuthSessionPhase.unauthenticated);
+      expect(
+        (await TokenStore(storage: storage, baseUri: _baseUri).read()).state,
+        TokenStoreCredentialState.missing,
+      );
+      api.dispose();
+
+      final restartedClient = _LifecycleClient();
+      final restartedApi = ApiClient(
+        baseUri: _baseUri,
+        httpClient: restartedClient,
+        credentialStorage: storage,
+      );
+      addTearDown(restartedApi.dispose);
+      await restartedApi.initialize();
+      expect(restartedApi.sessionState.phase, AuthSessionPhase.unauthenticated);
+      expect(restartedClient.paths, isEmpty);
+    },
+  );
+
+  test('marker removal failure after durable credential deletion recovers on restart', () async {
+    final storage = _FaultStorage();
+    final client = _LifecycleClient();
+    final api = ApiClient(
+      baseUri: _baseUri,
+      httpClient: client,
+      credentialStorage: storage,
+    );
+    await api.initialize();
+    await api.signIn('user@example.test', 'password');
+    final store = TokenStore(storage: storage, baseUri: _baseUri);
+    storage.failDeleteForKey = store.logoutIntentStorageKey;
+
+    await expectLater(api.signOut(), throwsA(isA<AuthSessionException>()));
+
+    expect((await store.read()).state, TokenStoreCredentialState.logoutPending);
+    expect(await storage.read(key: store.storageKey), isNull);
+    api.dispose();
+
+    final restartedClient = _LifecycleClient();
+    final restartedApi = ApiClient(
+      baseUri: _baseUri,
+      httpClient: restartedClient,
+      credentialStorage: storage,
+    );
+    addTearDown(restartedApi.dispose);
+    await restartedApi.initialize();
+
+    expect(restartedApi.sessionState.phase, AuthSessionPhase.unauthenticated);
+    expect(restartedClient.paths, isEmpty);
+    expect((await store.read()).state, TokenStoreCredentialState.missing);
+  });
+
   test('uncertain refresh outcome stays pending and is never replayed after restart', () async {
     final storage = _FaultStorage();
     await _storedToken(storage);
@@ -574,20 +955,26 @@ class _LifecycleClient extends RecordingHttpClient {
   _LifecycleClient({
     this.onRefresh,
     this.onIdentity,
+    this.logoutStarted,
+    this.logoutResponse,
     this.throwOnRefresh = false,
     this.timeoutOnRefresh = false,
     this.malformedRefresh = false,
     this.refreshStatus,
+    this.logoutStatus,
     this.rateLimitRefreshes = 0,
     this.rateLimitCode = 'RATE_LIMIT_EXCEEDED',
   }) : super((_) async => throw StateError('handler initialized below'));
 
   final Future<void> Function()? onRefresh;
   final Future<void> Function()? onIdentity;
+  final Completer<void>? logoutStarted;
+  final Completer<http.StreamedResponse>? logoutResponse;
   final bool throwOnRefresh;
   final bool timeoutOnRefresh;
   final bool malformedRefresh;
   final int? refreshStatus;
+  final int? logoutStatus;
   int rateLimitRefreshes;
   final String rateLimitCode;
   final List<String> paths = <String>[];
@@ -650,6 +1037,16 @@ class _LifecycleClient extends RecordingHttpClient {
       return jsonResponse(200, successEnvelope(_identity()));
     }
     if (path.endsWith('/auth/logout')) {
+      if (logoutStarted != null && !logoutStarted!.isCompleted) {
+        logoutStarted!.complete();
+      }
+      if (logoutResponse != null) return logoutResponse!.future;
+      if (logoutStatus != null) {
+        return jsonResponse(
+          logoutStatus!,
+          errorEnvelope('SERVICE_UNAVAILABLE', 'Logout unavailable.'),
+        );
+      }
       return jsonResponse(200, successEnvelope(null));
     }
     throw StateError('Unexpected authentication request $path');
@@ -665,6 +1062,8 @@ class _FaultStorage extends InMemoryCredentialStorage {
   int? failOnWriteNumber;
   int? failOnDurabilityNumber;
   bool failAfterPersistence = false;
+  String? failDeleteForKey;
+  bool failDeleteAfterPersistence = false;
 
   @override
   Future<String?> read({required String key}) {
@@ -693,6 +1092,14 @@ class _FaultStorage extends InMemoryCredentialStorage {
 
   @override
   Future<void> delete({required String key}) async {
+    if (failDeleteForKey == key) {
+      failDeleteForKey = null;
+      if (failDeleteAfterPersistence) {
+        failDeleteAfterPersistence = false;
+        await super.delete(key: key);
+      }
+      throw StateError('private storage detail');
+    }
     if (failNextDelete) {
       failNextDelete = false;
       throw StateError('private storage detail');

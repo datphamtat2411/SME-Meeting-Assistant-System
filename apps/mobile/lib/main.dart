@@ -144,8 +144,10 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
 
   Widget _recoverableSessionView(AuthSessionState session) {
     if (session.failure?.category == AuthFailureCategory.credentialStorage) {
+      final cleanupCode = session.failure?.machineCode;
       final cleanupFailed =
-          session.failure?.machineCode == 'CREDENTIAL_STORAGE_DELETE_FAILED';
+          cleanupCode == 'CREDENTIAL_STORAGE_DELETE_FAILED' ||
+          cleanupCode?.startsWith('LOGOUT_') == true;
       return StartupFailureView(
         title: cleanupFailed
             ? 'Không thể xác nhận xóa phiên bảo mật'

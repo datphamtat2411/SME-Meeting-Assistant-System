@@ -140,6 +140,8 @@ class AuthSessionCoordinator extends ChangeNotifier {
   _StorageRecoveryAction? _storageRecoveryAction;
   AuthSessionFailure? _failureAfterStorageRecovery;
   AuthSessionFailure? _logoutFailureAfterStorageRecovery;
+  bool _logoutIntentKnownPending = false;
+  bool _interruptedLogoutRecovered = false;
 
   AuthSessionState get state => _state;
   int get lifecycleEpoch => _lifecycleEpoch;
@@ -196,6 +198,36 @@ class AuthSessionCoordinator extends ChangeNotifier {
     }
   }
 
+  /// Caller holds the TokenStore queue for the complete persistence sequence.
+  Future<LogoutCredentialDeletionReceipt>
+  _persistLogoutIntentAndDeleteCredentials() async {
+    Object? intentError;
+    try {
+      await _tokenStore.persistLogoutIntent();
+      _logoutIntentKnownPending = true;
+    } catch (error) {
+      intentError = error;
+      _logoutIntentKnownPending = false;
+    }
+
+    try {
+      return await _tokenStore.deleteForLogout();
+    } catch (_) {
+      if (intentError != null) throw const _LogoutDurabilityFailure();
+      rethrow;
+    }
+  }
+
+  /// Completes a previously fenced logout. The marker is confirmed (or
+  /// recreated if its persistence was uncertain) before retrying deletion.
+  Future<void> _completeLogoutStorageRecovery() async {
+    final confirmation = _logoutIntentKnownPending
+        ? await _tokenStore.deleteForLogout()
+        : await _persistLogoutIntentAndDeleteCredentials();
+    await _tokenStore.clearLogoutIntent(confirmation);
+    _logoutIntentKnownPending = false;
+  }
+
   Future<void> initialize() async {
     if (_state.phase != AuthSessionPhase.initializing) return;
 
@@ -241,6 +273,9 @@ class AuthSessionCoordinator extends ChangeNotifier {
             ),
           );
         }
+      case TokenStoreCredentialState.logoutPending ||
+          TokenStoreCredentialState.logoutIntentUnusable:
+        await _recoverInterruptedLogout(epoch);
       case TokenStoreCredentialState.rotationPending:
         _requireReauthenticationForUnsafeCredential(
           'REFRESH_ROTATION_PENDING',
@@ -255,6 +290,39 @@ class AuthSessionCoordinator extends ChangeNotifier {
           'Phiên đã lưu không thể được sử dụng an toàn. Vui lòng đăng nhập lại.',
         );
     }
+  }
+
+  Future<void> _recoverInterruptedLogout(int expectedEpoch) async {
+    _logoutIntentKnownPending = true;
+    _interruptedLogoutRecovered = true;
+    _setState(AuthSessionState._(phase: AuthSessionPhase.signingOut));
+    try {
+      await _withTokenStoreLock(() async {
+        _requireCurrentEpoch(expectedEpoch);
+        final confirmation = await _tokenStore.deleteForLogout();
+        await _tokenStore.clearLogoutIntent(confirmation);
+        _logoutIntentKnownPending = false;
+      });
+    } catch (error) {
+      if (!_isCurrentEpoch(expectedEpoch)) return;
+      _setStorageFailure(
+        error,
+        recoveryAction: _StorageRecoveryAction.completeLogout,
+        failureOverride: _classifier.interruptedLogoutCleanupFailure(),
+        expectedEpoch: expectedEpoch,
+      );
+      return;
+    }
+    if (!_isCurrentEpoch(expectedEpoch)) return;
+    _clearMemoryCredentials();
+    _interruptedLogoutRecovered = false;
+    _setState(
+      AuthSessionState._(
+        phase: AuthSessionPhase.unauthenticated,
+        failure: _classifier.logoutUnconfirmed(null),
+        notice: 'Phiên đăng xuất bị gián đoạn đã được dọn dẹp trên thiết bị.',
+      ),
+    );
   }
 
   Future<void> _restoreStoredSession(int epoch) async {
@@ -306,18 +374,24 @@ class AuthSessionCoordinator extends ChangeNotifier {
           case _StorageRecoveryAction.completeLogout:
             await _withTokenStoreLock(() async {
               _requireCurrentEpoch(epoch);
-              await _tokenStore.delete();
+              await _completeLogoutStorageRecovery();
             });
             if (!_isCurrentEpoch(epoch)) return;
             final logoutFailure = _logoutFailureAfterStorageRecovery;
+            final interruptedLogoutRecovered = _interruptedLogoutRecovered;
             _storageRecoveryAction = null;
             _logoutFailureAfterStorageRecovery = null;
+            _interruptedLogoutRecovered = false;
             _clearMemoryCredentials();
             _setState(
               AuthSessionState._(
                 phase: AuthSessionPhase.unauthenticated,
-                failure: logoutFailure,
-                notice: logoutFailure == null
+                failure: interruptedLogoutRecovered
+                    ? _classifier.logoutUnconfirmed(null)
+                    : logoutFailure,
+                notice: interruptedLogoutRecovered
+                    ? 'Phiên đăng xuất bị gián đoạn đã được dọn dẹp trên thiết bị.'
+                    : logoutFailure == null
                     ? 'Đã đăng xuất khỏi thiết bị.'
                     : null,
               ),
@@ -325,7 +399,7 @@ class AuthSessionCoordinator extends ChangeNotifier {
           case _StorageRecoveryAction.completeReauthentication:
             await _withTokenStoreLock(() async {
               _requireCurrentEpoch(epoch);
-              await _tokenStore.delete();
+              await _completeLogoutStorageRecovery();
             });
             if (!_isCurrentEpoch(epoch)) return;
             final failure = _failureAfterStorageRecovery;
@@ -350,6 +424,11 @@ class AuthSessionCoordinator extends ChangeNotifier {
           error,
           recoveryAction: recoveryAction,
           failureAfterRecovery: _failureAfterStorageRecovery,
+          failureOverride:
+              recoveryAction == _StorageRecoveryAction.completeLogout &&
+                  _interruptedLogoutRecovered
+              ? _classifier.interruptedLogoutCleanupFailure()
+              : null,
           expectedEpoch: epoch,
         );
       }
@@ -411,10 +490,13 @@ class AuthSessionCoordinator extends ChangeNotifier {
     try {
       await _withTokenStoreLock(() async {
         _requireCurrentEpoch(epoch);
-        await _tokenStore.delete();
+        final confirmation = await _persistLogoutIntentAndDeleteCredentials();
+        await _tokenStore.clearLogoutIntent(confirmation);
+        _logoutIntentKnownPending = false;
       });
       if (!_isCurrentEpoch(epoch)) return;
       _storageRecoveryAction = null;
+      _interruptedLogoutRecovered = false;
       _setState(AuthSessionState._(phase: AuthSessionPhase.unauthenticated));
     } catch (error) {
       if (!_isCurrentEpoch(epoch)) return;
@@ -570,12 +652,21 @@ class AuthSessionCoordinator extends ChangeNotifier {
     final accessToken = _accessToken;
     final epoch = ++_lifecycleEpoch;
     _clearMemoryCredentials();
+    _interruptedLogoutRecovered = false;
     _setState(AuthSessionState._(phase: AuthSessionPhase.signingOut));
-    // Make interrupted logout non-restorable before waiting on network I/O.
+
+    // The tombstone is committed before credential deletion. Keep it in place
+    // through the server request so a process restart during remote logout is
+    // still classified as an interrupted logout.
     Object? cleanupError;
+    var credentialsDeleted = false;
+    LogoutCredentialDeletionReceipt? deletionConfirmation;
     try {
-      await _withTokenStoreLock(_tokenStore.delete);
-      _storageRecoveryAction = null;
+      await _withTokenStoreLock(() async {
+        _requireCurrentEpoch(epoch);
+        deletionConfirmation = await _persistLogoutIntentAndDeleteCredentials();
+        credentialsDeleted = true;
+      });
     } catch (error) {
       cleanupError = error;
     }
@@ -591,11 +682,26 @@ class AuthSessionCoordinator extends ChangeNotifier {
         : _classifier.logoutUnconfirmed(logoutError);
     _logoutFailureAfterStorageRecovery = logoutFailure;
 
+    if (credentialsDeleted && _isCurrentEpoch(epoch)) {
+      try {
+        await _withTokenStoreLock(() async {
+          _requireCurrentEpoch(epoch);
+          await _tokenStore.clearLogoutIntent(deletionConfirmation!);
+          _logoutIntentKnownPending = false;
+        });
+      } catch (error) {
+        cleanupError = error;
+      }
+    }
+
     if (cleanupError != null) {
-      final cleanupFailure = _classifier.credentialStorageFailure(cleanupError);
+      final cleanupFailure = cleanupError is _LogoutDurabilityFailure
+          ? _classifier.logoutDurabilityUnconfirmed()
+          : _classifier.credentialStorageFailure(cleanupError);
       _setStorageFailure(
         cleanupError,
         recoveryAction: _StorageRecoveryAction.completeLogout,
+        failureOverride: cleanupFailure,
         expectedEpoch: epoch,
       );
       throw AuthSessionException(cleanupFailure);
@@ -603,6 +709,8 @@ class AuthSessionCoordinator extends ChangeNotifier {
 
     _logoutFailureAfterStorageRecovery = null;
     if (_isCurrentEpoch(epoch)) {
+      _storageRecoveryAction = null;
+      _interruptedLogoutRecovered = false;
       _setState(
         AuthSessionState._(
           phase: AuthSessionPhase.unauthenticated,
@@ -1078,9 +1186,15 @@ class AuthSessionCoordinator extends ChangeNotifier {
     }
     final invalidatedEpoch = ++_lifecycleEpoch;
     _clearMemoryCredentials();
+    _interruptedLogoutRecovered = false;
     _setState(AuthSessionState._(phase: AuthSessionPhase.signingOut));
     try {
-      await _withTokenStoreLock(_tokenStore.delete);
+      await _withTokenStoreLock(() async {
+        _requireCurrentEpoch(invalidatedEpoch);
+        final confirmation = await _persistLogoutIntentAndDeleteCredentials();
+        await _tokenStore.clearLogoutIntent(confirmation);
+        _logoutIntentKnownPending = false;
+      });
       _storageRecoveryAction = null;
     } catch (error) {
       _failureAfterStorageRecovery = failure;
@@ -1150,6 +1264,7 @@ class AuthSessionCoordinator extends ChangeNotifier {
     Object error, {
     required _StorageRecoveryAction recoveryAction,
     AuthSessionFailure? failureAfterRecovery,
+    AuthSessionFailure? failureOverride,
     int? expectedEpoch,
   }) {
     if (expectedEpoch != null && !_isCurrentEpoch(expectedEpoch)) return;
@@ -1160,7 +1275,11 @@ class AuthSessionCoordinator extends ChangeNotifier {
     _setState(
       AuthSessionState._(
         phase: AuthSessionPhase.recoverableFailure,
-        failure: _classifier.credentialStorageFailure(error),
+        failure:
+            failureOverride ??
+            (error is _LogoutDurabilityFailure
+                ? _classifier.logoutDurabilityUnconfirmed()
+                : _classifier.credentialStorageFailure(error)),
         canRetryCredentialStorage: true,
       ),
     );
@@ -1196,4 +1315,8 @@ class AuthSessionCoordinator extends ChangeNotifier {
     _clearMemoryCredentials();
     super.dispose();
   }
+}
+
+class _LogoutDurabilityFailure implements Exception {
+  const _LogoutDurabilityFailure();
 }
