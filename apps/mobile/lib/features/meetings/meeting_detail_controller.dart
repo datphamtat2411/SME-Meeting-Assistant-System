@@ -42,6 +42,8 @@ enum MeetingLifecycleResultStatus {
   blocked,
 }
 
+enum MeetingOrganizerMetadataStatus { loading, resolved, unavailable }
+
 class MeetingLifecycleResult {
   const MeetingLifecycleResult({
     required this.status,
@@ -64,6 +66,8 @@ class MeetingDetailState {
     required this.roomUnavailable,
     required this.participants,
     required this.participantsLoaded,
+    this.organizerName,
+    this.organizerMetadataStatus = MeetingOrganizerMetadataStatus.unavailable,
     required this.metadataFailure,
     required this.failure,
     required this.activeMutation,
@@ -77,6 +81,8 @@ class MeetingDetailState {
   final bool roomUnavailable;
   final List<MeetingParticipant> participants;
   final bool participantsLoaded;
+  final String? organizerName;
+  final MeetingOrganizerMetadataStatus organizerMetadataStatus;
   final Object? metadataFailure;
   final Object? failure;
   final MeetingDetailMutation? activeMutation;
@@ -99,7 +105,30 @@ class MeetingDetailState {
         return participant.displayName!.trim();
       }
     }
-    return 'Người tổ chức';
+    final resolved = organizerName?.trim();
+    if (resolved != null && resolved.isNotEmpty) return resolved;
+    return switch (organizerMetadataStatus) {
+      MeetingOrganizerMetadataStatus.loading =>
+        'Đang tải thông tin người tổ chức',
+      MeetingOrganizerMetadataStatus.resolved => 'Người tổ chức',
+      MeetingOrganizerMetadataStatus.unavailable =>
+        'Người tổ chức · thông tin chưa khả dụng',
+    };
+  }
+
+  MeetingOrganizerMetadataStatus get organizerMetadataState {
+    final meeting = snapshot?.meeting;
+    if (meeting != null &&
+        participants.any(
+          (participant) =>
+              participant.userId.toLowerCase() ==
+                  meeting.organizerId.toLowerCase() &&
+              participant.displayName != null &&
+              participant.displayName!.trim().isNotEmpty,
+        )) {
+      return MeetingOrganizerMetadataStatus.resolved;
+    }
+    return organizerMetadataStatus;
   }
 
   String get roomDisplayName {
@@ -141,6 +170,8 @@ class MeetingDetailController extends ChangeNotifier {
          roomUnavailable: false,
          participants: <MeetingParticipant>[],
          participantsLoaded: false,
+         organizerName: null,
+         organizerMetadataStatus: MeetingOrganizerMetadataStatus.unavailable,
          metadataFailure: null,
          failure: null,
          activeMutation: null,
@@ -185,6 +216,23 @@ class MeetingDetailController extends ChangeNotifier {
   }
 
   Future<void> initialize() => _load(initial: true);
+
+  /// Revalidates protected detail data when the app returns to the foreground.
+  ///
+  /// An active aggregate operation owns the reviewed version. Resuming during
+  /// that operation fences later mutations without replacing its context.
+  Future<void> revalidateOnResume() {
+    if (_disposed || !ownsSession) return Future<void>.value();
+    if (_state.activeMutation != null) {
+      _pendingInvalidation = true;
+      if (!_state.needsRevalidation) {
+        _state = _copy(needsRevalidation: true);
+        notifyListeners();
+      }
+      return Future<void>.value();
+    }
+    return refresh();
+  }
 
   Future<void> refresh() {
     if (_disposed || !ownsSession) return Future<void>.value();
@@ -262,6 +310,7 @@ class MeetingDetailController extends ChangeNotifier {
     MeetingSnapshot snapshot, {
     required int generation,
     bool refreshMetadata = false,
+    bool loadSecondary = true,
   }) {
     if (!_owns(generation) ||
         snapshot.meeting.id.toLowerCase() != meetingId.toLowerCase()) {
@@ -269,10 +318,41 @@ class MeetingDetailController extends ChangeNotifier {
     }
     final old = _state.snapshot;
     final roomChanged = old?.meeting.roomId != snapshot.meeting.roomId;
+    final organizerChanged =
+        old?.meeting.organizerId.toLowerCase() !=
+        snapshot.meeting.organizerId.toLowerCase();
+    final participantOrganizerName = _participantDisplayName(
+      _state.participants,
+      snapshot.meeting.organizerId,
+    );
+    final canonicalOrganizerName = snapshot.meeting.organizerName?.trim();
+    final signedInOrganizerName =
+        snapshot.meeting.organizerId.toLowerCase() ==
+                (meetings.api.userId).toLowerCase() &&
+            meetings.api.displayName.trim().isNotEmpty
+        ? meetings.api.displayName.trim()
+        : null;
+    final resolvedOrganizerName =
+        participantOrganizerName ??
+        (canonicalOrganizerName == null || canonicalOrganizerName.isEmpty
+            ? null
+            : canonicalOrganizerName) ??
+        signedInOrganizerName;
+    final nextOrganizerName =
+        resolvedOrganizerName ??
+        (organizerChanged ? null : _state.organizerName);
+    final hasOrganizerLabel =
+        resolvedOrganizerName != null ||
+        (nextOrganizerName?.trim().isNotEmpty ?? false);
     final shouldLoadRoom =
         snapshot.meeting.roomId != null && (roomChanged || refreshMetadata);
     final shouldLoadParticipants =
         !_state.participantsLoaded || refreshMetadata;
+    final shouldLoadOrganizer =
+        loadSecondary &&
+        !hasOrganizerLabel &&
+        _state.organizerMetadataStatus !=
+            MeetingOrganizerMetadataStatus.loading;
     _state = MeetingDetailState(
       phase: MeetingDetailPhase.ready,
       snapshot: snapshot,
@@ -280,6 +360,14 @@ class MeetingDetailController extends ChangeNotifier {
       roomUnavailable: roomChanged ? false : _state.roomUnavailable,
       participants: _state.participants,
       participantsLoaded: _state.participantsLoaded,
+      organizerName: nextOrganizerName,
+      organizerMetadataStatus: hasOrganizerLabel
+          ? MeetingOrganizerMetadataStatus.resolved
+          : shouldLoadOrganizer
+          ? MeetingOrganizerMetadataStatus.loading
+          : organizerChanged
+          ? MeetingOrganizerMetadataStatus.unavailable
+          : _state.organizerMetadataStatus,
       metadataFailure: null,
       failure: null,
       activeMutation: _state.activeMutation,
@@ -292,13 +380,14 @@ class MeetingDetailController extends ChangeNotifier {
       listener(snapshot);
     }
     notifyListeners();
-    if (shouldLoadRoom || shouldLoadParticipants) {
+    if (shouldLoadRoom || shouldLoadParticipants || shouldLoadOrganizer) {
       unawaited(
         _loadSecondary(
           snapshot,
           generation,
           loadRoom: shouldLoadRoom,
           loadParticipants: shouldLoadParticipants,
+          loadOrganizer: shouldLoadOrganizer,
         ),
       );
     }
@@ -309,30 +398,50 @@ class MeetingDetailController extends ChangeNotifier {
     int generation, {
     required bool loadRoom,
     required bool loadParticipants,
+    required bool loadOrganizer,
+    MeetingAggregateMutationToken? aggregateToken,
   }) async {
+    bool ownsSecondary() =>
+        _owns(generation) &&
+        (aggregateToken == null || ownsAggregateMutation(aggregateToken)) &&
+        _state.snapshot?.meeting.id.toLowerCase() ==
+            snapshot.meeting.id.toLowerCase();
+
+    if (loadOrganizer &&
+        (_participantDisplayName(
+                  _state.participants,
+                  snapshot.meeting.organizerId,
+                ) !=
+                null ||
+            (_state.organizerName?.trim().isNotEmpty ?? false))) {
+      loadOrganizer = false;
+    }
+
     final roomId = snapshot.meeting.roomId;
     if (!loadRoom) {
       // Retain the already-resolved room projection.
     } else if (roomId == null) {
-      if (_owns(generation)) {
+      if (ownsSecondary()) {
         _state = _copy(room: null, roomUnavailable: false);
         notifyListeners();
       }
     } else {
       try {
         final room = await rooms.roomById(roomId, sessionScope: sessionScope);
-        if (_owns(generation) &&
+        if (ownsSecondary() &&
             _state.snapshot?.meeting.roomId?.toLowerCase() ==
                 roomId.toLowerCase()) {
           _state = _copy(
             room: room,
             roomUnavailable: false,
-            clearMetadataFailure: true,
+            clearMetadataFailure:
+                _state.organizerMetadataStatus !=
+                MeetingOrganizerMetadataStatus.unavailable,
           );
           notifyListeners();
         }
       } catch (error) {
-        if (!_owns(generation)) return;
+        if (!ownsSecondary()) return;
         if (_state.snapshot?.meeting.roomId?.toLowerCase() ==
             roomId.toLowerCase()) {
           _state = _copy(
@@ -345,32 +454,94 @@ class MeetingDetailController extends ChangeNotifier {
       }
     }
 
-    if (!loadParticipants) return;
+    if (loadParticipants) {
+      if (!ownsSecondary()) return;
+      try {
+        final records = await membership.listParticipants(
+          snapshot.meeting.id,
+          sessionScope: sessionScope,
+        );
+        if (!ownsSecondary()) return;
+        final organizerLabel = _participantDisplayName(
+          records,
+          snapshot.meeting.organizerId,
+        );
+        _state = _copy(
+          participants: records,
+          participantsLoaded: true,
+          organizerMetadataStatus: organizerLabel == null
+              ? _state.organizerMetadataStatus
+              : MeetingOrganizerMetadataStatus.resolved,
+          clearMetadataFailure:
+              organizerLabel != null &&
+              _state.organizerMetadataStatus !=
+                  MeetingOrganizerMetadataStatus.unavailable,
+        );
+        notifyListeners();
+      } catch (error) {
+        if (!ownsSecondary()) return;
+        if (error is ApiFailure &&
+            (error.status == 403 || error.status == 404)) {
+          _clearProtectedState();
+          return;
+        }
+        _state = _copy(participantsLoaded: false, metadataFailure: error);
+        notifyListeners();
+      }
+    }
+
+    if (!loadOrganizer || !ownsSecondary()) return;
+    if (_participantDisplayName(
+          _state.participants,
+          snapshot.meeting.organizerId,
+        ) !=
+        null) {
+      if (_state.organizerMetadataStatus !=
+          MeetingOrganizerMetadataStatus.resolved) {
+        _state = _copy(
+          organizerMetadataStatus: MeetingOrganizerMetadataStatus.resolved,
+        );
+        notifyListeners();
+      }
+      return;
+    }
     try {
-      final records = await membership.listParticipants(
-        snapshot.meeting.id,
+      final organizer = await meetings.organizer(
+        snapshot.meeting.organizerId,
         sessionScope: sessionScope,
       );
-      if (!_owns(generation) ||
-          _state.snapshot?.meeting.id.toLowerCase() !=
-              snapshot.meeting.id.toLowerCase()) {
+      if (!ownsSecondary() ||
+          organizer.id.toLowerCase() !=
+              snapshot.meeting.organizerId.toLowerCase()) {
         return;
       }
       _state = _copy(
-        participants: records,
-        participantsLoaded: true,
+        organizerName: organizer.name,
+        organizerMetadataStatus: MeetingOrganizerMetadataStatus.resolved,
         clearMetadataFailure: true,
       );
       notifyListeners();
     } catch (error) {
-      if (!_owns(generation)) return;
-      if (error is ApiFailure && (error.status == 403 || error.status == 404)) {
-        _clearProtectedState();
-        return;
-      }
-      _state = _copy(participantsLoaded: false, metadataFailure: error);
+      if (!ownsSecondary()) return;
+      _state = _copy(
+        organizerMetadataStatus: MeetingOrganizerMetadataStatus.unavailable,
+        metadataFailure: error,
+      );
       notifyListeners();
     }
+  }
+
+  String? _participantDisplayName(
+    Iterable<MeetingParticipant> records,
+    String organizerId,
+  ) {
+    for (final participant in records) {
+      if (participant.userId.toLowerCase() == organizerId.toLowerCase()) {
+        final name = participant.displayName?.trim();
+        if (name != null && name.isNotEmpty) return name;
+      }
+    }
+    return null;
   }
 
   MeetingAggregateMutationToken? acquireAggregateMutation(
@@ -414,13 +585,48 @@ class MeetingDetailController extends ChangeNotifier {
     MeetingAggregateMutationToken token,
     MeetingSnapshot snapshot,
   ) {
-    if (!ownsAggregateMutation(token) ||
-        snapshot.meeting.id.toLowerCase() != meetingId.toLowerCase() ||
-        snapshot.sessionScope != sessionScope) {
+    if (!_validAggregateSnapshot(token, snapshot)) {
       return false;
     }
     final generation = ++_generation;
-    _acceptCanonical(snapshot, generation: generation);
+    _acceptCanonical(snapshot, generation: generation, loadSecondary: false);
+    _finishAggregateAcceptance(token);
+    return ownsAggregateMutation(token) &&
+        _state.snapshot?.etag == snapshot.etag;
+  }
+
+  /// Accepts a mutation response and awaits all protected secondary
+  /// projections before the aggregate owner can release its token.
+  Future<bool> acceptAggregateSnapshotAndReconcile(
+    MeetingAggregateMutationToken token,
+    MeetingSnapshot snapshot,
+  ) async {
+    if (!_validAggregateSnapshot(token, snapshot)) return false;
+    final generation = ++_generation;
+    _acceptCanonical(snapshot, generation: generation, loadSecondary: false);
+    await _loadSecondary(
+      snapshot,
+      generation,
+      loadRoom: snapshot.meeting.roomId != null,
+      loadParticipants: true,
+      loadOrganizer: true,
+      aggregateToken: token,
+    );
+    if (!ownsAggregateMutation(token)) return false;
+    _finishAggregateAcceptance(token);
+    return _state.snapshot?.etag == snapshot.etag;
+  }
+
+  bool _validAggregateSnapshot(
+    MeetingAggregateMutationToken token,
+    MeetingSnapshot snapshot,
+  ) =>
+      ownsAggregateMutation(token) &&
+      snapshot.meeting.id.toLowerCase() == meetingId.toLowerCase() &&
+      snapshot.sessionScope == sessionScope;
+
+  void _finishAggregateAcceptance(MeetingAggregateMutationToken token) {
+    if (!ownsAggregateMutation(token)) return;
     final currentRevision = invalidation.revision;
     final ownInvalidation =
         currentRevision == token.invalidationRevision + 1 &&
@@ -428,13 +634,14 @@ class MeetingDetailController extends ChangeNotifier {
     if (ownInvalidation) {
       _pendingInvalidation = false;
       _seenInvalidationRevision = currentRevision;
-    } else if (currentRevision != token.invalidationRevision) {
+    } else if (currentRevision != token.invalidationRevision &&
+        (invalidation.lastMeetingId == null ||
+            invalidation.lastMeetingId?.toLowerCase() ==
+                meetingId.toLowerCase())) {
       _pendingInvalidation = true;
       _state = _copy(needsRevalidation: true);
       notifyListeners();
     }
-    return ownsAggregateMutation(token) &&
-        _state.snapshot?.etag == snapshot.etag;
   }
 
   Future<MeetingSnapshot?> revalidateAggregate(
@@ -460,7 +667,21 @@ class MeetingDetailController extends ChangeNotifier {
       }
       _pendingInvalidation = false;
       _seenInvalidationRevision = revisionAtRead;
-      _acceptCanonical(latest, generation: generation, refreshMetadata: true);
+      _acceptCanonical(
+        latest,
+        generation: generation,
+        refreshMetadata: true,
+        loadSecondary: false,
+      );
+      await _loadSecondary(
+        latest,
+        generation,
+        loadRoom: latest.meeting.roomId != null,
+        loadParticipants: false,
+        loadOrganizer: true,
+        aggregateToken: token,
+      );
+      if (!_ownsAggregate(generation, token)) return null;
       return _state.snapshot;
     } catch (error) {
       if (!_ownsAggregate(generation, token)) return null;
@@ -493,10 +714,32 @@ class MeetingDetailController extends ChangeNotifier {
   }
 
   void acceptMembershipRecords(List<MeetingParticipant> records) {
-    if (!ownsSession || _state.snapshot == null) return;
+    final snapshot = _state.snapshot;
+    if (snapshot == null) return;
+    acceptMembershipSnapshotRecords(snapshot, records);
+  }
+
+  void acceptMembershipSnapshotRecords(
+    MeetingSnapshot snapshot,
+    List<MeetingParticipant> records,
+  ) {
+    if (!ownsSession ||
+        _state.snapshot == null ||
+        snapshot.sessionScope != sessionScope ||
+        snapshot.meeting.id.toLowerCase() != meetingId.toLowerCase() ||
+        _state.snapshot!.etag != snapshot.etag) {
+      return;
+    }
+    final organizerLabel = _participantDisplayName(
+      records,
+      snapshot.meeting.organizerId,
+    );
     _state = _copy(
       participants: List<MeetingParticipant>.unmodifiable(records),
       participantsLoaded: true,
+      organizerMetadataStatus: organizerLabel == null
+          ? _state.organizerMetadataStatus
+          : MeetingOrganizerMetadataStatus.resolved,
     );
     notifyListeners();
   }
@@ -586,7 +829,7 @@ class MeetingDetailController extends ChangeNotifier {
           message: 'Phiên đăng nhập đã thay đổi; kết quả chưa thể hiển thị.',
         );
       }
-      if (!acceptAggregateSnapshot(token, changed)) {
+      if (!await acceptAggregateSnapshotAndReconcile(token, changed)) {
         return const MeetingLifecycleResult(
           status: MeetingLifecycleResultStatus.unknown,
           message:
@@ -678,7 +921,25 @@ class MeetingDetailController extends ChangeNotifier {
         _pendingInvalidation = false;
         _seenInvalidationRevision = revisionAtRead;
       }
-      _acceptCanonical(latest, generation: generation);
+      _acceptCanonical(latest, generation: generation, loadSecondary: false);
+      await _loadSecondary(
+        latest,
+        generation,
+        loadRoom: latest.meeting.roomId != null,
+        loadParticipants: true,
+        loadOrganizer: true,
+        aggregateToken: token,
+      );
+      if (!_ownsAggregate(generation, token)) {
+        return const MeetingLifecycleResult(
+          status: MeetingLifecycleResultStatus.unknown,
+          message: 'Phiên đăng nhập đã thay đổi; chưa thể xác nhận kết quả.',
+        );
+      }
+      if (revisionAtRead == invalidation.revision) {
+        _pendingInvalidation = false;
+        _seenInvalidationRevision = revisionAtRead;
+      }
       final target = _targetStatus(command);
       final observed =
           latest.meeting.lifecycleStatus == target &&
@@ -749,7 +1010,20 @@ class MeetingDetailController extends ChangeNotifier {
         _pendingInvalidation = false;
         _seenInvalidationRevision = revisionAtRead;
       }
-      _acceptCanonical(latest, generation: generation);
+      _acceptCanonical(latest, generation: generation, loadSecondary: false);
+      await _loadSecondary(
+        latest,
+        generation,
+        loadRoom: latest.meeting.roomId != null,
+        loadParticipants: true,
+        loadOrganizer: true,
+        aggregateToken: token,
+      );
+      if (!_ownsAggregate(generation, token)) return;
+      if (revisionAtRead == invalidation.revision) {
+        _pendingInvalidation = false;
+        _seenInvalidationRevision = revisionAtRead;
+      }
       _state = _copy(
         message:
             'Thao tác bị từ chối. Đã tải trạng thái hiện tại để bạn xem lại.',
@@ -792,6 +1066,9 @@ class MeetingDetailController extends ChangeNotifier {
     bool? roomUnavailable,
     List<MeetingParticipant>? participants,
     bool? participantsLoaded,
+    String? organizerName,
+    bool clearOrganizerName = false,
+    MeetingOrganizerMetadataStatus? organizerMetadataStatus,
     Object? metadataFailure,
     bool clearMetadataFailure = false,
     Object? failure,
@@ -808,6 +1085,11 @@ class MeetingDetailController extends ChangeNotifier {
     roomUnavailable: roomUnavailable ?? _state.roomUnavailable,
     participants: participants ?? _state.participants,
     participantsLoaded: participantsLoaded ?? _state.participantsLoaded,
+    organizerName: clearOrganizerName
+        ? null
+        : organizerName ?? _state.organizerName,
+    organizerMetadataStatus:
+        organizerMetadataStatus ?? _state.organizerMetadataStatus,
     metadataFailure: clearMetadataFailure
         ? null
         : metadataFailure ?? _state.metadataFailure,
@@ -857,6 +1139,8 @@ class MeetingDetailController extends ChangeNotifier {
       roomUnavailable: false,
       participants: <MeetingParticipant>[],
       participantsLoaded: false,
+      organizerName: null,
+      organizerMetadataStatus: MeetingOrganizerMetadataStatus.unavailable,
       metadataFailure: null,
       failure: null,
       activeMutation: null,

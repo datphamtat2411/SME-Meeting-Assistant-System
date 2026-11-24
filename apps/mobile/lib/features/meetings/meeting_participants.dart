@@ -19,12 +19,14 @@ class MeetingParticipants extends StatefulWidget {
     required this.snapshot,
     this.initialRecords,
     this.onRecordsChanged,
+    this.onSnapshotRecordsChanged,
     this.onAccessRevoked,
     this.canStartAggregateMutation,
     this.acquireAggregateMutation,
     this.releaseAggregateMutation,
     this.ownsAggregateMutation,
     this.acceptAggregateSnapshot,
+    this.acceptAggregateSnapshotAndReconcile,
     this.revalidateAggregate,
     this.refreshCanonical,
     this.addCanonicalSnapshotListener,
@@ -34,6 +36,7 @@ class MeetingParticipants extends StatefulWidget {
   final MeetingSnapshot snapshot;
   final List<MeetingParticipant>? initialRecords;
   final MeetingMembershipRecordsCallback? onRecordsChanged;
+  final MeetingMembershipSnapshotRecordsCallback? onSnapshotRecordsChanged;
   final VoidCallback? onAccessRevoked;
   final bool Function()? canStartAggregateMutation;
   final MeetingAggregateMutationToken? Function(
@@ -49,6 +52,11 @@ class MeetingParticipants extends StatefulWidget {
     MeetingSnapshot snapshot,
   )?
   acceptAggregateSnapshot;
+  final Future<bool> Function(
+    MeetingAggregateMutationToken token,
+    MeetingSnapshot snapshot,
+  )?
+  acceptAggregateSnapshotAndReconcile;
   final Future<MeetingSnapshot?> Function(MeetingAggregateMutationToken token)?
   revalidateAggregate;
   final Future<MeetingSnapshot?> Function()? refreshCanonical;
@@ -71,12 +79,15 @@ class _MeetingParticipantsState extends State<MeetingParticipants> {
       snapshot: widget.snapshot,
       initialRecords: widget.initialRecords,
       onRecordsChanged: widget.onRecordsChanged,
+      onSnapshotRecordsChanged: widget.onSnapshotRecordsChanged,
       onAccessRevoked: widget.onAccessRevoked,
       canStartAggregateMutation: widget.canStartAggregateMutation,
       acquireAggregateMutation: widget.acquireAggregateMutation,
       releaseAggregateMutation: widget.releaseAggregateMutation,
       ownsAggregateMutation: widget.ownsAggregateMutation,
       acceptAggregateSnapshot: widget.acceptAggregateSnapshot,
+      acceptAggregateSnapshotAndReconcile:
+          widget.acceptAggregateSnapshotAndReconcile,
       revalidateAggregate: widget.revalidateAggregate,
       refreshCanonical: widget.refreshCanonical,
     );

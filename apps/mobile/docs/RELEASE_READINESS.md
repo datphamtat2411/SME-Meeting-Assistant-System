@@ -5,6 +5,8 @@ automated foundation evidence from backend integration, device acceptance, and
 production release readiness. See
 [`M01_FOUNDATION_VERIFICATION.md`](M01_FOUNDATION_VERIFICATION.md) for the
 current local results and the successful hosted GitHub Actions foundation run.
+For the M03-T08 meeting corrective patch, see
+[`M03_T08_ACCEPTANCE.md`](M03_T08_ACCEPTANCE.md).
 
 ## Verified foundation capabilities
 

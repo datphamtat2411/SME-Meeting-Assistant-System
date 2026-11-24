@@ -25,7 +25,8 @@ class MeetingEditSheet extends StatefulWidget {
   State<MeetingEditSheet> createState() => _MeetingEditSheetState();
 }
 
-class _MeetingEditSheetState extends State<MeetingEditSheet> {
+class _MeetingEditSheetState extends State<MeetingEditSheet>
+    with WidgetsBindingObserver {
   final _form = GlobalKey<FormState>();
   late final MeetingEditingController _controller;
   late final TextEditingController _title;
@@ -78,6 +79,7 @@ class _MeetingEditSheetState extends State<MeetingEditSheet> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _controller = MeetingEditingController(
       repository: widget.dependencies.meetings,
       invalidation: widget.dependencies.meetingInvalidation,
@@ -95,7 +97,15 @@ class _MeetingEditSheetState extends State<MeetingEditSheet> {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_controller.revalidateOnResume());
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _title.dispose();
     _description.dispose();
     _controller.removeListener(_syncPreviewIntent);
@@ -151,7 +161,10 @@ class _MeetingEditSheetState extends State<MeetingEditSheet> {
     if (values == null || values.start == null || values.end == null) {
       return null;
     }
-    return MeetingInterval.fromNullableEndpoints(values.start, values.end);
+    return MeetingScheduleDraft(
+      start: values.start,
+      end: values.end,
+    ).validatedInterval;
   }
 
   ScheduleIntent? _previewIntent(MeetingEditingState state) {

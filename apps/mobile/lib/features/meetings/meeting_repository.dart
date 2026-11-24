@@ -122,6 +122,32 @@ class MeetingRepository {
     return snapshot;
   }
 
+  /// Resolves one organizer label through the Core API's authorized,
+  /// meeting-visible organizer projection. This is deliberately narrower than
+  /// administrative directory access.
+  Future<MeetingOrganizer> organizer(
+    String organizerId, {
+    required AuthenticatedSessionScope sessionScope,
+  }) async {
+    _validateMeetingId(organizerId);
+    final response = await _readRequest(
+      sessionScope,
+      () => api.get('/meeting-organizers/${Uri.encodeComponent(organizerId)}'),
+    );
+    final raw = response.objectData();
+    final id = raw['id'];
+    final name = raw['name'];
+    if (id is! String ||
+        !isMeetingUuid(id) ||
+        id.toLowerCase() != organizerId.toLowerCase() ||
+        name is! String ||
+        name.trim().isEmpty) {
+      throw response.invalidDataFailure();
+    }
+    _requireCurrentSession(sessionScope);
+    return MeetingOrganizer(id: id, name: name.trim());
+  }
+
   Future<MeetingSnapshot> create(
     CreateMeetingInput input, {
     required String idempotencyKey,
@@ -501,6 +527,13 @@ class MeetingRepository {
     }
     return <String, String>{'If-Match': etag};
   }
+}
+
+class MeetingOrganizer {
+  const MeetingOrganizer({required this.id, required this.name});
+
+  final String id;
+  final String name;
 }
 
 bool _validIdempotencyKey(String key) =>

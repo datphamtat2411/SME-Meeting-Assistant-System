@@ -66,8 +66,15 @@ class MeetingCreationRecord {
   final MeetingCreationRecordPhase phase;
   final String? meetingId;
 
-  bool canReplayCreateAt(DateTime now) =>
-      meetingId == null && now.toUtc().isBefore(replayDeadline);
+  bool canReplayCreateAt(DateTime now) {
+    final window = replayDeadline.difference(createdAt);
+    final current = now.toUtc();
+    return meetingId == null &&
+        window > Duration.zero &&
+        window <= meetingCreationReplaySafetyWindow &&
+        !current.isBefore(createdAt) &&
+        current.isBefore(replayDeadline);
+  }
 
   MeetingCreationRecord withPhase(
     MeetingCreationRecordPhase next, {
@@ -229,11 +236,15 @@ class MeetingCreationRecoveryStore {
         }
       });
 
-  bool tryAcquireOperation(String accountId, String idempotencyKey) =>
-      _activeOperations.add('${_storageKey(accountId)}|$idempotencyKey');
+  /// Acquires the one logical recovery slot for an account/deployment.
+  ///
+  /// Idempotency keys identify a request, but they must not create separate
+  /// in-process recovery owners for the same durable record.
+  bool tryAcquireOperation(String accountId, [String? idempotencyKey]) =>
+      _activeOperations.add(_storageKey(accountId));
 
-  void releaseOperation(String accountId, String idempotencyKey) {
-    _activeOperations.remove('${_storageKey(accountId)}|$idempotencyKey');
+  void releaseOperation(String accountId, [String? idempotencyKey]) {
+    _activeOperations.remove(_storageKey(accountId));
   }
 
   Future<T> _serialize<T>(
@@ -345,6 +356,8 @@ class MeetingCreationController extends ChangeNotifier {
   bool get ownsSession =>
       !_disposed && meetings.api.isCurrentAuthenticatedSession(sessionScope);
   bool canReplayCreate(MeetingCreationRecord record) =>
+      record.accountId == sessionScope.userId &&
+      record.deploymentScope == recoveryStore.deploymentScope &&
       _replayEligibility(record) == _ReplayEligibility.eligible;
 
   Future<void> restore() async {
@@ -541,8 +554,9 @@ class MeetingCreationController extends ChangeNotifier {
       clearFailure: true,
       clearMessage: true,
     );
+    late final MeetingCreationRecord persistedIntent;
     try {
-      await recoveryStore.save(sessionScope.userId, record);
+      persistedIntent = await recoveryStore.save(sessionScope.userId, record);
     } catch (error) {
       if (!ownsSession) return;
       _publish(
@@ -556,6 +570,16 @@ class MeetingCreationController extends ChangeNotifier {
       return;
     }
     if (!ownsSession) return;
+    if (persistedIntent.phase != MeetingCreationRecordPhase.intentPersisted ||
+        persistedIntent.meetingId != null) {
+      _publish(
+        phase: MeetingCreationPhase.recoveryRequired,
+        record: persistedIntent,
+        snapshot: null,
+        message: 'Đã có một bước khác của yêu cầu này được lưu an toàn. Không gửi lại lệnh tạo; hãy mở hoặc kiểm tra trạng thái hiện tại.',
+      );
+      return;
+    }
     _publish(
       phase: MeetingCreationPhase.creating,
       record: record,
@@ -629,19 +653,21 @@ class MeetingCreationController extends ChangeNotifier {
       return;
     }
     if (!ownsSession) return;
-    final confirmed = record.withPhase(
-      record.action == MeetingCreationAction.schedule
-          ? MeetingCreationRecordPhase.meetingConfirmed
-          : MeetingCreationRecordPhase.meetingConfirmed,
+    final confirmedCandidate = record.withPhase(
+      MeetingCreationRecordPhase.meetingConfirmed,
       meetingId: created.meeting.id,
     );
+    late final MeetingCreationRecord confirmed;
     try {
-      await recoveryStore.save(sessionScope.userId, confirmed);
+      confirmed = await recoveryStore.save(
+        sessionScope.userId,
+        confirmedCandidate,
+      );
     } catch (error) {
       if (!ownsSession) return;
       _publish(
         phase: MeetingCreationPhase.recoveryRequired,
-        record: confirmed,
+        record: confirmedCandidate,
         snapshot: created,
         failure: error,
         message: 'Cuộc họp đã được tạo, nhưng chưa thể lưu định danh khôi phục. Không tạo cuộc họp khác.',
@@ -649,6 +675,16 @@ class MeetingCreationController extends ChangeNotifier {
       return;
     }
     if (!ownsSession) return;
+    if (confirmed.phase != MeetingCreationRecordPhase.meetingConfirmed ||
+        confirmed.meetingId != created.meeting.id) {
+      _publish(
+        phase: MeetingCreationPhase.partialSuccess,
+        record: confirmed,
+        snapshot: created,
+        message: 'Cuộc họp đã được tạo nhưng một bước khôi phục khác đang giữ định danh. Không gửi lại lệnh tạo hoặc lên lịch tự động.',
+      );
+      return;
+    }
 
     if (record.action == MeetingCreationAction.saveDraft) {
       await _finishConfirmed(
@@ -711,12 +747,13 @@ class MeetingCreationController extends ChangeNotifier {
       );
       return;
     }
-    final pending = record.withPhase(
+    final pendingCandidate = record.withPhase(
       MeetingCreationRecordPhase.schedulePending,
       meetingId: meeting.id,
     );
+    late final MeetingCreationRecord pending;
     try {
-      await recoveryStore.save(sessionScope.userId, pending);
+      pending = await recoveryStore.save(sessionScope.userId, pendingCandidate);
     } catch (error) {
       if (!ownsSession) return;
       _publish(
@@ -729,6 +766,16 @@ class MeetingCreationController extends ChangeNotifier {
       return;
     }
     if (!ownsSession) return;
+    if (pending.phase != MeetingCreationRecordPhase.schedulePending ||
+        pending.meetingId != meeting.id) {
+      _publish(
+        phase: MeetingCreationPhase.partialSuccess,
+        record: pending,
+        snapshot: snapshot,
+        message: 'Bản nháp đã được tạo nhưng một bước lên lịch khác đang được khôi phục. Không gửi lại lệnh lên lịch tự động.',
+      );
+      return;
+    }
     _publish(
       phase: MeetingCreationPhase.scheduling,
       record: pending,

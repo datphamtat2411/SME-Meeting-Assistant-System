@@ -43,8 +43,21 @@ class MeetingEditValues {
     roomId: meeting.roomId,
   );
 
+  /// Returns a validated interval only when the editable endpoints form one.
+  ///
+  /// A form may temporarily contain one endpoint, equal endpoints, or a
+  /// reversed range. Those are ordinary editing states and must not invoke
+  /// the strict domain constructor.
   MeetingInterval? get interval =>
-      MeetingInterval.fromNullableEndpoints(start, end);
+      MeetingScheduleDraft(start: start, end: end).validatedInterval;
+
+  String? get scheduleValidationMessage {
+    if (start == null && end == null) return null;
+    return MeetingScheduleDraft(start: start, end: end).validationMessage;
+  }
+
+  bool get hasValidSchedule =>
+      (start == null && end == null) || interval != null;
 
   MeetingEditValues withField(
     MeetingEditField field,
@@ -159,6 +172,9 @@ class MeetingEditingState {
       snapshot != null &&
       values != null &&
       dirtyFields.isNotEmpty &&
+      values!.hasValidSchedule &&
+      (snapshot!.meeting.lifecycleStatus != MeetingStatus.scheduled ||
+          values!.interval != null) &&
       !needsRevalidation;
 }
 
@@ -216,9 +232,10 @@ class MeetingEditingController extends ChangeNotifier {
     final dirty = _dirtyFields(original, values);
     if (dirty.isEmpty) return null;
     final schedule = values.interval;
-    if (original.lifecycleStatus == MeetingStatus.scheduled &&
-        schedule == null) {
-      throw ArgumentError('A scheduled meeting must retain a valid interval.');
+    if (!values.hasValidSchedule ||
+        (original.lifecycleStatus == MeetingStatus.scheduled &&
+            schedule == null)) {
+      return null;
     }
     return MeetingUpdateInput(
       title: dirty.contains(MeetingEditField.title)
@@ -248,6 +265,23 @@ class MeetingEditingController extends ChangeNotifier {
       return;
     }
     final snapshot = _originalSnapshot;
+    final values = _state.values;
+    if (values == null) return;
+    final scheduleValidation = values.scheduleValidationMessage;
+    if (scheduleValidation != null) {
+      _state = _copy(clearFailure: true, message: scheduleValidation);
+      notifyListeners();
+      return;
+    }
+    if (snapshot.meeting.lifecycleStatus == MeetingStatus.scheduled &&
+        values.interval == null) {
+      _state = _copy(
+        clearFailure: true,
+        message: 'Cuộc họp đã lên lịch phải giữ khoảng thời gian hợp lệ.',
+      );
+      notifyListeners();
+      return;
+    }
     if (!MeetingCapabilityPolicy.evaluate(
       callerId: repository.api.userId,
       meeting: snapshot.meeting,
@@ -276,7 +310,7 @@ class MeetingEditingController extends ChangeNotifier {
 
     final generation = ++_generation;
     final invalidationRevisionAtDispatch = invalidation.revision;
-    final localAtDispatch = _state.values!;
+    final localAtDispatch = values;
     _state = _copy(
       phase: MeetingEditPhase.submitting,
       clearFailure: true,
@@ -434,6 +468,71 @@ class MeetingEditingController extends ChangeNotifier {
       failure: null,
       unknownOutcome: false,
     );
+  }
+
+  /// Revalidates access on foreground resume without replacing unsaved values.
+  Future<void> revalidateOnResume() async {
+    if (_disposed ||
+        !_ownsSession ||
+        _state.phase == MeetingEditPhase.submitting ||
+        _state.phase == MeetingEditPhase.completed ||
+        _state.phase == MeetingEditPhase.accessRevoked) {
+      return;
+    }
+    if (_state.dirtyFields.isNotEmpty ||
+        _state.phase != MeetingEditPhase.editing) {
+      await revalidateLatest();
+      return;
+    }
+    final generation = ++_generation;
+    final original = _originalSnapshot;
+    final revisionAtStart = invalidation.revision;
+    _state = _copy(
+      phase: MeetingEditPhase.submitting,
+      clearFailure: true,
+      clearMessage: true,
+    );
+    notifyListeners();
+    try {
+      final latest = await repository.detail(original.meeting.id);
+      if (!_owns(generation, original.sessionScope)) return;
+      if (invalidation.revision != revisionAtStart &&
+          (invalidation.lastMeetingId == null ||
+              invalidation.lastMeetingId?.toLowerCase() ==
+                  original.meeting.id.toLowerCase())) {
+        _state = _copy(
+          phase: MeetingEditPhase.recoveryRequired,
+          needsRevalidation: true,
+          message: 'Cuộc họp vừa thay đổi. Hãy tải lại trước khi tiếp tục chỉnh sửa.',
+        );
+      } else {
+        _originalSnapshot = latest;
+        _state = MeetingEditingState(
+          snapshot: latest,
+          values: MeetingEditValues.fromMeeting(latest.meeting),
+          dirtyFields: const <MeetingEditField>{},
+          phase: MeetingEditPhase.editing,
+          reconciliation: null,
+          failure: null,
+          message: 'Đã xác minh quyền truy cập và trạng thái hiện tại.',
+          needsRevalidation: false,
+        );
+      }
+    } catch (error) {
+      if (!_owns(generation, original.sessionScope)) return;
+      final denied =
+          error is ApiFailure && (error.status == 403 || error.status == 404);
+      if (denied) {
+        _clearProtectedState();
+        return;
+      }
+      _state = _copy(
+        phase: MeetingEditPhase.recoveryRequired,
+        failure: error,
+        message: 'Không thể xác minh quyền truy cập hiện tại. Chưa gửi thay đổi nào.',
+      );
+    }
+    if (_owns(generation, original.sessionScope)) notifyListeners();
   }
 
   Future<void> _reconcileUnknown({

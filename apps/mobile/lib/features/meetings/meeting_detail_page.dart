@@ -29,13 +29,15 @@ class MeetingDetailPage extends StatefulWidget {
   State<MeetingDetailPage> createState() => _MeetingDetailPageState();
 }
 
-class _MeetingDetailPageState extends State<MeetingDetailPage> {
+class _MeetingDetailPageState extends State<MeetingDetailPage>
+    with WidgetsBindingObserver {
   late final MeetingDetailController _controller;
   int _tab = 0;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _controller = MeetingDetailController(
       meetings: widget.dependencies.meetings,
       membership: widget.dependencies.meetingMembership,
@@ -47,7 +49,15 @@ class _MeetingDetailPageState extends State<MeetingDetailPage> {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_controller.revalidateOnResume());
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _controller.dispose();
     super.dispose();
   }
@@ -71,7 +81,7 @@ class _MeetingDetailPageState extends State<MeetingDetailPage> {
         ),
       );
       if (updated != null && mounted) {
-        _controller.acceptAggregateSnapshot(token, updated);
+        await _controller.acceptAggregateSnapshotAndReconcile(token, updated);
       }
     } finally {
       _controller.releaseAggregateMutation(token);
@@ -467,6 +477,8 @@ class _MeetingDetailPageState extends State<MeetingDetailPage> {
                             ? state.participants
                             : null,
                         onRecordsChanged: _controller.acceptMembershipRecords,
+                        onSnapshotRecordsChanged:
+                            _controller.acceptMembershipSnapshotRecords,
                         onAccessRevoked: _controller.membershipAccessRevoked,
                         canStartAggregateMutation: () =>
                             _controller.state.canStartAggregateMutation,
@@ -481,6 +493,8 @@ class _MeetingDetailPageState extends State<MeetingDetailPage> {
                             _controller.ownsAggregateMutation,
                         acceptAggregateSnapshot:
                             _controller.acceptAggregateSnapshot,
+                        acceptAggregateSnapshotAndReconcile:
+                            _controller.acceptAggregateSnapshotAndReconcile,
                         revalidateAggregate: _controller.revalidateAggregate,
                         refreshCanonical: _controller.refreshCanonicalForChild,
                         addCanonicalSnapshotListener:

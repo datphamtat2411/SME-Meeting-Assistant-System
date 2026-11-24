@@ -391,6 +391,14 @@ typedef MeetingMembershipSnapshotAcceptance = bool Function(
 typedef MeetingMembershipRecordsCallback = void Function(
   List<MeetingParticipant> records,
 );
+typedef MeetingMembershipSnapshotRecordsCallback = void Function(
+  MeetingSnapshot snapshot,
+  List<MeetingParticipant> records,
+);
+typedef MeetingMembershipSnapshotAsyncAcceptance = Future<bool> Function(
+  MeetingAggregateMutationToken token,
+  MeetingSnapshot snapshot,
+);
 typedef MeetingAggregateMutationAcquirer =
     MeetingAggregateMutationToken? Function(MeetingSnapshot confirmedContext);
 typedef MeetingAggregateMutationOwnership = bool Function(
@@ -410,12 +418,14 @@ class MeetingMembershipController extends ChangeNotifier {
     required MeetingSnapshot snapshot,
     Iterable<MeetingParticipant>? initialRecords,
     this.onRecordsChanged,
+    this.onSnapshotRecordsChanged,
     this.onAccessRevoked,
     this.canStartAggregateMutation,
     this.acquireAggregateMutation,
     this.releaseAggregateMutation,
     this.ownsAggregateMutation,
     this.acceptAggregateSnapshot,
+    this.acceptAggregateSnapshotAndReconcile,
     this.revalidateAggregate,
     this.refreshCanonical,
   }) : _state = MeetingMembershipState(
@@ -438,12 +448,15 @@ class MeetingMembershipController extends ChangeNotifier {
 
   final MeetingMembershipRepository repository;
   final MeetingMembershipRecordsCallback? onRecordsChanged;
+  final MeetingMembershipSnapshotRecordsCallback? onSnapshotRecordsChanged;
   final VoidCallback? onAccessRevoked;
   final bool Function()? canStartAggregateMutation;
   final MeetingAggregateMutationAcquirer? acquireAggregateMutation;
   final MeetingAggregateMutationReleaser? releaseAggregateMutation;
   final MeetingAggregateMutationOwnership? ownsAggregateMutation;
   final MeetingMembershipSnapshotAcceptance? acceptAggregateSnapshot;
+  final MeetingMembershipSnapshotAsyncAcceptance?
+  acceptAggregateSnapshotAndReconcile;
   final MeetingAggregateRevalidator? revalidateAggregate;
   final MeetingCanonicalRefresher? refreshCanonical;
   MeetingMembershipState _state;
@@ -494,7 +507,7 @@ class MeetingMembershipController extends ChangeNotifier {
         failure: null,
         clearFailure: true,
       );
-      onRecordsChanged?.call(records);
+      _publishRecords(snapshot, records);
     } catch (error) {
       if (!_owns(generation, snapshot.sessionScope)) return;
       _applyReadFailure(error, accessContext: true);
@@ -563,7 +576,7 @@ class MeetingMembershipController extends ChangeNotifier {
         failure: null,
         clearFailure: true,
       );
-      onRecordsChanged?.call(records);
+      _publishRecords(snapshot, records);
     } catch (error) {
       if (!_owns(generation, snapshot.sessionScope)) return;
       _applyReadFailure(error, accessContext: true);
@@ -721,7 +734,6 @@ class MeetingMembershipController extends ChangeNotifier {
           failure: null,
           clearFailure: true,
         );
-        onRecordsChanged?.call(records);
         notifyListeners();
         final reconciled = await _reconcileBoth(
           generation: generation,
@@ -744,6 +756,13 @@ class MeetingMembershipController extends ChangeNotifier {
             clearFailure: true,
           );
         } else {
+          if (!_ownsOperation(
+            generation,
+            snapshot.sessionScope,
+            aggregateToken,
+          )) {
+            return _unknownAfterSessionChange();
+          }
           result = MembershipMutationResult(
             status: MembershipOperationStatus.confirmed,
             reconciled: false,
@@ -762,10 +781,15 @@ class MeetingMembershipController extends ChangeNotifier {
       if (!_ownsOperation(generation, snapshot.sessionScope, aggregateToken)) {
         return _unknownAfterSessionChange();
       }
-      if (aggregateToken != null &&
-          !(acceptAggregateSnapshot?.call(aggregateToken, updatedSnapshot) ??
-              false)) {
-        return _unknownAfterSessionChange();
+      if (aggregateToken != null) {
+        final accepted = acceptAggregateSnapshotAndReconcile != null
+            ? await acceptAggregateSnapshotAndReconcile!(
+                aggregateToken,
+                updatedSnapshot,
+              )
+            : acceptAggregateSnapshot?.call(aggregateToken, updatedSnapshot) ??
+                  false;
+        if (!accepted) return _unknownAfterSessionChange();
       }
       var result = MembershipMutationResult(
         status: MembershipOperationStatus.confirmed,
@@ -802,8 +826,15 @@ class MeetingMembershipController extends ChangeNotifier {
           failure: null,
           clearFailure: true,
         );
-        onRecordsChanged?.call(records);
+        _publishRecords(updatedSnapshot, records);
       } else {
+        if (!_ownsOperation(
+          generation,
+          snapshot.sessionScope,
+          aggregateToken,
+        )) {
+          return _unknownAfterSessionChange();
+        }
         result = MembershipMutationResult(
           status: MembershipOperationStatus.confirmed,
           reconciled: false,
@@ -848,6 +879,13 @@ class MeetingMembershipController extends ChangeNotifier {
         final success =
             reconciled != null &&
             _ownsOperation(generation, snapshot.sessionScope, aggregateToken);
+        if (!_ownsOperation(
+          generation,
+          snapshot.sessionScope,
+          aggregateToken,
+        )) {
+          return _unknownAfterSessionChange(failure: failure);
+        }
         result = MembershipMutationResult(
           status: MembershipOperationStatus.rejected,
           reconciled: success,
@@ -881,8 +919,18 @@ class MeetingMembershipController extends ChangeNotifier {
       return result;
     } finally {
       var refreshAfterRelease = false;
-      if (_ownsOperation(generation, snapshot.sessionScope, aggregateToken)) {
-        _state = _copy(isMutating: false);
+      if (_owns(generation, snapshot.sessionScope)) {
+        final stillOwnsAggregate = _ownsOperation(
+          generation,
+          snapshot.sessionScope,
+          aggregateToken,
+        );
+        _state = _copy(
+          isMutating: false,
+          needsRevalidation: stillOwnsAggregate
+              ? _state.needsRevalidation
+              : true,
+        );
         notifyListeners();
         refreshAfterRelease = _pendingInvalidation;
       }
@@ -1006,7 +1054,7 @@ class MeetingMembershipController extends ChangeNotifier {
         failure: null,
         clearFailure: true,
       );
-      onRecordsChanged?.call(records);
+      _publishRecords(snapshot, records);
       notifyListeners();
       return snapshot;
     } catch (error) {
@@ -1039,6 +1087,22 @@ class MeetingMembershipController extends ChangeNotifier {
       }
       return null;
     }
+  }
+
+  void _publishRecords(
+    MeetingSnapshot snapshot,
+    List<MeetingParticipant> records,
+  ) {
+    if (!_isCurrentSession(snapshot.sessionScope) ||
+        _state.snapshot?.sessionScope != snapshot.sessionScope ||
+        _state.snapshot?.meeting.id.toLowerCase() !=
+            snapshot.meeting.id.toLowerCase() ||
+        _state.snapshot?.etag != snapshot.etag) {
+      return;
+    }
+    final immutable = List<MeetingParticipant>.unmodifiable(records);
+    onSnapshotRecordsChanged?.call(snapshot, immutable);
+    onRecordsChanged?.call(immutable);
   }
 
   Future<void> _refreshCanonicalAndMembership() async {
