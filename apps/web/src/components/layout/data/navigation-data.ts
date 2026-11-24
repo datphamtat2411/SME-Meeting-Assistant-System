@@ -14,6 +14,7 @@ import {
   Video,
 } from 'lucide-react'
 import type { AuthContext } from '@/features/auth/session/current-user'
+import { canEnterMemberDirectory } from '@/features/members/member-access-policy'
 import { type NavGroup } from '../types'
 
 export const navigationGroups = [
@@ -96,12 +97,7 @@ export const navigationGroups = [
 ] satisfies NavGroup[]
 
 export function getNavigationGroups(identity?: AuthContext | null): NavGroup[] {
-  if (!identity) return navigationGroups
-
-  const canAccessMembers =
-    identity.accountStatus === 'ACTIVE' &&
-    (identity.globalRole === 'ADMINISTRATOR' ||
-      identity.globalRole === 'DEPARTMENT_MANAGER')
+  const canAccessMembers = canEnterMemberDirectory(identity)
 
   return navigationGroups.map((group) => ({
     ...group,

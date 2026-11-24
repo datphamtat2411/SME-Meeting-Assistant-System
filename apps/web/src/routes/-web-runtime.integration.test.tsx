@@ -292,7 +292,6 @@ describe('integrated generated Web runtime', () => {
     ['/action-items', 'Action Items'],
     ['/assistant', 'AI Assistant & search'],
     ['/rooms', 'Meeting Rooms'],
-    ['/members', 'Members'],
     ['/settings', 'Profile'],
     ['/settings/account', 'Account'],
     ['/settings/appearance', 'Appearance'],
@@ -330,9 +329,22 @@ describe('integrated generated Web runtime', () => {
     }
   )
 
+  it.each(['/members', '/users'] as const)(
+    'renders the Member authorization boundary for an Employee on %s',
+    async (path) => {
+      const protectedRead = vi.spyOn(coreApi, 'getWithMeta')
+      const { router, screen } = await renderGeneratedRoute(path)
+
+      await expect
+        .element(screen.getByText('Access Forbidden', { exact: true }))
+        .toBeInTheDocument()
+      expect(router.state.location.pathname).toBe('/members')
+      expect(protectedRead).not.toHaveBeenCalled()
+    }
+  )
+
   it.each([
     ['/tasks', 'Tasks', '/tasks'],
-    ['/users', 'Members', '/members'],
     ['/apps', 'App Integrations', '/apps'],
     ['/chats', 'Inbox', '/chats'],
   ] as const)(

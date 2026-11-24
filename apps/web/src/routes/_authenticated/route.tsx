@@ -63,6 +63,9 @@ function AuthenticatedRoute() {
   const lifecycleState = useAuthLifecycleState()
   const verification = useCurrentUserVerification()
   const verifiedUser = verification.identity ?? currentUser
+  const verifiedIdentity = verification.isVerified
+    ? verification.identity
+    : undefined
 
   if (lifecycleState !== 'idle') {
     return (
@@ -77,7 +80,7 @@ function AuthenticatedRoute() {
   return (
     <AuthenticatedLayout
       user={toUserPresentation(verifiedUser)}
-      identity={verifiedUser}
+      identity={verifiedIdentity}
     />
   )
 }

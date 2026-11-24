@@ -107,7 +107,7 @@ export function MemberLifecycleDialog({
     <AlertDialog
       open={open}
       onOpenChange={(nextOpen) => {
-        if (!nextOpen && !saving) onClose()
+        if (!nextOpen && (!saving || reviewRequired)) onClose()
       }}
     >
       <AlertDialogContent className='max-h-[90vh] overflow-y-auto'>
@@ -140,7 +140,9 @@ export function MemberLifecycleDialog({
               Loading current member details…
             </div>
             <AlertDialogFooter>
-              <AlertDialogCancel disabled={saving}>Cancel</AlertDialogCancel>
+              <AlertDialogCancel disabled={saving && !reviewRequired}>
+                Cancel
+              </AlertDialogCancel>
             </AlertDialogFooter>
           </>
         ) : session?.phase === 'error' ? (
@@ -258,7 +260,7 @@ export function MemberLifecycleDialog({
                             )
                           }
                         >
-                          Use latest state and review confirmation
+                          Review and confirm lifecycle operation
                         </Button>
                       )}
                   </div>

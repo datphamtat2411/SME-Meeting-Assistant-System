@@ -20,11 +20,22 @@ export type MemberDirectoryAccess =
   | { type: 'denied'; actorId: string }
   | { type: 'empty-scope'; actorId: string }
 
+export function canEnterMemberDirectory(
+  identity: AuthContext | null | undefined
+): boolean {
+  return Boolean(
+    identity &&
+    identity.accountStatus === 'ACTIVE' &&
+    (identity.globalRole === 'ADMINISTRATOR' ||
+      identity.globalRole === 'DEPARTMENT_MANAGER')
+  )
+}
+
 export function getMemberDirectoryAccess(
   identity: AuthContext | null | undefined
 ): MemberDirectoryAccess {
   if (!identity) return { type: 'unresolved' }
-  if (identity.accountStatus !== 'ACTIVE') {
+  if (!canEnterMemberDirectory(identity)) {
     return { type: 'denied', actorId: identity.userId }
   }
 

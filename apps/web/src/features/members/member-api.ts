@@ -350,6 +350,7 @@ function creationMetadataMatches(
 
 const memberReconciliationPageSize = 100
 const maxMemberReconciliationPages = 10_000
+const maxDirectorySearchLength = 200
 
 /**
  * Reconciles a non-idempotent provisioning request through the authorized
@@ -385,7 +386,10 @@ export async function reconcileMemberCreation(
 
     const result = await fetchMemberDirectory(
       {
-        q: normalizeMemberEmail(submitted.email),
+        q: normalizeMemberEmail(submitted.email).slice(
+          0,
+          maxDirectorySearchLength
+        ),
         page,
         size: memberReconciliationPageSize,
       },

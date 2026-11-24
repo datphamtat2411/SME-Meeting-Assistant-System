@@ -13,7 +13,7 @@ import {
 import { routeTree } from '@/routeTree.gen'
 import { beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
-import { page } from 'vitest/browser'
+import { page, userEvent } from 'vitest/browser'
 import {
   CoreApiError,
   coreApi,
@@ -28,6 +28,7 @@ import {
   AUTH_LIFECYCLE_STORAGE_KEY,
   resetAuthLifecycleAfterSignIn,
 } from '@/features/auth/session/auth-lifecycle'
+import { currentUserQueryKey } from '@/features/auth/session/current-user'
 
 vi.mock('react-top-loading-bar', () => ({
   default: () => null,
@@ -48,6 +49,30 @@ const identity = {
     lastSeenAt: null,
     absoluteExpiresAt: '2027-01-01T00:00:00Z',
   },
+}
+const organizationUnitId = '11111111-1111-4111-8111-111111111111'
+const organizationUnit = {
+  id: organizationUnitId,
+  code: 'OPS',
+  name: 'Operations',
+  parentId: null,
+  status: 'ACTIVE',
+}
+
+function emptyPage(page: number, size: number) {
+  return {
+    data: [],
+    meta: {
+      pagination: {
+        page,
+        size,
+        totalElements: 0,
+        totalPages: 0,
+        hasNext: false,
+        hasPrevious: false,
+      },
+    },
+  }
 }
 
 const apiError = (status: number, kind: 'http' | 'network' | 'server') =>
@@ -110,7 +135,7 @@ async function renderRoute(initialPath: string) {
     </QueryClientProvider>
   )
 
-  return { router, screen }
+  return { router, screen, queryClient }
 }
 
 describe('session restoration and protected routing', () => {
@@ -217,6 +242,266 @@ describe('session restoration and protected routing', () => {
       .element(screen.getByRole('navigation', { name: 'Primary navigation' }))
       .not.toBeInTheDocument()
   })
+
+  it('allows an Administrator to enter Members', async () => {
+    const administrator = {
+      ...identity,
+      globalRole: 'ADMINISTRATOR' as const,
+      directoryManagementScope: { allUnits: true, unitIds: [] },
+    }
+    getCurrentUser.mockResolvedValue(administrator as never)
+    const protectedRead = vi
+      .spyOn(coreApi, 'getWithMeta')
+      .mockImplementation(async (url, config) => {
+        if (url === '/users') {
+          return emptyPage(
+            Number(config?.params?.page ?? 0),
+            Number(config?.params?.size ?? 20)
+          )
+        }
+        if (url === '/organizational-units') {
+          return {
+            data: [organizationUnit],
+            meta: {
+              pagination: {
+                page: 0,
+                size: 100,
+                totalElements: 1,
+                totalPages: 1,
+                hasNext: false,
+                hasPrevious: false,
+              },
+            },
+          }
+        }
+        throw new Error(`Unexpected protected request ${url}`)
+      })
+    const admin = await renderRoute('/members')
+    await expect
+      .element(admin.screen.getByRole('heading', { name: 'Members' }))
+      .toBeVisible()
+    await expect
+      .element(admin.screen.getByRole('link', { name: 'Members' }))
+      .toBeVisible()
+    expect(protectedRead.mock.calls.some(([url]) => url === '/users')).toBe(
+      true
+    )
+  })
+
+  it('allows a scoped Department Manager to enter Members with an Employee-only query', async () => {
+    const manager = {
+      ...identity,
+      globalRole: 'DEPARTMENT_MANAGER' as const,
+      directoryManagementScope: {
+        allUnits: false,
+        unitIds: [organizationUnitId],
+      },
+    }
+    getCurrentUser.mockResolvedValue(manager as never)
+    const managerRead = vi
+      .spyOn(coreApi, 'getWithMeta')
+      .mockImplementation(async (url, config) => {
+        if (url === '/users') {
+          return emptyPage(
+            Number(config?.params?.page ?? 0),
+            Number(config?.params?.size ?? 20)
+          )
+        }
+        if (url === '/organizational-units') {
+          return {
+            data: [organizationUnit],
+            meta: {
+              pagination: {
+                page: 0,
+                size: 100,
+                totalElements: 1,
+                totalPages: 1,
+                hasNext: false,
+                hasPrevious: false,
+              },
+            },
+          }
+        }
+        throw new Error(`Unexpected protected request ${url}`)
+      })
+    const managerRoute = await renderRoute('/members')
+    await expect
+      .element(managerRoute.screen.getByRole('heading', { name: 'Members' }))
+      .toBeVisible()
+    await expect
+      .element(managerRoute.screen.getByRole('link', { name: 'Members' }))
+      .toBeVisible()
+    expect(
+      managerRead.mock.calls.find(([url]) => url === '/users')?.[1]?.params
+    ).toMatchObject({ role: 'EMPLOYEE' })
+  })
+
+  it('keeps a Department Manager with no grants in the authorized empty-scope experience', async () => {
+    getCurrentUser.mockResolvedValue({
+      ...identity,
+      globalRole: 'DEPARTMENT_MANAGER',
+      directoryManagementScope: { allUnits: false, unitIds: [] },
+    } as never)
+    const protectedRead = vi.spyOn(coreApi, 'getWithMeta')
+    const { screen } = await renderRoute('/members')
+
+    await expect
+      .element(screen.getByRole('heading', { name: 'Members' }))
+      .toBeVisible()
+    await expect
+      .element(
+        screen.getByText(
+          'No organizational units are granted for member management.'
+        )
+      )
+      .toBeVisible()
+    expect(protectedRead).not.toHaveBeenCalled()
+  })
+
+  it.each(['/members', '/users'])(
+    'denies Employee direct navigation through %s without mounting protected Member queries',
+    async (path) => {
+      getCurrentUser.mockResolvedValue(identity as never)
+      const protectedRead = vi.spyOn(coreApi, 'getWithMeta')
+      const { router, screen } = await renderRoute(path)
+
+      await expect.element(screen.getByText('Access Forbidden')).toBeVisible()
+      await expect
+        .element(screen.getByRole('link', { name: 'Members' }))
+        .not.toBeInTheDocument()
+      await expect
+        .element(screen.getByRole('link', { name: 'Meeting Rooms' }))
+        .toBeVisible()
+      expect(protectedRead).not.toHaveBeenCalled()
+      if (path === '/users') {
+        await expect.poll(() => router.state.location.pathname).toBe('/members')
+      }
+    }
+  )
+
+  it('reacts to actor and role replacement and removes obsolete Member access', async () => {
+    const administrator = {
+      ...identity,
+      userId: '55555555-5555-4555-8555-555555555555',
+      globalRole: 'ADMINISTRATOR' as const,
+      directoryManagementScope: { allUnits: true, unitIds: [] },
+    }
+    let verifiedIdentity: typeof administrator | typeof identity = administrator
+    getCurrentUser.mockImplementation(async () => verifiedIdentity as never)
+    const protectedRead = vi
+      .spyOn(coreApi, 'getWithMeta')
+      .mockImplementation(async (url, config) =>
+        url === '/users'
+          ? emptyPage(
+              Number(config?.params?.page ?? 0),
+              Number(config?.params?.size ?? 20)
+            )
+          : emptyPage(
+              Number(config?.params?.page ?? 0),
+              Number(config?.params?.size ?? 100)
+            )
+      )
+    const { queryClient, screen } = await renderRoute('/members')
+    await expect
+      .element(screen.getByRole('heading', { name: 'Members' }))
+      .toBeVisible()
+    const readsBeforeReplacement = protectedRead.mock.calls.length
+
+    verifiedIdentity = {
+      ...identity,
+      userId: '66666666-6666-4666-8666-666666666666',
+      session: {
+        ...identity.session,
+        id: '77777777-7777-4777-8777-777777777777',
+      },
+    }
+    await queryClient.invalidateQueries({ queryKey: currentUserQueryKey })
+
+    await expect.element(screen.getByText('Access Forbidden')).toBeVisible()
+    await expect
+      .element(screen.getByRole('link', { name: 'Members' }))
+      .not.toBeInTheDocument()
+    expect(protectedRead.mock.calls.length).toBe(readsBeforeReplacement)
+  })
+
+  it('preserves a compatible Member draft during transient identity verification failure', async () => {
+    const administrator = {
+      ...identity,
+      globalRole: 'ADMINISTRATOR' as const,
+      directoryManagementScope: { allUnits: true, unitIds: [] },
+    }
+    getCurrentUser.mockResolvedValue(administrator as never)
+    vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url, config) =>
+      url === '/users'
+        ? emptyPage(
+            Number(config?.params?.page ?? 0),
+            Number(config?.params?.size ?? 20)
+          )
+        : emptyPage(
+            Number(config?.params?.page ?? 0),
+            Number(config?.params?.size ?? 100)
+          )
+    )
+    const { queryClient, screen } = await renderRoute('/members')
+    await userEvent.click(screen.getByRole('button', { name: 'Add member' }))
+    const name = screen.getByRole('textbox', { name: 'Name' })
+    await userEvent.fill(name, 'Preserved routed draft')
+
+    getCurrentUser.mockRejectedValue(apiError(0, 'network'))
+    await queryClient.invalidateQueries({ queryKey: currentUserQueryKey })
+
+    await expect
+      .element(screen.getByRole('dialog', { name: 'Create account' }))
+      .toBeVisible()
+    await expect.element(name).toHaveValue('Preserved routed draft')
+    await expect
+      .element(screen.getByRole('button', { name: 'Save member' }))
+      .toBeDisabled()
+  })
+
+  it.each([
+    ['confirmed authorization denial', apiError(403, 'http')],
+    ['confirmed session loss', apiError(401, 'http')],
+  ] as const)(
+    'removes Member navigation after %s without restoring the stale route identity',
+    async (_label, error) => {
+      const administrator = {
+        ...identity,
+        globalRole: 'ADMINISTRATOR' as const,
+        directoryManagementScope: { allUnits: true, unitIds: [] },
+      }
+      getCurrentUser.mockResolvedValue(administrator as never)
+      vi.spyOn(coreApi, 'getWithMeta').mockImplementation(
+        async (url, config) =>
+          url === '/users'
+            ? emptyPage(
+                Number(config?.params?.page ?? 0),
+                Number(config?.params?.size ?? 20)
+              )
+            : emptyPage(
+                Number(config?.params?.page ?? 0),
+                Number(config?.params?.size ?? 100)
+              )
+      )
+      const { queryClient, screen } = await renderRoute('/members')
+      await expect
+        .element(screen.getByRole('link', { name: 'Members' }))
+        .toBeVisible()
+
+      getCurrentUser.mockRejectedValue(error)
+      await queryClient.invalidateQueries({ queryKey: currentUserQueryKey })
+
+      await expect
+        .element(screen.getByRole('link', { name: 'Members' }))
+        .not.toBeInTheDocument()
+      await expect
+        .element(screen.getByRole('link', { name: 'Meeting Rooms' }))
+        .toBeVisible()
+      await expect
+        .element(screen.getByRole('heading', { name: 'Members' }))
+        .not.toBeInTheDocument()
+    }
+  )
 
   it.each([
     ['network', apiError(0, 'network')],

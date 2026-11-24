@@ -21,6 +21,17 @@ const baseIdentity = {
 }
 
 describe('identity-aware shell navigation', () => {
+  it('does not show management navigation before a verified identity is available', () => {
+    const groups = getNavigationGroups(undefined)
+    const items = groups.flatMap((group) => group.items)
+    expect(items.some((item) => 'url' in item && item.url === '/members')).toBe(
+      false
+    )
+    expect(items.some((item) => 'url' in item && item.url === '/rooms')).toBe(
+      true
+    )
+  })
+
   it('hides Members from employees while preserving Meeting Rooms', () => {
     const groups = getNavigationGroups({
       ...baseIdentity,

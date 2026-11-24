@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   constrainMemberSearch,
+  canEnterMemberDirectory,
   getMemberDirectoryAccess,
 } from './member-access-policy'
 
@@ -27,6 +28,22 @@ const baseIdentity = {
 }
 
 describe('member directory access policy', () => {
+  it('allows the directory independently of provisioning, including empty manager scope', () => {
+    const emptyManager = {
+      ...baseIdentity,
+      globalRole: 'DEPARTMENT_MANAGER' as const,
+      directoryManagementScope: { allUnits: false, unitIds: [] },
+    }
+    expect(canEnterMemberDirectory(emptyManager)).toBe(true)
+    expect(getMemberDirectoryAccess(emptyManager)).toMatchObject({
+      type: 'empty-scope',
+    })
+    expect(
+      canEnterMemberDirectory({ ...baseIdentity, globalRole: 'EMPLOYEE' })
+    ).toBe(false)
+    expect(canEnterMemberDirectory(undefined)).toBe(false)
+  })
+
   it('allows administrators organization-wide access and scopes cache identity by actor', () => {
     const access = getMemberDirectoryAccess({
       ...baseIdentity,

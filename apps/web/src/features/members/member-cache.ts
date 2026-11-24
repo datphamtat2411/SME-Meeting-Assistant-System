@@ -1,37 +1,113 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { currentUserQueryKey } from '@/features/auth/session/current-user'
-import type { Member } from './member-api'
+
+export const memberCacheQueryKeys = {
+  directory: ['users', 'directory'] as const,
+  detail: ['users', 'detail'] as const,
+  meetingCandidates: ['users', 'meeting-candidates'] as const,
+  meetingOrganizers: ['meeting-organizers'] as const,
+  meetingsList: ['meetings', 'list'] as const,
+  meetingParticipants: ['meetings', 'participants'] as const,
+}
+
+type CacheOutcome = 'confirmed' | 'uncertain' | 'rejected'
+type MemberChangedField =
+  | 'displayName'
+  | 'globalRole'
+  | 'primaryOrgUnitId'
+  | 'managerScopeUnitIds'
+
+interface MemberMutationActor {
+  userId: string
+}
 
 export type MemberCacheMutation =
-  | 'created'
-  | 'updated'
-  | 'deactivated'
-  | 'reactivated'
-  | 'setup-reissued'
+  | {
+      type: 'created'
+      actor?: MemberMutationActor
+      outcome: CacheOutcome
+    }
+  | {
+      type: 'updated'
+      targetMemberId: string
+      changedFields: readonly MemberChangedField[]
+      actor?: MemberMutationActor
+      outcome: CacheOutcome
+    }
+  | {
+      type: 'deactivated' | 'reactivated'
+      targetMemberId: string
+      actor?: MemberMutationActor
+      outcome: CacheOutcome
+    }
+  | {
+      type: 'setup-reissued'
+      targetMemberId: string
+      actor?: MemberMutationActor
+      outcome: CacheOutcome
+    }
 
-export async function synchronizeMemberCaches(
-  queryClient: QueryClient,
-  mutation: MemberCacheMutation,
-  target: Member,
-  currentActorId?: string
-): Promise<void> {
-  const keys: Array<readonly unknown[]> = [['users', 'directory']]
+const sessionInvalidatingFields = new Set<MemberChangedField>([
+  'globalRole',
+  'primaryOrgUnitId',
+  'managerScopeUnitIds',
+])
 
-  if (mutation !== 'created' && mutation !== 'setup-reissued') {
+function keysForMutation(mutation: MemberCacheMutation) {
+  const keys: Array<readonly unknown[]> = [memberCacheQueryKeys.directory]
+  if (mutation.outcome === 'rejected' || mutation.type === 'created') {
+    return keys
+  }
+
+  keys.push(memberCacheQueryKeys.detail)
+  if (mutation.type === 'setup-reissued') return keys
+
+  if (
+    mutation.type === 'deactivated' ||
+    mutation.type === 'reactivated' ||
+    (mutation.type === 'updated' &&
+      mutation.changedFields.some((field) =>
+        ['globalRole', 'primaryOrgUnitId'].includes(field)
+      ))
+  ) {
+    keys.push(memberCacheQueryKeys.meetingCandidates)
+  }
+
+  if (
+    mutation.type === 'updated' &&
+    mutation.changedFields.includes('displayName')
+  ) {
     keys.push(
-      ['users', 'detail'],
-      ['users', 'meeting-candidates'],
-      ['meeting-organizers'],
-      ['meetings', 'list'],
-      ['meetings', 'detail']
+      memberCacheQueryKeys.meetingCandidates,
+      memberCacheQueryKeys.meetingOrganizers,
+      memberCacheQueryKeys.meetingsList,
+      memberCacheQueryKeys.meetingParticipants
     )
   }
 
-  await Promise.all(
-    keys.map((queryKey) => queryClient.invalidateQueries({ queryKey }))
+  return keys.filter(
+    (key, index) => keys.findIndex((candidate) => candidate === key) === index
   )
+}
 
-  if (currentActorId && target.id === currentActorId) {
+export async function synchronizeMemberCaches(
+  queryClient: QueryClient,
+  mutation: MemberCacheMutation
+): Promise<void> {
+  if (mutation.outcome === 'rejected') return
+
+  const refreshCurrentActor =
+    mutation.type === 'updated' &&
+    mutation.actor?.userId === mutation.targetMemberId &&
+    mutation.changedFields.some((field) => sessionInvalidatingFields.has(field))
+
+  if (refreshCurrentActor) {
     await queryClient.invalidateQueries({ queryKey: currentUserQueryKey })
   }
+
+  await Promise.all(
+    keysForMutation(mutation).map((queryKey) =>
+      queryClient.invalidateQueries({ queryKey })
+    )
+  )
 }

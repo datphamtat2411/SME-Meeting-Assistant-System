@@ -4,6 +4,7 @@ import {
   useLayoutEffect,
   useReducer,
   useRef,
+  useState,
 } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -264,7 +265,10 @@ function reducer(state: OperationState, action: Action): OperationState {
 
 function statusMutationName(
   action: MemberLifecycleAction
-): MemberCacheMutation {
+): Extract<
+  MemberCacheMutation,
+  { type: 'deactivated' | 'reactivated' | 'setup-reissued' }
+>['type'] {
   if (action === 'deactivate') return 'deactivated'
   if (action === 'reactivate') return 'reactivated'
   return 'setup-reissued'
@@ -281,7 +285,7 @@ function lifecycleVerifiedStateMessage(
   latest: MemberSnapshot
 ): string {
   if (action === 'account-setup/reissue') {
-    return 'The account remains pending setup. Ordinary account data cannot confirm whether this reissue request was applied or whether an email was delivered.'
+    return 'The account remains pending setup. Ordinary account data cannot independently establish whether the reissue request was applied or whether a setup email was delivered.'
   }
   const expected = action === 'deactivate' ? 'INACTIVE' : 'ACTIVE'
   if (latest.member.accountStatus === expected) {
@@ -350,6 +354,9 @@ export function useMemberAdministrationController({
   const snapshotController = useRef<AbortController | null>(null)
   const reconciliationController = useRef<AbortController | null>(null)
   const mutationInFlight = useRef<number | null>(null)
+  const [mutationOperationId, setMutationOperationId] = useState<number | null>(
+    null
+  )
   const previousAccessKey = useRef(accessKey)
 
   useLayoutEffect(() => {
@@ -388,6 +395,8 @@ export function useMemberAdministrationController({
     if (previousAccessKey.current === accessKey) return
     previousAccessKey.current = accessKey
     abortReads()
+    mutationInFlight.current = null
+    setMutationOperationId(null)
     dispatch({ type: 'invalidate-context' })
   }, [abortReads, accessKey])
 
@@ -729,7 +738,7 @@ export function useMemberAdministrationController({
       if (input.mode === 'create') {
         assertMemberCreateAllowed(currentIdentity, input.payload, units)
         return {
-          mutation: 'created' as const,
+          mutation: { type: 'created' as const },
           snapshot: await createMember(input.payload),
         }
       }
@@ -740,7 +749,16 @@ export function useMemberAdministrationController({
         units
       )
       return {
-        mutation: 'updated' as const,
+        mutation: {
+          type: 'updated' as const,
+          targetMemberId: input.snapshot.member.id,
+          changedFields: Object.keys(input.payload) as Array<
+            | 'displayName'
+            | 'globalRole'
+            | 'primaryOrgUnitId'
+            | 'managerScopeUnitIds'
+          >,
+        },
         snapshot: await updateMember(
           input.snapshot.member.id,
           input.payload,
@@ -749,15 +767,16 @@ export function useMemberAdministrationController({
       }
     },
     onSuccess: async (result, input) => {
-      await synchronizeMemberCaches(
-        queryClient,
-        result.mutation,
-        result.snapshot.member,
-        authorizationRef.current.identity?.userId
-      )
+      await synchronizeMemberCaches(queryClient, {
+        ...result.mutation,
+        actor: authorizationRef.current.identity
+          ? { userId: authorizationRef.current.identity.userId }
+          : undefined,
+        outcome: 'confirmed',
+      })
       if (!isCurrentOperation(input.operationId, input.contextKey)) return
       toast.success(
-        result.mutation === 'created'
+        result.mutation.type === 'created'
           ? 'Account provisioned; secure setup is still required'
           : 'Member updated'
       )
@@ -788,21 +807,13 @@ export function useMemberAdministrationController({
         outcome === 'precondition'
       ) {
         if (input.mode === 'create') {
-          await synchronizeMemberCaches(
-            queryClient,
-            'created',
-            {
-              ...input.payload,
-              id: '00000000-0000-4000-8000-000000000000',
-              globalRole: input.payload.globalRole ?? 'EMPLOYEE',
-              accountStatus: 'PENDING_SETUP',
-              primaryOrgUnitId: input.payload.primaryOrgUnitId,
-              managerScopeUnitIds: input.payload.managerScopeUnitIds ?? [],
-              createdAt: new Date(0).toISOString(),
-              updatedAt: new Date(0).toISOString(),
-            } as Member,
-            authorizationRef.current.identity?.userId
-          )
+          await synchronizeMemberCaches(queryClient, {
+            type: 'created',
+            actor: authorizationRef.current.identity
+              ? { userId: authorizationRef.current.identity.userId }
+              : undefined,
+            outcome: 'uncertain',
+          })
           if (isCurrentOperation(input.operationId, input.contextKey)) {
             await verifyCreation(
               input.operationId,
@@ -812,12 +823,20 @@ export function useMemberAdministrationController({
             )
           }
         } else {
-          await synchronizeMemberCaches(
-            queryClient,
-            'updated',
-            input.snapshot.member,
-            authorizationRef.current.identity?.userId
-          )
+          await synchronizeMemberCaches(queryClient, {
+            type: 'updated',
+            targetMemberId: input.snapshot.member.id,
+            changedFields: Object.keys(input.payload) as Array<
+              | 'displayName'
+              | 'globalRole'
+              | 'primaryOrgUnitId'
+              | 'managerScopeUnitIds'
+            >,
+            actor: authorizationRef.current.identity
+              ? { userId: authorizationRef.current.identity.userId }
+              : undefined,
+            outcome: 'uncertain',
+          })
           if (isCurrentOperation(input.operationId, input.contextKey)) {
             await verifyEdit(
               input.operationId,
@@ -844,6 +863,9 @@ export function useMemberAdministrationController({
       if (mutationInFlight.current === input.operationId) {
         mutationInFlight.current = null
       }
+      setMutationOperationId((current) =>
+        current === input.operationId ? null : current
+      )
     },
   })
 
@@ -933,6 +955,7 @@ export function useMemberAdministrationController({
       }
       return {
         mutation: statusMutationName(action),
+        targetMemberId: snapshot.member.id,
         snapshot: await changeMemberStatus(
           snapshot.member.id,
           action,
@@ -941,12 +964,14 @@ export function useMemberAdministrationController({
       }
     },
     onSuccess: async (result, input) => {
-      await synchronizeMemberCaches(
-        queryClient,
-        result.mutation,
-        result.snapshot.member,
-        authorizationRef.current.identity?.userId
-      )
+      await synchronizeMemberCaches(queryClient, {
+        type: result.mutation,
+        targetMemberId: result.targetMemberId,
+        actor: authorizationRef.current.identity
+          ? { userId: authorizationRef.current.identity.userId }
+          : undefined,
+        outcome: 'confirmed',
+      })
       if (!isCurrentOperation(input.operationId, input.contextKey)) return
       toast.success(lifecycleSuccessMessage(input.action))
       dispatch({ type: 'close' })
@@ -965,12 +990,14 @@ export function useMemberAdministrationController({
         outcome === 'unknown' ||
         outcome === 'precondition'
       ) {
-        await synchronizeMemberCaches(
-          queryClient,
-          statusMutationName(input.action),
-          input.snapshot.member,
-          authorizationRef.current.identity?.userId
-        )
+        await synchronizeMemberCaches(queryClient, {
+          type: statusMutationName(input.action),
+          targetMemberId: input.snapshot.member.id,
+          actor: authorizationRef.current.identity
+            ? { userId: authorizationRef.current.identity.userId }
+            : undefined,
+          outcome: 'uncertain',
+        })
         if (isCurrentOperation(input.operationId, input.contextKey)) {
           await verifyLifecycle(
             input.operationId,
@@ -994,24 +1021,25 @@ export function useMemberAdministrationController({
       if (mutationInFlight.current === input.operationId) {
         mutationInFlight.current = null
       }
+      setMutationOperationId((current) =>
+        current === input.operationId ? null : current
+      )
     },
   })
-  const { mutate: mutateEditor, isPending: editorPending } = editorMutation
-  const { mutate: mutateLifecycle, isPending: lifecyclePending } =
-    lifecycleMutation
+  const { mutate: mutateEditor } = editorMutation
+  const { mutate: mutateLifecycle } = lifecycleMutation
 
   const submitEditor = useCallback(
     (input: MemberEditorSubmit) => {
       if (
         !isCurrentOperation(input.operationId, input.contextKey) ||
         !authorizationRef.current.identityVerified ||
-        mutationInFlight.current !== null ||
-        editorPending ||
-        lifecyclePending
+        mutationInFlight.current !== null
       ) {
         return
       }
       mutationInFlight.current = input.operationId
+      setMutationOperationId(input.operationId)
       dispatch({
         type: 'editor-feedback',
         operationId: input.operationId,
@@ -1020,7 +1048,7 @@ export function useMemberAdministrationController({
       })
       mutateEditor(input)
     },
-    [editorPending, isCurrentOperation, lifecyclePending, mutateEditor]
+    [isCurrentOperation, mutateEditor]
   )
 
   const confirmLifecycle = useCallback(
@@ -1032,12 +1060,12 @@ export function useMemberAdministrationController({
         current.session.contextKey !== accessKey ||
         current.session.phase !== 'confirm' ||
         !authorizationRef.current.identityVerified ||
-        mutationInFlight.current !== null ||
-        lifecyclePending
+        mutationInFlight.current !== null
       ) {
         return
       }
       mutationInFlight.current = operationId
+      setMutationOperationId(operationId)
       dispatch({
         type: 'lifecycle-feedback',
         operationId,
@@ -1051,7 +1079,7 @@ export function useMemberAdministrationController({
         contextKey: accessKey,
       })
     },
-    [accessKey, lifecyclePending, mutateLifecycle]
+    [accessKey, mutateLifecycle]
   )
 
   const loadLatestMember = useCallback(
@@ -1169,7 +1197,19 @@ export function useMemberAdministrationController({
       }
       const reconciliation = current.feedback.editReconciliation
       const resolved = resolveMemberEditReconciliation(reconciliation, choices)
-      if (resolved.status !== 'resolved') return
+      if (resolved.status === 'unresolved') return
+      if (resolved.status === 'invalid') {
+        dispatch({
+          type: 'editor-feedback',
+          operationId,
+          contextKey: current.session.contextKey,
+          feedback: {
+            ...current.feedback,
+            reconciliationError: resolved.message,
+          },
+        })
+        return
+      }
       const nextId = nextOperationId()
       dispatch({
         type: 'replace-editor',
@@ -1297,6 +1337,8 @@ export function useMemberAdministrationController({
       current.kind !== 'editor' ||
       current.session.operationId !== operationId ||
       current.session.mode !== 'create' ||
+      current.feedback?.creationReconciliation?.status !== 'not-found' ||
+      current.feedback.reconciliationLoading ||
       !authorizationRef.current.identityVerified
     ) {
       return
@@ -1341,16 +1383,21 @@ export function useMemberAdministrationController({
 
   const close = useCallback(() => {
     abortReads()
+    mutationInFlight.current = null
+    setMutationOperationId(null)
     dispatch({ type: 'close' })
   }, [abortReads])
+
+  const activeMutationPending =
+    state.kind !== 'idle' && mutationOperationId === state.session.operationId
 
   return {
     editorSession: state.kind === 'editor' ? state.session : null,
     editorFeedback: state.kind === 'editor' ? state.feedback : null,
     lifecycleSession: state.kind === 'lifecycle' ? state.session : null,
     lifecycleFeedback: state.kind === 'lifecycle' ? state.feedback : null,
-    saving: editorMutation.isPending || lifecycleMutation.isPending,
-    statusMutationPending: lifecycleMutation.isPending,
+    saving: activeMutationPending,
+    statusMutationPending: activeMutationPending,
     startCreate,
     startEdit,
     startLifecycle,

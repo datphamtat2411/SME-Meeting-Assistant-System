@@ -15,7 +15,7 @@ import '@/styles/index.css'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { page, userEvent } from 'vitest/browser'
-import { coreApi } from '@/lib/core-api'
+import { CoreApiError, coreApi } from '@/lib/core-api'
 import { SearchProvider } from '@/context/search-provider'
 import { ThemeProvider } from '@/context/theme-provider'
 import { SidebarProvider } from '@/components/ui/sidebar'
@@ -73,6 +73,30 @@ const unit = {
   name: 'Operations',
   parentId: null,
   status: 'ACTIVE',
+}
+const productUnit = {
+  id: '33333333-3333-4333-8333-333333333333',
+  code: 'PROD',
+  name: 'Product',
+  parentId: null,
+  status: 'ACTIVE',
+}
+
+function uncertainMutationError() {
+  return new CoreApiError({
+    message: 'The connection ended before the outcome was confirmed.',
+    code: 'NETWORK_ERROR',
+    kind: 'network',
+  })
+}
+
+function staleMutationError() {
+  return new CoreApiError({
+    message: 'The member changed.',
+    code: 'PRECONDITION_FAILED',
+    status: 412,
+    kind: 'http',
+  })
 }
 
 function listResponse(
@@ -445,6 +469,261 @@ describe('Members directory', () => {
       .not.toBeInTheDocument()
   })
 
+  it.each([
+    ['matching metadata', 'New Person', /matching metadata/i],
+    ['conflicting metadata', 'Different Person', /different metadata/i],
+  ])(
+    'keeps an uncertain creation draft closed when an authorized account with %s is found',
+    async (_, existingName, metadataMessage) => {
+      const existing = {
+        ...member,
+        email: 'new.person@example.test',
+        displayName: existingName,
+        primaryOrgUnitId: null,
+        accountStatus: 'PENDING_SETUP',
+      }
+      const getSpy = vi
+        .spyOn(coreApi, 'getWithMeta')
+        .mockImplementation(async (url, config) => {
+          if (url === '/users') {
+            return config?.params?.q
+              ? listResponse([existing], 0, 100, 1)
+              : listResponse()
+          }
+          if (url === '/organizational-units') {
+            return listResponse([unit], 0, 100)
+          }
+          throw new Error(`Unexpected Core API directory request ${url}`)
+        })
+      const createSpy = vi
+        .spyOn(coreApi, 'postWithMetaAndEtag')
+        .mockRejectedValue(uncertainMutationError())
+      const { screen } = await renderMembers()
+
+      await userEvent.click(screen.getByRole('button', { name: 'Add member' }))
+      await userEvent.fill(
+        screen.getByRole('textbox', { name: 'Name' }),
+        'New Person'
+      )
+      await userEvent.fill(
+        screen.getByRole('textbox', { name: 'Email' }),
+        'New.Person@Example.Test'
+      )
+      await userEvent.click(screen.getByRole('button', { name: 'Save member' }))
+
+      await expect.poll(() => createSpy.mock.calls.length).toBe(1)
+      await expect.element(screen.getByText(metadataMessage)).toBeVisible()
+      await expect
+        .element(
+          screen.getByText(`Matching authorized account: ${existingName}`)
+        )
+        .toBeVisible()
+      expect(createSpy).toHaveBeenCalledTimes(1)
+      expect(getSpy.mock.calls.some(([, config]) => config?.params?.q)).toBe(
+        true
+      )
+      await expect
+        .element(screen.getByRole('button', { name: 'Review preserved draft' }))
+        .not.toBeInTheDocument()
+      await expect
+        .element(
+          screen.getByRole('button', { name: 'Review existing account' })
+        )
+        .toBeVisible()
+    }
+  )
+
+  it('retries failed creation verification with GET only and opens a draft only after a verified no-match', async () => {
+    let reconciliationReads = 0
+    const verificationError = new CoreApiError({
+      message: 'Directory verification is temporarily unavailable.',
+      code: 'DIRECTORY_UNAVAILABLE',
+      kind: 'network',
+    })
+    const getSpy = vi
+      .spyOn(coreApi, 'getWithMeta')
+      .mockImplementation(async (url, config) => {
+        if (url === '/users') {
+          if (config?.params?.q) {
+            reconciliationReads += 1
+            if (reconciliationReads === 1) {
+              throw verificationError
+            }
+            return listResponse([], 0, 100, 0)
+          }
+          return listResponse()
+        }
+        if (url === '/organizational-units') {
+          return listResponse([unit], 0, 100)
+        }
+        throw new Error(`Unexpected Core API directory request ${url}`)
+      })
+    const createSpy = vi
+      .spyOn(coreApi, 'postWithMetaAndEtag')
+      .mockRejectedValueOnce(uncertainMutationError())
+      .mockResolvedValueOnce({
+        data: {
+          ...member,
+          id: '33333333-3333-4333-8333-333333333333',
+          email: 'new.person@example.test',
+          displayName: 'New Person',
+          primaryOrgUnitId: null,
+          accountStatus: 'PENDING_SETUP',
+        },
+        meta: {},
+        etag: 'W/"v-2"',
+      })
+    const { screen } = await renderMembers()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Add member' }))
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Name' }),
+      'New Person'
+    )
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Email' }),
+      'New.Person@Example.Test'
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Save member' }))
+
+    await expect
+      .element(screen.getByText(/verification is temporarily unavailable/i))
+      .toBeVisible()
+    await expect
+      .element(screen.getByRole('button', { name: 'Retry verification' }))
+      .toBeEnabled()
+    expect(createSpy).toHaveBeenCalledTimes(1)
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Retry verification' })
+    )
+    await expect
+      .element(screen.getByRole('button', { name: 'Review preserved draft' }))
+      .toBeEnabled()
+    expect(reconciliationReads).toBe(2)
+    expect(createSpy).toHaveBeenCalledTimes(1)
+    expect(
+      getSpy.mock.calls.filter(
+        ([url, config]) => url === '/users' && config?.params?.q
+      )
+    ).toHaveLength(2)
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Review preserved draft' })
+    )
+    await expect
+      .element(screen.getByRole('textbox', { name: 'Name' }))
+      .toHaveValue('New Person')
+    await expect
+      .element(screen.getByRole('textbox', { name: 'Email' }))
+      .toHaveValue('new.person@example.test')
+    expect(createSpy).toHaveBeenCalledTimes(1)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Save member' }))
+    await expect.poll(() => createSpy.mock.calls.length).toBe(2)
+    expect(createSpy).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not claim global email availability for a Department Manager no-match', async () => {
+    vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url, config) => {
+      if (url === '/users') {
+        return config?.params?.q ? listResponse([], 0, 100, 0) : listResponse()
+      }
+      if (url === '/organizational-units') {
+        return listResponse([unit], 0, 100)
+      }
+      throw new Error(`Unexpected Core API directory request ${url}`)
+    })
+    const createSpy = vi
+      .spyOn(coreApi, 'postWithMetaAndEtag')
+      .mockRejectedValue(uncertainMutationError())
+    const { screen } = await renderMembers(identity('DEPARTMENT_MANAGER'))
+
+    await userEvent.click(screen.getByRole('button', { name: 'Add member' }))
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Name' }),
+      'Scoped Draft'
+    )
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Email' }),
+      'scoped@example.test'
+    )
+    await userEvent.click(
+      screen.getByRole('combobox', { name: 'Primary organizational unit' })
+    )
+    await userEvent.click(screen.getByRole('option', { name: /Operations/ }))
+    await userEvent.click(screen.getByRole('button', { name: 'Save member' }))
+
+    await expect
+      .element(screen.getByText(/no matching account is visible.*scope/i))
+      .toBeVisible()
+    await expect
+      .element(screen.getByRole('button', { name: 'Review preserved draft' }))
+      .toBeEnabled()
+    await expect
+      .element(
+        screen.getByText(
+          /does not establish that the email is globally unused/i
+        )
+      )
+      .toBeVisible()
+    expect(createSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('ignores a delayed creation verification after its operation has closed', async () => {
+    let finishVerification!: (response: ReturnType<typeof listResponse>) => void
+    const getSpy = vi
+      .spyOn(coreApi, 'getWithMeta')
+      .mockImplementation(async (url, config) => {
+        if (url === '/users') {
+          if (config?.params?.q) {
+            return new Promise((resolve) => {
+              finishVerification = resolve
+            }) as never
+          }
+          return listResponse()
+        }
+        if (url === '/organizational-units') {
+          return listResponse([unit], 0, 100)
+        }
+        throw new Error(`Unexpected Core API directory request ${url}`)
+      })
+    const createSpy = vi
+      .spyOn(coreApi, 'postWithMetaAndEtag')
+      .mockRejectedValue(uncertainMutationError())
+    const { screen } = await renderMembers()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Add member' }))
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Name' }),
+      'First Draft'
+    )
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Email' }),
+      'first@example.test'
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Save member' }))
+    await expect.poll(() => Boolean(finishVerification)).toBe(true)
+    expect(createSpy).toHaveBeenCalledTimes(1)
+    await expect
+      .element(screen.getByRole('button', { name: 'Review preserved draft' }))
+      .not.toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Add member' }))
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Name' }),
+      'Second Draft'
+    )
+    finishVerification(listResponse([member], 0, 100, 1))
+
+    await expect
+      .element(screen.getByRole('textbox', { name: 'Name' }))
+      .toHaveValue('Second Draft')
+    expect(getSpy).toHaveBeenCalled()
+    expect(createSpy).toHaveBeenCalledTimes(1)
+  })
+
   it('edits from one authoritative snapshot and sends its ETag without refetching at submit', async () => {
     mockDirectory()
     const detailSpy = vi
@@ -480,6 +759,566 @@ describe('Members directory', () => {
     )
   })
 
+  it('keeps a name edit while adopting an independent server unit change and sends the reviewed ETag', async () => {
+    const original = {
+      ...member,
+      displayName: 'John',
+      primaryOrgUnitId: unit.id,
+    }
+    const latest = { ...original, primaryOrgUnitId: productUnit.id }
+    mockDirectory({ units: listResponse([unit, productUnit], 0, 100) })
+    let detailReads = 0
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockImplementation(async () => {
+      detailReads += 1
+      return detailReads === 1
+        ? { data: original, meta: {}, etag: 'W/"v-1"' }
+        : { data: latest, meta: {}, etag: 'W/"v-2"' }
+    })
+    const patchSpy = vi
+      .spyOn(coreApi, 'patchWithMetaAndEtag')
+      .mockRejectedValueOnce(staleMutationError())
+      .mockResolvedValueOnce({
+        data: { ...latest, displayName: 'John Nguyen' },
+        meta: {},
+        etag: 'W/"v-3"',
+      })
+    const { screen } = await renderMembers()
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Edit Lee Member' })
+    )
+    await expect
+      .element(screen.getByRole('dialog', { name: 'Edit member' }))
+      .toBeVisible()
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Name' }),
+      'John Nguyen'
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Save member' }))
+
+    await expect
+      .element(
+        screen.getByRole('button', {
+          name: 'Keep intended changes and continue',
+        })
+      )
+      .toBeEnabled()
+    await expect
+      .element(
+        screen.getByRole('button', {
+          name: 'Discard my edits and restart from latest',
+        })
+      )
+      .toBeEnabled()
+    expect(patchSpy).toHaveBeenCalledTimes(1)
+
+    await userEvent.click(
+      screen.getByRole('button', {
+        name: 'Keep intended changes and continue',
+      })
+    )
+    await expect
+      .element(screen.getByRole('textbox', { name: 'Name' }))
+      .toHaveValue('John Nguyen')
+    await expect
+      .element(
+        screen.getByRole('combobox', {
+          name: 'Primary organizational unit',
+        })
+      )
+      .toHaveTextContent('Product')
+    expect(patchSpy).toHaveBeenCalledTimes(1)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Save member' }))
+    await expect.poll(() => patchSpy.mock.calls.length).toBe(2)
+    expect(patchSpy).toHaveBeenLastCalledWith(
+      `/users/${memberId}`,
+      { displayName: 'John Nguyen' },
+      { headers: { 'If-Match': 'W/"v-2"' } }
+    )
+  })
+
+  it('requires a separate conflict choice and save before sending the intended value', async () => {
+    const original = { ...member, displayName: 'John' }
+    const latest = { ...member, displayName: 'Server Name' }
+    mockDirectory()
+    vi.spyOn(coreApi, 'getWithMetaAndEtag')
+      .mockResolvedValueOnce({
+        data: original,
+        meta: {},
+        etag: 'W/"v-1"',
+      })
+      .mockResolvedValueOnce({
+        data: latest,
+        meta: {},
+        etag: 'W/"v-2"',
+      })
+    const patchSpy = vi
+      .spyOn(coreApi, 'patchWithMetaAndEtag')
+      .mockRejectedValueOnce(staleMutationError())
+      .mockResolvedValueOnce({
+        data: { ...latest, displayName: 'My Name' },
+        meta: {},
+        etag: 'W/"v-3"',
+      })
+    const { screen } = await renderMembers()
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Edit Lee Member' })
+    )
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Name' }),
+      'My Name'
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Save member' }))
+    const resolve = screen.getByRole('button', {
+      name: 'Resolve conflicts and continue',
+    })
+    await expect.element(resolve).toBeDisabled()
+    await expect
+      .element(screen.getByRole('radio', { name: /server value/i }))
+      .toBeVisible()
+    await userEvent.click(
+      screen.getByRole('radio', { name: /your intended value/i })
+    )
+    await userEvent.click(resolve)
+
+    await expect
+      .element(screen.getByRole('textbox', { name: 'Name' }))
+      .toHaveValue('My Name')
+    expect(patchSpy).toHaveBeenCalledTimes(1)
+    await userEvent.click(screen.getByRole('button', { name: 'Save member' }))
+    await expect.poll(() => patchSpy.mock.calls.length).toBe(2)
+    expect(patchSpy).toHaveBeenLastCalledWith(
+      `/users/${memberId}`,
+      { displayName: 'My Name' },
+      { headers: { 'If-Match': 'W/"v-2"' } }
+    )
+  })
+
+  it('accepts a conflicting latest value without resending the discarded intent', async () => {
+    const original = { ...member, displayName: 'John' }
+    const latest = { ...member, displayName: 'Server Name' }
+    mockDirectory()
+    vi.spyOn(coreApi, 'getWithMetaAndEtag')
+      .mockResolvedValueOnce({
+        data: original,
+        meta: {},
+        etag: 'W/"v-1"',
+      })
+      .mockResolvedValueOnce({
+        data: latest,
+        meta: {},
+        etag: 'W/"v-2"',
+      })
+    const patchSpy = vi
+      .spyOn(coreApi, 'patchWithMetaAndEtag')
+      .mockRejectedValueOnce(staleMutationError())
+    const { screen } = await renderMembers()
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Edit Lee Member' })
+    )
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Name' }),
+      'My Name'
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Save member' }))
+    await userEvent.click(screen.getByRole('radio', { name: /server value/i }))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Resolve conflicts and continue' })
+    )
+
+    await expect
+      .element(screen.getByRole('textbox', { name: 'Name' }))
+      .toHaveValue('Server Name')
+    expect(patchSpy).toHaveBeenCalledTimes(1)
+    await userEvent.click(screen.getByRole('button', { name: 'Save member' }))
+    expect(patchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('requires explicit review before retaining a manager-scope assignment after a role conflict', async () => {
+    const original = {
+      ...member,
+      globalRole: 'EMPLOYEE',
+      managerScopeUnitIds: [],
+    }
+    const latest = {
+      ...member,
+      globalRole: 'ADMINISTRATOR',
+      managerScopeUnitIds: [],
+    }
+    mockDirectory({ units: listResponse([unit, productUnit], 0, 100) })
+    vi.spyOn(coreApi, 'getWithMetaAndEtag')
+      .mockResolvedValueOnce({
+        data: original,
+        meta: {},
+        etag: 'W/"role-v1"',
+      })
+      .mockResolvedValueOnce({
+        data: latest,
+        meta: {},
+        etag: 'W/"role-v2"',
+      })
+    const patchSpy = vi
+      .spyOn(coreApi, 'patchWithMetaAndEtag')
+      .mockRejectedValueOnce(staleMutationError())
+      .mockResolvedValueOnce({
+        data: {
+          ...latest,
+          globalRole: 'DEPARTMENT_MANAGER',
+          managerScopeUnitIds: [productUnit.id],
+        },
+        meta: {},
+        etag: 'W/"role-v3"',
+      })
+    const { screen } = await renderMembers()
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Edit Lee Member' })
+    )
+    await userEvent.click(screen.getByRole('combobox', { name: 'Global role' }))
+    await userEvent.click(
+      screen.getByRole('option', { name: 'Department manager' })
+    )
+    await expect
+      .element(screen.getByRole('checkbox', { name: 'Product (PROD)' }))
+      .toBeVisible()
+    await userEvent.click(
+      screen.getByRole('checkbox', { name: 'Product (PROD)' })
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Save member' }))
+
+    const resolve = screen.getByRole('button', {
+      name: 'Resolve conflicts and continue',
+    })
+    await expect.element(resolve).toBeDisabled()
+    await userEvent.click(
+      screen.getByRole('radio', {
+        name: /your intended value.*DEPARTMENT_MANAGER/i,
+      })
+    )
+    await expect
+      .element(screen.getByText(/grants being assigned: Product/i))
+      .toBeVisible()
+    await expect.element(resolve).toBeDisabled()
+    await userEvent.click(
+      screen.getByRole('checkbox', {
+        name: /i understand this assigns manager access to the selected units/i,
+      })
+    )
+    await userEvent.click(resolve)
+
+    await expect
+      .element(screen.getByRole('combobox', { name: 'Global role' }))
+      .toHaveTextContent('Department manager')
+    await userEvent.click(screen.getByRole('button', { name: 'Save member' }))
+    await expect.poll(() => patchSpy.mock.calls.length).toBe(2)
+    expect(patchSpy).toHaveBeenLastCalledWith(
+      `/users/${memberId}`,
+      {
+        globalRole: 'DEPARTMENT_MANAGER',
+        managerScopeUnitIds: [productUnit.id],
+      },
+      { headers: { 'If-Match': 'W/"role-v2"' } }
+    )
+  })
+
+  it('explicitly discards the old edit when restarting from the latest snapshot', async () => {
+    const original = { ...member, displayName: 'John' }
+    const latest = { ...member, displayName: 'Server Name' }
+    mockDirectory()
+    vi.spyOn(coreApi, 'getWithMetaAndEtag')
+      .mockResolvedValueOnce({
+        data: original,
+        meta: {},
+        etag: 'W/"v-1"',
+      })
+      .mockResolvedValueOnce({
+        data: latest,
+        meta: {},
+        etag: 'W/"v-2"',
+      })
+    const patchSpy = vi
+      .spyOn(coreApi, 'patchWithMetaAndEtag')
+      .mockRejectedValueOnce(staleMutationError())
+    const { screen } = await renderMembers()
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Edit Lee Member' })
+    )
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Name' }),
+      'My Name'
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Save member' }))
+    await userEvent.click(
+      screen.getByRole('button', {
+        name: 'Discard my edits and restart from latest',
+      })
+    )
+
+    await expect
+      .element(screen.getByRole('textbox', { name: 'Name' }))
+      .toHaveValue('Server Name')
+    expect(patchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('invalidates a conflict choice when a newer authoritative version removes that conflict', async () => {
+    const original = { ...member, displayName: 'John' }
+    const conflicting = { ...member, displayName: 'Server Name' }
+    const latest = { ...member, displayName: 'My Name' }
+    mockDirectory()
+    vi.spyOn(coreApi, 'getWithMetaAndEtag')
+      .mockResolvedValueOnce({
+        data: original,
+        meta: {},
+        etag: 'W/"v-1"',
+      })
+      .mockResolvedValueOnce({
+        data: conflicting,
+        meta: {},
+        etag: 'W/"v-2"',
+      })
+      .mockResolvedValueOnce({
+        data: latest,
+        meta: {},
+        etag: 'W/"v-3"',
+      })
+    const patchSpy = vi
+      .spyOn(coreApi, 'patchWithMetaAndEtag')
+      .mockRejectedValueOnce(staleMutationError())
+    const { screen } = await renderMembers()
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Edit Lee Member' })
+    )
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Name' }),
+      'My Name'
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Save member' }))
+    await userEvent.click(
+      screen.getByRole('radio', { name: /your intended value/i })
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Reload latest for review' })
+    )
+
+    await expect
+      .element(
+        screen.getByRole('button', {
+          name: 'Keep intended changes and continue',
+        })
+      )
+      .toBeEnabled()
+    await expect
+      .element(
+        screen.getByRole('button', {
+          name: 'Resolve conflicts and continue',
+        })
+      )
+      .not.toBeInTheDocument()
+    expect(patchSpy).toHaveBeenCalledTimes(1)
+    await userEvent.click(
+      screen.getByRole('button', {
+        name: 'Keep intended changes and continue',
+      })
+    )
+    await expect
+      .element(screen.getByRole('textbox', { name: 'Name' }))
+      .toHaveValue('My Name')
+    expect(patchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('demotes a Department Manager with existing grants using the role-only contract', async () => {
+    const managerMember = {
+      ...member,
+      globalRole: 'DEPARTMENT_MANAGER',
+      managerScopeUnitIds: [unit.id, productUnit.id],
+    }
+    mockDirectory({ units: listResponse([unit, productUnit], 0, 100) })
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+      data: managerMember,
+      meta: {},
+      etag: 'W/"manager-v1"',
+    })
+    const patchSpy = vi
+      .spyOn(coreApi, 'patchWithMetaAndEtag')
+      .mockResolvedValue({
+        data: {
+          ...managerMember,
+          globalRole: 'EMPLOYEE',
+          managerScopeUnitIds: [],
+        },
+        meta: {},
+        etag: 'W/"manager-v2"',
+      })
+    const { screen } = await renderMembers()
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Edit Lee Member' })
+    )
+    await userEvent.click(screen.getByRole('combobox', { name: 'Global role' }))
+    await userEvent.click(screen.getByRole('option', { name: 'Employee' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Save member' }))
+
+    await expect.poll(() => patchSpy.mock.calls.length).toBe(1)
+    expect(patchSpy).toHaveBeenCalledWith(
+      `/users/${memberId}`,
+      { globalRole: 'EMPLOYEE' },
+      { headers: { 'If-Match': 'W/"manager-v1"' } }
+    )
+  })
+
+  it('requires explicit review before a demotion removes independently changed manager grants', async () => {
+    const original = {
+      ...member,
+      globalRole: 'DEPARTMENT_MANAGER',
+      managerScopeUnitIds: [unit.id],
+    }
+    const latest = {
+      ...original,
+      managerScopeUnitIds: [unit.id, productUnit.id],
+    }
+    mockDirectory({ units: listResponse([unit, productUnit], 0, 100) })
+    vi.spyOn(coreApi, 'getWithMetaAndEtag')
+      .mockResolvedValueOnce({
+        data: original,
+        meta: {},
+        etag: 'W/"manager-v1"',
+      })
+      .mockResolvedValueOnce({
+        data: latest,
+        meta: {},
+        etag: 'W/"manager-v2"',
+      })
+    const patchSpy = vi
+      .spyOn(coreApi, 'patchWithMetaAndEtag')
+      .mockRejectedValueOnce(staleMutationError())
+      .mockResolvedValueOnce({
+        data: { ...latest, globalRole: 'EMPLOYEE', managerScopeUnitIds: [] },
+        meta: {},
+        etag: 'W/"manager-v3"',
+      })
+    const { screen } = await renderMembers()
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Edit Lee Member' })
+    )
+    await userEvent.click(screen.getByRole('combobox', { name: 'Global role' }))
+    await userEvent.click(screen.getByRole('option', { name: 'Employee' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Save member' }))
+
+    await expect
+      .element(screen.getByText(/demotion removes.*Operations.*Product/i))
+      .toBeVisible()
+    expect(patchSpy).toHaveBeenCalledTimes(1)
+    await expect
+      .element(
+        screen.getByRole('button', {
+          name: 'Keep intended changes and continue',
+        })
+      )
+      .toBeDisabled()
+    await userEvent.click(
+      screen.getByRole('checkbox', {
+        name: /i understand this demotion removes all current manager grants/i,
+      })
+    )
+    await userEvent.click(
+      screen.getByRole('button', {
+        name: 'Keep intended changes and continue',
+      })
+    )
+
+    await expect
+      .element(screen.getByRole('combobox', { name: 'Global role' }))
+      .toHaveTextContent('Employee')
+    expect(patchSpy).toHaveBeenCalledTimes(1)
+    await userEvent.click(screen.getByRole('button', { name: 'Save member' }))
+    await expect.poll(() => patchSpy.mock.calls.length).toBe(2)
+    expect(patchSpy).toHaveBeenLastCalledWith(
+      `/users/${memberId}`,
+      { globalRole: 'EMPLOYEE' },
+      { headers: { 'If-Match': 'W/"manager-v2"' } }
+    )
+  })
+
+  it('rejects an old scope replacement after the server demotes the target', async () => {
+    const original = {
+      ...member,
+      globalRole: 'DEPARTMENT_MANAGER',
+      managerScopeUnitIds: [unit.id],
+    }
+    const latest = {
+      ...original,
+      globalRole: 'EMPLOYEE',
+      managerScopeUnitIds: [],
+    }
+    mockDirectory({ units: listResponse([unit, productUnit], 0, 100) })
+    vi.spyOn(coreApi, 'getWithMetaAndEtag')
+      .mockResolvedValueOnce({
+        data: original,
+        meta: {},
+        etag: 'W/"manager-v1"',
+      })
+      .mockResolvedValueOnce({
+        data: latest,
+        meta: {},
+        etag: 'W/"employee-v2"',
+      })
+    const patchSpy = vi
+      .spyOn(coreApi, 'patchWithMetaAndEtag')
+      .mockRejectedValueOnce(staleMutationError())
+    const { screen } = await renderMembers()
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Edit Lee Member' })
+    )
+    await expect
+      .element(screen.getByRole('dialog', { name: 'Edit member' }))
+      .toBeVisible()
+    await expect
+      .element(screen.getByRole('checkbox', { name: /Operations/ }))
+      .toBeVisible()
+    await userEvent.click(
+      screen.getByRole('checkbox', { name: 'Operations (OPS)' })
+    )
+    await userEvent.click(
+      screen.getByRole('checkbox', { name: 'Product (PROD)' })
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Save member' }))
+
+    await userEvent.click(
+      screen.getByRole('radio', { name: /your intended value.*Product/i })
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Resolve conflicts and continue' })
+    )
+    await expect
+      .element(screen.getByText(/separate.*role|role.*separately/i))
+      .toBeVisible()
+    expect(patchSpy).toHaveBeenCalledTimes(1)
+
+    await userEvent.click(
+      screen.getByRole('radio', { name: /server value.*none/i })
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Resolve conflicts and continue' })
+    )
+    await expect
+      .element(screen.getByRole('textbox', { name: 'Name' }))
+      .toHaveValue(member.displayName)
+    await expect
+      .element(screen.getByRole('combobox', { name: 'Global role' }))
+      .toHaveTextContent('Employee')
+    await expect
+      .element(screen.getByRole('checkbox', { name: 'Product (PROD)' }))
+      .not.toBeInTheDocument()
+    expect(patchSpy).toHaveBeenCalledTimes(1)
+  })
+
   it('requires an authoritative snapshot before confirming lifecycle changes', async () => {
     mockDirectory()
     vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
@@ -512,6 +1351,227 @@ describe('Members directory', () => {
       undefined,
       { headers: { 'If-Match': 'W/"v-9"' } }
     )
+  })
+
+  it('does not repeat uncertain deactivation when the latest state is already inactive', async () => {
+    mockDirectory()
+    vi.spyOn(coreApi, 'getWithMetaAndEtag')
+      .mockResolvedValueOnce({
+        data: member,
+        meta: {},
+        etag: 'W/"v-9"',
+      })
+      .mockResolvedValueOnce({
+        data: { ...member, accountStatus: 'INACTIVE' },
+        meta: {},
+        etag: 'W/"v-10"',
+      })
+    const lifecycleSpy = vi
+      .spyOn(coreApi, 'postWithMetaAndEtag')
+      .mockRejectedValue(uncertainMutationError())
+    const { screen } = await renderMembers()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Deactivate' }))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Deactivate account' })
+    )
+
+    await expect
+      .element(screen.getByText(/currently verifies this account as inactive/i))
+      .toBeVisible()
+    await expect
+      .element(
+        screen.getByText(/cannot determine whether this request caused/i)
+      )
+      .toBeVisible()
+    expect(lifecycleSpy).toHaveBeenCalledTimes(1)
+    await expect
+      .element(
+        screen.getByRole('button', {
+          name: 'Review and confirm lifecycle operation',
+        })
+      )
+      .not.toBeInTheDocument()
+  })
+
+  it('requires renewed review and confirmation to retry an uncertain but still eligible deactivation', async () => {
+    mockDirectory()
+    vi.spyOn(coreApi, 'getWithMetaAndEtag')
+      .mockResolvedValueOnce({
+        data: member,
+        meta: {},
+        etag: 'W/"v-9"',
+      })
+      .mockResolvedValueOnce({
+        data: member,
+        meta: {},
+        etag: 'W/"v-10"',
+      })
+    const lifecycleSpy = vi
+      .spyOn(coreApi, 'postWithMetaAndEtag')
+      .mockRejectedValueOnce(uncertainMutationError())
+      .mockResolvedValueOnce({
+        data: { ...member, accountStatus: 'INACTIVE' },
+        meta: {},
+        etag: 'W/"v-11"',
+      })
+    const { screen } = await renderMembers()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Deactivate' }))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Deactivate account' })
+    )
+    const review = screen.getByRole('button', {
+      name: 'Review and confirm lifecycle operation',
+    })
+    await expect.element(review).toBeEnabled()
+    expect(lifecycleSpy).toHaveBeenCalledTimes(1)
+
+    await userEvent.click(review)
+    await expect
+      .element(
+        screen.getByRole('alertdialog', {
+          name: 'Deactivate member account?',
+        })
+      )
+      .toBeVisible()
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Deactivate account' })
+    )
+    await expect.poll(() => lifecycleSpy.mock.calls.length).toBe(2)
+    expect(lifecycleSpy).toHaveBeenLastCalledWith(
+      `/users/${memberId}/deactivate`,
+      undefined,
+      { headers: { 'If-Match': 'W/"v-10"' } }
+    )
+  })
+
+  it('does not repeat an uncertain reactivation after active state is verified', async () => {
+    const inactiveMember = { ...member, accountStatus: 'INACTIVE' }
+    mockDirectory({ directory: listResponse([inactiveMember]) })
+    vi.spyOn(coreApi, 'getWithMetaAndEtag')
+      .mockResolvedValueOnce({
+        data: inactiveMember,
+        meta: {},
+        etag: 'W/"v-20"',
+      })
+      .mockResolvedValueOnce({
+        data: member,
+        meta: {},
+        etag: 'W/"v-21"',
+      })
+    const lifecycleSpy = vi
+      .spyOn(coreApi, 'postWithMetaAndEtag')
+      .mockRejectedValue(uncertainMutationError())
+    const { screen } = await renderMembers()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Reactivate' }))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Reactivate account' })
+    )
+
+    await expect
+      .element(screen.getByText(/currently verifies this account as active/i))
+      .toBeVisible()
+    expect(lifecycleSpy).toHaveBeenCalledTimes(1)
+    await expect
+      .element(
+        screen.getByRole('button', {
+          name: 'Review and confirm lifecycle operation',
+        })
+      )
+      .not.toBeInTheDocument()
+  })
+
+  it('keeps an uncertain pending-setup reissue inconclusive and requires a fresh confirmed action', async () => {
+    const pendingMember = { ...member, accountStatus: 'PENDING_SETUP' }
+    const pendingAfterRead = {
+      ...pendingMember,
+      updatedAt: '2026-11-24T01:00:00Z',
+    }
+    mockDirectory({ directory: listResponse([pendingMember]) })
+    vi.spyOn(coreApi, 'getWithMetaAndEtag')
+      .mockResolvedValueOnce({
+        data: pendingMember,
+        meta: {},
+        etag: 'W/"setup-v1"',
+      })
+      .mockResolvedValueOnce({
+        data: pendingAfterRead,
+        meta: {},
+        etag: 'W/"setup-v2"',
+      })
+    const lifecycleSpy = vi
+      .spyOn(coreApi, 'postWithMetaAndEtag')
+      .mockRejectedValueOnce(uncertainMutationError())
+      .mockResolvedValueOnce({
+        data: pendingAfterRead,
+        meta: {},
+        etag: 'W/"setup-v3"',
+      })
+    const { screen } = await renderMembers()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Resend setup' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Reissue setup' }))
+
+    await expect
+      .element(
+        screen.getByText(
+          /cannot independently establish whether.*reissue.*applied/i
+        )
+      )
+      .toBeVisible()
+    await expect
+      .element(screen.getByText(/whether a setup email was delivered/i))
+      .toBeVisible()
+    expect(lifecycleSpy).toHaveBeenCalledTimes(1)
+    await userEvent.click(
+      screen.getByRole('button', {
+        name: 'Review and confirm lifecycle operation',
+      })
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Reissue setup' }))
+    await expect.poll(() => lifecycleSpy.mock.calls.length).toBe(2)
+    expect(lifecycleSpy).toHaveBeenLastCalledWith(
+      `/users/${memberId}/account-setup/reissue`,
+      undefined,
+      { headers: { 'If-Match': 'W/"setup-v2"' } }
+    )
+  })
+
+  it('shows the actual lifecycle state and prevents setup reissue when the account became active', async () => {
+    const pendingMember = { ...member, accountStatus: 'PENDING_SETUP' }
+    mockDirectory({ directory: listResponse([pendingMember]) })
+    vi.spyOn(coreApi, 'getWithMetaAndEtag')
+      .mockResolvedValueOnce({
+        data: pendingMember,
+        meta: {},
+        etag: 'W/"setup-v1"',
+      })
+      .mockResolvedValueOnce({
+        data: member,
+        meta: {},
+        etag: 'W/"active-v2"',
+      })
+    const lifecycleSpy = vi
+      .spyOn(coreApi, 'postWithMetaAndEtag')
+      .mockRejectedValue(uncertainMutationError())
+    const { screen } = await renderMembers()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Resend setup' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Reissue setup' }))
+
+    await expect
+      .element(screen.getByText(/latest state: active/i))
+      .toBeVisible()
+    await expect
+      .element(
+        screen.getByRole('button', {
+          name: 'Review and confirm lifecycle operation',
+        })
+      )
+      .not.toBeInTheDocument()
+    expect(lifecycleSpy).toHaveBeenCalledTimes(1)
   })
 
   it('keeps the directory usable at a narrow viewport and in dark mode with keyboard controls', async () => {

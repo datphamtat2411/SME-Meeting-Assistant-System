@@ -154,6 +154,15 @@ export function MembersPage({
               onRestartFromLatest={administration.restartEditorFromLatest}
               onReviewDirectory={administration.closeEditor}
               onReviewCreationDraft={administration.reviewCreationDraft}
+              onReviewExistingAccount={(email) => {
+                administration.closeEditor()
+                onSearchChange(
+                  { q: email.slice(0, 200), page: undefined },
+                  {
+                    replace: true,
+                  }
+                )
+              }}
               onResolveEditReconciliation={
                 administration.resolveEditReconciliation
               }

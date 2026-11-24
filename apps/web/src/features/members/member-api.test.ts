@@ -8,6 +8,7 @@ import {
   parseMemberDetailResponse,
   parseMemberListResponse,
   parseMemberMutationResponse,
+  reconcileMemberCreation,
   serializeMemberDirectoryParams,
   updateMember,
 } from './member-api'
@@ -107,6 +108,74 @@ describe('member API contracts', () => {
       params: { q: 'Lee', role: 'EMPLOYEE', page: 2, size: 50 },
       signal,
     })
+  })
+
+  it('bounds long-email reconciliation searches while exact-matching the full email across pages', async () => {
+    const email = `local${'a'.repeat(45)}@${[
+      'b'.repeat(60),
+      'c'.repeat(60),
+      'd'.repeat(60),
+      'e'.repeat(60),
+    ].join('.')}`
+    const exactMatch = {
+      ...member,
+      email,
+      displayName: 'Long Email Member',
+      primaryOrgUnitId: null,
+    }
+    const getSpy = vi
+      .spyOn(coreApi, 'getWithMeta')
+      .mockImplementation(async (_url, config) => {
+        const page = Number(config?.params?.page)
+        const items =
+          page === 0
+            ? Array.from({ length: 100 }, (_, index) => ({
+                ...member,
+                id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+                email: `person${index}@example.test`,
+              }))
+            : [exactMatch]
+        return {
+          data: items,
+          meta: {
+            pagination: {
+              page,
+              size: 100,
+              totalElements: 101,
+              totalPages: 2,
+              hasNext: page === 0,
+              hasPrevious: page > 0,
+            },
+          },
+        }
+      })
+
+    const result = await reconcileMemberCreation(
+      { email, displayName: 'Long Email Member' },
+      {
+        type: 'authorized',
+        actorId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        role: 'ADMINISTRATOR',
+        allUnits: true,
+        unitIds: [],
+        canFilterRoles: true,
+        queryScopeKey: 'administrator-scope',
+      }
+    )
+
+    expect(result).toMatchObject({
+      status: 'found',
+      metadataMatches: true,
+      member: { email },
+    })
+    expect(getSpy).toHaveBeenCalledTimes(2)
+    expect(getSpy.mock.calls.map(([, config]) => config?.params?.q)).toEqual([
+      email.slice(0, 200),
+      email.slice(0, 200),
+    ])
+    expect(getSpy.mock.calls.map(([, config]) => config?.params?.page)).toEqual(
+      [0, 1]
+    )
   })
 
   it('rejects malformed members and inconsistent pagination rather than fabricating results', () => {

@@ -44,10 +44,11 @@ import {
   NoMemberChangesError,
   type MemberFormValues,
 } from './member-form'
-import type {
-  MemberConflictChoices,
-  MemberEditReconciliation,
-  MemberEditableField,
+import {
+  resolveMemberEditReconciliation,
+  type MemberConflictChoices,
+  type MemberEditReconciliation,
+  type MemberEditableField,
 } from './member-reconciliation'
 import type {
   OrganizationalUnit,
@@ -70,9 +71,16 @@ function fieldLabel(field: MemberEditableField): string {
   return 'Manager scope'
 }
 
-function displayEditableValue(value: unknown): string {
+function displayEditableValue(
+  value: unknown,
+  units: readonly OrganizationalUnit[]
+): string {
   if (Array.isArray(value)) {
-    return value.length > 0 ? value.join(', ') : 'None'
+    return value.length > 0
+      ? value
+          .map((id) => units.find((unit) => unit.id === id)?.name ?? id)
+          .join(', ')
+      : 'None'
   }
   return value === null || value === '' || value === undefined
     ? 'Not assigned'
@@ -83,26 +91,38 @@ function MemberConflictResolution({
   reconciliation,
   operationId,
   authorizationVerified,
+  units,
   onResolve,
 }: {
   reconciliation: MemberEditReconciliation
   operationId: number
   authorizationVerified: boolean
+  units: readonly OrganizationalUnit[]
   onResolve: (operationId: number, choices: MemberConflictChoices) => void
 }) {
   const [choices, setChoices] = useState<MemberConflictChoices>({})
-  const unresolved = reconciliation.conflicts.some(
-    (field) => choices[field] === undefined
-  )
+  const decision = resolveMemberEditReconciliation(reconciliation, choices)
+  const requiredReviews =
+    decision.status === 'unresolved' ? decision.requiredReviews : []
+  const unresolved =
+    decision.status === 'unresolved' &&
+    (decision.unresolvedFields.length > 0 ||
+      decision.unresolvedReviews.length > 0)
+  const latestGrants = reconciliation.latest.member.managerScopeUnitIds
+    .map((id) => units.find((unit) => unit.id === id)?.name ?? id)
+    .join(', ')
+  const intendedGrants = reconciliation.values.managerScopeUnitIds
+    .map((id) => units.find((unit) => unit.id === id)?.name ?? id)
+    .join(', ')
 
   return (
     <div className='space-y-3 rounded-md border border-amber-500/40 bg-amber-500/5 p-3'>
       <div>
-        <p className='font-medium'>Review conflicting fields</p>
+        <p className='font-medium'>Review retained changes</p>
         <p className='text-sm text-muted-foreground'>
-          Choose the current server value or retain your intended value for each
-          conflict. No second update is sent until you continue from the
-          reviewed state.
+          Compare the authoritative state with your original intent. Resolve
+          conflicts and dependent role/scope changes before continuing. No
+          second update is sent until you continue from this reviewed version.
         </p>
       </div>
       {reconciliation.conflicts.map((field) => {
@@ -126,7 +146,7 @@ function MemberConflictResolution({
                   Server value
                 </span>
                 <span className='block break-words'>
-                  {displayEditableValue(comparison.latest)}
+                  {displayEditableValue(comparison.latest, units)}
                 </span>
               </span>
             </label>
@@ -144,13 +164,59 @@ function MemberConflictResolution({
                   Your intended value
                 </span>
                 <span className='block break-words'>
-                  {displayEditableValue(comparison.intended)}
+                  {displayEditableValue(comparison.intended, units)}
                 </span>
               </span>
             </label>
           </fieldset>
         )
       })}
+      {requiredReviews.includes('manager-scope-removal') && (
+        <label className='flex items-start gap-2 rounded-md border border-amber-500/40 p-3 text-sm'>
+          <input
+            type='checkbox'
+            checked={choices.reviewManagerScopeRemoval === true}
+            onChange={(event) => {
+              const checked = event.currentTarget.checked
+              setChoices((current) => ({
+                ...current,
+                reviewManagerScopeRemoval: checked,
+              }))
+            }}
+          />
+          <span>
+            <span className='block font-medium'>
+              I understand this demotion removes all current manager grants
+            </span>
+            <span className='block text-muted-foreground'>
+              Grants being removed: {latestGrants || 'None'}
+            </span>
+          </span>
+        </label>
+      )}
+      {requiredReviews.includes('manager-scope-assignment') && (
+        <label className='flex items-start gap-2 rounded-md border border-amber-500/40 p-3 text-sm'>
+          <input
+            type='checkbox'
+            checked={choices.reviewManagerScopeAssignment === true}
+            onChange={(event) => {
+              const checked = event.currentTarget.checked
+              setChoices((current) => ({
+                ...current,
+                reviewManagerScopeAssignment: checked,
+              }))
+            }}
+          />
+          <span>
+            <span className='block font-medium'>
+              I understand this assigns manager access to the selected units
+            </span>
+            <span className='block text-muted-foreground'>
+              Grants being assigned: {intendedGrants || 'None'}
+            </span>
+          </span>
+        </label>
+      )}
       <Button
         type='button'
         variant='secondary'
@@ -158,7 +224,9 @@ function MemberConflictResolution({
         disabled={!authorizationVerified || unresolved}
         onClick={() => onResolve(operationId, choices)}
       >
-        Resolve conflicts and continue
+        {reconciliation.conflicts.length > 0
+          ? 'Resolve conflicts and continue'
+          : 'Keep intended changes and continue'}
       </Button>
     </div>
   )
@@ -237,6 +305,7 @@ interface MemberAdministrationDialogProps {
   onRestartFromLatest: (snapshot: MemberSnapshot, operationId: number) => void
   onReviewDirectory: () => void
   onReviewCreationDraft: (operationId: number) => void
+  onReviewExistingAccount: (email: string) => void
   onResolveEditReconciliation: (
     operationId: number,
     choices: MemberConflictChoices
@@ -262,6 +331,7 @@ export function MemberAdministrationDialog({
   onRestartFromLatest,
   onReviewDirectory,
   onReviewCreationDraft,
+  onReviewExistingAccount,
   onResolveEditReconciliation,
   onRetryCreationVerification,
   onSubmit,
@@ -289,6 +359,16 @@ export function MemberAdministrationDialog({
           memberFormValuesFromMember(session.snapshot.member))
         : blankValues
     form.reset(initialValues)
+  }, [form, session])
+
+  useEffect(() => {
+    const snapshotRole =
+      session?.mode === 'edit' && session.status === 'ready'
+        ? session.snapshot?.member.globalRole
+        : undefined
+    if (snapshotRole && !form.getValues('globalRole')) {
+      form.setValue('globalRole', snapshotRole)
+    }
   }, [form, session])
 
   useEffect(() => {
@@ -370,6 +450,12 @@ export function MemberAdministrationDialog({
   const hasUnitLookup = lookupStatus === 'success'
   const targetMember = readySnapshot?.member
   const reconciliation = feedback?.editReconciliation
+  const foundCreation =
+    feedback?.creationReconciliation?.status === 'found'
+      ? feedback.creationReconciliation
+      : undefined
+  const effectiveRole =
+    selectedRole || targetMember?.globalRole || blankValues.globalRole
 
   return (
     <Dialog
@@ -507,19 +593,24 @@ export function MemberAdministrationDialog({
                       onRestartFromLatest(reviewedSnapshot, session.operationId)
                     }
                   >
-                    Use latest state and review changes
+                    Discard my edits and restart from latest
                   </Button>
                 </div>
               </div>
             )}
-            {reconciliation && reconciliation.conflicts.length > 0 && (
-              <MemberConflictResolution
-                reconciliation={reconciliation}
-                operationId={session?.operationId ?? 0}
-                authorizationVerified={authorizationVerified}
-                onResolve={onResolveEditReconciliation}
-              />
-            )}
+            {reconciliation &&
+              (reviewRequired ||
+                reconciliation.conflicts.length > 0 ||
+                reconciliation.requiredReviews.length > 0) && (
+                <MemberConflictResolution
+                  key={reconciliation.latest.etag}
+                  reconciliation={reconciliation}
+                  operationId={session?.operationId ?? 0}
+                  authorizationVerified={authorizationVerified}
+                  units={units}
+                  onResolve={onResolveEditReconciliation}
+                />
+              )}
             {reviewRequired && session?.mode === 'create' && (
               <div className='flex flex-wrap gap-2'>
                 <Button
@@ -531,16 +622,42 @@ export function MemberAdministrationDialog({
                     onRetryCreationVerification(session.operationId)
                   }
                 >
-                  Recheck authorized directory
+                  Retry verification
                 </Button>
-                <Button
-                  type='button'
-                  variant='secondary'
-                  size='sm'
-                  onClick={() => onReviewCreationDraft(session.operationId)}
-                >
-                  Review preserved draft
-                </Button>
+                {feedback?.creationReconciliation?.status === 'not-found' && (
+                  <Button
+                    type='button'
+                    variant='secondary'
+                    size='sm'
+                    onClick={() => {
+                      const payload = feedback.submittedCreationPayload
+                      if (!payload) return
+                      form.reset({
+                        ...blankValues,
+                        email: payload.email,
+                        displayName: payload.displayName,
+                        primaryOrgUnitId: payload.primaryOrgUnitId ?? '',
+                        globalRole: payload.globalRole ?? 'EMPLOYEE',
+                        managerScopeUnitIds: payload.managerScopeUnitIds ?? [],
+                      })
+                      onReviewCreationDraft(session.operationId)
+                    }}
+                  >
+                    Review preserved draft
+                  </Button>
+                )}
+                {foundCreation && (
+                  <Button
+                    type='button'
+                    variant='secondary'
+                    size='sm'
+                    onClick={() =>
+                      onReviewExistingAccount(foundCreation.member.email)
+                    }
+                  >
+                    Review existing account
+                  </Button>
+                )}
                 <Button
                   type='button'
                   variant='outline'
@@ -672,7 +789,10 @@ export function MemberAdministrationDialog({
                         <FormLabel>Global role</FormLabel>
                         <Select
                           value={field.value}
-                          onValueChange={field.onChange}
+                          onValueChange={(value) => {
+                            if (!value) return
+                            field.onChange(value)
+                          }}
                           disabled={saving || !canEditValues}
                         >
                           <FormControl>
@@ -695,7 +815,7 @@ export function MemberAdministrationDialog({
                     )}
                   />
                 )}
-                {isAdministrator && selectedRole === 'DEPARTMENT_MANAGER' && (
+                {isAdministrator && effectiveRole === 'DEPARTMENT_MANAGER' && (
                   <FormField
                     control={form.control}
                     name='managerScopeUnitIds'
@@ -704,7 +824,7 @@ export function MemberAdministrationDialog({
                         <FormControl>
                           <ManagerScopePicker
                             units={units}
-                            selected={field.value}
+                            selected={field.value ?? []}
                             lookupStatus={lookupStatus}
                             disabled={
                               saving || !canEditValues || !hasUnitLookup
@@ -730,7 +850,7 @@ export function MemberAdministrationDialog({
                 variant='outline'
                 type='button'
                 onClick={onClose}
-                disabled={saving}
+                disabled={saving && !reviewRequired}
               >
                 Cancel
               </Button>

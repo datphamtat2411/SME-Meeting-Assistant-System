@@ -44,18 +44,28 @@ export interface MemberEditReconciliation {
   values: MemberEditableValues
   fields: Record<MemberEditableField, MemberFieldReconciliation>
   conflicts: readonly MemberEditableField[]
+  requiredReviews: readonly MemberReconciliationReview[]
   patch: MemberPatchPayload
 }
+
+export type MemberReconciliationReview =
+  | 'manager-scope-removal'
+  | 'manager-scope-assignment'
 
 export type MemberConflictChoice = 'server' | 'intent'
 export type MemberConflictChoices = Partial<
   Record<MemberEditableField, MemberConflictChoice>
->
+> & {
+  reviewManagerScopeRemoval?: boolean
+  reviewManagerScopeAssignment?: boolean
+}
 
 type ResolvedMemberEditReconciliation =
   | {
       status: 'unresolved'
       unresolvedFields: readonly MemberEditableField[]
+      unresolvedReviews: readonly MemberReconciliationReview[]
+      requiredReviews: readonly MemberReconciliationReview[]
     }
   | {
       status: 'invalid'
@@ -191,7 +201,35 @@ function patchFromValues(
       setPatchValue(patch, field, values[field])
     }
   }
+  if (values.globalRole !== 'DEPARTMENT_MANAGER') {
+    delete patch.managerScopeUnitIds
+  }
   return patch
+}
+
+function requiredManagerScopeReviews(
+  original: MemberEditableValues,
+  latest: MemberEditableValues,
+  values: MemberEditableValues
+): MemberReconciliationReview[] {
+  const reviews: MemberReconciliationReview[] = []
+  if (
+    latest.globalRole === 'DEPARTMENT_MANAGER' &&
+    values.globalRole !== 'DEPARTMENT_MANAGER' &&
+    latest.managerScopeUnitIds.length > 0 &&
+    !sameManagerScope(original.managerScopeUnitIds, latest.managerScopeUnitIds)
+  ) {
+    reviews.push('manager-scope-removal')
+  }
+  if (
+    latest.globalRole !== 'DEPARTMENT_MANAGER' &&
+    values.globalRole === 'DEPARTMENT_MANAGER' &&
+    values.managerScopeUnitIds.length > 0 &&
+    !sameManagerScope(latest.managerScopeUnitIds, values.managerScopeUnitIds)
+  ) {
+    reviews.push('manager-scope-assignment')
+  }
+  return reviews
 }
 
 function normalizePatchIntent(payload: MemberPatchPayload): MemberPatchPayload {
@@ -261,6 +299,19 @@ export function reconcileMemberEdit(
     }
   }
 
+  if (
+    latestValues.globalRole === 'DEPARTMENT_MANAGER' &&
+    values.globalRole !== 'DEPARTMENT_MANAGER' &&
+    fields.globalRole.userChanged
+  ) {
+    values.managerScopeUnitIds = []
+  }
+  const requiredReviews = requiredManagerScopeReviews(
+    originalValues,
+    latestValues,
+    values
+  )
+
   return {
     original,
     latest,
@@ -268,6 +319,7 @@ export function reconcileMemberEdit(
     values,
     fields,
     conflicts,
+    requiredReviews,
     patch: patchFromValues(latestValues, values),
   }
 }
@@ -276,15 +328,9 @@ export function resolveMemberEditReconciliation(
   reconciliation: MemberEditReconciliation,
   choices: MemberConflictChoices
 ): ResolvedMemberEditReconciliation {
-  const unresolvedFields = reconciliation.conflicts.filter(
-    (field) => choices[field] === undefined
-  )
-  if (unresolvedFields.length > 0) {
-    return { status: 'unresolved', unresolvedFields }
-  }
-
   const values = { ...reconciliation.values }
   for (const field of reconciliation.conflicts) {
+    if (choices[field] === undefined) continue
     const comparison = reconciliation.fields[field]
     setEditableValue(
       values,
@@ -295,6 +341,28 @@ export function resolveMemberEditReconciliation(
     )
   }
 
+  const requiredReviews = requiredManagerScopeReviews(
+    valuesFromMember(reconciliation.original.member),
+    valuesFromMember(reconciliation.latest.member),
+    values
+  )
+  const unresolvedFields = reconciliation.conflicts.filter(
+    (field) => choices[field] === undefined
+  )
+  const unresolvedReviews = requiredReviews.filter((review) =>
+    review === 'manager-scope-removal'
+      ? choices.reviewManagerScopeRemoval !== true
+      : choices.reviewManagerScopeAssignment !== true
+  )
+  if (unresolvedFields.length > 0 || unresolvedReviews.length > 0) {
+    return {
+      status: 'unresolved',
+      unresolvedFields,
+      unresolvedReviews,
+      requiredReviews,
+    }
+  }
+
   if (
     values.globalRole !== 'DEPARTMENT_MANAGER' &&
     values.managerScopeUnitIds.length > 0
@@ -302,7 +370,7 @@ export function resolveMemberEditReconciliation(
     return {
       status: 'invalid',
       message:
-        'A non-manager account cannot retain manager scope. Resolve the role and scope together.',
+        'Manager-scope changes must be reviewed separately from role changes. The latest account is not a Department Manager, so this edit cannot restore manager scope.',
     }
   }
 
