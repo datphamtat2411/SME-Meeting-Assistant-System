@@ -4,8 +4,15 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
+import 'package:sqflite/sqflite.dart' as sqflite;
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:sme_meeting_assistant/core/api_client.dart';
+import 'package:sme_meeting_assistant/features/recording/local_media_database.dart';
+import 'package:sme_meeting_assistant/features/recording/local_media_models.dart';
+import 'package:sme_meeting_assistant/features/recording/local_media_persistence.dart';
+import 'package:sme_meeting_assistant/features/recording/local_media_repository.dart';
 import 'package:sme_meeting_assistant/features/recording/recording_drafts.dart';
+import 'package:sme_meeting_assistant/features/recording/managed_media_storage.dart';
 
 import 'support/http_test_support.dart';
 
@@ -15,6 +22,11 @@ const _userA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const _userB = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 
 void main() {
+  setUpAll(() {
+    sqfliteFfiInit();
+    sqflite.databaseFactory = databaseFactoryFfi;
+  });
+
   test(
     'recording drafts remain scoped by deployment and verified user',
     () async {
@@ -139,6 +151,103 @@ void main() {
       RecordingDrafts(storage: storage).list('meeting', api: api),
       throwsA(isA<AuthSessionException>()),
     );
+  });
+
+  test('managed drafts expose stable asset identity and incomplete files stay recoverable', () async {
+    final storage = InMemoryCredentialStorage();
+    final api = _api(_DraftAuthClient(<String>[_userA]), storage: storage);
+    addTearDown(api.dispose);
+    final directory = await Directory.systemTemp.createTemp(
+      'sme-recording-managed-drafts-',
+    );
+    addTearDown(() => directory.delete(recursive: true));
+    final database = await LocalMediaDatabase.open(
+      databasePath: '${directory.path}/media.db',
+      databaseFactory: databaseFactoryFfi,
+    );
+    addTearDown(database.close);
+    final managedStorage = ManagedMediaStorage(
+      root: Directory('${directory.path}/managed'),
+    );
+    final repository = LocalMediaRepository(
+      persistence: LocalMediaPersistence(database),
+      storage: managedStorage,
+      legacyStorage: storage,
+    );
+    addTearDown(repository.dispose);
+    final drafts = RecordingDrafts(storage: storage, repository: repository);
+
+    await api.initialize();
+    await api.signIn('user-a@example.test', 'password');
+    final scope = api.authenticatedSessionScope!;
+    final reserved = await repository.reserveAsset(
+      scope: scope,
+      meetingId: 'reservation-meeting',
+      sourceType: LocalMediaSourceType.recording,
+      originalFilename: 'reserved.wav',
+      contentType: 'audio/wav',
+    );
+    final repeatedReservation = await repository.reserveAsset(
+      scope: scope,
+      meetingId: 'reservation-meeting',
+      sourceType: LocalMediaSourceType.recording,
+      originalFilename: 'reserved.wav',
+      contentType: 'audio/wav',
+    );
+    expect(repeatedReservation.id, reserved.id);
+    final source = File('${directory.path}/source.wav')
+      ..writeAsBytesSync(<int>[1, 2, 3]);
+    final asset = await repository.rememberSourceFile(
+      scope: scope,
+      meetingId: 'meeting-shared',
+      source: source,
+      sourceType: LocalMediaSourceType.recording,
+      originalFilename: 'source.wav',
+      contentType: 'audio/wav',
+      expectedSizeBytes: 3,
+    );
+
+    final listed = await drafts.list('meeting-shared', api: api);
+    expect(listed.single.assetId, asset.id);
+    expect(listed.single.meetingId, 'meeting-shared');
+
+    final incompleteId = 'b' * 32;
+    final incompletePaths = managedStorage.allocatePaths(incompleteId);
+    await managedStorage.writeStreamToStaging(
+      incompletePaths.stagedRelativePath,
+      Stream<List<int>>.value(<int>[9]),
+    );
+    await LocalMediaPersistence(database).insertAsset(
+      LocalMediaAsset(
+        id: incompleteId,
+        deploymentScope: scope.deploymentScope,
+        ownerUserId: scope.userId,
+        meetingId: 'meeting-shared',
+        sourceType: LocalMediaSourceType.recording,
+        managedRelativePath: incompletePaths.managedRelativePath,
+        stagedRelativePath: incompletePaths.stagedRelativePath,
+        originalFilename: 'incomplete.wav',
+        contentType: 'audio/wav',
+        sizeBytes: null,
+        durationMs: null,
+        sha256: null,
+        lifecycle: LocalMediaLifecycle.staged,
+        sourceProvenance: 'incomplete-source',
+        quarantineReason: null,
+        createdAt: DateTime.utc(2026, 11, 24, 12),
+        updatedAt: DateTime.utc(2026, 11, 24, 12),
+        readyAt: null,
+        version: 0,
+      ),
+    );
+    await repository.reconcile(scope: scope, meetingId: 'meeting-shared');
+    final incomplete = await LocalMediaPersistence(database).findAsset(
+      id: incompleteId,
+      deploymentScope: scope.deploymentScope,
+      ownerUserId: scope.userId,
+    );
+    expect(incomplete!.lifecycle, LocalMediaLifecycle.interrupted);
+    expect(await drafts.list('meeting-shared', api: api), hasLength(1));
   });
 
   test(

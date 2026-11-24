@@ -1,9 +1,7 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
-import 'package:crypto/crypto.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
@@ -53,6 +51,8 @@ class _RecordingPageState extends State<RecordingPage> {
   bool busy = false;
   double? uploadProgress;
   File? file;
+  LocalMediaAsset? selectedAsset;
+  LocalMediaAsset? captureAsset;
   String? selectedName;
   String sourceType = 'UPLOAD';
   int elapsed = 0;
@@ -101,29 +101,35 @@ class _RecordingPageState extends State<RecordingPage> {
   void dispose() {
     timer?.cancel();
     if (capturing || startingCapture) {
-      unawaited(
-        recorder
-            .stop()
-            .then((path) async {
-              if (path != null) {
-                await draftStore.remember(
-                  widget.meetingId,
-                  File(path),
-                  session: sessionScope,
-                );
-              }
-            })
-            .catchError((Object _) {})
-            .whenComplete(() => recorder.dispose()),
-      );
+      unawaited(_finishCaptureDuringDispose(captureAsset));
     } else {
       unawaited(recorder.dispose());
     }
     super.dispose();
   }
 
+  Future<void> _finishCaptureDuringDispose(LocalMediaAsset? reserved) async {
+    try {
+      final stoppedPath = await recorder.stop();
+      await _completeCapture(stoppedPath, reserved);
+    } catch (_) {
+      if (reserved != null && widget.localMedia != null) {
+        try {
+          await widget.localMedia!.recordInterruption(
+            scope: sessionScope,
+            assetId: reserved.id,
+            reason: 'RECORDING_DISPOSED_BEFORE_COMPLETION',
+          );
+        } catch (_) {}
+      }
+    } finally {
+      await recorder.dispose();
+    }
+  }
+
   Future<void> begin() async {
     if (!widget.enabled || busy || capturing) return;
+    LocalMediaAsset? reserved;
     try {
       widget.api.requireCurrentAuthenticatedSession(sessionScope);
       if (!await recorder.hasPermission()) {
@@ -134,13 +140,29 @@ class _RecordingPageState extends State<RecordingPage> {
         );
       }
       widget.api.requireCurrentAuthenticatedSession(sessionScope);
-      final folder = await getApplicationDocumentsDirectory();
-      widget.api.requireCurrentAuthenticatedSession(sessionScope);
-      final path =
-          folder.path +
-          '/sme-meeting-' +
-          DateTime.now().millisecondsSinceEpoch.toString() +
-          '.wav';
+      final localMedia = widget.localMedia;
+      final filename =
+          'sme-meeting-${DateTime.now().millisecondsSinceEpoch}.wav';
+      final String path;
+      if (localMedia == null) {
+        path = '${(await getApplicationDocumentsDirectory()).path}/$filename';
+      } else {
+        reserved = await localMedia.reserveAsset(
+          scope: sessionScope,
+          meetingId: widget.meetingId,
+          sourceType: LocalMediaSourceType.recording,
+          originalFilename: filename,
+          contentType: 'audio/wav',
+          sourceProvenance:
+              'capture:${sessionScope.deploymentScope}:'
+              '${sessionScope.userId}:${widget.meetingId}:$filename',
+        );
+        captureAsset = reserved;
+        path = (await localMedia.stagingFileFor(
+          scope: sessionScope,
+          asset: reserved,
+        )).path;
+      }
       startingCapture = true;
       try {
         await recorder.start(
@@ -153,22 +175,21 @@ class _RecordingPageState extends State<RecordingPage> {
         );
       } catch (_) {
         startingCapture = false;
+        if (reserved != null && localMedia != null) {
+          await localMedia.recordInterruption(
+            scope: sessionScope,
+            assetId: reserved.id,
+            reason: 'RECORDING_START_FAILED',
+          );
+          captureAsset = null;
+        }
         rethrow;
       }
-      if (!mounted) {
-        startingCapture = false;
-        return;
-      }
-      if (!widget.api.isCurrentAuthenticatedSession(sessionScope)) {
+      if (!mounted || !widget.api.isCurrentAuthenticatedSession(sessionScope)) {
         startingCapture = false;
         final stoppedPath = await recorder.stop();
-        if (stoppedPath != null) {
-          await draftStore.remember(
-            widget.meetingId,
-            File(stoppedPath),
-            session: sessionScope,
-          );
-        }
+        await _completeCapture(stoppedPath, reserved);
+        captureAsset = null;
         return;
       }
       startingCapture = false;
@@ -182,6 +203,7 @@ class _RecordingPageState extends State<RecordingPage> {
           capturing = true;
           elapsed = 0;
           file = null;
+          selectedAsset = null;
           selectedName = null;
           job = null;
           sourceType = 'RECORDING';
@@ -195,29 +217,67 @@ class _RecordingPageState extends State<RecordingPage> {
 
   Future<void> stop() async {
     timer?.cancel();
+    final reserved = captureAsset;
     try {
       final path = await recorder.stop();
-      if (path != null) {
-        await draftStore.remember(
-          widget.meetingId,
-          File(path),
-          session: sessionScope,
-        );
-        await loadDrafts();
-      }
+      final completed = await _completeCapture(path, reserved);
+      captureAsset = null;
+      await loadDrafts();
       if (mounted && widget.api.isCurrentAuthenticatedSession(sessionScope)) {
         setState(() {
           capturing = false;
           file = path == null ? null : File(path);
-          selectedName = path == null ? null : File(path).uri.pathSegments.last;
+          selectedAsset = completed;
+          selectedName =
+              completed?.originalFilename ??
+              (path == null ? null : File(path).uri.pathSegments.last);
           sourceType = 'RECORDING';
         });
       }
     } catch (error) {
+      captureAsset = null;
+      if (reserved != null && widget.localMedia != null) {
+        try {
+          await widget.localMedia!.recordInterruption(
+            scope: sessionScope,
+            assetId: reserved.id,
+            reason: 'RECORDING_STOP_FAILED',
+          );
+        } catch (_) {}
+      }
       if (mounted && widget.api.isCurrentAuthenticatedSession(sessionScope)) {
         showFailure(context, error);
       }
     }
+  }
+
+  Future<LocalMediaAsset?> _completeCapture(
+    String? stoppedPath,
+    LocalMediaAsset? reserved,
+  ) async {
+    final localMedia = widget.localMedia;
+    if (reserved != null && localMedia != null) {
+      if (stoppedPath == null) {
+        return localMedia.recordInterruption(
+          scope: sessionScope,
+          assetId: reserved.id,
+          reason: 'RECORDING_STOP_RETURNED_NO_PATH',
+        );
+      }
+      final source = File(stoppedPath);
+      final size = await source.length();
+      return localMedia.confirmFileCompletion(
+        scope: sessionScope,
+        assetId: reserved.id,
+        expectedSizeBytes: size,
+      );
+    }
+    if (stoppedPath == null) return null;
+    return draftStore.remember(
+      widget.meetingId,
+      File(stoppedPath),
+      session: sessionScope,
+    );
   }
 
   Future<void> pick() async {
@@ -258,6 +318,7 @@ class _RecordingPageState extends State<RecordingPage> {
         widget.api.requireCurrentAuthenticatedSession(sessionScope);
         setState(() {
           file = selected;
+          selectedAsset = null;
           selectedName = result.name;
           sourceType = 'UPLOAD';
           job = null;
@@ -306,17 +367,25 @@ class _RecordingPageState extends State<RecordingPage> {
       final filename = selectedName ?? selected.uri.pathSegments.last;
       final localMedia = widget.localMedia;
       if (localMedia != null) {
-        localAsset = await localMedia.rememberSourceFile(
-          scope: sessionScope,
-          meetingId: widget.meetingId,
-          source: selected,
-          sourceType: sourceType == 'RECORDING'
-              ? LocalMediaSourceType.recording
-              : LocalMediaSourceType.upload,
-          originalFilename: filename,
-          contentType: mime,
-          expectedSizeBytes: size,
-        );
+        if (selectedAsset != null) {
+          localAsset = await localMedia.findReadyAsset(
+            scope: sessionScope,
+            assetId: selectedAsset!.id,
+            meetingId: widget.meetingId,
+          );
+        } else {
+          localAsset = await localMedia.rememberSourceFile(
+            scope: sessionScope,
+            meetingId: widget.meetingId,
+            source: selected,
+            sourceType: sourceType == 'RECORDING'
+                ? LocalMediaSourceType.recording
+                : LocalMediaSourceType.upload,
+            originalFilename: filename,
+            contentType: mime,
+            expectedSizeBytes: size,
+          );
+        }
         uploadFile = await localMedia.fileFor(
           scope: sessionScope,
           asset: localAsset,
@@ -328,9 +397,6 @@ class _RecordingPageState extends State<RecordingPage> {
           scope: sessionScope,
           asset: localAsset,
           idempotencyKey: uploadKey,
-          requestFingerprint: _fingerprint(
-            '$sourceType\n$filename\n$mime\n$size',
-          ),
         );
       }
       final intent = await mediaRepository.createUploadIntent(
@@ -369,8 +435,9 @@ class _RecordingPageState extends State<RecordingPage> {
           intent.uploadUrl!,
           uploadFile,
           intent.requiredContentType,
+          session: sessionScope,
           expectedLength: size,
-          expiresAt: intent.expiresAt,
+          expiresAt: intent.expiresAt!,
           onProgress: (sent, total) {
             if (!mounted ||
                 !widget.api.isCurrentAuthenticatedSession(sessionScope) ||
@@ -426,7 +493,6 @@ class _RecordingPageState extends State<RecordingPage> {
           scope: sessionScope,
           meetingId: widget.meetingId,
           idempotencyKey: processingKey,
-          requestFingerprint: _fingerprint('ADMISSION\n${finalized.id}'),
           operationType: ProcessingOperationType.admission,
           sourceMediaId: finalized.id,
         );
@@ -441,7 +507,7 @@ class _RecordingPageState extends State<RecordingPage> {
           processingOperation,
           scope: sessionScope,
           checkpoint: ProcessingOperationCheckpoint.admissionConfirmed,
-          targetJobId: accepted.id,
+          resultingJobId: accepted.id,
         );
       }
       if (mounted && widget.api.isCurrentAuthenticatedSession(sessionScope)) {
@@ -459,11 +525,13 @@ class _RecordingPageState extends State<RecordingPage> {
             failedUpload.checkpoint !=
                 UploadOperationCheckpoint.finalizationConfirmed) {
           try {
+            final outcome = _operationOutcome(failure);
             await localMedia.updateUploadOperation(
               failedUpload,
               scope: sessionScope,
-              checkpoint: UploadOperationCheckpoint.failed,
               attemptCount: failedUpload.attemptCount + 1,
+              attemptOutcome: outcome,
+              recoveryRequired: outcome == OperationAttemptOutcome.uncertain,
               failureCode: failure?.code ?? 'MEDIA_UPLOAD_FAILED',
               failureStatus: failure?.status,
               failureMessage: failure?.message,
@@ -473,11 +541,13 @@ class _RecordingPageState extends State<RecordingPage> {
         final failedProcessing = processingOperation;
         if (failedProcessing != null) {
           try {
+            final outcome = _operationOutcome(failure);
             await localMedia.updateProcessingOperation(
               failedProcessing,
               scope: sessionScope,
-              checkpoint: ProcessingOperationCheckpoint.failed,
               attemptCount: failedProcessing.attemptCount + 1,
+              attemptOutcome: outcome,
+              recoveryRequired: outcome == OperationAttemptOutcome.uncertain,
               failureCode: failure?.code ?? 'PROCESSING_ADMISSION_FAILED',
               failureStatus: failure?.status,
               failureMessage: failure?.message,
@@ -495,37 +565,80 @@ class _RecordingPageState extends State<RecordingPage> {
     }
   }
 
+  Future<void> selectDraft(RecordingDraft draft) async {
+    if (!widget.api.isCurrentAuthenticatedSession(sessionScope)) return;
+    try {
+      LocalMediaAsset? asset;
+      File selected;
+      final localMedia = widget.localMedia;
+      if (draft.assetId != null && localMedia != null) {
+        asset = await localMedia.findReadyAsset(
+          scope: sessionScope,
+          assetId: draft.assetId!,
+          meetingId: widget.meetingId,
+        );
+        selected = await localMedia.fileFor(scope: sessionScope, asset: asset);
+      } else {
+        selected = File(draft.path);
+      }
+      if (!await selected.exists()) {
+        throw const LocalMediaUnavailableException();
+      }
+      if (!mounted || !widget.api.isCurrentAuthenticatedSession(sessionScope)) {
+        return;
+      }
+      setState(() {
+        file = selected;
+        selectedAsset = asset;
+        selectedName = asset?.originalFilename ?? draft.name;
+        sourceType = 'RECORDING';
+        job = null;
+      });
+    } catch (error) {
+      if (mounted && widget.api.isCurrentAuthenticatedSession(sessionScope)) {
+        showFailure(context, error);
+      }
+    }
+  }
+
+  OperationAttemptOutcome _operationOutcome(ApiFailure? failure) {
+    if (failure == null ||
+        failure.remoteOutcomeAmbiguous ||
+        failure.isTransportFailure) {
+      return OperationAttemptOutcome.uncertain;
+    }
+    if (failure.status >= 400 && failure.status < 500) {
+      return OperationAttemptOutcome.rejected;
+    }
+    return OperationAttemptOutcome.failed;
+  }
+
   Future<void> retryJob(ProcessingJobRecord candidate) async {
     if (!widget.api.isCurrentAuthenticatedSession(sessionScope)) return;
     setState(() => busy = true);
+    ProcessingOperation? operation;
     try {
       final retryKey = key();
-      ProcessingOperation? operation;
       final localMedia = widget.localMedia;
       if (localMedia != null) {
         operation = await localMedia.beginProcessingOperation(
           scope: sessionScope,
           meetingId: candidate.meetingId,
           idempotencyKey: retryKey,
-          requestFingerprint: _fingerprint(
-            'RETRY\n${candidate.id}\n${candidate.currentStage ?? ''}',
-          ),
           operationType: ProcessingOperationType.retry,
           targetJobId: candidate.id,
-          stageCode: candidate.currentStage,
         );
       }
       final response = await processingRepository.retry(
         candidate.id,
         idempotencyKey: retryKey,
-        stageCode: candidate.currentStage,
       );
       if (operation != null && localMedia != null) {
         await localMedia.updateProcessingOperation(
           operation,
           scope: sessionScope,
           checkpoint: ProcessingOperationCheckpoint.retryConfirmed,
-          targetJobId: response.id,
+          resultingJobId: response.id,
         );
       }
       if (mounted && widget.api.isCurrentAuthenticatedSession(sessionScope)) {
@@ -533,6 +646,25 @@ class _RecordingPageState extends State<RecordingPage> {
         reloadJobs();
       }
     } catch (error) {
+      final localMedia = widget.localMedia;
+      final failure = error is ApiFailure ? error : null;
+      if (operation != null &&
+          localMedia != null &&
+          widget.api.isCurrentAuthenticatedSession(sessionScope)) {
+        try {
+          final outcome = _operationOutcome(failure);
+          await localMedia.updateProcessingOperation(
+            operation,
+            scope: sessionScope,
+            attemptCount: operation.attemptCount + 1,
+            attemptOutcome: outcome,
+            recoveryRequired: outcome == OperationAttemptOutcome.uncertain,
+            failureCode: failure?.code ?? 'PROCESSING_RETRY_FAILED',
+            failureStatus: failure?.status,
+            failureMessage: failure?.message,
+          );
+        } catch (_) {}
+      }
       if (mounted && widget.api.isCurrentAuthenticatedSession(sessionScope)) {
         showFailure(context, error);
       }
@@ -542,9 +674,6 @@ class _RecordingPageState extends State<RecordingPage> {
       }
     }
   }
-
-  String _fingerprint(String value) =>
-      sha256.convert(utf8.encode(value)).toString();
 
   @override
   Widget build(BuildContext context) => ListView(
@@ -619,21 +748,7 @@ class _RecordingPageState extends State<RecordingPage> {
                 draft.createdAt.toLocal().toString().split('.').first,
               ),
               trailing: OutlinedButton(
-                onPressed: busy || capturing
-                    ? null
-                    : () {
-                        if (!widget.api.isCurrentAuthenticatedSession(
-                          sessionScope,
-                        )) {
-                          return;
-                        }
-                        setState(() {
-                          file = File(draft.path);
-                          selectedName = draft.name;
-                          sourceType = 'RECORDING';
-                          job = null;
-                        });
-                      },
+                onPressed: busy || capturing ? null : () => selectDraft(draft),
                 child: const Text('Chọn'),
               ),
             ),

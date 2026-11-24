@@ -1,8 +1,6 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:math';
 
-import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
 
 import '../../core/api_client.dart';
@@ -93,32 +91,23 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
           scope: scope,
           meetingId: candidate.meetingId,
           idempotencyKey: key,
-          requestFingerprint: sha256
-              .convert(
-                utf8.encode(
-                  'RETRY\n${candidate.id}\n${candidate.currentStage ?? ''}',
-                ),
-              )
-              .toString(),
           operationType: ProcessingOperationType.retry,
           targetJobId: candidate.id,
-          stageCode: candidate.currentStage,
         );
       }
       final accepted = await processingRepository.retry(
         candidate.id,
         idempotencyKey: key,
-        stageCode: candidate.currentStage,
       );
       if (operation != null && localMedia != null) {
         await localMedia.updateProcessingOperation(
           operation,
           scope: scope,
           checkpoint: ProcessingOperationCheckpoint.retryConfirmed,
-          targetJobId: accepted.id,
+          resultingJobId: accepted.id,
         );
       }
-      if (mounted) {
+      if (mounted && widget.api.isCurrentAuthenticatedSession(scope)) {
         showSuccess(context, 'Đã tiếp nhận yêu cầu thử lại.');
         reload();
       }
@@ -135,18 +124,38 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
           await localMedia.updateProcessingOperation(
             failedOperation,
             scope: activeScope,
-            checkpoint: ProcessingOperationCheckpoint.failed,
             attemptCount: failedOperation.attemptCount + 1,
+            attemptOutcome: _operationOutcome(failure),
+            recoveryRequired:
+                failure == null ||
+                failure.remoteOutcomeAmbiguous ||
+                failure.isTransportFailure,
             failureCode: failure?.code ?? 'PROCESSING_RETRY_FAILED',
             failureStatus: failure?.status,
             failureMessage: failure?.message,
           );
         } catch (_) {}
       }
-      if (mounted) showFailure(context, error);
+      if (mounted &&
+          activeScope != null &&
+          widget.api.isCurrentAuthenticatedSession(activeScope)) {
+        showFailure(context, error);
+      }
     } finally {
       if (mounted) setState(() => retrying = false);
     }
+  }
+
+  OperationAttemptOutcome _operationOutcome(ApiFailure? failure) {
+    if (failure == null ||
+        failure.remoteOutcomeAmbiguous ||
+        failure.isTransportFailure) {
+      return OperationAttemptOutcome.uncertain;
+    }
+    if (failure.status >= 400 && failure.status < 500) {
+      return OperationAttemptOutcome.rejected;
+    }
+    return OperationAttemptOutcome.failed;
   }
 
   @override

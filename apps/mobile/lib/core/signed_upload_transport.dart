@@ -85,8 +85,8 @@ class SignedUploadTransport {
     File file,
     String contentType, {
     void Function(int sent, int total)? onProgress,
-    int? expectedLength,
-    DateTime? expiresAt,
+    required int expectedLength,
+    required DateTime expiresAt,
     UploadCancellationToken? cancellationToken,
   }) async {
     final uri = _parseAndValidateUrl(signedUrl);
@@ -101,12 +101,15 @@ class SignedUploadTransport {
         'The selected audio file is empty.',
       );
     }
-    if (expectedLength != null && expectedLength != length) {
+    if (expectedLength <= 0 || expectedLength != length) {
       throw TransportFailure(
         0,
         'UPLOAD_SIZE_MISMATCH',
         'The selected audio file changed before upload.',
       );
+    }
+    if (cancellationToken?.isCancelled == true) {
+      throw _abortFailure(_UploadAbortReason.cancelled);
     }
 
     final abortTrigger = Completer<void>();
@@ -114,9 +117,6 @@ class SignedUploadTransport {
     var active = true;
     Timer? overallTimer;
     Timer? inactivityTimer;
-    StreamSubscription<List<int>>? sourceSubscription;
-    StreamController<List<int>>? sourceController;
-    Future<void>? bodyWrite;
     var requestClosed = false;
     var sent = 0;
     var progressTotal = length;
@@ -125,11 +125,6 @@ class SignedUploadTransport {
       if (abortReason == _UploadAbortReason.none) abortReason = reason;
       if (!abortTrigger.isCompleted) abortTrigger.complete();
       active = false;
-      unawaited(sourceSubscription?.cancel() ?? Future<void>.value());
-      final controller = sourceController;
-      if (controller != null && !controller.isClosed) {
-        unawaited(controller.close());
-      }
     }
 
     void activity() {
@@ -187,32 +182,30 @@ class SignedUploadTransport {
     );
 
     try {
-      sourceController = StreamController<List<int>>(sync: true);
-      final controller = sourceController;
-      sourceSubscription = file.openRead().listen(
-        (chunk) {
+      // Stream directly from File.openRead through the request sink. The
+      // addStream subscription is paused by package:http while the native
+      // request buffer is full; an intermediate controller would keep reading
+      // and accumulate an unbounded amount of audio in memory.
+      Stream<List<int>> monitoredFile() async* {
+        await for (final chunk in file.openRead()) {
           if (!active) return;
           final next = sent + chunk.length;
           if (next > length) {
             abort(_UploadAbortReason.fileChanged);
-            controller.addError(const _UploadFileChanged());
-            return;
+            throw const _UploadFileChanged();
           }
           activity();
           reportProgress(next);
-          controller.add(chunk);
-        },
-        onError: (Object error, StackTrace stackTrace) {
-          if (!controller.isClosed) controller.addError(error, stackTrace);
-        },
-        onDone: () {
-          if (!controller.isClosed) unawaited(controller.close());
-        },
-        cancelOnError: false,
-      );
+          yield chunk;
+        }
+        if (active && sent != length) {
+          abort(_UploadAbortReason.fileChanged);
+          throw const _UploadFileChanged();
+        }
+      }
 
-      bodyWrite = request.sink.addStream(controller.stream);
-      await bodyWrite;
+      final body = request.sink.addStream(monitoredFile());
+      await _awaitWithAbort(body, abortTrigger.future);
       if (abortReason != _UploadAbortReason.none) {
         throw _abortFailure(abortReason);
       }
@@ -340,11 +333,6 @@ class SignedUploadTransport {
       active = false;
       overallTimer.cancel();
       inactivityTimer?.cancel();
-      final subscription = sourceSubscription;
-      if (subscription != null) await subscription.cancel();
-      if (sourceController != null && !sourceController.isClosed) {
-        await sourceController.close();
-      }
       if (!requestClosed) {
         try {
           await request.sink.close();
@@ -363,9 +351,6 @@ class SignedUploadTransport {
           ),
         );
       }
-      // Keep the local variable live for implementations which optimize
-      // stream subscriptions before the request has finalized.
-      bodyWrite;
     }
   }
 
@@ -410,8 +395,7 @@ class SignedUploadTransport {
     }
   }
 
-  void _validateCapabilityExpiry(DateTime? expiresAt) {
-    if (expiresAt == null) return;
+  void _validateCapabilityExpiry(DateTime expiresAt) {
     final minimum = _now().toUtc().add(minimumCapabilityValidity);
     if (!expiresAt.toUtc().isAfter(minimum)) {
       throw TransportFailure(

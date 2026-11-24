@@ -318,11 +318,13 @@ class ApiClient extends ChangeNotifier {
     String signedUrl,
     File file,
     String contentType, {
+    AuthenticatedSessionScope? session,
     void Function(int sent, int total)? onProgress,
-    int? expectedLength,
-    DateTime? expiresAt,
+    required int expectedLength,
+    required DateTime expiresAt,
     UploadCancellationToken? cancellationToken,
   }) async {
+    if (session != null) requireCurrentAuthenticatedSession(session);
     try {
       await _signedUploadTransport.upload(
         signedUrl,
@@ -333,6 +335,7 @@ class ApiClient extends ChangeNotifier {
         expiresAt: expiresAt,
         cancellationToken: cancellationToken,
       );
+      if (session != null) requireCurrentAuthenticatedSession(session);
     } on TransportFailure catch (failure) {
       throw normalizeTransportFailure(failure);
     }

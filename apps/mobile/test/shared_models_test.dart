@@ -3,6 +3,7 @@ import 'package:sme_meeting_assistant/core/api_response.dart';
 import 'package:sme_meeting_assistant/core/date_labels.dart';
 import 'package:sme_meeting_assistant/core/meeting_models.dart';
 import 'package:sme_meeting_assistant/core/models.dart';
+import 'package:sme_meeting_assistant/features/recording/media_contracts.dart';
 
 void main() {
   group('shared API models', () {
@@ -268,13 +269,13 @@ void main() {
     );
 
     test('validates processing identity, status, counter and timestamps', () {
-      final job = ProcessingJob.fromJson({
-        'id': 'job-1',
-        'meetingId': 'meeting-1',
+      final job = ProcessingJobRecord.fromJson({
+        'id': 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        'meetingId': 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
         'sourceMediaId': null,
-        'jobType': 'TRANSCRIPTION',
+        'jobType': 'OFFLINE_MEETING_PROCESSING',
         'status': 'QUEUED',
-        'requestedByUserId': 'user-1',
+        'requestedByUserId': 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
         'currentStage': null,
         'queuedAt': '2026-11-23T10:00:00Z',
         'startedAt': null,
@@ -289,12 +290,12 @@ void main() {
         'stageRuns': [],
       });
 
-      expect(job.status, 'QUEUED');
+      expect(job.status, ProcessingJobStatus.queued);
       expect(job.currentStage, isNull);
-      expect(job.queuedAt.isUtc, isTrue);
+      expect(job.queuedAt?.isUtc, isTrue);
       expect(
-        () => ProcessingJob.fromJson({
-          'id': 'job-1',
+        () => ProcessingJobRecord.fromJson({
+          'id': 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
           'status': 'QUEUED',
           'queuedAt': '2026-11-23T10:00:00',
         }),

@@ -183,7 +183,8 @@ class MediaUploadIntent {
   bool get hasUploadCapability =>
       status == MediaStatus.pendingUpload &&
       uploadUrl != null &&
-      uploadUrl!.isNotEmpty;
+      uploadUrl!.isNotEmpty &&
+      expiresAt != null;
 
   /// A replay may identify an existing media record without minting another
   /// object-storage capability. The repository deliberately returns that

@@ -10,4 +10,9 @@
     <exclude domain="file" path="sme-media" />
     <exclude domain="file" path="app_flutter/sme-media" />
     <exclude domain="database" path="sme_mobile_media.db" />
+    <exclude domain="database" path="sme_mobile_media.db-wal" />
+    <exclude domain="database" path="sme_mobile_media.db-shm" />
+    <!-- Legacy recorder/import locations used before managed media storage. -->
+    <exclude domain="file" path="sme-meeting-" />
+    <exclude domain="file" path="app_flutter/sme-meeting-" />
 </full-backup-content>

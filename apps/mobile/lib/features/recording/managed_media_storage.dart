@@ -80,28 +80,41 @@ class ManagedMediaStorage {
     final digestSink = _DigestSink();
     final converter = sha256.startChunkedConversion(digestSink);
     var size = 0;
-    Object? failure;
-    StackTrace? failureStack;
+    var converterClosed = false;
     try {
-      await for (final chunk in bytes) {
-        size += chunk.length;
-        if (expectedSizeBytes != null && size > expectedSizeBytes) {
-          throw const FileSystemException('The staged file exceeded its size.');
-        }
-        converter.add(chunk);
-        sink.add(chunk);
-      }
-      converter.close();
+      final transformed = bytes.transform(
+        StreamTransformer<List<int>, List<int>>.fromHandlers(
+          handleData: (chunk, output) {
+            size += chunk.length;
+            if (expectedSizeBytes != null && size > expectedSizeBytes) {
+              throw const FileSystemException(
+                'The staged file exceeded its size.',
+              );
+            }
+            converter.add(chunk);
+            output.add(chunk);
+          },
+          handleDone: (output) {
+            converter.close();
+            converterClosed = true;
+            output.close();
+          },
+        ),
+      );
+      // IOSink.addStream pauses the input subscription while its internal
+      // buffer is full. Do not replace this with an await-for/add loop: that
+      // loop can read an entire large source into pending IOSink memory.
+      await sink.addStream(transformed);
+      await sink.flush();
       await sink.close();
-    } catch (error, stackTrace) {
-      failure = error;
-      failureStack = stackTrace;
+    } catch (_) {
       try {
         await sink.close();
       } catch (_) {}
+      rethrow;
     }
-    if (failure != null) {
-      Error.throwWithStackTrace(failure, failureStack!);
+    if (!converterClosed) {
+      converter.close();
     }
     if (size <= 0 || expectedSizeBytes != null && size != expectedSizeBytes) {
       throw const FileSystemException('The staged file size is invalid.');
@@ -172,14 +185,25 @@ class ManagedMediaStorage {
     final source = fileFor(relativePath);
     if (!await source.exists()) return relativePath;
     await quarantineDirectory.create(recursive: true);
-    final identifier = _fileIdentity();
+    final identifier = _fileIdentity(relativePath, reason);
     final destinationRelative = path.join(
       'quarantine',
       '$identifier-${_safeReason(reason)}.artifact',
     );
-    final destination = fileFor(destinationRelative);
+    var destination = fileFor(destinationRelative);
+    var uniqueRelative = destinationRelative;
+    var collision = 0;
+    final collisionSeed = _now().microsecondsSinceEpoch;
+    while (await destination.exists()) {
+      collision++;
+      uniqueRelative = path.join(
+        'quarantine',
+        '$identifier-${_safeReason(reason)}-$collisionSeed-$collision.artifact',
+      );
+      destination = fileFor(uniqueRelative);
+    }
     await source.rename(destination.path);
-    return destinationRelative;
+    return uniqueRelative;
   }
 
   Future<void> deleteStaging(String relativePath) async {
@@ -269,8 +293,11 @@ class ManagedMediaStorage {
     }
   }
 
-  String _fileIdentity() {
-    final seed = '${_now().microsecondsSinceEpoch}-${root.path}';
+  String _fileIdentity(String relativePath, String reason) {
+    // The base path is deterministic so a repeated reconciliation can identify
+    // the same recovery artifact. quarantine() adds a collision suffix rather
+    // than overwriting an older artifact if the source path is recreated.
+    final seed = '${root.path}\u0000$relativePath\u0000$reason';
     return sha256.convert(seed.codeUnits).toString().substring(0, 24);
   }
 

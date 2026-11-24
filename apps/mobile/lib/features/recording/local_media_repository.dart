@@ -9,6 +9,7 @@ import '../../core/api_client.dart';
 import 'local_media_database.dart';
 import 'local_media_models.dart';
 import 'local_media_persistence.dart';
+import 'local_media_persistence.dart' as media_persistence;
 import 'managed_media_storage.dart';
 
 /// Application-level owner of durable local media state.
@@ -48,6 +49,8 @@ class LocalMediaRepository {
   Future<ManagedMediaStorage>? _storageFuture;
   final CredentialStorage? legacyStorage;
   final DateTime Function() _now;
+  Future<void> _lifecycleTail = Future<void>.value();
+  Future<void> _migrationTail = Future<void>.value();
   bool _disposed = false;
 
   static LocalMediaRepository fromReady({
@@ -71,16 +74,18 @@ class LocalMediaRepository {
     required String contentType,
     int? expectedSizeBytes,
     String? sourceProvenance,
-  }) => _rememberForOwner(
-    deploymentScope: scope.deploymentScope,
-    ownerUserId: scope.userId,
-    meetingId: meetingId,
-    source: source,
-    sourceType: sourceType,
-    originalFilename: originalFilename,
-    contentType: contentType,
-    expectedSizeBytes: expectedSizeBytes,
-    sourceProvenance: sourceProvenance,
+  }) => _withLifecycleLock(
+    () => _rememberForOwner(
+      deploymentScope: scope.deploymentScope,
+      ownerUserId: scope.userId,
+      meetingId: meetingId,
+      source: source,
+      sourceType: sourceType,
+      originalFilename: originalFilename,
+      contentType: contentType,
+      expectedSizeBytes: expectedSizeBytes,
+      sourceProvenance: sourceProvenance,
+    ),
   );
 
   Future<List<LocalMediaAsset>> listAssets({
@@ -103,14 +108,242 @@ class LocalMediaRepository {
     required LocalMediaAsset asset,
   }) async {
     _requireAssetOwner(asset, scope);
+    final persisted = await (await _persistence()).findAsset(
+      id: asset.id,
+      deploymentScope: scope.deploymentScope,
+      ownerUserId: scope.userId,
+    );
+    if (persisted == null ||
+        persisted.meetingId != asset.meetingId ||
+        !persisted.isReady ||
+        persisted.sizeBytes == null ||
+        persisted.sizeBytes! <= 0 ||
+        persisted.sha256 == null ||
+        !RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(persisted.sha256!)) {
+      throw const LocalMediaUnavailableException();
+    }
     final storage = await _storage();
-    return storage.fileFor(asset.managedRelativePath);
+    final file = storage.fileFor(persisted.managedRelativePath);
+    try {
+      if (!await file.exists() ||
+          await file.length() != persisted.sizeBytes ||
+          !_matchesConfirmed(
+            persisted,
+            await storage.inspectFile(persisted.managedRelativePath),
+          )) {
+        throw const LocalMediaUnavailableException();
+      }
+    } on FileSystemException {
+      throw const LocalMediaUnavailableException();
+    }
+    return file;
   }
+
+  Future<LocalMediaAsset> findReadyAsset({
+    required AuthenticatedSessionScope scope,
+    required String assetId,
+    required String meetingId,
+  }) async {
+    _requireScope(scope.deploymentScope, scope.userId);
+    _validateIdentifier(meetingId, 'meetingId');
+    final asset = await (await _persistence()).findAsset(
+      id: assetId,
+      deploymentScope: scope.deploymentScope,
+      ownerUserId: scope.userId,
+    );
+    if (asset == null ||
+        asset.meetingId != meetingId ||
+        !asset.isReady ||
+        asset.sizeBytes == null ||
+        asset.sizeBytes! <= 0 ||
+        asset.sha256 == null ||
+        !RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(asset.sha256!)) {
+      throw const LocalMediaUnavailableException();
+    }
+    final file = (await _storage()).fileFor(asset.managedRelativePath);
+    if (!await file.exists() || await file.length() != asset.sizeBytes) {
+      throw const LocalMediaUnavailableException();
+    }
+    return asset;
+  }
+
+  /// Reserves ownership and both managed locations before a native writer is
+  /// allowed to create bytes.
+  Future<LocalMediaAsset> reserveAsset({
+    required AuthenticatedSessionScope scope,
+    required String meetingId,
+    required LocalMediaSourceType sourceType,
+    required String originalFilename,
+    required String contentType,
+    String? sourceProvenance,
+    DateTime? createdAt,
+    String? assetId,
+  }) => _withLifecycleLock(() async {
+    _requireScope(scope.deploymentScope, scope.userId);
+    _validateIdentifier(meetingId, 'meetingId');
+    _validateFilename(originalFilename);
+    _validateContentType(contentType);
+    final persistence = await _persistence();
+    final storage = await _storage();
+    await storage.ensureDirectories();
+    final provenance =
+        sourceProvenance ??
+        'reserved:${scope.deploymentScope}:$meetingId:'
+            '${sourceType.wireValue}:$originalFilename:$contentType';
+    final existing = await persistence.findAssetByProvenance(
+      deploymentScope: scope.deploymentScope,
+      ownerUserId: scope.userId,
+      meetingId: meetingId,
+      sourceProvenance: provenance,
+    );
+    if (existing != null) return existing;
+    final id = assetId ?? _newId();
+    final paths = storage.allocatePaths(id);
+    final now = _utcNow();
+    final asset = LocalMediaAsset(
+      id: id,
+      deploymentScope: scope.deploymentScope,
+      ownerUserId: scope.userId,
+      meetingId: meetingId,
+      sourceType: sourceType,
+      managedRelativePath: paths.managedRelativePath,
+      stagedRelativePath: paths.stagedRelativePath,
+      originalFilename: originalFilename,
+      contentType: contentType,
+      sizeBytes: null,
+      durationMs: null,
+      sha256: null,
+      lifecycle: LocalMediaLifecycle.creating,
+      sourceProvenance: provenance,
+      quarantineReason: null,
+      createdAt: (createdAt ?? now).toUtc(),
+      updatedAt: now,
+      readyAt: null,
+      version: 0,
+    );
+    return persistence.insertAsset(asset);
+  });
+
+  Future<File> stagingFileFor({
+    required AuthenticatedSessionScope scope,
+    required LocalMediaAsset asset,
+  }) async {
+    _requireAssetOwner(asset, scope);
+    final persisted = await (await _persistence()).findAsset(
+      id: asset.id,
+      deploymentScope: scope.deploymentScope,
+      ownerUserId: scope.userId,
+    );
+    if (persisted == null || persisted.stagedRelativePath == null) {
+      throw const LocalMediaUnavailableException();
+    }
+    return (await _storage()).fileFor(persisted.stagedRelativePath!);
+  }
+
+  Future<LocalMediaAsset> confirmFileCompletion({
+    required AuthenticatedSessionScope scope,
+    required String assetId,
+    int? expectedSizeBytes,
+  }) => _withLifecycleLock(() async {
+    final persistence = await _persistence();
+    final asset = await persistence.findAsset(
+      id: assetId,
+      deploymentScope: scope.deploymentScope,
+      ownerUserId: scope.userId,
+    );
+    if (asset == null) throw const LocalMediaOwnershipException();
+    if (asset.stagedRelativePath == null) {
+      throw const LocalMediaUnavailableException();
+    }
+    final storage = await _storage();
+    try {
+      final integrity = await storage.inspectFile(asset.stagedRelativePath!);
+      if (integrity.sizeBytes <= 0 ||
+          expectedSizeBytes != null &&
+              integrity.sizeBytes != expectedSizeBytes) {
+        return await persistence.updateAsset(
+          asset.copyWith(
+            lifecycle: LocalMediaLifecycle.interrupted,
+            quarantineReason: 'FILE_COMPLETION_INVALID',
+            updatedAt: _utcNow(),
+          ),
+          expectedVersion: asset.version,
+        );
+      }
+      var staged = await persistence.updateAsset(
+        asset.copyWith(
+          lifecycle: LocalMediaLifecycle.staged,
+          sizeBytes: integrity.sizeBytes,
+          sha256: integrity.sha256,
+          quarantineReason: null,
+          updatedAt: _utcNow(),
+        ),
+        expectedVersion: asset.version,
+      );
+      staged = await persistence.updateAsset(
+        staged.copyWith(
+          lifecycle: LocalMediaLifecycle.promotionPending,
+          updatedAt: _utcNow(),
+        ),
+        expectedVersion: staged.version,
+      );
+      await storage.promote(
+        staged.stagedRelativePath!,
+        staged.managedRelativePath,
+      );
+      return await persistence.updateAsset(
+        staged.copyWith(
+          lifecycle: LocalMediaLifecycle.ready,
+          readyAt: staged.readyAt ?? _utcNow(),
+          updatedAt: _utcNow(),
+        ),
+        expectedVersion: staged.version,
+      );
+    } on FileSystemException {
+      try {
+        await persistence.updateAsset(
+          asset.copyWith(
+            lifecycle: LocalMediaLifecycle.interrupted,
+            quarantineReason: 'FILE_COMPLETION_UNREADABLE',
+            updatedAt: _utcNow(),
+          ),
+          expectedVersion: asset.version,
+        );
+      } catch (_) {}
+      rethrow;
+    }
+  });
+
+  Future<LocalMediaAsset> recordInterruption({
+    required AuthenticatedSessionScope scope,
+    required String assetId,
+    String reason = 'FILE_CREATION_INTERRUPTED',
+  }) => _withLifecycleLock(() async {
+    final persistence = await _persistence();
+    final asset = await persistence.findAsset(
+      id: assetId,
+      deploymentScope: scope.deploymentScope,
+      ownerUserId: scope.userId,
+    );
+    if (asset == null) throw const LocalMediaOwnershipException();
+    if (asset.lifecycle == LocalMediaLifecycle.quarantined ||
+        asset.lifecycle == LocalMediaLifecycle.discarded) {
+      return asset;
+    }
+    return persistence.updateAsset(
+      asset.copyWith(
+        lifecycle: LocalMediaLifecycle.interrupted,
+        quarantineReason: reason,
+        updatedAt: _utcNow(),
+      ),
+      expectedVersion: asset.version,
+    );
+  });
 
   Future<LocalMediaAsset> discard({
     required AuthenticatedSessionScope scope,
     required String assetId,
-  }) async {
+  }) => _withLifecycleLock(() async {
     final persistence = await _persistence();
     final asset = await persistence.findAsset(
       id: assetId,
@@ -128,7 +361,9 @@ class LocalMediaRepository {
     final storage = await _storage();
     await _deleteIfPresent(storage, pending.managedRelativePath);
     final stagedPath = pending.stagedRelativePath;
-    if (stagedPath != null) await _deleteIfPresent(storage, stagedPath);
+    if (stagedPath != null && _isStagingPath(stagedPath)) {
+      await _deleteIfPresent(storage, stagedPath);
+    }
     pending = await persistence.updateAsset(
       pending.copyWith(
         lifecycle: LocalMediaLifecycle.discarded,
@@ -137,12 +372,12 @@ class LocalMediaRepository {
       expectedVersion: pending.version,
     );
     return pending;
-  }
+  });
 
   Future<LocalMediaRecoveryReport> reconcile({
     required AuthenticatedSessionScope scope,
     String? meetingId,
-  }) async {
+  }) => _withLifecycleLock(() async {
     final persistence = await _persistence();
     final storage = await _storage();
     final assets = await persistence.listAssets(
@@ -155,6 +390,7 @@ class LocalMediaRepository {
     var missing = 0;
     var quarantined = 0;
     var interrupted = 0;
+    var orphaned = 0;
     for (final asset in assets) {
       final result = await _reconcileAsset(persistence, storage, asset);
       switch (result.lifecycle) {
@@ -170,19 +406,50 @@ class LocalMediaRepository {
           break;
       }
     }
+    final allAssets = await persistence.listAllAssets();
+    final referenced = <String>{
+      for (final candidate in allAssets) ...<String>[
+        candidate.managedRelativePath,
+        if (candidate.stagedRelativePath != null) candidate.stagedRelativePath!,
+      ],
+    };
+    referenced.addAll(
+      (await persistence.listRecoveryArtifacts()).map(
+        (artifact) => artifact.relativePath,
+      ),
+    );
+    for (final relativePath in await storage.listFiles()) {
+      if (referenced.contains(relativePath) ||
+          relativePath == 'quarantine' ||
+          relativePath.startsWith('quarantine${Platform.pathSeparator}')) {
+        continue;
+      }
+      final quarantinedPath = await storage.quarantine(
+        relativePath,
+        reason: 'unmanaged-orphan',
+      );
+      await _recordRecoveryArtifact(
+        persistence,
+        relativePath: quarantinedPath,
+        originalRelativePath: relativePath,
+        reason: 'UNMANAGED_FILESYSTEM_ARTIFACT',
+      );
+      orphaned++;
+    }
     return LocalMediaRecoveryReport(
       inspected: assets.length,
       ready: ready,
       missing: missing,
       quarantined: quarantined,
       interrupted: interrupted,
+      orphaned: orphaned,
     );
-  }
+  });
 
   Future<int> cleanupStaleStaging({
     required AuthenticatedSessionScope scope,
     Duration maxAge = const Duration(days: 7),
-  }) async {
+  }) => _withLifecycleLock(() async {
     if (maxAge <= Duration.zero) {
       throw ArgumentError.value(maxAge, 'maxAge', 'Must be positive.');
     }
@@ -221,59 +488,62 @@ class LocalMediaRepository {
       count++;
     }
     return count;
-  }
+  });
 
   Future<UploadOperation> beginUploadOperation({
     required AuthenticatedSessionScope scope,
     required LocalMediaAsset asset,
     required String idempotencyKey,
-    required String requestFingerprint,
+    String? requestFingerprint,
   }) async {
     _requireAssetOwner(asset, scope);
     _validateIdempotencyKey(idempotencyKey);
-    _validateFingerprint(requestFingerprint);
-    if (asset.sizeBytes == null || asset.sizeBytes! <= 0) {
-      throw StateError(
-        'A local media asset must have a positive size before upload admission.',
-      );
+    final persistedAsset = await findReadyAsset(
+      scope: scope,
+      assetId: asset.id,
+      meetingId: asset.meetingId ?? '',
+    );
+    if (persistedAsset.meetingId == null) {
+      throw const LocalMediaUnavailableException();
+    }
+    final expectedFingerprint = _uploadFingerprint(scope, persistedAsset);
+    if (requestFingerprint != null &&
+        requestFingerprint != expectedFingerprint) {
+      throw const LocalMediaIdempotencyConflictException();
     }
     final persistence = await _persistence();
-    final existing = await persistence.findUploadOperation(
-      deploymentScope: scope.deploymentScope,
-      ownerUserId: scope.userId,
-      idempotencyKey: idempotencyKey,
-    );
-    if (existing != null) {
-      if (existing.requestFingerprint != requestFingerprint) {
-        throw const LocalMediaIdempotencyConflictException();
-      }
-      return existing;
-    }
     final now = _utcNow();
-    return persistence.insertUploadOperation(
-      UploadOperation(
-        id: _newId(),
-        assetId: asset.id,
-        deploymentScope: scope.deploymentScope,
-        ownerUserId: scope.userId,
-        idempotencyKey: idempotencyKey,
-        requestFingerprint: requestFingerprint,
-        sourceType: asset.sourceType,
-        originalFilename: asset.originalFilename,
-        contentType: asset.contentType,
-        expectedSizeBytes: asset.sizeBytes ?? 0,
-        remoteMediaId: null,
-        checkpoint: UploadOperationCheckpoint.intentNotConfirmed,
-        confirmedBytes: 0,
-        attemptCount: 0,
-        lastFailureCode: null,
-        lastFailureStatus: null,
-        lastFailureMessage: null,
-        createdAt: now,
-        updatedAt: now,
-        version: 0,
-      ),
-    );
+    try {
+      return await persistence.getOrCreateUploadOperation(
+        UploadOperation(
+          id: _newId(),
+          assetId: persistedAsset.id,
+          deploymentScope: scope.deploymentScope,
+          ownerUserId: scope.userId,
+          meetingId: persistedAsset.meetingId!,
+          idempotencyKey: idempotencyKey,
+          requestFingerprint: expectedFingerprint,
+          sourceType: persistedAsset.sourceType,
+          originalFilename: persistedAsset.originalFilename,
+          contentType: persistedAsset.contentType,
+          expectedSizeBytes: persistedAsset.sizeBytes!,
+          remoteMediaId: null,
+          checkpoint: UploadOperationCheckpoint.intentNotConfirmed,
+          confirmedBytes: 0,
+          attemptCount: 0,
+          attemptOutcome: OperationAttemptOutcome.none,
+          recoveryRequired: false,
+          lastFailureCode: null,
+          lastFailureStatus: null,
+          lastFailureMessage: null,
+          createdAt: now,
+          updatedAt: now,
+          version: 0,
+        ),
+      );
+    } on media_persistence.LocalMediaIdempotencyConflictException {
+      throw const LocalMediaIdempotencyConflictException();
+    }
   }
 
   Future<UploadOperation> updateUploadOperation(
@@ -283,6 +553,8 @@ class LocalMediaRepository {
     String? remoteMediaId,
     int? confirmedBytes,
     int? attemptCount,
+    OperationAttemptOutcome? attemptOutcome,
+    bool? recoveryRequired,
     String? failureCode,
     int? failureStatus,
     String? failureMessage,
@@ -296,11 +568,17 @@ class LocalMediaRepository {
         (confirmedBytes < 0 || confirmedBytes > operation.expectedSizeBytes)) {
       throw ArgumentError.value(confirmedBytes, 'confirmedBytes');
     }
+    final confirmedCheckpoint = _mergeUploadCheckpoint(
+      operation.checkpoint,
+      checkpoint,
+    );
     final next = operation.copyWith(
-      checkpoint: checkpoint,
+      checkpoint: confirmedCheckpoint,
       remoteMediaId: remoteMediaId,
       confirmedBytes: confirmedBytes,
       attemptCount: attemptCount,
+      attemptOutcome: attemptOutcome,
+      recoveryRequired: recoveryRequired,
       lastFailureCode: failureCode,
       lastFailureStatus: failureStatus,
       lastFailureMessage: failureMessage,
@@ -316,7 +594,7 @@ class LocalMediaRepository {
     required AuthenticatedSessionScope scope,
     required String meetingId,
     required String idempotencyKey,
-    required String requestFingerprint,
+    String? requestFingerprint,
     required ProcessingOperationType operationType,
     String? sourceMediaId,
     String? reprocessOfJobId,
@@ -326,58 +604,71 @@ class LocalMediaRepository {
     _requireScope(scope.deploymentScope, scope.userId);
     _validateIdentifier(meetingId, 'meetingId');
     _validateIdempotencyKey(idempotencyKey);
-    _validateFingerprint(requestFingerprint);
-    final persistence = await _persistence();
-    final existing = await persistence.findProcessingOperation(
-      deploymentScope: scope.deploymentScope,
-      ownerUserId: scope.userId,
-      idempotencyKey: idempotencyKey,
+    _validateOptionalIdentifier(sourceMediaId, 'sourceMediaId');
+    _validateOptionalIdentifier(reprocessOfJobId, 'reprocessOfJobId');
+    _validateOptionalStage(stageCode);
+    final expectedFingerprint = _processingFingerprint(
+      scope: scope,
+      meetingId: meetingId,
+      operationType: operationType,
+      sourceMediaId: sourceMediaId,
+      targetJobId: targetJobId,
+      reprocessOfJobId: reprocessOfJobId,
+      stageCode: stageCode,
     );
-    if (existing != null) {
-      if (existing.requestFingerprint != requestFingerprint) {
-        throw const LocalMediaIdempotencyConflictException();
-      }
-      return existing;
+    if (requestFingerprint != null &&
+        requestFingerprint != expectedFingerprint) {
+      throw const LocalMediaIdempotencyConflictException();
     }
+    final persistence = await _persistence();
     final now = _utcNow();
-    return persistence.insertProcessingOperation(
-      ProcessingOperation(
-        id: _newId(),
-        deploymentScope: scope.deploymentScope,
-        ownerUserId: scope.userId,
-        meetingId: meetingId,
-        idempotencyKey: idempotencyKey,
-        requestFingerprint: requestFingerprint,
-        operationType: operationType,
-        sourceMediaId: sourceMediaId,
-        targetJobId: targetJobId,
-        reprocessOfJobId: reprocessOfJobId,
-        stageCode: stageCode,
-        checkpoint: switch (operationType) {
-          ProcessingOperationType.admission =>
-            ProcessingOperationCheckpoint.admissionNotConfirmed,
-          ProcessingOperationType.retry =>
-            ProcessingOperationCheckpoint.admissionNotConfirmed,
-          ProcessingOperationType.reprocess =>
-            ProcessingOperationCheckpoint.admissionNotConfirmed,
-        },
-        attemptCount: 0,
-        lastFailureCode: null,
-        lastFailureStatus: null,
-        lastFailureMessage: null,
-        createdAt: now,
-        updatedAt: now,
-        version: 0,
-      ),
-    );
+    try {
+      return await persistence.getOrCreateProcessingOperation(
+        ProcessingOperation(
+          id: _newId(),
+          deploymentScope: scope.deploymentScope,
+          ownerUserId: scope.userId,
+          meetingId: meetingId,
+          idempotencyKey: idempotencyKey,
+          requestFingerprint: expectedFingerprint,
+          operationType: operationType,
+          sourceMediaId: sourceMediaId,
+          targetJobId: targetJobId,
+          resultingJobId: null,
+          reprocessOfJobId: reprocessOfJobId,
+          stageCode: stageCode,
+          checkpoint: switch (operationType) {
+            ProcessingOperationType.admission =>
+              ProcessingOperationCheckpoint.admissionNotConfirmed,
+            ProcessingOperationType.retry =>
+              ProcessingOperationCheckpoint.retryNotConfirmed,
+            ProcessingOperationType.reprocess =>
+              ProcessingOperationCheckpoint.reprocessNotConfirmed,
+          },
+          attemptCount: 0,
+          attemptOutcome: OperationAttemptOutcome.none,
+          recoveryRequired: false,
+          lastFailureCode: null,
+          lastFailureStatus: null,
+          lastFailureMessage: null,
+          createdAt: now,
+          updatedAt: now,
+          version: 0,
+        ),
+      );
+    } on media_persistence.LocalMediaIdempotencyConflictException {
+      throw const LocalMediaIdempotencyConflictException();
+    }
   }
 
   Future<ProcessingOperation> updateProcessingOperation(
     ProcessingOperation operation, {
     required AuthenticatedSessionScope scope,
     ProcessingOperationCheckpoint? checkpoint,
-    String? targetJobId,
+    String? resultingJobId,
     int? attemptCount,
+    OperationAttemptOutcome? attemptOutcome,
+    bool? recoveryRequired,
     String? failureCode,
     int? failureStatus,
     String? failureMessage,
@@ -388,9 +679,11 @@ class LocalMediaRepository {
       scope,
     );
     final next = operation.copyWith(
-      checkpoint: checkpoint,
-      targetJobId: targetJobId,
+      checkpoint: _mergeProcessingCheckpoint(operation.checkpoint, checkpoint),
+      resultingJobId: resultingJobId,
       attemptCount: attemptCount,
+      attemptOutcome: attemptOutcome,
+      recoveryRequired: recoveryRequired,
       lastFailureCode: failureCode,
       lastFailureStatus: failureStatus,
       lastFailureMessage: failureMessage,
@@ -402,114 +695,322 @@ class LocalMediaRepository {
     );
   }
 
-  /// Retires the legacy secure-storage index exactly once. Entries that do not
-  /// carry an owner/deployment scope are quarantined as metadata only; their
-  /// source files are deliberately left untouched.
+  /// Migrates both the original unscoped index and the account-scoped v2
+  /// indexes used by the previous application version.
+  ///
+  /// The v2 key is derived from the explicitly supplied verified scope. A
+  /// caller cannot migrate an arbitrary index by merely being signed in.
   Future<LocalMediaMigrationRecord?> migrateLegacyMetadata({
     CredentialStorage? storage,
     String legacyStorageKey = 'sme.mobile.recordings.v1',
-  }) async {
+    AuthenticatedSessionScope? scope,
+  }) => _withMigrationLock(() async {
     final sourceStorage = storage ?? legacyStorage;
     if (sourceStorage == null) return null;
-    final raw = await sourceStorage.read(key: legacyStorageKey);
-    if (raw == null) return null;
+    LocalMediaMigrationRecord? result;
+    final unscoped = await sourceStorage.read(key: legacyStorageKey);
+    if (unscoped != null) {
+      result = await _quarantineUnscopedLegacy(
+        sourceStorage,
+        legacyStorageKey,
+        unscoped,
+      );
+    }
+    if (scope != null) {
+      final scopedKey = legacyStorageKeyForScope(scope);
+      final scoped = await sourceStorage.read(key: scopedKey);
+      if (scoped != null) {
+        result = await _migrateScopedLegacy(
+          sourceStorage,
+          scopedKey,
+          scoped,
+          scope,
+        );
+      }
+    }
+    return result;
+  });
+
+  static String legacyStorageKeyForScope(AuthenticatedSessionScope scope) {
+    final ownerDigest = sha256
+        .convert(utf8.encode('${scope.deploymentScope}\u0000${scope.userId}'))
+        .toString();
+    return 'sme.mobile.recordings.v2.$ownerDigest';
+  }
+
+  Future<LocalMediaMigrationRecord> _quarantineUnscopedLegacy(
+    CredentialStorage sourceStorage,
+    String sourceKey,
+    String raw,
+  ) async {
     final persistence = await _persistence();
-    final key = sha256.convert(utf8.encode(raw)).toString();
+    final key = sha256
+        .convert(utf8.encode('unscoped\u0000$sourceKey\u0000$raw'))
+        .toString();
     final existing = await persistence.findMigration(key);
     if (existing?.state == LocalMediaMigrationState.completed ||
         existing?.state == LocalMediaMigrationState.quarantined) {
-      await sourceStorage.delete(key: legacyStorageKey);
+      await sourceStorage.delete(key: sourceKey);
       await sourceStorage.confirmDurable();
-      return existing;
+      return existing!;
     }
     final startedAt = _utcNow();
-    await persistence.upsertMigration(
-      LocalMediaMigrationRecord(
-        id: _newId(),
-        migrationKey: key,
-        deploymentScope: null,
-        ownerUserId: null,
-        sourceDescription: 'secure-storage-recording-index',
-        state: LocalMediaMigrationState.started,
-        detail: null,
-        createdAt: startedAt,
-        updatedAt: startedAt,
-      ),
+    await _appendLegacyQuarantine(
+      sourceStorage,
+      raw,
+      sourceKey: sourceKey,
+      reason: 'UNSCOPED_LEGACY_METADATA',
     );
-
-    var imported = 0;
-    var quarantined = 0;
-    String? detail;
-    try {
-      final decoded = jsonDecode(raw);
-      if (decoded is! List) {
-        quarantined = 1;
-        detail = 'Legacy metadata was not a list.';
-      } else {
-        for (final item in decoded) {
-          if (item is! Map) {
-            quarantined++;
-            continue;
-          }
-          final entry = item.map(
-            (key, value) => MapEntry(key.toString(), value),
-          );
-          final deploymentScope = _text(entry['deploymentScope']);
-          final ownerUserId = _text(entry['userId']);
-          final meetingId = _text(entry['meetingId']);
-          final filePath = _text(entry['path']);
-          if (deploymentScope == null ||
-              ownerUserId == null ||
-              meetingId == null ||
-              filePath == null) {
-            quarantined++;
-            continue;
-          }
-          final source = File(filePath);
-          if (!await source.exists()) {
-            quarantined++;
-            continue;
-          }
-          try {
-            await _rememberForOwner(
-              deploymentScope: deploymentScope,
-              ownerUserId: ownerUserId,
-              meetingId: meetingId,
-              source: source,
-              sourceType: LocalMediaSourceType.legacy,
-              originalFilename:
-                  _text(entry['name']) ?? source.uri.pathSegments.last,
-              contentType: _text(entry['contentType']) ?? 'audio/wav',
-              sourceProvenance: 'legacy:$key:$imported',
-            );
-            imported++;
-          } on Object {
-            quarantined++;
-          }
-        }
-      }
-    } on FormatException {
-      quarantined = 1;
-      detail = 'Legacy metadata was not valid JSON.';
-    }
-    final state = quarantined == 0
-        ? LocalMediaMigrationState.completed
-        : LocalMediaMigrationState.quarantined;
     final completed = LocalMediaMigrationRecord(
       id: existing?.id ?? _newId(),
       migrationKey: key,
       deploymentScope: null,
       ownerUserId: null,
-      sourceDescription: 'secure-storage-recording-index',
-      state: state,
-      detail: detail ?? 'Imported $imported entries; quarantined $quarantined.',
+      sourceDescription: sourceKey,
+      state: LocalMediaMigrationState.quarantined,
+      detail: 'The unscoped legacy index was preserved without assigning ownership.',
       createdAt: existing?.createdAt ?? startedAt,
       updatedAt: _utcNow(),
     );
     final result = await persistence.upsertMigration(completed);
-    await sourceStorage.delete(key: legacyStorageKey);
+    await sourceStorage.delete(key: sourceKey);
     await sourceStorage.confirmDurable();
     return result;
+  }
+
+  Future<LocalMediaMigrationRecord> _migrateScopedLegacy(
+    CredentialStorage sourceStorage,
+    String sourceKey,
+    String raw,
+    AuthenticatedSessionScope scope,
+  ) async {
+    final persistence = await _persistence();
+    final migrationKey = sha256
+        .convert(utf8.encode('scoped-v2\u0000$sourceKey'))
+        .toString();
+    final existing = await persistence.findMigration(migrationKey);
+    final startedAt = existing?.createdAt ?? _utcNow();
+    final Object? decoded;
+    try {
+      decoded = jsonDecode(raw);
+    } on FormatException {
+      await _appendLegacyQuarantine(
+        sourceStorage,
+        raw,
+        sourceKey: sourceKey,
+        reason: 'SCOPED_LEGACY_INDEX_INVALID_JSON',
+      );
+      final result = await persistence.upsertMigration(
+        LocalMediaMigrationRecord(
+          id: existing?.id ?? _newId(),
+          migrationKey: migrationKey,
+          deploymentScope: scope.deploymentScope,
+          ownerUserId: scope.userId,
+          sourceDescription: sourceKey,
+          state: LocalMediaMigrationState.quarantined,
+          detail: 'The scoped legacy index was not valid JSON.',
+          createdAt: startedAt,
+          updatedAt: _utcNow(),
+        ),
+      );
+      await sourceStorage.delete(key: sourceKey);
+      await sourceStorage.confirmDurable();
+      return result;
+    }
+    if (decoded is! List) {
+      await _appendLegacyQuarantine(
+        sourceStorage,
+        raw,
+        sourceKey: sourceKey,
+        reason: 'SCOPED_LEGACY_INDEX_INVALID',
+      );
+      final result = await persistence.upsertMigration(
+        LocalMediaMigrationRecord(
+          id: existing?.id ?? _newId(),
+          migrationKey: migrationKey,
+          deploymentScope: scope.deploymentScope,
+          ownerUserId: scope.userId,
+          sourceDescription: sourceKey,
+          state: LocalMediaMigrationState.quarantined,
+          detail: 'The scoped legacy index was not a list.',
+          createdAt: startedAt,
+          updatedAt: _utcNow(),
+        ),
+      );
+      await sourceStorage.delete(key: sourceKey);
+      await sourceStorage.confirmDurable();
+      return result;
+    }
+
+    final remaining = <Object?>[];
+    var imported = 0;
+    var quarantined = 0;
+    for (final item in decoded) {
+      final entry = item is Map
+          ? item.map((key, value) => MapEntry(key.toString(), value))
+          : null;
+      final entryIdentity = sha256
+          .convert(
+            utf8.encode(
+              'scoped-v2-entry\u0000$sourceKey\u0000'
+              '${jsonEncode(_canonicalLegacyEntry(entry ?? <String, dynamic>{}))}',
+            ),
+          )
+          .toString();
+      final prior = await persistence.findMigration(entryIdentity);
+      if (prior?.state == LocalMediaMigrationState.completed ||
+          prior?.state == LocalMediaMigrationState.quarantined) {
+        continue;
+      }
+
+      try {
+        if (entry == null) {
+          throw const _InvalidLegacyMetadata('Entry is not an object.');
+        }
+        final deployment = _text(entry['deploymentScope']);
+        final owner = _text(entry['userId']);
+        final meeting = _text(entry['meetingId']);
+        final sourcePath = _text(entry['path']);
+        if (deployment == null ||
+            owner == null ||
+            deployment != scope.deploymentScope ||
+            owner != scope.userId) {
+          throw const _InvalidLegacyMetadata(
+            'The legacy entry ownership does not match its storage scope.',
+          );
+        }
+        if (meeting == null || sourcePath == null) {
+          throw const _InvalidLegacyMetadata(
+            'The legacy entry is missing ownership or source metadata.',
+          );
+        }
+        final source = File(sourcePath);
+        if (!await source.exists()) {
+          throw const _RecoverableLegacyFailure(
+            'The legacy source file is not currently available.',
+          );
+        }
+        final createdAt = _legacyTimestamp(entry['createdAt']);
+        final filename = _text(entry['name']) ?? source.uri.pathSegments.last;
+        final contentType = _legacyContentType(entry, filename);
+        final sourceType = _legacySourceType(entry);
+        final sourceProvenance =
+            _text(entry['sourceProvenance']) ??
+            'legacy-v2:$entryIdentity:${source.absolute.path}';
+        final expectedSize = _legacyPositiveInt(entry['sizeBytes']);
+        final asset = await _rememberForOwner(
+          deploymentScope: deployment,
+          ownerUserId: owner,
+          meetingId: meeting,
+          source: source,
+          sourceType: sourceType,
+          originalFilename: filename,
+          contentType: contentType,
+          expectedSizeBytes: expectedSize,
+          sourceProvenance: sourceProvenance,
+          assetId: entryIdentity.substring(0, 32),
+          createdAt: createdAt,
+        );
+        final verified = await _verifyReadyAsset(asset);
+        if (!verified) {
+          throw const _RecoverableLegacyFailure(
+            'The replacement asset did not pass local verification.',
+          );
+        }
+        await persistence.upsertMigration(
+          LocalMediaMigrationRecord(
+            id: prior?.id ?? _newId(),
+            migrationKey: entryIdentity,
+            deploymentScope: deployment,
+            ownerUserId: owner,
+            sourceDescription: sourceKey,
+            state: LocalMediaMigrationState.completed,
+            detail: 'Migrated asset ${asset.id}.',
+            createdAt: prior?.createdAt ?? _utcNow(),
+            updatedAt: _utcNow(),
+          ),
+        );
+        imported++;
+      } on _InvalidLegacyMetadata catch (error) {
+        quarantined++;
+        await _appendLegacyQuarantine(
+          sourceStorage,
+          jsonEncode(item),
+          sourceKey: sourceKey,
+          reason: error.reason,
+        );
+        await persistence.upsertMigration(
+          LocalMediaMigrationRecord(
+            id: prior?.id ?? _newId(),
+            migrationKey: entryIdentity,
+            deploymentScope: scope.deploymentScope,
+            ownerUserId: scope.userId,
+            sourceDescription: sourceKey,
+            state: LocalMediaMigrationState.quarantined,
+            detail: error.reason,
+            createdAt: prior?.createdAt ?? _utcNow(),
+            updatedAt: _utcNow(),
+          ),
+        );
+      } on _RecoverableLegacyFailure catch (error) {
+        remaining.add(item);
+        await persistence.upsertMigration(
+          LocalMediaMigrationRecord(
+            id: prior?.id ?? _newId(),
+            migrationKey: entryIdentity,
+            deploymentScope: scope.deploymentScope,
+            ownerUserId: scope.userId,
+            sourceDescription: sourceKey,
+            state: LocalMediaMigrationState.started,
+            detail: error.reason,
+            createdAt: prior?.createdAt ?? _utcNow(),
+            updatedAt: _utcNow(),
+          ),
+        );
+      } on Object catch (error) {
+        remaining.add(item);
+        await persistence.upsertMigration(
+          LocalMediaMigrationRecord(
+            id: prior?.id ?? _newId(),
+            migrationKey: entryIdentity,
+            deploymentScope: scope.deploymentScope,
+            ownerUserId: scope.userId,
+            sourceDescription: sourceKey,
+            state: LocalMediaMigrationState.started,
+            detail: 'Recoverable migration failure: ${error.runtimeType}.',
+            createdAt: prior?.createdAt ?? _utcNow(),
+            updatedAt: _utcNow(),
+          ),
+        );
+      }
+    }
+
+    if (remaining.isNotEmpty) {
+      await sourceStorage.write(key: sourceKey, value: jsonEncode(remaining));
+      await sourceStorage.confirmDurable();
+    } else {
+      await sourceStorage.delete(key: sourceKey);
+      await sourceStorage.confirmDurable();
+    }
+    return persistence.upsertMigration(
+      LocalMediaMigrationRecord(
+        id: existing?.id ?? _newId(),
+        migrationKey: migrationKey,
+        deploymentScope: scope.deploymentScope,
+        ownerUserId: scope.userId,
+        sourceDescription: sourceKey,
+        state: remaining.isNotEmpty
+            ? LocalMediaMigrationState.started
+            : quarantined > 0
+            ? LocalMediaMigrationState.quarantined
+            : LocalMediaMigrationState.completed,
+        detail:
+            'Imported $imported entries; quarantined $quarantined; '
+            'recoverable ${remaining.length}.',
+        createdAt: startedAt,
+        updatedAt: _utcNow(),
+      ),
+    );
   }
 
   Future<void> dispose() async {
@@ -533,6 +1034,8 @@ class LocalMediaRepository {
     required String contentType,
     int? expectedSizeBytes,
     String? sourceProvenance,
+    String? assetId,
+    DateTime? createdAt,
   }) async {
     _requireScope(deploymentScope, ownerUserId);
     _validateIdentifier(meetingId, 'meetingId');
@@ -548,44 +1051,59 @@ class LocalMediaRepository {
     final existing = await persistence.findAssetByProvenance(
       deploymentScope: deploymentScope,
       ownerUserId: ownerUserId,
+      meetingId: meetingId,
       sourceProvenance: provenance,
     );
+    late LocalMediaAsset asset;
     if (existing != null) {
       final managed = storage.fileFor(existing.managedRelativePath);
-      if (existing.isReady && await managed.exists()) return existing;
-      throw const LocalMediaConflictException(
-        'A local media import with this source provenance is incomplete.',
+      if (existing.isReady &&
+          await managed.exists() &&
+          await _verifyReadyAsset(existing)) {
+        return existing;
+      }
+      if (existing.lifecycle == LocalMediaLifecycle.quarantined ||
+          existing.lifecycle == LocalMediaLifecycle.discarded) {
+        throw const _RecoverableLegacyFailure(
+          'An incomplete or quarantined migration asset needs explicit recovery.',
+        );
+      }
+      asset = existing;
+    } else {
+      final id = assetId ?? _newId();
+      final paths = storage.allocatePaths(id);
+      final now = _utcNow();
+      asset = LocalMediaAsset(
+        id: id,
+        deploymentScope: deploymentScope,
+        ownerUserId: ownerUserId,
+        meetingId: meetingId,
+        sourceType: sourceType,
+        managedRelativePath: paths.managedRelativePath,
+        stagedRelativePath: paths.stagedRelativePath,
+        originalFilename: originalFilename,
+        contentType: contentType,
+        sizeBytes: null,
+        durationMs: null,
+        sha256: null,
+        lifecycle: LocalMediaLifecycle.creating,
+        sourceProvenance: provenance,
+        quarantineReason: null,
+        createdAt: (createdAt ?? now).toUtc(),
+        updatedAt: now,
+        readyAt: null,
+        version: 0,
       );
+      await persistence.insertAsset(asset);
     }
-    final id = _newId();
-    final paths = storage.allocatePaths(id);
-    final now = _utcNow();
-    var asset = LocalMediaAsset(
-      id: id,
-      deploymentScope: deploymentScope,
-      ownerUserId: ownerUserId,
-      meetingId: meetingId,
-      sourceType: sourceType,
-      managedRelativePath: paths.managedRelativePath,
-      stagedRelativePath: paths.stagedRelativePath,
-      originalFilename: originalFilename,
-      contentType: contentType,
-      sizeBytes: null,
-      durationMs: null,
-      sha256: null,
-      lifecycle: LocalMediaLifecycle.creating,
-      sourceProvenance: provenance,
-      quarantineReason: null,
-      createdAt: now,
-      updatedAt: now,
-      readyAt: null,
-      version: 0,
-    );
-    await persistence.insertAsset(asset);
     try {
+      final stagedPath = asset.stagedRelativePath;
+      if (stagedPath == null) {
+        throw const FileSystemException('The staged media path is missing.');
+      }
       final integrity = await storage.copyFileToStaging(
         source,
-        paths.stagedRelativePath,
+        stagedPath,
         expectedSizeBytes: expectedSizeBytes,
       );
       asset = await persistence.updateAsset(
@@ -597,10 +1115,23 @@ class LocalMediaRepository {
         ),
         expectedVersion: asset.version,
       );
-      await storage.promote(
-        paths.stagedRelativePath,
-        paths.managedRelativePath,
+      asset = await persistence.updateAsset(
+        asset.copyWith(
+          lifecycle: LocalMediaLifecycle.promotionPending,
+          updatedAt: _utcNow(),
+        ),
+        expectedVersion: asset.version,
       );
+      await storage.promote(stagedPath, asset.managedRelativePath);
+      final managedIntegrity = await storage.inspectFile(
+        asset.managedRelativePath,
+      );
+      if (managedIntegrity.sizeBytes != integrity.sizeBytes ||
+          managedIntegrity.sha256 != integrity.sha256) {
+        throw const FileSystemException(
+          'The promoted media file failed integrity verification.',
+        );
+      }
       asset = await persistence.updateAsset(
         asset.copyWith(
           lifecycle: LocalMediaLifecycle.ready,
@@ -642,14 +1173,30 @@ class LocalMediaRepository {
         expectedVersion: asset.version,
       );
     }
+    if (asset.lifecycle == LocalMediaLifecycle.quarantined ||
+        asset.lifecycle == LocalMediaLifecycle.discarded) {
+      return asset;
+    }
 
     final managed = storage.fileFor(asset.managedRelativePath);
     final stagedPath = asset.stagedRelativePath;
     final staged = stagedPath == null ? null : storage.fileFor(stagedPath);
     if (await managed.exists()) {
+      if (!_hasCompletionEvidence(asset)) {
+        return await persistence.updateAsset(
+          asset.copyWith(
+            lifecycle: asset.lifecycle == LocalMediaLifecycle.ready
+                ? LocalMediaLifecycle.unavailable
+                : LocalMediaLifecycle.interrupted,
+            quarantineReason: 'COMPLETION_EVIDENCE_MISSING',
+            updatedAt: _utcNow(),
+          ),
+          expectedVersion: asset.version,
+        );
+      }
       try {
         final integrity = await storage.inspectFile(asset.managedRelativePath);
-        if (!_matches(asset, integrity)) {
+        if (!_matchesConfirmed(asset, integrity)) {
           return await persistence.updateAsset(
             asset.copyWith(
               lifecycle: LocalMediaLifecycle.unavailable,
@@ -660,18 +1207,36 @@ class LocalMediaRepository {
           );
         }
         if (staged != null && await staged.exists()) {
+          final stagedIntegrity = await storage.inspectFile(stagedPath!);
+          if (!_matchesConfirmed(asset, stagedIntegrity) ||
+              stagedIntegrity.sizeBytes != integrity.sizeBytes ||
+              stagedIntegrity.sha256 != integrity.sha256) {
+            final quarantinedPath = await storage.quarantine(
+              stagedPath,
+              reason: 'redundant-staging-mismatch',
+            );
+            await _recordRecoveryArtifact(
+              persistence,
+              relativePath: quarantinedPath,
+              originalRelativePath: stagedPath,
+              asset: asset,
+              reason: 'REDUNDANT_STAGING_MISMATCH',
+            );
+            return await persistence.updateAsset(
+              asset.copyWith(
+                lifecycle: LocalMediaLifecycle.unavailable,
+                stagedRelativePath: quarantinedPath,
+                quarantineReason: 'REDUNDANT_STAGING_MISMATCH',
+                updatedAt: _utcNow(),
+              ),
+              expectedVersion: asset.version,
+            );
+          }
           await staged.delete();
-        }
-        if (asset.lifecycle == LocalMediaLifecycle.ready &&
-            asset.sizeBytes == integrity.sizeBytes &&
-            asset.sha256 == integrity.sha256) {
-          return asset;
         }
         return await persistence.updateAsset(
           asset.copyWith(
             lifecycle: LocalMediaLifecycle.ready,
-            sizeBytes: integrity.sizeBytes,
-            sha256: integrity.sha256,
             readyAt: asset.readyAt ?? _utcNow(),
             updatedAt: _utcNow(),
           ),
@@ -690,12 +1255,29 @@ class LocalMediaRepository {
     }
 
     if (staged != null && await staged.exists()) {
+      if (!_hasCompletionEvidence(asset)) {
+        return await persistence.updateAsset(
+          asset.copyWith(
+            lifecycle: LocalMediaLifecycle.interrupted,
+            quarantineReason: 'COMPLETION_EVIDENCE_MISSING',
+            updatedAt: _utcNow(),
+          ),
+          expectedVersion: asset.version,
+        );
+      }
       try {
         final integrity = await storage.inspectFile(stagedPath!);
-        if (!_matches(asset, integrity)) {
+        if (!_matchesConfirmed(asset, integrity)) {
           final quarantinedPath = await storage.quarantine(
             stagedPath,
             reason: 'integrity-mismatch',
+          );
+          await _recordRecoveryArtifact(
+            persistence,
+            relativePath: quarantinedPath,
+            originalRelativePath: stagedPath,
+            asset: asset,
+            reason: 'STAGED_FILE_INTEGRITY_MISMATCH',
           );
           return await persistence.updateAsset(
             asset.copyWith(
@@ -721,7 +1303,7 @@ class LocalMediaRepository {
       } on FileSystemException {
         return await persistence.updateAsset(
           asset.copyWith(
-            lifecycle: LocalMediaLifecycle.quarantined,
+            lifecycle: LocalMediaLifecycle.interrupted,
             quarantineReason: 'STAGED_FILE_UNREADABLE',
             updatedAt: _utcNow(),
           ),
@@ -744,9 +1326,304 @@ class LocalMediaRepository {
     );
   }
 
-  bool _matches(LocalMediaAsset asset, LocalMediaFileIntegrity integrity) =>
-      (asset.sizeBytes == null || asset.sizeBytes == integrity.sizeBytes) &&
-      (asset.sha256 == null || asset.sha256 == integrity.sha256);
+  bool _hasCompletionEvidence(LocalMediaAsset asset) =>
+      asset.sizeBytes != null &&
+      asset.sizeBytes! > 0 &&
+      asset.sha256 != null &&
+      RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(asset.sha256!);
+
+  bool _matchesConfirmed(
+    LocalMediaAsset asset,
+    LocalMediaFileIntegrity integrity,
+  ) =>
+      _hasCompletionEvidence(asset) &&
+      asset.sizeBytes == integrity.sizeBytes &&
+      asset.sha256!.toLowerCase() == integrity.sha256.toLowerCase();
+
+  Future<bool> _verifyReadyAsset(LocalMediaAsset asset) async {
+    if (!_hasCompletionEvidence(asset)) return false;
+    try {
+      final file = (await _storage()).fileFor(asset.managedRelativePath);
+      if (!await file.exists()) return false;
+      return _matchesConfirmed(
+        asset,
+        await (await _storage()).inspectFile(asset.managedRelativePath),
+      );
+    } on FileSystemException {
+      return false;
+    }
+  }
+
+  Future<void> _recordRecoveryArtifact(
+    LocalMediaPersistence persistence, {
+    required String relativePath,
+    required String reason,
+    String? originalRelativePath,
+    LocalMediaAsset? asset,
+  }) async {
+    final id = sha256
+        .convert(utf8.encode('$relativePath\u0000$reason'))
+        .toString()
+        .substring(0, 32);
+    final now = _utcNow();
+    await persistence.insertRecoveryArtifact(
+      LocalMediaRecoveryArtifact(
+        id: id,
+        relativePath: relativePath,
+        originalRelativePath: originalRelativePath,
+        deploymentScope: asset?.deploymentScope,
+        ownerUserId: asset?.ownerUserId,
+        assetId: asset?.id,
+        reason: reason,
+        metadata: asset == null
+            ? null
+            : jsonEncode(<String, Object?>{
+                'meetingId': asset.meetingId,
+                'lifecycle': asset.lifecycle.wireValue,
+              }),
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
+  }
+
+  Future<T> _withLifecycleLock<T>(Future<T> Function() action) {
+    final previous = _lifecycleTail;
+    final release = Completer<void>();
+    _lifecycleTail = release.future;
+    return () async {
+      await previous;
+      try {
+        return await action();
+      } finally {
+        release.complete();
+      }
+    }();
+  }
+
+  Future<T> _withMigrationLock<T>(Future<T> Function() action) {
+    final previous = _migrationTail;
+    final release = Completer<void>();
+    _migrationTail = release.future;
+    return () async {
+      await previous;
+      try {
+        return await action();
+      } finally {
+        release.complete();
+      }
+    }();
+  }
+
+  Future<void> _appendLegacyQuarantine(
+    CredentialStorage storage,
+    String rawEntry, {
+    required String sourceKey,
+    required String reason,
+  }) async {
+    const unscopedKey = 'sme.mobile.recordings.legacy-quarantine.v1';
+    const scopedKey = 'sme.mobile.recordings.legacy-quarantine.v2';
+    final key = sourceKey == 'sme.mobile.recordings.v1'
+        ? unscopedKey
+        : scopedKey;
+    final existing = await storage.read(key: key);
+    final decoded = existing == null
+        ? <Object?>[]
+        : jsonDecode(existing) as Object?;
+    if (decoded is! List) {
+      throw const _RecoverableLegacyFailure(
+        'The existing legacy quarantine record is malformed.',
+      );
+    }
+    final values = decoded.toList(growable: true);
+    if (key == unscopedKey) {
+      if (values.any((value) => value == rawEntry)) return;
+      if (values.any((value) => value is! String)) {
+        throw const _RecoverableLegacyFailure(
+          'The existing unscoped quarantine record is malformed.',
+        );
+      }
+      values.add(rawEntry);
+    } else {
+      values.add(<String, Object?>{
+        'sourceKey': sourceKey,
+        'entry': rawEntry,
+        'reason': reason,
+        'recordedAt': _utcNow().toIso8601String(),
+      });
+    }
+    await storage.write(key: key, value: jsonEncode(values));
+    await storage.confirmDurable();
+  }
+
+  static Map<String, dynamic> _canonicalLegacyEntry(
+    Map<String, dynamic> entry,
+  ) {
+    final keys = entry.keys.toList()..sort();
+    return <String, dynamic>{for (final key in keys) key: entry[key]};
+  }
+
+  static DateTime _legacyTimestamp(Object? value) {
+    final text = _text(value);
+    final parsed = text == null ? null : DateTime.tryParse(text);
+    if (parsed == null) {
+      throw const _InvalidLegacyMetadata(
+        'The legacy creation timestamp is missing or invalid.',
+      );
+    }
+    return parsed.toUtc();
+  }
+
+  static int? _legacyPositiveInt(Object? value) {
+    if (value == null) return null;
+    if (value is int && value > 0) return value;
+    if (value is num && value == value.toInt() && value > 0) {
+      return value.toInt();
+    }
+    throw const _InvalidLegacyMetadata('The legacy size metadata is invalid.');
+  }
+
+  static LocalMediaSourceType _legacySourceType(Map<String, dynamic> entry) {
+    final value = _text(entry['sourceType']);
+    if (value == null) return LocalMediaSourceType.recording;
+    try {
+      return LocalMediaSourceType.fromWireValue(value);
+    } on Object {
+      throw const _InvalidLegacyMetadata('The legacy source type is invalid.');
+    }
+  }
+
+  static String _legacyContentType(
+    Map<String, dynamic> entry,
+    String filename,
+  ) {
+    final explicit = _text(entry['contentType']);
+    final candidate = explicit ?? _contentTypeFor(filename);
+    final supported = <String>{
+      'audio/wav',
+      'audio/x-wav',
+      'audio/mpeg',
+      'audio/mp4',
+      'audio/aac',
+      'audio/ogg',
+      'audio/opus',
+      'audio/flac',
+    };
+    if (!supported.contains(candidate.toLowerCase())) {
+      throw const _InvalidLegacyMetadata(
+        'The legacy content type cannot be established reliably.',
+      );
+    }
+    return candidate;
+  }
+
+  static String _contentTypeFor(String value) {
+    final lower = value.toLowerCase();
+    if (lower.endsWith('.mp3')) return 'audio/mpeg';
+    if (lower.endsWith('.m4a')) return 'audio/mp4';
+    if (lower.endsWith('.aac')) return 'audio/aac';
+    if (lower.endsWith('.ogg')) return 'audio/ogg';
+    if (lower.endsWith('.opus')) return 'audio/opus';
+    if (lower.endsWith('.flac')) return 'audio/flac';
+    if (lower.endsWith('.wav')) return 'audio/wav';
+    throw const _InvalidLegacyMetadata(
+      'The legacy filename does not identify a supported audio type.',
+    );
+  }
+
+  static String _uploadFingerprint(
+    AuthenticatedSessionScope scope,
+    LocalMediaAsset asset,
+  ) => sha256
+      .convert(
+        utf8.encode(
+          _canonicalFields(<String, Object?>{
+            'kind': 'UPLOAD_INTENT',
+            'deployment': scope.deploymentScope,
+            'owner': scope.userId,
+            'meeting': asset.meetingId,
+            'asset': asset.id,
+            'sourceType': asset.sourceType.wireValue,
+            'filename': asset.originalFilename,
+            'contentType': asset.contentType,
+            'sizeBytes': asset.sizeBytes,
+          }),
+        ),
+      )
+      .toString();
+
+  static String _processingFingerprint({
+    required AuthenticatedSessionScope scope,
+    required String meetingId,
+    required ProcessingOperationType operationType,
+    String? sourceMediaId,
+    String? targetJobId,
+    String? reprocessOfJobId,
+    String? stageCode,
+  }) => sha256
+      .convert(
+        utf8.encode(
+          _canonicalFields(<String, Object?>{
+            'kind': operationType.wireValue,
+            'deployment': scope.deploymentScope,
+            'owner': scope.userId,
+            'meeting': meetingId,
+            'sourceMediaId': sourceMediaId,
+            'targetJobId': targetJobId,
+            'reprocessOfJobId': reprocessOfJobId,
+            'stageCode': stageCode,
+          }),
+        ),
+      )
+      .toString();
+
+  static String _canonicalFields(Map<String, Object?> fields) {
+    final keys = fields.keys.toList()..sort();
+    return keys.map((key) => '$key=${jsonEncode(fields[key])}').join('\u0000');
+  }
+
+  static UploadOperationCheckpoint _mergeUploadCheckpoint(
+    UploadOperationCheckpoint current,
+    UploadOperationCheckpoint? requested,
+  ) {
+    if (requested == null ||
+        requested == UploadOperationCheckpoint.failed ||
+        requested == UploadOperationCheckpoint.remoteReconciliationRequired) {
+      return current;
+    }
+    int rank(UploadOperationCheckpoint value) => switch (value) {
+      UploadOperationCheckpoint.intentNotConfirmed => 0,
+      UploadOperationCheckpoint.intentConfirmed => 1,
+      UploadOperationCheckpoint.binaryTransferConfirmed => 2,
+      UploadOperationCheckpoint.finalizationConfirmed => 3,
+      UploadOperationCheckpoint.remoteReconciliationRequired => 0,
+      UploadOperationCheckpoint.failed => 0,
+    };
+    return rank(requested) >= rank(current) ? requested : current;
+  }
+
+  static ProcessingOperationCheckpoint _mergeProcessingCheckpoint(
+    ProcessingOperationCheckpoint current,
+    ProcessingOperationCheckpoint? requested,
+  ) {
+    if (requested == null ||
+        requested == ProcessingOperationCheckpoint.failed ||
+        requested ==
+            ProcessingOperationCheckpoint.remoteReconciliationRequired) {
+      return current;
+    }
+    int rank(ProcessingOperationCheckpoint value) => switch (value) {
+      ProcessingOperationCheckpoint.admissionNotConfirmed => 0,
+      ProcessingOperationCheckpoint.retryNotConfirmed => 0,
+      ProcessingOperationCheckpoint.reprocessNotConfirmed => 0,
+      ProcessingOperationCheckpoint.admissionConfirmed => 1,
+      ProcessingOperationCheckpoint.retryConfirmed => 1,
+      ProcessingOperationCheckpoint.reprocessConfirmed => 1,
+      ProcessingOperationCheckpoint.remoteReconciliationRequired => 0,
+      ProcessingOperationCheckpoint.failed => 0,
+    };
+    return rank(requested) >= rank(current) ? requested : current;
+  }
 
   Future<LocalMediaPersistence> _persistence() async {
     if (_disposed) throw StateError('The local media repository is closed.');
@@ -791,6 +1668,10 @@ class LocalMediaRepository {
     final file = storage.fileFor(relativePath);
     if (await file.exists()) await file.delete();
   }
+
+  static bool _isStagingPath(String relativePath) =>
+      relativePath == 'staging' ||
+      relativePath.startsWith('staging${Platform.pathSeparator}');
 
   static void _requireScope(String deploymentScope, String ownerUserId) {
     if (deploymentScope.trim().isEmpty || ownerUserId.trim().isEmpty) {
@@ -856,9 +1737,13 @@ class LocalMediaRepository {
     }
   }
 
-  static void _validateFingerprint(String value) {
-    if (!RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(value)) {
-      throw ArgumentError.value(value, 'requestFingerprint');
+  static void _validateOptionalIdentifier(String? value, String field) {
+    if (value != null) _validateIdentifier(value, field);
+  }
+
+  static void _validateOptionalStage(String? value) {
+    if (value != null && !RegExp(r'^[A-Z][A-Z0-9_]{0,47}$').hasMatch(value)) {
+      throw ArgumentError.value(value, 'stageCode');
     }
   }
 
@@ -877,6 +1762,7 @@ class LocalMediaRecoveryReport {
     required this.missing,
     required this.quarantined,
     required this.interrupted,
+    this.orphaned = 0,
   });
 
   final int inspected;
@@ -884,6 +1770,7 @@ class LocalMediaRecoveryReport {
   final int missing;
   final int quarantined;
   final int interrupted;
+  final int orphaned;
 }
 
 class LocalMediaOwnershipException implements Exception {
@@ -900,4 +1787,23 @@ class LocalMediaIdempotencyConflictException implements Exception {
   @override
   String toString() =>
       'The idempotency key is already bound to another request.';
+}
+
+class LocalMediaUnavailableException implements Exception {
+  const LocalMediaUnavailableException();
+
+  @override
+  String toString() => 'The local media asset is unavailable.';
+}
+
+class _InvalidLegacyMetadata implements Exception {
+  const _InvalidLegacyMetadata(this.reason);
+
+  final String reason;
+}
+
+class _RecoverableLegacyFailure implements Exception {
+  const _RecoverableLegacyFailure(this.reason);
+
+  final String reason;
 }

@@ -33,6 +33,8 @@ void main() {
         signedUrl,
         file,
         'audio/mpeg',
+        expectedLength: bytes.length,
+        expiresAt: DateTime.now().toUtc().add(const Duration(minutes: 5)),
         onProgress: (sent, total) => progress.add(<int>[sent, total]),
       );
 
@@ -54,6 +56,36 @@ void main() {
       expect(progress, isNotEmpty);
       expect(progress.last, <int>[bytes.length, bytes.length]);
     });
+
+    test(
+      'does not read ahead while the request body consumer is paused',
+      () async {
+        final directory = await Directory.systemTemp.createTemp(
+          'sme-upload-backpressure-',
+        );
+        addTearDown(() => directory.delete(recursive: true));
+        final file = File('${directory.path}/audio.bin');
+        final bytes = List<int>.generate(512 * 1024, (index) => index % 251);
+        await file.writeAsBytes(bytes);
+        final client = PausingUploadClient();
+        final transport = SignedUploadTransport(
+          httpClient: client,
+          androidDebugOverride: false,
+        );
+
+        final upload = transport.upload(
+          'https://storage.example.test/object?signature=secret',
+          file,
+          'audio/wav',
+          expectedLength: bytes.length,
+          expiresAt: DateTime.now().toUtc().add(const Duration(minutes: 5)),
+        );
+        await client.firstChunk.future;
+        expect(client.bytesRead, lessThan(bytes.length));
+        client.resume();
+        expect((await upload).statusCode, 200);
+      },
+    );
 
     test('rejects public HTTP signed URLs and malformed URLs', () async {
       final directory = await Directory.systemTemp.createTemp(
@@ -77,7 +109,13 @@ void main() {
         'https://user:password@storage.example.test/object',
       ]) {
         await expectLater(
-          transport.upload(url, file, 'audio/mpeg'),
+          transport.upload(
+            url,
+            file,
+            'audio/mpeg',
+            expectedLength: 3,
+            expiresAt: DateTime.now().toUtc().add(const Duration(minutes: 5)),
+          ),
           throwsA(
             isA<TransportFailure>().having(
               (failure) => failure.code,
@@ -109,6 +147,8 @@ void main() {
         'http://127.0.0.1:9000/object?signature=local',
         file,
         'audio/wav',
+        expectedLength: 3,
+        expiresAt: DateTime.now().toUtc().add(const Duration(minutes: 5)),
       );
 
       expect(client.requests.single.url.host, '127.0.0.1');
@@ -136,6 +176,7 @@ void main() {
           'https://storage.example.test/object?signature=secret',
           file,
           'audio/wav',
+          expectedLength: 3,
           expiresAt: DateTime.utc(2026, 11, 24, 12, 0, 29),
         ),
         throwsA(
@@ -168,8 +209,11 @@ void main() {
         'https://storage.example.test/object?signature=secret',
         file,
         'audio/wav',
+        expectedLength: 3,
+        expiresAt: DateTime.now().toUtc().add(const Duration(minutes: 5)),
         cancellationToken: token,
       );
+      await client.requestStarted.future;
       token.cancel();
 
       await expectLater(
@@ -185,6 +229,45 @@ void main() {
       expect(client.requests, hasLength(1));
       pendingResponse.complete(streamedUploadResponse(200));
     });
+
+    test(
+      'does not dispatch an upload that was cancelled before starting',
+      () async {
+        final directory = await Directory.systemTemp.createTemp(
+          'sme-upload-pre-cancel-',
+        );
+        addTearDown(() => directory.delete(recursive: true));
+        final file = File('${directory.path}/audio.bin')
+          ..writeAsBytesSync(<int>[1, 2, 3]);
+        final client = UploadRecordingClient(
+          (request) async => streamedUploadResponse(200),
+        );
+        final transport = SignedUploadTransport(
+          httpClient: client,
+          androidDebugOverride: false,
+        );
+        final token = UploadCancellationToken()..cancel();
+
+        await expectLater(
+          transport.upload(
+            'https://storage.example.test/object?signature=secret',
+            file,
+            'audio/wav',
+            expectedLength: 3,
+            expiresAt: DateTime.now().toUtc().add(const Duration(minutes: 5)),
+            cancellationToken: token,
+          ),
+          throwsA(
+            isA<TransportFailure>().having(
+              (failure) => failure.code,
+              'code',
+              'UPLOAD_CANCELLED',
+            ),
+          ),
+        );
+        expect(client.requests, isEmpty);
+      },
+    );
 
     test('rejects a changed expected length before dispatch', () async {
       final directory = await Directory.systemTemp.createTemp(
@@ -207,6 +290,7 @@ void main() {
           file,
           'audio/wav',
           expectedLength: 4,
+          expiresAt: DateTime.now().toUtc().add(const Duration(minutes: 5)),
         ),
         throwsA(
           isA<TransportFailure>().having(
@@ -247,6 +331,8 @@ void main() {
             'https://storage.example.test/object?signature=secret',
             file,
             'audio/mpeg',
+            expectedLength: 3,
+            expiresAt: DateTime.now().toUtc().add(const Duration(minutes: 5)),
           ),
           throwsA(
             isA<TransportFailure>()
@@ -267,6 +353,8 @@ void main() {
             'https://storage.example.test/object?signature=secret',
             file,
             'audio/mpeg',
+            expectedLength: 3,
+            expiresAt: DateTime.now().toUtc().add(const Duration(minutes: 5)),
           ),
           throwsA(
             isA<TransportFailure>()
@@ -308,6 +396,8 @@ void main() {
             'https://storage.example.test/object?signature=secret',
             file,
             'audio/mpeg',
+            expectedLength: 3,
+            expiresAt: DateTime.now().toUtc().add(const Duration(minutes: 5)),
           ),
           throwsA(
             isA<TransportFailure>()
@@ -330,6 +420,8 @@ void main() {
             'https://storage.example.test/object?signature=secret',
             file,
             'audio/mpeg',
+            expectedLength: 3,
+            expiresAt: DateTime.now().toUtc().add(const Duration(minutes: 5)),
           ),
           throwsA(
             isA<TransportFailure>().having(
@@ -359,13 +451,44 @@ class UploadRecordingClient extends http.BaseClient {
 
   final Future<http.StreamedResponse> Function(http.BaseRequest request)
   handler;
+  final requestStarted = Completer<void>();
   final List<http.BaseRequest> requests = <http.BaseRequest>[];
   final List<List<int>> requestBodies = <List<int>>[];
 
   @override
   Future<http.StreamedResponse> send(http.BaseRequest request) async {
     requests.add(request);
+    if (!requestStarted.isCompleted) requestStarted.complete();
     requestBodies.add(await request.finalize().toBytes());
     return handler(request);
   }
+}
+
+class PausingUploadClient extends http.BaseClient {
+  final firstChunk = Completer<void>();
+  final response = Completer<http.StreamedResponse>();
+  late StreamSubscription<List<int>> subscription;
+  int bytesRead = 0;
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    subscription = request.finalize().listen(
+      (chunk) {
+        bytesRead += chunk.length;
+        if (!firstChunk.isCompleted) {
+          firstChunk.complete();
+          subscription.pause();
+        }
+      },
+      onError: response.completeError,
+      onDone: () {
+        if (!response.isCompleted) {
+          response.complete(streamedUploadResponse(200));
+        }
+      },
+    );
+    return response.future;
+  }
+
+  void resume() => subscription.resume();
 }

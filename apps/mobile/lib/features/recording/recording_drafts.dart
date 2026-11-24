@@ -13,11 +13,15 @@ class RecordingDraft {
     required this.path,
     required this.name,
     required this.createdAt,
+    this.assetId,
+    this.meetingId,
   });
 
   final String path;
   final String name;
   final DateTime createdAt;
+  final String? assetId;
+  final String? meetingId;
 }
 
 class RecordingDrafts {
@@ -42,7 +46,7 @@ class RecordingDrafts {
     api.requireCurrentAuthenticatedSession(scope);
     final repository = _repository;
     if (repository != null) {
-      await repository.migrateLegacyMetadata(storage: _storage);
+      await repository.migrateLegacyMetadata(storage: _storage, scope: scope);
       api.requireCurrentAuthenticatedSession(scope);
       await repository.reconcile(scope: scope, meetingId: meetingId);
       api.requireCurrentAuthenticatedSession(scope);
@@ -61,6 +65,8 @@ class RecordingDrafts {
             path: mediaFile.path,
             name: asset.originalFilename,
             createdAt: asset.createdAt,
+            assetId: asset.id,
+            meetingId: asset.meetingId,
           ),
         );
       }
@@ -101,15 +107,15 @@ class RecordingDrafts {
   /// Stores metadata only under the verified account scope captured when the
   /// recording began. A stale scope can retain its own audio after logout but
   /// cannot make that metadata visible to another account.
-  Future<void> remember(
+  Future<LocalMediaAsset?> remember(
     String meetingId,
     File file, {
     required AuthenticatedSessionScope session,
   }) async {
-    if (!await file.exists()) return;
+    if (!await file.exists()) return null;
     final repository = _repository;
     if (repository != null) {
-      await repository.rememberSourceFile(
+      return repository.rememberSourceFile(
         scope: session,
         meetingId: meetingId,
         source: file,
@@ -117,7 +123,6 @@ class RecordingDrafts {
         originalFilename: file.uri.pathSegments.last,
         contentType: _contentTypeFor(file.path),
       );
-      return;
     }
     await _retireLegacyIndex();
     final entries = await _readIndex(session);
@@ -128,7 +133,7 @@ class RecordingDrafts {
           item['meetingId'] == meetingId &&
           item['path'] == file.path,
     )) {
-      return;
+      return null;
     }
     entries.add(<String, dynamic>{
       'deploymentScope': session.deploymentScope,
@@ -145,6 +150,7 @@ class RecordingDrafts {
         : entries;
     await _storage.write(key: _storageKey(session), value: jsonEncode(tail));
     await _storage.confirmDurable();
+    return null;
   }
 
   Future<List<Map<String, dynamic>>> _readIndex(
