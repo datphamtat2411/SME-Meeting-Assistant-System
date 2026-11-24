@@ -13,6 +13,7 @@ import { MemberAdministrationDialog } from './member-administration-dialog'
 import { useMemberDirectoryController } from './member-directory-controller'
 import { MemberDirectoryPresentation } from './member-directory-presentation'
 import type { MemberDirectorySearch } from './member-directory-state'
+import { MemberLifecycleDialog } from './member-lifecycle-dialog'
 
 type SearchChange = (
   patch: Partial<MemberDirectorySearch>,
@@ -32,6 +33,8 @@ export function MembersPage({
     accessKey: directory.accessKey,
     identity: directory.identity,
     identityVerified: directory.identityVerified,
+    authorizedUnits: directory.organizationUnits,
+    organizationLookupStatus: directory.organizationLookup.status,
   })
   const { verification } = directory
   const authorizationMessage =
@@ -60,7 +63,7 @@ export function MembersPage({
             directory.access.type === 'authorized' && (
               <Button
                 disabled={!directory.identityVerified}
-                onClick={() => administration.openAdministration(null)}
+                onClick={administration.startCreate}
               >
                 <UserRound className='size-4' />
                 Add member
@@ -124,32 +127,61 @@ export function MembersPage({
             controller={directory}
             administration={administration}
             onSearchChange={onSearchChange}
-            onEdit={administration.openAdministration}
-            onLifecycle={administration.runLifecycle}
+            onEdit={administration.startEdit}
+            onLifecycle={administration.startLifecycle}
           />
         )}
 
         {directory.identityResolved &&
           directory.access.type === 'authorized' &&
           directory.identity &&
-          administration.administrationDialog?.contextKey ===
-            directory.accessKey && (
+          administration.editorSession?.contextKey === directory.accessKey && (
             <MemberAdministrationDialog
-              key={`${administration.administrationDialog.contextKey}:${administration.administrationDialog.member?.id ?? 'new'}`}
-              open
-              member={administration.administrationDialog.member}
+              key={`${administration.editorSession.operationId}`}
+              session={administration.editorSession}
+              saving={administration.saving}
               identity={directory.identity}
-              authorizationKey={administration.authorizationKey}
               authorizationVerified={administration.authorizationVerified}
               authorizationMessage={authorizationMessage}
-              isAuthorizationContextCurrent={
-                administration.isAuthorizationContextCurrent
-              }
+              feedback={administration.editorFeedback}
               onRetryAuthorization={() => void verification.query.refetch()}
-              units={directory.units}
-              onOpenChange={(open) => {
-                if (!open) administration.closeAdministration()
-              }}
+              units={directory.organizationUnits}
+              lookupStatus={directory.organizationLookup.status}
+              onClose={administration.closeEditor}
+              onRetrySnapshot={administration.retryEditorSnapshot}
+              onLoadLatest={administration.loadLatestMember}
+              onReviewLatest={administration.reviewLatestEditor}
+              onRestartFromLatest={administration.restartEditorFromLatest}
+              onReviewDirectory={administration.closeEditor}
+              onReviewCreationDraft={administration.reviewCreationDraft}
+              onResolveEditReconciliation={
+                administration.resolveEditReconciliation
+              }
+              onRetryCreationVerification={
+                administration.retryCreationVerification
+              }
+              onSubmit={administration.submitEditor}
+            />
+          )}
+        {directory.identityResolved &&
+          directory.access.type === 'authorized' &&
+          directory.identity &&
+          administration.lifecycleSession?.contextKey ===
+            directory.accessKey && (
+            <MemberLifecycleDialog
+              key={`${administration.lifecycleSession.operationId}`}
+              session={administration.lifecycleSession}
+              saving={administration.saving}
+              authorizationVerified={administration.authorizationVerified}
+              authorizationMessage={authorizationMessage}
+              feedback={administration.lifecycleFeedback}
+              onRetryAuthorization={() => void verification.query.refetch()}
+              onClose={administration.closeLifecycle}
+              onRetrySnapshot={administration.retryLifecycleSnapshot}
+              onLoadLatest={administration.loadLatestMember}
+              onReviewLatest={administration.reviewLatestLifecycle}
+              onRestartFromLatest={administration.restartLifecycleFromLatest}
+              onConfirm={administration.confirmLifecycle}
             />
           )}
       </Main>

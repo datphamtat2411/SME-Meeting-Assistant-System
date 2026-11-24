@@ -1,10 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { coreApi } from '@/lib/core-api'
+import { CoreApiError, coreApi } from '@/lib/core-api'
 import {
+  changeMemberStatus,
+  classifyMemberMutationOutcome,
+  createMember,
   fetchMemberDirectory,
   parseMemberDetailResponse,
   parseMemberListResponse,
+  parseMemberMutationResponse,
   serializeMemberDirectoryParams,
+  updateMember,
 } from './member-api'
 
 const memberId = '11111111-1111-4111-8111-111111111111'
@@ -132,5 +137,66 @@ describe('member API contracts', () => {
     expect(() =>
       parseMemberDetailResponse({ data: member, meta: {}, etag: undefined })
     ).toThrow(/malformed/i)
+  })
+
+  it('uses the reviewed ETag and validates mutation responses', async () => {
+    const response = {
+      data: member,
+      meta: {},
+      etag: 'W/"v-3"',
+    }
+    const createSpy = vi
+      .spyOn(coreApi, 'postWithMetaAndEtag')
+      .mockResolvedValue({
+        ...response,
+        data: { ...member, accountStatus: 'PENDING_SETUP' },
+      })
+    const created = await createMember({
+      email: 'lee@example.com',
+      displayName: 'Lee Member',
+    })
+    expect(created.etag).toBe('W/"v-3"')
+    expect(createSpy).toHaveBeenCalledWith('/users', {
+      email: 'lee@example.com',
+      displayName: 'Lee Member',
+    })
+
+    const patchSpy = vi
+      .spyOn(coreApi, 'patchWithMetaAndEtag')
+      .mockResolvedValue(response)
+    await updateMember(memberId, { displayName: 'Renamed' }, 'W/"v-2"')
+    expect(patchSpy).toHaveBeenCalledWith(
+      `/users/${memberId}`,
+      { displayName: 'Renamed' },
+      { headers: { 'If-Match': 'W/"v-2"' } }
+    )
+
+    const lifecycleSpy = vi
+      .spyOn(coreApi, 'postWithMetaAndEtag')
+      .mockResolvedValue({
+        ...response,
+        data: { ...member, accountStatus: 'INACTIVE' },
+      })
+    await changeMemberStatus(memberId, 'deactivate', 'W/"v-3"')
+    expect(lifecycleSpy).toHaveBeenCalledWith(
+      `/users/${memberId}/deactivate`,
+      undefined,
+      { headers: { 'If-Match': 'W/"v-3"' } }
+    )
+  })
+
+  it('rejects mutation responses without an opaque ETag and classifies conflicts', () => {
+    expect(() =>
+      parseMemberMutationResponse({ data: member, meta: {} }, memberId)
+    ).toThrow(/malformed/i)
+    expect(
+      classifyMemberMutationOutcome(
+        new CoreApiError({
+          message: 'stale',
+          status: 412,
+          kind: 'http',
+        })
+      )
+    ).toBe('precondition')
   })
 })

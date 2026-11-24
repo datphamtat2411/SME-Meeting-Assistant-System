@@ -28,6 +28,7 @@ interface OrganizationUnitSelectProps {
   onValueChange: (value: string | null) => void
   label: string
   emptyLabel?: string
+  allowClear?: boolean
   disabled?: boolean
 }
 
@@ -49,6 +50,7 @@ export function OrganizationUnitSelect({
   onValueChange,
   label,
   emptyLabel = 'No organizational units available.',
+  allowClear = true,
   disabled,
 }: OrganizationUnitSelectProps) {
   const [open, setOpen] = useState(false)
@@ -110,7 +112,7 @@ export function OrganizationUnitSelect({
                   : 'No matching authorized units.'}
             </CommandEmpty>
             <CommandGroup>
-              {value && (
+              {value && allowClear && (
                 <CommandItem
                   value={`${clearSelection} ${emptyLabel}`}
                   onSelect={() => select(clearSelection)}

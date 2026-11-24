@@ -1,11 +1,7 @@
-import { useLayoutEffect, useRef, useState, type FormEvent } from 'react'
-import {
-  useMutation,
-  useQueryClient,
-  type UseQueryResult,
-} from '@tanstack/react-query'
-import { toast } from 'sonner'
-import { normalizeCoreApiError } from '@/lib/core-api'
+import { useEffect, useState } from 'react'
+import { useForm, useWatch } from 'react-hook-form'
+import { zodResolver } from '@hookform/resolvers/zod'
+import type { FieldErrors } from '@/lib/core-api'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -15,8 +11,16 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import {
+  Form,
+  FormControl,
+  FormDescription,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import {
   Select,
   SelectContent,
@@ -26,183 +30,356 @@ import {
 } from '@/components/ui/select'
 import type { AuthContext } from '@/features/auth/session/current-user'
 import { ManagerScopePicker } from './manager-scope-picker'
+import type {
+  MemberEditorSession,
+  MemberEditorSubmit,
+  MemberOperationFeedback,
+} from './member-administration-controller'
+import type { Member, MemberSnapshot } from './member-api'
 import {
-  memberDetail,
-  createMember,
-  updateMember,
-  type Member,
-} from './member-api'
-import {
-  type OrganizationalUnit,
-  type OrganizationUnitLookup,
+  buildMemberCreatePayload,
+  buildMemberPatchPayload,
+  memberFormSchema,
+  memberFormValuesFromMember,
+  NoMemberChangesError,
+  type MemberFormValues,
+} from './member-form'
+import type {
+  MemberConflictChoices,
+  MemberEditReconciliation,
+  MemberEditableField,
+} from './member-reconciliation'
+import type {
+  OrganizationalUnit,
+  OrganizationUnitLookup,
 } from './organization-api'
 import { OrganizationUnitSelect } from './organization-unit-select'
 
-type Draft = {
-  email: string
-  displayName: string
-  globalRole: Member['globalRole']
-  primaryOrgUnitId: string
-  managerScopeUnitIds: string[]
-}
-
-const blank: Draft = {
+const blankValues: MemberFormValues = {
   email: '',
   displayName: '',
-  globalRole: 'EMPLOYEE',
   primaryOrgUnitId: '',
+  globalRole: 'EMPLOYEE',
   managerScopeUnitIds: [],
 }
 
-interface MemberAdministrationDialogProps {
-  open: boolean
-  member: Member | null
-  identity: AuthContext
-  units: UseQueryResult<OrganizationalUnit[], Error>
-  authorizationKey: string
-  authorizationVerified: boolean
-  authorizationMessage: string
-  isAuthorizationContextCurrent: (key: string) => boolean
-  onRetryAuthorization: () => void
-  onOpenChange: (open: boolean) => void
+function fieldLabel(field: MemberEditableField): string {
+  if (field === 'displayName') return 'Display name'
+  if (field === 'primaryOrgUnitId') return 'Primary organizational unit'
+  if (field === 'globalRole') return 'Global role'
+  return 'Manager scope'
 }
 
-function lookupState(
-  units: UseQueryResult<OrganizationalUnit[], Error>
-): OrganizationUnitLookup['status'] {
-  if (units.isPending) return 'loading'
-  if (units.isError) return 'error'
-  return 'success'
+function displayEditableValue(value: unknown): string {
+  if (Array.isArray(value)) {
+    return value.length > 0 ? value.join(', ') : 'None'
+  }
+  return value === null || value === '' || value === undefined
+    ? 'Not assigned'
+    : String(value)
+}
+
+function MemberConflictResolution({
+  reconciliation,
+  operationId,
+  authorizationVerified,
+  onResolve,
+}: {
+  reconciliation: MemberEditReconciliation
+  operationId: number
+  authorizationVerified: boolean
+  onResolve: (operationId: number, choices: MemberConflictChoices) => void
+}) {
+  const [choices, setChoices] = useState<MemberConflictChoices>({})
+  const unresolved = reconciliation.conflicts.some(
+    (field) => choices[field] === undefined
+  )
+
+  return (
+    <div className='space-y-3 rounded-md border border-amber-500/40 bg-amber-500/5 p-3'>
+      <div>
+        <p className='font-medium'>Review conflicting fields</p>
+        <p className='text-sm text-muted-foreground'>
+          Choose the current server value or retain your intended value for each
+          conflict. No second update is sent until you continue from the
+          reviewed state.
+        </p>
+      </div>
+      {reconciliation.conflicts.map((field) => {
+        const comparison = reconciliation.fields[field]
+        return (
+          <fieldset key={field} className='space-y-2 rounded-md border p-3'>
+            <legend className='px-1 text-sm font-medium'>
+              {fieldLabel(field)}
+            </legend>
+            <label className='flex items-start gap-2 text-sm'>
+              <input
+                type='radio'
+                name={`member-conflict-${field}`}
+                checked={choices[field] === 'server'}
+                onChange={() =>
+                  setChoices((current) => ({ ...current, [field]: 'server' }))
+                }
+              />
+              <span>
+                <span className='block text-xs text-muted-foreground'>
+                  Server value
+                </span>
+                <span className='block break-words'>
+                  {displayEditableValue(comparison.latest)}
+                </span>
+              </span>
+            </label>
+            <label className='flex items-start gap-2 text-sm'>
+              <input
+                type='radio'
+                name={`member-conflict-${field}`}
+                checked={choices[field] === 'intent'}
+                onChange={() =>
+                  setChoices((current) => ({ ...current, [field]: 'intent' }))
+                }
+              />
+              <span>
+                <span className='block text-xs text-muted-foreground'>
+                  Your intended value
+                </span>
+                <span className='block break-words'>
+                  {displayEditableValue(comparison.intended)}
+                </span>
+              </span>
+            </label>
+          </fieldset>
+        )
+      })}
+      <Button
+        type='button'
+        variant='secondary'
+        size='sm'
+        disabled={!authorizationVerified || unresolved}
+        onClick={() => onResolve(operationId, choices)}
+      >
+        Resolve conflicts and continue
+      </Button>
+    </div>
+  )
+}
+
+function applyServerFieldErrors(
+  form: ReturnType<typeof useForm<MemberFormValues>>,
+  fieldErrors: FieldErrors | undefined
+) {
+  if (!fieldErrors) return
+  const supported = new Set([
+    'email',
+    'displayName',
+    'primaryOrgUnitId',
+    'globalRole',
+    'managerScopeUnitIds',
+  ])
+  for (const [field, messages] of Object.entries(fieldErrors)) {
+    if (!supported.has(field) || messages.length === 0) continue
+    form.setError(field as keyof MemberFormValues, {
+      type: 'server',
+      message: messages[0],
+    })
+  }
+}
+
+function memberSummary(member: Member) {
+  return (
+    <dl className='grid gap-3 rounded-md border bg-muted/30 p-3 text-sm sm:grid-cols-2'>
+      <div>
+        <dt className='text-muted-foreground'>Name</dt>
+        <dd className='font-medium'>{member.displayName}</dd>
+      </div>
+      <div>
+        <dt className='text-muted-foreground'>Email</dt>
+        <dd className='font-medium break-all'>{member.email}</dd>
+      </div>
+      <div>
+        <dt className='text-muted-foreground'>Role</dt>
+        <dd className='font-medium'>
+          {member.globalRole === 'DEPARTMENT_MANAGER'
+            ? 'Department manager'
+            : member.globalRole === 'ADMINISTRATOR'
+              ? 'Administrator'
+              : 'Employee'}
+        </dd>
+      </div>
+      <div>
+        <dt className='text-muted-foreground'>Account status</dt>
+        <dd className='font-medium'>
+          {member.accountStatus === 'PENDING_SETUP'
+            ? 'Pending secure setup'
+            : member.accountStatus === 'ACTIVE'
+              ? 'Active'
+              : 'Inactive'}
+        </dd>
+      </div>
+    </dl>
+  )
+}
+
+interface MemberAdministrationDialogProps {
+  session: MemberEditorSession | null
+  saving: boolean
+  identity: AuthContext
+  units: OrganizationalUnit[]
+  lookupStatus: OrganizationUnitLookup['status']
+  authorizationVerified: boolean
+  authorizationMessage: string
+  feedback: MemberOperationFeedback | null
+  onRetryAuthorization: () => void
+  onClose: () => void
+  onRetrySnapshot: (memberId: string, operationId: number) => void
+  onLoadLatest: (memberId: string) => Promise<MemberSnapshot>
+  onReviewLatest: (snapshot: MemberSnapshot, operationId: number) => void
+  onRestartFromLatest: (snapshot: MemberSnapshot, operationId: number) => void
+  onReviewDirectory: () => void
+  onReviewCreationDraft: (operationId: number) => void
+  onResolveEditReconciliation: (
+    operationId: number,
+    choices: MemberConflictChoices
+  ) => void
+  onRetryCreationVerification: (operationId: number) => void
+  onSubmit: (input: MemberEditorSubmit) => void
 }
 
 export function MemberAdministrationDialog({
-  open,
-  member,
+  session,
+  saving,
   identity,
   units,
-  authorizationKey,
+  lookupStatus,
   authorizationVerified,
   authorizationMessage,
-  isAuthorizationContextCurrent,
+  feedback,
   onRetryAuthorization,
-  onOpenChange,
+  onClose,
+  onRetrySnapshot,
+  onLoadLatest,
+  onReviewLatest,
+  onRestartFromLatest,
+  onReviewDirectory,
+  onReviewCreationDraft,
+  onResolveEditReconciliation,
+  onRetryCreationVerification,
+  onSubmit,
 }: MemberAdministrationDialogProps) {
-  const queryClient = useQueryClient()
-  const isAdmin = identity.globalRole === 'ADMINISTRATOR'
-  const submitting = useRef(false)
-  const authorizationCheck = useRef(isAuthorizationContextCurrent)
-  const authorizationVerification = useRef(authorizationVerified)
-  useLayoutEffect(() => {
-    authorizationCheck.current = isAuthorizationContextCurrent
-    authorizationVerification.current = authorizationVerified
-  }, [authorizationVerified, isAuthorizationContextCurrent])
-  const [draft, setDraft] = useState<Draft>(() =>
-    member
-      ? {
-          email: member.email,
-          displayName: member.displayName,
-          globalRole: member.globalRole,
-          primaryOrgUnitId: member.primaryOrgUnitId ?? '',
-          managerScopeUnitIds: Array.from(member.managerScopeUnitIds),
-        }
-      : { ...blank }
-  )
-  const mutation = useMutation({
-    mutationFn: async ({
-      data,
-      contextKey,
-    }: {
-      data: Draft
-      contextKey: string
-    }) => {
-      if (!authorizationCheck.current(contextKey)) {
-        throw new Error(
-          'Administration access changed before the member operation started.'
-        )
-      }
-      if (!authorizationVerification.current) {
-        throw new Error(
-          'Administration access must be verified before the member operation starts.'
-        )
-      }
-      const input = {
-        displayName: data.displayName.trim(),
-        primaryOrgUnitId: data.primaryOrgUnitId || null,
-      }
-      const managerScopeUnitIds =
-        data.globalRole === 'DEPARTMENT_MANAGER' ? data.managerScopeUnitIds : []
-      if (!member) {
-        return createMember({
-          ...input,
-          email: data.email.trim(),
-          globalRole: isAdmin ? data.globalRole : 'EMPLOYEE',
-          managerScopeUnitIds: isAdmin ? managerScopeUnitIds : [],
-        })
-      }
-      const fresh = await memberDetail(member.id)
-      if (!authorizationCheck.current(contextKey)) {
-        throw new Error(
-          'Administration access changed before the member operation started.'
-        )
-      }
-      if (!authorizationVerification.current) {
-        throw new Error(
-          'Administration access must be verified before the member operation starts.'
-        )
-      }
-      return updateMember(
-        member.id,
-        {
-          ...input,
-          ...(isAdmin
-            ? { globalRole: data.globalRole, managerScopeUnitIds }
-            : {}),
-        },
-        fresh.etag
-      )
-    },
-    onSuccess: async (_result, variables) => {
-      await queryClient.invalidateQueries({ queryKey: ['users'] })
-      if (!authorizationCheck.current(variables.contextKey)) return
-      toast.success(
-        member ? 'Member updated' : 'Account created: setup invitation pending'
-      )
-      onOpenChange(false)
-    },
-    onError: (error, variables) => {
-      if (!authorizationCheck.current(variables.contextKey)) return
-      const normalized = normalizeCoreApiError(error)
-      toast.error('Unable to save member', {
-        description: normalized.message,
-      })
-    },
-    onSettled: () => {
-      submitting.current = false
-    },
+  const [recoverySnapshot, setRecoverySnapshot] =
+    useState<MemberSnapshot | null>(null)
+  const [recoveryError, setRecoveryError] = useState<string | null>(null)
+  const [recoveryLoading, setRecoveryLoading] = useState(false)
+  const [localError, setLocalError] = useState<string | null>(null)
+  const editing = session?.mode === 'edit'
+  const readySnapshot =
+    session?.mode === 'edit' && session.status === 'ready'
+      ? session.snapshot
+      : undefined
+  const form = useForm<MemberFormValues>({
+    resolver: zodResolver(memberFormSchema),
+    defaultValues: blankValues,
+    mode: 'onSubmit',
   })
 
-  function submit(event: FormEvent) {
-    event.preventDefault()
-    if (
-      submitting.current ||
-      !authorizationVerified ||
-      !isAuthorizationContextCurrent(authorizationKey) ||
-      !draft.displayName.trim() ||
-      (!member && !draft.email.trim())
-    ) {
-      return
+  useEffect(() => {
+    const initialValues =
+      session?.mode === 'edit' && session.status === 'ready' && session.snapshot
+        ? (session.initialValues ??
+          memberFormValuesFromMember(session.snapshot.member))
+        : blankValues
+    form.reset(initialValues)
+  }, [form, session])
+
+  useEffect(() => {
+    applyServerFieldErrors(form, feedback?.fieldErrors)
+  }, [feedback?.fieldErrors, form])
+
+  const reviewRequired =
+    feedback?.outcome === 'precondition' ||
+    feedback?.outcome === 'uncertain' ||
+    feedback?.outcome === 'unknown'
+  const reviewedSnapshot = recoverySnapshot ?? feedback?.latestSnapshot
+  const canEditValues = Boolean(
+    session && session.status === 'ready' && !reviewRequired
+  )
+
+  async function reloadLatest(memberId: string) {
+    setRecoveryLoading(true)
+    setRecoveryError(null)
+    try {
+      const latest = await onLoadLatest(memberId)
+      setRecoverySnapshot(latest)
+      if (session?.mode === 'edit') {
+        onReviewLatest(latest, session.operationId)
+      }
+    } catch (error) {
+      setRecoveryError(
+        error instanceof Error
+          ? error.message
+          : 'The latest member state could not be loaded.'
+      )
+    } finally {
+      setRecoveryLoading(false)
     }
-    submitting.current = true
-    mutation.mutate({ data: draft, contextKey: authorizationKey })
   }
 
-  const status = lookupState(units)
-  const unitCollection = units.data ?? []
+  async function submit(values: MemberFormValues) {
+    if (!session || session.status !== 'ready') return
+    setLocalError(null)
+    try {
+      if (session.mode === 'create') {
+        const payload = buildMemberCreatePayload(values, identity)
+        onSubmit({
+          operationId: session.operationId,
+          contextKey: session.contextKey,
+          mode: 'create',
+          payload,
+        })
+        return
+      }
+      if (!session.snapshot) return
+      const payload = buildMemberPatchPayload(
+        session.snapshot.member,
+        values,
+        identity
+      )
+      onSubmit({
+        operationId: session.operationId,
+        contextKey: session.contextKey,
+        mode: 'edit',
+        snapshot: session.snapshot,
+        payload,
+      })
+    } catch (error) {
+      setLocalError(
+        error instanceof NoMemberChangesError
+          ? error.message
+          : error instanceof Error
+            ? error.message
+            : 'Member values are invalid.'
+      )
+    }
+  }
+
+  const isAdministrator = identity.globalRole === 'ADMINISTRATOR'
+  const selectedRole = useWatch({
+    control: form.control,
+    name: 'globalRole',
+  })
+  const hasUnitLookup = lookupStatus === 'success'
+  const targetMember = readySnapshot?.member
+  const reconciliation = feedback?.editReconciliation
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className='max-h-[90vh] overflow-y-auto sm:max-w-xl'>
-        {!authorizationVerified && (
+    <Dialog
+      open={session !== null}
+      onOpenChange={(open) => {
+        if (!open && !saving) onClose()
+      }}
+    >
+      <DialogContent className='max-h-[90vh] overflow-y-auto sm:max-w-2xl'>
+        {!authorizationVerified && session && (
           <div
             role='alert'
             className='flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-sm'
@@ -218,135 +395,355 @@ export function MemberAdministrationDialog({
             </Button>
           </div>
         )}
-        <DialogHeader>
-          <DialogTitle>{member ? 'Edit member' : 'Create account'}</DialogTitle>
-          <DialogDescription>
-            New accounts are created pending secure setup. Passwords are never
-            set by an administrator.
-          </DialogDescription>
-        </DialogHeader>
-        <form onSubmit={submit} className='space-y-4'>
-          <div className='space-y-1.5'>
-            <Label htmlFor='member-name'>Name</Label>
-            <Input
-              id='member-name'
-              maxLength={200}
-              required
-              value={draft.displayName}
-              onChange={(event) =>
-                setDraft((current) => ({
-                  ...current,
-                  displayName: event.target.value,
-                }))
-              }
-              disabled={mutation.isPending}
-            />
-          </div>
-          <div className='space-y-1.5'>
-            <Label htmlFor='member-email'>Email</Label>
-            <Input
-              id='member-email'
-              type='email'
-              required
-              disabled={Boolean(member) || mutation.isPending}
-              value={draft.email}
-              onChange={(event) =>
-                setDraft((current) => ({
-                  ...current,
-                  email: event.target.value,
-                }))
-              }
-            />
-          </div>
-          <div className='space-y-1.5'>
-            <Label>Primary organizational unit</Label>
-            <OrganizationUnitSelect
-              value={draft.primaryOrgUnitId || null}
-              units={unitCollection}
-              lookupStatus={status}
-              label='Primary organizational unit'
-              emptyLabel='Unassigned'
-              disabled={status !== 'success' || mutation.isPending}
-              onValueChange={(primaryOrgUnitId) =>
-                setDraft((current) => ({
-                  ...current,
-                  primaryOrgUnitId: primaryOrgUnitId ?? '',
-                }))
-              }
-            />
-          </div>
-          {units.isError && (
+        {session?.mode === 'edit' && session.status === 'loading' ? (
+          <>
+            <DialogHeader>
+              <DialogTitle>Loading current member</DialogTitle>
+              <DialogDescription>
+                Retrieving the authoritative account state and concurrency token
+                before opening the editor.
+              </DialogDescription>
+            </DialogHeader>
             <div
-              role='alert'
-              className='flex flex-wrap items-center justify-between gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm'
+              role='status'
+              className='py-8 text-center text-sm text-muted-foreground'
             >
-              <span>
-                Organizational-unit lookup failed. Existing resource IDs are
-                preserved; names cannot be verified.
-              </span>
-              <Button
-                type='button'
-                variant='outline'
-                size='sm'
-                onClick={() => void units.refetch()}
-              >
-                Retry unit lookup
-              </Button>
+              Loading member details…
             </div>
-          )}
-          {isAdmin && (
-            <div className='space-y-1.5'>
-              <Label>Global role</Label>
-              <Select
-                value={draft.globalRole}
-                disabled={mutation.isPending}
-                onValueChange={(value) =>
-                  setDraft((current) => ({
-                    ...current,
-                    globalRole: value as Member['globalRole'],
-                  }))
+            <DialogFooter>
+              <Button variant='outline' disabled={saving} onClick={onClose}>
+                Cancel
+              </Button>
+            </DialogFooter>
+          </>
+        ) : session?.mode === 'edit' && session.status === 'error' ? (
+          <>
+            <DialogHeader>
+              <DialogTitle>Member details could not be loaded</DialogTitle>
+              <DialogDescription>
+                No edit session was opened because a reviewed authoritative
+                snapshot is required.
+              </DialogDescription>
+            </DialogHeader>
+            <p role='alert' className='text-sm text-destructive'>
+              {session.loadError ?? 'The member detail request failed.'}
+            </p>
+            <DialogFooter>
+              <Button variant='outline' disabled={saving} onClick={onClose}>
+                Close
+              </Button>
+              <Button
+                disabled={!authorizationVerified}
+                onClick={() =>
+                  onRetrySnapshot(session.memberId, session.operationId)
                 }
               >
-                <SelectTrigger aria-label='Global role'>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value='EMPLOYEE'>Employee</SelectItem>
-                  <SelectItem value='DEPARTMENT_MANAGER'>
-                    Department manager
-                  </SelectItem>
-                  <SelectItem value='ADMINISTRATOR'>Administrator</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          )}
-          {isAdmin && draft.globalRole === 'DEPARTMENT_MANAGER' && (
-            <ManagerScopePicker
-              units={unitCollection}
-              selected={draft.managerScopeUnitIds}
-              lookupStatus={status}
-              onChange={(managerScopeUnitIds) =>
-                setDraft((current) => ({ ...current, managerScopeUnitIds }))
-              }
-            />
-          )}
-          <DialogFooter className='flex-col-reverse gap-2 sm:flex-row'>
-            <Button
-              variant='outline'
-              type='button'
-              onClick={() => onOpenChange(false)}
-              disabled={mutation.isPending}
-            >
-              Cancel
-            </Button>
-            <Button
-              disabled={mutation.isPending || !authorizationVerified}
-              type='submit'
-            >
-              {mutation.isPending ? 'Saving…' : 'Save member'}
-            </Button>
-          </DialogFooter>
-        </form>
+                Retry member details
+              </Button>
+            </DialogFooter>
+          </>
+        ) : (
+          <>
+            <DialogHeader>
+              <DialogTitle>
+                {editing ? 'Edit member' : 'Create account'}
+              </DialogTitle>
+              <DialogDescription>
+                New accounts remain pending secure setup. Administrators never
+                set or receive a member password.
+              </DialogDescription>
+            </DialogHeader>
+            {targetMember && memberSummary(targetMember)}
+            {feedback && (
+              <div
+                role='alert'
+                className={`space-y-2 rounded-md border p-3 text-sm ${
+                  reviewRequired
+                    ? 'border-amber-500/40 bg-amber-500/5'
+                    : 'border-destructive/30 bg-destructive/5'
+                }`}
+              >
+                <p>{feedback.message}</p>
+                {feedback.reconciliationError && (
+                  <p className='text-destructive'>
+                    {feedback.reconciliationError}
+                  </p>
+                )}
+                {feedback.reconciliationLoading && (
+                  <p role='status' className='text-muted-foreground'>
+                    Loading authoritative state for review…
+                  </p>
+                )}
+                {feedback.creationReconciliation?.status === 'found' && (
+                  <div className='rounded-md border bg-background p-3'>
+                    <p className='font-medium'>
+                      Matching authorized account:{' '}
+                      {feedback.creationReconciliation.member.displayName}
+                    </p>
+                    <p className='break-all text-muted-foreground'>
+                      {feedback.creationReconciliation.member.email}
+                    </p>
+                  </div>
+                )}
+                {feedback.creationReconciliation?.status === 'not-found' && (
+                  <p className='text-muted-foreground'>
+                    No matching account was visible in the authorized directory.
+                  </p>
+                )}
+              </div>
+            )}
+            {reviewedSnapshot && editing && (
+              <div className='space-y-2 rounded-md border bg-muted/30 p-3 text-sm'>
+                <p className='font-medium'>Latest authoritative member state</p>
+                {memberSummary(reviewedSnapshot.member)}
+                <div className='flex flex-wrap gap-2'>
+                  <Button
+                    type='button'
+                    size='sm'
+                    variant='secondary'
+                    disabled={!authorizationVerified || !reviewedSnapshot}
+                    onClick={() =>
+                      session &&
+                      onRestartFromLatest(reviewedSnapshot, session.operationId)
+                    }
+                  >
+                    Use latest state and review changes
+                  </Button>
+                </div>
+              </div>
+            )}
+            {reconciliation && reconciliation.conflicts.length > 0 && (
+              <MemberConflictResolution
+                reconciliation={reconciliation}
+                operationId={session?.operationId ?? 0}
+                authorizationVerified={authorizationVerified}
+                onResolve={onResolveEditReconciliation}
+              />
+            )}
+            {reviewRequired && session?.mode === 'create' && (
+              <div className='flex flex-wrap gap-2'>
+                <Button
+                  type='button'
+                  variant='outline'
+                  size='sm'
+                  disabled={feedback?.reconciliationLoading}
+                  onClick={() =>
+                    onRetryCreationVerification(session.operationId)
+                  }
+                >
+                  Recheck authorized directory
+                </Button>
+                <Button
+                  type='button'
+                  variant='secondary'
+                  size='sm'
+                  onClick={() => onReviewCreationDraft(session.operationId)}
+                >
+                  Review preserved draft
+                </Button>
+                <Button
+                  type='button'
+                  variant='outline'
+                  size='sm'
+                  onClick={onReviewDirectory}
+                >
+                  Review members
+                </Button>
+              </div>
+            )}
+            {reviewRequired && editing && readySnapshot && (
+              <div className='flex flex-wrap gap-2'>
+                <Button
+                  type='button'
+                  variant='outline'
+                  size='sm'
+                  disabled={recoveryLoading || !authorizationVerified}
+                  onClick={() => void reloadLatest(readySnapshot.member.id)}
+                >
+                  {recoveryLoading
+                    ? 'Loading latest member…'
+                    : 'Reload latest for review'}
+                </Button>
+                {recoveryError && (
+                  <Button
+                    type='button'
+                    variant='outline'
+                    size='sm'
+                    disabled={recoveryLoading || !authorizationVerified}
+                    onClick={() => void reloadLatest(readySnapshot.member.id)}
+                  >
+                    Retry latest member
+                  </Button>
+                )}
+              </div>
+            )}
+            {recoveryError && (
+              <p role='alert' className='text-sm text-destructive'>
+                {recoveryError}
+              </p>
+            )}
+            <Form {...form}>
+              <form
+                id='member-editor-form'
+                onSubmit={form.handleSubmit(submit)}
+                className='space-y-4'
+              >
+                <FormField
+                  control={form.control}
+                  name='displayName'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Name</FormLabel>
+                      <FormControl>
+                        <Input
+                          {...field}
+                          maxLength={200}
+                          autoComplete='name'
+                          disabled={saving || !canEditValues}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name='email'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Email</FormLabel>
+                      <FormControl>
+                        <Input
+                          {...field}
+                          type='email'
+                          autoComplete='email'
+                          readOnly={editing}
+                          disabled={saving || !canEditValues}
+                        />
+                      </FormControl>
+                      <FormDescription>
+                        Email identity cannot be changed after provisioning.
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name='primaryOrgUnitId'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Primary organizational unit</FormLabel>
+                      <FormControl>
+                        <OrganizationUnitSelect
+                          value={field.value || null}
+                          units={units}
+                          lookupStatus={lookupStatus}
+                          label='Primary organizational unit'
+                          emptyLabel={
+                            identity.globalRole === 'DEPARTMENT_MANAGER'
+                              ? 'Select a unit'
+                              : 'Unassigned'
+                          }
+                          allowClear={
+                            !editing && identity.globalRole === 'ADMINISTRATOR'
+                          }
+                          disabled={saving || !canEditValues || !hasUnitLookup}
+                          onValueChange={(value) => field.onChange(value ?? '')}
+                        />
+                      </FormControl>
+                      <FormDescription>
+                        {identity.globalRole === 'DEPARTMENT_MANAGER'
+                          ? 'Select an active unit within your explicit management scope.'
+                          : editing
+                            ? 'Assignments can move to another active unit; they cannot be cleared here.'
+                            : 'Optional for administrator-provisioned accounts.'}
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                {isAdministrator && (
+                  <FormField
+                    control={form.control}
+                    name='globalRole'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Global role</FormLabel>
+                        <Select
+                          value={field.value}
+                          onValueChange={field.onChange}
+                          disabled={saving || !canEditValues}
+                        >
+                          <FormControl>
+                            <SelectTrigger aria-label='Global role'>
+                              <SelectValue />
+                            </SelectTrigger>
+                          </FormControl>
+                          <SelectContent>
+                            <SelectItem value='EMPLOYEE'>Employee</SelectItem>
+                            <SelectItem value='DEPARTMENT_MANAGER'>
+                              Department manager
+                            </SelectItem>
+                            <SelectItem value='ADMINISTRATOR'>
+                              Administrator
+                            </SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                )}
+                {isAdministrator && selectedRole === 'DEPARTMENT_MANAGER' && (
+                  <FormField
+                    control={form.control}
+                    name='managerScopeUnitIds'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormControl>
+                          <ManagerScopePicker
+                            units={units}
+                            selected={field.value}
+                            lookupStatus={lookupStatus}
+                            disabled={
+                              saving || !canEditValues || !hasUnitLookup
+                            }
+                            onChange={field.onChange}
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                )}
+                {(localError ||
+                  (feedback?.outcome === 'rejected' && !reviewRequired)) && (
+                  <p role='alert' className='text-sm text-destructive'>
+                    {localError ?? feedback?.message}
+                  </p>
+                )}
+              </form>
+            </Form>
+            <DialogFooter className='flex-col-reverse gap-2 sm:flex-row'>
+              <Button
+                variant='outline'
+                type='button'
+                onClick={onClose}
+                disabled={saving}
+              >
+                Cancel
+              </Button>
+              <Button
+                type='submit'
+                form='member-editor-form'
+                disabled={saving || !authorizationVerified || !canEditValues}
+              >
+                {saving ? 'Saving…' : editing ? 'Save member' : 'Save member'}
+              </Button>
+            </DialogFooter>
+          </>
+        )}
       </DialogContent>
     </Dialog>
   )

@@ -9,11 +9,13 @@ export function ManagerScopePicker({
   selected,
   onChange,
   lookupStatus = 'success',
+  disabled = false,
 }: {
   units: OrganizationalUnit[]
   selected: string[]
   onChange: (value: string[]) => void
   lookupStatus?: 'loading' | 'error' | 'success'
+  disabled?: boolean
 }) {
   const [search, setSearch] = useState('')
   const normalizedSearch = search.trim().toLocaleLowerCase()
@@ -40,6 +42,7 @@ export function ManagerScopePicker({
         onChange={(event) => setSearch(event.target.value)}
         placeholder='Search authorized units'
         aria-label='Search manager scope units'
+        disabled={disabled}
       />
       {lookupStatus === 'loading' && (
         <p role='status' className='text-xs text-muted-foreground'>
@@ -76,6 +79,7 @@ export function ManagerScopePicker({
                 <Checkbox
                   id={'scope-' + unit.id}
                   checked={selected.includes(unit.id)}
+                  disabled={disabled}
                   onCheckedChange={(checked) =>
                     onChange(
                       checked === true

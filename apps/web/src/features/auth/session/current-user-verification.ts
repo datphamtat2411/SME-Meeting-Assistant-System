@@ -113,7 +113,14 @@ export function deriveCurrentUserVerification(
 export function useCurrentUserVerification(): CurrentUserVerificationState & {
   query: ReturnType<typeof useQuery>
 } {
-  const query = useQuery(currentUserQueryOptions())
+  const query = useQuery({
+    ...currentUserQueryOptions(),
+    // The authenticated route already verifies /auth/me before mounting its
+    // protected shell. Observe that cached identity without issuing a second
+    // request during the same mount; route revalidation and explicit query
+    // invalidation still update this reactive boundary.
+    refetchOnMount: false,
+  })
   return {
     ...deriveCurrentUserVerification({
       data: query.data,

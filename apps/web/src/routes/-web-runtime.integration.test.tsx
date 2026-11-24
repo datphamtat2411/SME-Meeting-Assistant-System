@@ -331,19 +331,19 @@ describe('integrated generated Web runtime', () => {
   )
 
   it.each([
-    ['/tasks', 'Tasks'],
-    ['/users', 'User List'],
-    ['/apps', 'App Integrations'],
-    ['/chats', 'Inbox'],
+    ['/tasks', 'Tasks', '/tasks'],
+    ['/users', 'Members', '/members'],
+    ['/apps', 'App Integrations', '/apps'],
+    ['/chats', 'Inbox', '/chats'],
   ] as const)(
     'keeps compatibility route %s reachable without presenting it as Core data',
-    async (path, expectedText) => {
+    async (path, expectedText, expectedPath) => {
       const { screen, router } = await renderGeneratedRoute(path)
 
       await expect
         .element(screen.getByText(expectedText, { exact: true }))
         .toBeInTheDocument()
-      expect(router.state.location.pathname).toBe(path)
+      expect(router.state.location.pathname).toBe(expectedPath)
       expect(coreApi.getWithMeta).not.toHaveBeenCalled()
     }
   )

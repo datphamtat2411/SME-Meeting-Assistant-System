@@ -136,7 +136,7 @@ interface MemberDirectoryPresentationProps {
     patch: Partial<MemberDirectorySearch>,
     options?: { replace?: boolean }
   ) => void
-  onEdit: (member: Member | null) => void
+  onEdit: (member: Member) => void
   onLifecycle: (member: Member, action: MemberLifecycleAction) => void
 }
 
@@ -428,21 +428,23 @@ export function MemberDirectoryPresentation({
                             Reactivate
                           </Button>
                         )}
-                        {member.accountStatus === 'PENDING_SETUP' && (
-                          <Button
-                            variant='ghost'
-                            size='sm'
-                            disabled={
-                              administration.statusMutationPending ||
-                              !identityVerified
-                            }
-                            onClick={() =>
-                              onLifecycle(member, 'account-setup/reissue')
-                            }
-                          >
-                            Resend setup
-                          </Button>
-                        )}
+                        {member.accountStatus === 'PENDING_SETUP' &&
+                          controller.identity?.globalRole ===
+                            'ADMINISTRATOR' && (
+                            <Button
+                              variant='ghost'
+                              size='sm'
+                              disabled={
+                                administration.statusMutationPending ||
+                                !identityVerified
+                              }
+                              onClick={() =>
+                                onLifecycle(member, 'account-setup/reissue')
+                              }
+                            >
+                              Resend setup
+                            </Button>
+                          )}
                       </div>
                     </TableCell>
                   </TableRow>

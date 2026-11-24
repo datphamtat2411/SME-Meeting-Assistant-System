@@ -408,6 +408,112 @@ describe('Members directory', () => {
       .not.toBeInTheDocument()
   })
 
+  it('creates a pending account with the canonical administrator payload', async () => {
+    mockDirectory()
+    const created = {
+      ...member,
+      id: '33333333-3333-4333-8333-333333333333',
+      email: 'new.person@example.test',
+      displayName: 'New Person',
+      accountStatus: 'PENDING_SETUP',
+    }
+    const createSpy = vi
+      .spyOn(coreApi, 'postWithMetaAndEtag')
+      .mockResolvedValue({ data: created, meta: {}, etag: 'W/"v-1"' })
+    const { screen } = await renderMembers()
+
+    await expect.element(screen.getByText('Lee Member')).toBeVisible()
+    await userEvent.click(screen.getByRole('button', { name: 'Add member' }))
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Name' }),
+      'New Person'
+    )
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Email' }),
+      'New.Person@Example.Test'
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Save member' }))
+
+    await expect.poll(() => createSpy.mock.calls.length).toBe(1)
+    expect(createSpy).toHaveBeenCalledWith('/users', {
+      email: 'new.person@example.test',
+      displayName: 'New Person',
+      globalRole: 'EMPLOYEE',
+    })
+    await expect
+      .element(screen.getByRole('dialog', { name: 'Create account' }))
+      .not.toBeInTheDocument()
+  })
+
+  it('edits from one authoritative snapshot and sends its ETag without refetching at submit', async () => {
+    mockDirectory()
+    const detailSpy = vi
+      .spyOn(coreApi, 'getWithMetaAndEtag')
+      .mockResolvedValue({ data: member, meta: {}, etag: 'W/"v-7"' })
+    const patchSpy = vi
+      .spyOn(coreApi, 'patchWithMetaAndEtag')
+      .mockResolvedValue({
+        data: { ...member, displayName: 'Renamed Member' },
+        meta: {},
+        etag: 'W/"v-8"',
+      })
+    const { screen } = await renderMembers()
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Edit Lee Member' })
+    )
+    await expect
+      .element(screen.getByRole('dialog', { name: 'Edit member' }))
+      .toBeVisible()
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Name' }),
+      'Renamed Member'
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Save member' }))
+
+    await expect.poll(() => patchSpy.mock.calls.length).toBe(1)
+    expect(detailSpy).toHaveBeenCalledTimes(1)
+    expect(patchSpy).toHaveBeenCalledWith(
+      `/users/${memberId}`,
+      { displayName: 'Renamed Member' },
+      { headers: { 'If-Match': 'W/"v-7"' } }
+    )
+  })
+
+  it('requires an authoritative snapshot before confirming lifecycle changes', async () => {
+    mockDirectory()
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+      data: member,
+      meta: {},
+      etag: 'W/"v-9"',
+    })
+    const lifecycleSpy = vi
+      .spyOn(coreApi, 'postWithMetaAndEtag')
+      .mockResolvedValue({
+        data: { ...member, accountStatus: 'INACTIVE' },
+        meta: {},
+        etag: 'W/"v-10"',
+      })
+    const { screen } = await renderMembers()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Deactivate' }))
+    await expect
+      .element(
+        screen.getByRole('alertdialog', { name: 'Deactivate member account?' })
+      )
+      .toBeVisible()
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Deactivate account' })
+    )
+
+    await expect.poll(() => lifecycleSpy.mock.calls.length).toBe(1)
+    expect(lifecycleSpy).toHaveBeenCalledWith(
+      `/users/${memberId}/deactivate`,
+      undefined,
+      { headers: { 'If-Match': 'W/"v-9"' } }
+    )
+  })
+
   it('keeps the directory usable at a narrow viewport and in dark mode with keyboard controls', async () => {
     const getSpy = mockDirectory()
     await page.viewport(390, 844)

@@ -16,6 +16,7 @@ import {
   currentUserQueryKey,
   type AuthContext,
 } from '@/features/auth/session/current-user'
+import { useCurrentUserVerification } from '@/features/auth/session/current-user-verification'
 import { useAuthLifecycleState } from '@/features/auth/session/logout-status'
 import { SessionGate } from '@/features/auth/session/session-gate'
 import { GeneralError } from '@/features/errors/general-error'
@@ -60,6 +61,8 @@ export const Route = createFileRoute('/_authenticated')({
 function AuthenticatedRoute() {
   const { currentUser } = Route.useRouteContext()
   const lifecycleState = useAuthLifecycleState()
+  const verification = useCurrentUserVerification()
+  const verifiedUser = verification.identity ?? currentUser
 
   if (lifecycleState !== 'idle') {
     return (
@@ -71,7 +74,12 @@ function AuthenticatedRoute() {
     )
   }
 
-  return <AuthenticatedLayout user={toUserPresentation(currentUser)} />
+  return (
+    <AuthenticatedLayout
+      user={toUserPresentation(verifiedUser)}
+      identity={verifiedUser}
+    />
+  )
 }
 
 // eslint-disable-next-line react-refresh/only-export-components
