@@ -14,7 +14,10 @@ import {
   currentUserQueryKey,
   type AuthContext,
 } from '@/features/auth/session/current-user'
-import type { MemberDirectoryAccess } from './member-access-policy'
+import {
+  getMemberDirectoryAccess,
+  type MemberDirectoryAccess,
+} from './member-access-policy'
 import {
   assertMemberCreateAllowed,
   assertMemberPatchAllowed,
@@ -81,6 +84,12 @@ class ObsoleteMemberOperationError extends Error {
     this.name = 'ObsoleteMemberOperationError'
   }
 }
+
+const snapshotVerificationDeferredMessage =
+  'Current administration access could not be verified while loading the member. The protected response was discarded; verify access and retry the authoritative snapshot.'
+
+const submissionAuthorizationBlockedMessage =
+  'Current administration access changed before the request was sent. No mutation was dispatched; verify access and review the preserved values before trying again.'
 
 export type MemberEditorSubmit =
   | {
@@ -219,36 +228,58 @@ export function useMemberAdministrationController({
     state,
   ])
 
-  const isAuthorizationAllowed = useCallback((contextKey: string) => {
-    const authorization = authorizationRef.current
-    const currentIdentity = authorization.identity
-    return (
-      authorization.accessKey === contextKey &&
-      authorization.identityVerified &&
-      !sessionRevalidationPendingRef.current &&
-      accessRef.current.type === 'authorized' &&
-      currentIdentity !== undefined &&
-      currentIdentity.session.id.length > 0
-    )
-  }, [])
+  const canPerformPrivilegedAction = useCallback(
+    (contextKey: string) => {
+      const authorization = authorizationRef.current
+      const currentUserState =
+        queryClient.getQueryState<AuthContext>(currentUserQueryKey)
+      const currentIdentity = currentUserState?.data
+      const currentAccess = currentIdentity
+        ? getMemberDirectoryAccess(currentIdentity)
+        : undefined
+      return (
+        authorization.accessKey === contextKey &&
+        authorization.identityVerified &&
+        !sessionRevalidationPendingRef.current &&
+        currentUserState?.status === 'success' &&
+        currentUserState.fetchStatus === 'idle' &&
+        currentIdentity !== undefined &&
+        currentAccess?.type === 'authorized' &&
+        currentAccess.queryScopeKey === contextKey &&
+        currentIdentity.userId === authorization.identity?.userId &&
+        currentIdentity.session.id === authorization.identity?.session.id &&
+        accessRef.current.type === 'authorized' &&
+        currentIdentity.session.id.length > 0
+      )
+    },
+    [queryClient]
+  )
 
-  const isCurrentOperation = useCallback(
+  const isCurrentOperationContext = useCallback(
     (operationId: number, contextKey: string): boolean => {
       const current = stateRef.current
-      const currentIdentity = authorizationRef.current.identity
+      const currentUserState =
+        queryClient.getQueryState<AuthContext>(currentUserQueryKey)
+      const currentIdentity =
+        currentUserState?.data ?? authorizationRef.current.identity
+      const currentAccess = currentUserState?.data
+        ? getMemberDirectoryAccess(currentUserState.data)
+        : undefined
       return (
         current.kind !== 'idle' &&
         current.operationId === operationId &&
         current.authorization.contextKey === contextKey &&
         authorizationRef.current.accessKey === contextKey &&
-        authorizationRef.current.identityVerified &&
-        !sessionRevalidationPendingRef.current &&
+        accessRef.current.type === 'authorized' &&
         currentIdentity !== undefined &&
+        (currentAccess === undefined ||
+          (currentAccess.type === 'authorized' &&
+            currentAccess.queryScopeKey === contextKey)) &&
         current.authorization.actorId === currentIdentity.userId &&
         current.authorization.sessionId === currentIdentity.session.id
       )
     },
-    []
+    [queryClient]
   )
 
   const getAuthorizedAccess = useCallback(
@@ -359,9 +390,9 @@ export function useMemberAdministrationController({
         contextKey,
         purpose,
         isOperationCurrent: currentCheck,
-        isAuthorizationAllowed: () => isAuthorizationAllowed(contextKey),
+        isAuthorizationAllowed: () => canPerformPrivilegedAction(contextKey),
       }),
-    [getRequests, isAuthorizationAllowed]
+    [canPerformPrivilegedAction, getRequests]
   )
 
   const loadEditorSnapshot = useCallback(
@@ -378,8 +409,18 @@ export function useMemberAdministrationController({
             operationId,
             contextKey,
           }) ||
-          !isCurrentOperation(operationId, contextKey)
+          !isCurrentOperationContext(operationId, contextKey)
         ) {
+          return
+        }
+        if (!canPerformPrivilegedAction(contextKey)) {
+          dispatchOperation({
+            type: 'SNAPSHOT_DEFERRED',
+            operationId,
+            contextKey,
+            requestId: request.requestId,
+            message: snapshotVerificationDeferredMessage,
+          })
           return
         }
         const currentIdentity = authorizationRef.current.identity
@@ -405,8 +446,18 @@ export function useMemberAdministrationController({
             operationId,
             contextKey,
           }) ||
-          !isCurrentOperation(operationId, contextKey)
+          !isCurrentOperationContext(operationId, contextKey)
         ) {
+          return
+        }
+        if (!canPerformPrivilegedAction(contextKey)) {
+          dispatchOperation({
+            type: 'SNAPSHOT_DEFERRED',
+            operationId,
+            contextKey,
+            requestId: request.requestId,
+            message: snapshotVerificationDeferredMessage,
+          })
           return
         }
         dispatchOperation({
@@ -420,7 +471,12 @@ export function useMemberAdministrationController({
         getRequests().completeRequest(request)
       }
     },
-    [dispatchOperation, getRequests, isCurrentOperation]
+    [
+      canPerformPrivilegedAction,
+      dispatchOperation,
+      getRequests,
+      isCurrentOperationContext,
+    ]
   )
 
   const loadLifecycleSnapshot = useCallback(
@@ -438,8 +494,18 @@ export function useMemberAdministrationController({
             operationId,
             contextKey,
           }) ||
-          !isCurrentOperation(operationId, contextKey)
+          !isCurrentOperationContext(operationId, contextKey)
         ) {
+          return
+        }
+        if (!canPerformPrivilegedAction(contextKey)) {
+          dispatchOperation({
+            type: 'SNAPSHOT_DEFERRED',
+            operationId,
+            contextKey,
+            requestId: request.requestId,
+            message: snapshotVerificationDeferredMessage,
+          })
           return
         }
         const currentIdentity = authorizationRef.current.identity
@@ -465,8 +531,18 @@ export function useMemberAdministrationController({
             operationId,
             contextKey,
           }) ||
-          !isCurrentOperation(operationId, contextKey)
+          !isCurrentOperationContext(operationId, contextKey)
         ) {
+          return
+        }
+        if (!canPerformPrivilegedAction(contextKey)) {
+          dispatchOperation({
+            type: 'SNAPSHOT_DEFERRED',
+            operationId,
+            contextKey,
+            requestId: request.requestId,
+            message: snapshotVerificationDeferredMessage,
+          })
           return
         }
         dispatchOperation({
@@ -480,7 +556,12 @@ export function useMemberAdministrationController({
         getRequests().completeRequest(request)
       }
     },
-    [dispatchOperation, getRequests, isCurrentOperation]
+    [
+      canPerformPrivilegedAction,
+      dispatchOperation,
+      getRequests,
+      isCurrentOperationContext,
+    ]
   )
 
   const startCreate = useCallback(() => {
@@ -488,7 +569,7 @@ export function useMemberAdministrationController({
     if (
       !currentIdentity ||
       !canProvisionMember(currentIdentity) ||
-      !isAuthorizationAllowed(accessKey) ||
+      !canPerformPrivilegedAction(accessKey) ||
       mutationInFlight.current !== null
     ) {
       return
@@ -504,7 +585,12 @@ export function useMemberAdministrationController({
       operationId,
       authorization,
     })
-  }, [accessKey, dispatchOperation, isAuthorizationAllowed, nextOperationId])
+  }, [
+    accessKey,
+    canPerformPrivilegedAction,
+    dispatchOperation,
+    nextOperationId,
+  ])
 
   const startEdit = useCallback(
     (member: Pick<Member, 'id' | 'globalRole' | 'primaryOrgUnitId'>) => {
@@ -512,7 +598,7 @@ export function useMemberAdministrationController({
       if (
         !currentIdentity ||
         !canManageMemberTarget(currentIdentity, member as Member) ||
-        !isAuthorizationAllowed(accessKey) ||
+        !canPerformPrivilegedAction(accessKey) ||
         mutationInFlight.current !== null
       ) {
         return
@@ -522,7 +608,7 @@ export function useMemberAdministrationController({
         operationId,
         accessKey,
         'editor-snapshot',
-        () => isAuthorizationAllowed(accessKey)
+        () => canPerformPrivilegedAction(accessKey)
       )
       if (!request) return
       const authorization: MemberAuthorizationContext = {
@@ -543,7 +629,7 @@ export function useMemberAdministrationController({
       accessKey,
       beginOperationRequest,
       dispatchOperation,
-      isAuthorizationAllowed,
+      canPerformPrivilegedAction,
       loadEditorSnapshot,
       nextOperationId,
     ]
@@ -555,7 +641,7 @@ export function useMemberAdministrationController({
       if (
         !currentIdentity ||
         !canPerformMemberLifecycle(currentIdentity, member, action) ||
-        !isAuthorizationAllowed(accessKey) ||
+        !canPerformPrivilegedAction(accessKey) ||
         mutationInFlight.current !== null
       ) {
         return
@@ -565,7 +651,7 @@ export function useMemberAdministrationController({
         operationId,
         accessKey,
         'lifecycle-snapshot',
-        () => isAuthorizationAllowed(accessKey)
+        () => canPerformPrivilegedAction(accessKey)
       )
       if (!request) return
       const authorization: MemberAuthorizationContext = {
@@ -593,7 +679,7 @@ export function useMemberAdministrationController({
       accessKey,
       beginOperationRequest,
       dispatchOperation,
-      isAuthorizationAllowed,
+      canPerformPrivilegedAction,
       loadLifecycleSnapshot,
       nextOperationId,
     ]
@@ -608,8 +694,8 @@ export function useMemberAdministrationController({
         requests: getRequests(),
         dispatch: dispatchOperation,
         getAccess: getAuthorizedAccess,
-        isAuthorizationAllowed,
-        isOperationCurrent: isCurrentOperation,
+        isAuthorizationAllowed: canPerformPrivilegedAction,
+        isOperationCurrent: isCurrentOperationContext,
       })
     }
     return editorRecoveryRef.current
@@ -617,8 +703,8 @@ export function useMemberAdministrationController({
     dispatchOperation,
     getAuthorizedAccess,
     getRequests,
-    isAuthorizationAllowed,
-    isCurrentOperation,
+    canPerformPrivilegedAction,
+    isCurrentOperationContext,
   ])
 
   const lifecycleRecoveryRef = useRef<ReturnType<
@@ -630,8 +716,8 @@ export function useMemberAdministrationController({
         requests: getRequests(),
         dispatch: dispatchOperation,
         getIdentity: getCurrentIdentity,
-        isAuthorizationAllowed,
-        isOperationCurrent: isCurrentOperation,
+        isAuthorizationAllowed: canPerformPrivilegedAction,
+        isOperationCurrent: isCurrentOperationContext,
       })
     }
     return lifecycleRecoveryRef.current
@@ -639,8 +725,8 @@ export function useMemberAdministrationController({
     dispatchOperation,
     getCurrentIdentity,
     getRequests,
-    isAuthorizationAllowed,
-    isCurrentOperation,
+    canPerformPrivilegedAction,
+    isCurrentOperationContext,
   ])
 
   const assertMutationOriginCurrent = useCallback(
@@ -700,7 +786,8 @@ export function useMemberAdministrationController({
         { ...result.mutation, outcome: 'confirmed' },
         input.origin
       )
-      if (!isCurrentOperation(input.operationId, input.contextKey)) return
+      if (!isCurrentOperationContext(input.operationId, input.contextKey))
+        return
       dispatchOperation({
         type: 'SUBMISSION_CONFIRMED',
         operationId: input.operationId,
@@ -713,7 +800,26 @@ export function useMemberAdministrationController({
       )
     },
     onError: async (error, input) => {
-      if (error instanceof ObsoleteMemberOperationError) return
+      if (error instanceof ObsoleteMemberOperationError) {
+        if (isCurrentOperationContext(input.operationId, input.contextKey)) {
+          dispatchOperation({
+            type: 'SUBMISSION_REJECTED',
+            operationId: input.operationId,
+            contextKey: input.contextKey,
+            feedback: storeMemberOperationFeedback({
+              outcome: 'rejected',
+              message: submissionAuthorizationBlockedMessage,
+              ...(input.mode === 'create'
+                ? { submittedCreationPayload: input.payload }
+                : {
+                    originalSnapshot: input.snapshot,
+                    submittedPatch: input.payload,
+                  }),
+            }),
+          })
+        }
+        return
+      }
       const outcome = classifyMemberMutationOutcome(error)
       const normalized = normalizeCoreApiError(error)
       const baseFeedback: MemberOperationFeedback = {
@@ -747,7 +853,8 @@ export function useMemberAdministrationController({
               },
           input.origin
         )
-        if (!isCurrentOperation(input.operationId, input.contextKey)) return
+        if (!isCurrentOperationContext(input.operationId, input.contextKey))
+          return
         dispatchOperation({
           type: 'SUBMISSION_UNCERTAIN',
           operationId: input.operationId,
@@ -771,7 +878,7 @@ export function useMemberAdministrationController({
         return
       }
 
-      if (isCurrentOperation(input.operationId, input.contextKey)) {
+      if (isCurrentOperationContext(input.operationId, input.contextKey)) {
         dispatchOperation({
           type: 'SUBMISSION_REJECTED',
           operationId: input.operationId,
@@ -823,7 +930,8 @@ export function useMemberAdministrationController({
         },
         input.origin
       )
-      if (!isCurrentOperation(input.operationId, input.contextKey)) return
+      if (!isCurrentOperationContext(input.operationId, input.contextKey))
+        return
       dispatchOperation({
         type: 'SUBMISSION_CONFIRMED',
         operationId: input.operationId,
@@ -832,7 +940,20 @@ export function useMemberAdministrationController({
       toast.success(lifecycleSuccessMessage(input.action))
     },
     onError: async (error, input) => {
-      if (error instanceof ObsoleteMemberOperationError) return
+      if (error instanceof ObsoleteMemberOperationError) {
+        if (isCurrentOperationContext(input.operationId, input.contextKey)) {
+          dispatchOperation({
+            type: 'SUBMISSION_REJECTED',
+            operationId: input.operationId,
+            contextKey: input.contextKey,
+            feedback: storeMemberOperationFeedback({
+              outcome: 'rejected',
+              message: submissionAuthorizationBlockedMessage,
+            }),
+          })
+        }
+        return
+      }
       const outcome = classifyMemberMutationOutcome(error)
       const normalized = normalizeCoreApiError(error)
       const baseFeedback: MemberOperationFeedback = {
@@ -853,7 +974,8 @@ export function useMemberAdministrationController({
           },
           input.origin
         )
-        if (!isCurrentOperation(input.operationId, input.contextKey)) return
+        if (!isCurrentOperationContext(input.operationId, input.contextKey))
+          return
         dispatchOperation({
           type: 'SUBMISSION_UNCERTAIN',
           operationId: input.operationId,
@@ -868,7 +990,7 @@ export function useMemberAdministrationController({
         })
         return
       }
-      if (isCurrentOperation(input.operationId, input.contextKey)) {
+      if (isCurrentOperationContext(input.operationId, input.contextKey)) {
         dispatchOperation({
           type: 'SUBMISSION_REJECTED',
           operationId: input.operationId,
@@ -893,7 +1015,8 @@ export function useMemberAdministrationController({
       if (
         current.kind === 'idle' ||
         mutationInFlight.current !== null ||
-        !isCurrentOperation(input.operationId, input.contextKey) ||
+        !isCurrentOperationContext(input.operationId, input.contextKey) ||
+        !canPerformPrivilegedAction(input.contextKey) ||
         !selectOperationCapabilities(current).canSubmit
       ) {
         return
@@ -939,7 +1062,13 @@ export function useMemberAdministrationController({
       })
       mutateEditor(mutationInput)
     },
-    [captureMutationOrigin, dispatchOperation, isCurrentOperation, mutateEditor]
+    [
+      captureMutationOrigin,
+      canPerformPrivilegedAction,
+      dispatchOperation,
+      isCurrentOperationContext,
+      mutateEditor,
+    ]
   )
 
   const confirmLifecycle = useCallback(
@@ -951,7 +1080,8 @@ export function useMemberAdministrationController({
         current.authorization.contextKey !== accessKey ||
         !selectOperationCapabilities(current).canSubmit ||
         mutationInFlight.current !== null ||
-        !isCurrentOperation(operationId, accessKey)
+        !isCurrentOperationContext(operationId, accessKey) ||
+        !canPerformPrivilegedAction(accessKey)
       ) {
         return
       }
@@ -980,8 +1110,9 @@ export function useMemberAdministrationController({
     [
       accessKey,
       captureMutationOrigin,
+      canPerformPrivilegedAction,
       dispatchOperation,
-      isCurrentOperation,
+      isCurrentOperationContext,
       mutateLifecycle,
     ]
   )
@@ -993,7 +1124,8 @@ export function useMemberAdministrationController({
         current.kind !== 'edit' ||
         current.phase !== 'load-error' ||
         current.operationId !== operationId ||
-        current.authorization.contextKey !== accessKey
+        current.authorization.contextKey !== accessKey ||
+        !canPerformPrivilegedAction(accessKey)
       ) {
         return
       }
@@ -1001,7 +1133,7 @@ export function useMemberAdministrationController({
         operationId,
         accessKey,
         'editor-snapshot',
-        () => isCurrentOperation(operationId, accessKey)
+        () => isCurrentOperationContext(operationId, accessKey)
       )
       if (!request) return
       dispatchOperation({
@@ -1015,8 +1147,9 @@ export function useMemberAdministrationController({
     [
       accessKey,
       beginOperationRequest,
+      canPerformPrivilegedAction,
       dispatchOperation,
-      isCurrentOperation,
+      isCurrentOperationContext,
       loadEditorSnapshot,
     ]
   )
@@ -1028,7 +1161,8 @@ export function useMemberAdministrationController({
         current.kind !== 'lifecycle' ||
         current.phase !== 'load-error' ||
         current.operationId !== operationId ||
-        current.authorization.contextKey !== accessKey
+        current.authorization.contextKey !== accessKey ||
+        !canPerformPrivilegedAction(accessKey)
       ) {
         return
       }
@@ -1036,7 +1170,7 @@ export function useMemberAdministrationController({
         operationId,
         accessKey,
         'lifecycle-snapshot',
-        () => isCurrentOperation(operationId, accessKey)
+        () => isCurrentOperationContext(operationId, accessKey)
       )
       if (!request) return
       dispatchOperation({
@@ -1056,8 +1190,9 @@ export function useMemberAdministrationController({
     [
       accessKey,
       beginOperationRequest,
+      canPerformPrivilegedAction,
       dispatchOperation,
-      isCurrentOperation,
+      isCurrentOperationContext,
       loadLifecycleSnapshot,
     ]
   )
@@ -1071,7 +1206,8 @@ export function useMemberAdministrationController({
         (current.phase === 'verification-required' ||
           current.phase === 'verification-failed' ||
           current.phase === 'review-found' ||
-          current.phase === 'review-not-found')
+          current.phase === 'review-not-found') &&
+        canPerformPrivilegedAction(current.authorization.contextKey)
       ) {
         void getEditorRecovery().verifyCreation({
           operationId,
@@ -1085,7 +1221,8 @@ export function useMemberAdministrationController({
         current.operationId === operationId &&
         (current.phase === 'verification-required' ||
           current.phase === 'verification-failed' ||
-          current.phase === 'review')
+          current.phase === 'review') &&
+        canPerformPrivilegedAction(current.authorization.contextKey)
       ) {
         void getEditorRecovery().verifyEdit({
           operationId,
@@ -1095,7 +1232,7 @@ export function useMemberAdministrationController({
         })
       }
     },
-    [getEditorRecovery]
+    [canPerformPrivilegedAction, getEditorRecovery]
   )
 
   const retryLifecycleVerification = useCallback(
@@ -1106,7 +1243,8 @@ export function useMemberAdministrationController({
         current.operationId !== operationId ||
         (current.phase !== 'verification-required' &&
           current.phase !== 'verification-failed' &&
-          current.phase !== 'review')
+          current.phase !== 'review') ||
+        !canPerformPrivilegedAction(current.authorization.contextKey)
       ) {
         return
       }
@@ -1117,7 +1255,7 @@ export function useMemberAdministrationController({
         originalSnapshot: current.originalSnapshot,
       })
     },
-    [getLifecycleRecovery]
+    [canPerformPrivilegedAction, getLifecycleRecovery]
   )
 
   const reviewCreationDraft = useCallback(
@@ -1126,7 +1264,8 @@ export function useMemberAdministrationController({
       if (
         current.kind !== 'create' ||
         current.operationId !== operationId ||
-        current.phase !== 'review-not-found'
+        current.phase !== 'review-not-found' ||
+        !canPerformPrivilegedAction(current.authorization.contextKey)
       ) {
         return
       }
@@ -1136,7 +1275,7 @@ export function useMemberAdministrationController({
         contextKey: current.authorization.contextKey,
       })
     },
-    [dispatchOperation]
+    [canPerformPrivilegedAction, dispatchOperation]
   )
 
   const resolveEditReconciliation = useCallback(
@@ -1151,7 +1290,7 @@ export function useMemberAdministrationController({
         current.operationId !== operationId ||
         current.phase !== 'review' ||
         current.latestSnapshot.etag !== reviewedVersion ||
-        !isAuthorizationAllowed(current.authorization.contextKey)
+        !canPerformPrivilegedAction(current.authorization.contextKey)
       ) {
         return
       }
@@ -1186,7 +1325,7 @@ export function useMemberAdministrationController({
         })
       }
     },
-    [dispatchOperation, isAuthorizationAllowed, nextOperationId]
+    [canPerformPrivilegedAction, dispatchOperation, nextOperationId]
   )
 
   const discardEdit = useCallback(
@@ -1197,7 +1336,7 @@ export function useMemberAdministrationController({
         current.operationId !== operationId ||
         current.phase !== 'review' ||
         current.latestSnapshot.etag !== reviewedVersion ||
-        !isAuthorizationAllowed(current.authorization.contextKey)
+        !canPerformPrivilegedAction(current.authorization.contextKey)
       ) {
         return
       }
@@ -1210,7 +1349,7 @@ export function useMemberAdministrationController({
         nextOperationId: nextId,
       })
     },
-    [dispatchOperation, isAuthorizationAllowed, nextOperationId]
+    [canPerformPrivilegedAction, dispatchOperation, nextOperationId]
   )
 
   const reviewLifecycleForConfirmation = useCallback(
@@ -1223,7 +1362,7 @@ export function useMemberAdministrationController({
         current.latestSnapshot.etag !== reviewedVersion ||
         !current.eligible ||
         current.desiredStatePresent ||
-        !isAuthorizationAllowed(current.authorization.contextKey)
+        !canPerformPrivilegedAction(current.authorization.contextKey)
       ) {
         return
       }
@@ -1236,7 +1375,7 @@ export function useMemberAdministrationController({
         nextOperationId: nextId,
       })
     },
-    [dispatchOperation, isAuthorizationAllowed, nextOperationId]
+    [canPerformPrivilegedAction, dispatchOperation, nextOperationId]
   )
 
   const close = useCallback(() => {

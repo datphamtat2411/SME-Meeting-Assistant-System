@@ -169,6 +169,7 @@ export async function synchronizeMemberCaches(
   } else if (
     mutation.type === 'updated' &&
     mutation.changedFields.includes('displayName') &&
+    origin?.actorId === mutation.targetMemberId &&
     sameActor
   ) {
     // A display-name update affects the current-user presentation but does not

@@ -83,7 +83,7 @@ interface MemberEditorRecovery {
 export function createMemberEditorRecovery(
   dependencies: MemberEditorRecoveryDependencies
 ): MemberEditorRecovery {
-  function canApply(
+  function isCurrentRequestContext(
     request: MemberOperationRequest,
     operationId: number,
     contextKey: string
@@ -92,11 +92,12 @@ export function createMemberEditorRecovery(
       dependencies.requests.isCurrentRequest(request, {
         operationId,
         contextKey,
-      }) &&
-      dependencies.isOperationCurrent(operationId, contextKey) &&
-      dependencies.isAuthorizationAllowed(contextKey)
+      }) && dependencies.isOperationCurrent(operationId, contextKey)
     )
   }
+
+  const verificationDeferredMessage =
+    'Current administration access could not be verified while checking the request outcome. The protected response was discarded; verify access and reload the authoritative state before continuing.'
 
   async function verifyCreation(input: {
     operationId: number
@@ -133,7 +134,20 @@ export function createMemberEditorRecovery(
         access,
         request.signal
       )
-      if (!canApply(request, input.operationId, input.contextKey)) return
+      if (
+        !isCurrentRequestContext(request, input.operationId, input.contextKey)
+      )
+        return
+      if (!dependencies.isAuthorizationAllowed(input.contextKey)) {
+        dependencies.dispatch({
+          type: 'VERIFICATION_DEFERRED',
+          operationId: input.operationId,
+          contextKey: input.contextKey,
+          requestId: request.requestId,
+          message: verificationDeferredMessage,
+        })
+        return
+      }
       dependencies.dispatch({
         type: 'VERIFICATION_SUCCEEDED',
         operationId: input.operationId,
@@ -148,8 +162,18 @@ export function createMemberEditorRecovery(
     } catch (error) {
       if (
         request.signal.aborted ||
-        !canApply(request, input.operationId, input.contextKey)
+        !isCurrentRequestContext(request, input.operationId, input.contextKey)
       ) {
+        return
+      }
+      if (!dependencies.isAuthorizationAllowed(input.contextKey)) {
+        dependencies.dispatch({
+          type: 'VERIFICATION_DEFERRED',
+          operationId: input.operationId,
+          contextKey: input.contextKey,
+          requestId: request.requestId,
+          message: verificationDeferredMessage,
+        })
         return
       }
       dependencies.dispatch({
@@ -193,7 +217,20 @@ export function createMemberEditorRecovery(
         input.original.member.id,
         request.signal
       )
-      if (!canApply(request, input.operationId, input.contextKey)) return
+      if (
+        !isCurrentRequestContext(request, input.operationId, input.contextKey)
+      )
+        return
+      if (!dependencies.isAuthorizationAllowed(input.contextKey)) {
+        dependencies.dispatch({
+          type: 'VERIFICATION_DEFERRED',
+          operationId: input.operationId,
+          contextKey: input.contextKey,
+          requestId: request.requestId,
+          message: verificationDeferredMessage,
+        })
+        return
+      }
       const reconciliation = reconcileMemberEdit(
         input.original,
         input.payload,
@@ -218,8 +255,18 @@ export function createMemberEditorRecovery(
     } catch (error) {
       if (
         request.signal.aborted ||
-        !canApply(request, input.operationId, input.contextKey)
+        !isCurrentRequestContext(request, input.operationId, input.contextKey)
       ) {
+        return
+      }
+      if (!dependencies.isAuthorizationAllowed(input.contextKey)) {
+        dependencies.dispatch({
+          type: 'VERIFICATION_DEFERRED',
+          operationId: input.operationId,
+          contextKey: input.contextKey,
+          requestId: request.requestId,
+          message: verificationDeferredMessage,
+        })
         return
       }
       dependencies.dispatch({

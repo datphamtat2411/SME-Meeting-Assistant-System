@@ -275,6 +275,13 @@ export type MemberOperationAction =
       error: string
     }
   | {
+      type: 'SNAPSHOT_DEFERRED'
+      operationId: number
+      contextKey: string
+      requestId: number
+      message: string
+    }
+  | {
       type: 'SUBMISSION_STARTED'
       operationId: number
       contextKey: string
@@ -336,6 +343,13 @@ export type MemberOperationAction =
       contextKey: string
       requestId: number
       error: string
+    }
+  | {
+      type: 'VERIFICATION_DEFERRED'
+      operationId: number
+      contextKey: string
+      requestId: number
+      message: string
     }
   | {
       type: 'CREATION_DRAFT_REVIEWED'
@@ -523,6 +537,23 @@ export function memberOperationReducer(
         state.snapshotRequestId === action.requestId
       ) {
         return { ...state, phase: 'load-error', loadError: action.error }
+      }
+      return state
+    case 'SNAPSHOT_DEFERRED':
+      if (!matches(state, action.operationId, action.contextKey)) return state
+      if (
+        state.kind === 'edit' &&
+        state.phase === 'loading' &&
+        state.snapshotRequestId === action.requestId
+      ) {
+        return { ...state, phase: 'load-error', loadError: action.message }
+      }
+      if (
+        state.kind === 'lifecycle' &&
+        state.phase === 'loading' &&
+        state.snapshotRequestId === action.requestId
+      ) {
+        return { ...state, phase: 'load-error', loadError: action.message }
       }
       return state
     case 'SUBMISSION_STARTED':
@@ -815,6 +846,42 @@ export function memberOperationReducer(
           originalSnapshot: state.originalSnapshot,
           feedback: state.feedback,
           verificationError: action.error,
+        }
+      }
+      return state
+    case 'VERIFICATION_DEFERRED':
+      if (!matches(state, action.operationId, action.contextKey)) return state
+      if (
+        state.kind === 'create' &&
+        state.phase === 'verifying' &&
+        state.verificationRequestId === action.requestId
+      ) {
+        return {
+          ...state,
+          phase: 'verification-required',
+          feedback: { ...state.feedback, message: action.message },
+        }
+      }
+      if (
+        state.kind === 'edit' &&
+        state.phase === 'verifying' &&
+        state.verificationRequestId === action.requestId
+      ) {
+        return {
+          ...state,
+          phase: 'verification-required',
+          feedback: { ...state.feedback, message: action.message },
+        }
+      }
+      if (
+        state.kind === 'lifecycle' &&
+        state.phase === 'verifying' &&
+        state.verificationRequestId === action.requestId
+      ) {
+        return {
+          ...state,
+          phase: 'verification-required',
+          feedback: { ...state.feedback, message: action.message },
         }
       }
       return state

@@ -224,6 +224,42 @@ describe('Member mutation cache synchronization', () => {
     ).toContain(currentUserQueryKey)
   })
 
+  it('does not refresh current presentation for another member display-name update', async () => {
+    const queryClient = client()
+    const invalidate = vi
+      .spyOn(queryClient, 'invalidateQueries')
+      .mockResolvedValue(undefined)
+
+    await synchronizeMemberCaches(
+      queryClient,
+      {
+        type: 'updated',
+        targetMemberId: memberId,
+        changedFields: ['displayName'],
+        origin: {
+          actorId: actor.userId,
+          sessionId: actor.session.id,
+          authorizationContextKey: 'actor:session-1',
+        },
+        outcome: 'confirmed',
+      },
+      {
+        activeIdentity: {
+          userId: actor.userId,
+          session: { id: actor.session.id },
+        },
+      }
+    )
+
+    expect(
+      invalidate.mock.calls.some(
+        ([filters]) =>
+          JSON.stringify(filters?.queryKey) ===
+          JSON.stringify(currentUserQueryKey)
+      )
+    ).toBe(false)
+  })
+
   it('does not apply an old session authentication effect to a replacement session', async () => {
     const queryClient = client()
     const invalidate = vi

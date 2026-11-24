@@ -353,6 +353,83 @@ describe('Member operation state transitions', () => {
     ).toEqual({ kind: 'idle' })
   })
 
+  it('settles an initial snapshot when verification interrupts its response', () => {
+    const loading = reduce(
+      { kind: 'idle' },
+      {
+        type: 'START_EDIT',
+        operationId: 1,
+        authorization,
+        memberId: snapshot.member.id,
+        requestId: 4,
+      }
+    )
+
+    const deferred = reduce(loading, {
+      type: 'SNAPSHOT_DEFERRED',
+      operationId: 1,
+      contextKey: authorization.contextKey,
+      requestId: 4,
+      message: 'Verification is required before reviewing this member.',
+    })
+
+    expect(deferred).toMatchObject({
+      kind: 'edit',
+      phase: 'load-error',
+      loadError: 'Verification is required before reviewing this member.',
+    })
+    expect(selectEditorSession(deferred)).toMatchObject({ status: 'error' })
+  })
+
+  it('returns recovery verification to an explicit retry phase when authorization is unavailable', () => {
+    let state = reduce(
+      { kind: 'idle' },
+      {
+        type: 'START_CREATE',
+        operationId: 1,
+        authorization,
+      }
+    )
+    state = reduce(state, {
+      type: 'SUBMISSION_STARTED',
+      operationId: 1,
+      contextKey: authorization.contextKey,
+      payload: { email: 'new@example.test', displayName: 'New' },
+    })
+    state = reduce(state, {
+      type: 'SUBMISSION_UNCERTAIN',
+      operationId: 1,
+      contextKey: authorization.contextKey,
+      feedback,
+    })
+    state = reduce(state, {
+      type: 'VERIFICATION_STARTED',
+      operationId: 1,
+      contextKey: authorization.contextKey,
+      requestId: 9,
+    })
+
+    const deferred = reduce(state, {
+      type: 'VERIFICATION_DEFERRED',
+      operationId: 1,
+      contextKey: authorization.contextKey,
+      requestId: 9,
+      message: 'Verify access before reviewing the request outcome.',
+    })
+
+    expect(deferred).toMatchObject({
+      kind: 'create',
+      phase: 'verification-required',
+      feedback: {
+        message: 'Verify access before reviewing the request outcome.',
+      },
+    })
+    expect(selectOperationCapabilities(deferred)).toMatchObject({
+      canRetryVerification: true,
+      canSubmit: false,
+    })
+  })
+
   it('keeps a rejected edit editable with its submitted draft and reviewed snapshot', () => {
     let state = reduce(
       { kind: 'idle' },

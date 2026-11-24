@@ -799,6 +799,216 @@ describe('Members directory', () => {
       .not.toBeInTheDocument()
   })
 
+  it('does not refresh current identity when another member changes display name', async () => {
+    mockDirectory()
+    const detailSpy = vi
+      .spyOn(coreApi, 'getWithMetaAndEtag')
+      .mockResolvedValue({ data: member, meta: {}, etag: 'W/"member-v1"' })
+    const patchSpy = vi
+      .spyOn(coreApi, 'patchWithMetaAndEtag')
+      .mockResolvedValue({
+        data: { ...member, displayName: 'Renamed Member' },
+        meta: {},
+        etag: 'W/"member-v2"',
+      })
+    const { screen, identityRead } = await renderMembers()
+    const identityReadsBeforeMutation = identityRead.mock.calls.length
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Edit Lee Member' })
+    )
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Name' }),
+      'Renamed Member'
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Save member' }))
+
+    await expect.poll(() => patchSpy.mock.calls.length).toBe(1)
+    await expect
+      .element(screen.getByRole('dialog', { name: 'Edit member' }))
+      .not.toBeInTheDocument()
+    expect(detailSpy).toHaveBeenCalledTimes(1)
+    expect(identityRead.mock.calls.length).toBe(identityReadsBeforeMutation)
+  })
+
+  it('processes a confirmed member mutation while compatible identity verification is pending', async () => {
+    mockDirectory()
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+      data: member,
+      meta: {},
+      etag: 'W/"member-v1"',
+    })
+    let resolvePatch!: (value: unknown) => void
+    const patchSpy = vi
+      .spyOn(coreApi, 'patchWithMetaAndEtag')
+      .mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolvePatch = resolve
+          }) as never
+      )
+    const { queryClient, screen, identityRead } = await renderMembers()
+    const identityReadsBeforeRefresh = identityRead.mock.calls.length
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Edit Lee Member' })
+    )
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Name' }),
+      'Renamed During Verification'
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Save member' }))
+    await expect.poll(() => patchSpy.mock.calls.length).toBe(1)
+
+    let resolveIdentity!: (value: unknown) => void
+    identityRead.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveIdentity = resolve
+        }) as never
+    )
+    const refresh = queryClient.invalidateQueries({
+      queryKey: currentUserQueryKey,
+    })
+    await expect
+      .poll(() => identityRead.mock.calls.length)
+      .toBeGreaterThan(identityReadsBeforeRefresh)
+
+    resolvePatch({
+      data: { ...member, displayName: 'Renamed During Verification' },
+      meta: {},
+      etag: 'W/"member-v2"',
+    })
+    await expect
+      .element(screen.getByRole('dialog', { name: 'Edit member' }))
+      .not.toBeInTheDocument()
+    expect(patchSpy).toHaveBeenCalledTimes(1)
+
+    resolveIdentity(identity('ADMINISTRATOR'))
+    await refresh
+  })
+
+  it('preserves a rejected mutation while compatible identity verification is pending', async () => {
+    mockDirectory()
+    const detailSpy = vi
+      .spyOn(coreApi, 'getWithMetaAndEtag')
+      .mockResolvedValue({ data: member, meta: {}, etag: 'W/"member-v1"' })
+    let rejectPatch!: (error: unknown) => void
+    const patchSpy = vi
+      .spyOn(coreApi, 'patchWithMetaAndEtag')
+      .mockImplementation(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectPatch = reject
+          }) as never
+      )
+    const { queryClient, screen, identityRead } = await renderMembers()
+    const identityReadsBeforeRefresh = identityRead.mock.calls.length
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Edit Lee Member' })
+    )
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Name' }),
+      'Rejected During Verification'
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Save member' }))
+    await expect.poll(() => patchSpy.mock.calls.length).toBe(1)
+
+    let resolveIdentity!: (value: unknown) => void
+    identityRead.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveIdentity = resolve
+        }) as never
+    )
+    const refresh = queryClient.invalidateQueries({
+      queryKey: currentUserQueryKey,
+    })
+    await expect
+      .poll(() => identityRead.mock.calls.length)
+      .toBeGreaterThan(identityReadsBeforeRefresh)
+
+    rejectPatch(
+      new CoreApiError({
+        message: 'The member update was rejected.',
+        code: 'VALIDATION_FAILED',
+        status: 422,
+        kind: 'http',
+      })
+    )
+    await expect
+      .element(screen.getByText(/Core API rejected/i).first())
+      .toBeVisible()
+    await expect
+      .element(screen.getByRole('button', { name: 'Save member' }))
+      .toBeDisabled()
+    expect(detailSpy).toHaveBeenCalledTimes(1)
+
+    resolveIdentity(identity('ADMINISTRATOR'))
+    await refresh
+    await expect
+      .element(screen.getByRole('button', { name: 'Save member' }))
+      .toBeEnabled()
+  })
+
+  it('settles an initial member snapshot when verification interrupts its response', async () => {
+    mockDirectory()
+    let resolveDetail!: (value: unknown) => void
+    const detailSpy = vi
+      .spyOn(coreApi, 'getWithMetaAndEtag')
+      .mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveDetail = resolve
+          }) as never
+      )
+    const { queryClient, screen, identityRead } = await renderMembers()
+    const identityReadsBeforeRefresh = identityRead.mock.calls.length
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Edit Lee Member' })
+    )
+    await expect
+      .element(screen.getByText('Loading member details…'))
+      .toBeVisible()
+
+    let resolveIdentity!: (value: unknown) => void
+    identityRead.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveIdentity = resolve
+        }) as never
+    )
+    const refresh = queryClient.invalidateQueries({
+      queryKey: currentUserQueryKey,
+    })
+    await expect
+      .poll(() => identityRead.mock.calls.length)
+      .toBeGreaterThan(identityReadsBeforeRefresh)
+
+    resolveDetail({ data: member, meta: {}, etag: 'W/"member-v1"' })
+    await expect
+      .element(screen.getByText('Member details could not be loaded'))
+      .toBeVisible()
+    expect(detailSpy).toHaveBeenCalledTimes(1)
+
+    resolveIdentity(identity('ADMINISTRATOR'))
+    await refresh
+    detailSpy.mockResolvedValueOnce({
+      data: member,
+      meta: {},
+      etag: 'W/"member-v2"',
+    })
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Retry member details' })
+    )
+    await expect
+      .element(screen.getByRole('dialog', { name: 'Edit member' }))
+      .toBeVisible()
+    expect(detailSpy).toHaveBeenCalledTimes(2)
+  })
+
   it('suspends privileged interaction before unrelated invalidation for a self role update', async () => {
     const self = {
       ...member,
