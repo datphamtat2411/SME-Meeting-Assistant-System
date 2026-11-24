@@ -10,6 +10,7 @@ import 'local_media_models.dart';
 import 'local_media_repository.dart';
 import 'media_contracts.dart';
 import 'processing_repository.dart';
+import '../meetings/meeting_foundation.dart';
 
 class ProcessingTimelinePanel extends StatefulWidget {
   const ProcessingTimelinePanel({
@@ -19,12 +20,14 @@ class ProcessingTimelinePanel extends StatefulWidget {
     this.processingRepository,
     this.localMedia,
     this.canRetry = true,
+    this.capabilities,
   });
   final ApiClient api;
   final String meetingId;
   final ProcessingRepository? processingRepository;
   final LocalMediaRepository? localMedia;
   final bool canRetry;
+  final MeetingCapabilities? capabilities;
   @override
   State<ProcessingTimelinePanel> createState() =>
       _ProcessingTimelinePanelState();
@@ -36,6 +39,8 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
   late Future<List<ProcessingJobRecord>> future;
   Timer? timer;
   bool retrying = false;
+  late final AuthenticatedSessionScope sessionScope;
+  MeetingCapabilities? _capabilities;
 
   @override
   void initState() {
@@ -43,8 +48,29 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
     WidgetsBinding.instance.addObserver(this);
     processingRepository =
         widget.processingRepository ?? ProcessingRepository(api: widget.api);
+    sessionScope = widget.api.requireAuthenticatedSessionScope();
+    _capabilities = widget.capabilities;
     reload();
     timer = Timer.periodic(const Duration(seconds: 12), (_) => reload());
+  }
+
+  @override
+  void didUpdateWidget(covariant ProcessingTimelinePanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _capabilities = widget.capabilities;
+  }
+
+  bool _allows(MeetingOperation operation) =>
+      _capabilities?.allows(operation) == true;
+
+  void _requireCapability(MeetingOperation operation) {
+    if (!_allows(operation)) {
+      throw const ApiFailure(
+        403,
+        'MEDIA_CAPABILITY_REQUIRED',
+        'Bạn không có quyền thực hiện thao tác xử lý này.',
+      );
+    }
   }
 
   @override
@@ -68,24 +94,35 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
 
   void reload() {
     if (!mounted) return;
+    if (!_allows(MeetingOperation.readMedia)) {
+      setState(
+        () => future = Future<List<ProcessingJobRecord>>.value(const []),
+      );
+      return;
+    }
+    if (!widget.api.isCurrentAuthenticatedSession(sessionScope)) return;
     setState(() {
-      future = processingRepository.list(widget.meetingId);
+      future = processingRepository.list(
+        widget.meetingId,
+        sessionScope: sessionScope,
+      );
     });
   }
 
   Future<void> retry(ProcessingJobRecord candidate) async {
-    if (retrying) return;
+    if (retrying || !_allows(MeetingOperation.retryProcessing)) return;
     setState(() => retrying = true);
     ProcessingOperation? operation;
-    AuthenticatedSessionScope? scope;
+    final scope = sessionScope;
     try {
+      _requireCapability(MeetingOperation.retryProcessing);
+      widget.api.requireCurrentAuthenticatedSession(scope);
       final rand = Random.secure();
       final key = List<int>.generate(
         16,
         (_) => rand.nextInt(256),
       ).map((v) => v.toRadixString(16).padLeft(2, '0')).join();
       final localMedia = widget.localMedia;
-      scope = widget.api.requireAuthenticatedSessionScope();
       if (localMedia != null) {
         operation = await localMedia.beginProcessingOperation(
           scope: scope,
@@ -98,6 +135,7 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
       final accepted = await processingRepository.retry(
         candidate.id,
         idempotencyKey: key,
+        sessionScope: scope,
       );
       if (operation != null && localMedia != null) {
         await localMedia.updateProcessingOperation(
@@ -115,7 +153,6 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
       final localMedia = widget.localMedia;
       final activeScope = scope;
       if (localMedia != null &&
-          activeScope != null &&
           widget.api.isCurrentAuthenticatedSession(activeScope) &&
           operation != null) {
         final failure = error is ApiFailure ? error : null;
@@ -136,9 +173,7 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
           );
         } catch (_) {}
       }
-      if (mounted &&
-          activeScope != null &&
-          widget.api.isCurrentAuthenticatedSession(activeScope)) {
+      if (mounted && widget.api.isCurrentAuthenticatedSession(activeScope)) {
         showFailure(context, error);
       }
     } finally {
@@ -238,7 +273,10 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
                     Align(
                       alignment: Alignment.centerRight,
                       child: TextButton(
-                        onPressed: !widget.canRetry || retrying
+                        onPressed:
+                            !widget.canRetry ||
+                                !_allows(MeetingOperation.retryProcessing) ||
+                                retrying
                             ? null
                             : () => retry(item),
                         child: const Text('Thử lại xử lý'),

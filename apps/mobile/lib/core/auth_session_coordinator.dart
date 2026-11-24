@@ -726,8 +726,12 @@ class AuthSessionCoordinator extends ChangeNotifier {
 
   Future<_SessionCredentialSnapshot> _credentialForProtectedRequest({
     required int expectedEpoch,
+    AuthenticatedSessionScope? expectedScope,
   }) async {
     _requireCurrentEpoch(expectedEpoch);
+    if (expectedScope != null) {
+      _requireScope(expectedScope);
+    }
     if (!_state.isAuthenticated) {
       throw const ApiFailure(
         401,
@@ -737,6 +741,9 @@ class AuthSessionCoordinator extends ChangeNotifier {
     }
     await _refreshIfNeeded(expectedEpoch);
     _requireCurrentEpoch(expectedEpoch);
+    if (expectedScope != null) {
+      _requireScope(expectedScope);
+    }
     if (!_state.isAuthenticated) throw _sessionChanged();
     final snapshot = _snapshotForEpoch(expectedEpoch);
     if (snapshot == null) throw _sessionChanged();
@@ -775,14 +782,22 @@ class AuthSessionCoordinator extends ChangeNotifier {
   _SessionCredentialSnapshot _credentialForDispatch(
     _SessionCredentialSnapshot snapshot, {
     required bool requireVerifiedSession,
+    AuthenticatedSessionScope? expectedScope,
   }) {
     _requireCurrentEpoch(snapshot.epoch);
+    if (expectedScope != null) {
+      _requireScope(expectedScope);
+    }
     if (requireVerifiedSession && !_state.isAuthenticated) {
       throw _sessionChanged();
     }
     final current = _snapshotForEpoch(snapshot.epoch);
     if (current == null) throw _sessionChanged();
     return current.generation >= snapshot.generation ? current : snapshot;
+  }
+
+  void _requireScope(AuthenticatedSessionScope scope) {
+    if (!isCurrentAuthenticatedSession(scope)) throw _sessionChanged();
   }
 
   Future<void> _refreshIfNeeded(int epoch) async {

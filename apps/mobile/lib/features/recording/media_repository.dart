@@ -55,16 +55,18 @@ class MediaRepository {
     String meetingId,
     MediaUploadRequest request, {
     required String idempotencyKey,
+    AuthenticatedSessionScope? sessionScope,
   }) async {
     _validateMeetingId(meetingId);
     _validateIdempotencyKey(idempotencyKey);
-    final scope = _captureSession();
+    final scope = _captureSession(sessionScope);
     final response = await _mutateRequest(
       scope,
       () => api.post(
         '${_meetingPath(meetingId)}/media/uploads',
         request.toJson(),
         headers: <String, String>{'Idempotency-Key': idempotencyKey},
+        sessionScope: scope,
       ),
     );
     try {
@@ -88,16 +90,21 @@ class MediaRepository {
   /// Finalization intentionally returns a typed media record for every valid
   /// Core response. A 2xx response with `REJECTED` or `FAILED` is not success,
   /// but it is also not a malformed transport response.
-  Future<MediaRecord> finalizeUpload(String meetingId, String mediaId) async {
+  Future<MediaRecord> finalizeUpload(
+    String meetingId,
+    String mediaId, {
+    AuthenticatedSessionScope? sessionScope,
+  }) async {
     _validateMeetingId(meetingId);
     _validateIdentifier(mediaId, 'mediaId');
-    final scope = _captureSession();
+    final scope = _captureSession(sessionScope);
     final response = await _mutateRequest(
       scope,
       () => api.post(
         '${_meetingPath(meetingId)}/media/${Uri.encodeComponent(mediaId)}/finalize',
         const <String, dynamic>{},
         timeoutPolicy: CoreApiTimeoutPolicy.mediaFinalization,
+        sessionScope: scope,
       ),
     );
     try {
@@ -122,12 +129,15 @@ class MediaRepository {
     }
   }
 
-  Future<List<MediaRecord>> listMedia(String meetingId) async {
+  Future<List<MediaRecord>> listMedia(
+    String meetingId, {
+    AuthenticatedSessionScope? sessionScope,
+  }) async {
     _validateMeetingId(meetingId);
-    final scope = _captureSession();
+    final scope = _captureSession(sessionScope);
     final response = await _readRequest(
       scope,
-      () => api.get('${_meetingPath(meetingId)}/media'),
+      () => api.get('${_meetingPath(meetingId)}/media', sessionScope: scope),
     );
     try {
       final values = response
@@ -152,14 +162,19 @@ class MediaRepository {
     }
   }
 
-  Future<MediaRecord> getMedia(String meetingId, String mediaId) async {
+  Future<MediaRecord> getMedia(
+    String meetingId,
+    String mediaId, {
+    AuthenticatedSessionScope? sessionScope,
+  }) async {
     _validateMeetingId(meetingId);
     _validateIdentifier(mediaId, 'mediaId');
-    final scope = _captureSession();
+    final scope = _captureSession(sessionScope);
     final response = await _readRequest(
       scope,
       () => api.get(
         '${_meetingPath(meetingId)}/media/${Uri.encodeComponent(mediaId)}',
+        sessionScope: scope,
       ),
     );
     try {
@@ -186,16 +201,18 @@ class MediaRepository {
 
   Future<MediaAccessCapability> createAccessCapability(
     String meetingId,
-    String mediaId,
-  ) async {
+    String mediaId, {
+    AuthenticatedSessionScope? sessionScope,
+  }) async {
     _validateMeetingId(meetingId);
     _validateIdentifier(mediaId, 'mediaId');
-    final scope = _captureSession();
+    final scope = _captureSession(sessionScope);
     final response = await _readRequest(
       scope,
       () => api.post(
         '${_meetingPath(meetingId)}/media/${Uri.encodeComponent(mediaId)}/access-url',
         const <String, dynamic>{},
+        sessionScope: scope,
       ),
     );
     try {
@@ -262,8 +279,10 @@ class MediaRepository {
     }
   }
 
-  AuthenticatedSessionScope _captureSession() {
-    final scope = api.authenticatedSessionScope;
+  AuthenticatedSessionScope _captureSession(
+    AuthenticatedSessionScope? expected,
+  ) {
+    final scope = expected ?? api.authenticatedSessionScope;
     if (scope == null || !api.isCurrentAuthenticatedSession(scope)) {
       throw _sessionFailure(MediaMutationOutcome.notDispatched);
     }
@@ -337,6 +356,11 @@ class MediaRepository {
   }
 
   MediaMutationOutcome _mutationOutcome(ApiFailure failure) {
+    if (failure.code == 'AUTH_SESSION_CHANGED' ||
+        failure.code == 'AUTH_SESSION_REQUIRED' ||
+        failure.status == 401) {
+      return MediaMutationOutcome.unknown;
+    }
     if (!failure.transportFailure &&
         failure.status >= 400 &&
         failure.status <= 499 &&

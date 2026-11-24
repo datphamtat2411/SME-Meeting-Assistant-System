@@ -112,14 +112,30 @@ class SignedUploadTransport {
       throw _abortFailure(_UploadAbortReason.cancelled);
     }
 
+    // Capability and source admission are repeated after all asynchronous
+    // preparation and immediately before the native request is dispatched.
+    final dispatchLength = await _readableLength(file);
+    if (dispatchLength <= 0 || dispatchLength != length) {
+      throw TransportFailure(
+        0,
+        'UPLOAD_SIZE_MISMATCH',
+        'The selected audio file changed before upload.',
+      );
+    }
+    _validateCapabilityExpiry(expiresAt);
+    if (cancellationToken?.isCancelled == true) {
+      throw _abortFailure(_UploadAbortReason.cancelled);
+    }
+
     final abortTrigger = Completer<void>();
     var abortReason = _UploadAbortReason.none;
     var active = true;
+    var dispatchStarted = false;
+    var responseClaimed = false;
     Timer? overallTimer;
     Timer? inactivityTimer;
-    var requestClosed = false;
     var sent = 0;
-    var progressTotal = length;
+    final stopwatch = Stopwatch()..start();
 
     void abort(_UploadAbortReason reason) {
       if (abortReason == _UploadAbortReason.none) abortReason = reason;
@@ -137,11 +153,11 @@ class SignedUploadTransport {
 
     void reportProgress(int value) {
       if (!active) return;
-      final bounded = value.clamp(0, progressTotal);
+      final bounded = value.clamp(0, length);
       if (bounded < sent) return;
       sent = bounded;
       try {
-        onProgress?.call(sent, progressTotal);
+        onProgress?.call(sent, length);
       } catch (_) {
         // A UI progress listener must not fail the binary transfer.
       }
@@ -159,34 +175,8 @@ class SignedUploadTransport {
     });
     activity();
 
-    final request =
-        http.AbortableStreamedRequest(
-            'PUT',
-            uri,
-            abortTrigger: abortTrigger.future,
-          )
-          ..followRedirects = false
-          ..contentLength = length
-          ..headers['Content-Type'] = contentType;
-
-    final responseFuture = httpClient.send(request);
-    unawaited(
-      responseFuture.then<void>(
-        (_) {},
-        onError: (Object _, StackTrace __) {
-          // If dispatch fails, close the source stream promptly. The awaited
-          // response future still supplies the original safe classification.
-          abort(_UploadAbortReason.networkFailure);
-        },
-      ),
-    );
-
-    try {
-      // Stream directly from File.openRead through the request sink. The
-      // addStream subscription is paused by package:http while the native
-      // request buffer is full; an intermediate controller would keep reading
-      // and accumulate an unbounded amount of audio in memory.
-      Stream<List<int>> monitoredFile() async* {
+    Stream<List<int>> monitoredFile() async* {
+      try {
         await for (final chunk in file.openRead()) {
           if (!active) return;
           final next = sent + chunk.length;
@@ -198,46 +188,48 @@ class SignedUploadTransport {
           reportProgress(next);
           yield chunk;
         }
-        if (active && sent != length) {
-          abort(_UploadAbortReason.fileChanged);
-          throw const _UploadFileChanged();
-        }
+      } on _UploadFileChanged {
+        rethrow;
+      } on Object {
+        if (active) abort(_UploadAbortReason.sourceFailure);
+        rethrow;
       }
-
-      final body = request.sink.addStream(monitoredFile());
-      await _awaitWithAbort(body, abortTrigger.future);
-      if (abortReason != _UploadAbortReason.none) {
-        throw _abortFailure(abortReason);
-      }
-      if (sent != length) {
+      if (active && sent != length) {
+        abort(_UploadAbortReason.fileChanged);
         throw const _UploadFileChanged();
       }
-      if (!requestClosed) {
-        await request.sink.close();
-        requestClosed = true;
-      }
+    }
 
+    final request =
+        _AbortableFileRequest(
+            method: 'PUT',
+            url: uri,
+            body: monitoredFile(),
+            abortTrigger: abortTrigger.future,
+          )
+          ..followRedirects = false
+          ..contentLength = length
+          ..headers['Content-Type'] = contentType;
+    Future<http.StreamedResponse>? responseFuture;
+
+    try {
+      dispatchStarted = true;
+      final pendingResponse = httpClient.send(request);
+      responseFuture = pendingResponse;
       final response = await _awaitWithAbort(
-        responseFuture,
+        pendingResponse,
         abortTrigger.future,
       );
+      responseClaimed = true;
       if (abortReason != _UploadAbortReason.none) {
         throw _abortFailure(abortReason);
       }
-      activity();
 
-      // Drain without buffering response content. Signed storage responses
-      // are never exposed as application data.
-      await _awaitWithAbort(
-        response.stream
-            .listen(
-              (_) => activity(),
-              onError: (Object error, StackTrace stackTrace) {
-                throw error;
-              },
-            )
-            .asFuture<void>(),
+      await _consumeResponse(
+        response,
         abortTrigger.future,
+        stopwatch: stopwatch,
+        onActivity: activity,
       );
       if (abortReason != _UploadAbortReason.none) {
         throw _abortFailure(abortReason);
@@ -275,6 +267,7 @@ class SignedUploadTransport {
         0,
         'UPLOAD_FILE_CHANGED',
         'The selected audio file changed during upload.',
+        remoteOutcomeAmbiguous: dispatchStarted,
       );
     } on http.RequestAbortedException {
       throw _abortFailure(
@@ -333,24 +326,54 @@ class SignedUploadTransport {
       active = false;
       overallTimer.cancel();
       inactivityTimer?.cancel();
-      if (!requestClosed) {
-        try {
-          await request.sink.close();
-        } catch (_) {
-          // The native client may already have closed an aborted request.
+      if (dispatchStarted && !responseClaimed && responseFuture != null) {
+        if (abortReason == _UploadAbortReason.none) {
+          abort(_UploadAbortReason.networkFailure);
         }
-      }
-      // Do not await a late response after a cancellation or timeout. The
-      // abort trigger has already detached the native request from the
-      // shared client, and any late error is deliberately ignored.
-      if (abortReason != _UploadAbortReason.none) {
         unawaited(
           responseFuture.then<void>(
-            (_) {},
+            (response) => _disposeResponse(response),
             onError: (Object _, StackTrace __) {},
           ),
         );
       }
+      stopwatch.stop();
+    }
+  }
+
+  Future<void> _consumeResponse(
+    http.StreamedResponse response,
+    Future<void> abortTrigger, {
+    required Stopwatch stopwatch,
+    required void Function() onActivity,
+  }) async {
+    final subscription = response.stream.listen((_) => onActivity());
+    try {
+      await _awaitWithAbort(subscription.asFuture<void>(), abortTrigger);
+    } finally {
+      await _boundedCleanup(subscription.cancel(), stopwatch);
+    }
+  }
+
+  Future<void> _disposeResponse(http.StreamedResponse response) async {
+    final subscription = response.stream.listen((_) {});
+    try {
+      await subscription.cancel();
+    } catch (_) {
+      // A late response is already outside the attempt's terminal outcome.
+    }
+  }
+
+  Future<void> _boundedCleanup(
+    Future<void> cleanup,
+    Stopwatch stopwatch,
+  ) async {
+    final remaining = timeout - stopwatch.elapsed;
+    if (remaining <= Duration.zero) return;
+    try {
+      await cleanup.timeout(remaining);
+    } catch (_) {
+      // Cleanup cannot replace an established upload outcome.
     }
   }
 
@@ -466,6 +489,14 @@ class SignedUploadTransport {
           0,
           'UPLOAD_FILE_CHANGED',
           'The selected audio file changed during upload.',
+          remoteOutcomeAmbiguous: true,
+        );
+      case _UploadAbortReason.sourceFailure:
+        return TransportFailure(
+          0,
+          'UPLOAD_SOURCE_READ_ERROR',
+          'The selected audio file could not be read during upload.',
+          remoteOutcomeAmbiguous: true,
         );
       case _UploadAbortReason.networkFailure:
       case _UploadAbortReason.none:
@@ -518,6 +549,7 @@ enum _UploadAbortReason {
   inactivityTimeout,
   overallTimeout,
   fileChanged,
+  sourceFailure,
   networkFailure,
 }
 
@@ -527,4 +559,28 @@ class _UploadFileChanged implements Exception {
 
 class _UploadAborted implements Exception {
   const _UploadAborted();
+}
+
+/// A signed PUT request whose finalized body is the monitored source stream.
+///
+/// The inherited sink is intentionally unused. Keeping the request body on
+/// [finalize] lets the native client own subscription backpressure and
+/// cancellation instead of creating a producer-side buffering lifecycle.
+class _AbortableFileRequest extends http.StreamedRequest with http.Abortable {
+  _AbortableFileRequest({
+    required String method,
+    required Uri url,
+    required this.body,
+    required this.abortTrigger,
+  }) : super(method, url);
+
+  final Stream<List<int>> body;
+  @override
+  final Future<void> abortTrigger;
+
+  @override
+  http.ByteStream finalize() {
+    super.finalize();
+    return http.ByteStream(body);
+  }
 }

@@ -17,11 +17,13 @@ import 'processing_repository.dart';
 import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
 import '../../core/widgets.dart';
+import '../meetings/meeting_foundation.dart';
 
 class RecordingPage extends StatefulWidget {
   final ApiClient api;
   final String meetingId;
   final bool enabled;
+  final MeetingCapabilities? capabilities;
   final LocalMediaRepository? localMedia;
   final MediaRepository? mediaRepository;
   final ProcessingRepository? processingRepository;
@@ -30,6 +32,7 @@ class RecordingPage extends StatefulWidget {
     required this.api,
     required this.meetingId,
     required this.enabled,
+    this.capabilities,
     this.localMedia,
     this.mediaRepository,
     this.processingRepository,
@@ -45,6 +48,7 @@ class _RecordingPageState extends State<RecordingPage> {
   late final MediaRepository mediaRepository;
   late final ProcessingRepository processingRepository;
   late final AuthenticatedSessionScope sessionScope;
+  MeetingCapabilities? _capabilities;
   List<RecordingDraft> savedRecordings = [];
   bool capturing = false;
   bool startingCapture = false;
@@ -69,8 +73,28 @@ class _RecordingPageState extends State<RecordingPage> {
     processingRepository =
         widget.processingRepository ?? ProcessingRepository(api: widget.api);
     sessionScope = widget.api.requireAuthenticatedSessionScope();
+    _capabilities = widget.capabilities;
     reloadJobs();
     loadDrafts();
+  }
+
+  @override
+  void didUpdateWidget(covariant RecordingPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _capabilities = widget.capabilities;
+  }
+
+  bool _allows(MeetingOperation operation) =>
+      _capabilities?.allows(operation) == true;
+
+  void _requireCapability(MeetingOperation operation) {
+    if (!_allows(operation)) {
+      throw const ApiFailure(
+        403,
+        'MEDIA_CAPABILITY_REQUIRED',
+        'Bạn không có quyền thực hiện thao tác âm thanh này.',
+      );
+    }
   }
 
   Future<void> loadDrafts() async {
@@ -92,8 +116,15 @@ class _RecordingPageState extends State<RecordingPage> {
 
   void reloadJobs() {
     if (!widget.api.isCurrentAuthenticatedSession(sessionScope)) return;
+    if (!_allows(MeetingOperation.readMedia)) {
+      setState(() => jobs = Future<List<ProcessingJobRecord>>.value(const []));
+      return;
+    }
     setState(() {
-      jobs = processingRepository.list(widget.meetingId);
+      jobs = processingRepository.list(
+        widget.meetingId,
+        sessionScope: sessionScope,
+      );
     });
   }
 
@@ -128,7 +159,12 @@ class _RecordingPageState extends State<RecordingPage> {
   }
 
   Future<void> begin() async {
-    if (!widget.enabled || busy || capturing) return;
+    if (!widget.enabled ||
+        !_allows(MeetingOperation.uploadMedia) ||
+        busy ||
+        capturing) {
+      return;
+    }
     LocalMediaAsset? reserved;
     try {
       widget.api.requireCurrentAuthenticatedSession(sessionScope);
@@ -224,13 +260,20 @@ class _RecordingPageState extends State<RecordingPage> {
       captureAsset = null;
       await loadDrafts();
       if (mounted && widget.api.isCurrentAuthenticatedSession(sessionScope)) {
+        final managedFile =
+            completed?.isReady == true && widget.localMedia != null
+            ? await widget.localMedia!.fileFor(
+                scope: sessionScope,
+                asset: completed!,
+              )
+            : null;
         setState(() {
           capturing = false;
-          file = path == null ? null : File(path);
-          selectedAsset = completed;
-          selectedName =
-              completed?.originalFilename ??
-              (path == null ? null : File(path).uri.pathSegments.last);
+          file = managedFile;
+          selectedAsset = completed?.isReady == true ? completed : null;
+          selectedName = completed?.isReady == true
+              ? completed!.originalFilename
+              : null;
           sourceType = 'RECORDING';
         });
       }
@@ -282,6 +325,7 @@ class _RecordingPageState extends State<RecordingPage> {
 
   Future<void> pick() async {
     try {
+      _requireCapability(MeetingOperation.uploadMedia);
       widget.api.requireCurrentAuthenticatedSession(sessionScope);
       final result = await FilePicker.pickFile(
         type: FileType.custom,
@@ -338,6 +382,36 @@ class _RecordingPageState extends State<RecordingPage> {
     return 'audio/wav';
   }
 
+  MediaSourceType _backendSourceType(LocalMediaSourceType value) =>
+      value == LocalMediaSourceType.recording
+      ? MediaSourceType.recording
+      : MediaSourceType.upload;
+
+  MediaSourceType _backendSourceTypeForValue(String value) =>
+      value == LocalMediaSourceType.recording.wireValue
+      ? MediaSourceType.recording
+      : MediaSourceType.upload;
+
+  Future<MediaRecord> _getMediaWithCapability(String mediaId) {
+    _requireCapability(MeetingOperation.readMedia);
+    widget.api.requireCurrentAuthenticatedSession(sessionScope);
+    return mediaRepository.getMedia(
+      widget.meetingId,
+      mediaId,
+      sessionScope: sessionScope,
+    );
+  }
+
+  Future<MediaRecord> _finalizeWithCapability(String mediaId) {
+    _requireCapability(MeetingOperation.finalizeMedia);
+    widget.api.requireCurrentAuthenticatedSession(sessionScope);
+    return mediaRepository.finalizeUpload(
+      widget.meetingId,
+      mediaId,
+      sessionScope: sessionScope,
+    );
+  }
+
   String key() {
     final bytes = List<int>.generate(16, (_) => Random.secure().nextInt(256));
     return bytes.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join();
@@ -350,6 +424,7 @@ class _RecordingPageState extends State<RecordingPage> {
         !widget.api.isCurrentAuthenticatedSession(sessionScope)) {
       return;
     }
+    if (!_allows(MeetingOperation.uploadMedia)) return;
     setState(() {
       busy = true;
       uploadProgress = 0;
@@ -358,14 +433,14 @@ class _RecordingPageState extends State<RecordingPage> {
     ProcessingOperation? processingOperation;
     LocalMediaAsset? localAsset;
     try {
+      _requireCapability(MeetingOperation.uploadMedia);
       var uploadFile = selected;
-      final size = await selected.length();
-      widget.api.requireCurrentAuthenticatedSession(sessionScope);
-      if (size == 0)
-        throw const ApiFailure(422, 'EMPTY_AUDIO', 'File ghi âm trống.');
-      final mime = contentType(selected);
-      final filename = selectedName ?? selected.uri.pathSegments.last;
+      var size = 0;
+      var mime = contentType(selected);
+      var filename = selectedName ?? selected.uri.pathSegments.last;
+      var backendSourceType = _backendSourceTypeForValue(sourceType);
       final localMedia = widget.localMedia;
+      widget.api.requireCurrentAuthenticatedSession(sessionScope);
       if (localMedia != null) {
         if (selectedAsset != null) {
           localAsset = await localMedia.findReadyAsset(
@@ -374,6 +449,7 @@ class _RecordingPageState extends State<RecordingPage> {
             meetingId: widget.meetingId,
           );
         } else {
+          size = await selected.length();
           localAsset = await localMedia.rememberSourceFile(
             scope: sessionScope,
             meetingId: widget.meetingId,
@@ -386,11 +462,24 @@ class _RecordingPageState extends State<RecordingPage> {
             expectedSizeBytes: size,
           );
         }
+        if (!localAsset.isReady ||
+            localAsset.sizeBytes == null ||
+            localAsset.sizeBytes! <= 0) {
+          throw const LocalMediaUnavailableException();
+        }
         uploadFile = await localMedia.fileFor(
           scope: sessionScope,
           asset: localAsset,
         );
+        size = localAsset.sizeBytes!;
+        mime = localAsset.contentType;
+        filename = localAsset.originalFilename;
+        backendSourceType = _backendSourceType(localAsset.sourceType);
+      } else {
+        size = await selected.length();
       }
+      if (size == 0)
+        throw const ApiFailure(422, 'EMPTY_AUDIO', 'File ghi âm trống.');
       final uploadKey = key();
       if (localMedia != null && localAsset != null) {
         uploadOperation = await localMedia.beginUploadOperation(
@@ -399,17 +488,17 @@ class _RecordingPageState extends State<RecordingPage> {
           idempotencyKey: uploadKey,
         );
       }
+      _requireCapability(MeetingOperation.uploadMedia);
       final intent = await mediaRepository.createUploadIntent(
         widget.meetingId,
         MediaUploadRequest(
-          sourceType: sourceType == 'RECORDING'
-              ? MediaSourceType.recording
-              : MediaSourceType.upload,
+          sourceType: backendSourceType,
           originalFilename: filename,
           contentType: mime,
           expectedSizeBytes: size,
         ),
         idempotencyKey: uploadKey,
+        sessionScope: sessionScope,
       );
       widget.api.requireCurrentAuthenticatedSession(sessionScope);
       final intentOperation = uploadOperation;
@@ -466,11 +555,8 @@ class _RecordingPageState extends State<RecordingPage> {
           intent.status == MediaStatus.available ||
               intent.status == MediaStatus.rejected ||
               intent.status == MediaStatus.failed
-          ? await mediaRepository.getMedia(widget.meetingId, intent.mediaId)
-          : await mediaRepository.finalizeUpload(
-              widget.meetingId,
-              intent.mediaId,
-            );
+          ? await _getMediaWithCapability(intent.mediaId)
+          : await _finalizeWithCapability(intent.mediaId);
       if (!finalized.accepted) {
         throw ApiFailure(
           409,
@@ -488,6 +574,7 @@ class _RecordingPageState extends State<RecordingPage> {
         );
       }
       final processingKey = key();
+      _requireCapability(MeetingOperation.admitProcessing);
       if (localMedia != null) {
         processingOperation = await localMedia.beginProcessingOperation(
           scope: sessionScope,
@@ -501,6 +588,7 @@ class _RecordingPageState extends State<RecordingPage> {
         widget.meetingId,
         ProcessingAdmissionRequest(mediaId: finalized.id),
         idempotencyKey: processingKey,
+        sessionScope: sessionScope,
       );
       if (processingOperation != null && localMedia != null) {
         await localMedia.updateProcessingOperation(
@@ -591,7 +679,10 @@ class _RecordingPageState extends State<RecordingPage> {
         file = selected;
         selectedAsset = asset;
         selectedName = asset?.originalFilename ?? draft.name;
-        sourceType = 'RECORDING';
+        sourceType =
+            asset?.sourceType.wireValue ??
+            draft.sourceType?.wireValue ??
+            'UPLOAD';
         job = null;
       });
     } catch (error) {
@@ -614,11 +705,15 @@ class _RecordingPageState extends State<RecordingPage> {
   }
 
   Future<void> retryJob(ProcessingJobRecord candidate) async {
-    if (!widget.api.isCurrentAuthenticatedSession(sessionScope)) return;
+    if (!widget.api.isCurrentAuthenticatedSession(sessionScope) ||
+        !_allows(MeetingOperation.retryProcessing)) {
+      return;
+    }
     setState(() => busy = true);
     ProcessingOperation? operation;
     try {
       final retryKey = key();
+      _requireCapability(MeetingOperation.retryProcessing);
       final localMedia = widget.localMedia;
       if (localMedia != null) {
         operation = await localMedia.beginProcessingOperation(
@@ -632,6 +727,7 @@ class _RecordingPageState extends State<RecordingPage> {
       final response = await processingRepository.retry(
         candidate.id,
         idempotencyKey: retryKey,
+        sessionScope: sessionScope,
       );
       if (operation != null && localMedia != null) {
         await localMedia.updateProcessingOperation(
@@ -683,8 +779,10 @@ class _RecordingPageState extends State<RecordingPage> {
         'Ghi âm và tải lên',
         subtitle: 'Âm thanh chỉ được xử lý sau khi gửi hoàn tất.',
       ),
-      if (!widget.enabled)
-        const MessagePanel(title: 'Không thể ghi âm cuộc họp đã hủy'),
+      if (!widget.enabled || !_allows(MeetingOperation.uploadMedia))
+        const MessagePanel(
+          title: 'Bạn không có quyền thay đổi âm thanh cuộc họp này',
+        ),
       ContentCard(
         child: Column(
           children: [
@@ -716,13 +814,24 @@ class _RecordingPageState extends State<RecordingPage> {
               )
             else
               FilledButton.icon(
-                onPressed: widget.enabled && !busy ? begin : null,
+                onPressed:
+                    widget.enabled &&
+                        _allows(MeetingOperation.uploadMedia) &&
+                        !busy
+                    ? begin
+                    : null,
                 icon: const Icon(Icons.mic),
                 label: const Text('Bắt đầu ghi âm'),
               ),
             const SizedBox(height: 8),
             OutlinedButton.icon(
-              onPressed: capturing || busy || !widget.enabled ? null : pick,
+              onPressed:
+                  capturing ||
+                      busy ||
+                      !widget.enabled ||
+                      !_allows(MeetingOperation.uploadMedia)
+                  ? null
+                  : pick,
               icon: const Icon(Icons.upload_file),
               label: const Text('Chọn file MP3 / WAV / M4A'),
             ),
@@ -767,7 +876,9 @@ class _RecordingPageState extends State<RecordingPage> {
               ),
               const SizedBox(height: 12),
               FilledButton.icon(
-                onPressed: busy ? null : upload,
+                onPressed: busy || !_allows(MeetingOperation.uploadMedia)
+                    ? null
+                    : upload,
                 icon: const Icon(Icons.cloud_upload_outlined),
                 label: Text(busy ? 'Đang tải lên...' : 'Tải lên và xử lý AI'),
               ),

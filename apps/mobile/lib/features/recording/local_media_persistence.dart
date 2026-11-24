@@ -1,3 +1,6 @@
+import 'dart:convert';
+
+import 'package:crypto/crypto.dart';
 import 'package:sqflite/sqflite.dart' as sqflite;
 
 import 'local_media_database.dart';
@@ -277,19 +280,48 @@ class LocalMediaPersistence {
     UploadOperation operation, {
     required int expectedVersion,
   }) async {
-    if (operation.version != expectedVersion) {
+    final rows = await database.query(
+      'upload_operations',
+      where: 'id = ? AND deployment_scope = ? AND owner_user_id = ?',
+      whereArgs: <Object?>[
+        operation.id,
+        operation.deploymentScope,
+        operation.ownerUserId,
+      ],
+      limit: 1,
+    );
+    if (rows.isEmpty) {
+      throw LocalMediaConflictException(
+        'The upload operation was not found in its owner scope.',
+      );
+    }
+    final current = _uploadFromRow(rows.single);
+    if (operation.version != expectedVersion ||
+        current.version != expectedVersion) {
       throw LocalMediaConflictException(
         'The upload operation version is stale.',
       );
     }
+    _requireEquivalentUploadRequest(current, operation);
+    if (current.remoteMediaId != null &&
+        operation.remoteMediaId != current.remoteMediaId) {
+      throw const LocalMediaIdempotencyConflictException();
+    }
+    final requestedCheckpoint =
+        operation.checkpoint == UploadOperationCheckpoint.failed ||
+            operation.checkpoint ==
+                UploadOperationCheckpoint.remoteReconciliationRequired
+        ? current.checkpoint
+        : operation.checkpoint;
     final next = operation.copyWith(
       updatedAt: operation.updatedAt.toUtc(),
+      checkpoint: requestedCheckpoint,
       version: expectedVersion + 1,
     );
     _validateUploadOperationState(next);
     final changed = await database.update(
       'upload_operations',
-      _uploadValues(next),
+      _uploadMutableValues(next),
       where: 'id = ? AND deployment_scope = ? AND owner_user_id = ? AND version = ?',
       whereArgs: <Object?>[
         operation.id,
@@ -445,19 +477,48 @@ class LocalMediaPersistence {
     ProcessingOperation operation, {
     required int expectedVersion,
   }) async {
-    if (operation.version != expectedVersion) {
+    final rows = await database.query(
+      'processing_operations',
+      where: 'id = ? AND deployment_scope = ? AND owner_user_id = ?',
+      whereArgs: <Object?>[
+        operation.id,
+        operation.deploymentScope,
+        operation.ownerUserId,
+      ],
+      limit: 1,
+    );
+    if (rows.isEmpty) {
+      throw LocalMediaConflictException(
+        'The processing operation was not found in its owner scope.',
+      );
+    }
+    final current = _processingFromRow(rows.single);
+    if (operation.version != expectedVersion ||
+        current.version != expectedVersion) {
       throw LocalMediaConflictException(
         'The processing operation version is stale.',
       );
     }
+    _requireEquivalentProcessingRequest(current, operation);
+    if (current.resultingJobId != null &&
+        operation.resultingJobId != current.resultingJobId) {
+      throw const LocalMediaIdempotencyConflictException();
+    }
+    final requestedCheckpoint =
+        operation.checkpoint == ProcessingOperationCheckpoint.failed ||
+            operation.checkpoint ==
+                ProcessingOperationCheckpoint.remoteReconciliationRequired
+        ? current.checkpoint
+        : operation.checkpoint;
     final next = operation.copyWith(
       updatedAt: operation.updatedAt.toUtc(),
+      checkpoint: requestedCheckpoint,
       version: expectedVersion + 1,
     );
     _validateProcessingOperationState(next);
     final changed = await database.update(
       'processing_operations',
-      _processingValues(next),
+      _processingMutableValues(next),
       where: 'id = ? AND deployment_scope = ? AND owner_user_id = ? AND version = ?',
       whereArgs: <Object?>[
         operation.id,
@@ -577,6 +638,21 @@ class LocalMediaPersistence {
         'version': operation.version,
       };
 
+  Map<String, Object?> _uploadMutableValues(UploadOperation operation) =>
+      <String, Object?>{
+        'remote_media_id': operation.remoteMediaId,
+        'confirmed_checkpoint': operation.checkpoint.wireValue,
+        'confirmed_bytes': operation.confirmedBytes,
+        'attempt_count': operation.attemptCount,
+        'attempt_outcome': operation.attemptOutcome.wireValue,
+        'recovery_required': operation.recoveryRequired ? 1 : 0,
+        'last_failure_code': operation.lastFailureCode,
+        'last_failure_status': operation.lastFailureStatus,
+        'last_failure_message': operation.lastFailureMessage,
+        'updated_at': operation.updatedAt.toUtc().toIso8601String(),
+        'version': operation.version,
+      };
+
   Map<String, Object?> _processingValues(ProcessingOperation operation) =>
       <String, Object?>{
         'id': operation.id,
@@ -602,6 +678,21 @@ class LocalMediaPersistence {
         'updated_at': operation.updatedAt.toUtc().toIso8601String(),
         'version': operation.version,
       };
+
+  Map<String, Object?> _processingMutableValues(
+    ProcessingOperation operation,
+  ) => <String, Object?>{
+    'resulting_job_id': operation.resultingJobId,
+    'confirmed_checkpoint': operation.checkpoint.wireValue,
+    'attempt_count': operation.attemptCount,
+    'attempt_outcome': operation.attemptOutcome.wireValue,
+    'recovery_required': operation.recoveryRequired ? 1 : 0,
+    'last_failure_code': operation.lastFailureCode,
+    'last_failure_status': operation.lastFailureStatus,
+    'last_failure_message': operation.lastFailureMessage,
+    'updated_at': operation.updatedAt.toUtc().toIso8601String(),
+    'version': operation.version,
+  };
 
   Map<String, Object?> _recoveryArtifactValues(
     LocalMediaRecoveryArtifact artifact,
@@ -834,11 +925,13 @@ class LocalMediaPersistence {
     UploadOperation actual,
     UploadOperation candidate,
   ) {
-    if (actual.requestFingerprint != candidate.requestFingerprint ||
+    if ((actual.requestFingerprint != candidate.requestFingerprint &&
+            actual.requestFingerprint != _legacyUploadFingerprint(actual)) ||
         actual.assetId != candidate.assetId ||
         actual.deploymentScope != candidate.deploymentScope ||
         actual.ownerUserId != candidate.ownerUserId ||
         actual.meetingId != candidate.meetingId ||
+        actual.idempotencyKey != candidate.idempotencyKey ||
         actual.sourceType != candidate.sourceType ||
         actual.originalFilename != candidate.originalFilename ||
         actual.contentType != candidate.contentType ||
@@ -851,10 +944,13 @@ class LocalMediaPersistence {
     ProcessingOperation actual,
     ProcessingOperation candidate,
   ) {
-    if (actual.requestFingerprint != candidate.requestFingerprint ||
+    if ((actual.requestFingerprint != candidate.requestFingerprint &&
+            actual.requestFingerprint !=
+                _legacyProcessingFingerprint(actual)) ||
         actual.deploymentScope != candidate.deploymentScope ||
         actual.ownerUserId != candidate.ownerUserId ||
         actual.meetingId != candidate.meetingId ||
+        actual.idempotencyKey != candidate.idempotencyKey ||
         actual.operationType != candidate.operationType ||
         actual.sourceMediaId != candidate.sourceMediaId ||
         actual.targetJobId != candidate.targetJobId ||
@@ -862,6 +958,30 @@ class LocalMediaPersistence {
         actual.stageCode != candidate.stageCode) {
       throw const LocalMediaIdempotencyConflictException();
     }
+  }
+
+  static String _legacyUploadFingerprint(UploadOperation operation) => sha256
+      .convert(
+        utf8.encode(
+          '${operation.sourceType.wireValue}\n'
+          '${operation.originalFilename}\n'
+          '${operation.contentType}\n'
+          '${operation.expectedSizeBytes}',
+        ),
+      )
+      .toString();
+
+  static String _legacyProcessingFingerprint(ProcessingOperation operation) {
+    final value = switch (operation.operationType) {
+      ProcessingOperationType.admission =>
+        'ADMISSION\n${operation.sourceMediaId ?? ''}',
+      ProcessingOperationType.retry =>
+        'RETRY\n${operation.targetJobId ?? ''}\n${operation.stageCode ?? ''}',
+      ProcessingOperationType.reprocess =>
+        'REPROCESS\n${operation.sourceMediaId ?? ''}\n'
+            '${operation.targetJobId ?? ''}\n${operation.stageCode ?? ''}',
+    };
+    return sha256.convert(utf8.encode(value)).toString();
   }
 
   static void _requireScope(String deploymentScope, String ownerUserId) =>

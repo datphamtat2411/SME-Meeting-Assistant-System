@@ -152,30 +152,45 @@ class ApiClient extends ChangeNotifier {
   Future<ApiResult> completeAccountSetup(String token, String password) =>
       _authRepository.completeAccountSetup(token, password);
 
-  Future<ApiResult> get(String path, {Map<String, String>? query}) =>
-      _request('GET', path, query: query);
+  Future<ApiResult> get(
+    String path, {
+    Map<String, String>? query,
+    AuthenticatedSessionScope? sessionScope,
+  }) => _request('GET', path, query: query, sessionScope: sessionScope);
 
   Future<ApiResult> post(
     String path,
     Map<String, dynamic> body, {
     Map<String, String>? headers,
     CoreApiTimeoutPolicy? timeoutPolicy,
+    AuthenticatedSessionScope? sessionScope,
   }) => _request(
     'POST',
     path,
     body: body,
     headers: headers,
     timeoutPolicy: timeoutPolicy,
+    sessionScope: sessionScope,
   );
 
   Future<ApiResult> patch(
     String path,
     Map<String, dynamic> body, {
     Map<String, String>? headers,
-  }) => _request('PATCH', path, body: body, headers: headers);
+    AuthenticatedSessionScope? sessionScope,
+  }) => _request(
+    'PATCH',
+    path,
+    body: body,
+    headers: headers,
+    sessionScope: sessionScope,
+  );
 
-  Future<ApiResult> delete(String path, {Map<String, String>? headers}) =>
-      _request('DELETE', path, headers: headers);
+  Future<ApiResult> delete(
+    String path, {
+    Map<String, String>? headers,
+    AuthenticatedSessionScope? sessionScope,
+  }) => _request('DELETE', path, headers: headers, sessionScope: sessionScope);
 
   Future<ApiResult> _request(
     String method,
@@ -184,12 +199,17 @@ class ApiClient extends ChangeNotifier {
     Map<String, dynamic>? body,
     Map<String, String>? headers,
     CoreApiTimeoutPolicy? timeoutPolicy,
+    AuthenticatedSessionScope? sessionScope,
   }) async {
     final coordinator = sessionCoordinator;
-    final epoch = coordinator._lifecycleEpoch;
+    final epoch = sessionScope?.lifecycleEpoch ?? coordinator._lifecycleEpoch;
     final credential = coordinator._credentialForDispatch(
-      await coordinator._credentialForProtectedRequest(expectedEpoch: epoch),
+      await coordinator._credentialForProtectedRequest(
+        expectedEpoch: epoch,
+        expectedScope: sessionScope,
+      ),
       requireVerifiedSession: true,
+      expectedScope: sessionScope,
     );
     final requestEpoch = credential.epoch;
     try {
@@ -202,9 +222,14 @@ class ApiClient extends ChangeNotifier {
         body: body,
         headers: headers,
         timeoutPolicy: timeoutPolicy,
+        expectedScope: sessionScope,
       );
     } on ApiFailure catch (failure) {
-      if (!_coordinatorStillOwnsRequest(coordinator, credential)) {
+      if (!_coordinatorStillOwnsRequest(
+        coordinator,
+        credential,
+        sessionScope,
+      )) {
         throw coordinator._sessionChanged();
       }
       if (!_isAuthentication401(failure)) rethrow;
@@ -221,7 +246,11 @@ class ApiClient extends ChangeNotifier {
       if (method.toUpperCase() != 'GET') {
         // Mutations are never replayed, even when a credential rotation
         // succeeds. Preserve the original API failure for deliberate retry.
-        if (!_coordinatorStillOwnsRequest(coordinator, credential)) {
+        if (!_coordinatorStillOwnsRequest(
+          coordinator,
+          credential,
+          sessionScope,
+        )) {
           throw coordinator._sessionChanged();
         }
         rethrow;
@@ -230,6 +259,7 @@ class ApiClient extends ChangeNotifier {
       final replayCredential = coordinator._credentialForDispatch(
         recovered,
         requireVerifiedSession: true,
+        expectedScope: sessionScope,
       );
       try {
         return await _sendForSession(
@@ -241,6 +271,7 @@ class ApiClient extends ChangeNotifier {
           body: body,
           headers: headers,
           timeoutPolicy: timeoutPolicy,
+          expectedScope: sessionScope,
         );
       } on ApiFailure catch (retryFailure) {
         if (_isAuthentication401(retryFailure)) {
@@ -249,7 +280,11 @@ class ApiClient extends ChangeNotifier {
             expectedEpoch: requestEpoch,
             usedGeneration: replayCredential.generation,
           );
-          if (!_coordinatorStillOwnsRequest(coordinator, credential)) {
+          if (!_coordinatorStillOwnsRequest(
+            coordinator,
+            credential,
+            sessionScope,
+          )) {
             throw coordinator._sessionChanged();
           }
         }
@@ -267,10 +302,12 @@ class ApiClient extends ChangeNotifier {
     Map<String, dynamic>? body,
     Map<String, String>? headers,
     CoreApiTimeoutPolicy? timeoutPolicy,
+    AuthenticatedSessionScope? expectedScope,
   }) async {
     final dispatchCredential = coordinator._credentialForDispatch(
       credential,
       requireVerifiedSession: true,
+      expectedScope: expectedScope,
     );
     try {
       final response = await _requestExecutor.send(
@@ -282,16 +319,25 @@ class ApiClient extends ChangeNotifier {
         authorization: dispatchCredential.authorization,
         timeoutPolicy: timeoutPolicy,
       );
-      if (!_coordinatorStillOwnsRequest(coordinator, credential)) {
+      if (!_coordinatorStillOwnsRequest(
+        coordinator,
+        credential,
+        expectedScope,
+      )) {
         throw coordinator._sessionChanged();
       }
       coordinator._credentialForDispatch(
         dispatchCredential,
         requireVerifiedSession: true,
+        expectedScope: expectedScope,
       );
       return response;
     } catch (error, stackTrace) {
-      if (!_coordinatorStillOwnsRequest(coordinator, credential)) {
+      if (!_coordinatorStillOwnsRequest(
+        coordinator,
+        credential,
+        expectedScope,
+      )) {
         Error.throwWithStackTrace(coordinator._sessionChanged(), stackTrace);
       }
       rethrow;
@@ -301,9 +347,12 @@ class ApiClient extends ChangeNotifier {
   bool _coordinatorStillOwnsRequest(
     AuthSessionCoordinator coordinator,
     _SessionCredentialSnapshot credential,
+    AuthenticatedSessionScope? expectedScope,
   ) =>
       coordinator._isCurrentEpoch(credential.epoch) &&
-      coordinator._state.isAuthenticated;
+      coordinator._state.isAuthenticated &&
+      (expectedScope == null ||
+          coordinator.isCurrentAuthenticatedSession(expectedScope));
 
   bool _isAuthentication401(ApiFailure failure) =>
       const AuthFailureClassifier().classify(
@@ -325,7 +374,30 @@ class ApiClient extends ChangeNotifier {
     UploadCancellationToken? cancellationToken,
   }) async {
     if (session != null) requireCurrentAuthenticatedSession(session);
+    final transferCancellation = UploadCancellationToken();
+    void cancelForSessionChange() {
+      if (session != null && !isCurrentAuthenticatedSession(session)) {
+        transferCancellation.cancel();
+      }
+    }
+
+    sessionCoordinator.addListener(cancelForSessionChange);
+    if (cancellationToken != null) {
+      unawaited(
+        cancellationToken.whenCancelled.then<void>(
+          (_) => transferCancellation.cancel(),
+        ),
+      );
+    }
     try {
+      if (transferCancellation.isCancelled) {
+        if (session != null) requireCurrentAuthenticatedSession(session);
+        throw TransportFailure(
+          0,
+          'UPLOAD_CANCELLED',
+          'Audio upload was cancelled.',
+        );
+      }
       await _signedUploadTransport.upload(
         signedUrl,
         file,
@@ -333,11 +405,16 @@ class ApiClient extends ChangeNotifier {
         onProgress: onProgress,
         expectedLength: expectedLength,
         expiresAt: expiresAt,
-        cancellationToken: cancellationToken,
+        cancellationToken: transferCancellation,
       );
       if (session != null) requireCurrentAuthenticatedSession(session);
     } on TransportFailure catch (failure) {
+      if (session != null && !isCurrentAuthenticatedSession(session)) {
+        throw sessionCoordinator._sessionChanged();
+      }
       throw normalizeTransportFailure(failure);
+    } finally {
+      sessionCoordinator.removeListener(cancelForSessionChange);
     }
   }
 

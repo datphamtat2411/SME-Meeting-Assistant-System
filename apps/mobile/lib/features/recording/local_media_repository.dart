@@ -51,6 +51,7 @@ class LocalMediaRepository {
   final DateTime Function() _now;
   Future<void> _lifecycleTail = Future<void>.value();
   Future<void> _migrationTail = Future<void>.value();
+  final Set<String> _activeAssetIds = <String>{};
   bool _disposed = false;
 
   static LocalMediaRepository fromReady({
@@ -131,6 +132,38 @@ class LocalMediaRepository {
             persisted,
             await storage.inspectFile(persisted.managedRelativePath),
           )) {
+        throw const LocalMediaUnavailableException();
+      }
+    } on FileSystemException {
+      throw const LocalMediaUnavailableException();
+    }
+    return file;
+  }
+
+  /// Resolves a ready managed file for routine listing without re-reading the
+  /// entire recording. Integrity is re-established by [fileFor] at submission
+  /// and recovery boundaries.
+  Future<File> lightweightFileFor({
+    required AuthenticatedSessionScope scope,
+    required LocalMediaAsset asset,
+  }) async {
+    _requireAssetOwner(asset, scope);
+    final persisted = await (await _persistence()).findAsset(
+      id: asset.id,
+      deploymentScope: scope.deploymentScope,
+      ownerUserId: scope.userId,
+    );
+    if (persisted == null ||
+        persisted.meetingId != asset.meetingId ||
+        !persisted.isReady ||
+        persisted.sizeBytes == null ||
+        persisted.sizeBytes! <= 0 ||
+        !_hasCompletionEvidence(persisted)) {
+      throw const LocalMediaUnavailableException();
+    }
+    final file = (await _storage()).fileFor(persisted.managedRelativePath);
+    try {
+      if (!await file.exists() || await file.length() != persisted.sizeBytes) {
         throw const LocalMediaUnavailableException();
       }
     } on FileSystemException {
@@ -237,6 +270,16 @@ class LocalMediaRepository {
     if (persisted == null || persisted.stagedRelativePath == null) {
       throw const LocalMediaUnavailableException();
     }
+    if (persisted.lifecycle == LocalMediaLifecycle.discarded ||
+        persisted.lifecycle == LocalMediaLifecycle.quarantined ||
+        persisted.lifecycle == LocalMediaLifecycle.discardPending) {
+      throw const LocalMediaUnavailableException();
+    }
+    if (persisted.lifecycle != LocalMediaLifecycle.creating &&
+        persisted.lifecycle != LocalMediaLifecycle.staged) {
+      throw const LocalMediaUnavailableException();
+    }
+    _activeAssetIds.add(persisted.id);
     return (await _storage()).fileFor(persisted.stagedRelativePath!);
   }
 
@@ -245,6 +288,7 @@ class LocalMediaRepository {
     required String assetId,
     int? expectedSizeBytes,
   }) => _withLifecycleLock(() async {
+    _requireScope(scope.deploymentScope, scope.userId);
     final persistence = await _persistence();
     final asset = await persistence.findAsset(
       id: assetId,
@@ -252,10 +296,24 @@ class LocalMediaRepository {
       ownerUserId: scope.userId,
     );
     if (asset == null) throw const LocalMediaOwnershipException();
+    if (asset.lifecycle == LocalMediaLifecycle.discarded ||
+        asset.lifecycle == LocalMediaLifecycle.quarantined) {
+      return asset;
+    }
+    if (asset.lifecycle == LocalMediaLifecycle.interrupted ||
+        asset.lifecycle == LocalMediaLifecycle.missing ||
+        asset.lifecycle == LocalMediaLifecycle.unavailable) {
+      throw const LocalMediaUnavailableException();
+    }
+    if (asset.lifecycle == LocalMediaLifecycle.discardPending) {
+      _activeAssetIds.remove(asset.id);
+      return _discardAssetFiles(persistence, await _storage(), asset);
+    }
     if (asset.stagedRelativePath == null) {
       throw const LocalMediaUnavailableException();
     }
     final storage = await _storage();
+    _activeAssetIds.add(asset.id);
     try {
       final integrity = await storage.inspectFile(asset.stagedRelativePath!);
       if (integrity.sizeBytes <= 0 ||
@@ -311,6 +369,8 @@ class LocalMediaRepository {
         );
       } catch (_) {}
       rethrow;
+    } finally {
+      _activeAssetIds.remove(asset.id);
     }
   });
 
@@ -330,6 +390,11 @@ class LocalMediaRepository {
         asset.lifecycle == LocalMediaLifecycle.discarded) {
       return asset;
     }
+    if (asset.lifecycle == LocalMediaLifecycle.discardPending) {
+      _activeAssetIds.remove(asset.id);
+      return _discardAssetFiles(persistence, await _storage(), asset);
+    }
+    _activeAssetIds.remove(asset.id);
     return persistence.updateAsset(
       asset.copyWith(
         lifecycle: LocalMediaLifecycle.interrupted,
@@ -358,6 +423,7 @@ class LocalMediaRepository {
       ),
       expectedVersion: asset.version,
     );
+    if (_activeAssetIds.contains(asset.id)) return pending;
     final storage = await _storage();
     await _deleteIfPresent(storage, pending.managedRelativePath);
     final stagedPath = pending.stagedRelativePath;
@@ -392,6 +458,7 @@ class LocalMediaRepository {
     var interrupted = 0;
     var orphaned = 0;
     for (final asset in assets) {
+      if (_activeAssetIds.contains(asset.id)) continue;
       final result = await _reconcileAsset(persistence, storage, asset);
       switch (result.lifecycle) {
         case LocalMediaLifecycle.ready:
@@ -463,6 +530,7 @@ class LocalMediaRepository {
     );
     var count = 0;
     for (final asset in assets) {
+      if (_activeAssetIds.contains(asset.id)) continue;
       final stagedPath = asset.stagedRelativePath;
       if (stagedPath == null ||
           !asset.updatedAt.isBefore(cutoff) ||
@@ -498,6 +566,27 @@ class LocalMediaRepository {
   }) async {
     _requireAssetOwner(asset, scope);
     _validateIdempotencyKey(idempotencyKey);
+    final persistence = await _persistence();
+    final existing = await persistence.findUploadOperation(
+      deploymentScope: scope.deploymentScope,
+      ownerUserId: scope.userId,
+      idempotencyKey: idempotencyKey,
+    );
+    if (existing != null) {
+      if (existing.assetId != asset.id ||
+          existing.meetingId != asset.meetingId ||
+          existing.sourceType != asset.sourceType ||
+          existing.originalFilename != asset.originalFilename ||
+          existing.contentType != asset.contentType ||
+          asset.sizeBytes != null &&
+              existing.expectedSizeBytes != asset.sizeBytes) {
+        throw const LocalMediaIdempotencyConflictException();
+      }
+      // The request fingerprint may have been produced by an older canonical
+      // algorithm. Exact persisted request fields above are the compatibility
+      // authority; never regenerate the stored key or metadata.
+      return existing;
+    }
     final persistedAsset = await findReadyAsset(
       scope: scope,
       assetId: asset.id,
@@ -511,7 +600,6 @@ class LocalMediaRepository {
         requestFingerprint != expectedFingerprint) {
       throw const LocalMediaIdempotencyConflictException();
     }
-    final persistence = await _persistence();
     final now = _utcNow();
     try {
       return await persistence.getOrCreateUploadOperation(
@@ -606,6 +694,7 @@ class LocalMediaRepository {
     _validateIdempotencyKey(idempotencyKey);
     _validateOptionalIdentifier(sourceMediaId, 'sourceMediaId');
     _validateOptionalIdentifier(reprocessOfJobId, 'reprocessOfJobId');
+    _validateOptionalIdentifier(targetJobId, 'targetJobId');
     _validateOptionalStage(stageCode);
     final expectedFingerprint = _processingFingerprint(
       scope: scope,
@@ -853,7 +942,7 @@ class LocalMediaRepository {
           .convert(
             utf8.encode(
               'scoped-v2-entry\u0000$sourceKey\u0000'
-              '${jsonEncode(_canonicalLegacyEntry(entry ?? <String, dynamic>{}))}',
+              '${jsonEncode(_canonicalLegacyValue(item))}',
             ),
           )
           .toString();
@@ -1096,6 +1185,7 @@ class LocalMediaRepository {
       );
       await persistence.insertAsset(asset);
     }
+    _activeAssetIds.add(asset.id);
     try {
       final stagedPath = asset.stagedRelativePath;
       if (stagedPath == null) {
@@ -1153,6 +1243,8 @@ class LocalMediaRepository {
         );
       } catch (_) {}
       rethrow;
+    } finally {
+      _activeAssetIds.remove(asset.id);
     }
   }
 
@@ -1387,6 +1479,25 @@ class LocalMediaRepository {
     );
   }
 
+  Future<LocalMediaAsset> _discardAssetFiles(
+    LocalMediaPersistence persistence,
+    ManagedMediaStorage storage,
+    LocalMediaAsset asset,
+  ) async {
+    await _deleteIfPresent(storage, asset.managedRelativePath);
+    final stagedPath = asset.stagedRelativePath;
+    if (stagedPath != null && _isStagingPath(stagedPath)) {
+      await _deleteIfPresent(storage, stagedPath);
+    }
+    return persistence.updateAsset(
+      asset.copyWith(
+        lifecycle: LocalMediaLifecycle.discarded,
+        updatedAt: _utcNow(),
+      ),
+      expectedVersion: asset.version,
+    );
+  }
+
   Future<T> _withLifecycleLock<T>(Future<T> Function() action) {
     final previous = _lifecycleTail;
     final release = Completer<void>();
@@ -1445,6 +1556,14 @@ class LocalMediaRepository {
       }
       values.add(rawEntry);
     } else {
+      final alreadyRecorded = values.any(
+        (value) =>
+            value is Map &&
+            value['sourceKey'] == sourceKey &&
+            value['entry'] == rawEntry &&
+            value['reason'] == reason,
+      );
+      if (alreadyRecorded) return;
       values.add(<String, Object?>{
         'sourceKey': sourceKey,
         'entry': rawEntry,
@@ -1456,11 +1575,19 @@ class LocalMediaRepository {
     await storage.confirmDurable();
   }
 
-  static Map<String, dynamic> _canonicalLegacyEntry(
-    Map<String, dynamic> entry,
-  ) {
-    final keys = entry.keys.toList()..sort();
-    return <String, dynamic>{for (final key in keys) key: entry[key]};
+  static Object? _canonicalLegacyValue(Object? value) {
+    if (value is Map) {
+      final values = <String, Object?>{
+        for (final item in value.entries)
+          item.key.toString(): _canonicalLegacyValue(item.value),
+      };
+      final keys = values.keys.toList()..sort();
+      return <String, Object?>{for (final key in keys) key: values[key]};
+    }
+    if (value is List) {
+      return value.map(_canonicalLegacyValue).toList(growable: false);
+    }
+    return value;
   }
 
   static DateTime _legacyTimestamp(Object? value) {

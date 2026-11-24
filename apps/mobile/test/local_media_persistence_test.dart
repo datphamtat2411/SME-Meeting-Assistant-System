@@ -221,6 +221,23 @@ void main() {
       );
       expect(processingConfirmed.targetJobId, 'target-job');
       expect(processingConfirmed.resultingJobId, 'result-job');
+
+      final uncertain = await persistence.updateUploadOperation(
+        checkpointed.copyWith(
+          attemptOutcome: OperationAttemptOutcome.uncertain,
+          recoveryRequired: true,
+          lastFailureCode: 'NETWORK_TIMEOUT',
+          lastFailureStatus: null,
+          lastFailureMessage: 'The upload outcome is unknown.',
+        ),
+        expectedVersion: checkpointed.version,
+      );
+      expect(
+        uncertain.checkpoint,
+        UploadOperationCheckpoint.binaryTransferConfirmed,
+      );
+      expect(uncertain.attemptOutcome, OperationAttemptOutcome.uncertain);
+      expect(uncertain.recoveryRequired, isTrue);
     },
   );
 
@@ -496,6 +513,91 @@ void main() {
       expect(migration?.state, LocalMediaMigrationState.quarantined);
       expect(await credentials.read(key: 'sme.mobile.recordings.v1'), isNull);
       expect(await audio.exists(), isTrue);
+    },
+  );
+
+  test(
+    'schema v4 keeps failed remote outcomes recoverable during correction',
+    () async {
+      final directory = await Directory.systemTemp.createTemp('sme-media-v4-');
+      addTearDown(() => directory.delete(recursive: true));
+      final databasePath = '${directory.path}/media.db';
+      final database = await LocalMediaDatabase.open(
+        databasePath: databasePath,
+        databaseFactory: databaseFactoryFfi,
+      );
+      final persistence = LocalMediaPersistence(database);
+      final now = DateTime.utc(2026, 11, 24, 12);
+      final asset = LocalMediaAsset(
+        id: 'i' * 32,
+        deploymentScope: 'deployment-a',
+        ownerUserId: 'user-a',
+        meetingId: 'meeting-a',
+        sourceType: LocalMediaSourceType.recording,
+        managedRelativePath: 'assets/${'i' * 32}.audio',
+        stagedRelativePath: 'staging/${'i' * 32}.part',
+        originalFilename: 'meeting.wav',
+        contentType: 'audio/wav',
+        sizeBytes: 3,
+        durationMs: null,
+        sha256: 'a' * 64,
+        lifecycle: LocalMediaLifecycle.ready,
+        sourceProvenance: 'v4-source',
+        quarantineReason: null,
+        createdAt: now,
+        updatedAt: now,
+        readyAt: now,
+        version: 0,
+      );
+      await persistence.insertAsset(asset);
+      await persistence.insertUploadOperation(
+        UploadOperation(
+          id: 'k' * 32,
+          assetId: asset.id,
+          deploymentScope: asset.deploymentScope,
+          ownerUserId: asset.ownerUserId,
+          meetingId: asset.meetingId!,
+          idempotencyKey: 'v4-upload',
+          requestFingerprint: 'l' * 64,
+          sourceType: asset.sourceType,
+          originalFilename: asset.originalFilename,
+          contentType: asset.contentType,
+          expectedSizeBytes: 3,
+          remoteMediaId: 'm' * 32,
+          checkpoint: UploadOperationCheckpoint.failed,
+          confirmedBytes: 3,
+          attemptCount: 1,
+          attemptOutcome: OperationAttemptOutcome.none,
+          recoveryRequired: false,
+          lastFailureCode: 'NETWORK_TIMEOUT',
+          lastFailureStatus: null,
+          lastFailureMessage: 'The previous attempt ended ambiguously.',
+          createdAt: now,
+          updatedAt: now,
+          version: 0,
+        ),
+      );
+      await database.database.execute('PRAGMA user_version = 3');
+      await database.close();
+
+      final upgraded = await LocalMediaDatabase.open(
+        databasePath: databasePath,
+        databaseFactory: databaseFactoryFfi,
+      );
+      addTearDown(upgraded.close);
+      final operation = (await LocalMediaPersistence(upgraded)
+          .findUploadOperation(
+            deploymentScope: 'deployment-a',
+            ownerUserId: 'user-a',
+            idempotencyKey: 'v4-upload',
+          ))!;
+      expect(
+        operation.checkpoint,
+        UploadOperationCheckpoint.remoteReconciliationRequired,
+      );
+      expect(operation.confirmedBytes, 3);
+      expect(operation.attemptOutcome, OperationAttemptOutcome.failed);
+      expect(operation.recoveryRequired, isTrue);
     },
   );
 }

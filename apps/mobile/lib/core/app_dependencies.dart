@@ -38,9 +38,7 @@ class AppDependencies {
     required this.httpClient,
     LocalMediaRepository? localMedia,
   }) {
-    this.localMedia =
-        localMedia ??
-        LocalMediaRepository.lazyDefault(legacyStorage: api.credentialStorage);
+    this.localMedia = localMedia ?? LocalMediaRepository.lazyDefault();
     media = MediaRepository(api: api);
     processing = ProcessingRepository(api: api);
     meetingInvalidation = MeetingInvalidationSignal(api);

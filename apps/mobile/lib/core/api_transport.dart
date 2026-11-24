@@ -173,19 +173,23 @@ class CoreApiTransport {
       body,
       abortTrigger: abortTrigger.future,
     );
-    final startedAt = DateTime.now();
+    final stopwatch = Stopwatch()..start();
     final dispatchLimit = timeoutPolicy?.dispatchTimeout ?? dispatchTimeout;
     final responseLimit = timeoutPolicy?.responseTimeout ?? responseTimeout;
+    Future<http.StreamedResponse>? pendingResponse;
+    var responseClaimed = false;
 
     try {
+      pendingResponse = httpClient.send(request);
       final streamed = await _awaitPhase(
-        httpClient.send(request),
-        _remaining(startedAt, dispatchLimit, timeoutPolicy?.overallTimeout),
+        pendingResponse,
+        _remaining(stopwatch, dispatchLimit, timeoutPolicy?.overallTimeout),
         abortTrigger,
       );
-      final bodyBytes = await _awaitPhase(
-        streamed.stream.toBytes(),
-        _remaining(startedAt, responseLimit, timeoutPolicy?.overallTimeout),
+      responseClaimed = true;
+      final bodyBytes = await _readResponseBody(
+        streamed,
+        _remaining(stopwatch, responseLimit, timeoutPolicy?.overallTimeout),
         abortTrigger,
       );
       final response = CoreApiResponse(
@@ -255,6 +259,44 @@ class CoreApiTransport {
         'Network request failed.',
         remoteOutcomeAmbiguous: true,
       );
+    } finally {
+      stopwatch.stop();
+      if (!responseClaimed && pendingResponse != null) {
+        unawaited(
+          pendingResponse.then<void>(
+            (response) => _disposeResponse(response),
+            onError: (Object _, StackTrace __) {},
+          ),
+        );
+      }
+    }
+  }
+
+  Future<List<int>> _readResponseBody(
+    http.StreamedResponse response,
+    Duration timeout,
+    Completer<void> abortTrigger,
+  ) async {
+    final builder = BytesBuilder(copy: false);
+    final subscription = response.stream.listen(builder.add);
+    try {
+      await _awaitPhase(subscription.asFuture<void>(), timeout, abortTrigger);
+      return builder.takeBytes();
+    } finally {
+      try {
+        await subscription.cancel().timeout(timeout);
+      } catch (_) {
+        // The terminal request failure is already established.
+      }
+    }
+  }
+
+  Future<void> _disposeResponse(http.StreamedResponse response) async {
+    try {
+      final subscription = response.stream.listen((_) {});
+      await subscription.cancel();
+    } catch (_) {
+      // A late response cannot replace the request's terminal outcome.
     }
   }
 
@@ -272,13 +314,13 @@ class CoreApiTransport {
   }
 
   Duration _remaining(
-    DateTime startedAt,
+    Stopwatch stopwatch,
     Duration phaseLimit,
     Duration? overallLimit,
   ) {
     var result = phaseLimit;
     if (overallLimit != null) {
-      final remaining = overallLimit - DateTime.now().difference(startedAt);
+      final remaining = overallLimit - stopwatch.elapsed;
       if (remaining <= Duration.zero) {
         throw TimeoutException('Core API request timed out.');
       }

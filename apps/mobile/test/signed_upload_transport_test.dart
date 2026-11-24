@@ -219,11 +219,13 @@ void main() {
       await expectLater(
         upload,
         throwsA(
-          isA<TransportFailure>().having(
-            (failure) => failure.code,
-            'code',
-            'UPLOAD_CANCELLED',
-          ),
+          isA<TransportFailure>()
+              .having((failure) => failure.code, 'code', 'UPLOAD_CANCELLED')
+              .having(
+                (failure) => failure.remoteOutcomeAmbiguous,
+                'remoteOutcomeAmbiguous',
+                isTrue,
+              ),
         ),
       );
       expect(client.requests, hasLength(1));

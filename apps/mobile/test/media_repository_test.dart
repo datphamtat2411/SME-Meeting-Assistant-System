@@ -93,6 +93,55 @@ void main() {
       ),
     );
   });
+
+  test('explicit session scope fences a mutation before dispatch', () async {
+    final storage = InMemoryCredentialStorage();
+    final client = _MediaClient();
+    final api = ApiClient(
+      baseUri: Uri.parse(_apiBase),
+      httpClient: client,
+      credentialStorage: storage,
+    );
+    addTearDown(api.dispose);
+    await api.initialize();
+    await api.signIn('user@example.test', 'password');
+    final originalScope = api.requireAuthenticatedSessionScope();
+    await api.signOut();
+    await api.signIn('user@example.test', 'password');
+
+    await expectLater(
+      MediaRepository(api: api).createUploadIntent(
+        _meetingId,
+        MediaUploadRequest(
+          sourceType: MediaSourceType.upload,
+          originalFilename: 'meeting.wav',
+          contentType: 'audio/wav',
+          expectedSizeBytes: 3,
+        ),
+        idempotencyKey: 'stale-session-upload',
+        sessionScope: originalScope,
+      ),
+      throwsA(
+        isA<MediaRepositoryFailure>()
+            .having(
+              (failure) => failure.mutationOutcome,
+              'mutationOutcome',
+              MediaMutationOutcome.notDispatched,
+            )
+            .having(
+              (failure) => failure.category,
+              'category',
+              MediaFailureCategory.authentication,
+            ),
+      ),
+    );
+    expect(
+      client.requests.where(
+        (request) => request.url.path.endsWith('/media/uploads'),
+      ),
+      isEmpty,
+    );
+  });
 }
 
 class _MediaClient extends http.BaseClient {

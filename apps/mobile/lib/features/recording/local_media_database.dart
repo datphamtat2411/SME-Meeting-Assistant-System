@@ -9,7 +9,7 @@ import 'package:path/path.dart' as path_utils;
 class LocalMediaDatabase {
   LocalMediaDatabase._(this.database, this.path);
 
-  static const int schemaVersion = 3;
+  static const int schemaVersion = 4;
   static const String defaultDatabaseName = 'sme_mobile_media.db';
 
   final sqflite.Database database;
@@ -313,6 +313,9 @@ class LocalMediaDatabase {
     if (oldVersion < 3 && newVersion >= 3) {
       await _rebuildSchemaForV3(db);
     }
+    if (oldVersion < 4 && newVersion >= 4) {
+      await _correctHistoricalV3Operations(db);
+    }
     if (oldVersion > newVersion) {
       throw StateError('Local media database downgrade is not supported.');
     }
@@ -599,6 +602,142 @@ class LocalMediaDatabase {
       CREATE INDEX IF NOT EXISTS ix_local_media_recovery_artifacts_updated
       ON local_media_recovery_artifacts(updated_at DESC)
     ''');
+  }
+
+  /// V3 introduced separate attempt outcome fields but copied legacy failure
+  /// checkpoints as if they were confirmed progress. Correct that state in a
+  /// forward migration so both fresh v2 upgrades and already-opened v3
+  /// databases receive the same non-destructive interpretation.
+  static Future<void> _correctHistoricalV3Operations(
+    sqflite.DatabaseExecutor db,
+  ) async {
+    await db.execute(
+      'DROP TRIGGER IF EXISTS trg_processing_target_job_immutable',
+    );
+    final uploadRows = await db.query('upload_operations');
+    for (final row in uploadRows) {
+      final checkpoint = row['confirmed_checkpoint'] as String?;
+      final remoteMediaId = row['remote_media_id'] as String?;
+      final expectedBytes = _integer(row['expected_size_bytes']);
+      final oldBytes = _integer(row['confirmed_bytes']);
+      var nextCheckpoint = checkpoint;
+      var nextBytes = oldBytes;
+      var outcome = row['attempt_outcome'] as String? ?? 'NONE';
+      var recoveryRequired = _integer(row['recovery_required']) == 1;
+
+      if (checkpoint == 'FAILED' ||
+          checkpoint == 'REMOTE_RECONCILIATION_REQUIRED') {
+        final hasRemoteEvidence =
+            remoteMediaId != null && remoteMediaId.isNotEmpty;
+        final hasTransferEvidence = oldBytes != null && oldBytes > 0;
+        final safeBytes = oldBytes ?? 0;
+        nextCheckpoint = hasRemoteEvidence || hasTransferEvidence
+            ? 'REMOTE_RECONCILIATION_REQUIRED'
+            : 'INTENT_NOT_CONFIRMED';
+        nextBytes = hasRemoteEvidence || hasTransferEvidence
+            ? safeBytes.clamp(0, expectedBytes ?? safeBytes).toInt()
+            : 0;
+        outcome = checkpoint == 'REMOTE_RECONCILIATION_REQUIRED'
+            ? 'UNCERTAIN'
+            : 'FAILED';
+        recoveryRequired = true;
+      } else if (checkpoint == 'INTENT_CONFIRMED' ||
+          checkpoint == 'BINARY_TRANSFER_CONFIRMED' ||
+          checkpoint == 'FINALIZATION_CONFIRMED') {
+        final hasValidTransferEvidence =
+            expectedBytes != null && oldBytes == expectedBytes;
+        if (checkpoint == 'INTENT_CONFIRMED' || hasValidTransferEvidence) {
+          outcome = 'SUCCEEDED';
+        } else {
+          nextCheckpoint = remoteMediaId != null && remoteMediaId.isNotEmpty
+              ? 'REMOTE_RECONCILIATION_REQUIRED'
+              : 'INTENT_NOT_CONFIRMED';
+          nextBytes =
+              oldBytes?.clamp(0, expectedBytes ?? oldBytes).toInt() ?? 0;
+          outcome = 'UNCERTAIN';
+          recoveryRequired = true;
+        }
+      } else {
+        nextBytes = 0;
+      }
+
+      await db.update(
+        'upload_operations',
+        <String, Object?>{
+          'confirmed_checkpoint': nextCheckpoint,
+          'confirmed_bytes': nextBytes,
+          'attempt_outcome': outcome,
+          'recovery_required': recoveryRequired ? 1 : 0,
+        },
+        where: 'id = ?',
+        whereArgs: <Object?>[row['id']],
+      );
+    }
+
+    final processingRows = await db.query('processing_operations');
+    for (final row in processingRows) {
+      final type = row['operation_type'] as String?;
+      final checkpoint = row['confirmed_checkpoint'] as String?;
+      var targetJobId = row['target_job_id'] as String?;
+      var resultingJobId = row['resulting_job_id'] as String?;
+      var nextCheckpoint = checkpoint;
+      var outcome = row['attempt_outcome'] as String? ?? 'NONE';
+      var recoveryRequired = _integer(row['recovery_required']) == 1;
+      final confirmedCheckpoint = switch (type) {
+        'RETRY' => 'RETRY_CONFIRMED',
+        'REPROCESS' => 'REPROCESS_CONFIRMED',
+        _ => 'ADMISSION_CONFIRMED',
+      };
+      final pendingCheckpoint = switch (type) {
+        'RETRY' => 'RETRY_NOT_CONFIRMED',
+        'REPROCESS' => 'REPROCESS_NOT_CONFIRMED',
+        _ => 'ADMISSION_NOT_CONFIRMED',
+      };
+
+      if (type == 'ADMISSION' &&
+          checkpoint == 'ADMISSION_CONFIRMED' &&
+          resultingJobId == null &&
+          targetJobId != null &&
+          targetJobId.isNotEmpty) {
+        // V2 used target_job_id for the response job on admission. The
+        // admission request itself has no target identity.
+        resultingJobId = targetJobId;
+        targetJobId = null;
+      }
+
+      if (checkpoint == 'FAILED' ||
+          checkpoint == 'REMOTE_RECONCILIATION_REQUIRED') {
+        if (resultingJobId == null) nextCheckpoint = pendingCheckpoint;
+        outcome = checkpoint == 'REMOTE_RECONCILIATION_REQUIRED'
+            ? 'UNCERTAIN'
+            : 'FAILED';
+        recoveryRequired = true;
+      } else if (checkpoint == confirmedCheckpoint) {
+        outcome = 'SUCCEEDED';
+      } else if (checkpoint == pendingCheckpoint) {
+        outcome = 'NONE';
+      }
+
+      await db.update(
+        'processing_operations',
+        <String, Object?>{
+          'target_job_id': targetJobId,
+          'resulting_job_id': resultingJobId,
+          'confirmed_checkpoint': nextCheckpoint,
+          'attempt_outcome': outcome,
+          'recovery_required': recoveryRequired ? 1 : 0,
+        },
+        where: 'id = ?',
+        whereArgs: <Object?>[row['id']],
+      );
+    }
+    await _createProcessingTargetTrigger(db);
+  }
+
+  static int? _integer(Object? value) {
+    if (value is int) return value;
+    if (value is num && value == value.toInt()) return value.toInt();
+    return null;
   }
 
   static Future<void> _createUploadScopeTriggers(

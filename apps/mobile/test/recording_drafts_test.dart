@@ -211,6 +211,22 @@ void main() {
     expect(listed.single.assetId, asset.id);
     expect(listed.single.meetingId, 'meeting-shared');
 
+    await managedStorage.fileFor(asset.managedRelativePath).writeAsBytes(<int>[
+      9,
+      8,
+      7,
+    ]);
+    expect(await drafts.list('meeting-shared', api: api), hasLength(1));
+    await expectLater(
+      repository.fileFor(scope: scope, asset: asset),
+      throwsA(isA<LocalMediaUnavailableException>()),
+    );
+    await managedStorage.fileFor(asset.managedRelativePath).writeAsBytes(<int>[
+      1,
+      2,
+      3,
+    ]);
+
     final incompleteId = 'b' * 32;
     final incompletePaths = managedStorage.allocatePaths(incompleteId);
     await managedStorage.writeStreamToStaging(

@@ -15,6 +15,7 @@ class RecordingDraft {
     required this.createdAt,
     this.assetId,
     this.meetingId,
+    this.sourceType,
   });
 
   final String path;
@@ -22,6 +23,7 @@ class RecordingDraft {
   final DateTime createdAt;
   final String? assetId;
   final String? meetingId;
+  final LocalMediaSourceType? sourceType;
 }
 
 class RecordingDrafts {
@@ -48,8 +50,6 @@ class RecordingDrafts {
     if (repository != null) {
       await repository.migrateLegacyMetadata(storage: _storage, scope: scope);
       api.requireCurrentAuthenticatedSession(scope);
-      await repository.reconcile(scope: scope, meetingId: meetingId);
-      api.requireCurrentAuthenticatedSession(scope);
       final assets = await repository.listAssets(
         scope: scope,
         meetingId: meetingId,
@@ -57,7 +57,10 @@ class RecordingDrafts {
       final drafts = <RecordingDraft>[];
       for (final asset in assets) {
         if (!asset.isReady) continue;
-        final mediaFile = await repository.fileFor(scope: scope, asset: asset);
+        final mediaFile = await repository.lightweightFileFor(
+          scope: scope,
+          asset: asset,
+        );
         if (!await mediaFile.exists()) continue;
         api.requireCurrentAuthenticatedSession(scope);
         drafts.add(
@@ -67,6 +70,7 @@ class RecordingDrafts {
             createdAt: asset.createdAt,
             assetId: asset.id,
             meetingId: asset.meetingId,
+            sourceType: asset.sourceType,
           ),
         );
       }
@@ -96,6 +100,7 @@ class RecordingDrafts {
           path: path,
           name: raw['name']?.toString() ?? 'meeting-audio.wav',
           createdAt: when ?? DateTime.now(),
+          sourceType: _sourceType(raw['sourceType']),
         ),
       );
     }
@@ -141,6 +146,7 @@ class RecordingDrafts {
       'meetingId': meetingId,
       'path': file.path,
       'name': file.uri.pathSegments.last,
+      'sourceType': LocalMediaSourceType.recording.wireValue,
       'createdAt': DateTime.now().toUtc().toIso8601String(),
     });
     // Each owner has a distinct index, so the cap cannot trim another
@@ -217,5 +223,14 @@ class RecordingDrafts {
     if (lower.endsWith('.mp3')) return 'audio/mpeg';
     if (lower.endsWith('.m4a')) return 'audio/mp4';
     return 'audio/wav';
+  }
+
+  static LocalMediaSourceType? _sourceType(Object? value) {
+    if (value is! String) return null;
+    try {
+      return LocalMediaSourceType.fromWireValue(value);
+    } on Object {
+      return null;
+    }
   }
 }

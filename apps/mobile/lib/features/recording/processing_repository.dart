@@ -35,16 +35,18 @@ class ProcessingRepository {
     String meetingId,
     ProcessingAdmissionRequest request, {
     required String idempotencyKey,
+    AuthenticatedSessionScope? sessionScope,
   }) async {
     _validateId(meetingId, 'meetingId');
     _validateIdempotencyKey(idempotencyKey);
-    final scope = _captureSession();
+    final scope = _captureSession(sessionScope);
     final response = await _mutate(
       scope,
       () => api.post(
         '${_meetingPath(meetingId)}/processing-jobs',
         request.toJson(),
         headers: <String, String>{'Idempotency-Key': idempotencyKey},
+        sessionScope: scope,
       ),
     );
     final job = _decode(response, meetingId: meetingId);
@@ -52,12 +54,18 @@ class ProcessingRepository {
     return job;
   }
 
-  Future<List<ProcessingJobRecord>> list(String meetingId) async {
+  Future<List<ProcessingJobRecord>> list(
+    String meetingId, {
+    AuthenticatedSessionScope? sessionScope,
+  }) async {
     _validateId(meetingId, 'meetingId');
-    final scope = _captureSession();
+    final scope = _captureSession(sessionScope);
     final response = await _read(
       scope,
-      () => api.get('${_meetingPath(meetingId)}/processing-jobs'),
+      () => api.get(
+        '${_meetingPath(meetingId)}/processing-jobs',
+        sessionScope: scope,
+      ),
     );
     final jobs = response
         .objectArrayData()
@@ -72,12 +80,18 @@ class ProcessingRepository {
     return List<ProcessingJobRecord>.unmodifiable(jobs);
   }
 
-  Future<ProcessingJobRecord> get(String jobId) async {
+  Future<ProcessingJobRecord> get(
+    String jobId, {
+    AuthenticatedSessionScope? sessionScope,
+  }) async {
     _validateId(jobId, 'jobId');
-    final scope = _captureSession();
+    final scope = _captureSession(sessionScope);
     final response = await _read(
       scope,
-      () => api.get('/processing-jobs/${Uri.encodeComponent(jobId)}'),
+      () => api.get(
+        '/processing-jobs/${Uri.encodeComponent(jobId)}',
+        sessionScope: scope,
+      ),
     );
     final job = _decode(response);
     if (job.id.toLowerCase() != jobId.toLowerCase()) {
@@ -91,6 +105,7 @@ class ProcessingRepository {
     String jobId, {
     required String idempotencyKey,
     String? stageCode,
+    AuthenticatedSessionScope? sessionScope,
   }) async {
     _validateId(jobId, 'jobId');
     _validateIdempotencyKey(idempotencyKey);
@@ -102,13 +117,14 @@ class ProcessingRepository {
         'Must match the Core processing stage contract.',
       );
     }
-    final scope = _captureSession();
+    final scope = _captureSession(sessionScope);
     final response = await _mutate(
       scope,
       () => api.post(
         '/processing-jobs/${Uri.encodeComponent(jobId)}/retry',
         <String, dynamic>{if (stageCode != null) 'stageCode': stageCode},
         headers: <String, String>{'Idempotency-Key': idempotencyKey},
+        sessionScope: scope,
       ),
     );
     final job = _decode(response);
@@ -131,8 +147,10 @@ class ProcessingRepository {
     return job;
   }
 
-  AuthenticatedSessionScope _captureSession() {
-    final scope = api.authenticatedSessionScope;
+  AuthenticatedSessionScope _captureSession(
+    AuthenticatedSessionScope? expected,
+  ) {
+    final scope = expected ?? api.authenticatedSessionScope;
     if (scope == null || !api.isCurrentAuthenticatedSession(scope)) {
       throw MediaRepositoryFailure(
         const ApiFailure(
@@ -200,16 +218,20 @@ class ProcessingRepository {
       if (error is MediaRepositoryFailure) rethrow;
       final failure = error is ApiFailure ? error : _unknownFailure();
       final outcome =
-          !failure.transportFailure &&
-              failure.status >= 400 &&
-              failure.status <= 499 &&
-              failure.status != 408 &&
-              failure.status != 425
+          failure.code == 'AUTH_SESSION_CHANGED' ||
+              failure.code == 'AUTH_SESSION_REQUIRED' ||
+              failure.status == 401
+          ? MediaMutationOutcome.unknown
+          : !failure.transportFailure &&
+                failure.status >= 400 &&
+                failure.status <= 499 &&
+                failure.status != 408 &&
+                failure.status != 425
           ? MediaMutationOutcome.rejected
           : MediaMutationOutcome.unknown;
       throw MediaRepositoryFailure(
         failure,
-        category: MediaFailureCategory.unknown,
+        category: _categoryFor(failure),
         mutationOutcome: outcome,
         cause: error,
       );
@@ -222,6 +244,38 @@ class ProcessingRepository {
     'The processing operation could not be completed.',
     isTransportFailure: true,
   );
+
+  MediaFailureCategory _categoryFor(ApiFailure failure) {
+    if (failure.status == 401) return MediaFailureCategory.authentication;
+    if (failure.status == 403) return MediaFailureCategory.authorization;
+    if (failure.status == 404) return MediaFailureCategory.resourceUnavailable;
+    if (failure.status == 409 || failure.status == 412) {
+      return MediaFailureCategory.businessConflict;
+    }
+    if (failure.status == 429) return MediaFailureCategory.rateLimited;
+    if (failure.code == 'NETWORK_TIMEOUT' ||
+        failure.code == 'UPLOAD_TIMEOUT' ||
+        failure.code == 'UPLOAD_INACTIVITY_TIMEOUT') {
+      return MediaFailureCategory.timeout;
+    }
+    if (failure.transportFailure) return MediaFailureCategory.transport;
+    if (failure.invalidResponse) return MediaFailureCategory.invalidResponse;
+    if (failure.status == 408 || failure.status == 425) {
+      return MediaFailureCategory.timeout;
+    }
+    if (failure.status >= 500 && failure.status <= 599) {
+      return MediaFailureCategory.server;
+    }
+    if (failure.status == 400 ||
+        failure.status == 422 ||
+        failure.code == 'VALIDATION_FAILED') {
+      return MediaFailureCategory.validation;
+    }
+    if (failure.status >= 400 && failure.status <= 499) {
+      return MediaFailureCategory.rejectedRequest;
+    }
+    return MediaFailureCategory.unknown;
+  }
 }
 
 void _validateId(String value, String name) {
