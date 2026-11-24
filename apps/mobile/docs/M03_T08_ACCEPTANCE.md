@@ -26,10 +26,12 @@ remain open.
 
 | Gate | Result |
 | --- | --- |
-| `dart format --output=none --set-exit-if-changed lib test` | PASS |
-| `flutter analyze` | PASS |
-| Focused meeting tests (workflow, membership, scheduling widgets, corrective regressions) | PASS — 25 tests |
-| Complete Flutter suite: `flutter test --reporter=compact` | PASS — 279 tests |
+| `dart format --output=none --set-exit-if-changed lib test` | PASS — 97 files checked, 0 changed |
+| `flutter analyze` | PASS — no issues |
+| `flutter test test/meeting_corrective_regression_test.dart` | PASS — 13 tests |
+| `flutter test test/meeting_workflow_controller_test.dart` | PASS — 17 tests |
+| `flutter test test/meeting_edit_sheet_test.dart` | PASS — 1 widget test |
+| Complete Flutter suite: `flutter test --reporter=compact` | PASS — 291 tests |
 | `python3 tool/validate_native_config.py` | PASS |
 | `PYTHONPATH=. python3 tool/test_android_native_verification.py` | PASS — 8 tests |
 | `python3 tool/run_android_native_verification.py --timeout-seconds 1200` | PASS |

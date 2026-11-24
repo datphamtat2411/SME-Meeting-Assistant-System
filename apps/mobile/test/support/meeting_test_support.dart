@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:crypto/crypto.dart';
 import 'package:http/http.dart' as http;
 import 'package:sme_meeting_assistant/core/api_client.dart';
 
@@ -10,6 +11,22 @@ const testMeetingId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const testUserId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const testRoomId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const testMeetingEtag = '"meeting-test-v1"';
+
+String meetingRecoveryStorageKey(Uri deployment, String accountId) {
+  final normalized = deployment.replace(
+    scheme: deployment.scheme.toLowerCase(),
+    host: deployment.host.toLowerCase().replaceFirst(RegExp(r'\.$'), ''),
+    fragment: null,
+    query: null,
+  );
+  final deploymentScope = sha256
+      .convert(
+        utf8.encode(normalized.toString().replaceFirst(RegExp(r'/+$'), '')),
+      )
+      .toString();
+  final scope = sha256.convert(utf8.encode('$deploymentScope|$accountId'));
+  return 'sme.mobile.meeting-create.v1.$scope';
+}
 
 typedef MeetingRequestHandler = Future<http.StreamedResponse> Function(
   http.BaseRequest request,
@@ -64,10 +81,11 @@ class MeetingTestHttpClient extends http.BaseClient {
 ApiClient createMeetingTestApi(
   MeetingTestHttpClient client, {
   DateTime Function()? now,
+  CredentialStorage? credentialStorage,
 }) => ApiClient(
   baseUri: Uri.parse('https://api.example.test/api/v1'),
   httpClient: client,
-  credentialStorage: InMemoryCredentialStorage(),
+  credentialStorage: credentialStorage ?? InMemoryCredentialStorage(),
   now: now,
 );
 
@@ -201,4 +219,50 @@ Future<void> completeRequestAfter(
   Map<String, String> headers = const <String, String>{},
 }) async {
   completer.complete(await meetingJsonResponse(status, body, headers: headers));
+}
+
+class ControllableMeetingCredentialStorage implements CredentialStorage {
+  ControllableMeetingCredentialStorage()
+    : _delegate = InMemoryCredentialStorage();
+
+  final InMemoryCredentialStorage _delegate;
+  Completer<void>? _durabilityGate;
+  Completer<void>? _durabilityStarted;
+
+  void holdNextDurabilityConfirmation() {
+    if (_durabilityGate != null) {
+      throw StateError('A durability confirmation is already held.');
+    }
+    _durabilityGate = Completer<void>();
+    _durabilityStarted = Completer<void>();
+  }
+
+  Future<void> waitForDurabilityConfirmation() =>
+      _durabilityStarted?.future ?? Future<void>.value();
+
+  void releaseDurabilityConfirmation() {
+    final gate = _durabilityGate;
+    _durabilityGate = null;
+    _durabilityStarted = null;
+    gate?.complete();
+  }
+
+  @override
+  Future<String?> read({required String key}) => _delegate.read(key: key);
+
+  @override
+  Future<void> write({required String key, required String value}) =>
+      _delegate.write(key: key, value: value);
+
+  @override
+  Future<void> delete({required String key}) => _delegate.delete(key: key);
+
+  @override
+  Future<void> confirmDurable() async {
+    final gate = _durabilityGate;
+    final started = _durabilityStarted;
+    _durabilityStarted = null;
+    started?.complete();
+    if (gate != null) await gate.future;
+  }
 }

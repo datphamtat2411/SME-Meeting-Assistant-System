@@ -43,6 +43,14 @@ enum MeetingCreationRecoveryReadStatus {
   unavailable,
 }
 
+enum MeetingCreationRecoveryDeleteStatus {
+  deleted,
+  alreadyAbsent,
+  changed,
+  unavailable,
+  notOwned,
+}
+
 class MeetingCreationRecord {
   const MeetingCreationRecord({
     required this.accountId,
@@ -93,10 +101,140 @@ class MeetingCreationRecord {
 }
 
 class MeetingCreationRecoveryRead {
-  const MeetingCreationRecoveryRead(this.status, {this.record});
+  const MeetingCreationRecoveryRead(
+    this.status, {
+    this.record,
+    this.fingerprint,
+  });
 
   final MeetingCreationRecoveryReadStatus status;
   final MeetingCreationRecord? record;
+  final String? fingerprint;
+}
+
+class MeetingCreationRecoveryDeleteResult {
+  const MeetingCreationRecoveryDeleteResult(this.status);
+
+  final MeetingCreationRecoveryDeleteStatus status;
+
+  bool get deleted =>
+      status == MeetingCreationRecoveryDeleteStatus.deleted ||
+      status == MeetingCreationRecoveryDeleteStatus.alreadyAbsent;
+}
+
+/// An opaque, identity-bound owner for one account/deployment recovery scope.
+///
+/// The object identity, rather than the account identifier, grants the right to
+/// release a recovery operation.
+class MeetingCreationOperationLease {
+  MeetingCreationOperationLease._(this.scopeKey);
+
+  final String scopeKey;
+}
+
+class _MeetingCreationReplayEvidence {
+  const _MeetingCreationReplayEvidence({
+    required this.scopeKey,
+    required this.idempotencyKey,
+    required this.createdAt,
+    required this.replayDeadline,
+    required this.monotonicStart,
+  });
+
+  final String scopeKey;
+  final String idempotencyKey;
+  final DateTime createdAt;
+  final DateTime replayDeadline;
+  final Duration monotonicStart;
+}
+
+/// Process-scoped evidence used to decide whether an identity-less creation
+/// intent may be safely replayed.
+class MeetingCreationReplayClock {
+  MeetingCreationReplayClock({
+    DateTime Function()? wallNow,
+    Duration Function()? monotonicNow,
+  }) : _wallNow = wallNow ?? DateTime.now {
+    _monotonicNow = monotonicNow ?? (() => _stopwatch.elapsed);
+    _stopwatch.start();
+  }
+
+  final DateTime Function() _wallNow;
+  final Stopwatch _stopwatch = Stopwatch();
+  late final Duration Function() _monotonicNow;
+  final Map<String, _MeetingCreationReplayEvidence> _evidence =
+      <String, _MeetingCreationReplayEvidence>{};
+
+  DateTime wallNow() => _wallNow().toUtc();
+
+  Duration monotonicNow() => _monotonicNow();
+
+  void register(MeetingCreationRecord record) {
+    final key = _evidenceKey(record);
+    _evidence.putIfAbsent(
+      key,
+      () => _MeetingCreationReplayEvidence(
+        scopeKey: '${record.deploymentScope}|${record.accountId}',
+        idempotencyKey: record.idempotencyKey,
+        createdAt: record.createdAt,
+        replayDeadline: record.replayDeadline,
+        monotonicStart: monotonicNow(),
+      ),
+    );
+  }
+
+  _ReplayEligibility _eligibility(MeetingCreationRecord record) {
+    if (record.meetingId != null) return _ReplayEligibility.notApplicable;
+    final window = record.replayDeadline.difference(record.createdAt);
+    if (window <= Duration.zero || window > meetingCreationReplaySafetyWindow) {
+      return _ReplayEligibility.uncertain;
+    }
+    final evidence = _evidence[_evidenceKey(record)];
+    if (evidence == null ||
+        evidence.scopeKey != '${record.deploymentScope}|${record.accountId}' ||
+        evidence.idempotencyKey != record.idempotencyKey ||
+        evidence.createdAt != record.createdAt ||
+        evidence.replayDeadline != record.replayDeadline) {
+      return _ReplayEligibility.uncertain;
+    }
+    final wall = wallNow();
+    final monotonicElapsed = monotonicNow() - evidence.monotonicStart;
+    if (wall.isBefore(record.createdAt) || monotonicElapsed.isNegative) {
+      return _ReplayEligibility.uncertain;
+    }
+    if (!wall.isBefore(record.replayDeadline) || monotonicElapsed >= window) {
+      return _ReplayEligibility.expired;
+    }
+    final expectedWall = record.createdAt.add(monotonicElapsed);
+    if (wall.isBefore(expectedWall.subtract(const Duration(seconds: 5))) ||
+        wall.isAfter(expectedWall.add(const Duration(seconds: 5)))) {
+      return _ReplayEligibility.uncertain;
+    }
+    return _ReplayEligibility.eligible;
+  }
+
+  void retire(MeetingCreationRecord record) {
+    _evidence.remove(_evidenceKey(record));
+  }
+
+  String _evidenceKey(MeetingCreationRecord record) =>
+      '${record.deploymentScope}|${record.accountId}|${record.idempotencyKey}';
+}
+
+final MeetingCreationReplayClock sharedMeetingCreationReplayClock =
+    MeetingCreationReplayClock();
+
+/// The exact recovery context presented to a user for manual review.
+class MeetingCreationRecoveryContext {
+  const MeetingCreationRecoveryContext({
+    required this.status,
+    this.record,
+    this.fingerprint,
+  });
+
+  final MeetingCreationRecoveryReadStatus status;
+  final MeetingCreationRecord? record;
+  final String? fingerprint;
 }
 
 /// Device-private recovery for explicitly submitted meeting creation requests.
@@ -104,25 +242,36 @@ class MeetingCreationRecoveryRead {
 /// The account and deployment are part of both the record and its storage key;
 /// credentials and unrelated meeting metadata are never persisted here.
 class MeetingCreationRecoveryStore {
-  MeetingCreationRecoveryStore({required this.storage, required Uri deployment})
-    : deploymentScope = _deploymentDigest(deployment);
+  MeetingCreationRecoveryStore({
+    required this.storage,
+    required Uri deployment,
+    MeetingCreationReplayClock? replayClock,
+  }) : deploymentScope = _deploymentDigest(deployment),
+       replayClock = replayClock ?? sharedMeetingCreationReplayClock;
 
   static const int recordVersion = 1;
   static const String _keyPrefix = 'sme.mobile.meeting-create.v1.';
   static final Map<String, Future<void>> _operationTails =
       <String, Future<void>>{};
-  static final Set<String> _activeOperations = <String>{};
+  static final Map<String, MeetingCreationOperationLease> _activeOperations =
+      <String, MeetingCreationOperationLease>{};
 
   final CredentialStorage storage;
   final String deploymentScope;
+  final MeetingCreationReplayClock replayClock;
 
   String _storageKey(String accountId) =>
       '$_keyPrefix${_digest('$deploymentScope|$accountId')}';
 
   Future<MeetingCreationRecord> save(
     String accountId,
-    MeetingCreationRecord record,
-  ) => _serialize(accountId, () async {
+    MeetingCreationRecord record, {
+    MeetingCreationOperationLease? lease,
+  }) => _serialize(accountId, () async {
+    if (lease != null &&
+        (!ownsOperation(lease) || lease.scopeKey != _storageKey(accountId))) {
+      throw const MeetingCreationStorageException();
+    }
     if (record.accountId != accountId ||
         record.deploymentScope != deploymentScope) {
       throw const MeetingCreationStorageException();
@@ -160,8 +309,30 @@ class MeetingCreationRecoveryStore {
     return record;
   });
 
-  Future<MeetingCreationRecoveryRead> read(String accountId) =>
-      _serialize(accountId, () => _readUnlocked(accountId));
+  Future<MeetingCreationRecoveryRead> read(
+    String accountId, {
+    MeetingCreationOperationLease? lease,
+  }) => _serialize(accountId, () {
+    if (lease != null &&
+        (!ownsOperation(lease) || lease.scopeKey != _storageKey(accountId))) {
+      throw const MeetingCreationStorageException();
+    }
+    return _readUnlocked(accountId);
+  });
+
+  Future<void> confirmDurable(
+    String accountId, {
+    required MeetingCreationOperationLease lease,
+  }) => _serialize(accountId, () async {
+    if (!ownsOperation(lease) || lease.scopeKey != _storageKey(accountId)) {
+      throw const MeetingCreationStorageException();
+    }
+    try {
+      await storage.confirmDurable();
+    } catch (_) {
+      throw const MeetingCreationStorageException();
+    }
+  });
 
   Future<MeetingCreationRecoveryRead> _readUnlocked(String accountId) async {
     final String? encoded;
@@ -177,74 +348,125 @@ class MeetingCreationRecoveryStore {
         MeetingCreationRecoveryReadStatus.missing,
       );
     }
+    final fingerprint = _digest(encoded);
     try {
       final decoded = jsonDecode(encoded);
       if (decoded is! Map<String, dynamic>) {
-        return const MeetingCreationRecoveryRead(
+        return MeetingCreationRecoveryRead(
           MeetingCreationRecoveryReadStatus.malformed,
+          fingerprint: fingerprint,
         );
       }
       if (decoded['version'] != recordVersion) {
-        return const MeetingCreationRecoveryRead(
+        return MeetingCreationRecoveryRead(
           MeetingCreationRecoveryReadStatus.unsupportedVersion,
+          fingerprint: fingerprint,
         );
       }
       final record = _recordFromJson(decoded);
       if (record.accountId != accountId ||
           record.deploymentScope != deploymentScope) {
-        return const MeetingCreationRecoveryRead(
+        return MeetingCreationRecoveryRead(
           MeetingCreationRecoveryReadStatus.malformed,
+          fingerprint: fingerprint,
         );
       }
       return MeetingCreationRecoveryRead(
         MeetingCreationRecoveryReadStatus.available,
         record: record,
+        fingerprint: fingerprint,
       );
     } on FormatException {
-      return const MeetingCreationRecoveryRead(
+      return MeetingCreationRecoveryRead(
         MeetingCreationRecoveryReadStatus.malformed,
+        fingerprint: fingerprint,
       );
     } on TypeError {
-      return const MeetingCreationRecoveryRead(
+      return MeetingCreationRecoveryRead(
         MeetingCreationRecoveryReadStatus.malformed,
+        fingerprint: fingerprint,
       );
     } on ArgumentError {
-      return const MeetingCreationRecoveryRead(
+      return MeetingCreationRecoveryRead(
         MeetingCreationRecoveryReadStatus.malformed,
+        fingerprint: fingerprint,
       );
     }
   }
 
-  Future<void> delete(String accountId, {String? expectedIdempotencyKey}) =>
-      _serialize(accountId, () async {
-        if (expectedIdempotencyKey != null) {
-          final current = await _readUnlocked(accountId);
-          if (current.status == MeetingCreationRecoveryReadStatus.missing)
-            return;
-          if (current.status != MeetingCreationRecoveryReadStatus.available) {
-            throw const MeetingCreationStorageException();
-          }
-          if (current.record?.idempotencyKey != expectedIdempotencyKey) {
-            return;
-          }
-        }
-        try {
-          await storage.delete(key: _storageKey(accountId));
-          await storage.confirmDurable();
-        } catch (_) {
-          throw const MeetingCreationStorageException();
-        }
-      });
+  Future<MeetingCreationRecoveryDeleteResult> delete(
+    String accountId, {
+    required MeetingCreationOperationLease lease,
+    required String expectedFingerprint,
+    String? expectedIdempotencyKey,
+    String? expectedMeetingId,
+  }) => _serialize(accountId, () async {
+    if (!ownsOperation(lease) || lease.scopeKey != _storageKey(accountId)) {
+      return const MeetingCreationRecoveryDeleteResult(
+        MeetingCreationRecoveryDeleteStatus.notOwned,
+      );
+    }
+    final current = await _readUnlocked(accountId);
+    if (!ownsOperation(lease)) {
+      return const MeetingCreationRecoveryDeleteResult(
+        MeetingCreationRecoveryDeleteStatus.notOwned,
+      );
+    }
+    if (current.status == MeetingCreationRecoveryReadStatus.missing) {
+      return const MeetingCreationRecoveryDeleteResult(
+        MeetingCreationRecoveryDeleteStatus.alreadyAbsent,
+      );
+    }
+    if (current.status == MeetingCreationRecoveryReadStatus.unavailable ||
+        current.fingerprint == null) {
+      return const MeetingCreationRecoveryDeleteResult(
+        MeetingCreationRecoveryDeleteStatus.unavailable,
+      );
+    }
+    if (current.fingerprint != expectedFingerprint) {
+      return const MeetingCreationRecoveryDeleteResult(
+        MeetingCreationRecoveryDeleteStatus.changed,
+      );
+    }
+    final record = current.record;
+    if (expectedIdempotencyKey != null &&
+            record?.idempotencyKey != expectedIdempotencyKey ||
+        expectedMeetingId != null && record?.meetingId != expectedMeetingId) {
+      return const MeetingCreationRecoveryDeleteResult(
+        MeetingCreationRecoveryDeleteStatus.changed,
+      );
+    }
+    try {
+      await storage.delete(key: _storageKey(accountId));
+      await storage.confirmDurable();
+      return const MeetingCreationRecoveryDeleteResult(
+        MeetingCreationRecoveryDeleteStatus.deleted,
+      );
+    } catch (_) {
+      return const MeetingCreationRecoveryDeleteResult(
+        MeetingCreationRecoveryDeleteStatus.unavailable,
+      );
+    }
+  });
 
   /// Acquires the one logical recovery slot for an account/deployment.
   ///
   /// Idempotency keys identify a request, but they must not create separate
   /// in-process recovery owners for the same durable record.
-  bool tryAcquireOperation(String accountId, [String? idempotencyKey]) =>
-      _activeOperations.add(_storageKey(accountId));
+  MeetingCreationOperationLease? tryAcquireOperation(String accountId) {
+    final scopeKey = _storageKey(accountId);
+    if (_activeOperations.containsKey(scopeKey)) return null;
+    final lease = MeetingCreationOperationLease._(scopeKey);
+    _activeOperations[scopeKey] = lease;
+    return lease;
+  }
 
-  void releaseOperation(String accountId, [String? idempotencyKey]) {
-    _activeOperations.remove(_storageKey(accountId));
+  bool ownsOperation(MeetingCreationOperationLease lease) =>
+      identical(_activeOperations[lease.scopeKey], lease);
+
+  void releaseOperation(MeetingCreationOperationLease lease) {
+    if (!ownsOperation(lease)) return;
+    _activeOperations.remove(lease.scopeKey);
   }
 
   Future<T> _serialize<T>(
@@ -284,6 +506,8 @@ class MeetingCreationState {
     required this.failure,
     required this.message,
     required this.recoveryReadStatus,
+    this.recoveryFingerprint,
+    this.recoveryBusy = false,
   });
 
   final MeetingCreationPhase phase;
@@ -292,6 +516,18 @@ class MeetingCreationState {
   final Object? failure;
   final String? message;
   final MeetingCreationRecoveryReadStatus? recoveryReadStatus;
+  final String? recoveryFingerprint;
+  final bool recoveryBusy;
+
+  MeetingCreationRecoveryContext? get recoveryContext {
+    final status = recoveryReadStatus;
+    if (status == null) return null;
+    return MeetingCreationRecoveryContext(
+      status: status,
+      record: record,
+      fingerprint: recoveryFingerprint,
+    );
+  }
 
   bool get isBusy =>
       phase == MeetingCreationPhase.restoring ||
@@ -308,6 +544,7 @@ class MeetingCreationState {
 
   bool get canEdit =>
       !isBusy &&
+      !recoveryBusy &&
       !hasUnresolvedOperation &&
       (phase == MeetingCreationPhase.ready ||
           phase == MeetingCreationPhase.rejected);
@@ -320,11 +557,16 @@ class MeetingCreationController extends ChangeNotifier {
     required this.sessionScope,
     DateTime Function()? now,
     Duration Function()? monotonicNow,
+    MeetingCreationReplayClock? replayClock,
     String Function()? createIdempotencyKey,
-  }) : _now = now ?? DateTime.now,
-       _monotonicNow = monotonicNow,
-       _clockWallAnchor = (now ?? DateTime.now)().toUtc(),
-       _clockMonotonicAnchor = monotonicNow?.call() ?? Duration.zero,
+  }) : _replayClock =
+           replayClock ??
+           (now != null || monotonicNow != null
+               ? MeetingCreationReplayClock(
+                   wallNow: now,
+                   monotonicNow: monotonicNow,
+                 )
+               : recoveryStore.replayClock),
        _createIdempotencyKey = createIdempotencyKey ?? _randomKey,
        _state = const MeetingCreationState(
          phase: MeetingCreationPhase.ready,
@@ -340,19 +582,15 @@ class MeetingCreationController extends ChangeNotifier {
   final MeetingRepository meetings;
   final MeetingCreationRecoveryStore recoveryStore;
   final AuthenticatedSessionScope sessionScope;
-  final DateTime Function() _now;
-  final Duration Function()? _monotonicNow;
-  final DateTime _clockWallAnchor;
-  final Duration _clockMonotonicAnchor;
+  final MeetingCreationReplayClock _replayClock;
   final String Function() _createIdempotencyKey;
-  final Stopwatch _stopwatch = Stopwatch()..start();
 
   MeetingCreationState _state;
   Future<void>? _operation;
   bool _disposed = false;
-  bool _clockReliable = true;
 
   MeetingCreationState get state => _state;
+  MeetingCreationRecoveryContext? get recoveryContext => _state.recoveryContext;
   bool get ownsSession =>
       !_disposed && meetings.api.isCurrentAuthenticatedSession(sessionScope);
   bool canReplayCreate(MeetingCreationRecord record) =>
@@ -360,63 +598,92 @@ class MeetingCreationController extends ChangeNotifier {
       record.deploymentScope == recoveryStore.deploymentScope &&
       _replayEligibility(record) == _ReplayEligibility.eligible;
 
-  Future<void> restore() async {
-    if (_disposed || !ownsSession) return;
-    _publish(
-      phase: MeetingCreationPhase.restoring,
-      record: _state.record,
-      snapshot: _state.snapshot,
-      clearFailure: true,
-      clearMessage: true,
-    );
-    final result = await recoveryStore.read(sessionScope.userId);
-    if (!ownsSession) return;
-    switch (result.status) {
-      case MeetingCreationRecoveryReadStatus.missing:
+  Future<void> restore() {
+    if (_disposed || !ownsSession) return Future<void>.value();
+    return _run(() async {
+      await _withRecoveryLease<void>((lease) async {
         _publish(
-          phase: MeetingCreationPhase.ready,
-          record: null,
-          snapshot: null,
-          recoveryReadStatus: result.status,
+          phase: MeetingCreationPhase.restoring,
+          record: _state.record,
+          snapshot: _state.snapshot,
+          clearFailure: true,
+          clearMessage: true,
+          recoveryBusy: false,
         );
-      case MeetingCreationRecoveryReadStatus.available:
-        final record = result.record!;
-        final replayEligibility = record.meetingId == null
-            ? _replayEligibility(record)
-            : _ReplayEligibility.notApplicable;
-        _publish(
-          phase: record.meetingId == null
-              ? (replayEligibility == _ReplayEligibility.eligible
-                    ? MeetingCreationPhase.outcomeUnknown
-                    : MeetingCreationPhase.recoveryRequired)
-              : MeetingCreationPhase.partialSuccess,
-          record: record,
-          snapshot: null,
-          recoveryReadStatus: result.status,
-          message: switch (replayEligibility) {
-            _ReplayEligibility.eligible =>
-              'Có một yêu cầu tạo cuộc họp chưa được xác nhận hoàn tất.',
-            _ReplayEligibility.expired => 'Đã hết thời hạn gửi lại an toàn; hãy kiểm tra danh sách cuộc họp trước khi xử lý tiếp.',
-            _ReplayEligibility.uncertain => 'Không thể xác minh thời hạn gửi lại an toàn. Hãy kiểm tra danh sách cuộc họp trước khi xử lý tiếp.',
-            _ReplayEligibility.notApplicable => 'Có một cuộc họp đã được tạo nhưng cần xem lại trạng thái hiện tại.',
-          },
-        );
-      case MeetingCreationRecoveryReadStatus.malformed ||
-          MeetingCreationRecoveryReadStatus.unsupportedVersion ||
-          MeetingCreationRecoveryReadStatus.unavailable:
-        _publish(
-          phase: MeetingCreationPhase.recoveryRequired,
-          record: null,
-          snapshot: null,
-          recoveryReadStatus: result.status,
-          message: switch (result.status) {
-            MeetingCreationRecoveryReadStatus.unavailable => 'Không thể đọc thông tin khôi phục. Chưa thể bắt đầu yêu cầu tạo khác.',
-            MeetingCreationRecoveryReadStatus.unsupportedVersion =>
-              'Thông tin khôi phục được tạo bởi phiên bản ứng dụng khác.',
-            _ => 'Thông tin khôi phục không hợp lệ; chưa thể bắt đầu yêu cầu tạo khác.',
-          },
-        );
-    }
+        late final MeetingCreationRecoveryRead result;
+        try {
+          result = await recoveryStore.read(sessionScope.userId, lease: lease);
+        } catch (error) {
+          if (!ownsSession || !recoveryStore.ownsOperation(lease)) return;
+          _publish(
+            phase: MeetingCreationPhase.recoveryRequired,
+            record: null,
+            snapshot: null,
+            failure: error,
+            recoveryReadStatus: MeetingCreationRecoveryReadStatus.unavailable,
+            recoveryFingerprint: null,
+            clearRecoveryFingerprint: true,
+            message: 'Không thể đọc thông tin khôi phục. Chưa thể bắt đầu yêu cầu tạo khác.',
+          );
+          return;
+        }
+        if (!ownsSession || !recoveryStore.ownsOperation(lease)) return;
+        switch (result.status) {
+          case MeetingCreationRecoveryReadStatus.missing:
+            if (_state.record != null) {
+              _replayClock.retire(_state.record!);
+            }
+            _publish(
+              phase: MeetingCreationPhase.ready,
+              record: null,
+              snapshot: null,
+              recoveryReadStatus: result.status,
+              recoveryFingerprint: null,
+              clearRecoveryFingerprint: true,
+              clearMessage: true,
+            );
+          case MeetingCreationRecoveryReadStatus.available:
+            final record = result.record!;
+            final replayEligibility = record.meetingId == null
+                ? _replayEligibility(record)
+                : _ReplayEligibility.notApplicable;
+            _publish(
+              phase: record.meetingId == null
+                  ? (replayEligibility == _ReplayEligibility.eligible
+                        ? MeetingCreationPhase.outcomeUnknown
+                        : MeetingCreationPhase.recoveryRequired)
+                  : MeetingCreationPhase.partialSuccess,
+              record: record,
+              snapshot: null,
+              recoveryReadStatus: result.status,
+              recoveryFingerprint: result.fingerprint,
+              message: switch (replayEligibility) {
+                _ReplayEligibility.eligible =>
+                  'Có một yêu cầu tạo cuộc họp chưa được xác nhận hoàn tất.',
+                _ReplayEligibility.expired => 'Đã hết thời hạn gửi lại an toàn; hãy kiểm tra danh sách cuộc họp trước khi tiếp tục.',
+                _ReplayEligibility.uncertain => 'Không thể xác minh thời hạn gửi lại an toàn. Hãy kiểm tra danh sách cuộc họp trước khi tiếp tục.',
+                _ReplayEligibility.notApplicable => 'Có một cuộc họp đã được tạo nhưng cần xem lại trạng thái hiện tại.',
+              },
+            );
+          case MeetingCreationRecoveryReadStatus.malformed ||
+              MeetingCreationRecoveryReadStatus.unsupportedVersion ||
+              MeetingCreationRecoveryReadStatus.unavailable:
+            _publish(
+              phase: MeetingCreationPhase.recoveryRequired,
+              record: null,
+              snapshot: null,
+              recoveryReadStatus: result.status,
+              recoveryFingerprint: result.fingerprint,
+              message: switch (result.status) {
+                MeetingCreationRecoveryReadStatus.unavailable => 'Không thể đọc thông tin khôi phục. Chưa thể bắt đầu yêu cầu tạo khác.',
+                MeetingCreationRecoveryReadStatus.unsupportedVersion =>
+                  'Thông tin khôi phục được tạo bởi phiên bản ứng dụng khác.',
+                _ => 'Thông tin khôi phục không hợp lệ; chưa thể bắt đầu yêu cầu tạo khác.',
+              },
+            );
+        }
+      });
+    });
   }
 
   Future<void> submit(
@@ -433,7 +700,7 @@ class MeetingCreationController extends ChangeNotifier {
         (action == MeetingCreationAction.schedule && blockingRoomConflict)) {
       return Future<void>.value();
     }
-    final createdAt = _readWallClock();
+    final createdAt = _replayClock.wallNow();
     final record = MeetingCreationRecord(
       accountId: sessionScope.userId,
       deploymentScope: recoveryStore.deploymentScope,
@@ -444,6 +711,7 @@ class MeetingCreationController extends ChangeNotifier {
       replayDeadline: createdAt.add(meetingCreationReplaySafetyWindow),
       phase: MeetingCreationRecordPhase.intentPersisted,
     );
+    _replayClock.register(record);
     return _run(() => _dispatchCreation(record, isReplay: false));
   }
 
@@ -464,26 +732,17 @@ class MeetingCreationController extends ChangeNotifier {
   /// Revalidates a known created meeting and returns its id only after an
   /// authorized current representation was obtained.
   Future<String?> openRecoveredMeeting() async {
-    final record = _state.record;
-    if (record?.meetingId == null || !ownsSession || _operation != null) {
+    final reviewed = recoveryContext;
+    if (reviewed?.record?.meetingId == null ||
+        reviewed?.fingerprint == null ||
+        !ownsSession ||
+        _operation != null) {
       return null;
     }
     String? result;
     await _run(() async {
-      final snapshot = await meetings.detail(record!.meetingId!);
-      if (!ownsSession) return;
-      await recoveryStore.delete(
-        sessionScope.userId,
-        expectedIdempotencyKey: record.idempotencyKey,
-      );
-      if (!ownsSession) return;
-      result = snapshot.meeting.id;
-      _publish(
-        phase: MeetingCreationPhase.completed,
-        record: null,
-        snapshot: snapshot,
-        message: 'Đã mở trạng thái hiện tại của cuộc họp.',
-        recoveryReadStatus: MeetingCreationRecoveryReadStatus.missing,
+      result = await _withRecoveryLease<String?>(
+        (lease) => _openRecoveredMeetingOwned(reviewed!, lease),
       );
     });
     return result;
@@ -491,27 +750,24 @@ class MeetingCreationController extends ChangeNotifier {
 
   /// Called only after the user has reviewed the existing meeting list and
   /// explicitly chosen to retire an identity-less recovery record.
-  Future<bool> resolveAfterManualReview() async {
+  Future<bool> resolveAfterManualReview({
+    MeetingCreationRecoveryContext? reviewedContext,
+  }) async {
+    final reviewed = reviewedContext ?? recoveryContext;
     if (!ownsSession ||
-        _state.record?.meetingId != null ||
-        _operation != null) {
+        _operation != null ||
+        reviewed == null ||
+        reviewed.fingerprint == null ||
+        reviewed.record?.meetingId != null) {
       return false;
     }
     var cleared = false;
     await _run(() async {
-      await recoveryStore.delete(
-        sessionScope.userId,
-        expectedIdempotencyKey: _state.record?.idempotencyKey,
-      );
-      if (!ownsSession) return;
-      cleared = true;
-      _publish(
-        phase: MeetingCreationPhase.ready,
-        record: null,
-        snapshot: null,
-        recoveryReadStatus: MeetingCreationRecoveryReadStatus.missing,
-        message: 'Thông tin khôi phục đã được xóa theo xác nhận của bạn.',
-      );
+      cleared =
+          await _withRecoveryLease<bool>(
+            (lease) => _resolveAfterManualReviewOwned(reviewed, lease),
+          ) ??
+          false;
     });
     return cleared;
   }
@@ -521,32 +777,41 @@ class MeetingCreationController extends ChangeNotifier {
     required bool isReplay,
   }) async {
     if (!ownsSession) return;
-    if (!recoveryStore.tryAcquireOperation(
-      sessionScope.userId,
-      record.idempotencyKey,
-    )) {
+    await _withRecoveryLease<void>(
+      (lease) =>
+          _dispatchCreationOwned(record, isReplay: isReplay, lease: lease),
+    );
+  }
+
+  Future<T?> _withRecoveryLease<T>(
+    Future<T> Function(MeetingCreationOperationLease lease) operation,
+  ) async {
+    if (!ownsSession) return null;
+    final lease = recoveryStore.tryAcquireOperation(sessionScope.userId);
+    if (lease == null) {
       _publish(
         phase: MeetingCreationPhase.recoveryRequired,
-        record: record,
+        record: _state.record,
         snapshot: _state.snapshot,
-        message: 'Yêu cầu này đang được khôi phục ở một cửa sổ khác.',
+        recoveryBusy: true,
+        message: 'Yêu cầu khôi phục đang được xử lý ở một cửa sổ khác. Hãy tải lại trạng thái sau khi thao tác đó hoàn tất.',
       );
-      return;
+      return null;
     }
     try {
-      await _dispatchCreationOwned(record, isReplay: isReplay);
+      if (!ownsSession) return null;
+      return await operation(lease);
     } finally {
-      recoveryStore.releaseOperation(
-        sessionScope.userId,
-        record.idempotencyKey,
-      );
+      recoveryStore.releaseOperation(lease);
     }
   }
 
   Future<void> _dispatchCreationOwned(
     MeetingCreationRecord record, {
     required bool isReplay,
+    required MeetingCreationOperationLease lease,
   }) async {
+    if (!ownsSession || !recoveryStore.ownsOperation(lease)) return;
     _publish(
       phase: MeetingCreationPhase.persistingIntent,
       record: record,
@@ -554,42 +819,102 @@ class MeetingCreationController extends ChangeNotifier {
       clearFailure: true,
       clearMessage: true,
     );
-    late final MeetingCreationRecord persistedIntent;
+    late MeetingCreationRecord persistedIntent;
+    late String persistedFingerprint;
     try {
-      persistedIntent = await recoveryStore.save(sessionScope.userId, record);
+      var current = await recoveryStore.read(sessionScope.userId, lease: lease);
+      if (!ownsSession || !recoveryStore.ownsOperation(lease)) return;
+      if (isReplay) {
+        if (current.status != MeetingCreationRecoveryReadStatus.available) {
+          _publishReplayPreparationFailure(record, current);
+          return;
+        }
+        final stored = current.record!;
+        if (!_sameReplayIntent(record, stored) ||
+            stored.phase != MeetingCreationRecordPhase.intentPersisted ||
+            stored.meetingId != null) {
+          _publishAdvancedOrChangedRecovery(current, fallback: record);
+          return;
+        }
+        await recoveryStore.confirmDurable(sessionScope.userId, lease: lease);
+        current = await recoveryStore.read(sessionScope.userId, lease: lease);
+        if (!ownsSession || !recoveryStore.ownsOperation(lease)) return;
+        if (current.status != MeetingCreationRecoveryReadStatus.available) {
+          _publishReplayPreparationFailure(record, current);
+          return;
+        }
+        final revalidated = current.record!;
+        if (!_sameReplayIntent(record, revalidated) ||
+            revalidated.phase != MeetingCreationRecordPhase.intentPersisted ||
+            revalidated.meetingId != null) {
+          _publishAdvancedOrChangedRecovery(current, fallback: record);
+          return;
+        }
+        persistedIntent = revalidated;
+        persistedFingerprint = current.fingerprint!;
+      } else {
+        if (current.status == MeetingCreationRecoveryReadStatus.missing) {
+          await recoveryStore.save(sessionScope.userId, record, lease: lease);
+          current = await recoveryStore.read(sessionScope.userId, lease: lease);
+        }
+        if (!ownsSession || !recoveryStore.ownsOperation(lease)) return;
+        if (current.status != MeetingCreationRecoveryReadStatus.available) {
+          _publishReplayPreparationFailure(record, current);
+          return;
+        }
+        final stored = current.record!;
+        if (!_sameReplayIntent(record, stored) ||
+            stored.phase != MeetingCreationRecordPhase.intentPersisted ||
+            stored.meetingId != null) {
+          _publishAdvancedOrChangedRecovery(current, fallback: record);
+          return;
+        }
+        persistedIntent = stored;
+        persistedFingerprint = current.fingerprint!;
+      }
     } catch (error) {
-      if (!ownsSession) return;
+      if (!ownsSession || !recoveryStore.ownsOperation(lease)) return;
       _publish(
         phase: MeetingCreationPhase.recoveryRequired,
-        record: null,
+        record: isReplay ? record : null,
         snapshot: null,
         failure: error,
         recoveryReadStatus: MeetingCreationRecoveryReadStatus.unavailable,
+        recoveryFingerprint: null,
+        clearRecoveryFingerprint: true,
         message: 'Không thể xác nhận lưu bền vững yêu cầu. Cuộc họp chưa được gửi; hãy khôi phục trước khi tạo yêu cầu khác.',
-      );
-      return;
-    }
-    if (!ownsSession) return;
-    if (persistedIntent.phase != MeetingCreationRecordPhase.intentPersisted ||
-        persistedIntent.meetingId != null) {
-      _publish(
-        phase: MeetingCreationPhase.recoveryRequired,
-        record: persistedIntent,
-        snapshot: null,
-        message: 'Đã có một bước khác của yêu cầu này được lưu an toàn. Không gửi lại lệnh tạo; hãy mở hoặc kiểm tra trạng thái hiện tại.',
       );
       return;
     }
     _publish(
       phase: MeetingCreationPhase.creating,
-      record: record,
+      record: persistedIntent,
       snapshot: null,
+      recoveryReadStatus: MeetingCreationRecoveryReadStatus.available,
+      recoveryFingerprint: persistedFingerprint,
     );
+    if (!ownsSession ||
+        !recoveryStore.ownsOperation(lease) ||
+        (isReplay &&
+            _replayEligibility(persistedIntent) !=
+                _ReplayEligibility.eligible)) {
+      if (ownsSession && recoveryStore.ownsOperation(lease)) {
+        _publish(
+          phase: MeetingCreationPhase.recoveryRequired,
+          record: persistedIntent,
+          snapshot: null,
+          recoveryReadStatus: MeetingCreationRecoveryReadStatus.available,
+          recoveryFingerprint: persistedFingerprint,
+          message: _replayMessage(_replayEligibility(persistedIntent)),
+        );
+      }
+      return;
+    }
     final MeetingSnapshot created;
     try {
       created = await meetings.create(
-        record.input,
-        idempotencyKey: record.idempotencyKey,
+        persistedIntent.input,
+        idempotencyKey: persistedIntent.idempotencyKey,
       );
     } on MeetingFailure catch (failure) {
       if (!ownsSession) return;
@@ -598,29 +923,35 @@ class MeetingCreationController extends ChangeNotifier {
         if (isReplay) {
           _publish(
             phase: MeetingCreationPhase.recoveryRequired,
-            record: record,
+            record: persistedIntent,
             snapshot: null,
             failure: failure,
+            recoveryReadStatus: MeetingCreationRecoveryReadStatus.available,
+            recoveryFingerprint: persistedFingerprint,
             message: 'Lần khôi phục này bị từ chối nhưng chưa xác định được kết quả của yêu cầu ban đầu. Yêu cầu gốc vẫn được giữ nguyên.',
           );
           return;
         }
-        try {
-          await recoveryStore.delete(
-            sessionScope.userId,
-            expectedIdempotencyKey: record.idempotencyKey,
-          );
-        } catch (error) {
-          if (!ownsSession) return;
+        final cleanup = await recoveryStore.delete(
+          sessionScope.userId,
+          lease: lease,
+          expectedFingerprint: persistedFingerprint,
+          expectedIdempotencyKey: persistedIntent.idempotencyKey,
+        );
+        if (cleanup.status != MeetingCreationRecoveryDeleteStatus.deleted &&
+            cleanup.status !=
+                MeetingCreationRecoveryDeleteStatus.alreadyAbsent) {
+          if (!ownsSession || !recoveryStore.ownsOperation(lease)) return;
           _publish(
             phase: MeetingCreationPhase.recoveryRequired,
-            record: record,
+            record: persistedIntent,
             snapshot: null,
-            failure: error,
+            recoveryFingerprint: persistedFingerprint,
             message: 'Yêu cầu bị từ chối nhưng chưa thể xóa an toàn bản ghi khôi phục.',
           );
           return;
         }
+        _replayClock.retire(persistedIntent);
         if (!ownsSession) return;
         _publish(
           phase: MeetingCreationPhase.rejected,
@@ -630,13 +961,17 @@ class MeetingCreationController extends ChangeNotifier {
           message:
               'Máy chủ chưa tạo cuộc họp. Bạn có thể sửa thông tin và thử lại.',
           recoveryReadStatus: MeetingCreationRecoveryReadStatus.missing,
+          recoveryFingerprint: null,
+          clearRecoveryFingerprint: true,
         );
       } else {
         _publish(
           phase: MeetingCreationPhase.outcomeUnknown,
-          record: record,
+          record: persistedIntent,
           snapshot: null,
           failure: failure,
+          recoveryReadStatus: MeetingCreationRecoveryReadStatus.available,
+          recoveryFingerprint: persistedFingerprint,
           message: 'Chưa thể xác nhận cuộc họp đã được tạo. Hãy khôi phục bằng đúng yêu cầu ban đầu.',
         );
       }
@@ -645,24 +980,40 @@ class MeetingCreationController extends ChangeNotifier {
       if (!ownsSession) return;
       _publish(
         phase: MeetingCreationPhase.outcomeUnknown,
-        record: record,
+        record: persistedIntent,
         snapshot: null,
         failure: error,
+        recoveryReadStatus: MeetingCreationRecoveryReadStatus.available,
+        recoveryFingerprint: persistedFingerprint,
         message: 'Chưa thể xác nhận cuộc họp đã được tạo. Yêu cầu ban đầu được giữ để khôi phục an toàn.',
       );
       return;
     }
     if (!ownsSession) return;
-    final confirmedCandidate = record.withPhase(
+    final confirmedCandidate = persistedIntent.withPhase(
       MeetingCreationRecordPhase.meetingConfirmed,
       meetingId: created.meeting.id,
     );
     late final MeetingCreationRecord confirmed;
+    late final String confirmedFingerprint;
     try {
       confirmed = await recoveryStore.save(
         sessionScope.userId,
         confirmedCandidate,
+        lease: lease,
       );
+      final confirmedRead = await recoveryStore.read(
+        sessionScope.userId,
+        lease: lease,
+      );
+      if (confirmedRead.status != MeetingCreationRecoveryReadStatus.available ||
+          confirmedRead.record?.phase !=
+              MeetingCreationRecordPhase.meetingConfirmed ||
+          confirmedRead.record?.meetingId != created.meeting.id ||
+          confirmedRead.fingerprint == null) {
+        throw const MeetingCreationStorageException();
+      }
+      confirmedFingerprint = confirmedRead.fingerprint!;
     } catch (error) {
       if (!ownsSession) return;
       _publish(
@@ -670,6 +1021,7 @@ class MeetingCreationController extends ChangeNotifier {
         record: confirmedCandidate,
         snapshot: created,
         failure: error,
+        recoveryFingerprint: persistedFingerprint,
         message: 'Cuộc họp đã được tạo, nhưng chưa thể lưu định danh khôi phục. Không tạo cuộc họp khác.',
       );
       return;
@@ -681,16 +1033,19 @@ class MeetingCreationController extends ChangeNotifier {
         phase: MeetingCreationPhase.partialSuccess,
         record: confirmed,
         snapshot: created,
+        recoveryFingerprint: confirmedFingerprint,
         message: 'Cuộc họp đã được tạo nhưng một bước khôi phục khác đang giữ định danh. Không gửi lại lệnh tạo hoặc lên lịch tự động.',
       );
       return;
     }
 
-    if (record.action == MeetingCreationAction.saveDraft) {
+    if (persistedIntent.action == MeetingCreationAction.saveDraft) {
       await _finishConfirmed(
         confirmed,
         created,
         'Đã tạo cuộc họp với trạng thái ${created.meeting.status}. Chưa có phòng nào được xác nhận đặt.',
+        lease: lease,
+        expectedFingerprint: confirmedFingerprint,
       );
       return;
     }
@@ -700,29 +1055,279 @@ class MeetingCreationController extends ChangeNotifier {
           phase: MeetingCreationPhase.partialSuccess,
           record: confirmed,
           snapshot: created,
+          recoveryFingerprint: confirmedFingerprint,
           message: 'Đã khôi phục bản nháp hiện tại. Hãy kiểm tra trạng thái và xác nhận riêng nếu muốn lên lịch.',
         );
         return;
       }
       final matching =
           created.meeting.lifecycleStatus == MeetingStatus.scheduled &&
-          _matchesCreationSchedule(created.meeting, record.input);
+          _matchesCreationSchedule(created.meeting, persistedIntent.input);
       await _finishConfirmed(
         confirmed,
         created,
         matching
             ? 'Cuộc họp hiện đã được lên lịch theo thông tin yêu cầu; trạng thái được xác nhận từ máy chủ.'
             : 'Đã khôi phục cuộc họp hiện có ở trạng thái ${created.meeting.status}. Hãy xem lại trước khi tiếp tục.',
+        lease: lease,
+        expectedFingerprint: confirmedFingerprint,
       );
       return;
     }
-    await _scheduleExisting(confirmed, created);
+    await _scheduleExisting(
+      confirmed,
+      created,
+      lease: lease,
+      expectedFingerprint: confirmedFingerprint,
+    );
   }
+
+  void _publishReplayPreparationFailure(
+    MeetingCreationRecord fallback,
+    MeetingCreationRecoveryRead current,
+  ) {
+    final message = switch (current.status) {
+      MeetingCreationRecoveryReadStatus.missing => 'Yêu cầu khôi phục không còn bản ghi bền vững hiện tại. Hãy tải lại trạng thái và kiểm tra danh sách cuộc họp trước khi tiếp tục.',
+      MeetingCreationRecoveryReadStatus.malformed ||
+      MeetingCreationRecoveryReadStatus.unsupportedVersion => 'Thông tin khôi phục đã thay đổi hoặc không hợp lệ. Hãy kiểm tra danh sách cuộc họp trước khi tiếp tục.',
+      MeetingCreationRecoveryReadStatus.unavailable =>
+        'Không thể đọc thông tin khôi phục. Chưa thể gửi lại yêu cầu.',
+      MeetingCreationRecoveryReadStatus.available =>
+        'Thông tin khôi phục đã thay đổi. Hãy xem lại trạng thái hiện tại.',
+    };
+    _publish(
+      phase: MeetingCreationPhase.recoveryRequired,
+      record: current.status == MeetingCreationRecoveryReadStatus.available
+          ? current.record
+          : fallback,
+      snapshot: null,
+      recoveryReadStatus: current.status,
+      recoveryFingerprint: current.fingerprint,
+      message: message,
+    );
+  }
+
+  void _publishAdvancedOrChangedRecovery(
+    MeetingCreationRecoveryRead current, {
+    required MeetingCreationRecord fallback,
+  }) {
+    final record = current.record;
+    if (current.status != MeetingCreationRecoveryReadStatus.available ||
+        record == null) {
+      _publishReplayPreparationFailure(fallback, current);
+      return;
+    }
+    _publish(
+      phase: record.meetingId == null
+          ? MeetingCreationPhase.recoveryRequired
+          : MeetingCreationPhase.partialSuccess,
+      record: record,
+      snapshot: null,
+      recoveryReadStatus: current.status,
+      recoveryFingerprint: current.fingerprint,
+      message: record.meetingId == null
+          ? 'Yêu cầu khôi phục hiện tại không còn khớp yêu cầu đang mở. Hãy xem lại trạng thái trước khi tiếp tục.'
+          : 'Đã có một bước khác của yêu cầu này được lưu an toàn. Không gửi lại lệnh tạo; hãy mở hoặc kiểm tra trạng thái hiện tại.',
+    );
+  }
+
+  bool _sameReplayIntent(
+    MeetingCreationRecord expected,
+    MeetingCreationRecord actual,
+  ) =>
+      expected.accountId == sessionScope.userId &&
+      expected.deploymentScope == recoveryStore.deploymentScope &&
+      _sameIntent(expected, actual);
+
+  String _replayMessage(_ReplayEligibility eligibility) =>
+      switch (eligibility) {
+        _ReplayEligibility.eligible =>
+          'Có một yêu cầu tạo cuộc họp chưa được xác nhận hoàn tất.',
+        _ReplayEligibility.expired => 'Đã hết thời hạn gửi lại an toàn; hãy kiểm tra danh sách cuộc họp trước khi tiếp tục.',
+        _ReplayEligibility.uncertain => 'Không thể xác minh thời hạn gửi lại an toàn. Hãy kiểm tra danh sách cuộc họp trước khi tiếp tục.',
+        _ReplayEligibility.notApplicable =>
+          'Có một cuộc họp đã được tạo nhưng cần xem lại trạng thái hiện tại.',
+      };
+
+  Future<String?> _openRecoveredMeetingOwned(
+    MeetingCreationRecoveryContext reviewed,
+    MeetingCreationOperationLease lease,
+  ) async {
+    if (!ownsSession || !recoveryStore.ownsOperation(lease)) return null;
+    final reviewedRecord = reviewed.record!;
+    var current = await recoveryStore.read(sessionScope.userId, lease: lease);
+    if (!_ownsRecoveryLease(lease)) return null;
+    final sameImmutableIntent =
+        current.status == MeetingCreationRecoveryReadStatus.available &&
+        current.fingerprint == reviewed.fingerprint &&
+        current.record != null &&
+        _sameIntent(reviewedRecord, current.record!);
+    final memoryOnlyIdentity =
+        sameImmutableIntent &&
+        current.record!.meetingId == null &&
+        reviewedRecord.meetingId != null &&
+        current.record!.phase == MeetingCreationRecordPhase.intentPersisted;
+    if (!sameImmutableIntent ||
+        (!memoryOnlyIdentity &&
+            current.record!.meetingId != reviewedRecord.meetingId)) {
+      _publishRecoveryContextChanged(current, reviewedRecord);
+      return null;
+    }
+
+    if (current.record!.meetingId == null) {
+      final reconciled = current.record!.withPhase(
+        MeetingCreationRecordPhase.meetingConfirmed,
+        meetingId: reviewedRecord.meetingId,
+      );
+      try {
+        await recoveryStore.save(sessionScope.userId, reconciled, lease: lease);
+        current = await recoveryStore.read(sessionScope.userId, lease: lease);
+      } catch (error) {
+        _publish(
+          phase: MeetingCreationPhase.recoveryRequired,
+          record: reviewedRecord,
+          snapshot: _state.snapshot,
+          failure: error,
+          recoveryFingerprint: reviewed.fingerprint,
+          message: 'Cuộc họp đã được xác định trong phiên này nhưng chưa thể đồng bộ an toàn bằng chứng khôi phục. Hãy tải lại để xem xét.',
+        );
+        return null;
+      }
+      if (!_ownsRecoveryLease(lease) ||
+          current.status != MeetingCreationRecoveryReadStatus.available ||
+          current.record?.meetingId != reviewedRecord.meetingId ||
+          current.fingerprint == null) {
+        _publishRecoveryContextChanged(current, reviewedRecord);
+        return null;
+      }
+    }
+
+    final meetingId = current.record!.meetingId!;
+    final snapshot = await meetings.detail(meetingId);
+    if (!_ownsRecoveryLease(lease)) return null;
+    final latest = await recoveryStore.read(sessionScope.userId, lease: lease);
+    if (!_ownsRecoveryLease(lease) ||
+        latest.status != MeetingCreationRecoveryReadStatus.available ||
+        latest.fingerprint != current.fingerprint ||
+        latest.record?.meetingId != meetingId) {
+      _publishRecoveryContextChanged(latest, current.record!);
+      return null;
+    }
+    final cleanup = await recoveryStore.delete(
+      sessionScope.userId,
+      lease: lease,
+      expectedFingerprint: latest.fingerprint!,
+      expectedIdempotencyKey: current.record!.idempotencyKey,
+      expectedMeetingId: meetingId,
+    );
+    if (cleanup.status != MeetingCreationRecoveryDeleteStatus.deleted &&
+        cleanup.status != MeetingCreationRecoveryDeleteStatus.alreadyAbsent) {
+      _publish(
+        phase: MeetingCreationPhase.recoveryRequired,
+        record: current.record,
+        snapshot: snapshot,
+        recoveryFingerprint: latest.fingerprint,
+        message: 'Đã tải cuộc họp nhưng chưa thể dọn bản ghi khôi phục an toàn. Hãy tải lại trạng thái trước khi tiếp tục.',
+      );
+      return null;
+    }
+    _replayClock.retire(current.record!);
+    if (!_ownsRecoveryLease(lease)) return null;
+    _publish(
+      phase: MeetingCreationPhase.completed,
+      record: null,
+      snapshot: snapshot,
+      message: 'Đã mở trạng thái hiện tại của cuộc họp.',
+      recoveryReadStatus: MeetingCreationRecoveryReadStatus.missing,
+      recoveryFingerprint: null,
+      clearRecoveryFingerprint: true,
+    );
+    return snapshot.meeting.id;
+  }
+
+  Future<bool> _resolveAfterManualReviewOwned(
+    MeetingCreationRecoveryContext reviewed,
+    MeetingCreationOperationLease lease,
+  ) async {
+    if (!_ownsRecoveryLease(lease)) return false;
+    final current = await recoveryStore.read(sessionScope.userId, lease: lease);
+    if (!_ownsRecoveryLease(lease)) return false;
+    if (current.status != reviewed.status ||
+        current.fingerprint != reviewed.fingerprint ||
+        (reviewed.record != null &&
+            (current.record == null ||
+                !_sameIntent(reviewed.record!, current.record!) ||
+                current.record!.meetingId != reviewed.record!.meetingId))) {
+      _publishRecoveryContextChanged(current, reviewed.record);
+      return false;
+    }
+    final cleanup = await recoveryStore.delete(
+      sessionScope.userId,
+      lease: lease,
+      expectedFingerprint: reviewed.fingerprint!,
+      expectedIdempotencyKey: reviewed.record?.idempotencyKey,
+      expectedMeetingId: reviewed.record?.meetingId,
+    );
+    if (cleanup.status != MeetingCreationRecoveryDeleteStatus.deleted) {
+      _publish(
+        phase: MeetingCreationPhase.recoveryRequired,
+        record: current.record ?? reviewed.record,
+        snapshot: null,
+        recoveryReadStatus: current.status,
+        recoveryFingerprint: current.fingerprint,
+        message: switch (cleanup.status) {
+          MeetingCreationRecoveryDeleteStatus.alreadyAbsent => 'Thông tin khôi phục đã biến mất trước khi xác nhận xóa. Hãy tải lại trạng thái trước khi tiếp tục.',
+          MeetingCreationRecoveryDeleteStatus.changed => 'Thông tin khôi phục đã thay đổi sau khi bạn xem xét. Hãy tải lại và kiểm tra lại trước khi xóa.',
+          MeetingCreationRecoveryDeleteStatus.unavailable ||
+          MeetingCreationRecoveryDeleteStatus.notOwned => 'Chưa thể xác nhận xóa an toàn thông tin khôi phục. Hãy thử tải lại sau.',
+          MeetingCreationRecoveryDeleteStatus.deleted =>
+            'Thông tin khôi phục đã được xóa.',
+        },
+      );
+      return false;
+    }
+    if (current.record != null) {
+      _replayClock.retire(current.record!);
+    }
+    if (!_ownsRecoveryLease(lease)) return false;
+    _publish(
+      phase: MeetingCreationPhase.ready,
+      record: null,
+      snapshot: null,
+      recoveryReadStatus: MeetingCreationRecoveryReadStatus.missing,
+      recoveryFingerprint: null,
+      clearRecoveryFingerprint: true,
+      message: 'Thông tin khôi phục đã được xóa theo xác nhận của bạn.',
+    );
+    return true;
+  }
+
+  void _publishRecoveryContextChanged(
+    MeetingCreationRecoveryRead current,
+    MeetingCreationRecord? fallback,
+  ) {
+    final message = current.status == MeetingCreationRecoveryReadStatus.missing
+        ? 'Thông tin khôi phục đã không còn. Hãy tải lại trạng thái và kiểm tra danh sách cuộc họp trước khi tiếp tục.'
+        : 'Thông tin khôi phục đã thay đổi sau khi bạn xem xét. Hãy tải lại và kiểm tra lại trước khi tiếp tục.';
+    _publish(
+      phase: MeetingCreationPhase.recoveryRequired,
+      record: current.record ?? fallback,
+      snapshot: null,
+      recoveryReadStatus: current.status,
+      recoveryFingerprint: current.fingerprint,
+      message: message,
+    );
+  }
+
+  bool _ownsRecoveryLease(MeetingCreationOperationLease lease) =>
+      ownsSession && recoveryStore.ownsOperation(lease);
 
   Future<void> _scheduleExisting(
     MeetingCreationRecord record,
-    MeetingSnapshot snapshot,
-  ) async {
+    MeetingSnapshot snapshot, {
+    required MeetingCreationOperationLease lease,
+    required String expectedFingerprint,
+  }) async {
     if (!ownsSession) return;
     final meeting = snapshot.meeting;
     if (meeting.lifecycleStatus != MeetingStatus.draft) {
@@ -735,6 +1340,8 @@ class MeetingCreationController extends ChangeNotifier {
         matching
             ? 'Cuộc họp hiện đã được lên lịch với thời gian bạn yêu cầu.'
             : 'Cuộc họp hiện ở trạng thái ${meeting.status}; không gửi lại lệnh tạo hoặc ghi đè lịch.',
+        lease: lease,
+        expectedFingerprint: expectedFingerprint,
       );
       return;
     }
@@ -743,6 +1350,7 @@ class MeetingCreationController extends ChangeNotifier {
         phase: MeetingCreationPhase.partialSuccess,
         record: record,
         snapshot: snapshot,
+        recoveryFingerprint: expectedFingerprint,
         message: 'Bản nháp đã được tạo nhưng lịch hoặc phòng hiện tại khác yêu cầu. Hãy xem lại bản nháp trước khi lên lịch.',
       );
       return;
@@ -752,8 +1360,25 @@ class MeetingCreationController extends ChangeNotifier {
       meetingId: meeting.id,
     );
     late final MeetingCreationRecord pending;
+    late final String pendingFingerprint;
     try {
-      pending = await recoveryStore.save(sessionScope.userId, pendingCandidate);
+      pending = await recoveryStore.save(
+        sessionScope.userId,
+        pendingCandidate,
+        lease: lease,
+      );
+      final pendingRead = await recoveryStore.read(
+        sessionScope.userId,
+        lease: lease,
+      );
+      if (pendingRead.status != MeetingCreationRecoveryReadStatus.available ||
+          pendingRead.record?.phase !=
+              MeetingCreationRecordPhase.schedulePending ||
+          pendingRead.record?.meetingId != meeting.id ||
+          pendingRead.fingerprint == null) {
+        throw const MeetingCreationStorageException();
+      }
+      pendingFingerprint = pendingRead.fingerprint!;
     } catch (error) {
       if (!ownsSession) return;
       _publish(
@@ -761,6 +1386,7 @@ class MeetingCreationController extends ChangeNotifier {
         record: record,
         snapshot: snapshot,
         failure: error,
+        recoveryFingerprint: expectedFingerprint,
         message: 'Bản nháp đã được tạo nhưng chưa thể lưu trạng thái lên lịch. Hãy mở bản nháp để tiếp tục.',
       );
       return;
@@ -772,6 +1398,7 @@ class MeetingCreationController extends ChangeNotifier {
         phase: MeetingCreationPhase.partialSuccess,
         record: pending,
         snapshot: snapshot,
+        recoveryFingerprint: pendingFingerprint,
         message: 'Bản nháp đã được tạo nhưng một bước lên lịch khác đang được khôi phục. Không gửi lại lệnh lên lịch tự động.',
       );
       return;
@@ -780,6 +1407,7 @@ class MeetingCreationController extends ChangeNotifier {
       phase: MeetingCreationPhase.scheduling,
       record: pending,
       snapshot: snapshot,
+      recoveryFingerprint: pendingFingerprint,
       clearFailure: true,
       clearMessage: true,
     );
@@ -793,11 +1421,18 @@ class MeetingCreationController extends ChangeNotifier {
         pending,
         scheduled,
         'Đã lên lịch cuộc họp theo xác nhận của máy chủ.',
+        lease: lease,
+        expectedFingerprint: pendingFingerprint,
       );
     } on MeetingFailure catch (failure) {
       if (!ownsSession) return;
       if (failure.mutationOutcome == MeetingMutationOutcome.unknown) {
-        await _reconcileUnknownSchedule(pending, failure);
+        await _reconcileUnknownSchedule(
+          pending,
+          failure,
+          lease: lease,
+          expectedFingerprint: pendingFingerprint,
+        );
       } else if (failure.category == MeetingFailureCategory.versionConflict) {
         await _refreshForReview(pending, failure);
       } else {
@@ -811,14 +1446,21 @@ class MeetingCreationController extends ChangeNotifier {
       }
     } catch (error) {
       if (!ownsSession) return;
-      await _reconcileUnknownSchedule(pending, error);
+      await _reconcileUnknownSchedule(
+        pending,
+        error,
+        lease: lease,
+        expectedFingerprint: pendingFingerprint,
+      );
     }
   }
 
   Future<void> _reconcileUnknownSchedule(
     MeetingCreationRecord record,
-    Object cause,
-  ) async {
+    Object cause, {
+    required MeetingCreationOperationLease lease,
+    required String expectedFingerprint,
+  }) async {
     try {
       final snapshot = await meetings.detail(record.meetingId!);
       if (!ownsSession) return;
@@ -828,6 +1470,8 @@ class MeetingCreationController extends ChangeNotifier {
           record,
           snapshot,
           'Trạng thái hiện tại khớp lịch bạn yêu cầu. Không thể xác định thao tác nào đã tạo trạng thái này.',
+          lease: lease,
+          expectedFingerprint: expectedFingerprint,
         );
         return;
       }
@@ -836,6 +1480,7 @@ class MeetingCreationController extends ChangeNotifier {
         record: record,
         snapshot: snapshot,
         failure: cause,
+        recoveryFingerprint: expectedFingerprint,
         message: 'Đã tải trạng thái hiện tại nhưng chưa thể xác nhận lịch yêu cầu. Hãy xem lại cuộc họp trước khi thử thao tác khác.',
       );
     } catch (readError) {
@@ -845,6 +1490,7 @@ class MeetingCreationController extends ChangeNotifier {
         record: record,
         snapshot: null,
         failure: readError,
+        recoveryFingerprint: expectedFingerprint,
         message: 'Kết quả lên lịch chưa rõ và chưa thể tải trạng thái hiện tại. Không gửi lại lệnh tự động.',
       );
     }
@@ -879,25 +1525,32 @@ class MeetingCreationController extends ChangeNotifier {
   Future<void> _finishConfirmed(
     MeetingCreationRecord record,
     MeetingSnapshot snapshot,
-    String message,
-  ) async {
-    try {
-      await recoveryStore.delete(
-        sessionScope.userId,
-        expectedIdempotencyKey: record.idempotencyKey,
-      );
-    } catch (error) {
-      if (!ownsSession) return;
+    String message, {
+    required MeetingCreationOperationLease lease,
+    required String expectedFingerprint,
+  }) async {
+    if (!ownsSession || !recoveryStore.ownsOperation(lease)) return;
+    final cleanup = await recoveryStore.delete(
+      sessionScope.userId,
+      lease: lease,
+      expectedFingerprint: expectedFingerprint,
+      expectedIdempotencyKey: record.idempotencyKey,
+      expectedMeetingId: record.meetingId,
+    );
+    if (cleanup.status != MeetingCreationRecoveryDeleteStatus.deleted &&
+        cleanup.status != MeetingCreationRecoveryDeleteStatus.alreadyAbsent) {
+      if (!ownsSession || !recoveryStore.ownsOperation(lease)) return;
       _publish(
         phase: MeetingCreationPhase.recoveryRequired,
         record: record,
         snapshot: snapshot,
-        failure: error,
+        recoveryFingerprint: expectedFingerprint,
         message:
             '$message Thao tác đã hoàn tất, nhưng bản ghi khôi phục chưa thể được dọn.',
       );
       return;
     }
+    _replayClock.retire(record);
     if (!ownsSession) return;
     _publish(
       phase: MeetingCreationPhase.completed,
@@ -905,6 +1558,8 @@ class MeetingCreationController extends ChangeNotifier {
       snapshot: snapshot,
       message: message,
       recoveryReadStatus: MeetingCreationRecoveryReadStatus.missing,
+      recoveryFingerprint: null,
+      clearRecoveryFingerprint: true,
     );
   }
 
@@ -914,16 +1569,16 @@ class MeetingCreationController extends ChangeNotifier {
     final operation = completer.future;
     _operation = operation;
     unawaited(
-      Future<void>.sync(callback)
-          .then(
-            (_) => completer.complete(),
-            onError: (Object error, StackTrace stackTrace) {
-              completer.completeError(error, stackTrace);
-            },
-          )
-          .whenComplete(() {
-            if (identical(_operation, operation)) _operation = null;
-          }),
+      Future<void>.sync(callback).then(
+        (_) {
+          if (identical(_operation, operation)) _operation = null;
+          completer.complete();
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          if (identical(_operation, operation)) _operation = null;
+          completer.completeError(error, stackTrace);
+        },
+      ),
     );
     return operation;
   }
@@ -937,6 +1592,9 @@ class MeetingCreationController extends ChangeNotifier {
     bool clearFailure = false,
     bool clearMessage = false,
     MeetingCreationRecoveryReadStatus? recoveryReadStatus,
+    String? recoveryFingerprint,
+    bool clearRecoveryFingerprint = false,
+    bool? recoveryBusy,
   }) {
     if (_disposed || !ownsSession) return;
     _state = MeetingCreationState(
@@ -946,39 +1604,17 @@ class MeetingCreationController extends ChangeNotifier {
       failure: clearFailure ? null : failure ?? _state.failure,
       message: clearMessage ? null : message ?? _state.message,
       recoveryReadStatus: recoveryReadStatus ?? _state.recoveryReadStatus,
+      recoveryFingerprint: clearRecoveryFingerprint
+          ? null
+          : recoveryFingerprint ?? _state.recoveryFingerprint,
+      recoveryBusy: recoveryBusy ?? false,
     );
     notifyListeners();
   }
 
   _ReplayEligibility _replayEligibility(MeetingCreationRecord record) {
     if (record.meetingId != null) return _ReplayEligibility.notApplicable;
-    final window = record.replayDeadline.difference(record.createdAt);
-    if (window.isNegative ||
-        window == Duration.zero ||
-        window > meetingCreationReplaySafetyWindow) {
-      return _ReplayEligibility.uncertain;
-    }
-    final now = _readWallClock();
-    if (!_clockReliable || now.isBefore(record.createdAt)) {
-      return _ReplayEligibility.uncertain;
-    }
-    if (!now.isBefore(record.replayDeadline)) {
-      return _ReplayEligibility.expired;
-    }
-    return _ReplayEligibility.eligible;
-  }
-
-  DateTime _readWallClock() {
-    final wallNow = _now().toUtc();
-    final monotonicNow = _monotonicNow?.call() ?? _stopwatch.elapsed;
-    final elapsed = monotonicNow - _clockMonotonicAnchor;
-    final expectedWallNow = _clockWallAnchor.add(elapsed);
-    if (wallNow.isBefore(
-      expectedWallNow.subtract(const Duration(seconds: 5)),
-    )) {
-      _clockReliable = false;
-    }
-    return wallNow;
+    return _replayClock._eligibility(record);
   }
 
   void _sessionChanged() {

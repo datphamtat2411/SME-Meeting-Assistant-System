@@ -789,6 +789,13 @@ class MeetingMembershipController extends ChangeNotifier {
               )
             : acceptAggregateSnapshot?.call(aggregateToken, updatedSnapshot) ??
                   false;
+        if (!_ownsOperation(
+          generation,
+          snapshot.sessionScope,
+          aggregateToken,
+        )) {
+          return _unknownAfterSessionChange();
+        }
         if (!accepted) return _unknownAfterSessionChange();
       }
       var result = MembershipMutationResult(
@@ -849,7 +856,7 @@ class MeetingMembershipController extends ChangeNotifier {
         return _unknownAfterSessionChange(failure: failure);
       }
       if (failure.outcome == MembershipMutationCertainty.unknown) {
-        return _reconcileUnknown(
+        return await _reconcileUnknown(
           generation: generation,
           snapshot: snapshot,
           aggregateToken: aggregateToken,

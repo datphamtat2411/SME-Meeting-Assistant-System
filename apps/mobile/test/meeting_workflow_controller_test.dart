@@ -52,16 +52,22 @@ void main() {
           invalidation: invalidation,
         );
         final scope = api.requireAuthenticatedSessionScope();
+        var wallNow = DateTime.utc(2026, 11, 24, 12);
+        var monotonicNow = Duration.zero;
+        final replayClock = MeetingCreationReplayClock(
+          wallNow: () => wallNow,
+          monotonicNow: () => monotonicNow,
+        );
         final recovery = MeetingCreationRecoveryStore(
           storage: api.credentialStorage,
           deployment: api.baseUri,
+          replayClock: replayClock,
         );
-        final now = DateTime.now().toUtc();
         MeetingCreationController controller() => MeetingCreationController(
           meetings: meetings,
           recoveryStore: recovery,
           sessionScope: scope,
-          now: () => now,
+          replayClock: replayClock,
           createIdempotencyKey: () => 'stable-create-key',
         );
         var workflow = controller();
@@ -82,6 +88,8 @@ void main() {
         expect(saved.record?.input.title, 'Planning review');
 
         workflow.dispose();
+        wallNow = wallNow.add(const Duration(minutes: 1));
+        monotonicNow += const Duration(minutes: 1);
         workflow = controller();
         await workflow.restore();
         expect(workflow.state.phase, MeetingCreationPhase.outcomeUnknown);
@@ -109,6 +117,209 @@ void main() {
         expect(
           (await recovery.read(scope.userId)).status,
           MeetingCreationRecoveryReadStatus.missing,
+        );
+      },
+    );
+
+    test('identity-less recovery after process restart is non-replayable without time evidence', () async {
+      var createCalls = 0;
+      final client = MeetingTestHttpClient((request) async {
+        if (request.method == 'POST' &&
+            request.url.path.endsWith('/meetings')) {
+          createCalls++;
+          throw http.ClientException('connection lost');
+        }
+        throw StateError('Unexpected request ${request.method} ${request.url}');
+      });
+      final api = createMeetingTestApi(client);
+      addTearDown(api.dispose);
+      await signInMeetingTestApi(api);
+      final invalidation = MeetingInvalidationSignal(api);
+      addTearDown(invalidation.dispose);
+      final meetings = MeetingRepository(api: api, invalidation: invalidation);
+      final storage = api.credentialStorage;
+      final originalClock = MeetingCreationReplayClock(
+        wallNow: () => DateTime.utc(2026, 11, 24, 12),
+        monotonicNow: () => Duration.zero,
+      );
+      final recovery = MeetingCreationRecoveryStore(
+        storage: storage,
+        deployment: api.baseUri,
+        replayClock: originalClock,
+      );
+      final scope = api.requireAuthenticatedSessionScope();
+      final first = MeetingCreationController(
+        meetings: meetings,
+        recoveryStore: recovery,
+        sessionScope: scope,
+        replayClock: originalClock,
+        createIdempotencyKey: () => 'restart-uncertain',
+      );
+      addTearDown(first.dispose);
+      await first.submit(
+        CreateMeetingInput(title: 'Restart recovery'),
+        MeetingCreationAction.saveDraft,
+      );
+      first.dispose();
+
+      final freshClock = MeetingCreationReplayClock(
+        wallNow: () => DateTime.utc(2026, 11, 24, 12, 5),
+        monotonicNow: () => Duration.zero,
+      );
+      final restored = MeetingCreationController(
+        meetings: meetings,
+        recoveryStore: MeetingCreationRecoveryStore(
+          storage: storage,
+          deployment: api.baseUri,
+          replayClock: freshClock,
+        ),
+        sessionScope: scope,
+        replayClock: freshClock,
+      );
+      addTearDown(restored.dispose);
+      await restored.restore();
+
+      expect(restored.state.phase, MeetingCreationPhase.recoveryRequired);
+      expect(restored.canReplayCreate(restored.state.record!), isFalse);
+      expect(
+        restored.state.message,
+        contains('Không thể xác minh thời hạn gửi lại an toàn'),
+      );
+      await restored.retryUnresolvedCreation();
+      expect(createCalls, 1);
+      expect(
+        (await recovery.read(scope.userId)).status,
+        MeetingCreationRecoveryReadStatus.available,
+      );
+      expect(restored.state.hasUnresolvedOperation, isTrue);
+    });
+
+    test('wall-clock rollback cannot restore replay eligibility after controller recreation', () async {
+      var wall = DateTime.utc(2026, 11, 24, 12);
+      var monotonic = Duration.zero;
+      var createCalls = 0;
+      final client = MeetingTestHttpClient((request) async {
+        if (request.method == 'POST' &&
+            request.url.path.endsWith('/meetings')) {
+          createCalls++;
+          throw http.ClientException('connection lost');
+        }
+        throw StateError('Unexpected request ${request.method} ${request.url}');
+      });
+      final api = createMeetingTestApi(client);
+      addTearDown(api.dispose);
+      await signInMeetingTestApi(api);
+      final invalidation = MeetingInvalidationSignal(api);
+      addTearDown(invalidation.dispose);
+      final meetings = MeetingRepository(api: api, invalidation: invalidation);
+      final clock = MeetingCreationReplayClock(
+        wallNow: () => wall,
+        monotonicNow: () => monotonic,
+      );
+      final recovery = MeetingCreationRecoveryStore(
+        storage: api.credentialStorage,
+        deployment: api.baseUri,
+        replayClock: clock,
+      );
+      final scope = api.requireAuthenticatedSessionScope();
+      final first = MeetingCreationController(
+        meetings: meetings,
+        recoveryStore: recovery,
+        sessionScope: scope,
+        replayClock: clock,
+        createIdempotencyKey: () => 'rollback-key',
+      );
+      addTearDown(first.dispose);
+      await first.submit(
+        CreateMeetingInput(title: 'Rollback recovery'),
+        MeetingCreationAction.saveDraft,
+      );
+      wall = wall.subtract(const Duration(minutes: 5));
+      monotonic = const Duration(hours: 1);
+      first.dispose();
+
+      final recreated = MeetingCreationController(
+        meetings: meetings,
+        recoveryStore: recovery,
+        sessionScope: scope,
+        replayClock: clock,
+      );
+      addTearDown(recreated.dispose);
+      await recreated.restore();
+      expect(recreated.state.phase, MeetingCreationPhase.recoveryRequired);
+      expect(
+        recreated.state.message,
+        contains('Không thể xác minh thời hạn gửi lại an toàn'),
+      );
+      await recreated.retryUnresolvedCreation();
+      expect(createCalls, 1);
+      expect(
+        (await recovery.read(scope.userId)).status,
+        MeetingCreationRecoveryReadStatus.available,
+      );
+    });
+
+    test(
+      'replay expiration during durable preparation prevents creation dispatch',
+      () async {
+        var wall = DateTime.utc(2026, 11, 24, 12);
+        var monotonic = Duration.zero;
+        var createCalls = 0;
+        final storage = ControllableMeetingCredentialStorage();
+        final client = MeetingTestHttpClient((request) async {
+          if (request.method == 'POST' &&
+              request.url.path.endsWith('/meetings')) {
+            createCalls++;
+            throw http.ClientException('connection lost');
+          }
+          throw StateError(
+            'Unexpected request ${request.method} ${request.url}',
+          );
+        });
+        final api = createMeetingTestApi(client, credentialStorage: storage);
+        addTearDown(api.dispose);
+        await signInMeetingTestApi(api);
+        final invalidation = MeetingInvalidationSignal(api);
+        addTearDown(invalidation.dispose);
+        final meetings = MeetingRepository(
+          api: api,
+          invalidation: invalidation,
+        );
+        final clock = MeetingCreationReplayClock(
+          wallNow: () => wall,
+          monotonicNow: () => monotonic,
+        );
+        final recovery = MeetingCreationRecoveryStore(
+          storage: storage,
+          deployment: api.baseUri,
+          replayClock: clock,
+        );
+        final scope = api.requireAuthenticatedSessionScope();
+        final controller = MeetingCreationController(
+          meetings: meetings,
+          recoveryStore: recovery,
+          sessionScope: scope,
+          replayClock: clock,
+          createIdempotencyKey: () => 'preparation-expiry',
+        );
+        addTearDown(controller.dispose);
+        await controller.submit(
+          CreateMeetingInput(title: 'Preparation expiry'),
+          MeetingCreationAction.saveDraft,
+        );
+        storage.holdNextDurabilityConfirmation();
+        final replay = controller.retryUnresolvedCreation();
+        await storage.waitForDurabilityConfirmation();
+        wall = wall.add(const Duration(hours: 24));
+        monotonic = const Duration(hours: 24);
+        storage.releaseDurabilityConfirmation();
+        await replay;
+
+        expect(createCalls, 1);
+        expect(controller.state.phase, MeetingCreationPhase.recoveryRequired);
+        expect(
+          (await recovery.read(scope.userId)).status,
+          MeetingCreationRecoveryReadStatus.available,
         );
       },
     );

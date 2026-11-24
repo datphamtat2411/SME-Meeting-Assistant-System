@@ -247,6 +247,8 @@ class _MeetingFormState extends State<MeetingForm> {
   }
 
   Future<void> _retryRecovery() async {
+    final record = _creation.state.record;
+    if (record == null || !_creation.canReplayCreate(record)) return;
     try {
       await _creation.retryUnresolvedCreation();
     } catch (error) {
@@ -272,6 +274,9 @@ class _MeetingFormState extends State<MeetingForm> {
   }
 
   Future<void> _resolveRecovery() async {
+    final reviewed = _creation.recoveryContext;
+    final reviewedSession = _scope;
+    if (reviewed == null || reviewed.fingerprint == null) return;
     final proceed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -292,8 +297,30 @@ class _MeetingFormState extends State<MeetingForm> {
       ),
     );
     if (proceed != true || !mounted) return;
+    if (!widget.api.isCurrentAuthenticatedSession(reviewedSession) ||
+        !_creation.ownsSession) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Phiên đăng nhập đã thay đổi. Hãy tải lại trạng thái khôi phục.',
+          ),
+        ),
+      );
+      return;
+    }
     try {
-      await _creation.resolveAfterManualReview();
+      final cleared = await _creation.resolveAfterManualReview(
+        reviewedContext: reviewed,
+      );
+      if (!cleared && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Thông tin khôi phục đang bận hoặc đã thay đổi. Hãy tải lại và kiểm tra lại trước khi tiếp tục.',
+            ),
+          ),
+        );
+      }
     } catch (error) {
       if (mounted) showFailure(context, error);
     }
@@ -495,10 +522,18 @@ class _MeetingFormState extends State<MeetingForm> {
             style: const TextStyle(color: Palette.red),
           ),
         ],
+        if (state.recoveryBusy)
+          TextButton.icon(
+            onPressed: state.isBusy ? null : _creation.restore,
+            icon: const Icon(Icons.sync),
+            label: const Text('Tải lại trạng thái khôi phục'),
+          ),
         if (state.record?.meetingId != null) ...[
           const SizedBox(height: 8),
           OutlinedButton.icon(
-            onPressed: state.isBusy ? null : _openRecovered,
+            onPressed: state.isBusy || state.recoveryBusy
+                ? null
+                : _openRecovered,
             icon: const Icon(Icons.open_in_new),
             label: const Text('Mở trạng thái hiện tại'),
           ),
@@ -506,22 +541,35 @@ class _MeetingFormState extends State<MeetingForm> {
             _creation.canReplayCreate(state.record!)) ...[
           const SizedBox(height: 8),
           FilledButton.icon(
-            onPressed: state.isBusy ? null : _retryRecovery,
+            onPressed: state.isBusy || state.recoveryBusy
+                ? null
+                : _retryRecovery,
             icon: const Icon(Icons.refresh),
             label: const Text('Khôi phục đúng yêu cầu đã gửi'),
           ),
         ],
+        if (state.record != null &&
+            state.record?.meetingId == null &&
+            !_creation.canReplayCreate(state.record!))
+          const Padding(
+            padding: EdgeInsets.only(top: 8),
+            child: Text(
+              'Không thể xác minh thời hạn gửi lại an toàn. Hãy kiểm tra danh sách cuộc họp trước khi tiếp tục.',
+            ),
+          ),
         if (state.hasUnresolvedOperation &&
             state.record?.meetingId == null) ...[
           TextButton.icon(
-            onPressed: state.isBusy
+            onPressed: state.isBusy || state.recoveryBusy
                 ? null
                 : () => _popWithResult(const MeetingFormResult.inspect()),
             icon: const Icon(Icons.search),
             label: const Text('Kiểm tra danh sách cuộc họp'),
           ),
           TextButton(
-            onPressed: state.isBusy ? null : _resolveRecovery,
+            onPressed: state.isBusy || state.recoveryBusy
+                ? null
+                : _resolveRecovery,
             child: const Text('Tôi đã kiểm tra và muốn xóa yêu cầu chờ'),
           ),
         ],
