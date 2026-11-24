@@ -40,8 +40,69 @@ class _MeetingFormState extends State<MeetingForm> {
   late final SchedulePreviewController _previewController;
   MeetingScheduleDraft? _scheduleDraft;
   String? _roomId;
+  bool _allowPop = false;
+  bool _dismissPromptOpen = false;
 
   MeetingInterval? get _interval => _scheduleDraft?.validatedInterval;
+
+  bool get _hasUnsavedInput =>
+      _title.text.trim().isNotEmpty ||
+      _description.text.trim().isNotEmpty ||
+      _scheduleDraft != null ||
+      _roomId != null ||
+      _members.isNotEmpty;
+
+  Future<void> _guardDismissal(MeetingCreationState state) async {
+    if (!mounted || _allowPop || _dismissPromptOpen) return;
+    if (state.isBusy) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Hãy đợi thao tác hiện tại hoàn tất.')),
+      );
+      return;
+    }
+    if (!state.hasUnresolvedOperation && !_hasUnsavedInput) return;
+    _dismissPromptOpen = true;
+    try {
+      final keepRecovery = state.hasUnresolvedOperation;
+      final leave = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: Text(
+            keepRecovery ? 'Rời biểu mẫu khôi phục?' : 'Bỏ thay đổi chưa lưu?',
+          ),
+          content: Text(
+            keepRecovery
+                ? 'Yêu cầu đã gửi sẽ được giữ trên thiết bị để bạn khôi phục sau.'
+                : 'Các thay đổi chưa gửi sẽ bị loại bỏ.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Tiếp tục ở lại'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: Text(
+                keepRecovery ? 'Rời và giữ khôi phục' : 'Bỏ thay đổi',
+              ),
+            ),
+          ],
+        ),
+      );
+      if (leave == true && mounted && !_creation.state.isBusy) {
+        setState(() => _allowPop = true);
+        Navigator.pop(context);
+      }
+    } finally {
+      _dismissPromptOpen = false;
+    }
+  }
+
+  void _popWithResult(MeetingFormResult result) {
+    if (!mounted) return;
+    setState(() => _allowPop = true);
+    Navigator.pop(context, result);
+  }
 
   @override
   void initState() {
@@ -56,17 +117,33 @@ class _MeetingFormState extends State<MeetingForm> {
       repository: widget.dependencies.roomScheduling,
       sessionScope: _scope,
     );
+    _creation.addListener(_onObservedStateChanged);
+    _previewController.addListener(_onObservedStateChanged);
+    _title.addListener(_onTextChanged);
+    _description.addListener(_onTextChanged);
     _updatePreviewIntent();
     unawaited(_creation.restore());
   }
 
   @override
   void dispose() {
+    _creation.removeListener(_onObservedStateChanged);
+    _previewController.removeListener(_onObservedStateChanged);
+    _title.removeListener(_onTextChanged);
+    _description.removeListener(_onTextChanged);
     _title.dispose();
     _description.dispose();
     _creation.dispose();
     _previewController.dispose();
     super.dispose();
+  }
+
+  void _onObservedStateChanged() {
+    if (mounted) setState(() {});
+  }
+
+  void _onTextChanged() {
+    if (mounted) setState(() {});
   }
 
   ScheduleIntent? get _previewIntent {
@@ -89,11 +166,13 @@ class _MeetingFormState extends State<MeetingForm> {
   void _updatePreviewIntent() => _previewController.setIntent(_previewIntent);
 
   void _changeSchedule(MeetingScheduleDraft? value) {
+    if (!_creation.state.canEdit || !_creation.ownsSession) return;
     setState(() => _scheduleDraft = value);
     _updatePreviewIntent();
   }
 
   void _changeRoom(String? value) {
+    if (!_creation.state.canEdit || !_creation.ownsSession) return;
     setState(() => _roomId = value);
     _updatePreviewIntent();
   }
@@ -107,7 +186,12 @@ class _MeetingFormState extends State<MeetingForm> {
       organizerId: widget.api.userId,
       initialSelection: _members.values,
     );
-    if (selected == null || !mounted) return;
+    if (selected == null ||
+        !mounted ||
+        !_creation.state.canEdit ||
+        !_creation.ownsSession) {
+      return;
+    }
     setState(() {
       _members
         ..clear()
@@ -158,7 +242,7 @@ class _MeetingFormState extends State<MeetingForm> {
     final snapshot = _creation.state.snapshot;
     if (_creation.state.phase == MeetingCreationPhase.completed &&
         snapshot != null) {
-      Navigator.pop(context, MeetingFormResult.meeting(snapshot.meeting.id));
+      _popWithResult(MeetingFormResult.meeting(snapshot.meeting.id));
     }
   }
 
@@ -172,7 +256,7 @@ class _MeetingFormState extends State<MeetingForm> {
     final snapshot = _creation.state.snapshot;
     if (_creation.state.phase == MeetingCreationPhase.completed &&
         snapshot != null) {
-      Navigator.pop(context, MeetingFormResult.meeting(snapshot.meeting.id));
+      _popWithResult(MeetingFormResult.meeting(snapshot.meeting.id));
     }
   }
 
@@ -180,7 +264,7 @@ class _MeetingFormState extends State<MeetingForm> {
     try {
       final meetingId = await _creation.openRecoveredMeeting();
       if (meetingId != null && mounted) {
-        Navigator.pop(context, MeetingFormResult.meeting(meetingId));
+        _popWithResult(MeetingFormResult.meeting(meetingId));
       }
     } catch (error) {
       if (mounted) showFailure(context, error);
@@ -216,18 +300,23 @@ class _MeetingFormState extends State<MeetingForm> {
   }
 
   @override
-  Widget build(BuildContext context) => AnimatedBuilder(
-    animation: Listenable.merge([_creation, _previewController]),
-    builder: (context, _) {
-      final state = _creation.state;
-      final canEdit = state.canEdit;
-      final hasSession = widget.api.isCurrentAuthenticatedSession(_scope);
-      final previewState = _previewController.state;
-      final blockingRoomConflict =
-          previewState.phase == SchedulePreviewPhase.current &&
-          previewState.intent == _previewIntent &&
-          previewState.preview?.roomConflict == true;
-      return SafeArea(
+  Widget build(BuildContext context) {
+    final state = _creation.state;
+    final canEdit = state.canEdit;
+    final hasSession = widget.api.isCurrentAuthenticatedSession(_scope);
+    final previewState = _previewController.state;
+    final blockingRoomConflict =
+        previewState.phase == SchedulePreviewPhase.current &&
+        previewState.intent == _previewIntent &&
+        previewState.preview?.roomConflict == true;
+    return PopScope<Object?>(
+      canPop:
+          _allowPop ||
+          (!state.isBusy && !state.hasUnresolvedOperation && !_hasUnsavedInput),
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && !_allowPop) unawaited(_guardDismissal(state));
+      },
+      child: SafeArea(
         child: Padding(
           padding: EdgeInsets.only(
             left: 18,
@@ -273,7 +362,10 @@ class _MeetingFormState extends State<MeetingForm> {
                     const SizedBox(height: 10),
                     MeetingScheduleFields(
                       draft: _scheduleDraft,
-                      onDraftChanged: _changeSchedule,
+                      enabled: canEdit && hasSession,
+                      onDraftChanged: (value) {
+                        if (canEdit && hasSession) _changeSchedule(value);
+                      },
                       allowUnscheduled: true,
                     ),
                     if (_members.length > maxSchedulePreviewParticipants)
@@ -288,7 +380,10 @@ class _MeetingFormState extends State<MeetingForm> {
                         selectedId: _roomId,
                         interval: _interval,
                         participantCount: _members.length + 1,
-                        onChanged: canEdit ? _changeRoom : (_) {},
+                        enabled: canEdit && hasSession,
+                        onChanged: (value) {
+                          if (canEdit && hasSession) _changeRoom(value);
+                        },
                       ),
                     if (hasSession) ...[
                       const SizedBox(height: 8),
@@ -382,9 +477,9 @@ class _MeetingFormState extends State<MeetingForm> {
             ),
           ),
         ),
-      );
-    },
-  );
+      ),
+    );
+  }
 
   Widget _creationStatus(MeetingCreationState state) => ContentCard(
     child: Column(
@@ -407,7 +502,8 @@ class _MeetingFormState extends State<MeetingForm> {
             icon: const Icon(Icons.open_in_new),
             label: const Text('Mở trạng thái hiện tại'),
           ),
-        ] else if (state.record != null && state.record!.canReplayCreate) ...[
+        ] else if (state.record != null &&
+            _creation.canReplayCreate(state.record!)) ...[
           const SizedBox(height: 8),
           FilledButton.icon(
             onPressed: state.isBusy ? null : _retryRecovery,
@@ -420,8 +516,7 @@ class _MeetingFormState extends State<MeetingForm> {
           TextButton.icon(
             onPressed: state.isBusy
                 ? null
-                : () =>
-                      Navigator.pop(context, const MeetingFormResult.inspect()),
+                : () => _popWithResult(const MeetingFormResult.inspect()),
             icon: const Icon(Icons.search),
             label: const Text('Kiểm tra danh sách cuộc họp'),
           ),

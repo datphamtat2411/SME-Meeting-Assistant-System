@@ -101,6 +101,7 @@ class ScheduleIntent {
     String? roomId,
     String? meetingId,
     String? organizerId,
+    String? meetingVersion,
     List<String>? participantUserIds,
   }) {
     if (roomId != null && !isMeetingUuid(roomId)) {
@@ -142,6 +143,7 @@ class ScheduleIntent {
       roomId: roomId,
       meetingId: meetingId,
       organizerId: organizerId,
+      meetingVersion: meetingVersion,
       participantUserIds: validatedParticipants == null
           ? null
           : List<String>.unmodifiable(validatedParticipants),
@@ -153,6 +155,7 @@ class ScheduleIntent {
     required this.roomId,
     required this.meetingId,
     required this.organizerId,
+    required this.meetingVersion,
     required this.participantUserIds,
   });
 
@@ -160,6 +163,7 @@ class ScheduleIntent {
   final String? roomId;
   final String? meetingId;
   final String? organizerId;
+  final String? meetingVersion;
   final List<String>? participantUserIds;
 
   Map<String, dynamic> toRequestBody() => Map<String, dynamic>.unmodifiable({
@@ -178,6 +182,7 @@ class ScheduleIntent {
       roomId == other.roomId &&
       meetingId == other.meetingId &&
       organizerId == other.organizerId &&
+      meetingVersion == other.meetingVersion &&
       listEquals(participantUserIds, other.participantUserIds);
 
   @override
@@ -187,6 +192,7 @@ class ScheduleIntent {
     roomId,
     meetingId,
     organizerId,
+    meetingVersion,
     Object.hashAll(participantUserIds ?? const <String>[]),
   );
 }
@@ -355,10 +361,14 @@ class RoomSchedulingRepository {
     );
     if (!preview.previewOnly ||
         (intent.roomId == null && preview.room != null) ||
+        (intent.roomId == null && preview.roomConflict) ||
         (intent.roomId != null &&
             preview.room?.roomId.toLowerCase() !=
                 intent.roomId!.toLowerCase()) ||
-        (preview.roomConflict && preview.room?.available == true)) {
+        (preview.roomConflict &&
+            (preview.canSchedule || preview.room?.available != false)) ||
+        (!preview.roomConflict && preview.room?.available == false) ||
+        (preview.canSchedule && preview.room?.active == false)) {
       throw response.invalidDataFailure();
     }
     return preview;

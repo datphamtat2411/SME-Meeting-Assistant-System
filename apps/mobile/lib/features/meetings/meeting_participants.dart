@@ -9,6 +9,7 @@ import 'package:sme_meeting_assistant/core/models.dart';
 import 'package:sme_meeting_assistant/core/widgets.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_foundation.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_membership.dart';
+import 'package:sme_meeting_assistant/features/meetings/meeting_aggregate_coordination.dart';
 import 'package:sme_meeting_assistant/features/meetings/participant_selection.dart';
 
 class MeetingParticipants extends StatefulWidget {
@@ -17,23 +18,42 @@ class MeetingParticipants extends StatefulWidget {
     required this.dependencies,
     required this.snapshot,
     this.initialRecords,
-    this.onSnapshotChanged,
     this.onRecordsChanged,
     this.onAccessRevoked,
     this.canStartAggregateMutation,
     this.acquireAggregateMutation,
     this.releaseAggregateMutation,
+    this.ownsAggregateMutation,
+    this.acceptAggregateSnapshot,
+    this.revalidateAggregate,
+    this.refreshCanonical,
+    this.addCanonicalSnapshotListener,
   });
 
   final AppDependencies dependencies;
   final MeetingSnapshot snapshot;
   final List<MeetingParticipant>? initialRecords;
-  final MeetingMembershipSnapshotCallback? onSnapshotChanged;
   final MeetingMembershipRecordsCallback? onRecordsChanged;
   final VoidCallback? onAccessRevoked;
   final bool Function()? canStartAggregateMutation;
-  final bool Function()? acquireAggregateMutation;
-  final VoidCallback? releaseAggregateMutation;
+  final MeetingAggregateMutationToken? Function(
+    MeetingSnapshot confirmedContext,
+  )?
+  acquireAggregateMutation;
+  final void Function(MeetingAggregateMutationToken token)?
+  releaseAggregateMutation;
+  final bool Function(MeetingAggregateMutationToken token)?
+  ownsAggregateMutation;
+  final bool Function(
+    MeetingAggregateMutationToken token,
+    MeetingSnapshot snapshot,
+  )?
+  acceptAggregateSnapshot;
+  final Future<MeetingSnapshot?> Function(MeetingAggregateMutationToken token)?
+  revalidateAggregate;
+  final Future<MeetingSnapshot?> Function()? refreshCanonical;
+  final VoidCallback Function(void Function(MeetingSnapshot?) listener)?
+  addCanonicalSnapshotListener;
 
   @override
   State<MeetingParticipants> createState() => _MeetingParticipantsState();
@@ -41,6 +61,7 @@ class MeetingParticipants extends StatefulWidget {
 
 class _MeetingParticipantsState extends State<MeetingParticipants> {
   late final MeetingMembershipController _controller;
+  VoidCallback? _removeCanonicalSnapshotListener;
 
   @override
   void initState() {
@@ -49,18 +70,38 @@ class _MeetingParticipantsState extends State<MeetingParticipants> {
       repository: widget.dependencies.meetingMembership,
       snapshot: widget.snapshot,
       initialRecords: widget.initialRecords,
-      onSnapshotChanged: widget.onSnapshotChanged,
       onRecordsChanged: widget.onRecordsChanged,
       onAccessRevoked: widget.onAccessRevoked,
       canStartAggregateMutation: widget.canStartAggregateMutation,
       acquireAggregateMutation: widget.acquireAggregateMutation,
       releaseAggregateMutation: widget.releaseAggregateMutation,
+      ownsAggregateMutation: widget.ownsAggregateMutation,
+      acceptAggregateSnapshot: widget.acceptAggregateSnapshot,
+      revalidateAggregate: widget.revalidateAggregate,
+      refreshCanonical: widget.refreshCanonical,
     );
+    _removeCanonicalSnapshotListener = widget.addCanonicalSnapshotListener
+        ?.call((snapshot) {
+          if (snapshot == null) {
+            _controller.clearForCanonicalAccessLoss();
+          } else {
+            _controller.updateCanonicalSnapshot(snapshot);
+          }
+        });
     unawaited(_controller.initialize());
   }
 
   @override
+  void didUpdateWidget(covariant MeetingParticipants oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.snapshot.etag != widget.snapshot.etag) {
+      _controller.updateCanonicalSnapshot(widget.snapshot);
+    }
+  }
+
+  @override
   void dispose() {
+    _removeCanonicalSnapshotListener?.call();
     _controller.dispose();
     super.dispose();
   }
@@ -80,10 +121,22 @@ class _MeetingParticipantsState extends State<MeetingParticipants> {
       mode: ParticipantSelectionMode.single,
       title: 'Mời nhân viên',
     );
-    if (selected == null || selected.isEmpty || !mounted) return;
-    if (!await _confirmUpdatedContext(original, 'thêm người tham gia')) return;
+    if (selected == null ||
+        selected.isEmpty ||
+        !mounted ||
+        !_controller.canManageParticipants) {
+      return;
+    }
+    final confirmedContext = await _confirmUpdatedContext(
+      original,
+      'thêm người tham gia',
+    );
+    if (confirmedContext == null || !mounted) return;
     await _handleMutation(
-      await _controller.addParticipant(selected.single.id),
+      await _controller.addParticipant(
+        selected.single.id,
+        confirmedContext: confirmedContext,
+      ),
       successMessage: 'Đã thêm người tham gia.',
     );
   }
@@ -112,24 +165,48 @@ class _MeetingParticipantsState extends State<MeetingParticipants> {
       ),
     );
     if (proceed != true || !mounted) return;
-    if (!await _confirmUpdatedContext(original, 'xóa thành viên')) return;
+    final confirmedContext = await _confirmUpdatedContext(
+      original,
+      'xóa thành viên',
+      participant: participant,
+    );
+    if (confirmedContext == null || !mounted) return;
     await _handleMutation(
-      await _controller.removeParticipant(participant.userId),
+      await _controller.removeParticipant(
+        participant,
+        confirmedContext: confirmedContext,
+      ),
       successMessage: 'Đã xóa người tham gia.',
     );
   }
 
-  Future<bool> _confirmUpdatedContext(
+  Future<MeetingSnapshot?> _confirmUpdatedContext(
     MeetingSnapshot original,
-    String action,
-  ) async {
+    String action, {
+    MeetingParticipant? participant,
+  }) async {
     var reviewed = original;
     while (mounted) {
       final latest = _controller.state.snapshot;
-      if (latest == null || _controller.state.accessRevoked) return false;
+      if (latest == null || _controller.state.accessRevoked) return null;
+      if (participant != null &&
+          !_controller.state.activeParticipants.any(
+            (record) =>
+                record.id.toLowerCase() == participant.id.toLowerCase() &&
+                record.userId.toLowerCase() == participant.userId.toLowerCase(),
+          )) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Thành viên đã thay đổi. Hãy chọn lại thành viên đang hoạt động.',
+            ),
+          ),
+        );
+        return null;
+      }
       if (latest.etag == reviewed.etag &&
           latest.meeting.lifecycleStatus == reviewed.meeting.lifecycleStatus) {
-        return true;
+        return latest;
       }
       final confirmed =
           await showDialog<bool>(
@@ -152,10 +229,10 @@ class _MeetingParticipantsState extends State<MeetingParticipants> {
             ),
           ) ==
           true;
-      if (!confirmed || !mounted) return false;
+      if (!confirmed || !mounted) return null;
       reviewed = latest;
     }
-    return false;
+    return null;
   }
 
   Future<void> _handleMutation(
@@ -170,6 +247,14 @@ class _MeetingParticipantsState extends State<MeetingParticipants> {
           result.requiresRevalidation
               ? '$successMessage Hãy tải lại trước khi thực hiện thay đổi khác.'
               : successMessage,
+        );
+      case MembershipOperationStatus.observed:
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Trạng thái thành viên hiện tại phản ánh yêu cầu; không thể xác định thao tác nào đã tạo trạng thái này.',
+            ),
+          ),
         );
       case MembershipOperationStatus.unknown:
         showFailure(

@@ -66,8 +66,8 @@ class MeetingCreationRecord {
   final MeetingCreationRecordPhase phase;
   final String? meetingId;
 
-  bool get canReplayCreate =>
-      meetingId == null && DateTime.now().isBefore(replayDeadline);
+  bool canReplayCreateAt(DateTime now) =>
+      meetingId == null && now.toUtc().isBefore(replayDeadline);
 
   MeetingCreationRecord withPhase(
     MeetingCreationRecordPhase next, {
@@ -102,6 +102,9 @@ class MeetingCreationRecoveryStore {
 
   static const int recordVersion = 1;
   static const String _keyPrefix = 'sme.mobile.meeting-create.v1.';
+  static final Map<String, Future<void>> _operationTails =
+      <String, Future<void>>{};
+  static final Set<String> _activeOperations = <String>{};
 
   final CredentialStorage storage;
   final String deploymentScope;
@@ -109,9 +112,33 @@ class MeetingCreationRecoveryStore {
   String _storageKey(String accountId) =>
       '$_keyPrefix${_digest('$deploymentScope|$accountId')}';
 
-  Future<void> save(String accountId, MeetingCreationRecord record) async {
+  Future<MeetingCreationRecord> save(
+    String accountId,
+    MeetingCreationRecord record,
+  ) => _serialize(accountId, () async {
     if (record.accountId != accountId ||
         record.deploymentScope != deploymentScope) {
+      throw const MeetingCreationStorageException();
+    }
+    _validateRecord(record);
+    final existing = await _readUnlocked(accountId);
+    if (existing.status == MeetingCreationRecoveryReadStatus.available) {
+      final previous = existing.record!;
+      if (previous.idempotencyKey != record.idempotencyKey ||
+          !_sameIntent(previous, record)) {
+        throw const MeetingCreationStorageException();
+      }
+      if (_phaseRank(previous.phase) > _phaseRank(record.phase)) {
+        return previous;
+      }
+      if (previous.meetingId != null &&
+          record.meetingId != previous.meetingId) {
+        throw const MeetingCreationStorageException();
+      }
+    } else if (existing.status != MeetingCreationRecoveryReadStatus.missing) {
+      throw const MeetingCreationStorageException();
+    } else if (record.phase != MeetingCreationRecordPhase.intentPersisted ||
+        record.meetingId != null) {
       throw const MeetingCreationStorageException();
     }
     final encoded = jsonEncode(_recordJson(record));
@@ -123,9 +150,13 @@ class MeetingCreationRecoveryStore {
     } catch (_) {
       throw const MeetingCreationStorageException();
     }
-  }
+    return record;
+  });
 
-  Future<MeetingCreationRecoveryRead> read(String accountId) async {
+  Future<MeetingCreationRecoveryRead> read(String accountId) =>
+      _serialize(accountId, () => _readUnlocked(accountId));
+
+  Future<MeetingCreationRecoveryRead> _readUnlocked(String accountId) async {
     final String? encoded;
     try {
       encoded = await storage.read(key: _storageKey(accountId));
@@ -177,12 +208,51 @@ class MeetingCreationRecoveryStore {
     }
   }
 
-  Future<void> delete(String accountId) async {
+  Future<void> delete(String accountId, {String? expectedIdempotencyKey}) =>
+      _serialize(accountId, () async {
+        if (expectedIdempotencyKey != null) {
+          final current = await _readUnlocked(accountId);
+          if (current.status == MeetingCreationRecoveryReadStatus.missing)
+            return;
+          if (current.status != MeetingCreationRecoveryReadStatus.available) {
+            throw const MeetingCreationStorageException();
+          }
+          if (current.record?.idempotencyKey != expectedIdempotencyKey) {
+            return;
+          }
+        }
+        try {
+          await storage.delete(key: _storageKey(accountId));
+          await storage.confirmDurable();
+        } catch (_) {
+          throw const MeetingCreationStorageException();
+        }
+      });
+
+  bool tryAcquireOperation(String accountId, String idempotencyKey) =>
+      _activeOperations.add('${_storageKey(accountId)}|$idempotencyKey');
+
+  void releaseOperation(String accountId, String idempotencyKey) {
+    _activeOperations.remove('${_storageKey(accountId)}|$idempotencyKey');
+  }
+
+  Future<T> _serialize<T>(
+    String accountId,
+    Future<T> Function() operation,
+  ) async {
+    final key = _storageKey(accountId);
+    final previous = _operationTails[key] ?? Future<void>.value();
+    final release = Completer<void>();
+    final current = previous.then((_) => release.future);
+    _operationTails[key] = current;
+    await previous;
     try {
-      await storage.delete(key: _storageKey(accountId));
-      await storage.confirmDurable();
-    } catch (_) {
-      throw const MeetingCreationStorageException();
+      return await operation();
+    } finally {
+      release.complete();
+      if (identical(_operationTails[key], current)) {
+        _operationTails.remove(key);
+      }
     }
   }
 }
@@ -238,8 +308,12 @@ class MeetingCreationController extends ChangeNotifier {
     required this.recoveryStore,
     required this.sessionScope,
     DateTime Function()? now,
+    Duration Function()? monotonicNow,
     String Function()? createIdempotencyKey,
   }) : _now = now ?? DateTime.now,
+       _monotonicNow = monotonicNow,
+       _clockWallAnchor = (now ?? DateTime.now)().toUtc(),
+       _clockMonotonicAnchor = monotonicNow?.call() ?? Duration.zero,
        _createIdempotencyKey = createIdempotencyKey ?? _randomKey,
        _state = const MeetingCreationState(
          phase: MeetingCreationPhase.ready,
@@ -256,15 +330,22 @@ class MeetingCreationController extends ChangeNotifier {
   final MeetingCreationRecoveryStore recoveryStore;
   final AuthenticatedSessionScope sessionScope;
   final DateTime Function() _now;
+  final Duration Function()? _monotonicNow;
+  final DateTime _clockWallAnchor;
+  final Duration _clockMonotonicAnchor;
   final String Function() _createIdempotencyKey;
+  final Stopwatch _stopwatch = Stopwatch()..start();
 
   MeetingCreationState _state;
   Future<void>? _operation;
   bool _disposed = false;
+  bool _clockReliable = true;
 
   MeetingCreationState get state => _state;
   bool get ownsSession =>
       !_disposed && meetings.api.isCurrentAuthenticatedSession(sessionScope);
+  bool canReplayCreate(MeetingCreationRecord record) =>
+      _replayEligibility(record) == _ReplayEligibility.eligible;
 
   Future<void> restore() async {
     if (_disposed || !ownsSession) return;
@@ -287,18 +368,25 @@ class MeetingCreationController extends ChangeNotifier {
         );
       case MeetingCreationRecoveryReadStatus.available:
         final record = result.record!;
+        final replayEligibility = record.meetingId == null
+            ? _replayEligibility(record)
+            : _ReplayEligibility.notApplicable;
         _publish(
           phase: record.meetingId == null
-              ? (record.canReplayCreate
+              ? (replayEligibility == _ReplayEligibility.eligible
                     ? MeetingCreationPhase.outcomeUnknown
                     : MeetingCreationPhase.recoveryRequired)
               : MeetingCreationPhase.partialSuccess,
           record: record,
           snapshot: null,
           recoveryReadStatus: result.status,
-          message: record.meetingId == null && !record.canReplayCreate
-              ? 'Đã hết thời hạn gửi lại an toàn; hãy kiểm tra danh sách cuộc họp trước khi xử lý tiếp.'
-              : 'Có một yêu cầu tạo cuộc họp chưa được xác nhận hoàn tất.',
+          message: switch (replayEligibility) {
+            _ReplayEligibility.eligible =>
+              'Có một yêu cầu tạo cuộc họp chưa được xác nhận hoàn tất.',
+            _ReplayEligibility.expired => 'Đã hết thời hạn gửi lại an toàn; hãy kiểm tra danh sách cuộc họp trước khi xử lý tiếp.',
+            _ReplayEligibility.uncertain => 'Không thể xác minh thời hạn gửi lại an toàn. Hãy kiểm tra danh sách cuộc họp trước khi xử lý tiếp.',
+            _ReplayEligibility.notApplicable => 'Có một cuộc họp đã được tạo nhưng cần xem lại trạng thái hiện tại.',
+          },
         );
       case MeetingCreationRecoveryReadStatus.malformed ||
           MeetingCreationRecoveryReadStatus.unsupportedVersion ||
@@ -329,10 +417,10 @@ class MeetingCreationController extends ChangeNotifier {
         !_state.canEdit ||
         (action == MeetingCreationAction.schedule &&
             input.scheduledInterval == null) ||
-        blockingRoomConflict) {
+        (action == MeetingCreationAction.schedule && blockingRoomConflict)) {
       return Future<void>.value();
     }
-    final createdAt = _now().toUtc();
+    final createdAt = _readWallClock();
     final record = MeetingCreationRecord(
       accountId: sessionScope.userId,
       deploymentScope: recoveryStore.deploymentScope,
@@ -343,7 +431,7 @@ class MeetingCreationController extends ChangeNotifier {
       replayDeadline: createdAt.add(meetingCreationReplaySafetyWindow),
       phase: MeetingCreationRecordPhase.intentPersisted,
     );
-    return _run(() => _dispatchCreation(record));
+    return _run(() => _dispatchCreation(record, isReplay: false));
   }
 
   /// Deliberately retries the exact immutable create request while its
@@ -352,12 +440,12 @@ class MeetingCreationController extends ChangeNotifier {
     final record = _state.record;
     if (record == null ||
         record.meetingId != null ||
-        !record.canReplayCreate ||
+        !canReplayCreate(record) ||
         !ownsSession ||
         _operation != null) {
       return Future<void>.value();
     }
-    return _run(() => _dispatchCreation(record));
+    return _run(() => _dispatchCreation(record, isReplay: true));
   }
 
   /// Revalidates a known created meeting and returns its id only after an
@@ -371,7 +459,10 @@ class MeetingCreationController extends ChangeNotifier {
     await _run(() async {
       final snapshot = await meetings.detail(record!.meetingId!);
       if (!ownsSession) return;
-      await recoveryStore.delete(sessionScope.userId);
+      await recoveryStore.delete(
+        sessionScope.userId,
+        expectedIdempotencyKey: record.idempotencyKey,
+      );
       if (!ownsSession) return;
       result = snapshot.meeting.id;
       _publish(
@@ -395,7 +486,10 @@ class MeetingCreationController extends ChangeNotifier {
     }
     var cleared = false;
     await _run(() async {
-      await recoveryStore.delete(sessionScope.userId);
+      await recoveryStore.delete(
+        sessionScope.userId,
+        expectedIdempotencyKey: _state.record?.idempotencyKey,
+      );
       if (!ownsSession) return;
       cleared = true;
       _publish(
@@ -409,7 +503,37 @@ class MeetingCreationController extends ChangeNotifier {
     return cleared;
   }
 
-  Future<void> _dispatchCreation(MeetingCreationRecord record) async {
+  Future<void> _dispatchCreation(
+    MeetingCreationRecord record, {
+    required bool isReplay,
+  }) async {
+    if (!ownsSession) return;
+    if (!recoveryStore.tryAcquireOperation(
+      sessionScope.userId,
+      record.idempotencyKey,
+    )) {
+      _publish(
+        phase: MeetingCreationPhase.recoveryRequired,
+        record: record,
+        snapshot: _state.snapshot,
+        message: 'Yêu cầu này đang được khôi phục ở một cửa sổ khác.',
+      );
+      return;
+    }
+    try {
+      await _dispatchCreationOwned(record, isReplay: isReplay);
+    } finally {
+      recoveryStore.releaseOperation(
+        sessionScope.userId,
+        record.idempotencyKey,
+      );
+    }
+  }
+
+  Future<void> _dispatchCreationOwned(
+    MeetingCreationRecord record, {
+    required bool isReplay,
+  }) async {
     _publish(
       phase: MeetingCreationPhase.persistingIntent,
       record: record,
@@ -423,11 +547,11 @@ class MeetingCreationController extends ChangeNotifier {
       if (!ownsSession) return;
       _publish(
         phase: MeetingCreationPhase.recoveryRequired,
-        record: record,
+        record: null,
         snapshot: null,
         failure: error,
-        message:
-            'Không thể xác nhận lưu bền vững yêu cầu. Cuộc họp chưa được gửi.',
+        recoveryReadStatus: MeetingCreationRecoveryReadStatus.unavailable,
+        message: 'Không thể xác nhận lưu bền vững yêu cầu. Cuộc họp chưa được gửi; hãy khôi phục trước khi tạo yêu cầu khác.',
       );
       return;
     }
@@ -447,8 +571,21 @@ class MeetingCreationController extends ChangeNotifier {
       if (!ownsSession) return;
       if (failure.mutationOutcome == MeetingMutationOutcome.rejected ||
           failure.mutationOutcome == MeetingMutationOutcome.notDispatched) {
+        if (isReplay) {
+          _publish(
+            phase: MeetingCreationPhase.recoveryRequired,
+            record: record,
+            snapshot: null,
+            failure: failure,
+            message: 'Lần khôi phục này bị từ chối nhưng chưa xác định được kết quả của yêu cầu ban đầu. Yêu cầu gốc vẫn được giữ nguyên.',
+          );
+          return;
+        }
         try {
-          await recoveryStore.delete(sessionScope.userId);
+          await recoveryStore.delete(
+            sessionScope.userId,
+            expectedIdempotencyKey: record.idempotencyKey,
+          );
         } catch (error) {
           if (!ownsSession) return;
           _publish(
@@ -504,7 +641,7 @@ class MeetingCreationController extends ChangeNotifier {
       if (!ownsSession) return;
       _publish(
         phase: MeetingCreationPhase.recoveryRequired,
-        record: record,
+        record: confirmed,
         snapshot: created,
         failure: error,
         message: 'Cuộc họp đã được tạo, nhưng chưa thể lưu định danh khôi phục. Không tạo cuộc họp khác.',
@@ -521,14 +658,35 @@ class MeetingCreationController extends ChangeNotifier {
       );
       return;
     }
-    await _scheduleExisting(confirmed, created, requireReview: false);
+    if (isReplay) {
+      if (created.meeting.lifecycleStatus == MeetingStatus.draft) {
+        _publish(
+          phase: MeetingCreationPhase.partialSuccess,
+          record: confirmed,
+          snapshot: created,
+          message: 'Đã khôi phục bản nháp hiện tại. Hãy kiểm tra trạng thái và xác nhận riêng nếu muốn lên lịch.',
+        );
+        return;
+      }
+      final matching =
+          created.meeting.lifecycleStatus == MeetingStatus.scheduled &&
+          _matchesCreationSchedule(created.meeting, record.input);
+      await _finishConfirmed(
+        confirmed,
+        created,
+        matching
+            ? 'Cuộc họp hiện đã được lên lịch theo thông tin yêu cầu; trạng thái được xác nhận từ máy chủ.'
+            : 'Đã khôi phục cuộc họp hiện có ở trạng thái ${created.meeting.status}. Hãy xem lại trước khi tiếp tục.',
+      );
+      return;
+    }
+    await _scheduleExisting(confirmed, created);
   }
 
   Future<void> _scheduleExisting(
     MeetingCreationRecord record,
-    MeetingSnapshot snapshot, {
-    required bool requireReview,
-  }) async {
+    MeetingSnapshot snapshot,
+  ) async {
     if (!ownsSession) return;
     final meeting = snapshot.meeting;
     if (meeting.lifecycleStatus != MeetingStatus.draft) {
@@ -553,16 +711,6 @@ class MeetingCreationController extends ChangeNotifier {
       );
       return;
     }
-    if (requireReview) {
-      _publish(
-        phase: MeetingCreationPhase.partialSuccess,
-        record: record,
-        snapshot: snapshot,
-        message: 'Bản nháp hiện vẫn có thể lên lịch. Hãy xác nhận lại thao tác sau khi xem trạng thái mới nhất.',
-      );
-      return;
-    }
-
     final pending = record.withPhase(
       MeetingCreationRecordPhase.schedulePending,
       meetingId: meeting.id,
@@ -627,7 +775,8 @@ class MeetingCreationController extends ChangeNotifier {
     try {
       final snapshot = await meetings.detail(record.meetingId!);
       if (!ownsSession) return;
-      if (_matchesCreationSchedule(snapshot.meeting, record.input)) {
+      if (snapshot.meeting.lifecycleStatus == MeetingStatus.scheduled &&
+          _matchesCreationSchedule(snapshot.meeting, record.input)) {
         await _finishConfirmed(
           record,
           snapshot,
@@ -686,7 +835,10 @@ class MeetingCreationController extends ChangeNotifier {
     String message,
   ) async {
     try {
-      await recoveryStore.delete(sessionScope.userId);
+      await recoveryStore.delete(
+        sessionScope.userId,
+        expectedIdempotencyKey: record.idempotencyKey,
+      );
     } catch (error) {
       if (!ownsSession) return;
       _publish(
@@ -751,6 +903,37 @@ class MeetingCreationController extends ChangeNotifier {
     notifyListeners();
   }
 
+  _ReplayEligibility _replayEligibility(MeetingCreationRecord record) {
+    if (record.meetingId != null) return _ReplayEligibility.notApplicable;
+    final window = record.replayDeadline.difference(record.createdAt);
+    if (window.isNegative ||
+        window == Duration.zero ||
+        window > meetingCreationReplaySafetyWindow) {
+      return _ReplayEligibility.uncertain;
+    }
+    final now = _readWallClock();
+    if (!_clockReliable || now.isBefore(record.createdAt)) {
+      return _ReplayEligibility.uncertain;
+    }
+    if (!now.isBefore(record.replayDeadline)) {
+      return _ReplayEligibility.expired;
+    }
+    return _ReplayEligibility.eligible;
+  }
+
+  DateTime _readWallClock() {
+    final wallNow = _now().toUtc();
+    final monotonicNow = _monotonicNow?.call() ?? _stopwatch.elapsed;
+    final elapsed = monotonicNow - _clockMonotonicAnchor;
+    final expectedWallNow = _clockWallAnchor.add(elapsed);
+    if (wallNow.isBefore(
+      expectedWallNow.subtract(const Duration(seconds: 5)),
+    )) {
+      _clockReliable = false;
+    }
+    return wallNow;
+  }
+
   void _sessionChanged() {
     if (_disposed || ownsSession) return;
     _state = const MeetingCreationState(
@@ -772,6 +955,8 @@ class MeetingCreationController extends ChangeNotifier {
     super.dispose();
   }
 }
+
+enum _ReplayEligibility { eligible, expired, uncertain, notApplicable }
 
 bool _matchesCreationSchedule(Meeting meeting, CreateMeetingInput input) =>
     _matchesSchedule(meeting, input) && meeting.roomId == input.roomId;
@@ -834,16 +1019,60 @@ MeetingCreationRecord _recordFromJson(Map<String, dynamic> raw) {
   if (record.accountId.isEmpty ||
       !_validStoredIdempotencyKey(record.idempotencyKey) ||
       (record.meetingId != null && !isMeetingUuid(record.meetingId!)) ||
-      record.replayDeadline.isBefore(record.createdAt) ||
+      !record.replayDeadline.isAfter(record.createdAt) ||
+      record.replayDeadline.difference(record.createdAt) >
+          meetingCreationReplaySafetyWindow ||
       (record.phase == MeetingCreationRecordPhase.intentPersisted &&
           record.meetingId != null) ||
       (record.phase != MeetingCreationRecordPhase.intentPersisted &&
           record.meetingId == null) ||
-      (record.action == MeetingCreationAction.schedule && interval == null)) {
+      (record.action == MeetingCreationAction.schedule && interval == null) ||
+      (record.phase == MeetingCreationRecordPhase.schedulePending &&
+          record.action != MeetingCreationAction.schedule)) {
     throw const FormatException('Invalid creation recovery record.');
   }
   return record;
 }
+
+void _validateRecord(MeetingCreationRecord record) {
+  if (record.accountId.isEmpty ||
+      !_validStoredIdempotencyKey(record.idempotencyKey) ||
+      (record.meetingId != null && !isMeetingUuid(record.meetingId!)) ||
+      !record.replayDeadline.isAfter(record.createdAt) ||
+      record.replayDeadline.difference(record.createdAt) >
+          meetingCreationReplaySafetyWindow ||
+      (record.action == MeetingCreationAction.schedule &&
+          record.input.scheduledInterval == null) ||
+      (record.phase == MeetingCreationRecordPhase.intentPersisted &&
+          record.meetingId != null) ||
+      (record.phase != MeetingCreationRecordPhase.intentPersisted &&
+          record.meetingId == null) ||
+      (record.phase == MeetingCreationRecordPhase.schedulePending &&
+          record.action != MeetingCreationAction.schedule)) {
+    throw const MeetingCreationStorageException();
+  }
+}
+
+bool _sameIntent(MeetingCreationRecord first, MeetingCreationRecord second) =>
+    first.accountId == second.accountId &&
+    first.deploymentScope == second.deploymentScope &&
+    first.idempotencyKey == second.idempotencyKey &&
+    first.action == second.action &&
+    first.createdAt == second.createdAt &&
+    first.replayDeadline == second.replayDeadline &&
+    first.input.title == second.input.title &&
+    first.input.description == second.input.description &&
+    first.input.roomId == second.input.roomId &&
+    first.input.scheduledInterval?.start ==
+        second.input.scheduledInterval?.start &&
+    first.input.scheduledInterval?.end == second.input.scheduledInterval?.end &&
+    listEquals(first.input.participantUserIds, second.input.participantUserIds);
+
+int _phaseRank(MeetingCreationRecordPhase phase) => switch (phase) {
+  MeetingCreationRecordPhase.intentPersisted => 0,
+  MeetingCreationRecordPhase.meetingConfirmed => 1,
+  MeetingCreationRecordPhase.schedulePending => 2,
+};
 
 DateTime? _optionalDate(Map<String, dynamic> raw, String key) {
   final value = raw[key];

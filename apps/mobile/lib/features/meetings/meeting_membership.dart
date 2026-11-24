@@ -6,6 +6,7 @@ import 'package:sme_meeting_assistant/core/meeting_models.dart';
 import 'package:sme_meeting_assistant/core/models.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_foundation.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_invalidation.dart';
+import 'package:sme_meeting_assistant/features/meetings/meeting_aggregate_coordination.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_repository.dart';
 
 enum MembershipMutationCertainty { notDispatched, rejected, unknown }
@@ -325,7 +326,13 @@ class MeetingMembershipRepository {
   }
 }
 
-enum MembershipOperationStatus { notDispatched, confirmed, rejected, unknown }
+enum MembershipOperationStatus {
+  notDispatched,
+  confirmed,
+  observed,
+  rejected,
+  unknown,
+}
 
 class MembershipMutationResult {
   const MembershipMutationResult({
@@ -377,24 +384,40 @@ class MeetingMembershipState {
   int get activeParticipantCount => activeParticipants.length;
 }
 
-typedef MeetingMembershipSnapshotCallback = void Function(
+typedef MeetingMembershipSnapshotAcceptance = bool Function(
+  MeetingAggregateMutationToken token,
   MeetingSnapshot snapshot,
 );
 typedef MeetingMembershipRecordsCallback = void Function(
   List<MeetingParticipant> records,
 );
+typedef MeetingAggregateMutationAcquirer =
+    MeetingAggregateMutationToken? Function(MeetingSnapshot confirmedContext);
+typedef MeetingAggregateMutationOwnership = bool Function(
+  MeetingAggregateMutationToken token,
+);
+typedef MeetingAggregateMutationReleaser = void Function(
+  MeetingAggregateMutationToken token,
+);
+typedef MeetingAggregateRevalidator = Future<MeetingSnapshot?> Function(
+  MeetingAggregateMutationToken token,
+);
+typedef MeetingCanonicalRefresher = Future<MeetingSnapshot?> Function();
 
 class MeetingMembershipController extends ChangeNotifier {
   MeetingMembershipController({
     required this.repository,
     required MeetingSnapshot snapshot,
     Iterable<MeetingParticipant>? initialRecords,
-    this.onSnapshotChanged,
     this.onRecordsChanged,
     this.onAccessRevoked,
     this.canStartAggregateMutation,
     this.acquireAggregateMutation,
     this.releaseAggregateMutation,
+    this.ownsAggregateMutation,
+    this.acceptAggregateSnapshot,
+    this.revalidateAggregate,
+    this.refreshCanonical,
   }) : _state = MeetingMembershipState(
          snapshot: snapshot,
          records: initialRecords == null
@@ -414,12 +437,15 @@ class MeetingMembershipController extends ChangeNotifier {
   }
 
   final MeetingMembershipRepository repository;
-  final MeetingMembershipSnapshotCallback? onSnapshotChanged;
   final MeetingMembershipRecordsCallback? onRecordsChanged;
   final VoidCallback? onAccessRevoked;
   final bool Function()? canStartAggregateMutation;
-  final bool Function()? acquireAggregateMutation;
-  final VoidCallback? releaseAggregateMutation;
+  final MeetingAggregateMutationAcquirer? acquireAggregateMutation;
+  final MeetingAggregateMutationReleaser? releaseAggregateMutation;
+  final MeetingAggregateMutationOwnership? ownsAggregateMutation;
+  final MeetingMembershipSnapshotAcceptance? acceptAggregateSnapshot;
+  final MeetingAggregateRevalidator? revalidateAggregate;
+  final MeetingCanonicalRefresher? refreshCanonical;
   MeetingMembershipState _state;
   int _generation = 0;
   int _seenInvalidationRevision = 0;
@@ -477,6 +503,74 @@ class MeetingMembershipController extends ChangeNotifier {
     }
   }
 
+  /// Accepts a version published by the detail owner and refreshes only the
+  /// membership projection; this controller never promotes its own read to
+  /// the current aggregate version.
+  void updateCanonicalSnapshot(MeetingSnapshot snapshot) {
+    final previous = _state.snapshot;
+    if (_disposed ||
+        previous == null ||
+        !_isCurrentSession(snapshot.sessionScope) ||
+        snapshot.sessionScope != previous.sessionScope ||
+        snapshot.meeting.id.toLowerCase() !=
+            previous.meeting.id.toLowerCase() ||
+        snapshot.etag == previous.etag ||
+        _state.isMutating) {
+      return;
+    }
+    final generation = ++_generation;
+    _state = _copy(snapshot: snapshot, needsRevalidation: true);
+    notifyListeners();
+    unawaited(_refreshMembershipForSnapshot(snapshot, generation));
+  }
+
+  void clearForCanonicalAccessLoss() {
+    if (_disposed) return;
+    _generation++;
+    _pendingInvalidation = false;
+    _state = const MeetingMembershipState(
+      snapshot: null,
+      records: <MeetingParticipant>[],
+      isInitialized: false,
+      isLoading: false,
+      isMutating: false,
+      needsRevalidation: false,
+      accessRevoked: true,
+      lastMutation: null,
+      failure: null,
+    );
+    notifyListeners();
+  }
+
+  Future<void> _refreshMembershipForSnapshot(
+    MeetingSnapshot snapshot,
+    int generation,
+  ) async {
+    try {
+      final records = await repository.listParticipants(
+        snapshot.meeting.id,
+        sessionScope: snapshot.sessionScope,
+      );
+      if (!_owns(generation, snapshot.sessionScope) ||
+          _state.snapshot?.etag != snapshot.etag) {
+        return;
+      }
+      _state = _copy(
+        records: records,
+        isInitialized: true,
+        isLoading: false,
+        needsRevalidation: false,
+        failure: null,
+        clearFailure: true,
+      );
+      onRecordsChanged?.call(records);
+    } catch (error) {
+      if (!_owns(generation, snapshot.sessionScope)) return;
+      _applyReadFailure(error, accessContext: true);
+    }
+    if (_owns(generation, snapshot.sessionScope)) notifyListeners();
+  }
+
   Future<void> refresh() {
     if (_disposed || _state.isMutating) return Future<void>.value();
     final active = _refreshOperation;
@@ -493,9 +587,12 @@ class MeetingMembershipController extends ChangeNotifier {
     return operation;
   }
 
-  Future<MembershipMutationResult> addParticipant(String userId) async {
+  Future<MembershipMutationResult> addParticipant(
+    String userId, {
+    MeetingSnapshot? confirmedContext,
+  }) async {
     final snapshot = _state.snapshot;
-    final guardFailure = _mutationGuard(snapshot, userId);
+    final guardFailure = _mutationGuard(snapshot, userId, confirmedContext);
     if (guardFailure != null) return _notDispatched(guardFailure);
     if (_state.activeParticipants.any(
       (record) => record.userId.toLowerCase() == userId.toLowerCase(),
@@ -507,26 +604,39 @@ class MeetingMembershipController extends ChangeNotifier {
     return _mutateMembership(snapshot: snapshot!, userId: userId, add: true);
   }
 
-  Future<MembershipMutationResult> removeParticipant(String userId) async {
+  Future<MembershipMutationResult> removeParticipant(
+    MeetingParticipant intent, {
+    MeetingSnapshot? confirmedContext,
+  }) async {
     final snapshot = _state.snapshot;
-    final guardFailure = _mutationGuard(snapshot, userId);
+    final userId = intent.userId;
+    final guardFailure = _mutationGuard(snapshot, userId, confirmedContext);
     if (guardFailure != null) return _notDispatched(guardFailure);
     if (userId.toLowerCase() == snapshot!.meeting.organizerId.toLowerCase()) {
       return _notDispatched(
         _localConflict('The meeting organizer cannot be removed.'),
       );
     }
-    if (!_state.activeParticipants.any(
-      (record) => record.userId.toLowerCase() == userId.toLowerCase(),
-    )) {
+    final activeOccurrence = _state.activeParticipants.where(
+      (record) =>
+          record.userId.toLowerCase() == userId.toLowerCase() &&
+          record.id.toLowerCase() == intent.id.toLowerCase(),
+    );
+    if (activeOccurrence.isEmpty) {
       return _notDispatched(
-        _localConflict('This person is not an active participant.'),
+        _localConflict(
+          'The active membership changed while the confirmation was open. Review the current membership before removing it.',
+        ),
       );
     }
     return _mutateMembership(snapshot: snapshot, userId: userId, add: false);
   }
 
-  MembershipFailure? _mutationGuard(MeetingSnapshot? snapshot, String userId) {
+  MembershipFailure? _mutationGuard(
+    MeetingSnapshot? snapshot,
+    String userId,
+    MeetingSnapshot? confirmedContext,
+  ) {
     if (snapshot == null ||
         _disposed ||
         !_isCurrentSession(snapshot.sessionScope)) {
@@ -537,6 +647,17 @@ class MeetingMembershipController extends ChangeNotifier {
     }
     if (!_state.isInitialized || _state.needsRevalidation) {
       return _localConflict('Reload membership data before trying again.');
+    }
+    if (confirmedContext != null &&
+        (confirmedContext.meeting.id.toLowerCase() !=
+                snapshot.meeting.id.toLowerCase() ||
+            confirmedContext.sessionScope != snapshot.sessionScope ||
+            confirmedContext.etag != snapshot.etag ||
+            confirmedContext.meeting.lifecycleStatus !=
+                snapshot.meeting.lifecycleStatus)) {
+      return _localConflict(
+        'The reviewed meeting version is no longer current. Review it again before continuing.',
+      );
     }
     if (canStartAggregateMutation != null && !canStartAggregateMutation!()) {
       return _localConflict('A meeting change is already in progress.');
@@ -567,7 +688,8 @@ class MeetingMembershipController extends ChangeNotifier {
     required bool add,
   }) async {
     final acquire = acquireAggregateMutation;
-    if (acquire != null && !acquire()) {
+    final aggregateToken = acquire?.call(snapshot);
+    if (acquire != null && aggregateToken == null) {
       return _notDispatched(
         _localConflict('A meeting change is already in progress.'),
       );
@@ -578,7 +700,11 @@ class MeetingMembershipController extends ChangeNotifier {
     try {
       if (add) {
         final participant = await repository.addParticipant(snapshot, userId);
-        if (!_owns(generation, snapshot.sessionScope)) {
+        if (!_ownsOperation(
+          generation,
+          snapshot.sessionScope,
+          aggregateToken,
+        )) {
           return _unknownAfterSessionChange();
         }
         final records = _withConfirmedAddition(_state.records, participant);
@@ -600,8 +726,10 @@ class MeetingMembershipController extends ChangeNotifier {
         final reconciled = await _reconcileBoth(
           generation: generation,
           sessionScope: snapshot.sessionScope,
+          aggregateToken: aggregateToken,
         );
-        if (reconciled != null && _owns(generation, snapshot.sessionScope)) {
+        if (reconciled != null &&
+            _ownsOperation(generation, snapshot.sessionScope, aggregateToken)) {
           result = MembershipMutationResult(
             status: MembershipOperationStatus.confirmed,
             reconciled: true,
@@ -631,7 +759,12 @@ class MeetingMembershipController extends ChangeNotifier {
         snapshot,
         userId,
       );
-      if (!_owns(generation, snapshot.sessionScope)) {
+      if (!_ownsOperation(generation, snapshot.sessionScope, aggregateToken)) {
+        return _unknownAfterSessionChange();
+      }
+      if (aggregateToken != null &&
+          !(acceptAggregateSnapshot?.call(aggregateToken, updatedSnapshot) ??
+              false)) {
         return _unknownAfterSessionChange();
       }
       var result = MembershipMutationResult(
@@ -647,13 +780,14 @@ class MeetingMembershipController extends ChangeNotifier {
         failure: null,
         clearFailure: true,
       );
-      onSnapshotChanged?.call(updatedSnapshot);
       notifyListeners();
       final records = await _readMemberships(
         updatedSnapshot,
         generation: generation,
+        aggregateToken: aggregateToken,
       );
-      if (records != null && _owns(generation, snapshot.sessionScope)) {
+      if (records != null &&
+          _ownsOperation(generation, snapshot.sessionScope, aggregateToken)) {
         result = MembershipMutationResult(
           status: MembershipOperationStatus.confirmed,
           reconciled: true,
@@ -680,13 +814,14 @@ class MeetingMembershipController extends ChangeNotifier {
       }
       return result;
     } on MembershipFailure catch (failure) {
-      if (!_owns(generation, snapshot.sessionScope)) {
+      if (!_ownsOperation(generation, snapshot.sessionScope, aggregateToken)) {
         return _unknownAfterSessionChange(failure: failure);
       }
       if (failure.outcome == MembershipMutationCertainty.unknown) {
         return _reconcileUnknown(
           generation: generation,
           snapshot: snapshot,
+          aggregateToken: aggregateToken,
           userId: userId,
           add: add,
           failure: failure,
@@ -708,9 +843,11 @@ class MeetingMembershipController extends ChangeNotifier {
         final reconciled = await _reconcileBoth(
           generation: generation,
           sessionScope: snapshot.sessionScope,
+          aggregateToken: aggregateToken,
         );
         final success =
-            reconciled != null && _owns(generation, snapshot.sessionScope);
+            reconciled != null &&
+            _ownsOperation(generation, snapshot.sessionScope, aggregateToken);
         result = MembershipMutationResult(
           status: MembershipOperationStatus.rejected,
           reconciled: success,
@@ -726,7 +863,7 @@ class MeetingMembershipController extends ChangeNotifier {
       }
       return result;
     } catch (error) {
-      if (!_owns(generation, snapshot.sessionScope)) {
+      if (!_ownsOperation(generation, snapshot.sessionScope, aggregateToken)) {
         return _unknownAfterSessionChange();
       }
       final failure = _localFailure(error);
@@ -743,22 +880,27 @@ class MeetingMembershipController extends ChangeNotifier {
       );
       return result;
     } finally {
-      if (_owns(generation, snapshot.sessionScope)) {
+      var refreshAfterRelease = false;
+      if (_ownsOperation(generation, snapshot.sessionScope, aggregateToken)) {
         _state = _copy(isMutating: false);
         notifyListeners();
-        if (_pendingInvalidation) {
-          _pendingInvalidation = false;
-          _seenInvalidationRevision = repository.invalidation.revision;
-          unawaited(refresh());
-        }
+        refreshAfterRelease = _pendingInvalidation;
       }
-      if (acquire != null) releaseAggregateMutation?.call();
+      if (aggregateToken != null) {
+        releaseAggregateMutation?.call(aggregateToken);
+      }
+      if (refreshAfterRelease && _owns(generation, snapshot.sessionScope)) {
+        _pendingInvalidation = false;
+        _seenInvalidationRevision = repository.invalidation.revision;
+        unawaited(refresh());
+      }
     }
   }
 
   Future<MembershipMutationResult> _reconcileUnknown({
     required int generation,
     required MeetingSnapshot snapshot,
+    required MeetingAggregateMutationToken? aggregateToken,
     required String userId,
     required bool add,
     required MembershipFailure failure,
@@ -777,9 +919,11 @@ class MeetingMembershipController extends ChangeNotifier {
     final reconciled = await _reconcileBoth(
       generation: generation,
       sessionScope: snapshot.sessionScope,
+      aggregateToken: aggregateToken,
     );
-    if (reconciled == null || !_owns(generation, snapshot.sessionScope)) {
-      if (!_owns(generation, snapshot.sessionScope)) {
+    if (reconciled == null ||
+        !_ownsOperation(generation, snapshot.sessionScope, aggregateToken)) {
+      if (!_ownsOperation(generation, snapshot.sessionScope, aggregateToken)) {
         return _unknownAfterSessionChange(failure: failure);
       }
       final result = MembershipMutationResult(
@@ -794,7 +938,7 @@ class MeetingMembershipController extends ChangeNotifier {
     final foundActive = _state.activeParticipants.any(
       (record) => record.userId.toLowerCase() == userId.toLowerCase(),
     );
-    final mutationConfirmed = add ? foundActive : !foundActive;
+    final desiredStateObserved = add ? foundActive : !foundActive;
     final matchingParticipants = add
         ? _state.activeParticipants
               .where(
@@ -803,8 +947,8 @@ class MeetingMembershipController extends ChangeNotifier {
               .toList()
         : const <MeetingParticipant>[];
     final result = MembershipMutationResult(
-      status: mutationConfirmed
-          ? MembershipOperationStatus.confirmed
+      status: desiredStateObserved
+          ? MembershipOperationStatus.observed
           : MembershipOperationStatus.unknown,
       reconciled: true,
       requiresRevalidation: false,
@@ -812,7 +956,7 @@ class MeetingMembershipController extends ChangeNotifier {
           ? null
           : matchingParticipants.first,
       snapshot: reconciled,
-      failure: mutationConfirmed ? null : failure,
+      failure: desiredStateObserved ? null : failure,
     );
     _state = _copy(
       needsRevalidation: false,
@@ -825,17 +969,35 @@ class MeetingMembershipController extends ChangeNotifier {
   Future<MeetingSnapshot?> _reconcileBoth({
     required int generation,
     required AuthenticatedSessionScope sessionScope,
+    MeetingAggregateMutationToken? aggregateToken,
   }) async {
     final current = _state.snapshot;
     if (current == null) return null;
+    final revisionAtStart = repository.invalidation.revision;
     try {
-      final snapshot = await repository.meetings.detail(current.meeting.id);
-      if (!_owns(generation, sessionScope)) return null;
+      final snapshot = aggregateToken != null
+          ? await revalidateAggregate?.call(aggregateToken)
+          : refreshCanonical == null
+          ? await repository.meetings.detail(current.meeting.id)
+          : await refreshCanonical!();
+      if (snapshot == null ||
+          !_ownsOperation(generation, sessionScope, aggregateToken)) {
+        return null;
+      }
       final records = await repository.listParticipants(
         snapshot.meeting.id,
         sessionScope: sessionScope,
       );
-      if (!_owns(generation, sessionScope)) return null;
+      if (!_ownsOperation(generation, sessionScope, aggregateToken))
+        return null;
+      if (repository.invalidation.revision != revisionAtStart) {
+        _pendingInvalidation = true;
+        _state = _copy(needsRevalidation: true);
+        notifyListeners();
+        return null;
+      }
+      _pendingInvalidation = false;
+      _seenInvalidationRevision = revisionAtStart;
       _state = _copy(
         snapshot: snapshot,
         records: records,
@@ -844,12 +1006,12 @@ class MeetingMembershipController extends ChangeNotifier {
         failure: null,
         clearFailure: true,
       );
-      onSnapshotChanged?.call(snapshot);
       onRecordsChanged?.call(records);
       notifyListeners();
       return snapshot;
     } catch (error) {
-      if (!_owns(generation, sessionScope)) return null;
+      if (!_ownsOperation(generation, sessionScope, aggregateToken))
+        return null;
       _applyReadFailure(error, accessContext: true);
       notifyListeners();
       return null;
@@ -859,16 +1021,19 @@ class MeetingMembershipController extends ChangeNotifier {
   Future<List<MeetingParticipant>?> _readMemberships(
     MeetingSnapshot snapshot, {
     required int generation,
+    MeetingAggregateMutationToken? aggregateToken,
   }) async {
     try {
       final records = await repository.listParticipants(
         snapshot.meeting.id,
         sessionScope: snapshot.sessionScope,
       );
-      if (!_owns(generation, snapshot.sessionScope)) return null;
+      if (!_ownsOperation(generation, snapshot.sessionScope, aggregateToken)) {
+        return null;
+      }
       return records;
     } catch (error) {
-      if (_owns(generation, snapshot.sessionScope)) {
+      if (_ownsOperation(generation, snapshot.sessionScope, aggregateToken)) {
         _applyReadFailure(error, accessContext: true);
         notifyListeners();
       }
@@ -1002,6 +1167,14 @@ class MeetingMembershipController extends ChangeNotifier {
 
   bool _owns(int generation, AuthenticatedSessionScope scope) =>
       !_disposed && generation == _generation && _isCurrentSession(scope);
+
+  bool _ownsOperation(
+    int generation,
+    AuthenticatedSessionScope scope,
+    MeetingAggregateMutationToken? token,
+  ) =>
+      _owns(generation, scope) &&
+      (token == null || (ownsAggregateMutation?.call(token) ?? false));
 
   void _onInvalidation() {
     final snapshot = _state.snapshot;

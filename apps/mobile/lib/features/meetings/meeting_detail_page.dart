@@ -53,11 +53,17 @@ class _MeetingDetailPageState extends State<MeetingDetailPage> {
   }
 
   Future<void> _edit(MeetingSnapshot snapshot) async {
-    if (!_controller.beginMutation(MeetingDetailMutation.editing)) return;
+    final token = _controller.acquireAggregateMutation(
+      MeetingDetailMutation.editing,
+      confirmedContext: snapshot,
+    );
+    if (token == null) return;
     try {
       final updated = await showModalBottomSheet<MeetingSnapshot>(
         context: context,
         isScrollControlled: true,
+        isDismissible: false,
+        enableDrag: false,
         showDragHandle: true,
         builder: (_) => MeetingEditSheet(
           dependencies: widget.dependencies,
@@ -65,10 +71,10 @@ class _MeetingDetailPageState extends State<MeetingDetailPage> {
         ),
       );
       if (updated != null && mounted) {
-        _controller.acceptMembershipSnapshot(updated);
+        _controller.acceptAggregateSnapshot(token, updated);
       }
     } finally {
-      if (mounted) _controller.endMutation();
+      _controller.releaseAggregateMutation(token);
     }
   }
 
@@ -460,14 +466,25 @@ class _MeetingDetailPageState extends State<MeetingDetailPage> {
                         initialRecords: state.participantsLoaded
                             ? state.participants
                             : null,
-                        onSnapshotChanged: _controller.acceptMembershipSnapshot,
                         onRecordsChanged: _controller.acceptMembershipRecords,
                         onAccessRevoked: _controller.membershipAccessRevoked,
                         canStartAggregateMutation: () =>
                             _controller.state.canStartAggregateMutation,
-                        acquireAggregateMutation: () => _controller
-                            .beginMutation(MeetingDetailMutation.membership),
-                        releaseAggregateMutation: _controller.endMutation,
+                        acquireAggregateMutation: (confirmedContext) =>
+                            _controller.acquireAggregateMutation(
+                              MeetingDetailMutation.membership,
+                              confirmedContext: confirmedContext,
+                            ),
+                        releaseAggregateMutation:
+                            _controller.releaseAggregateMutation,
+                        ownsAggregateMutation:
+                            _controller.ownsAggregateMutation,
+                        acceptAggregateSnapshot:
+                            _controller.acceptAggregateSnapshot,
+                        revalidateAggregate: _controller.revalidateAggregate,
+                        refreshCanonical: _controller.refreshCanonicalForChild,
+                        addCanonicalSnapshotListener:
+                            _controller.addCanonicalSnapshotListener,
                       ),
                       _ => ProcessingTimelinePanel(
                         api: widget.api,

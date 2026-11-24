@@ -58,6 +58,8 @@ class _MeetingsPageState extends State<MeetingsPage> {
     final result = await showModalBottomSheet<MeetingFormResult>(
       context: context,
       isScrollControlled: true,
+      isDismissible: false,
+      enableDrag: false,
       showDragHandle: true,
       builder: (_) => MeetingForm(dependencies: widget.dependencies),
     );

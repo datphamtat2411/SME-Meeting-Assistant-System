@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
+import 'package:sme_meeting_assistant/core/api_response.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_foundation.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_scheduling.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_scheduling_widgets.dart';
@@ -300,6 +301,40 @@ void main() {
         expect(preview.warnings.single.userId, testUserId);
       },
     );
+
+    test('rejects contradictory successful preview signals', () async {
+      final client = MeetingTestHttpClient((request) async {
+        return meetingApiSuccess({
+          'previewOnly': true,
+          'canSchedule': true,
+          'roomConflict': true,
+          'room': {
+            'roomId': testRoomId,
+            'active': true,
+            'available': false,
+            'capacity': 12,
+            'participantCount': 3,
+            'capacityExceeded': false,
+          },
+          'warnings': [],
+        });
+      });
+      final api = createMeetingTestApi(client);
+      addTearDown(api.dispose);
+      await signInMeetingTestApi(api);
+      final interval = MeetingInterval(
+        start: DateTime.utc(2026, 11, 24, 9),
+        end: DateTime.utc(2026, 11, 24, 10),
+      );
+
+      await expectLater(
+        RoomSchedulingRepository(api).preview(
+          ScheduleIntent(interval: interval, roomId: testRoomId),
+          sessionScope: api.requireAuthenticatedSessionScope(),
+        ),
+        throwsA(isA<ApiFailure>()),
+      );
+    });
 
     test(
       'preview fences changed intents and coalesces unchanged requests',

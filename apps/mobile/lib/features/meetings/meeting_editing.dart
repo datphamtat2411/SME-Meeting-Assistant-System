@@ -275,6 +275,7 @@ class MeetingEditingController extends ChangeNotifier {
     }
 
     final generation = ++_generation;
+    final invalidationRevisionAtDispatch = invalidation.revision;
     final localAtDispatch = _state.values!;
     _state = _copy(
       phase: MeetingEditPhase.submitting,
@@ -285,6 +286,18 @@ class MeetingEditingController extends ChangeNotifier {
     try {
       final updated = await repository.update(snapshot, patch);
       if (!_owns(generation, snapshot.sessionScope)) return;
+      if (invalidation.revision != invalidationRevisionAtDispatch + 1 ||
+          invalidation.lastMeetingId?.toLowerCase() !=
+              snapshot.meeting.id.toLowerCase()) {
+        await _loadLatestForReconciliation(
+          generation: generation,
+          originalSnapshot: snapshot,
+          local: localAtDispatch,
+          failure: null,
+          unknownOutcome: false,
+        );
+        return;
+      }
       _originalSnapshot = updated;
       final nextValues = MeetingEditValues.fromMeeting(updated.meeting);
       _state = MeetingEditingState(
@@ -364,6 +377,7 @@ class MeetingEditingController extends ChangeNotifier {
     if (_state.phase != MeetingEditPhase.rebaseRequired ||
         reconciliation == null ||
         reconciliation.unresolvedConflicts.isNotEmpty ||
+        _state.needsRevalidation ||
         !_ownsSession) {
       return;
     }
@@ -404,7 +418,8 @@ class MeetingEditingController extends ChangeNotifier {
     if (_disposed ||
         !_ownsSession ||
         (_state.phase != MeetingEditPhase.editing &&
-            _state.phase != MeetingEditPhase.recoveryRequired)) {
+            _state.phase != MeetingEditPhase.recoveryRequired &&
+            _state.phase != MeetingEditPhase.rebaseRequired)) {
       return;
     }
     final generation = ++_generation;
@@ -443,9 +458,22 @@ class MeetingEditingController extends ChangeNotifier {
     required Object? failure,
     required bool unknownOutcome,
   }) async {
+    final invalidationRevisionAtStart = invalidation.revision;
     try {
       final latest = await repository.detail(originalSnapshot.meeting.id);
       if (!_owns(generation, originalSnapshot.sessionScope)) return;
+      if (invalidation.revision != invalidationRevisionAtStart &&
+          (invalidation.lastMeetingId == null ||
+              invalidation.lastMeetingId?.toLowerCase() ==
+                  originalSnapshot.meeting.id.toLowerCase())) {
+        _state = _copy(
+          phase: MeetingEditPhase.recoveryRequired,
+          failure: failure,
+          message: 'Cuộc họp tiếp tục thay đổi trong khi tải trạng thái. Nội dung đã nhập được giữ lại; hãy tải lại trước khi xác nhận.',
+          needsRevalidation: true,
+        );
+        return;
+      }
       if (unknownOutcome &&
           _matchesChangedValues(
             originalSnapshot.meeting,

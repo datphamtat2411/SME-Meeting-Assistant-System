@@ -6,6 +6,7 @@ import 'package:sme_meeting_assistant/core/meeting_models.dart';
 import 'package:sme_meeting_assistant/core/models.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_foundation.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_invalidation.dart';
+import 'package:sme_meeting_assistant/features/meetings/meeting_aggregate_coordination.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_membership.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_repository.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_scheduling.dart';
@@ -28,6 +29,10 @@ enum MeetingDetailMutation {
 }
 
 enum MeetingLifecycleCommand { schedule, start, end, cancel }
+
+typedef MeetingCanonicalSnapshotListener = void Function(
+  MeetingSnapshot? snapshot,
+);
 
 enum MeetingLifecycleResultStatus {
   confirmed,
@@ -153,10 +158,14 @@ class MeetingDetailController extends ChangeNotifier {
   final MeetingInvalidationSignal invalidation;
   final String meetingId;
   final AuthenticatedSessionScope sessionScope;
+  final Set<MeetingCanonicalSnapshotListener> _canonicalListeners =
+      <MeetingCanonicalSnapshotListener>{};
 
   MeetingDetailState _state;
   int _generation = 0;
   int _seenInvalidationRevision = 0;
+  int _mutationSequence = 0;
+  MeetingAggregateMutationToken? _activeMutationToken;
   Future<void>? _refreshOperation;
   bool _pendingInvalidation = false;
   bool _disposed = false;
@@ -165,6 +174,15 @@ class MeetingDetailController extends ChangeNotifier {
   MeetingSnapshot? get snapshot => _state.snapshot;
   bool get ownsSession =>
       !_disposed && meetings.api.isCurrentAuthenticatedSession(sessionScope);
+
+  VoidCallback addCanonicalSnapshotListener(
+    MeetingCanonicalSnapshotListener listener,
+  ) {
+    if (_disposed) return () {};
+    _canonicalListeners.add(listener);
+    listener(_state.snapshot);
+    return () => _canonicalListeners.remove(listener);
+  }
 
   Future<void> initialize() => _load(initial: true);
 
@@ -197,6 +215,13 @@ class MeetingDetailController extends ChangeNotifier {
     return operation;
   }
 
+  Future<MeetingSnapshot?> refreshCanonicalForChild() async {
+    if (!ownsSession) return null;
+    await refresh();
+    if (!ownsSession || _state.needsRevalidation) return null;
+    return _state.snapshot;
+  }
+
   Future<void> _load({required bool initial}) async {
     if (!ownsSession) return;
     final generation = ++_generation;
@@ -213,7 +238,7 @@ class MeetingDetailController extends ChangeNotifier {
     try {
       final latest = await meetings.detail(meetingId);
       if (!_owns(generation)) return;
-      _acceptCanonical(latest, generation: generation, refreshMetadata: true);
+      _acceptCanonical(latest, generation: generation);
     } catch (error) {
       if (!_owns(generation)) return;
       final denied =
@@ -261,6 +286,11 @@ class MeetingDetailController extends ChangeNotifier {
       needsRevalidation: false,
       message: _state.message,
     );
+    for (final listener in List<MeetingCanonicalSnapshotListener>.of(
+      _canonicalListeners,
+    )) {
+      listener(snapshot);
+    }
     notifyListeners();
     if (shouldLoadRoom || shouldLoadParticipants) {
       unawaited(
@@ -343,30 +373,123 @@ class MeetingDetailController extends ChangeNotifier {
     }
   }
 
-  bool beginMutation(MeetingDetailMutation mutation) {
-    if (!state.canStartAggregateMutation || !ownsSession) return false;
+  MeetingAggregateMutationToken? acquireAggregateMutation(
+    MeetingDetailMutation mutation, {
+    MeetingSnapshot? confirmedContext,
+  }) {
+    if (!state.canStartAggregateMutation || !ownsSession) return null;
+    final current = _state.snapshot;
+    if (confirmedContext != null &&
+        (current == null ||
+            confirmedContext.meeting.id.toLowerCase() !=
+                meetingId.toLowerCase() ||
+            !meetings.api.isCurrentAuthenticatedSession(
+              confirmedContext.sessionScope,
+            ) ||
+            confirmedContext.etag != current.etag ||
+            confirmedContext.meeting.lifecycleStatus !=
+                current.meeting.lifecycleStatus)) {
+      return null;
+    }
+    final token = MeetingAggregateMutationToken(
+      meetingId: meetingId,
+      sessionScope: sessionScope,
+      sequence: ++_mutationSequence,
+      invalidationRevision: invalidation.revision,
+    );
+    _activeMutationToken = token;
     _state = _copy(activeMutation: mutation, clearMessage: true);
     notifyListeners();
-    return true;
+    return token;
   }
 
-  void endMutation() {
-    if (_disposed || _state.activeMutation == null) return;
+  bool ownsAggregateMutation(MeetingAggregateMutationToken token) =>
+      !_disposed &&
+      identical(_activeMutationToken, token) &&
+      token.meetingId.toLowerCase() == meetingId.toLowerCase() &&
+      token.sessionScope == sessionScope &&
+      meetings.api.isCurrentAuthenticatedSession(token.sessionScope);
+
+  bool acceptAggregateSnapshot(
+    MeetingAggregateMutationToken token,
+    MeetingSnapshot snapshot,
+  ) {
+    if (!ownsAggregateMutation(token) ||
+        snapshot.meeting.id.toLowerCase() != meetingId.toLowerCase() ||
+        snapshot.sessionScope != sessionScope) {
+      return false;
+    }
+    final generation = ++_generation;
+    _acceptCanonical(snapshot, generation: generation);
+    final currentRevision = invalidation.revision;
+    final ownInvalidation =
+        currentRevision == token.invalidationRevision + 1 &&
+        invalidation.lastMeetingId?.toLowerCase() == meetingId.toLowerCase();
+    if (ownInvalidation) {
+      _pendingInvalidation = false;
+      _seenInvalidationRevision = currentRevision;
+    } else if (currentRevision != token.invalidationRevision) {
+      _pendingInvalidation = true;
+      _state = _copy(needsRevalidation: true);
+      notifyListeners();
+    }
+    return ownsAggregateMutation(token) &&
+        _state.snapshot?.etag == snapshot.etag;
+  }
+
+  Future<MeetingSnapshot?> revalidateAggregate(
+    MeetingAggregateMutationToken token,
+  ) async {
+    if (!ownsAggregateMutation(token)) return null;
+    final generation = ++_generation;
+    final revisionAtRead = invalidation.revision;
+    _state = _copy(needsRevalidation: true, clearFailure: true);
+    notifyListeners();
+    try {
+      final latest = await meetings.detail(meetingId);
+      if (!_ownsAggregate(generation, token)) return null;
+      if (revisionAtRead != invalidation.revision) {
+        _pendingInvalidation = true;
+        _state = _copy(
+          phase: MeetingDetailPhase.recoveryRequired,
+          needsRevalidation: true,
+          message: 'ข้อมูล cuộc họp vừa thay đổi thêm. Hãy tải lại trước khi tiếp tục.',
+        );
+        notifyListeners();
+        return null;
+      }
+      _pendingInvalidation = false;
+      _seenInvalidationRevision = revisionAtRead;
+      _acceptCanonical(latest, generation: generation, refreshMetadata: true);
+      return _state.snapshot;
+    } catch (error) {
+      if (!_ownsAggregate(generation, token)) return null;
+      final denied =
+          error is ApiFailure && (error.status == 403 || error.status == 404);
+      if (denied) {
+        _clearProtectedState();
+      } else {
+        _state = _copy(
+          phase: MeetingDetailPhase.recoveryRequired,
+          failure: error,
+          needsRevalidation: true,
+          message: 'Không thể xác nhận phiên bản cuộc họp hiện tại.',
+        );
+        notifyListeners();
+      }
+      return null;
+    }
+  }
+
+  void releaseAggregateMutation(MeetingAggregateMutationToken token) {
+    if (!ownsAggregateMutation(token)) return;
+    _activeMutationToken = null;
     _state = _copy(clearActiveMutation: true);
     notifyListeners();
     if (_pendingInvalidation && ownsSession) {
       _pendingInvalidation = false;
       unawaited(refresh());
     }
-  }
-
-  void acceptMembershipSnapshot(MeetingSnapshot snapshot) {
-    if (!ownsSession ||
-        snapshot.meeting.id.toLowerCase() != meetingId.toLowerCase()) {
-      return;
-    }
-    final generation = ++_generation;
-    _acceptCanonical(snapshot, generation: generation);
   }
 
   void acceptMembershipRecords(List<MeetingParticipant> records) {
@@ -380,6 +503,9 @@ class MeetingDetailController extends ChangeNotifier {
 
   void membershipAccessRevoked() => _clearProtectedState();
 
+  bool _ownsAggregate(int generation, MeetingAggregateMutationToken token) =>
+      _owns(generation) && ownsAggregateMutation(token);
+
   Future<MeetingLifecycleResult> runLifecycle({
     required MeetingLifecycleCommand command,
     required MeetingSnapshot confirmedContext,
@@ -390,6 +516,12 @@ class MeetingDetailController extends ChangeNotifier {
     }
     final current = _state.snapshot;
     if (current == null ||
+        current.meeting.id.toLowerCase() !=
+            confirmedContext.meeting.id.toLowerCase() ||
+        confirmedContext.meeting.id.toLowerCase() != meetingId.toLowerCase() ||
+        !meetings.api.isCurrentAuthenticatedSession(
+          confirmedContext.sessionScope,
+        ) ||
         current.etag != confirmedContext.etag ||
         current.meeting.lifecycleStatus !=
             confirmedContext.meeting.lifecycleStatus) {
@@ -427,7 +559,11 @@ class MeetingDetailController extends ChangeNotifier {
       MeetingLifecycleCommand.end => MeetingDetailMutation.ending,
       MeetingLifecycleCommand.cancel => MeetingDetailMutation.cancelling,
     };
-    if (!beginMutation(mutation)) {
+    final token = acquireAggregateMutation(
+      mutation,
+      confirmedContext: confirmedContext,
+    );
+    if (token == null) {
       return _blocked('Một thay đổi khác đang được thực hiện.');
     }
     final generation = ++_generation;
@@ -444,20 +580,26 @@ class MeetingDetailController extends ChangeNotifier {
           MeetingCancelInput(reason: _normalizeReason(cancellationReason)),
         ),
       };
-      if (!_owns(generation)) {
+      if (!_ownsAggregate(generation, token)) {
         return const MeetingLifecycleResult(
           status: MeetingLifecycleResultStatus.unknown,
           message: 'Phiên đăng nhập đã thay đổi; kết quả chưa thể hiển thị.',
         );
       }
-      _acceptCanonical(changed, generation: generation);
+      if (!acceptAggregateSnapshot(token, changed)) {
+        return const MeetingLifecycleResult(
+          status: MeetingLifecycleResultStatus.unknown,
+          message:
+              'Phiên bản mới chưa thể được xác nhận trong chi tiết cuộc họp.',
+        );
+      }
       return MeetingLifecycleResult(
         status: MeetingLifecycleResultStatus.confirmed,
         message: 'Đã cập nhật cuộc họp theo xác nhận của máy chủ.',
         snapshot: changed,
       );
     } on MeetingFailure catch (failure) {
-      if (!_owns(generation)) {
+      if (!_ownsAggregate(generation, token)) {
         return MeetingLifecycleResult(
           status: MeetingLifecycleResultStatus.unknown,
           message: 'Phiên đăng nhập đã thay đổi; chưa thể xác nhận kết quả.',
@@ -467,8 +609,10 @@ class MeetingDetailController extends ChangeNotifier {
       if (failure.mutationOutcome == MeetingMutationOutcome.unknown) {
         return await _reconcileLifecycleOutcome(
           generation: generation,
+          token: token,
           command: command,
           context: confirmedContext,
+          cancellationReason: cancellationReason,
           failure: failure,
         );
       }
@@ -478,6 +622,7 @@ class MeetingDetailController extends ChangeNotifier {
           failure.category == MeetingFailureCategory.resourceUnavailable) {
         await _revalidateAfterRejectedLifecycle(
           generation: generation,
+          token: token,
           failure: failure,
         );
       } else {
@@ -493,7 +638,7 @@ class MeetingDetailController extends ChangeNotifier {
         failure: failure,
       );
     } catch (error) {
-      if (!_owns(generation)) {
+      if (!_ownsAggregate(generation, token)) {
         return const MeetingLifecycleResult(
           status: MeetingLifecycleResultStatus.unknown,
           message: 'Phiên đăng nhập đã thay đổi; chưa thể xác nhận kết quả.',
@@ -501,25 +646,29 @@ class MeetingDetailController extends ChangeNotifier {
       }
       return await _reconcileLifecycleOutcome(
         generation: generation,
+        token: token,
         command: command,
         context: confirmedContext,
+        cancellationReason: cancellationReason,
         failure: error,
       );
     } finally {
-      if (_owns(generation)) endMutation();
+      if (ownsAggregateMutation(token)) releaseAggregateMutation(token);
     }
   }
 
   Future<MeetingLifecycleResult> _reconcileLifecycleOutcome({
     required int generation,
+    required MeetingAggregateMutationToken token,
     required MeetingLifecycleCommand command,
     required MeetingSnapshot context,
+    required String? cancellationReason,
     required Object failure,
   }) async {
     final revisionAtRead = invalidation.revision;
     try {
       final latest = await meetings.detail(meetingId);
-      if (!_owns(generation)) {
+      if (!_ownsAggregate(generation, token)) {
         return const MeetingLifecycleResult(
           status: MeetingLifecycleResultStatus.unknown,
           message: 'Phiên đăng nhập đã thay đổi; chưa thể xác nhận kết quả.',
@@ -534,7 +683,12 @@ class MeetingDetailController extends ChangeNotifier {
       final observed =
           latest.meeting.lifecycleStatus == target &&
           (command != MeetingLifecycleCommand.schedule ||
-              _sameInterval(context.meeting, latest.meeting));
+              (_sameInterval(context.meeting, latest.meeting) &&
+                  context.meeting.roomId == latest.meeting.roomId)) &&
+          (command != MeetingLifecycleCommand.cancel ||
+              _normalizeReason(cancellationReason) == null ||
+              _normalizeReason(latest.meeting.cancellationReason) ==
+                  _normalizeReason(cancellationReason));
       final message = observed
           ? 'Trạng thái hiện tại phù hợp với yêu cầu; không thể xác định thao tác nào đã tạo trạng thái này.'
           : 'Chưa xác nhận được kết quả thao tác. Trạng thái hiện tại đã được tải; không tự động gửi lại.';
@@ -584,12 +738,13 @@ class MeetingDetailController extends ChangeNotifier {
 
   Future<void> _revalidateAfterRejectedLifecycle({
     required int generation,
+    required MeetingAggregateMutationToken token,
     required Object failure,
   }) async {
     final revisionAtRead = invalidation.revision;
     try {
       final latest = await meetings.detail(meetingId);
-      if (!_owns(generation)) return;
+      if (!_ownsAggregate(generation, token)) return;
       if (revisionAtRead == invalidation.revision) {
         _pendingInvalidation = false;
         _seenInvalidationRevision = revisionAtRead;
@@ -601,7 +756,7 @@ class MeetingDetailController extends ChangeNotifier {
       );
       notifyListeners();
     } catch (error) {
-      if (!_owns(generation)) return;
+      if (!_ownsAggregate(generation, token)) return;
       final denied =
           error is ApiFailure && (error.status == 403 || error.status == 404);
       if (denied) {
@@ -694,6 +849,7 @@ class MeetingDetailController extends ChangeNotifier {
   void _clearProtectedState() {
     _generation++;
     _pendingInvalidation = false;
+    _activeMutationToken = null;
     _state = const MeetingDetailState(
       phase: MeetingDetailPhase.accessRevoked,
       snapshot: null,
@@ -707,6 +863,11 @@ class MeetingDetailController extends ChangeNotifier {
       needsRevalidation: false,
       message: 'Quyền truy cập cuộc họp đã thay đổi.',
     );
+    for (final listener in List<MeetingCanonicalSnapshotListener>.of(
+      _canonicalListeners,
+    )) {
+      listener(null);
+    }
     notifyListeners();
   }
 
@@ -717,6 +878,7 @@ class MeetingDetailController extends ChangeNotifier {
     _generation++;
     invalidation.removeListener(_onInvalidation);
     meetings.api.sessionCoordinator.removeListener(_onSessionChanged);
+    _canonicalListeners.clear();
     super.dispose();
   }
 }

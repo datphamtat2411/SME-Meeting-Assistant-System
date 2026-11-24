@@ -334,8 +334,12 @@ class ParticipantPickerController extends ChangeNotifier {
               _expectedTotalPages != page.totalPages);
       _expectedTotalElements ??= page.totalElements;
       _expectedTotalPages ??= page.totalPages;
-      final seen = _state.candidates.map((candidate) => candidate.id).toSet();
-      final duplicate = page.items.any((candidate) => !seen.add(candidate.id));
+      final seen = _state.candidates
+          .map((candidate) => candidate.id.toLowerCase())
+          .toSet();
+      final duplicate = page.items.any(
+        (candidate) => !seen.add(candidate.id.toLowerCase()),
+      );
       _window.accept(page, request: token);
       final candidates = <String, MeetingParticipantCandidate>{
         for (final candidate in _state.candidates)

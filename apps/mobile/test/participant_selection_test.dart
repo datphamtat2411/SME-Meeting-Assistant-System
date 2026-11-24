@@ -150,6 +150,37 @@ void main() {
       );
     });
 
+    test('treats case-varied identities repeated across pages as collection change', () async {
+      final candidateId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+      final client = MeetingTestHttpClient((request) async {
+        final page = int.parse(request.url.queryParameters['page']!);
+        return _candidatePage(
+          id: page == 0 ? candidateId : candidateId.toUpperCase(),
+          page: page,
+          totalElements: 21,
+          totalPages: 2,
+          hasNext: page == 0,
+        );
+      });
+      final api = createMeetingTestApi(client);
+      addTearDown(api.dispose);
+      await signInMeetingTestApi(api);
+      final controller = ParticipantPickerController(
+        repository: ParticipantCandidateRepository(api),
+        sessionScope: api.requireAuthenticatedSessionScope(),
+        organizerId: testUserId,
+        mode: ParticipantSelectionMode.single,
+      );
+      addTearDown(controller.dispose);
+
+      await controller.searchNow('Al');
+      await controller.loadMore();
+
+      expect(controller.state.candidates, hasLength(1));
+      expect(controller.state.collectionChanged, isTrue);
+      expect(controller.state.hasMore, isFalse);
+    });
+
     test(
       'an older candidate response cannot replace the current applied search',
       () async {

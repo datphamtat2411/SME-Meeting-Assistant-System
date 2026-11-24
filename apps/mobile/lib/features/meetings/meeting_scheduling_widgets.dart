@@ -320,6 +320,7 @@ class MeetingRoomSelector extends StatelessWidget {
     required this.participantCount,
     required this.onChanged,
     this.label = 'Phòng họp (tùy chọn)',
+    this.enabled = true,
   });
 
   final RoomSchedulingRepository repository;
@@ -329,25 +330,28 @@ class MeetingRoomSelector extends StatelessWidget {
   final int? participantCount;
   final ValueChanged<String?> onChanged;
   final String label;
+  final bool enabled;
 
   @override
   Widget build(BuildContext context) => OutlinedButton.icon(
-    onPressed: () async {
-      final roomId = await showDialog<String?>(
-        context: context,
-        builder: (_) => RoomPickerDialog(
-          repository: repository,
-          sessionScope: sessionScope,
-          interval: interval,
-          participantCount: participantCount,
-          selectedId: selectedId,
-        ),
-      );
-      if (roomId != null) onChanged(roomId.isEmpty ? null : roomId);
-    },
+    onPressed: !enabled
+        ? null
+        : () async {
+            final roomId = await showDialog<String?>(
+              context: context,
+              builder: (_) => RoomPickerDialog(
+                repository: repository,
+                sessionScope: sessionScope,
+                interval: interval,
+                participantCount: participantCount,
+                selectedId: selectedId,
+              ),
+            );
+            if (roomId != null) onChanged(roomId.isEmpty ? null : roomId);
+          },
     icon: const Icon(Icons.meeting_room_outlined),
     label: Text(
-      selectedId == null ? label : 'Phòng đã chọn · ${_shortId(selectedId!)}',
+      selectedId == null ? label : 'Phòng đã chọn',
       overflow: TextOverflow.ellipsis,
     ),
   );
@@ -523,6 +527,7 @@ class MeetingScheduleFields extends StatelessWidget {
     this.draft,
     this.onDraftChanged,
     this.allowUnscheduled = true,
+    this.enabled = true,
   });
 
   /// Compatibility input for callers that already hold a validated interval.
@@ -531,12 +536,14 @@ class MeetingScheduleFields extends StatelessWidget {
   final MeetingScheduleDraft? draft;
   final ValueChanged<MeetingScheduleDraft?>? onDraftChanged;
   final bool allowUnscheduled;
+  final bool enabled;
 
   Future<void> _choose(
     BuildContext context, {
     required bool chooseStart,
     required MeetingScheduleDraft currentDraft,
   }) async {
+    if (!enabled) return;
     final currentInterval = currentDraft.validatedInterval;
     final current = chooseStart
         ? currentDraft.start?.toLocal() ??
@@ -606,7 +613,7 @@ class MeetingScheduleFields extends StatelessWidget {
                 : 'Có thể để lịch chưa xác định.',
           ),
           value: enabled,
-          onChanged: (allowUnscheduled || enabled)
+          onChanged: this.enabled && (allowUnscheduled || enabled)
               ? (turnOn) {
                   if (!turnOn) {
                     onDraftChanged?.call(null);
@@ -625,17 +632,24 @@ class MeetingScheduleFields extends StatelessWidget {
         ),
         if (enabled) ...[
           OutlinedButton.icon(
-            onPressed: () =>
-                _choose(context, chooseStart: true, currentDraft: displayDraft),
+            onPressed: !this.enabled
+                ? null
+                : () => _choose(
+                    context,
+                    chooseStart: true,
+                    currentDraft: displayDraft,
+                  ),
             icon: const Icon(Icons.event),
             label: Text('Bắt đầu · ${dateLabel(displayDraft.start)}'),
           ),
           OutlinedButton.icon(
-            onPressed: () => _choose(
-              context,
-              chooseStart: false,
-              currentDraft: displayDraft,
-            ),
+            onPressed: !this.enabled
+                ? null
+                : () => _choose(
+                    context,
+                    chooseStart: false,
+                    currentDraft: displayDraft,
+                  ),
             icon: const Icon(Icons.schedule),
             label: Text('Kết thúc · ${dateLabel(displayDraft.end)}'),
           ),
@@ -814,12 +828,9 @@ String _warningMessage(
     case 'CAPACITY_ADVISORY_EXCEEDED':
       return 'Số người tham gia vượt sức chứa tham khảo của phòng.';
     default:
-      return 'Cảnh báo từ máy chủ: ${warning.code}';
+      return 'Có một cảnh báo khác cần được xem xét.';
   }
 }
-
-String _shortId(String value) =>
-    value.length <= 8 ? value : '${value.substring(0, 8)}…';
 
 String? _normalizeSearch(String value) {
   final trimmed = value.trim();

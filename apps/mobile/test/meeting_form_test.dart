@@ -7,6 +7,52 @@ import 'package:sme_meeting_assistant/features/meetings/meeting_form.dart';
 import 'support/meeting_test_support.dart';
 
 void main() {
+  testWidgets('asks before dismissing a form with unsaved text', (
+    tester,
+  ) async {
+    final client = MeetingTestHttpClient((request) async {
+      throw StateError('Unexpected request ${request.method} ${request.url}');
+    });
+    final api = createMeetingTestApi(client);
+    await signInMeetingTestApi(api);
+    final dependencies = AppDependencies(
+      api: api,
+      appearancePreferences: InMemoryAppearancePreferences(),
+      httpClient: client,
+    );
+    addTearDown(dependencies.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => Scaffold(
+            body: TextButton(
+              onPressed: () => Navigator.push<void>(
+                context,
+                MaterialPageRoute<void>(
+                  builder: (_) => Scaffold(
+                    appBar: AppBar(leading: const BackButton()),
+                    body: MeetingForm(dependencies: dependencies),
+                  ),
+                ),
+              ),
+              child: const Text('Open form'),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('Open form'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextFormField).first, 'Unsaved title');
+    await tester.pump();
+    await tester.tap(find.byType(BackButton));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Bỏ thay đổi chưa lưu?'), findsOneWidget);
+    expect(find.text('Tiếp tục ở lại'), findsOneWidget);
+  });
+
   testWidgets(
     'creation uses typed intent and preserves nullable schedule semantics',
     (tester) async {
