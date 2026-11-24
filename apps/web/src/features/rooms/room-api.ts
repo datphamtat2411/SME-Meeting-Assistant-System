@@ -1,67 +1,365 @@
 import { z } from 'zod'
-import { queryOptions } from '@tanstack/react-query'
-import { coreApi } from '@/lib/core-api'
-import { pageInfo, paginationParams } from '@/lib/list-pagination'
+import { queryOptions, skipToken } from '@tanstack/react-query'
+import {
+  CoreApiError,
+  coreApi,
+  normalizeCoreApiError,
+  type ApiResponseData,
+  type ApiResponseDataWithEtag,
+} from '@/lib/core-api'
+import {
+  paginationParams,
+  validatedPageInfo,
+  type PageInfo,
+} from '@/lib/list-pagination'
+import type { RoomDirectoryAccess } from './room-access-policy'
+import {
+  defaultRoomSort,
+  roomStatuses,
+  type RoomDirectoryCriteria,
+} from './room-directory-state'
 
 export const roomSchema = z.object({
   id: z.string().uuid(),
-  code: z.string(),
-  name: z.string(),
-  location: z.string().nullable(),
-  capacity: z.number().int().nullable(),
-  status: z.enum(['ACTIVE', 'INACTIVE']),
+  code: z.string().min(1).max(64),
+  name: z.string().min(1).max(160),
+  location: z.string().max(255).nullable(),
+  capacity: z.number().int().positive().max(2_147_483_647).nullable(),
+  status: z.enum(roomStatuses),
   notes: z.string().nullable(),
-  createdAt: z.string(),
-  updatedAt: z.string(),
+  createdAt: z.iso.datetime({ offset: true }),
+  updatedAt: z.iso.datetime({ offset: true }),
 })
+
 export type Room = z.infer<typeof roomSchema>
-export interface RoomInput {
+export interface RoomCreatePayload {
   code: string
   name: string
+  location: string | null
+  capacity: number | null
+  notes: string | null
+}
+export type RoomPatchPayload = {
+  name?: string
   location?: string | null
   capacity?: number | null
   notes?: string | null
 }
+export interface RoomSnapshot {
+  room: Room
+  etag: string
+}
+interface RoomDirectoryResponse {
+  items: Room[]
+  pagination: PageInfo
+  outOfRange: boolean
+}
 
-export function roomsQuery(page: number, q: string) {
+const roomPatchSchema = z
+  .object({
+    name: z.string().trim().min(1).max(160).optional(),
+    location: z.string().trim().max(255).nullable().optional(),
+    capacity: z
+      .number()
+      .int()
+      .positive()
+      .max(2_147_483_647)
+      .nullable()
+      .optional(),
+    notes: z.string().nullable().optional(),
+  })
+  .strict()
+
+const roomDirectoryKey = ['rooms', 'directory'] as const
+
+function malformedRoomResponse(error: unknown): CoreApiError {
+  return new CoreApiError({
+    message: 'Core API returned a malformed room response.',
+    code: 'MALFORMED_RESPONSE',
+    kind: 'malformed',
+    cause: error,
+  })
+}
+
+function invalidRoomInput(error: unknown): CoreApiError {
+  return new CoreApiError({
+    message: 'Room changes are invalid.',
+    code: 'INVALID_INPUT',
+    kind: 'malformed',
+    cause: error,
+  })
+}
+
+function parseRoom(value: unknown): Room {
+  const parsed = roomSchema.safeParse(value)
+  if (!parsed.success) throw malformedRoomResponse(parsed.error)
+  return parsed.data
+}
+
+export function parseRoomListResponse(
+  response: ApiResponseData<unknown>,
+  requestedPage: number,
+  requestedSize: number
+): RoomDirectoryResponse {
+  try {
+    const items = z.array(roomSchema).parse(response.data)
+    const pagination = validatedPageInfo(response.meta.pagination, {
+      requestedPage,
+      requestedSize,
+      itemCount: items.length,
+    })
+    return {
+      items,
+      pagination,
+      outOfRange:
+        requestedPage > 0 &&
+        requestedPage >= pagination.totalPages &&
+        items.length === 0,
+    }
+  } catch (error) {
+    throw malformedRoomResponse(error)
+  }
+}
+
+export function parseRoomDetailResponse(
+  response: ApiResponseDataWithEtag<unknown>,
+  expectedId?: string
+): RoomSnapshot {
+  const room = parseRoom(response.data)
+  if (
+    (expectedId && room.id !== expectedId) ||
+    typeof response.etag !== 'string' ||
+    !response.etag.trim()
+  ) {
+    throw malformedRoomResponse(
+      new Error('Room detail must include the requested identity and ETag.')
+    )
+  }
+  return { room, etag: response.etag }
+}
+
+export function serializeRoomDirectoryParams(
+  criteria: RoomDirectoryCriteria
+): Record<string, string | number> {
+  const params: Record<string, string | number> = {
+    ...paginationParams(criteria.page, criteria.size),
+    sort: criteria.sort || defaultRoomSort,
+  }
+  const q = criteria.q?.trim()
+  if (q) params.q = q
+  if (criteria.status) params.status = criteria.status
+  return params
+}
+
+export async function fetchRoomDirectory(
+  criteria: RoomDirectoryCriteria,
+  signal?: AbortSignal
+): Promise<RoomDirectoryResponse> {
+  const response = await coreApi.getWithMeta<unknown>('/rooms', {
+    params: serializeRoomDirectoryParams(criteria),
+    signal,
+  })
+  return parseRoomListResponse(response, criteria.page, criteria.size)
+}
+
+export function roomsQuery(
+  criteria: RoomDirectoryCriteria,
+  access: RoomDirectoryAccess | { type: 'unresolved' }
+) {
+  const scopeKey =
+    access.type === 'authorized' ? access.queryScopeKey : 'unresolved'
+  const requestCriteria: RoomDirectoryCriteria =
+    access.type === 'authorized' && access.role !== 'ADMINISTRATOR'
+      ? { ...criteria, status: 'ACTIVE' }
+      : criteria
   return queryOptions({
-    queryKey: ['rooms', 'directory', page, q],
-    queryFn: async ({ signal }) => {
-      const response = await coreApi.getWithMeta<unknown>('/rooms', {
-        params: { ...paginationParams(page), q, sort: 'code,asc' },
-        signal,
-      })
-      return {
-        items: z.array(roomSchema).parse(response.data),
-        page: pageInfo(response.meta.pagination),
-      }
-    },
+    queryKey: [
+      ...roomDirectoryKey,
+      scopeKey,
+      criteria,
+      requestCriteria,
+    ] as const,
+    queryFn:
+      access.type === 'authorized'
+        ? ({ signal }) => fetchRoomDirectory(requestCriteria, signal)
+        : skipToken,
+    enabled: access.type === 'authorized',
+    placeholderData: (previousData, previousQuery) =>
+      access.type === 'authorized' &&
+      previousQuery?.queryKey[2] === access.queryScopeKey
+        ? previousData
+        : undefined,
     retry: false,
   })
 }
 
-export async function roomDetail(id: string) {
-  const result = await coreApi.getWithMetaAndEtag<unknown>(
-    '/rooms/' + encodeURIComponent(id)
-  )
-  return { room: roomSchema.parse(result.data), etag: result.etag }
-}
-export function createRoom(input: RoomInput) {
-  return coreApi.post<Room>('/rooms', input)
-}
-export function updateRoom(
+export async function roomDetail(
   id: string,
-  input: Partial<RoomInput>,
-  etag?: string
-) {
-  return coreApi.patch<Room>('/rooms/' + encodeURIComponent(id), input, {
-    headers: etag ? { 'If-Match': etag } : {},
-  })
-}
-export function deactivateRoom(id: string, etag?: string) {
-  return coreApi.post<Room>(
-    '/rooms/' + encodeURIComponent(id) + '/deactivate',
-    undefined,
-    { headers: etag ? { 'If-Match': etag } : {} }
+  signal?: AbortSignal
+): Promise<RoomSnapshot> {
+  const response = await coreApi.getWithMetaAndEtag<unknown>(
+    `/rooms/${encodeURIComponent(id)}`,
+    { signal }
   )
+  return parseRoomDetailResponse(response, id)
+}
+
+function requireMutationSnapshot(id: string, etag: string) {
+  if (!id.trim() || typeof etag !== 'string' || !etag.trim()) {
+    throw new CoreApiError({
+      message: 'A room ID and reviewed ETag are required for this operation.',
+      code: 'INVALID_PRECONDITION',
+      kind: 'malformed',
+    })
+  }
+}
+
+function parseRoomMutationResponse(
+  response: ApiResponseDataWithEtag<unknown>,
+  expectedId: string,
+  expectedStatus: Room['status']
+): RoomSnapshot {
+  const snapshot = parseRoomDetailResponse(response, expectedId)
+  if (snapshot.room.status !== expectedStatus) {
+    throw malformedRoomResponse(
+      new Error(`Expected room lifecycle state ${expectedStatus}.`)
+    )
+  }
+  return snapshot
+}
+
+export async function createRoom(
+  payload: RoomCreatePayload
+): Promise<RoomSnapshot> {
+  const validated = z
+    .object({
+      code: z.string().trim().min(1).max(64),
+      name: z.string().trim().min(1).max(160),
+      location: z.string().trim().max(255).nullable(),
+      capacity: z.number().int().positive().max(2_147_483_647).nullable(),
+      notes: z.string().nullable(),
+    })
+    .safeParse(payload)
+  if (!validated.success) throw invalidRoomInput(validated.error)
+
+  const response = await coreApi.postWithMetaAndEtag<unknown>(
+    '/rooms',
+    validated.data
+  )
+  const room = parseRoom(response.data)
+  if (room.status !== 'ACTIVE' || !response.etag?.trim()) {
+    throw malformedRoomResponse(
+      new Error('Room creation must return an active room and ETag.')
+    )
+  }
+  return { room, etag: response.etag }
+}
+
+export async function updateRoom(
+  id: string,
+  payload: RoomPatchPayload,
+  etag: string
+): Promise<RoomSnapshot> {
+  requireMutationSnapshot(id, etag)
+  const validated = roomPatchSchema.safeParse(payload)
+  if (!validated.success || Object.keys(validated.data ?? {}).length === 0) {
+    throw invalidRoomInput(
+      validated.success
+        ? new Error('At least one changed field is required.')
+        : validated.error
+    )
+  }
+
+  const response = await coreApi.patchWithMetaAndEtag<unknown>(
+    `/rooms/${encodeURIComponent(id)}`,
+    validated.data,
+    { headers: { 'If-Match': etag } }
+  )
+  return parseRoomMutationResponse(response, id, 'ACTIVE')
+}
+
+export async function deactivateRoom(
+  id: string,
+  etag: string
+): Promise<RoomSnapshot> {
+  requireMutationSnapshot(id, etag)
+  const response = await coreApi.postWithMetaAndEtag<unknown>(
+    `/rooms/${encodeURIComponent(id)}/deactivate`,
+    undefined,
+    { headers: { 'If-Match': etag } }
+  )
+  return parseRoomMutationResponse(response, id, 'INACTIVE')
+}
+
+type RoomMutationOutcome =
+  | 'rejected'
+  | 'precondition'
+  | 'uncertain'
+  | 'unknown'
+
+export function classifyRoomMutationOutcome(
+  error: unknown
+): RoomMutationOutcome {
+  const normalized = normalizeCoreApiError(error)
+  if (normalized.status === 412 || normalized.status === 428) {
+    return 'precondition'
+  }
+  if (normalized.isNetworkError || normalized.kind === 'malformed') {
+    return 'uncertain'
+  }
+  if ((normalized.status ?? 0) >= 500 || normalized.isServerError) {
+    return 'uncertain'
+  }
+  if (
+    normalized.status === 400 ||
+    normalized.status === 401 ||
+    normalized.status === 403 ||
+    normalized.status === 404 ||
+    normalized.status === 409 ||
+    normalized.status === 422 ||
+    normalized.status === 429
+  ) {
+    return 'rejected'
+  }
+  return 'unknown'
+}
+
+export function roomOperationErrorMessage(
+  error: unknown,
+  operation: 'create' | 'edit' | 'deactivate'
+): string {
+  const normalized = normalizeCoreApiError(error)
+  if (normalized.status === 401) {
+    return 'Your session could not be verified. Follow the existing sign-in recovery and try again.'
+  }
+  if (normalized.status === 403) {
+    return 'You do not have permission to perform this room operation.'
+  }
+  if (normalized.status === 404) {
+    return 'This room no longer exists. The directory has been refreshed.'
+  }
+  if (normalized.status === 412) {
+    return 'This room changed on the server. Your unsaved changes are preserved; reload and review the latest room before starting another operation.'
+  }
+  if (normalized.status === 428) {
+    return 'The server rejected the missing or unusable concurrency precondition. No unconditional change was sent; reload and review the latest room.'
+  }
+  if (normalized.status === 409) {
+    return operation === 'deactivate'
+      ? 'The room could not be deactivated because its current state or reservations conflict with the request.'
+      : 'The room conflicts with current server data. Review the room directory and correct any duplicate identity.'
+  }
+  if (normalized.status === 400 || normalized.status === 422) {
+    return 'The Core API rejected these room values. Review the highlighted fields.'
+  }
+  if (normalized.status === 429) {
+    return 'Too many requests were sent. Wait briefly before trying again.'
+  }
+  if (normalized.isNetworkError || normalized.kind === 'malformed') {
+    return 'The operation outcome could not be confirmed. Authoritative room data is being refreshed; review it before deciding whether to try again.'
+  }
+  if (normalized.isServerError || (normalized.status ?? 0) >= 500) {
+    return 'The server did not confirm the operation. Authoritative room data is being refreshed; review it before deciding whether to try again.'
+  }
+  return 'The server response did not confirm the operation. Authoritative room data is being refreshed; review it before deciding whether to try again.'
 }
