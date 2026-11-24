@@ -26,20 +26,26 @@ export function RoomDeactivationDialog({
   session,
   saving,
   authorizationVerified,
+  authorizationMessage,
+  onRetryAuthorization,
   feedback,
   onClose,
   onRetrySnapshot,
   onLoadLatest,
+  onReviewLatest,
   onRestartFromLatest,
   onConfirm,
 }: {
   session: RoomDeactivationSession | null
   saving: boolean
   authorizationVerified: boolean
+  authorizationMessage: string
+  onRetryAuthorization: () => void
   feedback: RoomOperationFeedback | null
   onClose: () => void
   onRetrySnapshot: (roomId: string, operationId: number) => void
   onLoadLatest: (roomId: string) => Promise<RoomSnapshot>
+  onReviewLatest: (snapshot: RoomSnapshot, operationId: number) => void
   onRestartFromLatest: (snapshot: RoomSnapshot, operationId: number) => void
   onConfirm: (snapshot: RoomSnapshot, operationId: number) => void
 }) {
@@ -53,7 +59,9 @@ export function RoomDeactivationDialog({
     setLatestLoading(true)
     setLatestError(null)
     try {
-      setLatestSnapshot(await onLoadLatest(roomId))
+      const latest = await onLoadLatest(roomId)
+      setLatestSnapshot(latest)
+      if (session) onReviewLatest(latest, session.operationId)
     } catch (error) {
       setLatestError(
         error instanceof Error
@@ -82,6 +90,22 @@ export function RoomDeactivationDialog({
       }}
     >
       <AlertDialogContent className='max-h-[90vh] overflow-y-auto'>
+        {!authorizationVerified && session && (
+          <div
+            role='alert'
+            className='flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-sm'
+          >
+            <span>{authorizationMessage}</span>
+            <Button
+              type='button'
+              variant='outline'
+              size='sm'
+              onClick={onRetryAuthorization}
+            >
+              Retry verification
+            </Button>
+          </div>
+        )}
         {session?.phase === 'loading' ? (
           <>
             <AlertDialogHeader>

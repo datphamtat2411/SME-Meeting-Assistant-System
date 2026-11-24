@@ -61,7 +61,9 @@ interface MemberAdministrationDialogProps {
   units: UseQueryResult<OrganizationalUnit[], Error>
   authorizationKey: string
   authorizationVerified: boolean
+  authorizationMessage: string
   isAuthorizationContextCurrent: (key: string) => boolean
+  onRetryAuthorization: () => void
   onOpenChange: (open: boolean) => void
 }
 
@@ -80,7 +82,9 @@ export function MemberAdministrationDialog({
   units,
   authorizationKey,
   authorizationVerified,
+  authorizationMessage,
   isAuthorizationContextCurrent,
+  onRetryAuthorization,
   onOpenChange,
 }: MemberAdministrationDialogProps) {
   const queryClient = useQueryClient()
@@ -198,6 +202,22 @@ export function MemberAdministrationDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className='max-h-[90vh] overflow-y-auto sm:max-w-xl'>
+        {!authorizationVerified && (
+          <div
+            role='alert'
+            className='flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-sm'
+          >
+            <span>{authorizationMessage}</span>
+            <Button
+              type='button'
+              variant='outline'
+              size='sm'
+              onClick={onRetryAuthorization}
+            >
+              Retry verification
+            </Button>
+          </div>
+        )}
         <DialogHeader>
           <DialogTitle>{member ? 'Edit member' : 'Create account'}</DialogTitle>
           <DialogDescription>

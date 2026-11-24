@@ -397,7 +397,9 @@ describe('Rooms Management', () => {
     await userEvent.click(
       screen.getByRole('button', { name: 'Reload latest for review' })
     )
-    await expect.element(screen.getByText('Changed elsewhere')).toBeVisible()
+    await expect
+      .element(screen.getByRole('group').getByText('Changed elsewhere'))
+      .toBeVisible()
     await expect.element(nameInput).toHaveValue('My unsaved change')
     await userEvent.click(
       screen.getByRole('button', {
@@ -407,6 +409,68 @@ describe('Rooms Management', () => {
     await expect.element(nameInput).toHaveValue('Changed elsewhere')
     expect(detailSpy).toHaveBeenCalledTimes(2)
     expect(patchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps an intended edit while adopting independent server metadata before a sparse retry', async () => {
+    mockRoomReads()
+    const detailSpy = vi
+      .spyOn(coreApi, 'getWithMetaAndEtag')
+      .mockResolvedValueOnce({ data: room, meta: {}, etag: 'original-etag' })
+      .mockResolvedValueOnce({
+        data: { ...room, capacity: 20 },
+        meta: {},
+        etag: 'latest-etag',
+      })
+    const patchSpy = vi
+      .spyOn(coreApi, 'patchWithMetaAndEtag')
+      .mockRejectedValueOnce(
+        new CoreApiError({
+          status: 412,
+          message: 'Stale room',
+          kind: 'http',
+        })
+      )
+      .mockResolvedValueOnce({
+        data: { ...room, name: 'Conference Room', capacity: 20 },
+        meta: {},
+        etag: 'updated-etag',
+      })
+    const { screen } = await renderRooms()
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Edit Boardroom' })
+    )
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Name' }),
+      'Conference Room'
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Save room' }))
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Reload latest for review' })
+    )
+    await expect
+      .element(screen.getByText(/independent server changes/i))
+      .toBeVisible()
+    await userEvent.click(
+      screen.getByRole('button', {
+        name: 'Keep intended changes and continue',
+      })
+    )
+    await expect
+      .element(screen.getByRole('textbox', { name: 'Name' }))
+      .toHaveValue('Conference Room')
+    await expect
+      .element(screen.getByRole('textbox', { name: 'Capacity' }))
+      .toHaveValue('20')
+    await userEvent.click(screen.getByRole('button', { name: 'Save room' }))
+
+    await vi.waitFor(() => expect(patchSpy).toHaveBeenCalledTimes(2))
+    expect(detailSpy).toHaveBeenCalledTimes(2)
+    expect(patchSpy).toHaveBeenLastCalledWith(
+      `/rooms/${roomId}`,
+      { name: 'Conference Room' },
+      { headers: { 'If-Match': 'latest-etag' } }
+    )
   })
 
   it('uses an accessible deactivation confirmation and the pre-confirmation ETag', async () => {
@@ -792,6 +856,61 @@ describe('Rooms Management', () => {
     ).toBe(true)
   })
 
+  it('retries a failed creation verification read without sending another creation request', async () => {
+    let verificationAttempts = 0
+    const listSpy = vi
+      .spyOn(coreApi, 'getWithMeta')
+      .mockImplementation(async (url, config) => {
+        if (url !== '/rooms') throw new Error(`Unexpected list ${url}`)
+        if (config?.params?.q === 'NEW-BOARD') {
+          verificationAttempts += 1
+          if (verificationAttempts === 1) {
+            throw new CoreApiError({
+              code: 'NETWORK_ERROR',
+              message: 'Catalog unavailable',
+              kind: 'network',
+            })
+          }
+          return roomListResponse([room], 0, 100, 1) as never
+        }
+        return roomListResponse() as never
+      })
+    const createSpy = vi
+      .spyOn(coreApi, 'postWithMetaAndEtag')
+      .mockRejectedValue(
+        new CoreApiError({
+          status: 503,
+          message: 'Service unavailable',
+          kind: 'server',
+        })
+      )
+    const { screen } = await renderRooms()
+    await userEvent.click(screen.getByRole('button', { name: 'Add room' }))
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Room code' }),
+      'new-board'
+    )
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Name' }),
+      'New Boardroom'
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Create room' }))
+
+    await expect
+      .element(screen.getByRole('button', { name: 'Retry verification' }))
+      .toBeVisible()
+    expect(createSpy).toHaveBeenCalledTimes(1)
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Retry verification' })
+    )
+    await expect
+      .element(screen.getByText(/no exact room code was found/i))
+      .toBeVisible()
+    expect(verificationAttempts).toBe(2)
+    expect(listSpy).toHaveBeenCalled()
+    expect(createSpy).toHaveBeenCalledTimes(1)
+  })
+
   it('preserves an uncertain edit draft and requires review before using a fresh ETag', async () => {
     mockRoomReads()
     const detailSpy = vi
@@ -825,15 +944,18 @@ describe('Rooms Management', () => {
     await userEvent.fill(nameInput, 'My reviewed draft')
     await userEvent.click(screen.getByRole('button', { name: 'Save room' }))
 
-    await expect
-      .element(screen.getByText(/latest room state matches neither/i))
-      .toBeVisible()
+    await expect.element(screen.getByText(/field conflicts/i)).toBeVisible()
     await expect.element(nameInput).toHaveValue('My reviewed draft')
     expect(detailSpy).toHaveBeenCalledTimes(2)
     expect(patchSpy).toHaveBeenCalledTimes(1)
 
     await userEvent.click(
-      screen.getByRole('button', { name: 'Review latest and keep my draft' })
+      screen.getByRole('radio', {
+        name: /your intended value my reviewed draft/i,
+      })
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Resolve conflicts and continue' })
     )
     await expect.element(nameInput).toHaveValue('My reviewed draft')
     expect(patchSpy).toHaveBeenCalledTimes(1)
@@ -881,6 +1003,51 @@ describe('Rooms Management', () => {
       .toBeVisible()
     expect(detailSpy).toHaveBeenCalledTimes(2)
     expect(deactivateSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('preserves an edit draft through transient identity verification failure and resumes after retry', async () => {
+    mockRoomReads()
+    const { queryClient, screen, identityRead } = await renderRooms()
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Edit Boardroom' })
+    )
+    const nameInput = screen.getByRole('textbox', { name: 'Name' })
+    await userEvent.fill(nameInput, 'Draft during verification failure')
+
+    await vi.waitFor(() =>
+      expect(queryClient.getQueryState(currentUserQueryKey)?.fetchStatus).toBe(
+        'idle'
+      )
+    )
+    identityRead.mockRejectedValueOnce(
+      new CoreApiError({
+        code: 'NETWORK_ERROR',
+        message: 'Identity lookup unavailable',
+        kind: 'network',
+      })
+    )
+    await queryClient.invalidateQueries({ queryKey: currentUserQueryKey })
+
+    await expect
+      .element(screen.getByRole('dialog').getByText(/could not be verified/i))
+      .toBeVisible()
+    await expect
+      .element(nameInput)
+      .toHaveValue('Draft during verification failure')
+    await expect
+      .element(screen.getByRole('button', { name: 'Save room' }))
+      .toBeDisabled()
+
+    identityRead.mockResolvedValue(identity('ADMINISTRATOR'))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Retry verification' })
+    )
+    await expect
+      .element(screen.getByRole('button', { name: 'Save room' }))
+      .toBeEnabled()
+    await expect
+      .element(nameInput)
+      .toHaveValue('Draft during verification failure')
   })
 
   it('keeps the table responsive and operable with keyboard at a narrow dark-mode viewport', async () => {

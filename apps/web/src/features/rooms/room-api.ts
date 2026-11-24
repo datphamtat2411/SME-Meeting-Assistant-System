@@ -52,7 +52,7 @@ export interface RoomSnapshot {
   room: Room
   etag: string
 }
-interface RoomDirectoryResponse {
+export interface RoomDirectoryResponse {
   items: Room[]
   pagination: PageInfo
   outOfRange: boolean

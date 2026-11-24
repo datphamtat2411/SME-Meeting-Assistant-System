@@ -51,7 +51,7 @@ interface MemberUpdate {
   managerScopeUnitIds?: string[]
 }
 
-interface MemberDirectoryResponse {
+export interface MemberDirectoryResponse {
   items: Member[]
   pagination: PageInfo
   outOfRange: boolean

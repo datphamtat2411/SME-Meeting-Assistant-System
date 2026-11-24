@@ -51,8 +51,10 @@ function normalizedCapacity(value: string): number | null {
   return normalized ? Number(normalized) : null
 }
 
-function normalizedOptionalText(value: string): string | null {
-  const normalized = value.trim()
+function normalizedOptionalText(
+  value: string | null | undefined
+): string | null {
+  const normalized = value?.trim() ?? ''
   return normalized || null
 }
 
@@ -93,16 +95,18 @@ export function buildRoomPatchPayload(
     capacity?: number | null
     notes?: string | null
   } = {}
-  if (normalized.name !== current.name) payload.name = normalized.name
+  if (normalized.name !== current.name.trim()) payload.name = normalized.name
 
   const location = normalizedOptionalText(normalized.location)
-  if (location !== current.location) payload.location = location
+  if (location !== normalizedOptionalText(current.location)) {
+    payload.location = location
+  }
 
   const capacity = normalizedCapacity(normalized.capacity)
   if (capacity !== current.capacity) payload.capacity = capacity
 
   const notes = normalizedOptionalText(normalized.notes)
-  if (notes !== current.notes) payload.notes = notes
+  if (notes !== normalizedOptionalText(current.notes)) payload.notes = notes
 
   if (Object.keys(payload).length === 0) throw new NoRoomChangesError()
   return payload
