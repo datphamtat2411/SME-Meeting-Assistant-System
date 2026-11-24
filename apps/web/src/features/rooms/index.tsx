@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { MapPin, Pencil, Plus, Search, ShieldAlert, Users } from 'lucide-react'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import { useDirectorySearchDraft } from '@/hooks/use-directory-search-draft'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -47,6 +48,8 @@ import {
   deactivateRoom,
   roomDetail,
   roomOperationErrorMessage,
+  reconcileRoomCreation,
+  roomPatchMatchesRoom,
   roomsQuery,
   updateRoom,
   type Room,
@@ -79,6 +82,10 @@ type SearchChange = (
 
 const searchDebounceMs = 350
 const pageSizeChoices = [10, 20, 50, 100]
+
+function normalizeSearchDraft(value: string) {
+  return normalizeRoomSearch({ q: value }).q
+}
 
 const roomSortLabels: Record<(typeof roomSortFields)[number], string> = {
   code: 'Room code',
@@ -154,24 +161,37 @@ export function RoomsPage({
 }) {
   const queryClient = useQueryClient()
   const identity = useQuery(currentUserQueryOptions())
-  const identityResolved = identity.isSuccess
+  const identityErrorStatus = identity.isRefetchError
+    ? normalizeCoreApiError(identity.error).status
+    : undefined
+  const identityDenied =
+    identityErrorStatus === 401 || identityErrorStatus === 403
+  const identityResolved = identity.isSuccess && !identityDenied
+  const identityVerified =
+    identityResolved && !identity.isFetching && !identity.isRefetchError
   const access = getRoomDirectoryAccess(
     identityResolved ? identity.data : undefined
   )
+  const accessKey =
+    access.type === 'authorized' ? access.queryScopeKey : access.type
+  const currentAuthorization = useRef({ accessKey, identityVerified })
+  useLayoutEffect(() => {
+    currentAuthorization.current = { accessKey, identityVerified }
+  }, [accessKey, identityVerified])
   const constrainedSearch =
     access.type === 'authorized'
       ? constrainRoomSearch(search, identity.data)
       : normalizeRoomSearch(search)
   const criteria = resolveRoomDirectoryCriteria(constrainedSearch)
+  const { draft: searchDraft, updateDraft: updateSearchDraft } =
+    useDirectorySearchDraft({
+      criteriaKey: JSON.stringify([accessKey, normalizeRoomSearch(search)]),
+      committedQuery: criteria.q,
+      normalize: normalizeSearchDraft,
+      onCommit: (q) => onSearchChange({ q }, { replace: true }),
+      delayMs: searchDebounceMs,
+    })
   const directory = useQuery(roomsQuery(criteria, access))
-  const [searchDraftState, setSearchDraftState] = useState(() => ({
-    criteria: criteria.q ?? '',
-    value: criteria.q ?? '',
-  }))
-  const searchDraft =
-    searchDraftState.criteria === (criteria.q ?? '')
-      ? searchDraftState.value
-      : (criteria.q ?? '')
   const [editorSession, setEditorSession] = useState<RoomEditorSession | null>(
     null
   )
@@ -183,8 +203,27 @@ export function RoomsPage({
     useState<RoomOperationFeedback | null>(null)
   const operationSequence = useRef(0)
   const activeOperation = useRef(0)
+  const mutationInFlight = useRef(false)
+  const recoveryController = useRef<AbortController | null>(null)
+  const previousAccessKey = useRef(accessKey)
+
+  function isCurrentOperation(operationId: number, contextKey: string) {
+    return (
+      activeOperation.current === operationId &&
+      currentAuthorization.current.accessKey === contextKey
+    )
+  }
+
   const mutation = useMutation({
     mutationFn: async (input: RoomEditorSubmit) => {
+      if (
+        currentAuthorization.current.accessKey !== input.contextKey ||
+        !currentAuthorization.current.identityVerified
+      ) {
+        throw new Error(
+          'Room-management authorization changed before the operation started.'
+        )
+      }
       if (input.mode === 'create') {
         return {
           mutation: 'created' as const,
@@ -201,9 +240,8 @@ export function RoomsPage({
       }
     },
     onSuccess: async (result, input) => {
-      if (activeOperation.current !== input.operationId) return
       await synchronizeRoomCaches(queryClient, result.mutation)
-      if (activeOperation.current !== input.operationId) return
+      if (!isCurrentOperation(input.operationId, input.contextKey)) return
       toast.success(
         result.mutation === 'created' ? 'Room created' : 'Room updated'
       )
@@ -212,59 +250,178 @@ export function RoomsPage({
       setEditorFeedback(null)
     },
     onError: async (error, input) => {
-      if (activeOperation.current !== input.operationId) return
       const outcome = classifyRoomMutationOutcome(error)
       const normalizedError = normalizeCoreApiError(error)
-      setEditorFeedback({
+      const baseFeedback: RoomOperationFeedback = {
         outcome,
         message: roomOperationErrorMessage(
           error,
           input.mode === 'create' ? 'create' : 'edit'
         ),
         fieldErrors: normalizedError.fieldErrors,
-      })
+      }
       if (outcome === 'uncertain' || outcome === 'unknown') {
         await synchronizeRoomCaches(
           queryClient,
           input.mode === 'create' ? 'created' : 'updated'
         )
+        if (!isCurrentOperation(input.operationId, input.contextKey)) return
+        const controller = new AbortController()
+        recoveryController.current?.abort()
+        recoveryController.current = controller
+        if (input.mode === 'create') {
+          try {
+            const creationReconciliation = await reconcileRoomCreation(
+              input.payload,
+              controller.signal
+            )
+            if (!isCurrentOperation(input.operationId, input.contextKey)) return
+            const message =
+              creationReconciliation.status === 'found'
+                ? creationReconciliation.metadataMatches
+                  ? 'The exact room code already exists and its metadata matches the submitted request. The request may have succeeded; no second request was sent.'
+                  : 'The exact room code already exists with different metadata. Review the existing record before deciding what to do.'
+                : 'No exact room code was found in the authoritative catalog. Review the preserved draft before explicitly deciding whether to retry.'
+            setEditorFeedback({
+              ...baseFeedback,
+              message,
+              creationReconciliation,
+            })
+          } catch (reconciliationError) {
+            if (!isCurrentOperation(input.operationId, input.contextKey)) return
+            setEditorFeedback({
+              ...baseFeedback,
+              reconciliationError:
+                normalizeCoreApiError(reconciliationError).message,
+            })
+          }
+          return
+        }
+        try {
+          const latest = await roomDetail(
+            input.snapshot.room.id,
+            controller.signal
+          )
+          if (!isCurrentOperation(input.operationId, input.contextKey)) return
+          const latestMatchesRequest = roomPatchMatchesRoom(
+            latest.room,
+            input.payload
+          )
+          setEditorFeedback({
+            ...baseFeedback,
+            message: latestMatchesRequest
+              ? 'The latest room state matches the submitted changes. The request may have succeeded; review the room before any retry.'
+              : 'The latest room state matches neither the submitted edit nor the prior room snapshot. Review it before deciding what to do.',
+            latestSnapshot: latest,
+            latestMatchesRequest,
+          })
+        } catch (reconciliationError) {
+          if (!isCurrentOperation(input.operationId, input.contextKey)) return
+          setEditorFeedback({
+            ...baseFeedback,
+            reconciliationError:
+              normalizeCoreApiError(reconciliationError).message,
+          })
+        }
+        return
       } else if (normalizedError.status === 404) {
         await queryClient.invalidateQueries({ queryKey: ['rooms'] })
       }
+      if (isCurrentOperation(input.operationId, input.contextKey)) {
+        setEditorFeedback(baseFeedback)
+      }
+    },
+    onSettled: () => {
+      mutationInFlight.current = false
     },
   })
   const deactivationMutation = useMutation({
     mutationFn: async ({
       snapshot,
+      contextKey,
     }: {
       snapshot: RoomSnapshot
       operationId: number
-    }) => deactivateRoom(snapshot.room.id, snapshot.etag),
+      contextKey: string
+    }) => {
+      if (
+        currentAuthorization.current.accessKey !== contextKey ||
+        !currentAuthorization.current.identityVerified
+      ) {
+        throw new Error(
+          'Room-management authorization changed before the operation started.'
+        )
+      }
+      return deactivateRoom(snapshot.room.id, snapshot.etag)
+    },
     onSuccess: async (_result, input) => {
-      if (activeOperation.current !== input.operationId) return
       await synchronizeRoomCaches(queryClient, 'deactivated')
-      if (activeOperation.current !== input.operationId) return
+      if (!isCurrentOperation(input.operationId, input.contextKey)) return
       toast.success('Room deactivated')
       activeOperation.current = 0
       setDeactivationSession(null)
       setDeactivationFeedback(null)
     },
     onError: async (error, input) => {
-      if (activeOperation.current !== input.operationId) return
       const outcome = classifyRoomMutationOutcome(error)
       const normalizedError = normalizeCoreApiError(error)
-      setDeactivationFeedback({
+      const baseFeedback: RoomOperationFeedback = {
         outcome,
         message: roomOperationErrorMessage(error, 'deactivate'),
         fieldErrors: normalizedError.fieldErrors,
-      })
+      }
       if (outcome === 'uncertain' || outcome === 'unknown') {
         await synchronizeRoomCaches(queryClient, 'deactivated')
+        if (!isCurrentOperation(input.operationId, input.contextKey)) return
+        const controller = new AbortController()
+        recoveryController.current?.abort()
+        recoveryController.current = controller
+        try {
+          const latest = await roomDetail(
+            input.snapshot.room.id,
+            controller.signal
+          )
+          if (!isCurrentOperation(input.operationId, input.contextKey)) return
+          setDeactivationFeedback({
+            ...baseFeedback,
+            message:
+              latest.room.status === 'INACTIVE'
+                ? 'The server has verified the room as inactive. We cannot determine whether this request caused the change; the verified state is shown below.'
+                : 'The latest server state remains active. We cannot determine whether this request was applied; review the current state before deciding what to do.',
+            latestSnapshot: latest,
+          })
+        } catch (reconciliationError) {
+          if (!isCurrentOperation(input.operationId, input.contextKey)) return
+          setDeactivationFeedback({
+            ...baseFeedback,
+            reconciliationError:
+              normalizeCoreApiError(reconciliationError).message,
+          })
+        }
+        return
       } else if (normalizedError.status === 404) {
         await queryClient.invalidateQueries({ queryKey: ['rooms'] })
       }
+      if (isCurrentOperation(input.operationId, input.contextKey)) {
+        setDeactivationFeedback(baseFeedback)
+      }
+    },
+    onSettled: () => {
+      mutationInFlight.current = false
     },
   })
+
+  useEffect(() => {
+    if (previousAccessKey.current === accessKey) return
+    previousAccessKey.current = accessKey
+    activeOperation.current = 0
+    recoveryController.current?.abort()
+    recoveryController.current = null
+    setEditorSession(null)
+    setDeactivationSession(null)
+    setEditorFeedback(null)
+    setDeactivationFeedback(null)
+  }, [accessKey])
 
   useEffect(() => {
     if (!identityResolved || access.type !== 'authorized') return
@@ -294,52 +451,62 @@ export function RoomsPage({
     onSearchChange({ page }, { replace: true })
   }, [directory.data, directory.isPlaceholderData, onSearchChange])
 
-  useEffect(() => {
-    const nextQuery = normalizeRoomSearch({ q: searchDraft }).q
-    if (nextQuery === criteria.q) return
-    const timer = window.setTimeout(() => {
-      onSearchChange({ q: nextQuery }, { replace: true })
-    }, searchDebounceMs)
-    return () => window.clearTimeout(timer)
-  }, [criteria.q, onSearchChange, searchDraft])
-
   function nextOperationId() {
+    recoveryController.current?.abort()
+    recoveryController.current = null
     operationSequence.current += 1
     activeOperation.current = operationSequence.current
+    setEditorSession(null)
+    setDeactivationSession(null)
     setEditorFeedback(null)
     setDeactivationFeedback(null)
     return operationSequence.current
   }
 
   function openCreate() {
+    if (!identityVerified || !canManage) return
     const operationId = nextOperationId()
-    setEditorSession({ operationId, mode: 'create', status: 'ready' })
+    setEditorSession({
+      operationId,
+      contextKey: accessKey,
+      mode: 'create',
+      status: 'ready',
+    })
   }
 
   function closeEditor() {
+    recoveryController.current?.abort()
+    recoveryController.current = null
     activeOperation.current = 0
     setEditorSession(null)
     setEditorFeedback(null)
   }
 
   function openEdit(room: Room) {
+    if (!identityVerified || !canManage) return
     const operationId = nextOperationId()
     setEditorSession({
       operationId,
+      contextKey: accessKey,
       mode: 'edit',
       roomId: room.id,
       status: 'loading',
     })
-    void loadEditorSnapshot(room.id, operationId)
+    void loadEditorSnapshot(room.id, operationId, accessKey)
   }
 
-  async function loadEditorSnapshot(roomId: string, operationId: number) {
+  async function loadEditorSnapshot(
+    roomId: string,
+    operationId: number,
+    contextKey: string
+  ) {
     try {
       const snapshot = await roomDetail(roomId)
-      if (activeOperation.current !== operationId) return
+      if (!isCurrentOperation(operationId, contextKey)) return
       if (snapshot.room.status !== 'ACTIVE') {
         setEditorSession({
           operationId,
+          contextKey,
           mode: 'edit',
           roomId,
           status: 'error',
@@ -349,15 +516,17 @@ export function RoomsPage({
       }
       setEditorSession({
         operationId,
+        contextKey,
         mode: 'edit',
         roomId,
         status: 'ready',
         snapshot,
       })
     } catch (error) {
-      if (activeOperation.current !== operationId) return
+      if (!isCurrentOperation(operationId, contextKey)) return
       setEditorSession({
         operationId,
+        contextKey,
         mode: 'edit',
         roomId,
         status: 'error',
@@ -367,33 +536,49 @@ export function RoomsPage({
   }
 
   function retryEditorSnapshot(roomId: string, operationId: number) {
-    if (activeOperation.current !== operationId) return
+    if (
+      activeOperation.current !== operationId ||
+      !identityVerified ||
+      !editorSession ||
+      editorSession.operationId !== operationId ||
+      editorSession.contextKey !== accessKey
+    ) {
+      return
+    }
     setEditorSession({
       operationId,
+      contextKey: editorSession.contextKey,
       mode: 'edit',
       roomId,
       status: 'loading',
     })
-    void loadEditorSnapshot(roomId, operationId)
+    void loadEditorSnapshot(roomId, operationId, editorSession.contextKey)
   }
 
   function openDeactivation(room: Room) {
+    if (!identityVerified || !canManage) return
     const operationId = nextOperationId()
     setDeactivationSession({
       operationId,
+      contextKey: accessKey,
       roomId: room.id,
       phase: 'loading',
     })
-    void loadDeactivationSnapshot(room.id, operationId)
+    void loadDeactivationSnapshot(room.id, operationId, accessKey)
   }
 
-  async function loadDeactivationSnapshot(roomId: string, operationId: number) {
+  async function loadDeactivationSnapshot(
+    roomId: string,
+    operationId: number,
+    contextKey: string
+  ) {
     try {
       const snapshot = await roomDetail(roomId)
-      if (activeOperation.current !== operationId) return
+      if (!isCurrentOperation(operationId, contextKey)) return
       if (snapshot.room.status !== 'ACTIVE') {
         setDeactivationSession({
           operationId,
+          contextKey,
           roomId,
           phase: 'error',
           loadError: 'This room is no longer active.',
@@ -402,14 +587,16 @@ export function RoomsPage({
       }
       setDeactivationSession({
         operationId,
+        contextKey,
         roomId,
         phase: 'confirm',
         snapshot,
       })
     } catch (error) {
-      if (activeOperation.current !== operationId) return
+      if (!isCurrentOperation(operationId, contextKey)) return
       setDeactivationSession({
         operationId,
+        contextKey,
         roomId,
         phase: 'error',
         loadError: normalizeCoreApiError(error).message,
@@ -418,12 +605,31 @@ export function RoomsPage({
   }
 
   function retryDeactivationSnapshot(roomId: string, operationId: number) {
-    if (activeOperation.current !== operationId) return
-    setDeactivationSession({ operationId, roomId, phase: 'loading' })
-    void loadDeactivationSnapshot(roomId, operationId)
+    if (
+      activeOperation.current !== operationId ||
+      !identityVerified ||
+      !deactivationSession ||
+      deactivationSession.operationId !== operationId ||
+      deactivationSession.contextKey !== accessKey
+    ) {
+      return
+    }
+    setDeactivationSession({
+      operationId,
+      contextKey: deactivationSession.contextKey,
+      roomId,
+      phase: 'loading',
+    })
+    void loadDeactivationSnapshot(
+      roomId,
+      operationId,
+      deactivationSession.contextKey
+    )
   }
 
   function closeDeactivation() {
+    recoveryController.current?.abort()
+    recoveryController.current = null
     activeOperation.current = 0
     setDeactivationSession(null)
     setDeactivationFeedback(null)
@@ -433,11 +639,41 @@ export function RoomsPage({
     snapshot: RoomSnapshot,
     operationId: number
   ) {
-    if (activeOperation.current !== operationId) return
+    if (
+      activeOperation.current !== operationId ||
+      !editorSession ||
+      editorSession.operationId !== operationId ||
+      !identityVerified
+    ) {
+      return
+    }
+    const nextId = nextOperationId()
     setEditorSession({
-      operationId,
+      operationId: nextId,
+      contextKey: editorSession.contextKey,
       mode: 'edit',
       roomId: snapshot.room.id,
+      status: 'ready',
+      snapshot,
+    })
+    setEditorFeedback(null)
+  }
+
+  function keepEditorDraftFromLatest(
+    snapshot: RoomSnapshot,
+    operationId: number
+  ) {
+    if (
+      activeOperation.current !== operationId ||
+      !editorSession ||
+      editorSession.operationId !== operationId ||
+      editorSession.mode !== 'edit' ||
+      !identityVerified
+    ) {
+      return
+    }
+    setEditorSession({
+      ...editorSession,
       status: 'ready',
       snapshot,
     })
@@ -448,9 +684,18 @@ export function RoomsPage({
     snapshot: RoomSnapshot,
     operationId: number
   ) {
-    if (activeOperation.current !== operationId) return
+    if (
+      activeOperation.current !== operationId ||
+      !deactivationSession ||
+      deactivationSession.operationId !== operationId ||
+      !identityVerified
+    ) {
+      return
+    }
+    const nextId = nextOperationId()
     setDeactivationSession({
-      operationId,
+      operationId: nextId,
+      contextKey: deactivationSession.contextKey,
       roomId: snapshot.room.id,
       phase: 'confirm',
       snapshot,
@@ -458,23 +703,68 @@ export function RoomsPage({
     setDeactivationFeedback(null)
   }
 
-  function handleEditorSubmit(input: RoomEditorSubmit) {
-    if (activeOperation.current !== input.operationId || mutation.isPending) {
+  function reviewCreationDraft(operationId: number) {
+    if (
+      activeOperation.current !== operationId ||
+      !editorSession ||
+      editorSession.mode !== 'create' ||
+      editorSession.operationId !== operationId ||
+      editorSession.contextKey !== accessKey ||
+      !identityVerified
+    ) {
       return
     }
+    setEditorFeedback(null)
+  }
+
+  function handleEditorSubmit(input: RoomEditorSubmit) {
+    if (
+      !isCurrentOperation(input.operationId, input.contextKey) ||
+      !currentAuthorization.current.identityVerified ||
+      mutationInFlight.current ||
+      mutation.isPending ||
+      deactivationMutation.isPending
+    ) {
+      return
+    }
+    mutationInFlight.current = true
     setEditorFeedback(null)
     mutation.mutate(input)
   }
 
   function confirmDeactivation(snapshot: RoomSnapshot, operationId: number) {
+    const contextKey = deactivationSession?.contextKey
     if (
       activeOperation.current !== operationId ||
+      !contextKey ||
+      !isCurrentOperation(operationId, contextKey) ||
+      !currentAuthorization.current.identityVerified ||
+      mutationInFlight.current ||
       deactivationMutation.isPending
     ) {
       return
     }
+    mutationInFlight.current = true
     setDeactivationFeedback(null)
-    deactivationMutation.mutate({ snapshot, operationId })
+    deactivationMutation.mutate({ snapshot, operationId, contextKey })
+  }
+
+  async function loadLatestRoom(roomId: string): Promise<RoomSnapshot> {
+    const operationId = activeOperation.current
+    const contextKey = accessKey
+    if (!identityVerified) {
+      throw new Error('Verify room-management access before loading room data.')
+    }
+    const snapshot = await roomDetail(roomId)
+    if (
+      !isCurrentOperation(operationId, contextKey) ||
+      !currentAuthorization.current.identityVerified
+    ) {
+      throw new Error(
+        'The room operation context changed before the latest state was received.'
+      )
+    }
+    return snapshot
   }
 
   const authorized = access.type === 'authorized' && identityResolved
@@ -498,7 +788,7 @@ export function RoomsPage({
             </p>
           </div>
           {canManage && (
-            <Button onClick={openCreate}>
+            <Button disabled={!identityVerified} onClick={openCreate}>
               <Plus aria-hidden='true' className='size-4' />
               Add room
             </Button>
@@ -516,11 +806,32 @@ export function RoomsPage({
           )
         ) : (
           <>
+            {identity.data && !identityVerified && !identityDenied && (
+              <div
+                role='status'
+                className='flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-sm'
+              >
+                <span>
+                  {identity.isFetching
+                    ? 'Verifying current room-management access. Existing directory and form state are preserved; submissions are paused.'
+                    : 'Current room-management access could not be verified. Existing form state is preserved; verify access before submitting.'}
+                </span>
+                {!identity.isFetching && (
+                  <Button
+                    size='sm'
+                    variant='outline'
+                    onClick={() => void identity.refetch()}
+                  >
+                    Retry verification
+                  </Button>
+                )}
+              </div>
+            )}
             {!canManage && (
               <p className='flex items-center gap-2 text-sm text-muted-foreground'>
                 <ShieldAlert aria-hidden='true' className='size-4 shrink-0' />
                 Room changes require administrator permission. Only active rooms
-                are available in this directory.
+                are included in this catalog for assignment eligibility.
               </p>
             )}
             <Card className='overflow-hidden'>
@@ -530,7 +841,7 @@ export function RoomsPage({
                   <CardDescription className='mt-1'>
                     {canManage
                       ? 'Search and review active or inactive room records.'
-                      : 'Search rooms currently available for meeting assignments.'}
+                      : 'Search active room records eligible for meeting assignments. Status does not indicate real-time availability.'}
                   </CardDescription>
                 </div>
                 <div className='grid gap-3 sm:grid-cols-2 xl:grid-cols-4'>
@@ -542,10 +853,7 @@ export function RoomsPage({
                     <Input
                       value={searchDraft}
                       onChange={(event) =>
-                        setSearchDraftState({
-                          criteria: criteria.q ?? '',
-                          value: event.target.value,
-                        })
+                        updateSearchDraft(event.target.value)
                       }
                       maxLength={200}
                       placeholder='Search room name or code'
@@ -669,7 +977,7 @@ export function RoomsPage({
                       title={
                         criteria.q || criteria.status
                           ? 'No rooms match these filters'
-                          : 'No rooms are available'
+                          : 'No rooms are found'
                       }
                       description='Try another search or adjust the room filters.'
                     />
@@ -720,6 +1028,7 @@ export function RoomsPage({
                                         variant='ghost'
                                         size='sm'
                                         aria-label={`Edit ${room.name}`}
+                                        disabled={!identityVerified}
                                         onClick={() => openEdit(room)}
                                       >
                                         <Pencil
@@ -733,6 +1042,7 @@ export function RoomsPage({
                                         size='sm'
                                         aria-label={`Deactivate ${room.name}`}
                                         disabled={
+                                          !identityVerified ||
                                           deactivationMutation.isPending ||
                                           mutation.isPending
                                         }
@@ -812,30 +1122,32 @@ export function RoomsPage({
           <>
             <RoomEditorDialog
               key={
-                editorSession
+                editorSession?.contextKey === accessKey
                   ? [
                       editorSession.operationId,
                       editorSession.mode,
                       editorSession.status,
-                      editorSession.mode === 'edit'
-                        ? (editorSession.snapshot?.etag ?? '')
-                        : '',
                     ].join(':')
                   : 'editor-closed'
               }
-              session={editorSession}
+              session={
+                editorSession?.contextKey === accessKey ? editorSession : null
+              }
               saving={mutation.isPending}
+              authorizationVerified={identityVerified}
               feedback={editorFeedback}
               onClose={closeEditor}
               onRetrySnapshot={retryEditorSnapshot}
-              onLoadLatest={roomDetail}
+              onLoadLatest={loadLatestRoom}
               onRestartFromLatest={restartEditorFromLatest}
               onReviewDirectory={closeEditor}
+              onReviewCreationDraft={reviewCreationDraft}
+              onKeepDraftFromLatest={keepEditorDraftFromLatest}
               onSubmit={handleEditorSubmit}
             />
             <RoomDeactivationDialog
               key={
-                deactivationSession
+                deactivationSession?.contextKey === accessKey
                   ? [
                       deactivationSession.operationId,
                       deactivationSession.phase,
@@ -843,12 +1155,17 @@ export function RoomsPage({
                     ].join(':')
                   : 'deactivation-closed'
               }
-              session={deactivationSession}
+              session={
+                deactivationSession?.contextKey === accessKey
+                  ? deactivationSession
+                  : null
+              }
               saving={deactivationMutation.isPending}
+              authorizationVerified={identityVerified}
               feedback={deactivationFeedback}
               onClose={closeDeactivation}
               onRetrySnapshot={retryDeactivationSnapshot}
-              onLoadLatest={roomDetail}
+              onLoadLatest={loadLatestRoom}
               onRestartFromLatest={restartDeactivationFromLatest}
               onConfirm={confirmDeactivation}
             />

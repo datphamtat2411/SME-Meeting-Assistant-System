@@ -15,6 +15,7 @@ import type { RoomOperationFeedback } from './room-editor-dialog'
 
 export interface RoomDeactivationSession {
   operationId: number
+  contextKey: string
   roomId: string
   phase: 'loading' | 'error' | 'confirm'
   snapshot?: RoomSnapshot
@@ -24,6 +25,7 @@ export interface RoomDeactivationSession {
 export function RoomDeactivationDialog({
   session,
   saving,
+  authorizationVerified,
   feedback,
   onClose,
   onRetrySnapshot,
@@ -33,6 +35,7 @@ export function RoomDeactivationDialog({
 }: {
   session: RoomDeactivationSession | null
   saving: boolean
+  authorizationVerified: boolean
   feedback: RoomOperationFeedback | null
   onClose: () => void
   onRetrySnapshot: (roomId: string, operationId: number) => void
@@ -69,6 +72,7 @@ export function RoomDeactivationDialog({
     feedback?.outcome === 'precondition' ||
     feedback?.outcome === 'uncertain' ||
     feedback?.outcome === 'unknown'
+  const reviewedSnapshot = latestSnapshot ?? feedback?.latestSnapshot
 
   return (
     <AlertDialog
@@ -111,6 +115,7 @@ export function RoomDeactivationDialog({
             <AlertDialogFooter>
               <AlertDialogCancel disabled={saving}>Close</AlertDialogCancel>
               <Button
+                disabled={!authorizationVerified}
                 onClick={() =>
                   onRetrySnapshot(session.roomId, session.operationId)
                 }
@@ -166,13 +171,57 @@ export function RoomDeactivationDialog({
                 }`}
               >
                 <p>{feedback.message}</p>
+                {feedback.reconciliationError && (
+                  <p role='alert' className='text-destructive'>
+                    {feedback.reconciliationError}
+                  </p>
+                )}
+                {reviewedSnapshot && (
+                  <div className='space-y-2 rounded-md border bg-background p-3'>
+                    <p className='font-medium'>
+                      Latest server state is{' '}
+                      {reviewedSnapshot.room.status === 'ACTIVE'
+                        ? 'active'
+                        : 'inactive'}
+                      .
+                    </p>
+                    <p>
+                      <span className='font-mono'>
+                        {reviewedSnapshot.room.code}
+                      </span>{' '}
+                      · {reviewedSnapshot.room.name}
+                    </p>
+                    {reviewedSnapshot.room.status === 'ACTIVE' ? (
+                      <Button
+                        type='button'
+                        variant='secondary'
+                        size='sm'
+                        disabled={!authorizationVerified}
+                        onClick={() =>
+                          activeOperationId !== undefined &&
+                          onRestartFromLatest(
+                            reviewedSnapshot,
+                            activeOperationId
+                          )
+                        }
+                      >
+                        Use latest state and review confirmation
+                      </Button>
+                    ) : (
+                      <p className='text-muted-foreground'>
+                        The current state is verified, but the result of the
+                        original request cannot be attributed.
+                      </p>
+                    )}
+                  </div>
+                )}
                 {reviewRequired && snapshot && (
                   <>
                     <Button
                       type='button'
                       variant='outline'
                       size='sm'
-                      disabled={latestLoading}
+                      disabled={latestLoading || !authorizationVerified}
                       onClick={() => void reloadLatest(snapshot.room.id)}
                     >
                       {latestLoading
@@ -186,7 +235,7 @@ export function RoomDeactivationDialog({
                           type='button'
                           variant='outline'
                           size='sm'
-                          disabled={latestLoading}
+                          disabled={latestLoading || !authorizationVerified}
                           onClick={() => void reloadLatest(snapshot.room.id)}
                         >
                           Retry latest room
@@ -215,6 +264,7 @@ export function RoomDeactivationDialog({
                             type='button'
                             variant='secondary'
                             size='sm'
+                            disabled={!authorizationVerified}
                             onClick={() =>
                               activeOperationId !== undefined &&
                               onRestartFromLatest(
@@ -242,6 +292,7 @@ export function RoomDeactivationDialog({
               <AlertDialogAction
                 disabled={
                   saving ||
+                  !authorizationVerified ||
                   !snapshot ||
                   snapshot.room.status !== 'ACTIVE' ||
                   reviewRequired

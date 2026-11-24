@@ -1,8 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Pencil, RefreshCw, Search, ShieldAlert, UserRound } from 'lucide-react'
 import { toast } from 'sonner'
+import { normalizeCoreApiError } from '@/lib/core-api'
 import { getDisplayNameInitials } from '@/lib/utils'
+import { useDirectorySearchDraft } from '@/hooks/use-directory-search-draft'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -73,6 +75,19 @@ type SearchChange = (
 
 const pageSizeChoices = [10, 20, 50, 100]
 const searchDebounceMs = 350
+
+function normalizeSearchDraft(value: string) {
+  return normalizeMemberSearch({ q: value }).q
+}
+
+class ObsoleteMemberOperationError extends Error {
+  constructor() {
+    super(
+      'Member-management authorization changed before the operation started.'
+    )
+    this.name = 'ObsoleteMemberOperationError'
+  }
+}
 
 const roleLabels: Record<MemberRole, string> = {
   ADMINISTRATOR: 'Administrator',
@@ -178,15 +193,39 @@ export function MembersPage({
 }) {
   const queryClient = useQueryClient()
   const identity = useQuery(currentUserQueryOptions())
-  const identityResolved = identity.isSuccess && !identity.isFetching
+  const identityErrorStatus = identity.isRefetchError
+    ? normalizeCoreApiError(identity.error).status
+    : undefined
+  const identityDenied =
+    identityErrorStatus === 401 || identityErrorStatus === 403
+  const identityResolved = identity.isSuccess && !identityDenied
+  const identityVerified =
+    identityResolved && !identity.isFetching && !identity.isRefetchError
   const access = getMemberDirectoryAccess(
     identityResolved ? identity.data : undefined
   )
+  const accessKey =
+    access.type === 'authorized'
+      ? access.queryScopeKey
+      : `${access.type}:${'actorId' in access ? access.actorId : ''}`
+  const currentAuthorization = useRef({ accessKey, identityVerified })
+  useLayoutEffect(() => {
+    currentAuthorization.current = { accessKey, identityVerified }
+  }, [accessKey, identityVerified])
+  const statusOperationInFlight = useRef(false)
   const constrainedSearch =
     access.type === 'authorized'
       ? constrainMemberSearch(search, access)
       : normalizeMemberSearch(search)
   const criteria = resolveMemberDirectoryCriteria(constrainedSearch)
+  const { draft: searchDraft, updateDraft: updateSearchDraft } =
+    useDirectorySearchDraft({
+      criteriaKey: JSON.stringify([accessKey, normalizeMemberSearch(search)]),
+      committedQuery: criteria.q,
+      normalize: normalizeSearchDraft,
+      onCommit: (q) => onSearchChange({ q }, { replace: true }),
+      delayMs: searchDebounceMs,
+    })
   const unitsOptions = organizationalUnitsQuery(access)
   const units = useQuery({
     ...unitsOptions,
@@ -197,41 +236,86 @@ export function MembersPage({
     mutationFn: async ({
       member,
       action,
+      contextKey,
     }: {
       member: Member
       action: 'deactivate' | 'reactivate' | 'account-setup/reissue'
+      contextKey: string
     }) => {
+      if (
+        currentAuthorization.current.accessKey !== contextKey ||
+        !currentAuthorization.current.identityVerified
+      ) {
+        throw new ObsoleteMemberOperationError()
+      }
       const fresh = await memberDetail(member.id)
+      if (
+        currentAuthorization.current.accessKey !== contextKey ||
+        !currentAuthorization.current.identityVerified
+      ) {
+        throw new ObsoleteMemberOperationError()
+      }
       return changeMemberStatus(member.id, action, fresh.etag)
     },
-    onSuccess: async () => {
-      toast.success('Account updated')
+    onSuccess: async (_result, input) => {
       await queryClient.invalidateQueries({ queryKey: ['users'] })
+      if (currentAuthorization.current.accessKey === input.contextKey) {
+        toast.success('Account updated')
+      }
     },
-    onError: (error) =>
+    onError: (error, input) => {
+      if (
+        error instanceof ObsoleteMemberOperationError ||
+        currentAuthorization.current.accessKey !== input.contextKey
+      ) {
+        return
+      }
       toast.error('Account update failed', {
         description:
           error instanceof Error
             ? error.message
             : 'The account was not updated.',
-      }),
+      })
+    },
+    onSettled: () => {
+      statusOperationInFlight.current = false
+    },
   })
-  const [searchDraftState, setSearchDraftState] = useState(() => ({
-    criteria: criteria.q ?? '',
-    value: criteria.q ?? '',
-  }))
-  const searchDraft =
-    searchDraftState.criteria === (criteria.q ?? '')
-      ? searchDraftState.value
-      : (criteria.q ?? '')
-  const [selectedMember, setSelectedMember] = useState<Member | null>(null)
-  const [dialogOpen, setDialogOpen] = useState(false)
+  const [administrationDialog, setAdministrationDialog] = useState<{
+    contextKey: string
+    member: Member | null
+  } | null>(null)
+  const [administrationDialogScope, setAdministrationDialogScope] =
+    useState(accessKey)
+  if (administrationDialogScope !== accessKey) {
+    setAdministrationDialogScope(accessKey)
+    setAdministrationDialog(null)
+  }
   const organizationLookup: OrganizationUnitLookup = units.isPending
     ? { status: 'loading' }
     : units.isError
       ? { status: 'error' }
       : { status: 'success', units: units.data ?? [] }
   const organizationUnits: OrganizationalUnit[] = units.data ?? []
+  const priorAccessKey = useRef(accessKey)
+
+  useEffect(() => {
+    if (priorAccessKey.current === accessKey) return
+    const previousKey = priorAccessKey.current
+    priorAccessKey.current = accessKey
+    void queryClient.cancelQueries({
+      queryKey: ['users', 'directory', previousKey],
+    })
+    void queryClient.cancelQueries({
+      queryKey: ['organization', 'units', previousKey],
+    })
+    queryClient.removeQueries({
+      queryKey: ['users', 'directory', previousKey],
+    })
+    queryClient.removeQueries({
+      queryKey: ['organization', 'units', previousKey],
+    })
+  }, [accessKey, queryClient])
 
   useEffect(() => {
     if (!identityResolved || access.type !== 'authorized') return
@@ -262,29 +346,43 @@ export function MembersPage({
     onSearchChange({ page }, { replace: true })
   }, [memberDirectory.data, memberDirectory.isPlaceholderData, onSearchChange])
 
-  useEffect(() => {
-    const nextQuery = normalizeMemberSearch({ q: searchDraft }).q
-    if (nextQuery === criteria.q) return
-    const timer = window.setTimeout(() => {
-      onSearchChange({ q: nextQuery }, { replace: true })
-    }, searchDebounceMs)
-    return () => window.clearTimeout(timer)
-  }, [criteria.q, onSearchChange, searchDraft])
-
   function editMember(member: Member | null) {
-    setSelectedMember(member)
-    setDialogOpen(true)
+    if (
+      !identityVerified ||
+      access.type !== 'authorized' ||
+      statusOperationInFlight.current ||
+      statusMutation.isPending ||
+      currentAuthorization.current.accessKey !== accessKey
+    ) {
+      return
+    }
+    setAdministrationDialog({ contextKey: accessKey, member })
   }
 
   function runLifecycle(
     member: Member,
     action: 'deactivate' | 'reactivate' | 'account-setup/reissue'
   ) {
+    if (
+      !identityVerified ||
+      access.type !== 'authorized' ||
+      currentAuthorization.current.accessKey !== accessKey
+    ) {
+      return
+    }
     const actionLabel = action.replace(/\//g, ' ')
     if (!window.confirm(`Apply ${actionLabel} to ${member.displayName}?`)) {
       return
     }
-    statusMutation.mutate({ member, action })
+    if (
+      !identityVerified ||
+      currentAuthorization.current.accessKey !== accessKey ||
+      statusOperationInFlight.current
+    ) {
+      return
+    }
+    statusOperationInFlight.current = true
+    statusMutation.mutate({ member, action, contextKey: accessKey })
   }
 
   return (
@@ -305,12 +403,37 @@ export function MembersPage({
             </p>
           </div>
           {identityResolved && access.type === 'authorized' && (
-            <Button onClick={() => editMember(null)}>
+            <Button
+              disabled={!identityVerified}
+              onClick={() => editMember(null)}
+            >
               <UserRound className='size-4' />
               Add member
             </Button>
           )}
         </div>
+
+        {identity.data && !identityVerified && !identityDenied && (
+          <div
+            role='status'
+            className='flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-sm'
+          >
+            <span>
+              {identity.isFetching
+                ? 'Verifying current administration access. Existing directory and form state are preserved; submissions are paused.'
+                : 'Current administration access could not be verified. Existing form state is preserved; verify access before submitting.'}
+            </span>
+            {!identity.isFetching && (
+              <Button
+                size='sm'
+                variant='outline'
+                onClick={() => void identity.refetch()}
+              >
+                Retry verification
+              </Button>
+            )}
+          </div>
+        )}
 
         {!identityResolved ? (
           identity.isError ? (
@@ -365,12 +488,7 @@ export function MembersPage({
                   <Search className='pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground' />
                   <Input
                     value={searchDraft}
-                    onChange={(event) =>
-                      setSearchDraftState({
-                        criteria: criteria.q ?? '',
-                        value: event.target.value,
-                      })
-                    }
+                    onChange={(event) => updateSearchDraft(event.target.value)}
                     maxLength={200}
                     placeholder='Search name or email'
                     aria-label='Search members'
@@ -595,6 +713,7 @@ export function MembersPage({
                                 variant='ghost'
                                 size='sm'
                                 aria-label={`Edit ${member.displayName}`}
+                                disabled={!identityVerified}
                                 onClick={() => editMember(member)}
                               >
                                 <Pencil className='size-4' />
@@ -605,7 +724,10 @@ export function MembersPage({
                                   <Button
                                     variant='ghost'
                                     size='sm'
-                                    disabled={statusMutation.isPending}
+                                    disabled={
+                                      statusMutation.isPending ||
+                                      !identityVerified
+                                    }
                                     onClick={() =>
                                       runLifecycle(member, 'deactivate')
                                     }
@@ -617,7 +739,10 @@ export function MembersPage({
                                 <Button
                                   variant='ghost'
                                   size='sm'
-                                  disabled={statusMutation.isPending}
+                                  disabled={
+                                    statusMutation.isPending ||
+                                    !identityVerified
+                                  }
                                   onClick={() =>
                                     runLifecycle(member, 'reactivate')
                                   }
@@ -629,7 +754,10 @@ export function MembersPage({
                                 <Button
                                   variant='ghost'
                                   size='sm'
-                                  disabled={statusMutation.isPending}
+                                  disabled={
+                                    statusMutation.isPending ||
+                                    !identityVerified
+                                  }
                                   onClick={() =>
                                     runLifecycle(
                                       member,
@@ -704,16 +832,26 @@ export function MembersPage({
           </Card>
         )}
 
-        {identityResolved && access.type === 'authorized' && identity.data && (
-          <MemberAdministrationDialog
-            key={`${dialogOpen ? 'open' : 'closed'}:${selectedMember?.id ?? 'new'}`}
-            open={dialogOpen}
-            member={selectedMember}
-            identity={identity.data}
-            units={units}
-            onOpenChange={setDialogOpen}
-          />
-        )}
+        {identityResolved &&
+          access.type === 'authorized' &&
+          identity.data &&
+          administrationDialog?.contextKey === accessKey && (
+            <MemberAdministrationDialog
+              key={`${administrationDialog.contextKey}:${administrationDialog.member?.id ?? 'new'}`}
+              open
+              member={administrationDialog.member}
+              identity={identity.data}
+              authorizationKey={accessKey}
+              authorizationVerified={identityVerified}
+              isAuthorizationContextCurrent={(key) =>
+                currentAuthorization.current.accessKey === key
+              }
+              units={units}
+              onOpenChange={(open) => {
+                if (!open) setAdministrationDialog(null)
+              }}
+            />
+          )}
       </Main>
     </>
   )

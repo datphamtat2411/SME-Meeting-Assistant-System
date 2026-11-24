@@ -24,6 +24,7 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import type {
   RoomCreatePayload,
+  RoomCreationReconciliation,
   RoomPatchPayload,
   RoomSnapshot,
 } from './room-api'
@@ -39,11 +40,13 @@ import {
 export type RoomEditorSession =
   | {
       operationId: number
+      contextKey: string
       mode: 'create'
       status: 'ready'
     }
   | {
       operationId: number
+      contextKey: string
       mode: 'edit'
       roomId: string
       status: 'loading' | 'error' | 'ready'
@@ -55,16 +58,22 @@ export interface RoomOperationFeedback {
   outcome: 'rejected' | 'precondition' | 'uncertain' | 'unknown'
   message: string
   fieldErrors?: FieldErrors
+  creationReconciliation?: RoomCreationReconciliation
+  latestSnapshot?: RoomSnapshot
+  latestMatchesRequest?: boolean
+  reconciliationError?: string
 }
 
 export type RoomEditorSubmit =
   | {
       operationId: number
+      contextKey: string
       mode: 'create'
       payload: RoomCreatePayload
     }
   | {
       operationId: number
+      contextKey: string
       mode: 'edit'
       snapshot: RoomSnapshot
       payload: RoomPatchPayload
@@ -91,22 +100,28 @@ function roomDisplayValues(room: RoomSnapshot['room']) {
 export function RoomEditorDialog({
   session,
   saving,
+  authorizationVerified,
   feedback,
   onClose,
   onRetrySnapshot,
   onLoadLatest,
   onRestartFromLatest,
   onReviewDirectory,
+  onReviewCreationDraft,
+  onKeepDraftFromLatest,
   onSubmit,
 }: {
   session: RoomEditorSession | null
   saving: boolean
+  authorizationVerified: boolean
   feedback: RoomOperationFeedback | null
   onClose: () => void
   onRetrySnapshot: (roomId: string, operationId: number) => void
   onLoadLatest: (roomId: string) => Promise<RoomSnapshot>
   onRestartFromLatest: (snapshot: RoomSnapshot, operationId: number) => void
   onReviewDirectory: () => void
+  onReviewCreationDraft: (operationId: number) => void
+  onKeepDraftFromLatest: (snapshot: RoomSnapshot, operationId: number) => void
   onSubmit: (input: RoomEditorSubmit) => void
 }) {
   const [recoverySnapshot, setRecoverySnapshot] = useState<RoomSnapshot | null>(
@@ -166,6 +181,7 @@ export function RoomEditorDialog({
       if (session.mode === 'create') {
         onSubmit({
           operationId: session.operationId,
+          contextKey: session.contextKey,
           mode: 'create',
           payload: buildRoomCreatePayload(values),
         })
@@ -174,6 +190,7 @@ export function RoomEditorDialog({
       if (!session.snapshot) return
       onSubmit({
         operationId: session.operationId,
+        contextKey: session.contextKey,
         mode: 'edit',
         snapshot: session.snapshot,
         payload: buildRoomPatchPayload(session.snapshot.room, values),
@@ -197,7 +214,7 @@ export function RoomEditorDialog({
     feedback?.outcome === 'precondition' ||
     feedback?.outcome === 'uncertain' ||
     feedback?.outcome === 'unknown'
-  const latestCanRestart = recoverySnapshot?.room.status === 'ACTIVE'
+  const currentRecoverySnapshot = recoverySnapshot ?? feedback?.latestSnapshot
 
   return (
     <Dialog
@@ -223,7 +240,7 @@ export function RoomEditorDialog({
               Loading room details…
             </div>
             <DialogFooter>
-              <Button variant='outline' onClick={onClose}>
+              <Button variant='outline' disabled={saving} onClick={onClose}>
                 Cancel
               </Button>
             </DialogFooter>
@@ -248,6 +265,7 @@ export function RoomEditorDialog({
                 Close
               </Button>
               <Button
+                disabled={!authorizationVerified}
                 onClick={() =>
                   onRetrySnapshot(session.roomId, session.operationId)
                 }
@@ -280,44 +298,48 @@ export function RoomEditorDialog({
                       type='button'
                       variant='outline'
                       size='sm'
-                      disabled={recoveryLoading}
+                      disabled={recoveryLoading || !authorizationVerified}
                       onClick={() => void reloadLatest(session.roomId)}
                     >
                       {recoveryLoading
                         ? 'Loading latest room…'
                         : 'Reload latest for review'}
                     </Button>
-                    {recoveryError && (
+                    {(recoveryError || feedback.reconciliationError) && (
                       <div className='space-y-2'>
                         <p role='alert' className='text-destructive'>
-                          {recoveryError}
+                          {recoveryError ?? feedback.reconciliationError}
                         </p>
                         <Button
                           type='button'
                           variant='outline'
                           size='sm'
-                          disabled={recoveryLoading}
+                          disabled={recoveryLoading || !authorizationVerified}
                           onClick={() => void reloadLatest(session.roomId)}
                         >
                           Retry latest room
                         </Button>
                       </div>
                     )}
-                    {recoverySnapshot && (
+                    {currentRecoverySnapshot && (
                       <div className='space-y-3 rounded-md border bg-background p-3'>
                         <div>
                           <p className='font-medium'>
                             Latest authoritative state ·{' '}
-                            {recoverySnapshot.room.status === 'ACTIVE'
+                            {currentRecoverySnapshot.room.status === 'ACTIVE'
                               ? 'Active'
                               : 'Inactive'}
                           </p>
                           <p className='text-muted-foreground'>
-                            Review this version before starting another edit.
+                            {feedback.latestMatchesRequest === true
+                              ? 'The latest metadata matches the submitted changes. The request may have succeeded; no second request was sent.'
+                              : feedback.latestMatchesRequest === false
+                                ? 'The latest room state differs from the submitted changes. Keep your draft only after reviewing this version.'
+                                : 'Review this version before starting another edit.'}
                           </p>
                         </div>
                         <dl className='grid gap-2 sm:grid-cols-2'>
-                          {roomDisplayValues(recoverySnapshot.room).map(
+                          {roomDisplayValues(currentRecoverySnapshot.room).map(
                             ([label, value]) => (
                               <div key={label} className='min-w-0'>
                                 <dt className='text-xs text-muted-foreground'>
@@ -330,20 +352,39 @@ export function RoomEditorDialog({
                             )
                           )}
                         </dl>
-                        {latestCanRestart ? (
-                          <Button
-                            type='button'
-                            variant='secondary'
-                            size='sm'
-                            onClick={() =>
-                              onRestartFromLatest(
-                                recoverySnapshot,
-                                session.operationId
-                              )
-                            }
-                          >
-                            Discard my edits and restart from latest
-                          </Button>
+                        {currentRecoverySnapshot.room.status === 'ACTIVE' ? (
+                          <div className='flex flex-wrap gap-2'>
+                            {feedback.latestMatchesRequest !== true && (
+                              <Button
+                                type='button'
+                                variant='secondary'
+                                size='sm'
+                                disabled={!authorizationVerified}
+                                onClick={() =>
+                                  onKeepDraftFromLatest(
+                                    currentRecoverySnapshot,
+                                    session.operationId
+                                  )
+                                }
+                              >
+                                Review latest and keep my draft
+                              </Button>
+                            )}
+                            <Button
+                              type='button'
+                              variant='outline'
+                              size='sm'
+                              disabled={!authorizationVerified}
+                              onClick={() =>
+                                onRestartFromLatest(
+                                  currentRecoverySnapshot,
+                                  session.operationId
+                                )
+                              }
+                            >
+                              Discard my edits and restart from latest
+                            </Button>
+                          </div>
                         ) : (
                           <p className='text-destructive'>
                             This room is inactive and cannot be edited.
@@ -354,15 +395,56 @@ export function RoomEditorDialog({
                   </>
                 )}
                 {session?.mode === 'create' && (
-                  <Button
-                    type='button'
-                    variant='outline'
-                    size='sm'
-                    onClick={onReviewDirectory}
-                  >
-                    Close and review directory
-                  </Button>
+                  <div className='flex flex-wrap gap-2'>
+                    {feedback.creationReconciliation?.status ===
+                      'not-found' && (
+                      <Button
+                        type='button'
+                        variant='secondary'
+                        size='sm'
+                        onClick={() =>
+                          onReviewCreationDraft(session.operationId)
+                        }
+                      >
+                        Review creation draft
+                      </Button>
+                    )}
+                    <Button
+                      type='button'
+                      variant='outline'
+                      size='sm'
+                      onClick={onReviewDirectory}
+                    >
+                      Close and review directory
+                    </Button>
+                  </div>
                 )}
+              </div>
+            )}
+            {feedback?.creationReconciliation?.status === 'found' && (
+              <div
+                role='status'
+                className='space-y-2 rounded-md border bg-muted/40 p-3 text-sm'
+              >
+                <p>
+                  Room code {feedback.creationReconciliation.room.code} already
+                  exists.{' '}
+                  {feedback.creationReconciliation.metadataMatches
+                    ? 'Its metadata matches the submitted request; the request may have succeeded, but the server outcome cannot be attributed.'
+                    : 'Its metadata differs from the submitted request; review the existing record before deciding what to do.'}
+                </p>
+                <dl className='grid gap-2 sm:grid-cols-2'>
+                  {roomDisplayValues(feedback.creationReconciliation.room).map(
+                    ([label, value]) => (
+                      <div key={label} className='min-w-0'>
+                        <dt className='text-xs text-muted-foreground'>
+                          {label}
+                        </dt>
+                        <dd className='font-medium break-words'>{value}</dd>
+                      </div>
+                    )
+                  )}
+                </dl>
               </div>
             )}
             {sessionRoom && (
@@ -511,7 +593,10 @@ export function RoomEditorDialog({
                 type='submit'
                 form='room-editor-form'
                 disabled={
-                  saving || session?.status !== 'ready' || isRecoveryRequired
+                  saving ||
+                  !authorizationVerified ||
+                  session?.status !== 'ready' ||
+                  isRecoveryRequired
                 }
               >
                 {saving ? 'Saving…' : editing ? 'Save room' : 'Create room'}

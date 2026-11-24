@@ -162,14 +162,19 @@ async function renderMembers(
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
   })
   queryClient.setQueryData(currentUserQueryKey, actor)
-  vi.spyOn(coreApi, 'get').mockResolvedValue(actor)
+  const identityRead = vi
+    .spyOn(coreApi, 'get')
+    .mockImplementation(async (url) => {
+      if (url === '/auth/me') return actor as never
+      throw new Error(`Unexpected Core GET ${url}`)
+    })
   const router = createMembersRouter(initialEntry)
   const screen = await render(
     <QueryClientProvider client={queryClient}>
       <RouterProvider router={router} />
     </QueryClientProvider>
   )
-  return { screen, queryClient, router }
+  return { screen, queryClient, router, identityRead }
 }
 
 function mockDirectory({
@@ -306,6 +311,101 @@ describe('Members directory', () => {
       .poll(() => router.state.location.search.q, { timeout: 1500 })
       .toBe('Lee Park')
     expect(getSpy.mock.calls.filter(([url]) => url === '/users').length).toBe(2)
+  })
+
+  it('cancels a pending search draft when browser navigation restores prior criteria', async () => {
+    const getSpy = mockDirectory()
+    const { router, screen } = await renderMembers(
+      identity('ADMINISTRATOR'),
+      '/members?q=alpha'
+    )
+    await expect
+      .element(screen.getByRole('textbox', { name: 'Search members' }))
+      .toHaveValue('alpha')
+
+    const search = screen.getByRole('textbox', { name: 'Search members' })
+    await userEvent.fill(search, 'obsolete draft')
+    await router.navigate({
+      search: { q: 'bravo' } as never,
+    })
+    await expect.poll(() => router.state.location.search.q).toBe('bravo')
+    await expect.element(search).toHaveValue('bravo')
+
+    router.history.back()
+    await expect.poll(() => router.state.location.search.q).toBe('alpha')
+    await expect.element(search).toHaveValue('alpha')
+    router.history.forward()
+    await expect.poll(() => router.state.location.search.q).toBe('bravo')
+    await expect.element(search).toHaveValue('bravo')
+    await new Promise((resolve) => window.setTimeout(resolve, 450))
+
+    expect(router.state.location.search.q).toBe('bravo')
+    expect(
+      getSpy.mock.calls.some(
+        ([url, config]) =>
+          url === '/users' && config?.params?.q === 'obsolete draft'
+      )
+    ).toBe(false)
+  })
+
+  it('keeps an open administration draft during background identity refresh and pauses submission', async () => {
+    mockDirectory()
+    const { queryClient, screen, identityRead } = await renderMembers()
+    await expect.element(screen.getByText('Lee Member')).toBeVisible()
+    await userEvent.click(screen.getByRole('button', { name: 'Add member' }))
+    const name = screen.getByRole('textbox', { name: 'Name' })
+    await userEvent.fill(name, 'Unsaved member draft')
+
+    let resolveRefresh!: (value: unknown) => void
+    identityRead.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveRefresh = resolve
+        }) as never
+    )
+    const refresh = queryClient.invalidateQueries({
+      queryKey: currentUserQueryKey,
+    })
+
+    await expect
+      .element(screen.getByRole('dialog', { name: 'Create account' }))
+      .toBeVisible()
+    await expect.element(name).toHaveValue('Unsaved member draft')
+    await expect
+      .element(screen.getByRole('button', { name: 'Save member' }))
+      .toBeDisabled()
+
+    resolveRefresh(identity('ADMINISTRATOR'))
+    await refresh
+    await expect.element(name).toHaveValue('Unsaved member draft')
+    await expect
+      .element(screen.getByRole('button', { name: 'Save member' }))
+      .toBeEnabled()
+  })
+
+  it('removes a protected member draft when the verified actor changes', async () => {
+    mockDirectory()
+    const { queryClient, screen, identityRead } = await renderMembers()
+    await expect.element(screen.getByText('Lee Member')).toBeVisible()
+    await userEvent.click(screen.getByRole('button', { name: 'Add member' }))
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Name' }),
+      'Private draft'
+    )
+
+    const replacement = {
+      ...identity('ADMINISTRATOR'),
+      userId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    }
+    identityRead.mockResolvedValue(replacement)
+    await queryClient.invalidateQueries({ queryKey: currentUserQueryKey })
+
+    await expect
+      .element(screen.getByText('Private draft'))
+      .not.toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('dialog', { name: 'Create account' }))
+      .not.toBeInTheDocument()
   })
 
   it('keeps the directory usable at a narrow viewport and in dark mode with keyboard controls', async () => {

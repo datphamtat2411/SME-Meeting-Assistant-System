@@ -24,6 +24,9 @@ export function getMemberDirectoryAccess(
   identity: AuthContext | null | undefined
 ): MemberDirectoryAccess {
   if (!identity) return { type: 'unresolved' }
+  if (identity.accountStatus !== 'ACTIVE') {
+    return { type: 'denied', actorId: identity.userId }
+  }
 
   if (identity.globalRole === 'ADMINISTRATOR') {
     return {
@@ -33,7 +36,7 @@ export function getMemberDirectoryAccess(
       allUnits: true,
       unitIds: [],
       canFilterRoles: true,
-      queryScopeKey: `${identity.userId}:ADMINISTRATOR:all`,
+      queryScopeKey: `${identity.userId}:ADMINISTRATOR:all:${identity.session.id}`,
     }
   }
 
@@ -54,7 +57,7 @@ export function getMemberDirectoryAccess(
     allUnits: false,
     unitIds,
     canFilterRoles: false,
-    queryScopeKey: `${identity.userId}:DEPARTMENT_MANAGER:${unitIds.join(',')}`,
+    queryScopeKey: `${identity.userId}:DEPARTMENT_MANAGER:${unitIds.join(',')}:${identity.session.id}`,
   }
 }
 

@@ -45,6 +45,9 @@ export type RoomPatchPayload = {
   capacity?: number | null
   notes?: string | null
 }
+export type RoomCreationReconciliation =
+  | { status: 'not-found' }
+  | { status: 'found'; room: Room; metadataMatches: boolean }
 export interface RoomSnapshot {
   room: Room
   etag: string
@@ -70,7 +73,22 @@ const roomPatchSchema = z
   })
   .strict()
 
+const roomCreateSchema = z.object({
+  code: z
+    .string()
+    .trim()
+    .min(1)
+    .max(64)
+    .transform((code) => code.toUpperCase()),
+  name: z.string().trim().min(1).max(160),
+  location: z.string().trim().max(255).nullable(),
+  capacity: z.number().int().positive().max(2_147_483_647).nullable(),
+  notes: z.string().nullable(),
+})
+
 const roomDirectoryKey = ['rooms', 'directory'] as const
+const roomReconciliationPageSize = 100
+const maxRoomReconciliationPages = 10_000
 
 function malformedRoomResponse(error: unknown): CoreApiError {
   return new CoreApiError({
@@ -162,6 +180,147 @@ export async function fetchRoomDirectory(
   return parseRoomListResponse(response, criteria.page, criteria.size)
 }
 
+function normalizeRoomCode(code: string): string {
+  return code.trim().toUpperCase()
+}
+
+function normalizedRoomText(value: string | null): string | null {
+  return value?.trim() || null
+}
+
+function roomCreationMetadataMatches(
+  room: Room,
+  payload: RoomCreatePayload
+): boolean {
+  const parsed = roomCreateSchema.safeParse(payload)
+  if (!parsed.success) throw invalidRoomInput(parsed.error)
+  const submitted = parsed.data
+  return (
+    room.name.trim() === submitted.name &&
+    normalizedRoomText(room.location) ===
+      normalizedRoomText(submitted.location) &&
+    room.capacity === submitted.capacity &&
+    normalizedRoomText(room.notes) === normalizedRoomText(submitted.notes)
+  )
+}
+
+export function roomPatchMatchesRoom(
+  room: Room,
+  payload: RoomPatchPayload
+): boolean {
+  const parsed = roomPatchSchema.safeParse(payload)
+  if (!parsed.success || Object.keys(parsed.data ?? {}).length === 0) {
+    throw invalidRoomInput(
+      parsed.success ? new Error('Empty room patch.') : parsed.error
+    )
+  }
+  const patch = parsed.data
+  return (
+    (patch.name === undefined || room.name.trim() === patch.name) &&
+    (patch.location === undefined ||
+      normalizedRoomText(room.location) ===
+        normalizedRoomText(patch.location)) &&
+    (patch.capacity === undefined || room.capacity === patch.capacity) &&
+    (patch.notes === undefined ||
+      normalizedRoomText(room.notes) === normalizedRoomText(patch.notes))
+  )
+}
+
+/**
+ * Search the full authoritative catalog using the submitted code, then apply
+ * exact normalized-code matching locally. No directory filters or page state
+ * are reused for this recovery read.
+ */
+export async function reconcileRoomCreation(
+  payload: RoomCreatePayload,
+  signal?: AbortSignal
+): Promise<RoomCreationReconciliation> {
+  const parsed = roomCreateSchema.safeParse(payload)
+  if (!parsed.success) throw invalidRoomInput(parsed.error)
+  const submitted = parsed.data
+  const exactMatches: Room[] = []
+  const seenIds = new Set<string>()
+  let expectedTotalElements: number | undefined
+  let expectedTotalPages: number | undefined
+  let retrievedCount = 0
+
+  for (let page = 0; ; page += 1) {
+    if (signal?.aborted) {
+      throw new DOMException('Room reconciliation was cancelled.', 'AbortError')
+    }
+    if (page >= maxRoomReconciliationPages) {
+      throw malformedRoomResponse(
+        new Error('Room reconciliation exceeded the pagination safety limit.')
+      )
+    }
+    const result = await fetchRoomDirectory(
+      {
+        q: submitted.code,
+        page,
+        size: roomReconciliationPageSize,
+        sort: 'code,asc',
+      },
+      signal
+    )
+    if (
+      expectedTotalElements !== undefined &&
+      (result.pagination.totalElements !== expectedTotalElements ||
+        result.pagination.totalPages !== expectedTotalPages)
+    ) {
+      throw malformedRoomResponse(
+        new Error('Room catalog pagination changed during reconciliation.')
+      )
+    }
+    expectedTotalElements = result.pagination.totalElements
+    expectedTotalPages = result.pagination.totalPages
+    retrievedCount += result.items.length
+
+    for (const room of result.items) {
+      if (seenIds.has(room.id)) {
+        throw malformedRoomResponse(
+          new Error('Room catalog pages contain duplicate identities.')
+        )
+      }
+      seenIds.add(room.id)
+      if (normalizeRoomCode(room.code) === submitted.code) {
+        exactMatches.push(room)
+      }
+    }
+
+    if (page === 0 && result.pagination.totalPages === 0) {
+      return { status: 'not-found' }
+    }
+    if (!result.pagination.hasNext) {
+      if (
+        page + 1 !== result.pagination.totalPages ||
+        retrievedCount !== result.pagination.totalElements
+      ) {
+        throw malformedRoomResponse(
+          new Error('Room catalog pagination did not terminate consistently.')
+        )
+      }
+      if (exactMatches.length > 1) {
+        throw malformedRoomResponse(
+          new Error('Multiple rooms share the submitted unique room code.')
+        )
+      }
+      const room = exactMatches[0]
+      return room
+        ? {
+            status: 'found',
+            room,
+            metadataMatches: roomCreationMetadataMatches(room, submitted),
+          }
+        : { status: 'not-found' }
+    }
+    if (result.items.length === 0 || page + 1 >= result.pagination.totalPages) {
+      throw malformedRoomResponse(
+        new Error('Room catalog pagination made no progress.')
+      )
+    }
+  }
+}
+
 export function roomsQuery(
   criteria: RoomDirectoryCriteria,
   access: RoomDirectoryAccess | { type: 'unresolved' }
@@ -231,15 +390,7 @@ function parseRoomMutationResponse(
 export async function createRoom(
   payload: RoomCreatePayload
 ): Promise<RoomSnapshot> {
-  const validated = z
-    .object({
-      code: z.string().trim().min(1).max(64),
-      name: z.string().trim().min(1).max(160),
-      location: z.string().trim().max(255).nullable(),
-      capacity: z.number().int().positive().max(2_147_483_647).nullable(),
-      notes: z.string().nullable(),
-    })
-    .safeParse(payload)
+  const validated = roomCreateSchema.safeParse(payload)
   if (!validated.success) throw invalidRoomInput(validated.error)
 
   const response = await coreApi.postWithMetaAndEtag<unknown>(
@@ -291,11 +442,7 @@ export async function deactivateRoom(
   return parseRoomMutationResponse(response, id, 'INACTIVE')
 }
 
-type RoomMutationOutcome =
-  | 'rejected'
-  | 'precondition'
-  | 'uncertain'
-  | 'unknown'
+type RoomMutationOutcome = 'rejected' | 'precondition' | 'uncertain' | 'unknown'
 
 export function classifyRoomMutationOutcome(
   error: unknown

@@ -6,6 +6,7 @@ import {
   fetchRoomDirectory,
   parseRoomDetailResponse,
   parseRoomListResponse,
+  reconcileRoomCreation,
   serializeRoomDirectoryParams,
   updateRoom,
 } from './room-api'
@@ -30,6 +31,38 @@ const pagination = {
   hasNext: false,
   hasPrevious: false,
 }
+
+function pageResponse(
+  items: unknown[],
+  page: number,
+  size: number,
+  totalElements: number
+) {
+  const totalPages = Math.ceil(totalElements / size)
+  return {
+    data: items,
+    meta: {
+      pagination: {
+        page,
+        size,
+        totalElements,
+        totalPages,
+        hasNext: page + 1 < totalPages,
+        hasPrevious: page > 0,
+      },
+    },
+  }
+}
+
+function candidate(index: number) {
+  return {
+    ...room,
+    id: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+    code: `BOARD-${index}`,
+    name: `Boardroom ${index}`,
+  }
+}
+
 describe('room API contracts', () => {
   beforeEach(() => vi.restoreAllMocks())
 
@@ -145,5 +178,118 @@ describe('room API contracts', () => {
         })
       )
     ).toBe('unknown')
+  })
+
+  it('reconciles creation through every catalog page and compares canonical metadata', async () => {
+    const matching = {
+      ...room,
+      id: '33333333-3333-4333-8333-333333333333',
+      code: 'BOARD-1',
+      name: ' Boardroom ',
+      location: 'HQ',
+      notes: null,
+    }
+    const firstPage = Array.from({ length: 100 }, (_, index) =>
+      candidate(index + 10)
+    )
+    const getSpy = vi
+      .spyOn(coreApi, 'getWithMeta')
+      .mockImplementation(async (_url, config) => {
+        if (config?.params?.page === 0) {
+          return pageResponse(firstPage, 0, 100, 101) as never
+        }
+        if (config?.params?.page === 1) {
+          return pageResponse([matching], 1, 100, 101) as never
+        }
+        throw new Error('Unexpected page')
+      })
+
+    await expect(
+      reconcileRoomCreation(
+        {
+          code: ' board-1 ',
+          name: 'Boardroom',
+          location: ' HQ ',
+          capacity: 8,
+          notes: ' ',
+        },
+        new AbortController().signal
+      )
+    ).resolves.toMatchObject({
+      status: 'found',
+      room: { code: 'BOARD-1' },
+      metadataMatches: true,
+    })
+    expect(getSpy).toHaveBeenCalledTimes(2)
+    expect(getSpy).toHaveBeenNthCalledWith(1, '/rooms', {
+      params: { q: 'BOARD-1', page: 0, size: 100, sort: 'code,asc' },
+      signal: expect.any(AbortSignal),
+    })
+    expect(getSpy).toHaveBeenNthCalledWith(2, '/rooms', {
+      params: { q: 'BOARD-1', page: 1, size: 100, sort: 'code,asc' },
+      signal: expect.any(AbortSignal),
+    })
+  })
+
+  it('distinguishes a conflicting same-code resource from a missing exact code', async () => {
+    const conflicting = { ...room, name: 'A different boardroom' }
+    vi.spyOn(coreApi, 'getWithMeta').mockResolvedValueOnce(
+      pageResponse([conflicting], 0, 100, 1) as never
+    )
+    await expect(
+      reconcileRoomCreation({
+        code: 'BOARD-1',
+        name: 'Boardroom',
+        location: 'HQ',
+        capacity: 8,
+        notes: null,
+      })
+    ).resolves.toMatchObject({
+      status: 'found',
+      metadataMatches: false,
+      room: conflicting,
+    })
+
+    const getSpy = vi
+      .spyOn(coreApi, 'getWithMeta')
+      .mockResolvedValueOnce(pageResponse([candidate(2)], 0, 100, 1) as never)
+    await expect(
+      reconcileRoomCreation({
+        code: 'BOARD-1',
+        name: 'Boardroom',
+        location: 'HQ',
+        capacity: 8,
+        notes: null,
+      })
+    ).resolves.toEqual({ status: 'not-found' })
+    expect(getSpy).toHaveBeenCalledWith('/rooms', {
+      params: { q: 'BOARD-1', page: 0, size: 100, sort: 'code,asc' },
+      signal: undefined,
+    })
+  })
+
+  it('leaves creation inconclusive when an authoritative catalog page fails', async () => {
+    const getSpy = vi
+      .spyOn(coreApi, 'getWithMeta')
+      .mockResolvedValueOnce(
+        pageResponse(
+          Array.from({ length: 100 }, (_, i) => candidate(i)),
+          0,
+          100,
+          101
+        ) as never
+      )
+      .mockRejectedValueOnce(new Error('catalog unavailable'))
+
+    await expect(
+      reconcileRoomCreation({
+        code: 'BOARD-1',
+        name: 'Boardroom',
+        location: null,
+        capacity: null,
+        notes: null,
+      })
+    ).rejects.toThrow('catalog unavailable')
+    expect(getSpy).toHaveBeenCalledTimes(2)
   })
 })

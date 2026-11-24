@@ -24,7 +24,12 @@ export function getRoomDirectoryAccess(
     actorId: identity.userId,
     role: identity.globalRole,
     canManage,
-    queryScopeKey: `${identity.userId}:${identity.globalRole}`,
+    queryScopeKey: [
+      identity.userId,
+      identity.globalRole,
+      identity.accountStatus,
+      identity.session.id,
+    ].join(':'),
   }
 }
 

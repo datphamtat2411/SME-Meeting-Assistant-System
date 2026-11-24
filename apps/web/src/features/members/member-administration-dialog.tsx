@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useLayoutEffect, useRef, useState, type FormEvent } from 'react'
 import {
   useMutation,
   useQueryClient,
@@ -59,6 +59,9 @@ interface MemberAdministrationDialogProps {
   member: Member | null
   identity: AuthContext
   units: UseQueryResult<OrganizationalUnit[], Error>
+  authorizationKey: string
+  authorizationVerified: boolean
+  isAuthorizationContextCurrent: (key: string) => boolean
   onOpenChange: (open: boolean) => void
 }
 
@@ -75,10 +78,20 @@ export function MemberAdministrationDialog({
   member,
   identity,
   units,
+  authorizationKey,
+  authorizationVerified,
+  isAuthorizationContextCurrent,
   onOpenChange,
 }: MemberAdministrationDialogProps) {
   const queryClient = useQueryClient()
   const isAdmin = identity.globalRole === 'ADMINISTRATOR'
+  const submitting = useRef(false)
+  const authorizationCheck = useRef(isAuthorizationContextCurrent)
+  const authorizationVerification = useRef(authorizationVerified)
+  useLayoutEffect(() => {
+    authorizationCheck.current = isAuthorizationContextCurrent
+    authorizationVerification.current = authorizationVerified
+  }, [authorizationVerified, isAuthorizationContextCurrent])
   const [draft, setDraft] = useState<Draft>(() =>
     member
       ? {
@@ -91,7 +104,23 @@ export function MemberAdministrationDialog({
       : { ...blank }
   )
   const mutation = useMutation({
-    mutationFn: async (data: Draft) => {
+    mutationFn: async ({
+      data,
+      contextKey,
+    }: {
+      data: Draft
+      contextKey: string
+    }) => {
+      if (!authorizationCheck.current(contextKey)) {
+        throw new Error(
+          'Administration access changed before the member operation started.'
+        )
+      }
+      if (!authorizationVerification.current) {
+        throw new Error(
+          'Administration access must be verified before the member operation starts.'
+        )
+      }
       const input = {
         displayName: data.displayName.trim(),
         primaryOrgUnitId: data.primaryOrgUnitId || null,
@@ -107,6 +136,16 @@ export function MemberAdministrationDialog({
         })
       }
       const fresh = await memberDetail(member.id)
+      if (!authorizationCheck.current(contextKey)) {
+        throw new Error(
+          'Administration access changed before the member operation started.'
+        )
+      }
+      if (!authorizationVerification.current) {
+        throw new Error(
+          'Administration access must be verified before the member operation starts.'
+        )
+      }
       return updateMember(
         member.id,
         {
@@ -118,25 +157,39 @@ export function MemberAdministrationDialog({
         fresh.etag
       )
     },
-    onSuccess: () => {
+    onSuccess: async (_result, variables) => {
+      await queryClient.invalidateQueries({ queryKey: ['users'] })
+      if (!authorizationCheck.current(variables.contextKey)) return
       toast.success(
         member ? 'Member updated' : 'Account created: setup invitation pending'
       )
       onOpenChange(false)
-      void queryClient.invalidateQueries({ queryKey: ['users'] })
     },
-    onError: (error) => {
+    onError: (error, variables) => {
+      if (!authorizationCheck.current(variables.contextKey)) return
       const normalized = normalizeCoreApiError(error)
       toast.error('Unable to save member', {
         description: normalized.message,
       })
     },
+    onSettled: () => {
+      submitting.current = false
+    },
   })
 
   function submit(event: FormEvent) {
     event.preventDefault()
-    if (!draft.displayName.trim() || (!member && !draft.email.trim())) return
-    mutation.mutate(draft)
+    if (
+      submitting.current ||
+      !authorizationVerified ||
+      !isAuthorizationContextCurrent(authorizationKey) ||
+      !draft.displayName.trim() ||
+      (!member && !draft.email.trim())
+    ) {
+      return
+    }
+    submitting.current = true
+    mutation.mutate({ data: draft, contextKey: authorizationKey })
   }
 
   const status = lookupState(units)
@@ -266,7 +319,10 @@ export function MemberAdministrationDialog({
             >
               Cancel
             </Button>
-            <Button disabled={mutation.isPending} type='submit'>
+            <Button
+              disabled={mutation.isPending || !authorizationVerified}
+              type='submit'
+            >
               {mutation.isPending ? 'Saving…' : 'Save member'}
             </Button>
           </DialogFooter>
