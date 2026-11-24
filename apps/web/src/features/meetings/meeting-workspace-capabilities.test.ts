@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { CoreApiError } from '@/lib/core-api'
 import type { AuthContext } from '@/features/auth/session/current-user'
 import type { MeetingView, ParticipantView } from './data/detail-api'
 import { deriveMeetingWorkspaceCapabilities } from './meeting-workspace-capabilities'
@@ -143,7 +144,7 @@ describe('meeting workspace capability projection', () => {
     expect(cancelled.canRecoverProcessing).toBe(false)
   })
 
-  it('fails closed for stale, unresolved, failed, and removed memberships', () => {
+  it('retains established access during ordinary refetch but fails closed for unresolved, failed, and removed memberships', () => {
     const stale = derive({
       membership: {
         status: 'success',
@@ -169,7 +170,9 @@ describe('meeting workspace capability projection', () => {
       },
     })
 
-    for (const capabilities of [stale, failed, pending, removed]) {
+    expect(stale.canReadMeetingContent).toBe(true)
+    expect(stale.canReadMedia).toBe(true)
+    for (const capabilities of [failed, pending, removed]) {
       expect(capabilities.canReadOperationalMetadata).toBe(true)
       expect(capabilities.canReadMeetingContent).toBe(false)
       expect(capabilities.canReadMedia).toBe(false)
@@ -192,7 +195,8 @@ describe('meeting workspace capability projection', () => {
     expect(departmentManager.canReadMeetingContent).toBe(false)
     expect(departmentManager.canReadMedia).toBe(false)
     expect(departmentManager.canReadActionItems).toBe(true)
-    expect(departmentManager.canManageActionItems).toBe(true)
+    expect(departmentManager.canManageActionItems).toBe(false)
+    expect(departmentManager.actionItemManagementResolution).toBe('unresolved')
     expect(departmentManager.canManageMeeting).toBe(false)
   })
 
@@ -206,6 +210,33 @@ describe('meeting workspace capability projection', () => {
     expect(capabilities.canReadMeetingContent).toBe(false)
     expect(capabilities.canManageMeeting).toBe(false)
     expect(capabilities.canReadActionItems).toBe(false)
+  })
+
+  it('treats an authoritative membership denial differently from a transient failure', () => {
+    const denied = derive({
+      membership: {
+        status: 'error',
+        isFetching: false,
+        error: new CoreApiError({
+          status: 403,
+          kind: 'http',
+          message: 'removed',
+        }),
+      },
+    })
+    const unavailable = derive({
+      membership: {
+        status: 'error',
+        isFetching: false,
+        error: new CoreApiError({
+          kind: 'network',
+          message: 'offline',
+        }),
+      },
+    })
+
+    expect(denied.authorizationResolution).toBe('denied')
+    expect(unavailable.authorizationResolution).toBe('unresolved')
   })
 
   it('allows meeting edits only to the organizer while the lifecycle supports editing', () => {

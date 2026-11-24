@@ -69,10 +69,15 @@ export function resolveMeetingWorkspaceSection(
   requested: MeetingWorkspaceSection,
   capabilities: Pick<
     MeetingWorkspaceCapabilities,
-    'canReadMeetingContent' | 'canReadIntelligence' | 'canReadActionItems'
+    | 'canReadMeetingContent'
+    | 'canReadIntelligence'
+    | 'canReadActionItems'
+    | 'authorizationResolution'
   >
 ): MeetingWorkspaceSection {
-  return isMeetingWorkspaceSectionAllowed(requested, capabilities)
+  if (isMeetingWorkspaceSectionAllowed(requested, capabilities))
+    return requested
+  return capabilities.authorizationResolution === 'unresolved'
     ? requested
     : 'overview'
 }

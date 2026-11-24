@@ -1,13 +1,22 @@
+import { normalizeCoreApiError } from '@/lib/core-api'
 import type { AuthContext } from '@/features/auth/session/current-user'
 import type { MeetingView, ParticipantView } from './data/detail-api'
+
+export type MeetingWorkspaceAuthorizationResolution =
+  | 'unresolved'
+  | 'allowed'
+  | 'denied'
 
 export interface MeetingWorkspaceMembership {
   status: 'pending' | 'success' | 'error'
   data?: ParticipantView[]
   isFetching: boolean
+  error?: unknown
 }
 
 export interface MeetingWorkspaceCapabilities {
+  authorizationResolution?: MeetingWorkspaceAuthorizationResolution
+  actionItemManagementResolution?: MeetingWorkspaceAuthorizationResolution
   canReadOperationalMetadata: boolean
   canReadMeetingContent: boolean
   canManageMeeting: boolean
@@ -37,6 +46,7 @@ export interface DeriveMeetingWorkspaceCapabilitiesInput {
   identityCanReadProtectedData: boolean
   meeting: MeetingView
   membership: MeetingWorkspaceMembership
+  authorizationResolution?: MeetingWorkspaceAuthorizationResolution
 }
 
 const meetingEditStatuses = new Set<MeetingView['status']>([
@@ -50,30 +60,61 @@ const participantManagementStatuses = new Set<MeetingView['status']>([
   'IN_PROGRESS',
 ])
 
+export function resolveMeetingWorkspaceAuthorization({
+  identity,
+  identityCanReadProtectedData,
+  meeting,
+  membership,
+}: Omit<
+  DeriveMeetingWorkspaceCapabilitiesInput,
+  'authorizationResolution'
+>): MeetingWorkspaceAuthorizationResolution {
+  const hasTrustedIdentity =
+    identityCanReadProtectedData && Boolean(identity?.userId)
+  if (!hasTrustedIdentity) return 'unresolved'
+  if (identity?.userId === meeting.organizerUserId) return 'allowed'
+
+  const isActiveParticipant = (membership.data ?? []).some(
+    (participant) =>
+      participant.userId === identity?.userId &&
+      participant.meetingId === meeting.id &&
+      participant.removedAt === null
+  )
+
+  if (membership.status === 'error') {
+    const status = membership.error
+      ? normalizeCoreApiError(membership.error).status
+      : undefined
+    return status === 401 || status === 403 || status === 404
+      ? 'denied'
+      : 'unresolved'
+  }
+  if (membership.status === 'pending') return 'unresolved'
+  if (membership.isFetching && isActiveParticipant) return 'allowed'
+  return isActiveParticipant ? 'allowed' : 'denied'
+}
+
 export function deriveMeetingWorkspaceCapabilities({
   identity,
   identityCanReadProtectedData,
   meeting,
   membership,
+  authorizationResolution: explicitAuthorizationResolution,
 }: DeriveMeetingWorkspaceCapabilitiesInput): MeetingWorkspaceCapabilities {
   const hasTrustedIdentity =
     identityCanReadProtectedData && Boolean(identity?.userId)
   const isOrganizer =
     hasTrustedIdentity && identity?.userId === meeting.organizerUserId
-  const verifiedMembership =
-    hasTrustedIdentity &&
-    membership.status === 'success' &&
-    !membership.isFetching
-  const isActiveParticipant =
-    verifiedMembership &&
-    (membership.data ?? []).some(
-      (participant) =>
-        participant.userId === identity?.userId &&
-        participant.meetingId === meeting.id &&
-        participant.removedAt === null
-    )
+  const authorizationResolution =
+    explicitAuthorizationResolution ??
+    resolveMeetingWorkspaceAuthorization({
+      identity,
+      identityCanReadProtectedData,
+      meeting,
+      membership,
+    })
   const canReadMeetingContent = Boolean(
-    hasTrustedIdentity && (isOrganizer || isActiveParticipant)
+    hasTrustedIdentity && authorizationResolution === 'allowed'
   )
   const canManageMeeting = Boolean(isOrganizer)
   const canSubmitMedia = Boolean(
@@ -86,8 +127,15 @@ export function deriveMeetingWorkspaceCapabilities({
   // Global administrators do not inherit this exception or general content.
   const canAttemptScopedActionItemAccess =
     hasTrustedIdentity && identity?.globalRole === 'DEPARTMENT_MANAGER'
+  const actionItemManagementResolution = isOrganizer
+    ? 'allowed'
+    : canAttemptScopedActionItemAccess
+      ? 'unresolved'
+      : 'denied'
 
   return {
+    authorizationResolution,
+    actionItemManagementResolution,
     canReadOperationalMetadata: hasTrustedIdentity,
     canReadMeetingContent,
     canManageMeeting,
@@ -110,10 +158,9 @@ export function deriveMeetingWorkspaceCapabilities({
     canReadActionItems: Boolean(
       canReadMeetingContent || canAttemptScopedActionItemAccess
     ),
-    // This is a UI candidate for the backend's scoped manager policy. The
-    // meeting unit is not present in MeetingView, so Core still decides.
-    canManageActionItems: Boolean(
-      canManageMeeting || canAttemptScopedActionItemAccess
-    ),
+    // MeetingView does not carry the meeting-scoped Action Item grant. A
+    // Department Manager may read the server-filtered list, but management
+    // remains unresolved until authoritative meeting scope is available.
+    canManageActionItems: canManageMeeting,
   }
 }

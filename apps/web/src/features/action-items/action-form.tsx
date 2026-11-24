@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Check, Search } from 'lucide-react'
@@ -29,13 +29,19 @@ export function ActionForm({
   onOpenChange,
   item,
   meetingId,
+  canManageActionItems = true,
 }: {
   open: boolean
   onOpenChange: (value: boolean) => void
   item?: ActionItem | null
   meetingId?: string
+  canManageActionItems?: boolean
 }) {
   const qc = useQueryClient()
+  const canManageRef = useRef(canManageActionItems)
+  useEffect(() => {
+    canManageRef.current = canManageActionItems
+  }, [canManageActionItems])
   const [title, setTitle] = useState(item?.title ?? '')
   const [details, setDetails] = useState(item?.details ?? '')
   const [assignee, setAssignee] = useState(item?.assigneeUserId ?? '')
@@ -67,8 +73,11 @@ export function ActionForm({
     enabled: open && isValidMeetingParticipantCandidateQuery(userSearch),
   })
   const mutation = useMutation({
-    mutationFn: () =>
-      item
+    mutationFn: () => {
+      if (!canManageRef.current) {
+        throw new Error('Action item management is no longer authorized.')
+      }
+      return item
         ? patchAction(item.id, {
             title: title.trim(),
             details: details.trim() || null,
@@ -84,7 +93,8 @@ export function ActionForm({
               dueDate: dueDate || null,
             },
             idempotencyKey
-          ),
+          )
+    },
     onSuccess: () => {
       toast.success('Action item saved')
       onOpenChange(false)
@@ -99,7 +109,13 @@ export function ActionForm({
   })
   function submit(event: FormEvent) {
     event.preventDefault()
-    if (!title.trim() || !meeting || (!item && !assignee)) return
+    if (
+      !canManageRef.current ||
+      !title.trim() ||
+      !meeting ||
+      (!item && !assignee)
+    )
+      return
     mutation.mutate()
   }
   return (

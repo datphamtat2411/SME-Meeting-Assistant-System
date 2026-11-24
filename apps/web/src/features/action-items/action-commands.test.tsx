@@ -99,4 +99,18 @@ describe('ActionCommands workspace authorization', () => {
       .element(screen.getByRole('button', { name: 'Reject' }))
       .toBeInTheDocument()
   })
+
+  it('does not expose Reopen for cancelled items', async () => {
+    const screen = await renderCommands(
+      { ...officialOpenItem, status: 'CANCELLED' },
+      {
+        currentUserId: '44444444-4444-4444-8444-444444444444',
+        canManageActionItems: true,
+      }
+    )
+
+    await expect
+      .element(screen.getByRole('button', { name: 'Reopen' }))
+      .not.toBeInTheDocument()
+  })
 })

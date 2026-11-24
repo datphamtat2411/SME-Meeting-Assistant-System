@@ -6,7 +6,10 @@ import { SpeakersPanel } from './intelligence/speakers-panel'
 import { SummaryPanel } from './intelligence/summary-panel'
 import { TranscriptPanel } from './intelligence/transcript-panel'
 import { ProcessingPanel } from './media/processing-panel'
-import { RecordingPanel } from './media/recording-panel'
+import {
+  RecordingPanel,
+  type RecordingStateChange,
+} from './media/recording-panel'
 import { UploadPanel } from './media/upload-panel'
 import { useMeetingWorkspace } from './meeting-workspace-context'
 import type { MeetingWorkspaceSection } from './meeting-workspace-navigation'
@@ -14,9 +17,11 @@ import type { MeetingWorkspaceSection } from './meeting-workspace-navigation'
 export function MeetingTools({
   meetingId,
   section,
+  onRecordingStateChange,
 }: {
   meetingId: string
   section: Exclude<MeetingWorkspaceSection, 'overview'>
+  onRecordingStateChange?: (state: RecordingStateChange) => void
 }) {
   const { identity, capabilities } = useMeetingWorkspace()
 
@@ -38,6 +43,7 @@ export function MeetingTools({
           meetingId={meetingId}
           canRecordAudio={capabilities.canRecordAudio}
           canSubmitMedia={capabilities.canSubmitMedia}
+          onRecordingStateChange={onRecordingStateChange}
         />
         <UploadPanel
           meetingId={meetingId}
@@ -45,9 +51,8 @@ export function MeetingTools({
         />
         <ProcessingPanel
           meetingId={meetingId}
-          canManageProcessing={
-            capabilities.canAdmitProcessing || capabilities.canRecoverProcessing
-          }
+          canAdmitProcessing={capabilities.canAdmitProcessing}
+          canRecoverProcessing={capabilities.canRecoverProcessing}
         />
       </div>
     )
@@ -103,7 +108,10 @@ export function MeetingTools({
           canManageDecisions={capabilities.canMutateIntelligence}
         />
         <MinutesPanel meetingId={meetingId} />
-        <ExportPanel meetingId={meetingId} />
+        <ExportPanel
+          meetingId={meetingId}
+          canManage={capabilities.canMutateIntelligence}
+        />
       </div>
     )
   }

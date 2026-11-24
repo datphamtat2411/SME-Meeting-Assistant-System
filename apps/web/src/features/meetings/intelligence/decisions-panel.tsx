@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
@@ -27,6 +27,10 @@ export function DecisionsPanel({
   canManageDecisions: boolean
 }) {
   const qc = useQueryClient()
+  const canManageRef = useRef(canManageDecisions)
+  useEffect(() => {
+    canManageRef.current = canManageDecisions
+  }, [canManageDecisions])
   const query = useQuery(decisionsQuery(meetingId))
   const [editing, setEditing] = useState<Decision | null>(null)
   const [content, setContent] = useState('')
@@ -35,10 +39,14 @@ export function DecisionsPanel({
     invalidateMeetingArtifacts(qc, meetingId)
   }
   const mutation = useMutation({
-    mutationFn: () =>
-      editing
+    mutationFn: () => {
+      if (!canManageRef.current) {
+        throw new Error('Decision management is no longer authorized.')
+      }
+      return editing
         ? editDecision(editing, content.trim())
-        : createDecision(meetingId, content.trim()),
+        : createDecision(meetingId, content.trim())
+    },
     onSuccess: () => {
       toast.success('Decision saved')
       setEditing(null)
@@ -58,7 +66,12 @@ export function DecisionsPanel({
     }: {
       item: Decision
       command: 'confirm' | 'reject'
-    }) => reviewDecision(item, command),
+    }) => {
+      if (!canManageRef.current) {
+        throw new Error('Decision review is no longer authorized.')
+      }
+      return reviewDecision(item, command)
+    },
     onSuccess: () => {
       toast.success('Decision reviewed')
       refresh()
@@ -72,7 +85,7 @@ export function DecisionsPanel({
   })
   function submit(e: FormEvent) {
     e.preventDefault()
-    if (content.trim()) mutation.mutate()
+    if (canManageRef.current && content.trim()) mutation.mutate()
   }
   return (
     <Card>

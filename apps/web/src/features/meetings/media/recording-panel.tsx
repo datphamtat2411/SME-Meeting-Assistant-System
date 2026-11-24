@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Mic, Square, Upload } from 'lucide-react'
 import { toast } from 'sonner'
@@ -15,6 +15,11 @@ const recordingCandidates = [
   'audio/mp4;codecs=mp4a.40.2',
   'audio/mp4;codecs=mp4a.40.5',
 ]
+
+export type RecordingStateChange = {
+  recording: boolean
+  stop: () => void
+}
 
 function supportedRecordingMimeType(): string | null {
   if (
@@ -55,10 +60,12 @@ export function RecordingPanel({
   meetingId,
   canRecordAudio,
   canSubmitMedia,
+  onRecordingStateChange,
 }: {
   meetingId: string
   canRecordAudio: boolean
   canSubmitMedia: boolean
+  onRecordingStateChange?: (state: RecordingStateChange) => void
 }) {
   const qc = useQueryClient()
   const recorder = useRef<MediaRecorder | null>(null)
@@ -75,6 +82,12 @@ export function RecordingPanel({
   const [uploadPhase, setUploadPhase] = useState<MediaUploadPhase | null>(null)
   const [uncertainMediaId, setUncertainMediaId] = useState<string | null>(null)
   const [checkingStatus, setCheckingStatus] = useState(false)
+  const canRecordAudioRef = useRef(canRecordAudio)
+  const canSubmitMediaRef = useRef(canSubmitMedia)
+  useEffect(() => {
+    canRecordAudioRef.current = canRecordAudio
+    canSubmitMediaRef.current = canSubmitMedia
+  }, [canRecordAudio, canSubmitMedia])
 
   function isLifecycleActive(generation: number): boolean {
     return mounted.current && lifecycleGeneration.current === generation
@@ -108,8 +121,34 @@ export function RecordingPanel({
     }
   }, [])
 
+  const stop = useCallback(() => {
+    if (recorder.current?.state === 'recording') recorder.current.stop()
+  }, [])
+
+  useEffect(() => {
+    onRecordingStateChange?.({ recording, stop })
+    return () => {
+      onRecordingStateChange?.({ recording: false, stop })
+    }
+  }, [onRecordingStateChange, recording, stop])
+
+  useEffect(() => {
+    if (!canRecordAudio && recorder.current?.state === 'recording') {
+      recorder.current.stop()
+    }
+    if (!canSubmitMedia && !recording && !busy) {
+      discard()
+    }
+  }, [busy, canRecordAudio, canSubmitMedia, recording])
+
   async function begin() {
-    if (recording || busy || activePermissionRequest.current !== null) return
+    if (
+      !canRecordAudioRef.current ||
+      recording ||
+      busy ||
+      activePermissionRequest.current !== null
+    )
+      return
     const mimeType = supportedRecordingMimeType()
     if (!mimeType) {
       toast.error(
@@ -132,7 +171,8 @@ export function RecordingPanel({
       media = await navigator.mediaDevices.getUserMedia({ audio: true })
       if (
         !isLifecycleActive(generation) ||
-        activePermissionRequest.current !== requestGeneration
+        activePermissionRequest.current !== requestGeneration ||
+        !canRecordAudioRef.current
       ) {
         releaseStream(media)
         return
@@ -150,6 +190,10 @@ export function RecordingPanel({
         return
       }
 
+      if (!canRecordAudioRef.current) {
+        releaseStream(media)
+        return
+      }
       stream.current = media
       const recordedChunks: Blob[] = []
       setAudio(null)
@@ -228,10 +272,6 @@ export function RecordingPanel({
     }
   }
 
-  function stop() {
-    if (recorder.current?.state === 'recording') recorder.current.stop()
-  }
-
   function operationKey(selectedAudio: File): string {
     if (operation.current?.file === selectedAudio) {
       return operation.current.idempotencyKey
@@ -243,6 +283,11 @@ export function RecordingPanel({
 
   async function upload() {
     if (!audio || busy || uncertainMediaId) return
+    if (!canSubmitMediaRef.current) {
+      discard()
+      toast.error('Recording submission is no longer authorized')
+      return
+    }
     setBusy(true)
     setUploadPhase(null)
     try {
@@ -279,6 +324,10 @@ export function RecordingPanel({
 
   async function checkStatus() {
     if (!uncertainMediaId || checkingStatus) return
+    if (!canSubmitMediaRef.current) {
+      discard()
+      return
+    }
     setCheckingStatus(true)
     setUploadPhase('reconciling')
     try {
@@ -310,8 +359,6 @@ export function RecordingPanel({
     setUploadPhase(null)
   }
 
-  if (!canRecordAudio) return null
-
   return (
     <Card>
       <CardHeader>
@@ -330,7 +377,7 @@ export function RecordingPanel({
           <Button variant='destructive' onClick={stop}>
             <Square className='size-4' /> Stop recording
           </Button>
-        ) : (
+        ) : canRecordAudio ? (
           <Button
             variant='outline'
             disabled={busy || !!audio || checkingStatus}
@@ -338,6 +385,10 @@ export function RecordingPanel({
           >
             <Mic className='size-4' /> Start recording
           </Button>
+        ) : (
+          <span className='text-sm text-muted-foreground'>
+            New recording is not available for the current meeting state.
+          </span>
         )}
         {recording && (
           <span role='status' className='text-sm text-destructive'>

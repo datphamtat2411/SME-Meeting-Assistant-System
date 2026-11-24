@@ -430,7 +430,7 @@ describe('MeetingWorkspacePage', () => {
       .element(screen.getByRole('tab', { name: 'Transcript' }))
       .toBeDisabled()
     await expect
-      .element(screen.getByText(/verify.*meeting membership|access.*content/i))
+      .element(screen.getByText('Access to meeting content'))
       .toBeInTheDocument()
     expect(protectedRead).not.toHaveBeenCalled()
   })
@@ -570,9 +570,7 @@ describe('MeetingWorkspacePage', () => {
     await expect
       .element(screen.getByText('No source media'))
       .toBeInTheDocument()
-    await expect
-      .element(screen.getByText('Processing not started'))
-      .toBeInTheDocument()
+    await expect.element(screen.getByText('Not started')).toBeInTheDocument()
     await expect
       .element(screen.getByText('Transcript not available'))
       .toBeInTheDocument()

@@ -60,6 +60,10 @@ export function UploadPanel({
   canSubmitMedia: boolean
 }) {
   const qc = useQueryClient()
+  const canSubmitMediaRef = useRef(canSubmitMedia)
+  useEffect(() => {
+    canSubmitMediaRef.current = canSubmitMedia
+  }, [canSubmitMedia])
   const fileInput = useRef<HTMLInputElement>(null)
   const operation = useRef<{
     file: File
@@ -83,11 +87,15 @@ export function UploadPanel({
   )
 
   const mutation = useMutation<MeetingMedia, Error, UploadVariables>({
-    mutationFn: ({ file: selectedFile, idempotencyKey }) =>
-      uploadMeetingFile(meetingId, selectedFile, 'UPLOAD', {
+    mutationFn: ({ file: selectedFile, idempotencyKey }) => {
+      if (!canSubmitMediaRef.current) {
+        throw new Error('Media upload is no longer authorized.')
+      }
+      return uploadMeetingFile(meetingId, selectedFile, 'UPLOAD', {
         idempotencyKey,
         onPhase: setUploadPhase,
-      }),
+      })
+    },
     onSuccess: (media) => {
       setUploadPhase('available')
       setUncertainMediaId(null)
@@ -145,7 +153,13 @@ export function UploadPanel({
   }
 
   function submit() {
-    if (!file || mutation.isPending || uncertainMediaId) return
+    if (
+      !canSubmitMediaRef.current ||
+      !file ||
+      mutation.isPending ||
+      uncertainMediaId
+    )
+      return
     mutation.mutate({
       file,
       idempotencyKey: createOperationKey(file),

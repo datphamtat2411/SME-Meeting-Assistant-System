@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
@@ -21,6 +21,10 @@ export function SpeakersPanel({
   canMapSpeakers: boolean
 }) {
   const qc = useQueryClient()
+  const canMapRef = useRef(canMapSpeakers)
+  useEffect(() => {
+    canMapRef.current = canMapSpeakers
+  }, [canMapSpeakers])
   const speakers = useQuery(speakerClustersQuery(meetingId))
   const [searchInput, setSearchInput] = useState('')
   const [search, setSearch] = useState('')
@@ -35,8 +39,12 @@ export function SpeakersPanel({
   })
   const [selected, setSelected] = useState<string | null>(null)
   const mutation = useMutation({
-    mutationFn: (payload: { speakerId: string; userId: string | null }) =>
-      mapSpeaker(meetingId, payload.speakerId, payload.userId),
+    mutationFn: (payload: { speakerId: string; userId: string | null }) => {
+      if (!canMapRef.current) {
+        throw new Error('Speaker mapping is no longer authorized.')
+      }
+      return mapSpeaker(meetingId, payload.speakerId, payload.userId)
+    },
     onSuccess: () => {
       toast.success('Speaker identity updated')
       setSelected(null)

@@ -78,6 +78,17 @@ describe('meeting workspace navigation state', () => {
     ).toBe('action-items')
   })
 
+  it('preserves an unresolved direct link until authorization is definitive', () => {
+    expect(
+      resolveMeetingWorkspaceSection('transcript', {
+        canReadMeetingContent: false,
+        canReadIntelligence: false,
+        canReadActionItems: false,
+        authorizationResolution: 'unresolved',
+      })
+    ).toBe('transcript')
+  })
+
   it('accepts each authorized section directly', () => {
     for (const section of meetingWorkspaceSections as readonly MeetingWorkspaceSection[]) {
       expect(isMeetingWorkspaceSectionAllowed(section, fullyAuthorized)).toBe(

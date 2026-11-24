@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
@@ -30,6 +30,10 @@ export function TranscriptPanel({
   canCorrectTranscript: boolean
 }) {
   const qc = useQueryClient()
+  const canCorrectRef = useRef(canCorrectTranscript)
+  useEffect(() => {
+    canCorrectRef.current = canCorrectTranscript
+  }, [canCorrectTranscript])
   const transcript = useQuery(transcriptQuery(meetingId))
   const coverage = useQuery({
     ...transcriptCoverageQuery(meetingId),
@@ -42,6 +46,9 @@ export function TranscriptPanel({
   const [reason, setReason] = useState('')
   const mutation = useMutation({
     mutationFn: () => {
+      if (!canCorrectRef.current) {
+        throw new Error('Transcript correction is no longer authorized.')
+      }
       if (!editing) throw new Error('No transcript segment selected')
       return correctTranscriptSegment(
         meetingId,

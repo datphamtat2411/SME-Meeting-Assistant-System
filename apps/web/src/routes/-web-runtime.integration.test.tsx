@@ -389,7 +389,7 @@ describe('integrated generated Web runtime', () => {
       )
       .toBeInTheDocument()
     await expect
-      .element(screen.getByText('Meeting intelligence workspace'))
+      .element(screen.getByRole('tab', { name: 'Overview' }))
       .toBeInTheDocument()
 
     await router.navigate({
@@ -398,12 +398,12 @@ describe('integrated generated Web runtime', () => {
     })
     await expect.element(screen.getByText('Live route')).toBeInTheDocument()
     await expect
-      .element(screen.getByText('Meeting intelligence workspace'))
+      .element(screen.getByRole('tab', { name: 'Overview' }))
       .not.toBeInTheDocument()
 
     router.history.back()
     await expect
-      .element(screen.getByText('Meeting intelligence workspace'))
+      .element(screen.getByRole('tab', { name: 'Overview' }))
       .toBeInTheDocument()
     router.history.back()
     await expect
@@ -449,7 +449,7 @@ describe('integrated generated Web runtime', () => {
       .element(screen.getByText('Meeting not found or unavailable'))
       .toBeInTheDocument()
     await expect
-      .element(screen.getByText('Meeting intelligence workspace'))
+      .element(screen.getByRole('tab', { name: 'Overview' }))
       .not.toBeInTheDocument()
     expect(router.state.location.pathname).toBe(`/meetings/${meetingId}`)
     expect(getUserMedia).not.toHaveBeenCalled()

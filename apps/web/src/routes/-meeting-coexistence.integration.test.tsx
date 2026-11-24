@@ -120,6 +120,14 @@ function installAuthorizedApi() {
   const reads = vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
     if (url === '/auth/me') return user
     if (url.endsWith('/media')) return []
+    if (url.endsWith('/transcript')) {
+      throw new CoreApiError({
+        message: 'Transcript is not ready',
+        status: 404,
+        kind: 'http',
+      })
+    }
+    if (url.endsWith('/speaker-clusters')) return []
     throw new Error(`Unexpected read ${url}`)
   })
 
@@ -166,7 +174,13 @@ describe('generated meeting route coexistence', () => {
       '/_authenticated/meetings/$meetingId'
     )
     await expect
-      .element(screen.getByText('Meeting intelligence workspace'))
+      .element(screen.getByRole('tab', { name: 'Overview' }))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('tab', { name: 'Recording' }))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('tab', { name: 'Transcript' }))
       .toBeInTheDocument()
 
     await router.navigate({
@@ -178,7 +192,7 @@ describe('generated meeting route coexistence', () => {
       '/_authenticated/meetings/$meetingId/live'
     )
     await expect
-      .element(screen.getByText('Meeting intelligence workspace'))
+      .element(screen.getByRole('tab', { name: 'Overview' }))
       .not.toBeInTheDocument()
 
     await router.navigate({
@@ -207,10 +221,25 @@ describe('generated meeting route coexistence', () => {
       '/_authenticated/meetings/operator-mi-e2e'
     )
     await expect
-      .element(screen.getByText('Meeting intelligence workspace'))
+      .element(screen.getByRole('tab', { name: 'Overview' }))
       .not.toBeInTheDocument()
     expect(detailReads.mock.calls.length).toBe(detailsBeforeOperator)
     expect(metadataReads.mock.calls.length).toBe(metadataBeforeOperator)
+  })
+
+  it('preserves an authorized direct workspace section through verification', async () => {
+    installAuthorizedApi()
+    const { router, screen } = await renderRoute(
+      `/meetings/${meetingA.id}?section=transcript`
+    )
+
+    await expect
+      .element(screen.getByRole('tab', { name: 'Transcript' }))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('Transcript not available yet'))
+      .toBeInTheDocument()
+    expect(router.state.location.search.section).toBe('transcript')
   })
 
   it('redirects anonymous meeting deep links to sign-in without mounting descendants', async () => {
@@ -257,7 +286,7 @@ describe('generated meeting route coexistence', () => {
       .element(missing.screen.getByText('Meeting not found or unavailable'))
       .toBeInTheDocument()
     await expect
-      .element(missing.screen.getByText('Meeting intelligence workspace'))
+      .element(missing.screen.getByRole('tab', { name: 'Overview' }))
       .not.toBeInTheDocument()
     expect(api.metadataReads).not.toHaveBeenCalled()
   })

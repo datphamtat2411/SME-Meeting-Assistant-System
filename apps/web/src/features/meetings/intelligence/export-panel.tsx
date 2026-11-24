@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Download, FileDown } from 'lucide-react'
 import { toast } from 'sonner'
@@ -15,7 +15,17 @@ import {
 } from './export-api'
 import { minutesQuery } from './minutes-api'
 
-export function ExportPanel({ meetingId }: { meetingId: string }) {
+export function ExportPanel({
+  meetingId,
+  canManage = true,
+}: {
+  meetingId: string
+  canManage?: boolean
+}) {
+  const canManageRef = useRef(canManage)
+  useEffect(() => {
+    canManageRef.current = canManage
+  }, [canManage])
   const [exportId, setExportId] = useState('')
   const [unavailable, setUnavailable] = useState(false)
   const idempotencyKeys = useRef<Record<'PDF' | 'MARKDOWN', string>>({
@@ -36,8 +46,16 @@ export function ExportPanel({ meetingId }: { meetingId: string }) {
     },
   })
   const create = useMutation({
-    mutationFn: (format: 'PDF' | 'MARKDOWN') =>
-      createMinutesExport(meetingId, format, idempotencyKeys.current[format]),
+    mutationFn: (format: 'PDF' | 'MARKDOWN') => {
+      if (!canManageRef.current) {
+        throw new Error('Minutes export is no longer authorized.')
+      }
+      return createMinutesExport(
+        meetingId,
+        format,
+        idempotencyKeys.current[format]
+      )
+    },
     onSuccess: (data, format) => {
       idempotencyKeys.current[format] = crypto.randomUUID()
       setExportId(data.exportId)
@@ -60,6 +78,9 @@ export function ExportPanel({ meetingId }: { meetingId: string }) {
   })
   const download = useMutation({
     mutationFn: async () => {
+      if (!canManageRef.current) {
+        throw new Error('Minutes export is no longer authorized.')
+      }
       const result = await accessMinutesExport(exportId)
       if (result.freshness !== 'CURRENT')
         throw new Error('Export is not current. Generate a fresh copy.')

@@ -32,10 +32,26 @@ function isUncertainProcessingError(error: unknown): boolean {
 export function ProcessingPanel({
   meetingId,
   canManageProcessing,
+  canAdmitProcessing,
+  canRecoverProcessing,
 }: {
   meetingId: string
-  canManageProcessing: boolean
+  /**
+   * Kept for existing feature-local consumers. Workspace composition passes
+   * the two command capabilities separately.
+   */
+  canManageProcessing?: boolean
+  canAdmitProcessing?: boolean
+  canRecoverProcessing?: boolean
 }) {
+  const admissionAllowed = canAdmitProcessing ?? canManageProcessing ?? false
+  const recoveryAllowed = canRecoverProcessing ?? canManageProcessing ?? false
+  const admissionAllowedRef = useRef(admissionAllowed)
+  const recoveryAllowedRef = useRef(recoveryAllowed)
+  useEffect(() => {
+    admissionAllowedRef.current = admissionAllowed
+    recoveryAllowedRef.current = recoveryAllowed
+  }, [admissionAllowed, recoveryAllowed])
   const qc = useQueryClient()
   const media = useQuery(meetingMediaQuery(meetingId))
   const jobs = useQuery({
@@ -60,13 +76,9 @@ export function ProcessingPanel({
   useEffect(() => {
     for (const job of jobs.data ?? []) {
       if (
-        [
-          'COMPLETED',
-          'COMPLETED_WITH_WARNINGS',
-          'SUCCEEDED',
-          'FAILED',
-          'PARTIAL_SUCCESS',
-        ].includes(job.status) &&
+        ['COMPLETED', 'COMPLETED_WITH_WARNINGS', 'FAILED'].includes(
+          job.status
+        ) &&
         !completed.current.has(job.id)
       ) {
         completed.current.add(job.id)
@@ -88,10 +100,14 @@ export function ProcessingPanel({
     }: {
       selectedMediaId: string
       idempotencyKey: string
-    }) =>
-      requestProcessing(meetingId, selectedMediaId, undefined, {
+    }) => {
+      if (!admissionAllowedRef.current) {
+        throw new Error('Processing admission is no longer authorized.')
+      }
+      return requestProcessing(meetingId, selectedMediaId, undefined, {
         idempotencyKey,
-      }),
+      })
+    },
     onSuccess: (_, variables) => {
       if (admissionOperation.current?.mediaId === variables.selectedMediaId) {
         admissionOperation.current = null
@@ -130,7 +146,12 @@ export function ProcessingPanel({
       jobId: string
       stageCode?: string
       idempotencyKey: string
-    }) => retryProcessing(jobId, stageCode, { idempotencyKey }),
+    }) => {
+      if (!recoveryAllowedRef.current) {
+        throw new Error('Processing recovery is no longer authorized.')
+      }
+      return retryProcessing(jobId, stageCode, { idempotencyKey })
+    },
     onSuccess: (_, variables) => {
       retryOperations.current.delete(
         `${variables.jobId}:${variables.stageCode ?? ''}`
@@ -184,6 +205,7 @@ export function ProcessingPanel({
   function submitProcessing() {
     if (
       !mediaId ||
+      !admissionAllowedRef.current ||
       create.isPending ||
       retry.isPending ||
       (uncertainAdmissionMediaId !== null &&
@@ -198,7 +220,8 @@ export function ProcessingPanel({
   }
 
   function submitRetry(jobId: string, stageCode?: string) {
-    if (retry.isPending || create.isPending) return
+    if (!recoveryAllowedRef.current || retry.isPending || create.isPending)
+      return
     retry.mutate({
       jobId,
       stageCode,
@@ -222,7 +245,7 @@ export function ProcessingPanel({
             retry={() => void media.refetch()}
           />
         )}
-        {canManageProcessing && available.length > 0 && (
+        {admissionAllowed && available.length > 0 && (
           <div className='flex flex-wrap items-center gap-2'>
             <Select
               value={mediaId}
@@ -307,7 +330,7 @@ export function ProcessingPanel({
                     ))}
                   </div>
                 )}
-                {canManageProcessing && job.retryable && (
+                {recoveryAllowed && job.retryable && (
                   <Button
                     size='sm'
                     variant='outline'

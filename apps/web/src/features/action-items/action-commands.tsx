@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
@@ -25,7 +26,7 @@ const allowed: Record<
     { label: 'Cancel', command: 'cancel' },
   ],
   DONE: [{ label: 'Reopen', command: 'reopen' }],
-  CANCELLED: [{ label: 'Reopen', command: 'reopen' }],
+  CANCELLED: [],
 }
 export function ActionCommands({
   item,
@@ -37,6 +38,10 @@ export function ActionCommands({
   canManageActionItems?: boolean
 }) {
   const qc = useQueryClient()
+  const authorization = useRef({ currentUserId, canManageActionItems })
+  useEffect(() => {
+    authorization.current = { currentUserId, canManageActionItems }
+  }, [canManageActionItems, currentUserId])
   const mutation = useMutation({
     mutationFn: (
       command: 'confirm' | 'reject' | 'start' | 'complete' | 'cancel' | 'reopen'
@@ -61,6 +66,21 @@ export function ActionCommands({
     return !['confirm', 'reject', 'cancel'].includes(command)
   })
 
+  function canExecute(command: (typeof visibleCommands)[number]['command']) {
+    const current = authorization.current
+    if (
+      current.currentUserId === undefined &&
+      current.canManageActionItems === undefined
+    ) {
+      return true
+    }
+    if (current.canManageActionItems) return true
+    const officialAssignee =
+      (item.sourceType === 'MANUAL' || item.confirmedByUserId !== null) &&
+      item.assigneeUserId === current.currentUserId
+    return officialAssignee && ['start', 'complete', 'reopen'].includes(command)
+  }
+
   if (!visibleCommands.length) return null
 
   return (
@@ -75,7 +95,13 @@ export function ActionCommands({
               : 'outline'
           }
           disabled={mutation.isPending}
-          onClick={() => mutation.mutate(x.command)}
+          onClick={() => {
+            if (!canExecute(x.command)) {
+              toast.error('Action operation is no longer authorized')
+              return
+            }
+            mutation.mutate(x.command)
+          }}
         >
           {x.label}
         </Button>

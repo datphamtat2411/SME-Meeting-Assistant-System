@@ -136,6 +136,7 @@ export function MeetingActionsPanel({
           open={open}
           onOpenChange={setOpen}
           meetingId={meetingId}
+          canManageActionItems={canManageActionItems}
         />
       )}
     </>

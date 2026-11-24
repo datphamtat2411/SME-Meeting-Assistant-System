@@ -1,16 +1,14 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import {
   AlertCircle,
   ArrowLeft,
   CheckCircle2,
-  CalendarDays,
   Clock3,
   FileText,
   LayoutDashboard,
   ListChecks,
-  MapPin,
   MessageSquare,
   Mic,
   RefreshCw,
@@ -40,9 +38,7 @@ import {
   type MeetingEditCommit,
   type EditableMeetingView,
 } from './components/meeting-edit-dialog'
-import { MeetingLifecycleActions } from './components/meeting-lifecycle-actions'
 import { MeetingParticipantManagement } from './components/meeting-participant-management'
-import { MeetingStatusBadge } from './components/meeting-status-badge'
 import {
   classifyParticipantMemberships,
   meetingDetailQueryOptions,
@@ -61,22 +57,33 @@ import {
   updateMeetingListCacheData,
   type MeetingListCacheData,
 } from './data/meeting-cache'
-import { formatMeetingSchedule as formatSchedule } from './data/meeting-schedule-format'
 import type { MeetingParticipantRefresh } from './data/participant-management-api'
 import { minutesQuery } from './intelligence/minutes-api'
 import { meetingMediaQuery } from './media/media-api'
 import { processingJobsQuery } from './media/processing-api'
+import { presentProcessingStatus } from './media/processing-status-presentation'
+import type { RecordingStateChange } from './media/recording-panel'
 import { MeetingTools } from './meeting-tools'
 import {
   deriveMeetingWorkspaceCapabilities,
+  resolveMeetingWorkspaceAuthorization,
   type MeetingWorkspaceMembership,
 } from './meeting-workspace-capabilities'
 import { MeetingWorkspaceProvider } from './meeting-workspace-context'
+import { MeetingWorkspaceHeader as MeetingHeader } from './meeting-workspace-header'
 import {
   isMeetingWorkspaceSectionAllowed,
   resolveMeetingWorkspaceSection,
   type MeetingWorkspaceSection,
 } from './meeting-workspace-navigation'
+import {
+  canonicalResultAvailability,
+  resultAvailabilityLabel,
+} from './meeting-workspace-results'
+import type {
+  WorkspaceLookupState,
+  WorkspaceParticipantState,
+} from './meeting-workspace-types'
 
 const presentationTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
 const meetingDateTimeFormatter = new Intl.DateTimeFormat('en-US', {
@@ -85,20 +92,8 @@ const meetingDateTimeFormatter = new Intl.DateTimeFormat('en-US', {
   timeZone: presentationTimeZone,
 })
 
-type LookupState<T> = {
-  hasId: boolean
-  data?: T
-  isPending: boolean
-  isError: boolean
-  onRetry: () => void
-}
-
-type ParticipantState = {
-  data?: ParticipantView[]
-  isPending: boolean
-  isError: boolean
-  onRetry: () => void
-}
+type LookupState<T> = WorkspaceLookupState<T>
+type ParticipantState = WorkspaceParticipantState
 
 export function MeetingWorkspacePage({
   meetingId,
@@ -256,24 +251,25 @@ function MeetingWorkspaceIdentityBoundary({
 
   const membership: MeetingWorkspaceMembership = {
     status: participantsQuery.status,
-    data:
-      participantsQuery.isError || participantsQuery.isFetching
-        ? undefined
-        : participantsQuery.data,
+    data: participantsQuery.isError ? undefined : participantsQuery.data,
     isFetching: participantsQuery.isFetching,
+    error: participantsQuery.error,
   }
   const capabilities = deriveMeetingWorkspaceCapabilities({
     identity,
     identityCanReadProtectedData,
     meeting,
     membership,
+    authorizationResolution: resolveMeetingWorkspaceAuthorization({
+      identity,
+      identityCanReadProtectedData,
+      meeting,
+      membership,
+    }),
   })
   const participants: ParticipantState = {
-    data:
-      participantsQuery.isError || participantsQuery.isFetching
-        ? undefined
-        : participantsQuery.data,
-    isPending: participantsQuery.isPending || participantsQuery.isFetching,
+    data: participantsQuery.isError ? undefined : participantsQuery.data,
+    isPending: participantsQuery.isPending && !participantsQuery.data,
     isError: participantsQuery.isError,
     onRetry: () => void participantsQuery.refetch(),
   }
@@ -331,6 +327,9 @@ async function resetMeetingWorkspaceQueries(
   queryClient: ReturnType<typeof useQueryClient>,
   meetingId: string
 ) {
+  await queryClient.cancelQueries({
+    predicate: (query) => isMeetingWorkspaceQuery(query.queryKey, meetingId),
+  })
   await queryClient.resetQueries({
     predicate: (query) => isMeetingWorkspaceQuery(query.queryKey, meetingId),
   })
@@ -430,10 +429,9 @@ function MeetingWorkspace({
 }) {
   const [editOpen, setEditOpen] = useState(false)
   const notifiedEditCommits = useRef(new Set<string>())
+  const [recordingState, setRecordingState] =
+    useState<RecordingStateChange | null>(null)
   const activeSection = resolveMeetingWorkspaceSection(section, capabilities)
-  const [visitedSections, setVisitedSections] = useState(
-    () => new Set<MeetingWorkspaceSection>([activeSection])
-  )
   const canEdit = capabilities.canEditMeeting
 
   useEffect(() => {
@@ -446,14 +444,13 @@ function MeetingWorkspace({
     nextSection: MeetingWorkspaceSection,
     replace?: boolean
   ) => {
-    setVisitedSections((visited) => {
-      const nextVisited = new Set(visited)
-      nextVisited.add(activeSection)
-      nextVisited.add(nextSection)
-      return nextVisited.size === visited.size ? visited : nextVisited
-    })
     onSectionChange?.(nextSection, replace)
   }
+  const handleRecordingStateChange = useCallback(
+    (state: RecordingStateChange) =>
+      setRecordingState(state.recording ? state : null),
+    []
+  )
 
   const handleMeetingEdited = (commit: MeetingEditCommit) => {
     const key = `${commit.meetingId}:${commit.etag}:${commit.outcome}`
@@ -500,6 +497,35 @@ function MeetingWorkspace({
         />
       )}
       <div className='space-y-5'>
+        {recordingState?.recording && (
+          <div
+            role='status'
+            aria-live='polite'
+            className='flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm'
+          >
+            <span className='font-medium text-destructive'>
+              Recording in progress in this meeting
+            </span>
+            <div className='flex flex-wrap gap-2'>
+              <Button
+                type='button'
+                size='sm'
+                variant='outline'
+                onClick={() => navigateToSection('recording')}
+              >
+                Open recording controls
+              </Button>
+              <Button
+                type='button'
+                size='sm'
+                variant='destructive'
+                onClick={recordingState.stop}
+              >
+                Stop recording
+              </Button>
+            </div>
+          </div>
+        )}
         {!capabilities.canReadMeetingContent && (
           <div
             role='status'
@@ -568,48 +594,78 @@ function MeetingWorkspace({
           </TabsList>
           <TabsContent
             value='overview'
-            forceMount={visitedSections.has('overview') ? true : undefined}
             className='mt-6'
+            hidden={activeSection !== 'overview'}
+            aria-hidden={activeSection !== 'overview'}
           >
-            <OperationalOverview
-              meeting={meeting}
-              currentUser={currentUser}
-              capabilities={capabilities}
-              participants={participants}
-              etag={etag}
-              onParticipantReconciled={onParticipantReconciled}
-              onSectionChange={navigateToSection}
-            />
+            {activeSection === 'overview' && (
+              <OperationalOverview
+                meeting={meeting}
+                currentUser={currentUser}
+                capabilities={capabilities}
+                participants={participants}
+                etag={etag}
+                onParticipantReconciled={onParticipantReconciled}
+                onSectionChange={navigateToSection}
+              />
+            )}
           </TabsContent>
           {(
             ['recording', 'transcript', 'intelligence', 'action-items'] as const
           ).map((workspaceSection) => {
             const shouldMount =
-              visitedSections.has(workspaceSection) ||
-              activeSection === workspaceSection
+              workspaceSection === 'recording' &&
+              capabilities.canReadMeetingContent
+            const isActive = activeSection === workspaceSection
             return (
               <TabsContent
                 key={workspaceSection}
                 value={workspaceSection}
                 forceMount={shouldMount ? true : undefined}
                 className='mt-6'
+                hidden={!isActive}
+                aria-hidden={!isActive}
               >
-                {shouldMount &&
-                  isMeetingWorkspaceSectionAllowed(
+                {isActive &&
+                  (isMeetingWorkspaceSectionAllowed(
                     workspaceSection,
                     capabilities
-                  ) && (
+                  ) ? (
                     <MeetingTools
                       meetingId={meeting.id}
                       section={workspaceSection}
+                      onRecordingStateChange={handleRecordingStateChange}
                     />
-                  )}
+                  ) : (
+                    <WorkspaceAuthorizationState
+                      resolution={
+                        capabilities.authorizationResolution ?? 'unresolved'
+                      }
+                    />
+                  ))}
               </TabsContent>
             )
           })}
         </Tabs>
       </div>
     </>
+  )
+}
+
+function WorkspaceAuthorizationState({
+  resolution,
+}: {
+  resolution: ReturnType<typeof resolveMeetingWorkspaceAuthorization>
+}) {
+  return (
+    <div
+      role='status'
+      className='rounded-lg border border-dashed px-4 py-6 text-sm text-muted-foreground'
+    >
+      {resolution === 'denied'
+        ? 'This meeting section is not available to the current session.'
+        : 'Verifying meeting membership before protected content can be opened…'}
+    </div>
   )
 }
 
@@ -633,105 +689,6 @@ function WorkspaceTab({
       {icon}
       {children}
     </TabsTrigger>
-  )
-}
-
-function MeetingHeader({
-  meeting,
-  etag,
-  currentUser,
-  capabilities,
-  participants,
-  room,
-  organizer,
-  canEdit,
-  onEdit,
-}: {
-  meeting: MeetingView
-  etag: string
-  currentUser: AuthContext
-  capabilities: ReturnType<typeof deriveMeetingWorkspaceCapabilities>
-  participants: ParticipantState
-  room: LookupState<RoomFilterOption>
-  organizer: LookupState<OrganizerFilterOption>
-  canEdit: boolean
-  onEdit: () => void
-}) {
-  return (
-    <section className='space-y-5'>
-      <div className='min-w-0 space-y-3'>
-        <div className='flex flex-wrap items-center gap-2'>
-          <MeetingStatusBadge status={meeting.status} />
-        </div>
-        <div className='flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between'>
-          <div>
-            <h1 className='text-2xl font-bold tracking-tight sm:text-3xl'>
-              {meeting.title}
-            </h1>
-            {meeting.description && (
-              <p className='mt-2 max-w-3xl text-muted-foreground'>
-                {meeting.description}
-              </p>
-            )}
-          </div>
-          <div className='flex flex-wrap justify-end gap-2'>
-            <MeetingLifecycleActions
-              meeting={meeting}
-              etag={etag}
-              currentUserId={currentUser.userId}
-              allowedActions={capabilities.canManageMeeting ? undefined : []}
-            />
-            {canEdit && (
-              <Button type='button' variant='outline' onClick={onEdit}>
-                Edit meeting
-              </Button>
-            )}
-          </div>
-        </div>
-        <div className='flex flex-wrap gap-x-4 gap-y-2 text-sm text-muted-foreground'>
-          <span className='inline-flex items-center gap-1.5'>
-            <CalendarDays className='size-4' />
-            {formatMeetingScheduleValue(meeting)}
-          </span>
-          <span className='inline-flex items-center gap-1.5'>
-            <MapPin className='size-4' />
-            {formatRoomLabel(room)}
-          </span>
-        </div>
-      </div>
-
-      <div className='flex flex-col gap-3 rounded-xl border bg-card p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between'>
-        <div className='flex min-w-0 items-center gap-3'>
-          <ParticipantAvatarStack
-            participants={
-              capabilities.canReadMeetingContent
-                ? (participants.data ?? [])
-                : []
-            }
-          />
-          <div className='min-w-0'>
-            <p className='font-medium'>
-              {capabilities.canReadMeetingContent
-                ? formatParticipantSummary(participants)
-                : 'Participant details unavailable'}
-            </p>
-            <p className='truncate text-sm text-muted-foreground'>
-              {!capabilities.canReadMeetingContent
-                ? 'Active membership is required to view the participant list.'
-                : participants.isError
-                  ? 'Participant memberships could not be loaded.'
-                  : formatParticipantNames(participants.data ?? [])}
-            </p>
-          </div>
-        </div>
-        <div className='text-sm text-muted-foreground sm:text-end'>
-          <span>Organized by </span>
-          <span className='font-medium text-foreground'>
-            {formatOrganizerLabel(organizer)}
-          </span>
-        </div>
-      </div>
-    </section>
   )
 }
 
@@ -838,15 +795,18 @@ function WorkspaceResultsOverview({
         : latest,
     undefined as NonNullable<typeof jobs.data>[number] | undefined
   )
-  const transcriptState = minutes.isSuccess
-    ? formatResultAvailability(minutes.data.transcript.availability)
+  const processingState = latestJob
+    ? presentProcessingStatus(latestJob.status)
     : undefined
-  const summaryState = minutes.isSuccess
-    ? formatResultAvailability(minutes.data.summary.availability)
+  const transcriptAvailability = minutes.isSuccess
+    ? canonicalResultAvailability(minutes.data.transcript.availability)
+    : undefined
+  const summaryAvailability = minutes.isSuccess
+    ? canonicalResultAvailability(minutes.data.summary.availability)
     : undefined
   const hasDerivedResults = Boolean(
     minutes.data &&
-    (minutes.data.summary.availability !== 'MISSING' ||
+    (summaryAvailability === 'AVAILABLE' ||
       minutes.data.confirmedDecisions.length > 0 ||
       minutes.data.officialActionItems.length > 0)
   )
@@ -868,7 +828,7 @@ function WorkspaceResultsOverview({
             media.isPending
               ? 'Checking availability'
               : media.isError
-                ? 'Unavailable'
+                ? 'Unable to verify'
                 : media.data.length === 0
                   ? 'No source media'
                   : `${availableMedia?.length ?? 0} available · ${media.data.length} total`
@@ -919,10 +879,10 @@ function WorkspaceResultsOverview({
             jobs.isPending
               ? 'Checking status'
               : jobs.isError
-                ? 'Unavailable'
+                ? 'Unable to verify'
                 : latestJob
-                  ? latestJob.status.replace(/_/g, ' ')
-                  : 'Processing not started'
+                  ? (processingState?.label ?? 'Unknown status')
+                  : 'Not started'
           }
           description={
             jobs.isPending
@@ -931,6 +891,7 @@ function WorkspaceResultsOverview({
                 ? 'Processing status could not be verified.'
                 : latestJob
                   ? [
+                      `Latest observed attempt: ${processingState?.label ?? 'Unknown status'}`,
                       latestJob.currentStage
                         ? `Current stage: ${latestJob.currentStage}`
                         : undefined,
@@ -948,19 +909,24 @@ function WorkspaceResultsOverview({
               : jobs.isError
                 ? 'error'
                 : latestJob
-                  ? 'available'
+                  ? processingResultKind(processingState?.kind)
                   : 'unavailable'
           }
           action={
             jobs.isError
               ? { label: 'Retry', onClick: () => void jobs.refetch() }
-              : latestJob ||
-                  (availableMedia?.length && capabilities.canAdmitProcessing)
+              : latestJob?.status === 'WAITING_FOR_REVIEW'
                 ? {
-                    label: 'Review processing',
-                    onClick: () => onSectionChange?.('recording'),
+                    label: 'Review transcript',
+                    onClick: () => onSectionChange?.('transcript'),
                   }
-                : undefined
+                : latestJob ||
+                    (availableMedia?.length && capabilities.canAdmitProcessing)
+                  ? {
+                      label: 'Review processing',
+                      onClick: () => onSectionChange?.('recording'),
+                    }
+                  : undefined
           }
         />
         <WorkspaceResultRow
@@ -970,17 +936,19 @@ function WorkspaceResultsOverview({
             minutes.isPending
               ? 'Checking availability'
               : minutes.isError
-                ? 'Unavailable'
-                : minutes.data.transcript.availability === 'MISSING'
+                ? 'Unable to verify'
+                : transcriptAvailability === 'MISSING'
                   ? 'Transcript not available'
-                  : (transcriptState ?? 'Unavailable')
+                  : resultAvailabilityLabel(
+                      minutes.data.transcript.availability
+                    )
           }
           description={
             minutes.isPending
               ? 'Checking the latest meeting results.'
               : minutes.isError
                 ? 'Transcript availability could not be verified.'
-                : minutes.data.transcript.availability === 'MISSING'
+                : transcriptAvailability === 'MISSING'
                   ? 'No transcript artifact is available yet.'
                   : `${minutes.data.transcript.unresolvedSegments} unresolved segments · ${minutes.data.transcript.unresolvedCoverageRegions} unresolved speech regions.`
           }
@@ -989,15 +957,15 @@ function WorkspaceResultsOverview({
               ? 'pending'
               : minutes.isError
                 ? 'error'
-                : minutes.data.transcript.availability === 'MISSING'
-                  ? 'unavailable'
-                  : 'available'
+                : resultAvailabilityKind(transcriptAvailability)
           }
           action={
             minutes.isError
               ? { label: 'Retry', onClick: () => void minutes.refetch() }
               : minutes.isSuccess &&
-                  minutes.data.transcript.availability !== 'MISSING'
+                  transcriptAvailability !== 'MISSING' &&
+                  transcriptAvailability !== 'UNKNOWN' &&
+                  transcriptAvailability !== 'FAILED'
                 ? {
                     label: 'Review transcript',
                     onClick: () => onSectionChange?.('transcript'),
@@ -1012,11 +980,11 @@ function WorkspaceResultsOverview({
             minutes.isPending
               ? 'Checking availability'
               : minutes.isError
-                ? 'Unavailable'
+                ? 'Unable to verify'
                 : hasDerivedResults
-                  ? summaryState === 'MISSING'
+                  ? summaryAvailability === 'MISSING'
                     ? 'Other confirmed results available'
-                    : `Summary ${summaryState}`
+                    : `Summary ${resultAvailabilityLabel(minutes.data.summary.availability).toLocaleLowerCase()}`
                   : 'No summary available'
           }
           description={
@@ -1032,7 +1000,9 @@ function WorkspaceResultsOverview({
               : minutes.isError
                 ? 'error'
                 : hasDerivedResults
-                  ? 'available'
+                  ? summaryAvailability === 'NEEDS_REVIEW'
+                    ? 'warning'
+                    : 'available'
                   : 'unavailable'
           }
           action={
@@ -1056,7 +1026,7 @@ function WorkspaceResultsOverview({
             minutes.isPending
               ? 'Checking availability'
               : minutes.isError
-                ? 'Unavailable'
+                ? 'Unable to verify'
                 : `${minutes.data.officialActionItems.length} official`
           }
           description={
@@ -1117,13 +1087,19 @@ function WorkspaceResultRow({
   title: string
   state: string
   description: string
-  kind: 'pending' | 'available' | 'unavailable' | 'error'
+  kind:
+    | 'pending'
+    | 'available'
+    | 'unavailable'
+    | 'error'
+    | 'warning'
+    | 'neutral'
   action?: { label: string; onClick: () => void }
 }) {
   const StateIcon =
     kind === 'available'
       ? CheckCircle2
-      : kind === 'error'
+      : kind === 'error' || kind === 'warning'
         ? TriangleAlert
         : null
   return (
@@ -1146,7 +1122,9 @@ function WorkspaceResultRow({
               className={
                 kind === 'error'
                   ? 'text-sm text-destructive'
-                  : 'text-sm font-medium text-muted-foreground'
+                  : kind === 'warning'
+                    ? 'text-sm font-medium text-amber-700 dark:text-amber-300'
+                    : 'text-sm font-medium text-muted-foreground'
               }
             >
               {state}
@@ -1172,8 +1150,40 @@ function WorkspaceResultRow({
   )
 }
 
-function formatResultAvailability(value: string) {
-  return value.replace(/_/g, ' ').toLocaleLowerCase()
+function processingResultKind(
+  kind: ReturnType<typeof presentProcessingStatus>['kind'] | undefined
+): 'pending' | 'available' | 'unavailable' | 'error' | 'warning' | 'neutral' {
+  switch (kind) {
+    case 'success':
+      return 'available'
+    case 'warning':
+    case 'action':
+      return 'warning'
+    case 'failure':
+      return 'error'
+    case 'pending':
+    case 'processing':
+      return 'pending'
+    default:
+      return 'neutral'
+  }
+}
+
+function resultAvailabilityKind(
+  availability: ReturnType<typeof canonicalResultAvailability> | undefined
+): 'available' | 'unavailable' | 'error' | 'warning' | 'neutral' {
+  switch (availability) {
+    case 'AVAILABLE':
+      return 'available'
+    case 'NEEDS_REVIEW':
+      return 'warning'
+    case 'FAILED':
+      return 'error'
+    case 'UNKNOWN':
+      return 'neutral'
+    default:
+      return 'unavailable'
+  }
 }
 
 function ParticipantsCard({
@@ -1392,80 +1402,12 @@ function MeetingWorkspaceSkeleton() {
   )
 }
 
-function formatRoomLabel(room: LookupState<RoomFilterOption>) {
-  if (!room.hasId) return 'Room not assigned'
-  if (room.isError) return 'Room unavailable'
-  if (room.isPending) return 'Loading room'
-  return room.data?.name ?? 'Room unavailable'
-}
-
-function formatOrganizerLabel(organizer: LookupState<OrganizerFilterOption>) {
-  if (organizer.isError) return 'Organizer unavailable'
-  if (organizer.isPending) return 'Loading organizer'
-  return organizer.data?.name ?? 'Organizer unavailable'
-}
-
-function formatParticipantSummary(state: ParticipantState) {
-  if (state.isPending) return 'Loading participants'
-  if (state.isError) return 'Participants unavailable'
-  const activeCount = classifyParticipantMemberships(state.data ?? []).active
-    .length
-  return `${activeCount} active participant${activeCount === 1 ? '' : 's'}`
-}
-
-function formatParticipantNames(participants: ParticipantView[]) {
-  const names = classifyParticipantMemberships(participants)
-    .active.map((participant) => participant.displayName?.trim())
-    .filter((name): name is string => Boolean(name))
-  if (!names.length) return 'Names are shown only when projected by Core API.'
-  return names.slice(0, 3).join(', ') + (names.length > 3 ? ', …' : '')
-}
-
 function formatParticipantCount(participants: ParticipantView[]) {
   const { active, removed } = classifyParticipantMemberships(participants)
   const activeLabel = `${active.length} active participant${active.length === 1 ? '' : 's'}`
   return removed.length
     ? `${activeLabel}; ${removed.length} historical membership${removed.length === 1 ? '' : 's'}`
     : activeLabel
-}
-
-function ParticipantAvatarStack({
-  participants,
-}: {
-  participants: ParticipantView[]
-}) {
-  const namedParticipants = classifyParticipantMemberships(participants)
-    .active.filter((participant) => participant.displayName?.trim())
-    .slice(0, 3)
-
-  return (
-    <div
-      aria-hidden='true'
-      className='flex size-10 shrink-0 items-center -space-x-2'
-    >
-      {namedParticipants.length ? (
-        namedParticipants.map((participant) => (
-          <span
-            key={participant.id}
-            className='flex size-9 items-center justify-center rounded-full border-2 border-card bg-primary/10 text-xs font-semibold text-primary'
-          >
-            {participant
-              .displayName!.trim()
-              .split(/\s+/)
-              .slice(0, 2)
-              .map((part) => part[0]?.toLocaleUpperCase())
-              .join('')}
-          </span>
-        ))
-      ) : (
-        <Users className='size-5 text-primary' />
-      )}
-    </div>
-  )
-}
-
-function formatMeetingScheduleValue(meeting: MeetingView) {
-  return formatSchedule(meeting.scheduledStartAt, meeting.scheduledEndAt)
 }
 
 function formatDateTime(value: string) {

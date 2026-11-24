@@ -1,4 +1,4 @@
-import { StrictMode } from 'react'
+import { StrictMode, useState } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
@@ -42,6 +42,22 @@ function renderPanel(strict = false) {
     </QueryClientProvider>
   )
   return render(strict ? <StrictMode>{panel}</StrictMode> : panel)
+}
+
+function CapabilityHarness() {
+  const [canRecordAudio, setCanRecordAudio] = useState(true)
+  return (
+    <>
+      <button type='button' onClick={() => setCanRecordAudio(false)}>
+        Revoke recording admission
+      </button>
+      <RecordingPanel
+        meetingId={meetingId}
+        canRecordAudio={canRecordAudio}
+        canSubmitMedia
+      />
+    </>
+  )
 }
 
 type RecorderOptions = {
@@ -267,6 +283,57 @@ describe('RecordingPanel', () => {
 
     expect(track.stop).toHaveBeenCalled()
     expect(toastMocks.error.mock.calls.length).toBe(errorsBeforeUnmount)
+    expect(mediaMocks.uploadMeetingFile).not.toHaveBeenCalled()
+  })
+
+  it('keeps completed audio controls when recording admission is revoked', async () => {
+    const { track } = installRecorder()
+    const screen = await render(
+      <QueryClientProvider client={queryClient()}>
+        <CapabilityHarness />
+      </QueryClientProvider>
+    )
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Start recording' })
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Stop recording' })
+    )
+    await expect
+      .element(screen.getByText(/captured \(M4A\/AAC declaration\)/))
+      .toBeInTheDocument()
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Revoke recording admission' })
+    )
+
+    await expect
+      .element(screen.getByRole('button', { name: 'Submit recording' }))
+      .toBeInTheDocument()
+    expect(track.stop).toHaveBeenCalled()
+  })
+
+  it('releases a permission stream when admission is revoked while awaiting permission', async () => {
+    const pending = deferred<{ getTracks: () => { stop: () => void }[] }>()
+    const getUserMedia = vi.fn(() => pending.promise)
+    const { track, recorder } = installRecorder({ getUserMedia })
+    const screen = await render(
+      <QueryClientProvider client={queryClient()}>
+        <CapabilityHarness />
+      </QueryClientProvider>
+    )
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Start recording' })
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Revoke recording admission' })
+    )
+    pending.resolve({ getTracks: () => [track] })
+
+    await expect.poll(() => track.stop.mock.calls.length).toBeGreaterThan(0)
+    expect(recorder.instances).toHaveLength(0)
     expect(mediaMocks.uploadMeetingFile).not.toHaveBeenCalled()
   })
 })

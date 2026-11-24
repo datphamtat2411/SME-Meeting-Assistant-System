@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
@@ -30,6 +30,12 @@ export function SummaryPanel({
   canRegenerate: boolean
 }) {
   const qc = useQueryClient()
+  const canEditRef = useRef(canEdit)
+  const canRegenerateRef = useRef(canRegenerate)
+  useEffect(() => {
+    canEditRef.current = canEdit
+    canRegenerateRef.current = canRegenerate
+  }, [canEdit, canRegenerate])
   const summary = useQuery(summaryQuery(meetingId))
   const versions = useQuery({
     ...summaryVersionsQuery(meetingId),
@@ -41,7 +47,12 @@ export function SummaryPanel({
     invalidateMeetingArtifacts(qc, meetingId)
   }
   const save = useMutation({
-    mutationFn: () => editSummary(meetingId, content.trim()),
+    mutationFn: () => {
+      if (!canEditRef.current) {
+        throw new Error('Summary editing is no longer authorized.')
+      }
+      return editSummary(meetingId, content.trim())
+    },
     onSuccess: () => {
       toast.success('New summary version saved')
       setEditing(false)
@@ -53,7 +64,12 @@ export function SummaryPanel({
       }),
   })
   const activate = useMutation({
-    mutationFn: (id: string) => activateSummary(meetingId, id),
+    mutationFn: (id: string) => {
+      if (!canEditRef.current) {
+        throw new Error('Summary activation is no longer authorized.')
+      }
+      return activateSummary(meetingId, id)
+    },
     onSuccess: () => {
       toast.success('Summary version activated')
       refresh()
@@ -64,7 +80,12 @@ export function SummaryPanel({
       }),
   })
   const regenerate = useMutation({
-    mutationFn: () => regenerateSummary(meetingId),
+    mutationFn: () => {
+      if (!canRegenerateRef.current) {
+        throw new Error('Summary regeneration is no longer authorized.')
+      }
+      return regenerateSummary(meetingId)
+    },
     onSuccess: () => {
       toast.success('Summary regeneration queued')
       refresh()
