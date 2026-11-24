@@ -169,7 +169,7 @@ class MeetingCreationReplayClock {
 
   Duration monotonicNow() => _monotonicNow();
 
-  void register(MeetingCreationRecord record) {
+  void register(MeetingCreationRecord record, {Duration? monotonicStart}) {
     final key = _evidenceKey(record);
     _evidence.putIfAbsent(
       key,
@@ -178,7 +178,7 @@ class MeetingCreationReplayClock {
         idempotencyKey: record.idempotencyKey,
         createdAt: record.createdAt,
         replayDeadline: record.replayDeadline,
-        monotonicStart: monotonicNow(),
+        monotonicStart: monotonicStart ?? monotonicNow(),
       ),
     );
   }
@@ -266,10 +266,9 @@ class MeetingCreationRecoveryStore {
   Future<MeetingCreationRecord> save(
     String accountId,
     MeetingCreationRecord record, {
-    MeetingCreationOperationLease? lease,
+    required MeetingCreationOperationLease lease,
   }) => _serialize(accountId, () async {
-    if (lease != null &&
-        (!ownsOperation(lease) || lease.scopeKey != _storageKey(accountId))) {
+    if (!ownsOperation(lease) || lease.scopeKey != _storageKey(accountId)) {
       throw const MeetingCreationStorageException();
     }
     if (record.accountId != accountId ||
@@ -295,6 +294,9 @@ class MeetingCreationRecoveryStore {
       throw const MeetingCreationStorageException();
     } else if (record.phase != MeetingCreationRecordPhase.intentPersisted ||
         record.meetingId != null) {
+      throw const MeetingCreationStorageException();
+    }
+    if (!ownsOperation(lease) || lease.scopeKey != _storageKey(accountId)) {
       throw const MeetingCreationStorageException();
     }
     final encoded = jsonEncode(_recordJson(record));
@@ -711,8 +713,14 @@ class MeetingCreationController extends ChangeNotifier {
       replayDeadline: createdAt.add(meetingCreationReplaySafetyWindow),
       phase: MeetingCreationRecordPhase.intentPersisted,
     );
-    _replayClock.register(record);
-    return _run(() => _dispatchCreation(record, isReplay: false));
+    final monotonicStart = _replayClock.monotonicNow();
+    return _run(
+      () => _dispatchCreation(
+        record,
+        isReplay: false,
+        initialMonotonicStart: monotonicStart,
+      ),
+    );
   }
 
   /// Deliberately retries the exact immutable create request while its
@@ -775,11 +783,16 @@ class MeetingCreationController extends ChangeNotifier {
   Future<void> _dispatchCreation(
     MeetingCreationRecord record, {
     required bool isReplay,
+    Duration? initialMonotonicStart,
   }) async {
     if (!ownsSession) return;
     await _withRecoveryLease<void>(
-      (lease) =>
-          _dispatchCreationOwned(record, isReplay: isReplay, lease: lease),
+      (lease) => _dispatchCreationOwned(
+        record,
+        isReplay: isReplay,
+        initialMonotonicStart: initialMonotonicStart,
+        lease: lease,
+      ),
     );
   }
 
@@ -809,6 +822,7 @@ class MeetingCreationController extends ChangeNotifier {
   Future<void> _dispatchCreationOwned(
     MeetingCreationRecord record, {
     required bool isReplay,
+    Duration? initialMonotonicStart,
     required MeetingCreationOperationLease lease,
   }) async {
     if (!ownsSession || !recoveryStore.ownsOperation(lease)) return;
@@ -821,6 +835,7 @@ class MeetingCreationController extends ChangeNotifier {
     );
     late MeetingCreationRecord persistedIntent;
     late String persistedFingerprint;
+    var acceptedInitialIntent = false;
     try {
       var current = await recoveryStore.read(sessionScope.userId, lease: lease);
       if (!ownsSession || !recoveryStore.ownsOperation(lease)) return;
@@ -856,6 +871,7 @@ class MeetingCreationController extends ChangeNotifier {
         if (current.status == MeetingCreationRecoveryReadStatus.missing) {
           await recoveryStore.save(sessionScope.userId, record, lease: lease);
           current = await recoveryStore.read(sessionScope.userId, lease: lease);
+          acceptedInitialIntent = true;
         }
         if (!ownsSession || !recoveryStore.ownsOperation(lease)) return;
         if (current.status != MeetingCreationRecoveryReadStatus.available) {
@@ -871,6 +887,13 @@ class MeetingCreationController extends ChangeNotifier {
         }
         persistedIntent = stored;
         persistedFingerprint = current.fingerprint!;
+      }
+      if (acceptedInitialIntent) {
+        if (!ownsSession || !recoveryStore.ownsOperation(lease)) return;
+        _replayClock.register(
+          persistedIntent,
+          monotonicStart: initialMonotonicStart,
+        );
       }
     } catch (error) {
       if (!ownsSession || !recoveryStore.ownsOperation(lease)) return;

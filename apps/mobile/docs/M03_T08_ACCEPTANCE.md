@@ -8,6 +8,16 @@ remain open.
 
 - Incomplete, reversed, and otherwise invalid edit intervals remain
   non-throwing and cannot trigger preview or mutation requests.
+- Editing-widget fixtures construct local timestamps and convert them to UTC
+  for API responses, so the invalid, equal, and corrected interval regression
+  is independent of the host timezone.
+- Durable recovery writes require an owner-bound
+  `MeetingCreationOperationLease`; stale, released, foreign-account, and
+  foreign-deployment leases cannot modify an existing record.
+- Process-local replay evidence is registered only after an accepted initial
+  intent has acquired ownership, persisted and re-read its immutable durable
+  record, and retained the original replay deadline. Rejected initial intents
+  and restored or historical records do not register new evidence.
 - Detail aggregate ownership remains held through awaited canonical membership
   reconciliation; stale session, generation, snapshot, and aggregate
   continuations fail closed.
@@ -22,16 +32,25 @@ remain open.
   their confirmed, observed, rejected, partial, or uncertain meaning and use
   Vietnamese user messaging.
 
+## Selected process-restoration limitation
+
+Identity-less meeting creation recovery can replay only when trustworthy
+process-local time evidence remains available. After process restart, an
+unresolved creation record without that evidence cannot authorize replay. The
+user must manually review existing meetings. Recovery through an already
+confirmed meeting identity remains available.
+
 ## Local verification
 
 | Gate | Result |
 | --- | --- |
 | `dart format --output=none --set-exit-if-changed lib test` | PASS — 97 files checked, 0 changed |
 | `flutter analyze` | PASS — no issues |
-| `flutter test test/meeting_corrective_regression_test.dart` | PASS — 13 tests |
-| `flutter test test/meeting_workflow_controller_test.dart` | PASS — 17 tests |
-| `flutter test test/meeting_edit_sheet_test.dart` | PASS — 1 widget test |
-| Complete Flutter suite: `flutter test --reporter=compact` | PASS — 291 tests |
+| `TZ=UTC flutter test test/meeting_edit_sheet_test.dart` | PASS — 1 widget test |
+| `TZ=Asia/Ho_Chi_Minh flutter test test/meeting_edit_sheet_test.dart` | PASS — 1 widget test |
+| `flutter test test/meeting_corrective_regression_test.dart` | PASS — 14 tests |
+| `flutter test test/meeting_workflow_controller_test.dart` | PASS — 19 tests |
+| Complete Flutter suite: `TZ=UTC flutter test --reporter=compact` | PASS — 295 tests |
 | `python3 tool/validate_native_config.py` | PASS |
 | `PYTHONPATH=. python3 tool/test_android_native_verification.py` | PASS — 8 tests |
 | `python3 tool/run_android_native_verification.py --timeout-seconds 1200` | PASS |
@@ -40,6 +59,9 @@ remain open.
 The installed Flutter 3.50.1 / Dart 3.14.0 toolchain matches the repository
 pin. `fvm` is not installed in this environment, so verification used the
 matching direct Flutter installation.
+
+These local commands do not establish successful hosted CI execution. Hosted
+Mobile CI remains an external verification gate.
 
 ## Open acceptance evidence
 

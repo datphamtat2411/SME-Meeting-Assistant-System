@@ -13,13 +13,15 @@ void main() {
     'editing sheet keeps invalid and equal intervals visible without dispatching',
     (tester) async {
       var previewCalls = 0;
+      final scheduledStart = DateTime(2026, 11, 24, 9);
+      final scheduledEnd = DateTime(2026, 11, 24, 10);
       final client = MeetingTestHttpClient((request) async {
         if (request.method == 'GET') {
           return meetingApiSuccess(
             meetingTestJson(
               status: 'SCHEDULED',
-              scheduledStartAt: '2026-11-24T02:00:00Z',
-              scheduledEndAt: '2026-11-24T03:00:00Z',
+              scheduledStartAt: scheduledStart.toUtc().toIso8601String(),
+              scheduledEndAt: scheduledEnd.toUtc().toIso8601String(),
             ),
             headers: const {'etag': '"edit-widget-v1"'},
           );
@@ -115,8 +117,14 @@ void main() {
         find.text('Thời gian kết thúc phải sau thời gian bắt đầu.'),
         findsOneWidget,
       );
-      expect(find.textContaining('Bắt đầu · 24/11/2026'), findsOneWidget);
-      expect(find.textContaining('Kết thúc · 24/11/2026'), findsOneWidget);
+      expect(
+        find.textContaining('Bắt đầu · 24/11/2026 · 11:00'),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('Kết thúc · 24/11/2026 · 10:00'),
+        findsOneWidget,
+      );
       final save = tester.widget<FilledButton>(
         find.widgetWithText(FilledButton, 'Lưu thay đổi'),
       );
@@ -133,13 +141,28 @@ void main() {
         find.text('Thời gian kết thúc phải sau thời gian bắt đầu.'),
         findsOneWidget,
       );
-      expect(find.textContaining('Bắt đầu · 24/11/2026'), findsOneWidget);
+      expect(
+        find.textContaining('Bắt đầu · 24/11/2026 · 10:00'),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('Kết thúc · 24/11/2026 · 10:00'),
+        findsOneWidget,
+      );
 
       await chooseStartHour(8);
       expect(tester.takeException(), isNull);
       expect(
         find.text('Thời gian kết thúc phải sau thời gian bắt đầu.'),
         findsNothing,
+      );
+      expect(
+        find.textContaining('Bắt đầu · 24/11/2026 · 08:00'),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('Kết thúc · 24/11/2026 · 10:00'),
+        findsOneWidget,
       );
       final readySave = tester.widget<FilledButton>(
         find.widgetWithText(FilledButton, 'Lưu thay đổi'),

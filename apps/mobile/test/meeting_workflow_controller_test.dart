@@ -17,6 +17,158 @@ import 'support/meeting_test_support.dart';
 void main() {
   group('Meeting creation recovery controller', () {
     test(
+      'a rejected initial creation does not register replay evidence',
+      () async {
+        final client = MeetingTestHttpClient((request) async {
+          throw StateError(
+            'Unexpected request ${request.method} ${request.url}',
+          );
+        });
+        final api = createMeetingTestApi(client);
+        addTearDown(api.dispose);
+        await signInMeetingTestApi(api);
+        final invalidation = MeetingInvalidationSignal(api);
+        addTearDown(invalidation.dispose);
+        final meetings = MeetingRepository(
+          api: api,
+          invalidation: invalidation,
+        );
+        final now = DateTime.utc(2026, 11, 24, 12);
+        final replayClock = MeetingCreationReplayClock(
+          wallNow: () => now,
+          monotonicNow: () => Duration.zero,
+        );
+        final recovery = MeetingCreationRecoveryStore(
+          storage: api.credentialStorage,
+          deployment: api.baseUri,
+          replayClock: replayClock,
+        );
+        final scope = api.requireAuthenticatedSessionScope();
+        final controller = MeetingCreationController(
+          meetings: meetings,
+          recoveryStore: recovery,
+          sessionScope: scope,
+          replayClock: replayClock,
+          createIdempotencyKey: () => 'rejected-initial-intent',
+        );
+        addTearDown(controller.dispose);
+
+        final blocker = recovery.tryAcquireOperation(scope.userId);
+        expect(blocker, isNotNull);
+        try {
+          await controller.submit(
+            CreateMeetingInput(title: 'Rejected initial intent'),
+            MeetingCreationAction.saveDraft,
+          );
+        } finally {
+          recovery.releaseOperation(blocker!);
+        }
+
+        expect(controller.state.phase, MeetingCreationPhase.recoveryRequired);
+        expect(
+          (await recovery.read(scope.userId)).status,
+          MeetingCreationRecoveryReadStatus.missing,
+        );
+        final rejected = MeetingCreationRecord(
+          accountId: scope.userId,
+          deploymentScope: recovery.deploymentScope,
+          idempotencyKey: 'rejected-initial-intent',
+          input: CreateMeetingInput(title: 'Rejected initial intent'),
+          action: MeetingCreationAction.saveDraft,
+          createdAt: now,
+          replayDeadline: now.add(meetingCreationReplaySafetyWindow),
+          phase: MeetingCreationRecordPhase.intentPersisted,
+        );
+        expect(controller.canReplayCreate(rejected), isFalse);
+        expect(
+          client.requests.where(
+            (request) =>
+                request.method == 'POST' &&
+                request.url.path.endsWith('/meetings'),
+          ),
+          isEmpty,
+        );
+      },
+    );
+
+    test(
+      'an occupied durable slot does not register a rejected initial intent',
+      () async {
+        final client = MeetingTestHttpClient((request) async {
+          throw StateError(
+            'Unexpected request ${request.method} ${request.url}',
+          );
+        });
+        final api = createMeetingTestApi(client);
+        addTearDown(api.dispose);
+        await signInMeetingTestApi(api);
+        final invalidation = MeetingInvalidationSignal(api);
+        addTearDown(invalidation.dispose);
+        final meetings = MeetingRepository(
+          api: api,
+          invalidation: invalidation,
+        );
+        final now = DateTime.utc(2026, 11, 24, 12);
+        final replayClock = MeetingCreationReplayClock(
+          wallNow: () => now,
+          monotonicNow: () => Duration.zero,
+        );
+        final recovery = MeetingCreationRecoveryStore(
+          storage: api.credentialStorage,
+          deployment: api.baseUri,
+          replayClock: replayClock,
+        );
+        final scope = api.requireAuthenticatedSessionScope();
+        final existing = MeetingCreationRecord(
+          accountId: scope.userId,
+          deploymentScope: recovery.deploymentScope,
+          idempotencyKey: 'existing-durable-intent',
+          input: CreateMeetingInput(title: 'Existing durable intent'),
+          action: MeetingCreationAction.saveDraft,
+          createdAt: now,
+          replayDeadline: now.add(meetingCreationReplaySafetyWindow),
+          phase: MeetingCreationRecordPhase.intentPersisted,
+        );
+        final existingLease = recovery.tryAcquireOperation(scope.userId);
+        expect(existingLease, isNotNull);
+        try {
+          await recovery.save(scope.userId, existing, lease: existingLease!);
+        } finally {
+          recovery.releaseOperation(existingLease!);
+        }
+
+        final controller = MeetingCreationController(
+          meetings: meetings,
+          recoveryStore: recovery,
+          sessionScope: scope,
+          replayClock: replayClock,
+          createIdempotencyKey: () => 'rejected-existing-slot',
+        );
+        addTearDown(controller.dispose);
+        await controller.submit(
+          CreateMeetingInput(title: 'Rejected existing slot'),
+          MeetingCreationAction.saveDraft,
+        );
+
+        expect(controller.state.phase, MeetingCreationPhase.recoveryRequired);
+        final rejected = MeetingCreationRecord(
+          accountId: scope.userId,
+          deploymentScope: recovery.deploymentScope,
+          idempotencyKey: 'rejected-existing-slot',
+          input: CreateMeetingInput(title: 'Rejected existing slot'),
+          action: MeetingCreationAction.saveDraft,
+          createdAt: now,
+          replayDeadline: now.add(meetingCreationReplaySafetyWindow),
+          phase: MeetingCreationRecordPhase.intentPersisted,
+        );
+        expect(controller.canReplayCreate(rejected), isFalse);
+        final current = await recovery.read(scope.userId);
+        expect(current.record?.idempotencyKey, existing.idempotencyKey);
+        expect(current.record?.input.title, 'Existing durable intent');
+      },
+    );
+
+    test(
       'replays only the durable original request after an unknown create',
       () async {
         var createCalls = 0;
@@ -321,6 +473,72 @@ void main() {
           (await recovery.read(scope.userId)).status,
           MeetingCreationRecoveryReadStatus.available,
         );
+      },
+    );
+
+    test(
+      'initial replay evidence keeps the original deadline during preparation',
+      () async {
+        var monotonic = Duration.zero;
+        var createCalls = 0;
+        final storage = ControllableMeetingCredentialStorage();
+        final client = MeetingTestHttpClient((request) async {
+          if (request.method == 'POST' &&
+              request.url.path.endsWith('/meetings')) {
+            createCalls++;
+            throw http.ClientException('connection lost');
+          }
+          throw StateError(
+            'Unexpected request ${request.method} ${request.url}',
+          );
+        });
+        final api = createMeetingTestApi(client, credentialStorage: storage);
+        addTearDown(api.dispose);
+        addTearDown(storage.releaseDurabilityConfirmation);
+        await signInMeetingTestApi(api);
+        final invalidation = MeetingInvalidationSignal(api);
+        addTearDown(invalidation.dispose);
+        final meetings = MeetingRepository(
+          api: api,
+          invalidation: invalidation,
+        );
+        final now = DateTime.utc(2026, 11, 24, 12);
+        final replayClock = MeetingCreationReplayClock(
+          wallNow: () => now,
+          monotonicNow: () => monotonic,
+        );
+        final recovery = MeetingCreationRecoveryStore(
+          storage: storage,
+          deployment: api.baseUri,
+          replayClock: replayClock,
+        );
+        final scope = api.requireAuthenticatedSessionScope();
+        final controller = MeetingCreationController(
+          meetings: meetings,
+          recoveryStore: recovery,
+          sessionScope: scope,
+          replayClock: replayClock,
+          createIdempotencyKey: () => 'pre-registration-deadline',
+        );
+        addTearDown(controller.dispose);
+
+        storage.holdNextDurabilityConfirmation();
+        final initial = controller.submit(
+          CreateMeetingInput(title: 'Pre-registration deadline'),
+          MeetingCreationAction.saveDraft,
+        );
+        await storage.waitForDurabilityConfirmation();
+        monotonic =
+            meetingCreationReplaySafetyWindow + const Duration(minutes: 1);
+        storage.releaseDurabilityConfirmation();
+        await initial;
+
+        expect(createCalls, 1);
+        expect(controller.state.phase, MeetingCreationPhase.outcomeUnknown);
+        final unresolved = controller.state.record!;
+        expect(controller.canReplayCreate(unresolved), isFalse);
+        await controller.retryUnresolvedCreation();
+        expect(createCalls, 1);
       },
     );
   });

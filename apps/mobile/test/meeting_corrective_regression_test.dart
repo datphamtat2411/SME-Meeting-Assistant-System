@@ -524,6 +524,99 @@ void main() {
     },
   );
 
+  test('durable recovery writes require an owned lease and preserve rejected state', () async {
+    final storage = InMemoryCredentialStorage();
+    final deployment = Uri.parse('https://api.example.test/api/v1');
+    final store = MeetingCreationRecoveryStore(
+      storage: storage,
+      deployment: deployment,
+    );
+    final now = DateTime.utc(2026, 11, 24, 12);
+    MeetingCreationRecord record({
+      required String accountId,
+      required String deploymentScope,
+      required String idempotencyKey,
+      required String title,
+    }) => MeetingCreationRecord(
+      accountId: accountId,
+      deploymentScope: deploymentScope,
+      idempotencyKey: idempotencyKey,
+      input: CreateMeetingInput(title: title),
+      action: MeetingCreationAction.saveDraft,
+      createdAt: now,
+      replayDeadline: now.add(const Duration(hours: 1)),
+      phase: MeetingCreationRecordPhase.intentPersisted,
+    );
+
+    final original = record(
+      accountId: testUserId,
+      deploymentScope: store.deploymentScope,
+      idempotencyKey: 'owned-recovery-write',
+      title: 'Owned recovery write',
+    );
+    final owner = store.tryAcquireOperation(testUserId);
+    expect(owner, isNotNull);
+    try {
+      final saved = await store.save(testUserId, original, lease: owner!);
+      expect(saved.idempotencyKey, original.idempotencyKey);
+    } finally {
+      store.releaseOperation(owner!);
+    }
+
+    final persisted = await store.read(testUserId);
+    expect(persisted.status, MeetingCreationRecoveryReadStatus.available);
+    expect(persisted.record?.input.title, 'Owned recovery write');
+
+    final replacement = record(
+      accountId: testUserId,
+      deploymentScope: store.deploymentScope,
+      idempotencyKey: 'rejected-recovery-write',
+      title: 'Rejected recovery write',
+    );
+    Future<void> expectUnchanged() async {
+      final current = await store.read(testUserId);
+      expect(current.fingerprint, persisted.fingerprint);
+      expect(current.record?.input.title, 'Owned recovery write');
+    }
+
+    await expectLater(
+      store.save(testUserId, replacement, lease: owner),
+      throwsA(isA<MeetingCreationStorageException>()),
+    );
+    await expectUnchanged();
+
+    final otherAccount = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    final otherAccountLease = store.tryAcquireOperation(otherAccount);
+    expect(otherAccountLease, isNotNull);
+    try {
+      await expectLater(
+        store.save(testUserId, replacement, lease: otherAccountLease!),
+        throwsA(isA<MeetingCreationStorageException>()),
+      );
+    } finally {
+      store.releaseOperation(otherAccountLease!);
+    }
+    await expectUnchanged();
+
+    final otherDeploymentStore = MeetingCreationRecoveryStore(
+      storage: storage,
+      deployment: Uri.parse('https://other.example.test/api/v1'),
+    );
+    final otherDeploymentLease = otherDeploymentStore.tryAcquireOperation(
+      testUserId,
+    );
+    expect(otherDeploymentLease, isNotNull);
+    try {
+      await expectLater(
+        store.save(testUserId, replacement, lease: otherDeploymentLease!),
+        throwsA(isA<MeetingCreationStorageException>()),
+      );
+    } finally {
+      otherDeploymentStore.releaseOperation(otherDeploymentLease!);
+    }
+    await expectUnchanged();
+  });
+
   test('manual resolution cannot retire a recovery record while another controller creates', () async {
     final createResponse = Completer<http.StreamedResponse>();
     final createStarted = Completer<void>();
@@ -903,15 +996,18 @@ void main() {
       );
       final unresolved = controller.state.record!;
       final lease = recovery.tryAcquireOperation(scope.userId)!;
-      await recovery.save(
-        scope.userId,
-        unresolved.withPhase(
-          MeetingCreationRecordPhase.meetingConfirmed,
-          meetingId: testMeetingId,
-        ),
-        lease: lease,
-      );
-      recovery.releaseOperation(lease);
+      try {
+        await recovery.save(
+          scope.userId,
+          unresolved.withPhase(
+            MeetingCreationRecordPhase.meetingConfirmed,
+            meetingId: testMeetingId,
+          ),
+          lease: lease,
+        );
+      } finally {
+        recovery.releaseOperation(lease);
+      }
 
       await controller.retryUnresolvedCreation();
       expect(createCalls, 1);
