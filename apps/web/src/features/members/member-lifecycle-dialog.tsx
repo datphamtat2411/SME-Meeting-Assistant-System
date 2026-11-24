@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -51,12 +50,12 @@ export function MemberLifecycleDialog({
   authorizationVerified,
   authorizationMessage,
   feedback,
+  canRenewConfirmation,
   onRetryAuthorization,
   onClose,
   onRetrySnapshot,
-  onLoadLatest,
-  onReviewLatest,
-  onRestartFromLatest,
+  onRetryVerification,
+  onReviewForConfirmation,
   onConfirm,
 }: {
   session: MemberLifecycleSession | null
@@ -64,44 +63,25 @@ export function MemberLifecycleDialog({
   authorizationVerified: boolean
   authorizationMessage: string
   feedback: MemberOperationFeedback | null
+  canRenewConfirmation: boolean
   onRetryAuthorization: () => void
   onClose: () => void
   onRetrySnapshot: (memberId: string, operationId: number) => void
-  onLoadLatest: (memberId: string) => Promise<MemberSnapshot>
-  onReviewLatest: (snapshot: MemberSnapshot, operationId: number) => void
-  onRestartFromLatest: (snapshot: MemberSnapshot, operationId: number) => void
-  onConfirm: (snapshot: MemberSnapshot, operationId: number) => void
+  onRetryVerification: (operationId: number) => void
+  onReviewForConfirmation: (
+    operationId: number,
+    reviewedVersion: string
+  ) => void
+  onConfirm: (operationId: number) => void
 }) {
-  const [latestSnapshot, setLatestSnapshot] = useState<MemberSnapshot | null>(
-    null
-  )
-  const [latestError, setLatestError] = useState<string | null>(null)
-  const [latestLoading, setLatestLoading] = useState(false)
   const open = session !== null
-  const snapshot = session?.phase === 'confirm' ? session.snapshot : undefined
+  const snapshot = session?.snapshot
   const reviewRequired =
-    feedback?.outcome === 'precondition' ||
-    feedback?.outcome === 'uncertain' ||
-    feedback?.outcome === 'unknown'
-  const reviewedSnapshot = latestSnapshot ?? feedback?.latestSnapshot
-
-  async function reloadLatest(memberId: string) {
-    setLatestLoading(true)
-    setLatestError(null)
-    try {
-      const latest = await onLoadLatest(memberId)
-      setLatestSnapshot(latest)
-      if (session) onReviewLatest(latest, session.operationId)
-    } catch (error) {
-      setLatestError(
-        error instanceof Error
-          ? error.message
-          : 'The latest member state could not be loaded.'
-      )
-    } finally {
-      setLatestLoading(false)
-    }
-  }
+    session?.phase === 'verification-required' ||
+    session?.phase === 'verifying' ||
+    session?.phase === 'review' ||
+    session?.phase === 'verification-failed'
+  const reviewedSnapshot = feedback?.latestSnapshot
 
   return (
     <AlertDialog
@@ -145,7 +125,7 @@ export function MemberLifecycleDialog({
               </AlertDialogCancel>
             </AlertDialogFooter>
           </>
-        ) : session?.phase === 'error' ? (
+        ) : session?.status === 'error' ? (
           <>
             <AlertDialogHeader>
               <AlertDialogTitle>
@@ -242,6 +222,7 @@ export function MemberLifecycleDialog({
                       {reviewedSnapshot.member.email}
                     </p>
                     {session &&
+                      canRenewConfirmation &&
                       (session.action === 'deactivate'
                         ? reviewedSnapshot.member.accountStatus === 'ACTIVE'
                         : session.action === 'reactivate'
@@ -254,9 +235,9 @@ export function MemberLifecycleDialog({
                           size='sm'
                           disabled={!authorizationVerified}
                           onClick={() =>
-                            onRestartFromLatest(
-                              reviewedSnapshot,
-                              session.operationId
+                            onReviewForConfirmation(
+                              session.operationId,
+                              reviewedSnapshot.etag
                             )
                           }
                         >
@@ -265,22 +246,22 @@ export function MemberLifecycleDialog({
                       )}
                   </div>
                 )}
-                {reviewRequired && snapshot && (
+                {reviewRequired && session && (
                   <>
                     <Button
                       type='button'
                       variant='outline'
                       size='sm'
-                      disabled={latestLoading || !authorizationVerified}
-                      onClick={() => void reloadLatest(snapshot.member.id)}
+                      disabled={
+                        feedback?.reconciliationLoading ||
+                        !authorizationVerified
+                      }
+                      onClick={() => onRetryVerification(session.operationId)}
                     >
-                      {latestLoading
+                      {feedback?.reconciliationLoading
                         ? 'Loading latest member…'
                         : 'Reload latest for review'}
                     </Button>
-                    {latestError && (
-                      <p className='text-destructive'>{latestError}</p>
-                    )}
                   </>
                 )}
               </div>
@@ -296,8 +277,8 @@ export function MemberLifecycleDialog({
                 }
                 onClick={(event) => {
                   event.preventDefault()
-                  if (snapshot && session && !saving && !reviewRequired) {
-                    onConfirm(snapshot, session.operationId)
+                  if (session && !saving && !reviewRequired) {
+                    onConfirm(session.operationId)
                   }
                 }}
               >

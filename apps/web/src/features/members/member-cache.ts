@@ -1,5 +1,8 @@
 import type { QueryClient } from '@tanstack/react-query'
-import { currentUserQueryKey } from '@/features/auth/session/current-user'
+import {
+  currentUserQueryKey,
+  type AuthContext,
+} from '@/features/auth/session/current-user'
 
 export const memberCacheQueryKeys = {
   directory: ['users', 'directory'] as const,
@@ -19,12 +22,20 @@ type MemberChangedField =
 
 interface MemberMutationActor {
   userId: string
+  session?: Pick<AuthContext['session'], 'id'>
+}
+
+export interface MemberMutationOrigin {
+  actorId: string
+  sessionId: string
+  authorizationContextKey: string
 }
 
 export type MemberCacheMutation =
   | {
       type: 'created'
       actor?: MemberMutationActor
+      origin?: MemberMutationOrigin
       outcome: CacheOutcome
     }
   | {
@@ -32,18 +43,21 @@ export type MemberCacheMutation =
       targetMemberId: string
       changedFields: readonly MemberChangedField[]
       actor?: MemberMutationActor
+      origin?: MemberMutationOrigin
       outcome: CacheOutcome
     }
   | {
       type: 'deactivated' | 'reactivated'
       targetMemberId: string
       actor?: MemberMutationActor
+      origin?: MemberMutationOrigin
       outcome: CacheOutcome
     }
   | {
       type: 'setup-reissued'
       targetMemberId: string
       actor?: MemberMutationActor
+      origin?: MemberMutationOrigin
       outcome: CacheOutcome
     }
 
@@ -90,18 +104,75 @@ function keysForMutation(mutation: MemberCacheMutation) {
   )
 }
 
+interface MemberCacheSynchronizationOptions {
+  activeIdentity?: {
+    userId: string
+    session: Pick<AuthContext['session'], 'id'>
+  }
+  beforeAuthorizationRefresh?: () => Promise<void>
+}
+
+function activeIdentityFromCache(
+  queryClient: QueryClient
+): MemberCacheSynchronizationOptions['activeIdentity'] {
+  const identity = queryClient.getQueryData<AuthContext>(currentUserQueryKey)
+  return identity
+    ? { userId: identity.userId, session: identity.session }
+    : undefined
+}
+
+function mutationOrigin(
+  mutation: MemberCacheMutation
+): MemberMutationOrigin | undefined {
+  if (mutation.origin) return mutation.origin
+  if (!mutation.actor?.session) return undefined
+  const session = mutation.actor.session
+  return session
+    ? {
+        actorId: mutation.actor.userId,
+        sessionId: session.id,
+        authorizationContextKey: '',
+      }
+    : undefined
+}
+
 export async function synchronizeMemberCaches(
   queryClient: QueryClient,
-  mutation: MemberCacheMutation
+  mutation: MemberCacheMutation,
+  options: MemberCacheSynchronizationOptions = {}
 ): Promise<void> {
   if (mutation.outcome === 'rejected') return
 
-  const refreshCurrentActor =
+  const origin = mutationOrigin(mutation)
+  const activeIdentity =
+    options.activeIdentity ?? activeIdentityFromCache(queryClient)
+  const sameActor =
+    origin !== undefined &&
+    activeIdentity !== undefined &&
+    origin.actorId === activeIdentity.userId
+  const sameOriginatingSession =
+    sameActor &&
+    origin !== undefined &&
+    activeIdentity !== undefined &&
+    origin.sessionId === activeIdentity.session.id
+  const sessionInvalidating =
     mutation.type === 'updated' &&
-    mutation.actor?.userId === mutation.targetMemberId &&
+    origin?.actorId === mutation.targetMemberId &&
     mutation.changedFields.some((field) => sessionInvalidatingFields.has(field))
 
-  if (refreshCurrentActor) {
+  if (sessionInvalidating && sameOriginatingSession) {
+    if (options.beforeAuthorizationRefresh) {
+      await options.beforeAuthorizationRefresh()
+    } else {
+      await queryClient.invalidateQueries({ queryKey: currentUserQueryKey })
+    }
+  } else if (
+    mutation.type === 'updated' &&
+    mutation.changedFields.includes('displayName') &&
+    sameActor
+  ) {
+    // A display-name update affects the current-user presentation but does not
+    // invalidate the authorization/session context.
     await queryClient.invalidateQueries({ queryKey: currentUserQueryKey })
   }
 

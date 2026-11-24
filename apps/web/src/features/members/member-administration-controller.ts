@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useReducer,
   useRef,
   useState,
@@ -9,7 +10,10 @@ import {
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
-import type { AuthContext } from '@/features/auth/session/current-user'
+import {
+  currentUserQueryKey,
+  type AuthContext,
+} from '@/features/auth/session/current-user'
 import type { MemberDirectoryAccess } from './member-access-policy'
 import {
   assertMemberCreateAllowed,
@@ -25,30 +29,49 @@ import {
   createMember,
   memberDetail,
   memberOperationErrorMessage,
-  reconcileMemberCreation,
   updateMember,
   type Member,
   type MemberCreatePayload,
   type MemberPatchPayload,
   type MemberSnapshot,
-  type MemberCreationReconciliation,
 } from './member-api'
 import {
   synchronizeMemberCaches,
   type MemberCacheMutation,
+  type MemberMutationOrigin,
 } from './member-cache'
-import { type MemberFormValues } from './member-form'
+import { createMemberEditorRecovery } from './member-editor-recovery'
+import { createMemberLifecycleRecovery } from './member-lifecycle-recovery'
 import {
-  memberFormValuesFromEditableValues,
-  memberPatchMatchesMember,
-  reconcileMemberEdit,
+  createMemberOperationRequestCoordinator,
+  type MemberOperationRequest,
+  type MemberOperationRequestCoordinator,
+} from './member-operation-requests'
+import {
+  memberOperationReducer,
+  selectEditorFeedback,
+  selectEditorSession,
+  selectLifecycleFeedback,
+  selectLifecycleSession,
+  selectOperationCapabilities,
+  storeMemberOperationFeedback,
+  type MemberAuthorizationContext,
+  type MemberOperationAction,
+  type MemberOperationFeedback,
+  type MemberOperationState,
+} from './member-operation-state'
+import {
   resolveMemberEditReconciliation,
   type MemberConflictChoices,
-  type MemberEditReconciliation,
 } from './member-reconciliation'
 import type { OrganizationalUnit } from './organization-api'
 
 export type { MemberLifecycleAction }
+export type {
+  MemberEditorSession,
+  MemberLifecycleSession,
+  MemberOperationFeedback,
+} from './member-operation-state'
 
 class ObsoleteMemberOperationError extends Error {
   constructor() {
@@ -59,208 +82,58 @@ class ObsoleteMemberOperationError extends Error {
   }
 }
 
-export type MemberEditorSession =
-  | {
-      operationId: number
-      contextKey: string
-      mode: 'create'
-      status: 'ready'
-    }
-  | {
-      operationId: number
-      contextKey: string
-      mode: 'edit'
-      memberId: string
-      status: 'loading' | 'error' | 'ready'
-      snapshot?: MemberSnapshot
-      initialValues?: MemberFormValues
-      loadError?: string
-    }
-
-export interface MemberOperationFeedback {
-  outcome: 'rejected' | 'precondition' | 'uncertain' | 'unknown'
-  message: string
-  fieldErrors?: Record<string, string[]>
-  latestSnapshot?: MemberSnapshot
-  originalSnapshot?: MemberSnapshot
-  submittedPatch?: MemberPatchPayload
-  submittedCreationPayload?: MemberCreatePayload
-  creationReconciliation?: MemberCreationReconciliation
-  editReconciliation?: MemberEditReconciliation
-  latestMatchesRequest?: boolean
-  reconciliationError?: string
-  reconciliationLoading?: boolean
-}
-
-export interface MemberEditorSubmitBase {
-  operationId: number
-  contextKey: string
-}
-
 export type MemberEditorSubmit =
-  | (MemberEditorSubmitBase & {
+  | {
+      operationId: number
+      contextKey: string
       mode: 'create'
       payload: MemberCreatePayload
-    })
-  | (MemberEditorSubmitBase & {
+    }
+  | {
+      operationId: number
+      contextKey: string
       mode: 'edit'
       snapshot: MemberSnapshot
       payload: MemberPatchPayload
-    })
+    }
 
-export interface MemberLifecycleSession {
+type MemberEditorMutationInput = MemberEditorSubmit & {
+  origin: MemberMutationOrigin
+}
+
+type MemberLifecycleMutationInput = {
   operationId: number
   contextKey: string
-  memberId: string
   action: MemberLifecycleAction
-  phase: 'loading' | 'error' | 'confirm'
-  snapshot?: MemberSnapshot
-  loadError?: string
+  snapshot: MemberSnapshot
+  origin: MemberMutationOrigin
 }
 
-type OperationState =
-  | { kind: 'idle' }
-  | {
-      kind: 'editor'
-      session: MemberEditorSession
-      feedback: MemberOperationFeedback | null
-    }
-  | {
-      kind: 'lifecycle'
-      session: MemberLifecycleSession
-      feedback: MemberOperationFeedback | null
-    }
+interface MemberAdministrationControllerOptions {
+  access: MemberDirectoryAccess
+  accessKey: string
+  identity?: AuthContext
+  identityVerified: boolean
+  authorizedUnits: OrganizationalUnit[]
+  organizationLookupStatus: 'loading' | 'error' | 'success'
+}
 
-type Action =
-  | { type: 'start-editor'; session: MemberEditorSession }
-  | { type: 'start-lifecycle'; session: MemberLifecycleSession }
-  | {
-      type: 'editor-snapshot-loaded'
-      operationId: number
-      contextKey: string
-      snapshot: MemberSnapshot
-    }
-  | {
-      type: 'editor-snapshot-failed'
-      operationId: number
-      contextKey: string
-      error: string
-    }
-  | {
-      type: 'lifecycle-snapshot-loaded'
-      operationId: number
-      contextKey: string
-      snapshot: MemberSnapshot
-    }
-  | {
-      type: 'lifecycle-snapshot-failed'
-      operationId: number
-      contextKey: string
-      error: string
-    }
-  | {
-      type: 'editor-feedback'
-      operationId: number
-      contextKey: string
-      feedback: MemberOperationFeedback | null
-    }
-  | {
-      type: 'lifecycle-feedback'
-      operationId: number
-      contextKey: string
-      feedback: MemberOperationFeedback | null
-    }
-  | {
-      type: 'replace-editor'
-      session: MemberEditorSession
-      feedback: MemberOperationFeedback | null
-    }
-  | {
-      type: 'replace-lifecycle'
-      session: MemberLifecycleSession
-      feedback: MemberOperationFeedback | null
-    }
-  | { type: 'close' }
-  | { type: 'invalidate-context' }
+type MemberChangedField =
+  | 'displayName'
+  | 'globalRole'
+  | 'primaryOrgUnitId'
+  | 'managerScopeUnitIds'
 
-function isCurrent(
-  state: OperationState,
-  operationId: number,
-  contextKey: string
-): boolean {
-  return (
-    state.kind !== 'idle' &&
-    state.session.operationId === operationId &&
-    state.session.contextKey === contextKey
+function changedMemberFields(
+  payload: MemberPatchPayload
+): MemberChangedField[] {
+  return Object.keys(payload).filter(
+    (field): field is MemberChangedField =>
+      field === 'displayName' ||
+      field === 'globalRole' ||
+      field === 'primaryOrgUnitId' ||
+      field === 'managerScopeUnitIds'
   )
-}
-
-function reducer(state: OperationState, action: Action): OperationState {
-  switch (action.type) {
-    case 'start-editor':
-      return { kind: 'editor', session: action.session, feedback: null }
-    case 'start-lifecycle':
-      return { kind: 'lifecycle', session: action.session, feedback: null }
-    case 'editor-snapshot-loaded':
-      if (!isCurrent(state, action.operationId, action.contextKey)) return state
-      if (state.kind !== 'editor' || state.session.mode !== 'edit') return state
-      return {
-        ...state,
-        session: {
-          ...state.session,
-          status: 'ready',
-          snapshot: action.snapshot,
-        },
-      }
-    case 'editor-snapshot-failed':
-      if (!isCurrent(state, action.operationId, action.contextKey)) return state
-      if (state.kind !== 'editor' || state.session.mode !== 'edit') return state
-      return {
-        ...state,
-        session: { ...state.session, status: 'error', loadError: action.error },
-      }
-    case 'lifecycle-snapshot-loaded':
-      if (!isCurrent(state, action.operationId, action.contextKey)) return state
-      if (state.kind !== 'lifecycle') return state
-      return {
-        ...state,
-        session: {
-          ...state.session,
-          phase: 'confirm',
-          snapshot: action.snapshot,
-        },
-      }
-    case 'lifecycle-snapshot-failed':
-      if (!isCurrent(state, action.operationId, action.contextKey)) return state
-      if (state.kind !== 'lifecycle') return state
-      return {
-        ...state,
-        session: { ...state.session, phase: 'error', loadError: action.error },
-      }
-    case 'editor-feedback':
-      if (!isCurrent(state, action.operationId, action.contextKey)) return state
-      if (state.kind !== 'editor') return state
-      return { ...state, feedback: action.feedback }
-    case 'lifecycle-feedback':
-      if (!isCurrent(state, action.operationId, action.contextKey)) return state
-      if (state.kind !== 'lifecycle') return state
-      return { ...state, feedback: action.feedback }
-    case 'replace-editor':
-      return {
-        kind: 'editor',
-        session: action.session,
-        feedback: action.feedback,
-      }
-    case 'replace-lifecycle':
-      return {
-        kind: 'lifecycle',
-        session: action.session,
-        feedback: action.feedback,
-      }
-    case 'close':
-    case 'invalidate-context':
-      return { kind: 'idle' }
-  }
 }
 
 function statusMutationName(
@@ -280,55 +153,6 @@ function lifecycleSuccessMessage(action: MemberLifecycleAction): string {
   return 'New secure setup process requested'
 }
 
-function lifecycleVerifiedStateMessage(
-  action: MemberLifecycleAction,
-  latest: MemberSnapshot
-): string {
-  if (action === 'account-setup/reissue') {
-    return 'The account remains pending setup. Ordinary account data cannot independently establish whether the reissue request was applied or whether a setup email was delivered.'
-  }
-  const expected = action === 'deactivate' ? 'INACTIVE' : 'ACTIVE'
-  if (latest.member.accountStatus === expected) {
-    return `The server currently verifies this account as ${expected === 'ACTIVE' ? 'active' : 'inactive'}. We cannot determine whether this request caused that state; no second request was sent.`
-  }
-  return `The server currently verifies this account as ${latest.member.accountStatus === 'ACTIVE' ? 'active' : latest.member.accountStatus === 'INACTIVE' ? 'inactive' : 'pending setup'}. The requested lifecycle change was not confirmed; review the account before deciding what to do.`
-}
-
-function editReconciliationMessage(reconciliation: MemberEditReconciliation) {
-  if (reconciliation.conflicts.length > 0) {
-    return 'The latest member state contains field conflicts. Compare the server values with your intended changes and resolve each conflict before continuing.'
-  }
-  const fields = Object.values(reconciliation.fields)
-  const hasIntent = fields.some((field) => field.userChanged)
-  const hasServerChanges = fields.some((field) => field.serverChanged)
-  const intendedValuesArePresent = fields.every(
-    (field) =>
-      !field.userChanged ||
-      (field.intended !== undefined &&
-        (Array.isArray(field.latest) && Array.isArray(field.intended)
-          ? field.latest.length === field.intended.length &&
-            field.latest.every((id) => field.intended?.includes(id))
-          : field.latest === field.intended))
-  )
-  if (hasIntent && intendedValuesArePresent) {
-    return hasServerChanges
-      ? 'The latest member state already contains your intended values and also includes independent server changes. No second request was sent; review the current state before continuing.'
-      : 'The latest member state already contains your intended values. The request may have succeeded, but the result cannot be attributed and no second request was sent.'
-  }
-  return hasServerChanges
-    ? 'The latest member state includes independent server changes. Your intended changes are preserved for review against this version.'
-    : 'Review the latest authoritative member state before deciding what to do.'
-}
-
-interface MemberAdministrationControllerOptions {
-  access: MemberDirectoryAccess
-  accessKey: string
-  identity?: AuthContext
-  identityVerified: boolean
-  authorizedUnits: OrganizationalUnit[]
-  organizationLookupStatus: 'loading' | 'error' | 'success'
-}
-
 export function useMemberAdministrationController({
   access,
   accessKey,
@@ -338,8 +162,10 @@ export function useMemberAdministrationController({
   organizationLookupStatus,
 }: MemberAdministrationControllerOptions) {
   const queryClient = useQueryClient()
-  const [state, dispatch] = useReducer(reducer, { kind: 'idle' })
-  const stateRef = useRef(state)
+  const [state, dispatch] = useReducer(memberOperationReducer, {
+    kind: 'idle',
+  })
+  const stateRef = useRef<MemberOperationState>(state)
   const authorizationRef = useRef({
     accessKey,
     identityVerified,
@@ -351,13 +177,29 @@ export function useMemberAdministrationController({
     status: organizationLookupStatus,
   })
   const operationSequence = useRef(0)
-  const snapshotController = useRef<AbortController | null>(null)
-  const reconciliationController = useRef<AbortController | null>(null)
   const mutationInFlight = useRef<number | null>(null)
+  const previousAuthorizationKey = useRef(
+    `${accessKey}:${identity?.userId ?? ''}:${identity?.session.id ?? ''}`
+  )
+  const sessionRevalidationPendingRef = useRef(false)
   const [mutationOperationId, setMutationOperationId] = useState<number | null>(
     null
   )
-  const previousAccessKey = useRef(accessKey)
+  const [sessionRevalidationPending, setSessionRevalidationPending] =
+    useState(false)
+
+  const requestsRef = useRef<MemberOperationRequestCoordinator | null>(null)
+  const getRequests = useCallback(() => {
+    if (requestsRef.current === null) {
+      requestsRef.current = createMemberOperationRequestCoordinator()
+    }
+    return requestsRef.current
+  }, [])
+
+  const dispatchOperation = useCallback((action: MemberOperationAction) => {
+    stateRef.current = memberOperationReducer(stateRef.current, action)
+    dispatch(action)
+  }, [])
 
   useLayoutEffect(() => {
     stateRef.current = state
@@ -377,43 +219,169 @@ export function useMemberAdministrationController({
     state,
   ])
 
+  const isAuthorizationAllowed = useCallback((contextKey: string) => {
+    const authorization = authorizationRef.current
+    const currentIdentity = authorization.identity
+    return (
+      authorization.accessKey === contextKey &&
+      authorization.identityVerified &&
+      !sessionRevalidationPendingRef.current &&
+      accessRef.current.type === 'authorized' &&
+      currentIdentity !== undefined &&
+      currentIdentity.session.id.length > 0
+    )
+  }, [])
+
   const isCurrentOperation = useCallback(
-    (operationId: number, contextKey: string) =>
-      isCurrent(stateRef.current, operationId, contextKey) &&
-      authorizationRef.current.accessKey === contextKey,
+    (operationId: number, contextKey: string): boolean => {
+      const current = stateRef.current
+      const currentIdentity = authorizationRef.current.identity
+      return (
+        current.kind !== 'idle' &&
+        current.operationId === operationId &&
+        current.authorization.contextKey === contextKey &&
+        authorizationRef.current.accessKey === contextKey &&
+        authorizationRef.current.identityVerified &&
+        !sessionRevalidationPendingRef.current &&
+        currentIdentity !== undefined &&
+        current.authorization.actorId === currentIdentity.userId &&
+        current.authorization.sessionId === currentIdentity.session.id
+      )
+    },
     []
   )
 
-  const abortReads = useCallback(() => {
-    snapshotController.current?.abort()
-    snapshotController.current = null
-    reconciliationController.current?.abort()
-    reconciliationController.current = null
+  const getAuthorizedAccess = useCallback(
+    () =>
+      accessRef.current.type === 'authorized' ? accessRef.current : undefined,
+    []
+  )
+  const getCurrentIdentity = useCallback(
+    () => authorizationRef.current.identity,
+    []
+  )
+
+  const captureMutationOrigin = useCallback((): MemberMutationOrigin | null => {
+    const currentIdentity = authorizationRef.current.identity
+    if (
+      !currentIdentity ||
+      !authorizationRef.current.identityVerified ||
+      sessionRevalidationPendingRef.current
+    ) {
+      return null
+    }
+    return {
+      actorId: currentIdentity.userId,
+      sessionId: currentIdentity.session.id,
+      authorizationContextKey: authorizationRef.current.accessKey,
+    }
   }, [])
 
+  const synchronizeMutation = useCallback(
+    async (mutation: MemberCacheMutation, origin: MemberMutationOrigin) => {
+      await synchronizeMemberCaches(
+        queryClient,
+        {
+          ...mutation,
+          actor: { userId: origin.actorId },
+          origin,
+        },
+        {
+          activeIdentity: authorizationRef.current.identity,
+          beforeAuthorizationRefresh: async () => {
+            const currentIdentity = authorizationRef.current.identity
+            if (
+              !currentIdentity ||
+              currentIdentity.userId !== origin.actorId ||
+              currentIdentity.session.id !== origin.sessionId ||
+              authorizationRef.current.accessKey !==
+                origin.authorizationContextKey
+            ) {
+              return
+            }
+            sessionRevalidationPendingRef.current = true
+            setSessionRevalidationPending(true)
+            try {
+              await queryClient.invalidateQueries({
+                queryKey: currentUserQueryKey,
+              })
+            } finally {
+              const latestIdentity = authorizationRef.current.identity
+              if (
+                latestIdentity?.userId === origin.actorId &&
+                latestIdentity.session.id === origin.sessionId &&
+                authorizationRef.current.accessKey ===
+                  origin.authorizationContextKey
+              ) {
+                sessionRevalidationPendingRef.current = false
+                setSessionRevalidationPending(false)
+              }
+            }
+          },
+        }
+      )
+    },
+    [queryClient]
+  )
+
   useEffect(() => {
-    if (previousAccessKey.current === accessKey) return
-    previousAccessKey.current = accessKey
-    abortReads()
+    const currentKey = `${accessKey}:${identity?.userId ?? ''}:${identity?.session.id ?? ''}`
+    if (previousAuthorizationKey.current === currentKey) return
+    previousAuthorizationKey.current = currentKey
+    getRequests().cancelAllRequests()
     mutationInFlight.current = null
     setMutationOperationId(null)
-    dispatch({ type: 'invalidate-context' })
-  }, [abortReads, accessKey])
+    sessionRevalidationPendingRef.current = false
+    setSessionRevalidationPending(false)
+    dispatchOperation({
+      type: 'AUTHORIZATION_CONTEXT_INVALIDATED',
+      contextKey: accessKey,
+    })
+  }, [accessKey, dispatchOperation, getRequests, identity])
 
-  useEffect(() => abortReads, [abortReads])
+  useEffect(() => () => getRequests().cancelAllRequests(), [getRequests])
 
   const nextOperationId = useCallback(() => {
-    abortReads()
+    getRequests().cancelAllRequests()
     operationSequence.current += 1
     return operationSequence.current
-  }, [abortReads])
+  }, [getRequests])
+
+  const beginOperationRequest = useCallback(
+    (
+      operationId: number,
+      contextKey: string,
+      purpose: string,
+      currentCheck: () => boolean
+    ) =>
+      getRequests().beginRequest({
+        operationId,
+        contextKey,
+        purpose,
+        isOperationCurrent: currentCheck,
+        isAuthorizationAllowed: () => isAuthorizationAllowed(contextKey),
+      }),
+    [getRequests, isAuthorizationAllowed]
+  )
 
   const loadEditorSnapshot = useCallback(
-    async (memberId: string, operationId: number, contextKey: string) => {
-      const controller = new AbortController()
-      snapshotController.current = controller
+    async (
+      memberId: string,
+      operationId: number,
+      contextKey: string,
+      request: MemberOperationRequest
+    ) => {
       try {
-        const snapshot = await memberDetail(memberId, controller.signal)
+        const snapshot = await memberDetail(memberId, request.signal)
+        if (
+          !getRequests().isCurrentRequest(request, {
+            operationId,
+            contextKey,
+          }) ||
+          !isCurrentOperation(operationId, contextKey)
+        ) {
+          return
+        }
         const currentIdentity = authorizationRef.current.identity
         if (
           !currentIdentity ||
@@ -423,29 +391,36 @@ export function useMemberAdministrationController({
             'The current account can no longer manage this member.'
           )
         }
-        if (!isCurrentOperation(operationId, contextKey)) return
-        dispatch({
-          type: 'editor-snapshot-loaded',
+        dispatchOperation({
+          type: 'SNAPSHOT_LOADED',
           operationId,
           contextKey,
+          requestId: request.requestId,
           snapshot,
         })
       } catch (error) {
-        if (controller.signal.aborted) return
-        if (!isCurrentOperation(operationId, contextKey)) return
-        dispatch({
-          type: 'editor-snapshot-failed',
+        if (
+          request.signal.aborted ||
+          !getRequests().isCurrentRequest(request, {
+            operationId,
+            contextKey,
+          }) ||
+          !isCurrentOperation(operationId, contextKey)
+        ) {
+          return
+        }
+        dispatchOperation({
+          type: 'SNAPSHOT_FAILED',
           operationId,
           contextKey,
+          requestId: request.requestId,
           error: normalizeCoreApiError(error).message,
         })
       } finally {
-        if (snapshotController.current === controller) {
-          snapshotController.current = null
-        }
+        getRequests().completeRequest(request)
       }
     },
-    [isCurrentOperation]
+    [dispatchOperation, getRequests, isCurrentOperation]
   )
 
   const loadLifecycleSnapshot = useCallback(
@@ -453,12 +428,20 @@ export function useMemberAdministrationController({
       memberId: string,
       action: MemberLifecycleAction,
       operationId: number,
-      contextKey: string
+      contextKey: string,
+      request: MemberOperationRequest
     ) => {
-      const controller = new AbortController()
-      snapshotController.current = controller
       try {
-        const snapshot = await memberDetail(memberId, controller.signal)
+        const snapshot = await memberDetail(memberId, request.signal)
+        if (
+          !getRequests().isCurrentRequest(request, {
+            operationId,
+            contextKey,
+          }) ||
+          !isCurrentOperation(operationId, contextKey)
+        ) {
+          return
+        }
         const currentIdentity = authorizationRef.current.identity
         if (
           !currentIdentity ||
@@ -468,29 +451,36 @@ export function useMemberAdministrationController({
             'This lifecycle operation is no longer eligible for the current account or member state.'
           )
         }
-        if (!isCurrentOperation(operationId, contextKey)) return
-        dispatch({
-          type: 'lifecycle-snapshot-loaded',
+        dispatchOperation({
+          type: 'SNAPSHOT_LOADED',
           operationId,
           contextKey,
+          requestId: request.requestId,
           snapshot,
         })
       } catch (error) {
-        if (controller.signal.aborted) return
-        if (!isCurrentOperation(operationId, contextKey)) return
-        dispatch({
-          type: 'lifecycle-snapshot-failed',
+        if (
+          request.signal.aborted ||
+          !getRequests().isCurrentRequest(request, {
+            operationId,
+            contextKey,
+          }) ||
+          !isCurrentOperation(operationId, contextKey)
+        ) {
+          return
+        }
+        dispatchOperation({
+          type: 'SNAPSHOT_FAILED',
           operationId,
           contextKey,
+          requestId: request.requestId,
           error: normalizeCoreApiError(error).message,
         })
       } finally {
-        if (snapshotController.current === controller) {
-          snapshotController.current = null
-        }
+        getRequests().completeRequest(request)
       }
     },
-    [isCurrentOperation]
+    [dispatchOperation, getRequests, isCurrentOperation]
   )
 
   const startCreate = useCallback(() => {
@@ -498,23 +488,23 @@ export function useMemberAdministrationController({
     if (
       !currentIdentity ||
       !canProvisionMember(currentIdentity) ||
-      !authorizationRef.current.identityVerified ||
-      mutationInFlight.current !== null ||
-      authorizationRef.current.accessKey !== accessKey
+      !isAuthorizationAllowed(accessKey) ||
+      mutationInFlight.current !== null
     ) {
       return
     }
     const operationId = nextOperationId()
-    dispatch({
-      type: 'start-editor',
-      session: {
-        operationId,
-        contextKey: accessKey,
-        mode: 'create',
-        status: 'ready',
-      },
+    const authorization: MemberAuthorizationContext = {
+      actorId: currentIdentity.userId,
+      sessionId: currentIdentity.session.id,
+      contextKey: accessKey,
+    }
+    dispatchOperation({
+      type: 'START_CREATE',
+      operationId,
+      authorization,
     })
-  }, [accessKey, nextOperationId])
+  }, [accessKey, dispatchOperation, isAuthorizationAllowed, nextOperationId])
 
   const startEdit = useCallback(
     (member: Pick<Member, 'id' | 'globalRole' | 'primaryOrgUnitId'>) => {
@@ -522,26 +512,41 @@ export function useMemberAdministrationController({
       if (
         !currentIdentity ||
         !canManageMemberTarget(currentIdentity, member as Member) ||
-        !authorizationRef.current.identityVerified ||
-        mutationInFlight.current !== null ||
-        authorizationRef.current.accessKey !== accessKey
+        !isAuthorizationAllowed(accessKey) ||
+        mutationInFlight.current !== null
       ) {
         return
       }
       const operationId = nextOperationId()
-      dispatch({
-        type: 'start-editor',
-        session: {
-          operationId,
-          contextKey: accessKey,
-          mode: 'edit',
-          memberId: member.id,
-          status: 'loading',
-        },
+      const request = beginOperationRequest(
+        operationId,
+        accessKey,
+        'editor-snapshot',
+        () => isAuthorizationAllowed(accessKey)
+      )
+      if (!request) return
+      const authorization: MemberAuthorizationContext = {
+        actorId: currentIdentity.userId,
+        sessionId: currentIdentity.session.id,
+        contextKey: accessKey,
+      }
+      dispatchOperation({
+        type: 'START_EDIT',
+        operationId,
+        authorization,
+        memberId: member.id,
+        requestId: request.requestId,
       })
-      void loadEditorSnapshot(member.id, operationId, accessKey)
+      void loadEditorSnapshot(member.id, operationId, accessKey, request)
     },
-    [accessKey, loadEditorSnapshot, nextOperationId]
+    [
+      accessKey,
+      beginOperationRequest,
+      dispatchOperation,
+      isAuthorizationAllowed,
+      loadEditorSnapshot,
+      nextOperationId,
+    ]
   )
 
   const startLifecycle = useCallback(
@@ -550,185 +555,114 @@ export function useMemberAdministrationController({
       if (
         !currentIdentity ||
         !canPerformMemberLifecycle(currentIdentity, member, action) ||
-        !authorizationRef.current.identityVerified ||
-        mutationInFlight.current !== null ||
-        authorizationRef.current.accessKey !== accessKey
+        !isAuthorizationAllowed(accessKey) ||
+        mutationInFlight.current !== null
       ) {
         return
       }
       const operationId = nextOperationId()
-      dispatch({
-        type: 'start-lifecycle',
-        session: {
-          operationId,
-          contextKey: accessKey,
-          memberId: member.id,
-          action,
-          phase: 'loading',
-        },
-      })
-      void loadLifecycleSnapshot(member.id, action, operationId, accessKey)
-    },
-    [accessKey, loadLifecycleSnapshot, nextOperationId]
-  )
-
-  const verifyCreation = useCallback(
-    async (
-      operationId: number,
-      contextKey: string,
-      payload: MemberCreatePayload,
-      baseFeedback: MemberOperationFeedback
-    ) => {
-      if (!isCurrentOperation(operationId, contextKey)) return
-      const currentAccess = accessRef.current
-      if (currentAccess.type !== 'authorized') return
-      reconciliationController.current?.abort()
-      const controller = new AbortController()
-      reconciliationController.current = controller
-      dispatch({
-        type: 'editor-feedback',
+      const request = beginOperationRequest(
         operationId,
-        contextKey,
-        feedback: {
-          ...baseFeedback,
-          submittedCreationPayload: payload,
-          reconciliationLoading: true,
-          creationReconciliation: undefined,
-          reconciliationError: undefined,
-        },
-      })
-      try {
-        const result = await reconcileMemberCreation(
-          payload,
-          currentAccess,
-          controller.signal
-        )
-        if (!isCurrentOperation(operationId, contextKey)) return
-        const message =
-          result.status === 'found'
-            ? result.metadataMatches
-              ? 'A visible account has the submitted normalized email and matching metadata. The request may have succeeded, but no second request was sent.'
-              : 'A visible account has the submitted normalized email but different metadata. Review that account before deciding what to do.'
-            : result.visibilityLimited
-              ? 'No matching account is visible in your current management scope. This does not establish that the email is globally unused or that the original request failed.'
-              : 'No matching account was found in the authoritative directory. The original request was not confirmed; review the preserved draft before explicitly deciding whether to retry.'
-        dispatch({
-          type: 'editor-feedback',
-          operationId,
-          contextKey,
-          feedback: {
-            ...baseFeedback,
-            message,
-            creationReconciliation: result,
-            submittedCreationPayload: payload,
-            reconciliationLoading: false,
-            reconciliationError: undefined,
-          },
-        })
-      } catch (error) {
-        if (controller.signal.aborted) return
-        if (!isCurrentOperation(operationId, contextKey)) return
-        dispatch({
-          type: 'editor-feedback',
-          operationId,
-          contextKey,
-          feedback: {
-            ...baseFeedback,
-            submittedCreationPayload: payload,
-            reconciliationLoading: false,
-            reconciliationError: normalizeCoreApiError(error).message,
-          },
-        })
-      } finally {
-        if (reconciliationController.current === controller) {
-          reconciliationController.current = null
-        }
+        accessKey,
+        'lifecycle-snapshot',
+        () => isAuthorizationAllowed(accessKey)
+      )
+      if (!request) return
+      const authorization: MemberAuthorizationContext = {
+        actorId: currentIdentity.userId,
+        sessionId: currentIdentity.session.id,
+        contextKey: accessKey,
       }
-    },
-    [isCurrentOperation]
-  )
-
-  const verifyEdit = useCallback(
-    async (
-      operationId: number,
-      contextKey: string,
-      original: MemberSnapshot,
-      payload: MemberPatchPayload,
-      baseFeedback: MemberOperationFeedback,
-      latestOverride?: MemberSnapshot
-    ) => {
-      if (!isCurrentOperation(operationId, contextKey)) return
-      reconciliationController.current?.abort()
-      const controller = new AbortController()
-      reconciliationController.current = controller
-      dispatch({
-        type: 'editor-feedback',
+      dispatchOperation({
+        type: 'START_LIFECYCLE',
         operationId,
-        contextKey,
-        feedback: {
-          ...baseFeedback,
-          originalSnapshot: original,
-          submittedPatch: payload,
-          reconciliationLoading: latestOverride === undefined,
-        },
+        authorization,
+        memberId: member.id,
+        action,
+        requestId: request.requestId,
       })
-      try {
-        const latest =
-          latestOverride ??
-          (await memberDetail(original.member.id, controller.signal))
-        if (!isCurrentOperation(operationId, contextKey)) return
-        const reconciliation = reconcileMemberEdit(original, payload, latest)
-        dispatch({
-          type: 'editor-feedback',
-          operationId,
-          contextKey,
-          feedback: {
-            ...baseFeedback,
-            message: editReconciliationMessage(reconciliation),
-            latestSnapshot: latest,
-            originalSnapshot: original,
-            submittedPatch: payload,
-            editReconciliation: reconciliation,
-            latestMatchesRequest: memberPatchMatchesMember(
-              latest.member,
-              payload
-            ),
-            reconciliationLoading: false,
-            reconciliationError: undefined,
-          },
-        })
-      } catch (error) {
-        if (controller.signal.aborted) return
-        if (!isCurrentOperation(operationId, contextKey)) return
-        dispatch({
-          type: 'editor-feedback',
-          operationId,
-          contextKey,
-          feedback: {
-            ...baseFeedback,
-            originalSnapshot: original,
-            submittedPatch: payload,
-            reconciliationLoading: false,
-            reconciliationError: normalizeCoreApiError(error).message,
-          },
-        })
-      } finally {
-        if (reconciliationController.current === controller) {
-          reconciliationController.current = null
-        }
-      }
+      void loadLifecycleSnapshot(
+        member.id,
+        action,
+        operationId,
+        accessKey,
+        request
+      )
     },
-    [isCurrentOperation]
+    [
+      accessKey,
+      beginOperationRequest,
+      dispatchOperation,
+      isAuthorizationAllowed,
+      loadLifecycleSnapshot,
+      nextOperationId,
+    ]
   )
 
-  const editorMutation = useMutation({
-    mutationFn: async (input: MemberEditorSubmit) => {
+  const editorRecoveryRef = useRef<ReturnType<
+    typeof createMemberEditorRecovery
+  > | null>(null)
+  const getEditorRecovery = useCallback(() => {
+    if (editorRecoveryRef.current === null) {
+      editorRecoveryRef.current = createMemberEditorRecovery({
+        requests: getRequests(),
+        dispatch: dispatchOperation,
+        getAccess: getAuthorizedAccess,
+        isAuthorizationAllowed,
+        isOperationCurrent: isCurrentOperation,
+      })
+    }
+    return editorRecoveryRef.current
+  }, [
+    dispatchOperation,
+    getAuthorizedAccess,
+    getRequests,
+    isAuthorizationAllowed,
+    isCurrentOperation,
+  ])
+
+  const lifecycleRecoveryRef = useRef<ReturnType<
+    typeof createMemberLifecycleRecovery
+  > | null>(null)
+  const getLifecycleRecovery = useCallback(() => {
+    if (lifecycleRecoveryRef.current === null) {
+      lifecycleRecoveryRef.current = createMemberLifecycleRecovery({
+        requests: getRequests(),
+        dispatch: dispatchOperation,
+        getIdentity: getCurrentIdentity,
+        isAuthorizationAllowed,
+        isOperationCurrent: isCurrentOperation,
+      })
+    }
+    return lifecycleRecoveryRef.current
+  }, [
+    dispatchOperation,
+    getCurrentIdentity,
+    getRequests,
+    isAuthorizationAllowed,
+    isCurrentOperation,
+  ])
+
+  const assertMutationOriginCurrent = useCallback(
+    (origin: MemberMutationOrigin, contextKey: string) => {
+      const currentIdentity = authorizationRef.current.identity
       if (
-        authorizationRef.current.accessKey !== input.contextKey ||
-        !authorizationRef.current.identityVerified
+        authorizationRef.current.accessKey !== contextKey ||
+        !authorizationRef.current.identityVerified ||
+        sessionRevalidationPendingRef.current ||
+        !currentIdentity ||
+        currentIdentity.userId !== origin.actorId ||
+        currentIdentity.session.id !== origin.sessionId
       ) {
         throw new ObsoleteMemberOperationError()
       }
+    },
+    []
+  )
+
+  const { mutate: mutateEditor } = useMutation({
+    mutationFn: async (input: MemberEditorMutationInput) => {
+      assertMutationOriginCurrent(input.origin, input.contextKey)
       const currentIdentity = authorizationRef.current.identity
       if (!currentIdentity) throw new ObsoleteMemberOperationError()
       const units =
@@ -752,12 +686,7 @@ export function useMemberAdministrationController({
         mutation: {
           type: 'updated' as const,
           targetMemberId: input.snapshot.member.id,
-          changedFields: Object.keys(input.payload) as Array<
-            | 'displayName'
-            | 'globalRole'
-            | 'primaryOrgUnitId'
-            | 'managerScopeUnitIds'
-          >,
+          changedFields: changedMemberFields(input.payload),
         },
         snapshot: await updateMember(
           input.snapshot.member.id,
@@ -767,20 +696,21 @@ export function useMemberAdministrationController({
       }
     },
     onSuccess: async (result, input) => {
-      await synchronizeMemberCaches(queryClient, {
-        ...result.mutation,
-        actor: authorizationRef.current.identity
-          ? { userId: authorizationRef.current.identity.userId }
-          : undefined,
-        outcome: 'confirmed',
-      })
+      await synchronizeMutation(
+        { ...result.mutation, outcome: 'confirmed' },
+        input.origin
+      )
       if (!isCurrentOperation(input.operationId, input.contextKey)) return
+      dispatchOperation({
+        type: 'SUBMISSION_CONFIRMED',
+        operationId: input.operationId,
+        contextKey: input.contextKey,
+      })
       toast.success(
         result.mutation.type === 'created'
           ? 'Account provisioned; secure setup is still required'
           : 'Member updated'
       )
-      dispatch({ type: 'close' })
     },
     onError: async (error, input) => {
       if (error instanceof ObsoleteMemberOperationError) return
@@ -806,56 +736,47 @@ export function useMemberAdministrationController({
         outcome === 'unknown' ||
         outcome === 'precondition'
       ) {
+        await synchronizeMutation(
+          input.mode === 'create'
+            ? { type: 'created', outcome: 'uncertain' }
+            : {
+                type: 'updated',
+                targetMemberId: input.snapshot.member.id,
+                changedFields: changedMemberFields(input.payload),
+                outcome: 'uncertain',
+              },
+          input.origin
+        )
+        if (!isCurrentOperation(input.operationId, input.contextKey)) return
+        dispatchOperation({
+          type: 'SUBMISSION_UNCERTAIN',
+          operationId: input.operationId,
+          contextKey: input.contextKey,
+          feedback: storeMemberOperationFeedback(baseFeedback),
+        })
         if (input.mode === 'create') {
-          await synchronizeMemberCaches(queryClient, {
-            type: 'created',
-            actor: authorizationRef.current.identity
-              ? { userId: authorizationRef.current.identity.userId }
-              : undefined,
-            outcome: 'uncertain',
+          void getEditorRecovery().verifyCreation({
+            operationId: input.operationId,
+            contextKey: input.contextKey,
+            payload: input.payload,
           })
-          if (isCurrentOperation(input.operationId, input.contextKey)) {
-            await verifyCreation(
-              input.operationId,
-              input.contextKey,
-              input.payload,
-              baseFeedback
-            )
-          }
         } else {
-          await synchronizeMemberCaches(queryClient, {
-            type: 'updated',
-            targetMemberId: input.snapshot.member.id,
-            changedFields: Object.keys(input.payload) as Array<
-              | 'displayName'
-              | 'globalRole'
-              | 'primaryOrgUnitId'
-              | 'managerScopeUnitIds'
-            >,
-            actor: authorizationRef.current.identity
-              ? { userId: authorizationRef.current.identity.userId }
-              : undefined,
-            outcome: 'uncertain',
+          void getEditorRecovery().verifyEdit({
+            operationId: input.operationId,
+            contextKey: input.contextKey,
+            original: input.snapshot,
+            payload: input.payload,
           })
-          if (isCurrentOperation(input.operationId, input.contextKey)) {
-            await verifyEdit(
-              input.operationId,
-              input.contextKey,
-              input.snapshot,
-              input.payload,
-              baseFeedback
-            )
-          }
         }
         return
       }
 
       if (isCurrentOperation(input.operationId, input.contextKey)) {
-        dispatch({
-          type: 'editor-feedback',
+        dispatchOperation({
+          type: 'SUBMISSION_REJECTED',
           operationId: input.operationId,
           contextKey: input.contextKey,
-          feedback: baseFeedback,
+          feedback: storeMemberOperationFeedback(baseFeedback),
         })
       }
     },
@@ -869,112 +790,46 @@ export function useMemberAdministrationController({
     },
   })
 
-  const verifyLifecycle = useCallback(
-    async (
-      operationId: number,
-      contextKey: string,
-      input: {
-        action: MemberLifecycleAction
-        snapshot: MemberSnapshot
-      },
-      baseFeedback: MemberOperationFeedback
-    ) => {
-      if (!isCurrentOperation(operationId, contextKey)) return
-      reconciliationController.current?.abort()
-      const controller = new AbortController()
-      reconciliationController.current = controller
-      dispatch({
-        type: 'lifecycle-feedback',
-        operationId,
-        contextKey,
-        feedback: { ...baseFeedback, reconciliationLoading: true },
-      })
-      try {
-        const latest = await memberDetail(
-          input.snapshot.member.id,
-          controller.signal
-        )
-        if (!isCurrentOperation(operationId, contextKey)) return
-        dispatch({
-          type: 'lifecycle-feedback',
-          operationId,
-          contextKey,
-          feedback: {
-            ...baseFeedback,
-            message: lifecycleVerifiedStateMessage(input.action, latest),
-            latestSnapshot: latest,
-            reconciliationLoading: false,
-            reconciliationError: undefined,
-          },
-        })
-      } catch (error) {
-        if (controller.signal.aborted) return
-        if (!isCurrentOperation(operationId, contextKey)) return
-        dispatch({
-          type: 'lifecycle-feedback',
-          operationId,
-          contextKey,
-          feedback: {
-            ...baseFeedback,
-            reconciliationLoading: false,
-            reconciliationError: normalizeCoreApiError(error).message,
-          },
-        })
-      } finally {
-        if (reconciliationController.current === controller) {
-          reconciliationController.current = null
-        }
-      }
-    },
-    [isCurrentOperation]
-  )
-
-  const lifecycleMutation = useMutation({
-    mutationFn: async ({
-      snapshot,
-      action,
-      contextKey,
-    }: {
-      snapshot: MemberSnapshot
-      action: MemberLifecycleAction
-      operationId: number
-      contextKey: string
-    }) => {
-      if (
-        authorizationRef.current.accessKey !== contextKey ||
-        !authorizationRef.current.identityVerified
-      ) {
-        throw new ObsoleteMemberOperationError()
-      }
+  const { mutate: mutateLifecycle } = useMutation({
+    mutationFn: async (input: MemberLifecycleMutationInput) => {
+      assertMutationOriginCurrent(input.origin, input.contextKey)
       const currentIdentity = authorizationRef.current.identity
       if (
         !currentIdentity ||
-        !canPerformMemberLifecycle(currentIdentity, snapshot.member, action)
+        !canPerformMemberLifecycle(
+          currentIdentity,
+          input.snapshot.member,
+          input.action
+        )
       ) {
         throw new ObsoleteMemberOperationError()
       }
       return {
-        mutation: statusMutationName(action),
-        targetMemberId: snapshot.member.id,
+        mutation: statusMutationName(input.action),
+        targetMemberId: input.snapshot.member.id,
         snapshot: await changeMemberStatus(
-          snapshot.member.id,
-          action,
-          snapshot.etag
+          input.snapshot.member.id,
+          input.action,
+          input.snapshot.etag
         ),
       }
     },
     onSuccess: async (result, input) => {
-      await synchronizeMemberCaches(queryClient, {
-        type: result.mutation,
-        targetMemberId: result.targetMemberId,
-        actor: authorizationRef.current.identity
-          ? { userId: authorizationRef.current.identity.userId }
-          : undefined,
-        outcome: 'confirmed',
-      })
+      await synchronizeMutation(
+        {
+          type: result.mutation,
+          targetMemberId: result.targetMemberId,
+          outcome: 'confirmed',
+        },
+        input.origin
+      )
       if (!isCurrentOperation(input.operationId, input.contextKey)) return
+      dispatchOperation({
+        type: 'SUBMISSION_CONFIRMED',
+        operationId: input.operationId,
+        contextKey: input.contextKey,
+      })
       toast.success(lifecycleSuccessMessage(input.action))
-      dispatch({ type: 'close' })
     },
     onError: async (error, input) => {
       if (error instanceof ObsoleteMemberOperationError) return
@@ -990,30 +845,35 @@ export function useMemberAdministrationController({
         outcome === 'unknown' ||
         outcome === 'precondition'
       ) {
-        await synchronizeMemberCaches(queryClient, {
-          type: statusMutationName(input.action),
-          targetMemberId: input.snapshot.member.id,
-          actor: authorizationRef.current.identity
-            ? { userId: authorizationRef.current.identity.userId }
-            : undefined,
-          outcome: 'uncertain',
+        await synchronizeMutation(
+          {
+            type: statusMutationName(input.action),
+            targetMemberId: input.snapshot.member.id,
+            outcome: 'uncertain',
+          },
+          input.origin
+        )
+        if (!isCurrentOperation(input.operationId, input.contextKey)) return
+        dispatchOperation({
+          type: 'SUBMISSION_UNCERTAIN',
+          operationId: input.operationId,
+          contextKey: input.contextKey,
+          feedback: storeMemberOperationFeedback(baseFeedback),
         })
-        if (isCurrentOperation(input.operationId, input.contextKey)) {
-          await verifyLifecycle(
-            input.operationId,
-            input.contextKey,
-            { action: input.action, snapshot: input.snapshot },
-            baseFeedback
-          )
-        }
+        void getLifecycleRecovery().verifyLifecycle({
+          operationId: input.operationId,
+          contextKey: input.contextKey,
+          action: input.action,
+          originalSnapshot: input.snapshot,
+        })
         return
       }
       if (isCurrentOperation(input.operationId, input.contextKey)) {
-        dispatch({
-          type: 'lifecycle-feedback',
+        dispatchOperation({
+          type: 'SUBMISSION_REJECTED',
           operationId: input.operationId,
           contextKey: input.contextKey,
-          feedback: baseFeedback,
+          feedback: storeMemberOperationFeedback(baseFeedback),
         })
       }
     },
@@ -1026,206 +886,298 @@ export function useMemberAdministrationController({
       )
     },
   })
-  const { mutate: mutateEditor } = editorMutation
-  const { mutate: mutateLifecycle } = lifecycleMutation
 
   const submitEditor = useCallback(
     (input: MemberEditorSubmit) => {
-      if (
-        !isCurrentOperation(input.operationId, input.contextKey) ||
-        !authorizationRef.current.identityVerified ||
-        mutationInFlight.current !== null
-      ) {
-        return
-      }
-      mutationInFlight.current = input.operationId
-      setMutationOperationId(input.operationId)
-      dispatch({
-        type: 'editor-feedback',
-        operationId: input.operationId,
-        contextKey: input.contextKey,
-        feedback: null,
-      })
-      mutateEditor(input)
-    },
-    [isCurrentOperation, mutateEditor]
-  )
-
-  const confirmLifecycle = useCallback(
-    (snapshot: MemberSnapshot, operationId: number) => {
-      const current = stateRef.current
-      if (
-        current.kind !== 'lifecycle' ||
-        current.session.operationId !== operationId ||
-        current.session.contextKey !== accessKey ||
-        current.session.phase !== 'confirm' ||
-        !authorizationRef.current.identityVerified ||
-        mutationInFlight.current !== null
-      ) {
-        return
-      }
-      mutationInFlight.current = operationId
-      setMutationOperationId(operationId)
-      dispatch({
-        type: 'lifecycle-feedback',
-        operationId,
-        contextKey: accessKey,
-        feedback: null,
-      })
-      mutateLifecycle({
-        snapshot,
-        action: current.session.action,
-        operationId,
-        contextKey: accessKey,
-      })
-    },
-    [accessKey, mutateLifecycle]
-  )
-
-  const loadLatestMember = useCallback(
-    async (memberId: string) => {
       const current = stateRef.current
       if (
         current.kind === 'idle' ||
-        current.session.contextKey !== accessKey ||
-        !authorizationRef.current.identityVerified
-      ) {
-        throw new Error('Verify member-management access before loading data.')
-      }
-      const controller = new AbortController()
-      reconciliationController.current?.abort()
-      reconciliationController.current = controller
-      try {
-        return await memberDetail(memberId, controller.signal)
-      } finally {
-        if (reconciliationController.current === controller) {
-          reconciliationController.current = null
-        }
-      }
-    },
-    [accessKey]
-  )
-
-  const reviewLatestEditor = useCallback(
-    (snapshot: MemberSnapshot, operationId: number) => {
-      const current = stateRef.current
-      if (
-        current.kind !== 'editor' ||
-        current.session.operationId !== operationId ||
-        current.session.mode !== 'edit' ||
-        !current.feedback?.submittedPatch ||
-        !current.feedback.originalSnapshot
+        mutationInFlight.current !== null ||
+        !isCurrentOperation(input.operationId, input.contextKey) ||
+        !selectOperationCapabilities(current).canSubmit
       ) {
         return
       }
-      void verifyEdit(
-        operationId,
-        current.session.contextKey,
-        current.feedback.originalSnapshot,
-        current.feedback.submittedPatch,
-        current.feedback,
-        snapshot
-      )
+      let mutationInput: MemberEditorMutationInput
+      if (
+        current.kind === 'create' &&
+        input.mode === 'create' &&
+        (current.phase === 'ready' || current.phase === 'rejected')
+      ) {
+        const origin = captureMutationOrigin()
+        if (!origin) return
+        mutationInput = { ...input, origin }
+      } else if (
+        current.kind === 'edit' &&
+        input.mode === 'edit' &&
+        (current.phase === 'ready' || current.phase === 'rejected') &&
+        input.snapshot.member.id === current.reviewedSnapshot.member.id &&
+        input.snapshot.etag === current.reviewedSnapshot.etag
+      ) {
+        const origin = captureMutationOrigin()
+        if (!origin) return
+        mutationInput = {
+          ...input,
+          snapshot: current.reviewedSnapshot,
+          origin,
+        }
+      } else {
+        return
+      }
+
+      const payload =
+        mutationInput.mode === 'create'
+          ? mutationInput.payload
+          : mutationInput.payload
+      mutationInFlight.current = input.operationId
+      setMutationOperationId(input.operationId)
+      dispatchOperation({
+        type: 'SUBMISSION_STARTED',
+        operationId: input.operationId,
+        contextKey: input.contextKey,
+        payload,
+      })
+      mutateEditor(mutationInput)
     },
-    [verifyEdit]
+    [captureMutationOrigin, dispatchOperation, isCurrentOperation, mutateEditor]
   )
 
-  const reviewLatestLifecycle = useCallback(
-    (snapshot: MemberSnapshot, operationId: number) => {
+  const confirmLifecycle = useCallback(
+    (operationId: number) => {
       const current = stateRef.current
       if (
         current.kind !== 'lifecycle' ||
-        current.session.operationId !== operationId ||
-        !current.feedback
+        current.operationId !== operationId ||
+        current.authorization.contextKey !== accessKey ||
+        !selectOperationCapabilities(current).canSubmit ||
+        mutationInFlight.current !== null ||
+        !isCurrentOperation(operationId, accessKey)
       ) {
         return
       }
-      dispatch({
-        type: 'lifecycle-feedback',
+      const origin = captureMutationOrigin()
+      if (!origin) return
+      const snapshot =
+        current.phase === 'confirm' || current.phase === 'rejected'
+          ? current.reviewedSnapshot
+          : undefined
+      if (!snapshot) return
+      mutationInFlight.current = operationId
+      setMutationOperationId(operationId)
+      dispatchOperation({
+        type: 'SUBMISSION_STARTED',
         operationId,
-        contextKey: current.session.contextKey,
-        feedback: {
-          ...current.feedback,
-          latestSnapshot: snapshot,
-          reconciliationLoading: false,
-          reconciliationError: undefined,
-        },
+        contextKey: accessKey,
+      })
+      mutateLifecycle({
+        operationId,
+        contextKey: accessKey,
+        action: current.action,
+        snapshot,
+        origin,
       })
     },
-    []
+    [
+      accessKey,
+      captureMutationOrigin,
+      dispatchOperation,
+      isCurrentOperation,
+      mutateLifecycle,
+    ]
   )
 
-  const restartEditorFromLatest = useCallback(
-    (snapshot: MemberSnapshot, operationId: number) => {
+  const retryEditorSnapshot = useCallback(
+    (memberId: string, operationId: number) => {
       const current = stateRef.current
       if (
-        current.kind !== 'editor' ||
-        current.session.operationId !== operationId ||
-        current.session.mode !== 'edit' ||
-        !authorizationRef.current.identityVerified
+        current.kind !== 'edit' ||
+        current.phase !== 'load-error' ||
+        current.operationId !== operationId ||
+        current.authorization.contextKey !== accessKey
       ) {
         return
       }
-      const nextId = nextOperationId()
-      dispatch({
-        type: 'replace-editor',
-        session: {
-          operationId: nextId,
-          contextKey: current.session.contextKey,
-          mode: 'edit',
-          memberId: snapshot.member.id,
-          status: 'ready',
-          snapshot,
-        },
-        feedback: null,
+      const request = beginOperationRequest(
+        operationId,
+        accessKey,
+        'editor-snapshot',
+        () => isCurrentOperation(operationId, accessKey)
+      )
+      if (!request) return
+      dispatchOperation({
+        type: 'SNAPSHOT_REQUESTED',
+        operationId,
+        contextKey: accessKey,
+        requestId: request.requestId,
+      })
+      void loadEditorSnapshot(memberId, operationId, accessKey, request)
+    },
+    [
+      accessKey,
+      beginOperationRequest,
+      dispatchOperation,
+      isCurrentOperation,
+      loadEditorSnapshot,
+    ]
+  )
+
+  const retryLifecycleSnapshot = useCallback(
+    (memberId: string, operationId: number) => {
+      const current = stateRef.current
+      if (
+        current.kind !== 'lifecycle' ||
+        current.phase !== 'load-error' ||
+        current.operationId !== operationId ||
+        current.authorization.contextKey !== accessKey
+      ) {
+        return
+      }
+      const request = beginOperationRequest(
+        operationId,
+        accessKey,
+        'lifecycle-snapshot',
+        () => isCurrentOperation(operationId, accessKey)
+      )
+      if (!request) return
+      dispatchOperation({
+        type: 'SNAPSHOT_REQUESTED',
+        operationId,
+        contextKey: accessKey,
+        requestId: request.requestId,
+      })
+      void loadLifecycleSnapshot(
+        memberId,
+        current.action,
+        operationId,
+        accessKey,
+        request
+      )
+    },
+    [
+      accessKey,
+      beginOperationRequest,
+      dispatchOperation,
+      isCurrentOperation,
+      loadLifecycleSnapshot,
+    ]
+  )
+
+  const retryEditorVerification = useCallback(
+    (operationId: number) => {
+      const current = stateRef.current
+      if (
+        current.kind === 'create' &&
+        current.operationId === operationId &&
+        (current.phase === 'verification-required' ||
+          current.phase === 'verification-failed' ||
+          current.phase === 'review-found' ||
+          current.phase === 'review-not-found')
+      ) {
+        void getEditorRecovery().verifyCreation({
+          operationId,
+          contextKey: current.authorization.contextKey,
+          payload: current.submittedPayload,
+        })
+        return
+      }
+      if (
+        current.kind === 'edit' &&
+        current.operationId === operationId &&
+        (current.phase === 'verification-required' ||
+          current.phase === 'verification-failed' ||
+          current.phase === 'review')
+      ) {
+        void getEditorRecovery().verifyEdit({
+          operationId,
+          contextKey: current.authorization.contextKey,
+          original: current.originalSnapshot,
+          payload: current.submittedPatch,
+        })
+      }
+    },
+    [getEditorRecovery]
+  )
+
+  const retryLifecycleVerification = useCallback(
+    (operationId: number) => {
+      const current = stateRef.current
+      if (
+        current.kind !== 'lifecycle' ||
+        current.operationId !== operationId ||
+        (current.phase !== 'verification-required' &&
+          current.phase !== 'verification-failed' &&
+          current.phase !== 'review')
+      ) {
+        return
+      }
+      void getLifecycleRecovery().verifyLifecycle({
+        operationId,
+        contextKey: current.authorization.contextKey,
+        action: current.action,
+        originalSnapshot: current.originalSnapshot,
       })
     },
-    [nextOperationId]
+    [getLifecycleRecovery]
+  )
+
+  const reviewCreationDraft = useCallback(
+    (operationId: number) => {
+      const current = stateRef.current
+      if (
+        current.kind !== 'create' ||
+        current.operationId !== operationId ||
+        current.phase !== 'review-not-found'
+      ) {
+        return
+      }
+      dispatchOperation({
+        type: 'CREATION_DRAFT_REVIEWED',
+        operationId,
+        contextKey: current.authorization.contextKey,
+      })
+    },
+    [dispatchOperation]
   )
 
   const resolveEditReconciliation = useCallback(
-    (operationId: number, choices: MemberConflictChoices) => {
+    (
+      operationId: number,
+      reviewedVersion: string,
+      choices: MemberConflictChoices
+    ) => {
       const current = stateRef.current
       if (
-        current.kind !== 'editor' ||
-        current.session.operationId !== operationId ||
-        current.session.mode !== 'edit' ||
-        !current.feedback?.editReconciliation ||
-        !authorizationRef.current.identityVerified
+        current.kind !== 'edit' ||
+        current.operationId !== operationId ||
+        current.phase !== 'review' ||
+        current.latestSnapshot.etag !== reviewedVersion ||
+        !isAuthorizationAllowed(current.authorization.contextKey)
       ) {
         return
       }
-      const reconciliation = current.feedback.editReconciliation
-      const resolved = resolveMemberEditReconciliation(reconciliation, choices)
+      const resolved = resolveMemberEditReconciliation(
+        current.reconciliation,
+        choices
+      )
       if (resolved.status === 'unresolved') return
       if (resolved.status === 'invalid') {
-        dispatch({
-          type: 'editor-feedback',
+        dispatchOperation({
+          type: 'RECOVERY_VALIDATION_FAILED',
           operationId,
-          contextKey: current.session.contextKey,
-          feedback: {
-            ...current.feedback,
-            reconciliationError: resolved.message,
-          },
+          contextKey: current.authorization.contextKey,
+          reviewedVersion,
+          message: resolved.message,
         })
         return
       }
       const nextId = nextOperationId()
-      dispatch({
-        type: 'replace-editor',
-        session: {
-          operationId: nextId,
-          contextKey: current.session.contextKey,
-          mode: 'edit',
-          memberId: reconciliation.latest.member.id,
-          status: 'ready',
-          snapshot: reconciliation.latest,
-          initialValues: memberFormValuesFromEditableValues(
-            reconciliation.latest.member,
-            resolved.values
-          ),
-        },
-        feedback: null,
+      dispatchOperation({
+        type: 'EDIT_RECONCILIATION_RESOLVED',
+        operationId,
+        contextKey: current.authorization.contextKey,
+        reviewedVersion,
+        nextOperationId: nextId,
+        values: resolved.values,
       })
       if (Object.keys(resolved.patch).length === 0) {
         toast.success('Member is already up to date', {
@@ -1234,170 +1186,91 @@ export function useMemberAdministrationController({
         })
       }
     },
-    [nextOperationId]
+    [dispatchOperation, isAuthorizationAllowed, nextOperationId]
   )
 
-  const restartLifecycleFromLatest = useCallback(
-    (snapshot: MemberSnapshot, operationId: number) => {
+  const discardEdit = useCallback(
+    (operationId: number, reviewedVersion: string) => {
       const current = stateRef.current
-      const actor = authorizationRef.current.identity
       if (
-        current.kind !== 'lifecycle' ||
-        current.session.operationId !== operationId ||
-        !actor ||
-        !authorizationRef.current.identityVerified ||
-        !canPerformMemberLifecycle(
-          actor,
-          snapshot.member,
-          current.session.action
-        )
+        current.kind !== 'edit' ||
+        current.operationId !== operationId ||
+        current.phase !== 'review' ||
+        current.latestSnapshot.etag !== reviewedVersion ||
+        !isAuthorizationAllowed(current.authorization.contextKey)
       ) {
         return
       }
       const nextId = nextOperationId()
-      dispatch({
-        type: 'replace-lifecycle',
-        session: {
-          operationId: nextId,
-          contextKey: current.session.contextKey,
-          memberId: snapshot.member.id,
-          action: current.session.action,
-          phase: 'confirm',
-          snapshot,
-        },
-        feedback: null,
+      dispatchOperation({
+        type: 'EDIT_DISCARDED',
+        operationId,
+        contextKey: current.authorization.contextKey,
+        reviewedVersion,
+        nextOperationId: nextId,
       })
     },
-    [nextOperationId]
+    [dispatchOperation, isAuthorizationAllowed, nextOperationId]
   )
 
-  const retryEditorSnapshot = useCallback(
-    (memberId: string, operationId: number) => {
-      const current = stateRef.current
-      if (
-        current.kind !== 'editor' ||
-        current.session.operationId !== operationId ||
-        current.session.mode !== 'edit' ||
-        current.session.contextKey !== accessKey ||
-        !authorizationRef.current.identityVerified
-      ) {
-        return
-      }
-      dispatch({
-        type: 'replace-editor',
-        session: {
-          ...current.session,
-          memberId,
-          status: 'loading',
-          snapshot: undefined,
-          loadError: undefined,
-        },
-        feedback: null,
-      })
-      void loadEditorSnapshot(memberId, operationId, accessKey)
-    },
-    [accessKey, loadEditorSnapshot]
-  )
-
-  const retryLifecycleSnapshot = useCallback(
-    (memberId: string, operationId: number) => {
+  const reviewLifecycleForConfirmation = useCallback(
+    (operationId: number, reviewedVersion: string) => {
       const current = stateRef.current
       if (
         current.kind !== 'lifecycle' ||
-        current.session.operationId !== operationId ||
-        current.session.contextKey !== accessKey ||
-        !authorizationRef.current.identityVerified
+        current.operationId !== operationId ||
+        current.phase !== 'review' ||
+        current.latestSnapshot.etag !== reviewedVersion ||
+        !current.eligible ||
+        current.desiredStatePresent ||
+        !isAuthorizationAllowed(current.authorization.contextKey)
       ) {
         return
       }
-      dispatch({
-        type: 'replace-lifecycle',
-        session: {
-          ...current.session,
-          memberId,
-          phase: 'loading',
-          snapshot: undefined,
-          loadError: undefined,
-        },
-        feedback: null,
+      const nextId = nextOperationId()
+      dispatchOperation({
+        type: 'LIFECYCLE_REVIEW_CONFIRMED',
+        operationId,
+        contextKey: current.authorization.contextKey,
+        reviewedVersion,
+        nextOperationId: nextId,
       })
-      void loadLifecycleSnapshot(
-        memberId,
-        current.session.action,
-        operationId,
-        accessKey
-      )
     },
-    [accessKey, loadLifecycleSnapshot]
-  )
-
-  const reviewCreationDraft = useCallback((operationId: number) => {
-    const current = stateRef.current
-    if (
-      current.kind !== 'editor' ||
-      current.session.operationId !== operationId ||
-      current.session.mode !== 'create' ||
-      current.feedback?.creationReconciliation?.status !== 'not-found' ||
-      current.feedback.reconciliationLoading ||
-      !authorizationRef.current.identityVerified
-    ) {
-      return
-    }
-    dispatch({
-      type: 'editor-feedback',
-      operationId,
-      contextKey: current.session.contextKey,
-      feedback: null,
-    })
-  }, [])
-
-  const retryCreationVerification = useCallback(
-    (operationId: number) => {
-      const current = stateRef.current
-      const payload =
-        current.kind === 'editor'
-          ? current.feedback?.submittedCreationPayload
-          : undefined
-      if (
-        current.kind !== 'editor' ||
-        current.session.operationId !== operationId ||
-        current.session.mode !== 'create' ||
-        !payload ||
-        !authorizationRef.current.identityVerified
-      ) {
-        return
-      }
-      void verifyCreation(
-        operationId,
-        current.session.contextKey,
-        payload,
-        current.feedback ?? {
-          outcome: 'unknown',
-          message:
-            'The provisioning outcome could not be confirmed. Review the authorized directory before deciding what to do.',
-        }
-      )
-    },
-    [verifyCreation]
+    [dispatchOperation, isAuthorizationAllowed, nextOperationId]
   )
 
   const close = useCallback(() => {
-    abortReads()
+    getRequests().cancelAllRequests()
+    const current = stateRef.current
     mutationInFlight.current = null
     setMutationOperationId(null)
-    dispatch({ type: 'close' })
-  }, [abortReads])
+    if (current.kind !== 'idle') {
+      dispatchOperation({
+        type: 'OPERATION_CLOSED',
+        operationId: current.operationId,
+        contextKey: current.authorization.contextKey,
+      })
+    }
+  }, [dispatchOperation, getRequests])
 
+  const capabilities = selectOperationCapabilities(state)
   const activeMutationPending =
-    state.kind !== 'idle' && mutationOperationId === state.session.operationId
+    state.kind !== 'idle' && mutationOperationId === state.operationId
+  const editorSession = useMemo(() => selectEditorSession(state), [state])
+  const lifecycleSession = useMemo(() => selectLifecycleSession(state), [state])
 
   return {
-    editorSession: state.kind === 'editor' ? state.session : null,
-    editorFeedback: state.kind === 'editor' ? state.feedback : null,
-    lifecycleSession: state.kind === 'lifecycle' ? state.session : null,
-    lifecycleFeedback: state.kind === 'lifecycle' ? state.feedback : null,
+    operationState: state,
+    editorOperation:
+      state.kind === 'create' || state.kind === 'edit' ? state : null,
+    lifecycleOperation: state.kind === 'lifecycle' ? state : null,
+    editorSession,
+    editorFeedback: selectEditorFeedback(state),
+    lifecycleSession,
+    lifecycleFeedback: selectLifecycleFeedback(state),
     saving: activeMutationPending,
     statusMutationPending: activeMutationPending,
+    capabilities,
     startCreate,
     startEdit,
     startLifecycle,
@@ -1405,20 +1278,22 @@ export function useMemberAdministrationController({
     closeLifecycle: close,
     retryEditorSnapshot,
     retryLifecycleSnapshot,
-    loadLatestMember,
-    reviewLatestEditor,
-    reviewLatestLifecycle,
-    restartEditorFromLatest,
-    restartLifecycleFromLatest,
-    resolveEditReconciliation,
+    retryEditorVerification,
+    retryLifecycleVerification,
     reviewCreationDraft,
-    retryCreationVerification,
+    discardEdit,
+    resolveEditReconciliation,
+    reviewLifecycleForConfirmation,
     submitEditor,
     confirmLifecycle,
     authorizationKey: accessKey,
-    authorizationVerified: identityVerified,
+    authorizationVerified: identityVerified && !sessionRevalidationPending,
     isAuthorizationContextCurrent: (key: string) =>
       authorizationRef.current.accessKey === key,
+    canSubmit: capabilities.canSubmit,
+    canRetryVerification: capabilities.canRetryVerification,
+    canResolveEdit: capabilities.canResolveEdit,
+    canRenewLifecycleConfirmation: capabilities.canRenewLifecycleConfirmation,
   }
 }
 

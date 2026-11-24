@@ -188,4 +188,79 @@ describe('Member mutation cache synchronization', () => {
 
     expect(invalidate).not.toHaveBeenCalled()
   })
+
+  it('refreshes current presentation for a display-name self update without auth revalidation', async () => {
+    const queryClient = client()
+    const invalidate = vi
+      .spyOn(queryClient, 'invalidateQueries')
+      .mockResolvedValue(undefined)
+    const beforeAuthorizationRefresh = vi.fn(async () => undefined)
+
+    await synchronizeMemberCaches(
+      queryClient,
+      {
+        type: 'updated',
+        targetMemberId: actor.userId,
+        changedFields: ['displayName'],
+        origin: {
+          actorId: actor.userId,
+          sessionId: actor.session.id,
+          authorizationContextKey: 'actor:session-1',
+        },
+        outcome: 'confirmed',
+      },
+      {
+        activeIdentity: {
+          userId: actor.userId,
+          session: { id: actor.session.id },
+        },
+        beforeAuthorizationRefresh,
+      }
+    )
+
+    expect(beforeAuthorizationRefresh).not.toHaveBeenCalled()
+    expect(
+      invalidate.mock.calls.map(([filters]) => filters?.queryKey)
+    ).toContain(currentUserQueryKey)
+  })
+
+  it('does not apply an old session authentication effect to a replacement session', async () => {
+    const queryClient = client()
+    const invalidate = vi
+      .spyOn(queryClient, 'invalidateQueries')
+      .mockResolvedValue(undefined)
+    const beforeAuthorizationRefresh = vi.fn(async () => undefined)
+
+    await synchronizeMemberCaches(
+      queryClient,
+      {
+        type: 'updated',
+        targetMemberId: actor.userId,
+        changedFields: ['globalRole'],
+        origin: {
+          actorId: actor.userId,
+          sessionId: 'old-session-id',
+          authorizationContextKey: 'actor:old-session',
+        },
+        outcome: 'uncertain',
+      },
+      {
+        activeIdentity: {
+          userId: actor.userId,
+          session: { id: 'new-session-id' },
+        },
+        beforeAuthorizationRefresh,
+      }
+    )
+
+    expect(beforeAuthorizationRefresh).not.toHaveBeenCalled()
+    expect(
+      invalidate.mock.calls.some(
+        ([filters]) =>
+          JSON.stringify(filters?.queryKey) ===
+          JSON.stringify(currentUserQueryKey)
+      )
+    ).toBe(false)
+    expect(invalidate).toHaveBeenCalled()
+  })
 })

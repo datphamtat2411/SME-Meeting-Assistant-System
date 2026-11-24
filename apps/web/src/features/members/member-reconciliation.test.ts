@@ -51,6 +51,109 @@ function snapshot(
 }
 
 describe('member edit reconciliation', () => {
+  it('resolves an intended Administrator role after a concurrent manager promotion', () => {
+    const original = snapshot({
+      globalRole: 'EMPLOYEE',
+      managerScopeUnitIds: [],
+    })
+    const latest = snapshot(
+      {
+        globalRole: 'DEPARTMENT_MANAGER',
+        managerScopeUnitIds: [unitId],
+      },
+      'W/"v-2"'
+    )
+    const reconciliation = reconcileMemberEdit(
+      original,
+      { globalRole: 'ADMINISTRATOR' },
+      latest
+    )
+
+    const unresolved = resolveMemberEditReconciliation(reconciliation, {
+      globalRole: 'intent',
+    })
+    expect(unresolved).toMatchObject({
+      status: 'unresolved',
+      unresolvedReviews: ['manager-scope-removal'],
+    })
+    const resolved = resolveMemberEditReconciliation(reconciliation, {
+      globalRole: 'intent',
+      reviewManagerScopeRemoval: true,
+    })
+    expect(resolved).toMatchObject({
+      status: 'resolved',
+      values: {
+        globalRole: 'ADMINISTRATOR',
+        managerScopeUnitIds: [],
+      },
+      patch: { globalRole: 'ADMINISTRATOR' },
+    })
+  })
+
+  it('keeps the latest manager role and grants when the server role is selected', () => {
+    const original = snapshot()
+    const latest = snapshot(
+      {
+        globalRole: 'DEPARTMENT_MANAGER',
+        managerScopeUnitIds: [unitId],
+      },
+      'W/"v-2"'
+    )
+    const reconciliation = reconcileMemberEdit(
+      original,
+      { globalRole: 'ADMINISTRATOR' },
+      latest
+    )
+
+    expect(
+      resolveMemberEditReconciliation(reconciliation, {
+        globalRole: 'server',
+      })
+    ).toMatchObject({
+      status: 'resolved',
+      values: {
+        globalRole: 'DEPARTMENT_MANAGER',
+        managerScopeUnitIds: [unitId],
+      },
+      patch: {},
+    })
+  })
+
+  it('preserves independent display-name intent when incompatible scope intent is discarded', () => {
+    const original = snapshot({
+      globalRole: 'DEPARTMENT_MANAGER',
+      managerScopeUnitIds: [unitId],
+      displayName: 'Original',
+    })
+    const latest = snapshot(
+      {
+        globalRole: 'EMPLOYEE',
+        managerScopeUnitIds: [],
+        displayName: 'Original',
+      },
+      'W/"v-2"'
+    )
+    const reconciliation = reconcileMemberEdit(
+      original,
+      { managerScopeUnitIds: [secondUnitId], displayName: 'Updated' },
+      latest
+    )
+
+    expect(
+      resolveMemberEditReconciliation(reconciliation, {
+        managerScopeUnitIds: 'server',
+      })
+    ).toMatchObject({
+      status: 'resolved',
+      values: {
+        globalRole: 'EMPLOYEE',
+        managerScopeUnitIds: [],
+        displayName: 'Updated',
+      },
+      patch: { displayName: 'Updated' },
+    })
+  })
+
   it('keeps independent intended metadata and adopts concurrent role/scope changes', () => {
     const result = reconcileMemberEdit(
       snapshot(),

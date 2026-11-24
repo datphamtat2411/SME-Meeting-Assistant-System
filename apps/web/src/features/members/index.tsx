@@ -149,9 +149,8 @@ export function MembersPage({
               lookupStatus={directory.organizationLookup.status}
               onClose={administration.closeEditor}
               onRetrySnapshot={administration.retryEditorSnapshot}
-              onLoadLatest={administration.loadLatestMember}
-              onReviewLatest={administration.reviewLatestEditor}
-              onRestartFromLatest={administration.restartEditorFromLatest}
+              onRetryVerification={administration.retryEditorVerification}
+              onDiscardEdit={administration.discardEdit}
               onReviewDirectory={administration.closeEditor}
               onReviewCreationDraft={administration.reviewCreationDraft}
               onReviewExistingAccount={(email) => {
@@ -165,9 +164,6 @@ export function MembersPage({
               }}
               onResolveEditReconciliation={
                 administration.resolveEditReconciliation
-              }
-              onRetryCreationVerification={
-                administration.retryCreationVerification
               }
               onSubmit={administration.submitEditor}
             />
@@ -184,12 +180,16 @@ export function MembersPage({
               authorizationVerified={administration.authorizationVerified}
               authorizationMessage={authorizationMessage}
               feedback={administration.lifecycleFeedback}
+              canRenewConfirmation={
+                administration.canRenewLifecycleConfirmation
+              }
               onRetryAuthorization={() => void verification.query.refetch()}
               onClose={administration.closeLifecycle}
               onRetrySnapshot={administration.retryLifecycleSnapshot}
-              onLoadLatest={administration.loadLatestMember}
-              onReviewLatest={administration.reviewLatestLifecycle}
-              onRestartFromLatest={administration.restartLifecycleFromLatest}
+              onRetryVerification={administration.retryLifecycleVerification}
+              onReviewForConfirmation={
+                administration.reviewLifecycleForConfirmation
+              }
               onConfirm={administration.confirmLifecycle}
             />
           )}

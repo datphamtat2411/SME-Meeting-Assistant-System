@@ -759,6 +759,91 @@ describe('Members directory', () => {
     )
   })
 
+  it('refreshes current presentation for a self display-name update without session revocation', async () => {
+    const self = {
+      ...member,
+      id: identity('ADMINISTRATOR').userId,
+      displayName: 'Directory Operator',
+      globalRole: 'ADMINISTRATOR',
+    }
+    mockDirectory({ directory: listResponse([self]) })
+    const detailSpy = vi
+      .spyOn(coreApi, 'getWithMetaAndEtag')
+      .mockResolvedValue({ data: self, meta: {}, etag: 'W/"self-v1"' })
+    const patchSpy = vi
+      .spyOn(coreApi, 'patchWithMetaAndEtag')
+      .mockResolvedValue({
+        data: { ...self, displayName: 'Updated Operator' },
+        meta: {},
+        etag: 'W/"self-v2"',
+      })
+    const { screen, identityRead } = await renderMembers()
+    const identityReadsBeforeMutation = identityRead.mock.calls.length
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Edit Directory Operator' })
+    )
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Name' }),
+      'Updated Operator'
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Save member' }))
+
+    await expect.poll(() => patchSpy.mock.calls.length).toBe(1)
+    await expect
+      .poll(() => identityRead.mock.calls.length)
+      .toBeGreaterThan(identityReadsBeforeMutation)
+    expect(detailSpy).toHaveBeenCalledTimes(1)
+    await expect
+      .element(screen.getByRole('dialog', { name: 'Edit member' }))
+      .not.toBeInTheDocument()
+  })
+
+  it('suspends privileged interaction before unrelated invalidation for a self role update', async () => {
+    const self = {
+      ...member,
+      id: identity('ADMINISTRATOR').userId,
+      displayName: 'Directory Operator',
+      globalRole: 'ADMINISTRATOR',
+    }
+    mockDirectory({ directory: listResponse([self]) })
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+      data: self,
+      meta: {},
+      etag: 'W/"self-role-v1"',
+    })
+    const patchSpy = vi
+      .spyOn(coreApi, 'patchWithMetaAndEtag')
+      .mockResolvedValue({
+        data: { ...self, globalRole: 'EMPLOYEE' },
+        meta: {},
+        etag: 'W/"self-role-v2"',
+      })
+    const { screen, identityRead } = await renderMembers()
+    let resolveIdentityRefresh!: (value: unknown) => void
+    identityRead.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveIdentityRefresh = resolve
+        }) as never
+    )
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Edit Directory Operator' })
+    )
+    await userEvent.click(screen.getByRole('combobox', { name: 'Global role' }))
+    await userEvent.click(screen.getByRole('option', { name: 'Employee' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Save member' }))
+
+    await expect.poll(() => patchSpy.mock.calls.length).toBe(1)
+    await expect.poll(() => identityRead.mock.calls.length).toBeGreaterThan(0)
+    await expect
+      .element(screen.getByRole('button', { name: 'Saving…' }))
+      .toBeDisabled()
+    expect(patchSpy).toHaveBeenCalledTimes(1)
+    resolveIdentityRefresh(identity('ADMINISTRATOR'))
+  })
+
   it('keeps a name edit while adopting an independent server unit change and sends the reviewed ETag', async () => {
     const original = {
       ...member,
@@ -1563,6 +1648,60 @@ describe('Members directory', () => {
 
     await expect
       .element(screen.getByText(/latest state: active/i))
+      .toBeVisible()
+    await expect
+      .element(screen.getByText(/remains pending secure setup/i))
+      .not.toBeInTheDocument()
+    await expect
+      .element(
+        screen.getByText(
+          /initial account setup reissue is no longer available/i
+        )
+      )
+      .toBeVisible()
+    await expect
+      .element(
+        screen.getByRole('button', {
+          name: 'Review and confirm lifecycle operation',
+        })
+      )
+      .not.toBeInTheDocument()
+    expect(lifecycleSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows the actual inactive state and prevents setup reissue when the account became inactive', async () => {
+    const pendingMember = { ...member, accountStatus: 'PENDING_SETUP' }
+    const inactiveMember = { ...member, accountStatus: 'INACTIVE' }
+    mockDirectory({ directory: listResponse([pendingMember]) })
+    vi.spyOn(coreApi, 'getWithMetaAndEtag')
+      .mockResolvedValueOnce({
+        data: pendingMember,
+        meta: {},
+        etag: 'W/"setup-v1"',
+      })
+      .mockResolvedValueOnce({
+        data: inactiveMember,
+        meta: {},
+        etag: 'W/"inactive-v2"',
+      })
+    const lifecycleSpy = vi
+      .spyOn(coreApi, 'postWithMetaAndEtag')
+      .mockRejectedValue(uncertainMutationError())
+    const { screen } = await renderMembers()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Resend setup' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Reissue setup' }))
+
+    await expect
+      .element(screen.getByText(/latest state: inactive/i))
+      .toBeVisible()
+    await expect
+      .element(screen.getByText(/remains pending secure setup/i))
+      .not.toBeInTheDocument()
+    await expect
+      .element(
+        screen.getByText(/initial account setup reissue is not available/i)
+      )
       .toBeVisible()
     await expect
       .element(

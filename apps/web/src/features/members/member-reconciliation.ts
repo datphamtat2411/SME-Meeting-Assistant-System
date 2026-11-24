@@ -203,6 +203,16 @@ function patchFromValues(
   }
   if (values.globalRole !== 'DEPARTMENT_MANAGER') {
     delete patch.managerScopeUnitIds
+  } else if (
+    baseline.globalRole !== 'DEPARTMENT_MANAGER' &&
+    !('managerScopeUnitIds' in patch)
+  ) {
+    // Promotion carries an explicit scope, including an intentional empty
+    // scope. This is distinct from a manager-to-non-manager demotion, where
+    // the backend removes grants as a consequence of the role change.
+    patch.managerScopeUnitIds = normalizeManagerScope(
+      values.managerScopeUnitIds
+    )
   }
   return patch
 }
@@ -210,7 +220,8 @@ function patchFromValues(
 function requiredManagerScopeReviews(
   original: MemberEditableValues,
   latest: MemberEditableValues,
-  values: MemberEditableValues
+  values: MemberEditableValues,
+  intent: MemberPatchPayload
 ): MemberReconciliationReview[] {
   const reviews: MemberReconciliationReview[] = []
   if (
@@ -224,8 +235,8 @@ function requiredManagerScopeReviews(
   if (
     latest.globalRole !== 'DEPARTMENT_MANAGER' &&
     values.globalRole === 'DEPARTMENT_MANAGER' &&
-    values.managerScopeUnitIds.length > 0 &&
-    !sameManagerScope(latest.managerScopeUnitIds, values.managerScopeUnitIds)
+    'globalRole' in intent &&
+    intent.globalRole === 'DEPARTMENT_MANAGER'
   ) {
     reviews.push('manager-scope-assignment')
   }
@@ -299,18 +310,13 @@ export function reconcileMemberEdit(
     }
   }
 
-  if (
-    latestValues.globalRole === 'DEPARTMENT_MANAGER' &&
-    values.globalRole !== 'DEPARTMENT_MANAGER' &&
-    fields.globalRole.userChanged
-  ) {
+  const roleConflict = conflicts.includes('globalRole')
+  if (!roleConflict && values.globalRole !== 'DEPARTMENT_MANAGER') {
     values.managerScopeUnitIds = []
   }
-  const requiredReviews = requiredManagerScopeReviews(
-    originalValues,
-    latestValues,
-    values
-  )
+  const requiredReviews = roleConflict
+    ? []
+    : requiredManagerScopeReviews(originalValues, latestValues, values, intent)
 
   return {
     original,
@@ -341,13 +347,31 @@ export function resolveMemberEditReconciliation(
     )
   }
 
-  const requiredReviews = requiredManagerScopeReviews(
-    valuesFromMember(reconciliation.original.member),
-    valuesFromMember(reconciliation.latest.member),
-    values
-  )
   const unresolvedFields = reconciliation.conflicts.filter(
     (field) => choices[field] === undefined
+  )
+  const originalValues = valuesFromMember(reconciliation.original.member)
+  const latestValues = valuesFromMember(reconciliation.latest.member)
+  const scopeIntentSelected =
+    reconciliation.fields.managerScopeUnitIds.userChanged &&
+    choices.managerScopeUnitIds === 'intent'
+
+  if (values.globalRole !== 'DEPARTMENT_MANAGER') {
+    if (scopeIntentSelected && values.managerScopeUnitIds.length > 0) {
+      return {
+        status: 'invalid',
+        message:
+          'The latest account is not a Department Manager. Discard the incompatible manager-scope intent, or review a separate role promotion before restoring manager authority.',
+      }
+    }
+    values.managerScopeUnitIds = []
+  }
+
+  const requiredReviews = requiredManagerScopeReviews(
+    originalValues,
+    latestValues,
+    values,
+    reconciliation.intent
   )
   const unresolvedReviews = requiredReviews.filter((review) =>
     review === 'manager-scope-removal'
@@ -363,24 +387,10 @@ export function resolveMemberEditReconciliation(
     }
   }
 
-  if (
-    values.globalRole !== 'DEPARTMENT_MANAGER' &&
-    values.managerScopeUnitIds.length > 0
-  ) {
-    return {
-      status: 'invalid',
-      message:
-        'Manager-scope changes must be reviewed separately from role changes. The latest account is not a Department Manager, so this edit cannot restore manager scope.',
-    }
-  }
-
   return {
     status: 'resolved',
     values,
-    patch: patchFromValues(
-      valuesFromMember(reconciliation.latest.member),
-      values
-    ),
+    patch: patchFromValues(latestValues, values),
   }
 }
 
