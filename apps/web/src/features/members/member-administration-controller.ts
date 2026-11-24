@@ -733,9 +733,8 @@ export function useMemberAdministrationController({
     (origin: MemberMutationOrigin, contextKey: string) => {
       const currentIdentity = authorizationRef.current.identity
       if (
+        !canPerformPrivilegedAction(contextKey) ||
         authorizationRef.current.accessKey !== contextKey ||
-        !authorizationRef.current.identityVerified ||
-        sessionRevalidationPendingRef.current ||
         !currentIdentity ||
         currentIdentity.userId !== origin.actorId ||
         currentIdentity.session.id !== origin.sessionId
@@ -743,7 +742,7 @@ export function useMemberAdministrationController({
         throw new ObsoleteMemberOperationError()
       }
     },
-    []
+    [canPerformPrivilegedAction]
   )
 
   const { mutate: mutateEditor } = useMutation({
