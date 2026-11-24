@@ -34,6 +34,7 @@ class TransportFailure implements Exception {
     this.message, {
     Map<String, String> responseHeaders = const <String, String>{},
     List<int>? responseBodyBytes,
+    this.remoteOutcomeAmbiguous = false,
   }) : responseHeaders = Map<String, String>.unmodifiable(responseHeaders),
        responseBodyBytes = responseBodyBytes == null
            ? null
@@ -44,9 +45,32 @@ class TransportFailure implements Exception {
   final String message;
   final Map<String, String> responseHeaders;
   final Uint8List? responseBodyBytes;
+  final bool remoteOutcomeAmbiguous;
 
   @override
   String toString() => message;
+}
+
+/// Per-operation Core API timeout overrides.
+///
+/// Ordinary requests keep the transport defaults. Media finalization uses one
+/// bounded deadline that includes waiting for response headers.
+class CoreApiTimeoutPolicy {
+  const CoreApiTimeoutPolicy({
+    this.dispatchTimeout,
+    this.responseTimeout,
+    this.overallTimeout,
+  });
+
+  static const CoreApiTimeoutPolicy mediaFinalization = CoreApiTimeoutPolicy(
+    dispatchTimeout: Duration(minutes: 12),
+    responseTimeout: Duration(minutes: 12),
+    overallTimeout: Duration(minutes: 12),
+  );
+
+  final Duration? dispatchTimeout;
+  final Duration? responseTimeout;
+  final Duration? overallTimeout;
 }
 
 /// The only Core API operations that may use the public authentication policy.
@@ -102,6 +126,7 @@ class CoreApiTransport {
     Object? body,
     Map<String, String>? headers,
     String? authorization,
+    CoreApiTimeoutPolicy? timeoutPolicy,
   }) => _send(
     method,
     endpointPath,
@@ -110,6 +135,7 @@ class CoreApiTransport {
     headers: headers,
     authorization: authorization,
     includeAuthTransport: true,
+    timeoutPolicy: timeoutPolicy,
   );
 
   /// Sends one allowlisted, state-changing public auth operation.
@@ -130,6 +156,7 @@ class CoreApiTransport {
     Map<String, String>? headers,
     String? authorization,
     required bool includeAuthTransport,
+    CoreApiTimeoutPolicy? timeoutPolicy,
   }) async {
     final uri = _buildUri(endpointPath, query);
     final requestHeaders = _buildHeaders(
@@ -138,12 +165,28 @@ class CoreApiTransport {
       authorization: authorization,
       includeAuthTransport: includeAuthTransport,
     );
-    final request = _buildRequest(method, uri, requestHeaders, body);
+    final abortTrigger = Completer<void>();
+    final request = _buildRequest(
+      method,
+      uri,
+      requestHeaders,
+      body,
+      abortTrigger: abortTrigger.future,
+    );
+    final startedAt = DateTime.now();
+    final dispatchLimit = timeoutPolicy?.dispatchTimeout ?? dispatchTimeout;
+    final responseLimit = timeoutPolicy?.responseTimeout ?? responseTimeout;
 
     try {
-      final streamed = await httpClient.send(request).timeout(dispatchTimeout);
-      final bodyBytes = await streamed.stream.toBytes().timeout(
-        responseTimeout,
+      final streamed = await _awaitPhase(
+        httpClient.send(request),
+        _remaining(startedAt, dispatchLimit, timeoutPolicy?.overallTimeout),
+        abortTrigger,
+      );
+      final bodyBytes = await _awaitPhase(
+        streamed.stream.toBytes(),
+        _remaining(startedAt, responseLimit, timeoutPolicy?.overallTimeout),
+        abortTrigger,
       );
       final response = CoreApiResponse(
         statusCode: streamed.statusCode,
@@ -163,11 +206,20 @@ class CoreApiTransport {
       return response;
     } on TransportFailure {
       rethrow;
-    } on TimeoutException {
+    } on http.RequestAbortedException {
       throw TransportFailure(
         0,
         'NETWORK_TIMEOUT',
         'Request timed out. Try again.',
+        remoteOutcomeAmbiguous: true,
+      );
+    } on TimeoutException {
+      if (!abortTrigger.isCompleted) abortTrigger.complete();
+      throw TransportFailure(
+        0,
+        'NETWORK_TIMEOUT',
+        'Request timed out. Try again.',
+        remoteOutcomeAmbiguous: true,
       );
     } on HandshakeException {
       throw TransportFailure(
@@ -180,14 +232,59 @@ class CoreApiTransport {
         0,
         'NETWORK_UNAVAILABLE',
         'Cannot reach Core API.',
+        remoteOutcomeAmbiguous: true,
       );
     } on http.ClientException {
-      throw TransportFailure(0, 'NETWORK_ERROR', 'Network request failed.');
+      throw TransportFailure(
+        0,
+        'NETWORK_ERROR',
+        'Network request failed.',
+        remoteOutcomeAmbiguous: true,
+      );
     } on IOException {
-      throw TransportFailure(0, 'NETWORK_ERROR', 'Network request failed.');
+      throw TransportFailure(
+        0,
+        'NETWORK_ERROR',
+        'Network request failed.',
+        remoteOutcomeAmbiguous: true,
+      );
     } on Exception {
-      throw TransportFailure(0, 'NETWORK_ERROR', 'Network request failed.');
+      throw TransportFailure(
+        0,
+        'NETWORK_ERROR',
+        'Network request failed.',
+        remoteOutcomeAmbiguous: true,
+      );
     }
+  }
+
+  Future<T> _awaitPhase<T>(
+    Future<T> operation,
+    Duration timeout,
+    Completer<void> abortTrigger,
+  ) async {
+    try {
+      return await operation.timeout(timeout);
+    } on TimeoutException {
+      if (!abortTrigger.isCompleted) abortTrigger.complete();
+      rethrow;
+    }
+  }
+
+  Duration _remaining(
+    DateTime startedAt,
+    Duration phaseLimit,
+    Duration? overallLimit,
+  ) {
+    var result = phaseLimit;
+    if (overallLimit != null) {
+      final remaining = overallLimit - DateTime.now().difference(startedAt);
+      if (remaining <= Duration.zero) {
+        throw TimeoutException('Core API request timed out.');
+      }
+      if (remaining < result) result = remaining;
+    }
+    return result;
   }
 
   Uri _buildUri(String endpointPath, Map<String, String>? query) {
@@ -262,12 +359,20 @@ class CoreApiTransport {
     String method,
     Uri uri,
     Map<String, String> headers,
-    Object? body,
-  ) {
+    Object? body, {
+    Future<void>? abortTrigger,
+  }) {
     try {
-      final request = http.Request(method.toUpperCase(), uri)
-        ..followRedirects = false
-        ..headers.addAll(headers);
+      final request =
+          abortTrigger == null
+                ? http.Request(method.toUpperCase(), uri)
+                : http.AbortableRequest(
+                    method.toUpperCase(),
+                    uri,
+                    abortTrigger: abortTrigger,
+                  )
+            ..followRedirects = false
+            ..headers.addAll(headers);
       if (body != null) {
         request.bodyBytes = utf8.encode(jsonEncode(body));
       }

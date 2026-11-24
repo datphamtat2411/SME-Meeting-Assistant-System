@@ -58,7 +58,10 @@ class ApiClient extends ChangeNotifier {
     required CredentialStorage credentialStorage,
     Duration apiDispatchTimeout = const Duration(seconds: 25),
     Duration apiResponseTimeout = const Duration(seconds: 45),
-    Duration uploadTimeout = const Duration(minutes: 10),
+    Duration uploadTimeout = const Duration(minutes: 30),
+    Duration uploadInactivityTimeout = const Duration(seconds: 60),
+    Duration minimumUploadCapabilityValidity = const Duration(seconds: 30),
+    DateTime Function()? uploadNow,
     bool? androidDebugOverride,
     DateTime Function()? now,
   }) : _coreTransport = CoreApiTransport(
@@ -70,6 +73,9 @@ class ApiClient extends ChangeNotifier {
        _signedUploadTransport = SignedUploadTransport(
          httpClient: httpClient,
          timeout: uploadTimeout,
+         inactivityTimeout: uploadInactivityTimeout,
+         minimumCapabilityValidity: minimumUploadCapabilityValidity,
+         now: uploadNow,
          androidDebugOverride: androidDebugOverride,
        ),
        credentialStorage = credentialStorage {
@@ -153,7 +159,14 @@ class ApiClient extends ChangeNotifier {
     String path,
     Map<String, dynamic> body, {
     Map<String, String>? headers,
-  }) => _request('POST', path, body: body, headers: headers);
+    CoreApiTimeoutPolicy? timeoutPolicy,
+  }) => _request(
+    'POST',
+    path,
+    body: body,
+    headers: headers,
+    timeoutPolicy: timeoutPolicy,
+  );
 
   Future<ApiResult> patch(
     String path,
@@ -170,6 +183,7 @@ class ApiClient extends ChangeNotifier {
     Map<String, String>? query,
     Map<String, dynamic>? body,
     Map<String, String>? headers,
+    CoreApiTimeoutPolicy? timeoutPolicy,
   }) async {
     final coordinator = sessionCoordinator;
     final epoch = coordinator._lifecycleEpoch;
@@ -187,6 +201,7 @@ class ApiClient extends ChangeNotifier {
         query: query,
         body: body,
         headers: headers,
+        timeoutPolicy: timeoutPolicy,
       );
     } on ApiFailure catch (failure) {
       if (!_coordinatorStillOwnsRequest(coordinator, credential)) {
@@ -225,6 +240,7 @@ class ApiClient extends ChangeNotifier {
           query: query,
           body: body,
           headers: headers,
+          timeoutPolicy: timeoutPolicy,
         );
       } on ApiFailure catch (retryFailure) {
         if (_isAuthentication401(retryFailure)) {
@@ -250,6 +266,7 @@ class ApiClient extends ChangeNotifier {
     Map<String, String>? query,
     Map<String, dynamic>? body,
     Map<String, String>? headers,
+    CoreApiTimeoutPolicy? timeoutPolicy,
   }) async {
     final dispatchCredential = coordinator._credentialForDispatch(
       credential,
@@ -263,6 +280,7 @@ class ApiClient extends ChangeNotifier {
         body: body,
         headers: headers,
         authorization: dispatchCredential.authorization,
+        timeoutPolicy: timeoutPolicy,
       );
       if (!_coordinatorStillOwnsRequest(coordinator, credential)) {
         throw coordinator._sessionChanged();
@@ -301,6 +319,9 @@ class ApiClient extends ChangeNotifier {
     File file,
     String contentType, {
     void Function(int sent, int total)? onProgress,
+    int? expectedLength,
+    DateTime? expiresAt,
+    UploadCancellationToken? cancellationToken,
   }) async {
     try {
       await _signedUploadTransport.upload(
@@ -308,6 +329,9 @@ class ApiClient extends ChangeNotifier {
         file,
         contentType,
         onProgress: onProgress,
+        expectedLength: expectedLength,
+        expiresAt: expiresAt,
+        cancellationToken: cancellationToken,
       );
     } on TransportFailure catch (failure) {
       throw normalizeTransportFailure(failure);

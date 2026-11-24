@@ -6,6 +6,19 @@ import 'package:http/http.dart' as http;
 
 import 'api_transport.dart';
 
+class UploadCancellationToken {
+  final Completer<void> _cancelled = Completer<void>();
+
+  bool get isCancelled => _cancelled.isCompleted;
+  Future<void> get whenCancelled => _cancelled.future;
+
+  void cancel() {
+    if (!isCancelled) _cancelled.complete();
+  }
+}
+
+typedef UploadCancelToken = UploadCancellationToken;
+
 class SignedUploadResponse {
   SignedUploadResponse({
     required this.statusCode,
@@ -14,81 +27,230 @@ class SignedUploadResponse {
 
   final int statusCode;
   final Map<String, String> headers;
+
+  /// A successful object-storage response confirms transfer acknowledgement,
+  /// not Core media validation or finalization.
+  bool get transferConfirmed => statusCode >= 200 && statusCode < 300;
+}
+
+/// One bounded policy for a single signed PUT attempt.
+class SignedUploadTimeoutPolicy {
+  const SignedUploadTimeoutPolicy({
+    this.maximumAttemptDuration = const Duration(minutes: 30),
+    this.inactivityTimeout = const Duration(seconds: 60),
+    this.minimumCapabilityValidity = const Duration(seconds: 30),
+  });
+
+  final Duration maximumAttemptDuration;
+  final Duration inactivityTimeout;
+  final Duration minimumCapabilityValidity;
 }
 
 /// HTTP transport for short-lived object-storage upload capabilities.
 ///
-/// This transport deliberately has no access to authentication state and only
-/// creates the upload-specific headers required by the signed URL contract.
-/// The injected client is shared with [CoreApiTransport] and is never closed
-/// here.
+/// The transport has no access to authentication state. It sends one exact
+/// signed PUT and only adds the content type required by that capability.
+/// Requests use package:http's request-level abort trigger, which lets the
+/// native IO client abort this request without closing the shared client.
 class SignedUploadTransport {
   SignedUploadTransport({
     required this.httpClient,
-    this.timeout = const Duration(minutes: 10),
+    Duration timeout = const Duration(minutes: 30),
+    Duration inactivityTimeout = const Duration(seconds: 60),
+    Duration minimumCapabilityValidity = const Duration(seconds: 30),
     this.androidDebugOverride,
-  });
+    DateTime Function()? now,
+  }) : timeoutPolicy = SignedUploadTimeoutPolicy(
+         maximumAttemptDuration: timeout,
+         inactivityTimeout: inactivityTimeout,
+         minimumCapabilityValidity: minimumCapabilityValidity,
+       ),
+       _now = now ?? DateTime.now;
 
   final http.Client httpClient;
-  final Duration timeout;
+  final SignedUploadTimeoutPolicy timeoutPolicy;
 
   /// Test-only platform input. Production callers should leave this null so
   /// local HTTP is limited to Android debug builds.
   final bool? androidDebugOverride;
+  final DateTime Function() _now;
+
+  Duration get timeout => timeoutPolicy.maximumAttemptDuration;
+  Duration get inactivityTimeout => timeoutPolicy.inactivityTimeout;
+  Duration get minimumCapabilityValidity =>
+      timeoutPolicy.minimumCapabilityValidity;
 
   Future<SignedUploadResponse> upload(
     String signedUrl,
     File file,
     String contentType, {
     void Function(int sent, int total)? onProgress,
+    int? expectedLength,
+    DateTime? expiresAt,
+    UploadCancellationToken? cancellationToken,
   }) async {
     final uri = _parseAndValidateUrl(signedUrl);
-    if (contentType.trim().isEmpty) {
+    _validateContentType(contentType);
+    _validateCapabilityExpiry(expiresAt);
+
+    final length = await _readableLength(file);
+    if (length <= 0) {
       throw TransportFailure(
         0,
-        'INVALID_UPLOAD',
-        'Upload content type is required.',
+        'EMPTY_UPLOAD',
+        'The selected audio file is empty.',
+      );
+    }
+    if (expectedLength != null && expectedLength != length) {
+      throw TransportFailure(
+        0,
+        'UPLOAD_SIZE_MISMATCH',
+        'The selected audio file changed before upload.',
       );
     }
 
-    final int length;
-    try {
-      length = await file.length();
-    } on Exception {
-      throw TransportFailure(
-        0,
-        'UPLOAD_FILE_ERROR',
-        'The selected file could not be read.',
-      );
-    }
-
-    final request = http.StreamedRequest('PUT', uri)
-      ..followRedirects = false
-      ..contentLength = length
-      ..headers['Content-Type'] = contentType;
-
-    var requestClosed = false;
+    final abortTrigger = Completer<void>();
+    var abortReason = _UploadAbortReason.none;
+    var active = true;
+    Timer? overallTimer;
+    Timer? inactivityTimer;
+    StreamSubscription<List<int>>? sourceSubscription;
+    StreamController<List<int>>? sourceController;
     Future<void>? bodyWrite;
-    Future<void>? requestClose;
-    try {
-      final responseFuture = httpClient.send(request);
-      var sent = 0;
-      bodyWrite = request.sink.addStream(
-        file.openRead().map((chunk) {
-          sent += chunk.length;
-          onProgress?.call(sent, length);
-          return chunk;
-        }),
+    var requestClosed = false;
+    var sent = 0;
+    var progressTotal = length;
+
+    void abort(_UploadAbortReason reason) {
+      if (abortReason == _UploadAbortReason.none) abortReason = reason;
+      if (!abortTrigger.isCompleted) abortTrigger.complete();
+      active = false;
+      unawaited(sourceSubscription?.cancel() ?? Future<void>.value());
+      final controller = sourceController;
+      if (controller != null && !controller.isClosed) {
+        unawaited(controller.close());
+      }
+    }
+
+    void activity() {
+      if (!active) return;
+      inactivityTimer?.cancel();
+      inactivityTimer = Timer(inactivityTimeout, () {
+        abort(_UploadAbortReason.inactivityTimeout);
+      });
+    }
+
+    void reportProgress(int value) {
+      if (!active) return;
+      final bounded = value.clamp(0, progressTotal);
+      if (bounded < sent) return;
+      sent = bounded;
+      try {
+        onProgress?.call(sent, progressTotal);
+      } catch (_) {
+        // A UI progress listener must not fail the binary transfer.
+      }
+    }
+
+    if (cancellationToken != null) {
+      unawaited(
+        cancellationToken.whenCancelled.then<void>(
+          (_) => abort(_UploadAbortReason.cancelled),
+        ),
       );
-      await bodyWrite.timeout(timeout);
-      requestClose = request.sink.close();
-      await requestClose.timeout(timeout);
-      requestClosed = true;
+    }
+    overallTimer = Timer(timeout, () {
+      abort(_UploadAbortReason.overallTimeout);
+    });
+    activity();
 
-      final response = await responseFuture.timeout(timeout);
+    final request =
+        http.AbortableStreamedRequest(
+            'PUT',
+            uri,
+            abortTrigger: abortTrigger.future,
+          )
+          ..followRedirects = false
+          ..contentLength = length
+          ..headers['Content-Type'] = contentType;
+
+    final responseFuture = httpClient.send(request);
+    unawaited(
+      responseFuture.then<void>(
+        (_) {},
+        onError: (Object _, StackTrace __) {
+          // If dispatch fails, close the source stream promptly. The awaited
+          // response future still supplies the original safe classification.
+          abort(_UploadAbortReason.networkFailure);
+        },
+      ),
+    );
+
+    try {
+      sourceController = StreamController<List<int>>(sync: true);
+      final controller = sourceController;
+      sourceSubscription = file.openRead().listen(
+        (chunk) {
+          if (!active) return;
+          final next = sent + chunk.length;
+          if (next > length) {
+            abort(_UploadAbortReason.fileChanged);
+            controller.addError(const _UploadFileChanged());
+            return;
+          }
+          activity();
+          reportProgress(next);
+          controller.add(chunk);
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          if (!controller.isClosed) controller.addError(error, stackTrace);
+        },
+        onDone: () {
+          if (!controller.isClosed) unawaited(controller.close());
+        },
+        cancelOnError: false,
+      );
+
+      bodyWrite = request.sink.addStream(controller.stream);
+      await bodyWrite;
+      if (abortReason != _UploadAbortReason.none) {
+        throw _abortFailure(abortReason);
+      }
+      if (sent != length) {
+        throw const _UploadFileChanged();
+      }
+      if (!requestClosed) {
+        await request.sink.close();
+        requestClosed = true;
+      }
+
+      final response = await _awaitWithAbort(
+        responseFuture,
+        abortTrigger.future,
+      );
+      if (abortReason != _UploadAbortReason.none) {
+        throw _abortFailure(abortReason);
+      }
+      activity();
+
+      // Drain without buffering response content. Signed storage responses
+      // are never exposed as application data.
+      await _awaitWithAbort(
+        response.stream
+            .listen(
+              (_) => activity(),
+              onError: (Object error, StackTrace stackTrace) {
+                throw error;
+              },
+            )
+            .asFuture<void>(),
+        abortTrigger.future,
+      );
+      if (abortReason != _UploadAbortReason.none) {
+        throw _abortFailure(abortReason);
+      }
+
       final responseHeaders = Map<String, String>.from(response.headers);
-      await response.stream.drain<void>().timeout(timeout);
-
       if (response.statusCode >= 300 && response.statusCode < 400) {
         throw TransportFailure(
           response.statusCode,
@@ -101,85 +263,171 @@ class SignedUploadTransport {
         throw TransportFailure(
           response.statusCode,
           'UPLOAD_FAILED',
-          'Audio upload failed.',
+          'Audio upload was rejected by storage.',
           responseHeaders: responseHeaders,
         );
       }
+      reportProgress(length);
       return SignedUploadResponse(
         statusCode: response.statusCode,
         headers: responseHeaders,
       );
     } on TransportFailure {
       rethrow;
-    } on TimeoutException {
+    } on _UploadFileChanged {
+      if (abortReason != _UploadAbortReason.none) {
+        throw _abortFailure(abortReason);
+      }
       throw TransportFailure(
         0,
-        'UPLOAD_TIMEOUT',
-        'Audio upload timed out. Try again.',
+        'UPLOAD_FILE_CHANGED',
+        'The selected audio file changed during upload.',
       );
+    } on http.RequestAbortedException {
+      throw _abortFailure(
+        abortReason == _UploadAbortReason.none
+            ? _UploadAbortReason.overallTimeout
+            : abortReason,
+      );
+    } on _UploadAborted {
+      throw _abortFailure(
+        abortReason == _UploadAbortReason.none
+            ? _UploadAbortReason.overallTimeout
+            : abortReason,
+      );
+    } on TimeoutException {
+      abort(_UploadAbortReason.overallTimeout);
+      throw _abortFailure(_UploadAbortReason.overallTimeout);
     } on HandshakeException {
       throw TransportFailure(
         0,
         'UPLOAD_TLS_ERROR',
         'A secure upload connection could not be established.',
+        remoteOutcomeAmbiguous: true,
       );
     } on SocketException {
       throw TransportFailure(
         0,
         'UPLOAD_NETWORK_ERROR',
         'Audio upload connection lost.',
+        remoteOutcomeAmbiguous: true,
       );
     } on http.ClientException {
       throw TransportFailure(
         0,
         'UPLOAD_NETWORK_ERROR',
         'Audio upload connection failed.',
+        remoteOutcomeAmbiguous: true,
       );
     } on IOException {
       throw TransportFailure(
         0,
         'UPLOAD_NETWORK_ERROR',
         'Audio upload connection failed.',
+        remoteOutcomeAmbiguous: true,
       );
     } on Exception {
-      throw TransportFailure(0, 'UPLOAD_NETWORK_ERROR', 'Audio upload failed.');
-    } finally {
-      if (!requestClosed) {
-        _closeUploadRequestWhenSafe(request, bodyWrite, requestClose);
+      if (abortReason != _UploadAbortReason.none) {
+        throw _abortFailure(abortReason);
       }
+      throw TransportFailure(
+        0,
+        'UPLOAD_NETWORK_ERROR',
+        'Audio upload failed.',
+        remoteOutcomeAmbiguous: true,
+      );
+    } finally {
+      active = false;
+      overallTimer.cancel();
+      inactivityTimer?.cancel();
+      final subscription = sourceSubscription;
+      if (subscription != null) await subscription.cancel();
+      if (sourceController != null && !sourceController.isClosed) {
+        await sourceController.close();
+      }
+      if (!requestClosed) {
+        try {
+          await request.sink.close();
+        } catch (_) {
+          // The native client may already have closed an aborted request.
+        }
+      }
+      // Do not await a late response after a cancellation or timeout. The
+      // abort trigger has already detached the native request from the
+      // shared client, and any late error is deliberately ignored.
+      if (abortReason != _UploadAbortReason.none) {
+        unawaited(
+          responseFuture.then<void>(
+            (_) {},
+            onError: (Object _, StackTrace __) {},
+          ),
+        );
+      }
+      // Keep the local variable live for implementations which optimize
+      // stream subscriptions before the request has finalized.
+      bodyWrite;
     }
   }
 
-  void _closeUploadRequestWhenSafe(
-    http.StreamedRequest request,
-    Future<void>? bodyWrite,
-    Future<void>? requestClose,
-  ) {
-    Future<void> closeSafely() {
+  Future<int> _readableLength(File file) async {
+    try {
+      final handle = await file.open();
       try {
-        return (requestClose ?? request.sink.close()).catchError((Object _) {});
-      } on Object {
-        return Future<void>.value();
+        final length = await file.length();
+        if (length < 0) throw const FileSystemException();
+        return length;
+      } finally {
+        await handle.close();
       }
+    } on Exception {
+      throw TransportFailure(
+        0,
+        'UPLOAD_FILE_ERROR',
+        'The selected file could not be read.',
+      );
     }
+  }
 
-    if (bodyWrite == null) {
-      unawaited(closeSafely());
-      return;
+  Future<T> _awaitWithAbort<T>(
+    Future<T> operation,
+    Future<void> abortTrigger,
+  ) => Future.any<T>(<Future<T>>[
+    operation,
+    abortTrigger.then<T>((_) => throw const _UploadAborted()),
+  ]);
+
+  void _validateContentType(String value) {
+    if (value.trim().isEmpty ||
+        value.trim() != value ||
+        value.codeUnits.any(
+          (unit) => unit < 0x20 || (unit >= 0x7f && unit <= 0x9f),
+        )) {
+      throw TransportFailure(
+        0,
+        'INVALID_UPLOAD',
+        'Upload content type is required.',
+      );
     }
-    unawaited(
-      bodyWrite.then<void>(
-        (_) => closeSafely(),
-        onError: (Object _, StackTrace __) => closeSafely(),
-      ),
-    );
+  }
+
+  void _validateCapabilityExpiry(DateTime? expiresAt) {
+    if (expiresAt == null) return;
+    final minimum = _now().toUtc().add(minimumCapabilityValidity);
+    if (!expiresAt.toUtc().isAfter(minimum)) {
+      throw TransportFailure(
+        0,
+        'UPLOAD_CAPABILITY_EXPIRED',
+        'The upload capability is expired or too close to expiration.',
+      );
+    }
   }
 
   Uri _parseAndValidateUrl(String signedUrl) {
     Uri? uri;
     try {
-      if (signedUrl.isEmpty || signedUrl.trim() != signedUrl)
+      if (signedUrl.isEmpty || signedUrl.trim() != signedUrl) {
         return _invalidUrl();
+      }
       uri = Uri.parse(signedUrl);
     } on FormatException {
       return _invalidUrl();
@@ -204,6 +452,46 @@ class SignedUploadTransport {
 
   Uri _invalidUrl() {
     throw TransportFailure(0, 'INSECURE_UPLOAD', 'Upload URL must use HTTPS.');
+  }
+
+  TransportFailure _abortFailure(_UploadAbortReason reason) {
+    switch (reason) {
+      case _UploadAbortReason.cancelled:
+        return TransportFailure(
+          0,
+          'UPLOAD_CANCELLED',
+          'Audio upload was cancelled.',
+          remoteOutcomeAmbiguous: true,
+        );
+      case _UploadAbortReason.inactivityTimeout:
+        return TransportFailure(
+          0,
+          'UPLOAD_INACTIVITY_TIMEOUT',
+          'Audio upload stopped after a period without transfer progress.',
+          remoteOutcomeAmbiguous: true,
+        );
+      case _UploadAbortReason.overallTimeout:
+        return TransportFailure(
+          0,
+          'UPLOAD_TIMEOUT',
+          'Audio upload timed out. Try again.',
+          remoteOutcomeAmbiguous: true,
+        );
+      case _UploadAbortReason.fileChanged:
+        return TransportFailure(
+          0,
+          'UPLOAD_FILE_CHANGED',
+          'The selected audio file changed during upload.',
+        );
+      case _UploadAbortReason.networkFailure:
+      case _UploadAbortReason.none:
+        return TransportFailure(
+          0,
+          'UPLOAD_NETWORK_ERROR',
+          'Audio upload connection failed.',
+          remoteOutcomeAmbiguous: true,
+        );
+    }
   }
 
   bool get _isAndroidDebug =>
@@ -238,4 +526,21 @@ class SignedUploadTransport {
     }
     return false;
   }
+}
+
+enum _UploadAbortReason {
+  none,
+  cancelled,
+  inactivityTimeout,
+  overallTimeout,
+  fileChanged,
+  networkFailure,
+}
+
+class _UploadFileChanged implements Exception {
+  const _UploadFileChanged();
+}
+
+class _UploadAborted implements Exception {
+  const _UploadAborted();
 }

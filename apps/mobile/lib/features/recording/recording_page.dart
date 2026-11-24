@@ -1,28 +1,40 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
+import 'package:crypto/crypto.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 
 import 'recording_drafts.dart';
+import 'local_media_models.dart';
+import 'local_media_repository.dart';
+import 'media_contracts.dart';
+import 'media_repository.dart';
+import 'processing_repository.dart';
 
 import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
-import '../../core/models.dart';
 import '../../core/widgets.dart';
 
 class RecordingPage extends StatefulWidget {
   final ApiClient api;
   final String meetingId;
   final bool enabled;
+  final LocalMediaRepository? localMedia;
+  final MediaRepository? mediaRepository;
+  final ProcessingRepository? processingRepository;
   const RecordingPage({
     super.key,
     required this.api,
     required this.meetingId,
     required this.enabled,
+    this.localMedia,
+    this.mediaRepository,
+    this.processingRepository,
   });
 
   @override
@@ -31,7 +43,9 @@ class RecordingPage extends StatefulWidget {
 
 class _RecordingPageState extends State<RecordingPage> {
   final AudioRecorder recorder = AudioRecorder();
-  final RecordingDrafts draftStore = RecordingDrafts();
+  late final RecordingDrafts draftStore;
+  late final MediaRepository mediaRepository;
+  late final ProcessingRepository processingRepository;
   late final AuthenticatedSessionScope sessionScope;
   List<RecordingDraft> savedRecordings = [];
   bool capturing = false;
@@ -43,12 +57,17 @@ class _RecordingPageState extends State<RecordingPage> {
   String sourceType = 'UPLOAD';
   int elapsed = 0;
   Timer? timer;
-  ProcessingJob? job;
-  late Future<List<ProcessingJob>> jobs;
+  ProcessingJobRecord? job;
+  late Future<List<ProcessingJobRecord>> jobs;
 
   @override
   void initState() {
     super.initState();
+    draftStore = RecordingDrafts(repository: widget.localMedia);
+    mediaRepository =
+        widget.mediaRepository ?? MediaRepository(api: widget.api);
+    processingRepository =
+        widget.processingRepository ?? ProcessingRepository(api: widget.api);
     sessionScope = widget.api.requireAuthenticatedSessionScope();
     reloadJobs();
     loadDrafts();
@@ -74,14 +93,7 @@ class _RecordingPageState extends State<RecordingPage> {
   void reloadJobs() {
     if (!widget.api.isCurrentAuthenticatedSession(sessionScope)) return;
     setState(() {
-      jobs = widget.api
-          .get('/meetings/' + widget.meetingId + '/processing-jobs')
-          .then(
-            (response) => response
-                .objectArrayData()
-                .map((raw) => ProcessingJob.fromJson(raw, response: response))
-                .toList(),
-          );
+      jobs = processingRepository.list(widget.meetingId);
     });
   }
 
@@ -281,77 +293,243 @@ class _RecordingPageState extends State<RecordingPage> {
       busy = true;
       uploadProgress = 0;
     });
+    UploadOperation? uploadOperation;
+    ProcessingOperation? processingOperation;
+    LocalMediaAsset? localAsset;
     try {
+      var uploadFile = selected;
       final size = await selected.length();
       widget.api.requireCurrentAuthenticatedSession(sessionScope);
       if (size == 0)
         throw const ApiFailure(422, 'EMPTY_AUDIO', 'File ghi âm trống.');
       final mime = contentType(selected);
-      final path = '/meetings/' + widget.meetingId;
-      final intent = (await widget.api.post(
-        path + '/media/uploads',
-        {
-          'sourceType': sourceType,
-          'originalFilename': selectedName ?? selected.uri.pathSegments.last,
-          'contentType': mime,
-          'expectedSizeBytes': size,
-        },
-        headers: {'Idempotency-Key': key()},
-      )).objectData();
+      final filename = selectedName ?? selected.uri.pathSegments.last;
+      final localMedia = widget.localMedia;
+      if (localMedia != null) {
+        localAsset = await localMedia.rememberSourceFile(
+          scope: sessionScope,
+          meetingId: widget.meetingId,
+          source: selected,
+          sourceType: sourceType == 'RECORDING'
+              ? LocalMediaSourceType.recording
+              : LocalMediaSourceType.upload,
+          originalFilename: filename,
+          contentType: mime,
+          expectedSizeBytes: size,
+        );
+        uploadFile = await localMedia.fileFor(
+          scope: sessionScope,
+          asset: localAsset,
+        );
+      }
+      final uploadKey = key();
+      if (localMedia != null && localAsset != null) {
+        uploadOperation = await localMedia.beginUploadOperation(
+          scope: sessionScope,
+          asset: localAsset,
+          idempotencyKey: uploadKey,
+          requestFingerprint: _fingerprint(
+            '$sourceType\n$filename\n$mime\n$size',
+          ),
+        );
+      }
+      final intent = await mediaRepository.createUploadIntent(
+        widget.meetingId,
+        MediaUploadRequest(
+          sourceType: sourceType == 'RECORDING'
+              ? MediaSourceType.recording
+              : MediaSourceType.upload,
+          originalFilename: filename,
+          contentType: mime,
+          expectedSizeBytes: size,
+        ),
+        idempotencyKey: uploadKey,
+      );
       widget.api.requireCurrentAuthenticatedSession(sessionScope);
-      final mediaId = textValue(intent['mediaId']);
-      final signedUrl = textValue(intent['uploadUrl']);
-      if (mediaId.isEmpty || signedUrl.isEmpty) {
+      final intentOperation = uploadOperation;
+      if (intentOperation != null && localMedia != null) {
+        uploadOperation = await localMedia.updateUploadOperation(
+          intentOperation,
+          scope: sessionScope,
+          checkpoint: UploadOperationCheckpoint.intentConfirmed,
+          remoteMediaId: intent.mediaId,
+          attemptCount: intentOperation.attemptCount + 1,
+        );
+      }
+      if (intent.status == MediaStatus.pendingUpload &&
+          !intent.hasUploadCapability) {
         throw const ApiFailure(
           0,
           'INVALID_UPLOAD',
           'Server did not provide upload capability.',
         );
       }
-      await widget.api.uploadSigned(
-        signedUrl,
-        selected,
-        textValue(intent['requiredContentType'], mime),
-        onProgress: (sent, total) {
-          if (!mounted ||
-              !widget.api.isCurrentAuthenticatedSession(sessionScope) ||
-              total == 0) {
-            return;
-          }
-          final ratio = sent / total;
-          if (uploadProgress == null ||
-              (uploadProgress! - ratio).abs() >= 0.01 ||
-              ratio == 1) {
-            setState(() => uploadProgress = ratio);
-          }
-        },
-      );
-      widget.api.requireCurrentAuthenticatedSession(sessionScope);
-      final finalized = (await widget.api.post(
-        path + '/media/' + mediaId + '/finalize',
-        {},
-      )).objectData();
-      if (textValue(finalized['status']) != 'AVAILABLE') {
-        throw const ApiFailure(
+      if (intent.hasUploadCapability) {
+        await widget.api.uploadSigned(
+          intent.uploadUrl!,
+          uploadFile,
+          intent.requiredContentType,
+          expectedLength: size,
+          expiresAt: intent.expiresAt,
+          onProgress: (sent, total) {
+            if (!mounted ||
+                !widget.api.isCurrentAuthenticatedSession(sessionScope) ||
+                total == 0) {
+              return;
+            }
+            final ratio = sent / total;
+            if (uploadProgress == null ||
+                (uploadProgress! - ratio).abs() >= 0.01 ||
+                ratio == 1) {
+              setState(() => uploadProgress = ratio);
+            }
+          },
+        );
+        final transferOperation = uploadOperation;
+        if (transferOperation != null && localMedia != null) {
+          uploadOperation = await localMedia.updateUploadOperation(
+            transferOperation,
+            scope: sessionScope,
+            checkpoint: UploadOperationCheckpoint.binaryTransferConfirmed,
+            confirmedBytes: size,
+          );
+        }
+      }
+      final finalized =
+          intent.status == MediaStatus.available ||
+              intent.status == MediaStatus.rejected ||
+              intent.status == MediaStatus.failed
+          ? await mediaRepository.getMedia(widget.meetingId, intent.mediaId)
+          : await mediaRepository.finalizeUpload(
+              widget.meetingId,
+              intent.mediaId,
+            );
+      if (!finalized.accepted) {
+        throw ApiFailure(
           409,
-          'MEDIA_NOT_AVAILABLE',
+          finalized.failureCode ?? 'MEDIA_NOT_AVAILABLE',
           'Media has not been accepted.',
         );
       }
-      widget.api.requireCurrentAuthenticatedSession(sessionScope);
-      final accepted = await widget.api.post(
-        path + '/processing-jobs',
-        {'mediaId': mediaId},
-        headers: {'Idempotency-Key': key()},
-      );
-      if (mounted && widget.api.isCurrentAuthenticatedSession(sessionScope)) {
-        setState(
-          () => job = ProcessingJob.fromJson(
-            accepted.objectData(),
-            response: accepted,
-          ),
+      final finalizedOperation = uploadOperation;
+      if (finalizedOperation != null && localMedia != null) {
+        uploadOperation = await localMedia.updateUploadOperation(
+          finalizedOperation,
+          scope: sessionScope,
+          checkpoint: UploadOperationCheckpoint.finalizationConfirmed,
+          remoteMediaId: finalized.id,
         );
+      }
+      final processingKey = key();
+      if (localMedia != null) {
+        processingOperation = await localMedia.beginProcessingOperation(
+          scope: sessionScope,
+          meetingId: widget.meetingId,
+          idempotencyKey: processingKey,
+          requestFingerprint: _fingerprint('ADMISSION\n${finalized.id}'),
+          operationType: ProcessingOperationType.admission,
+          sourceMediaId: finalized.id,
+        );
+      }
+      final accepted = await processingRepository.admit(
+        widget.meetingId,
+        ProcessingAdmissionRequest(mediaId: finalized.id),
+        idempotencyKey: processingKey,
+      );
+      if (processingOperation != null && localMedia != null) {
+        await localMedia.updateProcessingOperation(
+          processingOperation,
+          scope: sessionScope,
+          checkpoint: ProcessingOperationCheckpoint.admissionConfirmed,
+          targetJobId: accepted.id,
+        );
+      }
+      if (mounted && widget.api.isCurrentAuthenticatedSession(sessionScope)) {
+        setState(() => job = accepted);
         showSuccess(context, 'Đã gửi ghi âm. AI đang xử lý bất đồng bộ.');
+        reloadJobs();
+      }
+    } catch (error) {
+      final localMedia = widget.localMedia;
+      final failure = error is ApiFailure ? error : null;
+      if (localMedia != null &&
+          widget.api.isCurrentAuthenticatedSession(sessionScope)) {
+        final failedUpload = uploadOperation;
+        if (failedUpload != null &&
+            failedUpload.checkpoint !=
+                UploadOperationCheckpoint.finalizationConfirmed) {
+          try {
+            await localMedia.updateUploadOperation(
+              failedUpload,
+              scope: sessionScope,
+              checkpoint: UploadOperationCheckpoint.failed,
+              attemptCount: failedUpload.attemptCount + 1,
+              failureCode: failure?.code ?? 'MEDIA_UPLOAD_FAILED',
+              failureStatus: failure?.status,
+              failureMessage: failure?.message,
+            );
+          } catch (_) {}
+        }
+        final failedProcessing = processingOperation;
+        if (failedProcessing != null) {
+          try {
+            await localMedia.updateProcessingOperation(
+              failedProcessing,
+              scope: sessionScope,
+              checkpoint: ProcessingOperationCheckpoint.failed,
+              attemptCount: failedProcessing.attemptCount + 1,
+              failureCode: failure?.code ?? 'PROCESSING_ADMISSION_FAILED',
+              failureStatus: failure?.status,
+              failureMessage: failure?.message,
+            );
+          } catch (_) {}
+        }
+      }
+      if (mounted && widget.api.isCurrentAuthenticatedSession(sessionScope)) {
+        showFailure(context, error);
+      }
+    } finally {
+      if (mounted && widget.api.isCurrentAuthenticatedSession(sessionScope)) {
+        setState(() => busy = false);
+      }
+    }
+  }
+
+  Future<void> retryJob(ProcessingJobRecord candidate) async {
+    if (!widget.api.isCurrentAuthenticatedSession(sessionScope)) return;
+    setState(() => busy = true);
+    try {
+      final retryKey = key();
+      ProcessingOperation? operation;
+      final localMedia = widget.localMedia;
+      if (localMedia != null) {
+        operation = await localMedia.beginProcessingOperation(
+          scope: sessionScope,
+          meetingId: candidate.meetingId,
+          idempotencyKey: retryKey,
+          requestFingerprint: _fingerprint(
+            'RETRY\n${candidate.id}\n${candidate.currentStage ?? ''}',
+          ),
+          operationType: ProcessingOperationType.retry,
+          targetJobId: candidate.id,
+          stageCode: candidate.currentStage,
+        );
+      }
+      final response = await processingRepository.retry(
+        candidate.id,
+        idempotencyKey: retryKey,
+        stageCode: candidate.currentStage,
+      );
+      if (operation != null && localMedia != null) {
+        await localMedia.updateProcessingOperation(
+          operation,
+          scope: sessionScope,
+          checkpoint: ProcessingOperationCheckpoint.retryConfirmed,
+          targetJobId: response.id,
+        );
+      }
+      if (mounted && widget.api.isCurrentAuthenticatedSession(sessionScope)) {
+        setState(() => job = response);
         reloadJobs();
       }
     } catch (error) {
@@ -365,34 +543,8 @@ class _RecordingPageState extends State<RecordingPage> {
     }
   }
 
-  Future<void> retryJob(ProcessingJob candidate) async {
-    if (!widget.api.isCurrentAuthenticatedSession(sessionScope)) return;
-    setState(() => busy = true);
-    try {
-      final response = await widget.api.post(
-        '/processing-jobs/' + candidate.id + '/retry',
-        {},
-        headers: {'Idempotency-Key': key()},
-      );
-      if (mounted && widget.api.isCurrentAuthenticatedSession(sessionScope)) {
-        setState(
-          () => job = ProcessingJob.fromJson(
-            response.objectData(),
-            response: response,
-          ),
-        );
-        reloadJobs();
-      }
-    } catch (error) {
-      if (mounted && widget.api.isCurrentAuthenticatedSession(sessionScope)) {
-        showFailure(context, error);
-      }
-    } finally {
-      if (mounted && widget.api.isCurrentAuthenticatedSession(sessionScope)) {
-        setState(() => busy = false);
-      }
-    }
-  }
+  String _fingerprint(String value) =>
+      sha256.convert(utf8.encode(value)).toString();
 
   @override
   Widget build(BuildContext context) => ListView(
@@ -526,7 +678,7 @@ class _RecordingPageState extends State<RecordingPage> {
           icon: const Icon(Icons.refresh),
         ),
       ),
-      AsyncContent<List<ProcessingJob>>(
+      AsyncContent<List<ProcessingJobRecord>>(
         future: jobs,
         retry: reloadJobs,
         builder: (values) => Column(
@@ -540,7 +692,7 @@ class _RecordingPageState extends State<RecordingPage> {
     ],
   );
 
-  Widget jobTile(ProcessingJob item) => ContentCard(
+  Widget jobTile(ProcessingJobRecord item) => ContentCard(
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -556,7 +708,7 @@ class _RecordingPageState extends State<RecordingPage> {
                 style: const TextStyle(fontWeight: FontWeight.w700),
               ),
             ),
-            StatePill(item.status),
+            StatePill(item.status.wireValue),
           ],
         ),
         if (item.warningSummary?.isNotEmpty == true)

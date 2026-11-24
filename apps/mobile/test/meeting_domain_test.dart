@@ -117,19 +117,47 @@ void main() {
           MeetingOperation.schedule,
           MeetingOperation.cancel,
           MeetingOperation.manageParticipants,
+          MeetingOperation.readMedia,
+          MeetingOperation.accessMedia,
+          MeetingOperation.uploadMedia,
+          MeetingOperation.finalizeMedia,
+          MeetingOperation.admitProcessing,
+          MeetingOperation.retryProcessing,
         },
         MeetingStatus.scheduled: {
           MeetingOperation.edit,
           MeetingOperation.start,
           MeetingOperation.cancel,
           MeetingOperation.manageParticipants,
+          MeetingOperation.readMedia,
+          MeetingOperation.accessMedia,
+          MeetingOperation.uploadMedia,
+          MeetingOperation.finalizeMedia,
+          MeetingOperation.admitProcessing,
+          MeetingOperation.retryProcessing,
         },
         MeetingStatus.inProgress: {
           MeetingOperation.end,
           MeetingOperation.manageParticipants,
+          MeetingOperation.readMedia,
+          MeetingOperation.accessMedia,
+          MeetingOperation.uploadMedia,
+          MeetingOperation.finalizeMedia,
+          MeetingOperation.admitProcessing,
+          MeetingOperation.retryProcessing,
         },
-        MeetingStatus.ended: {},
-        MeetingStatus.cancelled: {},
+        MeetingStatus.ended: {
+          MeetingOperation.readMedia,
+          MeetingOperation.accessMedia,
+          MeetingOperation.uploadMedia,
+          MeetingOperation.finalizeMedia,
+          MeetingOperation.admitProcessing,
+          MeetingOperation.retryProcessing,
+        },
+        MeetingStatus.cancelled: {
+          MeetingOperation.readMedia,
+          MeetingOperation.accessMedia,
+        },
       };
 
       for (final entry in expected.entries) {
@@ -194,6 +222,16 @@ void main() {
           ),
           isTrue,
         );
+
+        final participant = MeetingCapabilityPolicy.evaluate(
+          callerId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+          meeting: meeting,
+          callerIsActiveParticipant: true,
+        );
+        expect(participant.canReadMedia, isTrue);
+        expect(participant.canAccessMedia, isTrue);
+        expect(participant.canUploadMedia, isFalse);
+        expect(participant.canAdmitProcessing, isFalse);
       },
     );
   });

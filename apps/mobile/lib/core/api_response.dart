@@ -17,6 +17,7 @@ class ApiFailure implements Exception {
   final String? retryAfter;
   final Map<String, String> headers;
   final bool isTransportFailure;
+  final bool remoteOutcomeAmbiguous;
 
   const ApiFailure(
     this.status,
@@ -29,6 +30,7 @@ class ApiFailure implements Exception {
     this.retryAfter,
     this.headers = const <String, String>{},
     this.isTransportFailure = false,
+    this.remoteOutcomeAmbiguous = false,
   });
 
   bool get unauthorized => status == 401;

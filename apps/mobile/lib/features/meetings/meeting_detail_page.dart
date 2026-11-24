@@ -414,6 +414,17 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
         );
       }
       final snapshot = state.snapshot;
+      final callerIsActiveParticipant =
+          state.participantsLoaded &&
+          state.participants.any(
+            (participant) =>
+                participant.isActive && participant.userId == widget.api.userId,
+          );
+      final mediaCapabilities = MeetingCapabilityPolicy.evaluate(
+        callerId: widget.api.userId,
+        meeting: snapshot?.meeting,
+        callerIsActiveParticipant: callerIsActiveParticipant,
+      );
       return Scaffold(
         appBar: AppBar(
           title: const Text('Chi tiết cuộc họp'),
@@ -465,7 +476,10 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
                       2 => RecordingPage(
                         api: widget.api,
                         meetingId: widget.meetingId,
-                        enabled: snapshot.meeting.status != 'CANCELLED',
+                        enabled: mediaCapabilities.canUploadMedia,
+                        localMedia: widget.dependencies.localMedia,
+                        mediaRepository: widget.dependencies.media,
+                        processingRepository: widget.dependencies.processing,
                       ),
                       3 => MeetingParticipants(
                         key: ValueKey(
@@ -503,6 +517,9 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
                       _ => ProcessingTimelinePanel(
                         api: widget.api,
                         meetingId: snapshot.meeting.id,
+                        processingRepository: widget.dependencies.processing,
+                        localMedia: widget.dependencies.localMedia,
+                        canRetry: mediaCapabilities.canRetryProcessing,
                       ),
                     },
                   ),

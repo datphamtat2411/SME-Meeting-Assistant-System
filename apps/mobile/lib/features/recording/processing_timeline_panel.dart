@@ -1,21 +1,32 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
 
 import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
-import '../../core/models.dart';
 import '../../core/widgets.dart';
+import 'local_media_models.dart';
+import 'local_media_repository.dart';
+import 'media_contracts.dart';
+import 'processing_repository.dart';
 
 class ProcessingTimelinePanel extends StatefulWidget {
   const ProcessingTimelinePanel({
     super.key,
     required this.api,
     required this.meetingId,
+    this.processingRepository,
+    this.localMedia,
+    this.canRetry = true,
   });
   final ApiClient api;
   final String meetingId;
+  final ProcessingRepository? processingRepository;
+  final LocalMediaRepository? localMedia;
+  final bool canRetry;
   @override
   State<ProcessingTimelinePanel> createState() =>
       _ProcessingTimelinePanelState();
@@ -23,7 +34,8 @@ class ProcessingTimelinePanel extends StatefulWidget {
 
 class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
     with WidgetsBindingObserver {
-  late Future<List<ProcessingJob>> future;
+  late final ProcessingRepository processingRepository;
+  late Future<List<ProcessingJobRecord>> future;
   Timer? timer;
   bool retrying = false;
 
@@ -31,6 +43,8 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    processingRepository =
+        widget.processingRepository ?? ProcessingRepository(api: widget.api);
     reload();
     timer = Timer.periodic(const Duration(seconds: 12), (_) => reload());
   }
@@ -57,36 +71,78 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
   void reload() {
     if (!mounted) return;
     setState(() {
-      future = widget.api
-          .get('/meetings/' + widget.meetingId + '/processing-jobs')
-          .then(
-            (response) => response
-                .objectArrayData()
-                .map((raw) => ProcessingJob.fromJson(raw, response: response))
-                .toList(),
-          );
+      future = processingRepository.list(widget.meetingId);
     });
   }
 
-  Future<void> retry(String id) async {
+  Future<void> retry(ProcessingJobRecord candidate) async {
     if (retrying) return;
     setState(() => retrying = true);
+    ProcessingOperation? operation;
+    AuthenticatedSessionScope? scope;
     try {
       final rand = Random.secure();
       final key = List<int>.generate(
         16,
         (_) => rand.nextInt(256),
       ).map((v) => v.toRadixString(16).padLeft(2, '0')).join();
-      await widget.api.post(
-        '/processing-jobs/' + id + '/retry',
-        {},
-        headers: {'Idempotency-Key': key},
+      final localMedia = widget.localMedia;
+      scope = widget.api.requireAuthenticatedSessionScope();
+      if (localMedia != null) {
+        operation = await localMedia.beginProcessingOperation(
+          scope: scope,
+          meetingId: candidate.meetingId,
+          idempotencyKey: key,
+          requestFingerprint: sha256
+              .convert(
+                utf8.encode(
+                  'RETRY\n${candidate.id}\n${candidate.currentStage ?? ''}',
+                ),
+              )
+              .toString(),
+          operationType: ProcessingOperationType.retry,
+          targetJobId: candidate.id,
+          stageCode: candidate.currentStage,
+        );
+      }
+      final accepted = await processingRepository.retry(
+        candidate.id,
+        idempotencyKey: key,
+        stageCode: candidate.currentStage,
       );
+      if (operation != null && localMedia != null) {
+        await localMedia.updateProcessingOperation(
+          operation,
+          scope: scope,
+          checkpoint: ProcessingOperationCheckpoint.retryConfirmed,
+          targetJobId: accepted.id,
+        );
+      }
       if (mounted) {
         showSuccess(context, 'Đã tiếp nhận yêu cầu thử lại.');
         reload();
       }
     } catch (error) {
+      final localMedia = widget.localMedia;
+      final activeScope = scope;
+      if (localMedia != null &&
+          activeScope != null &&
+          widget.api.isCurrentAuthenticatedSession(activeScope) &&
+          operation != null) {
+        final failure = error is ApiFailure ? error : null;
+        final failedOperation = operation;
+        try {
+          await localMedia.updateProcessingOperation(
+            failedOperation,
+            scope: activeScope,
+            checkpoint: ProcessingOperationCheckpoint.failed,
+            attemptCount: failedOperation.attemptCount + 1,
+            failureCode: failure?.code ?? 'PROCESSING_RETRY_FAILED',
+            failureStatus: failure?.status,
+            failureMessage: failure?.message,
+          );
+        } catch (_) {}
+      }
       if (mounted) showFailure(context, error);
     } finally {
       if (mounted) setState(() => retrying = false);
@@ -94,7 +150,7 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
   }
 
   @override
-  Widget build(BuildContext context) => AsyncContent<List<ProcessingJob>>(
+  Widget build(BuildContext context) => AsyncContent<List<ProcessingJobRecord>>(
     future: future,
     retry: reload,
     builder: (jobs) => RefreshIndicator(
@@ -125,7 +181,7 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
                           style: const TextStyle(fontWeight: FontWeight.w700),
                         ),
                       ),
-                      StatePill(item.status),
+                      StatePill(item.status.wireValue),
                     ],
                   ),
                   const SizedBox(height: 9),
@@ -145,7 +201,7 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
                           ),
                           Expanded(
                             child: Text(
-                              step.stageCode + ' · ' + step.status,
+                              step.stageCode + ' · ' + step.status.wireValue,
                               style: const TextStyle(fontSize: 12),
                             ),
                           ),
@@ -173,7 +229,9 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
                     Align(
                       alignment: Alignment.centerRight,
                       child: TextButton(
-                        onPressed: retrying ? null : () => retry(item.id),
+                        onPressed: !widget.canRetry || retrying
+                            ? null
+                            : () => retry(item),
                         child: const Text('Thử lại xử lý'),
                       ),
                     ),

@@ -9,6 +9,9 @@ import 'package:sme_meeting_assistant/features/meetings/meeting_membership.dart'
 import 'package:sme_meeting_assistant/features/meetings/meeting_repository.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_scheduling.dart';
 import 'package:sme_meeting_assistant/features/meetings/participant_selection.dart';
+import 'package:sme_meeting_assistant/features/recording/local_media_repository.dart';
+import 'package:sme_meeting_assistant/features/recording/media_repository.dart';
+import 'package:sme_meeting_assistant/features/recording/processing_repository.dart';
 
 /// The application-scoped dependency holder and resource owner.
 ///
@@ -24,13 +27,22 @@ class AppDependencies {
   late final ParticipantCandidateRepository participantCandidates;
   late final MeetingMembershipRepository meetingMembership;
   late final MeetingCreationRecoveryStore meetingCreationRecovery;
+  late final LocalMediaRepository localMedia;
+  late final MediaRepository media;
+  late final ProcessingRepository processing;
   bool _disposed = false;
 
   AppDependencies({
     required this.api,
     required this.appearancePreferences,
     required this.httpClient,
+    LocalMediaRepository? localMedia,
   }) {
+    this.localMedia =
+        localMedia ??
+        LocalMediaRepository.lazyDefault(legacyStorage: api.credentialStorage);
+    media = MediaRepository(api: api);
+    processing = ProcessingRepository(api: api);
     meetingInvalidation = MeetingInvalidationSignal(api);
     meetingCreationRecovery = MeetingCreationRecoveryStore(
       storage: api.credentialStorage,
@@ -51,6 +63,7 @@ class AppDependencies {
     http.Client? httpClient,
     CredentialStorage? credentialStorage,
     AppearancePreferences? appearancePreferences,
+    LocalMediaRepository? localMedia,
   }) {
     final client = httpClient ?? http.Client();
     try {
@@ -64,6 +77,7 @@ class AppDependencies {
         appearancePreferences:
             appearancePreferences ?? SharedPreferencesAppearancePreferences(),
         httpClient: client,
+        localMedia: localMedia,
       );
     } catch (_) {
       client.close();
@@ -77,6 +91,7 @@ class AppDependencies {
     if (_disposed) return;
     _disposed = true;
     meetingInvalidation.dispose();
+    localMedia.close();
     try {
       api.dispose();
     } finally {

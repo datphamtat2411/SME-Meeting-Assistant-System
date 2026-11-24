@@ -383,7 +383,20 @@ class MeetingCancelInput {
   final String? reason;
 }
 
-enum MeetingOperation { edit, schedule, start, end, cancel, manageParticipants }
+enum MeetingOperation {
+  edit,
+  schedule,
+  start,
+  end,
+  cancel,
+  manageParticipants,
+  readMedia,
+  accessMedia,
+  uploadMedia,
+  finalizeMedia,
+  admitProcessing,
+  retryProcessing,
+}
 
 class MeetingCapabilities {
   MeetingCapabilities._(Set<MeetingOperation> allowed)
@@ -399,6 +412,12 @@ class MeetingCapabilities {
   bool get canEnd => allows(MeetingOperation.end);
   bool get canCancel => allows(MeetingOperation.cancel);
   bool get canManageParticipants => allows(MeetingOperation.manageParticipants);
+  bool get canReadMedia => allows(MeetingOperation.readMedia);
+  bool get canAccessMedia => allows(MeetingOperation.accessMedia);
+  bool get canUploadMedia => allows(MeetingOperation.uploadMedia);
+  bool get canFinalizeMedia => allows(MeetingOperation.finalizeMedia);
+  bool get canAdmitProcessing => allows(MeetingOperation.admitProcessing);
+  bool get canRetryProcessing => allows(MeetingOperation.retryProcessing);
 }
 
 /// Pure client-side lifecycle eligibility. It never considers global roles,
@@ -409,36 +428,64 @@ class MeetingCapabilityPolicy {
   static MeetingCapabilities evaluate({
     required String? callerId,
     required Meeting? meeting,
+    bool callerIsActiveParticipant = false,
   }) {
     if (callerId == null ||
         !isMeetingUuid(callerId) ||
         meeting == null ||
-        !isMeetingUuid(meeting.organizerId) ||
-        callerId.toLowerCase() != meeting.organizerId.toLowerCase()) {
+        !isMeetingUuid(meeting.organizerId)) {
       return MeetingCapabilities._(<MeetingOperation>{});
     }
 
-    final allowed = switch (meeting.lifecycleStatus) {
-      MeetingStatus.draft => <MeetingOperation>{
-        MeetingOperation.edit,
-        MeetingOperation.schedule,
-        MeetingOperation.cancel,
-        MeetingOperation.manageParticipants,
-      },
-      MeetingStatus.scheduled => <MeetingOperation>{
-        MeetingOperation.edit,
-        MeetingOperation.start,
-        MeetingOperation.cancel,
-        MeetingOperation.manageParticipants,
-      },
-      MeetingStatus.inProgress => <MeetingOperation>{
-        MeetingOperation.end,
-        MeetingOperation.manageParticipants,
-      },
-      MeetingStatus.ended ||
-      MeetingStatus.cancelled ||
-      null => <MeetingOperation>{},
-    };
+    final organizer =
+        callerId.toLowerCase() == meeting.organizerId.toLowerCase();
+    final allowed = organizer
+        ? switch (meeting.lifecycleStatus) {
+            MeetingStatus.draft => <MeetingOperation>{
+              MeetingOperation.edit,
+              MeetingOperation.schedule,
+              MeetingOperation.cancel,
+              MeetingOperation.manageParticipants,
+            },
+            MeetingStatus.scheduled => <MeetingOperation>{
+              MeetingOperation.edit,
+              MeetingOperation.start,
+              MeetingOperation.cancel,
+              MeetingOperation.manageParticipants,
+            },
+            MeetingStatus.inProgress => <MeetingOperation>{
+              MeetingOperation.end,
+              MeetingOperation.manageParticipants,
+            },
+            MeetingStatus.ended ||
+            MeetingStatus.cancelled ||
+            null => <MeetingOperation>{},
+          }
+        : <MeetingOperation>{};
+    if (meeting.lifecycleStatus == null) {
+      return MeetingCapabilities._(<MeetingOperation>{});
+    }
+    if (organizer) {
+      if (meeting.lifecycleStatus != MeetingStatus.cancelled) {
+        allowed.addAll(<MeetingOperation>{
+          MeetingOperation.uploadMedia,
+          MeetingOperation.finalizeMedia,
+          MeetingOperation.admitProcessing,
+          MeetingOperation.retryProcessing,
+        });
+      }
+      allowed.addAll(<MeetingOperation>{
+        MeetingOperation.readMedia,
+        MeetingOperation.accessMedia,
+      });
+    } else if (callerIsActiveParticipant) {
+      // Core grants meeting-content reads to active members, but never grants
+      // organizer-only media mutations to a participant or global role.
+      allowed.addAll(<MeetingOperation>{
+        MeetingOperation.readMedia,
+        MeetingOperation.accessMedia,
+      });
+    }
     return MeetingCapabilities._(allowed);
   }
 }

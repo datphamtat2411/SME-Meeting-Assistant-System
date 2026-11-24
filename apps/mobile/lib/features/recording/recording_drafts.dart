@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:crypto/crypto.dart';
 
 import '../../core/api_client.dart';
+import 'local_media_models.dart';
+import 'local_media_repository.dart';
 
 /// Device-private, account-scoped index; source audio remains on disk.
 class RecordingDraft {
@@ -19,7 +21,7 @@ class RecordingDraft {
 }
 
 class RecordingDrafts {
-  RecordingDrafts({CredentialStorage? storage})
+  RecordingDrafts({CredentialStorage? storage, this._repository})
     : _storage = storage ?? const SecureCredentialStorage();
 
   static const String legacyStorageKey = 'sme.mobile.recordings.v1';
@@ -28,6 +30,7 @@ class RecordingDrafts {
   static const String _storageKeyPrefix = 'sme.mobile.recordings.v2.';
 
   final CredentialStorage _storage;
+  final LocalMediaRepository? _repository;
 
   Future<List<RecordingDraft>> list(
     String meetingId, {
@@ -37,6 +40,34 @@ class RecordingDrafts {
     final activeSession = api.requireAuthenticatedSessionScope();
     final scope = session ?? activeSession;
     api.requireCurrentAuthenticatedSession(scope);
+    final repository = _repository;
+    if (repository != null) {
+      await repository.migrateLegacyMetadata(storage: _storage);
+      api.requireCurrentAuthenticatedSession(scope);
+      await repository.reconcile(scope: scope, meetingId: meetingId);
+      api.requireCurrentAuthenticatedSession(scope);
+      final assets = await repository.listAssets(
+        scope: scope,
+        meetingId: meetingId,
+      );
+      final drafts = <RecordingDraft>[];
+      for (final asset in assets) {
+        if (!asset.isReady) continue;
+        final mediaFile = await repository.fileFor(scope: scope, asset: asset);
+        if (!await mediaFile.exists()) continue;
+        api.requireCurrentAuthenticatedSession(scope);
+        drafts.add(
+          RecordingDraft(
+            path: mediaFile.path,
+            name: asset.originalFilename,
+            createdAt: asset.createdAt,
+          ),
+        );
+      }
+      drafts.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      api.requireCurrentAuthenticatedSession(scope);
+      return drafts;
+    }
     await _retireLegacyIndex();
     api.requireCurrentAuthenticatedSession(scope);
     final entries = await _readIndex(scope);
@@ -76,6 +107,18 @@ class RecordingDrafts {
     required AuthenticatedSessionScope session,
   }) async {
     if (!await file.exists()) return;
+    final repository = _repository;
+    if (repository != null) {
+      await repository.rememberSourceFile(
+        scope: session,
+        meetingId: meetingId,
+        source: file,
+        sourceType: LocalMediaSourceType.recording,
+        originalFilename: file.uri.pathSegments.last,
+        contentType: _contentTypeFor(file.path),
+      );
+      return;
+    }
     await _retireLegacyIndex();
     final entries = await _readIndex(session);
     if (entries.any(
@@ -161,5 +204,12 @@ class RecordingDrafts {
         )
         .toString();
     return '$_storageKeyPrefix$ownerDigest';
+  }
+
+  static String _contentTypeFor(String value) {
+    final lower = value.toLowerCase();
+    if (lower.endsWith('.mp3')) return 'audio/mpeg';
+    if (lower.endsWith('.m4a')) return 'audio/mp4';
+    return 'audio/wav';
   }
 }

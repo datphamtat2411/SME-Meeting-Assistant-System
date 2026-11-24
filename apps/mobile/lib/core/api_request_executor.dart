@@ -22,6 +22,7 @@ class CoreApiRequestExecutor {
     Object? body,
     Map<String, String>? headers,
     String? authorization,
+    CoreApiTimeoutPolicy? timeoutPolicy,
   }) async {
     final CoreApiResponse response;
     try {
@@ -32,6 +33,7 @@ class CoreApiRequestExecutor {
         body: body,
         headers: headers,
         authorization: authorization,
+        timeoutPolicy: timeoutPolicy,
       );
     } on TransportFailure catch (failure) {
       throw normalizeTransportFailure(failure);
@@ -81,6 +83,7 @@ ApiFailure normalizeTransportFailure(TransportFailure failure) {
     retryAfter: headerValue(failure.responseHeaders, 'retry-after'),
     headers: failure.responseHeaders,
     isTransportFailure: true,
+    remoteOutcomeAmbiguous: failure.remoteOutcomeAmbiguous,
   );
 }
 

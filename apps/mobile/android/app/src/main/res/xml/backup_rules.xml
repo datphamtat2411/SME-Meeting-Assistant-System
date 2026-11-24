@@ -6,4 +6,8 @@
     <exclude domain="sharedpref" path="FlutterSecureKeyStorage.xml" />
     <exclude domain="sharedpref" path="FlutterSecureStorageConfiguration:FlutterSecureStorage.xml" />
     <exclude domain="sharedpref" path="FlutterSecureStorageConfiguration.xml" />
+    <!-- Local media bytes and resumable operation metadata are device-bound. -->
+    <exclude domain="file" path="sme-media" />
+    <exclude domain="file" path="app_flutter/sme-media" />
+    <exclude domain="database" path="sme_mobile_media.db" />
 </full-backup-content>
