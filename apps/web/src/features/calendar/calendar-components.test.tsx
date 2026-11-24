@@ -171,6 +171,16 @@ describe('Calendar toolbar', () => {
     expect(props.onFiltersChange).toHaveBeenCalledWith({
       relationship: 'participant',
     })
+    await expect
+      .element(
+        screen.getByText(
+          'All accessible shows meetings Core API lets you view. Participating shows participant membership only; meetings you organize are in Organized by me.'
+        )
+      )
+      .toBeVisible()
+    await expect
+      .element(screen.getByRole('combobox', { name: 'Relationship' }))
+      .toHaveAttribute('aria-describedby', 'calendar-relationship-description')
 
     await userEvent.click(screen.getByRole('button', { name: 'Reset filters' }))
     expect(props.onFiltersChange).toHaveBeenCalledWith({
@@ -208,6 +218,24 @@ describe('Calendar toolbar', () => {
 })
 
 describe('Calendar month view', () => {
+  it('shows a month-shaped skeleton while the first page is loading', async () => {
+    const screen = await render(
+      <CalendarMonthView
+        month={new Date(2026, 10, 1)}
+        segments={[]}
+        state={{ kind: 'loading' }}
+      />
+    )
+
+    await expect
+      .element(screen.getByRole('status'))
+      .toHaveTextContent('Loading Calendar meetings')
+    await expect
+      .element(screen.getByTestId('calendar-month-skeleton'))
+      .toBeVisible()
+    await expect.element(screen.getByRole('table')).not.toBeInTheDocument()
+  })
+
   it('renders a Monday-first month grid, selected-day interaction, and accessible overflow', async () => {
     const date = new Date(2026, 10, 1)
     const meetings = Array.from({ length: 5 }, (_, index) =>
@@ -284,6 +312,26 @@ describe('Calendar month view', () => {
 })
 
 describe('Calendar agenda view', () => {
+  it('shows agenda-shaped placeholders while the first page is loading', async () => {
+    const screen = await render(
+      <CalendarAgendaView
+        month={new Date(2026, 10, 1)}
+        segments={[]}
+        state={{ kind: 'loading' }}
+      />
+    )
+
+    await expect
+      .element(screen.getByRole('status'))
+      .toHaveTextContent('Loading Calendar meetings')
+    await expect
+      .element(screen.getByTestId('calendar-agenda-skeleton'))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByTestId('calendar-agenda-skeleton'))
+      .toHaveAttribute('aria-hidden', 'true')
+  })
+
   it('groups by occupied local day and preserves original multi-day scheduling', async () => {
     const multiDay = scheduledMeeting(
       'meeting-multi',
@@ -292,6 +340,7 @@ describe('Calendar agenda view', () => {
       localInstant(2026, 11, 3, 1),
       {
         status: 'DRAFT',
+        description: 'Review the launch plan and confirm owners.',
         roomId: null,
         display: {
           organizerName: 'Lan Nguyen',
@@ -372,6 +421,11 @@ describe('Calendar agenda view', () => {
       .element(screen.getByText('Tentative — no room reservation').first())
       .toBeInTheDocument()
     await expect
+      .element(
+        screen.getByText('Review the launch plan and confirm owners.').first()
+      )
+      .toBeVisible()
+    await expect
       .element(screen.getByText('Lan Nguyen').first())
       .toBeInTheDocument()
     await expect
@@ -396,7 +450,7 @@ describe('Calendar agenda view', () => {
     )
     await expect.element(failed.getByRole('alert')).toBeInTheDocument()
     await expect
-      .element(failed.getByText('No meetings scheduled this month'))
+      .element(failed.getByText('No accessible meetings overlap this month.'))
       .not.toBeInTheDocument()
   })
 
@@ -420,11 +474,25 @@ describe('Calendar agenda view', () => {
       .element(screen.getByText(/pagination ended/))
       .toBeInTheDocument()
     await expect
-      .element(screen.getByText('No meetings scheduled this month'))
+      .element(screen.getByText('No accessible meetings overlap this month.'))
       .not.toBeInTheDocument()
     await userEvent.click(
       screen.getByRole('button', { name: 'Reload Calendar meetings' })
     )
     expect(onRetry).toHaveBeenCalledOnce()
+  })
+
+  it('describes the default empty state as the accessible result set', async () => {
+    const screen = await render(
+      <CalendarAgendaView
+        month={new Date(2026, 10, 1)}
+        segments={[]}
+        state={readyState({ loadedCount: 0, totalCount: 0 })}
+      />
+    )
+
+    await expect
+      .element(screen.getByText('No accessible meetings overlap this month.'))
+      .toBeVisible()
   })
 })

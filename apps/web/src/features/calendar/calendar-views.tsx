@@ -3,6 +3,7 @@ import { Link } from '@tanstack/react-router'
 import { CalendarDays, Clock3, MapPin, Users } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { Skeleton } from '@/components/ui/skeleton'
 import { RequestError } from '@/components/request-state'
 import { MeetingStatusBadge } from '@/features/meetings/components/meeting-status-badge'
 import type { MeetingListItem } from '@/features/meetings/data/list-api'
@@ -77,6 +78,80 @@ function monthCells(month: Date) {
       inMonth: date.getMonth() === monthIndex,
     }
   })
+}
+
+function CalendarMonthSkeleton({
+  cells,
+}: {
+  cells: ReturnType<typeof monthCells>
+}) {
+  return (
+    <Card className='overflow-hidden'>
+      <CardContent className='p-2 sm:p-4'>
+        <div
+          data-testid='calendar-month-skeleton'
+          aria-hidden='true'
+          className='grid grid-cols-7'
+        >
+          {weekDays.map((day) => (
+            <div
+              key={day.full}
+              className='border-b px-1 py-2 text-center text-xs font-medium text-muted-foreground sm:px-2 sm:text-sm'
+            >
+              <span className='sm:hidden'>{day.short}</span>
+              <span className='hidden sm:inline'>{day.full}</span>
+            </div>
+          ))}
+          {cells.map((cell) => (
+            <div
+              key={cell.dayKey}
+              className={`h-24 min-w-0 border p-1 align-top sm:h-36 sm:p-2 ${
+                cell.inMonth ? 'bg-card' : 'bg-muted/20'
+              }`}
+            >
+              <Skeleton className='size-7 rounded-full' />
+              {cell.inMonth && (
+                <div className='mt-2 hidden space-y-1 sm:block'>
+                  <Skeleton className='h-5 w-3/4' />
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function CalendarAgendaSkeleton() {
+  return (
+    <div
+      data-testid='calendar-agenda-skeleton'
+      aria-hidden='true'
+      className='space-y-8'
+    >
+      {[0, 1, 2].map((group) => (
+        <section key={group} className='space-y-3'>
+          <Skeleton className='h-6 w-44' />
+          <div className='grid gap-3'>
+            {Array.from({ length: group === 0 ? 2 : 1 }, (_, index) => (
+              <Card key={`${group}-${index}`}>
+                <CardContent className='space-y-3 p-4 sm:p-5'>
+                  <Skeleton className='h-6 w-2/3' />
+                  <Skeleton className='h-4 w-full' />
+                  <div className='flex flex-wrap gap-3'>
+                    <Skeleton className='h-4 w-28' />
+                    <Skeleton className='h-4 w-32' />
+                    <Skeleton className='h-4 w-24' />
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </section>
+      ))}
+    </div>
+  )
 }
 
 function CalendarDataNotice({ state }: { state: CalendarDataPresentation }) {
@@ -300,8 +375,8 @@ function CalendarEmptyState({
   const title = hasOmissions
     ? 'No meetings with valid scheduled dates to show.'
     : state.filterActive
-      ? 'No meetings match these filters this month.'
-      : 'No meetings scheduled this month.'
+      ? 'No accessible meetings match these filters this month.'
+      : 'No accessible meetings overlap this month.'
   return (
     <div className='mt-4 flex min-h-32 flex-col items-center justify-center gap-2 rounded-lg border border-dashed px-4 text-center'>
       <CalendarDays
@@ -373,6 +448,7 @@ export function CalendarMeetingEntry({
   onMeetingSelect?: (meeting: MeetingListItem) => void
 }) {
   const { meeting } = segment
+  const description = meeting.description?.trim()
   const isMultiDay =
     segment.continuesFromPreviousDay || segment.continuesIntoNextDay
   const dayLabel = shortDateFormat.format(parseLocalDayKey(segment.dayKey))
@@ -426,7 +502,7 @@ export function CalendarMeetingEntry({
         to='/meetings/$meetingId'
         params={{ meetingId: meeting.id }}
         onClick={() => onMeetingSelect?.(meeting)}
-        aria-label={`Open ${meeting.title} workspace`}
+        aria-label={`Open ${meeting.title} workspace${description ? `. ${description}` : ''}`}
         className='group block rounded-xl border bg-card p-4 transition-colors hover:border-primary/50 hover:bg-accent/40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring sm:p-5'
       >
         <div className='flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between'>
@@ -442,6 +518,11 @@ export function CalendarMeetingEntry({
                 </span>
               )}
             </div>
+            {description && (
+              <p className='line-clamp-2 text-sm text-muted-foreground'>
+                {description}
+              </p>
+            )}
             <div className='flex flex-wrap gap-x-4 gap-y-2 text-sm text-muted-foreground'>
               <span className='inline-flex items-center gap-1.5'>
                 <Clock3 aria-hidden='true' className='size-4 shrink-0' />
@@ -590,152 +671,154 @@ export function CalendarMonthView({
   return (
     <div className='space-y-4'>
       <CalendarDataNotice state={state} />
-      <Card className='overflow-hidden'>
-        <CardContent className='p-2 sm:p-4'>
-          <table
-            aria-label={`${month.toLocaleDateString(undefined, {
-              month: 'long',
-              year: 'numeric',
-            })} calendar`}
-            className='w-full table-fixed border-collapse'
-          >
-            <caption className='sr-only'>
-              Monday-first calendar for{' '}
-              {month.toLocaleDateString(undefined, {
+      {state.kind === 'loading' ? (
+        <CalendarMonthSkeleton cells={cells} />
+      ) : (
+        <Card className='overflow-hidden'>
+          <CardContent className='p-2 sm:p-4'>
+            <table
+              aria-label={`${month.toLocaleDateString(undefined, {
                 month: 'long',
                 year: 'numeric',
-              })}
-            </caption>
-            <thead>
-              <tr>
-                {weekDays.map((day) => (
-                  <th
-                    key={day.full}
-                    scope='col'
-                    aria-label={day.full}
-                    className='border-b px-1 py-2 text-center text-xs font-medium text-muted-foreground sm:px-2 sm:text-sm'
-                  >
-                    <span className='sm:hidden'>{day.short}</span>
-                    <span className='hidden sm:inline'>{day.full}</span>
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {Array.from({ length: cells.length / 7 }, (_, rowIndex) => (
-                <tr key={`${monthKey}-week-${rowIndex}`}>
-                  {cells.slice(rowIndex * 7, rowIndex * 7 + 7).map((cell) => {
-                    const dateLabel = fullDateFormat.format(cell.date)
-                    const daySegments = cell.inMonth
-                      ? (segmentsByDay.get(cell.dayKey) ?? [])
-                      : []
-                    const isToday = cell.dayKey === todayKey
-                    const isSelected = cell.dayKey === selectedDayKey
-                    const expanded = currentDayState.expandedDays.has(
-                      cell.dayKey
-                    )
-                    const visibleSegments = daySegments.slice(0, 3)
-                    const overflowSegments = daySegments.slice(3)
-                    const overflowId = `calendar-overflow-${cell.dayKey}`
-                    const meetingCount =
-                      daySegments.length === 1
-                        ? '1 meeting'
-                        : `${daySegments.length} meetings`
-
-                    return (
-                      <td
-                        key={cell.dayKey}
-                        className={`h-24 min-w-0 border p-1 align-top sm:h-36 sm:p-2 ${
-                          cell.inMonth ? 'bg-card' : 'bg-muted/20'
-                        }`}
-                      >
-                        <button
-                          type='button'
-                          aria-label={
-                            cell.inMonth
-                              ? `${dateLabel}, ${meetingCount}`
-                              : `${dateLabel}, outside selected month; schedule not loaded`
-                          }
-                          aria-current={isToday ? 'date' : undefined}
-                          aria-pressed={isSelected}
-                          onClick={() => selectDay(cell.dayKey)}
-                          className={`flex size-7 items-center justify-center rounded-full text-xs font-medium transition-colors hover:bg-accent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring sm:size-8 sm:text-sm ${
-                            isToday
-                              ? 'bg-primary text-primary-foreground hover:bg-primary/90'
-                              : cell.inMonth
-                                ? 'text-foreground'
-                                : 'text-muted-foreground'
-                          } ${isSelected && !isToday ? 'ring-2 ring-primary/50' : ''}`}
-                        >
-                          {cell.date.getDate()}
-                        </button>
-                        {cell.inMonth ? (
-                          <>
-                            <span className='mt-1 block truncate text-[10px] text-muted-foreground sm:hidden'>
-                              {daySegments.length
-                                ? `${daySegments.length > 99 ? '99+' : daySegments.length} meetings`
-                                : ''}
-                            </span>
-                            <div className='mt-1 hidden space-y-1 sm:block'>
-                              {visibleSegments.map((item) => (
-                                <CalendarMeetingEntry
-                                  key={`${item.meeting.id}:${item.dayKey}`}
-                                  segment={item}
-                                  variant='compact'
-                                  onMeetingSelect={onMeetingSelect}
-                                />
-                              ))}
-                              {overflowSegments.length > 0 && (
-                                <div
-                                  id={overflowId}
-                                  hidden={!expanded}
-                                  className='space-y-1'
-                                >
-                                  {overflowSegments.map((item) => (
-                                    <CalendarMeetingEntry
-                                      key={`${item.meeting.id}:${item.dayKey}`}
-                                      segment={item}
-                                      variant='compact'
-                                      onMeetingSelect={onMeetingSelect}
-                                    />
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                            {overflowSegments.length > 0 && (
-                              <Button
-                                type='button'
-                                variant='ghost'
-                                size='sm'
-                                aria-expanded={
-                                  expanded || selectedDayKey === cell.dayKey
-                                }
-                                aria-controls={`${overflowId} calendar-selected-day`}
-                                aria-label={`Show ${overflowSegments.length} more meetings on ${dateLabel}`}
-                                className='mt-1 h-6 w-full justify-start px-1 text-[10px] text-primary'
-                                onClick={() => {
-                                  selectDay(cell.dayKey)
-                                  toggleExpanded(cell.dayKey)
-                                }}
-                              >
-                                +{overflowSegments.length} more
-                              </Button>
-                            )}
-                          </>
-                        ) : (
-                          <span className='mt-1 hidden text-[10px] leading-tight text-muted-foreground sm:block'>
-                            Outside month · schedule not loaded
-                          </span>
-                        )}
-                      </td>
-                    )
-                  })}
+              })} calendar`}
+              className='w-full table-fixed border-collapse'
+            >
+              <caption className='sr-only'>
+                Monday-first calendar for{' '}
+                {month.toLocaleDateString(undefined, {
+                  month: 'long',
+                  year: 'numeric',
+                })}
+              </caption>
+              <thead>
+                <tr>
+                  {weekDays.map((day) => (
+                    <th
+                      key={day.full}
+                      scope='col'
+                      aria-label={day.full}
+                      className='border-b px-1 py-2 text-center text-xs font-medium text-muted-foreground sm:px-2 sm:text-sm'
+                    >
+                      <span className='sm:hidden'>{day.short}</span>
+                      <span className='hidden sm:inline'>{day.full}</span>
+                    </th>
+                  ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </CardContent>
-      </Card>
+              </thead>
+              <tbody>
+                {Array.from({ length: cells.length / 7 }, (_, rowIndex) => (
+                  <tr key={`${monthKey}-week-${rowIndex}`}>
+                    {cells.slice(rowIndex * 7, rowIndex * 7 + 7).map((cell) => {
+                      const dateLabel = fullDateFormat.format(cell.date)
+                      const daySegments = cell.inMonth
+                        ? (segmentsByDay.get(cell.dayKey) ?? [])
+                        : []
+                      const isToday = cell.dayKey === todayKey
+                      const isSelected = cell.dayKey === selectedDayKey
+                      const expanded = currentDayState.expandedDays.has(
+                        cell.dayKey
+                      )
+                      const visibleSegments = daySegments.slice(0, 3)
+                      const overflowSegments = daySegments.slice(3)
+                      const overflowId = `calendar-overflow-${cell.dayKey}`
+                      const meetingCount =
+                        daySegments.length === 1
+                          ? '1 meeting'
+                          : `${daySegments.length} meetings`
+
+                      return (
+                        <td
+                          key={cell.dayKey}
+                          className={`h-24 min-w-0 border p-1 align-top sm:h-36 sm:p-2 ${
+                            cell.inMonth ? 'bg-card' : 'bg-muted/20'
+                          }`}
+                        >
+                          <button
+                            type='button'
+                            aria-label={
+                              cell.inMonth
+                                ? `${dateLabel}, ${meetingCount}`
+                                : `${dateLabel}, outside selected month; schedule not loaded`
+                            }
+                            aria-current={isToday ? 'date' : undefined}
+                            aria-pressed={isSelected}
+                            onClick={() => selectDay(cell.dayKey)}
+                            className={`flex size-7 items-center justify-center rounded-full text-xs font-medium transition-colors hover:bg-accent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring sm:size-8 sm:text-sm ${
+                              isToday
+                                ? 'bg-primary text-primary-foreground hover:bg-primary/90'
+                                : cell.inMonth
+                                  ? 'text-foreground'
+                                  : 'text-muted-foreground'
+                            } ${isSelected && !isToday ? 'ring-2 ring-primary/50' : ''}`}
+                          >
+                            {cell.date.getDate()}
+                          </button>
+                          {cell.inMonth ? (
+                            <>
+                              <span className='mt-1 block truncate text-[10px] text-muted-foreground sm:hidden'>
+                                {daySegments.length
+                                  ? `${daySegments.length > 99 ? '99+' : daySegments.length} meetings`
+                                  : ''}
+                              </span>
+                              <div className='mt-1 hidden space-y-1 sm:block'>
+                                {visibleSegments.map((item) => (
+                                  <CalendarMeetingEntry
+                                    key={`${item.meeting.id}:${item.dayKey}`}
+                                    segment={item}
+                                    variant='compact'
+                                    onMeetingSelect={onMeetingSelect}
+                                  />
+                                ))}
+                                {overflowSegments.length > 0 && (
+                                  <div
+                                    id={overflowId}
+                                    hidden={!expanded}
+                                    className='space-y-1'
+                                  >
+                                    {overflowSegments.map((item) => (
+                                      <CalendarMeetingEntry
+                                        key={`${item.meeting.id}:${item.dayKey}`}
+                                        segment={item}
+                                        variant='compact'
+                                        onMeetingSelect={onMeetingSelect}
+                                      />
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                              {overflowSegments.length > 0 && (
+                                <Button
+                                  type='button'
+                                  variant='ghost'
+                                  size='sm'
+                                  aria-expanded={expanded}
+                                  aria-controls={`${overflowId} calendar-selected-day`}
+                                  aria-label={`Show ${overflowSegments.length} more meetings on ${dateLabel}`}
+                                  className='mt-1 h-6 w-full justify-start px-1 text-[10px] text-primary'
+                                  onClick={() => {
+                                    selectDay(cell.dayKey)
+                                    toggleExpanded(cell.dayKey)
+                                  }}
+                                >
+                                  +{overflowSegments.length} more
+                                </Button>
+                              )}
+                            </>
+                          ) : (
+                            <span className='mt-1 hidden text-[10px] leading-tight text-muted-foreground sm:block'>
+                              Outside month · schedule not loaded
+                            </span>
+                          )}
+                        </td>
+                      )
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </CardContent>
+        </Card>
+      )}
       {state.kind === 'ready' &&
         state.complete &&
         !state.authorizationStatus &&
@@ -753,7 +836,12 @@ export function CalendarMonthView({
             ? fullDateFormat.format(selectedDay.date)
             : 'Selected day'}
         </h3>
-        {selectedDay && !selectedDay.inMonth ? (
+        {state.kind === 'loading' ? (
+          <div aria-hidden='true' className='space-y-2'>
+            <Skeleton className='h-20 w-full' />
+            <Skeleton className='h-20 w-full' />
+          </div>
+        ) : selectedDay && !selectedDay.inMonth ? (
           <p className='rounded-lg border border-dashed p-4 text-sm text-muted-foreground'>
             This date is outside the selected month; its meetings have not been
             loaded.
@@ -796,41 +884,45 @@ export function CalendarAgendaView({
   return (
     <div className='space-y-4'>
       <CalendarDataNotice state={state} />
-      {projectedGroups.length > 0 && (
-        <div className='space-y-8'>
-          {projectedGroups.map(([dayKey, daySegments]) => (
-            <section key={dayKey} className='space-y-3'>
-              <div className='flex items-center gap-3'>
-                <div className='flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary'>
-                  <CalendarDays aria-hidden='true' className='size-4' />
+      {state.kind === 'loading' ? (
+        <CalendarAgendaSkeleton />
+      ) : (
+        projectedGroups.length > 0 && (
+          <div className='space-y-8'>
+            {projectedGroups.map(([dayKey, daySegments]) => (
+              <section key={dayKey} className='space-y-3'>
+                <div className='flex items-center gap-3'>
+                  <div className='flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary'>
+                    <CalendarDays aria-hidden='true' className='size-4' />
+                  </div>
+                  <h2 className='font-semibold'>
+                    {fullDateFormat.format(parseLocalDayKey(dayKey))}
+                  </h2>
+                  {onDaySelect && (
+                    <Button
+                      variant='ghost'
+                      size='sm'
+                      aria-label={`Select ${fullDateFormat.format(parseLocalDayKey(dayKey))}`}
+                      onClick={() => onDaySelect(dayKey)}
+                    >
+                      Select day
+                    </Button>
+                  )}
                 </div>
-                <h2 className='font-semibold'>
-                  {fullDateFormat.format(parseLocalDayKey(dayKey))}
-                </h2>
-                {onDaySelect && (
-                  <Button
-                    variant='ghost'
-                    size='sm'
-                    aria-label={`Select ${fullDateFormat.format(parseLocalDayKey(dayKey))}`}
-                    onClick={() => onDaySelect(dayKey)}
-                  >
-                    Select day
-                  </Button>
-                )}
-              </div>
-              <ul className='grid gap-3'>
-                {daySegments.map((segment) => (
-                  <CalendarMeetingEntry
-                    key={`${segment.meeting.id}:${segment.dayKey}`}
-                    segment={segment}
-                    variant='agenda'
-                    onMeetingSelect={onMeetingSelect}
-                  />
-                ))}
-              </ul>
-            </section>
-          ))}
-        </div>
+                <ul className='grid gap-3'>
+                  {daySegments.map((segment) => (
+                    <CalendarMeetingEntry
+                      key={`${segment.meeting.id}:${segment.dayKey}`}
+                      segment={segment}
+                      variant='agenda'
+                      onMeetingSelect={onMeetingSelect}
+                    />
+                  ))}
+                </ul>
+              </section>
+            ))}
+          </div>
+        )
       )}
       {projectedGroups.length === 0 &&
         state.kind === 'ready' &&

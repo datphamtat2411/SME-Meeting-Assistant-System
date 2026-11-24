@@ -252,6 +252,7 @@ export function MeetingCreationDialog({
   const [draftRecovery, setDraftRecovery] = useState<DraftRecovery | null>(null)
   const [creationIntent, setCreationIntent] =
     useState<MeetingCreationIntent | null>(null)
+  const invokingElement = useRef<HTMLElement | null>(null)
   const idempotencyKey = useRef<string | null>(null)
   const wasOpen = useRef(false)
   const operationInFlight = useRef(false)
@@ -1099,7 +1100,21 @@ export function MeetingCreationDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className='max-h-[90vh] overflow-y-auto sm:max-w-2xl'>
+      <DialogContent
+        className='max-h-[90vh] overflow-y-auto sm:max-w-2xl'
+        onOpenAutoFocus={() => {
+          const activeElement = document.activeElement
+          invokingElement.current =
+            activeElement instanceof HTMLElement ? activeElement : null
+        }}
+        onCloseAutoFocus={(event) => {
+          const trigger = invokingElement.current
+          invokingElement.current = null
+          if (!trigger?.isConnected) return
+          event.preventDefault()
+          trigger.focus()
+        }}
+      >
         <DialogHeader>
           <DialogTitle>New Meeting</DialogTitle>
           <DialogDescription>

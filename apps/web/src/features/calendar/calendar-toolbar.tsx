@@ -161,7 +161,11 @@ export function CalendarToolbar({
               }
             }}
           >
-            <SelectTrigger aria-label='Relationship' className='w-full'>
+            <SelectTrigger
+              aria-label='Relationship'
+              aria-describedby='calendar-relationship-description'
+              className='w-full'
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -170,6 +174,14 @@ export function CalendarToolbar({
               <SelectItem value='participant'>Participating</SelectItem>
             </SelectContent>
           </Select>
+          <p
+            id='calendar-relationship-description'
+            className='text-xs font-normal text-muted-foreground'
+          >
+            All accessible shows meetings Core API lets you view. Participating
+            shows participant membership only; meetings you organize are in
+            Organized by me.
+          </p>
         </label>
 
         <label className='space-y-1.5 text-sm font-medium'>

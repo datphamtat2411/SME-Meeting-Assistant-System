@@ -79,6 +79,105 @@ function meetingListItem(
   }
 }
 
+const populatedMeetingIds = {
+  roadmap: '44444444-4444-4444-8444-444444444441',
+  standup: '44444444-4444-4444-8444-444444444442',
+  launch: '44444444-4444-4444-8444-444444444443',
+  unassigned: '44444444-4444-4444-8444-444444444444',
+  draft: '44444444-4444-4444-8444-444444444445',
+  retrospective: '44444444-4444-4444-8444-444444444446',
+  release: '44444444-4444-4444-8444-444444444447',
+} as const
+
+function populatedMeeting(
+  id: string,
+  title: string,
+  scheduledStartAt: string,
+  scheduledEndAt: string,
+  status: MeetingListItem['status'],
+  roomId: string | null = selectedRoomId
+): MeetingListItem {
+  const item = meetingListItem(scheduledStartAt, scheduledEndAt, status, title)
+  return {
+    ...item,
+    id,
+    organizerUserId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+    roomId,
+    startedAt: status === 'IN_PROGRESS' ? scheduledStartAt : null,
+    endedAt: status === 'ENDED' ? scheduledEndAt : null,
+    cancelledAt: status === 'CANCELLED' ? scheduledStartAt : null,
+    display: {
+      organizerName: 'Morgan Rivera',
+      roomName: roomId ? 'Boardroom' : null,
+      roomLocation: roomId ? 'Floor 2' : null,
+      participantCount: 2,
+      participantPreview: [
+        { userId: user.userId, displayName: 'Jordan Lee' },
+        {
+          userId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+          displayName: 'Casey Park',
+        },
+      ],
+    },
+  }
+}
+
+function populatedCalendarMeetings() {
+  return [
+    populatedMeeting(
+      populatedMeetingIds.roadmap,
+      'Roadmap review',
+      localInstant(2027, 11, 5, 9),
+      localInstant(2027, 11, 5, 10),
+      'CANCELLED'
+    ),
+    populatedMeeting(
+      populatedMeetingIds.standup,
+      'Team stand-up',
+      localInstant(2027, 11, 5, 10),
+      localInstant(2027, 11, 5, 11),
+      'SCHEDULED'
+    ),
+    populatedMeeting(
+      populatedMeetingIds.launch,
+      'Customer launch',
+      localInstant(2027, 11, 5, 11),
+      localInstant(2027, 11, 5, 12),
+      'IN_PROGRESS'
+    ),
+    populatedMeeting(
+      populatedMeetingIds.unassigned,
+      'Department update',
+      localInstant(2027, 11, 5, 12),
+      localInstant(2027, 11, 5, 13),
+      'SCHEDULED',
+      null
+    ),
+    populatedMeeting(
+      populatedMeetingIds.draft,
+      'Draft preparation',
+      localInstant(2027, 11, 5, 13),
+      localInstant(2027, 11, 5, 14),
+      'DRAFT',
+      null
+    ),
+    populatedMeeting(
+      populatedMeetingIds.retrospective,
+      'Sprint retrospective',
+      localInstant(2027, 11, 5, 14),
+      localInstant(2027, 11, 5, 15),
+      'ENDED'
+    ),
+    populatedMeeting(
+      populatedMeetingIds.release,
+      'Release readiness',
+      localInstant(2027, 11, 8, 22),
+      localInstant(2027, 11, 10, 1),
+      'SCHEDULED'
+    ),
+  ]
+}
+
 function meetingView(
   status: 'DRAFT' | 'SCHEDULED',
   scheduledStartAt: string,
@@ -147,6 +246,17 @@ async function renderCalendar(initialPath: string) {
   return { router, history, queryClient, screen }
 }
 
+async function tabUntil(
+  predicate: () => boolean,
+  description: string,
+  maximumTabs = 180
+) {
+  for (let index = 0; index < maximumTabs && !predicate(); index += 1) {
+    await userEvent.tab()
+  }
+  expect(predicate(), description).toBe(true)
+}
+
 beforeEach(async () => {
   vi.restoreAllMocks()
   resetCsrfToken()
@@ -206,6 +316,17 @@ describe('integrated Calendar route', () => {
     const { router, history, screen } = await renderCalendar(
       `/calendar?month=2027-11&view=agenda&relationship=participant&status=CANCELLED&roomId=${selectedRoomId}&q=roadmap`
     )
+
+    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
+    const timeZoneDisclosure = screen.getByRole('note', {
+      name: 'Calendar time zone',
+    })
+    await expect
+      .element(timeZoneDisclosure)
+      .toHaveTextContent(`Times shown in ${timeZone}`)
+    await expect
+      .element(timeZoneDisclosure)
+      .toHaveTextContent(/UTC[+-]\d{2}:\d{2} today/)
 
     await expect
       .element(
@@ -375,7 +496,11 @@ describe('integrated Calendar route', () => {
       '/calendar?month=2027-11&relationship=organizer'
     )
     await expect
-      .element(screen.getByText('No meetings match these filters this month.'))
+      .element(
+        screen.getByText(
+          'No accessible meetings match these filters this month.'
+        )
+      )
       .toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'New Meeting' }))
     await expect
@@ -411,6 +536,45 @@ describe('integrated Calendar route', () => {
     expect(scheduled).toBe(true)
   })
 
+  it.each([
+    ['month', 'calendar-month-skeleton'],
+    ['agenda', 'calendar-agenda-skeleton'],
+  ] as const)(
+    'shows the %s loading skeleton until the first Calendar page resolves',
+    async (view, skeletonTestId) => {
+      let resolveMeetings!: (
+        response: ReturnType<typeof meetingListResponse>
+      ) => void
+      const pendingMeetings = new Promise<
+        ReturnType<typeof meetingListResponse>
+      >((resolve) => {
+        resolveMeetings = resolve
+      })
+      vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
+        if (url === '/auth/me') return user
+        throw new Error(`Unexpected Core API read ${url}`)
+      })
+      vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url) => {
+        if (url === '/meetings') return pendingMeetings
+        throw new Error(`Unexpected Core API metadata read ${url}`)
+      })
+
+      const { screen } = await renderCalendar(
+        `/calendar?month=2027-11&view=${view}`
+      )
+
+      await expect
+        .element(screen.getByRole('status'))
+        .toHaveTextContent('Loading Calendar meetings')
+      await expect.element(screen.getByTestId(skeletonTestId)).toBeVisible()
+
+      resolveMeetings(meetingListResponse([]))
+      await expect
+        .element(screen.getByText('No accessible meetings overlap this month.'))
+        .toBeVisible()
+    }
+  )
+
   it('shows the session-specific Calendar state after a 401 response', async () => {
     vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
       if (url === '/auth/me') return user
@@ -436,7 +600,7 @@ describe('integrated Calendar route', () => {
       .element(screen.getByRole('heading', { name: 'Calendar' }))
       .toBeInTheDocument()
     await expect
-      .element(screen.getByText('No meetings scheduled this month'))
+      .element(screen.getByText('No accessible meetings overlap this month.'))
       .not.toBeInTheDocument()
   })
 
@@ -445,34 +609,294 @@ describe('integrated Calendar route', () => {
     [768, 1024],
     [390, 844],
   ])(
-    'keeps Month and Agenda usable without horizontal overflow at %sx%s',
+    'renders populated Month and Agenda views without overflow at %sx%s',
     async (width, height) => {
       await page.viewport(width, height)
+      const meetings = populatedCalendarMeetings()
+      const listCalls: Array<Record<string, string>> = []
       vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
         if (url === '/auth/me') return user
         throw new Error(`Unexpected Core API read ${url}`)
       })
-      vi.spyOn(coreApi, 'getWithMeta').mockResolvedValue(
-        meetingListResponse([])
+      vi.spyOn(coreApi, 'getWithMeta').mockImplementation(
+        async (url, config) => {
+          if (url !== '/meetings') {
+            throw new Error(`Unexpected Core API metadata read ${url}`)
+          }
+          listCalls.push(config?.params as Record<string, string>)
+          return meetingListResponse(meetings)
+        }
       )
 
-      const { screen } = await renderCalendar('/calendar?month=2027-11')
+      const { router, screen } = await renderCalendar(
+        '/calendar?month=2027-11&relationship=participant'
+      )
       const assertNoHorizontalOverflow = () => {
         expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(
           window.innerWidth
         )
+        const grid = document.querySelector(
+          'table[aria-label="November 2027 calendar"]'
+        )
+        if (grid) {
+          expect(grid.getBoundingClientRect().width).toBeLessThanOrEqual(
+            window.innerWidth
+          )
+        }
       }
 
       await expect.element(screen.getByRole('table')).toBeInTheDocument()
+      expect(screen.getByRole('columnheader').all()).toHaveLength(7)
+      assertNoHorizontalOverflow()
+      expect(listCalls[0]).toMatchObject({
+        relationship: 'PARTICIPANT',
+        size: '100',
+      })
+
+      if (width === 390) {
+        await expect
+          .element(screen.getByText('Fri', { exact: true }))
+          .toBeVisible()
+        await expect
+          .element(screen.getByText('Friday', { exact: true }))
+          .not.toBeVisible()
+      }
+
+      const denseDayLabel = 'Friday, November 5, 2027, 6 meetings'
+      const denseDay = screen.getByRole('button', { name: denseDayLabel })
+      await userEvent.click(denseDay)
+      await expect.element(denseDay).toHaveAttribute('aria-pressed', 'true')
+
+      if (width === 390) {
+        const selectedDay = screen.getByRole('region', {
+          name: 'Selected day meetings',
+        })
+        await expect.element(selectedDay).toBeVisible()
+        await expect
+          .element(
+            screen.getByRole('heading', {
+              name: 'Friday, November 5, 2027',
+            })
+          )
+          .toBeVisible()
+        for (const title of [
+          'Roadmap review',
+          'Team stand-up',
+          'Customer launch',
+          'Department update',
+          'Draft preparation',
+          'Sprint retrospective',
+        ]) {
+          await expect
+            .element(screen.getByRole('link', { name: new RegExp(title) }))
+            .toBeVisible()
+        }
+      } else {
+        const overflow = screen.getByRole('button', {
+          name: 'Show 3 more meetings on Friday, November 5, 2027',
+        })
+        await expect.element(overflow).toHaveAttribute('aria-expanded', 'false')
+        await userEvent.click(overflow)
+        await expect.element(overflow).toHaveAttribute('aria-expanded', 'true')
+        await expect
+          .element(
+            screen.getByRole('link', { name: /Open Sprint retrospective/ })
+          )
+          .toBeVisible()
+        await expect
+          .element(screen.getByRole('link', { name: /Open Draft preparation/ }))
+          .toBeVisible()
+      }
       assertNoHorizontalOverflow()
 
       await userEvent.click(screen.getByRole('tab', { name: 'Agenda' }))
       await expect
-        .element(screen.getByText('No meetings scheduled this month'))
-        .toBeInTheDocument()
+        .element(screen.getByRole('tab', { name: 'Agenda' }))
+        .toHaveAttribute('aria-selected', 'true')
+      for (const status of [
+        'Cancelled',
+        'Upcoming',
+        'Live',
+        'Draft',
+        'Completed',
+      ]) {
+        await expect
+          .element(screen.getByText(status, { exact: true }).first())
+          .toBeVisible()
+      }
+      await expect
+        .element(screen.getByText('Room not assigned', { exact: true }).first())
+        .toBeVisible()
+      await expect
+        .element(screen.getByText('Morgan Rivera').first())
+        .toBeVisible()
+      await expect
+        .element(
+          screen.getByText(/2 participants · Jordan Lee, Casey Park/).first()
+        )
+        .toBeVisible()
+      await expect
+        .element(screen.getByText('Continues into next day').first())
+        .toBeVisible()
+      await expect
+        .element(screen.getByText('Continues from previous day').first())
+        .toBeVisible()
+      await expect
+        .element(screen.getByText(/Full meeting schedule:/).first())
+        .toBeVisible()
+      expect(
+        screen
+          .getByRole('link', { name: 'Open Release readiness workspace' })
+          .all()
+      ).toHaveLength(3)
+      await expect
+        .element(
+          screen.getByRole('link', { name: 'Open Roadmap review workspace' })
+        )
+        .toHaveAttribute('href', `/meetings/${populatedMeetingIds.roadmap}`)
+      assertNoHorizontalOverflow()
+
+      await userEvent.click(screen.getByRole('tab', { name: 'Month' }))
+      await expect
+        .poll(() => router.state.location.search)
+        .toEqual({ month: '2027-11', relationship: 'participant' })
+      await userEvent.click(screen.getByRole('tab', { name: 'Agenda' }))
+      await expect
+        .poll(() => router.state.location.search)
+        .toEqual({
+          month: '2027-11',
+          relationship: 'participant',
+          view: 'agenda',
+        })
       assertNoHorizontalOverflow()
     }
   )
+
+  it('selects a populated day, expands overflow, and opens its meeting by keyboard', async () => {
+    const meetings = populatedCalendarMeetings()
+    vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
+      if (url === '/auth/me') return user
+      throw new Error(`Unexpected Core API read ${url}`)
+    })
+    vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url) => {
+      if (url === '/meetings') return meetingListResponse(meetings)
+      if (
+        url === `/meetings/${populatedMeetingIds.retrospective}/participants`
+      ) {
+        return { data: [], meta: {} }
+      }
+      if (url === `/rooms/${selectedRoomId}`) {
+        return {
+          data: { id: selectedRoomId, name: 'Boardroom', location: 'Floor 2' },
+          meta: {},
+        }
+      }
+      throw new Error(`Unexpected Core API metadata read ${url}`)
+    })
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+      data: {
+        ...meetingView(
+          'SCHEDULED',
+          localInstant(2027, 11, 5, 14),
+          localInstant(2027, 11, 5, 15)
+        ),
+        id: populatedMeetingIds.retrospective,
+        title: 'Sprint retrospective',
+        status: 'ENDED',
+        roomId: selectedRoomId,
+      },
+      meta: {},
+      etag: 'keyboard-workspace-etag',
+    })
+
+    const { router, screen } = await renderCalendar('/calendar?month=2027-11')
+    await expect.element(screen.getByRole('table')).toBeInTheDocument()
+
+    const dayLabel = 'Friday, November 5, 2027, 6 meetings'
+    await tabUntil(
+      () => document.activeElement?.getAttribute('aria-label') === dayLabel,
+      'Calendar day should be reachable using Tab'
+    )
+    await userEvent.keyboard('{Enter}')
+    const dayButton = screen.getByRole('button', { name: dayLabel })
+    await expect.element(dayButton).toHaveAttribute('aria-pressed', 'true')
+
+    const overflow = screen.getByRole('button', {
+      name: 'Show 3 more meetings on Friday, November 5, 2027',
+    })
+    await tabUntil(
+      () =>
+        document.activeElement?.getAttribute('aria-label') ===
+        'Show 3 more meetings on Friday, November 5, 2027',
+      'Dense-day overflow should be reachable using Tab'
+    )
+    await expect.element(overflow).toHaveAttribute('aria-expanded', 'false')
+    expect(
+      document.getElementById('calendar-overflow-2027-11-05')?.hidden
+    ).toBe(true)
+
+    await userEvent.keyboard('{Enter}')
+    await expect.element(overflow).toHaveAttribute('aria-expanded', 'true')
+    expect(
+      document.getElementById('calendar-overflow-2027-11-05')?.hidden
+    ).toBe(false)
+    await userEvent.keyboard('{Shift>}{Tab}{/Shift}')
+    expect(document.activeElement?.getAttribute('href')).toBe(
+      `/meetings/${populatedMeetingIds.retrospective}`
+    )
+    await userEvent.keyboard('{Enter}')
+    await expect
+      .poll(() => router.state.location.pathname)
+      .toBe(`/meetings/${populatedMeetingIds.retrospective}`)
+  })
+
+  it('opens New Meeting and navigates and closes its shared dialog by keyboard', async () => {
+    vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
+      if (url === '/auth/me') return user
+      throw new Error(`Unexpected Core API read ${url}`)
+    })
+    vi.spyOn(coreApi, 'getWithMeta').mockResolvedValue(meetingListResponse([]))
+
+    const { screen } = await renderCalendar('/calendar?month=2027-11')
+    const newMeeting = screen.getByRole('button', { name: 'New Meeting' })
+    await tabUntil(
+      () =>
+        document.activeElement?.tagName === 'BUTTON' &&
+        document.activeElement.textContent?.trim() === 'New Meeting',
+      'New Meeting should be reachable using Tab'
+    )
+    await expect.element(newMeeting).toHaveFocus()
+    await userEvent.keyboard('{Enter}')
+
+    await expect
+      .element(screen.getByRole('dialog', { name: 'New Meeting' }))
+      .toBeVisible()
+    await expect
+      .element(screen.getByRole('textbox', { name: 'Title' }))
+      .toHaveFocus()
+
+    await userEvent.tab()
+    expect(document.activeElement?.getAttribute('name')).toBe('description')
+    await userEvent.tab()
+    expect(document.activeElement?.getAttribute('type')).toBe('date')
+    expect(document.activeElement?.getAttribute('name')).toBe('date')
+    await tabUntil(
+      () => document.activeElement?.getAttribute('name') === 'endDate',
+      'End date should be reachable using Tab from the date control',
+      8
+    )
+    await tabUntil(
+      () => document.activeElement?.getAttribute('name') === 'startTime',
+      'Start time should be reachable using Tab from the end date',
+      8
+    )
+
+    await userEvent.keyboard('{Escape}')
+    await expect
+      .element(screen.getByRole('dialog', { name: 'New Meeting' }))
+      .not.toBeInTheDocument()
+    await expect.element(newMeeting).toHaveFocus()
+  })
 
   it('supports Calendar month and view navigation using the keyboard alone', async () => {
     await page.viewport(1440, 900)
@@ -555,7 +979,7 @@ describe('integrated Calendar route', () => {
     await expect
       .element(
         firstMount.screen.getByText(
-          'No meetings match these filters this month.'
+          'No accessible meetings match these filters this month.'
         )
       )
       .toBeInTheDocument()
@@ -568,7 +992,7 @@ describe('integrated Calendar route', () => {
     await expect
       .element(
         refreshedMount.screen.getByText(
-          'No meetings match these filters this month.'
+          'No accessible meetings match these filters this month.'
         )
       )
       .toBeInTheDocument()

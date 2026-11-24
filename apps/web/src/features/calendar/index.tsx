@@ -22,6 +22,15 @@ const selectedDateFormat = new Intl.DateTimeFormat(undefined, {
   year: 'numeric',
 })
 
+function localUtcOffset(date: Date) {
+  const offsetMinutes = -date.getTimezoneOffset()
+  const sign = offsetMinutes < 0 ? '-' : '+'
+  const absoluteMinutes = Math.abs(offsetMinutes)
+  const hours = String(Math.floor(absoluteMinutes / 60)).padStart(2, '0')
+  const minutes = String(absoluteMinutes % 60).padStart(2, '0')
+  return `UTC${sign}${hours}:${minutes}`
+}
+
 function parseLocalCalendarDay(dayKey: string) {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dayKey)
   if (!match) return undefined
@@ -107,6 +116,9 @@ function CalendarPageContent({
     ? parseLocalCalendarDay(selectedDayKey)
     : undefined
   const presentation = calendarDataPresentationFromController(calendar)
+  const timeZone =
+    Intl.DateTimeFormat().resolvedOptions().timeZone || 'browser local time'
+  const currentOffset = localUtcOffset(new Date())
 
   function selectDay(dayKey: string) {
     const date = parseLocalCalendarDay(dayKey)
@@ -152,6 +164,14 @@ function CalendarPageContent({
             <p className='mt-2 max-w-2xl text-muted-foreground'>
               Review when meetings happen and open any meeting workspace from
               the schedule.
+            </p>
+            <p
+              role='note'
+              aria-label='Calendar time zone'
+              className='mt-2 text-xs text-muted-foreground'
+            >
+              Times shown in {timeZone} ({currentOffset} today; daylight-saving
+              offsets follow each meeting date).
             </p>
           </div>
           <div className='flex flex-wrap gap-2'>

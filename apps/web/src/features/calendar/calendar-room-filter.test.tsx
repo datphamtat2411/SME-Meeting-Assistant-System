@@ -43,6 +43,50 @@ afterEach(() => {
 })
 
 describe('Calendar room filter discovery', () => {
+  it('opens, searches, and selects an authorized room using keyboard only', async () => {
+    const calls: Array<Record<string, string>> = []
+    vi.spyOn(coreApi, 'getWithMeta').mockImplementation(
+      async (_url, config) => {
+        const params = config?.params as Record<string, string>
+        calls.push(params)
+        const room = params.q === 'zeta' ? distantRoom : firstRoom
+        return {
+          data: [room],
+          meta: {
+            pagination: {
+              page: 0,
+              size: 20,
+              totalElements: 1,
+              totalPages: 1,
+              hasNext: false,
+              hasPrevious: false,
+            },
+          },
+        }
+      }
+    )
+    const onRoomChange = vi.fn()
+    const { screen } = await renderFilter({ onRoomChange })
+    const trigger = screen.getByRole('combobox', { name: 'Room' })
+
+    await userEvent.tab()
+    await expect.element(trigger).toHaveFocus()
+    await userEvent.keyboard('{Enter}')
+    await expect.element(trigger).toHaveAttribute('aria-expanded', 'true')
+    expect(document.activeElement?.getAttribute('placeholder')).toBe(
+      'Search authorized rooms...'
+    )
+
+    await userEvent.keyboard('zeta')
+    await expect
+      .element(screen.getByRole('option', { name: /Zeta room/ }))
+      .toBeInTheDocument()
+    await userEvent.keyboard('{ArrowDown}{Enter}')
+
+    expect(onRoomChange).toHaveBeenCalledWith(distantRoomId)
+    expect(calls.some((params) => params.q === 'zeta')).toBe(true)
+  })
+
   it('searches and pages authorized results without committing until selection', async () => {
     const calls: Array<Record<string, string>> = []
     vi.spyOn(coreApi, 'getWithMeta').mockImplementation(
