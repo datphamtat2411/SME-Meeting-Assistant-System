@@ -1,155 +1,102 @@
-import 'package:flutter/material.dart';
+import 'dart:async';
+
 import 'package:intl/intl.dart';
+import 'package:flutter/material.dart';
+import 'package:sme_meeting_assistant/core/api_response.dart';
+import 'package:sme_meeting_assistant/core/app_dependencies.dart';
+import 'package:sme_meeting_assistant/core/app_theme.dart';
+import 'package:sme_meeting_assistant/core/models.dart';
+import 'package:sme_meeting_assistant/core/widgets.dart';
+import 'package:sme_meeting_assistant/features/meetings/meeting_detail_page.dart';
+import 'package:sme_meeting_assistant/features/meetings/meeting_discovery.dart';
+import 'package:sme_meeting_assistant/features/meetings/meeting_discovery_widgets.dart';
+import 'package:sme_meeting_assistant/features/meetings/meeting_foundation.dart';
 
-import '../../core/api_client.dart';
-import '../../core/app_theme.dart';
-import '../../core/models.dart';
-import '../../core/paged_collection.dart';
-import '../../core/widgets.dart';
-import '../meetings/meeting_detail_page.dart';
-
-/// A calendar projection over canonical meetings, never a local schedule store.
 class CalendarPage extends StatefulWidget {
-  final ApiClient api;
-  const CalendarPage({super.key, required this.api});
+  const CalendarPage({super.key, required this.dependencies});
+
+  final AppDependencies dependencies;
 
   @override
   State<CalendarPage> createState() => _CalendarPageState();
 }
 
-class _CalendarFeed {
-  const _CalendarFeed(this.items, this.hasMore);
-  final List<Meeting> items;
-  final bool hasMore;
-}
-
 class _CalendarPageState extends State<CalendarPage> {
-  late DateTime month;
-  DateTime? selectedDate;
-  bool myMeetings = true;
-  late Future<_CalendarFeed> future;
+  late final MeetingCalendarController _controller;
+  DateTime? _selectedDate;
 
   @override
   void initState() {
     super.initState();
-    final now = DateTime.now();
-    month = DateTime(now.year, now.month);
-    reload();
-  }
-
-  Future<_CalendarFeed> _fetchForRelationship(String? relationship) async {
-    final start = DateTime(month.year, month.month).toUtc().toIso8601String();
-    final end = DateTime(month.year, month.month + 1).toUtc().toIso8601String();
-    final window = PageWindow<Meeting>();
-
-    // Load every page within a bounded query budget; never silently claim
-    // a truncated calendar is complete.
-    for (var page = 0; page < 30; page++) {
-      final request = window.beginRequest();
-      final response = await widget.api.get(
-        '/meetings',
-        query: {
-          'page': '${request.page}',
-          'size': '100',
-          'sort': 'scheduledStartAt,asc',
-          'from': start,
-          'to': end,
-          if (relationship != null) 'relationship': relationship,
-        },
-      );
-      final result = PagedCollection<Meeting>.fromResult(
-        response,
-        (raw) => Meeting.fromListJson(raw, response: response),
-        requestedPage: request.page,
-        requestedSize: 100,
-      );
-      window.accept(result, request: request);
-      if (!window.hasMore) break;
-    }
-    return _CalendarFeed(window.items, window.hasMore);
-  }
-
-  Future<_CalendarFeed> _load() async {
-    if (!myMeetings) return _fetchForRelationship(null);
-    final results = await Future.wait([
-      _fetchForRelationship('ORGANIZER'),
-      _fetchForRelationship('PARTICIPANT'),
-    ]);
-    final unique = <String, Meeting>{};
-    for (final result in results) {
-      for (final meeting in result.items) {
-        unique[meeting.id] = meeting;
-      }
-    }
-    return _CalendarFeed(
-      unique.values.toList(),
-      results.any((result) => result.hasMore),
+    _controller = MeetingCalendarController(
+      repository: widget.dependencies.meetings,
+      invalidation: widget.dependencies.meetingInvalidation,
     );
+    unawaited(_controller.initialize());
   }
-
-  void reload() => setState(() => future = _load());
-
-  void changeMonth(DateTime date) {
-    if (date.year == month.year && date.month == month.month) return;
-    setState(() {
-      month = DateTime(date.year, date.month);
-      selectedDate = null;
-      future = _load();
-    });
-  }
-
-  bool _sameDay(DateTime first, DateTime second) =>
-      first.year == second.year &&
-      first.month == second.month &&
-      first.day == second.day;
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(
-      title: const Text('Lịch họp'),
-      actions: [
-        IconButton(
-          tooltip: 'Làm mới lịch họp',
-          onPressed: reload,
-          icon: const Icon(Icons.refresh),
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _changeMonth(DateTime date) async {
+    final changed =
+        date.year != _controller.state.month.year ||
+        date.month != _controller.state.month.month;
+    if (changed) setState(() => _selectedDate = null);
+    await _controller.setMonth(date);
+  }
+
+  Future<void> _openDetail(String meetingId) async {
+    await Navigator.push<void>(
+      context,
+      MaterialPageRoute<void>(
+        builder: (_) => MeetingDetailPage(
+          dependencies: widget.dependencies,
+          meetingId: meetingId,
         ),
-      ],
-    ),
-    body: AsyncContent<_CalendarFeed>(
-      future: future,
-      retry: reload,
-      builder: (feed) {
-        final dated = feed.items
-            .where(
-              (meeting) =>
-                  dateValue(meeting.scheduledStartAt) != null &&
-                  meeting.status != 'CANCELLED',
-            )
-            .toList();
-        dated.sort((a, b) {
-          final first = a.scheduledStartAt;
-          final second = b.scheduledStartAt;
-          if (first == null) return second == null ? 0 : 1;
-          if (second == null) return -1;
-          return first.compareTo(second);
-        });
-        final visible = selectedDate == null
-            ? dated
-            : dated.where((meeting) {
-                final date = dateValue(meeting.scheduledStartAt);
-                return date != null && _sameDay(date, selectedDate!);
-              }).toList();
-        return RefreshIndicator(
-          onRefresh: () async {
-            reload();
-            await future;
-          },
+      ),
+    );
+    if (mounted) await _controller.refresh();
+  }
+
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: _controller,
+    builder: (context, _) {
+      final state = _controller.state;
+      final monthEntries = state.visibleEntries;
+      final visible = _selectedDate == null
+          ? monthEntries
+          : monthEntries
+                .where(
+                  (entry) =>
+                      meetingIntersectsLocalDay(entry.meeting, _selectedDate!),
+                )
+                .toList(growable: false);
+      final range = _controller.range;
+      return Scaffold(
+        appBar: AppBar(
+          title: const Text('Lịch họp'),
+          actions: [
+            IconButton(
+              tooltip: 'Làm mới lịch họp',
+              onPressed: _controller.refresh,
+              icon: const Icon(Icons.refresh),
+            ),
+          ],
+        ),
+        body: RefreshIndicator(
+          onRefresh: _controller.refresh,
           child: ListView(
             padding: const EdgeInsets.fromLTRB(18, 18, 18, 28),
             children: [
               const SectionHeading(
                 'Lịch trình',
-                subtitle: 'Cuộc họp hiển thị từ Core API theo tháng và quyền truy cập',
+                subtitle:
+                    'Các cuộc họp dùng bộ lọc khoảng thời gian của Core API.',
               ),
               ContentCard(
                 child: Column(
@@ -158,17 +105,14 @@ class _CalendarPageState extends State<CalendarPage> {
                       children: [
                         IconButton(
                           tooltip: 'Tháng trước',
-                          onPressed: () => changeMonth(
-                            DateTime(month.year, month.month - 1),
+                          onPressed: () => _changeMonth(
+                            DateTime(state.month.year, state.month.month - 1),
                           ),
                           icon: const Icon(Icons.chevron_left),
                         ),
                         Expanded(
                           child: Text(
-                            'Tháng ' +
-                                month.month.toString() +
-                                '/' +
-                                month.year.toString(),
+                            'Tháng ${state.month.month}/${state.month.year}',
                             textAlign: TextAlign.center,
                             style: Theme.of(context).textTheme.titleMedium
                                 ?.copyWith(fontWeight: FontWeight.w700),
@@ -176,177 +120,189 @@ class _CalendarPageState extends State<CalendarPage> {
                         ),
                         IconButton(
                           tooltip: 'Tháng sau',
-                          onPressed: () => changeMonth(
-                            DateTime(month.year, month.month + 1),
+                          onPressed: () => _changeMonth(
+                            DateTime(state.month.year, state.month.month + 1),
                           ),
                           icon: const Icon(Icons.chevron_right),
                         ),
                       ],
                     ),
-                    const SizedBox(height: 12),
-                    SegmentedButton<bool>(
-                      showSelectedIcon: false,
-                      segments: const [
-                        ButtonSegment(value: true, label: Text('Của tôi')),
-                        ButtonSegment(
-                          value: false,
-                          label: Text('Có quyền xem'),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: DropdownButtonFormField<MeetingRelationship?>(
+                            key: ValueKey(
+                              'calendar-relationship-${state.relationship?.wireValue ?? 'all'}',
+                            ),
+                            initialValue: state.relationship,
+                            isExpanded: true,
+                            decoration: const InputDecoration(
+                              isDense: true,
+                              labelText: 'Mối quan hệ',
+                            ),
+                            items: const [
+                              DropdownMenuItem<MeetingRelationship?>(
+                                value: null,
+                                child: Text('Tất cả'),
+                              ),
+                              DropdownMenuItem<MeetingRelationship?>(
+                                value: MeetingRelationship.organizer,
+                                child: Text('Tổ chức'),
+                              ),
+                              DropdownMenuItem<MeetingRelationship?>(
+                                value: MeetingRelationship.participant,
+                                child: Text('Tham gia'),
+                              ),
+                            ],
+                            onChanged: (value) => _controller.setFilters(
+                              relationship: value,
+                              status: state.status,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: DropdownButtonFormField<MeetingStatus?>(
+                            key: ValueKey(
+                              'calendar-status-${state.status?.wireValue ?? 'all'}',
+                            ),
+                            initialValue: state.status,
+                            isExpanded: true,
+                            decoration: const InputDecoration(
+                              isDense: true,
+                              labelText: 'Trạng thái',
+                            ),
+                            items: [
+                              const DropdownMenuItem<MeetingStatus?>(
+                                value: null,
+                                child: Text('Trạng thái bất kỳ'),
+                              ),
+                              ...MeetingStatus.values.map(
+                                (status) => DropdownMenuItem<MeetingStatus?>(
+                                  value: status,
+                                  child: Text(meetingStates[status.wireValue]!),
+                                ),
+                              ),
+                            ],
+                            onChanged: (value) => _controller.setFilters(
+                              relationship: state.relationship,
+                              status: value,
+                            ),
+                          ),
                         ),
                       ],
-                      selected: {myMeetings},
-                      onSelectionChanged: (choice) {
-                        setState(() {
-                          myMeetings = choice.first;
-                          selectedDate = null;
-                          future = _load();
-                        });
-                      },
                     ),
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 8),
                     CalendarDatePicker(
-                      key: ValueKey('calendar-' + month.toString()),
+                      key: ValueKey(
+                        'calendar-${state.month.year}-${state.month.month}',
+                      ),
                       initialDate:
-                          selectedDate ?? DateTime(month.year, month.month),
+                          _selectedDate ??
+                          DateTime(state.month.year, state.month.month),
                       firstDate: DateTime(2020),
                       lastDate: DateTime(2100),
-                      onDisplayedMonthChanged: changeMonth,
+                      onDisplayedMonthChanged: _changeMonth,
                       onDateChanged: (day) => setState(() {
-                        selectedDate =
-                            selectedDate != null && _sameDay(day, selectedDate!)
+                        _selectedDate = _sameDay(day, _selectedDate)
                             ? null
                             : day;
                       }),
                     ),
-                    if (selectedDate != null)
+                    if (_selectedDate != null)
                       TextButton.icon(
-                        onPressed: () => setState(() => selectedDate = null),
+                        onPressed: () => setState(() => _selectedDate = null),
                         icon: const Icon(Icons.clear),
                         label: const Text('Xem cả tháng'),
                       ),
                   ],
                 ),
               ),
-              if (feed.hasMore)
+              if (state.isLoading || state.isRefreshing)
+                const LinearProgressIndicator(),
+              if (state.failure != null)
+                MessagePanel(
+                  icon: Icons.cloud_off_outlined,
+                  title: 'Không thể tải toàn bộ dữ liệu lịch',
+                  description: state.failure is ApiFailure
+                      ? (state.failure! as ApiFailure).message
+                      : 'Đã xảy ra lỗi khi tải lịch.',
+                  onRetry: _controller.retry,
+                ),
+              if (state.collectionChanged)
+                MessagePanel(
+                  icon: Icons.sync_problem_outlined,
+                  title: 'Lịch đã thay đổi trong lúc tải',
+                  description: 'Đã dừng phân trang để tránh trộn các phiên bản khác nhau.',
+                  onRetry: _controller.refresh,
+                ),
+              if (state.incomplete && state.failure == null)
                 ContentCard(
-                  child: const Row(
+                  child: Row(
                     children: [
-                      Icon(Icons.warning_amber_outlined, color: Palette.amber),
-                      SizedBox(width: 10),
+                      const Icon(
+                        Icons.warning_amber_outlined,
+                        color: Palette.amber,
+                      ),
+                      const SizedBox(width: 10),
                       Expanded(
                         child: Text(
-                          'Lịch có nhiều dữ liệu hơn giới hạn tải. Hãy dùng bộ lọc tại danh sách cuộc họp.',
-                          style: TextStyle(fontSize: 12),
+                          state.hasMore
+                              ? 'Đã tải ${state.loadedPageCount} trang. Tiếp tục để hoàn tất lịch trong giới hạn phân trang.'
+                              : 'Dữ liệu lịch chưa hoàn chỉnh.',
                         ),
                       ),
                     ],
                   ),
                 ),
               SectionHeading(
-                selectedDate == null
+                _selectedDate == null
                     ? 'Cuộc họp trong tháng'
-                    : 'Cuộc họp ngày ' +
-                          DateFormat('dd/MM/yyyy').format(selectedDate!),
-                subtitle: visible.length.toString() + ' cuộc họp',
+                    : 'Cuộc họp ngày ${DateFormat('dd/MM/yyyy').format(_selectedDate!)}',
+                subtitle:
+                    '${visible.length} cuộc họp · ${range.startLocal.toString().substring(0, 10)}',
               ),
-              if (visible.isEmpty)
+              if (state.isConfirmedEmpty && state.failure == null)
                 const MessagePanel(
                   icon: Icons.event_busy_outlined,
                   title: 'Chưa có cuộc họp',
-                  description: 'Thử chọn ngày hoặc tháng khác.',
+                  description: 'Thử chọn ngày, tháng hoặc bộ lọc khác.',
+                ),
+              if (_selectedDate != null &&
+                  visible.isEmpty &&
+                  !state.isConfirmedEmpty &&
+                  !state.isLoading &&
+                  state.failure == null)
+                const MessagePanel(
+                  icon: Icons.event_busy_outlined,
+                  title: 'Không có cuộc họp trong ngày đã chọn',
+                  description: 'Các cuộc họp qua nửa đêm cũng được hiển thị theo phần thời gian giao nhau.',
                 ),
               ...visible.map(
-                (meeting) => ContentCard(
-                  child: InkWell(
-                    onTap: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => MeetingDetailPage(
-                          api: widget.api,
-                          meetingId: meeting.id,
-                        ),
-                      ),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        if (meeting.participantCount != null)
-                          Row(
-                            children: [
-                              Expanded(
-                                child: Text(
-                                  meeting.title,
-                                  style: Theme.of(context).textTheme.titleMedium
-                                      ?.copyWith(fontWeight: FontWeight.w700),
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              StatePill(meeting.status),
-                            ],
-                          ),
-                        const SizedBox(height: 10),
-                        Row(
-                          children: [
-                            const Icon(
-                              Icons.schedule_outlined,
-                              size: 17,
-                              color: Palette.muted,
-                            ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                dateLabel(meeting.scheduledStartAt) +
-                                    ' – ' +
-                                    (dateValue(meeting.scheduledEndAt) == null
-                                        ? 'Chưa xác định'
-                                        : DateFormat('HH:mm').format(
-                                            dateValue(meeting.scheduledEndAt)!,
-                                          )),
-                                style: const TextStyle(color: Palette.muted),
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 6),
-                        Row(
-                          children: [
-                            const Icon(
-                              Icons.meeting_room_outlined,
-                              size: 17,
-                              color: Palette.muted,
-                            ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                meeting.roomName ?? 'Chưa gán phòng',
-                                style: const TextStyle(color: Palette.muted),
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 6),
-                        Row(
-                          children: [
-                            const Icon(
-                              Icons.people_outline,
-                              size: 17,
-                              color: Palette.muted,
-                            ),
-                            const SizedBox(width: 8),
-                            Text(
-                              '${meeting.participantCount} người tham gia',
-                              style: const TextStyle(color: Palette.muted),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
+                (entry) => MeetingProjectionCard(
+                  projection: entry,
+                  onTap: () => _openDetail(entry.meeting.id),
                 ),
               ),
+              if (state.hasMore && !state.collectionChanged)
+                OutlinedButton.icon(
+                  onPressed: state.isLoading || state.isRefreshing
+                      ? null
+                      : _controller.continueLoading,
+                  icon: const Icon(Icons.download_outlined),
+                  label: const Text('Tải thêm trang lịch'),
+                ),
             ],
           ),
-        );
-      },
-    ),
+        ),
+      );
+    },
   );
+
+  bool _sameDay(DateTime first, DateTime? second) =>
+      second != null &&
+      first.year == second.year &&
+      first.month == second.month &&
+      first.day == second.day;
 }

@@ -1,323 +1,353 @@
-import 'package:flutter/material.dart';
+import 'dart:async';
 
-import '../../core/api_client.dart';
-import '../../core/app_theme.dart';
-import '../../core/models.dart';
-import '../../core/paged_collection.dart';
-import '../../core/widgets.dart';
-import 'meeting_detail_page.dart';
-import 'meeting_form.dart';
-import '../calendar/calendar_page.dart';
+import 'package:flutter/material.dart';
+import 'package:sme_meeting_assistant/core/api_response.dart';
+import 'package:sme_meeting_assistant/core/app_dependencies.dart';
+import 'package:sme_meeting_assistant/core/models.dart';
+import 'package:sme_meeting_assistant/core/widgets.dart';
+import 'package:sme_meeting_assistant/features/calendar/calendar_page.dart';
+import 'package:sme_meeting_assistant/features/meetings/meeting_detail_page.dart';
+import 'package:sme_meeting_assistant/features/meetings/meeting_discovery.dart';
+import 'package:sme_meeting_assistant/features/meetings/meeting_discovery_widgets.dart';
+import 'package:sme_meeting_assistant/features/meetings/meeting_form.dart';
+import 'package:sme_meeting_assistant/features/meetings/meeting_foundation.dart';
 
 class MeetingsPage extends StatefulWidget {
-  final ApiClient api;
-  const MeetingsPage({super.key, required this.api});
+  const MeetingsPage({super.key, required this.dependencies});
+
+  final AppDependencies dependencies;
 
   @override
   State<MeetingsPage> createState() => _MeetingsPageState();
 }
 
 class _MeetingsPageState extends State<MeetingsPage> {
-  final search = TextEditingController();
-  late Future<List<Meeting>> future;
-  String? status;
-  bool calendar = false;
-  DateTime selectedDate = DateTime.now();
-  final PageWindow<Meeting> window = PageWindow<Meeting>();
+  final _search = TextEditingController();
+  late final MeetingDiscoveryController _controller;
+  MeetingStatus? _status;
+  MeetingRelationship? _relationship;
+  MeetingSortField _sort = MeetingSortField.createdAt;
+  MeetingSortDirection _direction = MeetingSortDirection.descending;
 
   @override
   void initState() {
     super.initState();
-    reload();
+    _controller = MeetingDiscoveryController(
+      repository: widget.dependencies.meetings,
+      invalidation: widget.dependencies.meetingInvalidation,
+    );
+    unawaited(_controller.initialize());
   }
 
   @override
   void dispose() {
-    search.dispose();
+    _search.dispose();
+    _controller.dispose();
     super.dispose();
   }
 
-  Future<List<Meeting>> fetchNext() async {
-    final request = window.beginRequest();
-    final response = await widget.api.get(
-      '/meetings',
-      query: {
-        'page': request.page.toString(),
-        'size': '20',
-        'sort': 'scheduledStartAt,asc',
-        if (status != null) 'status': status!,
-        if (search.text.trim().isNotEmpty) 'q': search.text.trim(),
-      },
-    );
-    final page = PagedCollection<Meeting>.fromResult(
-      response,
-      (raw) => Meeting.fromListJson(raw, response: response),
-      requestedPage: request.page,
-      requestedSize: 20,
-    );
-    window.accept(page, request: request);
-    return window.items;
-  }
+  Future<void> _applyFilters() => _controller.applyQuery(
+    search: _search.text,
+    status: _status,
+    relationship: _relationship,
+    sort: _sort,
+    direction: _direction,
+  );
 
-  void reload() => setState(() {
-    window.reset();
-    future = fetchNext();
-  });
-  void loadMore() => setState(() => future = fetchNext());
-
-  Future<void> create() async {
-    final changed = await showModalBottomSheet<bool>(
+  Future<void> _create() async {
+    final created = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
       showDragHandle: true,
-      builder: (_) => MeetingForm(api: widget.api),
+      builder: (_) => MeetingForm(dependencies: widget.dependencies),
     );
-    if (changed == true && mounted) reload();
+    if (created == true && mounted) await _controller.refresh();
+  }
+
+  Future<void> _openDetail(String meetingId) async {
+    await Navigator.push<void>(
+      context,
+      MaterialPageRoute<void>(
+        builder: (_) => MeetingDetailPage(
+          dependencies: widget.dependencies,
+          meetingId: meetingId,
+        ),
+      ),
+    );
+    if (mounted) await _controller.refresh();
   }
 
   @override
-  Widget build(BuildContext context) => Column(
-    children: [
-      Padding(
-        padding: const EdgeInsets.fromLTRB(18, 18, 18, 4),
-        child: Column(
-          children: [
-            SectionHeading(
-              'Cuộc họp',
-              subtitle: 'Lịch họp và nội dung được phân quyền',
-              trailing: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  IconButton(
-                    tooltip: 'Lịch họp theo tháng',
-                    onPressed: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => CalendarPage(api: widget.api),
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: _controller,
+    builder: (context, _) {
+      final state = _controller.state;
+      return Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(18, 18, 18, 4),
+            child: Column(
+              children: [
+                SectionHeading(
+                  'Cuộc họp',
+                  subtitle: 'Lịch họp và nội dung được phân quyền',
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        tooltip: 'Lịch họp theo tháng',
+                        onPressed: () => Navigator.push<void>(
+                          context,
+                          MaterialPageRoute<void>(
+                            builder: (_) =>
+                                CalendarPage(dependencies: widget.dependencies),
+                          ),
+                        ),
+                        icon: const Icon(Icons.calendar_month_outlined),
+                      ),
+                      IconButton(
+                        tooltip: 'Làm mới',
+                        onPressed: _controller.refresh,
+                        icon: const Icon(Icons.refresh),
+                      ),
+                    ],
+                  ),
+                ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _search,
+                        maxLength: 200,
+                        textInputAction: TextInputAction.search,
+                        onChanged: _controller.setSearchInput,
+                        onSubmitted: (_) => _applyFilters(),
+                        decoration: const InputDecoration(
+                          hintText: 'Tìm cuộc họp',
+                          prefixIcon: Icon(Icons.search),
+                          counterText: '',
+                        ),
                       ),
                     ),
-                    icon: const Icon(Icons.calendar_month_outlined),
-                  ),
-                  IconButton(
-                    tooltip: 'Làm mới',
-                    onPressed: reload,
-                    icon: const Icon(Icons.refresh),
-                  ),
-                ],
-              ),
-            ),
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: search,
-                    textInputAction: TextInputAction.search,
-                    onSubmitted: (_) => reload(),
-                    decoration: InputDecoration(
-                      hintText: 'Tìm cuộc họp',
-                      prefixIcon: const Icon(Icons.search),
-                      suffixIcon: IconButton(
-                        icon: const Icon(Icons.close),
-                        onPressed: () {
-                          search.clear();
-                          reload();
+                    const SizedBox(width: 8),
+                    IconButton.filled(
+                      tooltip: 'Tìm kiếm',
+                      onPressed: _applyFilters,
+                      icon: const Icon(Icons.search),
+                    ),
+                    const SizedBox(width: 4),
+                    IconButton.filled(
+                      tooltip: 'Tạo cuộc họp',
+                      onPressed: _create,
+                      icon: const Icon(Icons.add),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: DropdownButtonFormField<MeetingStatus?>(
+                        key: ValueKey(
+                          'meeting-status-${_status?.wireValue ?? 'all'}',
+                        ),
+                        initialValue: _status,
+                        isExpanded: true,
+                        decoration: const InputDecoration(
+                          isDense: true,
+                          labelText: 'Trạng thái',
+                        ),
+                        items: [
+                          const DropdownMenuItem<MeetingStatus?>(
+                            value: null,
+                            child: Text('Tất cả'),
+                          ),
+                          ...MeetingStatus.values.map(
+                            (status) => DropdownMenuItem<MeetingStatus?>(
+                              value: status,
+                              child: Text(meetingStates[status.wireValue]!),
+                            ),
+                          ),
+                        ],
+                        onChanged: (value) {
+                          setState(() => _status = value);
+                          _applyFilters();
                         },
                       ),
                     ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                IconButton.filled(
-                  tooltip: 'Tạo cuộc họp',
-                  onPressed: create,
-                  icon: const Icon(Icons.add),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Expanded(
-                  child: DropdownButtonFormField<String>(
-                    initialValue: status ?? '',
-                    decoration: const InputDecoration(
-                      isDense: true,
-                      labelText: 'Trạng thái',
-                    ),
-                    items: [
-                      const DropdownMenuItem(value: '', child: Text('Tất cả')),
-                      ...meetingStates.entries.map(
-                        (e) => DropdownMenuItem(
-                          value: e.key,
-                          child: Text(e.value),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: DropdownButtonFormField<MeetingRelationship?>(
+                        key: ValueKey(
+                          'meeting-relationship-${_relationship?.wireValue ?? 'all'}',
                         ),
+                        initialValue: _relationship,
+                        isExpanded: true,
+                        decoration: const InputDecoration(
+                          isDense: true,
+                          labelText: 'Mối quan hệ',
+                        ),
+                        items: const [
+                          DropdownMenuItem<MeetingRelationship?>(
+                            value: null,
+                            child: Text('Tất cả'),
+                          ),
+                          DropdownMenuItem<MeetingRelationship?>(
+                            value: MeetingRelationship.organizer,
+                            child: Text('Tổ chức'),
+                          ),
+                          DropdownMenuItem<MeetingRelationship?>(
+                            value: MeetingRelationship.participant,
+                            child: Text('Tham gia'),
+                          ),
+                        ],
+                        onChanged: (value) {
+                          setState(() => _relationship = value);
+                          _applyFilters();
+                        },
                       ),
-                    ],
-                    onChanged: (v) {
-                      status = v == '' ? null : v;
-                      reload();
-                    },
-                  ),
-                ),
-                const SizedBox(width: 8),
-                SegmentedButton<bool>(
-                  showSelectedIcon: false,
-                  segments: const [
-                    ButtonSegment(value: false, icon: Icon(Icons.view_list)),
-                    ButtonSegment(
-                      value: true,
-                      icon: Icon(Icons.calendar_month),
                     ),
                   ],
-                  selected: {calendar},
-                  onSelectionChanged: (v) => setState(() => calendar = v.first),
                 ),
-              ],
-            ),
-          ],
-        ),
-      ),
-      Expanded(
-        child: AsyncContent<List<Meeting>>(
-          future: future,
-          retry: reload,
-          builder: (items) => RefreshIndicator(
-            onRefresh: () async {
-              reload();
-              await future;
-            },
-            child: ListView(
-              padding: const EdgeInsets.fromLTRB(18, 10, 18, 24),
-              children: [
-                if (calendar) ...[
-                  ContentCard(
-                    child: CalendarDatePicker(
-                      initialDate: selectedDate,
-                      firstDate: DateTime(2020),
-                      lastDate: DateTime(2100),
-                      onDateChanged: (value) =>
-                          setState(() => selectedDate = value),
-                    ),
-                  ),
-                  SectionHeading(
-                    dateLabel(selectedDate.toIso8601String(), time: false),
-                  ),
-                ],
-                if (items.isEmpty)
-                  const MessagePanel(
-                    title: 'Chưa có cuộc họp',
-                    description: 'Tạo cuộc họp đầu tiên hoặc đổi bộ lọc.',
-                  ),
-                ...items
-                    .where((m) {
-                      if (!calendar) return true;
-                      final date = dateValue(m.scheduledStartAt);
-                      return date != null &&
-                          date.year == selectedDate.year &&
-                          date.month == selectedDate.month &&
-                          date.day == selectedDate.day;
-                    })
-                    .map(
-                      (m) => ContentCard(
-                        child: InkWell(
-                          onTap: () async {
-                            await Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (_) => MeetingDetailPage(
-                                  api: widget.api,
-                                  meetingId: m.id,
-                                ),
-                              ),
-                            );
-                            if (mounted) reload();
-                          },
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                children: [
-                                  Expanded(
-                                    child: Text(
-                                      m.title,
-                                      style: const TextStyle(
-                                        fontSize: 15,
-                                        fontWeight: FontWeight.w800,
-                                      ),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  StatePill(m.status),
-                                ],
-                              ),
-                              if (m.description?.isNotEmpty == true)
-                                Padding(
-                                  padding: const EdgeInsets.only(top: 6),
-                                  child: Text(
-                                    m.description!,
-                                    maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      color: Palette.muted,
-                                    ),
-                                  ),
-                                ),
-                              const SizedBox(height: 12),
-                              Row(
-                                children: [
-                                  const Icon(
-                                    Icons.schedule_outlined,
-                                    size: 16,
-                                    color: Palette.muted,
-                                  ),
-                                  const SizedBox(width: 6),
-                                  Expanded(
-                                    child: Text(
-                                      dateLabel(m.scheduledStartAt),
-                                      style: const TextStyle(
-                                        fontSize: 12,
-                                        color: Palette.muted,
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              if (m.roomName != null)
-                                Padding(
-                                  padding: const EdgeInsets.only(top: 6),
-                                  child: Row(
-                                    children: [
-                                      const Icon(
-                                        Icons.meeting_room_outlined,
-                                        size: 16,
-                                        color: Palette.muted,
-                                      ),
-                                      const SizedBox(width: 6),
-                                      Text(
-                                        m.roomName!,
-                                        style: const TextStyle(
-                                          color: Palette.muted,
-                                          fontSize: 12,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                            ],
-                          ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: DropdownButtonFormField<MeetingSortField>(
+                        key: ValueKey('meeting-sort-$_sort'),
+                        initialValue: _sort,
+                        isExpanded: true,
+                        decoration: const InputDecoration(
+                          isDense: true,
+                          labelText: 'Sắp xếp',
                         ),
+                        items: const [
+                          DropdownMenuItem(
+                            value: MeetingSortField.createdAt,
+                            child: Text('Ngày tạo'),
+                          ),
+                          DropdownMenuItem(
+                            value: MeetingSortField.scheduledStartAt,
+                            child: Text('Thời gian họp'),
+                          ),
+                          DropdownMenuItem(
+                            value: MeetingSortField.title,
+                            child: Text('Tên cuộc họp'),
+                          ),
+                          DropdownMenuItem(
+                            value: MeetingSortField.status,
+                            child: Text('Trạng thái'),
+                          ),
+                        ],
+                        onChanged: (value) {
+                          if (value == null) return;
+                          setState(() => _sort = value);
+                          _applyFilters();
+                        },
                       ),
                     ),
-                if (window.hasMore)
-                  OutlinedButton(
-                    onPressed: loadMore,
-                    child: const Text('Tải thêm cuộc họp'),
-                  ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: DropdownButtonFormField<MeetingSortDirection>(
+                        key: ValueKey('meeting-direction-$_direction'),
+                        initialValue: _direction,
+                        isExpanded: true,
+                        decoration: const InputDecoration(
+                          isDense: true,
+                          labelText: 'Thứ tự',
+                        ),
+                        items: const [
+                          DropdownMenuItem(
+                            value: MeetingSortDirection.ascending,
+                            child: Text('Tăng dần'),
+                          ),
+                          DropdownMenuItem(
+                            value: MeetingSortDirection.descending,
+                            child: Text('Giảm dần'),
+                          ),
+                        ],
+                        onChanged: (value) {
+                          if (value == null) return;
+                          setState(() => _direction = value);
+                          _applyFilters();
+                        },
+                      ),
+                    ),
+                  ],
+                ),
               ],
             ),
           ),
-        ),
-      ),
-    ],
+          Expanded(
+            child: RefreshIndicator(
+              onRefresh: _controller.refresh,
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(18, 10, 18, 24),
+                children: [
+                  if (state.initialLoading)
+                    const Padding(
+                      padding: EdgeInsets.all(36),
+                      child: Center(child: CircularProgressIndicator()),
+                    ),
+                  if (state.loadingFailure != null && state.items.isEmpty)
+                    MessagePanel(
+                      icon: Icons.cloud_off_outlined,
+                      title: 'Không thể tải cuộc họp',
+                      description: _failureMessage(state.loadingFailure),
+                      onRetry: _controller.retry,
+                    ),
+                  if (state.refreshFailure != null)
+                    MessagePanel(
+                      icon: Icons.warning_amber_outlined,
+                      title: 'Không thể làm mới danh sách',
+                      description:
+                          '${_failureMessage(state.refreshFailure)} Dữ liệu hiển thị trước đó có thể đã cũ.',
+                      onRetry: _controller.retry,
+                    ),
+                  if (state.collectionChanged)
+                    MessagePanel(
+                      icon: Icons.sync_problem_outlined,
+                      title: 'Danh sách đã thay đổi trong lúc tải',
+                      description: 'Đã dừng phân trang để tránh trộn các phiên bản khác nhau.',
+                      onRetry: _controller.refresh,
+                    ),
+                  if (state.refreshing) const LinearProgressIndicator(),
+                  if (state.isConfirmedEmpty)
+                    const MessagePanel(
+                      title: 'Chưa có cuộc họp',
+                      description: 'Tạo cuộc họp đầu tiên hoặc đổi bộ lọc.',
+                    ),
+                  ...state.items.map(
+                    (projection) => MeetingProjectionCard(
+                      projection: projection,
+                      onTap: () => _openDetail(projection.meeting.id),
+                    ),
+                  ),
+                  if (state.loadingFailure != null && state.items.isNotEmpty)
+                    MessagePanel(
+                      icon: Icons.cloud_off_outlined,
+                      title: 'Không thể tải thêm cuộc họp',
+                      description: _failureMessage(state.loadingFailure),
+                      onRetry: _controller.retry,
+                    ),
+                  if (state.hasMore && !state.collectionChanged)
+                    OutlinedButton(
+                      onPressed: state.loadingMore
+                          ? null
+                          : _controller.loadMore,
+                      child: Text(
+                        state.loadingMore ? 'Đang tải...' : 'Tải thêm cuộc họp',
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      );
+    },
   );
+
+  String _failureMessage(Object? error) =>
+      error is ApiFailure ? error.message : 'Đã xảy ra lỗi không mong muốn.';
 }

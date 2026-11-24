@@ -47,6 +47,37 @@ void main() {
     dependencies.dispose();
     expect(client.closeCalls, 1);
   });
+
+  test(
+    'composes meeting repositories over one API and invalidation signal',
+    () {
+      final client = NoNetworkHttpClient();
+      final api = ApiClient(
+        baseUri: Uri.parse('https://api.example.test/api/v1'),
+        httpClient: client,
+        credentialStorage: InMemoryCredentialStorage(),
+      );
+      final dependencies = AppDependencies(
+        api: api,
+        appearancePreferences: InMemoryAppearancePreferences(),
+        httpClient: client,
+      );
+
+      expect(dependencies.meetings.api, same(api));
+      expect(dependencies.roomScheduling.api, same(api));
+      expect(dependencies.participantCandidates.api, same(api));
+      expect(dependencies.meetingMembership.api, same(api));
+      expect(
+        dependencies.meetingMembership.meetings,
+        same(dependencies.meetings),
+      );
+      expect(
+        dependencies.meetingMembership.invalidation,
+        same(dependencies.meetingInvalidation),
+      );
+      dependencies.dispose();
+    },
+  );
 }
 
 class TrackingApiClient extends ApiClient {

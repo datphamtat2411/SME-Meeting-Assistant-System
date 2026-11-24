@@ -1,302 +1,232 @@
-import 'package:flutter/material.dart';
+import 'dart:math';
 
-import '../../core/api_client.dart';
-import '../../core/app_theme.dart';
-import '../../core/meeting_models.dart';
-import '../../core/models.dart';
-import '../../core/paged_collection.dart';
-import '../../core/widgets.dart';
-import 'schedule_preview.dart';
+import 'package:flutter/material.dart';
+import 'package:sme_meeting_assistant/core/api_client.dart';
+import 'package:sme_meeting_assistant/core/app_dependencies.dart';
+import 'package:sme_meeting_assistant/core/app_theme.dart';
+import 'package:sme_meeting_assistant/core/widgets.dart';
+import 'package:sme_meeting_assistant/features/meetings/meeting_foundation.dart';
+import 'package:sme_meeting_assistant/features/meetings/meeting_scheduling.dart';
+import 'package:sme_meeting_assistant/features/meetings/meeting_scheduling_widgets.dart';
+import 'package:sme_meeting_assistant/features/meetings/participant_selection.dart';
 
 class MeetingForm extends StatefulWidget {
-  final ApiClient api;
-  const MeetingForm({super.key, required this.api});
+  const MeetingForm({super.key, required this.dependencies});
+
+  final AppDependencies dependencies;
+  ApiClient get api => dependencies.api;
 
   @override
   State<MeetingForm> createState() => _MeetingFormState();
 }
 
 class _MeetingFormState extends State<MeetingForm> {
-  final form = GlobalKey<FormState>();
-  final title = TextEditingController();
-  final description = TextEditingController();
-  final searchMember = TextEditingController();
-  DateTime start = DateTime.now().add(const Duration(hours: 1));
-  DateTime end = DateTime.now().add(const Duration(hours: 2));
-  String? roomId;
-  final Map<String, String> members = {};
-  bool saving = false;
-  late Future<List<MeetingRoom>> rooms;
+  final _form = GlobalKey<FormState>();
+  final _title = TextEditingController();
+  final _description = TextEditingController();
+  late MeetingInterval? _interval;
+  String? _roomId;
+  final Map<String, MeetingParticipantCandidate> _members =
+      <String, MeetingParticipantCandidate>{};
+  bool _saving = false;
 
   @override
   void initState() {
     super.initState();
-    rooms = widget.api
-        .get('/rooms', query: {'size': '100'})
-        .then(
-          (response) => PagedCollection<MeetingRoom>.fromResult(
-            response,
-            (raw) => MeetingRoom.fromJson(raw, response: response),
-            requestedPage: 0,
-            requestedSize: 100,
-          ).items,
-        );
+    final start = DateTime.now().add(const Duration(hours: 1));
+    _interval = MeetingInterval(
+      start: start,
+      end: start.add(const Duration(hours: 1)),
+    );
   }
 
   @override
   void dispose() {
-    title.dispose();
-    description.dispose();
-    searchMember.dispose();
+    _title.dispose();
+    _description.dispose();
     super.dispose();
   }
 
-  Future<void> chooseDate(bool begin) async {
-    final current = begin ? start : end;
-    final day = await showDatePicker(
-      context: context,
-      initialDate: current,
-      firstDate: DateTime(2020),
-      lastDate: DateTime(2100),
+  Future<void> _chooseParticipants() async {
+    final scope = widget.api.authenticatedSessionScope;
+    final organizerId = widget.api.userId;
+    if (scope == null) return;
+    final selected = await showParticipantPicker(
+      context,
+      repository: widget.dependencies.participantCandidates,
+      sessionScope: scope,
+      organizerId: organizerId,
+      initialSelection: _members.values,
     );
-    if (day == null || !mounted) return;
-    final clock = await showTimePicker(
-      context: context,
-      initialTime: TimeOfDay.fromDateTime(current),
-    );
-    if (clock == null || !mounted) return;
+    if (selected == null || !mounted) return;
     setState(() {
-      final value = DateTime(
-        day.year,
-        day.month,
-        day.day,
-        clock.hour,
-        clock.minute,
-      );
-      if (begin) {
-        start = value;
-        if (!end.isAfter(start)) end = start.add(const Duration(hours: 1));
-      } else {
-        end = value;
-      }
+      _members
+        ..clear()
+        ..addEntries(
+          selected.map(
+            (candidate) => MapEntry(candidate.id.toLowerCase(), candidate),
+          ),
+        );
     });
   }
 
-  Future<void> addMember() async {
-    final query = searchMember.text.trim();
-    if (query.length < 2) return;
-    try {
-      final response = await widget.api.get(
-        '/users/meeting-candidates',
-        query: {'q': query, 'size': '20'},
-      );
-      if (!mounted) return;
-      final candidates = PagedCollection<Map<String, dynamic>>.fromResult(
-        response,
-        (raw) => raw,
-        requestedPage: 0,
-        requestedSize: 20,
-      ).items;
-      await showDialog<void>(
-        context: context,
-        builder: (dialogContext) => AlertDialog(
-          title: const Text('Thêm người tham gia'),
-          content: SizedBox(
-            width: 380,
-            height: 320,
-            child: candidates.isEmpty
-                ? const Text('Không tìm thấy nhân viên.')
-                : ListView(
-                    children: candidates
-                        .map(
-                          (entry) => ListTile(
-                            title: Text(textValue(entry['displayName'])),
-                            subtitle: Text(textValue(entry['email'])),
-                            onTap: () {
-                              setState(
-                                () => members[textValue(entry['id'])] =
-                                    textValue(entry['displayName']),
-                              );
-                              Navigator.pop(dialogContext);
-                            },
-                          ),
-                        )
-                        .toList(),
-                  ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Đóng'),
-            ),
-          ],
-        ),
-      );
-    } catch (error) {
-      if (mounted) showFailure(context, error);
-    }
+  ScheduleIntent? get _previewIntent {
+    final interval = _interval;
+    final scope = widget.api.authenticatedSessionScope;
+    final organizerId = widget.api.userId;
+    if (interval == null || scope == null) return null;
+    return ScheduleIntent(
+      interval: interval,
+      roomId: _roomId,
+      organizerId: organizerId,
+      participantUserIds: _members.values
+          .map((candidate) => candidate.id)
+          .toList(growable: false),
+    );
   }
 
-  Future<void> save() async {
-    if (!(form.currentState?.validate() ?? false)) return;
-    if (!end.isAfter(start)) {
-      showFailure(
-        context,
-        const ApiFailure(
-          422,
-          'INVALID_INTERVAL',
-          'Giờ kết thúc phải sau giờ bắt đầu.',
-        ),
-      );
-      return;
-    }
-    setState(() => saving = true);
+  Future<void> _save() async {
+    if (!(_form.currentState?.validate() ?? false)) return;
+    final scope = widget.api.authenticatedSessionScope;
+    if (scope == null) return;
+    setState(() => _saving = true);
     try {
-      await widget.api.post('/meetings', {
-        'title': title.text.trim(),
-        'description': description.text.trim(),
-        'scheduledStartAt': dateIso(start),
-        'scheduledEndAt': dateIso(end),
-        'roomId': roomId,
-        'participantUserIds': members.keys.toList(),
-      });
+      final input = CreateMeetingInput(
+        title: _title.text.trim(),
+        description: _description.text.trim().isEmpty
+            ? null
+            : _description.text.trim(),
+        scheduledInterval: _interval,
+        roomId: _roomId,
+        participantUserIds: _members.values
+            .map((candidate) => candidate.id)
+            .toList(growable: false),
+      );
+      final random = Random.secure();
+      final idempotencyKey =
+          'mobile-${DateTime.now().microsecondsSinceEpoch}-${random.nextInt(1 << 32)}';
+      await widget.dependencies.meetings.create(
+        input,
+        idempotencyKey: idempotencyKey,
+      );
       if (mounted) Navigator.pop(context, true);
     } catch (error) {
       if (mounted) showFailure(context, error);
     } finally {
-      if (mounted) setState(() => saving = false);
+      if (mounted) setState(() => _saving = false);
     }
   }
 
   @override
-  Widget build(BuildContext context) => SafeArea(
-    child: Padding(
-      padding: EdgeInsets.only(
-        left: 18,
-        right: 18,
-        bottom: MediaQuery.viewInsetsOf(context).bottom + 16,
-      ),
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxHeight: 690),
-        child: SingleChildScrollView(
-          child: Form(
-            key: form,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                const SectionHeading(
-                  'Tạo cuộc họp',
-                  subtitle:
-                      'Mỗi cuộc họp có một người tổ chức và lịch trình riêng.',
-                ),
-                TextFormField(
-                  controller: title,
-                  maxLength: 255,
-                  decoration: const InputDecoration(
-                    labelText: 'Tên cuộc họp *',
+  Widget build(BuildContext context) {
+    final scope = widget.api.authenticatedSessionScope;
+    return SafeArea(
+      child: Padding(
+        padding: EdgeInsets.only(
+          left: 18,
+          right: 18,
+          bottom: MediaQuery.viewInsetsOf(context).bottom + 16,
+        ),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 760),
+          child: SingleChildScrollView(
+            child: Form(
+              key: _form,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const SectionHeading(
+                    'Tạo cuộc họp',
+                    subtitle: 'Mỗi cuộc họp có một người tổ chức và lịch trình riêng.',
                   ),
-                  validator: (v) => v == null || v.trim().isEmpty
-                      ? 'Nhập tên cuộc họp.'
-                      : null,
-                ),
-                TextFormField(
-                  controller: description,
-                  maxLines: 2,
-                  decoration: const InputDecoration(
-                    labelText: 'Mục đích / mô tả',
+                  TextFormField(
+                    controller: _title,
+                    maxLength: 255,
+                    decoration: const InputDecoration(
+                      labelText: 'Tên cuộc họp *',
+                    ),
+                    validator: (value) => value == null || value.trim().isEmpty
+                        ? 'Nhập tên cuộc họp.'
+                        : null,
                   ),
-                ),
-                const SizedBox(height: 10),
-                OutlinedButton.icon(
-                  onPressed: () => chooseDate(true),
-                  icon: const Icon(Icons.event),
-                  label: Text('Bắt đầu: ' + dateLabel(start.toIso8601String())),
-                ),
-                const SizedBox(height: 8),
-                OutlinedButton.icon(
-                  onPressed: () => chooseDate(false),
-                  icon: const Icon(Icons.schedule),
-                  label: Text('Kết thúc: ' + dateLabel(end.toIso8601String())),
-                ),
-                const SizedBox(height: 14),
-                FutureBuilder<List<MeetingRoom>>(
-                  future: rooms,
-                  builder: (context, snap) {
-                    if (!snap.hasData)
-                      return const Text('Đang tải phòng họp...');
-                    return DropdownButtonFormField<String>(
-                      initialValue: roomId ?? '',
-                      decoration: const InputDecoration(
-                        labelText: 'Phòng họp (tùy chọn)',
-                      ),
-                      items: [
-                        const DropdownMenuItem(
-                          value: '',
-                          child: Text('Không chọn phòng'),
-                        ),
-                        ...snap.data!
-                            .where((room) => room.status == 'ACTIVE')
-                            .map(
-                              (room) => DropdownMenuItem(
-                                value: room.id,
-                                child: Text(room.name),
-                              ),
-                            ),
-                      ],
-                      onChanged: (v) =>
-                          setState(() => roomId = v == '' ? null : v),
-                    );
-                  },
-                ),
-                const SizedBox(height: 12),
-                SchedulePreview(
-                  api: widget.api,
-                  start: start,
-                  end: end,
-                  roomId: roomId,
-                  participantIds: members.keys.toList(),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: searchMember,
-                  decoration: InputDecoration(
-                    labelText: 'Tìm người tham gia',
-                    suffixIcon: IconButton(
-                      onPressed: addMember,
-                      icon: const Icon(Icons.person_add_alt_1),
+                  TextFormField(
+                    controller: _description,
+                    maxLines: 2,
+                    decoration: const InputDecoration(
+                      labelText: 'Mục đích / mô tả',
                     ),
                   ),
-                ),
-                if (members.isNotEmpty)
-                  Wrap(
-                    spacing: 6,
-                    children: members.entries
-                        .map(
-                          (member) => InputChip(
-                            label: Text(member.value),
-                            onDeleted: () =>
-                                setState(() => members.remove(member.key)),
-                          ),
-                        )
-                        .toList(),
+                  const SizedBox(height: 10),
+                  MeetingScheduleFields(
+                    interval: _interval,
+                    onChanged: (value) => setState(() => _interval = value),
                   ),
-                const SizedBox(height: 18),
-                FilledButton.icon(
-                  onPressed: saving ? null : save,
-                  icon: const Icon(Icons.add),
-                  label: Text(saving ? 'Đang lưu...' : 'Tạo cuộc họp'),
-                ),
-                const SizedBox(height: 12),
-                const Text(
-                  'Xung đột phòng họp và quyền truy cập được backend kiểm tra.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: Palette.muted, fontSize: 12),
-                ),
-              ],
+                  if (scope != null)
+                    MeetingRoomSelector(
+                      repository: widget.dependencies.roomScheduling,
+                      sessionScope: scope,
+                      selectedId: _roomId,
+                      interval: _interval,
+                      participantCount: _members.length + 1,
+                      onChanged: (value) => setState(() => _roomId = value),
+                    ),
+                  if (scope != null) ...[
+                    const SizedBox(height: 8),
+                    OutlinedButton.icon(
+                      onPressed: _saving ? null : _chooseParticipants,
+                      icon: const Icon(Icons.person_add_alt_1),
+                      label: Text(
+                        _members.isEmpty
+                            ? 'Chọn người tham gia'
+                            : 'Người tham gia (${_members.length})',
+                      ),
+                    ),
+                    if (_members.isNotEmpty)
+                      Wrap(
+                        spacing: 6,
+                        runSpacing: 4,
+                        children: _members.values
+                            .map(
+                              (candidate) => InputChip(
+                                label: Text(candidate.displayName),
+                                onDeleted: _saving
+                                    ? null
+                                    : () => setState(
+                                        () => _members.remove(
+                                          candidate.id.toLowerCase(),
+                                        ),
+                                      ),
+                              ),
+                            )
+                            .toList(),
+                      ),
+                  ],
+                  if (scope != null) ...[
+                    const SizedBox(height: 8),
+                    SchedulePreviewCard(
+                      repository: widget.dependencies.roomScheduling,
+                      sessionScope: scope,
+                      intent: _previewIntent,
+                    ),
+                  ],
+                  const SizedBox(height: 18),
+                  FilledButton.icon(
+                    onPressed: _saving ? null : _save,
+                    icon: const Icon(Icons.add),
+                    label: Text(_saving ? 'Đang lưu...' : 'Tạo cuộc họp'),
+                  ),
+                  const SizedBox(height: 12),
+                  const Text(
+                    'Xung đột phòng họp và quyền truy cập được backend kiểm tra.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Palette.muted, fontSize: 12),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
       ),
-    ),
-  );
+    );
+  }
 }

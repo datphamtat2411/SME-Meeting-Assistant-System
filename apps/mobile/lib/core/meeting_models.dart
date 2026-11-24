@@ -22,6 +22,8 @@ class MeetingParticipant {
   final String? removedByUserId;
   final String? displayName;
 
+  bool get isActive => removedAt == null;
+
   factory MeetingParticipant.fromJson(
     Map<String, dynamic> raw, {
     ApiResult? response,

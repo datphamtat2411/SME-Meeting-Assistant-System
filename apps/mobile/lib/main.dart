@@ -135,6 +135,7 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
       AuthSessionPhase.recoverableFailure => _recoverableSessionView(session),
       AuthSessionPhase.authenticated => AppShell(
         key: ValueKey(api.authenticatedSessionScope),
+        dependencies: widget.dependencies,
         api: api,
         themeMode: appearance.mode,
         onThemeChanged: changeTheme,
@@ -346,11 +347,13 @@ String _recoveryMessage(AuthSessionState state) {
 }
 
 class AppShell extends StatefulWidget {
+  final AppDependencies dependencies;
   final ApiClient api;
   final ThemeMode themeMode;
   final ValueChanged<ThemeMode> onThemeChanged;
   const AppShell({
     super.key,
+    required this.dependencies,
     required this.api,
     required this.themeMode,
     required this.onThemeChanged,
@@ -398,7 +401,7 @@ class _AppShellState extends State<AppShell> {
         openMeetings: () => setState(() => index = 1),
         openActions: () => setState(() => index = 2),
       ),
-      MeetingsPage(api: widget.api),
+      MeetingsPage(dependencies: widget.dependencies),
       ActionItemsPage(api: widget.api),
       AssistantPage(api: widget.api),
       ProfilePage(

@@ -108,7 +108,7 @@ class MeetingRepository {
     );
     final MeetingSnapshot snapshot;
     try {
-      snapshot = _decodeSnapshot(response, scope);
+      snapshot = _decodeSnapshot(response, scope, expectedMeetingId: meetingId);
     } on MeetingFailure {
       rethrow;
     } on ApiFailure catch (failure) {
@@ -269,7 +269,11 @@ class MeetingRepository {
         sessionScope,
         mutationOutcome: MeetingMutationOutcome.unknown,
       );
-      final snapshot = _decodeSnapshot(response, sessionScope);
+      final snapshot = _decodeSnapshot(
+        response,
+        sessionScope,
+        expectedMeetingId: meetingId,
+      );
       _requireCurrentSession(
         sessionScope,
         mutationOutcome: MeetingMutationOutcome.unknown,
@@ -316,12 +320,17 @@ class MeetingRepository {
 
   MeetingSnapshot _decodeSnapshot(
     ApiResult response,
-    AuthenticatedSessionScope scope,
-  ) {
+    AuthenticatedSessionScope scope, {
+    String? expectedMeetingId,
+  }) {
     final meeting = Meeting.fromCanonicalJson(
       response.objectData(),
       response: response,
     );
+    if (expectedMeetingId != null &&
+        meeting.id.toLowerCase() != expectedMeetingId.toLowerCase()) {
+      throw response.invalidDataFailure();
+    }
     final etag = response.etag;
     if (etag == null || !_isUsableEtag(etag)) {
       throw MeetingFailure._(
@@ -542,5 +551,4 @@ Map<String, dynamic> _cancelBody(MeetingCancelInput input) =>
     ? <String, dynamic>{}
     : <String, dynamic>{'reason': input.reason};
 
-String? _optionalTimestamp(DateTime? value) =>
-    value?.toUtc().toIso8601String();
+String? _optionalTimestamp(DateTime? value) => value?.toUtc().toIso8601String();

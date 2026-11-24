@@ -305,6 +305,91 @@ void main() {
       expect(invalidation.revision, 1);
     });
 
+    test(
+      'rejects versioned responses for a different meeting identity',
+      () async {
+        const otherMeetingId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+        final detailClient = MeetingTestHttpClient((request) async {
+          return meetingApiSuccess(
+            {...meetingTestJson(), 'id': otherMeetingId},
+            headers: const {'etag': testMeetingEtag},
+          );
+        });
+        final detailApi = createMeetingTestApi(detailClient);
+        addTearDown(detailApi.dispose);
+        await signInMeetingTestApi(detailApi);
+        final detailInvalidation = MeetingInvalidationSignal(detailApi);
+        addTearDown(detailInvalidation.dispose);
+        final detailRepository = MeetingRepository(
+          api: detailApi,
+          invalidation: detailInvalidation,
+        );
+
+        await expectLater(
+          detailRepository.detail(testMeetingId),
+          throwsA(
+            isA<MeetingFailure>()
+                .having(
+                  (failure) => failure.category,
+                  'category',
+                  MeetingFailureCategory.invalidResponse,
+                )
+                .having(
+                  (failure) => failure.mutationOutcome,
+                  'outcome',
+                  MeetingMutationOutcome.notDispatched,
+                ),
+          ),
+        );
+
+        final mutationClient = MeetingTestHttpClient((request) async {
+          if (request.method == 'GET') {
+            return meetingApiSuccess(
+              meetingTestJson(),
+              headers: const {'etag': testMeetingEtag},
+            );
+          }
+          return meetingApiSuccess(
+            {...meetingTestJson(), 'id': otherMeetingId},
+            headers: const {'etag': '"wrong-meeting-v2"'},
+          );
+        });
+        final mutationApi = createMeetingTestApi(mutationClient);
+        addTearDown(mutationApi.dispose);
+        await signInMeetingTestApi(mutationApi);
+        final mutationInvalidation = MeetingInvalidationSignal(mutationApi);
+        addTearDown(mutationInvalidation.dispose);
+        final mutationRepository = MeetingRepository(
+          api: mutationApi,
+          invalidation: mutationInvalidation,
+        );
+        final snapshot = await mutationRepository.detail(testMeetingId);
+
+        await expectLater(
+          mutationRepository.update(
+            snapshot,
+            MeetingUpdateInput(
+              title: const MeetingFieldUpdate<String>.set('Updated'),
+            ),
+          ),
+          throwsA(
+            isA<MeetingFailure>()
+                .having(
+                  (failure) => failure.category,
+                  'category',
+                  MeetingFailureCategory.invalidResponse,
+                )
+                .having(
+                  (failure) => failure.mutationOutcome,
+                  'outcome',
+                  MeetingMutationOutcome.unknown,
+                ),
+          ),
+        );
+        expect(mutationInvalidation.revision, 1);
+      },
+    );
+
     test('preserves 412 as a rejected version conflict and does not retry or invalidate', () async {
       final client = MeetingTestHttpClient((request) async {
         if (request.method == 'GET') {

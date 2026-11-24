@@ -4,7 +4,10 @@ import 'api_client.dart';
 import 'appearance_preferences.dart';
 
 import 'package:sme_meeting_assistant/features/meetings/meeting_invalidation.dart';
+import 'package:sme_meeting_assistant/features/meetings/meeting_membership.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_repository.dart';
+import 'package:sme_meeting_assistant/features/meetings/meeting_scheduling.dart';
+import 'package:sme_meeting_assistant/features/meetings/participant_selection.dart';
 
 /// The application-scoped dependency holder and resource owner.
 ///
@@ -16,6 +19,9 @@ class AppDependencies {
   final http.Client httpClient;
   late final MeetingInvalidationSignal meetingInvalidation;
   late final MeetingRepository meetings;
+  late final RoomSchedulingRepository roomScheduling;
+  late final ParticipantCandidateRepository participantCandidates;
+  late final MeetingMembershipRepository meetingMembership;
   bool _disposed = false;
 
   AppDependencies({
@@ -25,6 +31,13 @@ class AppDependencies {
   }) {
     meetingInvalidation = MeetingInvalidationSignal(api);
     meetings = MeetingRepository(api: api, invalidation: meetingInvalidation);
+    roomScheduling = RoomSchedulingRepository(api);
+    participantCandidates = ParticipantCandidateRepository(api);
+    meetingMembership = MeetingMembershipRepository(
+      api: api,
+      meetings: meetings,
+      invalidation: meetingInvalidation,
+    );
   }
 
   factory AppDependencies.create({
