@@ -1,10 +1,18 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
 import 'package:sme_meeting_assistant/core/api_client.dart';
 import 'package:sme_meeting_assistant/core/app_dependencies.dart';
 import 'package:sme_meeting_assistant/core/appearance_preferences.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_repository.dart';
+import 'package:sme_meeting_assistant/features/recording/local_media_repository.dart';
+import 'package:sme_meeting_assistant/features/recording/media_repository.dart';
+import 'package:sme_meeting_assistant/features/recording/processing_manager.dart';
+import 'package:sme_meeting_assistant/features/recording/processing_repository.dart';
 
 import 'support/http_test_support.dart';
+import 'support/meeting_test_support.dart';
 
 void main() {
   test('the dependency holder closes owned resources exactly once', () {
@@ -81,6 +89,69 @@ void main() {
       dependencies.dispose();
     },
   );
+
+  test(
+    'shutdown keeps shared transport open until processing observation drains',
+    () async {
+      final mediaResponse = Completer<http.StreamedResponse>();
+      final processingResponse = Completer<http.StreamedResponse>();
+      final client = _ClosingMeetingHttpClient((request) {
+        if (request.url.path.endsWith('/media')) return mediaResponse.future;
+        if (request.url.path.endsWith('/processing-jobs')) {
+          return processingResponse.future;
+        }
+        throw StateError('Unexpected request ${request.url.path}');
+      });
+      final api = createMeetingTestApi(client);
+      await signInMeetingTestApi(api);
+      final manager = ProcessingManager(
+        api: api,
+        mediaRepository: MediaRepository(api: api),
+        processingRepository: ProcessingRepository(api: api),
+        localMedia: LocalMediaRepository.lazyDefault(),
+      );
+      final dependencies = AppDependencies(
+        api: api,
+        appearancePreferences: InMemoryAppearancePreferences(),
+        httpClient: client,
+        processingManager: manager,
+      );
+      addTearDown(dependencies.shutdown);
+
+      final refresh = manager.refresh(
+        testMeetingId,
+        scope: api.requireAuthenticatedSessionScope(),
+        explicit: true,
+      );
+      await _eventually(
+        () =>
+            client.requests.any(
+              (request) => request.url.path.endsWith('/media'),
+            ) &&
+            client.requests.any(
+              (request) => request.url.path.endsWith('/processing-jobs'),
+            ),
+      );
+
+      dependencies.dispose();
+      expect(client.closeCalls, 0);
+
+      mediaResponse.complete(await meetingApiSuccess(const <dynamic>[]));
+      processingResponse.complete(await meetingApiSuccess(const <dynamic>[]));
+      await refresh;
+      await dependencies.shutdown();
+
+      expect(client.closeCalls, 1);
+    },
+  );
+}
+
+Future<void> _eventually(bool Function() condition) async {
+  for (var attempt = 0; attempt < 100; attempt++) {
+    if (condition()) return;
+    await Future<void>.value();
+  }
+  fail('The expected processing request was not started.');
 }
 
 class TrackingApiClient extends ApiClient {
@@ -97,5 +168,17 @@ class TrackingApiClient extends ApiClient {
   void dispose() {
     disposeCalls++;
     super.dispose();
+  }
+}
+
+class _ClosingMeetingHttpClient extends MeetingTestHttpClient {
+  _ClosingMeetingHttpClient(super.onMeetingRequest);
+
+  int closeCalls = 0;
+
+  @override
+  void close() {
+    closeCalls++;
+    super.close();
   }
 }

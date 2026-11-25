@@ -8,8 +8,7 @@ import 'package:sme_meeting_assistant/core/credential_storage.dart';
 import 'package:sme_meeting_assistant/features/recording/local_media_database.dart';
 import 'package:sme_meeting_assistant/features/recording/local_media_models.dart';
 import 'package:sme_meeting_assistant/features/recording/local_media_persistence.dart';
-import 'package:sme_meeting_assistant/features/recording/local_media_repository.dart'
-    hide LocalMediaIdempotencyConflictException;
+import 'package:sme_meeting_assistant/features/recording/local_media_repository.dart';
 import 'package:sme_meeting_assistant/features/recording/managed_media_storage.dart';
 
 void main() {
@@ -221,6 +220,83 @@ void main() {
       );
       expect(processingConfirmed.targetJobId, 'target-job');
       expect(processingConfirmed.resultingJobId, 'result-job');
+
+      final initialCandidates = <ProcessingOperation>[
+        ProcessingOperation(
+          id: 'm' * 32,
+          deploymentScope: asset.deploymentScope,
+          ownerUserId: asset.ownerUserId,
+          meetingId: asset.meetingId!,
+          idempotencyKey: 'processing-initial-a',
+          requestFingerprint: '3' * 64,
+          operationType: ProcessingOperationType.admission,
+          sourceMediaId: 'source-media',
+          targetJobId: null,
+          resultingJobId: null,
+          reprocessOfJobId: null,
+          stageCode: null,
+          checkpoint: ProcessingOperationCheckpoint.admissionNotConfirmed,
+          attemptCount: 0,
+          attemptOutcome: OperationAttemptOutcome.none,
+          recoveryRequired: false,
+          lastFailureCode: null,
+          lastFailureStatus: null,
+          lastFailureMessage: null,
+          createdAt: now,
+          updatedAt: now,
+          version: 0,
+        ),
+        ProcessingOperation(
+          id: 'n' * 32,
+          deploymentScope: asset.deploymentScope,
+          ownerUserId: asset.ownerUserId,
+          meetingId: asset.meetingId!,
+          idempotencyKey: 'processing-initial-b',
+          requestFingerprint: '4' * 64,
+          operationType: ProcessingOperationType.admission,
+          sourceMediaId: 'source-media',
+          targetJobId: null,
+          resultingJobId: null,
+          reprocessOfJobId: null,
+          stageCode: null,
+          checkpoint: ProcessingOperationCheckpoint.admissionNotConfirmed,
+          attemptCount: 0,
+          attemptOutcome: OperationAttemptOutcome.none,
+          recoveryRequired: false,
+          lastFailureCode: null,
+          lastFailureStatus: null,
+          lastFailureMessage: null,
+          createdAt: now,
+          updatedAt: now,
+          version: 0,
+        ),
+      ];
+      final initialResults = await Future.wait(
+        initialCandidates.map(persistence.getOrCreateInitialAdmission),
+      );
+      expect(initialResults[0].id, initialResults[1].id);
+      final initialRows = await database.database.query(
+        'processing_operations',
+        where:
+            'deployment_scope = ? AND owner_user_id = ? AND meeting_id = ? '
+            'AND operation_type = ? AND source_media_id = ? '
+            'AND reprocess_of_job_id IS NULL',
+        whereArgs: <Object?>[
+          asset.deploymentScope,
+          asset.ownerUserId,
+          asset.meetingId,
+          ProcessingOperationType.admission.wireValue,
+          'source-media',
+        ],
+      );
+      expect(initialRows, hasLength(1));
+      final indexes = await database.database.rawQuery(
+        "PRAGMA index_list('processing_operations')",
+      );
+      expect(
+        indexes.any((row) => row['name'] == 'ux_processing_initial_admission'),
+        isTrue,
+      );
 
       final uncertain = await persistence.updateUploadOperation(
         checkpointed.copyWith(
@@ -952,5 +1028,109 @@ void main() {
     expect(reopenedOperation.checkpoint, fullTransfer.checkpoint);
     expect(reopenedOperation.attemptOutcome, fullTransfer.attemptOutcome);
     expect(reopenedOperation.version, fullTransfer.version);
+  });
+
+  test('schema v6 preserves historical admission conflicts while fencing new writes', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'sme-media-v6-admission-',
+    );
+    addTearDown(() => directory.delete(recursive: true));
+    final databasePath = '${directory.path}/media.db';
+    final database = await LocalMediaDatabase.open(
+      databasePath: databasePath,
+      databaseFactory: databaseFactoryFfi,
+    );
+    final persistence = LocalMediaPersistence(database);
+    final now = DateTime.utc(2026, 11, 24, 12);
+    await database.database.execute(
+      'DROP INDEX ux_processing_initial_admission',
+    );
+    await database.database.execute(
+      'DROP TRIGGER trg_processing_initial_admission_unique_insert',
+    );
+    await database.database.execute(
+      'DROP TRIGGER trg_processing_initial_admission_unique_update',
+    );
+
+    ProcessingOperation operation(String id, String key) => ProcessingOperation(
+      id: id,
+      deploymentScope: 'deployment-a',
+      ownerUserId: 'user-a',
+      meetingId: 'meeting-a',
+      idempotencyKey: key,
+      requestFingerprint: '$id-fingerprint',
+      operationType: ProcessingOperationType.admission,
+      sourceMediaId: 'source-a',
+      targetJobId: null,
+      resultingJobId: null,
+      reprocessOfJobId: null,
+      stageCode: null,
+      checkpoint: ProcessingOperationCheckpoint.admissionNotConfirmed,
+      attemptCount: 0,
+      attemptOutcome: OperationAttemptOutcome.none,
+      recoveryRequired: false,
+      lastFailureCode: null,
+      lastFailureStatus: null,
+      lastFailureMessage: null,
+      createdAt: now,
+      updatedAt: now,
+      version: 0,
+    );
+
+    await persistence.insertProcessingOperation(
+      operation('o' * 32, 'historical-a'),
+    );
+    await persistence.insertProcessingOperation(
+      operation('p' * 32, 'historical-b'),
+    );
+    await database.database.execute('PRAGMA user_version = 5');
+    await database.close();
+
+    final upgraded = await LocalMediaDatabase.open(
+      databasePath: databasePath,
+      databaseFactory: databaseFactoryFfi,
+    );
+    addTearDown(upgraded.close);
+    final upgradedPersistence = LocalMediaPersistence(upgraded);
+    final historical = await upgradedPersistence.listProcessingOperations(
+      deploymentScope: 'deployment-a',
+      ownerUserId: 'user-a',
+      meetingId: 'meeting-a',
+      sourceMediaId: 'source-a',
+    );
+    expect(historical, hasLength(2));
+    await expectLater(
+      upgradedPersistence.getOrCreateInitialAdmission(
+        operation('q' * 32, 'new-attempt'),
+      ),
+      throwsA(isA<LocalMediaLogicalOperationConflictException>()),
+    );
+    await expectLater(
+      upgraded.database.insert('processing_operations', <String, Object?>{
+        'id': 'r' * 32,
+        'deployment_scope': 'deployment-a',
+        'owner_user_id': 'user-a',
+        'meeting_id': 'meeting-a',
+        'idempotency_key': 'direct-duplicate',
+        'request_fingerprint': 'direct-fingerprint',
+        'operation_type': 'ADMISSION',
+        'source_media_id': 'source-a',
+        'target_job_id': null,
+        'resulting_job_id': null,
+        'reprocess_of_job_id': null,
+        'stage_code': null,
+        'confirmed_checkpoint': 'ADMISSION_NOT_CONFIRMED',
+        'attempt_count': 0,
+        'attempt_outcome': 'NONE',
+        'recovery_required': 0,
+        'last_failure_code': null,
+        'last_failure_status': null,
+        'last_failure_message': null,
+        'created_at': now.toIso8601String(),
+        'updated_at': now.toIso8601String(),
+        'version': 0,
+      }),
+      throwsA(isA<sqflite.DatabaseException>()),
+    );
   });
 }

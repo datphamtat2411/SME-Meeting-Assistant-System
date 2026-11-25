@@ -485,6 +485,111 @@ class LocalMediaPersistence {
     });
   }
 
+  /// Atomically finds or creates the one logical initial admission for a
+  /// deployment/owner/meeting/source tuple. The idempotency key is an
+  /// immutable property of the operation that wins this transaction; it is
+  /// deliberately not used as the logical lookup identity.
+  Future<ProcessingOperation> getOrCreateInitialAdmission(
+    ProcessingOperation candidate,
+  ) async {
+    if (candidate.operationType != ProcessingOperationType.admission ||
+        candidate.sourceMediaId == null ||
+        candidate.reprocessOfJobId != null) {
+      throw ArgumentError(
+        'Initial processing admission requires one source media identity.',
+      );
+    }
+    _validateScope(candidate.deploymentScope, candidate.ownerUserId);
+    return owner.transaction((txn) async {
+      final rows = await txn.query(
+        'processing_operations',
+        where:
+            'deployment_scope = ? AND owner_user_id = ? AND meeting_id = ? '
+            'AND operation_type = ? AND source_media_id = ? '
+            'AND reprocess_of_job_id IS NULL',
+        whereArgs: <Object?>[
+          candidate.deploymentScope,
+          candidate.ownerUserId,
+          candidate.meetingId,
+          ProcessingOperationType.admission.wireValue,
+          candidate.sourceMediaId,
+        ],
+      );
+      if (rows.length > 1) {
+        throw const LocalMediaLogicalOperationConflictException();
+      }
+      if (rows.isEmpty) {
+        try {
+          await txn.insert(
+            'processing_operations',
+            _processingValues(candidate),
+            conflictAlgorithm: sqflite.ConflictAlgorithm.ignore,
+          );
+        } catch (error) {
+          // A concurrent writer can win between the logical lookup and the
+          // INSERT, or a historical duplicate can be protected by the
+          // schema-level admission trigger. The authoritative reread below
+          // distinguishes that case from an unrelated SQLite failure.
+          final concurrent = await txn.query(
+            'processing_operations',
+            where:
+                'deployment_scope = ? AND owner_user_id = ? '
+                'AND meeting_id = ? AND operation_type = ? '
+                'AND source_media_id = ? AND reprocess_of_job_id IS NULL',
+            whereArgs: <Object?>[
+              candidate.deploymentScope,
+              candidate.ownerUserId,
+              candidate.meetingId,
+              ProcessingOperationType.admission.wireValue,
+              candidate.sourceMediaId,
+            ],
+          );
+          if (concurrent.isEmpty) rethrow;
+        }
+      }
+      final logicalRows = await txn.query(
+        'processing_operations',
+        where:
+            'deployment_scope = ? AND owner_user_id = ? AND meeting_id = ? '
+            'AND operation_type = ? AND source_media_id = ? '
+            'AND reprocess_of_job_id IS NULL',
+        whereArgs: <Object?>[
+          candidate.deploymentScope,
+          candidate.ownerUserId,
+          candidate.meetingId,
+          ProcessingOperationType.admission.wireValue,
+          candidate.sourceMediaId,
+        ],
+      );
+      if (logicalRows.length > 1) {
+        throw const LocalMediaLogicalOperationConflictException();
+      }
+      if (logicalRows.isEmpty) {
+        final keyRows = await txn.query(
+          'processing_operations',
+          where:
+              'deployment_scope = ? AND owner_user_id = ? '
+              'AND idempotency_key = ?',
+          whereArgs: <Object?>[
+            candidate.deploymentScope,
+            candidate.ownerUserId,
+            candidate.idempotencyKey,
+          ],
+          limit: 1,
+        );
+        if (keyRows.isEmpty) {
+          throw StateError('The processing operation could not be persisted.');
+        }
+        final keyed = _processingFromRow(keyRows.single);
+        _requireEquivalentProcessingRequest(keyed, candidate);
+        return keyed;
+      }
+      final existing = _processingFromRow(logicalRows.single);
+      _requireEquivalentInitialAdmission(existing, candidate);
+      return existing;
+    });
+  }
+
   Future<ProcessingOperation> updateProcessingOperation(
     ProcessingOperation operation, {
     required int expectedVersion,
@@ -1054,6 +1159,21 @@ class LocalMediaPersistence {
     }
   }
 
+  static void _requireEquivalentInitialAdmission(
+    ProcessingOperation actual,
+    ProcessingOperation candidate,
+  ) {
+    if (actual.deploymentScope != candidate.deploymentScope ||
+        actual.ownerUserId != candidate.ownerUserId ||
+        actual.meetingId != candidate.meetingId ||
+        actual.operationType != ProcessingOperationType.admission ||
+        actual.sourceMediaId != candidate.sourceMediaId ||
+        actual.reprocessOfJobId != null ||
+        candidate.reprocessOfJobId != null) {
+      throw const LocalMediaIdempotencyConflictException();
+    }
+  }
+
   static String _legacyUploadFingerprint(UploadOperation operation) => sha256
       .convert(
         utf8.encode(
@@ -1157,4 +1277,12 @@ class LocalMediaIdempotencyConflictException implements Exception {
   @override
   String toString() =>
       'The idempotency key is already bound to another request.';
+}
+
+class LocalMediaLogicalOperationConflictException implements Exception {
+  const LocalMediaLogicalOperationConflictException();
+
+  @override
+  String toString() =>
+      'Multiple historical operations match the same logical processing admission.';
 }

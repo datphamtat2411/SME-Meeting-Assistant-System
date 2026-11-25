@@ -46,6 +46,20 @@ class LocalMediaAssetLease {
   }
 }
 
+class _ImportPreparation {
+  const _ImportPreparation(this.asset, this.writerLease);
+
+  final LocalMediaAsset asset;
+  final LocalMediaAssetLease writerLease;
+}
+
+class _ImportDuplicate {
+  const _ImportDuplicate(this.asset, this.lease);
+
+  final LocalMediaAsset asset;
+  final LocalMediaAssetLease lease;
+}
+
 /// Application-level owner of durable local media state.
 ///
 /// Authentication and HTTP remain outside this class. Callers provide the
@@ -142,19 +156,17 @@ class LocalMediaRepository {
     required String contentType,
     String? sourceProvenance,
     UploadCancellationToken? cancellationToken,
-  }) => _withLifecycleLock(
-    () => _importStreamForOwner(
-      deploymentScope: scope.deploymentScope,
-      ownerUserId: scope.userId,
-      meetingId: meetingId,
-      bytes: bytes,
-      expectedSizeBytes: expectedSizeBytes,
-      sourceType: sourceType,
-      originalFilename: originalFilename,
-      contentType: contentType,
-      sourceProvenance: sourceProvenance,
-      cancellationToken: cancellationToken,
-    ),
+  }) => _importStreamForOwner(
+    deploymentScope: scope.deploymentScope,
+    ownerUserId: scope.userId,
+    meetingId: meetingId,
+    bytes: bytes,
+    expectedSizeBytes: expectedSizeBytes,
+    sourceType: sourceType,
+    originalFilename: originalFilename,
+    contentType: contentType,
+    sourceProvenance: sourceProvenance,
+    cancellationToken: cancellationToken,
   );
 
   Future<List<LocalMediaAsset>> listAssets({
@@ -1041,6 +1053,7 @@ class LocalMediaRepository {
     String? reprocessOfJobId,
     String? stageCode,
     String? targetJobId,
+    bool logicalInitialAdmission = false,
   }) async {
     _requireScope(scope.deploymentScope, scope.userId);
     _validateIdentifier(meetingId, 'meetingId');
@@ -1065,39 +1078,40 @@ class LocalMediaRepository {
     final persistence = await _persistence();
     final now = _utcNow();
     try {
-      return await persistence.getOrCreateProcessingOperation(
-        ProcessingOperation(
-          id: _newId(),
-          deploymentScope: scope.deploymentScope,
-          ownerUserId: scope.userId,
-          meetingId: meetingId,
-          idempotencyKey: idempotencyKey,
-          requestFingerprint: expectedFingerprint,
-          operationType: operationType,
-          sourceMediaId: sourceMediaId,
-          targetJobId: targetJobId,
-          resultingJobId: null,
-          reprocessOfJobId: reprocessOfJobId,
-          stageCode: stageCode,
-          checkpoint: switch (operationType) {
-            ProcessingOperationType.admission =>
-              ProcessingOperationCheckpoint.admissionNotConfirmed,
-            ProcessingOperationType.retry =>
-              ProcessingOperationCheckpoint.retryNotConfirmed,
-            ProcessingOperationType.reprocess =>
-              ProcessingOperationCheckpoint.reprocessNotConfirmed,
-          },
-          attemptCount: 0,
-          attemptOutcome: OperationAttemptOutcome.none,
-          recoveryRequired: false,
-          lastFailureCode: null,
-          lastFailureStatus: null,
-          lastFailureMessage: null,
-          createdAt: now,
-          updatedAt: now,
-          version: 0,
-        ),
+      final candidate = ProcessingOperation(
+        id: _newId(),
+        deploymentScope: scope.deploymentScope,
+        ownerUserId: scope.userId,
+        meetingId: meetingId,
+        idempotencyKey: idempotencyKey,
+        requestFingerprint: expectedFingerprint,
+        operationType: operationType,
+        sourceMediaId: sourceMediaId,
+        targetJobId: targetJobId,
+        resultingJobId: null,
+        reprocessOfJobId: reprocessOfJobId,
+        stageCode: stageCode,
+        checkpoint: switch (operationType) {
+          ProcessingOperationType.admission =>
+            ProcessingOperationCheckpoint.admissionNotConfirmed,
+          ProcessingOperationType.retry =>
+            ProcessingOperationCheckpoint.retryNotConfirmed,
+          ProcessingOperationType.reprocess =>
+            ProcessingOperationCheckpoint.reprocessNotConfirmed,
+        },
+        attemptCount: 0,
+        attemptOutcome: OperationAttemptOutcome.none,
+        recoveryRequired: false,
+        lastFailureCode: null,
+        lastFailureStatus: null,
+        lastFailureMessage: null,
+        createdAt: now,
+        updatedAt: now,
+        version: 0,
       );
+      return logicalInitialAdmission
+          ? await persistence.getOrCreateInitialAdmission(candidate)
+          : await persistence.getOrCreateProcessingOperation(candidate);
     } on LocalMediaIdempotencyConflictException {
       throw const LocalMediaIdempotencyConflictException();
     }
@@ -1630,6 +1644,121 @@ class LocalMediaRepository {
     String? sourceProvenance,
     UploadCancellationToken? cancellationToken,
   }) async {
+    final preparation = await _withLifecycleLock(
+      () => _prepareImportStream(
+        deploymentScope: deploymentScope,
+        ownerUserId: ownerUserId,
+        meetingId: meetingId,
+        expectedSizeBytes: expectedSizeBytes,
+        sourceType: sourceType,
+        originalFilename: originalFilename,
+        contentType: contentType,
+        sourceProvenance: sourceProvenance,
+      ),
+    );
+    final persistence = await _persistence();
+    final storage = await _storage();
+    var current = preparation.asset;
+    final writerLease = preparation.writerLease;
+    try {
+      final stagedPath = current.stagedRelativePath;
+      if (stagedPath == null) {
+        throw const FileSystemException('The staged media path is missing.');
+      }
+      final integrity = await storage.writeStreamToStaging(
+        stagedPath,
+        bytes,
+        expectedSizeBytes: expectedSizeBytes,
+        cancellationToken: cancellationToken,
+      );
+      current = await _withLifecycleLock(
+        () => persistence.updateAsset(
+          current.copyWith(
+            lifecycle: LocalMediaLifecycle.staged,
+            sizeBytes: integrity.sizeBytes,
+            sha256: integrity.sha256,
+            quarantineReason: null,
+            updatedAt: _utcNow(),
+          ),
+          expectedVersion: current.version,
+        ),
+      );
+      final duplicate = await _findImportDuplicate(
+        persistence: persistence,
+        deploymentScope: deploymentScope,
+        ownerUserId: ownerUserId,
+        meetingId: meetingId,
+        sourceType: sourceType,
+        originalFilename: originalFilename,
+        contentType: contentType,
+        integrity: integrity,
+        excludingAssetId: current.id,
+      );
+      if (duplicate != null) {
+        try {
+          return await _withLifecycleLock(
+            () => _reuseVerifiedImportDuplicate(
+              persistence: persistence,
+              storage: storage,
+              current: current,
+              candidate: duplicate.asset,
+              stagedPath: stagedPath,
+            ),
+          );
+        } finally {
+          await duplicate.lease.release();
+        }
+      }
+
+      current = await _withLifecycleLock(
+        () => persistence.updateAsset(
+          current.copyWith(
+            lifecycle: LocalMediaLifecycle.promotionPending,
+            updatedAt: _utcNow(),
+          ),
+          expectedVersion: current.version,
+        ),
+      );
+      // The writer lease fences discard and recovery while the external file
+      // move and integrity inspection happen outside the global lifecycle lock.
+      await storage.promote(stagedPath, current.managedRelativePath);
+      final managedIntegrity = await storage.inspectFile(
+        current.managedRelativePath,
+      );
+      if (managedIntegrity.sizeBytes != integrity.sizeBytes ||
+          managedIntegrity.sha256 != integrity.sha256) {
+        throw const FileSystemException(
+          'The promoted media file failed integrity verification.',
+        );
+      }
+      return await _withLifecycleLock(
+        () => persistence.updateAsset(
+          current.copyWith(
+            lifecycle: LocalMediaLifecycle.ready,
+            readyAt: _utcNow(),
+            updatedAt: _utcNow(),
+          ),
+          expectedVersion: current.version,
+        ),
+      );
+    } catch (_) {
+      await _markImportInterrupted(persistence: persistence, current: current);
+      rethrow;
+    } finally {
+      await writerLease.release();
+    }
+  }
+
+  Future<_ImportPreparation> _prepareImportStream({
+    required String deploymentScope,
+    required String ownerUserId,
+    required String meetingId,
+    required int expectedSizeBytes,
+    required LocalMediaSourceType sourceType,
+    required String originalFilename,
+    required String contentType,
+    String? sourceProvenance,
+  }) async {
     _requireScope(deploymentScope, ownerUserId);
     _validateIdentifier(meetingId, 'meetingId');
     _validateFilename(originalFilename);
@@ -1663,122 +1792,158 @@ class LocalMediaRepository {
       throw const LocalMediaBusyException();
     }
 
-    LocalMediaAsset? asset = existing;
-    if (asset == null) {
+    LocalMediaAsset prepared;
+    if (existing != null) {
+      prepared = existing;
+    } else {
       final id = _newId();
       final paths = storage.allocatePaths(id);
-      final now = _utcNow();
-      asset = LocalMediaAsset(
-        id: id,
-        deploymentScope: deploymentScope,
-        ownerUserId: ownerUserId,
-        meetingId: meetingId,
-        sourceType: sourceType,
-        managedRelativePath: paths.managedRelativePath,
-        stagedRelativePath: paths.stagedRelativePath,
-        originalFilename: originalFilename,
-        contentType: contentType,
-        sizeBytes: null,
-        durationMs: null,
-        sha256: null,
-        lifecycle: LocalMediaLifecycle.creating,
-        sourceProvenance: provenance,
-        quarantineReason: null,
-        createdAt: now,
-        updatedAt: now,
-        readyAt: null,
-        version: 0,
-      );
-      await persistence.insertAsset(asset);
-    }
-
-    var current = asset;
-    final writerLease = _acquireWriterLease(current.id);
-    try {
-      final stagedPath = current.stagedRelativePath;
-      if (stagedPath == null) {
-        throw const FileSystemException('The staged media path is missing.');
-      }
-      final integrity = await storage.writeStreamToStaging(
-        stagedPath,
-        bytes,
-        expectedSizeBytes: expectedSizeBytes,
-        cancellationToken: cancellationToken,
-      );
-      current = await persistence.updateAsset(
-        current.copyWith(
-          lifecycle: LocalMediaLifecycle.staged,
-          sizeBytes: integrity.sizeBytes,
-          sha256: integrity.sha256,
+      prepared = await persistence.insertAsset(
+        LocalMediaAsset(
+          id: id,
+          deploymentScope: deploymentScope,
+          ownerUserId: ownerUserId,
+          meetingId: meetingId,
+          sourceType: sourceType,
+          managedRelativePath: paths.managedRelativePath,
+          stagedRelativePath: paths.stagedRelativePath,
+          originalFilename: originalFilename,
+          contentType: contentType,
+          sizeBytes: null,
+          durationMs: null,
+          sha256: null,
+          lifecycle: LocalMediaLifecycle.creating,
+          sourceProvenance: provenance,
           quarantineReason: null,
+          createdAt: _utcNow(),
           updatedAt: _utcNow(),
+          readyAt: null,
+          version: 0,
         ),
-        expectedVersion: current.version,
       );
-      current = await persistence.updateAsset(
-        current.copyWith(
-          lifecycle: LocalMediaLifecycle.promotionPending,
-          updatedAt: _utcNow(),
-        ),
-        expectedVersion: current.version,
-      );
-      final readyAssets = await persistence.listAssets(
-        deploymentScope: deploymentScope,
-        ownerUserId: ownerUserId,
-        meetingId: meetingId,
-      );
-      for (final candidate in readyAssets) {
-        if (candidate.id == current.id ||
-            candidate.sourceType != sourceType ||
-            candidate.originalFilename != originalFilename ||
-            candidate.contentType != contentType ||
-            candidate.sizeBytes != integrity.sizeBytes ||
-            candidate.sha256?.toLowerCase() != integrity.sha256.toLowerCase()) {
-          continue;
+    }
+    if (prepared.stagedRelativePath == null) {
+      throw const FileSystemException('The staged media path is missing.');
+    }
+    final writerLease = _acquireWriterLease(prepared.id);
+    writerLease._file = storage.fileFor(prepared.stagedRelativePath!);
+    return _ImportPreparation(prepared, writerLease);
+  }
+
+  Future<_ImportDuplicate?> _findImportDuplicate({
+    required LocalMediaPersistence persistence,
+    required String deploymentScope,
+    required String ownerUserId,
+    required String meetingId,
+    required LocalMediaSourceType sourceType,
+    required String originalFilename,
+    required String contentType,
+    required LocalMediaFileIntegrity integrity,
+    required String excludingAssetId,
+  }) async {
+    final candidates = await persistence.listAssets(
+      deploymentScope: deploymentScope,
+      ownerUserId: ownerUserId,
+      meetingId: meetingId,
+    );
+    for (final candidate in candidates) {
+      if (candidate.id == excludingAssetId ||
+          candidate.sourceType != sourceType ||
+          candidate.originalFilename != originalFilename ||
+          candidate.contentType != contentType ||
+          candidate.sizeBytes != integrity.sizeBytes ||
+          candidate.sha256?.toLowerCase() != integrity.sha256.toLowerCase() ||
+          !candidate.isReady) {
+        continue;
+      }
+      LocalMediaAssetLease? lease;
+      await _withLifecycleLock(() async {
+        final current = await persistence.findAsset(
+          id: candidate.id,
+          deploymentScope: deploymentScope,
+          ownerUserId: ownerUserId,
+        );
+        if (current == null || !current.isReady) return;
+        try {
+          lease = _acquireReaderLease(current.id);
+        } on LocalMediaBusyException {
+          // Another owned action is changing this candidate. It is not safe
+          // to reuse during this import, but it must not abort an otherwise
+          // valid source stream.
+          lease = null;
         }
-        if (!await _verifyReadyAsset(candidate)) continue;
-        await _deleteIfPresent(storage, stagedPath);
-        await persistence.updateAsset(
+      });
+      if (lease == null) continue;
+      try {
+        if (await _verifyReadyAsset(candidate)) {
+          return _ImportDuplicate(candidate, lease!);
+        }
+      } catch (_) {
+        // A candidate that cannot be verified is not safe to reuse.
+      }
+      await lease!.release();
+    }
+    return null;
+  }
+
+  Future<LocalMediaAsset> _reuseVerifiedImportDuplicate({
+    required LocalMediaPersistence persistence,
+    required ManagedMediaStorage storage,
+    required LocalMediaAsset current,
+    required LocalMediaAsset candidate,
+    required String stagedPath,
+  }) async {
+    final retained = await persistence.findAsset(
+      id: candidate.id,
+      deploymentScope: candidate.deploymentScope,
+      ownerUserId: candidate.ownerUserId,
+    );
+    if (retained == null ||
+        !retained.isReady ||
+        retained.sizeBytes != candidate.sizeBytes ||
+        retained.sha256?.toLowerCase() != candidate.sha256?.toLowerCase()) {
+      throw const LocalMediaUnavailableException();
+    }
+    await _deleteIfPresent(storage, stagedPath);
+    return persistence
+        .updateAsset(
           current.copyWith(
             lifecycle: LocalMediaLifecycle.discarded,
             updatedAt: _utcNow(),
           ),
           expectedVersion: current.version,
+        )
+        .then((_) => retained);
+  }
+
+  Future<void> _markImportInterrupted({
+    required LocalMediaPersistence persistence,
+    required LocalMediaAsset current,
+  }) async {
+    try {
+      await _withLifecycleLock(() async {
+        final latest = await persistence.findAsset(
+          id: current.id,
+          deploymentScope: current.deploymentScope,
+          ownerUserId: current.ownerUserId,
         );
-        return candidate;
-      }
-      await storage.promote(stagedPath, current.managedRelativePath);
-      final managedIntegrity = await storage.inspectFile(
-        current.managedRelativePath,
-      );
-      if (managedIntegrity.sizeBytes != integrity.sizeBytes ||
-          managedIntegrity.sha256 != integrity.sha256) {
-        throw const FileSystemException(
-          'The promoted media file failed integrity verification.',
-        );
-      }
-      return await persistence.updateAsset(
-        current.copyWith(
-          lifecycle: LocalMediaLifecycle.ready,
-          readyAt: _utcNow(),
-          updatedAt: _utcNow(),
-        ),
-        expectedVersion: current.version,
-      );
-    } catch (_) {
-      try {
+        if (latest == null ||
+            latest.lifecycle == LocalMediaLifecycle.ready ||
+            latest.lifecycle == LocalMediaLifecycle.discarded) {
+          return;
+        }
         await persistence.updateAsset(
-          current.copyWith(
+          latest.copyWith(
             lifecycle: LocalMediaLifecycle.interrupted,
             quarantineReason: 'SOURCE_IMPORT_INTERRUPTED',
             updatedAt: _utcNow(),
           ),
-          expectedVersion: current.version,
+          expectedVersion: latest.version,
         );
-      } catch (_) {}
-      rethrow;
-    } finally {
-      _releaseLeaseNow(writerLease);
+      });
+    } catch (_) {
+      // The staged bytes and original operation identity remain available for
+      // the next explicit recovery pass even if this diagnostic update fails.
     }
   }
 
@@ -2555,14 +2720,6 @@ class LocalMediaOwnershipException implements Exception {
   @override
   String toString() =>
       'The local media record belongs to another session scope.';
-}
-
-class LocalMediaIdempotencyConflictException implements Exception {
-  const LocalMediaIdempotencyConflictException();
-
-  @override
-  String toString() =>
-      'The idempotency key is already bound to another request.';
 }
 
 class LocalMediaUnavailableException implements Exception {

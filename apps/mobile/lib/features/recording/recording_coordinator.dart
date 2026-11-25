@@ -93,7 +93,7 @@ abstract interface class RecordingCaptureAdapter {
   Future<String?> stop();
 
   /// Returns `null` when the adapter cannot establish native state.
-  Future<bool?> isRecording() async => false;
+  Future<bool?> isRecording() async => null;
 
   Future<void> dispose();
 }
@@ -122,8 +122,9 @@ class NativeRecordingCaptureAdapter implements RecordingCaptureAdapter {
 
   @override
   Future<bool?> isRecording() async {
+    if (_disposedRecorder) return false;
     final recorder = this.recorder;
-    if (recorder == null) return _disposedRecorder ? false : null;
+    if (recorder == null) return null;
     try {
       return await recorder.isRecording();
     } on Object {
@@ -134,11 +135,14 @@ class NativeRecordingCaptureAdapter implements RecordingCaptureAdapter {
   @override
   Future<void> dispose() async {
     final recorder = this.recorder;
-    this.recorder = null;
     if (recorder == null) return;
     try {
       await recorder.dispose();
       _disposedRecorder = true;
+      // Keep the reference until disposal has completed. A failed disposal
+      // must leave the only usable native handle available for a controlled
+      // termination retry.
+      this.recorder = null;
     } catch (_) {
       _disposedRecorder = false;
       rethrow;
@@ -186,7 +190,7 @@ Future<AudioImportSource?> pickSupportedAudioFile() async {
     sizeBytes: size,
     bytes: bytes,
     path: path,
-    provenance: path == null ? null : 'picker-path:${File(path).absolute.path}',
+    provenance: path == null ? null : 'picker:${result.name}:$size',
   );
 }
 
@@ -290,6 +294,24 @@ class RecordingCoordinator extends ChangeNotifier with WidgetsBindingObserver {
   late RecordingCoordinatorState _state;
   RecordingCoordinatorState get state => _state;
 
+  /// Returns only the state owned by the supplied authenticated meeting scope.
+  /// Application-wide recording indication may use [state], but a meeting
+  /// workspace must never project another meeting's command state.
+  RecordingCoordinatorState stateFor({
+    required String meetingId,
+    required AuthenticatedSessionScope scope,
+  }) {
+    final current = _state;
+    if (current.sessionScope != scope || current.meetingId != meetingId) {
+      return RecordingCoordinatorState(
+        lifecycle: RecordingLifecycleState.idle,
+        meetingId: meetingId,
+        sessionScope: scope,
+      );
+    }
+    return current;
+  }
+
   Future<void> _commandTail = Future<void>.value();
   Future<RecordingCoordinatorState>? _startFuture;
   Future<RecordingCoordinatorState>? _stopFuture;
@@ -307,29 +329,67 @@ class RecordingCoordinator extends ChangeNotifier with WidgetsBindingObserver {
   MeetingStatus? _activeMeetingStatus;
   bool _sessionInvalidated = false;
   bool _disposed = false;
+  bool _shuttingDown = false;
+  bool _nativeTerminationUncertain = false;
+  bool _captureSizeCheckInFlight = false;
+  int _captureGeneration = 0;
+  bool _limitStopRequested = false;
   bool _lifecycleObserverRegistered = false;
+  _RecordingCommandKind? _activeCommandKind;
+  AuthenticatedSessionScope? _commandScope;
+  String? _commandMeetingId;
+  Future<void>? _shutdownFuture;
+
+  bool get hasActiveWork =>
+      _activeCommandKind != null ||
+      _startFuture != null ||
+      _stopFuture != null ||
+      _activeAsset != null ||
+      _nativeTerminationUncertain ||
+      _state.isCapturing ||
+      _state.lifecycle == RecordingLifecycleState.importing;
 
   Future<RecordingCoordinatorState> start({
     required String meetingId,
     required MeetingCapabilities capabilities,
     required MeetingStatus meetingStatus,
   }) {
+    if (_disposed || _shuttingDown) {
+      throw const RecordingEligibilityException(
+        'Recording is unavailable while the application is shutting down.',
+      );
+    }
+    if (_nativeTerminationUncertain) {
+      final scope = api.requireAuthenticatedSessionScope();
+      if (_activeMeetingId != meetingId || _activeScope != scope) {
+        throw const RecordingEligibilityException(
+          'Native recording termination is uncertain for another meeting.',
+        );
+      }
+      // Keep the durable interrupted asset and writer protection in place.
+      // The command is deliberately a no-op until native ownership becomes
+      // observable as terminated; it must never start a second recorder.
+      return Future<RecordingCoordinatorState>.value(_state);
+    }
     final existing = _startFuture;
     if (existing != null) {
-      if (_activeMeetingId == meetingId) return existing;
+      if (_activeCommandKind == _RecordingCommandKind.capture &&
+          _commandMeetingId == meetingId) {
+        return existing;
+      }
       throw const RecordingEligibilityException(
         'Another meeting already owns the active recording attempt.',
       );
     }
-    if (_state.isCapturing ||
-        _state.lifecycle == RecordingLifecycleState.importing ||
-        _activeAsset != null) {
-      if (_activeMeetingId != meetingId) {
-        throw const RecordingEligibilityException(
-          'Another meeting already owns the active recording attempt.',
-        );
-      }
-      return Future<RecordingCoordinatorState>.value(_state);
+    if (_activeCommandKind != null ||
+        _activeAsset != null ||
+        _writerLease != null ||
+        _nativeTerminationUncertain ||
+        _state.isCapturing ||
+        _state.lifecycle == RecordingLifecycleState.importing) {
+      throw const RecordingEligibilityException(
+        'Another recording or import operation already owns the capture resources.',
+      );
     }
     final scope = api.requireAuthenticatedSessionScope();
     if (capabilityResolver == null) {
@@ -340,6 +400,9 @@ class RecordingCoordinator extends ChangeNotifier with WidgetsBindingObserver {
     _activeCapabilities = capabilities;
     _activeMeetingStatus = meetingStatus;
     _sessionInvalidated = false;
+    _activeCommandKind = _RecordingCommandKind.capture;
+    _commandScope = scope;
+    _commandMeetingId = meetingId;
     _captureCancellation = UploadCancellationToken();
     _publish(
       RecordingCoordinatorState(
@@ -361,9 +424,20 @@ class RecordingCoordinator extends ChangeNotifier with WidgetsBindingObserver {
     return future;
   }
 
-  Future<RecordingCoordinatorState> stop() {
+  Future<RecordingCoordinatorState> stop({
+    String? meetingId,
+    AuthenticatedSessionScope? scope,
+  }) {
     final existing = _stopFuture;
     if (existing != null) return existing;
+    if (meetingId != null && _activeMeetingId != meetingId) {
+      throw const RecordingEligibilityException(
+        'The requested meeting does not own the active recording.',
+      );
+    }
+    if (scope != null && _activeScope != scope) {
+      throw const RecordingSessionChangedException();
+    }
     if (!_state.isCapturing && _activeAsset == null) {
       return Future<RecordingCoordinatorState>.value(_state);
     }
@@ -384,10 +458,32 @@ class RecordingCoordinator extends ChangeNotifier with WidgetsBindingObserver {
   Future<RecordingCoordinatorState> importAudio({
     required String meetingId,
     required MeetingCapabilities capabilities,
+    MeetingStatus? meetingStatus,
   }) {
-    if (_state.isCapturing ||
+    if (_disposed || _shuttingDown) {
+      throw const RecordingEligibilityException(
+        'Audio import is unavailable while the application is shutting down.',
+      );
+    }
+    final existing = _startFuture;
+    if (existing != null) {
+      if (_activeCommandKind == _RecordingCommandKind.import &&
+          _commandMeetingId == meetingId) {
+        return existing;
+      }
+      throw const RecordingEligibilityException(
+        'Another recording or import operation already owns the capture resources.',
+      );
+    }
+    if (_activeCommandKind != null ||
+        _activeAsset != null ||
+        _writerLease != null ||
+        _nativeTerminationUncertain ||
+        _state.isCapturing ||
         _state.lifecycle == RecordingLifecycleState.importing) {
-      return Future<RecordingCoordinatorState>.value(_state);
+      throw const RecordingEligibilityException(
+        'Another recording or import operation already owns the capture resources.',
+      );
     }
     final scope = api.requireAuthenticatedSessionScope();
     if (capabilityResolver == null &&
@@ -396,11 +492,23 @@ class RecordingCoordinator extends ChangeNotifier with WidgetsBindingObserver {
         'The meeting does not allow audio submission.',
       );
     }
+    if (meetingStatus == MeetingStatus.cancelled) {
+      throw const RecordingEligibilityException(
+        'Audio import is not available for a cancelled meeting.',
+      );
+    }
     _activeScope = scope;
     _activeMeetingId = meetingId;
+    _activeCapabilities = capabilities;
+    _activeMeetingStatus = meetingStatus;
     _sessionInvalidated = false;
+    _activeCommandKind = _RecordingCommandKind.import;
+    _commandScope = scope;
+    _commandMeetingId = meetingId;
     _importCancellation = UploadCancellationToken();
-    final future = _serialize(() => _importInternal(scope, meetingId));
+    final future = _serialize(
+      () => _importInternal(scope, meetingId, meetingStatus),
+    );
     _startFuture = future;
     unawaited(
       future.then<void>(
@@ -465,7 +573,7 @@ class RecordingCoordinator extends ChangeNotifier with WidgetsBindingObserver {
       }
       _requireCaptureAttemptActive(scope);
       api.requireCurrentAuthenticatedSession(scope);
-      await _refreshAuthorization(scope);
+      await _refreshAuthorization(scope, meetingId: _activeMeetingId!);
       _validateStartEligibility(_activeCapabilities!, _activeMeetingStatus!);
 
       final filename =
@@ -489,7 +597,7 @@ class RecordingCoordinator extends ChangeNotifier with WidgetsBindingObserver {
       _publish(_state.copyWith(lifecycle: RecordingLifecycleState.starting));
       _requireCaptureAttemptActive(scope);
       api.requireCurrentAuthenticatedSession(scope);
-      await _refreshAuthorization(scope);
+      await _refreshAuthorization(scope, meetingId: _activeMeetingId!);
       _requireCaptureAttemptActive(scope);
       _nativeStartAttempted = true;
       await _capture.start(
@@ -505,17 +613,10 @@ class RecordingCoordinator extends ChangeNotifier with WidgetsBindingObserver {
       // before it can be published as an active capture.
       _requireCaptureAttemptActive(scope);
       _stopwatch = Stopwatch()..start();
-      _elapsedTimer = Timer.periodic(const Duration(milliseconds: 250), (_) {
-        if (_state.lifecycle == RecordingLifecycleState.recording &&
-            _stopwatch != null) {
-          final elapsed = _stopwatch!.elapsed;
-          if (elapsed >= limits.maximumDuration) {
-            unawaited(_stopForLimit('MAXIMUM_RECORDING_DURATION'));
-          } else {
-            _publish(_state.copyWith(elapsed: elapsed));
-          }
-        }
-      });
+      _elapsedTimer = Timer.periodic(
+        const Duration(milliseconds: 250),
+        (_) => _captureLimitTick(),
+      );
       _publish(
         _state.copyWith(
           lifecycle: RecordingLifecycleState.recording,
@@ -666,6 +767,7 @@ class RecordingCoordinator extends ChangeNotifier with WidgetsBindingObserver {
   Future<RecordingCoordinatorState> _importInternal(
     AuthenticatedSessionScope scope,
     String meetingId,
+    MeetingStatus? fallbackStatus,
   ) async {
     AudioImportSource? source;
     final cancellation = _importCancellation ?? UploadCancellationToken();
@@ -696,8 +798,21 @@ class RecordingCoordinator extends ChangeNotifier with WidgetsBindingObserver {
         );
       }
       api.requireCurrentAuthenticatedSession(scope);
-      await _refreshAuthorization(scope);
+      final authorization = await _refreshAuthorization(
+        scope,
+        meetingId: meetingId,
+      );
       api.requireCurrentAuthenticatedSession(scope);
+      if (cancellation.isCancelled) {
+        throw const AudioImportException(
+          'IMPORT_CANCELLED',
+          'Audio import was cancelled.',
+        );
+      }
+      _validateImportEligibility(
+        _activeCapabilities!,
+        authorization?.status ?? fallbackStatus,
+      );
       final contentType = _contentTypeFor(selectedSource.name);
       if (selectedSource.sizeBytes <= 0) {
         throw const AudioImportException(
@@ -745,6 +860,7 @@ class RecordingCoordinator extends ChangeNotifier with WidgetsBindingObserver {
       final provenance =
           selectedSource.provenance ??
           'picker:${selectedSource.name}:${selectedSource.sizeBytes}';
+      _requireImportAttemptActive(scope, meetingId);
       final asset = await localMedia.importStream(
         scope: scope,
         meetingId: meetingId,
@@ -763,6 +879,7 @@ class RecordingCoordinator extends ChangeNotifier with WidgetsBindingObserver {
         );
       }
       api.requireCurrentAuthenticatedSession(scope);
+      _requireImportAttemptActive(scope, meetingId);
       _publish(
         RecordingCoordinatorState(
           lifecycle: RecordingLifecycleState.localReady,
@@ -796,6 +913,11 @@ class RecordingCoordinator extends ChangeNotifier with WidgetsBindingObserver {
         _activeScope = null;
         _activeMeetingId = null;
         _sessionInvalidated = false;
+        _activeCapabilities = null;
+        _activeMeetingStatus = null;
+        _activeCommandKind = null;
+        _commandScope = null;
+        _commandMeetingId = null;
       }
     }
   }
@@ -812,11 +934,14 @@ class RecordingCoordinator extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _refreshAuthorization(AuthenticatedSessionScope scope) async {
+  Future<RecordingAuthorizationContext?> _refreshAuthorization(
+    AuthenticatedSessionScope scope, {
+    required String meetingId,
+  }) async {
     final resolver = capabilityResolver;
-    if (resolver == null) return;
+    if (resolver == null) return null;
     api.requireCurrentAuthenticatedSession(scope);
-    final current = await resolver(_activeMeetingId!, scope);
+    final current = await resolver(meetingId, scope);
     if (current == null) {
       throw const RecordingEligibilityException(
         'Current meeting authorization is unavailable.',
@@ -825,7 +950,19 @@ class RecordingCoordinator extends ChangeNotifier with WidgetsBindingObserver {
     _activeCapabilities = current.capabilities;
     _activeMeetingStatus = current.status;
     api.requireCurrentAuthenticatedSession(scope);
-    _validateStartEligibility(current.capabilities, current.status);
+    return current;
+  }
+
+  void _validateImportEligibility(
+    MeetingCapabilities capabilities,
+    MeetingStatus? status,
+  ) {
+    if (!capabilities.allows(MeetingOperation.uploadMedia) ||
+        status == MeetingStatus.cancelled) {
+      throw const RecordingEligibilityException(
+        'The meeting does not allow audio submission.',
+      );
+    }
   }
 
   Future<void> _markActiveInterrupted(String reason) async {
@@ -869,8 +1006,70 @@ class RecordingCoordinator extends ChangeNotifier with WidgetsBindingObserver {
     api.requireCurrentAuthenticatedSession(scope);
   }
 
+  void _requireImportAttemptActive(
+    AuthenticatedSessionScope scope,
+    String meetingId,
+  ) {
+    if (_activeCommandKind != _RecordingCommandKind.import ||
+        _commandScope != scope ||
+        _commandMeetingId != meetingId ||
+        _importCancellation?.isCancelled == true) {
+      throw const AudioImportException(
+        'IMPORT_CANCELLED',
+        'Audio import was cancelled.',
+      );
+    }
+    api.requireCurrentAuthenticatedSession(scope);
+  }
+
+  void _captureLimitTick() {
+    if (_state.lifecycle != RecordingLifecycleState.recording ||
+        _stopwatch == null ||
+        _limitStopRequested) {
+      return;
+    }
+    final elapsed = _stopwatch!.elapsed;
+    if (elapsed >= limits.maximumDuration) {
+      unawaited(_stopForLimit('MAXIMUM_RECORDING_DURATION'));
+      return;
+    }
+    _publish(_state.copyWith(elapsed: elapsed));
+    if (!_captureSizeCheckInFlight) {
+      unawaited(_checkCaptureSize());
+    }
+  }
+
+  Future<void> _checkCaptureSize() async {
+    final path = _activeStagingPath;
+    final assetId = _activeAsset?.id;
+    final generation = _captureGeneration;
+    if (path == null || assetId == null || _captureSizeCheckInFlight) return;
+    _captureSizeCheckInFlight = true;
+    try {
+      final size = await File(path).length();
+      if (_captureGeneration == generation &&
+          _activeAsset?.id == assetId &&
+          _activeStagingPath == path &&
+          _state.lifecycle == RecordingLifecycleState.recording &&
+          size >= limits.maximumSizeBytes) {
+        await _stopForLimit('MAXIMUM_RECORDING_SIZE');
+      }
+    } on FileSystemException {
+      // Native recording remains the source of truth for storage failures.
+      // Completion will preserve the staged bytes as interrupted media.
+    } finally {
+      if (_captureGeneration == generation) {
+        _captureSizeCheckInFlight = false;
+      }
+    }
+  }
+
   Future<void> _stopForLimit(String reason) async {
-    if (_state.lifecycle != RecordingLifecycleState.recording) return;
+    if (_state.lifecycle != RecordingLifecycleState.recording ||
+        _limitStopRequested) {
+      return;
+    }
+    _limitStopRequested = true;
     try {
       final stopped = await stop();
       if (_state.lifecycle == RecordingLifecycleState.localReady) {
@@ -883,7 +1082,10 @@ class RecordingCoordinator extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<bool> _terminateNativeCapture() async {
-    if (!_nativeStartAttempted) return true;
+    if (!_nativeStartAttempted) {
+      _nativeTerminationUncertain = false;
+      return true;
+    }
     var terminationKnown = false;
     try {
       await _capture.stop().timeout(const Duration(seconds: 5));
@@ -895,7 +1097,10 @@ class RecordingCoordinator extends ChangeNotifier with WidgetsBindingObserver {
     } catch (_) {
       terminationKnown = false;
     }
-    if (terminationKnown) return true;
+    if (terminationKnown) {
+      _nativeTerminationUncertain = false;
+      return true;
+    }
     // A few native implementations release their recorder only during
     // disposal. Disposal is a controlled fallback, not termination evidence.
     try {
@@ -904,11 +1109,13 @@ class RecordingCoordinator extends ChangeNotifier with WidgetsBindingObserver {
       return false;
     }
     try {
-      return (await _capture.isRecording().timeout(
-            const Duration(seconds: 5),
-          )) ==
+      final terminated =
+          (await _capture.isRecording().timeout(const Duration(seconds: 5))) ==
           false;
+      _nativeTerminationUncertain = !terminated;
+      return terminated;
     } catch (_) {
+      _nativeTerminationUncertain = true;
       return false;
     }
   }
@@ -939,6 +1146,7 @@ class RecordingCoordinator extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   void _resetCapture() {
+    _captureGeneration++;
     _elapsedTimer?.cancel();
     _elapsedTimer = null;
     _stopwatch = null;
@@ -948,10 +1156,16 @@ class RecordingCoordinator extends ChangeNotifier with WidgetsBindingObserver {
     _writerLease = null;
     _activeStagingPath = null;
     _nativeStartAttempted = false;
+    _nativeTerminationUncertain = false;
+    _captureSizeCheckInFlight = false;
+    _limitStopRequested = false;
     _activeCapabilities = null;
     _activeMeetingStatus = null;
     _sessionInvalidated = false;
     _captureCancellation = null;
+    _activeCommandKind = null;
+    _commandScope = null;
+    _commandMeetingId = null;
   }
 
   void _publish(RecordingCoordinatorState next) {
@@ -988,6 +1202,8 @@ class RecordingCoordinator extends ChangeNotifier with WidgetsBindingObserver {
   @override
   void dispose() {
     if (_disposed) return;
+    beginShutdown();
+    unawaited(shutdown());
     _disposed = true;
     api.removeListener(_sessionChanged);
     if (_lifecycleObserverRegistered) {
@@ -996,16 +1212,59 @@ class RecordingCoordinator extends ChangeNotifier with WidgetsBindingObserver {
     _elapsedTimer?.cancel();
     _importCancellation?.cancel();
     _captureCancellation?.cancel();
-    unawaited(_disposeCapture());
     super.dispose();
   }
 
-  Future<void> _disposeCapture() async {
-    try {
-      await _capture.dispose();
-    } catch (_) {
-      // Disposal is best effort after the coordinator has fenced its state.
-    }
+  /// Fences new commands and cancellation-sensitive work synchronously.
+  /// [shutdown] performs the bounded native cleanup before persistence closes.
+  void beginShutdown() {
+    if (_shuttingDown) return;
+    _shuttingDown = true;
+    _elapsedTimer?.cancel();
+    _importCancellation?.cancel();
+    _captureCancellation?.cancel();
+  }
+
+  Future<void> shutdown() {
+    final existing = _shutdownFuture;
+    if (existing != null) return existing;
+    final future = () async {
+      beginShutdown();
+      try {
+        final pendingStart = _startFuture;
+        final pendingStop = _stopFuture;
+        if (_activeAsset != null ||
+            _state.isCapturing ||
+            pendingStart != null) {
+          try {
+            if (_activeAsset != null || _state.isCapturing) {
+              await stop().timeout(const Duration(seconds: 6));
+            }
+          } catch (_) {
+            // Durable interruption/reconciliation state is retained by the
+            // coordinator and repository when native termination is unknown.
+          }
+        }
+        for (final pending in <Future<RecordingCoordinatorState>?>[
+          pendingStart,
+          pendingStop,
+          _startFuture,
+          _stopFuture,
+        ]) {
+          if (pending == null) continue;
+          try {
+            await pending.timeout(const Duration(seconds: 6));
+          } catch (_) {}
+        }
+        try {
+          await _capture.dispose().timeout(const Duration(seconds: 6));
+        } catch (_) {}
+      } finally {
+        _elapsedTimer?.cancel();
+      }
+    }();
+    _shutdownFuture = future;
+    return future;
   }
 
   static String randomIdentity() {
@@ -1016,3 +1275,5 @@ class RecordingCoordinator extends ChangeNotifier with WidgetsBindingObserver {
     ).map((value) => value.toRadixString(16).padLeft(2, '0')).join();
   }
 }
+
+enum _RecordingCommandKind { capture, import }

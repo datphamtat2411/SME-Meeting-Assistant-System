@@ -39,6 +39,8 @@ class AppDependencies {
   late final SubmissionCoordinator submissions;
   late final ProcessingManager processingManager;
   bool _disposed = false;
+  bool _resourcesClosed = false;
+  Future<void>? _shutdownFuture;
 
   AppDependencies({
     required this.api,
@@ -161,15 +163,53 @@ class AppDependencies {
   void dispose() {
     if (_disposed) return;
     _disposed = true;
+    // Fence every producer before releasing shared transport or local
+    // persistence. If nothing is active, the close path runs synchronously
+    // through the first await so Flutter's existing State.dispose contract
+    // remains compatible; active work uses the awaitable shutdown path.
+    recording.beginShutdown();
+    submissions.beginShutdown();
+    processingManager.beginShutdown();
+    if (!recording.hasActiveWork &&
+        !submissions.hasActiveWork &&
+        !processingManager.hasActiveWork) {
+      _shutdownFuture = _closeResources();
+      return;
+    }
+    _shutdownFuture = _finishShutdown();
+  }
+
+  Future<void> shutdown() {
+    if (!_disposed) {
+      dispose();
+    }
+    return _shutdownFuture ?? Future<void>.value();
+  }
+
+  Future<void> _finishShutdown() async {
+    try {
+      await Future.wait(<Future<void>>[
+        recording.shutdown(),
+        submissions.shutdown(),
+        processingManager.shutdown(),
+      ]);
+    } finally {
+      await _closeResources();
+    }
+  }
+
+  Future<void> _closeResources() async {
+    if (_resourcesClosed) return;
+    _resourcesClosed = true;
     meetingInvalidation.dispose();
     processingManager.dispose();
     submissions.dispose();
     recording.dispose();
-    localMedia.close();
     try {
       api.dispose();
     } finally {
       httpClient.close();
     }
+    await localMedia.dispose();
   }
 }

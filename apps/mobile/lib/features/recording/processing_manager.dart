@@ -138,11 +138,22 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
       <String, Future<ProcessingJobRecord>>{};
   bool _backgrounded = false;
   bool _disposed = false;
+  bool _shuttingDown = false;
   bool _lifecycleObserverRegistered = false;
+  Future<void>? _shutdownFuture;
 
-  ProcessingMeetingState? stateFor(String meetingId) {
-    final scope = api.authenticatedSessionScope;
-    return scope == null ? null : _states[_key(scope, meetingId)];
+  bool get hasActiveWork => _inFlight.isNotEmpty || _mutationFlights.isNotEmpty;
+
+  ProcessingMeetingState? stateFor(
+    String meetingId, {
+    AuthenticatedSessionScope? scope,
+  }) {
+    final activeScope = scope ?? api.authenticatedSessionScope;
+    if (activeScope == null ||
+        !api.isCurrentAuthenticatedSession(activeScope)) {
+      return null;
+    }
+    return _states[_key(activeScope, meetingId)];
   }
 
   int consumerCount(String meetingId) {
@@ -156,6 +167,13 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
     String meetingId, {
     required AuthenticatedSessionScope scope,
   }) {
+    if (_disposed || _shuttingDown) {
+      throw const ApiFailure(
+        0,
+        'PROCESSING_SHUTDOWN',
+        'Processing observation is unavailable while the application is shutting down.',
+      );
+    }
     api.requireCurrentAuthenticatedSession(scope);
     final key = _key(scope, meetingId);
     final wasInactive = (_consumers[key] ?? 0) == 0;
@@ -210,18 +228,12 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
     bool force = false,
   }) {
     api.requireCurrentAuthenticatedSession(scope);
-    if (_disposed) return Future<void>.value();
+    if (_disposed || _shuttingDown) return Future<void>.value();
     final key = _key(scope, meetingId);
     var activeGeneration = generation ?? _observationGenerations[key];
     if (activeGeneration == null) {
       activeGeneration = 1;
       _observationGenerations[key] = activeGeneration;
-    }
-    if (explicit && generation == null) {
-      activeGeneration++;
-      _observationGenerations[key] = activeGeneration;
-      _cancelTimer(key);
-      force = true;
     }
     if (_observationGenerations[key] != activeGeneration) {
       return Future<void>.value();
@@ -229,7 +241,11 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
     _scopes[key] ??= scope;
     _meetingForKey[key] ??= meetingId;
     final running = _inFlight[key];
-    if (running != null && !force) return running;
+    // An explicit caller refreshes the current observation generation; it
+    // must not create an overlapping request. A generation-bound refresh from
+    // a newly mounted observer may use [force] to supersede an older
+    // generation's request.
+    if (running != null && (!force || generation == null)) return running;
     final current =
         _states[key] ??
         ProcessingMeetingState(meetingId: meetingId, sessionScope: scope);
@@ -267,11 +283,14 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
   }) async {
     final key = _key(scope, meetingId);
     try {
+      await _requireCurrentReadCapability(scope, meetingId);
+      api.requireCurrentAuthenticatedSession(scope);
       final results = await Future.wait<Object>(<Future<Object>>[
         mediaRepository.listMedia(meetingId, sessionScope: scope),
         processingRepository.list(meetingId, sessionScope: scope),
       ]);
       if (_disposed ||
+          _shuttingDown ||
           !api.isCurrentAuthenticatedSession(scope) ||
           _scopes[key] != scope ||
           _observationGenerations[key] != generation ||
@@ -307,6 +326,7 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
       );
     } catch (error) {
       if (_disposed ||
+          _shuttingDown ||
           !api.isCurrentAuthenticatedSession(scope) ||
           _scopes[key] != scope ||
           _observationGenerations[key] != generation ||
@@ -361,6 +381,15 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
     required AuthenticatedSessionScope scope,
     MeetingCapabilities? capabilities,
   }) {
+    if (_disposed || _shuttingDown) {
+      return Future<ProcessingJobRecord>.error(
+        const ApiFailure(
+          0,
+          'PROCESSING_SHUTDOWN',
+          'Processing actions are unavailable while the application is shutting down.',
+        ),
+      );
+    }
     final key = '${_key(scope, job.meetingId)}\u0000retry\u0000${job.id}';
     final running = _mutationFlights[key];
     if (running != null) return running;
@@ -415,51 +444,60 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
       operationType: ProcessingOperationType.retry,
       targetJobId: job.id,
     );
+    _checkMutation(scope);
+    operation = await _beginProcessingAttempt(scope, operation);
+    late ProcessingJobRecord accepted;
     try {
       // The default request is deliberately {}. A current stage is not proof
       // that stage-specific retry is authorized.
-      final accepted = await processingRepository.retry(
+      await _requireCurrentCapability(
+        scope,
+        job.meetingId,
+        MeetingOperation.retryProcessing,
+        capabilities,
+      );
+      _checkMutation(scope);
+      accepted = await processingRepository.retry(
         job.id,
         idempotencyKey: operation.idempotencyKey,
         sessionScope: scope,
       );
       api.requireCurrentAuthenticatedSession(scope);
-      await localMedia.updateProcessingOperation(
-        operation,
-        scope: scope,
-        checkpoint: ProcessingOperationCheckpoint.retryConfirmed,
-        resultingJobId: accepted.id,
-        attemptCount: operation.attemptCount + 1,
-        attemptOutcome: OperationAttemptOutcome.succeeded,
-      );
-      await refresh(job.meetingId, scope: scope, explicit: true);
-      return accepted;
+      _validateAcceptedJob(accepted, job);
     } catch (error) {
-      final failure = error is ApiFailure
-          ? error
-          : const ApiFailure(
-              0,
-              'PROCESSING_RETRY_FAILED',
-              'The processing retry could not be completed.',
-              isTransportFailure: true,
-              remoteOutcomeAmbiguous: true,
-            );
+      final failure = _processingFailure(
+        error,
+        code: 'PROCESSING_RETRY_FAILED',
+        message: 'The processing retry could not be completed.',
+      );
+      final ambiguous = _processingOutcomeAmbiguous(failure);
       await localMedia.updateProcessingOperation(
         operation,
         scope: scope,
-        attemptCount: operation.attemptCount + 1,
-        attemptOutcome:
-            failure.remoteOutcomeAmbiguous || failure.isTransportFailure
+        attemptCount: operation.attemptCount,
+        attemptOutcome: failure.code == 'PROCESSING_SHUTDOWN'
+            ? OperationAttemptOutcome.interrupted
+            : ambiguous
             ? OperationAttemptOutcome.uncertain
             : OperationAttemptOutcome.rejected,
-        recoveryRequired:
-            failure.remoteOutcomeAmbiguous || failure.isTransportFailure,
+        recoveryRequired: failure.code == 'PROCESSING_SHUTDOWN' || ambiguous,
         failureCode: failure.code,
         failureStatus: failure.status,
         failureMessage: failure.message,
       );
       rethrow;
     }
+    await localMedia.updateProcessingOperation(
+      operation,
+      scope: scope,
+      checkpoint: ProcessingOperationCheckpoint.retryConfirmed,
+      resultingJobId: accepted.id,
+      attemptCount: operation.attemptCount,
+      attemptOutcome: OperationAttemptOutcome.succeeded,
+      recoveryRequired: false,
+    );
+    await refresh(job.meetingId, scope: scope, explicit: true);
+    return accepted;
   }
 
   Future<ProcessingJobRecord> reprocess({
@@ -468,6 +506,15 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
     required AuthenticatedSessionScope scope,
     MeetingCapabilities? capabilities,
   }) {
+    if (_disposed || _shuttingDown) {
+      return Future<ProcessingJobRecord>.error(
+        const ApiFailure(
+          0,
+          'PROCESSING_SHUTDOWN',
+          'Processing actions are unavailable while the application is shutting down.',
+        ),
+      );
+    }
     final key =
         '${_key(scope, parent.meetingId)}\u0000reprocess\u0000'
         '${parent.id}\u0000$sourceMediaId';
@@ -542,8 +589,18 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
       sourceMediaId: sourceMediaId,
       reprocessOfJobId: parent.id,
     );
+    _checkMutation(scope);
+    operation = await _beginProcessingAttempt(scope, operation);
+    late ProcessingJobRecord accepted;
     try {
-      final accepted = await processingRepository.admit(
+      await _requireCurrentCapability(
+        scope,
+        parent.meetingId,
+        MeetingOperation.admitProcessing,
+        capabilities,
+      );
+      _checkMutation(scope);
+      accepted = await processingRepository.admit(
         parent.meetingId,
         ProcessingAdmissionRequest(
           mediaId: sourceMediaId,
@@ -553,42 +610,41 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
         sessionScope: scope,
       );
       api.requireCurrentAuthenticatedSession(scope);
-      await localMedia.updateProcessingOperation(
-        operation,
-        scope: scope,
-        checkpoint: ProcessingOperationCheckpoint.reprocessConfirmed,
-        resultingJobId: accepted.id,
-        attemptCount: operation.attemptCount + 1,
-        attemptOutcome: OperationAttemptOutcome.succeeded,
-      );
-      await refresh(parent.meetingId, scope: scope, explicit: true);
-      return accepted;
+      _validateAcceptedJobIdentity(accepted, parent.meetingId, sourceMediaId);
     } catch (error) {
-      final failure = error is ApiFailure
-          ? error
-          : const ApiFailure(
-              0,
-              'PROCESSING_REPROCESS_FAILED',
-              'The reprocessing request could not be completed.',
-              isTransportFailure: true,
-              remoteOutcomeAmbiguous: true,
-            );
+      final failure = _processingFailure(
+        error,
+        code: 'PROCESSING_REPROCESS_FAILED',
+        message: 'The reprocessing request could not be completed.',
+      );
+      final ambiguous = _processingOutcomeAmbiguous(failure);
       await localMedia.updateProcessingOperation(
         operation,
         scope: scope,
-        attemptCount: operation.attemptCount + 1,
-        attemptOutcome:
-            failure.remoteOutcomeAmbiguous || failure.isTransportFailure
+        attemptCount: operation.attemptCount,
+        attemptOutcome: failure.code == 'PROCESSING_SHUTDOWN'
+            ? OperationAttemptOutcome.interrupted
+            : ambiguous
             ? OperationAttemptOutcome.uncertain
             : OperationAttemptOutcome.rejected,
-        recoveryRequired:
-            failure.remoteOutcomeAmbiguous || failure.isTransportFailure,
+        recoveryRequired: failure.code == 'PROCESSING_SHUTDOWN' || ambiguous,
         failureCode: failure.code,
         failureStatus: failure.status,
         failureMessage: failure.message,
       );
       rethrow;
     }
+    await localMedia.updateProcessingOperation(
+      operation,
+      scope: scope,
+      checkpoint: ProcessingOperationCheckpoint.reprocessConfirmed,
+      resultingJobId: accepted.id,
+      attemptCount: operation.attemptCount,
+      attemptOutcome: OperationAttemptOutcome.succeeded,
+      recoveryRequired: false,
+    );
+    await refresh(parent.meetingId, scope: scope, explicit: true);
+    return accepted;
   }
 
   TranscriptReviewHandoff? reviewHandoff(ProcessingJobRecord job) {
@@ -654,7 +710,8 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
           (_consumers[key] ?? 0) > 0 &&
           _scopes[key] == scope &&
           _observationGenerations[key] == generation &&
-          !_disposed) {
+          !_disposed &&
+          !_shuttingDown) {
         unawaited(refresh(meetingId, scope: scope, generation: generation));
       }
     });
@@ -662,6 +719,37 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
 
   void _cancelTimer(String key) {
     _timers.remove(key)?.cancel();
+  }
+
+  /// Fences new observations and processing mutations before shared
+  /// application resources are released.
+  void beginShutdown() {
+    if (_shuttingDown) return;
+    _shuttingDown = true;
+    for (final key in _timers.keys.toList(growable: false)) {
+      _cancelTimer(key);
+    }
+  }
+
+  Future<void> shutdown() {
+    final existing = _shutdownFuture;
+    if (existing != null) return existing;
+    final future = () async {
+      beginShutdown();
+      final active = <Future<void>>[
+        ..._inFlight.values,
+        ..._mutationFlights.values.map((value) => value.then<void>((_) {})),
+      ];
+      if (active.isEmpty) return;
+      try {
+        await Future.wait(active).timeout(const Duration(seconds: 6));
+      } catch (_) {
+        // Remote observation/mutation state is durable elsewhere or remains
+        // explicitly recoverable; shutdown must not block forever on network.
+      }
+    }();
+    _shutdownFuture = future;
+    return future;
   }
 
   Future<ProcessingOperation?> _unresolvedOperation({
@@ -678,19 +766,140 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
       remoteJobId: remoteJobId,
       sourceMediaId: sourceMediaId,
     );
-    for (final operation in operations) {
-      if (operation.operationType == type &&
-          operation.reprocessOfJobId == reprocessOfJobId &&
-          operation.checkpoint !=
-              ProcessingOperationCheckpoint.admissionConfirmed &&
-          operation.checkpoint !=
-              ProcessingOperationCheckpoint.retryConfirmed &&
-          operation.checkpoint !=
-              ProcessingOperationCheckpoint.reprocessConfirmed) {
-        return operation;
-      }
+    final matches = operations
+        .where(
+          (operation) =>
+              operation.operationType == type &&
+              operation.reprocessOfJobId == reprocessOfJobId &&
+              (!_processingConfirmed(operation) ||
+                  operation.recoveryRequired ||
+                  operation.attemptOutcome ==
+                      OperationAttemptOutcome.uncertain ||
+                  operation.attemptOutcome ==
+                      OperationAttemptOutcome.interrupted ||
+                  operation.attemptOutcome ==
+                      OperationAttemptOutcome.cancelled),
+        )
+        .toList(growable: false);
+    if (matches.length > 1) {
+      throw const ApiFailure(
+        409,
+        'PROCESSING_RECONCILIATION_REQUIRED',
+        'Multiple durable processing attempts require reconciliation.',
+      );
     }
-    return null;
+    return matches.isEmpty ? null : matches.single;
+  }
+
+  Future<ProcessingOperation> _beginProcessingAttempt(
+    AuthenticatedSessionScope scope,
+    ProcessingOperation operation,
+  ) => localMedia.updateProcessingOperation(
+    operation,
+    scope: scope,
+    attemptCount: operation.attemptCount + 1,
+    attemptOutcome: OperationAttemptOutcome.uncertain,
+    recoveryRequired: true,
+  );
+
+  bool _processingConfirmed(ProcessingOperation operation) =>
+      operation.resultingJobId != null &&
+      switch (operation.operationType) {
+        ProcessingOperationType.admission =>
+          operation.checkpoint ==
+              ProcessingOperationCheckpoint.admissionConfirmed,
+        ProcessingOperationType.retry =>
+          operation.checkpoint == ProcessingOperationCheckpoint.retryConfirmed,
+        ProcessingOperationType.reprocess =>
+          operation.checkpoint ==
+              ProcessingOperationCheckpoint.reprocessConfirmed,
+      };
+
+  void _checkMutation(AuthenticatedSessionScope scope) {
+    if (_disposed || _shuttingDown) {
+      throw const ApiFailure(
+        0,
+        'PROCESSING_SHUTDOWN',
+        'Processing actions are unavailable while the application is shutting down.',
+      );
+    }
+    api.requireCurrentAuthenticatedSession(scope);
+  }
+
+  ApiFailure _processingFailure(
+    Object error, {
+    required String code,
+    required String message,
+  }) {
+    if (error is MediaRepositoryFailure &&
+        error.mutationOutcome == MediaMutationOutcome.unknown &&
+        !error.remoteOutcomeAmbiguous) {
+      return ApiFailure(
+        error.status,
+        error.code,
+        error.message,
+        requestId: error.requestId,
+        responseRequestId: error.responseRequestId,
+        timestamp: error.timestamp,
+        errors: error.errors,
+        retryAfter: error.retryAfter,
+        headers: error.headers,
+        isTransportFailure: error.isTransportFailure,
+        remoteOutcomeAmbiguous: true,
+      );
+    }
+    if (error is ApiFailure) return error;
+    return ApiFailure(
+      0,
+      code,
+      message,
+      isTransportFailure: true,
+      remoteOutcomeAmbiguous: true,
+    );
+  }
+
+  bool _processingOutcomeAmbiguous(ApiFailure failure) =>
+      failure.remoteOutcomeAmbiguous ||
+      failure.isTransportFailure ||
+      failure.invalidResponse ||
+      failure.status == 401 ||
+      failure.status >= 500;
+
+  void _validateAcceptedJob(
+    ProcessingJobRecord accepted,
+    ProcessingJobRecord requested,
+  ) {
+    _validateAcceptedJobIdentity(
+      accepted,
+      requested.meetingId,
+      requested.sourceMediaId,
+    );
+    if (accepted.id.toLowerCase() != requested.id.toLowerCase()) {
+      throw const ApiFailure(
+        502,
+        'PROCESSING_RESPONSE_MISMATCH',
+        'The processing retry response does not match the requested job.',
+        remoteOutcomeAmbiguous: true,
+      );
+    }
+  }
+
+  void _validateAcceptedJobIdentity(
+    ProcessingJobRecord accepted,
+    String meetingId,
+    String? sourceMediaId,
+  ) {
+    if (accepted.meetingId.toLowerCase() != meetingId.toLowerCase() ||
+        sourceMediaId != null &&
+            accepted.sourceMediaId?.toLowerCase() !=
+                sourceMediaId.toLowerCase()) {
+      throw const ApiFailure(
+        502,
+        'PROCESSING_RESPONSE_MISMATCH',
+        'The processing response does not match the requested media.',
+        remoteOutcomeAmbiguous: true,
+      );
+    }
   }
 
   Future<void> _requireCurrentCapability(
@@ -718,6 +927,24 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
         403,
         'PROCESSING_CAPABILITY_REQUIRED',
         'The current meeting capability does not allow this processing operation.',
+      );
+    }
+  }
+
+  Future<void> _requireCurrentReadCapability(
+    AuthenticatedSessionScope scope,
+    String meetingId,
+  ) async {
+    api.requireCurrentAuthenticatedSession(scope);
+    final resolver = capabilityResolver;
+    if (resolver == null) return;
+    final current = await resolver(meetingId, scope);
+    api.requireCurrentAuthenticatedSession(scope);
+    if (current == null || !current.allows(MeetingOperation.readMedia)) {
+      throw const ApiFailure(
+        403,
+        'PROCESSING_CAPABILITY_REQUIRED',
+        'The current meeting capability does not allow processing observation.',
       );
     }
   }
@@ -779,6 +1006,8 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
   @override
   void dispose() {
     if (_disposed) return;
+    beginShutdown();
+    unawaited(shutdown());
     _disposed = true;
     if (_lifecycleObserverRegistered) {
       WidgetsBinding.instance.removeObserver(this);

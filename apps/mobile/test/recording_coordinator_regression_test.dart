@@ -9,6 +9,7 @@ import 'package:sme_meeting_assistant/core/api_client.dart';
 import 'package:sme_meeting_assistant/core/models.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_foundation.dart';
 import 'package:sme_meeting_assistant/features/recording/local_media_database.dart';
+import 'package:sme_meeting_assistant/features/recording/local_media_models.dart';
 import 'package:sme_meeting_assistant/features/recording/local_media_persistence.dart';
 import 'package:sme_meeting_assistant/features/recording/local_media_repository.dart';
 import 'package:sme_meeting_assistant/features/recording/managed_media_storage.dart';
@@ -108,6 +109,162 @@ void main() {
 
       expect(state.lifecycle, RecordingLifecycleState.localReady);
       expect(state.asset?.isReady, isTrue);
+    },
+  );
+
+  test('recording projection is fenced to its meeting scope', () async {
+    final fixture = await _Fixture.create();
+    addTearDown(fixture.dispose);
+    final coordinator = fixture.coordinator(_ControlledCapture());
+    addTearDown(coordinator.dispose);
+
+    await coordinator.start(
+      meetingId: testMeetingId,
+      capabilities: fixture.capabilities,
+      meetingStatus: MeetingStatus.inProgress,
+    );
+    final otherMeetingId = '99999999-9999-4999-8999-999999999999';
+    final other = coordinator.stateFor(
+      meetingId: otherMeetingId,
+      scope: fixture.scope,
+    );
+
+    expect(other.meetingId, otherMeetingId);
+    expect(other.lifecycle, RecordingLifecycleState.idle);
+    expect(other.isCapturing, isFalse);
+  });
+
+  test('authorized import succeeds for an ended meeting', () async {
+    final fixture = await _Fixture.create();
+    addTearDown(fixture.dispose);
+    final endedCapabilities = MeetingCapabilityPolicy.evaluate(
+      callerId: testUserId,
+      meeting: Meeting.fromJson(meetingTestJson(status: 'ENDED')),
+    );
+    final authorization = Completer<RecordingAuthorizationContext>();
+    final coordinator = fixture.coordinator(
+      _ControlledCapture(),
+      capabilityResolver: (meetingId, scope) => authorization.future,
+      picker: () async => AudioImportSource(
+        name: 'ended.wav',
+        sizeBytes: 3,
+        bytes: Stream<List<int>>.value(<int>[1, 2, 3]),
+      ),
+    );
+    addTearDown(coordinator.dispose);
+
+    final import = coordinator.importAudio(
+      meetingId: testMeetingId,
+      capabilities: endedCapabilities,
+    );
+    authorization.complete(
+      RecordingAuthorizationContext(
+        capabilities: endedCapabilities,
+        status: MeetingStatus.ended,
+      ),
+    );
+
+    final state = await import;
+    expect(state.lifecycle, RecordingLifecycleState.localReady);
+    expect(state.asset?.isReady, isTrue);
+  });
+
+  test('an import size mismatch preserves recoverable state and releases its writer', () async {
+    final fixture = await _Fixture.create();
+    addTearDown(fixture.dispose);
+    final coordinator = fixture.coordinator(
+      _ControlledCapture(),
+      picker: () async => AudioImportSource(
+        name: 'short.wav',
+        sizeBytes: 3,
+        bytes: Stream<List<int>>.value(<int>[1, 2]),
+      ),
+    );
+    addTearDown(coordinator.dispose);
+
+    await expectLater(
+      coordinator.importAudio(
+        meetingId: testMeetingId,
+        capabilities: fixture.capabilities,
+      ),
+      throwsA(isA<FileSystemException>()),
+    );
+    final assets = await fixture.repository.listAssets(
+      scope: fixture.scope,
+      meetingId: testMeetingId,
+    );
+    expect(assets, hasLength(1));
+    expect(assets.single.lifecycle, LocalMediaLifecycle.interrupted);
+    expect(
+      (await fixture.repository.discard(
+        scope: fixture.scope,
+        assetId: assets.single.id,
+      )).lifecycle,
+      LocalMediaLifecycle.discarded,
+    );
+  });
+
+  test(
+    'import cannot replace capture while native termination is uncertain',
+    () async {
+      final fixture = await _Fixture.create();
+      addTearDown(fixture.dispose);
+      final capture = _ControlledCapture(
+        stopThrows: true,
+        disposeTerminates: false,
+      );
+      final coordinator = fixture.coordinator(
+        capture,
+        picker: () async => AudioImportSource(
+          name: 'import.wav',
+          sizeBytes: 3,
+          bytes: Stream<List<int>>.value(<int>[1, 2, 3]),
+        ),
+      );
+      await coordinator.start(
+        meetingId: testMeetingId,
+        capabilities: fixture.capabilities,
+        meetingStatus: MeetingStatus.inProgress,
+      );
+      await expectLater(
+        coordinator.stop(),
+        throwsA(isA<FileSystemException>()),
+      );
+
+      expect(
+        () => coordinator.importAudio(
+          meetingId: testMeetingId,
+          capabilities: fixture.capabilities,
+        ),
+        throwsA(isA<RecordingEligibilityException>()),
+      );
+    },
+  );
+
+  test(
+    'unknown native state keeps writer protection after failed stop',
+    () async {
+      final fixture = await _Fixture.create();
+      addTearDown(fixture.dispose);
+      final capture = _UnknownStateCapture();
+      final coordinator = fixture.coordinator(capture);
+      await coordinator.start(
+        meetingId: testMeetingId,
+        capabilities: fixture.capabilities,
+        meetingStatus: MeetingStatus.inProgress,
+      );
+
+      await expectLater(
+        coordinator.stop(),
+        throwsA(isA<FileSystemException>()),
+      );
+      expect(
+        fixture.repository.discard(
+          scope: fixture.scope,
+          assetId: coordinator.state.asset!.id,
+        ),
+        throwsA(isA<LocalMediaBusyException>()),
+      );
     },
   );
 
@@ -292,7 +449,7 @@ class _Fixture {
   late Directory directory;
 
   RecordingCoordinator coordinator(
-    _ControlledCapture capture, {
+    RecordingCaptureAdapter capture, {
     AudioImportPicker? picker,
     RecordingCapabilityResolver? capabilityResolver,
   }) {
@@ -371,4 +528,27 @@ class _ControlledCapture implements RecordingCaptureAdapter {
   Future<void> dispose() async {
     if (disposeTerminates) nativeRecording = false;
   }
+}
+
+class _UnknownStateCapture implements RecordingCaptureAdapter {
+  bool nativeRecording = false;
+  String? path;
+
+  @override
+  Future<bool> hasPermission() async => true;
+
+  @override
+  Future<void> start(RecordConfig config, {required String path}) async {
+    this.path = path;
+    nativeRecording = true;
+  }
+
+  @override
+  Future<String?> stop() async => path;
+
+  @override
+  Future<bool?> isRecording() async => null;
+
+  @override
+  Future<void> dispose() async {}
 }

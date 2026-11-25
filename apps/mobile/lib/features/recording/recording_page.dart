@@ -49,7 +49,7 @@ class RecordingPage extends StatefulWidget {
 }
 
 class _RecordingPageState extends State<RecordingPage> {
-  late final AuthenticatedSessionScope sessionScope;
+  AuthenticatedSessionScope? sessionScope;
   late final LocalMediaRepository localMedia;
   late final RecordingCoordinator recording;
   late final SubmissionCoordinator submissions;
@@ -62,6 +62,7 @@ class _RecordingPageState extends State<RecordingPage> {
   ProcessingMeetingState? remoteState;
   Object? failure;
   bool _sessionFenced = false;
+  int _loadGeneration = 0;
 
   @override
   void initState() {
@@ -75,34 +76,69 @@ class _RecordingPageState extends State<RecordingPage> {
     submissions.addListener(_changed);
     processingManager.addListener(_changed);
     unawaited(_load());
-    if (_allows(MeetingOperation.readMedia)) {
-      observation = processingManager.startObserving(
-        widget.meetingId,
-        scope: sessionScope,
-      );
+    _startObservationIfAllowed();
+  }
+
+  @override
+  void didUpdateWidget(covariant RecordingPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final meetingChanged = oldWidget.meetingId != widget.meetingId;
+    final nextScope = widget.api.authenticatedSessionScope;
+    final sessionChanged = nextScope != sessionScope;
+    final oldReadAccess =
+        oldWidget.capabilities?.allows(MeetingOperation.readMedia) == true;
+    final newReadAccess =
+        widget.capabilities?.allows(MeetingOperation.readMedia) == true;
+
+    if (meetingChanged || sessionChanged) {
+      _loadGeneration++;
+      observation?.dispose();
+      observation = null;
+      sessionScope = nextScope;
+      _sessionFenced = nextScope == null;
+      assets = <LocalMediaAsset>[];
+      selectedAsset = null;
+      submission = null;
+      remoteState = null;
+      failure = null;
+      if (nextScope != null) {
+        _startObservationIfAllowed();
+        unawaited(_load());
+      }
+    } else if (!oldReadAccess && newReadAccess) {
+      _startObservationIfAllowed();
+    } else if (oldReadAccess && !newReadAccess) {
+      observation?.dispose();
+      observation = null;
+      remoteState = null;
     }
   }
 
   Future<void> _load() async {
+    final scope = sessionScope;
+    final meetingId = widget.meetingId;
+    if (scope == null) return;
+    final generation = ++_loadGeneration;
     Object? recoveryFailure;
     try {
-      await localMedia.recoverLocalState(
-        scope: sessionScope,
-        meetingId: widget.meetingId,
-      );
+      await localMedia.recoverLocalState(scope: scope, meetingId: meetingId);
     } catch (error) {
       recoveryFailure = error;
     }
     try {
       final recovered = await submissions.recoverDurableState(
-        scope: sessionScope,
-        meetingId: widget.meetingId,
+        scope: scope,
+        meetingId: meetingId,
       );
       final listed = await localMedia.listAssets(
-        scope: sessionScope,
-        meetingId: widget.meetingId,
+        scope: scope,
+        meetingId: meetingId,
       );
-      if (!mounted || !widget.api.isCurrentAuthenticatedSession(sessionScope)) {
+      if (!mounted ||
+          generation != _loadGeneration ||
+          widget.meetingId != meetingId ||
+          sessionScope != scope ||
+          !widget.api.isCurrentAuthenticatedSession(scope)) {
         return;
       }
       final ready = listed.where((asset) => asset.isReady).toList();
@@ -129,7 +165,10 @@ class _RecordingPageState extends State<RecordingPage> {
         failure = recoveryFailure;
       });
     } catch (error) {
-      if (mounted && widget.api.isCurrentAuthenticatedSession(sessionScope)) {
+      if (mounted &&
+          generation == _loadGeneration &&
+          sessionScope == scope &&
+          widget.api.isCurrentAuthenticatedSession(scope)) {
         setState(() => failure = recoveryFailure ?? error);
       }
     }
@@ -139,7 +178,8 @@ class _RecordingPageState extends State<RecordingPage> {
     if (!mounted) {
       return;
     }
-    if (!widget.api.isCurrentAuthenticatedSession(sessionScope)) {
+    final scope = sessionScope;
+    if (scope == null || !widget.api.isCurrentAuthenticatedSession(scope)) {
       if (_sessionFenced) return;
       setState(() {
         _sessionFenced = true;
@@ -153,15 +193,37 @@ class _RecordingPageState extends State<RecordingPage> {
     }
     if (_sessionFenced) return;
     setState(() {
-      submission = submissions.stateFor(selectedAsset?.id ?? '');
-      remoteState = processingManager.stateFor(widget.meetingId);
+      submission = selectedAsset == null
+          ? null
+          : submissions.stateFor(selectedAsset!.id);
+      remoteState = processingManager.stateFor(widget.meetingId, scope: scope);
     });
   }
 
   bool _allows(MeetingOperation operation) =>
-      !_sessionFenced && widget.capabilities?.allows(operation) == true;
+      !_sessionFenced &&
+      sessionScope != null &&
+      widget.api.isCurrentAuthenticatedSession(sessionScope!) &&
+      widget.capabilities?.allows(operation) == true;
+
+  void _startObservationIfAllowed() {
+    final scope = sessionScope;
+    if (scope == null || !_allows(MeetingOperation.readMedia)) return;
+    try {
+      observation = processingManager.startObserving(
+        widget.meetingId,
+        scope: scope,
+      );
+    } catch (error) {
+      if (mounted) setState(() => failure = error);
+    }
+  }
 
   Future<void> _start() async {
+    final scope = sessionScope;
+    if (scope == null || !widget.api.isCurrentAuthenticatedSession(scope)) {
+      return;
+    }
     try {
       await recording.start(
         meetingId: widget.meetingId,
@@ -180,31 +242,42 @@ class _RecordingPageState extends State<RecordingPage> {
       );
       await _load();
     } catch (error) {
-      if (mounted && widget.api.isCurrentAuthenticatedSession(sessionScope)) {
+      if (mounted && widget.api.isCurrentAuthenticatedSession(scope)) {
         setState(() => failure = error);
       }
     }
   }
 
   Future<void> _stop() async {
+    final scope = sessionScope;
+    if (scope == null || !widget.api.isCurrentAuthenticatedSession(scope)) {
+      return;
+    }
     try {
-      await recording.stop();
+      await recording.stop(meetingId: widget.meetingId, scope: scope);
       await _load();
-      final asset = recording.state.asset;
+      final asset = recording
+          .stateFor(meetingId: widget.meetingId, scope: scope)
+          .asset;
       if (asset?.isReady == true) {
         setState(() => selectedAsset = asset);
       }
     } catch (error) {
-      if (mounted && widget.api.isCurrentAuthenticatedSession(sessionScope)) {
+      if (mounted && widget.api.isCurrentAuthenticatedSession(scope)) {
         setState(() => failure = error);
       }
     }
   }
 
   Future<void> _import() async {
+    final scope = sessionScope;
+    if (scope == null || !widget.api.isCurrentAuthenticatedSession(scope)) {
+      return;
+    }
     try {
       await recording.importAudio(
         meetingId: widget.meetingId,
+        meetingStatus: widget.meetingStatus,
         capabilities:
             widget.capabilities ??
             (throw const ApiFailure(
@@ -214,10 +287,12 @@ class _RecordingPageState extends State<RecordingPage> {
             )),
       );
       await _load();
-      final asset = recording.state.asset;
+      final asset = recording
+          .stateFor(meetingId: widget.meetingId, scope: scope)
+          .asset;
       if (asset?.isReady == true) setState(() => selectedAsset = asset);
     } catch (error) {
-      if (mounted && widget.api.isCurrentAuthenticatedSession(sessionScope)) {
+      if (mounted && widget.api.isCurrentAuthenticatedSession(scope)) {
         setState(() => failure = error);
       }
     }
@@ -225,7 +300,12 @@ class _RecordingPageState extends State<RecordingPage> {
 
   Future<void> _submit() async {
     final asset = selectedAsset;
-    if (asset == null) return;
+    final scope = sessionScope;
+    if (asset == null ||
+        scope == null ||
+        !widget.api.isCurrentAuthenticatedSession(scope)) {
+      return;
+    }
     try {
       final existing = submissions.stateFor(asset.id);
       final operation = existing?.uploadOperation;
@@ -237,23 +317,27 @@ class _RecordingPageState extends State<RecordingPage> {
             )
           : await submissions.resume(
               operationId: operation.id,
-              scope: sessionScope,
+              scope: scope,
               capabilities: widget.capabilities,
               admitProcessing: _allows(MeetingOperation.admitProcessing),
             );
-      if (mounted && widget.api.isCurrentAuthenticatedSession(sessionScope)) {
+      if (mounted && widget.api.isCurrentAuthenticatedSession(scope)) {
         setState(() => submission = result);
       }
     } catch (error) {
-      if (mounted && widget.api.isCurrentAuthenticatedSession(sessionScope)) {
+      if (mounted && widget.api.isCurrentAuthenticatedSession(scope)) {
         setState(() => failure = error);
       }
     }
   }
 
   Future<void> _discard(LocalMediaAsset asset) async {
+    final scope = sessionScope;
+    if (scope == null || !widget.api.isCurrentAuthenticatedSession(scope)) {
+      return;
+    }
     try {
-      await localMedia.discard(scope: sessionScope, assetId: asset.id);
+      await localMedia.discard(scope: scope, assetId: asset.id);
       if (selectedAsset?.id == asset.id) {
         setState(() {
           selectedAsset = null;
@@ -262,7 +346,7 @@ class _RecordingPageState extends State<RecordingPage> {
       }
       await _load();
     } catch (error) {
-      if (mounted && widget.api.isCurrentAuthenticatedSession(sessionScope)) {
+      if (mounted && widget.api.isCurrentAuthenticatedSession(scope)) {
         setState(() => failure = error);
       }
     }
@@ -270,6 +354,7 @@ class _RecordingPageState extends State<RecordingPage> {
 
   @override
   void dispose() {
+    _loadGeneration++;
     observation?.dispose();
     recording.removeListener(_changed);
     submissions.removeListener(_changed);
@@ -279,17 +364,21 @@ class _RecordingPageState extends State<RecordingPage> {
 
   @override
   Widget build(BuildContext context) {
-    final captureState = recording.state;
+    final scope = sessionScope;
+    final captureState = scope == null
+        ? const RecordingCoordinatorState(
+            lifecycle: RecordingLifecycleState.idle,
+          )
+        : recording.stateFor(meetingId: widget.meetingId, scope: scope);
     final isCapturing = captureState.isCapturing;
     final canUpload =
         !_sessionFenced &&
         widget.enabled &&
         _allows(MeetingOperation.uploadMedia);
-    final selectedSubmission =
-        submission ??
-        (selectedAsset == null
-            ? null
-            : submissions.stateFor(selectedAsset!.id));
+    final selectedSubmission = selectedAsset == null
+        ? null
+        : submissions.stateFor(selectedAsset!.id) ??
+              (submission?.assetId == selectedAsset!.id ? submission : null);
     return ListView(
       padding: const EdgeInsets.all(18),
       children: [
@@ -508,18 +597,24 @@ class _RecordingPageState extends State<RecordingPage> {
   }
 
   Future<void> _submitExisting(MediaRecord media) async {
+    final scope = sessionScope;
+    if (scope == null || !widget.api.isCurrentAuthenticatedSession(scope)) {
+      return;
+    }
     try {
       final result = await submissions.admitAvailableMedia(
         meetingId: widget.meetingId,
         mediaId: media.id,
-        scope: sessionScope,
+        scope: scope,
         capabilities: widget.capabilities,
       );
-      if (mounted && widget.api.isCurrentAuthenticatedSession(sessionScope)) {
+      if (mounted && widget.api.isCurrentAuthenticatedSession(scope)) {
         setState(() => submission = result);
       }
     } catch (error) {
-      if (mounted) setState(() => failure = error);
+      if (mounted && widget.api.isCurrentAuthenticatedSession(scope)) {
+        setState(() => failure = error);
+      }
     }
   }
 }

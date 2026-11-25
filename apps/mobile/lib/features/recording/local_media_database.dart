@@ -202,6 +202,8 @@ class LocalMediaDatabase {
       CREATE INDEX IF NOT EXISTS ix_processing_operations_owner
       ON processing_operations(deployment_scope, owner_user_id, updated_at DESC)
     ''');
+    await _createInitialProcessingAdmissionIndex(db);
+    await _createInitialProcessingAdmissionTriggers(db);
     await db.execute('''
       CREATE INDEX IF NOT EXISTS ix_upload_operations_meeting
       ON upload_operations(deployment_scope, owner_user_id, meeting_id, updated_at DESC)
@@ -321,6 +323,8 @@ class LocalMediaDatabase {
       // exactly the same way as a V2--V4 upgrade.
       await _createOperationEvidence(db);
       await _normalizeHistoricalOperations(db);
+      await _createInitialProcessingAdmissionIndex(db);
+      await _createInitialProcessingAdmissionTriggers(db);
     }
     if (oldVersion > newVersion) {
       throw StateError('Local media database downgrade is not supported.');
@@ -571,6 +575,125 @@ class LocalMediaDatabase {
     await _createOperationEvidence(db);
     await _createUploadScopeTriggers(db);
     await _createProcessingTargetTrigger(db);
+    await _createInitialProcessingAdmissionIndex(db);
+    await _createInitialProcessingAdmissionTriggers(db);
+  }
+
+  /// There is at most one initial admission for a source media identity. A
+  /// partial unique index preserves retry/reprocess rows while making the
+  /// logical admission boundary enforceable by SQLite.
+  ///
+  /// Historical databases may already contain conflicting rows. Those rows
+  /// are left intact for explicit reconciliation; the persistence boundary
+  /// detects the conflict instead of silently deleting evidence during upgrade.
+  static Future<void> _createInitialProcessingAdmissionIndex(
+    sqflite.DatabaseExecutor db,
+  ) async {
+    final columns = await db.rawQuery(
+      'PRAGMA table_info(processing_operations)',
+    );
+    final names = columns.map((row) => row['name']).whereType<String>().toSet();
+    if (!names.containsAll(<String>{
+      'deployment_scope',
+      'owner_user_id',
+      'meeting_id',
+      'operation_type',
+      'source_media_id',
+      'reprocess_of_job_id',
+    })) {
+      // A pre-v3 table is rebuilt later in the same upgrade transaction.
+      return;
+    }
+    final conflicts = await db.rawQuery('''
+      SELECT deployment_scope, owner_user_id, meeting_id, source_media_id
+      FROM processing_operations
+      WHERE operation_type = 'ADMISSION'
+        AND reprocess_of_job_id IS NULL
+        AND source_media_id IS NOT NULL
+      GROUP BY deployment_scope, owner_user_id, meeting_id, source_media_id
+      HAVING COUNT(*) > 1
+      LIMIT 1
+    ''');
+    if (conflicts.isNotEmpty) return;
+    await db.execute('''
+      CREATE UNIQUE INDEX IF NOT EXISTS
+        ux_processing_initial_admission
+      ON processing_operations(
+        deployment_scope, owner_user_id, meeting_id, source_media_id
+      )
+      WHERE operation_type = 'ADMISSION'
+        AND reprocess_of_job_id IS NULL
+        AND source_media_id IS NOT NULL
+    ''');
+  }
+
+  /// V6 databases can contain historical duplicate admissions that cannot be
+  /// represented by a unique index without deleting evidence. The triggers
+  /// still make the logical boundary authoritative for every new direct
+  /// SQLite write (and for a tuple that already has historical duplicates).
+  static Future<void> _createInitialProcessingAdmissionTriggers(
+    sqflite.DatabaseExecutor db,
+  ) async {
+    final columns = await db.rawQuery(
+      'PRAGMA table_info(processing_operations)',
+    );
+    final names = columns.map((row) => row['name']).whereType<String>().toSet();
+    if (!names.containsAll(<String>{
+      'deployment_scope',
+      'owner_user_id',
+      'meeting_id',
+      'operation_type',
+      'source_media_id',
+      'reprocess_of_job_id',
+    })) {
+      return;
+    }
+    await db.execute('''
+      CREATE TRIGGER IF NOT EXISTS
+        trg_processing_initial_admission_unique_insert
+      BEFORE INSERT ON processing_operations
+      WHEN NEW.operation_type = 'ADMISSION'
+        AND NEW.reprocess_of_job_id IS NULL
+        AND NEW.source_media_id IS NOT NULL
+        AND EXISTS (
+          SELECT 1
+          FROM processing_operations existing
+          WHERE existing.deployment_scope = NEW.deployment_scope
+            AND existing.owner_user_id = NEW.owner_user_id
+            AND existing.meeting_id = NEW.meeting_id
+            AND existing.operation_type = 'ADMISSION'
+            AND existing.reprocess_of_job_id IS NULL
+            AND existing.source_media_id = NEW.source_media_id
+        )
+      BEGIN
+        SELECT RAISE(ABORT, 'initial processing admission already exists');
+      END
+    ''');
+    await db.execute('''
+      CREATE TRIGGER IF NOT EXISTS
+        trg_processing_initial_admission_unique_update
+      BEFORE UPDATE OF
+        deployment_scope, owner_user_id, meeting_id, operation_type,
+        source_media_id, reprocess_of_job_id
+      ON processing_operations
+      WHEN NEW.operation_type = 'ADMISSION'
+        AND NEW.reprocess_of_job_id IS NULL
+        AND NEW.source_media_id IS NOT NULL
+        AND EXISTS (
+          SELECT 1
+          FROM processing_operations existing
+          WHERE existing.id <> OLD.id
+            AND existing.deployment_scope = NEW.deployment_scope
+            AND existing.owner_user_id = NEW.owner_user_id
+            AND existing.meeting_id = NEW.meeting_id
+            AND existing.operation_type = 'ADMISSION'
+            AND existing.reprocess_of_job_id IS NULL
+            AND existing.source_media_id = NEW.source_media_id
+        )
+      BEGIN
+        SELECT RAISE(ABORT, 'initial processing admission already exists');
+      END
+    ''');
   }
 
   static Future<void> _createRecoveryArtifacts(

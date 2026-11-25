@@ -10,6 +10,44 @@ import 'package:sme_meeting_assistant/features/recording/local_media_repository.
 import 'support/meeting_test_support.dart';
 
 void main() {
+  test('explicit refreshes within one generation share one request', () async {
+    final mediaResponse = Completer<http.StreamedResponse>();
+    final jobsResponse = Completer<http.StreamedResponse>();
+    var requests = 0;
+    final client = MeetingTestHttpClient((request) async {
+      if (request.url.path.endsWith('/media')) {
+        return mediaResponse.future;
+      }
+      if (request.url.path.endsWith('/processing-jobs')) {
+        requests++;
+        return jobsResponse.future;
+      }
+      throw StateError('Unexpected request ${request.url.path}');
+    });
+    final api = createMeetingTestApi(client);
+    await signInMeetingTestApi(api);
+    final scope = api.requireAuthenticatedSessionScope();
+    final manager = ProcessingManager(
+      api: api,
+      mediaRepository: MediaRepository(api: api),
+      processingRepository: ProcessingRepository(api: api),
+      localMedia: LocalMediaRepository.lazyDefault(),
+    );
+    addTearDown(() {
+      manager.dispose();
+      api.dispose();
+    });
+
+    final first = manager.refresh(testMeetingId, scope: scope, explicit: true);
+    final second = manager.refresh(testMeetingId, scope: scope, explicit: true);
+    expect(identical(first, second), isTrue);
+
+    mediaResponse.complete(await meetingApiSuccess(const <dynamic>[]));
+    jobsResponse.complete(await meetingApiSuccess(const <dynamic>[]));
+    await Future.wait(<Future<void>>[first, second]);
+    expect(requests, 1);
+  });
+
   test(
     'a later observation generation wins over an earlier in-flight response',
     () async {

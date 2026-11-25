@@ -32,7 +32,7 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
     with WidgetsBindingObserver {
   late Future<List<ProcessingJobRecord>> future;
   bool retrying = false;
-  late final AuthenticatedSessionScope sessionScope;
+  AuthenticatedSessionScope? sessionScope;
   MeetingCapabilities? _capabilities;
   ProcessingObservation? observation;
 
@@ -44,34 +44,58 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
     _capabilities = widget.capabilities;
     widget.processingManager.addListener(_managerChanged);
     _managerChanged();
-    if (_allows(MeetingOperation.readMedia)) {
-      observation = widget.processingManager.startObserving(
-        widget.meetingId,
-        scope: sessionScope,
-      );
-    }
+    _startObservation();
   }
 
   @override
   void didUpdateWidget(covariant ProcessingTimelinePanel oldWidget) {
     super.didUpdateWidget(oldWidget);
+    final nextScope = widget.api.authenticatedSessionScope;
+    final meetingChanged = oldWidget.meetingId != widget.meetingId;
+    final sessionChanged = nextScope != sessionScope;
     final hadReadAccess =
         oldWidget.capabilities?.allows(MeetingOperation.readMedia) == true;
     _capabilities = widget.capabilities;
+    if (meetingChanged || sessionChanged) {
+      observation?.dispose();
+      observation = null;
+      sessionScope = nextScope;
+      future = Future<List<ProcessingJobRecord>>.value(const []);
+      if (_allows(MeetingOperation.readMedia)) {
+        _startObservation();
+      }
+      _managerChanged();
+      return;
+    }
     final hasReadAccess = _allows(MeetingOperation.readMedia);
     if (!hadReadAccess && hasReadAccess && observation == null) {
-      observation = widget.processingManager.startObserving(
-        widget.meetingId,
-        scope: sessionScope,
-      );
+      _startObservation();
     } else if (hadReadAccess && !hasReadAccess) {
       observation?.dispose();
       observation = null;
+      future = Future<List<ProcessingJobRecord>>.value(const []);
     }
   }
 
   bool _allows(MeetingOperation operation) =>
+      sessionScope != null &&
+      widget.api.isCurrentAuthenticatedSession(sessionScope!) &&
       _capabilities?.allows(operation) == true;
+
+  void _startObservation() {
+    final scope = sessionScope;
+    if (scope == null || !_allows(MeetingOperation.readMedia)) return;
+    try {
+      observation = widget.processingManager.startObserving(
+        widget.meetingId,
+        scope: scope,
+      );
+    } catch (error) {
+      if (mounted) {
+        setState(() => future = Future<List<ProcessingJobRecord>>.error(error));
+      }
+    }
+  }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
@@ -94,11 +118,14 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
       );
       return;
     }
-    if (!widget.api.isCurrentAuthenticatedSession(sessionScope)) return;
+    final scope = sessionScope;
+    if (scope == null || !widget.api.isCurrentAuthenticatedSession(scope)) {
+      return;
+    }
     unawaited(
       widget.processingManager.refresh(
         widget.meetingId,
-        scope: sessionScope,
+        scope: scope,
         explicit: true,
       ),
     );
@@ -107,7 +134,10 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
 
   void _managerChanged() {
     if (!mounted) return;
-    final state = widget.processingManager.stateFor(widget.meetingId);
+    final scope = sessionScope;
+    final state = scope == null
+        ? null
+        : widget.processingManager.stateFor(widget.meetingId, scope: scope);
     setState(
       () => future = Future<List<ProcessingJobRecord>>.value(
         state?.jobs ?? const <ProcessingJobRecord>[],
@@ -116,12 +146,17 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
   }
 
   Future<void> retry(ProcessingJobRecord candidate) async {
-    if (retrying || !_allows(MeetingOperation.retryProcessing)) return;
+    final scope = sessionScope;
+    if (retrying ||
+        scope == null ||
+        !_allows(MeetingOperation.retryProcessing)) {
+      return;
+    }
     setState(() => retrying = true);
     try {
       await widget.processingManager.retryJob(
         job: candidate,
-        scope: sessionScope,
+        scope: scope,
         capabilities: widget.capabilities,
       );
       if (mounted) showSuccess(context, 'Đã tiếp nhận yêu cầu thử lại.');
