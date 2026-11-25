@@ -588,10 +588,7 @@ class RecordingWorkspaceController extends ChangeNotifier {
     }
   }
 
-  void _applySubmissionResult(
-    _WorkspaceAction action,
-    SubmissionState result,
-  ) {
+  void _applySubmissionResult(_WorkspaceAction action, SubmissionState result) {
     if (!_ownsAction(action) ||
         result.meetingId != action.meetingId ||
         result.sessionScope != action.scope) {

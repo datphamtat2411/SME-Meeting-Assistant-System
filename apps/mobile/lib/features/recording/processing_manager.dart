@@ -333,7 +333,8 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
           ((_consumers[key] ?? 0) == 0 && !explicit)) {
         return;
       }
-      if (error is ApiFailure && (error.status == 401 || error.status == 403 || error.status == 404)) {
+      if (error is ApiFailure &&
+          (error.status == 401 || error.status == 403 || error.status == 404)) {
         _states[key] = ProcessingMeetingState(
           meetingId: meetingId,
           media: const <MediaRecord>[],
@@ -503,7 +504,9 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
             ? OperationAttemptOutcome.uncertain
             : OperationAttemptOutcome.rejected,
         recoveryRequired:
-            priorUnresolved || failure.code == 'PROCESSING_SHUTDOWN' || ambiguous,
+            priorUnresolved ||
+            failure.code == 'PROCESSING_SHUTDOWN' ||
+            ambiguous,
         failureCode: failure.code,
         failureStatus: failure.status,
         failureMessage: failure.message,
@@ -689,7 +692,9 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
             ? OperationAttemptOutcome.uncertain
             : OperationAttemptOutcome.rejected,
         recoveryRequired:
-            priorUnresolved || failure.code == 'PROCESSING_SHUTDOWN' || ambiguous,
+            priorUnresolved ||
+            failure.code == 'PROCESSING_SHUTDOWN' ||
+            ambiguous,
         failureCode: failure.code,
         failureStatus: failure.status,
         failureMessage: failure.message,
@@ -726,13 +731,17 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
     String meetingId,
     AuthenticatedSessionScope scope,
   ) async {
-    if (_disposed || _shuttingDown || !api.isCurrentAuthenticatedSession(scope)) {
+    if (_disposed ||
+        _shuttingDown ||
+        !api.isCurrentAuthenticatedSession(scope)) {
       return;
     }
     try {
       await refresh(meetingId, scope: scope, explicit: true);
     } catch (error) {
-      if (_disposed || _shuttingDown || !api.isCurrentAuthenticatedSession(scope)) {
+      if (_disposed ||
+          _shuttingDown ||
+          !api.isCurrentAuthenticatedSession(scope)) {
         return;
       }
       final key = _key(scope, meetingId);
@@ -835,10 +844,8 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
         ..._inFlight.values,
         ..._mutationFlights.values.map((future) => future.then<void>((_) {})),
       ].map(
-        (future) => future.then<void>(
-          (_) {},
-          onError: (Object _, StackTrace __) {},
-        ),
+        (future) =>
+            future.then<void>((_) {}, onError: (Object _, StackTrace __) {}),
       ),
     );
   }

@@ -295,13 +295,16 @@ Map<String, dynamic> _retryJobJson(String id, {required bool retryable}) =>
       'stageRuns': <Map<String, dynamic>>[],
     };
 
-Future<({
-  ApiClient api,
-  Directory directory,
-  LocalMediaRepository localMedia,
-  MeetingCapabilities capabilities,
-  RecordingWorkspaceController controller,
-})> _workspace({
+Future<
+  ({
+    ApiClient api,
+    Directory directory,
+    LocalMediaRepository localMedia,
+    MeetingCapabilities capabilities,
+    RecordingWorkspaceController controller,
+  })
+>
+_workspace({
   AudioImportPicker? picker,
   Future<http.StreamedResponse> Function(http.BaseRequest)? handler,
 }) async {
@@ -322,9 +325,7 @@ Future<({
   );
   final localMedia = LocalMediaRepository(
     persistence: LocalMediaPersistence(database),
-    storage: ManagedMediaStorage(
-      root: Directory('${directory.path}/managed'),
-    ),
+    storage: ManagedMediaStorage(root: Directory('${directory.path}/managed')),
   );
   final media = MediaRepository(api: api);
   final processing = ProcessingRepository(api: api);

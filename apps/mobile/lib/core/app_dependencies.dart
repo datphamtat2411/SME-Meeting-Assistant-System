@@ -233,13 +233,14 @@ class AppDependencies {
     // Network closure is bounded, but persistence must remain available to
     // original owned cleanup until it settles. The owner is already fenced.
     unawaited(
-      drain.then<void>((_) => localMedia.dispose()).catchError(
-        (Object error, StackTrace stack) {
-          FlutterError.reportError(
-            FlutterErrorDetails(exception: error, stack: stack),
-          );
-        },
-      ),
+      drain.then<void>((_) => localMedia.dispose()).catchError((
+        Object error,
+        StackTrace stack,
+      ) {
+        FlutterError.reportError(
+          FlutterErrorDetails(exception: error, stack: stack),
+        );
+      }),
     );
   }
 }

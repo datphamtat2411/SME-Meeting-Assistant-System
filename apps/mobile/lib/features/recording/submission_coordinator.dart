@@ -1899,10 +1899,8 @@ class SubmissionCoordinator extends ChangeNotifier {
   Future<void> drainActiveWork() async {
     await Future.wait<void>(
       _active.values.map(
-        (future) => future.then<void>(
-          (_) {},
-          onError: (Object _, StackTrace __) {},
-        ),
+        (future) =>
+            future.then<void>((_) {}, onError: (Object _, StackTrace __) {}),
       ),
     );
   }

@@ -193,8 +193,8 @@ class _RecordingPageState extends State<RecordingPage> {
           const SizedBox(height: 12),
           if (isCapturing)
             FilledButton.icon(
-              onPressed: controller.isBusy &&
-                      controller.pendingAction != 'recording'
+              onPressed:
+                  controller.isBusy && controller.pendingAction != 'recording'
                   ? null
                   : controller.stopRecording,
               icon: const Icon(Icons.stop),
@@ -307,15 +307,16 @@ class _RecordingPageState extends State<RecordingPage> {
 
   Widget _submissionCard(BuildContext context, SubmissionState? submission) {
     final asset = controller.selectedAsset!;
-    final active = controller.canCancelSubmission ||
+    final active =
+        controller.canCancelSubmission ||
         submission != null &&
-        <SubmissionLifecycleState>{
-          SubmissionLifecycleState.intentPending,
-          SubmissionLifecycleState.intentCreated,
-          SubmissionLifecycleState.transferring,
-          SubmissionLifecycleState.finalizing,
-          SubmissionLifecycleState.processingAdmissionPending,
-        }.contains(submission.lifecycle);
+            <SubmissionLifecycleState>{
+              SubmissionLifecycleState.intentPending,
+              SubmissionLifecycleState.intentCreated,
+              SubmissionLifecycleState.transferring,
+              SubmissionLifecycleState.finalizing,
+              SubmissionLifecycleState.processingAdmissionPending,
+            }.contains(submission.lifecycle);
     final remoteOnly =
         submission?.lifecycle == SubmissionLifecycleState.mediaAvailable;
     return ContentCard(
@@ -341,8 +342,7 @@ class _RecordingPageState extends State<RecordingPage> {
             ),
           const SizedBox(height: 10),
           FilledButton.icon(
-            onPressed:
-                active
+            onPressed: active
                 ? (controller.canCancelSubmission
                       ? controller.cancelSubmission
                       : null)
@@ -435,9 +435,13 @@ class _RecordingPageState extends State<RecordingPage> {
               ),
               title: Text(item.originalFilename),
               subtitle: Text(_mediaLabel(item)),
-              trailing: item.accepted &&
-                    controller.canAdmitProcessing &&
-                    !(remote?.jobs.any((job) => job.sourceMediaId == item.id) ?? false)
+              trailing:
+                  item.accepted &&
+                      controller.canAdmitProcessing &&
+                      !(remote?.jobs.any(
+                            (job) => job.sourceMediaId == item.id,
+                          ) ??
+                          false)
                   ? TextButton(
                       onPressed: controller.isBusy
                           ? null

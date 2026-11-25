@@ -145,27 +145,30 @@ void main() {
     },
   );
 
-  test('bounded shutdown defers persistence close until actual drain', () async {
-    final client = NoNetworkHttpClient();
-    final api = TrackingApiClient(client);
-    final localMedia = _TrackingLocalMedia();
-    final manager = _DelayedDrainManager(api, localMedia);
-    final dependencies = AppDependencies(
-      api: api,
-      appearancePreferences: InMemoryAppearancePreferences(),
-      httpClient: client,
-      localMedia: localMedia,
-      processingManager: manager,
-    );
+  test(
+    'bounded shutdown defers persistence close until actual drain',
+    () async {
+      final client = NoNetworkHttpClient();
+      final api = TrackingApiClient(client);
+      final localMedia = _TrackingLocalMedia();
+      final manager = _DelayedDrainManager(api, localMedia);
+      final dependencies = AppDependencies(
+        api: api,
+        appearancePreferences: InMemoryAppearancePreferences(),
+        httpClient: client,
+        localMedia: localMedia,
+        processingManager: manager,
+      );
 
-    await dependencies.shutdown();
-    expect(client.closeCalls, 1);
-    expect(localMedia.closeCalls, 0);
+      await dependencies.shutdown();
+      expect(client.closeCalls, 1);
+      expect(localMedia.closeCalls, 0);
 
-    manager.drained.complete();
-    await localMedia.closed.future;
-    expect(localMedia.closeCalls, 1);
-  });
+      manager.drained.complete();
+      await localMedia.closed.future;
+      expect(localMedia.closeCalls, 1);
+    },
+  );
 }
 
 Future<void> _eventually(bool Function() condition) async {
@@ -204,7 +207,6 @@ class _ClosingMeetingHttpClient extends MeetingTestHttpClient {
     super.close();
   }
 }
-
 
 class _TrackingLocalMedia extends LocalMediaRepository {
   _TrackingLocalMedia() : super.lazyDefault();
