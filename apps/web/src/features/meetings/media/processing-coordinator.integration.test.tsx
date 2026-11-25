@@ -20,6 +20,7 @@ const processingMocks = vi.hoisted(() => ({
   jobs: [] as Array<Record<string, unknown>>,
   requestProcessing: vi.fn(),
   retryProcessing: vi.fn(),
+  requestSummaryRegeneration: vi.fn(),
 }))
 
 vi.mock('./media-api', async (importOriginal) => {
@@ -47,6 +48,10 @@ vi.mock('./processing-api', async (importOriginal) => {
     retryProcessing: processingMocks.retryProcessing,
   }
 })
+
+vi.mock('../intelligence/summary-api', () => ({
+  requestSummaryRegeneration: processingMocks.requestSummaryRegeneration,
+}))
 
 const meetingId = '11111111-1111-4111-8111-111111111111'
 const firstMediaId = '22222222-2222-4222-8222-222222222222'
@@ -176,6 +181,14 @@ function CoordinatorHarness() {
       >
         Reprocess cancelled job
       </button>
+      <button
+        type='button'
+        onClick={() =>
+          void processing.regenerateSummary().catch(() => undefined)
+        }
+      >
+        Regenerate summary
+      </button>
       <output data-testid='reprocess-result'>{reprocessResult}</output>
       <output data-testid='reprocess-state'>
         {processing.unresolvedOperations.length}
@@ -190,6 +203,13 @@ function CoordinatorHarness() {
         {processing.isOperationUncertain(`retry:${failedJobId}:`)
           ? 'retry-uncertain'
           : 'retry-settled'}
+      </output>
+      <output data-testid='summary-state'>
+        {processing.isOperationPending('summary-regeneration')
+          ? 'summary-pending'
+          : processing.isOperationUncertain('summary-regeneration')
+            ? 'summary-uncertain'
+            : 'summary-idle'}
       </output>
     </>
   )
@@ -360,6 +380,63 @@ describe('meeting-scoped processing command owner', () => {
     await expect
       .poll(() => processingMocks.requestProcessing.mock.calls[0]?.length)
       .toBe(4)
+  })
+
+  it('retains the Summary Regeneration key through an uncertain admission', async () => {
+    processingMocks.requestSummaryRegeneration
+      .mockRejectedValueOnce(
+        Object.assign(new Error('network'), { recoveryOutcome: 'uncertain' })
+      )
+      .mockResolvedValueOnce(
+        processingJob({
+          status: 'PENDING',
+          retryable: false,
+          currentStage: 'GENERATING_SUMMARY',
+        })
+      )
+    const { screen } = await renderCoordinator()
+    const button = screen.getByRole('button', { name: 'Regenerate summary' })
+
+    await userEvent.click(button)
+    await expect
+      .element(screen.getByTestId('summary-state'))
+      .toHaveTextContent('summary-uncertain')
+    await userEvent.click(button)
+    await expect
+      .poll(() => processingMocks.requestSummaryRegeneration.mock.calls.length)
+      .toBe(2)
+
+    const firstKey = processingMocks.requestSummaryRegeneration.mock.calls[0][1]
+    const replayKey =
+      processingMocks.requestSummaryRegeneration.mock.calls[1][1]
+    expect(replayKey).toBe(firstKey)
+    await expect
+      .element(screen.getByTestId('summary-state'))
+      .toHaveTextContent('summary-pending')
+  })
+
+  it('does not replay a known active Summary Regeneration job', async () => {
+    const admitted = processingJob({
+      id: failedJobId,
+      status: 'PENDING',
+      retryable: false,
+      currentStage: 'GENERATING_SUMMARY',
+    })
+    processingMocks.requestSummaryRegeneration.mockResolvedValue(admitted)
+    const { screen } = await renderCoordinator()
+    const button = screen.getByRole('button', { name: 'Regenerate summary' })
+
+    await userEvent.click(button)
+    await expect
+      .poll(() => processingMocks.requestSummaryRegeneration.mock.calls.length)
+      .toBe(1)
+    await userEvent.click(button)
+    await expect
+      .poll(() => processingMocks.requestSummaryRegeneration.mock.calls.length)
+      .toBe(1)
+    await expect
+      .element(screen.getByTestId('summary-state'))
+      .toHaveTextContent('summary-pending')
   })
 
   it('blocks incompatible retries and reprocessing while an admission is pending', async () => {

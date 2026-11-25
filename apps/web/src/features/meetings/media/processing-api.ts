@@ -199,7 +199,7 @@ async function listProcessingJobs(
   return processingJobSchema.array().parse(response)
 }
 
-async function getProcessingJob(
+export async function getProcessingJob(
   jobId: string,
   signal?: AbortSignal
 ): Promise<ProcessingJob> {

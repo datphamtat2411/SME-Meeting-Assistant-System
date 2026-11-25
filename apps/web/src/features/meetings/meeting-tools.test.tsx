@@ -27,7 +27,7 @@ const transcriptId = '44444444-4444-4444-8444-444444444444'
 
 const emptyPagination = {
   page: 0,
-  size: 100,
+  size: 20,
   totalElements: 0,
   totalPages: 0,
   hasNext: false,
@@ -185,6 +185,21 @@ function installReadOnlyCore() {
     .mockImplementation(async (url) => {
       if (url === '/action-items' || /\/decisions$/.test(url)) {
         return { data: [], meta: { pagination: emptyPagination } }
+      }
+      if (/\/summary\/versions$/.test(url)) {
+        return {
+          data: [],
+          meta: {
+            pagination: {
+              page: 0,
+              size: 20,
+              totalElements: 0,
+              totalPages: 0,
+              hasNext: false,
+              hasPrevious: false,
+            },
+          },
+        }
       }
       throw new Error(`Unexpected GET with metadata ${url}`)
     })

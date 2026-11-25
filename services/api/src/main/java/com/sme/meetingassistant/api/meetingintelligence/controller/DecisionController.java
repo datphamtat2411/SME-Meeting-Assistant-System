@@ -6,7 +6,6 @@ import com.sme.meetingassistant.api.meetingintelligence.dto.CreateDecisionReques
 import com.sme.meetingassistant.api.meetingintelligence.dto.DecisionView;
 import com.sme.meetingassistant.api.meetingintelligence.dto.EditDecisionRequest;
 import com.sme.meetingassistant.api.meetingintelligence.service.DecisionService;
-import com.sme.meetingassistant.api.meetingintelligence.service.IntelligenceVersionTags;
 import jakarta.validation.Valid;
 import java.util.List;
 import java.util.UUID;
@@ -75,7 +74,7 @@ public class DecisionController {
 
     private ResponseEntity<ApiResponse<DecisionView>> decision(DecisionView view, HttpStatus status) {
         return ResponseEntity.status(status)
-            .eTag(IntelligenceVersionTags.decision(view.id(), view.version(), view.isStale()))
+            .eTag(view.etag())
             .cacheControl(CacheControl.noStore())
             .body(responses.success(view));
     }

@@ -12,6 +12,7 @@ import {
   type UseQueryResult,
 } from '@tanstack/react-query'
 import { invalidateMeetingArtifacts } from '../intelligence/query-invalidation'
+import { requestSummaryRegeneration } from '../intelligence/summary-api'
 import { meetingMediaQuery, type MeetingMedia } from './media-api'
 import {
   processingJobsQuery,
@@ -36,6 +37,7 @@ export type ProcessingOperationKind =
   | 'retry'
   | 'stage-retry'
   | 'reprocessing'
+  | 'summary-regeneration'
 
 type ProcessingExecution = {
   executionId: string
@@ -95,6 +97,7 @@ export type ProcessingCoordinatorValue = {
     jobId: string,
     sourceMediaId: string
   ) => Promise<ProcessingCommandResult>
+  regenerateSummary: () => Promise<ProcessingCommandResult>
   recoverOperation: (
     logicalIdentity: string
   ) => Promise<ProcessingCommandResult>
@@ -208,6 +211,8 @@ function reprocessingIdentity(jobId: string): string {
   return `reprocessing:${jobId}`
 }
 
+const summaryRegenerationIdentity = 'summary-regeneration'
+
 function latestStageAttempt(job: ProcessingJob, stageCode: string) {
   return job.stageRuns
     .filter((stage) => stage.stageCode === stageCode)
@@ -222,6 +227,62 @@ function operationAuthorizationKind(
   return operation.kind === 'retry' || operation.kind === 'stage-retry'
     ? 'recovery'
     : 'admission'
+}
+
+function summaryOperationStorageKey(
+  meetingId: string,
+  actorId: string
+): string {
+  return `sme:summary-regeneration:${meetingId}:${actorId}`
+}
+
+type StoredSummaryOperation = {
+  idempotencyKey: string
+  jobId: string | null
+}
+
+function readStoredSummaryOperation(
+  meetingId: string,
+  actorId: string
+): StoredSummaryOperation | null {
+  if (typeof sessionStorage === 'undefined') return null
+  try {
+    const value: unknown = JSON.parse(
+      sessionStorage.getItem(summaryOperationStorageKey(meetingId, actorId)) ??
+        'null'
+    )
+    if (
+      !value ||
+      typeof value !== 'object' ||
+      typeof (value as { idempotencyKey?: unknown }).idempotencyKey !== 'string'
+    ) {
+      return null
+    }
+    const jobId = (value as { jobId?: unknown }).jobId
+    return {
+      idempotencyKey: (value as { idempotencyKey: string }).idempotencyKey,
+      jobId: typeof jobId === 'string' ? jobId : null,
+    }
+  } catch {
+    return null
+  }
+}
+
+function storeSummaryOperation(
+  meetingId: string,
+  actorId: string,
+  value: StoredSummaryOperation
+) {
+  if (typeof sessionStorage === 'undefined') return
+  sessionStorage.setItem(
+    summaryOperationStorageKey(meetingId, actorId),
+    JSON.stringify(value)
+  )
+}
+
+function clearStoredSummaryOperation(meetingId: string, actorId: string) {
+  if (typeof sessionStorage === 'undefined') return
+  sessionStorage.removeItem(summaryOperationStorageKey(meetingId, actorId))
 }
 
 export function authorizedForProcessingOperation(
@@ -252,6 +313,11 @@ function canReplayFromSnapshot(
   meetingId: string
 ): boolean {
   if (!snapshot) return false
+  if (operation.kind === 'summary-regeneration') {
+    if (!operation.jobId) return true
+    const job = snapshot.jobs.find((item) => item.id === operation.jobId)
+    return Boolean(job && job.meetingId === meetingId)
+  }
   const source = operation.sourceMediaId
     ? snapshot.media.find(
         (item) =>
@@ -322,6 +388,8 @@ export function useProcessingCoordinator({
       operation.execution?.controller.abort()
     }
     operations.current.clear()
+    const actorId = authorizationRef.current?.identityId
+    if (actorId) clearStoredSummaryOperation(meetingId, actorId)
     reviewCommandOwner.current = null
     reviewWorkBlocked.current = false
     setReviewCommandActive(false)
@@ -329,7 +397,7 @@ export function useProcessingCoordinator({
     lifecycle.current.clear()
     setSelectedJobId(null)
     publishOperations()
-  }, [publishOperations])
+  }, [meetingId, publishOperations])
 
   const suspendUnauthorizedExecutions = useCallback(() => {
     let changed = false
@@ -426,12 +494,66 @@ export function useProcessingCoordinator({
           actions: terminalStatus(job.status),
         })
       }
+      const summaryOperation = operations.current.get(
+        summaryRegenerationIdentity
+      )
+      if (summaryOperation?.jobId === job.id && terminalStatus(job.status)) {
+        operations.current.delete(summaryRegenerationIdentity)
+        clearStoredSummaryOperation(
+          summaryOperation.meetingId,
+          summaryOperation.actorId
+        )
+        publishOperations()
+      }
       lifecycle.current.set(job.id, nextSignature)
     }
     for (const jobId of lifecycle.current.keys()) {
       if (!currentIds.has(jobId)) lifecycle.current.delete(jobId)
     }
-  }, [jobs.data, meetingId, queryClient])
+  }, [jobs.data, meetingId, publishOperations, queryClient])
+
+  // Recover the caller-held regeneration key after a reload. Only operation
+  // metadata is retained; protected summary/transcript content is never
+  // written to browser storage.
+  useEffect(() => {
+    const actorId = authorization?.identityId
+    if (
+      !actorId ||
+      !jobs.data ||
+      operations.current.has(summaryRegenerationIdentity)
+    ) {
+      return
+    }
+    const stored = readStoredSummaryOperation(meetingId, actorId)
+    if (!stored) return
+    const job = stored.jobId
+      ? jobs.data.find((item) => item.id === stored.jobId)
+      : undefined
+    if (job && terminalStatus(job.status)) {
+      clearStoredSummaryOperation(meetingId, actorId)
+      invalidateMeetingArtifacts(queryClient, meetingId)
+      return
+    }
+    operations.current.set(summaryRegenerationIdentity, {
+      operationId: stored.jobId ?? stored.idempotencyKey,
+      logicalIdentity: summaryRegenerationIdentity,
+      kind: 'summary-regeneration',
+      meetingId,
+      actorId,
+      jobId: stored.jobId ?? undefined,
+      idempotencyKey: stored.idempotencyKey,
+      generation: generation.current,
+      status: 'uncertain',
+      execution: null,
+    })
+    publishOperations()
+  }, [
+    authorization?.identityId,
+    jobs.data,
+    meetingId,
+    publishOperations,
+    queryClient,
+  ])
 
   const getAuthoritativeSnapshot =
     useCallback((): AuthoritativeSnapshot | null => {
@@ -559,6 +681,12 @@ export function useProcessingCoordinator({
         },
       }
       operations.current.set(logicalIdentity, operation)
+      if (operation.kind === 'summary-regeneration') {
+        storeSummaryOperation(operation.meetingId, operation.actorId, {
+          idempotencyKey: operation.idempotencyKey,
+          jobId: operation.jobId ?? null,
+        })
+      }
       publishOperations()
       return operation
     },
@@ -617,7 +745,8 @@ export function useProcessingCoordinator({
           operation.kind === 'retry' || operation.kind === 'stage-retry'
         const invalidBinding =
           job.meetingId !== operation.meetingId ||
-          job.sourceMediaId !== operation.sourceMediaId ||
+          (operation.sourceMediaId !== undefined &&
+            job.sourceMediaId !== operation.sourceMediaId) ||
           (isRetry && job.id !== operation.jobId) ||
           (operation.kind === 'admission' && job.reprocessOfJobId !== null) ||
           (operation.kind === 'reprocessing' &&
@@ -630,8 +759,26 @@ export function useProcessingCoordinator({
             { recoveryOutcome: 'uncertain' }
           )
         }
+        if (operation.kind === 'summary-regeneration') {
+          operation.jobId = job.id
+          storeSummaryOperation(operation.meetingId, operation.actorId, {
+            idempotencyKey: operation.idempotencyKey,
+            jobId: job.id,
+          })
+        }
         reconcileConfirmedJob(job)
-        operations.current.delete(operation.logicalIdentity)
+        if (
+          operation.kind !== 'summary-regeneration' ||
+          terminalStatus(job.status)
+        ) {
+          operations.current.delete(operation.logicalIdentity)
+          if (operation.kind === 'summary-regeneration') {
+            clearStoredSummaryOperation(operation.meetingId, operation.actorId)
+          }
+        } else {
+          operation.execution = null
+          operation.status = 'pending'
+        }
         publishOperations()
         return { status: 'confirmed', job }
       } catch (error) {
@@ -647,6 +794,9 @@ export function useProcessingCoordinator({
           operation.execution = null
         } else {
           operations.current.delete(operation.logicalIdentity)
+          if (operation.kind === 'summary-regeneration') {
+            clearStoredSummaryOperation(operation.meetingId, operation.actorId)
+          }
         }
         publishOperations()
         throw error
@@ -883,6 +1033,46 @@ export function useProcessingCoordinator({
     ]
   )
 
+  const regenerateSummary =
+    useCallback(async (): Promise<ProcessingCommandResult> => {
+      if (!isAuthorized('admission')) return { status: 'blocked' }
+      const logicalIdentity = summaryRegenerationIdentity
+      const existing = operations.current.get(logicalIdentity)
+      const snapshot = getAuthoritativeSnapshot()
+      if (!snapshot) return { status: 'blocked' }
+      if (existing) {
+        if (existing.status === 'pending' && existing.execution) {
+          return { status: 'blocked' }
+        }
+        if (
+          existing.jobId &&
+          snapshot.jobs.some(
+            (job) => job.id === existing.jobId && !terminalStatus(job.status)
+          )
+        ) {
+          return { status: 'blocked' }
+        }
+        if (!canReplayOperation(existing, snapshot))
+          return { status: 'blocked' }
+      }
+      const operation = acquireOperation(logicalIdentity, {
+        kind: 'summary-regeneration',
+        meetingId,
+        actorId: authorizationRef.current?.identityId ?? 'standalone',
+      })
+      if (!operation) return { status: 'blocked' }
+      return runOperation(operation, (signal) =>
+        requestSummaryRegeneration(meetingId, operation.idempotencyKey, signal)
+      )
+    }, [
+      acquireOperation,
+      canReplayOperation,
+      getAuthoritativeSnapshot,
+      isAuthorized,
+      meetingId,
+      runOperation,
+    ])
+
   const recoverOperation = useCallback(
     (logicalIdentity: string): Promise<ProcessingCommandResult> => {
       const operation = operations.current.get(logicalIdentity)
@@ -909,9 +1099,12 @@ export function useProcessingCoordinator({
       ) {
         return reprocess(operation.jobId, operation.sourceMediaId)
       }
+      if (operation.kind === 'summary-regeneration') {
+        return regenerateSummary()
+      }
       return Promise.resolve({ status: 'blocked' })
     },
-    [admit, reprocess, retry]
+    [admit, regenerateSummary, reprocess, retry]
   )
 
   const refreshObservation = useCallback(async () => {
@@ -1017,6 +1210,7 @@ export function useProcessingCoordinator({
     admit,
     retry,
     reprocess,
+    regenerateSummary,
     recoverOperation,
     refreshObservation,
     invalidate,

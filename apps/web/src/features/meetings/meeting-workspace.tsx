@@ -105,6 +105,7 @@ export function MeetingWorkspacePage({
   evidenceSegmentId,
   evidenceReferenceIssue,
   onSectionChange,
+  onEvidenceNavigate,
 }: {
   meetingId: string
   section?: MeetingWorkspaceSection
@@ -115,6 +116,7 @@ export function MeetingWorkspacePage({
     section: MeetingWorkspaceSection,
     replace?: boolean
   ) => void
+  onEvidenceNavigate?: (transcriptId: string, segmentId: string) => void
 }) {
   return (
     <MeetingSessionBoundary meetingId={meetingId}>
@@ -125,6 +127,7 @@ export function MeetingWorkspacePage({
         evidenceSegmentId={evidenceSegmentId}
         evidenceReferenceIssue={evidenceReferenceIssue}
         onSectionChange={onSectionChange}
+        onEvidenceNavigate={onEvidenceNavigate}
       />
     </MeetingSessionBoundary>
   )
@@ -137,6 +140,7 @@ function MeetingWorkspacePageContent({
   evidenceSegmentId,
   evidenceReferenceIssue,
   onSectionChange,
+  onEvidenceNavigate,
 }: {
   meetingId: string
   section?: MeetingWorkspaceSection
@@ -147,6 +151,7 @@ function MeetingWorkspacePageContent({
     section: MeetingWorkspaceSection,
     replace?: boolean
   ) => void
+  onEvidenceNavigate?: (transcriptId: string, segmentId: string) => void
 }) {
   const sharedAuthorization = useOptionalMeetingAuthorization()
   const verification = useCurrentUserVerification()
@@ -224,6 +229,7 @@ function MeetingWorkspacePageContent({
             evidenceSegmentId={evidenceSegmentId}
             evidenceReferenceIssue={evidenceReferenceIssue}
             onSectionChange={onSectionChange}
+            onEvidenceNavigate={onEvidenceNavigate}
             identityCanReadProtectedData={verification.canReadProtectedData}
           />
         ) : (
@@ -244,6 +250,7 @@ function SharedMeetingWorkspaceIdentityBoundary({
   evidenceSegmentId,
   evidenceReferenceIssue,
   onSectionChange,
+  onEvidenceNavigate,
 }: {
   meetingId: string
   section: MeetingWorkspaceSection
@@ -254,6 +261,7 @@ function SharedMeetingWorkspaceIdentityBoundary({
     section: MeetingWorkspaceSection,
     replace?: boolean
   ) => void
+  onEvidenceNavigate?: (transcriptId: string, segmentId: string) => void
 }) {
   const shared = useOptionalMeetingAuthorization()
   const queryClient = useQueryClient()
@@ -337,6 +345,7 @@ function SharedMeetingWorkspaceIdentityBoundary({
         evidenceSegmentId={evidenceSegmentId}
         evidenceReferenceIssue={evidenceReferenceIssue}
         onSectionChange={onSectionChange}
+        onEvidenceNavigate={onEvidenceNavigate}
         participants={participants}
         room={{
           hasId: Boolean(shared.meeting.roomId),
@@ -378,6 +387,7 @@ function MeetingWorkspaceIdentityBoundary({
   evidenceSegmentId,
   evidenceReferenceIssue,
   onSectionChange,
+  onEvidenceNavigate,
   identityCanReadProtectedData,
 }: {
   meetingId: string
@@ -390,6 +400,7 @@ function MeetingWorkspaceIdentityBoundary({
     section: MeetingWorkspaceSection,
     replace?: boolean
   ) => void
+  onEvidenceNavigate?: (transcriptId: string, segmentId: string) => void
   identityCanReadProtectedData: boolean
 }) {
   const queryClient = useQueryClient()
@@ -523,6 +534,7 @@ function MeetingWorkspaceIdentityBoundary({
         evidenceSegmentId={evidenceSegmentId}
         evidenceReferenceIssue={evidenceReferenceIssue}
         onSectionChange={onSectionChange}
+        onEvidenceNavigate={onEvidenceNavigate}
         participants={participants}
         room={{
           hasId: Boolean(meeting.roomId),
@@ -650,6 +662,7 @@ function MeetingWorkspace({
   evidenceSegmentId,
   evidenceReferenceIssue,
   onSectionChange,
+  onEvidenceNavigate,
   participants,
   room,
   organizer,
@@ -667,6 +680,7 @@ function MeetingWorkspace({
     section: MeetingWorkspaceSection,
     replace?: boolean
   ) => void
+  onEvidenceNavigate?: (transcriptId: string, segmentId: string) => void
   participants: ParticipantState
   room: LookupState<RoomFilterOption>
   organizer: LookupState<OrganizerFilterOption>
@@ -901,6 +915,7 @@ function MeetingWorkspace({
                     evidenceSegmentId={evidenceSegmentId}
                     evidenceReferenceIssue={evidenceReferenceIssue}
                     onSectionChange={navigateToSection}
+                    onEvidenceNavigate={onEvidenceNavigate}
                   />
                 ) : isActive && !isAllowed ? (
                   <WorkspaceAuthorizationState

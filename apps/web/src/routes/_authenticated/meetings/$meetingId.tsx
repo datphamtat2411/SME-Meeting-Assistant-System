@@ -45,6 +45,16 @@ function MeetingRoute() {
     })
   }
 
+  function navigateToEvidence(transcriptId: string, segmentId: string) {
+    void navigate({
+      search: (previous) => ({
+        ...updateMeetingWorkspaceSearch(previous, 'transcript'),
+        evidenceTranscriptId: transcriptId,
+        evidenceSegmentId: segmentId,
+      }),
+    })
+  }
+
   return (
     <MeetingAuthorizationProvider key={meetingId} meetingId={meetingId}>
       <MeetingSessionProvider key={meetingId} meetingId={meetingId}>
@@ -68,6 +78,7 @@ function MeetingRoute() {
               evidenceSegmentId={search.evidenceSegmentId}
               evidenceReferenceIssue={search.evidenceReferenceIssue}
               onSectionChange={changeSection}
+              onEvidenceNavigate={navigateToEvidence}
             />
           )}
         </TranscriptReviewGateBoundary>
