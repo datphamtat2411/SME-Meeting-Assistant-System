@@ -1,4 +1,5 @@
 import '../../core/api_client.dart';
+import '../../core/api_model_validation.dart';
 import '../../core/meeting_models.dart';
 import '../../core/paged_collection.dart';
 import '../meetings/meeting_membership.dart';
@@ -73,6 +74,42 @@ class ResultsRepository {
         .map((raw) => SpeakerCluster.fromJson(raw, response: response))
         .toList(growable: false);
   }
+
+  Future<SpeakerReviewSnapshot> speakerReview({
+    required AuthenticatedSessionScope sessionScope,
+    required String meetingId,
+    required bool Function() stillAuthorized,
+  }) async {
+    for (var attempt = 0; attempt < 2; attempt++) {
+      if (!stillAuthorized()) throw _accessChanged();
+      final before = await currentTranscript(
+        sessionScope: sessionScope, meetingId: meetingId,
+      );
+      if (!stillAuthorized()) throw _accessChanged();
+      final clusters = await speakerClusters(
+        sessionScope: sessionScope, meetingId: meetingId,
+      );
+      if (!stillAuthorized()) throw _accessChanged();
+      final after = await currentTranscript(
+        sessionScope: sessionScope, meetingId: meetingId,
+      );
+      if (!stillAuthorized()) throw _accessChanged();
+      final etag = before.etag;
+      if (etag != null && etag.isNotEmpty &&
+          before.id == after.id && etag == after.etag) {
+        return SpeakerReviewSnapshot(
+          transcriptId: before.id, etag: etag,
+          clusters: List.unmodifiable(clusters),
+        );
+      }
+    }
+    throw const ApiFailure(412, 'RESULTS_REVIEW_CHANGED',
+      'Transcript đã thay đổi. Vui lòng tải lại và xem xét lại.');
+  }
+
+  ApiFailure _accessChanged() => const ApiFailure(
+    403, 'RESULTS_ACCESS_CHANGED', 'Quyền truy cập đã thay đổi.',
+  );
 
   Future<ResultsSummary> currentSummary({
     required AuthenticatedSessionScope sessionScope,
@@ -239,25 +276,54 @@ class ResultsRepository {
     return _validatedMutationResponse(response, requireBodyEtag: true);
   }
 
-  Future<ApiResult> regenerateSummary({
+  Future<String> regenerateSummary({
     required AuthenticatedSessionScope sessionScope,
     required String meetingId,
     required String idempotencyKey,
-  }) => _post(
-    sessionScope,
-    '/meetings/$meetingId/summary/regenerate',
-    const <String, dynamic>{},
-    headers: {'Idempotency-Key': idempotencyKey},
-  );
+  }) async {
+    final response = await _post(
+      sessionScope,
+      '/meetings/$meetingId/summary/regenerate',
+      const <String, dynamic>{},
+      headers: {'Idempotency-Key': idempotencyKey},
+    );
+    final raw = response.objectData();
+    _requireOwnership(sessionScope, meetingId,
+      requiredIdentifier(raw, 'meetingId', response: response));
+    return requiredIdentifier(raw, 'processingJobId', response: response);
+  }
 
-  Future<List<Map<String, dynamic>>> meetingCandidates({
+  Future<List<SpeakerCandidate>> meetingCandidates({
     required AuthenticatedSessionScope sessionScope,
+    required String meetingId,
     required String query,
-  }) async => (await _get(
-    sessionScope,
-    '/users/meeting-candidates',
-    query: {'q': query, 'size': '20'},
-  )).objectArrayData();
+    required bool Function() stillAuthorized,
+  }) async {
+    final meetingRepository = meetings;
+    final membershipRepository = membership;
+    if (meetingRepository == null || membershipRepository == null ||
+        !stillAuthorized()) throw _accessChanged();
+    final snapshot = await meetingRepository.detail(meetingId);
+    if (!stillAuthorized()) throw _accessChanged();
+    final organizer = snapshot.meeting.organizerId;
+    final records = await membershipRepository.listParticipants(
+      meetingId, sessionScope: sessionScope,
+    );
+    if (!stillAuthorized()) throw _accessChanged();
+    final organizerLabel = await meetingRepository.organizer(
+      organizer, sessionScope: sessionScope,
+    );
+    if (!stillAuthorized()) throw _accessChanged();
+    final candidates = <SpeakerCandidate>[
+      SpeakerCandidate(organizer, organizerLabel.name),
+      for (final record in records)
+        if (record.isActive && record.userId.toLowerCase() != organizer.toLowerCase())
+          SpeakerCandidate(record.userId, record.displayName ?? record.userId),
+    ];
+    final needle = query.trim().toLowerCase();
+    return List.unmodifiable(candidates.where((candidate) =>
+      candidate.displayName.toLowerCase().contains(needle)));
+  }
 
   Future<ApiResult> _get(
     AuthenticatedSessionScope scope,

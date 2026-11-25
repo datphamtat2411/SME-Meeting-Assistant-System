@@ -73,6 +73,24 @@ class SpeakerCluster {
   );
 }
 
+/// Read representations bracketed by the same canonical transcript ETag.
+class SpeakerReviewSnapshot {
+  const SpeakerReviewSnapshot({
+    required this.transcriptId,
+    required this.etag,
+    required this.clusters,
+  });
+  final String transcriptId;
+  final String etag;
+  final List<SpeakerCluster> clusters;
+}
+
+class SpeakerCandidate {
+  const SpeakerCandidate(this.id, this.displayName);
+  final String id;
+  final String displayName;
+}
+
 class ResultsSummary {
   const ResultsSummary({
     required this.id,

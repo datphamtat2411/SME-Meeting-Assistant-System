@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
@@ -12,6 +11,9 @@ import '../recording/processing_manager.dart';
 import 'results_invalidation.dart';
 import 'results_models.dart';
 import 'results_repository.dart';
+import 'results_mutation_coordinator.dart';
+
+export 'results_mutation_coordinator.dart' show ResultsMutationGroup;
 
 class ResultsCapabilities {
   const ResultsCapabilities({required this.canRead, required this.canMutate});
@@ -74,8 +76,8 @@ class ResultsWorkspaceController extends ChangeNotifier {
   final AuthenticatedSessionScope sessionScope;
 
   ResultsResource<Transcript> transcript = const ResultsResource<Transcript>();
-  ResultsResource<List<SpeakerCluster>> speakers =
-      const ResultsResource<List<SpeakerCluster>>();
+  ResultsResource<SpeakerReviewSnapshot> speakers =
+      const ResultsResource<SpeakerReviewSnapshot>();
   ResultsResource<ResultsSummary> summary =
       const ResultsResource<ResultsSummary>();
   ResultsResource<PagedCollection<SummaryVersion>> summaryVersions =
@@ -94,6 +96,11 @@ class ResultsWorkspaceController extends ChangeNotifier {
   final Set<ResultsResourceKind> _dirty = <ResultsResourceKind>{};
   ResultsProcessingBridge? _processingBridge;
   bool _disposed = false;
+  final ResultsMutationCoordinator _mutations = ResultsMutationCoordinator();
+  int get reviewEpoch => _mutations.epoch;
+  bool mutationBusy(ResultsMutationGroup group) => _mutations.busy(group);
+  String? get acceptedRegenerationJobId => _mutations.acceptedRegenerationJobId;
+  bool ownsReview(int epoch) => capabilities.canMutate && epoch == reviewEpoch;
 
   bool get ownsSession =>
       !_disposed && api.isCurrentAuthenticatedSession(sessionScope);
@@ -114,6 +121,7 @@ class ResultsWorkspaceController extends ChangeNotifier {
   }
 
   void _clearProtectedState() {
+    _mutations.invalidate();
     for (final kind in ResultsResourceKind.values) {
       _generations[kind] = (_generations[kind] ?? 0) + 1;
       _dirty.add(kind);
@@ -122,7 +130,7 @@ class ResultsWorkspaceController extends ChangeNotifier {
     transcript = const ResultsResource<Transcript>(
       phase: ResultsResourcePhase.forbidden,
     );
-    speakers = const ResultsResource<List<SpeakerCluster>>(
+    speakers = const ResultsResource<SpeakerReviewSnapshot>(
       phase: ResultsResourcePhase.forbidden,
     );
     summary = const ResultsResource<ResultsSummary>(
@@ -153,6 +161,7 @@ class ResultsWorkspaceController extends ChangeNotifier {
         next.canMutate != _capabilities.canMutate;
     if (!changed) return;
     final newlyGranted = !_capabilities.canRead && next.canRead;
+    if (_capabilities.canMutate && !next.canMutate) _mutations.invalidate();
     _capabilities = next;
     if (newlyGranted) _accessDenied = false;
     if (!capabilities.canRead) {
@@ -207,15 +216,17 @@ class ResultsWorkspaceController extends ChangeNotifier {
   }
 
   Future<void> _loadSpeakers({required bool force}) {
-    return _load<List<SpeakerCluster>>(
+    final generation = _generations[ResultsResourceKind.speakers] ?? 0;
+    return _load<SpeakerReviewSnapshot>(
       ResultsResourceKind.speakers,
-      () => repository.speakerClusters(
+      () => repository.speakerReview(
         sessionScope: sessionScope,
         meetingId: meetingId,
+        stillAuthorized: () => _ownsGeneration(ResultsResourceKind.speakers, generation),
       ),
       () => speakers,
       (value) => speakers = value,
-      (value) => value.isEmpty,
+      (value) => value.clusters.isEmpty,
       force: force,
     );
   }
@@ -282,6 +293,7 @@ class ResultsWorkspaceController extends ChangeNotifier {
     bool Function(T) isEmpty, {
     required bool force,
   }) {
+    if (_disposed) return Future<void>.value();
     if (!ownsSession || !capabilities.canRead) {
       write(
         ResultsResource<T>(
@@ -302,6 +314,9 @@ class ResultsWorkspaceController extends ChangeNotifier {
             current.phase == ResultsResourcePhase.notReady)) {
       return Future<void>.value();
     }
+    final completion = Completer<void>();
+    final operation = completion.future;
+    _requests[kind] = operation;
     write(
       current.copyWith(
         phase: current.hasData
@@ -311,8 +326,12 @@ class ResultsWorkspaceController extends ChangeNotifier {
       ),
     );
     notifyListeners();
-    late final Future<void> operation;
-    operation = Future<T>.sync(request)
+    unawaited(Future<T>.sync(() {
+      if (!_ownsGeneration(kind, generation)) {
+        throw const ApiFailure(403, 'RESULTS_ACCESS_CHANGED', 'Quyền truy cập đã thay đổi.');
+      }
+      return request();
+    })
         .then<void>(
           (value) {
             if (!_ownsGeneration(kind, generation)) return;
@@ -378,14 +397,14 @@ class ResultsWorkspaceController extends ChangeNotifier {
           },
         )
         .whenComplete(() {
+          completion.complete();
           if (!identical(_requests[kind], operation)) return;
           _requests.remove(kind);
           if (capabilities.canRead && _active.contains(kind) &&
               (_generations[kind] ?? 0) != generation) {
-            unawaited(_load<T>(kind, request, read, write, isEmpty, force: true));
+            unawaited(_reload(kind));
           }
-        });
-    _requests[kind] = operation;
+        }));
     return operation;
   }
 
@@ -419,9 +438,10 @@ class ResultsWorkspaceController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> correctSegment(SpeechSegment snapshot, String text) async {
-    _requireMutation();
+  Future<void> correctSegment(SpeechSegment snapshot, String text, {required int epoch}) async {
+    _requireMutation(epoch);
     await _reconcileAfterMutation(
+      ResultsMutationGroup.transcript,
       <ResultsResourceKind>{
         ResultsResourceKind.transcript,
         ResultsResourceKind.speakers,
@@ -439,18 +459,16 @@ class ResultsWorkspaceController extends ChangeNotifier {
     );
   }
 
-  Future<void> mapSpeaker(String clusterId, String? userId) async {
-    _requireMutation();
-    final current = transcript.data;
-    final etag = current?.etag;
-    if (current == null || etag == null || etag.isEmpty) {
-      throw const ApiFailure(
-        0,
-        'VERSION_MISSING',
-        'Không nhận được phiên bản transcript. Vui lòng tải lại.',
-      );
+  Future<void> mapSpeaker(SpeakerReviewSnapshot snapshot, String clusterId,
+      String? userId, {required int epoch}) async {
+    _requireMutation(epoch);
+    if (!snapshot.clusters.any((cluster) => cluster.id == clusterId)) {
+      throw const ApiFailure(412, 'RESULTS_REVIEW_CHANGED',
+        'Nhóm người nói không thuộc transcript đã xem.');
     }
+    final etag = snapshot.etag;
     await _reconcileAfterMutation(
+      ResultsMutationGroup.transcript,
       <ResultsResourceKind>{
         ResultsResourceKind.transcript,
         ResultsResourceKind.speakers,
@@ -469,9 +487,10 @@ class ResultsWorkspaceController extends ChangeNotifier {
     );
   }
 
-  Future<void> editSummary(ResultsSummary snapshot, String content) async {
-    _requireMutation();
+  Future<void> editSummary(ResultsSummary snapshot, String content, {required int epoch}) async {
+    _requireMutation(epoch);
     await _reconcileAfterMutation(
+      ResultsMutationGroup.summary,
       <ResultsResourceKind>{
         ResultsResourceKind.summary,
         ResultsResourceKind.summaryVersions,
@@ -488,10 +507,15 @@ class ResultsWorkspaceController extends ChangeNotifier {
 
   Future<void> activateSummaryVersion(
     ResultsSummary snapshot,
-    String versionId,
+    SummaryVersion version, {required int epoch}
   ) async {
-    _requireMutation();
+    _requireMutation(epoch);
+    if (version.isStale || version.isCurrent) {
+      throw const ApiFailure(409, 'SUMMARY_VERSION_NOT_ACTIVATABLE',
+        'Không thể kích hoạt phiên bản này.');
+    }
     await _reconcileAfterMutation(
+      ResultsMutationGroup.summary,
       <ResultsResourceKind>{
         ResultsResourceKind.summary,
         ResultsResourceKind.summaryVersions,
@@ -501,14 +525,15 @@ class ResultsWorkspaceController extends ChangeNotifier {
         sessionScope: sessionScope,
         meetingId: meetingId,
         snapshot: snapshot,
-        versionId: versionId,
+        versionId: version.id,
       ),
     );
   }
 
-  Future<void> createDecision(String content) async {
-    _requireMutation();
+  Future<void> createDecision(String content, {required int epoch}) async {
+    _requireMutation(epoch);
     await _reconcileAfterMutation(
+      ResultsMutationGroup.decisions,
       <ResultsResourceKind>{
         ResultsResourceKind.decisions,
         ResultsResourceKind.minutes,
@@ -524,9 +549,11 @@ class ResultsWorkspaceController extends ChangeNotifier {
   Future<void> reviewDecision(
     MeetingDecision snapshot, {
     required bool confirm,
+    required int epoch,
   }) async {
-    _requireMutation();
+    _requireMutation(epoch);
     await _reconcileAfterMutation(
+      ResultsMutationGroup.decisions,
       <ResultsResourceKind>{
         ResultsResourceKind.decisions,
         ResultsResourceKind.minutes,
@@ -540,66 +567,72 @@ class ResultsWorkspaceController extends ChangeNotifier {
     );
   }
 
-  Future<void> regenerateSummary() async {
-    _requireMutation();
-    final random = Random.secure();
-    final key = List<int>.generate(
-      16,
-      (_) => random.nextInt(256),
-    ).map((value) => value.toRadixString(16).padLeft(2, '0')).join();
+  Future<void> regenerateSummary({required int epoch}) async {
+    _requireMutation(epoch);
     await _reconcileAfterMutation(
+      ResultsMutationGroup.summary,
       <ResultsResourceKind>{
         ResultsResourceKind.summary,
         ResultsResourceKind.summaryVersions,
         ResultsResourceKind.minutes,
       },
-      () => repository.regenerateSummary(
-        sessionScope: sessionScope,
-        meetingId: meetingId,
-        idempotencyKey: key,
-      ),
+      () async {
+        final key = _mutations.regenerationKey();
+        try {
+          final jobId = await repository.regenerateSummary(
+            sessionScope: sessionScope, meetingId: meetingId,
+            idempotencyKey: key,
+          );
+          if (ownsReview(epoch)) _mutations.recordAdmission(jobId);
+        } catch (error) {
+          if (ownsReview(epoch)) _mutations.recordFailure(error);
+          rethrow;
+        }
+      },
     );
   }
 
   Future<void> _reconcileAfterMutation(
+    ResultsMutationGroup group,
     Set<ResultsResourceKind> resources,
     Future<Object?> Function() operation,
   ) async {
+    final ticket = _mutations.begin(group);
+    final epoch = reviewEpoch;
+    notifyListeners();
     try {
+      _requireMutation(epoch);
       await operation();
+      _requireMutation(epoch);
     } finally {
-      if (ownsSession) {
-        try {
-          _invalidate(resources);
-        } on Object {
-          // A session transition already fences the original command. Do not
-          // replace its failure with a second invalidation error.
-        }
+      _mutations.finish(group, ticket);
+      if (ownsReview(epoch)) {
+        _invalidate(resources);
+        notifyListeners();
       }
     }
   }
 
-  Future<List<Map<String, dynamic>>> meetingCandidates(String query) {
-    _requireMutation();
-    return repository.meetingCandidates(
-      sessionScope: sessionScope,
-      query: query,
+  Future<List<SpeakerCandidate>> meetingCandidates(String query, {required int epoch}) async {
+    _requireMutation(epoch);
+    final candidates = await repository.meetingCandidates(
+      sessionScope: sessionScope, meetingId: meetingId, query: query,
+      stillAuthorized: () => ownsReview(epoch),
     );
+    _requireMutation(epoch);
+    return candidates;
   }
 
-  void _requireMutation() {
+  void _requireMutation(int epoch) {
     if (!ownsSession) {
       throw const ApiFailure(
-        401,
-        'AUTH_SESSION_CHANGED',
-        'Phiên đăng nhập đã thay đổi.',
+        401, 'AUTH_SESSION_CHANGED', 'Phiên đăng nhập đã thay đổi.',
       );
     }
-    if (!capabilities.canMutate) {
+    if (!ownsReview(epoch)) {
       throw const ApiFailure(
-        403,
-        'RESULTS_MUTATION_FORBIDDEN',
-        'Bạn không có quyền thay đổi kết quả.',
+        403, 'RESULTS_MUTATION_FORBIDDEN',
+        'Quyền thay đổi kết quả đã thay đổi. Vui lòng xem xét lại.',
       );
     }
   }
@@ -622,6 +655,7 @@ class ResultsWorkspaceController extends ChangeNotifier {
   void dispose() {
     if (_disposed) return;
     _disposed = true;
+    _mutations.invalidate();
     invalidation.removeListener(_onInvalidation);
     api.sessionCoordinator.removeListener(_onSessionChanged);
     _processingBridge?.dispose();

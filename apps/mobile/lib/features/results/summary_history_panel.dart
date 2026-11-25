@@ -27,6 +27,7 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
   }
 
   Future<void> edit(ResultsSummary summary) async {
+    final epoch = widget.workspace.reviewEpoch;
     final controller = TextEditingController(text: summary.content);
     final ok = await showDialog<bool>(
       context: context,
@@ -59,7 +60,7 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
     setState(() => busy = true);
     await runCommand(
       context,
-      operation: () => widget.workspace.editSummary(summary, value),
+      operation: () => widget.workspace.editSummary(summary, value, epoch: epoch),
       successText: 'Đã lưu phiên bản mới.',
     );
     if (mounted) setState(() => busy = false);
@@ -73,13 +74,14 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
     await runCommand(
       context,
       operation: () =>
-          widget.workspace.activateSummaryVersion(summary, version.id),
+          widget.workspace.activateSummaryVersion(summary, version, epoch: widget.workspace.reviewEpoch),
       successText: 'Đã kích hoạt phiên bản.',
     );
     if (mounted) setState(() => busy = false);
   }
 
   Future<void> regenerate() async {
+    final epoch = widget.workspace.reviewEpoch;
     final ok = await confirmCommand(
       context,
       title: 'Tạo lại tóm tắt AI?',
@@ -90,7 +92,7 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
     setState(() => busy = true);
     await runCommand(
       context,
-      operation: widget.workspace.regenerateSummary,
+      operation: () => widget.workspace.regenerateSummary(epoch: epoch),
       successText: 'Đã tiếp nhận tác vụ xử lý.',
     );
     if (mounted) setState(() => busy = false);
@@ -161,7 +163,7 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
               children: [
                 Expanded(
                   child: OutlinedButton.icon(
-                    onPressed: busy || !widget.workspace.capabilities.canMutate
+                    onPressed: busy || widget.workspace.mutationBusy(ResultsMutationGroup.summary) || !widget.workspace.capabilities.canMutate
                         ? null
                         : () => edit(current),
                     icon: const Icon(Icons.edit_outlined),
@@ -171,7 +173,7 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
                 const SizedBox(width: 8),
                 Expanded(
                   child: OutlinedButton.icon(
-                    onPressed: busy || !widget.workspace.capabilities.canMutate
+                    onPressed: busy || widget.workspace.mutationBusy(ResultsMutationGroup.summary) || !widget.workspace.capabilities.canMutate
                         ? null
                         : regenerate,
                     icon: const Icon(Icons.auto_awesome),
@@ -201,6 +203,8 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
                       : TextButton(
                           onPressed:
                               busy ||
+                                  widget.workspace.mutationBusy(ResultsMutationGroup.summary) ||
+                                  version.isStale ||
                                   current == null ||
                                   !widget.workspace.capabilities.canMutate
                               ? null

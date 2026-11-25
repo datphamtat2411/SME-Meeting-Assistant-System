@@ -26,6 +26,7 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
   }
 
   Future<void> createDecision() async {
+    final epoch = widget.workspace.reviewEpoch;
     final controller = TextEditingController();
     final ok = await showDialog<bool>(
       context: context,
@@ -58,7 +59,7 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
     setState(() => busy = true);
     await runCommand(
       context,
-      operation: () => widget.workspace.createDecision(value),
+      operation: () => widget.workspace.createDecision(value, epoch: epoch),
       successText: 'Đã lưu quyết định.',
     );
     if (mounted) setState(() => busy = false);
@@ -79,7 +80,7 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
               subtitle:
                   'Đề xuất AI cần xác nhận trước khi trở thành chính thức.',
               trailing: IconButton(
-                onPressed: busy || !widget.workspace.capabilities.canMutate
+                onPressed: busy || widget.workspace.mutationBusy(ResultsMutationGroup.decisions) || !widget.workspace.capabilities.canMutate
                     ? null
                     : createDecision,
                 icon: const Icon(Icons.add_circle_outline),

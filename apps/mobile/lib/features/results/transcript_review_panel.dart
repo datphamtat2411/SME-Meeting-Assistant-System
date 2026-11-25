@@ -34,6 +34,7 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
   }
 
   Future<void> edit(SpeechSegment segment) async {
+    final epoch = widget.workspace.reviewEpoch;
     final controller = TextEditingController(text: segment.text);
     final ok = await showDialog<bool>(
       context: context,
@@ -62,7 +63,7 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
     if (ok != true || value.isEmpty || !mounted) return;
     await runCommand(
       context,
-      operation: () => widget.workspace.correctSegment(segment, value),
+      operation: () => widget.workspace.correctSegment(segment, value, epoch: epoch),
       successText: 'Đã cập nhật transcript.',
     );
   }
@@ -144,7 +145,8 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
                               IconButton(
                                 icon: const Icon(Icons.edit_note_outlined),
                                 onPressed:
-                                    widget.workspace.capabilities.canMutate
+                                    widget.workspace.capabilities.canMutate &&
+                                    !widget.workspace.mutationBusy(ResultsMutationGroup.transcript)
                                     ? () => edit(segment)
                                     : null,
                                 tooltip: 'Chỉnh sửa đoạn transcript',
@@ -153,7 +155,7 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
                           ),
                           SelectableText(segment.text),
                           if (segment.quality.isNotEmpty &&
-                              segment.quality != 'OK')
+                              segment.quality != 'ACCEPTED')
                             Padding(
                               padding: const EdgeInsets.only(top: 8),
                               child: StatePill(segment.quality),

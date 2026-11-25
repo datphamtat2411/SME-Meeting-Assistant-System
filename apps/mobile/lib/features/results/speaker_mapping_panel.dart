@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../core/command_actions.dart';
-import '../../core/models.dart';
 import '../../core/widgets.dart';
 import 'results_models.dart';
 import 'results_workspace_controller.dart';
@@ -26,20 +25,23 @@ class _SpeakerMappingPanelState extends State<SpeakerMappingPanel> {
     unawaited(widget.workspace.loadTranscript());
   }
 
-  Future<void> assign(String clusterId, String? userId) async {
+  Future<void> assign(SpeakerReviewSnapshot snapshot, String clusterId,
+      String? userId, int epoch) async {
     if (busy) return;
     setState(() => busy = true);
     await runCommand(
       context,
-      operation: () => widget.workspace.mapSpeaker(clusterId, userId),
+      operation: () => widget.workspace.mapSpeaker(snapshot, clusterId, userId, epoch: epoch),
       successText: 'Đã cập nhật người nói.',
     );
     if (mounted) setState(() => busy = false);
   }
 
-  Future<void> choose(String clusterId) async {
+  Future<void> choose(SpeakerReviewSnapshot snapshot, String clusterId) async {
+    final epoch = widget.workspace.reviewEpoch;
     final search = TextEditingController();
-    List<Map<String, dynamic>> found = const [];
+    List<SpeakerCandidate> found = const [];
+    var searchGeneration = 0;
     final user = await showDialog<String>(
       context: context,
       builder: (dialog) => StatefulBuilder(
@@ -53,15 +55,18 @@ class _SpeakerMappingPanelState extends State<SpeakerMappingPanel> {
                 TextField(
                   controller: search,
                   decoration: const InputDecoration(
-                    labelText: 'Tìm tên/email (Enter để tìm)',
+                    labelText: 'Tìm thành viên cuộc họp (Enter để tìm)',
                   ),
                   onSubmitted: (value) async {
-                    if (value.trim().length < 2) return;
+                    final generation = ++searchGeneration;
                     try {
                       final items = await widget.workspace.meetingCandidates(
-                        value.trim(),
+                        value.trim(), epoch: epoch,
                       );
-                      if (dialog.mounted) update(() => found = items);
+                      if (dialog.mounted && generation == searchGeneration &&
+                          widget.workspace.ownsReview(epoch)) {
+                        update(() => found = items);
+                      }
                     } catch (error) {
                       if (dialog.mounted) showFailure(dialog, error);
                     }
@@ -72,10 +77,9 @@ class _SpeakerMappingPanelState extends State<SpeakerMappingPanel> {
                     children: found
                         .map(
                           (person) => ListTile(
-                            title: Text(textValue(person['displayName'])),
-                            subtitle: Text(textValue(person['email'])),
+                            title: Text(person.displayName),
                             onTap: () =>
-                                Navigator.pop(dialog, textValue(person['id'])),
+                                Navigator.pop(dialog, person.id),
                           ),
                         )
                         .toList(),
@@ -94,7 +98,7 @@ class _SpeakerMappingPanelState extends State<SpeakerMappingPanel> {
       ),
     );
     search.dispose();
-    if (user != null && mounted) await assign(clusterId, user);
+    if (user != null && mounted) await assign(snapshot, clusterId, user, epoch);
   }
 
   @override
@@ -102,8 +106,9 @@ class _SpeakerMappingPanelState extends State<SpeakerMappingPanel> {
     animation: widget.workspace,
     builder: (context, _) {
       final resource = widget.workspace.speakers;
-      final items = resource.data;
-      if (items == null) {
+      final snapshot = resource.data;
+      final items = snapshot?.clusters;
+      if (items == null || snapshot == null) {
         return MessagePanel(
           title: resource.phase == ResultsResourcePhase.forbidden
               ? 'Bạn không có quyền xem kết quả này'
@@ -136,18 +141,18 @@ class _SpeakerMappingPanelState extends State<SpeakerMappingPanel> {
                   children: [
                     IconButton(
                       onPressed:
-                          busy || !widget.workspace.capabilities.canMutate
+                          busy || widget.workspace.mutationBusy(ResultsMutationGroup.transcript) || !widget.workspace.capabilities.canMutate
                           ? null
-                          : () => choose(entry.id),
+                          : () => choose(snapshot, entry.id),
                       icon: const Icon(Icons.person_add_outlined),
                       tooltip: 'Gán người nói',
                     ),
                     if (entry.userId != null)
                       IconButton(
                         onPressed:
-                            busy || !widget.workspace.capabilities.canMutate
+                            busy || widget.workspace.mutationBusy(ResultsMutationGroup.transcript) || !widget.workspace.capabilities.canMutate
                             ? null
-                            : () => assign(entry.id, null),
+                            : () => assign(snapshot, entry.id, null, widget.workspace.reviewEpoch),
                         icon: const Icon(Icons.link_off_outlined),
                         tooltip: 'Bỏ gán',
                       ),
