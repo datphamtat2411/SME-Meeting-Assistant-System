@@ -1,5 +1,6 @@
 import '../../core/meeting_models.dart';
 import 'results_workspace_controller.dart';
+import 'results_models.dart';
 
 class TranscriptEvidenceReference {
   const TranscriptEvidenceReference({
@@ -15,7 +16,13 @@ class TranscriptEvidenceReference {
   final String? transcriptEtag;
 }
 
-enum TranscriptEvidenceNavigationStatus { opened, missing, obsolete, forbidden }
+enum TranscriptEvidenceNavigationStatus {
+  opened,
+  missing,
+  obsolete,
+  forbidden,
+  unavailable,
+}
 
 class TranscriptEvidenceNavigationResult {
   const TranscriptEvidenceNavigationResult({
@@ -37,12 +44,23 @@ class TranscriptEvidenceNavigationBoundary {
   Future<TranscriptEvidenceNavigationResult> locate(
     TranscriptEvidenceReference reference,
   ) async {
-    if (!workspace.capabilities.canRead || !workspace.ownsSession) {
+    final epoch = workspace.readEpoch;
+    if (!workspace.ownsRead(epoch)) {
       return const TranscriptEvidenceNavigationResult(
         status: TranscriptEvidenceNavigationStatus.forbidden,
       );
     }
-    await workspace.loadTranscript();
+    await workspace.loadTranscript(force: true);
+    if (!workspace.ownsRead(epoch)) {
+      return const TranscriptEvidenceNavigationResult(
+        status: TranscriptEvidenceNavigationStatus.forbidden,
+      );
+    }
+    if (!workspace.transcriptIsCurrent) {
+      return const TranscriptEvidenceNavigationResult(
+        status: TranscriptEvidenceNavigationStatus.unavailable,
+      );
+    }
     final transcript = workspace.transcript.data;
     if (transcript == null ||
         transcript.id != reference.transcriptId ||
@@ -60,6 +78,19 @@ class TranscriptEvidenceNavigationBoundary {
         segment = candidate;
         break;
       }
+    }
+    if (segment != null &&
+        !workspace.focusTranscriptSegment(
+          TranscriptFocusRequest(
+            transcriptId: transcript.id,
+            transcriptEtag: transcript.etag,
+            segmentId: segment.id,
+            readEpoch: epoch,
+          ),
+        )) {
+      return const TranscriptEvidenceNavigationResult(
+        status: TranscriptEvidenceNavigationStatus.obsolete,
+      );
     }
     return TranscriptEvidenceNavigationResult(
       status: segment == null

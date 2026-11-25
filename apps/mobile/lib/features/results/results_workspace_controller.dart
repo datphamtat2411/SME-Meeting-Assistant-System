@@ -122,6 +122,29 @@ class ResultsWorkspaceController extends ChangeNotifier {
   int get reviewEpoch => _mutations.epoch;
   int _readEpoch = 0;
   int get readEpoch => _readEpoch;
+  TranscriptFocusRequest? _transcriptFocus;
+  TranscriptFocusRequest? get transcriptFocus =>
+      capabilities.canRead ? _transcriptFocus : null;
+
+  bool get transcriptIsCurrent =>
+      !_dirty.contains(ResultsResourceKind.transcript) &&
+      (transcript.phase == ResultsResourcePhase.available ||
+          transcript.phase == ResultsResourcePhase.empty);
+
+  bool focusTranscriptSegment(TranscriptFocusRequest request) {
+    final current = transcript.data;
+    if (!ownsRead(request.readEpoch) ||
+        !transcriptIsCurrent ||
+        current == null ||
+        current.id != request.transcriptId ||
+        current.etag != request.transcriptEtag ||
+        !current.segments.any((segment) => segment.id == request.segmentId)) {
+      return false;
+    }
+    _transcriptFocus = request;
+    notifyListeners();
+    return true;
+  }
   bool get regenerationUncertain => _mutations.regenerationUncertain;
   bool get decisionOutcomeUnknown => _mutations.decisionOutcomeUnknown;
   ResultsRecoveryDraft? recoveryDraft(String key) =>
@@ -316,6 +339,7 @@ class ResultsWorkspaceController extends ChangeNotifier {
 
   void _clearProtectedState() {
     _readEpoch++;
+    _transcriptFocus = null;
     _invalidateDialogs();
     _mutations.invalidate();
     _accessVerificationPending = false;
@@ -434,6 +458,7 @@ class ResultsWorkspaceController extends ChangeNotifier {
     final ticket = Object();
     _authorizationTicket = ticket;
     _readEpoch++;
+    _transcriptFocus = null;
     _accessVerificationPending = true;
     _accessVerificationFailure = null;
     _invalidateDialogs();

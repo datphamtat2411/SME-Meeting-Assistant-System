@@ -4,6 +4,72 @@ import 'package:sme_meeting_assistant/core/meeting_models.dart';
 import 'package:sme_meeting_assistant/features/results/results_models.dart';
 
 void main() {
+  test('transcript projection rejects unrelated coverage and speaker snapshots', () {
+    const segment = SpeechSegment(
+      id: 'segment-1',
+      ordinal: 0,
+      text: 'Hello',
+      startMs: 0,
+      endMs: 1000,
+      speakerLabel: 'SPEAKER_01',
+      speakerClusterId: 'cluster-1',
+      quality: 'ACCEPTED',
+      version: 1,
+      etag: '"segment"',
+    );
+    const transcript = Transcript(
+      id: 'transcript-1',
+      meetingId: 'meeting-1',
+      sourceMediaId: null,
+      processingJobId: null,
+      versionNumber: 1,
+      languageCode: 'vi',
+      status: 'READY',
+      durationMs: 1000,
+      finalizedAt: null,
+      contentRevision: 1,
+      segments: [segment],
+      etag: '"current"',
+    );
+    const cluster = SpeakerCluster(
+      id: 'cluster-1',
+      label: 'SPEAKER_01',
+      userId: 'user-1',
+      displayName: 'Nguyễn Văn A',
+    );
+    final stale = TranscriptReviewProjection(
+      transcript,
+      coverage: const TranscriptCoverage(
+        transcriptId: 'transcript-1',
+        transcriptEtag: '"old"',
+        regions: [],
+      ),
+      speakers: const SpeakerReviewSnapshot(
+        transcriptId: 'transcript-1',
+        etag: '"old"',
+        clusters: [cluster],
+      ),
+    );
+    expect(stale.coverage, isNull);
+    expect(stale.speakerName(segment), 'SPEAKER_01');
+    final current = TranscriptReviewProjection(
+      transcript,
+      coverage: const TranscriptCoverage(
+        transcriptId: 'transcript-1',
+        transcriptEtag: '"current"',
+        regions: [],
+      ),
+      speakers: const SpeakerReviewSnapshot(
+        transcriptId: 'transcript-1',
+        etag: '"current"',
+        clusters: [cluster],
+      ),
+    );
+    expect(current.coverage!.regions, isEmpty);
+    expect(current.speakerName(segment), 'Nguyễn Văn A');
+    expect(current.speakerKey(segment), 'user:user-1');
+  });
+
   test('forbidden resource cannot retain previous protected data', () {
     const resource = ResultsResource<String>(
       phase: ResultsResourcePhase.available,

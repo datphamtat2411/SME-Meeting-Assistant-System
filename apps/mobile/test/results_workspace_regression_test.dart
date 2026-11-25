@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:sme_meeting_assistant/core/app_dependencies.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_detail_page.dart';
 import 'package:sme_meeting_assistant/features/results/summary_history_controller.dart';
+import 'package:sme_meeting_assistant/features/results/transcript_evidence_navigation.dart';
 import 'package:sme_meeting_assistant/features/results/results_presentation.dart';
 import 'package:sme_meeting_assistant/core/api_client.dart';
 import 'package:sme_meeting_assistant/core/meeting_models.dart';
@@ -249,6 +250,23 @@ _setup() async {
 }
 
 void main() {
+  test('evidence lookup rejects a read revoked during loading', () async {
+    final (:workspace, :repository) = await _setup();
+    repository.pending = Completer<Transcript>();
+    final result = TranscriptEvidenceNavigationBoundary(workspace).locate(
+      const TranscriptEvidenceReference(
+        transcriptId: 'transcript-1',
+        segmentId: 'segment-1',
+      ),
+    );
+    workspace.updateCapabilities(
+      const ResultsCapabilities(canRead: false, canMutate: false),
+    );
+    repository.pending!.complete(_transcript);
+    expect((await result).status, TranscriptEvidenceNavigationStatus.forbidden);
+    expect(workspace.transcriptFocus, isNull);
+  });
+
   test('history denial clears the shared protected workspace', () async {
     final (:workspace, :repository) = await _setup();
     await workspace.loadTranscript();

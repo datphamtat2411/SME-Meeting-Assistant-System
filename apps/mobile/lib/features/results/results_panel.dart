@@ -7,6 +7,7 @@ import 'decisions_review_panel.dart';
 import 'minutes_panel.dart';
 import 'results_workspace_controller.dart';
 import 'results_invalidation.dart';
+import 'results_models.dart';
 import 'speaker_mapping_panel.dart';
 import 'summary_history_panel.dart';
 import 'transcript_review_panel.dart';
@@ -22,10 +23,15 @@ class ResultsPanel extends StatefulWidget {
 
 class _ResultsPanelState extends State<ResultsPanel> {
   int selected = 0;
+  TranscriptFocusRequest? _handledFocus;
 
   Set<ResultsResourceKind> _resourcesFor(int index) => switch (index) {
     0 => {ResultsResourceKind.summary},
-    1 => {ResultsResourceKind.transcript, ResultsResourceKind.coverage},
+    1 => {
+      ResultsResourceKind.transcript,
+      ResultsResourceKind.coverage,
+      ResultsResourceKind.speakers,
+    },
     2 => {ResultsResourceKind.decisions},
     3 => {ResultsResourceKind.speakers},
     _ => {ResultsResourceKind.minutes},
@@ -34,11 +40,14 @@ class _ResultsPanelState extends State<ResultsPanel> {
   @override
   void initState() {
     super.initState();
+    widget.workspace.addListener(_workspaceChanged);
+    _workspaceChanged();
     _scheduleActivation(widget.workspace);
   }
 
   @override
   void dispose() {
+    widget.workspace.removeListener(_workspaceChanged);
     widget.workspace.deactivate();
     super.dispose();
   }
@@ -47,9 +56,30 @@ class _ResultsPanelState extends State<ResultsPanel> {
   void didUpdateWidget(covariant ResultsPanel oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (!identical(oldWidget.workspace, widget.workspace)) {
+      oldWidget.workspace.removeListener(_workspaceChanged);
       oldWidget.workspace.deactivate();
+      _handledFocus = null;
+      widget.workspace.addListener(_workspaceChanged);
+      _workspaceChanged();
       _scheduleActivation(widget.workspace);
     }
+  }
+
+  void _workspaceChanged() {
+    final workspace = widget.workspace;
+    final request = workspace.transcriptFocus;
+    if (request == null || identical(request, _handledFocus)) return;
+    _handledFocus = request;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted ||
+          !identical(widget.workspace, workspace) ||
+          !identical(workspace.transcriptFocus, request)) {
+        return;
+      }
+      setState(() => selected = 1);
+      workspace.activateResources(_resourcesFor(1));
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
   }
 
   void _scheduleActivation(ResultsWorkspaceController workspace) {

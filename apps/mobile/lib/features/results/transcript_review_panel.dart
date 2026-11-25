@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 
 import '../../core/app_theme.dart';
@@ -10,7 +8,6 @@ import '../../core/widgets.dart';
 import 'results_workspace_controller.dart';
 import 'results_presentation.dart';
 import 'results_models.dart';
-import 'transcript_evidence_navigation.dart';
 
 class TranscriptReviewPanel extends StatefulWidget {
   const TranscriptReviewPanel({super.key, required this.workspace});
@@ -24,17 +21,51 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
   final search = TextEditingController();
   String speakerFilter = 'Tất cả';
   String qualityFilter = 'Tất cả';
-
-  TranscriptEvidenceNavigationBoundary get evidenceNavigation =>
-      TranscriptEvidenceNavigationBoundary(widget.workspace);
+  final _scroll = ScrollController();
+  final _anchor = GlobalKey();
+  TranscriptFocusRequest? _focus;
 
   @override
   void initState() {
     super.initState();
+    widget.workspace.addListener(_workspaceChanged);
+    _workspaceChanged();
+  }
+
+  void _workspaceChanged() {
+    final workspace = widget.workspace;
+    final request = workspace.transcriptFocus;
+    if (identical(request, _focus)) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted ||
+          !identical(widget.workspace, workspace) ||
+          !identical(workspace.transcriptFocus, request)) {
+        return;
+      }
+      setState(() {
+        _focus = request;
+        if (request != null) {
+          search.clear();
+          speakerFilter = 'Tất cả';
+          qualityFilter = 'Tất cả';
+        }
+      });
+      _jumpToAnchor();
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
+  void _jumpToAnchor() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _scroll.hasClients) _scroll.jumpTo(0);
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
   }
 
   @override
   void dispose() {
+    widget.workspace.removeListener(_workspaceChanged);
+    _scroll.dispose();
     search.dispose();
     super.dispose();
   }
@@ -152,14 +183,45 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
     _ => quality,
   };
 
-  Widget _coverageOverview(TranscriptCoverage? coverage) {
+  void _focusRegion(TranscriptReviewProjection projection, TranscriptCoverageRegion region) {
+    final segment = projection.transcript.segments
+        .where((segment) =>
+            segment.startMs < region.endMs && segment.endMs > region.startMs)
+        .firstOrNull;
+    if (segment == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Không có đoạn transcript tại vùng này.')),
+      );
+      return;
+    }
+    widget.workspace.focusTranscriptSegment(
+      TranscriptFocusRequest(
+        transcriptId: projection.transcript.id,
+        transcriptEtag: projection.transcript.etag,
+        segmentId: segment.id,
+        readEpoch: widget.workspace.readEpoch,
+      ),
+    );
+  }
+
+  Future<void> _refreshReview() async {
+    await Future.wait([
+      widget.workspace.loadTranscript(force: true),
+      widget.workspace.loadCoverage(force: true),
+      widget.workspace.loadSpeakers(force: true),
+    ]);
+  }
+
+  Widget _coverageOverview(TranscriptReviewProjection projection) {
+    final coverage = projection.coverage;
     if (coverage == null) {
-      return widget.workspace.coverage.phase == ResultsResourcePhase.failed
-          ? const MessagePanel(
-              title: 'Chưa thể tải thông tin coverage',
-              description: 'Transcript vẫn hiển thị; hãy thử tải coverage lại.',
-            )
-          : const SizedBox.shrink();
+      return MessagePanel(
+        title: widget.workspace.coverage.phase == ResultsResourcePhase.loading
+            ? 'Đang tải thông tin coverage'
+            : 'Chưa có coverage phù hợp với transcript hiện tại',
+        description: 'Chưa thể đánh giá độ bao phủ của bản transcript này.',
+        onRetry: _refreshReview,
+      );
     }
     final concerns = coverage.regions
         .where((region) => region.status != 'COVERED')
@@ -173,17 +235,22 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
             style: TextStyle(fontWeight: FontWeight.w700),
           ),
           Text(
-            concerns.isEmpty
-                ? 'Toàn bộ vùng đã có bằng chứng giọng nói.'
+            coverage.regions.isEmpty
+                ? 'Chưa có bằng chứng để đánh giá độ bao phủ.'
+                : concerns.isEmpty
+                ? '${coverage.regions.length} vùng có bằng chứng; không có cảnh báo trong các vùng đã ghi nhận.'
                 : '${concerns.length} vùng cần chú ý trong timeline.',
             style: const TextStyle(color: Palette.muted),
           ),
-          ...concerns.map(
+          ...projection.reviewRegions.map(
             (region) => ListTile(
               contentPadding: EdgeInsets.zero,
+              onTap: () => _focusRegion(projection, region),
               leading: Icon(
                 region.status == 'UNRESOLVED_ERROR'
                     ? Icons.error_outline
+                    : region.status == 'COVERED'
+                    ? Icons.check_circle_outline
                     : Icons.warning_amber_outlined,
                 color: region.status == 'UNRESOLVED_ERROR'
                     ? Palette.red
@@ -191,7 +258,7 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
               ),
               title: Text(
                 '${durationLabel(region.startMs)}–${durationLabel(region.endMs)} · '
-                '${region.status == 'UNRESOLVED_ERROR' ? 'Không khôi phục được' : 'Đáng ngờ'}',
+                '${region.status == 'UNRESOLVED_ERROR' ? 'Không khôi phục được' : region.status == 'COVERED' ? 'Đã bao phủ' : 'Đáng ngờ'}',
               ),
               subtitle: Text(
                 region.recovered
@@ -205,15 +272,21 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
     );
   }
 
-  Widget _segmentCard(SpeechSegment segment) => ContentCard(
+  Widget _segmentCard(
+    SpeechSegment segment,
+    TranscriptReviewProjection projection, {
+    bool focused = false,
+  }) => ContentCard(
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        if (focused)
+          const StatePill('READY', label: 'Đoạn đang tham chiếu'),
         Row(
           children: [
             Expanded(
               child: Text(
-                segment.speakerLabel ?? 'Chưa xác định',
+                projection.speakerName(segment),
                 style: const TextStyle(fontWeight: FontWeight.w700),
               ),
             ),
@@ -264,33 +337,50 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
           onRetry: () => widget.workspace.loadTranscript(force: true),
         );
       }
+      final projection = TranscriptReviewProjection(
+        transcript,
+        coverage: widget.workspace.coverage.hasData
+            ? widget.workspace.coverage.data
+            : null,
+        speakers: widget.workspace.speakers.hasData
+            ? widget.workspace.speakers.data
+            : null,
+      );
       final query = _fold(search.text.trim());
-      final speakers = <String>{
-        'Tất cả',
-        ...transcript.segments.map(
-          (segment) => segment.speakerLabel ?? 'Chưa xác định',
-        ),
-      }.toList()..sort();
+      final speakers = <String, String>{
+        'Tất cả': 'Tất cả',
+        for (final segment in transcript.segments)
+          projection.speakerKey(segment): projection.speakerName(segment),
+      };
       final qualities = <String>{
         'Tất cả',
         ...transcript.segments.map((segment) => segment.quality),
       }.toList()..sort();
+      if (!speakers.containsKey(speakerFilter)) speakerFilter = 'Tất cả';
+      if (!qualities.contains(qualityFilter)) qualityFilter = 'Tất cả';
       final visible = transcript.segments
           .where((segment) {
             final matchesText =
                 query.isEmpty ||
                 _fold(segment.text).contains(query) ||
+                _fold(projection.speakerName(segment)).contains(query) ||
                 _fold(segment.speakerLabel ?? '').contains(query);
             final matchesSpeaker =
                 speakerFilter == 'Tất cả' ||
-                (segment.speakerLabel ?? 'Chưa xác định') == speakerFilter;
+                projection.speakerKey(segment) == speakerFilter;
             final matchesQuality =
                 qualityFilter == 'Tất cả' || segment.quality == qualityFilter;
             return matchesText && matchesSpeaker && matchesQuality;
           })
           .toList(growable: false);
-      if (!speakers.contains(speakerFilter)) speakerFilter = 'Tất cả';
-      if (!qualities.contains(qualityFilter)) qualityFilter = 'Tất cả';
+      final focus = _focus;
+      final focusIndex = focus != null &&
+              widget.workspace.ownsRead(focus.readEpoch) &&
+              transcript.id == focus.transcriptId &&
+              transcript.etag == focus.transcriptEtag
+          ? visible.indexWhere((segment) => segment.id == focus.segmentId)
+          : -1;
+      final anchorIndex = focusIndex < 0 ? 0 : focusIndex;
       return Column(
         children: [
           Padding(
@@ -314,11 +404,11 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
                     value: speakerFilter,
                     onChanged: (value) =>
                         setState(() => speakerFilter = value ?? 'Tất cả'),
-                    items: speakers
+                    items: speakers.entries
                         .map(
                           (value) => DropdownMenuItem(
-                            value: value,
-                            child: Text(value, overflow: TextOverflow.ellipsis),
+                            value: value.key,
+                            child: Text(value.value, overflow: TextOverflow.ellipsis),
                           ),
                         )
                         .toList(),
@@ -348,13 +438,10 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
           ),
           Expanded(
             child: RefreshIndicator(
-              onRefresh: () async {
-                await Future.wait([
-                  widget.workspace.loadTranscript(force: true),
-                  widget.workspace.loadCoverage(force: true),
-                ]);
-              },
+              onRefresh: _refreshReview,
               child: CustomScrollView(
+                controller: _scroll,
+                center: focusIndex < 0 ? null : _anchor,
                 physics: const AlwaysScrollableScrollPhysics(),
                 slivers: [
                   SliverPadding(
@@ -373,11 +460,7 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
                             resource,
                             () => widget.workspace.loadTranscript(force: true),
                           ),
-                          _coverageOverview(
-                            widget.workspace.coverage.hasData
-                                ? widget.workspace.coverage.data
-                                : null,
-                          ),
+                          _coverageOverview(projection),
                           if (transcript.segments.isEmpty)
                             const MessagePanel(
                               title: 'Transcript trống theo dữ liệu chuẩn',
@@ -390,16 +473,33 @@ class _TranscriptReviewPanelState extends State<TranscriptReviewPanel> {
                       ),
                     ),
                   ),
-                  if (visible.isNotEmpty)
+                  if (anchorIndex > 0)
                     SliverList(
                       delegate: SliverChildBuilderDelegate(
                         (context, index) => Padding(
                           padding: const EdgeInsets.fromLTRB(18, 0, 18, 10),
-                          child: _segmentCard(visible[index]),
+                          child: _segmentCard(
+                            visible[anchorIndex - index - 1],
+                            projection,
+                          ),
                         ),
-                        childCount: visible.length,
+                        childCount: anchorIndex,
                       ),
                     ),
+                  SliverList(
+                    key: _anchor,
+                    delegate: SliverChildBuilderDelegate(
+                      (context, index) => Padding(
+                        padding: const EdgeInsets.fromLTRB(18, 0, 18, 10),
+                        child: _segmentCard(
+                          visible[anchorIndex + index],
+                          projection,
+                          focused: focusIndex >= 0 && index == 0,
+                        ),
+                      ),
+                      childCount: visible.length - anchorIndex,
+                    ),
+                  ),
                   const SliverPadding(padding: EdgeInsets.only(bottom: 24)),
                 ],
               ),

@@ -1,5 +1,6 @@
 import '../../core/api_client.dart';
 import '../../core/api_model_validation.dart';
+import '../../core/meeting_models.dart';
 
 enum ResultsResourcePhase {
   uninitialized,
@@ -155,6 +156,62 @@ class TranscriptCoverage {
   final String transcriptId;
   final String transcriptEtag;
   final List<TranscriptCoverageRegion> regions;
+}
+
+/// A presentation projection may only combine representations that were
+/// bracketed by the same server-issued transcript identity and token.
+class TranscriptReviewProjection {
+  TranscriptReviewProjection(
+    this.transcript, {
+    TranscriptCoverage? coverage,
+    SpeakerReviewSnapshot? speakers,
+  }) : coverage = coverage != null &&
+               coverage.transcriptId == transcript.id &&
+               coverage.transcriptEtag == transcript.etag
+           ? coverage
+           : null,
+       _speakers = speakers != null &&
+               speakers.transcriptId == transcript.id &&
+               speakers.etag == transcript.etag
+           ? {for (final cluster in speakers.clusters) cluster.id: cluster}
+           : const <String, SpeakerCluster>{};
+
+  final Transcript transcript;
+  final TranscriptCoverage? coverage;
+  final Map<String, SpeakerCluster> _speakers;
+
+  String speakerName(SpeechSegment segment) {
+    final cluster = _speakers[segment.speakerClusterId];
+    return cluster?.displayName ??
+        cluster?.label ??
+        segment.speakerLabel ??
+        'Chưa xác định';
+  }
+
+  String speakerKey(SpeechSegment segment) {
+    final cluster = _speakers[segment.speakerClusterId];
+    final userId = cluster?.userId;
+    if (userId != null) return 'user:$userId';
+    return 'cluster:${segment.speakerClusterId ?? segment.speakerLabel ?? ''}';
+  }
+
+  List<TranscriptCoverageRegion> get reviewRegions => coverage?.regions
+      .where((region) => region.status != 'COVERED' || region.recovered)
+      .toList(growable: false) ?? const [];
+}
+
+class TranscriptFocusRequest {
+  const TranscriptFocusRequest({
+    required this.transcriptId,
+    required this.transcriptEtag,
+    required this.segmentId,
+    required this.readEpoch,
+  });
+
+  final String transcriptId;
+  final String? transcriptEtag;
+  final String segmentId;
+  final int readEpoch;
 }
 
 class ResultsSummary {
