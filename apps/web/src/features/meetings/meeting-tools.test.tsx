@@ -373,9 +373,9 @@ describe('MeetingTools section composition', () => {
     expect(
       getWithMetaSpy.mock.calls.some(([url]) => url.endsWith('/decisions'))
     ).toBe(false)
-    await screen.getByRole('tab', { name: 'Decisions' }).click()
+    await screen.getByRole('tab', { name: 'Decisions', exact: true }).click()
     await expect
-      .element(screen.getByRole('tab', { name: 'Decisions' }))
+      .element(screen.getByRole('tab', { name: 'Decisions', exact: true }))
       .toHaveAttribute('aria-selected', 'true')
     await expect
       .element(screen.getByText('No summary available'))

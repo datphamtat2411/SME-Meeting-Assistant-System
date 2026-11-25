@@ -170,14 +170,14 @@ function MeetingNavigationGuard() {
           'Unsaved transcript review work may be lost. Leave anyway?'
         )
       }
-      const currentSearch = normalizeMeetingWorkspaceSearch(current.search)
+      const currentSearch =
+        current.routeId === '/_authenticated/meetings/$meetingId'
+          ? current.search
+          : {}
       const remainsInIntelligence =
         sameMeeting &&
         next.routeId === '/_authenticated/meetings/$meetingId' &&
-        remainsInIntelligenceReview(
-          currentSearch,
-          normalizeMeetingWorkspaceSearch(next.search)
-        )
+        remainsInIntelligenceReview(currentSearch, next.search)
       if (
         session.hasUnsavedIntelligence &&
         !remainsInIntelligence &&
