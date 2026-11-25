@@ -11,9 +11,142 @@ import {
   accessMinutesExport,
   createMinutesExport,
   exportStatusQuery,
+  type ExportAdmission,
   type ExportStatus,
 } from './export-api'
 import { minutesQuery } from './minutes-api'
+
+type ExportFormat = ExportStatus['format']
+type ExportOperation = {
+  idempotencyKey: string
+  exportId?: string
+}
+type ExportOperations = Record<ExportFormat, ExportOperation>
+
+const formats: ExportFormat[] = ['MARKDOWN', 'PDF']
+
+function newOperations(): ExportOperations {
+  return {
+    PDF: { idempotencyKey: crypto.randomUUID() },
+    MARKDOWN: { idempotencyKey: crypto.randomUUID() },
+  }
+}
+
+function storageKey(meetingId: string) {
+  return `sme:meeting-minutes-export:${meetingId}`
+}
+
+function loadOperations(meetingId: string): ExportOperations {
+  const fallback = newOperations()
+  try {
+    const raw = sessionStorage.getItem(storageKey(meetingId))
+    if (!raw) return fallback
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return fallback
+    const record = parsed as Record<string, unknown>
+    return {
+      PDF: readOperation(record.PDF, fallback.PDF),
+      MARKDOWN: readOperation(record.MARKDOWN, fallback.MARKDOWN),
+    }
+  } catch {
+    return fallback
+  }
+}
+
+function readOperation(
+  value: unknown,
+  fallback: ExportOperation
+): ExportOperation {
+  if (!value || typeof value !== 'object') return fallback
+  const operation = value as Record<string, unknown>
+  return {
+    idempotencyKey:
+      typeof operation.idempotencyKey === 'string'
+        ? operation.idempotencyKey
+        : fallback.idempotencyKey,
+    exportId:
+      typeof operation.exportId === 'string' ? operation.exportId : undefined,
+  }
+}
+
+function persistOperations(meetingId: string, operations: ExportOperations) {
+  try {
+    sessionStorage.setItem(storageKey(meetingId), JSON.stringify(operations))
+  } catch {
+    // The server-side idempotency key remains authoritative when storage is
+    // unavailable; this only removes reload recovery for this browser.
+  }
+}
+
+function expectedContentType(format: ExportFormat) {
+  return format === 'PDF' ? 'application/pdf' : 'text/markdown; charset=UTF-8'
+}
+
+function isSafeFilename(filename: string, format: ExportFormat) {
+  if (
+    filename.length < 1 ||
+    filename.length > 160 ||
+    filename.includes('/') ||
+    filename.includes('\\')
+  ) {
+    return false
+  }
+  for (const character of filename) {
+    const code = character.charCodeAt(0)
+    if (code < 32 || code === 127) return false
+  }
+  return filename.toLowerCase().endsWith(format === 'PDF' ? '.pdf' : '.md')
+}
+
+function validateDownloadCapability(
+  result: Awaited<ReturnType<typeof accessMinutesExport>>,
+  format: ExportFormat,
+  exportId: string
+) {
+  if (result.exportId !== exportId) {
+    throw new Error(
+      'The export download response does not match this operation.'
+    )
+  }
+  if (result.freshness !== 'CURRENT') {
+    throw new Error('Export is not current. Generate a fresh copy.')
+  }
+  if (result.contentType !== expectedContentType(format)) {
+    throw new Error(
+      'The export content type does not match the requested format.'
+    )
+  }
+  const expiresAt = Date.parse(result.expiresAt)
+  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+    throw new Error('The export download capability has expired.')
+  }
+  if (!isSafeFilename(result.filename, format)) {
+    throw new Error('The export filename is unsafe or mismatched.')
+  }
+  const url = new URL(result.accessUrl)
+  if (
+    url.protocol !== 'https:' ||
+    !url.hostname ||
+    url.username ||
+    url.password ||
+    url.hash ||
+    !url.search
+  ) {
+    throw new Error('Refusing unsafe download URL.')
+  }
+  const configuredHosts = String(
+    import.meta.env.VITE_EXPORT_DOWNLOAD_HOSTS ?? ''
+  )
+    .split(',')
+    .map((host) => host.trim().toLowerCase())
+    .filter(Boolean)
+  if (
+    configuredHosts.length === 0 ||
+    !configuredHosts.includes(url.host.toLowerCase())
+  ) {
+    throw new Error('The export download host is not trusted.')
+  }
+}
 
 export function ExportPanel({
   meetingId,
@@ -26,12 +159,20 @@ export function ExportPanel({
   const mounted = useRef(false)
   const lifecycleGeneration = useRef(0)
   const downloadOperationGeneration = useRef(0)
-  const meetingIdRef = useRef(meetingId)
+  const [operationCache, setOperationCache] = useState<
+    Record<string, ExportOperations>
+  >({})
+  const [unavailableMeetings, setUnavailableMeetings] = useState<
+    Record<string, boolean>
+  >({})
+  const operations = operationCache[meetingId] ?? loadOperations(meetingId)
+  const unavailable = unavailableMeetings[meetingId] === true
+
   useEffect(() => {
     canExportRef.current = canExport
   }, [canExport])
+
   useEffect(() => {
-    meetingIdRef.current = meetingId
     mounted.current = true
     const generation = ++lifecycleGeneration.current
     return () => {
@@ -41,81 +182,141 @@ export function ExportPanel({
       downloadOperationGeneration.current += 1
     }
   }, [meetingId])
-  const [exportId, setExportId] = useState('')
-  const [unavailable, setUnavailable] = useState(false)
-  const idempotencyKeys = useRef<Record<'PDF' | 'MARKDOWN', string>>({
-    PDF: crypto.randomUUID(),
-    MARKDOWN: crypto.randomUUID(),
-  })
+
+  function updateOperations(scopeMeetingId: string, next: ExportOperations) {
+    setOperationCache((current) => ({
+      ...current,
+      [scopeMeetingId]: next,
+    }))
+    persistOperations(scopeMeetingId, next)
+  }
+
+  function setUnavailableForMeeting(scopeMeetingId: string, value: boolean) {
+    setUnavailableMeetings((current) => ({
+      ...current,
+      [scopeMeetingId]: value,
+    }))
+  }
+
   const minutes = useQuery(minutesQuery(meetingId))
-  const status = useQuery({
-    ...exportStatusQuery(exportId),
-    enabled: Boolean(exportId),
-    refetchInterval: (query) => {
-      const value = query.state.data as ExportStatus | undefined
-      return !value ||
-        value.status === 'PENDING' ||
-        value.status === 'GENERATING'
-        ? 4000
-        : false
-    },
-  })
+  const statusQueries = {
+    PDF: useQuery({
+      ...exportStatusQuery(operations.PDF.exportId ?? ''),
+      enabled: Boolean(operations.PDF.exportId),
+      refetchInterval: (query) => {
+        const value = query.state.data as ExportStatus | undefined
+        return !value ||
+          value.status === 'PENDING' ||
+          value.status === 'GENERATING'
+          ? 4000
+          : false
+      },
+    }),
+    MARKDOWN: useQuery({
+      ...exportStatusQuery(operations.MARKDOWN.exportId ?? ''),
+      enabled: Boolean(operations.MARKDOWN.exportId),
+      refetchInterval: (query) => {
+        const value = query.state.data as ExportStatus | undefined
+        return !value ||
+          value.status === 'PENDING' ||
+          value.status === 'GENERATING'
+          ? 4000
+          : false
+      },
+    }),
+  } satisfies Record<ExportFormat, ReturnType<typeof useQuery<ExportStatus>>>
+
   const create = useMutation({
-    mutationFn: (format: 'PDF' | 'MARKDOWN') => {
+    mutationFn: ({
+      format,
+      idempotencyKey,
+      meetingId: scopeMeetingId,
+    }: {
+      format: ExportFormat
+      idempotencyKey: string
+      meetingId: string
+    }) => {
       if (!canExportRef.current) {
         throw new Error('Minutes export is no longer authorized.')
       }
-      return createMinutesExport(
-        meetingId,
-        format,
-        idempotencyKeys.current[format]
-      )
+      return createMinutesExport(scopeMeetingId, format, idempotencyKey)
     },
-    onSuccess: (data, format) => {
-      idempotencyKeys.current[format] = crypto.randomUUID()
-      setExportId(data.exportId)
-      toast.success('Export queued')
+    onSuccess: (data: ExportAdmission, variables) => {
+      setOperationCache((cache) => {
+        const currentOperations =
+          cache[variables.meetingId] ?? loadOperations(variables.meetingId)
+        const current = currentOperations[variables.format]
+        if (current.idempotencyKey !== variables.idempotencyKey) return cache
+        const next = {
+          ...currentOperations,
+          [variables.format]: {
+            ...current,
+            exportId: data.exportId,
+          },
+        }
+        persistOperations(variables.meetingId, next)
+        return { ...cache, [variables.meetingId]: next }
+      })
+      toast.success(`${variables.format} export queued`)
     },
-    onError: (e) => {
-      const failure = normalizeCoreApiError(e)
-      if (failure.status === 404) setUnavailable(true)
-      if (failure.status === 422 || failure.status === 409)
+    onError: (error, variables) => {
+      const failure = normalizeCoreApiError(error)
+      if (failure.status === 404) {
+        setUnavailableForMeeting(variables.meetingId, true)
+      }
+      if (failure.status === 422 || failure.status === 409) {
         void minutes.refetch()
+      }
       toast.error(
         failure.status === 422 || failure.status === 409
           ? 'Minutes are not eligible for export. Review the latest meeting minutes.'
-          : 'Export request unavailable',
-        {
-          description: e instanceof Error ? e.message : undefined,
-        }
+          : failure.recoveryOutcome === 'uncertain'
+            ? 'Export admission is uncertain. Retry the same format to recover it.'
+            : 'Export request unavailable',
+        { description: error instanceof Error ? error.message : undefined }
       )
     },
   })
+
   const download = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (format: ExportFormat) => {
       if (!canExportRef.current) {
         throw new Error('Minutes export is no longer authorized.')
       }
+      const scopeMeetingId = meetingId
+      const exportId = operations[format].exportId
+      if (!exportId) throw new Error('No export operation is available.')
       const operation = {
-        meetingId: meetingIdRef.current,
+        exportId,
+        meetingId: scopeMeetingId,
         lifecycle: lifecycleGeneration.current,
         generation: ++downloadOperationGeneration.current,
       }
       const isCurrentOperation = () =>
         mounted.current &&
         canExportRef.current &&
-        meetingIdRef.current === operation.meetingId &&
         lifecycleGeneration.current === operation.lifecycle &&
         downloadOperationGeneration.current === operation.generation
 
       if (!isCurrentOperation()) return
+      const observed = await statusQueries[format].refetch()
+      if (!isCurrentOperation()) return
+      const status = observed.data
+      if (
+        !status ||
+        status.exportId !== exportId ||
+        status.meetingId !== operation.meetingId ||
+        status.format !== format ||
+        status.status !== 'READY'
+      ) {
+        throw new Error(
+          'The export status is no longer ready for this meeting.'
+        )
+      }
       const result = await accessMinutesExport(exportId)
       if (!isCurrentOperation()) return
-      if (result.freshness !== 'CURRENT')
-        throw new Error('Export is not current. Generate a fresh copy.')
-      const url = new URL(result.accessUrl)
-      if (url.protocol !== 'https:' && url.hostname !== 'localhost')
-        throw new Error('Refusing unsafe download URL')
+      validateDownloadCapability(result, format, exportId)
+      if (!isCurrentOperation()) return
       const link = document.createElement('a')
       link.href = result.accessUrl
       link.target = '_blank'
@@ -123,11 +324,12 @@ export function ExportPanel({
       link.download = result.filename
       link.click()
     },
-    onError: (e) =>
+    onError: (error) =>
       toast.error('Download unavailable', {
-        description: e instanceof Error ? e.message : undefined,
+        description: error instanceof Error ? error.message : undefined,
       }),
   })
+
   const proposalsIncluded = minutes.data?.proposalsIncluded === true
   return (
     <Card>
@@ -137,42 +339,44 @@ export function ExportPanel({
           Export meeting minutes
         </CardTitle>
         <p className='text-sm text-muted-foreground'>
-          Exports require a complete, reviewed minutes snapshot. Server-side
-          export admission may be disabled by deployment policy.
+          Exports require a complete, reviewed Minutes snapshot. Each format has
+          its own durable operation and idempotency key.
         </p>
       </CardHeader>
-      <CardContent className='space-y-3'>
+      <CardContent className='space-y-4'>
         {unavailable ? (
           <p className='text-sm text-muted-foreground'>
-            Export creation is not available for this meeting or this
-            deployment. Your administrator can confirm whether public export
-            admission and its worker are enabled.
+            Export creation is not available for this meeting or deployment.
           </p>
         ) : canExport ? (
           <div className='flex flex-wrap gap-2'>
-            <Button
-              size='sm'
-              variant='outline'
-              disabled={
-                create.isPending ||
-                minutes.data?.completeness !== 'COMPLETE' ||
-                proposalsIncluded
-              }
-              onClick={() => create.mutate('MARKDOWN')}
-            >
-              Generate Markdown
-            </Button>
-            <Button
-              size='sm'
-              disabled={
-                create.isPending ||
-                minutes.data?.completeness !== 'COMPLETE' ||
-                proposalsIncluded
-              }
-              onClick={() => create.mutate('PDF')}
-            >
-              Generate PDF
-            </Button>
+            {formats.map((format) => (
+              <Button
+                key={format}
+                size='sm'
+                variant={format === 'PDF' ? 'default' : 'outline'}
+                disabled={
+                  create.isPending ||
+                  minutes.data?.completeness !== 'COMPLETE' ||
+                  proposalsIncluded
+                }
+                onClick={() => {
+                  const next = {
+                    ...operations,
+                    [format]: { idempotencyKey: crypto.randomUUID() },
+                  }
+                  downloadOperationGeneration.current += 1
+                  updateOperations(meetingId, next)
+                  create.mutate({
+                    format,
+                    idempotencyKey: next[format].idempotencyKey,
+                    meetingId,
+                  })
+                }}
+              >
+                Generate {format === 'PDF' ? 'PDF' : 'Markdown'}
+              </Button>
+            ))}
           </div>
         ) : (
           <p className='text-sm text-muted-foreground'>
@@ -184,7 +388,7 @@ export function ExportPanel({
             size='sm'
             variant='outline'
             onClick={() => {
-              setUnavailable(false)
+              setUnavailableForMeeting(meetingId, false)
               void minutes.refetch()
             }}
           >
@@ -209,42 +413,52 @@ export function ExportPanel({
             retry={() => void minutes.refetch()}
           />
         )}
-        {status.isError && (
-          <RequestError
-            error={status.error}
-            retry={() => void status.refetch()}
-          />
-        )}
-        {status.data && (
-          <div className='flex flex-wrap items-center gap-3 rounded-lg border p-3 text-sm'>
-            <span>Export {status.data.format}</span>
-            <Badge variant='outline'>{status.data.status}</Badge>
-            <Badge variant='outline'>{status.data.freshness}</Badge>
-            {status.data.status === 'READY' &&
-              status.data.freshness !== 'CURRENT' && (
+        {formats.map((format) => {
+          const query = statusQueries[format]
+          const status = query.data
+          if (query.isError) {
+            return (
+              <RequestError
+                key={format}
+                error={query.error}
+                retry={() => void query.refetch()}
+              />
+            )
+          }
+          if (!status || status.exportId !== operations[format].exportId) {
+            return null
+          }
+          return (
+            <div
+              key={format}
+              className='flex flex-wrap items-center gap-3 rounded-lg border p-3 text-sm'
+            >
+              <span>Export {format}</span>
+              <Badge variant='outline'>{status.status}</Badge>
+              <Badge variant='outline'>{status.freshness}</Badge>
+              {status.status === 'READY' && status.freshness !== 'CURRENT' && (
                 <p className='text-xs text-amber-600'>
-                  This export no longer matches current meeting minutes.
-                  Generate a new version.
+                  This export no longer matches current Minutes. Generate a new
+                  version.
                 </p>
               )}
-            {status.data.safeErrorCode && (
-              <span className='text-destructive'>
-                {status.data.safeErrorCode}
-              </span>
-            )}
-            {canExport &&
-              status.data.status === 'READY' &&
-              status.data.freshness === 'CURRENT' && (
-                <Button
-                  size='sm'
-                  disabled={download.isPending}
-                  onClick={() => download.mutate()}
-                >
-                  <Download className='size-4' /> Download
-                </Button>
+              {status.safeErrorCode && (
+                <span className='text-destructive'>{status.safeErrorCode}</span>
               )}
-          </div>
-        )}
+              {canExport &&
+                status.status === 'READY' &&
+                status.freshness === 'CURRENT' && (
+                  <Button
+                    size='sm'
+                    disabled={download.isPending}
+                    onClick={() => download.mutate(format)}
+                  >
+                    <Download className='size-4' /> Download
+                  </Button>
+                )}
+            </div>
+          )
+        })}
       </CardContent>
     </Card>
   )

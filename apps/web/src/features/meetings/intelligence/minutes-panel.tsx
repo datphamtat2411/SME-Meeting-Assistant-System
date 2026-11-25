@@ -6,121 +6,261 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { RequestError, RequestLoading } from '@/components/request-state'
 import { minutesQuery } from './minutes-api'
 
+function SnapshotBadge({ value }: { value: string }) {
+  return (
+    <Badge
+      variant={
+        value === 'AVAILABLE' ||
+        value === 'CURRENT' ||
+        value === 'COMPLETE' ||
+        value === 'CONFIRMED'
+          ? 'secondary'
+          : value === 'NEEDS_REVIEW' ||
+              value === 'STALE' ||
+              value === 'PROCESSING'
+            ? 'outline'
+            : 'destructive'
+      }
+    >
+      {value.replace(/_/g, ' ')}
+    </Badge>
+  )
+}
+
 export function MinutesPanel({ meetingId }: { meetingId: string }) {
   const query = useQuery(minutesQuery(meetingId))
-  const proposalsIncluded = query.data?.proposalsIncluded === true
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>
-          {proposalsIncluded
-            ? 'Meeting minutes snapshot'
-            : 'Official meeting minutes'}
-        </CardTitle>
-        <p className='text-sm text-muted-foreground'>
-          {proposalsIncluded
-            ? 'Core reported that this snapshot contains unconfirmed AI proposals and it cannot be treated as official minutes.'
-            : 'Only confirmed decisions and official action items are included. Unreviewed AI proposals are excluded.'}
-        </p>
-      </CardHeader>
-      <CardContent className='space-y-4'>
-        {query.isPending ? (
+  if (query.isPending) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Canonical Minutes</CardTitle>
+        </CardHeader>
+        <CardContent>
           <RequestLoading />
-        ) : query.isError ? (
+        </CardContent>
+      </Card>
+    )
+  }
+  if (query.isError) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Canonical Minutes</CardTitle>
+        </CardHeader>
+        <CardContent>
           <RequestError
             error={query.error}
             retry={() => void query.refetch()}
           />
-        ) : (
-          <>
-            {proposalsIncluded && (
+        </CardContent>
+      </Card>
+    )
+  }
+
+  const minutes = query.data
+  const proposalsIncluded = minutes.proposalsIncluded
+  return (
+    <Card>
+      <CardHeader className='border-b'>
+        <div className='flex flex-wrap items-start justify-between gap-3'>
+          <div>
+            <p className='text-sm font-medium text-primary'>Meeting record</p>
+            <CardTitle className='mt-1'>Canonical Minutes</CardTitle>
+            <p className='mt-1 text-sm text-muted-foreground'>
+              Read-only assembly of the authoritative Summary, confirmed
+              Decisions, official Action Items, and transcript quality state.
+            </p>
+          </div>
+          <SnapshotBadge value={minutes.completeness} />
+        </div>
+        {proposalsIncluded && (
+          <p
+            role='alert'
+            className='rounded border border-amber-300 bg-amber-50 p-2 text-sm text-amber-800 dark:bg-amber-950/30 dark:text-amber-200'
+          >
+            This snapshot contains unconfirmed AI proposals and is not official
+            Minutes.
+          </p>
+        )}
+      </CardHeader>
+      <CardContent className='space-y-6 p-4 sm:p-6'>
+        <section className='grid gap-3 rounded-lg border bg-muted/20 p-4 text-sm sm:grid-cols-2'>
+          <div>
+            <p className='text-xs font-medium tracking-wide text-muted-foreground uppercase'>
+              Meeting
+            </p>
+            <p className='mt-1 font-medium'>{minutes.meeting.title}</p>
+            <p className='text-xs text-muted-foreground'>
+              {minutes.meeting.status.replace(/_/g, ' ')}
+              {minutes.meeting.scheduledStartAt
+                ? ` · ${minutes.meeting.scheduledStartAt}`
+                : ''}
+            </p>
+          </div>
+          <div>
+            <p className='text-xs font-medium tracking-wide text-muted-foreground uppercase'>
+              Snapshot identity
+            </p>
+            <p className='mt-1 text-xs'>
+              Assembled {minutes.assembledAt} · schema v{minutes.schemaVersion}
+            </p>
+            <p className='font-mono text-[11px] break-all text-muted-foreground'>
+              {minutes.sourceFingerprint}
+            </p>
+          </div>
+        </section>
+
+        {minutes.warnings.length > 0 && (
+          <section className='space-y-2'>
+            <h3 className='font-semibold'>Review warnings</h3>
+            {minutes.warnings.map((warning) => (
               <p
-                role='alert'
+                key={warning}
                 className='rounded border border-amber-300 p-2 text-sm text-amber-700'
               >
-                This snapshot contains unconfirmed AI proposals and is not
-                official minutes.
-              </p>
-            )}
-            <div className='flex flex-wrap items-center gap-2'>
-              <Badge
-                variant={
-                  query.data.completeness === 'COMPLETE'
-                    ? 'secondary'
-                    : 'outline'
-                }
-              >
-                {query.data.completeness}
-              </Badge>
-              <span className='text-xs text-muted-foreground'>
-                Snapshot: {query.data.assembledAt}
-              </span>
-            </div>
-            {query.data.warnings.map((warning, i) => (
-              <p
-                key={i}
-                className='rounded border border-amber-300 p-2 text-sm text-amber-700'
-              >
-                {warning}
+                {warning.replace(/_/g, ' ')}
               </p>
             ))}
-            <section>
-              <h4 className='font-semibold'>
-                Summary · {query.data.summary.availability}
-              </h4>
-              <p className='mt-2 text-sm whitespace-pre-wrap'>
-                {query.data.summary.content ||
-                  'No approved summary is currently available.'}
-              </p>
-              {query.data.summary.isStale && (
-                <Badge variant='destructive'>Source has changed</Badge>
-              )}
-            </section>
-            <section>
-              <h4 className='font-semibold'>
-                Confirmed decisions ({query.data.confirmedDecisions.length})
-              </h4>
-              {query.data.confirmedDecisions.length ? (
-                <ul className='mt-2 list-inside list-disc space-y-1 text-sm'>
-                  {query.data.confirmedDecisions.map((item) => (
-                    <li key={item.id}>{item.content}</li>
-                  ))}
-                </ul>
-              ) : (
-                <p className='text-sm text-muted-foreground'>
-                  No confirmed decisions.
-                </p>
-              )}
-            </section>
-            <section>
-              <h4 className='font-semibold'>
-                Official action items ({query.data.officialActionItems.length})
-              </h4>
-              {query.data.officialActionItems.length ? (
-                <ul className='mt-2 list-inside list-disc space-y-1 text-sm'>
-                  {query.data.officialActionItems.map((item) => (
-                    <li key={item.id}>
-                      {item.title} · {item.status}
-                      {item.dueDate ? ' · due ' + item.dueDate : ''}
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className='text-sm text-muted-foreground'>
-                  No official action items.
-                </p>
-              )}
-              <Button asChild size='sm' variant='link'>
-                <Link to='/action-items'>Open action board</Link>
-              </Button>
-            </section>
-            <p className='border-t pt-2 text-xs text-muted-foreground'>
-              Transcript: {query.data.transcript.availability} · Unresolved
-              segments: {query.data.transcript.unresolvedSegments} · Unresolved
-              speech regions: {query.data.transcript.unresolvedCoverageRegions}
-            </p>
-          </>
+          </section>
         )}
+
+        <section className='space-y-3'>
+          <div className='flex flex-wrap items-center justify-between gap-2'>
+            <h3 className='text-lg font-semibold'>Approved Summary</h3>
+            <SnapshotBadge value={minutes.summary.availability} />
+          </div>
+          <p className='text-sm whitespace-pre-wrap'>
+            {minutes.summary.content ||
+              'No approved Summary is currently available.'}
+          </p>
+          <div className='flex flex-wrap gap-2 text-xs text-muted-foreground'>
+            <span>Source: {minutes.summary.sourceType ?? 'not available'}</span>
+            <span>Version: {minutes.summary.versionNumber ?? '—'}</span>
+            <span>
+              Transcript revision: {minutes.summary.contentRevision ?? '—'}
+            </span>
+            <span>
+              Transcript: {minutes.summary.transcriptId ?? 'not available'}
+            </span>
+            {minutes.summary.isStale && <SnapshotBadge value='STALE' />}
+          </div>
+          {minutes.summary.aiWarnings.length > 0 && (
+            <ul className='list-inside list-disc text-sm text-amber-700'>
+              {minutes.summary.aiWarnings.map((warning) => (
+                <li key={warning}>{warning}</li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        <section className='space-y-3'>
+          <div className='flex items-center justify-between gap-2'>
+            <h3 className='text-lg font-semibold'>
+              Confirmed Decisions ({minutes.confirmedDecisions.length})
+            </h3>
+          </div>
+          {minutes.confirmedDecisions.length === 0 ? (
+            <p className='text-sm text-muted-foreground'>
+              No confirmed Decisions are included in this snapshot.
+            </p>
+          ) : (
+            <div className='space-y-3'>
+              {minutes.confirmedDecisions.map((decision) => (
+                <article key={decision.id} className='rounded-lg border p-3'>
+                  <div className='flex flex-wrap items-start justify-between gap-2'>
+                    <p className='text-sm whitespace-pre-wrap'>
+                      {decision.content}
+                    </p>
+                    <SnapshotBadge value={decision.status} />
+                  </div>
+                  <p className='mt-2 text-xs text-muted-foreground'>
+                    Source: {decision.sourceType} · version {decision.version}
+                    {decision.isStale ? ' · source stale' : ''}
+                  </p>
+                  {decision.transcriptId && (
+                    <p className='mt-1 font-mono text-[11px] break-all text-muted-foreground'>
+                      Transcript: {decision.transcriptId} · revision{' '}
+                      {decision.contentRevision ?? '—'}
+                    </p>
+                  )}
+                  {decision.evidenceSegmentIds.length > 0 && (
+                    <p className='mt-1 text-xs text-muted-foreground'>
+                      Evidence references: {decision.evidenceSegmentIds.length}
+                    </p>
+                  )}
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section className='space-y-3'>
+          <div className='flex flex-wrap items-center justify-between gap-2'>
+            <h3 className='text-lg font-semibold'>
+              Official Action Items ({minutes.officialActionItems.length})
+            </h3>
+            <Button asChild size='sm' variant='link'>
+              <Link to='/action-items'>Open Action Item workspace</Link>
+            </Button>
+          </div>
+          {minutes.officialActionItems.length === 0 ? (
+            <p className='text-sm text-muted-foreground'>
+              No official Action Items are included in this snapshot.
+            </p>
+          ) : (
+            <div className='space-y-3'>
+              {minutes.officialActionItems.map((item) => (
+                <article key={item.id} className='rounded-lg border p-3'>
+                  <div className='flex flex-wrap items-start justify-between gap-2'>
+                    <div>
+                      <p className='font-medium'>{item.title}</p>
+                      {item.details && (
+                        <p className='mt-1 text-sm whitespace-pre-wrap text-muted-foreground'>
+                          {item.details}
+                        </p>
+                      )}
+                    </div>
+                    <SnapshotBadge value={item.status} />
+                  </div>
+                  <p className='mt-2 text-xs text-muted-foreground'>
+                    {item.sourceType} · due {item.dueDate ?? 'none'} · version{' '}
+                    {item.version}
+                  </p>
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section className='space-y-3 border-t pt-4'>
+          <div className='flex flex-wrap items-center justify-between gap-2'>
+            <h3 className='font-semibold'>Transcript source</h3>
+            <SnapshotBadge value={minutes.transcript.availability} />
+          </div>
+          <div className='grid gap-2 text-sm sm:grid-cols-2'>
+            <p className='break-all'>
+              Transcript ID: {minutes.transcript.id ?? 'not available'}
+            </p>
+            <p>
+              Status: {minutes.transcript.status ?? 'not available'} · version{' '}
+              {minutes.transcript.versionNumber ?? '—'}
+            </p>
+            <p>
+              Content revision: {minutes.transcript.contentRevision ?? '—'} ·
+              duration {minutes.transcript.durationMs ?? '—'} ms
+            </p>
+            <p>Unresolved segments: {minutes.transcript.unresolvedSegments}</p>
+            <p>
+              Unresolved speech regions:{' '}
+              {minutes.transcript.unresolvedCoverageRegions}
+            </p>
+          </div>
+          <p className='text-xs text-muted-foreground'>
+            The canonical snapshot references the transcript source; it does not
+            silently substitute an unreviewed transcript or include a mutable
+            transcript dump.
+          </p>
+        </section>
       </CardContent>
     </Card>
   )

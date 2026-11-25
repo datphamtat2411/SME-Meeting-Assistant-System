@@ -48,7 +48,7 @@ export function MeetingTools({
     contentRevision?: number
   ) => void
 }) {
-  const { identity, capabilities } = useMeetingWorkspace()
+  const { capabilities } = useMeetingWorkspace()
   const reviewGate = useOptionalTranscriptReviewGate()
 
   if (section === 'recording') {
@@ -179,8 +179,8 @@ export function MeetingTools({
         />
         <MeetingActionsPanel
           meetingId={meetingId}
-          currentUserId={identity.userId}
           canManageActionItems={capabilities.canManageActionItems}
+          onEvidenceNavigate={onEvidenceNavigate}
         />
       </div>
     )

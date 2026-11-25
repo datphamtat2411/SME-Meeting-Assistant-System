@@ -15,20 +15,28 @@ export const exportStatusSchema = z.object({
   freshnessCheckedAt: z.string().nullable(),
 })
 export type ExportStatus = z.infer<typeof exportStatusSchema>
+
+const exportAdmissionSchema = z.object({
+  exportId: z.string().uuid(),
+  meetingId: z.string().uuid(),
+  format: z.enum(['PDF', 'MARKDOWN']),
+  status: exportStatusSchema.shape.status,
+  createdAt: z.string().datetime({ offset: true }),
+})
+export type ExportAdmission = z.infer<typeof exportAdmissionSchema>
+
 export function createMinutesExport(
   meetingId: string,
   format: ExportStatus['format'],
   idempotencyKey: string = crypto.randomUUID()
 ) {
-  return z
-    .object({ exportId: z.string().uuid() })
-    .parseAsync(
-      coreApi.post<unknown>(
-        '/meetings/' + encodeURIComponent(meetingId) + '/exports',
-        { format },
-        { headers: { 'Idempotency-Key': idempotencyKey } }
-      )
+  return coreApi
+    .post<unknown>(
+      '/meetings/' + encodeURIComponent(meetingId) + '/exports',
+      { format },
+      { headers: { 'Idempotency-Key': idempotencyKey } }
     )
+    .then((value) => exportAdmissionSchema.parse(value))
 }
 export function exportStatusQuery(exportId: string) {
   return queryOptions({
@@ -47,10 +55,11 @@ export async function accessMinutesExport(exportId: string) {
     .object({
       exportId: z.string().uuid(),
       accessUrl: z.string().url(),
-      filename: z.string(),
+      filename: z.string().min(1).max(160),
       contentType: z.string(),
-      expiresAt: z.string(),
+      expiresAt: z.string().datetime({ offset: true }),
       freshness: z.enum(['CURRENT', 'STALE', 'NOT_APPLICABLE', 'UNKNOWN']),
+      freshnessCheckedAt: z.string().datetime({ offset: true }),
     })
     .parse(
       await coreApi.post<unknown>(

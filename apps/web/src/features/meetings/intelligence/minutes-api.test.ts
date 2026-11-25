@@ -1,0 +1,110 @@
+import { describe, expect, it } from 'vitest'
+import { CoreApiError } from '@/lib/core-api'
+import { parseMinutes } from './minutes-api'
+
+const meetingId = '11111111-1111-4111-8111-111111111111'
+
+function validMinutes() {
+  return {
+    schemaVersion: 1,
+    assembledAt: '2026-11-25T08:00:00Z',
+    sourceFingerprint: 'a'.repeat(64),
+    completeness: 'COMPLETE',
+    proposalsIncluded: false,
+    warnings: [],
+    meeting: {
+      id: meetingId,
+      title: 'Launch planning',
+      description: null,
+      organizerUserId: '22222222-2222-4222-8222-222222222222',
+      status: 'ENDED',
+      scheduledStartAt: null,
+      scheduledEndAt: null,
+      startedAt: null,
+      endedAt: '2026-11-25T08:00:00Z',
+    },
+    summary: {
+      availability: 'AVAILABLE',
+      id: '33333333-3333-4333-8333-333333333333',
+      versionNumber: 1,
+      content: 'Reviewed summary',
+      sourceType: 'AI_GENERATED',
+      qualityStatus: 'READY',
+      transcriptId: '44444444-4444-4444-8444-444444444444',
+      contentRevision: 1,
+      selectionEpoch: 1,
+      isStale: false,
+      aiWarnings: [],
+    },
+    confirmedDecisions: [
+      {
+        id: '55555555-5555-4555-8555-555555555555',
+        content: 'Ship the reviewed release.',
+        status: 'CONFIRMED',
+        sourceType: 'HUMAN_CONFIRMED',
+        version: 1,
+        confirmedByUserId: '22222222-2222-4222-8222-222222222222',
+        evidenceSegmentIds: [],
+        isStale: false,
+        aiWarnings: [],
+      },
+    ],
+    officialActionItems: [
+      {
+        id: '66666666-6666-4666-8666-666666666666',
+        title: 'Publish the release notes',
+        details: null,
+        status: 'OPEN',
+        sourceType: 'MANUAL',
+        assigneeUserId: '22222222-2222-4222-8222-222222222222',
+        dueDate: null,
+        version: 1,
+        createdAt: '2026-11-25T08:00:00Z',
+        confirmedByUserId: null,
+        confirmedAt: null,
+      },
+    ],
+    transcript: {
+      availability: 'AVAILABLE',
+      id: '44444444-4444-4444-8444-444444444444',
+      processingJobId: null,
+      versionNumber: 1,
+      languageCode: 'en',
+      status: 'READY',
+      contentRevision: 1,
+      durationMs: 1000,
+      suspiciousSegments: 0,
+      unresolvedSegments: 0,
+      unresolvedCoverageRegions: 0,
+    },
+  }
+}
+
+describe('canonical Minutes adapter', () => {
+  it('accepts a complete authoritative snapshot', () => {
+    expect(parseMinutes(validMinutes()).meeting.id).toBe(meetingId)
+  })
+
+  it('rejects malformed fingerprints and unconfirmed work', () => {
+    expect(() =>
+      parseMinutes({
+        ...validMinutes(),
+        sourceFingerprint: 'not-a-fingerprint',
+      })
+    ).toThrowError(CoreApiError)
+
+    expect(() =>
+      parseMinutes({
+        ...validMinutes(),
+        officialActionItems: [
+          {
+            ...validMinutes().officialActionItems[0],
+            sourceType: 'AI_EXTRACTED',
+            status: 'PROPOSED',
+            confirmedByUserId: null,
+          },
+        ],
+      })
+    ).toThrowError(/invalid canonical Minutes snapshot/i)
+  })
+})

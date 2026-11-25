@@ -14,13 +14,50 @@ const officialOpenItem: ActionItem = {
   dueDate: null,
   overdue: false,
   sourceType: 'MANUAL',
+  transcriptId: null,
+  contentRevision: null,
+  isOfficial: true,
   processingJobId: null,
   createdByUserId: null,
   confirmedByUserId: null,
   confirmedAt: null,
+  completedByUserId: null,
+  completedAt: null,
+  cancelledByUserId: null,
+  cancelledAt: null,
   version: 1,
   createdAt: '2026-11-25T08:00:00Z',
   updatedAt: '2026-11-25T08:00:00Z',
+  capabilities: {
+    canEdit: true,
+    canAssign: true,
+    canConfirm: false,
+    canReject: false,
+    canStart: true,
+    canComplete: true,
+    canCancel: false,
+    canReopen: false,
+    canAccessMeeting: true,
+    canAccessEvidence: false,
+  },
+  assignee: {
+    id: '33333333-3333-4333-8333-333333333333',
+    displayName: 'Alex Example',
+    active: true,
+  },
+  meeting: {
+    id: '22222222-2222-4222-8222-222222222222',
+    label: 'Launch planning',
+    restricted: false,
+  },
+  evidence: {
+    availability: 'NOT_APPLICABLE',
+    transcriptId: null,
+    contentRevision: null,
+    freshness: 'NOT_APPLICABLE',
+    references: [],
+    limitation: null,
+  },
 }
 
 async function renderCommands(
@@ -65,6 +102,14 @@ describe('ActionCommands workspace authorization', () => {
         status: 'PROPOSED',
         sourceType: 'AI',
         confirmedByUserId: null,
+        isOfficial: false,
+        capabilities: {
+          ...officialOpenItem.capabilities,
+          canStart: false,
+          canComplete: false,
+          canConfirm: false,
+          canReject: false,
+        },
       },
       {
         currentUserId: officialOpenItem.assigneeUserId!,
@@ -85,7 +130,19 @@ describe('ActionCommands workspace authorization', () => {
 
   it('keeps the existing scoped manager transitions available to the Action Items feature', async () => {
     const screen = await renderCommands(
-      { ...officialOpenItem, status: 'PROPOSED', sourceType: 'AI' },
+      {
+        ...officialOpenItem,
+        status: 'PROPOSED',
+        sourceType: 'AI',
+        isOfficial: false,
+        capabilities: {
+          ...officialOpenItem.capabilities,
+          canStart: false,
+          canComplete: false,
+          canConfirm: true,
+          canReject: true,
+        },
+      },
       {
         currentUserId: '44444444-4444-4444-8444-444444444444',
         canManageActionItems: true,
