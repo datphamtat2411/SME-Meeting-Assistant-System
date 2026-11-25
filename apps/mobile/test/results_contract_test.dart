@@ -39,6 +39,14 @@ void main() {
   });
 
 
+  test('older item representations remain read-only without a token', () {
+    final segment = SpeechSegment.fromJson({
+      'id': 'segment-1', 'ordinal': 0, 'startMs': 0, 'endMs': 1000,
+      'text': 'Hello', 'qualityStatus': 'ACCEPTED', 'version': 0,
+    });
+    expect(segment.etag, isNull);
+  });
+
   test('keeps item and header concurrency tokens opaque', () {
     final response = ApiResult(
       {

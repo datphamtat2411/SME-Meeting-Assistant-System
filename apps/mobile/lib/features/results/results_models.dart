@@ -238,6 +238,50 @@ class SummaryVersion {
   );
 }
 
+/// Canonical minutes projections do not share mutation models with Decisions
+/// or Action Items; they intentionally carry no client-side business authority.
+class MinutesDecision {
+  const MinutesDecision({required this.id, required this.content,
+    required this.status, required this.confirmedByUserId,
+    required this.confirmedAt, required this.sourceType});
+  final String id, content, status, sourceType;
+  final String? confirmedByUserId;
+  final DateTime? confirmedAt;
+  factory MinutesDecision.fromJson(Map<String, dynamic> raw, ApiResult response) {
+    final status = requiredString(raw, 'status', response: response);
+    if (status != 'CONFIRMED') invalidApiData(response: response);
+    return MinutesDecision(
+      id: requiredIdentifier(raw, 'id', response: response),
+      content: requiredString(raw, 'content', response: response),
+      status: status,
+      sourceType: requiredString(raw, 'sourceType', response: response),
+      confirmedByUserId: optionalIdentifier(raw, 'confirmedByUserId', response: response),
+      confirmedAt: optionalTimestamp(raw, 'confirmedAt', response: response),
+    );
+  }
+}
+
+class MinutesAction {
+  const MinutesAction({required this.id, required this.title,
+    required this.details, required this.status, required this.assigneeUserId,
+    required this.dueDate, required this.sourceType});
+  final String id, title, status, sourceType;
+  final String? details, assigneeUserId, dueDate;
+  factory MinutesAction.fromJson(Map<String, dynamic> raw, ApiResult response) {
+    final status = requiredString(raw, 'status', response: response);
+    if (status == 'PROPOSED' || status == 'REJECTED') invalidApiData(response: response);
+    return MinutesAction(
+      id: requiredIdentifier(raw, 'id', response: response),
+      title: requiredString(raw, 'title', response: response),
+      details: optionalString(raw, 'details', response: response),
+      status: status,
+      sourceType: requiredString(raw, 'sourceType', response: response),
+      assigneeUserId: optionalIdentifier(raw, 'assigneeUserId', response: response),
+      dueDate: optionalDateOnly(raw, 'dueDate', response: response),
+    );
+  }
+}
+
 class MeetingMinutes {
   const MeetingMinutes({
     required this.completeness,
@@ -259,8 +303,8 @@ class MeetingMinutes {
   final String sourceFingerprint;
   final DateTime? assembledAt;
   final String? summaryContent;
-  final List<Map<String, dynamic>> confirmedDecisions;
-  final List<Map<String, dynamic>> officialActionItems;
+  final List<MinutesDecision> confirmedDecisions;
+  final List<MinutesAction> officialActionItems;
   final String transcriptAvailability;
   final String? transcriptStatus;
   final List<String> warnings;
@@ -285,8 +329,8 @@ class MeetingMinutes {
         'content',
         response,
       ),
-      confirmedDecisions: _nestedObjects(raw, 'confirmedDecisions', response),
-      officialActionItems: _nestedObjects(raw, 'officialActionItems', response),
+      confirmedDecisions: List.unmodifiable(_nestedObjects(raw, 'confirmedDecisions', response).map((item) => MinutesDecision.fromJson(item, response))),
+      officialActionItems: List.unmodifiable(_nestedObjects(raw, 'officialActionItems', response).map((item) => MinutesAction.fromJson(item, response))),
       transcriptAvailability: requiredString(
         transcript,
         'availability',

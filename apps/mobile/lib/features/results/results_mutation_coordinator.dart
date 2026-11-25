@@ -10,6 +10,7 @@ class ResultsMutationCoordinator {
   int _epoch = 0;
   String? _regenerationKey;
   bool regenerationUncertain = false;
+  bool decisionOutcomeUnknown = false;
   final Map<String, String> _drafts = {};
   String? draft(String key) => _drafts[key];
   void keepDraft(String key, String text) => _drafts[key] = text;
@@ -23,6 +24,7 @@ class ResultsMutationCoordinator {
     _epoch++;
     _pending.clear();
     _drafts.clear();
+    decisionOutcomeUnknown = false;
     regenerationUncertain = false;
     _regenerationKey = null;
     acceptedRegenerationJobId = null;

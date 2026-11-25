@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../core/app_theme.dart';
-import '../../core/models.dart';
 import '../../core/widgets.dart';
 import 'results_workspace_controller.dart';
 import 'results_presentation.dart';
@@ -70,7 +69,7 @@ class _MinutesPanelState extends State<MinutesPanel> {
               const MessagePanel(title: 'Chưa có quyết định chính thức'),
             ...minutes.confirmedDecisions.map(
               (entry) => ContentCard(
-                child: SelectableText(textValue(entry['content'])),
+                child: SelectableText(entry.content),
               ),
             ),
             SectionHeading(
@@ -85,13 +84,13 @@ class _MinutesPanelState extends State<MinutesPanel> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      textValue(entry['title']),
+                      entry.title,
                       style: const TextStyle(fontWeight: FontWeight.w700),
                     ),
                     const SizedBox(height: 4),
-                    Text(textValue(entry['details'])),
+                    Text(entry.details ?? ''),
                     const SizedBox(height: 7),
-                    StatePill(textValue(entry['status'])),
+                    StatePill(entry.status),
                   ],
                 ),
               ),

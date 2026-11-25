@@ -21,6 +21,14 @@ Future<T?> showResultsReviewDialog<T>({
       animation: workspace,
       builder: (context, _) {
         if (workspace.ownsReview(epoch)) return builder(context);
+        // Remove the obsolete modal after this frame; do not leave its
+        // editable protected content available in the navigator.
+        final route = ModalRoute.of(dialog);
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (route != null && route.isActive && dialog.mounted) {
+            Navigator.of(dialog).removeRoute(route);
+          }
+        });
         return AlertDialog(
           title: const Text('Quyền truy cập đã thay đổi'),
           actions: [

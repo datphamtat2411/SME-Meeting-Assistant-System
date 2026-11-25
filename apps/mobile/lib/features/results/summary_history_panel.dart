@@ -76,11 +76,26 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
     ResultsSummary summary,
     SummaryVersion version,
   ) async {
+    final epoch = widget.workspace.reviewEpoch;
+    final confirmed = await showResultsReviewDialog<bool>(
+      context: context,
+      workspace: widget.workspace,
+      epoch: epoch,
+      builder: (dialog) => AlertDialog(
+        title: Text('Kích hoạt phiên bản ${version.versionNumber}?'),
+        content: SingleChildScrollView(child: Text(version.content)),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialog, false), child: const Text('Hủy')),
+          FilledButton(onPressed: () => Navigator.pop(dialog, true), child: const Text('Kích hoạt')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
     setState(() => busy = true);
     await runCommand(
       context,
       operation: () =>
-          widget.workspace.activateSummaryVersion(summary, version, epoch: widget.workspace.reviewEpoch),
+          widget.workspace.activateSummaryVersion(summary, version, epoch: epoch),
       successText: 'Đã kích hoạt phiên bản.',
     );
     if (mounted) setState(() => busy = false);

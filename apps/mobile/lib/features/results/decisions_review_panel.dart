@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
 import '../../core/command_actions.dart';
 import '../../core/widgets.dart';
@@ -27,6 +28,34 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
 
   Future<void> createDecision() async {
     final epoch = widget.workspace.reviewEpoch;
+    if (widget.workspace.decisionOutcomeUnknown) {
+      final reviewed = await runCommand(
+        context,
+        operation: () async {
+          if (!await widget.workspace.reconcileUnknownDecision(epoch: epoch)) {
+            throw const ApiFailure(409, 'RESULTS_OUTCOME_UNKNOWN',
+              'Không thể xác minh quyết định trước đó.');
+          }
+        },
+        successText: 'Đã tải lại danh sách quyết định.',
+      );
+      if (!reviewed || !mounted) return;
+      final confirmed = await showResultsReviewDialog<bool>(
+        context: context,
+        workspace: widget.workspace,
+        epoch: epoch,
+        builder: (dialog) => AlertDialog(
+          title: const Text('Kiểm tra quyết định trước đó'),
+          content: const Text('Yêu cầu trước có thể đã được lưu. Hãy xem danh sách quyết định hiện tại trước khi tạo một yêu cầu mới.'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialog, false), child: const Text('Quay lại danh sách')),
+            FilledButton(onPressed: () => Navigator.pop(dialog, true), child: const Text('Đã kiểm tra, tạo mới')),
+          ],
+        ),
+      );
+      if (confirmed != true || !mounted) return;
+      widget.workspace.acknowledgeUnknownDecision(epoch: epoch);
+    }
     final controller = TextEditingController();
     final ok = await showResultsReviewDialog<bool>(
       context: context,

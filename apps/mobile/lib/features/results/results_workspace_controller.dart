@@ -99,6 +99,7 @@ class ResultsWorkspaceController extends ChangeNotifier {
   final ResultsMutationCoordinator _mutations = ResultsMutationCoordinator();
   int get reviewEpoch => _mutations.epoch;
   bool get regenerationUncertain => _mutations.regenerationUncertain;
+  bool get decisionOutcomeUnknown => _mutations.decisionOutcomeUnknown;
   String? draft(String key) => capabilities.canMutate ? _mutations.draft(key) : null;
   void keepDraft(String key, String text, int epoch) {
     if (ownsReview(epoch)) _mutations.keepDraft(key, text);
@@ -560,6 +561,10 @@ class ResultsWorkspaceController extends ChangeNotifier {
 
   Future<void> createDecision(String content, {required int epoch}) async {
     _requireMutation(epoch);
+    if (_mutations.decisionOutcomeUnknown) {
+      throw const ApiFailure(409, 'RESULTS_OUTCOME_UNKNOWN',
+        'Kiểm tra quyết định trước đó trước khi tạo quyết định mới.');
+    }
     await _reconcileAfterMutation(
       ResultsMutationGroup.decisions,
       <ResultsResourceKind>{
@@ -634,6 +639,9 @@ class ResultsWorkspaceController extends ChangeNotifier {
       _requireMutation(epoch);
     } on ApiFailure catch (failure) {
       if (ownsReview(epoch) && ResultsMutationCoordinator.isUncertain(failure)) {
+        if (group == ResultsMutationGroup.decisions) {
+          _mutations.decisionOutcomeUnknown = true;
+        }
         _invalidate(resources);
         // Reconcile active canonical projections before returning an
         // ambiguous outcome. Never replay the command automatically.
@@ -644,6 +652,15 @@ class ResultsWorkspaceController extends ChangeNotifier {
           remoteOutcomeAmbiguous: true,
         );
       }
+      if (ownsReview(epoch) && (failure.status == 403 || failure.status == 404)) {
+        bool allowed;
+        try {
+          allowed = await repository.verifyReadAccess(sessionScope: sessionScope, meetingId: meetingId);
+        } catch (_) {
+          allowed = false;
+        }
+        if (ownsReview(epoch) && !allowed) _denyAccess();
+      }
       rethrow;
     } finally {
       _mutations.finish(group, ticket);
@@ -652,6 +669,25 @@ class ResultsWorkspaceController extends ChangeNotifier {
         notifyListeners();
       }
     }
+  }
+
+  Future<bool> reconcileUnknownDecision({required int epoch}) async {
+    _requireMutation(epoch);
+    await loadDecisions(force: true);
+    _requireMutation(epoch);
+    return decisions.phase == ResultsResourcePhase.available ||
+        decisions.phase == ResultsResourcePhase.empty;
+  }
+
+  void acknowledgeUnknownDecision({required int epoch}) {
+    _requireMutation(epoch);
+    if (decisions.phase != ResultsResourcePhase.available &&
+        decisions.phase != ResultsResourcePhase.empty) {
+      throw const ApiFailure(409, 'RESULTS_OUTCOME_UNKNOWN',
+        'Không thể xác minh danh sách quyết định hiện tại.');
+    }
+    _mutations.decisionOutcomeUnknown = false;
+    notifyListeners();
   }
 
   Future<List<SpeakerCandidate>> meetingCandidates(String query, {required int epoch}) async {
@@ -696,7 +732,7 @@ class ResultsWorkspaceController extends ChangeNotifier {
   void dispose() {
     if (_disposed) return;
     _disposed = true;
-    _mutations.invalidate();
+    _clearProtectedState();
     invalidation.removeListener(_onInvalidation);
     api.sessionCoordinator.removeListener(_onSessionChanged);
     _processingBridge?.dispose();
