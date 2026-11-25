@@ -253,7 +253,17 @@ void main() {
             await Future<void>.delayed(const Duration(seconds: 2));
             await subscription.cancel();
           } else {
-            await request.drain<void>();
+            try {
+              await request.drain<void>();
+            } on HttpException catch (error) {
+              // The overall deadline intentionally aborts this request while
+              // the server is still consuming its body. dart:io reports that
+              // expected peer disconnect from drain(); only this exact
+              // connection-close condition is part of the timeout scenario.
+              if (error.message != 'Connection closed while receiving data') {
+                rethrow;
+              }
+            }
           }
         });
 
