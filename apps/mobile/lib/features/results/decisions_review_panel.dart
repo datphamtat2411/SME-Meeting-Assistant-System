@@ -76,41 +76,54 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
                 content: SizedBox(
                   width: 480,
                   height: 360,
-                  child: ListView(
-                    children: [
-                      const Text(
-                        'Yêu cầu tạo trước có thể đã được lưu. Danh sách này '
-                        'không chứng minh thành công hay thất bại. Tạo lại '
-                        'có thể tạo một quyết định chính thức trùng lặp.',
-                      ),
-                      const SizedBox(height: 12),
-                      Text('Thao tác trước: ${_commandLabel(intent.command)}'),
-                      SelectableText(intent.content),
-                      if (previousDraft != null) ...[
-                        const Divider(),
-                        Text(
-                          'Bằng chứng đã gửi: ${previousDraft.evidence.length} đoạn. '
-                          'Nguồn cũ chỉ được dùng để đối chiếu, không được '
-                          'tự động dùng lại.',
-                        ),
-                        if (previousDraft.source != null)
-                          Text(
-                            'Transcript cũ: ${previousDraft.source!.id}, '
-                            'revision ${previousDraft.source!.contentRevision}',
-                          ),
-                      ],
-                      const Divider(),
-                      if (observed.isEmpty)
-                        const Text(
-                          'Không tìm thấy quyết định trong kết quả kiểm tra.',
-                        ),
-                      for (final decision in observed)
-                        ListTile(
-                          title: Text(decision.content),
-                          subtitle: Text(decision.status),
-                          contentPadding: EdgeInsets.zero,
-                        ),
-                    ],
+                  child: ListView.builder(
+                    itemCount: observed.length + 1,
+                    itemBuilder: (context, index) {
+                      if (index == 0) {
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'Yêu cầu tạo trước có thể đã được lưu. Danh sách '
+                              'này không chứng minh thành công hay thất bại. '
+                              'Tạo lại có thể tạo một quyết định chính thức '
+                              'trùng lặp.',
+                            ),
+                            const SizedBox(height: 12),
+                            Text(
+                              'Thao tác trước: ${_commandLabel(intent.command)}',
+                            ),
+                            SelectableText(intent.content),
+                            if (previousDraft != null) ...[
+                              const Divider(),
+                              Text(
+                                'Bằng chứng đã gửi: '
+                                '${previousDraft.evidence.length} đoạn. '
+                                'Nguồn cũ chỉ được dùng để đối chiếu, không '
+                                'được tự động dùng lại.',
+                              ),
+                              if (previousDraft.source != null)
+                                Text(
+                                  'Transcript cũ: ${previousDraft.source!.id}, '
+                                  'revision '
+                                  '${previousDraft.source!.contentRevision}',
+                                ),
+                            ],
+                            const Divider(),
+                            if (observed.isEmpty)
+                              const Text(
+                                'Không tìm thấy quyết định trong kết quả kiểm tra.',
+                              ),
+                          ],
+                        );
+                      }
+                      final decision = observed[index - 1];
+                      return ListTile(
+                        title: Text(decision.content),
+                        subtitle: Text(decision.status),
+                        contentPadding: EdgeInsets.zero,
+                      );
+                    },
                   ),
                 ),
                 actions: [
