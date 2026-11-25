@@ -1,7 +1,8 @@
 import { QueryClient } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { coreApi } from '@/lib/core-api'
+import { CoreApiError, coreApi } from '@/lib/core-api'
 import {
+  createDecision,
   decisionsQuery,
   editDecision,
   reviewDecision,
@@ -92,6 +93,26 @@ describe('Decision API contracts', () => {
       undefined,
       { headers: { 'If-Match': decision.etag } }
     )
+  })
+
+  it('marks ambiguous creation outcomes without repeating the POST', async () => {
+    const post = vi.spyOn(coreApi, 'post').mockRejectedValue(
+      new CoreApiError({ kind: 'network', message: 'Connection lost' })
+    )
+    await expect(createDecision(meetingId, 'New decision')).rejects.toMatchObject({
+      recoveryOutcome: 'uncertain',
+    })
+    expect(post).toHaveBeenCalledTimes(1)
+  })
+
+  it('preserves definitive creation rejections', async () => {
+    const failure = new CoreApiError({
+      kind: 'http',
+      status: 422,
+      message: 'Invalid evidence',
+    })
+    vi.spyOn(coreApi, 'post').mockRejectedValue(failure)
+    await expect(createDecision(meetingId, 'New decision')).rejects.toBe(failure)
   })
 
   it('fails closed when a decision snapshot has no concurrency token', async () => {

@@ -1,12 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Columns2, FileText, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Textarea } from '@/components/ui/textarea'
 import {
   RequestEmpty,
   RequestError,
@@ -14,42 +12,59 @@ import {
 } from '@/components/request-state'
 import { useOptionalMeetingSession } from '../media/meeting-session-context'
 import { useOptionalMeetingAuthorization } from '../meeting-authorization-context'
+import {
+  intelligenceReadAllowed,
+  useIntelligenceDraftProtection,
+  useIntelligenceOperationScope,
+} from './intelligence-operation-scope'
 import { invalidateMeetingArtifacts } from './query-invalidation'
 import {
   activateSummary,
   editSummary,
-  requestSummaryRegeneration,
   summaryQuery,
   summaryVersionPageLabel,
   summaryVersionsQuery,
   type SummarySnapshot,
   type SummaryVersion,
 } from './summary-api'
+import { ConflictColumn, CurrentSummary, formatDate, PreviewColumn, VersionRow } from './summary-presentation'
 
 const historyPageSize = 20
 const regenerationIdentity = 'summary-regeneration'
 
-function formatDate(value: string) {
-  const date = new Date(value)
-  return Number.isNaN(date.valueOf()) ? value : date.toLocaleString()
-}
 
-export function SummaryPanel({
-  meetingId,
-  canEdit,
-  canRegenerate,
-}: {
+type SummaryPanelProps = {
   meetingId: string
   canEdit: boolean
   canRegenerate: boolean
-}) {
+}
+
+export function SummaryPanel(props: SummaryPanelProps) {
+  const authorization = useOptionalMeetingAuthorization()
+  if (!intelligenceReadAllowed(authorization)) {
+    return <RequestEmpty title='Summary unavailable' description='Meeting content access must be verified.' />
+  }
+  return (
+    <SummaryPanelContent
+      key={`${props.meetingId}:${authorization?.identity?.session?.id ?? authorization?.identity?.userId ?? 'standalone'}`}
+      {...props}
+    />
+  )
+}
+
+function SummaryPanelContent({
+  meetingId,
+  canEdit,
+  canRegenerate,
+}: SummaryPanelProps) {
   const queryClient = useQueryClient()
   const session = useOptionalMeetingSession()
   const authorization = useOptionalMeetingAuthorization()
   const canEditRef = useRef(canEdit)
   const canRegenerateRef = useRef(canRegenerate)
   const authorizationRef = useRef(authorization)
-  const fallbackRegenerationKey = useRef<string | null>(null)
+  const captureScope = useIntelligenceOperationScope(meetingId, authorization, canEdit)
+  const captureRegenerationScope = useIntelligenceOperationScope(meetingId, authorization, canRegenerate)
   const [historyPage, setHistoryPage] = useState(0)
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(
     null
@@ -61,15 +76,17 @@ export function SummaryPanel({
   const [draft, setDraft] = useState('')
   const [editConflict, setEditConflict] = useState<{
     reviewed: SummarySnapshot
-    latest: SummarySnapshot
+    latest: SummarySnapshot | null
   } | null>(null)
   const [activationConflict, setActivationConflict] = useState(false)
-  const [activationSnapshot, setActivationSnapshot] =
-    useState<SummarySnapshot | null>(null)
+  const [activationReview, setActivationReview] = useState<{
+    candidate: SummaryVersion
+    baseline: SummarySnapshot
+  } | null>(null)
   const [activationLatest, setActivationLatest] =
     useState<SummarySnapshot | null>(null)
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     canEditRef.current = canEdit
     canRegenerateRef.current = canRegenerate
     authorizationRef.current = authorization
@@ -100,6 +117,7 @@ export function SummaryPanel({
   }
 
   const save = useMutation({
+    onMutate: captureScope,
     mutationFn: () => {
       const currentAuthorization = authorizationRef.current
       if (
@@ -112,7 +130,7 @@ export function SummaryPanel({
       ) {
         throw new Error('Summary editing is no longer authorized.')
       }
-      if (!editorSnapshot) throw new Error('Open the current summary again.')
+      if (!editorSnapshot || editConflict) throw new Error('Review the current summary before saving.')
       const content = draft.trim()
       if (!content || content.length > 20_000) {
         throw new Error(
@@ -121,7 +139,8 @@ export function SummaryPanel({
       }
       return editSummary(meetingId, content, editorSnapshot)
     },
-    onSuccess: (result, _variables, _context) => {
+    onSuccess: (result, _variables, ownsScope) => {
+      if (!ownsScope?.()) return
       queryClient.setQueryData(summaryQuery(meetingId).queryKey, result)
       setEditorSnapshot(null)
       setEditConflict(null)
@@ -136,12 +155,15 @@ export function SummaryPanel({
         toast.success('Summary version saved')
       }
     },
-    onError: (error) => {
+    onError: (error, _variables, ownsScope) => {
+      if (!ownsScope?.()) return
       const normalized = normalizeCoreApiError(error)
       if (normalized.status === 412 && editorSnapshot) {
+        const reviewed = editorSnapshot
+        setEditConflict({ reviewed, latest: null })
         void summary.refetch().then((latest) => {
-          if (latest.data) {
-            setEditConflict({ reviewed: editorSnapshot, latest: latest.data })
+          if (ownsScope() && latest.isSuccess && latest.data) {
+            setEditConflict({ reviewed, latest: latest.data })
           }
         })
         return
@@ -156,7 +178,8 @@ export function SummaryPanel({
   })
 
   const activate = useMutation({
-    mutationFn: (versionId: string) => {
+    onMutate: captureScope,
+    mutationFn: () => {
       const currentAuthorization = authorizationRef.current
       if (
         !canEditRef.current ||
@@ -168,34 +191,37 @@ export function SummaryPanel({
       ) {
         throw new Error('Summary activation is no longer authorized.')
       }
-      const baseline = activationSnapshot ?? summary.data
-      if (!baseline) {
+      if (!activationReview || activationConflict || editorSnapshot) {
         throw new Error(
           'Review the current summary before activating a version.'
         )
       }
       const candidate = versions.data?.items.find(
-        (version) => version.id === versionId
+        (version) => version.id === activationReview.candidate.id
       )
       if (!candidate || candidate.isCurrent || candidate.isStale) {
         throw new Error('Only a fresh historical version can be activated.')
       }
-      return activateSummary(meetingId, versionId, baseline)
+      return activateSummary(meetingId, candidate.id, activationReview.baseline)
     },
-    onSuccess: (result) => {
+    onSuccess: (result, _variables, ownsScope) => {
+      if (!ownsScope?.()) return
       queryClient.setQueryData(summaryQuery(meetingId).queryKey, result)
       setActivationConflict(false)
-      setActivationSnapshot(null)
+      setActivationReview(null)
       setActivationLatest(null)
       refreshArtifacts()
       toast.success('Selected summary version is now current')
     },
-    onError: (error) => {
+    onError: (error, _variables, ownsScope) => {
+      if (!ownsScope?.()) return
       const normalized = normalizeCoreApiError(error)
-      if (normalized.status === 412) {
+      if (normalized.status === 412 || normalized.status === 409) {
         setActivationConflict(true)
+        setActivationLatest(null)
+        void versions.refetch()
         void summary.refetch().then((latest) => {
-          if (latest.data) setActivationLatest(latest.data)
+          if (ownsScope() && latest.isSuccess && latest.data) setActivationLatest(latest.data)
         })
         return
       }
@@ -206,6 +232,7 @@ export function SummaryPanel({
   })
 
   const regenerate = useMutation({
+    onMutate: captureRegenerationScope,
     mutationFn: async () => {
       const currentAuthorization = authorizationRef.current
       if (
@@ -223,16 +250,10 @@ export function SummaryPanel({
           ? session.processing.recoverOperation(regenerationIdentity)
           : session.processing.regenerateSummary()
       }
-      // This branch only supports isolated feature tests. The real workspace
-      // always supplies the meeting-scoped coordinator above.
-      fallbackRegenerationKey.current ??= crypto.randomUUID()
-      return requestSummaryRegeneration(
-        meetingId,
-        fallbackRegenerationKey.current
-      )
+      throw new Error('Summary regeneration requires the meeting processing owner.')
     },
-    onSuccess: (result) => {
-      if (!session) fallbackRegenerationKey.current = null
+    onSuccess: (result, _variables, ownsScope) => {
+      if (!ownsScope?.()) return
       if (result.status === 'blocked') {
         toast.error('Regeneration is not available', {
           description:
@@ -243,12 +264,13 @@ export function SummaryPanel({
       refreshArtifacts()
       toast.success('Summary regeneration admitted', {
         description:
-          'Core accepted a new AI candidate. Review it in version history before activating it.',
+          'Core accepted the regeneration request. Follow its processing status and review any resulting version.',
       })
     },
-    onError: (error) => {
+    onError: (error, _variables, ownsScope) => {
+      if (!ownsScope?.()) return
       const normalized = normalizeCoreApiError(error)
-      toast.error('Could not request regeneration', {
+      toast.error(normalized.recoveryOutcome === 'uncertain' ? 'Regeneration admission is uncertain' : 'Could not request regeneration', {
         description:
           normalized.status === 503
             ? 'Summary generation is currently unavailable because the worker is not ready.'
@@ -257,7 +279,17 @@ export function SummaryPanel({
     },
   })
 
+  useIntelligenceDraftProtection(
+    'summary',
+    save.isPending || activate.isPending ||
+      Boolean(editorSnapshot && draft !== editorSnapshot.summary.content)
+  )
+
   const currentSummary = summary.data?.summary
+  const regenerationJob = session?.processing.summaryRegenerationJob
+  const activationCandidate = versions.data?.items.find(
+    (version) => version.id === activationReview?.candidate.id
+  )
   const historyError = versions.isError
   const protectedScopeReady =
     !authorization ||
@@ -284,8 +316,11 @@ export function SummaryPanel({
               <Button
                 size='sm'
                 variant='outline'
-                disabled={Boolean(editorSnapshot)}
+                disabled={Boolean(editorSnapshot) || activate.isPending || !protectedScopeReady || summary.isError}
                 onClick={() => {
+                  setActivationReview(null)
+                  setActivationConflict(false)
+                  setActivationLatest(null)
                   setEditorSnapshot(summary.data ?? null)
                   setDraft(currentSummary.content)
                   setEditConflict(null)
@@ -298,7 +333,7 @@ export function SummaryPanel({
               <Button
                 size='sm'
                 variant='secondary'
-                disabled={regenerate.isPending || regenerationInProgress}
+                disabled={!session || regenerate.isPending || regenerationInProgress || !protectedScopeReady}
                 onClick={() => regenerate.mutate()}
               >
                 <RefreshCw
@@ -315,6 +350,13 @@ export function SummaryPanel({
         </div>
       </CardHeader>
       <CardContent className='space-y-6 p-5'>
+        {regenerationJob && (
+          <div role='status' className='space-y-1 rounded-md border p-3 text-sm'>
+            <p className='font-medium'>Summary regeneration: {regenerationJob.status.replaceAll('_', ' ').toLowerCase()}</p>
+            {regenerationJob.warningSummary && <p>{regenerationJob.warningSummary}</p>}
+            {regenerationJob.errorSummary && <p>{regenerationJob.errorSummary}</p>}
+          </div>
+        )}
         {summary.isPending ? (
           <RequestLoading label='Loading the current summary snapshot…' />
         ) : summary.isError ? (
@@ -330,20 +372,24 @@ export function SummaryPanel({
               retry={() => void summary.refetch()}
             />
           )
-        ) : currentSummary ? (
+        ) : null}
+        {(editorSnapshot || (!summary.isError && summary.data)) && (
           <CurrentSummary
-            snapshot={summary.data}
+            snapshot={editorSnapshot ?? summary.data!}
             editorSnapshot={editorSnapshot}
             draft={draft}
             savePending={save.isPending}
+            saveBlocked={Boolean(editConflict) || !canEdit || !protectedScopeReady}
             onDraftChange={setDraft}
             onSave={() => save.mutate()}
             onCancel={() => {
+              if (save.isPending) return
+              if (editorSnapshot && draft !== editorSnapshot.summary.content && !window.confirm('Discard unsaved summary changes?')) return
               setEditorSnapshot(null)
               setEditConflict(null)
             }}
           />
-        ) : null}
+        )}
 
         {editConflict && (
           <div
@@ -359,10 +405,14 @@ export function SummaryPanel({
                 title='Your reviewed version'
                 content={editConflict.reviewed.summary.content}
               />
-              <ConflictColumn
-                title='Latest server version'
-                content={editConflict.latest.summary.content}
-              />
+              {editConflict.latest ? (
+                <ConflictColumn
+                  title='Latest server version'
+                  content={editConflict.latest.summary.content}
+                />
+              ) : (
+                <p>The latest version has not been verified. Retry before saving.</p>
+              )}
             </div>
             <p className='text-muted-foreground'>
               Your pending changes remain in the editor. Review the latest
@@ -372,11 +422,20 @@ export function SummaryPanel({
               size='sm'
               variant='outline'
               onClick={() => {
-                setEditorSnapshot(editConflict.latest)
-                setEditConflict(null)
+                if (editConflict.latest) {
+                  setEditorSnapshot(editConflict.latest)
+                  setEditConflict(null)
+                } else {
+                  const ownsScope = captureScope()
+                  void summary.refetch().then((latest) => {
+                    if (ownsScope() && latest.isSuccess && latest.data) {
+                      setEditConflict({ reviewed: editConflict.reviewed, latest: latest.data })
+                    }
+                  })
+                }
               }}
             >
-              Use latest as editing baseline
+              {editConflict.latest ? 'Use latest as editing baseline' : 'Retry loading latest version'}
             </Button>
           </div>
         )}
@@ -388,20 +447,19 @@ export function SummaryPanel({
           >
             The current summary changed before activation. Review the refreshed
             current version and explicitly select Activate again.
-            {activationLatest && (
-              <Button
-                className='mt-3'
-                size='sm'
-                variant='outline'
-                onClick={() => {
-                  setActivationSnapshot(activationLatest)
-                  setActivationLatest(null)
-                  setActivationConflict(false)
-                }}
-              >
-                Use refreshed current as activation baseline
-              </Button>
+            {activationLatest && activationReview && (
+              <div className='mt-3 grid gap-3 lg:grid-cols-2'>
+                <ConflictColumn title='Previously reviewed current' content={activationReview.baseline.summary.content} />
+                <ConflictColumn title='Latest current' content={activationLatest.summary.content} />
+              </div>
             )}
+            <Button className='mt-3' size='sm' variant='outline' onClick={() => {
+              setActivationReview(null)
+              setActivationConflict(false)
+              setActivationLatest(null)
+            }}>
+              Close outdated activation review
+            </Button>
           </div>
         )}
 
@@ -440,15 +498,13 @@ export function SummaryPanel({
                     key={version.id}
                     version={version}
                     selected={version.id === selectedVersion?.id}
-                    canActivate={canEdit && Boolean(summary.data)}
-                    activating={activate.isPending}
                     onSelect={() => {
+                      if (activate.isPending) return
                       setSelectedVersionId(version.id)
-                      setActivationSnapshot(summary.data ?? null)
+                      setActivationReview(null)
                       setActivationLatest(null)
                       setActivationConflict(false)
                     }}
-                    onActivate={() => activate.mutate(version.id)}
                   />
                 ))}
               </div>
@@ -459,9 +515,11 @@ export function SummaryPanel({
                   disabled={
                     !versions.data.page.hasPrevious || versions.isFetching
                   }
-                  onClick={() =>
+                  onClick={() => {
+                    setActivationReview(null)
+                    setActivationConflict(false)
                     setHistoryPage((page) => Math.max(0, page - 1))
-                  }
+                  }}
                 >
                   Previous
                 </Button>
@@ -473,7 +531,11 @@ export function SummaryPanel({
                   size='sm'
                   variant='outline'
                   disabled={!versions.data.page.hasNext || versions.isFetching}
-                  onClick={() => setHistoryPage((page) => page + 1)}
+                  onClick={() => {
+                    setActivationReview(null)
+                    setActivationConflict(false)
+                    setHistoryPage((page) => page + 1)
+                  }}
                 >
                   Next
                 </Button>
@@ -511,6 +573,35 @@ export function SummaryPanel({
                 {warning}
               </p>
             ))}
+            {canEdit && summary.data && !summary.isError && !editorSnapshot &&
+              !selectedVersion.isCurrent && !selectedVersion.isStale && !activationReview && (
+                <Button size='sm' variant='outline' onClick={() => {
+                  if (!summary.data) return
+                  setActivationReview({ candidate: selectedVersion, baseline: summary.data })
+                  setActivationConflict(false)
+                }}>
+                  Review activation
+                </Button>
+              )}
+            {activationReview && (
+              <section className='space-y-3 rounded-md border p-3'>
+                <h4 className='font-medium'>Review activation of version {activationReview.candidate.versionNumber}</h4>
+                <div className='grid gap-3 lg:grid-cols-2'>
+                  <PreviewColumn title={`Reviewed current v${activationReview.baseline.summary.versionNumber}`} content={activationReview.baseline.summary.content} />
+                  <PreviewColumn title={`Candidate v${activationReview.candidate.versionNumber}`} content={activationReview.candidate.content} />
+                </div>
+                <div className='flex flex-wrap gap-2'>
+                  <Button disabled={activate.isPending || activationConflict || !canEdit || !activationCandidate || activationCandidate.isCurrent || activationCandidate.isStale} onClick={() => activate.mutate()}>
+                    Activate reviewed version
+                  </Button>
+                  <Button variant='outline' disabled={activate.isPending} onClick={() => {
+                    setActivationReview(null)
+                    setActivationConflict(false)
+                    setActivationLatest(null)
+                  }}>Cancel activation</Button>
+                </div>
+              </section>
+            )}
             {comparisonOpen && currentSummary ? (
               <div className='grid gap-4 lg:grid-cols-2'>
                 <PreviewColumn
@@ -534,177 +625,3 @@ export function SummaryPanel({
   )
 }
 
-function CurrentSummary({
-  snapshot,
-  editorSnapshot,
-  draft,
-  savePending,
-  onDraftChange,
-  onSave,
-  onCancel,
-}: {
-  snapshot: SummarySnapshot
-  editorSnapshot: SummarySnapshot | null
-  draft: string
-  savePending: boolean
-  onDraftChange: (value: string) => void
-  onSave: () => void
-  onCancel: () => void
-}) {
-  const summary = snapshot.summary
-  return (
-    <section className='space-y-4'>
-      <div className='flex flex-wrap items-center gap-2'>
-        <Badge>Current · v{summary.versionNumber}</Badge>
-        <Badge variant='outline'>{summary.sourceType}</Badge>
-        <Badge variant='outline'>{summary.qualityStatus}</Badge>
-        {summary.isStale && <Badge variant='destructive'>Stale source</Badge>}
-      </div>
-      <div className='grid gap-2 text-xs text-muted-foreground sm:grid-cols-2'>
-        <span>Created {formatDate(summary.createdAt)}</span>
-        <span>
-          Transcript revision {summary.contentRevision ?? 'not available'}
-        </span>
-        {summary.aiProducer?.model && (
-          <span>
-            Produced by {summary.aiProducer.provider ?? 'AI'} ·{' '}
-            {summary.aiProducer.model}
-          </span>
-        )}
-      </div>
-      {summary.aiWarnings?.map((warning, index) => (
-        <p
-          key={index}
-          className='flex gap-2 rounded-md border border-amber-300/70 bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-950/20 dark:text-amber-200'
-        >
-          <AlertTriangle className='mt-0.5 size-4 shrink-0' />
-          {warning}
-        </p>
-      ))}
-      {editorSnapshot ? (
-        <form
-          className='space-y-3'
-          onSubmit={(event) => {
-            event.preventDefault()
-            onSave()
-          }}
-        >
-          <Textarea
-            aria-label='Summary content'
-            rows={12}
-            maxLength={20_000}
-            value={draft}
-            onChange={(event) => onDraftChange(event.target.value)}
-          />
-          <div className='flex flex-wrap items-center justify-between gap-2'>
-            <span className='text-xs text-muted-foreground'>
-              {draft.length.toLocaleString()} / 20,000 characters · editing
-              version {editorSnapshot.summary.versionNumber}
-            </span>
-            <div className='flex gap-2'>
-              <Button
-                type='submit'
-                disabled={savePending || !draft.trim() || draft.length > 20_000}
-              >
-                {savePending ? 'Saving…' : 'Save reviewed version'}
-              </Button>
-              <Button type='button' variant='outline' onClick={onCancel}>
-                Cancel
-              </Button>
-            </div>
-          </div>
-        </form>
-      ) : (
-        <p className='text-base leading-8 whitespace-pre-wrap'>
-          {summary.content}
-        </p>
-      )}
-    </section>
-  )
-}
-
-function VersionRow({
-  version,
-  selected,
-  canActivate,
-  activating,
-  onSelect,
-  onActivate,
-}: {
-  version: SummaryVersion
-  selected: boolean
-  canActivate: boolean
-  activating: boolean
-  onSelect: () => void
-  onActivate: () => void
-}) {
-  return (
-    <div
-      className={`flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3 ${
-        selected ? 'border-primary bg-primary/5' : ''
-      }`}
-    >
-      <button
-        type='button'
-        className='min-w-0 flex-1 text-left'
-        onClick={onSelect}
-        aria-pressed={selected}
-      >
-        <span className='flex flex-wrap items-center gap-2 font-medium'>
-          Version {version.versionNumber}
-          {version.isCurrent && <Badge>Current</Badge>}
-          {!version.isCurrent && version.sourceType === 'AI_GENERATED' && (
-            <Badge variant='secondary'>AI candidate</Badge>
-          )}
-          {version.isStale && <Badge variant='destructive'>Stale</Badge>}
-        </span>
-        <span className='mt-1 block text-xs text-muted-foreground'>
-          {version.sourceType} · {formatDate(version.createdAt)}
-        </span>
-      </button>
-      {canActivate && !version.isCurrent && !version.isStale && (
-        <Button
-          size='sm'
-          variant='outline'
-          disabled={activating}
-          onClick={(event) => {
-            event.stopPropagation()
-            onActivate()
-          }}
-        >
-          Activate
-        </Button>
-      )}
-    </div>
-  )
-}
-
-function PreviewColumn({ title, content }: { title: string; content: string }) {
-  return (
-    <div className='space-y-2 rounded-md border bg-background p-3'>
-      <h4 className='text-sm font-medium'>{title}</h4>
-      <p className='max-h-96 overflow-auto text-sm leading-7 whitespace-pre-wrap'>
-        {content}
-      </p>
-    </div>
-  )
-}
-
-function ConflictColumn({
-  title,
-  content,
-}: {
-  title: string
-  content: string
-}) {
-  return (
-    <div className='rounded-md border bg-background p-3'>
-      <h4 className='mb-2 text-xs font-semibold tracking-wide uppercase'>
-        {title}
-      </h4>
-      <p className='max-h-40 overflow-auto text-sm leading-6 whitespace-pre-wrap'>
-        {content}
-      </p>
-    </div>
-  )
-}

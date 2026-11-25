@@ -78,6 +78,20 @@ export function MeetingSessionProvider({
     authorization
   )
   const [hasUnsavedTranscriptReview, setTranscriptReviewDirty] = useState(false)
+  const [intelligenceDrafts, setIntelligenceDrafts] = useState({
+    summary: false,
+    decisions: false,
+  })
+  const hasUnsavedIntelligence =
+    intelligenceDrafts.summary || intelligenceDrafts.decisions
+  const setIntelligenceDraftDirty = useCallback(
+    (feature: 'summary' | 'decisions', dirty: boolean) => {
+      setIntelligenceDrafts((current) =>
+        current[feature] === dirty ? current : { ...current, [feature]: dirty }
+      )
+    },
+    []
+  )
   const [fallbackOverrides, setFallbackOverrides] = useState<
     Partial<FallbackCapabilities>
   >({})
@@ -138,6 +152,7 @@ export function MeetingSessionProvider({
   const authForProcessing = authorization
     ? ({
         identityId: authorization.identity?.userId ?? null,
+        sessionId: authorization.identity?.session?.id ?? null,
         scopeReady: authorization.scopeReady,
         canReadMedia: authorization.capabilities.canReadMedia,
         canReadProcessing: authorization.capabilities.canReadProcessing,
@@ -232,11 +247,11 @@ export function MeetingSessionProvider({
   }, [isArtifactLocked, stopLocalArtifact])
 
   const invalidateProcessing = processing.invalidate
-  const resetProtectedResources = useCallback(() => {
+  const resetProtectedResources = useCallback((discardRecovery = true) => {
     resetRecording()
     resetIngestion()
     resetPlayback()
-    invalidateProcessing()
+    invalidateProcessing(discardRecovery)
   }, [invalidateProcessing, resetIngestion, resetPlayback, resetRecording])
 
   const previousScope = useRef({
@@ -251,7 +266,9 @@ export function MeetingSessionProvider({
       previous.identityId !== identityId
     ) {
       previousScope.current = { meetingId, identityId }
-      resetProtectedResources()
+      // The processing owner handles the previous identity's recovery cleanup.
+      // Ordinary navigation must not discard an admitted or ambiguous intent.
+      resetProtectedResources(false)
       return
     }
     previousScope.current = { meetingId, identityId }
@@ -286,7 +303,7 @@ export function MeetingSessionProvider({
     stopRecording,
   ])
 
-  useEffect(() => () => resetProtectedResources(), [resetProtectedResources])
+  useEffect(() => () => resetProtectedResources(false), [resetProtectedResources])
 
   const updateFallbackCapabilities = useCallback(
     (next: Partial<FallbackCapabilities>) => {
@@ -326,12 +343,12 @@ export function MeetingSessionProvider({
       authorization?.status === 'confirmed-authentication-loss' ||
       authorization?.status === 'confirmed-authorization-denial'
     )
-    if ((!hasUnsavedResources && !hasUnsavedTranscriptReview) || accessLost) {
+    if ((!hasUnsavedResources && !hasUnsavedTranscriptReview && !hasUnsavedIntelligence) || accessLost) {
       return
     }
     const preventDiscard = (event: BeforeUnloadEvent) => {
       event.preventDefault()
-      event.returnValue = hasUnsavedTranscriptReview
+      event.returnValue = hasUnsavedTranscriptReview || hasUnsavedIntelligence
         ? 'Meeting review work has not been saved. Leave anyway?'
         : 'A recording or local media has not been submitted. Leave anyway?'
     }
@@ -342,6 +359,7 @@ export function MeetingSessionProvider({
     authorization?.status,
     hasUnsavedResources,
     hasUnsavedTranscriptReview,
+    hasUnsavedIntelligence,
   ])
 
   const selectRemoteSource = useCallback(
@@ -373,6 +391,8 @@ export function MeetingSessionProvider({
       hasUnsavedResources,
       hasUnsavedTranscriptReview,
       setTranscriptReviewDirty,
+      hasUnsavedIntelligence,
+      setIntelligenceDraftDirty,
       updateFallbackCapabilities,
       startRecording,
       stopRecording,
@@ -403,6 +423,8 @@ export function MeetingSessionProvider({
       discardRecording,
       hasUnsavedResources,
       hasUnsavedTranscriptReview,
+      hasUnsavedIntelligence,
+      setIntelligenceDraftDirty,
       importedMedia,
       pause,
       play,

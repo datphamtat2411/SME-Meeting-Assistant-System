@@ -1,0 +1,162 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { render } from 'vitest-browser-react'
+import { userEvent } from 'vitest/browser'
+import { CoreApiError, coreApi } from '@/lib/core-api'
+import { DecisionsPanel } from './decisions-panel'
+import { SummaryPanel } from './summary-panel'
+import { summaryQuery } from './summary-api'
+
+const meetingId = '11111111-1111-4111-8111-111111111111'
+const currentId = '22222222-2222-4222-8222-222222222222'
+const candidateId = '33333333-3333-4333-8333-333333333333'
+const transcriptId = '44444444-4444-4444-8444-444444444444'
+const segmentId = '55555555-5555-4555-8555-555555555555'
+
+const summary = {
+  id: currentId,
+  meetingId,
+  versionNumber: 4,
+  content: 'Current reviewed summary',
+  sourceType: 'HUMAN_EDIT',
+  qualityStatus: 'READY',
+  processingJobId: null,
+  transcriptId,
+  contentRevision: 4,
+  isStale: false,
+  createdAt: '2026-11-25T09:00:00Z',
+  createdByUserId: null,
+}
+
+const proposal = {
+  id: candidateId,
+  meetingId,
+  content: 'Reviewed proposal text',
+  status: 'PROPOSED',
+  sourceType: 'AI_EXTRACTED',
+  evidenceSegmentIds: [segmentId],
+  transcriptId,
+  contentRevision: 4,
+  isStale: false,
+  version: 0,
+  createdAt: '2026-11-25T09:00:00Z',
+  createdByUserId: null,
+  confirmedAt: null,
+  confirmedByUserId: null,
+  rejectedAt: null,
+  rejectedByUserId: null,
+  etag: '"reviewed-decision"',
+}
+
+function page(items: unknown[]) {
+  return {
+    data: items,
+    meta: {
+      pagination: {
+        page: 0,
+        size: 20,
+        totalElements: items.length,
+        totalPages: items.length ? 1 : 0,
+        hasNext: false,
+        hasPrevious: false,
+      },
+    },
+  }
+}
+
+function client() {
+  return new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  })
+}
+
+describe('intelligence review integrity', () => {
+  beforeEach(() => vi.restoreAllMocks())
+
+  it('binds activation to the current summary actually shown during review', async () => {
+    const queryClient = client()
+    const latest = { ...summary, versionNumber: 5, content: 'Newer server summary' }
+    const get = vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+      data: summary,
+      meta: {},
+      etag: '"reviewed-summary"',
+    })
+    vi.spyOn(coreApi, 'getWithMeta').mockResolvedValue(
+      page([
+        { ...summary, isCurrent: true },
+        { ...summary, id: candidateId, versionNumber: 3, content: 'Historical candidate', isCurrent: false },
+      ])
+    )
+    const post = vi.spyOn(coreApi, 'postWithMetaAndEtag').mockRejectedValue(
+      new CoreApiError({ message: 'Version changed', status: 412, kind: 'http' })
+    )
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <SummaryPanel meetingId={meetingId} canEdit canRegenerate={false} />
+      </QueryClientProvider>
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Review activation' }))
+    get.mockResolvedValue({ data: latest, meta: {}, etag: '"latest-summary"' })
+    queryClient.setQueryData(summaryQuery(meetingId).queryKey, {
+      summary: latest,
+      etag: '"latest-summary"',
+    })
+    await userEvent.click(screen.getByRole('button', { name: 'Activate reviewed version' }))
+    await expect.poll(() => post.mock.calls.length).toBe(1)
+    expect(post).toHaveBeenCalledWith(
+      `/meetings/${meetingId}/summary/versions/${candidateId}/activate`,
+      undefined,
+      { headers: { 'If-Match': '"reviewed-summary"' } }
+    )
+    await expect.element(screen.getByRole('button', { name: 'Activate reviewed version' })).toBeDisabled()
+  })
+
+  it('blocks an obsolete proposal review even when the record leaves the filtered collection', async () => {
+    const queryClient = client()
+    const collection = vi.spyOn(coreApi, 'getWithMeta').mockResolvedValue(page([proposal]))
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockRejectedValue(
+      new CoreApiError({ message: 'Transcript not available', status: 404, kind: 'http' })
+    )
+    const post = vi.spyOn(coreApi, 'post').mockRejectedValue(
+      new CoreApiError({ message: 'Decision changed', status: 412, kind: 'http' })
+    )
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <DecisionsPanel meetingId={meetingId} canManageDecisions />
+      </QueryClientProvider>
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Review proposal' }))
+    collection.mockResolvedValue(page([]))
+    await userEvent.click(screen.getByRole('button', { name: 'Reject proposal' }))
+    await expect.element(screen.getByText('This review is no longer actionable. No action was replayed.')).toBeInTheDocument()
+    await expect.element(screen.getByRole('button', { name: 'Reject proposal' })).toBeDisabled()
+    expect(post).toHaveBeenCalledTimes(1)
+    expect(post).toHaveBeenCalledWith(
+      `/meetings/${meetingId}/decisions/${candidateId}/reject`,
+      undefined,
+      { headers: { 'If-Match': '"reviewed-decision"' } }
+    )
+  })
+
+  it('blocks repeated manual creation after a transport failure until explicit reconciliation', async () => {
+    const queryClient = client()
+    vi.spyOn(coreApi, 'getWithMeta').mockResolvedValue(page([]))
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockRejectedValue(
+      new CoreApiError({ message: 'Transcript not available', status: 404, kind: 'http' })
+    )
+    const post = vi.spyOn(coreApi, 'post').mockRejectedValue(
+      new CoreApiError({ message: 'Connection lost', kind: 'network' })
+    )
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <DecisionsPanel meetingId={meetingId} canManageDecisions />
+      </QueryClientProvider>
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Add confirmed decision' }))
+    await userEvent.fill(screen.getByRole('textbox', { name: 'New decision content' }), 'New official decision')
+    await userEvent.click(screen.getByRole('button', { name: 'Create confirmed decision' }))
+    await expect.element(screen.getByRole('button', { name: 'Create confirmed decision' })).toBeDisabled()
+    await expect.element(screen.getByRole('button', { name: 'I checked the records — allow a new attempt' })).toBeInTheDocument()
+    expect(post).toHaveBeenCalledTimes(1)
+  })
+})

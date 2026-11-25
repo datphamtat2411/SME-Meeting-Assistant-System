@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { queryOptions } from '@tanstack/react-query'
-import { coreApi } from '@/lib/core-api'
+import { CoreApiError, coreApi, normalizeCoreApiError } from '@/lib/core-api'
 import {
   paginationParams,
   validatedPageInfo,
@@ -165,14 +165,38 @@ export async function requestSummaryRegeneration(
   idempotencyKey: string,
   signal?: AbortSignal
 ) {
-  const rawAdmission = await coreApi.post<unknown>(
-    path(meetingId) + '/regenerate',
-    undefined,
-    {
-      headers: { 'Idempotency-Key': idempotencyKey },
-      signal,
+  let rawAdmission: unknown
+  try {
+    rawAdmission = await coreApi.post<unknown>(
+      path(meetingId) + '/regenerate',
+      undefined,
+      {
+        headers: { 'Idempotency-Key': idempotencyKey },
+        signal,
+      }
+    )
+  } catch (error) {
+    const failure = normalizeCoreApiError(error)
+    // A transport failure or invalid success receipt cannot prove that
+    // Core rejected admission. Replay only the original idempotent intent.
+    if (
+      failure.isNetworkError ||
+      failure.kind === 'malformed' ||
+      failure.recoveryOutcome === 'uncertain' ||
+      error instanceof TypeError ||
+      (failure.isServerError && failure.status !== 503)
+    ) {
+      throw new CoreApiError({
+        message: 'Summary regeneration admission is uncertain. Recover the original request.',
+        code: 'PROCESSING_ADMISSION_UNCERTAIN',
+        kind: 'network',
+        recoveryOutcome: 'uncertain',
+        retryable: false,
+        cause: error,
+      })
     }
-  )
+    throw error
+  }
   let admission: SummaryRegenerationAdmission
   try {
     admission = regenerationResponseSchema.parse(rawAdmission)
@@ -205,7 +229,7 @@ export async function requestSummaryRegeneration(
       { recoveryOutcome: 'uncertain' as const }
     )
   }
-  if (job.id !== admission.processingJobId || job.meetingId !== meetingId) {
+  if (job.id !== admission.processingJobId || job.meetingId !== meetingId || job.jobType !== 'DERIVED_STAGE_PROCESSING') {
     throw Object.assign(
       new Error('Core API returned a different regeneration job.'),
       { recoveryOutcome: 'uncertain' as const }

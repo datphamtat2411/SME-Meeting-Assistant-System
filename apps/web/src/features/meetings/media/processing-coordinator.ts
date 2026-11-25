@@ -23,6 +23,7 @@ import {
 
 export type ProcessingAuthorization = {
   identityId: string | null
+  sessionId?: string | null
   scopeReady: boolean
   canReadMedia: boolean
   canReadProcessing: boolean
@@ -52,6 +53,7 @@ type ProcessingOperation = {
   kind: ProcessingOperationKind
   meetingId: string
   actorId: string
+  storageActorId?: string
   sourceMediaId?: string
   jobId?: string
   stageCode?: string
@@ -102,7 +104,8 @@ export type ProcessingCoordinatorValue = {
     logicalIdentity: string
   ) => Promise<ProcessingCommandResult>
   refreshObservation: () => Promise<void>
-  invalidate: () => void
+  summaryRegenerationJob?: ProcessingJob
+  invalidate: (discardRecovery?: boolean) => void
 }
 
 type CoordinatorOptions = {
@@ -316,7 +319,7 @@ function canReplayFromSnapshot(
   if (operation.kind === 'summary-regeneration') {
     if (!operation.jobId) return true
     const job = snapshot.jobs.find((item) => item.id === operation.jobId)
-    return Boolean(job && job.meetingId === meetingId)
+    return !job || (job.meetingId === meetingId && terminalStatus(job.status))
   }
   const source = operation.sourceMediaId
     ? snapshot.media.find(
@@ -365,9 +368,11 @@ export function useProcessingCoordinator({
   const [operationSnapshot, setOperationSnapshot] = useState<
     ProcessingOperation[]
   >([])
+  const [summaryRegenerationJobId, setSummaryRegenerationJobId] = useState<string | null>(null)
   const previousScope = useRef({
     meetingId,
     actorId: authorization?.identityId ?? null,
+    sessionId: authorization?.sessionId ?? null,
     confirmedAccessLoss: authorization?.isConfirmedAccessLoss ?? false,
   })
 
@@ -382,14 +387,17 @@ export function useProcessingCoordinator({
     )
   }, [])
 
-  const invalidate = useCallback(() => {
+  const invalidate = useCallback((discardRecovery = true) => {
     generation.current += 1
     for (const operation of operations.current.values()) {
       operation.execution?.controller.abort()
     }
     operations.current.clear()
-    const actorId = authorizationRef.current?.identityId
-    if (actorId) clearStoredSummaryOperation(meetingId, actorId)
+    const current = authorizationRef.current
+    if (discardRecovery && current?.identityId) {
+      clearStoredSummaryOperation(meetingId, current.sessionId ?? current.identityId)
+    }
+    setSummaryRegenerationJobId(null)
     reviewCommandOwner.current = null
     reviewWorkBlocked.current = false
     setReviewCommandActive(false)
@@ -453,14 +461,19 @@ export function useProcessingCoordinator({
     const actorId = authorization?.identityId ?? null
     const confirmedAccessLoss = authorization?.isConfirmedAccessLoss ?? false
     const previous = previousScope.current
-    const scopeChanged =
-      previous.meetingId !== meetingId || previous.actorId !== actorId
+    const sessionId = authorization?.sessionId ?? null
+    const identityChanged =
+      previous.actorId !== actorId || previous.sessionId !== sessionId
+    const scopeChanged = previous.meetingId !== meetingId || identityChanged
     const accessLossStarted =
       confirmedAccessLoss && !previous.confirmedAccessLoss
 
-    previousScope.current = { meetingId, actorId, confirmedAccessLoss }
+    previousScope.current = { meetingId, actorId, sessionId, confirmedAccessLoss }
     if (scopeChanged || accessLossStarted) {
-      invalidate()
+      if ((identityChanged || accessLossStarted) && previous.actorId) {
+        clearStoredSummaryOperation(previous.meetingId, previous.sessionId ?? previous.actorId)
+      }
+      invalidate(accessLossStarted)
       return
     }
     // A feature capability can be lost while meeting reads remain allowed.
@@ -501,7 +514,7 @@ export function useProcessingCoordinator({
         operations.current.delete(summaryRegenerationIdentity)
         clearStoredSummaryOperation(
           summaryOperation.meetingId,
-          summaryOperation.actorId
+          summaryOperation.storageActorId ?? summaryOperation.actorId
         )
         publishOperations()
       }
@@ -519,18 +532,25 @@ export function useProcessingCoordinator({
     const actorId = authorization?.identityId
     if (
       !actorId ||
+      !authorization?.scopeReady ||
+      authorization.isConfirmedAccessLoss ||
+      !authorization.canReadProcessing ||
       !jobs.data ||
+      jobs.isError ||
+      jobs.isFetching ||
       operations.current.has(summaryRegenerationIdentity)
     ) {
       return
     }
-    const stored = readStoredSummaryOperation(meetingId, actorId)
+    const storageActorId = authorization.sessionId ?? actorId
+    const stored = readStoredSummaryOperation(meetingId, storageActorId)
     if (!stored) return
     const job = stored.jobId
       ? jobs.data.find((item) => item.id === stored.jobId)
       : undefined
     if (job && terminalStatus(job.status)) {
-      clearStoredSummaryOperation(meetingId, actorId)
+      setSummaryRegenerationJobId(job.id)
+      clearStoredSummaryOperation(meetingId, storageActorId)
       invalidateMeetingArtifacts(queryClient, meetingId)
       return
     }
@@ -540,16 +560,20 @@ export function useProcessingCoordinator({
       kind: 'summary-regeneration',
       meetingId,
       actorId,
+      storageActorId,
       jobId: stored.jobId ?? undefined,
       idempotencyKey: stored.idempotencyKey,
       generation: generation.current,
-      status: 'uncertain',
+      status: job && activeStatus(job.status) ? 'pending' : 'uncertain',
       execution: null,
     })
+    if (job) setSummaryRegenerationJobId(job.id)
     publishOperations()
   }, [
-    authorization?.identityId,
+    authorization,
     jobs.data,
+    jobs.isError,
+    jobs.isFetching,
     meetingId,
     publishOperations,
     queryClient,
@@ -680,13 +704,13 @@ export function useProcessingCoordinator({
           replayingUncertain: false,
         },
       }
-      operations.current.set(logicalIdentity, operation)
       if (operation.kind === 'summary-regeneration') {
-        storeSummaryOperation(operation.meetingId, operation.actorId, {
+        storeSummaryOperation(operation.meetingId, operation.storageActorId ?? operation.actorId, {
           idempotencyKey: operation.idempotencyKey,
           jobId: operation.jobId ?? null,
         })
       }
+      operations.current.set(logicalIdentity, operation)
       publishOperations()
       return operation
     },
@@ -761,7 +785,8 @@ export function useProcessingCoordinator({
         }
         if (operation.kind === 'summary-regeneration') {
           operation.jobId = job.id
-          storeSummaryOperation(operation.meetingId, operation.actorId, {
+          setSummaryRegenerationJobId(job.id)
+          storeSummaryOperation(operation.meetingId, operation.storageActorId ?? operation.actorId, {
             idempotencyKey: operation.idempotencyKey,
             jobId: job.id,
           })
@@ -773,7 +798,7 @@ export function useProcessingCoordinator({
         ) {
           operations.current.delete(operation.logicalIdentity)
           if (operation.kind === 'summary-regeneration') {
-            clearStoredSummaryOperation(operation.meetingId, operation.actorId)
+            clearStoredSummaryOperation(operation.meetingId, operation.storageActorId ?? operation.actorId)
           }
         } else {
           operation.execution = null
@@ -795,7 +820,7 @@ export function useProcessingCoordinator({
         } else {
           operations.current.delete(operation.logicalIdentity)
           if (operation.kind === 'summary-regeneration') {
-            clearStoredSummaryOperation(operation.meetingId, operation.actorId)
+            clearStoredSummaryOperation(operation.meetingId, operation.storageActorId ?? operation.actorId)
           }
         }
         publishOperations()
@@ -1040,6 +1065,12 @@ export function useProcessingCoordinator({
       const existing = operations.current.get(logicalIdentity)
       const snapshot = getAuthoritativeSnapshot()
       if (!snapshot) return { status: 'blocked' }
+      const current = authorizationRef.current
+      // Do not allocate a new key while persisted recovery is awaiting hydration.
+      if (!existing && current?.identityId &&
+        readStoredSummaryOperation(meetingId, current.sessionId ?? current.identityId)) {
+        return { status: 'blocked' }
+      }
       if (existing) {
         if (existing.status === 'pending' && existing.execution) {
           return { status: 'blocked' }
@@ -1059,8 +1090,10 @@ export function useProcessingCoordinator({
         kind: 'summary-regeneration',
         meetingId,
         actorId: authorizationRef.current?.identityId ?? 'standalone',
+        storageActorId: authorizationRef.current?.sessionId ?? undefined,
       })
       if (!operation) return { status: 'blocked' }
+      setSummaryRegenerationJobId(null)
       return runOperation(operation, (signal) =>
         requestSummaryRegeneration(meetingId, operation.idempotencyKey, signal)
       )
@@ -1159,6 +1192,7 @@ export function useProcessingCoordinator({
           (candidate.status === 'pending' || candidate.status === 'uncertain')
       )
       const replayPermitted = Boolean(
+        operation.status === 'uncertain' &&
         operation.execution === null &&
         snapshot &&
         authorizedForProcessingOperation(
@@ -1211,6 +1245,7 @@ export function useProcessingCoordinator({
     retry,
     reprocess,
     regenerateSummary,
+    summaryRegenerationJob: jobs.data?.find((job) => job.id === summaryRegenerationJobId),
     recoverOperation,
     refreshObservation,
     invalidate,

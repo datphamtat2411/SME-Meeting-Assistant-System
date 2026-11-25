@@ -1,12 +1,10 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, CheckCircle2, ExternalLink, Plus } from 'lucide-react'
+import { CheckCircle2, Plus } from 'lucide-react'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Textarea } from '@/components/ui/textarea'
 import {
   RequestEmpty,
   RequestError,
@@ -21,16 +19,18 @@ import {
   type Decision,
   type DecisionStatus,
 } from './decision-api'
+import { CreateDecisionPanel, DecisionCard, EditDecisionPanel, ReviewPanel, type EvidenceNavigate } from './decision-presentation'
+import {
+  intelligenceReadAllowed,
+  useIntelligenceDraftProtection,
+  useIntelligenceOperationScope,
+} from './intelligence-operation-scope'
 import { invalidateMeetingArtifacts } from './query-invalidation'
 import { transcriptReviewQuery } from './transcript-api'
 
 const pageSize = 20
 type Filter = 'ALL' | DecisionStatus
 
-function formatDate(value: string) {
-  const date = new Date(value)
-  return Number.isNaN(date.valueOf()) ? value : date.toLocaleString()
-}
 
 function decisionLabel(status: DecisionStatus) {
   switch (status) {
@@ -43,34 +43,55 @@ function decisionLabel(status: DecisionStatus) {
   }
 }
 
-export function DecisionsPanel({
+type DecisionsPanelProps = {
+  meetingId: string
+  canManageDecisions: boolean
+  onEvidenceNavigate?: EvidenceNavigate
+}
+
+export function DecisionsPanel(props: DecisionsPanelProps) {
+  const authorization = useOptionalMeetingAuthorization()
+  if (!intelligenceReadAllowed(authorization)) {
+    return <RequestEmpty title='Decisions unavailable' description='Meeting content access must be verified.' />
+  }
+  return (
+    <DecisionsPanelContent
+      key={`${props.meetingId}:${authorization?.identity?.session?.id ?? authorization?.identity?.userId ?? 'standalone'}`}
+      {...props}
+    />
+  )
+}
+
+function DecisionsPanelContent({
   meetingId,
   canManageDecisions,
   onEvidenceNavigate,
-}: {
-  meetingId: string
-  canManageDecisions: boolean
-  onEvidenceNavigate?: (transcriptId: string, segmentId: string) => void
-}) {
+}: DecisionsPanelProps) {
   const queryClient = useQueryClient()
   const authorization = useOptionalMeetingAuthorization()
   const canManageRef = useRef(canManageDecisions)
   const authorizationRef = useRef(authorization)
+  const captureScope = useIntelligenceOperationScope(meetingId, authorization, canManageDecisions)
   const [filter, setFilter] = useState<Filter>('ALL')
   const [page, setPage] = useState(0)
   const [reviewSnapshot, setReviewSnapshot] = useState<Decision | null>(null)
   const [reviewConflict, setReviewConflict] = useState<Decision | null>(null)
+  const [reviewBlocked, setReviewBlocked] = useState(false)
   const [editingSnapshot, setEditingSnapshot] = useState<Decision | null>(null)
   const [editConflict, setEditConflict] = useState<Decision | null>(null)
+  const [editBlocked, setEditBlocked] = useState(false)
   const [draft, setDraft] = useState('')
   const [creating, setCreating] = useState(false)
   const [createDraft, setCreateDraft] = useState('')
+  const [createUncertain, setCreateUncertain] = useState(false)
+  const [createReconciled, setCreateReconciled] = useState(false)
+  const [reconcilingCreation, setReconcilingCreation] = useState(false)
   const [selectedEvidence, setSelectedEvidence] = useState<string[]>([])
   const [createTranscriptIdentity, setCreateTranscriptIdentity] = useState<
     string | null
   >(null)
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     canManageRef.current = canManageDecisions
     authorizationRef.current = authorization
   }, [authorization, canManageDecisions])
@@ -86,7 +107,7 @@ export function DecisionsPanel({
   const transcriptIdentity = currentTranscript
     ? `${currentTranscript.id}:${currentTranscript.contentRevision}`
     : null
-  const reviewedDecision = reviewConflict ?? reviewSnapshot
+  const reviewedDecision = reviewSnapshot
   const reviewEvidenceMatchesCurrent =
     Boolean(
       reviewedDecision &&
@@ -98,13 +119,23 @@ export function DecisionsPanel({
     reviewedDecision &&
     (reviewedDecision.isStale ||
       !reviewedDecision.transcriptId ||
+      transcript.isError ||
+      transcript.isFetching ||
       reviewedDecision.evidenceSegmentIds.length === 0 ||
-      !reviewEvidenceMatchesCurrent)
+      !reviewEvidenceMatchesCurrent ||
+      !reviewedDecision.evidenceSegmentIds.every((id) => currentTranscript?.segments.some((segment) => segment.id === id)))
   )
   const sourceSegments = useMemo(
     () => currentTranscript?.segments ?? [],
     [currentTranscript?.segments]
   )
+
+  const lastPage = query.data ? Math.max(0, query.data.page.totalPages - 1) : page
+  if (query.isSuccess && page > lastPage) setPage(lastPage)
+
+  const evidenceNeedsReview = selectedEvidence.length > 0 &&
+    (createTranscriptIdentity !== transcriptIdentity || transcript.isError ||
+      !selectedEvidence.every((id) => sourceSegments.some((segment) => segment.id === id)))
 
   function refresh() {
     void queryClient.invalidateQueries({
@@ -114,6 +145,7 @@ export function DecisionsPanel({
   }
 
   const review = useMutation({
+    onMutate: captureScope,
     mutationFn: ({
       decision,
       action,
@@ -132,6 +164,9 @@ export function DecisionsPanel({
       ) {
         throw new Error('Decision review is no longer authorized.')
       }
+      if (reviewBlocked || decision.status !== 'PROPOSED' || decision.id !== reviewSnapshot?.id) {
+        throw new Error('Review the current proposal before submitting.')
+      }
       if (action === 'confirm' && (decision.isStale || confirmationBlocked)) {
         throw new Error(
           'This proposal needs fresh, matching transcript evidence before confirmation.'
@@ -139,7 +174,9 @@ export function DecisionsPanel({
       }
       return reviewDecision(decision, action)
     },
-    onSuccess: (_result, variables) => {
+    onSuccess: (_result, variables, ownsScope) => {
+      if (!ownsScope?.()) return
+      setReviewBlocked(false)
       setReviewSnapshot(null)
       setReviewConflict(null)
       refresh()
@@ -149,15 +186,23 @@ export function DecisionsPanel({
           : 'Decision rejected and preserved in history'
       )
     },
-    onError: (error) => {
+    onError: (error, variables, ownsScope) => {
+      if (!ownsScope?.()) return
       const normalized = normalizeCoreApiError(error)
-      if (normalized.status === 412 && reviewSnapshot) {
+      if (normalized.status === 412 || normalized.status === 409) {
+        setReviewBlocked(true)
+        setReviewConflict(null)
+        toast.error('Decision review was not applied', {
+          description: normalized.message,
+        })
         void query.refetch().then((result) => {
+          if (!ownsScope() || !result.isSuccess) return
           const latest = result.data?.items.find(
-            (item) => item.id === reviewSnapshot.id
+            (item) => item.id === variables.decision.id
           )
           if (latest) setReviewConflict(latest)
         })
+        refresh()
         return
       }
       toast.error('Decision review was not applied', {
@@ -167,6 +212,7 @@ export function DecisionsPanel({
   })
 
   const edit = useMutation({
+    onMutate: captureScope,
     mutationFn: () => {
       const currentAuthorization = authorizationRef.current
       if (
@@ -179,8 +225,8 @@ export function DecisionsPanel({
       ) {
         throw new Error('Decision editing is no longer authorized.')
       }
-      if (!editingSnapshot)
-        throw new Error('Open the confirmed decision again.')
+      if (!editingSnapshot || editBlocked || editingSnapshot.status !== 'CONFIRMED')
+        throw new Error('Review the current confirmed decision again.')
       const content = draft.trim()
       if (!content || content.length > 5_000) {
         throw new Error(
@@ -189,22 +235,28 @@ export function DecisionsPanel({
       }
       return editDecision(editingSnapshot, content)
     },
-    onSuccess: () => {
+    onSuccess: (_result, _variables, ownsScope) => {
+      if (!ownsScope?.()) return
+      setEditBlocked(false)
       setEditingSnapshot(null)
       setEditConflict(null)
       setDraft('')
       refresh()
       toast.success('Confirmed decision correction saved')
     },
-    onError: (error) => {
+    onError: (error, _variables, ownsScope) => {
+      if (!ownsScope?.()) return
       const normalized = normalizeCoreApiError(error)
-      if (normalized.status === 412 && editingSnapshot) {
+      if ((normalized.status === 412 || normalized.status === 409) && editingSnapshot) {
+        const decisionId = editingSnapshot.id
+        setEditBlocked(true)
+        setEditConflict(null)
         void query.refetch().then((result) => {
-          const latest = result.data?.items.find(
-            (item) => item.id === editingSnapshot.id
-          )
+          if (!ownsScope() || !result.isSuccess) return
+          const latest = result.data?.items.find((item) => item.id === decisionId)
           if (latest) setEditConflict(latest)
         })
+        refresh()
         return
       }
       toast.error('Decision correction was not saved', {
@@ -214,7 +266,8 @@ export function DecisionsPanel({
   })
 
   const create = useMutation({
-    mutationFn: () => {
+    onMutate: captureScope,
+    mutationFn: async () => {
       const currentAuthorization = authorizationRef.current
       if (
         !canManageRef.current ||
@@ -232,18 +285,29 @@ export function DecisionsPanel({
           'Decision content must be between 1 and 5,000 characters.'
         )
       }
-      if (
-        selectedEvidence.length > 0 &&
-        (!createTranscriptIdentity ||
-          createTranscriptIdentity !== transcriptIdentity)
-      ) {
+      if (createUncertain) throw new Error('Resolve the previous creation outcome before submitting.')
+      if (evidenceNeedsReview || (selectedEvidence.length > 0 && transcript.isFetching)) {
         throw new Error(
           'The transcript changed while evidence was selected. Review the evidence again.'
         )
       }
+      if (selectedEvidence.length > 0) {
+        const ownsScope = captureScope()
+        const latest = await transcript.refetch()
+        if (!ownsScope()) throw new Error('Decision creation is no longer authorized.')
+        const source = latest.isSuccess ? latest.data?.transcript : undefined
+        if (!source ||
+          `${source.id}:${source.contentRevision}` !== createTranscriptIdentity ||
+          !selectedEvidence.every((id) => source.segments.some((segment) => segment.id === id))) {
+          throw new Error('Transcript evidence must be reviewed again before creating this decision.')
+        }
+      }
       return createDecision(meetingId, content, selectedEvidence)
     },
-    onSuccess: () => {
+    onSuccess: (_result, _variables, ownsScope) => {
+      if (!ownsScope?.()) return
+      setCreateUncertain(false)
+      setCreateReconciled(false)
       setCreating(false)
       setCreateDraft('')
       setSelectedEvidence([])
@@ -251,29 +315,64 @@ export function DecisionsPanel({
       refresh()
       toast.success('Manual confirmed decision created')
     },
-    onError: (error) => {
+    onError: (error, _variables, ownsScope) => {
+      if (!ownsScope?.()) return
       const normalized = normalizeCoreApiError(error)
-      toast.error(
-        normalized.isNetworkError
-          ? 'Decision creation outcome is uncertain'
-          : 'Unable to create decision',
-        {
-          description: normalized.isNetworkError
-            ? 'Refresh the decision list before deciding whether another attempt is needed.'
-            : normalized.message,
-        }
-      )
+      const uncertain = normalized.recoveryOutcome === 'uncertain'
+      if (uncertain) {
+        setCreateUncertain(true)
+        setCreateReconciled(false)
+        void reconcileCreation(ownsScope)
+      }
+      toast.error(uncertain ? 'Decision creation outcome is uncertain' : 'Unable to create decision', {
+        description: uncertain
+          ? 'Check the refreshed official decisions before explicitly allowing a new attempt.'
+          : normalized.message,
+      })
     },
   })
 
+  async function reconcileCreation(ownsScope = captureScope()) {
+    setReconcilingCreation(true)
+    try {
+      await queryClient.invalidateQueries({ queryKey: ['meeting-intelligence', meetingId, 'decisions'] })
+      if (!ownsScope()) return
+      await queryClient.fetchQuery(decisionsQuery(meetingId, 'CONFIRMED', 0, pageSize))
+      if (!ownsScope()) return
+      setFilter('CONFIRMED')
+      setPage(0)
+      setCreateReconciled(true)
+    } catch {
+      if (ownsScope()) {
+        setCreateReconciled(false)
+        toast.error('Could not verify official decisions. Creation remains unresolved.')
+      }
+    } finally {
+      if (ownsScope()) setReconcilingCreation(false)
+    }
+  }
+
+  const mutationPending = review.isPending || edit.isPending || create.isPending
+  useIntelligenceDraftProtection(
+    'decisions',
+    mutationPending || createUncertain ||
+      Boolean(editingSnapshot && draft !== editingSnapshot.content) ||
+      Boolean(creating && (createDraft.trim() || selectedEvidence.length))
+  )
+
   function selectFilter(next: Filter) {
+    if (mutationPending) return
     setFilter(next)
     setPage(0)
     setReviewSnapshot(null)
     setReviewConflict(null)
+    setReviewBlocked(false)
   }
 
   function openCreate() {
+    if (creating || editingSnapshot || reviewSnapshot || mutationPending) return
+    setCreateUncertain(false)
+    setCreateReconciled(false)
     setCreating(true)
     setCreateDraft('')
     setSelectedEvidence([])
@@ -295,7 +394,7 @@ export function DecisionsPanel({
             </p>
           </div>
           {canManageDecisions && (
-            <Button size='sm' variant='outline' onClick={openCreate}>
+            <Button size='sm' variant='outline' onClick={openCreate} disabled={creating || Boolean(editingSnapshot || reviewSnapshot) || mutationPending}>
               <Plus />
               Add confirmed decision
             </Button>
@@ -314,6 +413,7 @@ export function DecisionsPanel({
                 variant={filter === option ? 'default' : 'outline'}
                 role='tab'
                 aria-selected={filter === option}
+                disabled={mutationPending}
                 onClick={() => selectFilter(option)}
               >
                 {option === 'ALL' ? 'All decisions' : decisionLabel(option)}
@@ -345,16 +445,22 @@ export function DecisionsPanel({
               <DecisionCard
                 key={decision.id}
                 decision={decision}
-                canManage={canManageDecisions}
+                canManage={canManageDecisions && !creating && !mutationPending && !reviewSnapshot && (!editingSnapshot || (editBlocked && editingSnapshot.id === decision.id))}
                 selectedForReview={reviewedDecision?.id === decision.id}
-                editing={editingSnapshot?.id === decision.id}
+                editing={editingSnapshot?.id === decision.id && !editBlocked}
                 onReview={() => {
                   setReviewSnapshot(decision)
                   setReviewConflict(null)
+                  setReviewBlocked(false)
                 }}
                 onEdit={() => {
+                  if (editingSnapshot?.id === decision.id && editBlocked) {
+                    setEditConflict(decision)
+                    return
+                  }
                   setEditingSnapshot(decision)
                   setEditConflict(null)
+                  setEditBlocked(false)
                   setDraft(decision.content)
                 }}
                 onEvidenceNavigate={onEvidenceNavigate}
@@ -391,8 +497,15 @@ export function DecisionsPanel({
           <ReviewPanel
             decision={reviewedDecision}
             conflict={reviewConflict}
+            blocked={reviewBlocked || !canManageDecisions}
             confirmationBlocked={confirmationBlocked}
             pending={review.isPending}
+            evidenceSegments={reviewEvidenceMatchesCurrent && !transcript.isError ? sourceSegments.filter((segment) => reviewedDecision.evidenceSegmentIds.includes(segment.id)) : []}
+            onClose={() => {
+              setReviewSnapshot(null)
+              setReviewConflict(null)
+              setReviewBlocked(false)
+            }}
             onConfirm={() =>
               review.mutate({ decision: reviewedDecision, action: 'confirm' })
             }
@@ -400,9 +513,10 @@ export function DecisionsPanel({
               review.mutate({ decision: reviewedDecision, action: 'reject' })
             }
             onUseLatest={() => {
-              if (reviewConflict) {
+              if (reviewConflict?.status === 'PROPOSED') {
                 setReviewSnapshot(reviewConflict)
                 setReviewConflict(null)
+                setReviewBlocked(false)
               }
             }}
             onEvidenceNavigate={onEvidenceNavigate}
@@ -411,26 +525,63 @@ export function DecisionsPanel({
 
         {editingSnapshot && (
           <EditDecisionPanel
-            decision={editConflict ?? editingSnapshot}
+            decision={editingSnapshot}
             draft={draft}
             pending={edit.isPending}
+            blocked={editBlocked || !canManageDecisions}
             conflict={editConflict}
             onDraftChange={setDraft}
             onSubmit={() => edit.mutate()}
             onCancel={() => {
+              if (edit.isPending) return
+              if (draft !== editingSnapshot.content && !window.confirm('Discard unsaved decision changes?')) return
               setEditingSnapshot(null)
               setEditConflict(null)
+              setEditBlocked(false)
             }}
             onUseLatest={() => {
-              if (editConflict) {
+              if (editConflict?.status === 'CONFIRMED') {
                 setEditingSnapshot(editConflict)
                 setEditConflict(null)
+                setEditBlocked(false)
               }
             }}
           />
         )}
 
         {creating && (
+          <>
+          {createUncertain && (
+            <div role='alert' className='space-y-2 rounded-md border border-amber-300/70 p-3 text-sm'>
+              <p>The previous request may have created an official decision. Check the refreshed confirmed decisions before trying again.</p>
+              <Button size='sm' variant='outline' disabled={reconcilingCreation} onClick={() => void reconcileCreation()}>Refresh confirmed decisions</Button>
+              {createReconciled && (
+                <>
+                <Button size='sm' variant='outline' onClick={() => {
+                  setCreateUncertain(false)
+                  setCreateReconciled(false)
+                }}>I checked the records — allow a new attempt</Button>
+                <Button size='sm' variant='ghost' onClick={() => {
+                  setCreateUncertain(false)
+                  setCreateReconciled(false)
+                  setCreating(false)
+                  setCreateDraft('')
+                  setSelectedEvidence([])
+                  setCreateTranscriptIdentity(null)
+                }}>Close without retry</Button>
+                </>
+              )}
+            </div>
+          )}
+          {evidenceNeedsReview && (
+            <div role='alert' className='space-y-2 rounded-md border border-amber-300/70 p-3 text-sm'>
+              <p>The transcript changed. Clear outdated evidence and review the current transcript before selecting again.</p>
+              <Button size='sm' variant='outline' disabled={create.isPending || createUncertain} onClick={() => {
+                setSelectedEvidence([])
+                setCreateTranscriptIdentity(null)
+              }}>Clear outdated evidence</Button>
+            </div>
+          )}
           <CreateDecisionPanel
             content={createDraft}
             evidence={selectedEvidence}
@@ -438,390 +589,35 @@ export function DecisionsPanel({
             transcriptPending={transcript.isPending}
             transcriptError={transcript.isError ? transcript.error : null}
             pending={create.isPending}
+            blocked={createUncertain || evidenceNeedsReview || !canManageDecisions || (selectedEvidence.length > 0 && transcript.isFetching)}
             onContentChange={setCreateDraft}
-            onEvidenceToggle={(segmentId) =>
-              setSelectedEvidence((current) => {
-                if (current.includes(segmentId)) {
-                  return current.filter((id) => id !== segmentId)
-                }
-                if (current.length >= 50) return current
-                if (!createTranscriptIdentity && transcriptIdentity) {
-                  setCreateTranscriptIdentity(transcriptIdentity)
-                }
-                return [...current, segmentId]
-              })
-            }
+            onEvidenceToggle={(segmentId) => {
+              if (create.isPending || createUncertain || evidenceNeedsReview || !transcriptIdentity) return
+              const next = selectedEvidence.includes(segmentId)
+                ? selectedEvidence.filter((id) => id !== segmentId)
+                : selectedEvidence.length < 50
+                  ? [...selectedEvidence, segmentId]
+                  : selectedEvidence
+              setSelectedEvidence(next)
+              setCreateTranscriptIdentity(next.length ? transcriptIdentity : null)
+            }}
             onSubmit={(event) => {
               event.preventDefault()
-              create.mutate()
+              if (!createUncertain && !evidenceNeedsReview && !create.isPending) create.mutate()
             }}
             onCancel={() => {
+              if (create.isPending || reconcilingCreation || createUncertain) return
+              if ((createDraft.trim() || selectedEvidence.length) && !window.confirm('Discard unsaved decision content and evidence?')) return
               setCreating(false)
               setSelectedEvidence([])
               setCreateTranscriptIdentity(null)
             }}
             segments={sourceSegments}
           />
+          </>
         )}
       </CardContent>
     </Card>
   )
 }
 
-function statusVariant(status: DecisionStatus) {
-  return status === 'CONFIRMED'
-    ? 'secondary'
-    : status === 'REJECTED'
-      ? 'destructive'
-      : 'outline'
-}
-
-function DecisionCard({
-  decision,
-  canManage,
-  selectedForReview,
-  editing,
-  onReview,
-  onEdit,
-  onEvidenceNavigate,
-}: {
-  decision: Decision
-  canManage: boolean
-  selectedForReview: boolean
-  editing: boolean
-  onReview: () => void
-  onEdit: () => void
-  onEvidenceNavigate?: (transcriptId: string, segmentId: string) => void
-}) {
-  return (
-    <article
-      className={`space-y-3 rounded-lg border p-4 ${
-        selectedForReview ? 'border-primary bg-primary/5' : ''
-      }`}
-    >
-      <div className='flex flex-wrap items-center gap-2'>
-        <Badge variant={statusVariant(decision.status)}>
-          {decision.status}
-        </Badge>
-        <Badge variant='outline'>{decision.sourceType}</Badge>
-        <span className='text-xs text-muted-foreground'>
-          Created {formatDate(decision.createdAt)}
-        </span>
-        {decision.isStale && (
-          <Badge variant='destructive'>Stale evidence</Badge>
-        )}
-      </div>
-      <p className='text-sm leading-7 whitespace-pre-wrap'>
-        {decision.content}
-      </p>
-      <div className='flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground'>
-        <span>{decision.evidenceSegmentIds.length} evidence reference(s)</span>
-        {decision.contentRevision !== null && (
-          <span>Transcript revision {decision.contentRevision}</span>
-        )}
-        {decision.aiUncertainty && (
-          <span>AI uncertainty: {decision.aiUncertainty}</span>
-        )}
-        {decision.aiProducer?.model && (
-          <span>
-            Producer: {decision.aiProducer.provider ?? 'AI'} ·{' '}
-            {decision.aiProducer.model}
-          </span>
-        )}
-      </div>
-      {decision.aiWarnings?.map((warning, index) => (
-        <p key={index} className='flex gap-2 text-sm text-amber-700'>
-          <AlertTriangle className='mt-0.5 size-4 shrink-0' />
-          {warning}
-        </p>
-      ))}
-      {decision.transcriptId && decision.evidenceSegmentIds.length > 0 && (
-        <div className='flex flex-wrap gap-2'>
-          {decision.evidenceSegmentIds.map((segmentId, index) =>
-            onEvidenceNavigate ? (
-              <Button
-                key={segmentId}
-                size='sm'
-                variant='link'
-                className='h-auto px-0 text-xs'
-                onClick={() =>
-                  onEvidenceNavigate(decision.transcriptId!, segmentId)
-                }
-              >
-                Evidence {index + 1} <ExternalLink />
-              </Button>
-            ) : (
-              <span key={segmentId} className='text-xs text-muted-foreground'>
-                Evidence {index + 1}
-              </span>
-            )
-          )}
-        </div>
-      )}
-      {canManage && (
-        <div className='flex flex-wrap gap-2'>
-          {decision.status === 'PROPOSED' && (
-            <Button size='sm' variant='outline' onClick={onReview}>
-              Review proposal
-            </Button>
-          )}
-          {decision.status === 'CONFIRMED' && !editing && (
-            <Button size='sm' variant='ghost' onClick={onEdit}>
-              Correct content
-            </Button>
-          )}
-        </div>
-      )}
-    </article>
-  )
-}
-
-function ReviewPanel({
-  decision,
-  conflict,
-  confirmationBlocked,
-  pending,
-  onConfirm,
-  onReject,
-  onUseLatest,
-  onEvidenceNavigate,
-}: {
-  decision: Decision
-  conflict: Decision | null
-  confirmationBlocked: boolean
-  pending: boolean
-  onConfirm: () => void
-  onReject: () => void
-  onUseLatest: () => void
-  onEvidenceNavigate?: (transcriptId: string, segmentId: string) => void
-}) {
-  return (
-    <section className='space-y-3 rounded-lg border border-primary/40 bg-primary/5 p-4'>
-      <div>
-        <h3 className='font-semibold'>Proposal review</h3>
-        <p className='text-sm text-muted-foreground'>
-          Confirming makes this an official organizational decision. Rejecting
-          preserves the AI proposal as historical record.
-        </p>
-      </div>
-      {conflict && (
-        <div
-          role='alert'
-          className='rounded-md border border-amber-300/70 p-3 text-sm'
-        >
-          This proposal changed while it was under review. No action was
-          replayed. Review the latest content before continuing.
-          <div className='mt-2'>
-            <Button size='sm' variant='outline' onClick={onUseLatest}>
-              Use latest review snapshot
-            </Button>
-          </div>
-        </div>
-      )}
-      {confirmationBlocked && (
-        <p className='flex gap-2 text-sm text-amber-700'>
-          <AlertTriangle className='mt-0.5 size-4 shrink-0' />
-          Confirmation is unavailable because the known evidence is missing,
-          stale, or no longer matches the current transcript. Rejection remains
-          available.
-        </p>
-      )}
-      <div className='flex flex-wrap gap-2'>
-        <Button
-          disabled={pending || confirmationBlocked || Boolean(conflict)}
-          onClick={onConfirm}
-        >
-          Confirm decision
-        </Button>
-        <Button
-          variant='outline'
-          disabled={pending || Boolean(conflict)}
-          onClick={onReject}
-        >
-          Reject proposal
-        </Button>
-        {decision.transcriptId &&
-          decision.evidenceSegmentIds.map((segmentId, index) =>
-            onEvidenceNavigate ? (
-              <Button
-                key={segmentId}
-                variant='link'
-                size='sm'
-                className='h-auto'
-                onClick={() =>
-                  onEvidenceNavigate(decision.transcriptId!, segmentId)
-                }
-              >
-                Open evidence {index + 1}
-              </Button>
-            ) : null
-          )}
-      </div>
-    </section>
-  )
-}
-
-function EditDecisionPanel({
-  decision,
-  draft,
-  pending,
-  conflict,
-  onDraftChange,
-  onSubmit,
-  onCancel,
-  onUseLatest,
-}: {
-  decision: Decision
-  draft: string
-  pending: boolean
-  conflict: Decision | null
-  onDraftChange: (value: string) => void
-  onSubmit: () => void
-  onCancel: () => void
-  onUseLatest: () => void
-}) {
-  return (
-    <form
-      className='space-y-3 rounded-lg border border-primary/40 bg-primary/5 p-4'
-      onSubmit={(event) => {
-        event.preventDefault()
-        onSubmit()
-      }}
-    >
-      <div>
-        <h3 className='font-semibold'>Correct confirmed decision</h3>
-        <p className='text-sm text-muted-foreground'>
-          Only content changes are submitted. Status, evidence, provenance, and
-          meeting ownership remain server-controlled.
-        </p>
-      </div>
-      {conflict && (
-        <div
-          role='alert'
-          className='rounded-md border border-amber-300/70 p-3 text-sm'
-        >
-          The confirmed decision changed before this correction was saved.
-          Review the latest content before using its concurrency token.
-          <Button
-            className='mt-2'
-            size='sm'
-            variant='outline'
-            onClick={onUseLatest}
-          >
-            Use latest as baseline
-          </Button>
-        </div>
-      )}
-      <Textarea
-        aria-label='Confirmed decision content'
-        rows={4}
-        maxLength={5_000}
-        value={draft}
-        onChange={(event) => onDraftChange(event.target.value)}
-      />
-      <div className='flex flex-wrap justify-end gap-2'>
-        <Button type='submit' disabled={pending || !draft.trim()}>
-          {pending ? 'Saving…' : 'Save correction'}
-        </Button>
-        <Button type='button' variant='outline' onClick={onCancel}>
-          Cancel
-        </Button>
-      </div>
-      <p className='text-xs text-muted-foreground'>
-        Editing decision v{decision.version} · {decision.etag}
-      </p>
-    </form>
-  )
-}
-
-function CreateDecisionPanel({
-  content,
-  evidence,
-  transcript,
-  transcriptPending,
-  transcriptError,
-  pending,
-  onContentChange,
-  onEvidenceToggle,
-  onSubmit,
-  onCancel,
-  segments,
-}: {
-  content: string
-  evidence: string[]
-  transcript: {
-    id: string
-    contentRevision: number
-    segments: Array<{ id: string; ordinal: number; text: string }>
-  } | null
-  transcriptPending: boolean
-  transcriptError: unknown
-  pending: boolean
-  onContentChange: (value: string) => void
-  onEvidenceToggle: (segmentId: string) => void
-  onSubmit: (event: FormEvent) => void
-  onCancel: () => void
-  segments: Array<{ id: string; ordinal: number; text: string }>
-}) {
-  return (
-    <form
-      className='space-y-4 rounded-lg border border-primary/40 bg-primary/5 p-4'
-      onSubmit={onSubmit}
-    >
-      <div>
-        <h3 className='font-semibold'>New confirmed decision</h3>
-        <p className='text-sm text-muted-foreground'>
-          This creates an official human decision. Supporting evidence is
-          optional and must come from the current authorized transcript.
-        </p>
-      </div>
-      <Textarea
-        aria-label='New decision content'
-        rows={4}
-        maxLength={5_000}
-        value={content}
-        onChange={(event) => onContentChange(event.target.value)}
-      />
-      {transcriptPending ? (
-        <RequestLoading label='Loading current transcript evidence…' />
-      ) : transcriptError ? (
-        <RequestError error={transcriptError} />
-      ) : transcript ? (
-        <fieldset className='space-y-2'>
-          <legend className='text-sm font-medium'>
-            Supporting evidence ({evidence.length} / 50)
-          </legend>
-          <div className='max-h-64 space-y-2 overflow-auto rounded-md border bg-background p-3'>
-            {segments.length ? (
-              segments.map((segment) => (
-                <label key={segment.id} className='flex gap-2 text-sm'>
-                  <input
-                    type='checkbox'
-                    checked={evidence.includes(segment.id)}
-                    onChange={() => onEvidenceToggle(segment.id)}
-                  />
-                  <span>
-                    <span className='font-medium'>#{segment.ordinal + 1}</span>{' '}
-                    {segment.text}
-                  </span>
-                </label>
-              ))
-            ) : (
-              <span className='text-sm text-muted-foreground'>
-                No transcript segments are available for selection.
-              </span>
-            )}
-          </div>
-        </fieldset>
-      ) : null}
-      <div className='flex flex-wrap justify-end gap-2'>
-        <Button type='submit' disabled={pending || !content.trim()}>
-          {pending ? 'Creating…' : 'Create confirmed decision'}
-        </Button>
-        <Button type='button' variant='outline' onClick={onCancel}>
-          Cancel
-        </Button>
-      </div>
-    </form>
-  )
-}

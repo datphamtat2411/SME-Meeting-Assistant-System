@@ -1,6 +1,6 @@
 import { QueryClient } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { coreApi } from '@/lib/core-api'
+import { CoreApiError, coreApi } from '@/lib/core-api'
 import {
   editSummary,
   requestSummaryRegeneration,
@@ -122,6 +122,22 @@ describe('Summary API contracts', () => {
       { params: { page: 2, size: 20 }, signal: expect.any(AbortSignal) }
     )
     expect(query.queryKey).toContainEqual({ page: 2, size: 20 })
+  })
+
+  it('classifies a real Core network failure as uncertain without losing the intent', async () => {
+    const failure = new CoreApiError({ message: 'Connection lost', kind: 'network' })
+    const post = vi.spyOn(coreApi, 'post').mockRejectedValue(failure)
+    await expect(requestSummaryRegeneration(meetingId, 'original-key')).rejects.toMatchObject({
+      recoveryOutcome: 'uncertain',
+      cause: failure,
+    })
+    expect(post).toHaveBeenCalledTimes(1)
+  })
+
+  it('preserves a definitive admission rejection', async () => {
+    const failure = new CoreApiError({ message: 'Unavailable', kind: 'server', status: 503 })
+    vi.spyOn(coreApi, 'post').mockRejectedValue(failure)
+    await expect(requestSummaryRegeneration(meetingId, 'original-key')).rejects.toBe(failure)
   })
 
   it('retains one idempotency key while resolving exact regeneration admission', async () => {

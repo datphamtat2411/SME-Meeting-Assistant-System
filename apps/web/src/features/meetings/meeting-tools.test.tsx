@@ -178,6 +178,13 @@ function installReadOnlyCore() {
           kind: 'http',
         })
       }
+      if (url.endsWith('/summary')) {
+        throw new CoreApiError({
+          message: 'Summary is not ready.',
+          status: 404,
+          kind: 'http',
+        })
+      }
       throw new Error(`Unexpected GET with ETag ${url}`)
     })
   const getWithMetaSpy = vi

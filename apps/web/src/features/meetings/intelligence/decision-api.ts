@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { queryOptions } from '@tanstack/react-query'
-import { coreApi } from '@/lib/core-api'
+import { CoreApiError, coreApi, normalizeCoreApiError } from '@/lib/core-api'
 import {
   paginationParams,
   validatedPageInfo,
@@ -85,17 +85,35 @@ export function decisionsQuery(
 
 const mutationResponse = (value: unknown) => decisionSchema.parse(value)
 
-export function createDecision(
+export async function createDecision(
   meetingId: string,
   content: string,
   evidenceSegmentIds: string[] = []
 ) {
-  return coreApi
-    .post<unknown>(path(meetingId), {
+  try {
+    const response = await coreApi.post<unknown>(path(meetingId), {
       content,
       evidenceSegmentIds: [...new Set(evidenceSegmentIds)],
     })
-    .then(mutationResponse)
+    return mutationResponse(response)
+  } catch (error) {
+    const failure = normalizeCoreApiError(error)
+    if (
+      failure.isNetworkError ||
+      failure.isServerError ||
+      failure.kind === 'malformed' ||
+      failure.recoveryOutcome === 'uncertain'
+    ) {
+      throw new CoreApiError({
+        message: 'Decision creation could not be verified. Review official decisions before retrying.',
+        kind: failure.kind,
+        code: 'DECISION_CREATION_UNCERTAIN',
+        recoveryOutcome: 'uncertain',
+        cause: error,
+      })
+    }
+    throw error
+  }
 }
 
 export function editDecision(decision: Decision, content: string) {

@@ -77,7 +77,8 @@ vi.mock('./media-api', () => ({
   }),
 }))
 
-vi.mock('./processing-api', () => ({
+vi.mock('./processing-api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./processing-api')>()),
   processingJobsQuery: () => ({
     queryKey: ['processing-jobs', meetingId],
     queryFn: async () => apiMocks.jobs,

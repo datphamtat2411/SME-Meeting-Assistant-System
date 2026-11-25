@@ -181,7 +181,9 @@ function ProcessingPanelContent({
           ? 'Processing job queued'
           : operation.kind === 'reprocessing'
             ? 'Reprocessing job queued'
-            : 'Processing retry accepted'
+            : operation.kind === 'summary-regeneration'
+              ? 'Summary regeneration accepted'
+              : 'Processing retry accepted'
       )
     } catch (error) {
       const uncertain = isUncertainProcessingError(error)
@@ -228,7 +230,9 @@ function ProcessingPanelContent({
                   ? 'Processing admission'
                   : operation.kind === 'reprocessing'
                     ? 'Reprocessing'
-                    : 'Processing retry'
+                    : operation.kind === 'summary-regeneration'
+                      ? 'Summary regeneration'
+                      : 'Processing retry'
               return (
                 <div
                   key={operation.logicalIdentity}

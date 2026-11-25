@@ -415,6 +415,55 @@ describe('meeting-scoped processing command owner', () => {
       .toHaveTextContent('summary-pending')
   })
 
+  it('reattaches to a persisted admitted job without replaying its request', async () => {
+    const actorId = fullAuthorization.identityId!
+    const storageKey = `sme:summary-regeneration:${meetingId}:${actorId}`
+    const admitted = processingJob({
+      status: 'RUNNING',
+      jobType: 'DERIVED_STAGE_PROCESSING',
+      currentStage: 'GENERATING_SUMMARY',
+      retryable: false,
+    })
+    processingMocks.jobs = [admitted]
+    sessionStorage.setItem(
+      storageKey,
+      JSON.stringify({ idempotencyKey: 'original-key', jobId: admitted.id })
+    )
+    function RestoredJob() {
+      const processing = useProcessingCoordinator({
+        meetingId,
+        authorization: fullAuthorization,
+      })
+      return (
+        <>
+          <output data-testid='restored-job'>
+            {processing.summaryRegenerationJob?.id}
+            {processing.isOperationPending('summary-regeneration') ? ' pending' : ''}
+          </output>
+          <button type='button' onClick={() => void processing.regenerateSummary()}>
+            Try regeneration
+          </button>
+        </>
+      )
+    }
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    try {
+      const screen = await render(
+        <QueryClientProvider client={client}>
+          <RestoredJob />
+        </QueryClientProvider>
+      )
+      await expect.element(screen.getByTestId('restored-job')).toHaveTextContent(`${admitted.id} pending`)
+      await userEvent.click(screen.getByRole('button', { name: 'Try regeneration' }))
+      expect(processingMocks.requestSummaryRegeneration).not.toHaveBeenCalled()
+      expect(sessionStorage.getItem(storageKey)).toContain('original-key')
+    } finally {
+      sessionStorage.removeItem(storageKey)
+    }
+  })
+
   it('does not replay a known active Summary Regeneration job', async () => {
     const admitted = processingJob({
       id: failedJobId,

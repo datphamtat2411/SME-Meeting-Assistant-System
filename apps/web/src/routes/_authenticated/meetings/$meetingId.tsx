@@ -45,12 +45,18 @@ function MeetingRoute() {
     })
   }
 
-  function navigateToEvidence(transcriptId: string, segmentId: string) {
+  function navigateToEvidence(
+    transcriptId: string,
+    segmentId: string,
+    contentRevision?: number
+  ) {
     void navigate({
       search: (previous) => ({
         ...updateMeetingWorkspaceSearch(previous, 'transcript'),
         evidenceTranscriptId: transcriptId,
         evidenceSegmentId: segmentId,
+        evidenceContentRevision: contentRevision,
+        evidenceReferenceIssue: undefined,
       }),
     })
   }
@@ -76,6 +82,7 @@ function MeetingRoute() {
               }
               evidenceTranscriptId={search.evidenceTranscriptId}
               evidenceSegmentId={search.evidenceSegmentId}
+              evidenceContentRevision={search.evidenceContentRevision}
               evidenceReferenceIssue={search.evidenceReferenceIssue}
               onSectionChange={changeSection}
               onEvidenceNavigate={navigateToEvidence}
@@ -94,11 +101,13 @@ function MeetingNavigationGuard() {
     enableBeforeUnload: () =>
       session.hasUnsavedResources ||
       session.hasUnsavedTranscriptReview ||
+      session.hasUnsavedIntelligence ||
       gate.hasUnresolvedOperation,
     shouldBlockFn: ({ next }) => {
       if (
         !session.hasUnsavedResources &&
         !session.hasUnsavedTranscriptReview &&
+        !session.hasUnsavedIntelligence &&
         !gate.hasUnresolvedOperation
       ) {
         return false
@@ -142,6 +151,23 @@ function MeetingNavigationGuard() {
       ) {
         return !window.confirm(
           'Unsaved transcript review work may be lost. Leave anyway?'
+        )
+      }
+      const remainsInIntelligence =
+        sameMeeting &&
+        next.routeId === '/_authenticated/meetings/$meetingId' &&
+        typeof next.search === 'object' &&
+        next.search !== null &&
+        'section' in next.search &&
+        next.search.section === 'intelligence' &&
+        !('evidenceSegmentId' in next.search && next.search.evidenceSegmentId)
+      if (
+        session.hasUnsavedIntelligence &&
+        !remainsInIntelligence &&
+        session.authorization?.capabilities.authorizationResolution !== 'denied'
+      ) {
+        return !window.confirm(
+          'Unsaved meeting intelligence work may be lost. Leave anyway?'
         )
       }
       if (sameMeeting || !session.hasUnsavedResources) return false

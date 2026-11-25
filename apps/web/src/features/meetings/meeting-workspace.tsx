@@ -103,6 +103,7 @@ export function MeetingWorkspacePage({
   section = 'overview',
   evidenceTranscriptId,
   evidenceSegmentId,
+  evidenceContentRevision,
   evidenceReferenceIssue,
   onSectionChange,
   onEvidenceNavigate,
@@ -111,12 +112,17 @@ export function MeetingWorkspacePage({
   section?: MeetingWorkspaceSection
   evidenceTranscriptId?: string
   evidenceSegmentId?: string
+  evidenceContentRevision?: number
   evidenceReferenceIssue?: EvidenceReferenceIssue
   onSectionChange?: (
     section: MeetingWorkspaceSection,
     replace?: boolean
   ) => void
-  onEvidenceNavigate?: (transcriptId: string, segmentId: string) => void
+  onEvidenceNavigate?: (
+    transcriptId: string,
+    segmentId: string,
+    contentRevision?: number
+  ) => void
 }) {
   return (
     <MeetingSessionBoundary meetingId={meetingId}>
@@ -125,6 +131,7 @@ export function MeetingWorkspacePage({
         section={section}
         evidenceTranscriptId={evidenceTranscriptId}
         evidenceSegmentId={evidenceSegmentId}
+        evidenceContentRevision={evidenceContentRevision}
         evidenceReferenceIssue={evidenceReferenceIssue}
         onSectionChange={onSectionChange}
         onEvidenceNavigate={onEvidenceNavigate}
@@ -138,6 +145,7 @@ function MeetingWorkspacePageContent({
   section = 'overview',
   evidenceTranscriptId,
   evidenceSegmentId,
+  evidenceContentRevision,
   evidenceReferenceIssue,
   onSectionChange,
   onEvidenceNavigate,
@@ -146,12 +154,17 @@ function MeetingWorkspacePageContent({
   section?: MeetingWorkspaceSection
   evidenceTranscriptId?: string
   evidenceSegmentId?: string
+  evidenceContentRevision?: number
   evidenceReferenceIssue?: EvidenceReferenceIssue
   onSectionChange?: (
     section: MeetingWorkspaceSection,
     replace?: boolean
   ) => void
-  onEvidenceNavigate?: (transcriptId: string, segmentId: string) => void
+  onEvidenceNavigate?: (
+    transcriptId: string,
+    segmentId: string,
+    contentRevision?: number
+  ) => void
 }) {
   const sharedAuthorization = useOptionalMeetingAuthorization()
   const verification = useCurrentUserVerification()
@@ -176,8 +189,10 @@ function MeetingWorkspacePageContent({
               section={section}
               evidenceTranscriptId={evidenceTranscriptId}
               evidenceSegmentId={evidenceSegmentId}
+              evidenceContentRevision={evidenceContentRevision}
               evidenceReferenceIssue={evidenceReferenceIssue}
               onSectionChange={onSectionChange}
+              onEvidenceNavigate={onEvidenceNavigate}
             />
           ) : !sharedAuthorization.identity ||
             !sharedAuthorization.canReadProtectedData ? (
@@ -191,8 +206,10 @@ function MeetingWorkspacePageContent({
               section={section}
               evidenceTranscriptId={evidenceTranscriptId}
               evidenceSegmentId={evidenceSegmentId}
+              evidenceContentRevision={evidenceContentRevision}
               evidenceReferenceIssue={evidenceReferenceIssue}
               onSectionChange={onSectionChange}
+              onEvidenceNavigate={onEvidenceNavigate}
             />
           )}
         </Main>
@@ -227,6 +244,7 @@ function MeetingWorkspacePageContent({
             section={section}
             evidenceTranscriptId={evidenceTranscriptId}
             evidenceSegmentId={evidenceSegmentId}
+            evidenceContentRevision={evidenceContentRevision}
             evidenceReferenceIssue={evidenceReferenceIssue}
             onSectionChange={onSectionChange}
             onEvidenceNavigate={onEvidenceNavigate}
@@ -248,6 +266,7 @@ function SharedMeetingWorkspaceIdentityBoundary({
   section,
   evidenceTranscriptId,
   evidenceSegmentId,
+  evidenceContentRevision,
   evidenceReferenceIssue,
   onSectionChange,
   onEvidenceNavigate,
@@ -256,12 +275,17 @@ function SharedMeetingWorkspaceIdentityBoundary({
   section: MeetingWorkspaceSection
   evidenceTranscriptId?: string
   evidenceSegmentId?: string
+  evidenceContentRevision?: number
   evidenceReferenceIssue?: EvidenceReferenceIssue
   onSectionChange?: (
     section: MeetingWorkspaceSection,
     replace?: boolean
   ) => void
-  onEvidenceNavigate?: (transcriptId: string, segmentId: string) => void
+  onEvidenceNavigate?: (
+    transcriptId: string,
+    segmentId: string,
+    contentRevision?: number
+  ) => void
 }) {
   const shared = useOptionalMeetingAuthorization()
   const queryClient = useQueryClient()
@@ -343,6 +367,7 @@ function SharedMeetingWorkspaceIdentityBoundary({
         section={section}
         evidenceTranscriptId={evidenceTranscriptId}
         evidenceSegmentId={evidenceSegmentId}
+        evidenceContentRevision={evidenceContentRevision}
         evidenceReferenceIssue={evidenceReferenceIssue}
         onSectionChange={onSectionChange}
         onEvidenceNavigate={onEvidenceNavigate}
@@ -385,6 +410,7 @@ function MeetingWorkspaceIdentityBoundary({
   section,
   evidenceTranscriptId,
   evidenceSegmentId,
+  evidenceContentRevision,
   evidenceReferenceIssue,
   onSectionChange,
   onEvidenceNavigate,
@@ -395,12 +421,17 @@ function MeetingWorkspaceIdentityBoundary({
   section: MeetingWorkspaceSection
   evidenceTranscriptId?: string
   evidenceSegmentId?: string
+  evidenceContentRevision?: number
   evidenceReferenceIssue?: EvidenceReferenceIssue
   onSectionChange?: (
     section: MeetingWorkspaceSection,
     replace?: boolean
   ) => void
-  onEvidenceNavigate?: (transcriptId: string, segmentId: string) => void
+  onEvidenceNavigate?: (
+    transcriptId: string,
+    segmentId: string,
+    contentRevision?: number
+  ) => void
   identityCanReadProtectedData: boolean
 }) {
   const queryClient = useQueryClient()
@@ -532,6 +563,7 @@ function MeetingWorkspaceIdentityBoundary({
         section={section}
         evidenceTranscriptId={evidenceTranscriptId}
         evidenceSegmentId={evidenceSegmentId}
+        evidenceContentRevision={evidenceContentRevision}
         evidenceReferenceIssue={evidenceReferenceIssue}
         onSectionChange={onSectionChange}
         onEvidenceNavigate={onEvidenceNavigate}
@@ -660,6 +692,7 @@ function MeetingWorkspace({
   section,
   evidenceTranscriptId,
   evidenceSegmentId,
+  evidenceContentRevision,
   evidenceReferenceIssue,
   onSectionChange,
   onEvidenceNavigate,
@@ -675,12 +708,17 @@ function MeetingWorkspace({
   section: MeetingWorkspaceSection
   evidenceTranscriptId?: string
   evidenceSegmentId?: string
+  evidenceContentRevision?: number
   evidenceReferenceIssue?: EvidenceReferenceIssue
   onSectionChange?: (
     section: MeetingWorkspaceSection,
     replace?: boolean
   ) => void
-  onEvidenceNavigate?: (transcriptId: string, segmentId: string) => void
+  onEvidenceNavigate?: (
+    transcriptId: string,
+    segmentId: string,
+    contentRevision?: number
+  ) => void
   participants: ParticipantState
   room: LookupState<RoomFilterOption>
   organizer: LookupState<OrganizerFilterOption>
@@ -913,6 +951,7 @@ function MeetingWorkspace({
                     section={workspaceSection}
                     evidenceTranscriptId={evidenceTranscriptId}
                     evidenceSegmentId={evidenceSegmentId}
+                    evidenceContentRevision={evidenceContentRevision}
                     evidenceReferenceIssue={evidenceReferenceIssue}
                     onSectionChange={navigateToSection}
                     onEvidenceNavigate={onEvidenceNavigate}

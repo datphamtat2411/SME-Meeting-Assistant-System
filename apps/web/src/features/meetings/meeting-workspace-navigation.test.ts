@@ -31,6 +31,7 @@ describe('meeting workspace navigation state', () => {
       section: undefined,
       evidenceTranscriptId: undefined,
       evidenceSegmentId: undefined,
+      evidenceContentRevision: undefined,
       evidenceReferenceIssue: undefined,
     })
     expect(
@@ -76,6 +77,24 @@ describe('meeting workspace navigation state', () => {
       evidenceSegmentId: segmentId,
       evidenceReferenceIssue: 'malformed',
     })
+  })
+
+  it('preserves and validates revision-bound evidence links', () => {
+    const evidence = {
+      evidenceTranscriptId: '11111111-1111-4111-8111-111111111111',
+      evidenceSegmentId: '22222222-2222-4222-8222-222222222222',
+    }
+    const parsed = normalizeMeetingWorkspaceSearch({
+      ...evidence,
+      evidenceContentRevision: 7,
+    })
+    expect(parsed.evidenceContentRevision).toBe(7)
+    expect(parsed.evidenceReferenceIssue).toBeUndefined()
+    expect(normalizeMeetingWorkspaceSearch({
+      ...evidence,
+      evidenceContentRevision: -1,
+    }).evidenceReferenceIssue).toBe('malformed')
+    expect(updateMeetingWorkspaceSearch(parsed, 'intelligence').evidenceContentRevision).toBeUndefined()
   })
 
   it('preserves unrelated router search state while changing the workspace section', () => {

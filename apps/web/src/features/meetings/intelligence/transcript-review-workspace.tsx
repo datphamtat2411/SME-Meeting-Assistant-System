@@ -250,6 +250,7 @@ export function TranscriptReviewWorkspace({
   canReadMedia,
   evidenceTranscriptId,
   evidenceSegmentId,
+  evidenceContentRevision,
   evidenceReferenceIssue,
 }: {
   meetingId: string
@@ -259,6 +260,7 @@ export function TranscriptReviewWorkspace({
   canReadMedia: boolean
   evidenceTranscriptId?: string
   evidenceSegmentId?: string
+  evidenceContentRevision?: number
   evidenceReferenceIssue?: EvidenceReferenceIssue
 }) {
   const authorization = useOptionalMeetingAuthorization()
@@ -277,6 +279,7 @@ export function TranscriptReviewWorkspace({
         key={scopeKey}
         evidenceTranscriptId={evidenceTranscriptId}
         evidenceSegmentId={evidenceSegmentId}
+        evidenceContentRevision={evidenceContentRevision}
         evidenceReferenceIssue={evidenceReferenceIssue}
         meetingId={meetingId}
         canReadMeetingContent={canReadMeetingContent}
@@ -294,6 +297,7 @@ function TranscriptReviewWorkspaceContent({
   canMapSpeakers,
   evidenceTranscriptId,
   evidenceSegmentId,
+  evidenceContentRevision,
   evidenceReferenceIssue,
 }: {
   meetingId: string
@@ -302,6 +306,7 @@ function TranscriptReviewWorkspaceContent({
   canMapSpeakers: boolean
   evidenceTranscriptId?: string
   evidenceSegmentId?: string
+  evidenceContentRevision?: number
   evidenceReferenceIssue?: EvidenceReferenceIssue
 }) {
   const queryClient = useQueryClient()
@@ -835,10 +840,13 @@ function TranscriptReviewWorkspaceContent({
   }, [activeSegmentId, editingSegmentId, followPlayback, mappingDraft])
 
   const requestedEvidence =
+    !evidenceReferenceIssue &&
     evidenceTranscriptId === transcriptValue?.id &&
+    (evidenceContentRevision === undefined ||
+      evidenceContentRevision === transcriptValue?.contentRevision) &&
     evidenceSegmentId &&
     orderedSegments.some((segment) => segment.id === evidenceSegmentId)
-      ? `${evidenceTranscriptId}:${evidenceSegmentId}`
+      ? `${evidenceTranscriptId}:${evidenceSegmentId}:${evidenceContentRevision ?? 'current'}`
       : null
   const [handledEvidence, setHandledEvidence] = useState<string | null>(null)
   if (requestedEvidence !== handledEvidence) {
@@ -1200,6 +1208,15 @@ function TranscriptReviewWorkspaceContent({
                 )) && (
                 <p role='status' className='text-sm text-muted-foreground'>
                   The requested evidence is not part of the current transcript.
+                </p>
+              )}
+            {evidenceSegmentId && evidenceTranscriptId === transcriptValue.id &&
+              evidenceContentRevision !== undefined &&
+              evidenceContentRevision !== transcriptValue.contentRevision && (
+                <p role='status' className='text-sm text-muted-foreground'>
+                  The cited evidence belongs to transcript revision {evidenceContentRevision}.
+                  The current transcript is revision {transcriptValue.contentRevision}.
+                  Its content is not the original cited evidence.
                 </p>
               )}
             {evidenceReferenceIssue && (

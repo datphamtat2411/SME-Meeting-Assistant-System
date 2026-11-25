@@ -107,6 +107,8 @@ export type MeetingSessionContextValue = {
   selectedProcessingJobId: string | null
   hasUnsavedResources: boolean
   hasUnsavedTranscriptReview: boolean
+  hasUnsavedIntelligence: boolean
+  setIntelligenceDraftDirty: (feature: 'summary' | 'decisions', dirty: boolean) => void
   setTranscriptReviewDirty: (dirty: boolean) => void
   updateFallbackCapabilities: (
     capabilities: Partial<FallbackCapabilities>

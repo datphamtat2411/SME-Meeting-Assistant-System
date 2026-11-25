@@ -27,6 +27,7 @@ export function MeetingTools({
   section,
   evidenceTranscriptId,
   evidenceSegmentId,
+  evidenceContentRevision,
   evidenceReferenceIssue,
   onSectionChange,
   onEvidenceNavigate,
@@ -35,12 +36,17 @@ export function MeetingTools({
   section: Exclude<MeetingWorkspaceSection, 'overview'>
   evidenceTranscriptId?: string
   evidenceSegmentId?: string
+  evidenceContentRevision?: number
   evidenceReferenceIssue?: EvidenceReferenceIssue
   onSectionChange?: (
     section: MeetingWorkspaceSection,
     replace?: boolean
   ) => void
-  onEvidenceNavigate?: (transcriptId: string, segmentId: string) => void
+  onEvidenceNavigate?: (
+    transcriptId: string,
+    segmentId: string,
+    contentRevision?: number
+  ) => void
 }) {
   const { identity, capabilities } = useMeetingWorkspace()
   const reviewGate = useOptionalTranscriptReviewGate()
@@ -99,6 +105,7 @@ export function MeetingTools({
           canReadMedia={capabilities.canReadMedia}
           evidenceTranscriptId={evidenceTranscriptId}
           evidenceSegmentId={evidenceSegmentId}
+          evidenceContentRevision={evidenceContentRevision}
           evidenceReferenceIssue={evidenceReferenceIssue}
         />
         <TranscriptReviewAdmissionPanel

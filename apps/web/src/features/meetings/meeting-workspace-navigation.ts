@@ -19,6 +19,7 @@ export interface MeetingWorkspaceSearch extends Record<string, unknown> {
   section?: MeetingWorkspaceSection
   evidenceTranscriptId?: string
   evidenceSegmentId?: string
+  evidenceContentRevision?: number
   evidenceReferenceIssue?: EvidenceReferenceIssue
 }
 
@@ -28,6 +29,7 @@ const sectionSearchSchema = z
     section: meetingWorkspaceSectionSchema.optional().catch(undefined),
     evidenceTranscriptId: evidenceIdentifierSchema,
     evidenceSegmentId: evidenceIdentifierSchema,
+    evidenceContentRevision: z.number().int().nonnegative().optional().catch(undefined),
   })
   .passthrough()
 
@@ -51,12 +53,14 @@ export function normalizeMeetingWorkspaceSearch(
   const parsed = sectionSearchSchema.parse(search) as MeetingWorkspaceSearch
   const hasTranscript = hasSearchValue(search, 'evidenceTranscriptId')
   const hasSegment = hasSearchValue(search, 'evidenceSegmentId')
+  const hasRevision = hasSearchValue(search, 'evidenceContentRevision')
   const evidenceReferenceIssue: EvidenceReferenceIssue | undefined =
-    hasTranscript !== hasSegment
+    hasTranscript !== hasSegment || (hasRevision && !hasTranscript)
       ? 'incomplete'
-      : hasTranscript &&
+      : (hasTranscript &&
           (!isUuid(search.evidenceTranscriptId) ||
-            !isUuid(search.evidenceSegmentId))
+            !isUuid(search.evidenceSegmentId))) ||
+          (hasRevision && parsed.evidenceContentRevision === undefined)
         ? 'malformed'
         : undefined
 
@@ -83,6 +87,7 @@ export function updateMeetingWorkspaceSearch(
   if (section !== 'transcript') {
     delete next.evidenceTranscriptId
     delete next.evidenceSegmentId
+    delete next.evidenceContentRevision
     delete next.evidenceReferenceIssue
   }
   return next
