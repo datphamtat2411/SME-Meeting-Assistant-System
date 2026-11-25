@@ -96,10 +96,52 @@ class ManualDecisionDraft {
 class DecisionReviewState {
   ManualDecisionDraft? draft;
   DecisionCommandIntent? unresolved;
+  Object? _recoveryTicket;
+  List<MeetingDecision>? _reviewed;
+  int? _recoveryGeneration;
+
+  void invalidateRecovery() {
+    _recoveryTicket = null;
+    _reviewed = null;
+    _recoveryGeneration = null;
+  }
+
+  void recordUnresolved(DecisionCommandIntent intent) {
+    invalidateRecovery();
+    unresolved = intent;
+  }
+
+  Object beginRecovery() {
+    invalidateRecovery();
+    final ticket = Object();
+    _recoveryTicket = ticket;
+    return ticket;
+  }
+
+  bool ownsRecovery(Object ticket, DecisionCommandIntent intent) =>
+      identical(_recoveryTicket, ticket) && identical(unresolved, intent);
+
+  bool publishRecovery(
+    Object ticket,
+    DecisionCommandIntent intent,
+    List<MeetingDecision> reviewed,
+    int generation,
+  ) {
+    if (!ownsRecovery(ticket, intent)) return false;
+    _reviewed = reviewed;
+    _recoveryGeneration = generation;
+    return true;
+  }
+
+  bool matchesRecovery(List<MeetingDecision> reviewed, int generation) =>
+      unresolved != null &&
+      identical(_reviewed, reviewed) &&
+      _recoveryGeneration == generation;
 
   void clear() {
     draft = null;
     unresolved = null;
+    invalidateRecovery();
   }
 }
 

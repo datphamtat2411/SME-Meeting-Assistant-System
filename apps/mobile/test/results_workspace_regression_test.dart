@@ -442,6 +442,54 @@ void main() {
     },
   );
 
+  test('evidence review cannot adopt a stamp after invalidation', () async {
+    final (:workspace, :repository) = await _setup();
+    final proposal = MeetingDecision(
+      id: 'decision-1',
+      meetingId: testMeetingId,
+      content: 'Decision under review',
+      status: 'PROPOSED',
+      version: 1,
+      stale: false,
+      createdAt: _createdAt,
+      confirmedAt: null,
+      rejectedAt: null,
+      etag: '"decision-reviewed"',
+      sourceType: 'AI_EXTRACTED',
+      transcriptId: _transcript.id,
+      contentRevision: _transcript.contentRevision,
+    );
+    repository.decisionPages.add(_decisionPage(proposal));
+    await workspace.loadDecisions();
+    repository.pending = Completer<Transcript>();
+    final loading = workspace.loadStampedDecisionEvidence(proposal);
+    await _eventually(() => repository.reads == 1);
+    workspace.invalidation.invalidate(
+      sessionScope: workspace.sessionScope,
+      meetingId: testMeetingId,
+      resources: {ResultsResourceKind.transcript},
+    );
+    repository.pending!.complete(_transcript);
+    final review = await loading;
+    expect(workspace.decisionReviewIsCurrent(proposal, review.stamp), isFalse);
+    expect(review.stamp, isNot(workspace.decisionReviewStamp));
+  });
+
+  test('decision recovery tickets fence overlapping reviews', () {
+    final state = DecisionReviewState();
+    const intent = DecisionCommandIntent(DecisionCommand.create, 'Decision');
+    state.recordUnresolved(intent);
+    final first = state.beginRecovery();
+    final second = state.beginRecovery();
+    final records = List<MeetingDecision>.unmodifiable([]);
+    expect(state.publishRecovery(first, intent, records, 1), isFalse);
+    expect(state.publishRecovery(second, intent, records, 1), isTrue);
+    expect(state.matchesRecovery(records, 1), isTrue);
+    state.invalidateRecovery();
+    expect(state.matchesRecovery(records, 1), isFalse);
+    expect(state.unresolved, same(intent));
+  });
+
   test('decision review stamp is invalidated by transcript changes', () async {
     final (:workspace, :repository) = await _setup();
     final proposal = _decision('PROPOSED');

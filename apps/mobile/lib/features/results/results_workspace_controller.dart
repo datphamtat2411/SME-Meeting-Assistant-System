@@ -143,8 +143,6 @@ class ResultsWorkspaceController extends ChangeNotifier
   final Map<String, String> _processingOutcomes = <String, String>{};
   bool _hasObservedProcessing = false;
   bool _processingObservationGap = false;
-  List<MeetingDecision>? _decisionRecoveryReview;
-  int? _decisionRecoveryGeneration;
   final ResultsMutationCoordinator _mutations = ResultsMutationCoordinator();
   SummaryHistoryController? _summaryHistory;
   SummaryHistoryController get summaryHistory =>
@@ -450,8 +448,7 @@ class ResultsWorkspaceController extends ChangeNotifier
     _processingOutcomes.clear();
     _hasObservedProcessing = false;
     _processingObservationGap = false;
-    _decisionRecoveryReview = null;
-    _decisionRecoveryGeneration = null;
+    _mutations.decisionReview.invalidateRecovery();
     for (final kind in ResultsResourceKind.values) {
       _generations[kind] = (_generations[kind] ?? 0) + 1;
       _dirty.add(kind);
@@ -523,8 +520,7 @@ class ResultsWorkspaceController extends ChangeNotifier
     if (_capabilities.canMutate && !next.canMutate) {
       _invalidateDialogs(mutationOnly: true);
       _mutations.invalidate();
-      _decisionRecoveryReview = null;
-      _decisionRecoveryGeneration = null;
+      _mutations.decisionReview.invalidateRecovery();
     }
     _capabilities = next;
     _syncProcessingObservation();
@@ -565,8 +561,7 @@ class ResultsWorkspaceController extends ChangeNotifier
     _accessVerificationFailure = null;
     _invalidateDialogs();
     _mutations.invalidateReviews();
-    _decisionRecoveryReview = null;
-    _decisionRecoveryGeneration = null;
+    _mutations.decisionReview.invalidateRecovery();
     for (final kind in ResultsResourceKind.values) {
       _generations[kind] = (_generations[kind] ?? 0) + 1;
       _dirty.add(kind);
@@ -815,8 +810,7 @@ class ResultsWorkspaceController extends ChangeNotifier
     const kind = ResultsResourceKind.decisions;
     _generations[kind] = (_generations[kind] ?? 0) + 1;
     _dirty.add(kind);
-    _decisionRecoveryReview = null;
-    _decisionRecoveryGeneration = null;
+    _mutations.decisionReview.invalidateRecovery();
     decisions = const ResultsResource<DecisionCollection>();
     notifyListeners();
     await _loadDecisions(force: true);
@@ -1020,8 +1014,7 @@ class ResultsWorkspaceController extends ChangeNotifier
     }
     final kinds = invalidation.resources;
     if (kinds.contains(ResultsResourceKind.decisions)) {
-      _decisionRecoveryReview = null;
-      _decisionRecoveryGeneration = null;
+      _mutations.decisionReview.invalidateRecovery();
     }
     for (final kind in kinds) {
       _authorizationAbsent.remove(kind);
@@ -1156,6 +1149,13 @@ class ResultsWorkspaceController extends ChangeNotifier
         versionId: version.id,
       ),
     );
+  }
+
+  Future<({DecisionEvidenceReview evidence, DecisionReviewStamp stamp})>
+  loadStampedDecisionEvidence(MeetingDecision snapshot) async {
+    final stamp = decisionReviewStamp;
+    final evidence = await loadDecisionEvidence(snapshot);
+    return (evidence: evidence, stamp: stamp);
   }
 
   Future<DecisionEvidenceReview> loadDecisionEvidence(
@@ -1410,7 +1410,7 @@ class ResultsWorkspaceController extends ChangeNotifier
     } catch (error) {
       if (_ownsOperation(ResultsMutationGroup.decisions, ticket) &&
           ResultsMutationCoordinator.isUncertain(error)) {
-        _mutations.decisionReview.unresolved = intent;
+        _mutations.decisionReview.recordUnresolved(intent);
       }
       rethrow;
     }
@@ -1524,9 +1524,10 @@ class ResultsWorkspaceController extends ChangeNotifier
     required int epoch,
   }) async {
     _requireMutation(epoch);
-    _decisionRecoveryReview = null;
-    _decisionRecoveryGeneration = null;
-    if (!_mutations.decisionOutcomeUnknown) return null;
+    final state = _mutations.decisionReview;
+    final intent = state.unresolved;
+    if (intent == null) return null;
+    final ticket = state.beginRecovery();
     final accessEpoch = readEpoch;
     final generation = _generations[ResultsResourceKind.decisions] ?? 0;
     List<MeetingDecision>? review;
@@ -1540,15 +1541,19 @@ class ResultsWorkspaceController extends ChangeNotifier
         ),
         stillCurrent: () =>
             ownsReview(epoch) &&
+            state.ownsRecovery(ticket, intent) &&
             generation == (_generations[ResultsResourceKind.decisions] ?? 0),
       );
     } on ApiFailure catch (error) {
       await handleProtectedReadFailure(error, epoch: accessEpoch);
       rethrow;
     }
-    if (review == null || !ownsReview(epoch)) return null;
-    _decisionRecoveryReview = review;
-    _decisionRecoveryGeneration = generation;
+    if (review == null ||
+        !ownsReview(epoch) ||
+        generation != (_generations[ResultsResourceKind.decisions] ?? 0) ||
+        !state.publishRecovery(ticket, intent, review, generation)) {
+      return null;
+    }
     return review;
   }
 
@@ -1557,18 +1562,17 @@ class ResultsWorkspaceController extends ChangeNotifier
     required List<MeetingDecision> reviewed,
   }) {
     _requireMutation(epoch);
-    if (!_mutations.decisionOutcomeUnknown ||
-        !identical(_decisionRecoveryReview, reviewed) ||
-        _decisionRecoveryGeneration !=
-            (_generations[ResultsResourceKind.decisions] ?? 0)) {
+    final state = _mutations.decisionReview;
+    if (!state.matchesRecovery(
+      reviewed,
+      _generations[ResultsResourceKind.decisions] ?? 0,
+    )) {
       throw const ApiFailure(
         409,
         'RESULTS_OUTCOME_UNKNOWN',
         'Danh sách quyết định đã thay đổi. Vui lòng kiểm tra lại.',
       );
     }
-    _decisionRecoveryReview = null;
-    _decisionRecoveryGeneration = null;
     if (_mutations.busy(ResultsMutationGroup.decisions)) {
       throw const ApiFailure(
         409,
@@ -1576,7 +1580,8 @@ class ResultsWorkspaceController extends ChangeNotifier
         'Một thao tác trên quyết định đang được xử lý.',
       );
     }
-    _mutations.decisionReview.unresolved = null;
+    state.invalidateRecovery();
+    state.unresolved = null;
     notifyListeners();
   }
 

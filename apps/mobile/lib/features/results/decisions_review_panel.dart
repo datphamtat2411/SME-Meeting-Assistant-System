@@ -71,32 +71,36 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
           title: const Text('Kiểm tra quyết định trước đó'),
           content: SizedBox(
             width: 480,
-            child: SingleChildScrollView(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Yêu cầu trước có thể đã được lưu. Danh sách này không '
-                    'chứng minh yêu cầu thành công hay thất bại. Hãy kiểm tra '
-                    'trước khi tạo một yêu cầu mới.',
-                  ),
-                  if (target != null) ...[
-                    Text('Thao tác trước: ${_commandLabel(intent.command)}'),
-                    SelectableText(intent.content),
-                    const Divider(),
-                  ],
-                  if (observed.isEmpty)
-                    const Text(
-                      'Không tìm thấy quyết định trong kết quả kiểm tra.',
-                    ),
-                  for (final decision in observed)
-                    ListTile(
-                      title: Text(decision.content),
-                      subtitle: Text(decision.status),
-                      contentPadding: EdgeInsets.zero,
-                    ),
-                ],
-              ),
+            height: 360,
+            child: ListView.builder(
+              itemCount: observed.length + 1,
+              itemBuilder: (context, index) {
+                if (index == 0) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Yêu cầu trước có thể đã được lưu. Danh sách này không '
+                        'chứng minh yêu cầu thành công hay thất bại. Thao tác '
+                        'mới có thể tạo dữ liệu trùng lặp.',
+                      ),
+                      Text('Thao tác trước: ${_commandLabel(intent.command)}'),
+                      SelectableText(intent.content),
+                      const Divider(),
+                      if (observed.isEmpty)
+                        const Text(
+                          'Không tìm thấy quyết định trong kết quả kiểm tra.',
+                        ),
+                    ],
+                  );
+                }
+                final decision = observed[index - 1];
+                return ListTile(
+                  title: Text(decision.content),
+                  subtitle: Text(decision.status),
+                  contentPadding: EdgeInsets.zero,
+                );
+              },
             ),
           ),
           actions: [
@@ -222,9 +226,10 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
     final workspace = widget.workspace;
     final readEpoch = workspace.readEpoch;
     final reviewEpoch = workspace.reviewEpoch;
-    final evidence = await workspace.loadDecisionEvidence(decision);
+    final (:evidence, :stamp) = await workspace.loadStampedDecisionEvidence(
+      decision,
+    );
     if (!mounted || !workspace.ownsRead(readEpoch)) return;
-    final stamp = workspace.decisionReviewStamp;
     bool current() => workspace.decisionReviewIsCurrent(decision, stamp);
     bool canMutate() =>
         current() &&
