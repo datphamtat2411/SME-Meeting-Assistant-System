@@ -1,6 +1,8 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sme_meeting_assistant/core/api_response.dart';
 import 'package:sme_meeting_assistant/core/meeting_models.dart';
+import 'package:sme_meeting_assistant/core/paged_collection.dart';
+import 'package:sme_meeting_assistant/features/results/decision_review_state.dart';
 import 'package:sme_meeting_assistant/features/results/results_models.dart';
 
 Map<String, dynamic> minutesFixture() => {
@@ -33,6 +35,117 @@ Map<String, dynamic> minutesFixture() => {
 };
 
 void main() {
+  test('decision collection rejects duplicate or shifted page boundaries', () {
+    MeetingDecision item(String id, int day) => MeetingDecision(
+      id: id,
+      meetingId: 'meeting-1',
+      content: 'Decision',
+      status: 'PROPOSED',
+      version: 1,
+      stale: false,
+      createdAt: DateTime.utc(2026, 11, day),
+      confirmedAt: null,
+      rejectedAt: null,
+      etag: '"server-token"',
+      sourceType: 'AI_EXTRACTED',
+    );
+    PagedCollection<MeetingDecision> page(int number, MeetingDecision value) =>
+        PagedCollection(
+          items: [value],
+          page: number,
+          size: 1,
+          totalElements: 2,
+          totalPages: 2,
+          hasNext: number == 0,
+          hasPrevious: number > 0,
+        );
+    final first = DecisionCollection.first(page(0, item('d1', 24)), 'PROPOSED');
+    final second = first.append(page(1, item('d2', 23)));
+    expect(second.items.map((item) => item.id), ['d1', 'd2']);
+    expect(second.hasMore, isFalse);
+    expect(
+      () => first.append(page(1, item('d1', 24))),
+      throwsA(isA<ApiFailure>()),
+    );
+    expect(
+      () => first.append(page(1, item('d3', 25))),
+      throwsA(isA<ApiFailure>()),
+    );
+  });
+
+  test('decision evidence requires matching revision and safe coverage', () {
+    final decision = MeetingDecision(
+      id: 'd1',
+      meetingId: 'meeting-1',
+      content: 'Decision',
+      status: 'PROPOSED',
+      version: 1,
+      stale: false,
+      createdAt: DateTime.utc(2026, 11, 24),
+      confirmedAt: null,
+      rejectedAt: null,
+      etag: '"decision"',
+      sourceType: 'AI_EXTRACTED',
+      transcriptId: 'transcript-1',
+      contentRevision: 1,
+      evidenceSegmentIds: const ['segment-1'],
+    );
+    const transcript = Transcript(
+      id: 'transcript-1',
+      meetingId: 'meeting-1',
+      sourceMediaId: null,
+      processingJobId: null,
+      versionNumber: 1,
+      languageCode: 'vi',
+      status: 'READY_WITH_WARNINGS',
+      durationMs: 1000,
+      finalizedAt: null,
+      contentRevision: 1,
+      segments: [
+        SpeechSegment(
+          id: 'segment-1',
+          ordinal: 0,
+          text: 'Evidence',
+          startMs: 0,
+          endMs: 1000,
+          speakerLabel: null,
+          speakerClusterId: null,
+          quality: 'ACCEPTED',
+          version: 0,
+          etag: '"segment"',
+        ),
+      ],
+      etag: '"transcript"',
+    );
+    DecisionEvidenceReview review(List<TranscriptCoverageRegion> regions) =>
+        DecisionEvidenceReview(
+          decision,
+          TranscriptReviewProjection(
+            transcript,
+            coverage: TranscriptCoverage(
+              transcriptId: transcript.id,
+              transcriptEtag: transcript.etag!,
+              regions: regions,
+            ),
+          ),
+        );
+    expect(review(const []).canConfirm, isTrue);
+    expect(
+      review(const [
+        TranscriptCoverageRegion(
+          id: 'region-1',
+          startMs: 10,
+          endMs: 20,
+          status: 'SUSPICIOUS',
+          recovered: false,
+          retryCount: 0,
+        ),
+      ]).canConfirm,
+      isFalse,
+    );
+    expect(DecisionEvidenceReview(decision, null).canConfirm, isFalse);
+  });
+
   test(
     'transcript projection rejects unrelated coverage and speaker snapshots',
     () {

@@ -249,6 +249,7 @@ class MeetingDetailController extends ChangeNotifier {
       processingManager: processingManager,
     );
     _resultsWorkspace = workspace;
+    _updateResultsIdentityLabels(workspace);
     return workspace;
   }
 
@@ -278,6 +279,20 @@ class MeetingDetailController extends ChangeNotifier {
         ),
       ),
     );
+    _updateResultsIdentityLabels(workspace);
+  }
+
+  void _updateResultsIdentityLabels(ResultsWorkspaceController workspace) {
+    final meeting = _state.snapshot?.meeting;
+    if (meeting == null || !workspace.capabilities.canRead) return;
+    final organizerName = _state.organizerName ?? meeting.organizerName;
+    workspace.updateMeetingIdentityLabels({
+      for (final participant in _state.participants)
+        if (participant.displayName?.trim().isNotEmpty == true)
+          participant.userId.toLowerCase(): participant.displayName!.trim(),
+      if (organizerName?.trim().isNotEmpty == true)
+        meeting.organizerId.toLowerCase(): organizerName!.trim(),
+    });
   }
 
   void _disposeResultsWorkspace() {

@@ -25,11 +25,6 @@ class DecisionsReviewPanel extends StatefulWidget {
 class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
   bool busy = false;
 
-  @override
-  void initState() {
-    super.initState();
-  }
-
   Future<void> createDecision() async {
     if (busy) return;
     setState(() => busy = true);
@@ -305,15 +300,15 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
     ),
     Text('Tạo lúc: ${dateLabel(decision.createdAt)}'),
     if (decision.createdByUserId != null)
-      Text('Người tạo: ${decision.createdByUserId}'),
+      Text('Người tạo: ${widget.workspace.meetingIdentityLabel(decision.createdByUserId) ?? 'Chưa rõ tên (${decision.createdByUserId})'}'),
     if (decision.confirmedAt != null)
       Text('Xác nhận lúc: ${dateLabel(decision.confirmedAt)}'),
     if (decision.confirmedByUserId != null)
-      Text('Người xác nhận: ${decision.confirmedByUserId}'),
+      Text('Người xác nhận: ${widget.workspace.meetingIdentityLabel(decision.confirmedByUserId) ?? decision.confirmedByUserId}'),
     if (decision.rejectedAt != null)
       Text('Từ chối lúc: ${dateLabel(decision.rejectedAt)}'),
     if (decision.rejectedByUserId != null)
-      Text('Người từ chối: ${decision.rejectedByUserId}'),
+      Text('Người từ chối: ${widget.workspace.meetingIdentityLabel(decision.rejectedByUserId) ?? decision.rejectedByUserId}'),
     if (decision.stale)
       const Text('Nguồn transcript đã thay đổi; cần đối chiếu.'),
     if (decision.contentRevision != null)

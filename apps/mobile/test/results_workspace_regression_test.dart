@@ -44,6 +44,8 @@ class _Repository extends ResultsRepository {
   final List<String> regenerationKeys = <String>[];
   final List<PagedCollection<MeetingDecision>> decisionPages = [];
   int decisionCreates = 0;
+  final List<String?> decisionFilters = [];
+  ApiFailure? decisionReadFailure;
 
   @override
   Future<Transcript> currentTranscript({
@@ -135,6 +137,8 @@ class _Repository extends ResultsRepository {
     int size = 20,
     String? status,
   }) async {
+    decisionFilters.add(status);
+    if (decisionReadFailure != null) throw decisionReadFailure!;
     if (decisionPages.isNotEmpty) return decisionPages[page];
     return const PagedCollection<MeetingDecision>(
       items: <MeetingDecision>[],
@@ -323,6 +327,51 @@ _setup() async {
 }
 
 void main() {
+  test('decision pages survive navigation and recoverable failures', () async {
+    final (:workspace, :repository) = await _setup();
+    for (var page = 0; page < 2; page++) {
+      repository.decisionPages.add(
+        PagedCollection<MeetingDecision>(
+          items: [
+            MeetingDecision(
+              id: 'decision-$page',
+              meetingId: testMeetingId,
+              content: 'Decision $page',
+              status: 'PROPOSED',
+              version: 1,
+              stale: false,
+              createdAt: _createdAt.subtract(Duration(days: page)),
+              confirmedAt: null,
+              rejectedAt: null,
+              etag: '"decision-$page"',
+            ),
+          ],
+          page: page,
+          size: 1,
+          totalElements: 2,
+          totalPages: 2,
+          hasNext: page == 0,
+          hasPrevious: page > 0,
+        ),
+      );
+    }
+    await workspace.selectDecisionStatus('PROPOSED');
+    await workspace.loadMoreDecisions();
+    expect(workspace.decisions.data?.items.length, 2);
+    expect(repository.decisionFilters, ['PROPOSED', 'PROPOSED']);
+    workspace.deactivate();
+    await workspace.loadDecisions();
+    expect(workspace.decisions.data?.items.length, 2);
+    repository.decisionReadFailure = const ApiFailure(503, 'UNAVAILABLE', 'Retry');
+    await workspace.loadDecisions(force: true);
+    expect(workspace.decisions.data?.items.length, 2);
+    expect(workspace.decisions.phase, ResultsResourcePhase.failed);
+    workspace.updateCapabilities(
+      const ResultsCapabilities(canRead: false, canMutate: false),
+    );
+    expect(workspace.decisions.data, isNull);
+  });
+
   testWidgets('evidence opens the transcript and focuses a distant segment', (
     tester,
   ) async {

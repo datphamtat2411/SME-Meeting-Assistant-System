@@ -143,7 +143,7 @@ class MinutesPanel extends StatelessWidget {
                     if (meeting.description != null)
                       SelectableText(meeting.description!),
                     StatePill(meeting.status),
-                    _label('Người tổ chức', meeting.organizerUserId),
+                    _label('Người tổ chức', workspace.meetingIdentityLabel(meeting.organizerUserId) ?? meeting.organizerUserId),
                     _label('Bắt đầu dự kiến', dateLabel(meeting.scheduledStartAt)),
                     _label('Kết thúc dự kiến', dateLabel(meeting.scheduledEndAt)),
                     _label('Bắt đầu thực tế', dateLabel(meeting.startedAt)),
@@ -156,6 +156,8 @@ class MinutesPanel extends StatelessWidget {
                       _label('Phiên bản', summary.versionNumber),
                     if (summary.sourceType != null)
                       Text(_source(summary.sourceType)),
+                    if (summary.qualityStatus != null)
+                      StatePill(summary.qualityStatus!),
                     if (summary.contentRevision != null)
                       _label('Revision nguồn', summary.contentRevision),
                     if (summary.isStale)
@@ -185,7 +187,7 @@ class MinutesPanel extends StatelessWidget {
                     StatePill(decision.status),
                     SelectableText(decision.content),
                     Text(_source(decision.sourceType)),
-                    _label('Xác nhận bởi', decision.confirmedByUserId),
+                    _label('Xác nhận bởi', workspace.meetingIdentityLabel(decision.confirmedByUserId) ?? decision.confirmedByUserId),
                     _label('Thời điểm xác nhận', dateLabel(decision.confirmedAt)),
                     if (decision.isStale)
                       const Text('Đã xác nhận; nguồn cần đối chiếu lại.'),
@@ -236,9 +238,9 @@ class MinutesPanel extends StatelessWidget {
                     if (action.details != null) SelectableText(action.details!),
                     StatePill(action.status),
                     Text(_source(action.sourceType)),
-                    _label('Người phụ trách', action.assigneeUserId ?? 'Chưa giao'),
+                    _label('Người phụ trách', action.assigneeUserId == null ? 'Chưa giao' : workspace.meetingIdentityLabel(action.assigneeUserId) ?? 'Chưa rõ tên (${action.assigneeUserId})'),
                     _label('Hạn hoàn thành', action.dueDate),
-                    _label('Xác nhận bởi', action.confirmedByUserId),
+                    _label('Xác nhận bởi', workspace.meetingIdentityLabel(action.confirmedByUserId) ?? action.confirmedByUserId),
                     _label('Thời điểm xác nhận', dateLabel(action.confirmedAt)),
                   ]);
                 },
@@ -255,6 +257,8 @@ class MinutesPanel extends StatelessWidget {
                     _label('Phiên bản', transcript.versionNumber),
                     _label('Revision', transcript.contentRevision),
                     _label('Ngôn ngữ', transcript.languageCode),
+                    if (transcript.durationMs != null)
+                      _label('Thời lượng', '${transcript.durationMs! ~/ 1000} giây'),
                     _label('Đoạn đáng ngờ', transcript.suspiciousSegments),
                     _label('Đoạn chưa giải quyết', transcript.unresolvedSegments),
                     _label('Vùng thiếu bằng chứng', transcript.unresolvedCoverageRegions),

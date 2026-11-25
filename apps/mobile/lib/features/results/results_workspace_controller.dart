@@ -103,6 +103,23 @@ class ResultsWorkspaceController extends ChangeNotifier
       const ResultsResource<DecisionCollection>();
   String? _decisionStatus;
   String? get decisionStatus => _decisionStatus;
+  Map<String, String> _meetingIdentityLabels = const {};
+
+  String? meetingIdentityLabel(String? id) =>
+      capabilities.canRead && id != null
+      ? _meetingIdentityLabels[id.toLowerCase()]
+      : null;
+
+  void updateMeetingIdentityLabels(Map<String, String> labels) {
+    if (!capabilities.canRead) return;
+    final next = Map<String, String>.unmodifiable(labels);
+    if (next.length == _meetingIdentityLabels.length &&
+        next.entries.every((entry) => _meetingIdentityLabels[entry.key] == entry.value)) {
+      return;
+    }
+    _meetingIdentityLabels = next;
+    notifyListeners();
+  }
 
   ResultsResource<MeetingMinutes> minutes =
       const ResultsResource<MeetingMinutes>();
@@ -379,6 +396,7 @@ class ResultsWorkspaceController extends ChangeNotifier
 
   void _clearProtectedState() {
     _readEpoch++;
+    _meetingIdentityLabels = const {};
     _transcriptFocus = null;
     _invalidateDialogs();
     _mutations.invalidate();
@@ -1132,11 +1150,13 @@ class ResultsWorkspaceController extends ChangeNotifier
       TranscriptReviewProjection(
         source,
         coverage: !_dirty.contains(ResultsResourceKind.coverage) &&
-                coverage.phase == ResultsResourcePhase.available
+                (coverage.phase == ResultsResourcePhase.available ||
+                    coverage.phase == ResultsResourcePhase.empty)
             ? coverage.data
             : null,
         speakers: !_dirty.contains(ResultsResourceKind.speakers) &&
-                speakers.phase == ResultsResourcePhase.available
+                (speakers.phase == ResultsResourcePhase.available ||
+                    speakers.phase == ResultsResourcePhase.empty)
             ? speakers.data
             : null,
       ),
