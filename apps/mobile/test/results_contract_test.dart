@@ -162,6 +162,65 @@ void main() {
       ]).canConfirm,
       isFalse,
     );
+    final partial = review(const [
+      TranscriptCoverageRegion(
+        id: 'partial',
+        startMs: 0,
+        endMs: 500,
+        status: 'COVERED',
+        recovered: false,
+        retryCount: 0,
+      ),
+    ]);
+    expect(
+      partial.quality(transcript.segments.single),
+      DecisionEvidenceQuality.unknown,
+    );
+    expect(partial.canConfirm, isTrue);
+    final gap = review(const [
+      TranscriptCoverageRegion(
+        id: 'right',
+        startMs: 501,
+        endMs: 1000,
+        status: 'COVERED',
+        recovered: false,
+        retryCount: 0,
+      ),
+      TranscriptCoverageRegion(
+        id: 'left',
+        startMs: 0,
+        endMs: 500,
+        status: 'COVERED',
+        recovered: false,
+        retryCount: 0,
+      ),
+    ]);
+    expect(
+      gap.quality(transcript.segments.single),
+      DecisionEvidenceQuality.unknown,
+    );
+    final contiguous = review(const [
+      TranscriptCoverageRegion(
+        id: 'right',
+        startMs: 400,
+        endMs: 1000,
+        status: 'COVERED',
+        recovered: true,
+        retryCount: 1,
+      ),
+      TranscriptCoverageRegion(
+        id: 'left',
+        startMs: 0,
+        endMs: 400,
+        status: 'COVERED',
+        recovered: false,
+        retryCount: 0,
+      ),
+    ]);
+    expect(
+      contiguous.quality(transcript.segments.single),
+      DecisionEvidenceQuality.reviewable,
+    );
     expect(DecisionEvidenceReview(decision, null).canConfirm, isFalse);
   });
 

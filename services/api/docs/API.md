@@ -121,6 +121,24 @@ valid for the segment correction endpoint; decision tokens are valid for
 decision edit and review endpoints. Clients must treat these values as opaque
 and must not construct them from identifiers or version fields.
 
+## Reviewed-source preconditions for manual Decisions
+
+Manual Decision creation may include `reviewedTranscriptId` (UUID) and
+`reviewedContentRevision` (nonnegative integer) alongside
+`evidenceSegmentIds`. Both fields must be supplied together and require at
+least one linked evidence segment. The Core API validates the reviewed source
+against the current transcript while holding the meeting lock, before
+creating the Decision or its evidence links. A replaced transcript or changed
+content revision returns HTTP 412; invalid field combinations return HTTP
+422. The client must re-review the current source before making a new intent.
+The existing evidence identity, authorization and validation rules still apply.
+
+Legacy requests omitting both fields remain supported, including manual
+creation without evidence. Such requests do not assert an exact reviewed
+source. Deploy a Core API version supporting these fields before enabling
+reviewed evidence creation in a newer Mobile client; an older server may
+ignore the fields and cannot provide the atomic reviewed-source guarantee.
+
 ## Boundary
 
 This file records shared HTTP conventions, not an endpoint catalog. Feature paths, DTO fields, authorization specifics, and error codes are defined by the active Task Specification and implemented contract.

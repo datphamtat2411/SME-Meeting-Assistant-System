@@ -153,14 +153,29 @@ DecisionEvidenceQuality decisionEvidenceQuality(
           false)) {
     return DecisionEvidenceQuality.unsafe;
   }
-  if (coverage == null ||
-      !coverage.regions.any(
+  if (coverage == null) return DecisionEvidenceQuality.unknown;
+
+  // Covered regions must collectively span the segment. A partial overlap
+  // or an intervening gap is unknown, not verified coverage. This is a
+  // presentation distinction; the backend still owns confirmation eligibility.
+  final overlapping = coverage.regions
+      .where(
         (region) =>
             region.startMs < segment.endMs && region.endMs > segment.startMs,
-      )) {
-    return DecisionEvidenceQuality.unknown;
+      )
+      .toList()
+    ..sort((a, b) => a.startMs.compareTo(b.startMs));
+  var coveredUntil = segment.startMs;
+  for (final region in overlapping) {
+    if (region.startMs > coveredUntil) {
+      return DecisionEvidenceQuality.unknown;
+    }
+    if (region.endMs > coveredUntil) coveredUntil = region.endMs;
+    if (coveredUntil >= segment.endMs) {
+      return DecisionEvidenceQuality.reviewable;
+    }
   }
-  return DecisionEvidenceQuality.reviewable;
+  return DecisionEvidenceQuality.unknown;
 }
 
 /// A review is bound to the decision's recorded source, never substituted by

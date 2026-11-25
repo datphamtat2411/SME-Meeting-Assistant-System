@@ -199,6 +199,55 @@ class DecisionManagementIntegrationTests {
     }
 
     @Test
+    void reviewedManualEvidenceRequiresCompleteSourcePairAndLinkedEvidence() throws Exception {
+        String base = evidence("Reviewed evidence", segment);
+        base = base.substring(0, base.length() - 1);
+        for (String invalid : List.of(
+                base + ",\"reviewedTranscriptId\":\"" + transcript + "\"}",
+                base + ",\"reviewedContentRevision\":2}",
+                "{\"content\":\"No evidence\",\"reviewedTranscriptId\":\"" + transcript
+                    + "\",\"reviewedContentRevision\":2}")) {
+            mvc.perform(post(url()).principal(as(organizer))
+                    .contentType(MediaType.APPLICATION_JSON).content(invalid))
+                .andExpect(status().isUnprocessableEntity());
+        }
+        assertThat(jdbc.queryForObject(
+            "SELECT count(*) FROM meeting_decisions WHERE meeting_id=?",
+            Integer.class, meeting)).isZero();
+    }
+
+    @Test
+    void reviewedManualEvidenceRejectsReplacedTranscriptWithSameRevision() throws Exception {
+        String body = evidence("Reviewed old evidence", segment);
+        body = body.substring(0, body.length() - 1)
+            + ",\"reviewedTranscriptId\":\"" + transcript
+            + "\",\"reviewedContentRevision\":2}";
+        jdbc.update("UPDATE transcripts SET is_current=FALSE WHERE id=?", transcript);
+        UUID nextJob = UUID.randomUUID();
+        jdbc.update("""
+            INSERT INTO processing_jobs(
+                id,meeting_id,source_media_id,requested_by_user_id,status,reprocess_of_job_id)
+            VALUES (?,?,?,?,'COMPLETED',?)
+            """, nextJob, meeting, media, organizer, job);
+        jdbc.update("""
+            INSERT INTO transcripts(
+                id,meeting_id,source_media_id,processing_job_id,version_number,
+                language_code,status,is_current,content_revision)
+            VALUES (?,?,?,?,2,'vi','READY',TRUE,2)
+            """, UUID.randomUUID(), meeting, media, nextJob);
+        mvc.perform(post(url()).principal(as(organizer))
+                .contentType(MediaType.APPLICATION_JSON).content(body))
+            .andExpect(status().isPreconditionFailed());
+        assertThat(jdbc.queryForObject(
+            "SELECT count(*) FROM meeting_decisions WHERE meeting_id=?",
+            Integer.class, meeting)).isZero();
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM audit_events WHERE meeting_id=?
+                AND action_code='MI_DECISION_CREATED'
+            """, Integer.class, meeting)).isZero();
+    }
+
+    @Test
     void replacingTranscriptWithSameRevisionStalesEvidenceWithoutRevertingConfirmation() throws Exception {
         var created = create(evidence("Evidence-based confirmation", segment));
         UUID decision = id(created);
