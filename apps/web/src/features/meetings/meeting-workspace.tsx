@@ -77,6 +77,8 @@ import {
   isMeetingWorkspaceSectionAllowed,
   resolveMeetingWorkspaceSection,
   type EvidenceReferenceIssue,
+  type EvidenceReturn,
+  type IntelligenceView,
   type MeetingWorkspaceSection,
 } from './meeting-workspace-navigation'
 import {
@@ -105,6 +107,8 @@ export function MeetingWorkspacePage({
   evidenceSegmentId,
   evidenceContentRevision,
   evidenceReferenceIssue,
+  intelligenceView,
+  evidenceReturn,
   onSectionChange,
   onEvidenceNavigate,
 }: {
@@ -114,9 +118,12 @@ export function MeetingWorkspacePage({
   evidenceSegmentId?: string
   evidenceContentRevision?: number
   evidenceReferenceIssue?: EvidenceReferenceIssue
+  intelligenceView?: IntelligenceView
+  evidenceReturn?: EvidenceReturn
   onSectionChange?: (
     section: MeetingWorkspaceSection,
-    replace?: boolean
+    replace?: boolean,
+    view?: IntelligenceView
   ) => void
   onEvidenceNavigate?: (
     transcriptId: string,
@@ -133,6 +140,8 @@ export function MeetingWorkspacePage({
         evidenceSegmentId={evidenceSegmentId}
         evidenceContentRevision={evidenceContentRevision}
         evidenceReferenceIssue={evidenceReferenceIssue}
+        intelligenceView={intelligenceView}
+        evidenceReturn={evidenceReturn}
         onSectionChange={onSectionChange}
         onEvidenceNavigate={onEvidenceNavigate}
       />
@@ -147,6 +156,8 @@ function MeetingWorkspacePageContent({
   evidenceSegmentId,
   evidenceContentRevision,
   evidenceReferenceIssue,
+  intelligenceView,
+  evidenceReturn,
   onSectionChange,
   onEvidenceNavigate,
 }: {
@@ -156,9 +167,12 @@ function MeetingWorkspacePageContent({
   evidenceSegmentId?: string
   evidenceContentRevision?: number
   evidenceReferenceIssue?: EvidenceReferenceIssue
+  intelligenceView?: IntelligenceView
+  evidenceReturn?: EvidenceReturn
   onSectionChange?: (
     section: MeetingWorkspaceSection,
-    replace?: boolean
+    replace?: boolean,
+    view?: IntelligenceView
   ) => void
   onEvidenceNavigate?: (
     transcriptId: string,
@@ -191,6 +205,8 @@ function MeetingWorkspacePageContent({
               evidenceSegmentId={evidenceSegmentId}
               evidenceContentRevision={evidenceContentRevision}
               evidenceReferenceIssue={evidenceReferenceIssue}
+              intelligenceView={intelligenceView}
+              evidenceReturn={evidenceReturn}
               onSectionChange={onSectionChange}
               onEvidenceNavigate={onEvidenceNavigate}
             />
@@ -208,6 +224,8 @@ function MeetingWorkspacePageContent({
               evidenceSegmentId={evidenceSegmentId}
               evidenceContentRevision={evidenceContentRevision}
               evidenceReferenceIssue={evidenceReferenceIssue}
+              intelligenceView={intelligenceView}
+              evidenceReturn={evidenceReturn}
               onSectionChange={onSectionChange}
               onEvidenceNavigate={onEvidenceNavigate}
             />
@@ -246,6 +264,8 @@ function MeetingWorkspacePageContent({
             evidenceSegmentId={evidenceSegmentId}
             evidenceContentRevision={evidenceContentRevision}
             evidenceReferenceIssue={evidenceReferenceIssue}
+            intelligenceView={intelligenceView}
+            evidenceReturn={evidenceReturn}
             onSectionChange={onSectionChange}
             onEvidenceNavigate={onEvidenceNavigate}
             identityCanReadProtectedData={verification.canReadProtectedData}
@@ -268,6 +288,8 @@ function SharedMeetingWorkspaceIdentityBoundary({
   evidenceSegmentId,
   evidenceContentRevision,
   evidenceReferenceIssue,
+  intelligenceView,
+  evidenceReturn,
   onSectionChange,
   onEvidenceNavigate,
 }: {
@@ -277,9 +299,12 @@ function SharedMeetingWorkspaceIdentityBoundary({
   evidenceSegmentId?: string
   evidenceContentRevision?: number
   evidenceReferenceIssue?: EvidenceReferenceIssue
+  intelligenceView?: IntelligenceView
+  evidenceReturn?: EvidenceReturn
   onSectionChange?: (
     section: MeetingWorkspaceSection,
-    replace?: boolean
+    replace?: boolean,
+    view?: IntelligenceView
   ) => void
   onEvidenceNavigate?: (
     transcriptId: string,
@@ -369,6 +394,8 @@ function SharedMeetingWorkspaceIdentityBoundary({
         evidenceSegmentId={evidenceSegmentId}
         evidenceContentRevision={evidenceContentRevision}
         evidenceReferenceIssue={evidenceReferenceIssue}
+        intelligenceView={intelligenceView}
+        evidenceReturn={evidenceReturn}
         onSectionChange={onSectionChange}
         onEvidenceNavigate={onEvidenceNavigate}
         participants={participants}
@@ -412,6 +439,8 @@ function MeetingWorkspaceIdentityBoundary({
   evidenceSegmentId,
   evidenceContentRevision,
   evidenceReferenceIssue,
+  intelligenceView,
+  evidenceReturn,
   onSectionChange,
   onEvidenceNavigate,
   identityCanReadProtectedData,
@@ -423,9 +452,12 @@ function MeetingWorkspaceIdentityBoundary({
   evidenceSegmentId?: string
   evidenceContentRevision?: number
   evidenceReferenceIssue?: EvidenceReferenceIssue
+  intelligenceView?: IntelligenceView
+  evidenceReturn?: EvidenceReturn
   onSectionChange?: (
     section: MeetingWorkspaceSection,
-    replace?: boolean
+    replace?: boolean,
+    view?: IntelligenceView
   ) => void
   onEvidenceNavigate?: (
     transcriptId: string,
@@ -565,6 +597,8 @@ function MeetingWorkspaceIdentityBoundary({
         evidenceSegmentId={evidenceSegmentId}
         evidenceContentRevision={evidenceContentRevision}
         evidenceReferenceIssue={evidenceReferenceIssue}
+        intelligenceView={intelligenceView}
+        evidenceReturn={evidenceReturn}
         onSectionChange={onSectionChange}
         onEvidenceNavigate={onEvidenceNavigate}
         participants={participants}
@@ -694,6 +728,8 @@ function MeetingWorkspace({
   evidenceSegmentId,
   evidenceContentRevision,
   evidenceReferenceIssue,
+  intelligenceView,
+  evidenceReturn,
   onSectionChange,
   onEvidenceNavigate,
   participants,
@@ -710,9 +746,12 @@ function MeetingWorkspace({
   evidenceSegmentId?: string
   evidenceContentRevision?: number
   evidenceReferenceIssue?: EvidenceReferenceIssue
+  intelligenceView?: IntelligenceView
+  evidenceReturn?: EvidenceReturn
   onSectionChange?: (
     section: MeetingWorkspaceSection,
-    replace?: boolean
+    replace?: boolean,
+    view?: IntelligenceView
   ) => void
   onEvidenceNavigate?: (
     transcriptId: string,
@@ -762,9 +801,10 @@ function MeetingWorkspace({
 
   const navigateToSection = (
     nextSection: MeetingWorkspaceSection,
-    replace?: boolean
+    replace?: boolean,
+    view?: IntelligenceView
   ) => {
-    onSectionChange?.(nextSection, replace)
+    onSectionChange?.(nextSection, replace, view)
   }
   const handleMeetingEdited = (commit: MeetingEditCommit) => {
     const key = `${commit.meetingId}:${commit.etag}:${commit.outcome}`
@@ -953,6 +993,8 @@ function MeetingWorkspace({
                     evidenceSegmentId={evidenceSegmentId}
                     evidenceContentRevision={evidenceContentRevision}
                     evidenceReferenceIssue={evidenceReferenceIssue}
+                    intelligenceView={intelligenceView}
+                    evidenceReturn={evidenceReturn}
                     onSectionChange={navigateToSection}
                     onEvidenceNavigate={onEvidenceNavigate}
                   />
@@ -1032,7 +1074,8 @@ function OperationalOverview({
   ) => void
   onSectionChange?: (
     section: MeetingWorkspaceSection,
-    replace?: boolean
+    replace?: boolean,
+    view?: IntelligenceView
   ) => void
 }) {
   return (
@@ -1098,7 +1141,8 @@ function WorkspaceResultsOverview({
   capabilities: ReturnType<typeof deriveMeetingWorkspaceCapabilities>
   onSectionChange?: (
     section: MeetingWorkspaceSection,
-    replace?: boolean
+    replace?: boolean,
+    view?: IntelligenceView
   ) => void
 }) {
   const session = useOptionalMeetingSession()
@@ -1347,7 +1391,16 @@ function WorkspaceResultsOverview({
               (hasSummaryArtifact && hasReviewableSummary))
               ? {
                   label: 'Review intelligence',
-                  onClick: () => onSectionChange?.('intelligence'),
+                  onClick: () =>
+                    onSectionChange?.(
+                      'intelligence',
+                      false,
+                      hasSummaryArtifact && hasReviewableSummary
+                        ? 'summary'
+                        : minutes.data.confirmedDecisions.length
+                          ? 'decisions'
+                          : 'minutes'
+                    ),
                 }
               : minutes.isError
                 ? {

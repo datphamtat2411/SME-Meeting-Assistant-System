@@ -1,3 +1,5 @@
+import { Button } from '@/components/ui/button'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { MeetingActionsPanel } from '@/features/action-items/meeting-actions-panel'
 import { DecisionsPanel } from './intelligence/decisions-panel'
 import { ExportPanel } from './intelligence/export-panel'
@@ -19,6 +21,8 @@ import { UploadPanel } from './media/upload-panel'
 import { useMeetingWorkspace } from './meeting-workspace-context'
 import type {
   EvidenceReferenceIssue,
+  EvidenceReturn,
+  IntelligenceView,
   MeetingWorkspaceSection,
 } from './meeting-workspace-navigation'
 
@@ -29,6 +33,8 @@ export function MeetingTools({
   evidenceSegmentId,
   evidenceContentRevision,
   evidenceReferenceIssue,
+  intelligenceView = 'summary',
+  evidenceReturn,
   onSectionChange,
   onEvidenceNavigate,
 }: {
@@ -38,9 +44,12 @@ export function MeetingTools({
   evidenceSegmentId?: string
   evidenceContentRevision?: number
   evidenceReferenceIssue?: EvidenceReferenceIssue
+  intelligenceView?: IntelligenceView
+  evidenceReturn?: EvidenceReturn
   onSectionChange?: (
     section: MeetingWorkspaceSection,
-    replace?: boolean
+    replace?: boolean,
+    view?: IntelligenceView
   ) => void
   onEvidenceNavigate?: (
     transcriptId: string,
@@ -97,6 +106,22 @@ export function MeetingTools({
             organizer operations.
           </ReadOnlyNote>
         )}
+        {evidenceReturn === 'decisions' && capabilities.canReadIntelligence && (
+          <Button
+            variant='outline'
+            onClick={() => onSectionChange?.('intelligence', false, 'decisions')}
+          >
+            Back to Decisions
+          </Button>
+        )}
+        {evidenceReturn === 'action-items' && capabilities.canReadActionItems && (
+          <Button
+            variant='outline'
+            onClick={() => onSectionChange?.('action-items')}
+          >
+            Back to Action Items
+          </Button>
+        )}
         <TranscriptReviewWorkspace
           meetingId={meetingId}
           canReadMeetingContent={capabilities.canReadMeetingContent}
@@ -150,37 +175,76 @@ export function MeetingTools({
         <TranscriptReviewWorkflowStatus
           onReview={() => onSectionChange?.('transcript')}
         />
-        <SummaryPanel
-          meetingId={meetingId}
-          canEdit={capabilities.canMutateIntelligence}
-          canRegenerate={capabilities.canAdmitProcessing}
-        />
-        <DecisionsPanel
-          meetingId={meetingId}
-          canManageDecisions={capabilities.canMutateIntelligence}
-          onEvidenceNavigate={onEvidenceNavigate}
-        />
-        <MinutesPanel
-          meetingId={meetingId}
-          names={Object.fromEntries([
-            ...participants.flatMap((participant) =>
-              participant.displayName
-                ? [[participant.userId, participant.displayName]]
-                : []
-            ),
-            [identity.userId, identity.displayName],
-          ])}
-          onOpenActions={
-            onSectionChange ? () => onSectionChange('action-items') : undefined
+        <Tabs
+          value={intelligenceView}
+          activationMode='manual'
+          onValueChange={(value) =>
+            onSectionChange?.('intelligence', false, value as IntelligenceView)
           }
-          onOpenTranscript={
-            onSectionChange ? () => onSectionChange('transcript') : undefined
-          }
-        />
-        <ExportPanel
-          meetingId={meetingId}
-          canExport={capabilities.canReadMeetingContent}
-        />
+        >
+          <TabsList aria-label='Intelligence views' className='w-full justify-start sm:w-fit'>
+            <TabsTrigger value='summary'>Summary</TabsTrigger>
+            <TabsTrigger value='decisions'>Decisions</TabsTrigger>
+            <TabsTrigger value='minutes'>Minutes</TabsTrigger>
+          </TabsList>
+          <TabsContent value='summary'>
+            {intelligenceView === 'summary' && (
+              <div className='space-y-5'>
+                <SummaryPanel
+                  meetingId={meetingId}
+                  canEdit={capabilities.canMutateIntelligence}
+                  canRegenerate={capabilities.canAdmitProcessing}
+                />
+              </div>
+            )}
+          </TabsContent>
+          <TabsContent value='decisions'>
+            {intelligenceView === 'decisions' && (
+              <div className='space-y-5'>
+                <DecisionsPanel
+                  meetingId={meetingId}
+                  canManageDecisions={capabilities.canMutateIntelligence}
+                  onEvidenceNavigate={onEvidenceNavigate}
+                />
+              </div>
+            )}
+          </TabsContent>
+          <TabsContent value='minutes'>
+            {intelligenceView === 'minutes' && (
+              <div className='space-y-5'>
+                <MinutesPanel
+                  meetingId={meetingId}
+                  names={Object.fromEntries([
+                    ...participants.flatMap((participant) =>
+                      participant.displayName
+                        ? [[participant.userId, participant.displayName]]
+                        : []
+                    ),
+                    [identity.userId, identity.displayName],
+                  ])}
+                  onOpenSummary={
+                    onSectionChange ? () => onSectionChange('intelligence', false, 'summary') : undefined
+                  }
+                  onOpenDecisions={
+                    onSectionChange ? () => onSectionChange('intelligence', false, 'decisions') : undefined
+                  }
+                  onOpenActions={
+                    onSectionChange && capabilities.canReadActionItems
+                      ? () => onSectionChange('action-items')
+                      : undefined
+                  }
+                  onOpenTranscript={
+                    onSectionChange ? () => onSectionChange('transcript') : undefined
+                  }
+                />
+                <ExportPanel
+                  meetingId={meetingId}
+                  canExport={capabilities.canReadMeetingContent}
+                />
+              </div>
+            )}
+          </TabsContent>
+        </Tabs>
       </div>
     )
   }

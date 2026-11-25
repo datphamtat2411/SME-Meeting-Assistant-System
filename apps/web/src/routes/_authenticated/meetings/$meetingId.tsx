@@ -15,10 +15,13 @@ import {
 import { MeetingAuthorizationProvider } from '@/features/meetings/meeting-authorization-context'
 import { MeetingWorkspacePage } from '@/features/meetings/meeting-workspace'
 import {
+  activeIntelligenceView,
   meetingWorkspaceSectionSchema,
+  remainsInIntelligenceReview,
   normalizeMeetingWorkspaceSearch,
   updateMeetingWorkspaceSearch,
   type MeetingWorkspaceSection,
+  type IntelligenceView,
 } from '@/features/meetings/meeting-workspace-navigation'
 
 export const Route = createFileRoute('/_authenticated/meetings/$meetingId')({
@@ -38,9 +41,13 @@ function MeetingRoute() {
     fuzzy: false,
   })
 
-  function changeSection(section: MeetingWorkspaceSection, replace = false) {
+  function changeSection(
+    section: MeetingWorkspaceSection,
+    replace = false,
+    view?: IntelligenceView
+  ) {
     void navigate({
-      search: (previous) => updateMeetingWorkspaceSearch(previous, section),
+      search: (previous) => updateMeetingWorkspaceSearch(previous, section, view),
       replace,
     })
   }
@@ -57,6 +64,13 @@ function MeetingRoute() {
         evidenceSegmentId: segmentId,
         evidenceContentRevision: contentRevision,
         evidenceReferenceIssue: undefined,
+        evidenceReturn:
+          previous.section === 'action-items'
+            ? 'action-items'
+            : previous.section === 'intelligence' &&
+                activeIntelligenceView(previous) === 'decisions'
+              ? 'decisions'
+              : undefined,
       }),
     })
   }
@@ -84,6 +98,8 @@ function MeetingRoute() {
               evidenceSegmentId={search.evidenceSegmentId}
               evidenceContentRevision={search.evidenceContentRevision}
               evidenceReferenceIssue={search.evidenceReferenceIssue}
+              intelligenceView={activeIntelligenceView(search)}
+              evidenceReturn={search.evidenceReturn}
               onSectionChange={changeSection}
               onEvidenceNavigate={navigateToEvidence}
             />
@@ -103,7 +119,7 @@ function MeetingNavigationGuard() {
       session.hasUnsavedTranscriptReview ||
       session.hasUnsavedIntelligence ||
       gate.hasUnresolvedOperation,
-    shouldBlockFn: ({ next }) => {
+    shouldBlockFn: ({ current, next }) => {
       if (
         !session.hasUnsavedResources &&
         !session.hasUnsavedTranscriptReview &&
@@ -156,11 +172,10 @@ function MeetingNavigationGuard() {
       const remainsInIntelligence =
         sameMeeting &&
         next.routeId === '/_authenticated/meetings/$meetingId' &&
-        typeof next.search === 'object' &&
-        next.search !== null &&
-        'section' in next.search &&
-        next.search.section === 'intelligence' &&
-        !('evidenceSegmentId' in next.search && next.search.evidenceSegmentId)
+        remainsInIntelligenceReview(
+          normalizeMeetingWorkspaceSearch(current.search),
+          normalizeMeetingWorkspaceSearch(next.search)
+        )
       if (
         session.hasUnsavedIntelligence &&
         !remainsInIntelligence &&

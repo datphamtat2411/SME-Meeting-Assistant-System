@@ -31,11 +31,15 @@ export function MinutesPanel({
   meetingId,
   names = {},
   onOpenActions,
+  onOpenSummary,
+  onOpenDecisions,
   onOpenTranscript,
 }: {
   meetingId: string
   names?: Record<string, string>
   onOpenActions?: () => void
+  onOpenSummary?: () => void
+  onOpenDecisions?: () => void
   onOpenTranscript?: () => void
 }) {
   const query = useQuery(minutesQuery(meetingId))
@@ -158,6 +162,11 @@ export function MinutesPanel({
           <div className='flex flex-wrap items-center justify-between gap-2'>
             <h3 className='text-lg font-semibold'>Current Summary</h3>
             <SnapshotBadge value={minutes.summary.availability} />
+            {onOpenSummary && (
+              <Button size='sm' variant='link' onClick={onOpenSummary}>
+                Review Summary
+              </Button>
+            )}
           </div>
           <p className='text-sm whitespace-pre-wrap'>
             {minutes.summary.content || 'No current Summary is available.'}
@@ -190,6 +199,11 @@ export function MinutesPanel({
             <h3 className='text-lg font-semibold'>
               Confirmed Decisions ({minutes.confirmedDecisions.length})
             </h3>
+            {onOpenDecisions && (
+              <Button size='sm' variant='link' onClick={onOpenDecisions}>
+                Review Decisions
+              </Button>
+            )}
           </div>
           {minutes.confirmedDecisions.length === 0 ? (
             <p className='text-sm text-muted-foreground'>

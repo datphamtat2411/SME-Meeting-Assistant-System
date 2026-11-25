@@ -13,10 +13,18 @@ export const meetingWorkspaceSectionSchema = z.enum(meetingWorkspaceSections)
 
 export type MeetingWorkspaceSection = (typeof meetingWorkspaceSections)[number]
 
+export const intelligenceViewSchema = z.enum(['summary', 'decisions', 'minutes'])
+export type IntelligenceView = z.infer<typeof intelligenceViewSchema>
+
+const evidenceReturnSchema = z.enum(['decisions', 'action-items'])
+export type EvidenceReturn = z.infer<typeof evidenceReturnSchema>
+
 export type EvidenceReferenceIssue = 'malformed' | 'incomplete'
 
 export interface MeetingWorkspaceSearch extends Record<string, unknown> {
   section?: MeetingWorkspaceSection
+  intelligenceView?: IntelligenceView
+  evidenceReturn?: EvidenceReturn
   evidenceTranscriptId?: string
   evidenceSegmentId?: string
   evidenceContentRevision?: number
@@ -27,6 +35,8 @@ const evidenceIdentifierSchema = z.string().uuid().optional().catch(undefined)
 const sectionSearchSchema = z
   .object({
     section: meetingWorkspaceSectionSchema.optional().catch(undefined),
+    intelligenceView: intelligenceViewSchema.optional().catch(undefined),
+    evidenceReturn: evidenceReturnSchema.optional().catch(undefined),
     evidenceTranscriptId: evidenceIdentifierSchema,
     evidenceSegmentId: evidenceIdentifierSchema,
     evidenceContentRevision: z
@@ -69,10 +79,12 @@ export function normalizeMeetingWorkspaceSearch(
         ? 'malformed'
         : undefined
 
-  return {
-    ...parsed,
-    evidenceReferenceIssue,
-  }
+  const normalized = { ...parsed, evidenceReferenceIssue }
+  if (parsed.section !== 'intelligence') delete normalized.intelligenceView
+  if (!hasTranscript && !hasSegment) delete normalized.evidenceReturn
+  if (!normalized.intelligenceView) delete normalized.intelligenceView
+  if (!normalized.evidenceReturn) delete normalized.evidenceReturn
+  return normalized
 }
 
 export function activeMeetingWorkspaceSection(
@@ -81,15 +93,45 @@ export function activeMeetingWorkspaceSection(
   return search.section ?? 'overview'
 }
 
+export function activeIntelligenceView(
+  search: Pick<MeetingWorkspaceSearch, 'section' | 'intelligenceView'>
+): IntelligenceView {
+  return search.section === 'intelligence'
+    ? (search.intelligenceView ?? 'summary')
+    : 'summary'
+}
+
+/** Drafts belong to the feature view, not the parent Intelligence section. */
+export function remainsInIntelligenceReview(
+  current: MeetingWorkspaceSearch,
+  next: MeetingWorkspaceSearch
+): boolean {
+  if (next.evidenceTranscriptId || next.evidenceSegmentId || next.evidenceReferenceIssue)
+    return false
+  if (current.section === 'action-items') return next.section === 'action-items'
+  return (
+    current.section === 'intelligence' &&
+    next.section === 'intelligence' &&
+    activeIntelligenceView(current) === activeIntelligenceView(next)
+  )
+}
+
 export function updateMeetingWorkspaceSearch(
   previous: MeetingWorkspaceSearch,
-  section: MeetingWorkspaceSection
+  section: MeetingWorkspaceSection,
+  view?: IntelligenceView
 ): MeetingWorkspaceSearch {
   const next: MeetingWorkspaceSearch = {
     ...previous,
     section: section === 'overview' ? undefined : section,
   }
+  if (section === 'intelligence' && view) {
+    next.intelligenceView = view
+  } else if (section !== 'intelligence' || previous.section !== 'intelligence') {
+    delete next.intelligenceView
+  }
   if (section !== 'transcript') {
+    delete next.evidenceReturn
     delete next.evidenceTranscriptId
     delete next.evidenceSegmentId
     delete next.evidenceContentRevision
