@@ -80,6 +80,7 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
     final hasReadAccess = _allows(MeetingOperation.readMedia);
     if (!hadReadAccess && hasReadAccess && observation == null) {
       _startObservation();
+      _managerChanged(update: false);
     } else if (hadReadAccess && !hasReadAccess) {
       observation?.dispose();
       observation = null;
@@ -152,14 +153,15 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
   void _managerChanged({bool update = true}) {
     if (!mounted) return;
     final scope = sessionScope;
-    final state = scope == null
+    final authorized = _allows(MeetingOperation.readMedia);
+    final state = scope == null || !authorized
         ? null
         : widget.processingManager.stateFor(widget.meetingId, scope: scope);
     final nextJobs = List<ProcessingJobRecord>.unmodifiable(
       state?.jobs ?? const <ProcessingJobRecord>[],
     );
     final nextFailure = state?.failure;
-    final nextLoading = state == null;
+    final nextLoading = authorized && state == null;
     if (listEquals(jobs, nextJobs) &&
         failure == nextFailure &&
         loading == nextLoading) {
@@ -202,6 +204,9 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
 
   @override
   Widget build(BuildContext context) {
+    if (!_allows(MeetingOperation.readMedia)) {
+      return const MessagePanel(title: 'Bạn không có quyền xem tiến trình xử lý');
+    }
     if (loading) {
       return const Center(
         child: Padding(

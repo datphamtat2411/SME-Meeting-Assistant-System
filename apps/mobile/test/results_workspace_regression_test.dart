@@ -2,6 +2,10 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:sme_meeting_assistant/core/app_dependencies.dart';
+import 'package:sme_meeting_assistant/features/meetings/meeting_detail_page.dart';
+import 'package:sme_meeting_assistant/features/results/summary_history_controller.dart';
 import 'package:sme_meeting_assistant/features/results/results_presentation.dart';
 import 'package:sme_meeting_assistant/core/api_client.dart';
 import 'package:sme_meeting_assistant/core/meeting_models.dart';
@@ -20,6 +24,7 @@ import 'support/meeting_test_support.dart';
 class _Repository extends ResultsRepository {
   _Repository(super.api);
   int reads = 0;
+  ApiFailure? historyFailure;
   bool access = true;
   Object? verificationFailure;
   Completer<bool>? pendingVerification;
@@ -70,15 +75,19 @@ class _Repository extends ResultsRepository {
     required String meetingId,
     int page = 0,
     int size = 20,
-  }) async => const PagedCollection<SummaryVersion>(
-    items: <SummaryVersion>[],
-    page: 0,
-    size: 20,
-    totalElements: 0,
-    totalPages: 0,
-    hasNext: false,
-    hasPrevious: false,
-  );
+  }) async {
+    final failure = historyFailure;
+    if (failure != null) throw failure;
+    return const PagedCollection<SummaryVersion>(
+      items: <SummaryVersion>[],
+      page: 0,
+      size: 20,
+      totalElements: 0,
+      totalPages: 0,
+      hasNext: false,
+      hasPrevious: false,
+    );
+  }
 
   @override
   Future<PagedCollection<MeetingDecision>> decisions({
@@ -240,6 +249,35 @@ _setup() async {
 }
 
 void main() {
+  test('history denial clears the shared protected workspace', () async {
+    final (:workspace, :repository) = await _setup();
+    await workspace.loadTranscript();
+    final history = SummaryHistoryController(workspace);
+    addTearDown(history.dispose);
+    repository.historyFailure = const ApiFailure(403, 'FORBIDDEN', 'Denied');
+    await history.load();
+    expect(workspace.capabilities.canRead, isFalse);
+    expect(workspace.transcript.data, isNull);
+    expect(history.items, isEmpty);
+  });
+
+  test('history concealed absence suspends the shared workspace', () async {
+    final (:workspace, :repository) = await _setup();
+    await workspace.loadTranscript();
+    final history = SummaryHistoryController(workspace);
+    addTearDown(history.dispose);
+    repository.historyFailure = const ApiFailure(404, 'NOT_FOUND', 'Absent');
+    repository.pendingVerification = Completer<bool>();
+    final loading = history.load();
+    await _eventually(() => workspace.isAuthorizationVerificationPending);
+    expect(workspace.capabilities.canRead, isFalse);
+    expect(workspace.transcript.data, isNull);
+    repository.pendingVerification!.complete(true);
+    await loading;
+    expect(workspace.capabilities.canRead, isTrue);
+    expect(history.phase, SummaryHistoryPhase.failed);
+  });
+
   test('read revocation fences a delayed successful response', () async {
     final (:workspace, :repository) = await _setup();
     repository.pending = Completer<Transcript>();
@@ -472,6 +510,115 @@ void main() {
     expect(find.text('Protected draft'), findsNothing);
     expect(result, isNull);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Meeting Detail keeps pending Results commands across tabs', (
+    tester,
+  ) async {
+    final pending = Completer<http.StreamedResponse>();
+    final client = MeetingTestHttpClient((request) async {
+      final path = request.url.path;
+      if (path.endsWith('/summary/regenerate')) return pending.future;
+      if (path.endsWith('/summary/versions')) {
+        return meetingApiSuccess(
+          const <dynamic>[],
+          meta: {
+            ...meetingTestMeta,
+            'pagination': {
+              'page': 0,
+              'size': 20,
+              'totalElements': 0,
+              'totalPages': 0,
+              'hasNext': false,
+              'hasPrevious': false,
+            },
+          },
+        );
+      }
+      if (path.endsWith('/summary')) {
+        return meetingApiSuccess(
+          {
+            'id': 'summary-1',
+            'meetingId': testMeetingId,
+            'versionNumber': 1,
+            'content': 'Summary',
+            'sourceType': 'AI',
+            'qualityStatus': 'CONFIRMED',
+            'processingJobId': null,
+            'transcriptId': null,
+            'contentRevision': 1,
+            'isStale': false,
+            'createdAt': '2026-11-24T12:00:00Z',
+            'createdByUserId': null,
+            'aiWarnings': <String>[],
+          },
+          headers: const {'etag': '"summary-v1"'},
+        );
+      }
+      if (path.endsWith('/participants') ||
+          path.endsWith('/media') ||
+          path.endsWith('/processing-jobs')) {
+        return meetingApiSuccess(const <dynamic>[]);
+      }
+      if (path.endsWith('/meetings/$testMeetingId')) {
+        return meetingApiSuccess(
+          meetingTestJson(),
+          headers: const {'etag': testMeetingEtag},
+        );
+      }
+      return meetingApiFailure(404, 'NOT_FOUND');
+    });
+    final dependencies = await tester.runAsync(() async {
+      final deps = AppDependencies.create(
+        apiBaseUri: Uri.parse('https://api.example.test/api/v1'),
+        httpClient: client,
+        credentialStorage: InMemoryCredentialStorage(),
+      );
+      await signInMeetingTestApi(deps.api);
+      return deps;
+    });
+    final deps = dependencies!;
+    addTearDown(deps.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MeetingDetailPage(dependencies: deps, meetingId: testMeetingId),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Biên bản AI'));
+    await tester.pumpAndSettle();
+    final workspace = tester
+        .widget<ResultsPanel>(find.byType(ResultsPanel))
+        .workspace;
+    final command = workspace.regenerateSummary(epoch: workspace.reviewEpoch);
+    await tester.pump();
+    expect(workspace.mutationBusy(ResultsMutationGroup.summary), isTrue);
+    final processingTab = find.text('Xử lý');
+    await tester.ensureVisible(processingTab);
+    await tester.tap(processingTab);
+    await tester.pumpAndSettle();
+    expect(find.byType(ResultsPanel), findsNothing);
+    expect(workspace.mutationBusy(ResultsMutationGroup.summary), isTrue);
+    pending.complete(
+      await meetingApiSuccess({
+        'meetingId': testMeetingId,
+        'processingJobId': '11111111-1111-4111-8111-111111111111',
+      }, status: 202),
+    );
+    await tester.pump();
+    await command;
+    final resultsTab = find.text('Biên bản AI');
+    await tester.ensureVisible(resultsTab);
+    await tester.tap(resultsTab);
+    await tester.pumpAndSettle();
+    final restored = tester
+        .widget<ResultsPanel>(find.byType(ResultsPanel))
+        .workspace;
+    expect(restored, same(workspace));
+    expect(restored.acceptedRegenerationJobId, isNotNull);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.runAsync(deps.shutdown);
   });
 
   test('pending Results commands survive section changes', () async {

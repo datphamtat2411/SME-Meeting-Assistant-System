@@ -201,9 +201,11 @@ class ResultsWorkspaceController extends ChangeNotifier {
     for (final dialog in List<ResultsProtectedDialogRegistration>.of(
       _dialogs,
     )) {
-      if (!mutationOnly || dialog.requiresMutation) dialog.invalidate();
+      if (!mutationOnly || dialog.requiresMutation) {
+        dialog.invalidate();
+        _dialogs.remove(dialog);
+      }
     }
-    _dialogs.clear();
   }
 
   void _releaseDialog(ResultsProtectedDialogRegistration dialog) {
@@ -402,6 +404,20 @@ class ResultsWorkspaceController extends ChangeNotifier {
     _capabilities = next;
     _syncProcessingObservation();
     notifyListeners();
+  }
+
+  /// Feature-owned protected reads must use the same authorization recovery
+  /// as workspace-owned resources.
+  Future<void> handleProtectedReadFailure(
+    ApiFailure failure, {
+    required int epoch,
+  }) async {
+    if (!ownsRead(epoch)) return;
+    if (failure.status == 401 || failure.status == 403) {
+      _denyAccess();
+    } else if (failure.status == 404) {
+      await _verifyAuthorization();
+    }
   }
 
   Future<void> retryAccess() async {

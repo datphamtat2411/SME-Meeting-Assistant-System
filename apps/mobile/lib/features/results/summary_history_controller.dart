@@ -32,6 +32,7 @@ class SummaryHistoryController extends ChangeNotifier {
   int _generation = 0;
   bool _started = false;
   bool _disposed = false;
+  bool _recoveringRead = false;
   SummaryHistoryPhase phase = SummaryHistoryPhase.uninitialized;
   Object? failure;
 
@@ -67,7 +68,7 @@ class SummaryHistoryController extends ChangeNotifier {
 
     final token = _pages.beginRequest();
     final requestGeneration = _generation;
-    final operation = _loadPage(token, requestGeneration);
+    final operation = _loadPage(token, requestGeneration, workspace.readEpoch);
     _request = operation;
     unawaited(
       operation.whenComplete(() {
@@ -79,7 +80,11 @@ class SummaryHistoryController extends ChangeNotifier {
 
   Future<void> loadMore() => load();
 
-  Future<void> _loadPage(PageRequestToken token, int generation) async {
+  Future<void> _loadPage(
+    PageRequestToken token,
+    int generation,
+    int readEpoch,
+  ) async {
     try {
       final page = await workspace.repository.summaryVersions(
         sessionScope: workspace.sessionScope,
@@ -89,8 +94,7 @@ class SummaryHistoryController extends ChangeNotifier {
       );
       if (generation != _generation ||
           _disposed ||
-          !workspace.ownsSession ||
-          !workspace.capabilities.canRead) {
+          !workspace.ownsRead(readEpoch)) {
         return;
       }
       final accepted = _pages.accept(
@@ -105,9 +109,24 @@ class SummaryHistoryController extends ChangeNotifier {
       failure = null;
       notifyListeners();
     } catch (error) {
-      if (generation != _generation || _disposed) return;
+      if (generation != _generation ||
+          _disposed ||
+          !workspace.ownsRead(readEpoch)) {
+        return;
+      }
       if (error is ApiFailure && {401, 403, 404}.contains(error.status)) {
+        _recoveringRead = true;
         _clear(SummaryHistoryPhase.forbidden);
+        try {
+          await workspace.handleProtectedReadFailure(error, epoch: readEpoch);
+        } finally {
+          _recoveringRead = false;
+        }
+        if (!_disposed && workspace.capabilities.canRead) {
+          phase = SummaryHistoryPhase.failed;
+          failure = error;
+          notifyListeners();
+        }
         return;
       }
       phase = SummaryHistoryPhase.failed;
@@ -122,6 +141,7 @@ class SummaryHistoryController extends ChangeNotifier {
       _clear(SummaryHistoryPhase.forbidden);
       return;
     }
+    if (_recoveringRead) return;
     if (_started && phase == SummaryHistoryPhase.forbidden) {
       unawaited(load(refresh: true));
       return;
@@ -136,7 +156,7 @@ class SummaryHistoryController extends ChangeNotifier {
         !signal.resources.contains(ResultsResourceKind.summaryVersions)) {
       return;
     }
-    if (_started) unawaited(load(refresh: true));
+    if (_started && !_recoveringRead) unawaited(load(refresh: true));
   }
 
   void _clear(SummaryHistoryPhase next) {
