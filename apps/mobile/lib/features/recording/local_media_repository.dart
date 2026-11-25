@@ -1681,7 +1681,14 @@ class LocalMediaRepository {
     final storage = await _storage();
     var current = preparation.asset;
     final writerLease = preparation.writerLease;
+    void requireImportActive() {
+      if (_disposed || cancellationToken?.isCancelled == true) {
+        throw const FileSystemException('The staged import was cancelled.');
+      }
+    }
+
     try {
+      requireImportActive();
       final stagedPath = current.stagedRelativePath;
       if (stagedPath == null) {
         throw const FileSystemException('The staged media path is missing.');
@@ -1718,6 +1725,7 @@ class LocalMediaRepository {
       // identity lock, which covers the final deduplication decision and
       // promotion boundary.
       return await _withImportIdentityLock(identityKey, () async {
+        requireImportActive();
         final duplicate = await _findImportDuplicate(
           persistence: persistence,
           deploymentScope: deploymentScope,
@@ -1731,20 +1739,22 @@ class LocalMediaRepository {
         );
         if (duplicate != null) {
           try {
-            return await _withLifecycleLock(
-              () => _reuseVerifiedImportDuplicate(
+            return await _withLifecycleLock(() {
+              requireImportActive();
+              return _reuseVerifiedImportDuplicate(
                 persistence: persistence,
                 storage: storage,
                 current: current,
                 candidate: duplicate.asset,
                 stagedPath: stagedPath,
-              ),
-            );
+              );
+            });
           } finally {
             await duplicate.lease.release();
           }
         }
 
+        requireImportActive();
         current = await _withLifecycleLock(
           () => persistence.updateAsset(
             current.copyWith(
@@ -1757,6 +1767,7 @@ class LocalMediaRepository {
         // The writer lease fences discard and recovery while the external file
         // move and integrity inspection happen outside the global lifecycle
         // lock, but remain inside the equivalent-content lock.
+        requireImportActive();
         await storage.promote(stagedPath, current.managedRelativePath);
         final managedIntegrity = await storage.inspectFile(
           current.managedRelativePath,
@@ -1767,16 +1778,17 @@ class LocalMediaRepository {
             'The promoted media file failed integrity verification.',
           );
         }
-        return await _withLifecycleLock(
-          () => persistence.updateAsset(
+        return await _withLifecycleLock(() {
+          requireImportActive();
+          return persistence.updateAsset(
             current.copyWith(
               lifecycle: LocalMediaLifecycle.ready,
               readyAt: _utcNow(),
               updatedAt: _utcNow(),
             ),
             expectedVersion: current.version,
-          ),
-        );
+          );
+        });
       });
     } catch (_) {
       await _markImportInterrupted(persistence: persistence, current: current);

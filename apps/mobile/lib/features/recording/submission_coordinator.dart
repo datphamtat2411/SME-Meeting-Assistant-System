@@ -1411,19 +1411,19 @@ class SubmissionCoordinator extends ChangeNotifier {
             operationId: operation.id,
           ) ??
           operation;
-      final attemptStarted =
-          authoritative.attemptOutcome == OperationAttemptOutcome.uncertain &&
-          authoritative.recoveryRequired;
+      final priorUnresolved =
+          (operation.recoveryRequired ||
+              (authoritative.recoveryRequired &&
+                  authoritative.attemptCount > operation.attemptCount + 1)) &&
+          failure.code != 'MEDIA_REJECTED' &&
+          failure.code != 'MEDIA_PROCESSING_FAILED';
       return await localMedia.updateUploadOperation(
         authoritative,
         scope: scope,
-        attemptCount: attemptStarted
-            ? authoritative.attemptCount
-            : authoritative.attemptCount + 1,
+        attemptCount: authoritative.attemptCount,
         attemptOutcome: outcome,
         recoveryRequired:
-            operation.recoveryRequired ||
-            outcome == OperationAttemptOutcome.uncertain,
+            priorUnresolved || outcome == OperationAttemptOutcome.uncertain,
         failureCode: failure.code,
         failureStatus: failure.status,
         failureMessage: failure.message,
@@ -1462,15 +1462,10 @@ class SubmissionCoordinator extends ChangeNotifier {
           authoritative.resultingJobId != null) {
         return authoritative;
       }
-      final attemptStarted =
-          authoritative.attemptOutcome == OperationAttemptOutcome.uncertain &&
-          authoritative.recoveryRequired;
       return await localMedia.updateProcessingOperation(
         authoritative,
         scope: scope,
-        attemptCount: attemptStarted
-            ? authoritative.attemptCount
-            : authoritative.attemptCount + 1,
+        attemptCount: authoritative.attemptCount,
         attemptOutcome: outcome,
         recoveryRequired:
             operation.recoveryRequired ||

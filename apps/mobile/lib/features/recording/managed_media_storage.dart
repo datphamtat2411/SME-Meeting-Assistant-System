@@ -83,11 +83,42 @@ class ManagedMediaStorage {
     final converter = sha256.startChunkedConversion(digestSink);
     var size = 0;
     final iterator = StreamIterator<List<int>>(bytes);
-    final cancellation = cancellationToken?.whenCancelled.then<bool>(
-      (_) => false,
-    );
+    // Observe cancellation once per import, not once per source chunk.
+    Completer<bool>? pendingMove;
+    var finished = false;
+    if (cancellationToken != null) {
+      unawaited(
+        cancellationToken.whenCancelled.then<void>((_) {
+          if (finished) return;
+          final pending = pendingMove;
+          if (pending != null && !pending.isCompleted) {
+            pending.complete(false);
+          }
+        }),
+      );
+    }
+
+    Future<bool> moveNext() {
+      if (cancellationToken?.isCancelled == true) {
+        return Future<bool>.value(false);
+      }
+      final pending = Completer<bool>();
+      pendingMove = pending;
+      unawaited(
+        iterator.moveNext().then<void>(
+          (value) {
+            if (!pending.isCompleted) pending.complete(value);
+          },
+          onError: (Object error, StackTrace stack) {
+            if (!pending.isCompleted) pending.completeError(error, stack);
+          },
+        ),
+      );
+      return pending.future;
+    }
+
     try {
-      while (await _moveNext(iterator, cancellationToken, cancellation)) {
+      while (await moveNext()) {
         final chunk = iterator.current;
         if (cancellationToken?.isCancelled == true) {
           throw const FileSystemException('The staged import was cancelled.');
@@ -103,6 +134,9 @@ class ManagedMediaStorage {
         sink.add(chunk);
         await sink.flush();
       }
+      if (cancellationToken?.isCancelled == true) {
+        throw const FileSystemException('The staged import was cancelled.');
+      }
       converter.close();
       await sink.flush();
       await sink.close();
@@ -112,6 +146,9 @@ class ManagedMediaStorage {
         await sink.close();
       } catch (_) {}
       rethrow;
+    } finally {
+      finished = true;
+      pendingMove = null;
     }
     await iterator.cancel();
     if (size <= 0 || expectedSizeBytes != null && size != expectedSizeBytes) {
@@ -121,21 +158,6 @@ class ManagedMediaStorage {
       sizeBytes: size,
       sha256: digestSink.value.toString(),
     );
-  }
-
-  Future<bool> _moveNext(
-    StreamIterator<List<int>> iterator,
-    UploadCancellationToken? cancellationToken,
-    Future<bool>? cancellation,
-  ) async {
-    final moving = iterator.moveNext();
-    if (cancellationToken == null || cancellation == null) return moving;
-    final result = await Future.any<bool>(<Future<bool>>[moving, cancellation]);
-    if (!result && cancellationToken.isCancelled) {
-      await iterator.cancel();
-      throw const FileSystemException('The staged import was cancelled.');
-    }
-    return result;
   }
 
   Future<LocalMediaFileIntegrity> copyFileToStaging(
