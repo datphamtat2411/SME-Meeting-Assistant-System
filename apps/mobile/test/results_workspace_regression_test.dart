@@ -133,6 +133,7 @@ class _Repository extends ResultsRepository {
     required String meetingId,
     int page = 0,
     int size = 20,
+    String? status,
   }) async {
     if (decisionPages.isNotEmpty) return decisionPages[page];
     return const PagedCollection<MeetingDecision>(
@@ -151,6 +152,7 @@ class _Repository extends ResultsRepository {
     required AuthenticatedSessionScope sessionScope,
     required String meetingId,
     required String content,
+    List<String> evidenceSegmentIds = const [],
   }) async {
     decisionCreates++;
     throw const ApiFailure(

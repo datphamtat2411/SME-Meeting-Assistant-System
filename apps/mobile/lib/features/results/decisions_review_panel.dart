@@ -6,9 +6,13 @@ import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
 import '../../core/command_actions.dart';
 import '../../core/meeting_models.dart';
+import '../../core/models.dart';
 import '../../core/widgets.dart';
+import 'decision_review_state.dart';
 import 'results_workspace_controller.dart';
+import 'transcript_evidence_navigation.dart';
 import 'results_presentation.dart';
+import 'results_models.dart';
 
 class DecisionsReviewPanel extends StatefulWidget {
   const DecisionsReviewPanel({super.key, required this.workspace});
@@ -102,45 +106,37 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
         return;
       }
     }
-    final controller = TextEditingController();
-    final ok = await showResultsReviewDialog<bool>(
+    final input = await showResultsReviewDialog<(String, bool)>(
       context: context,
       workspace: workspace,
       epoch: epoch,
-      builder: (dialog) => AlertDialog(
-        title: const Text('Tạo quyết định'),
-        content: SizedBox(
-          width: 480,
-          child: TextField(
-            controller: controller,
-            minLines: 3,
-            maxLines: 8,
-            maxLength: 5000,
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialog, false),
-            child: const Text('Hủy'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(dialog, true),
-            child: const Text('Lưu'),
-          ),
-        ],
+      builder: (_) => const _DecisionContentDialog(
+        title: 'Tạo quyết định chính thức',
+        allowEvidence: true,
       ),
     );
-    if (ok != true ||
-        !mounted ||
-        !identical(widget.workspace, workspace) ||
-        !workspace.ownsReview(epoch)) {
-      controller.dispose();
-      return;
-    }
-    final value = controller.text.trim();
-    controller.dispose();
-    if (value.isEmpty) {
-      return;
+    if (input == null || !mounted || !workspace.ownsReview(epoch)) return;
+    Transcript? source;
+    Set<String> selected = {};
+    if (input.$2) {
+      await workspace.loadTranscript(force: true);
+      if (!mounted || !workspace.ownsReview(epoch)) return;
+      source = workspace.transcript.data;
+      if (!workspace.transcriptIsCurrent || source == null || source.etag == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Chưa thể tải transcript để chọn bằng chứng.')),
+        );
+        return;
+      }
+      final reviewed = source;
+      final evidence = await showResultsReviewDialog<Set<String>>(
+        context: context,
+        workspace: workspace,
+        epoch: epoch,
+        builder: (_) => _DecisionEvidencePicker(transcript: reviewed),
+      );
+      if (evidence == null || !mounted || !workspace.ownsReview(epoch)) return;
+      selected = evidence;
     }
     await runCommand(
       context,
@@ -152,97 +148,459 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
             reviewed: reviewed,
           );
         }
-        await workspace.createDecision(value, epoch: epoch);
+        await workspace.createDecision(
+          input.$1,
+          epoch: epoch,
+          reviewedTranscript: source,
+          evidenceSegmentIds: selected.toList(growable: false),
+        );
       },
       successText: 'Đã lưu quyết định.',
     );
+  }
+
+  Future<void> inspect(MeetingDecision decision) async {
+    final workspace = widget.workspace;
+    final readEpoch = workspace.readEpoch;
+    final reviewEpoch = workspace.reviewEpoch;
+    final evidence = await workspace.loadDecisionEvidence(decision);
+    if (!mounted || !workspace.ownsRead(readEpoch)) return;
+    final canMutate =
+        workspace.ownsReview(reviewEpoch) &&
+        !workspace.mutationBusy(ResultsMutationGroup.decisions) &&
+        decision.etag != null &&
+        decision.etag!.trim().isNotEmpty;
+    final action = await showResultsReviewDialog<String>(
+      context: context,
+      workspace: workspace,
+      epoch: readEpoch,
+      requiresMutation: false,
+      builder: (dialog) => AlertDialog(
+        title: const Text('Đối chiếu quyết định'),
+        content: SizedBox(
+          width: 480,
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                StatePill(decision.status),
+                SelectableText(decision.content),
+                ..._provenance(decision),
+                const Divider(),
+                const Text('Bằng chứng transcript'),
+                if (decision.evidenceSegmentIds.isEmpty)
+                  const Text('Không có bằng chứng đính kèm.'),
+                if (decision.evidenceSegmentIds.isNotEmpty &&
+                    !evidence.hasCompatibleSource)
+                  const Text('Không còn nguồn transcript tương thích hoặc nguồn chưa tải được.'),
+                for (final id in decision.evidenceSegmentIds)
+                  _evidenceTile(dialog, evidence, id),
+                if (decision.status == 'PROPOSED')
+                  Text(
+                    evidence.canConfirm
+                        ? 'Xác nhận sẽ đưa đề xuất vào quyết định chính thức.'
+                        : 'Chưa đủ điều kiện xác nhận; vẫn có thể từ chối đề xuất.',
+                  ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialog),
+            child: const Text('Đóng'),
+          ),
+          if (canMutate && decision.status == 'PROPOSED') ...[
+            TextButton(
+              onPressed: () => Navigator.pop(dialog, 'reject'),
+              child: const Text('Từ chối'),
+            ),
+            FilledButton(
+              onPressed: evidence.canConfirm
+                  ? () => Navigator.pop(dialog, 'confirm')
+                  : null,
+              child: const Text('Xác nhận chính thức'),
+            ),
+          ],
+          if (canMutate && decision.status == 'CONFIRMED')
+            FilledButton(
+              onPressed: () => Navigator.pop(dialog, 'edit'),
+              child: const Text('Chỉnh sửa'),
+            ),
+        ],
+      ),
+    );
+    if (action == null || !mounted || !workspace.ownsRead(readEpoch)) return;
+    if (action.startsWith('segment:')) {
+      final id = action.substring('segment:'.length);
+      final source = evidence.projection?.transcript;
+      if (source == null) return;
+      final result = await TranscriptEvidenceNavigationBoundary(workspace).locate(
+        TranscriptEvidenceReference(
+          transcriptId: source.id,
+          segmentId: id,
+          contentRevision: source.contentRevision,
+          transcriptEtag: source.etag,
+        ),
+      );
+      if (!mounted || !workspace.ownsRead(readEpoch)) return;
+      if (result.status != TranscriptEvidenceNavigationStatus.opened) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Không thể mở đoạn bằng chứng đã ghi.')),
+        );
+      }
+      return;
+    }
+    if (!workspace.ownsReview(reviewEpoch)) return;
+    if (action == 'edit') {
+      await edit(decision, reviewEpoch);
+      return;
+    }
+    if (action != 'confirm' && action != 'reject') return;
+    final confirm = action == 'confirm';
+    await runCommand(
+      context,
+      operation: () => workspace.reviewDecision(
+        decision,
+        confirm: confirm,
+        epoch: reviewEpoch,
+        reviewedEvidence: evidence,
+      ),
+      successText: confirm ? 'Đã xác nhận quyết định.' : 'Đã từ chối đề xuất.',
+    );
+  }
+
+  Widget _evidenceTile(
+    BuildContext dialog,
+    DecisionEvidenceReview review,
+    String id,
+  ) {
+    final segment = review.segment(id);
+    if (segment == null) {
+      return const ListTile(title: Text('Không thể xác minh đoạn bằng chứng.'));
+    }
+    final speaker = review.projection!.speakerName(segment);
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      title: Text(segment.text),
+      subtitle: Text(
+        '$speaker · ${segment.startMs ~/ 1000}s–${segment.endMs ~/ 1000}s'
+        '\n${review.isUnsafe(segment) ? 'Cần đối chiếu chất lượng' : 'Có thể đối chiếu'}',
+      ),
+      trailing: IconButton(
+        tooltip: 'Mở transcript',
+        icon: const Icon(Icons.open_in_new),
+        onPressed: () => Navigator.pop(dialog, 'segment:$id'),
+      ),
+    );
+  }
+
+  List<Widget> _provenance(MeetingDecision decision) => [
+    Text(
+      switch (decision.sourceType) {
+        'AI_EXTRACTED' => 'Đề xuất từ AI',
+        'MANUAL' => 'Do người dùng tạo',
+        _ => 'Nguồn chưa xác định',
+      },
+    ),
+    Text('Tạo lúc: ${dateLabel(decision.createdAt)}'),
+    if (decision.createdByUserId != null)
+      Text('Người tạo: ${decision.createdByUserId}'),
+    if (decision.confirmedAt != null)
+      Text('Xác nhận lúc: ${dateLabel(decision.confirmedAt)}'),
+    if (decision.confirmedByUserId != null)
+      Text('Người xác nhận: ${decision.confirmedByUserId}'),
+    if (decision.rejectedAt != null)
+      Text('Từ chối lúc: ${dateLabel(decision.rejectedAt)}'),
+    if (decision.rejectedByUserId != null)
+      Text('Người từ chối: ${decision.rejectedByUserId}'),
+    if (decision.stale)
+      const Text('Nguồn transcript đã thay đổi; cần đối chiếu.'),
+    if (decision.contentRevision != null)
+      Text('Revision nguồn: ${decision.contentRevision}'),
+    if (decision.aiUncertainty == 'MATERIAL')
+      const Text('Có bất định đáng kể về bằng chứng.'),
+    for (final warning in decision.aiWarnings)
+      Text('Cảnh báo: $warning', style: const TextStyle(color: Palette.amber)),
+  ];
+
+  Future<void> edit(MeetingDecision decision, int epoch) async {
+    final workspace = widget.workspace;
+    final token = decision.etag;
+    if (token == null || !workspace.ownsReview(epoch)) return;
+    final key = 'decision:${decision.id}';
+    final preserved = workspace.recoveryDraft(key);
+    var initial = workspace.draftFor(
+      key,
+      resourceId: decision.id,
+      reviewedToken: token,
+      epoch: epoch,
+    );
+    if (preserved != null && initial == null) {
+      final choice = await showResultsDraftConflictDialog(
+        context: context,
+        workspace: workspace,
+        epoch: epoch,
+        currentContent: decision.content,
+        preservedDraft: preserved.content,
+      );
+      if (!mounted || !workspace.ownsReview(epoch)) return;
+      if (choice == ResultsDraftConflictChoice.discard) {
+        workspace.clearDraft(key, epoch);
+        return;
+      }
+      if (choice == ResultsDraftConflictChoice.cancel) return;
+      initial = preserved.content;
+    }
+    final input = await showResultsReviewDialog<(String, bool)>(
+      context: context,
+      workspace: workspace,
+      epoch: epoch,
+      builder: (_) => _DecisionContentDialog(
+        title: 'Chỉnh sửa quyết định đã xác nhận',
+        initial: initial ?? decision.content,
+      ),
+    );
+    if (input == null || !mounted || !workspace.ownsReview(epoch)) return;
+    workspace.keepDraft(
+      key,
+      input.$1,
+      epoch,
+      resourceId: decision.id,
+      reviewedToken: token,
+    );
+    final saved = await runCommand(
+      context,
+      operation: () => workspace.editDecision(decision, input.$1, epoch: epoch),
+      successText: 'Đã lưu nội dung quyết định.',
+    );
+    if (saved) workspace.clearDraft(key, epoch);
   }
 
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
     animation: widget.workspace,
     builder: (context, _) {
-      final resource = widget.workspace.decisions;
-      final items = resource.hasData ? resource.data?.items : null;
+      final workspace = widget.workspace;
+      final resource = workspace.decisions;
+      final collection = workspace.capabilities.canRead && resource.hasData
+          ? resource.data
+          : null;
+      final items = collection?.items ?? const <MeetingDecision>[];
+      final filter = workspace.decisionStatus ?? 'ALL';
       return Column(
         children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(18, 14, 18, 6),
             child: SectionHeading(
               'Quyết định',
-              subtitle:
-                  'Đề xuất AI cần xác nhận trước khi trở thành chính thức.',
+              subtitle: 'Đề xuất AI cần xác nhận để trở thành chính thức.',
               trailing: IconButton(
-                onPressed:
-                    busy ||
-                        widget.workspace.mutationBusy(
-                          ResultsMutationGroup.decisions,
-                        ) ||
-                        !widget.workspace.capabilities.canMutate
+                tooltip: 'Tạo quyết định',
+                onPressed: busy ||
+                        workspace.mutationBusy(ResultsMutationGroup.decisions) ||
+                        !workspace.capabilities.canMutate
                     ? null
                     : createDecision,
                 icon: const Icon(Icons.add_circle_outline),
               ),
             ),
           ),
+          if (workspace.capabilities.canRead)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 18),
+              child: DropdownButton<String>(
+                isExpanded: true,
+                value: filter,
+                items: const [
+                  DropdownMenuItem(value: 'ALL', child: Text('Tất cả')),
+                  DropdownMenuItem(value: 'PROPOSED', child: Text('Đề xuất')),
+                  DropdownMenuItem(value: 'CONFIRMED', child: Text('Đã xác nhận')),
+                  DropdownMenuItem(value: 'REJECTED', child: Text('Đã từ chối')),
+                ],
+                onChanged: (value) {
+                  if (value != null) {
+                    unawaited(workspace.selectDecisionStatus(value == 'ALL' ? null : value));
+                  }
+                },
+              ),
+            ),
           Expanded(
             child: RefreshIndicator(
-              onRefresh: () => widget.workspace.loadDecisions(force: true),
-              child: ListView(
+              onRefresh: () => workspace.loadDecisions(force: true),
+              child: ListView.builder(
+                physics: const AlwaysScrollableScrollPhysics(),
                 padding: const EdgeInsets.all(18),
-                children: [
-                  resultsRefreshNotice(
-                    resource,
-                    () => widget.workspace.loadDecisions(force: true),
-                  ),
-                  if (items == null)
-                    resultsResourceMessage(
+                itemCount: items.length + 2,
+                itemBuilder: (context, index) {
+                  if (index == 0) {
+                    if (collection == null) {
+                      return resultsResourceMessage(
+                        resource,
+                        label: 'Quyết định',
+                        onRetry: () => workspace.loadDecisions(force: true),
+                      );
+                    }
+                    if (items.isEmpty) {
+                      return const MessagePanel(title: 'Chưa có quyết định');
+                    }
+                    return resultsRefreshNotice(
                       resource,
-                      label: 'Quyết định',
-                      onRetry: () =>
-                          widget.workspace.loadDecisions(force: true),
-                    )
-                  else if (items.isEmpty)
-                    const MessagePanel(title: 'Chưa có quyết định')
-                  else
-                    ...items.map(
-                      (decision) => ContentCard(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              children: [
-                                StatePill(decision.status),
-                                if (decision.stale)
-                                  const Padding(
-                                    padding: EdgeInsets.only(left: 8),
-                                    child: StatePill(
-                                      'COMPLETED_WITH_WARNINGS',
-                                      label: 'Cần đối chiếu',
-                                    ),
-                                  ),
-                              ],
-                            ),
-                            const SizedBox(height: 9),
-                            SelectableText(decision.content),
-                            if (decision.stale)
-                              const Text(
-                                'Nguồn transcript đã thay đổi; cần đối chiếu trước khi sử dụng.',
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color: Palette.muted,
-                                ),
-                              ),
-                          ],
+                      () => workspace.loadDecisions(force: true),
+                    );
+                  }
+                  if (index == items.length + 1) {
+                    return collection?.hasMore == true
+                        ? OutlinedButton(
+                            onPressed: resource.phase == ResultsResourcePhase.refreshing
+                                ? null
+                                : () => unawaited(workspace.loadMoreDecisions()),
+                            child: const Text('Tải thêm quyết định'),
+                          )
+                        : const SizedBox.shrink();
+                  }
+                  final decision = items[index - 1];
+                  return ContentCard(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        StatePill(decision.status),
+                        SelectableText(decision.content),
+                        Text('${decision.evidenceSegmentIds.length} đoạn bằng chứng'),
+                        if (decision.stale)
+                          const Text('Nguồn transcript cần đối chiếu lại.'),
+                        TextButton(
+                          onPressed: () => unawaited(inspect(decision)),
+                          child: const Text('Xem và đối chiếu'),
                         ),
-                      ),
+                      ],
                     ),
-                ],
+                  );
+                },
               ),
             ),
           ),
         ],
       );
     },
+  );
+}
+
+class _DecisionContentDialog extends StatefulWidget {
+  const _DecisionContentDialog({
+    required this.title,
+    this.initial = '',
+    this.allowEvidence = false,
+  });
+
+  final String title;
+  final String initial;
+  final bool allowEvidence;
+
+  @override
+  State<_DecisionContentDialog> createState() => _DecisionContentDialogState();
+}
+
+class _DecisionContentDialogState extends State<_DecisionContentDialog> {
+  late final TextEditingController _text = TextEditingController(text: widget.initial);
+  bool _attach = false;
+
+  @override
+  void dispose() {
+    _text.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: Text(widget.title),
+    content: SizedBox(
+      width: 480,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TextField(
+            controller: _text,
+            minLines: 3,
+            maxLines: 8,
+            maxLength: 5000,
+            onChanged: (_) => setState(() {}),
+          ),
+          if (widget.allowEvidence)
+            CheckboxListTile(
+              value: _attach,
+              title: const Text('Đính kèm bằng chứng transcript'),
+              onChanged: (value) => setState(() => _attach = value ?? false),
+            ),
+        ],
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('Hủy'),
+      ),
+      FilledButton(
+        onPressed: _text.text.trim().isEmpty || _text.text.length > 5000
+            ? null
+            : () => Navigator.pop(context, (_text.text.trim(), _attach)),
+        child: const Text('Tiếp tục'),
+      ),
+    ],
+  );
+}
+
+class _DecisionEvidencePicker extends StatefulWidget {
+  const _DecisionEvidencePicker({required this.transcript});
+  final Transcript transcript;
+
+  @override
+  State<_DecisionEvidencePicker> createState() => _DecisionEvidencePickerState();
+}
+
+class _DecisionEvidencePickerState extends State<_DecisionEvidencePicker> {
+  final Set<String> _selected = {};
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: Text('Chọn bằng chứng (${_selected.length}/50)'),
+    content: SizedBox(
+      width: 480,
+      height: 360,
+      child: ListView.builder(
+        itemCount: widget.transcript.segments.length,
+        itemBuilder: (context, index) {
+          final segment = widget.transcript.segments[index];
+          final selected = _selected.contains(segment.id);
+          return CheckboxListTile(
+            value: selected,
+            title: Text(segment.text),
+            subtitle: Text(
+              '${segment.startMs ~/ 1000}s · '
+              '${segment.quality == 'ACCEPTED' ? 'Đã chấp nhận' : 'Cần đối chiếu'}',
+            ),
+            onChanged: selected || _selected.length < 50
+                ? (value) => setState(() {
+                    if (value == true) {
+                      _selected.add(segment.id);
+                    } else {
+                      _selected.remove(segment.id);
+                    }
+                  })
+                : null,
+          );
+        },
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('Hủy'),
+      ),
+      FilledButton(
+        onPressed: () => Navigator.pop(context, Set<String>.of(_selected)),
+        child: const Text('Xác nhận lựa chọn'),
+      ),
+    ],
   );
 }

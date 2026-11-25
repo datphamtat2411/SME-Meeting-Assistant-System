@@ -262,16 +262,31 @@ class ResultsRepository {
     required String meetingId,
     int page = 0,
     int size = 20,
+    String? status,
   }) async {
     if (size < 1 || size > 100) throw ArgumentError.value(size, 'size');
     final response = await _get(
       sessionScope,
       '/meetings/$meetingId/decisions',
-      query: {'page': '$page', 'size': '$size'},
+      query: {
+        'page': '$page',
+        'size': '$size',
+        if (status != null) 'status': status,
+      },
     );
     return PagedCollection<MeetingDecision>.fromResult(
       response,
-      (raw) => MeetingDecision.fromJson(raw, response: response),
+      (raw) {
+        final decision = MeetingDecision.fromJson(raw, response: response);
+        _requireOwnership(sessionScope, meetingId, decision.meetingId);
+        if (!const {'PROPOSED', 'CONFIRMED', 'REJECTED'}.contains(
+              decision.status,
+            ) ||
+            (status != null && decision.status != status)) {
+          throw response.invalidDataFailure();
+        }
+        return decision;
+      },
       requestedPage: page,
       requestedSize: size,
     );
@@ -356,16 +371,20 @@ class ResultsRepository {
     required AuthenticatedSessionScope sessionScope,
     required String meetingId,
     required String content,
+    List<String> evidenceSegmentIds = const [],
   }) async {
     final response = await _post(
       sessionScope,
       '/meetings/$meetingId/decisions',
-      {'content': content, 'evidenceSegmentIds': <String>[]},
+      {'content': content, 'evidenceSegmentIds': evidenceSegmentIds},
     );
-    return MeetingDecision.fromJson(
+    final decision = MeetingDecision.fromJson(
       _validatedMutationResponse(response, requireBodyEtag: true).objectData(),
       response: response,
     );
+    _requireOwnership(sessionScope, meetingId, decision.meetingId);
+    if (decision.status != 'CONFIRMED') throw response.invalidDataFailure();
+    return decision;
   }
 
   Future<ApiResult> editDecision({
@@ -374,6 +393,7 @@ class ResultsRepository {
     required MeetingDecision snapshot,
     required String content,
   }) async {
+    _requireOwnership(sessionScope, meetingId, snapshot.meetingId);
     final response = await _patch(
       sessionScope,
       '/meetings/$meetingId/decisions/${snapshot.id}',
@@ -389,6 +409,7 @@ class ResultsRepository {
     required MeetingDecision snapshot,
     required bool confirm,
   }) async {
+    _requireOwnership(sessionScope, meetingId, snapshot.meetingId);
     final response = await _post(
       sessionScope,
       '/meetings/$meetingId/decisions/${snapshot.id}/${confirm ? 'confirm' : 'reject'}',

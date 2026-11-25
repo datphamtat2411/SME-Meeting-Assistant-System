@@ -9,6 +9,7 @@ import '../../core/paged_collection.dart';
 import '../meetings/meeting_foundation.dart';
 import '../recording/processing_manager.dart';
 import '../recording/media_contracts.dart';
+import 'decision_review_state.dart';
 import 'results_invalidation.dart';
 import 'results_models.dart';
 import 'results_repository.dart';
@@ -98,8 +99,11 @@ class ResultsWorkspaceController extends ChangeNotifier
       const ResultsResource<ResultsSummary>();
   ResultsResource<PagedCollection<SummaryVersion>> summaryVersions =
       const ResultsResource<PagedCollection<SummaryVersion>>();
-  ResultsResource<PagedCollection<MeetingDecision>> decisions =
-      const ResultsResource<PagedCollection<MeetingDecision>>();
+  ResultsResource<DecisionCollection> decisions =
+      const ResultsResource<DecisionCollection>();
+  String? _decisionStatus;
+  String? get decisionStatus => _decisionStatus;
+
   ResultsResource<MeetingMinutes> minutes =
       const ResultsResource<MeetingMinutes>();
 
@@ -408,7 +412,7 @@ class ResultsWorkspaceController extends ChangeNotifier
     summaryVersions = const ResultsResource<PagedCollection<SummaryVersion>>(
       phase: ResultsResourcePhase.forbidden,
     );
-    decisions = const ResultsResource<PagedCollection<MeetingDecision>>(
+    decisions = const ResultsResource<DecisionCollection>(
       phase: ResultsResourcePhase.forbidden,
     );
     minutes = const ResultsResource<MeetingMinutes>(
@@ -740,17 +744,64 @@ class ResultsWorkspaceController extends ChangeNotifier
     );
   }
 
+  Future<void> selectDecisionStatus(String? status) async {
+    if (!capabilities.canRead || _decisionStatus == status) return;
+    if (status != null &&
+        !const {'PROPOSED', 'CONFIRMED', 'REJECTED'}.contains(status)) {
+      throw ArgumentError.value(status, 'status');
+    }
+    _decisionStatus = status;
+    const kind = ResultsResourceKind.decisions;
+    _generations[kind] = (_generations[kind] ?? 0) + 1;
+    _dirty.add(kind);
+    _decisionRecoveryReview = null;
+    _decisionRecoveryGeneration = null;
+    decisions = const ResultsResource<DecisionCollection>();
+    notifyListeners();
+    await _loadDecisions(force: true);
+  }
+
   Future<void> _loadDecisions({required bool force}) {
-    return _load<PagedCollection<MeetingDecision>>(
+    final status = _decisionStatus;
+    return _load<DecisionCollection>(
       ResultsResourceKind.decisions,
-      () => repository.decisions(
-        sessionScope: sessionScope,
-        meetingId: meetingId,
+      () async => DecisionCollection.first(
+        await repository.decisions(
+          sessionScope: sessionScope,
+          meetingId: meetingId,
+          status: status,
+        ),
+        status,
       ),
       () => decisions,
       (value) => decisions = value,
       (value) => value.items.isEmpty,
       force: force,
+    );
+  }
+
+  Future<void> loadMoreDecisions() {
+    const kind = ResultsResourceKind.decisions;
+    final previous = decisions.data;
+    if (previous == null || _dirty.contains(kind)) {
+      return _loadDecisions(force: true);
+    }
+    if (!previous.hasMore) return Future<void>.value();
+    return _load<DecisionCollection>(
+      kind,
+      () async => previous.append(
+        await repository.decisions(
+          sessionScope: sessionScope,
+          meetingId: meetingId,
+          status: previous.status,
+          page: previous.lastPage.page + 1,
+          size: previous.lastPage.size,
+        ),
+      ),
+      () => decisions,
+      (value) => decisions = value,
+      (value) => value.items.isEmpty,
+      force: true,
     );
   }
 
@@ -864,6 +915,9 @@ class ResultsWorkspaceController extends ChangeNotifier
                 await _verifyAuthorization(absentKind: kind, failure: failure);
                 return;
               } else {
+                if (failure.code == 'DECISION_COLLECTION_CHANGED') {
+                  _dirty.add(kind);
+                }
                 write(
                   current.copyWith(
                     phase: ResultsResourcePhase.failed,
@@ -1043,7 +1097,58 @@ class ResultsWorkspaceController extends ChangeNotifier
     );
   }
 
-  Future<void> createDecision(String content, {required int epoch}) async {
+  Future<DecisionEvidenceReview> loadDecisionEvidence(
+    MeetingDecision snapshot,
+  ) async {
+    final epoch = readEpoch;
+    if (!ownsRead(epoch) ||
+        snapshot.meetingId.toLowerCase() != meetingId.toLowerCase() ||
+        snapshot.transcriptId == null ||
+        snapshot.contentRevision == null) {
+      return DecisionEvidenceReview(snapshot, null);
+    }
+    await loadTranscript(force: true);
+    if (!ownsRead(epoch) || !transcriptIsCurrent) {
+      return DecisionEvidenceReview(snapshot, null);
+    }
+    final source = transcript.data;
+    if (source == null ||
+        source.id != snapshot.transcriptId ||
+        source.contentRevision != snapshot.contentRevision) {
+      return DecisionEvidenceReview(snapshot, null);
+    }
+    await Future.wait([
+      loadCoverage(force: true),
+      loadSpeakers(force: true),
+    ]);
+    if (!ownsRead(epoch) ||
+        !transcriptIsCurrent ||
+        transcript.data?.etag != source.etag ||
+        transcript.data?.id != source.id) {
+      return DecisionEvidenceReview(snapshot, null);
+    }
+    return DecisionEvidenceReview(
+      snapshot,
+      TranscriptReviewProjection(
+        source,
+        coverage: !_dirty.contains(ResultsResourceKind.coverage) &&
+                coverage.phase == ResultsResourcePhase.available
+            ? coverage.data
+            : null,
+        speakers: !_dirty.contains(ResultsResourceKind.speakers) &&
+                speakers.phase == ResultsResourcePhase.available
+            ? speakers.data
+            : null,
+      ),
+    );
+  }
+
+  Future<void> createDecision(
+    String content, {
+    required int epoch,
+    Transcript? reviewedTranscript,
+    List<String> evidenceSegmentIds = const [],
+  }) async {
     _requireMutation(epoch);
     if (_mutations.decisionOutcomeUnknown) {
       throw const ApiFailure(
@@ -1052,18 +1157,99 @@ class ResultsWorkspaceController extends ChangeNotifier
         'Kiểm tra quyết định trước đó trước khi tạo quyết định mới.',
       );
     }
+    _validateDecisionContent(content);
+    final ids = List<String>.unmodifiable(evidenceSegmentIds);
+    if (ids.length > 50 ||
+        ids.toSet().length != ids.length ||
+        (ids.isNotEmpty &&
+            (reviewedTranscript == null ||
+                reviewedTranscript.meetingId != meetingId ||
+                !ids.every(
+                  (id) => reviewedTranscript.segments.any((s) => s.id == id),
+                )))) {
+      throw const ApiFailure(
+        422,
+        'DECISION_EVIDENCE_INVALID',
+        'Bằng chứng không hợp lệ hoặc bị trùng lặp.',
+      );
+    }
     await _reconcileAfterMutation(
       ResultsMutationGroup.decisions,
       <ResultsResourceKind>{
         ResultsResourceKind.decisions,
         ResultsResourceKind.minutes,
       },
-      (_) => repository.createDecision(
+      (_) async {
+        if (ids.isNotEmpty) {
+          await loadTranscript(force: true);
+          _requireMutation(epoch);
+          final current = transcript.data;
+          if (!transcriptIsCurrent ||
+              current == null ||
+              current.id != reviewedTranscript!.id ||
+              current.contentRevision != reviewedTranscript.contentRevision ||
+              current.etag == null ||
+              current.etag != reviewedTranscript.etag) {
+            throw const ApiFailure(
+              412,
+              'RESULTS_REVIEW_CHANGED',
+              'Transcript đã thay đổi. Vui lòng chọn lại bằng chứng.',
+            );
+          }
+        }
+        return repository.createDecision(
+          sessionScope: sessionScope,
+          meetingId: meetingId,
+          content: content,
+          evidenceSegmentIds: ids,
+        );
+      },
+      unresolvedIntent: content,
+    );
+  }
+
+  void _validateDecisionContent(String content) {
+    if (content.trim().isEmpty || content.length > 5000) {
+      throw const ApiFailure(
+        422,
+        'DECISION_CONTENT_INVALID',
+        'Nội dung quyết định phải có từ 1 đến 5.000 ký tự.',
+      );
+    }
+  }
+
+  void _requireDecisionSnapshot(MeetingDecision snapshot, String status) {
+    if (snapshot.meetingId.toLowerCase() != meetingId.toLowerCase() ||
+        snapshot.status != status ||
+        snapshot.etag == null ||
+        snapshot.etag!.trim().isEmpty ||
+        snapshot.etag!.contains('\r') ||
+        snapshot.etag!.contains('\n')) {
+      throw const ApiFailure(
+        412,
+        'RESULTS_REVIEW_CHANGED',
+        'Quyết định không còn phù hợp để thực hiện thao tác này.',
+      );
+    }
+  }
+
+  Future<void> editDecision(
+    MeetingDecision snapshot,
+    String content, {
+    required int epoch,
+  }) async {
+    _requireMutation(epoch);
+    _requireDecisionSnapshot(snapshot, 'CONFIRMED');
+    _validateDecisionContent(content);
+    await _reconcileAfterMutation(
+      ResultsMutationGroup.decisions,
+      {ResultsResourceKind.decisions, ResultsResourceKind.minutes},
+      (_) => repository.editDecision(
         sessionScope: sessionScope,
         meetingId: meetingId,
+        snapshot: snapshot,
         content: content,
       ),
-      unresolvedIntent: content,
     );
   }
 
@@ -1071,20 +1257,47 @@ class ResultsWorkspaceController extends ChangeNotifier
     MeetingDecision snapshot, {
     required bool confirm,
     required int epoch,
+    DecisionEvidenceReview? reviewedEvidence,
   }) async {
     _requireMutation(epoch);
+    _requireDecisionSnapshot(snapshot, 'PROPOSED');
+    if (confirm &&
+        (reviewedEvidence == null ||
+            !identical(reviewedEvidence.decision, snapshot) ||
+            !reviewedEvidence.canConfirm)) {
+      throw const ApiFailure(
+        409,
+        'DECISION_EVIDENCE_INVALID',
+        'Bằng chứng chưa đủ điều kiện xác nhận.',
+      );
+    }
     await _reconcileAfterMutation(
       ResultsMutationGroup.decisions,
       <ResultsResourceKind>{
         ResultsResourceKind.decisions,
         ResultsResourceKind.minutes,
       },
-      (_) => repository.reviewDecision(
-        sessionScope: sessionScope,
-        meetingId: meetingId,
-        snapshot: snapshot,
-        confirm: confirm,
-      ),
+      (_) async {
+        if (confirm) {
+          final current = await loadDecisionEvidence(snapshot);
+          _requireMutation(epoch);
+          if (!current.canConfirm ||
+              current.projection?.transcript.etag !=
+                  reviewedEvidence!.projection?.transcript.etag) {
+            throw const ApiFailure(
+              412,
+              'RESULTS_REVIEW_CHANGED',
+              'Bằng chứng đã thay đổi. Vui lòng đối chiếu lại.',
+            );
+          }
+        }
+        return repository.reviewDecision(
+          sessionScope: sessionScope,
+          meetingId: meetingId,
+          snapshot: snapshot,
+          confirm: confirm,
+        );
+      },
     );
   }
 
