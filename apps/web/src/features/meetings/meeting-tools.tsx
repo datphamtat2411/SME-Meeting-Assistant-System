@@ -85,8 +85,8 @@ export function MeetingTools({
         />
         {!capabilities.canCorrectTranscript && (
           <ReadOnlyNote>
-            You can review this transcript. Corrections and speaker mapping
-            are organizer operations.
+            You can review this transcript. Corrections and speaker mapping are
+            organizer operations.
           </ReadOnlyNote>
         )}
         <TranscriptReviewWorkspace

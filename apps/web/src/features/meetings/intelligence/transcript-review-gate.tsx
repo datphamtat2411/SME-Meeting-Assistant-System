@@ -257,7 +257,7 @@ export function TranscriptReviewGateProvider({
   const actorId = authorization?.identity?.userId ?? null
   const accessLost = Boolean(
     authorization?.isConfirmedAccessLoss ||
-      authorization?.capabilities.authorizationResolution === 'denied'
+    authorization?.capabilities.authorizationResolution === 'denied'
   )
   const authorizationRef = useRef(authorization)
   const sessionRef = useRef(session)
@@ -330,7 +330,10 @@ export function TranscriptReviewGateProvider({
   }, [])
 
   const clearCurrentScope = useCallback(() => {
-    for (const operation of [acknowledgementRef.current, admissionRef.current]) {
+    for (const operation of [
+      acknowledgementRef.current,
+      admissionRef.current,
+    ]) {
       if (!operation) continue
       operation.execution?.controller.abort()
       sessionRef.current.processing.releaseReviewCommand(operation)
@@ -728,7 +731,9 @@ export function TranscriptReviewGateProvider({
       const operation: AcknowledgementOperation = {
         kind: 'acknowledgement',
         operationId: createIdentity('transcript acknowledgement'),
-        idempotencyKey: createIdentity('transcript acknowledgement idempotency'),
+        idempotencyKey: createIdentity(
+          'transcript acknowledgement idempotency'
+        ),
         generation: generationRef.current,
         proof: currentEvidence,
         proofFingerprint: currentEvidence.fingerprint,
@@ -793,7 +798,8 @@ export function TranscriptReviewGateProvider({
       if (currentReceipt.admittedAt) return 'confirmed'
       if (
         currentAdmission?.status === 'confirmed' &&
-        currentAdmission.proof.processingJobId === currentEvidence.processingJobId
+        currentAdmission.proof.processingJobId ===
+          currentEvidence.processingJobId
       ) {
         return 'confirmed'
       }
@@ -855,7 +861,10 @@ export function TranscriptReviewGateProvider({
       digestGenerationRef.current += 1
       observationKeyRef.current = null
       evidenceRef.current = null
-      for (const operation of [acknowledgementRef.current, admissionRef.current]) {
+      for (const operation of [
+        acknowledgementRef.current,
+        admissionRef.current,
+      ]) {
         if (!operation) continue
         operation.execution?.controller.abort()
         sessionRef.current.processing.releaseReviewCommand(operation)
@@ -873,18 +882,18 @@ export function TranscriptReviewGateProvider({
   const currentBase = canonicalSnapshot ? evidenceBase(canonicalSnapshot) : null
   const evidenceVerified = Boolean(
     evidence &&
-      (!ownsEvidenceObservation ||
-        (canonicalEvidenceReady &&
-          currentBase &&
-          transcriptReviewEvidenceInputFingerprint(currentBase) ===
-            evidence.inputFingerprint))
+    (!ownsEvidenceObservation ||
+      (canonicalEvidenceReady &&
+        currentBase &&
+        transcriptReviewEvidenceInputFingerprint(currentBase) ===
+          evidence.inputFingerprint))
   )
   const receiptIsCurrent = Boolean(
     authorizedNow &&
-      evidenceVerified &&
-      receipt &&
-      evidence &&
-      receiptProofFingerprint === evidence.fingerprint
+    evidenceVerified &&
+    receipt &&
+    evidence &&
+    receiptProofFingerprint === evidence.fingerprint
   )
   const { jobs, media } = session.processing
   const observedSnapshot =
@@ -925,7 +934,9 @@ export function TranscriptReviewGateProvider({
       digestError,
       receipt: authorizedNow ? receipt : null,
       receiptIsCurrent,
-      acknowledgement: authorizedNow ? acknowledgementView : initialMutationView(),
+      acknowledgement: authorizedNow
+        ? acknowledgementView
+        : initialMutationView(),
       admission: authorizedNow ? admissionView : initialMutationView(),
       admittedJob: authorizedNow ? admittedJob : null,
       proofInvalidated,
@@ -1060,11 +1071,15 @@ function evidenceBase(
   }
 }
 
-function settled(state: {
-  status: string
-  fetchStatus: string
-  isInvalidated: boolean
-} | undefined): boolean {
+function settled(
+  state:
+    | {
+        status: string
+        fetchStatus: string
+        isInvalidated: boolean
+      }
+    | undefined
+): boolean {
   return Boolean(
     state?.status === 'success' &&
     state.fetchStatus === 'idle' &&
@@ -1137,11 +1152,11 @@ export function TranscriptReviewGateBoundary({
     enabled && transcript.isSuccess ? transcript.data : null
   const canonicalEvidenceReady = Boolean(
     canonicalSnapshot &&
-      !transcript.isFetching &&
-      coverage.isSuccess &&
-      !coverage.isFetching &&
-      speakers.isSuccess &&
-      !speakers.isFetching
+    !transcript.isFetching &&
+    coverage.isSuccess &&
+    !coverage.isFetching &&
+    speakers.isSuccess &&
+    !speakers.isFetching
   )
 
   return (

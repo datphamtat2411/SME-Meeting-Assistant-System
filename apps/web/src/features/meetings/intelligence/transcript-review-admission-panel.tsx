@@ -314,7 +314,6 @@ export function TranscriptReviewAdmissionPanel({
   )
 }
 
-
 export function TranscriptReviewWorkflowStatus({
   onReview,
 }: {
@@ -343,8 +342,8 @@ export function TranscriptReviewWorkflowStatus({
       )}
       {gate.hasUnresolvedOperation && (
         <p>
-          A transcript review request is unresolved. Job progression alone
-          does not confirm that request.
+          A transcript review request is unresolved. Job progression alone does
+          not confirm that request.
         </p>
       )}
       {onReview && (

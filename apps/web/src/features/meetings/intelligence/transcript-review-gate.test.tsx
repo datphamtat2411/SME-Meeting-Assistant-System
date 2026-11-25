@@ -106,9 +106,7 @@ function ReviewGateProbe() {
     <div>
       <span data-testid='digest-status'>{gate.digestStatus}</span>
       <span data-testid='ack-status'>{gate.acknowledgement.status}</span>
-      <span data-testid='receipt-current'>
-        {String(gate.receiptIsCurrent)}
-      </span>
+      <span data-testid='receipt-current'>{String(gate.receiptIsCurrent)}</span>
       <span data-testid='admission-status'>{gate.admission.status}</span>
       <span data-testid='proof-invalidated'>
         {String(gate.proofInvalidated)}
@@ -291,11 +289,15 @@ describe('transcript review gate lifecycle', () => {
     await expect
       .element(screen.getByText('Core acknowledgement confirmed'))
       .toBeInTheDocument()
-    await userEvent.click(screen.getByRole('button', { name: 'Toggle section' }))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Toggle section' })
+    )
     await expect
       .element(screen.getByTestId('transcript-review-admission'))
       .not.toBeInTheDocument()
-    await userEvent.click(screen.getByRole('button', { name: 'Toggle section' }))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Toggle section' })
+    )
     await expect
       .element(screen.getByText('Core acknowledgement confirmed'))
       .toBeInTheDocument()
