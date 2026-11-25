@@ -13,7 +13,11 @@ export const meetingWorkspaceSectionSchema = z.enum(meetingWorkspaceSections)
 
 export type MeetingWorkspaceSection = (typeof meetingWorkspaceSections)[number]
 
-export const intelligenceViewSchema = z.enum(['summary', 'decisions', 'minutes'])
+export const intelligenceViewSchema = z.enum([
+  'summary',
+  'decisions',
+  'minutes',
+])
 export type IntelligenceView = z.infer<typeof intelligenceViewSchema>
 
 const evidenceReturnSchema = z.enum(['decisions', 'action-items'])
@@ -106,7 +110,11 @@ export function remainsInIntelligenceReview(
   current: MeetingWorkspaceSearch,
   next: MeetingWorkspaceSearch
 ): boolean {
-  if (next.evidenceTranscriptId || next.evidenceSegmentId || next.evidenceReferenceIssue)
+  if (
+    next.evidenceTranscriptId ||
+    next.evidenceSegmentId ||
+    next.evidenceReferenceIssue
+  )
     return false
   if (current.section === 'action-items') return next.section === 'action-items'
   return (
@@ -127,7 +135,10 @@ export function updateMeetingWorkspaceSearch(
   }
   if (section === 'intelligence' && view) {
     next.intelligenceView = view
-  } else if (section !== 'intelligence' || previous.section !== 'intelligence') {
+  } else if (
+    section !== 'intelligence' ||
+    previous.section !== 'intelligence'
+  ) {
     delete next.intelligenceView
   }
   if (section !== 'transcript') {

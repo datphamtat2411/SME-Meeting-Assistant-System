@@ -57,6 +57,7 @@ import {
   updateMeetingListCacheData,
   type MeetingListCacheData,
 } from './data/meeting-cache'
+import { isMeetingScopedQuery } from './data/meeting-query-scope'
 import type { MeetingParticipantRefresh } from './data/participant-management-api'
 import { minutesQuery } from './intelligence/minutes-api'
 import {
@@ -256,7 +257,7 @@ function MeetingWorkspacePageContent({
           />
         ) : identity ? (
           <MeetingWorkspaceIdentityBoundary
-            key={`${meetingId}:${identity.userId}`}
+            key={`${meetingId}:${identity.userId}:${identity.session.id}`}
             meetingId={meetingId}
             identity={identity}
             section={section}
@@ -650,43 +651,10 @@ function isMeetingWorkspaceQuery(
   meetingId: string,
   data: unknown
 ): boolean {
-  if (
-    key[0] === 'meetings' &&
-    (key[1] === 'detail' || key[1] === 'participants') &&
-    key[2] === meetingId
-  ) {
-    return true
-  }
-  if (
-    (key[0] === 'meeting-media' ||
-      key[0] === 'processing-jobs' ||
-      key[0] === 'meeting-intelligence' ||
-      key[0] === 'transcript' ||
-      key[0] === 'minutes') &&
-    key[1] === meetingId
-  ) {
-    return true
-  }
-  if (
-    key[0] === 'action-items' &&
-    key[1] === 'list' &&
-    typeof key[2] === 'object' &&
-    key[2] !== null &&
-    'meetingId' in key[2] &&
-    key[2].meetingId === meetingId
-  ) {
-    return true
-  }
-  if (
-    (key[0] === 'processing-job' || key[0] === 'export') &&
-    typeof data === 'object' &&
-    data !== null &&
-    'meetingId' in data &&
-    data.meetingId === meetingId
-  ) {
-    return true
-  }
-  return key[0] === 'users' && key[1] === 'meeting-candidates'
+  return (
+    isMeetingScopedQuery(key, meetingId, data) ||
+    (key[0] === 'users' && key[1] === 'meeting-candidates')
+  )
 }
 
 function SessionVerificationState({
@@ -1397,7 +1365,7 @@ function WorkspaceResultsOverview({
                       false,
                       hasSummaryArtifact && hasReviewableSummary
                         ? 'summary'
-                        : minutes.data.confirmedDecisions.length
+                        : minutes.data?.confirmedDecisions.length
                           ? 'decisions'
                           : 'minutes'
                     ),

@@ -163,24 +163,46 @@ describe('meeting workspace navigation state', () => {
       source: 'calendar',
     })
     expect(activeIntelligenceView(direct)).toBe('minutes')
-    expect(activeIntelligenceView(normalizeMeetingWorkspaceSearch({
-      section: 'intelligence',
-      intelligenceView: 'invalid',
-    }))).toBe('summary')
+    expect(
+      activeIntelligenceView(
+        normalizeMeetingWorkspaceSearch({
+          section: 'intelligence',
+          intelligenceView: 'invalid',
+        })
+      )
+    ).toBe('summary')
     expect(updateMeetingWorkspaceSearch(direct, 'transcript')).toEqual({
       section: 'transcript',
       source: 'calendar',
     })
-    expect(updateMeetingWorkspaceSearch(direct, 'intelligence', 'decisions'))
-      .toMatchObject({ intelligenceView: 'decisions', source: 'calendar' })
+    expect(
+      updateMeetingWorkspaceSearch(direct, 'intelligence', 'decisions')
+    ).toMatchObject({ intelligenceView: 'decisions', source: 'calendar' })
   })
 
   it('protects drafts when leaving an internal view, but not within the same view', () => {
-    const current = { section: 'intelligence', intelligenceView: 'summary' } as const
-    expect(remainsInIntelligenceReview(current, { section: 'intelligence' })).toBe(true)
-    expect(remainsInIntelligenceReview(current, { section: 'intelligence', intelligenceView: 'minutes' })).toBe(false)
-    expect(remainsInIntelligenceReview({ section: 'action-items' }, { section: 'action-items' })).toBe(true)
-    expect(remainsInIntelligenceReview(current, { section: 'transcript' })).toBe(false)
+    const current = {
+      section: 'intelligence',
+      intelligenceView: 'summary',
+    } as const
+    expect(
+      remainsInIntelligenceReview(current, { section: 'intelligence' })
+    ).toBe(true)
+    expect(
+      remainsInIntelligenceReview(current, {
+        section: 'intelligence',
+        intelligenceView: 'minutes',
+      })
+    ).toBe(false)
+    expect(
+      remainsInIntelligenceReview(
+        { section: 'action-items' },
+        { section: 'action-items' }
+      )
+    ).toBe(true)
+    expect(
+      remainsInIntelligenceReview(current, { section: 'transcript' })
+    ).toBe(false)
   })
 
   it('accepts each authorized section directly', () => {

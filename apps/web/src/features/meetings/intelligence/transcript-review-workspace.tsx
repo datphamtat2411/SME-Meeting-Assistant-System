@@ -640,7 +640,10 @@ function TranscriptReviewWorkspaceContent({
     },
     onSuccess: async (_, payload) => {
       if (!isCurrent(payload.execution)) return
-      invalidateMeetingArtifacts(queryClient, meetingId, { transcript: true })
+      invalidateMeetingArtifacts(queryClient, meetingId, {
+        transcript: true,
+        actions: true,
+      })
       const refreshed = await refreshEvidence()
       if (!isCurrent(payload.execution)) return
       setDrafts((current) => {
@@ -673,7 +676,10 @@ function TranscriptReviewWorkspaceContent({
       }
       const uncertain = isUncertainMutation(error)
       if (uncertain) {
-        invalidateMeetingArtifacts(queryClient, meetingId, { transcript: true })
+        invalidateMeetingArtifacts(queryClient, meetingId, {
+          transcript: true,
+          actions: true,
+        })
       }
       setCorrectionNotice({
         kind: uncertain ? 'uncertain' : 'error',
@@ -710,7 +716,10 @@ function TranscriptReviewWorkspaceContent({
     },
     onSuccess: async (_, payload) => {
       if (!isCurrent(payload.execution)) return
-      invalidateMeetingArtifacts(queryClient, meetingId, { transcript: true })
+      invalidateMeetingArtifacts(queryClient, meetingId, {
+        transcript: true,
+        actions: true,
+      })
       await refreshEvidence()
       if (!isCurrent(payload.execution)) return
       setMappingDraft(null)
@@ -732,7 +741,10 @@ function TranscriptReviewWorkspaceContent({
       }
       const uncertain = isUncertainMutation(error)
       if (uncertain) {
-        invalidateMeetingArtifacts(queryClient, meetingId, { transcript: true })
+        invalidateMeetingArtifacts(queryClient, meetingId, {
+          transcript: true,
+          actions: true,
+        })
       }
       setMappingNotice({
         kind: uncertain ? 'uncertain' : 'error',

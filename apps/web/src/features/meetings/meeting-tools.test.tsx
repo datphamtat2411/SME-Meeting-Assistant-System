@@ -9,7 +9,10 @@ import type { MeetingView } from './data/detail-api'
 import { MeetingTools } from './meeting-tools'
 import { deriveMeetingWorkspaceCapabilities } from './meeting-workspace-capabilities'
 import { MeetingWorkspaceProvider } from './meeting-workspace-context'
-import type { IntelligenceView, MeetingWorkspaceSection } from './meeting-workspace-navigation'
+import type {
+  IntelligenceView,
+  MeetingWorkspaceSection,
+} from './meeting-workspace-navigation'
 
 vi.mock('@tanstack/react-router', () => ({
   Link: ({
@@ -361,16 +364,31 @@ describe('MeetingTools section composition', () => {
         <IntelligenceHarness />
       </QueryClientProvider>
     )
-    await expect.element(screen.getByText('No summary available')).toBeInTheDocument()
-    expect(getSpy.mock.calls.some(([url]) => url.endsWith('/minutes'))).toBe(false)
-    expect(getWithMetaSpy.mock.calls.some(([url]) => url.endsWith('/decisions'))).toBe(false)
+    await expect
+      .element(screen.getByText('No summary available'))
+      .toBeInTheDocument()
+    expect(getSpy.mock.calls.some(([url]) => url.endsWith('/minutes'))).toBe(
+      false
+    )
+    expect(
+      getWithMetaSpy.mock.calls.some(([url]) => url.endsWith('/decisions'))
+    ).toBe(false)
     await screen.getByRole('tab', { name: 'Decisions' }).click()
-    await expect.element(screen.getByRole('tab', { name: 'Decisions' })).toHaveAttribute('aria-selected', 'true')
-    await expect.element(screen.getByText('No summary available')).not.toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('tab', { name: 'Decisions' }))
+      .toHaveAttribute('aria-selected', 'true')
+    await expect
+      .element(screen.getByText('No summary available'))
+      .not.toBeInTheDocument()
     await screen.getByRole('tab', { name: 'Minutes' }).click()
-    await expect.element(screen.getByRole('tab', { name: 'Minutes' })).toHaveAttribute('aria-selected', 'true')
-    await expect.poll(() => getSpy.mock.calls.some(([url]) => url.endsWith('/minutes'))).toBe(true)
-    for (const spy of Object.values(mutationSpies)) expect(spy).not.toHaveBeenCalled()
+    await expect
+      .element(screen.getByRole('tab', { name: 'Minutes' }))
+      .toHaveAttribute('aria-selected', 'true')
+    await expect
+      .poll(() => getSpy.mock.calls.some(([url]) => url.endsWith('/minutes')))
+      .toBe(true)
+    for (const spy of Object.values(mutationSpies))
+      expect(spy).not.toHaveBeenCalled()
   })
 
   it('remounts recording-local operation state when the meeting identity changes', async () => {

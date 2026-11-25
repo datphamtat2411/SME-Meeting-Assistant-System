@@ -26,6 +26,11 @@ import {
   type ParticipantView,
 } from './data/detail-api'
 import {
+  isMeetingActionQuery,
+  isMeetingContentQuery,
+  isMeetingScopedQuery,
+} from './data/meeting-query-scope'
+import {
   deriveMeetingWorkspaceCapabilities,
   type MeetingWorkspaceCapabilities,
   type MeetingWorkspaceMembership,
@@ -83,59 +88,6 @@ const emptyCapabilities: MeetingWorkspaceCapabilities = {
   canManageActionItems: false,
 }
 
-function queryBelongsToMeeting(
-  queryKey: readonly unknown[],
-  meetingId: string,
-  data: unknown
-): boolean {
-  const [family, scope, filter] = queryKey
-  if (
-    family === 'meetings' &&
-    (scope === 'detail' || scope === 'participants') &&
-    queryKey[2] === meetingId
-  ) {
-    return true
-  }
-  if (
-    [
-      'meeting-media',
-      'processing-jobs',
-      'meeting-intelligence',
-      'transcript',
-      'minutes',
-    ].includes(String(family)) &&
-    scope === meetingId
-  ) {
-    return true
-  }
-  if (
-    family === 'action-items' &&
-    scope === 'list' &&
-    typeof filter === 'object' &&
-    filter !== null &&
-    'meetingId' in filter &&
-    filter.meetingId === meetingId
-  ) {
-    return true
-  }
-  if (
-    family === 'processing-job' &&
-    typeof data === 'object' &&
-    data !== null &&
-    'meetingId' in data &&
-    data.meetingId === meetingId
-  ) {
-    return true
-  }
-  return (
-    family === 'export' &&
-    typeof data === 'object' &&
-    data !== null &&
-    'meetingId' in data &&
-    data.meetingId === meetingId
-  )
-}
-
 async function resetMeetingQueries(
   queryClient: ReturnType<typeof useQueryClient>,
   meetingId: string,
@@ -153,7 +105,7 @@ async function resetMeetingQueries(
     ) {
       return false
     }
-    return queryBelongsToMeeting(query.queryKey, meetingId, query.state.data)
+    return isMeetingScopedQuery(query.queryKey, meetingId, query.state.data)
   }
 
   await queryClient.cancelQueries({ predicate })
@@ -179,7 +131,7 @@ export function MeetingAuthorizationProvider({
   const hasVerifiedSession = Boolean(
     identityId && verification.canReadProtectedData
   )
-  const scopeIdentity = `${meetingId}:${identityId ?? 'anonymous'}`
+  const scopeIdentity = `${meetingId}:${identityId ?? 'anonymous'}:${identity?.session.id ?? 'none'}`
 
   // Keep healthy /me revalidations from resetting meeting data. The error
   // revision changes only after a failed verification, so a recovered session
@@ -260,6 +212,37 @@ export function MeetingAuthorizationProvider({
     scopeReady,
     verification.canReadProtectedData,
   ])
+
+  // Membership denial is distinct from operational meeting access. Remove
+  // content observations and refresh Action Item projections under current
+  // permissions, without resetting the membership query that proved denial.
+  const contentDenied = capabilities.authorizationResolution === 'denied'
+  useEffect(() => {
+    if (!contentDenied) return
+    const content = {
+      predicate: (query: {
+        queryKey: readonly unknown[]
+        state: { data: unknown }
+      }) =>
+        isMeetingContentQuery(query.queryKey, meetingId, query.state.data),
+    }
+    const actions = {
+      predicate: (query: {
+        queryKey: readonly unknown[]
+        state: { data: unknown }
+      }) =>
+        isMeetingActionQuery(query.queryKey, meetingId, query.state.data) ||
+        (query.queryKey[0] === 'action-items' &&
+          query.queryKey[1] === 'list' &&
+          query.queryKey[3] === undefined),
+    }
+    void queryClient.cancelQueries(content).then(() => {
+      queryClient.removeQueries(content)
+    })
+    void queryClient.cancelQueries(actions).then(() => {
+      void queryClient.resetQueries(actions)
+    })
+  }, [contentDenied, meetingId, queryClient])
 
   const canReadProtectedData = Boolean(
     scopeReady &&

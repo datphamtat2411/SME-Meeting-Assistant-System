@@ -1,26 +1,34 @@
 import type { QueryClient } from '@tanstack/react-query'
+import { isMeetingActionQuery } from '../data/meeting-query-scope'
 
-/** A reviewed edit changes the canonical Minutes fingerprint and every derived view.
- * Invalidate by meeting scope; never reuse a previously approved snapshot/export
- * after source transcription, identity, decision or action lifecycle changes.
- */
+/** Reconcile canonical Minutes and exact export freshness for one meeting. */
 export function invalidateMeetingArtifacts(
   client: QueryClient,
   meetingId: string,
-  options: { transcript?: boolean; actions?: boolean } = {}
+  options: {
+    transcript?: boolean
+    actions?: boolean
+    intelligence?: 'all' | 'summary' | 'decisions' | 'none'
+  } = {}
 ) {
-  const keys: readonly (readonly unknown[])[] = [
-    ['meeting-intelligence', meetingId],
+  const intelligence = options.intelligence ?? 'all'
+  const keys: (readonly unknown[])[] = [
     ['minutes', meetingId],
     ['dashboard'],
   ]
+  if (intelligence !== 'none') {
+    keys.push(
+      intelligence === 'all'
+        ? ['meeting-intelligence', meetingId]
+        : ['meeting-intelligence', meetingId, intelligence]
+    )
+  }
+  if (options.transcript) keys.push(['transcript', meetingId])
   for (const queryKey of keys) void client.invalidateQueries({ queryKey })
   void client.invalidateQueries({
     predicate: (query) =>
       query.queryKey[0] === 'export' && query.queryKey[2] === meetingId,
   })
-  if (options.transcript)
-    void client.invalidateQueries({ queryKey: ['transcript', meetingId] })
   if (options.actions)
     void client.invalidateQueries({
       predicate: (query) => {
@@ -28,7 +36,8 @@ export function invalidateMeetingArtifacts(
         return (
           family === 'action-items' &&
           (kind === 'list' || kind === 'detail') &&
-          (scope === undefined || scope === meetingId)
+          (isMeetingActionQuery(query.queryKey, meetingId, query.state.data) ||
+            (kind === 'list' && scope === undefined))
         )
       },
     })

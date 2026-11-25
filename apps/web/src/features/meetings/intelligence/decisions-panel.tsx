@@ -217,10 +217,9 @@ function DecisionsPanelContent({
       ))
 
   function refresh() {
-    void queryClient.invalidateQueries({
-      queryKey: ['meeting-intelligence', meetingId, 'decisions'],
+    invalidateMeetingArtifacts(queryClient, meetingId, {
+      intelligence: 'decisions',
     })
-    invalidateMeetingArtifacts(queryClient, meetingId)
   }
 
   const review = useMutation({

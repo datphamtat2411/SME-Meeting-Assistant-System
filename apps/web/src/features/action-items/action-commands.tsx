@@ -117,7 +117,10 @@ export function ActionCommands({
       setReview(null)
       setConflict(null)
       operation.current += 1
-      invalidateMeetingArtifacts(qc, result.item.meetingId, { actions: true })
+      invalidateMeetingArtifacts(qc, result.item.meetingId, {
+        actions: true,
+        intelligence: 'none',
+      })
     },
     onError: async (error, variables) => {
       if (!variables.owns()) return

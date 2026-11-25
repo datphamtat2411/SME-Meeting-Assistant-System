@@ -1,4 +1,5 @@
 import type { InfiniteData, QueryClient } from '@tanstack/react-query'
+import { invalidateMeetingArtifacts } from '../intelligence/query-invalidation'
 import type { MeetingDetailResponse, MeetingView } from './detail-api'
 import type { MeetingListResponse } from './list-api'
 
@@ -130,6 +131,9 @@ export function synchronizeMeetingCaches(
     void queryClient.invalidateQueries(detailQuery)
   }
   void queryClient.invalidateQueries({ queryKey: meetingListQueryKey })
+  invalidateMeetingArtifacts(queryClient, detail.meeting.id, {
+    intelligence: 'none',
+  })
   if (
     options.invalidateRoomAvailability ||
     affectsRoomAvailability(previousMeeting, detail.meeting)

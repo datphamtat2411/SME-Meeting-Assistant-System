@@ -185,7 +185,10 @@ export function ActionForm({
       intent.current = null
       setUnresolvedCreate(null)
       toast.success(item ? 'Action Item saved' : 'Official Action Item created')
-      invalidateMeetingArtifacts(qc, result.item.meetingId, { actions: true })
+      invalidateMeetingArtifacts(qc, result.item.meetingId, {
+        actions: true,
+        intelligence: 'none',
+      })
       operation.current += 1
       onOpenChange(false)
     },
@@ -709,7 +712,10 @@ export function ActionForm({
                     return
                   operation.current += 1
                   intent.current = null
-                  invalidateMeetingArtifacts(qc, meeting, { actions: true })
+                  invalidateMeetingArtifacts(qc, meeting, {
+                    actions: true,
+                    intelligence: 'none',
+                  })
                   onOpenChange(false)
                 }}
               >

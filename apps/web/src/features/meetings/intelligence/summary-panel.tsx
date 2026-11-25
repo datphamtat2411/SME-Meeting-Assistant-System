@@ -169,7 +169,7 @@ function SummaryPanelContent({
   )
 
   function refreshArtifacts() {
-    invalidateMeetingArtifacts(queryClient, meetingId)
+    invalidateMeetingArtifacts(queryClient, meetingId, { intelligence: 'summary' })
   }
 
   const save = useMutation({

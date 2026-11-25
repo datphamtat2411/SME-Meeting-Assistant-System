@@ -109,19 +109,22 @@ export function MeetingTools({
         {evidenceReturn === 'decisions' && capabilities.canReadIntelligence && (
           <Button
             variant='outline'
-            onClick={() => onSectionChange?.('intelligence', false, 'decisions')}
+            onClick={() =>
+              onSectionChange?.('intelligence', false, 'decisions')
+            }
           >
             Back to Decisions
           </Button>
         )}
-        {evidenceReturn === 'action-items' && capabilities.canReadActionItems && (
-          <Button
-            variant='outline'
-            onClick={() => onSectionChange?.('action-items')}
-          >
-            Back to Action Items
-          </Button>
-        )}
+        {evidenceReturn === 'action-items' &&
+          capabilities.canReadActionItems && (
+            <Button
+              variant='outline'
+              onClick={() => onSectionChange?.('action-items')}
+            >
+              Back to Action Items
+            </Button>
+          )}
         <TranscriptReviewWorkspace
           meetingId={meetingId}
           canReadMeetingContent={capabilities.canReadMeetingContent}
@@ -182,7 +185,10 @@ export function MeetingTools({
             onSectionChange?.('intelligence', false, value as IntelligenceView)
           }
         >
-          <TabsList aria-label='Intelligence views' className='w-full justify-start sm:w-fit'>
+          <TabsList
+            aria-label='Intelligence views'
+            className='w-full justify-start sm:w-fit'
+          >
             <TabsTrigger value='summary'>Summary</TabsTrigger>
             <TabsTrigger value='decisions'>Decisions</TabsTrigger>
             <TabsTrigger value='minutes'>Minutes</TabsTrigger>
@@ -223,10 +229,15 @@ export function MeetingTools({
                     [identity.userId, identity.displayName],
                   ])}
                   onOpenSummary={
-                    onSectionChange ? () => onSectionChange('intelligence', false, 'summary') : undefined
+                    onSectionChange
+                      ? () => onSectionChange('intelligence', false, 'summary')
+                      : undefined
                   }
                   onOpenDecisions={
-                    onSectionChange ? () => onSectionChange('intelligence', false, 'decisions') : undefined
+                    onSectionChange
+                      ? () =>
+                          onSectionChange('intelligence', false, 'decisions')
+                      : undefined
                   }
                   onOpenActions={
                     onSectionChange && capabilities.canReadActionItems
@@ -234,7 +245,9 @@ export function MeetingTools({
                       : undefined
                   }
                   onOpenTranscript={
-                    onSectionChange ? () => onSectionChange('transcript') : undefined
+                    onSectionChange
+                      ? () => onSectionChange('transcript')
+                      : undefined
                   }
                 />
                 <ExportPanel

@@ -47,7 +47,8 @@ function MeetingRoute() {
     view?: IntelligenceView
   ) {
     void navigate({
-      search: (previous) => updateMeetingWorkspaceSearch(previous, section, view),
+      search: (previous) =>
+        updateMeetingWorkspaceSearch(previous, section, view),
       replace,
     })
   }
