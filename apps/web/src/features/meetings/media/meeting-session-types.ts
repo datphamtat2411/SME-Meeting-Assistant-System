@@ -108,7 +108,10 @@ export type MeetingSessionContextValue = {
   hasUnsavedResources: boolean
   hasUnsavedTranscriptReview: boolean
   hasUnsavedIntelligence: boolean
-  setIntelligenceDraftDirty: (feature: 'summary' | 'decisions', dirty: boolean) => void
+  setIntelligenceDraftDirty: (
+    feature: 'summary' | 'decisions',
+    dirty: boolean
+  ) => void
   setTranscriptReviewDirty: (dirty: boolean) => void
   updateFallbackCapabilities: (
     capabilities: Partial<FallbackCapabilities>

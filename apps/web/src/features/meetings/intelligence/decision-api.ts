@@ -105,7 +105,8 @@ export async function createDecision(
       failure.recoveryOutcome === 'uncertain'
     ) {
       throw new CoreApiError({
-        message: 'Decision creation could not be verified. Review official decisions before retrying.',
+        message:
+          'Decision creation could not be verified. Review official decisions before retrying.',
         kind: failure.kind,
         code: 'DECISION_CREATION_UNCERTAIN',
         recoveryOutcome: 'uncertain',

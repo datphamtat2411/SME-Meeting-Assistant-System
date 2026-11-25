@@ -17,7 +17,6 @@ function formatDate(value: string) {
   return Number.isNaN(date.valueOf()) ? value : date.toLocaleString()
 }
 
-
 function statusVariant(status: DecisionStatus) {
   return status === 'CONFIRMED'
     ? 'secondary'
@@ -95,7 +94,11 @@ export function DecisionCard({
                 variant='link'
                 className='h-auto px-0 text-xs'
                 onClick={() =>
-                  onEvidenceNavigate(decision.transcriptId!, segmentId, decision.contentRevision ?? undefined)
+                  onEvidenceNavigate(
+                    decision.transcriptId!,
+                    segmentId,
+                    decision.contentRevision ?? undefined
+                  )
                 }
               >
                 Evidence {index + 1} <ExternalLink />
@@ -160,37 +163,63 @@ export function ReviewPanel({
           preserves the AI proposal as historical record.
         </p>
       </div>
-      <p className='text-sm leading-7 whitespace-pre-wrap'>{decision.content}</p>
+      <p className='text-sm leading-7 whitespace-pre-wrap'>
+        {decision.content}
+      </p>
       <div className='flex flex-wrap gap-2'>
         <Badge variant='outline'>{decision.sourceType}</Badge>
-        <Badge variant='outline'>Revision {decision.contentRevision ?? 'unavailable'}</Badge>
-        {decision.isStale && <Badge variant='destructive'>Stale evidence</Badge>}
+        <Badge variant='outline'>
+          Revision {decision.contentRevision ?? 'unavailable'}
+        </Badge>
+        {decision.isStale && (
+          <Badge variant='destructive'>Stale evidence</Badge>
+        )}
       </div>
-      {decision.aiUncertainty && <p className='text-sm'>AI uncertainty: {decision.aiUncertainty}</p>}
-      {decision.aiWarnings?.map((warning, index) => <p key={index} className='text-sm text-muted-foreground'>{warning}</p>)}
+      {decision.aiUncertainty && (
+        <p className='text-sm'>AI uncertainty: {decision.aiUncertainty}</p>
+      )}
+      {decision.aiWarnings?.map((warning, index) => (
+        <p key={index} className='text-sm text-muted-foreground'>
+          {warning}
+        </p>
+      ))}
       {evidenceSegments.length > 0 && (
         <div className='space-y-2 rounded-md border bg-background p-3'>
-          <h4 className='text-sm font-medium'>Supporting transcript evidence</h4>
+          <h4 className='text-sm font-medium'>
+            Supporting transcript evidence
+          </h4>
           {evidenceSegments.map((segment) => (
             <div key={segment.id}>
-              <p className='text-xs text-muted-foreground'>Segment {segment.ordinal + 1}</p>
+              <p className='text-xs text-muted-foreground'>
+                Segment {segment.ordinal + 1}
+              </p>
               <p className='text-sm whitespace-pre-wrap'>{segment.text}</p>
             </div>
           ))}
         </div>
       )}
       {blocked && (
-        <div role='alert' className='space-y-2 rounded-md border border-amber-300/70 p-3 text-sm'>
+        <div
+          role='alert'
+          className='space-y-2 rounded-md border border-amber-300/70 p-3 text-sm'
+        >
           <p>This review is no longer actionable. No action was replayed.</p>
           {conflict ? (
             <>
               <p>Latest status: {conflict.status}</p>
               <p className='whitespace-pre-wrap'>{conflict.content}</p>
               {conflict.status === 'PROPOSED' && (
-                <Button size='sm' variant='outline' onClick={onUseLatest}>Use latest review snapshot</Button>
+                <Button size='sm' variant='outline' onClick={onUseLatest}>
+                  Use latest review snapshot
+                </Button>
               )}
             </>
-          ) : <p>The record could not be verified on the refreshed page. Close this review and reopen it from the authorized collection.</p>}
+          ) : (
+            <p>
+              The record could not be verified on the refreshed page. Close this
+              review and reopen it from the authorized collection.
+            </p>
+          )}
         </div>
       )}
       {confirmationBlocked && (
@@ -215,7 +244,9 @@ export function ReviewPanel({
         >
           Reject proposal
         </Button>
-        <Button size='sm' variant='ghost' disabled={pending} onClick={onClose}>Close review</Button>
+        <Button size='sm' variant='ghost' disabled={pending} onClick={onClose}>
+          Close review
+        </Button>
         {decision.transcriptId &&
           decision.evidenceSegmentIds.map((segmentId, index) =>
             onEvidenceNavigate ? (
@@ -225,7 +256,11 @@ export function ReviewPanel({
                 size='sm'
                 className='h-auto'
                 onClick={() =>
-                  onEvidenceNavigate(decision.transcriptId!, segmentId, decision.contentRevision ?? undefined)
+                  onEvidenceNavigate(
+                    decision.transcriptId!,
+                    segmentId,
+                    decision.contentRevision ?? undefined
+                  )
                 }
               >
                 Open evidence {index + 1}
@@ -274,17 +309,32 @@ export function EditDecisionPanel({
         </p>
       </div>
       {blocked && (
-        <div role='alert' className='space-y-2 rounded-md border border-amber-300/70 p-3 text-sm'>
-          <p>The correction cannot be submitted until the latest decision has been reviewed. Your draft is preserved.</p>
+        <div
+          role='alert'
+          className='space-y-2 rounded-md border border-amber-300/70 p-3 text-sm'
+        >
+          <p>
+            The correction cannot be submitted until the latest decision has
+            been reviewed. Your draft is preserved.
+          </p>
           <p className='font-medium'>Reviewed content</p>
           <p className='whitespace-pre-wrap'>{decision.content}</p>
           {conflict ? (
             <>
               <p className='font-medium'>Latest content · {conflict.status}</p>
               <p className='whitespace-pre-wrap'>{conflict.content}</p>
-              {conflict.status === 'CONFIRMED' && <Button size='sm' variant='outline' onClick={onUseLatest}>Use latest as baseline</Button>}
+              {conflict.status === 'CONFIRMED' && (
+                <Button size='sm' variant='outline' onClick={onUseLatest}>
+                  Use latest as baseline
+                </Button>
+              )}
             </>
-          ) : <p>Locate the decision in the refreshed collection and select Correct content to review its latest snapshot.</p>}
+          ) : (
+            <p>
+              Locate the decision in the refreshed collection and select Correct
+              content to review its latest snapshot.
+            </p>
+          )}
         </div>
       )}
       <Textarea
@@ -299,7 +349,12 @@ export function EditDecisionPanel({
         <Button type='submit' disabled={pending || blocked || !draft.trim()}>
           {pending ? 'Saving…' : 'Save correction'}
         </Button>
-        <Button type='button' variant='outline' disabled={pending} onClick={onCancel}>
+        <Button
+          type='button'
+          variant='outline'
+          disabled={pending}
+          onClick={onCancel}
+        >
           Cancel
         </Button>
       </div>
@@ -398,7 +453,12 @@ export function CreateDecisionPanel({
         <Button type='submit' disabled={pending || blocked || !content.trim()}>
           {pending ? 'Creating…' : 'Create confirmed decision'}
         </Button>
-        <Button type='button' variant='outline' disabled={pending} onClick={onCancel}>
+        <Button
+          type='button'
+          variant='outline'
+          disabled={pending}
+          onClick={onCancel}
+        >
           Cancel
         </Button>
       </div>

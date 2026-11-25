@@ -27,11 +27,16 @@ import {
   type SummarySnapshot,
   type SummaryVersion,
 } from './summary-api'
-import { ConflictColumn, CurrentSummary, formatDate, PreviewColumn, VersionRow } from './summary-presentation'
+import {
+  ConflictColumn,
+  CurrentSummary,
+  formatDate,
+  PreviewColumn,
+  VersionRow,
+} from './summary-presentation'
 
 const historyPageSize = 20
 const regenerationIdentity = 'summary-regeneration'
-
 
 type SummaryPanelProps = {
   meetingId: string
@@ -42,7 +47,12 @@ type SummaryPanelProps = {
 export function SummaryPanel(props: SummaryPanelProps) {
   const authorization = useOptionalMeetingAuthorization()
   if (!intelligenceReadAllowed(authorization)) {
-    return <RequestEmpty title='Summary unavailable' description='Meeting content access must be verified.' />
+    return (
+      <RequestEmpty
+        title='Summary unavailable'
+        description='Meeting content access must be verified.'
+      />
+    )
   }
   return (
     <SummaryPanelContent
@@ -63,8 +73,20 @@ function SummaryPanelContent({
   const canEditRef = useRef(canEdit)
   const canRegenerateRef = useRef(canRegenerate)
   const authorizationRef = useRef(authorization)
-  const captureScope = useIntelligenceOperationScope(meetingId, authorization, canEdit)
-  const captureRegenerationScope = useIntelligenceOperationScope(meetingId, authorization, canRegenerate)
+  const captureScope = useIntelligenceOperationScope(
+    meetingId,
+    authorization,
+    canEdit
+  )
+  const captureRegenerationScope = useIntelligenceOperationScope(
+    meetingId,
+    authorization,
+    canRegenerate
+  )
+  const editOperation = useRef(0)
+  const editReconciliation = useRef(0)
+  const activationOperation = useRef(0)
+  const activationReconciliation = useRef(0)
   const [historyPage, setHistoryPage] = useState(0)
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(
     null
@@ -92,6 +114,40 @@ function SummaryPanelContent({
     authorizationRef.current = authorization
   }, [authorization, canEdit, canRegenerate])
 
+  function captureEditScope() {
+    const ownsScope = captureScope()
+    const operation = editOperation.current
+    return () => ownsScope() && editOperation.current === operation
+  }
+
+  function captureEditReconciliation() {
+    const ownsScope = captureEditScope()
+    const attempt = ++editReconciliation.current
+    return () => ownsScope() && editReconciliation.current === attempt
+  }
+
+  function retireEditOperation() {
+    editOperation.current += 1
+    editReconciliation.current += 1
+  }
+
+  function captureActivationScope() {
+    const ownsScope = captureScope()
+    const operation = activationOperation.current
+    return () => ownsScope() && activationOperation.current === operation
+  }
+
+  function captureActivationReconciliation() {
+    const ownsScope = captureActivationScope()
+    const attempt = ++activationReconciliation.current
+    return () => ownsScope() && activationReconciliation.current === attempt
+  }
+
+  function retireActivationOperation() {
+    activationOperation.current += 1
+    activationReconciliation.current += 1
+  }
+
   const summary = useQuery(summaryQuery(meetingId))
   const versions = useQuery(
     summaryVersionsQuery(meetingId, historyPage, historyPageSize)
@@ -117,7 +173,7 @@ function SummaryPanelContent({
   }
 
   const save = useMutation({
-    onMutate: captureScope,
+    onMutate: captureEditScope,
     mutationFn: () => {
       const currentAuthorization = authorizationRef.current
       if (
@@ -130,7 +186,8 @@ function SummaryPanelContent({
       ) {
         throw new Error('Summary editing is no longer authorized.')
       }
-      if (!editorSnapshot || editConflict) throw new Error('Review the current summary before saving.')
+      if (!editorSnapshot || editConflict)
+        throw new Error('Review the current summary before saving.')
       const content = draft.trim()
       if (!content || content.length > 20_000) {
         throw new Error(
@@ -141,6 +198,7 @@ function SummaryPanelContent({
     },
     onSuccess: (result, _variables, ownsScope) => {
       if (!ownsScope?.()) return
+      retireEditOperation()
       queryClient.setQueryData(summaryQuery(meetingId).queryKey, result)
       setEditorSnapshot(null)
       setEditConflict(null)
@@ -160,9 +218,10 @@ function SummaryPanelContent({
       const normalized = normalizeCoreApiError(error)
       if (normalized.status === 412 && editorSnapshot) {
         const reviewed = editorSnapshot
+        const ownsReconciliation = captureEditReconciliation()
         setEditConflict({ reviewed, latest: null })
         void summary.refetch().then((latest) => {
-          if (ownsScope() && latest.isSuccess && latest.data) {
+          if (ownsReconciliation() && latest.isSuccess && latest.data) {
             setEditConflict({ reviewed, latest: latest.data })
           }
         })
@@ -178,7 +237,7 @@ function SummaryPanelContent({
   })
 
   const activate = useMutation({
-    onMutate: captureScope,
+    onMutate: captureActivationScope,
     mutationFn: () => {
       const currentAuthorization = authorizationRef.current
       if (
@@ -206,6 +265,7 @@ function SummaryPanelContent({
     },
     onSuccess: (result, _variables, ownsScope) => {
       if (!ownsScope?.()) return
+      retireActivationOperation()
       queryClient.setQueryData(summaryQuery(meetingId).queryKey, result)
       setActivationConflict(false)
       setActivationReview(null)
@@ -217,11 +277,13 @@ function SummaryPanelContent({
       if (!ownsScope?.()) return
       const normalized = normalizeCoreApiError(error)
       if (normalized.status === 412 || normalized.status === 409) {
+        const ownsReconciliation = captureActivationReconciliation()
         setActivationConflict(true)
         setActivationLatest(null)
         void versions.refetch()
         void summary.refetch().then((latest) => {
-          if (ownsScope() && latest.isSuccess && latest.data) setActivationLatest(latest.data)
+          if (ownsReconciliation() && latest.isSuccess && latest.data)
+            setActivationLatest(latest.data)
         })
         return
       }
@@ -250,7 +312,9 @@ function SummaryPanelContent({
           ? session.processing.recoverOperation(regenerationIdentity)
           : session.processing.regenerateSummary()
       }
-      throw new Error('Summary regeneration requires the meeting processing owner.')
+      throw new Error(
+        'Summary regeneration requires the meeting processing owner.'
+      )
     },
     onSuccess: (result, _variables, ownsScope) => {
       if (!ownsScope?.()) return
@@ -270,18 +334,24 @@ function SummaryPanelContent({
     onError: (error, _variables, ownsScope) => {
       if (!ownsScope?.()) return
       const normalized = normalizeCoreApiError(error)
-      toast.error(normalized.recoveryOutcome === 'uncertain' ? 'Regeneration admission is uncertain' : 'Could not request regeneration', {
-        description:
-          normalized.status === 503
-            ? 'Summary generation is currently unavailable because the worker is not ready.'
-            : normalized.message,
-      })
+      toast.error(
+        normalized.recoveryOutcome === 'uncertain'
+          ? 'Regeneration admission is uncertain'
+          : 'Could not request regeneration',
+        {
+          description:
+            normalized.status === 503
+              ? 'Summary generation is currently unavailable because the worker is not ready.'
+              : normalized.message,
+        }
+      )
     },
   })
 
   useIntelligenceDraftProtection(
     'summary',
-    save.isPending || activate.isPending ||
+    save.isPending ||
+      activate.isPending ||
       Boolean(editorSnapshot && draft !== editorSnapshot.summary.content)
   )
 
@@ -316,8 +386,15 @@ function SummaryPanelContent({
               <Button
                 size='sm'
                 variant='outline'
-                disabled={Boolean(editorSnapshot) || activate.isPending || !protectedScopeReady || summary.isError}
+                disabled={
+                  Boolean(editorSnapshot) ||
+                  activate.isPending ||
+                  !protectedScopeReady ||
+                  summary.isError
+                }
                 onClick={() => {
+                  retireActivationOperation()
+                  retireEditOperation()
                   setActivationReview(null)
                   setActivationConflict(false)
                   setActivationLatest(null)
@@ -333,7 +410,12 @@ function SummaryPanelContent({
               <Button
                 size='sm'
                 variant='secondary'
-                disabled={!session || regenerate.isPending || regenerationInProgress || !protectedScopeReady}
+                disabled={
+                  !session ||
+                  regenerate.isPending ||
+                  regenerationInProgress ||
+                  !protectedScopeReady
+                }
                 onClick={() => regenerate.mutate()}
               >
                 <RefreshCw
@@ -351,10 +433,20 @@ function SummaryPanelContent({
       </CardHeader>
       <CardContent className='space-y-6 p-5'>
         {regenerationJob && (
-          <div role='status' className='space-y-1 rounded-md border p-3 text-sm'>
-            <p className='font-medium'>Summary regeneration: {regenerationJob.status.replaceAll('_', ' ').toLowerCase()}</p>
-            {regenerationJob.warningSummary && <p>{regenerationJob.warningSummary}</p>}
-            {regenerationJob.errorSummary && <p>{regenerationJob.errorSummary}</p>}
+          <div
+            role='status'
+            className='space-y-1 rounded-md border p-3 text-sm'
+          >
+            <p className='font-medium'>
+              Summary regeneration:{' '}
+              {regenerationJob.status.replace(/_/g, ' ').toLowerCase()}
+            </p>
+            {regenerationJob.warningSummary && (
+              <p>{regenerationJob.warningSummary}</p>
+            )}
+            {regenerationJob.errorSummary && (
+              <p>{regenerationJob.errorSummary}</p>
+            )}
           </div>
         )}
         {summary.isPending ? (
@@ -379,13 +471,21 @@ function SummaryPanelContent({
             editorSnapshot={editorSnapshot}
             draft={draft}
             savePending={save.isPending}
-            saveBlocked={Boolean(editConflict) || !canEdit || !protectedScopeReady}
+            saveBlocked={
+              Boolean(editConflict) || !canEdit || !protectedScopeReady
+            }
             onDraftChange={setDraft}
             onSave={() => save.mutate()}
             onCancel={() => {
               if (save.isPending) return
-              if (editorSnapshot && draft !== editorSnapshot.summary.content && !window.confirm('Discard unsaved summary changes?')) return
+              if (
+                editorSnapshot &&
+                draft !== editorSnapshot.summary.content &&
+                !window.confirm('Discard unsaved summary changes?')
+              )
+                return
               setEditorSnapshot(null)
+              retireEditOperation()
               setEditConflict(null)
             }}
           />
@@ -411,7 +511,9 @@ function SummaryPanelContent({
                   content={editConflict.latest.summary.content}
                 />
               ) : (
-                <p>The latest version has not been verified. Retry before saving.</p>
+                <p>
+                  The latest version has not been verified. Retry before saving.
+                </p>
               )}
             </div>
             <p className='text-muted-foreground'>
@@ -423,19 +525,27 @@ function SummaryPanelContent({
               variant='outline'
               onClick={() => {
                 if (editConflict.latest) {
+                  retireEditOperation()
                   setEditorSnapshot(editConflict.latest)
                   setEditConflict(null)
                 } else {
-                  const ownsScope = captureScope()
+                  const reviewed = editConflict.reviewed
+                  const ownsReconciliation = captureEditReconciliation()
                   void summary.refetch().then((latest) => {
-                    if (ownsScope() && latest.isSuccess && latest.data) {
-                      setEditConflict({ reviewed: editConflict.reviewed, latest: latest.data })
+                    if (
+                      ownsReconciliation() &&
+                      latest.isSuccess &&
+                      latest.data
+                    ) {
+                      setEditConflict({ reviewed, latest: latest.data })
                     }
                   })
                 }
               }}
             >
-              {editConflict.latest ? 'Use latest as editing baseline' : 'Retry loading latest version'}
+              {editConflict.latest
+                ? 'Use latest as editing baseline'
+                : 'Retry loading latest version'}
             </Button>
           </div>
         )}
@@ -449,15 +559,27 @@ function SummaryPanelContent({
             current version and explicitly select Activate again.
             {activationLatest && activationReview && (
               <div className='mt-3 grid gap-3 lg:grid-cols-2'>
-                <ConflictColumn title='Previously reviewed current' content={activationReview.baseline.summary.content} />
-                <ConflictColumn title='Latest current' content={activationLatest.summary.content} />
+                <ConflictColumn
+                  title='Previously reviewed current'
+                  content={activationReview.baseline.summary.content}
+                />
+                <ConflictColumn
+                  title='Latest current'
+                  content={activationLatest.summary.content}
+                />
               </div>
             )}
-            <Button className='mt-3' size='sm' variant='outline' onClick={() => {
-              setActivationReview(null)
-              setActivationConflict(false)
-              setActivationLatest(null)
-            }}>
+            <Button
+              className='mt-3'
+              size='sm'
+              variant='outline'
+              onClick={() => {
+                retireActivationOperation()
+                setActivationReview(null)
+                setActivationConflict(false)
+                setActivationLatest(null)
+              }}
+            >
               Close outdated activation review
             </Button>
           </div>
@@ -500,6 +622,7 @@ function SummaryPanelContent({
                     selected={version.id === selectedVersion?.id}
                     onSelect={() => {
                       if (activate.isPending) return
+                      retireActivationOperation()
                       setSelectedVersionId(version.id)
                       setActivationReview(null)
                       setActivationLatest(null)
@@ -516,6 +639,7 @@ function SummaryPanelContent({
                     !versions.data.page.hasPrevious || versions.isFetching
                   }
                   onClick={() => {
+                    retireActivationOperation()
                     setActivationReview(null)
                     setActivationConflict(false)
                     setHistoryPage((page) => Math.max(0, page - 1))
@@ -532,6 +656,7 @@ function SummaryPanelContent({
                   variant='outline'
                   disabled={!versions.data.page.hasNext || versions.isFetching}
                   onClick={() => {
+                    retireActivationOperation()
                     setActivationReview(null)
                     setActivationConflict(false)
                     setHistoryPage((page) => page + 1)
@@ -573,32 +698,71 @@ function SummaryPanelContent({
                 {warning}
               </p>
             ))}
-            {canEdit && summary.data && !summary.isError && !editorSnapshot &&
-              !selectedVersion.isCurrent && !selectedVersion.isStale && !activationReview && (
-                <Button size='sm' variant='outline' onClick={() => {
-                  if (!summary.data) return
-                  setActivationReview({ candidate: selectedVersion, baseline: summary.data })
-                  setActivationConflict(false)
-                }}>
+            {canEdit &&
+              summary.data &&
+              !summary.isError &&
+              !editorSnapshot &&
+              !selectedVersion.isCurrent &&
+              !selectedVersion.isStale &&
+              !activationReview && (
+                <Button
+                  size='sm'
+                  variant='outline'
+                  onClick={() => {
+                    if (!summary.data) return
+                    retireActivationOperation()
+                    setActivationReview({
+                      candidate: selectedVersion,
+                      baseline: summary.data,
+                    })
+                    setActivationConflict(false)
+                  }}
+                >
                   Review activation
                 </Button>
               )}
             {activationReview && (
               <section className='space-y-3 rounded-md border p-3'>
-                <h4 className='font-medium'>Review activation of version {activationReview.candidate.versionNumber}</h4>
+                <h4 className='font-medium'>
+                  Review activation of version{' '}
+                  {activationReview.candidate.versionNumber}
+                </h4>
                 <div className='grid gap-3 lg:grid-cols-2'>
-                  <PreviewColumn title={`Reviewed current v${activationReview.baseline.summary.versionNumber}`} content={activationReview.baseline.summary.content} />
-                  <PreviewColumn title={`Candidate v${activationReview.candidate.versionNumber}`} content={activationReview.candidate.content} />
+                  <PreviewColumn
+                    title={`Reviewed current v${activationReview.baseline.summary.versionNumber}`}
+                    content={activationReview.baseline.summary.content}
+                  />
+                  <PreviewColumn
+                    title={`Candidate v${activationReview.candidate.versionNumber}`}
+                    content={activationReview.candidate.content}
+                  />
                 </div>
                 <div className='flex flex-wrap gap-2'>
-                  <Button disabled={activate.isPending || activationConflict || !canEdit || !activationCandidate || activationCandidate.isCurrent || activationCandidate.isStale} onClick={() => activate.mutate()}>
+                  <Button
+                    disabled={
+                      activate.isPending ||
+                      activationConflict ||
+                      !canEdit ||
+                      !activationCandidate ||
+                      activationCandidate.isCurrent ||
+                      activationCandidate.isStale
+                    }
+                    onClick={() => activate.mutate()}
+                  >
                     Activate reviewed version
                   </Button>
-                  <Button variant='outline' disabled={activate.isPending} onClick={() => {
-                    setActivationReview(null)
-                    setActivationConflict(false)
-                    setActivationLatest(null)
-                  }}>Cancel activation</Button>
+                  <Button
+                    variant='outline'
+                    disabled={activate.isPending}
+                    onClick={() => {
+                      retireActivationOperation()
+                      setActivationReview(null)
+                      setActivationConflict(false)
+                      setActivationLatest(null)
+                    }}
+                  >
+                    Cancel activation
+                  </Button>
                 </div>
               </section>
             )}
@@ -624,4 +788,3 @@ function SummaryPanelContent({
     </Card>
   )
 }
-

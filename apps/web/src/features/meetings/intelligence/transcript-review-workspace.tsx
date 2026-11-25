@@ -1210,13 +1210,15 @@ function TranscriptReviewWorkspaceContent({
                   The requested evidence is not part of the current transcript.
                 </p>
               )}
-            {evidenceSegmentId && evidenceTranscriptId === transcriptValue.id &&
+            {evidenceSegmentId &&
+              evidenceTranscriptId === transcriptValue.id &&
               evidenceContentRevision !== undefined &&
               evidenceContentRevision !== transcriptValue.contentRevision && (
                 <p role='status' className='text-sm text-muted-foreground'>
-                  The cited evidence belongs to transcript revision {evidenceContentRevision}.
-                  The current transcript is revision {transcriptValue.contentRevision}.
-                  Its content is not the original cited evidence.
+                  The cited evidence belongs to transcript revision{' '}
+                  {evidenceContentRevision}. The current transcript is revision{' '}
+                  {transcriptValue.contentRevision}. Its content is not the
+                  original cited evidence.
                 </p>
               )}
             {evidenceReferenceIssue && (

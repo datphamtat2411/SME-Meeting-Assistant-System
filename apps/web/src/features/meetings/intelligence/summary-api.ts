@@ -155,6 +155,22 @@ export type SummaryRegenerationAdmission = z.infer<
   typeof regenerationResponseSchema
 >
 
+function uncertainRegenerationObservation(
+  error: unknown,
+  admittedJobId: string
+): Error {
+  const failure = new CoreApiError({
+    message: 'The admitted regeneration job could not be observed.',
+    code: 'PROCESSING_ADMISSION_UNCERTAIN',
+    kind: 'network',
+    recoveryOutcome: 'uncertain',
+    retryable: false,
+    cause: error,
+  })
+  Object.assign(failure, { admittedJobId })
+  return failure
+}
+
 /**
  * Admission is accepted before generation completes. Read back the exact
  * admitted job so the existing meeting-scoped processing owner can observe
@@ -187,7 +203,8 @@ export async function requestSummaryRegeneration(
       (failure.isServerError && failure.status !== 503)
     ) {
       throw new CoreApiError({
-        message: 'Summary regeneration admission is uncertain. Recover the original request.',
+        message:
+          'Summary regeneration admission is uncertain. Recover the original request.',
         code: 'PROCESSING_ADMISSION_UNCERTAIN',
         kind: 'network',
         recoveryOutcome: 'uncertain',
@@ -222,17 +239,16 @@ export async function requestSummaryRegeneration(
   } catch (error) {
     // Admission already succeeded. A failed read-back cannot safely retire
     // the intent or justify a replacement idempotency key.
-    throw Object.assign(
-      error instanceof Error
-        ? error
-        : new Error('The admitted regeneration job could not be observed.'),
-      { recoveryOutcome: 'uncertain' as const }
-    )
+    throw uncertainRegenerationObservation(error, admission.processingJobId)
   }
-  if (job.id !== admission.processingJobId || job.meetingId !== meetingId || job.jobType !== 'DERIVED_STAGE_PROCESSING') {
-    throw Object.assign(
+  if (
+    job.id !== admission.processingJobId ||
+    job.meetingId !== meetingId ||
+    job.jobType !== 'DERIVED_STAGE_PROCESSING'
+  ) {
+    throw uncertainRegenerationObservation(
       new Error('Core API returned a different regeneration job.'),
-      { recoveryOutcome: 'uncertain' as const }
+      admission.processingJobId
     )
   }
   return job

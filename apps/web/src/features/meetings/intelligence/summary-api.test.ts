@@ -125,9 +125,14 @@ describe('Summary API contracts', () => {
   })
 
   it('classifies a real Core network failure as uncertain without losing the intent', async () => {
-    const failure = new CoreApiError({ message: 'Connection lost', kind: 'network' })
+    const failure = new CoreApiError({
+      message: 'Connection lost',
+      kind: 'network',
+    })
     const post = vi.spyOn(coreApi, 'post').mockRejectedValue(failure)
-    await expect(requestSummaryRegeneration(meetingId, 'original-key')).rejects.toMatchObject({
+    await expect(
+      requestSummaryRegeneration(meetingId, 'original-key')
+    ).rejects.toMatchObject({
       recoveryOutcome: 'uncertain',
       cause: failure,
     })
@@ -135,9 +140,15 @@ describe('Summary API contracts', () => {
   })
 
   it('preserves a definitive admission rejection', async () => {
-    const failure = new CoreApiError({ message: 'Unavailable', kind: 'server', status: 503 })
+    const failure = new CoreApiError({
+      message: 'Unavailable',
+      kind: 'server',
+      status: 503,
+    })
     vi.spyOn(coreApi, 'post').mockRejectedValue(failure)
-    await expect(requestSummaryRegeneration(meetingId, 'original-key')).rejects.toBe(failure)
+    await expect(
+      requestSummaryRegeneration(meetingId, 'original-key')
+    ).rejects.toBe(failure)
   })
 
   it('retains one idempotency key while resolving exact regeneration admission', async () => {
@@ -167,5 +178,29 @@ describe('Summary API contracts', () => {
       { headers: { 'Idempotency-Key': key }, signal: undefined }
     )
     expect(get).toHaveBeenCalledWith(`/processing-jobs/${jobId}`)
+  })
+
+  it('retains the admitted job identity when exact observation fails', async () => {
+    const post = vi.spyOn(coreApi, 'post').mockResolvedValue({
+      processingJobId: jobId,
+      meetingId,
+      status: 'PENDING',
+      transcriptId,
+      contentRevision: 9,
+    })
+    const observationFailure = new CoreApiError({
+      message: 'The processing job is temporarily unavailable.',
+      kind: 'network',
+    })
+    vi.spyOn(coreApi, 'get').mockRejectedValue(observationFailure)
+
+    await expect(
+      requestSummaryRegeneration(meetingId, 'original-key')
+    ).rejects.toMatchObject({
+      recoveryOutcome: 'uncertain',
+      admittedJobId: jobId,
+      cause: observationFailure,
+    })
+    expect(post).toHaveBeenCalledTimes(1)
   })
 })

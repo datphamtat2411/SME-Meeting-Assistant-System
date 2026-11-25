@@ -247,12 +247,15 @@ export function MeetingSessionProvider({
   }, [isArtifactLocked, stopLocalArtifact])
 
   const invalidateProcessing = processing.invalidate
-  const resetProtectedResources = useCallback((discardRecovery = true) => {
-    resetRecording()
-    resetIngestion()
-    resetPlayback()
-    invalidateProcessing(discardRecovery)
-  }, [invalidateProcessing, resetIngestion, resetPlayback, resetRecording])
+  const resetProtectedResources = useCallback(
+    (discardRecovery = true) => {
+      resetRecording()
+      resetIngestion()
+      resetPlayback()
+      invalidateProcessing(discardRecovery)
+    },
+    [invalidateProcessing, resetIngestion, resetPlayback, resetRecording]
+  )
 
   const previousScope = useRef({
     meetingId,
@@ -303,7 +306,10 @@ export function MeetingSessionProvider({
     stopRecording,
   ])
 
-  useEffect(() => () => resetProtectedResources(false), [resetProtectedResources])
+  useEffect(
+    () => () => resetProtectedResources(false),
+    [resetProtectedResources]
+  )
 
   const updateFallbackCapabilities = useCallback(
     (next: Partial<FallbackCapabilities>) => {
@@ -343,14 +349,20 @@ export function MeetingSessionProvider({
       authorization?.status === 'confirmed-authentication-loss' ||
       authorization?.status === 'confirmed-authorization-denial'
     )
-    if ((!hasUnsavedResources && !hasUnsavedTranscriptReview && !hasUnsavedIntelligence) || accessLost) {
+    if (
+      (!hasUnsavedResources &&
+        !hasUnsavedTranscriptReview &&
+        !hasUnsavedIntelligence) ||
+      accessLost
+    ) {
       return
     }
     const preventDiscard = (event: BeforeUnloadEvent) => {
       event.preventDefault()
-      event.returnValue = hasUnsavedTranscriptReview || hasUnsavedIntelligence
-        ? 'Meeting review work has not been saved. Leave anyway?'
-        : 'A recording or local media has not been submitted. Leave anyway?'
+      event.returnValue =
+        hasUnsavedTranscriptReview || hasUnsavedIntelligence
+          ? 'Meeting review work has not been saved. Leave anyway?'
+          : 'A recording or local media has not been submitted. Leave anyway?'
     }
     window.addEventListener('beforeunload', preventDiscard)
     return () => window.removeEventListener('beforeunload', preventDiscard)

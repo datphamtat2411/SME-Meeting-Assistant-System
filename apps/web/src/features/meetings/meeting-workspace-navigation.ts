@@ -29,7 +29,12 @@ const sectionSearchSchema = z
     section: meetingWorkspaceSectionSchema.optional().catch(undefined),
     evidenceTranscriptId: evidenceIdentifierSchema,
     evidenceSegmentId: evidenceIdentifierSchema,
-    evidenceContentRevision: z.number().int().nonnegative().optional().catch(undefined),
+    evidenceContentRevision: z
+      .number()
+      .int()
+      .nonnegative()
+      .optional()
+      .catch(undefined),
   })
   .passthrough()
 
@@ -58,8 +63,8 @@ export function normalizeMeetingWorkspaceSearch(
     hasTranscript !== hasSegment || (hasRevision && !hasTranscript)
       ? 'incomplete'
       : (hasTranscript &&
-          (!isUuid(search.evidenceTranscriptId) ||
-            !isUuid(search.evidenceSegmentId))) ||
+            (!isUuid(search.evidenceTranscriptId) ||
+              !isUuid(search.evidenceSegmentId))) ||
           (hasRevision && parsed.evidenceContentRevision === undefined)
         ? 'malformed'
         : undefined

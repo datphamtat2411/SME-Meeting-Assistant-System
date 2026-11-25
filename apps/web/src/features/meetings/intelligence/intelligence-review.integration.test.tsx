@@ -4,8 +4,8 @@ import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
 import { CoreApiError, coreApi } from '@/lib/core-api'
 import { DecisionsPanel } from './decisions-panel'
-import { SummaryPanel } from './summary-panel'
 import { summaryQuery } from './summary-api'
+import { SummaryPanel } from './summary-panel'
 
 const meetingId = '11111111-1111-4111-8111-111111111111'
 const currentId = '22222222-2222-4222-8222-222222222222'
@@ -70,12 +70,24 @@ function client() {
   })
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
+}
+
 describe('intelligence review integrity', () => {
   beforeEach(() => vi.restoreAllMocks())
 
   it('binds activation to the current summary actually shown during review', async () => {
     const queryClient = client()
-    const latest = { ...summary, versionNumber: 5, content: 'Newer server summary' }
+    const latest = {
+      ...summary,
+      versionNumber: 5,
+      content: 'Newer server summary',
+    }
     const get = vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
       data: summary,
       meta: {},
@@ -84,52 +96,92 @@ describe('intelligence review integrity', () => {
     vi.spyOn(coreApi, 'getWithMeta').mockResolvedValue(
       page([
         { ...summary, isCurrent: true },
-        { ...summary, id: candidateId, versionNumber: 3, content: 'Historical candidate', isCurrent: false },
+        {
+          ...summary,
+          id: candidateId,
+          versionNumber: 3,
+          content: 'Historical candidate',
+          isCurrent: false,
+        },
       ])
     )
     const post = vi.spyOn(coreApi, 'postWithMetaAndEtag').mockRejectedValue(
-      new CoreApiError({ message: 'Version changed', status: 412, kind: 'http' })
+      new CoreApiError({
+        message: 'Version changed',
+        status: 412,
+        kind: 'http',
+      })
     )
     const screen = await render(
       <QueryClientProvider client={queryClient}>
         <SummaryPanel meetingId={meetingId} canEdit canRegenerate={false} />
       </QueryClientProvider>
     )
-    await userEvent.click(screen.getByRole('button', { name: 'Review activation' }))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Review activation' })
+    )
     get.mockResolvedValue({ data: latest, meta: {}, etag: '"latest-summary"' })
     queryClient.setQueryData(summaryQuery(meetingId).queryKey, {
       summary: latest,
       etag: '"latest-summary"',
     })
-    await userEvent.click(screen.getByRole('button', { name: 'Activate reviewed version' }))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Activate reviewed version' })
+    )
     await expect.poll(() => post.mock.calls.length).toBe(1)
     expect(post).toHaveBeenCalledWith(
       `/meetings/${meetingId}/summary/versions/${candidateId}/activate`,
       undefined,
       { headers: { 'If-Match': '"reviewed-summary"' } }
     )
-    await expect.element(screen.getByRole('button', { name: 'Activate reviewed version' })).toBeDisabled()
+    await expect
+      .element(
+        screen.getByRole('button', { name: 'Activate reviewed version' })
+      )
+      .toBeDisabled()
   })
 
   it('blocks an obsolete proposal review even when the record leaves the filtered collection', async () => {
     const queryClient = client()
-    const collection = vi.spyOn(coreApi, 'getWithMeta').mockResolvedValue(page([proposal]))
+    const collection = vi
+      .spyOn(coreApi, 'getWithMeta')
+      .mockResolvedValue(page([proposal]))
     vi.spyOn(coreApi, 'getWithMetaAndEtag').mockRejectedValue(
-      new CoreApiError({ message: 'Transcript not available', status: 404, kind: 'http' })
+      new CoreApiError({
+        message: 'Transcript not available',
+        status: 404,
+        kind: 'http',
+      })
     )
     const post = vi.spyOn(coreApi, 'post').mockRejectedValue(
-      new CoreApiError({ message: 'Decision changed', status: 412, kind: 'http' })
+      new CoreApiError({
+        message: 'Decision changed',
+        status: 412,
+        kind: 'http',
+      })
     )
     const screen = await render(
       <QueryClientProvider client={queryClient}>
         <DecisionsPanel meetingId={meetingId} canManageDecisions />
       </QueryClientProvider>
     )
-    await userEvent.click(screen.getByRole('button', { name: 'Review proposal' }))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Review proposal' })
+    )
     collection.mockResolvedValue(page([]))
-    await userEvent.click(screen.getByRole('button', { name: 'Reject proposal' }))
-    await expect.element(screen.getByText('This review is no longer actionable. No action was replayed.')).toBeInTheDocument()
-    await expect.element(screen.getByRole('button', { name: 'Reject proposal' })).toBeDisabled()
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Reject proposal' })
+    )
+    await expect
+      .element(
+        screen.getByText(
+          'This review is no longer actionable. No action was replayed.'
+        )
+      )
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: 'Reject proposal' }))
+      .toBeDisabled()
     expect(post).toHaveBeenCalledTimes(1)
     expect(post).toHaveBeenCalledWith(
       `/meetings/${meetingId}/decisions/${candidateId}/reject`,
@@ -142,21 +194,160 @@ describe('intelligence review integrity', () => {
     const queryClient = client()
     vi.spyOn(coreApi, 'getWithMeta').mockResolvedValue(page([]))
     vi.spyOn(coreApi, 'getWithMetaAndEtag').mockRejectedValue(
-      new CoreApiError({ message: 'Transcript not available', status: 404, kind: 'http' })
+      new CoreApiError({
+        message: 'Transcript not available',
+        status: 404,
+        kind: 'http',
+      })
     )
-    const post = vi.spyOn(coreApi, 'post').mockRejectedValue(
-      new CoreApiError({ message: 'Connection lost', kind: 'network' })
+    const post = vi
+      .spyOn(coreApi, 'post')
+      .mockRejectedValue(
+        new CoreApiError({ message: 'Connection lost', kind: 'network' })
+      )
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <DecisionsPanel meetingId={meetingId} canManageDecisions />
+      </QueryClientProvider>
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Add confirmed decision' })
+    )
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'New decision content' }),
+      'New official decision'
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Create confirmed decision' })
+    )
+    await expect
+      .element(
+        screen.getByRole('button', { name: 'Create confirmed decision' })
+      )
+      .toBeDisabled()
+    await expect
+      .element(
+        screen.getByRole('button', {
+          name: 'I checked the records — allow a new attempt',
+        })
+      )
+      .toBeInTheDocument()
+    expect(post).toHaveBeenCalledTimes(1)
+  })
+
+  it('ignores a delayed proposal reconciliation after closing and reopening the same review', async () => {
+    const queryClient = client()
+    const latestCollection = deferred<ReturnType<typeof page>>()
+    const collection = vi
+      .spyOn(coreApi, 'getWithMeta')
+      .mockResolvedValueOnce(page([proposal]))
+      .mockImplementation(async () => latestCollection.promise)
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockRejectedValue(
+      new CoreApiError({
+        message: 'Transcript not available',
+        status: 404,
+        kind: 'http',
+      })
+    )
+    vi.spyOn(coreApi, 'post').mockRejectedValue(
+      new CoreApiError({
+        message: 'Decision changed',
+        status: 412,
+        kind: 'http',
+      })
     )
     const screen = await render(
       <QueryClientProvider client={queryClient}>
         <DecisionsPanel meetingId={meetingId} canManageDecisions />
       </QueryClientProvider>
     )
-    await userEvent.click(screen.getByRole('button', { name: 'Add confirmed decision' }))
-    await userEvent.fill(screen.getByRole('textbox', { name: 'New decision content' }), 'New official decision')
-    await userEvent.click(screen.getByRole('button', { name: 'Create confirmed decision' }))
-    await expect.element(screen.getByRole('button', { name: 'Create confirmed decision' })).toBeDisabled()
-    await expect.element(screen.getByRole('button', { name: 'I checked the records — allow a new attempt' })).toBeInTheDocument()
-    expect(post).toHaveBeenCalledTimes(1)
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Review proposal' })
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Reject proposal' })
+    )
+    await expect.poll(() => collection.mock.calls.length).toBeGreaterThan(1)
+    await userEvent.click(screen.getByRole('button', { name: 'Close review' }))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Review proposal' })
+    )
+
+    latestCollection.resolve(page([proposal]))
+    await expect
+      .element(
+        screen.getByText(
+          'This review is no longer actionable. No action was replayed.'
+        )
+      )
+      .not.toBeInTheDocument()
+  })
+
+  it('ignores a delayed Summary edit reconciliation after closing and reopening the editor', async () => {
+    const queryClient = client()
+    const latestSummary = deferred<{
+      data: typeof summary
+      meta: Record<string, never>
+      etag: string
+    }>()
+    const get = vi
+      .spyOn(coreApi, 'getWithMetaAndEtag')
+      .mockResolvedValueOnce({
+        data: summary,
+        meta: {},
+        etag: '"reviewed-summary"',
+      })
+      .mockImplementation(async () => latestSummary.promise)
+    vi.spyOn(coreApi, 'getWithMeta').mockResolvedValue(
+      page([
+        { ...summary, isCurrent: true },
+        {
+          ...summary,
+          id: candidateId,
+          versionNumber: 3,
+          content: 'Historical candidate',
+          isCurrent: false,
+        },
+      ])
+    )
+    vi.spyOn(coreApi, 'patchWithMetaAndEtag').mockRejectedValue(
+      new CoreApiError({
+        message: 'Version changed',
+        status: 412,
+        kind: 'http',
+      })
+    )
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <SummaryPanel meetingId={meetingId} canEdit canRegenerate={false} />
+      </QueryClientProvider>
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: 'Edit current' }))
+    await userEvent.fill(
+      screen.getByRole('textbox', { name: 'Summary content' }),
+      'Changed summary content'
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Save reviewed version' })
+    )
+    await expect
+      .element(screen.getByText('This summary changed while you were editing.'))
+      .toBeInTheDocument()
+
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Edit current' }))
+
+    latestSummary.resolve({
+      data: { ...summary, content: 'Latest server summary' },
+      meta: {},
+      etag: '"latest-summary"',
+    })
+    await expect
+      .element(screen.getByText('This summary changed while you were editing.'))
+      .not.toBeInTheDocument()
+    expect(get).toHaveBeenCalledTimes(2)
   })
 })

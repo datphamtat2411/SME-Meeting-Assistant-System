@@ -96,10 +96,14 @@ describe('Decision API contracts', () => {
   })
 
   it('marks ambiguous creation outcomes without repeating the POST', async () => {
-    const post = vi.spyOn(coreApi, 'post').mockRejectedValue(
-      new CoreApiError({ kind: 'network', message: 'Connection lost' })
-    )
-    await expect(createDecision(meetingId, 'New decision')).rejects.toMatchObject({
+    const post = vi
+      .spyOn(coreApi, 'post')
+      .mockRejectedValue(
+        new CoreApiError({ kind: 'network', message: 'Connection lost' })
+      )
+    await expect(
+      createDecision(meetingId, 'New decision')
+    ).rejects.toMatchObject({
       recoveryOutcome: 'uncertain',
     })
     expect(post).toHaveBeenCalledTimes(1)
@@ -112,7 +116,9 @@ describe('Decision API contracts', () => {
       message: 'Invalid evidence',
     })
     vi.spyOn(coreApi, 'post').mockRejectedValue(failure)
-    await expect(createDecision(meetingId, 'New decision')).rejects.toBe(failure)
+    await expect(createDecision(meetingId, 'New decision')).rejects.toBe(
+      failure
+    )
   })
 
   it('fails closed when a decision snapshot has no concurrency token', async () => {

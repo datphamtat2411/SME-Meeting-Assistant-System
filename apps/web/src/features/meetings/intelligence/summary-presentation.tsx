@@ -9,7 +9,6 @@ export function formatDate(value: string) {
   return Number.isNaN(date.valueOf()) ? value : date.toLocaleString()
 }
 
-
 export function CurrentSummary({
   snapshot,
   editorSnapshot,
@@ -83,11 +82,21 @@ export function CurrentSummary({
             <div className='flex gap-2'>
               <Button
                 type='submit'
-                disabled={savePending || saveBlocked || !draft.trim() || draft.length > 20_000}
+                disabled={
+                  savePending ||
+                  saveBlocked ||
+                  !draft.trim() ||
+                  draft.length > 20_000
+                }
               >
                 {savePending ? 'Saving…' : 'Save reviewed version'}
               </Button>
-              <Button type='button' variant='outline' disabled={savePending} onClick={onCancel}>
+              <Button
+                type='button'
+                variant='outline'
+                disabled={savePending}
+                onClick={onCancel}
+              >
                 Cancel
               </Button>
             </div>
@@ -139,7 +148,13 @@ export function VersionRow({
   )
 }
 
-export function PreviewColumn({ title, content }: { title: string; content: string }) {
+export function PreviewColumn({
+  title,
+  content,
+}: {
+  title: string
+  content: string
+}) {
   return (
     <div className='space-y-2 rounded-md border bg-background p-3'>
       <h4 className='text-sm font-medium'>{title}</h4>

@@ -90,11 +90,16 @@ describe('meeting workspace navigation state', () => {
     })
     expect(parsed.evidenceContentRevision).toBe(7)
     expect(parsed.evidenceReferenceIssue).toBeUndefined()
-    expect(normalizeMeetingWorkspaceSearch({
-      ...evidence,
-      evidenceContentRevision: -1,
-    }).evidenceReferenceIssue).toBe('malformed')
-    expect(updateMeetingWorkspaceSearch(parsed, 'intelligence').evidenceContentRevision).toBeUndefined()
+    expect(
+      normalizeMeetingWorkspaceSearch({
+        ...evidence,
+        evidenceContentRevision: -1,
+      }).evidenceReferenceIssue
+    ).toBe('malformed')
+    expect(
+      updateMeetingWorkspaceSearch(parsed, 'intelligence')
+        .evidenceContentRevision
+    ).toBeUndefined()
   })
 
   it('preserves unrelated router search state while changing the workspace section', () => {
