@@ -205,7 +205,9 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
   @override
   Widget build(BuildContext context) {
     if (!_allows(MeetingOperation.readMedia)) {
-      return const MessagePanel(title: 'Bạn không có quyền xem tiến trình xử lý');
+      return const MessagePanel(
+        title: 'Bạn không có quyền xem tiến trình xử lý',
+      );
     }
     if (loading) {
       return const Center(

@@ -20,30 +20,7 @@ class SummaryHistoryPanel extends StatefulWidget {
 
 class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
   bool busy = false;
-  late SummaryHistoryController history;
-
-  @override
-  void initState() {
-    super.initState();
-    history = SummaryHistoryController(widget.workspace);
-    unawaited(history.load());
-  }
-
-  @override
-  void didUpdateWidget(covariant SummaryHistoryPanel oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (!identical(oldWidget.workspace, widget.workspace)) {
-      history.dispose();
-      history = SummaryHistoryController(widget.workspace);
-      unawaited(history.load());
-    }
-  }
-
-  @override
-  void dispose() {
-    history.dispose();
-    super.dispose();
-  }
+  SummaryHistoryController get history => widget.workspace.summaryHistory;
 
   Future<void> edit(ResultsSummary summary) async {
     final epoch = widget.workspace.reviewEpoch;
@@ -209,7 +186,9 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
       workspace: widget.workspace,
       epoch: epoch,
       requiresMutation: false,
-      builder: (dialog) => AlertDialog(
+      builder: (dialog) => AnimatedBuilder(
+        animation: widget.workspace,
+        builder: (context, _) => AlertDialog(
         title: Text(
           'So sánh phiên bản ${current.versionNumber} và ${version.versionNumber}',
         ),
@@ -217,8 +196,13 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              if (widget.workspace.summary.data?.etag != current.etag)
+                const MessagePanel(
+                  title: 'Phiên bản đang chọn đã thay đổi',
+                  description: 'Đây là nội dung tại thời điểm mở so sánh.',
+                ),
               const Text(
-                'Bản đang chọn',
+                'Bản đã xem khi mở so sánh',
                 style: TextStyle(fontWeight: FontWeight.w700),
               ),
               SelectableText(current.content),
@@ -237,6 +221,7 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
             child: const Text('Đóng'),
           ),
         ],
+      ),
       ),
     );
   }
@@ -384,17 +369,17 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
           const SectionHeading('Lịch sử phiên bản'),
           if (history.phase == SummaryHistoryPhase.loading ||
               history.phase == SummaryHistoryPhase.refreshing)
-            const LinearProgressIndicator()
-          else if (history.phase == SummaryHistoryPhase.failed)
+            const LinearProgressIndicator(),
+          if (history.phase == SummaryHistoryPhase.failed)
             MessagePanel(
               title: 'Không thể tải lịch sử phiên bản',
               onRetry: () => unawaited(history.load(refresh: true)),
             )
           else if (history.phase == SummaryHistoryPhase.forbidden)
             const MessagePanel(title: 'Bạn không có quyền xem lịch sử này')
-          else if (versions.isEmpty)
-            const MessagePanel(title: 'Chưa có lịch sử')
-          else
+          else if (versions.isEmpty && !history.isLoading)
+            const MessagePanel(title: 'Chưa có lịch sử'),
+          if (versions.isNotEmpty)
             ...versions.map(
               (version) => ContentCard(
                 child: ListTile(
@@ -402,7 +387,8 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
                   title: Text('Phiên bản ${version.versionNumber}'),
                   subtitle: Text(
                     '${_sourceLabel(version.sourceType)} · ${_qualityLabel(version.qualityStatus)}'
-                    '${version.isStale ? ' · Nguồn đã cũ' : ''}',
+                    '${version.isStale ? ' · Nguồn đã cũ' : ''}'
+                    '${current?.id == version.id ? ' · Đang chọn' : ''}',
                   ),
                   trailing: PopupMenuButton<String>(
                     onSelected: (value) {
@@ -417,7 +403,8 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
                         value: 'compare',
                         child: Text('So sánh'),
                       ),
-                      if (!version.isCurrent &&
+                      if (current?.id != version.id &&
+                          history.phase == SummaryHistoryPhase.available &&
                           !version.isStale &&
                           current != null &&
                           widget.workspace.capabilities.canMutate)

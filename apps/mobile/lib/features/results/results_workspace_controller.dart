@@ -12,6 +12,7 @@ import 'results_invalidation.dart';
 import 'results_models.dart';
 import 'results_repository.dart';
 import 'results_mutation_coordinator.dart';
+import 'summary_history_controller.dart';
 
 // The private capability field is intentionally updated through the reviewed
 // capability boundary rather than exposing a mutable constructor field.
@@ -46,7 +47,8 @@ class ResultsCapabilityPolicy {
 
 /// Meeting-scoped application owner for Results. Feature panels only render
 /// this state and call commands; they never coordinate transport themselves.
-class ResultsWorkspaceController extends ChangeNotifier {
+class ResultsWorkspaceController extends ChangeNotifier
+    implements SummaryHistoryAccess {
   ResultsWorkspaceController({
     required this.api,
     required this.repository,
@@ -117,6 +119,16 @@ class ResultsWorkspaceController extends ChangeNotifier {
   List<MeetingDecision>? _decisionRecoveryReview;
   int? _decisionRecoveryGeneration;
   final ResultsMutationCoordinator _mutations = ResultsMutationCoordinator();
+  SummaryHistoryController? _summaryHistory;
+  SummaryHistoryController get summaryHistory =>
+      _summaryHistory ??= SummaryHistoryController(this);
+
+  @override
+  bool get canReadHistory => capabilities.canRead;
+
+  @override
+  ResultsSummary? get currentSummaryForHistory =>
+      capabilities.canRead && summary.hasData ? summary.data : null;
   final Set<ResultsProtectedDialogRegistration> _dialogs =
       <ResultsProtectedDialogRegistration>{};
   int get reviewEpoch => _mutations.epoch;
@@ -301,6 +313,11 @@ class ResultsWorkspaceController extends ChangeNotifier {
     _active
       ..clear()
       ..addAll(kinds);
+    if (kinds.contains(ResultsResourceKind.summary)) {
+      summaryHistory.setActive(true);
+    } else {
+      _summaryHistory?.setActive(false);
+    }
     _syncProcessingObservation();
     for (final kind in _active) {
       unawaited(_loadForActivation(kind));
@@ -310,6 +327,7 @@ class ResultsWorkspaceController extends ChangeNotifier {
   void deactivate() {
     if (_disposed) return;
     _active.clear();
+    _summaryHistory?.setActive(false);
     _syncProcessingObservation();
   }
 
@@ -1323,6 +1341,7 @@ class ResultsWorkspaceController extends ChangeNotifier {
     invalidation.removeListener(_onInvalidation);
     api.sessionCoordinator.removeListener(_onSessionChanged);
     _processingBridge?.dispose();
+    _summaryHistory?.dispose();
     super.dispose();
   }
 }
