@@ -226,7 +226,7 @@ class RecordingWorkspaceController extends ChangeNotifier {
       );
       if (!_owns(generation, scope, meeting) || !canReadMedia) return;
       _assets = listed
-          .where((asset) => asset.isRecoverable)
+          .where((asset) => asset.lifecycle != LocalMediaLifecycle.discarded)
           .toList(growable: false);
       _recoverableOperations = recovered;
       if (_selectedAsset != null) {
@@ -337,6 +337,7 @@ class RecordingWorkspaceController extends ChangeNotifier {
     final scope = _sessionScope;
     if (scope == null || !canCancelImport) return;
     recording.cancelImport(meetingId: meetingId, scope: scope);
+    notifyListeners();
   }
 
   Future<void> submitSelected() async {
@@ -373,6 +374,7 @@ class RecordingWorkspaceController extends ChangeNotifier {
     final scope = _sessionScope;
     if (asset == null || scope == null || !canCancelSubmission) return;
     submissions.cancel(asset.id, scope: scope);
+    notifyListeners();
   }
 
   Future<void> discardAsset(LocalMediaAsset asset) async {
