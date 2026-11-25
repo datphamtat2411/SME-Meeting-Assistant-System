@@ -80,12 +80,17 @@ class MeetingAssistantApp extends StatefulWidget {
 }
 
 class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
-  final _navigatorKey = GlobalKey<NavigatorState>();
+  GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
+  AuthenticatedSessionScope? _navigationScope;
   bool _openingRecording = false;
   late final ApiClient api = widget.dependencies.api;
   late final AppearanceController appearance = AppearanceController(
     preferences: widget.dependencies.appearancePreferences,
   );
+  late final Listenable shellState = Listenable.merge(<Listenable>[
+    api,
+    appearance,
+  ]);
   late final Listenable applicationState = Listenable.merge(<Listenable>[
     api,
     appearance,
@@ -109,21 +114,35 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
   }
 
   @override
-  Widget build(BuildContext context) => MaterialApp(
-    title: 'SME Meeting Assistant',
-    debugShowCheckedModeBanner: false,
-    theme: AppTheme.light(),
-    darkTheme: AppTheme.dark(),
-    themeMode: appearance.mode,
-    navigatorKey: _navigatorKey,
-    builder: (context, child) => AnimatedBuilder(
-      animation: applicationState,
-      builder: (context, _) => _recordingOverlay(child),
-    ),
-    home: AnimatedBuilder(
-      animation: applicationState,
-      builder: (_, __) => _sessionHome(),
-    ),
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: shellState,
+    builder: (context, _) {
+      final scope = api.authenticatedSessionScope;
+      if (scope != _navigationScope) {
+        // A protected route stack belongs to exactly one authenticated epoch.
+        // Replacing only the home widget leaves pushed routes and dialogs alive.
+        _navigationScope = scope;
+        _navigatorKey = GlobalKey<NavigatorState>();
+        _openingRecording = false;
+      }
+      return MaterialApp(
+        key: ValueKey(scope),
+        title: 'SME Meeting Assistant',
+        debugShowCheckedModeBanner: false,
+        theme: AppTheme.light(),
+        darkTheme: AppTheme.dark(),
+        themeMode: appearance.mode,
+        navigatorKey: _navigatorKey,
+        builder: (context, child) => AnimatedBuilder(
+          animation: applicationState,
+          builder: (context, _) => _recordingOverlay(child),
+        ),
+        home: AnimatedBuilder(
+          animation: applicationState,
+          builder: (_, __) => _sessionHome(),
+        ),
+      );
+    },
   );
 
   Widget _recordingOverlay(Widget? child) {
@@ -164,7 +183,8 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
         capture.sessionScope != scope) {
       return;
     }
-    final navigator = _navigatorKey.currentState;
+    final navigatorKey = _navigatorKey;
+    final navigator = navigatorKey.currentState;
     if (navigator == null) return;
     _openingRecording = true;
     try {
@@ -178,7 +198,9 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
         ),
       );
     } finally {
-      _openingRecording = false;
+      if (identical(_navigatorKey, navigatorKey)) {
+        _openingRecording = false;
+      }
     }
   }
 

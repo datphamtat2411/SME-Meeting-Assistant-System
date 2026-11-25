@@ -412,6 +412,93 @@ void main() {
     expect(find.text('Đăng nhập hệ thống'), findsOneWidget);
   });
 
+  testWidgets('session invalidation removes pushed protected routes', (
+    tester,
+  ) async {
+    final credentials = InMemoryCredentialStorage();
+    await _writeRefreshCredential(credentials, 'refresh-0');
+    final logoutRequested = Completer<void>();
+    final logoutResponse = Completer<http.StreamedResponse>();
+    final harness = _Harness.create(
+      _authClient(
+        logoutRequested: logoutRequested,
+        logoutResponse: logoutResponse,
+      ),
+      credentials,
+    );
+
+    await tester.pumpWidget(
+      MeetingAssistantApp(dependencies: harness.dependencies),
+    );
+    await pumpUntil(
+      tester,
+      () =>
+          harness.api.sessionState.isAuthenticated &&
+          find.text('Tổng quan').evaluate().isNotEmpty,
+      reason: 'authenticated navigation to become available',
+    );
+    final navigator = tester.state<NavigatorState>(find.byType(Navigator));
+    unawaited(
+      navigator.push<void>(
+        MaterialPageRoute<void>(
+          builder: (_) => const Scaffold(body: Text('Protected meeting')),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.text('Protected meeting'), findsOneWidget);
+
+    // An unrelated notification must not discard navigation in the same session.
+    harness.api.notifyListeners();
+    await tester.pump();
+    expect(find.text('Protected meeting'), findsOneWidget);
+    expect(
+      tester.state<NavigatorState>(find.byType(Navigator)),
+      same(navigator),
+    );
+
+    late Future<AuthLogoutOutcome> signOut;
+    await tester.runAsync(() async {
+      signOut = harness.api.signOut();
+    });
+    await pumpUntil(
+      tester,
+      () => logoutRequested.isCompleted,
+      reason: 'logout to begin while a protected route is open',
+    );
+    await tester.pump();
+
+    expect(find.text('Protected meeting', skipOffstage: false), findsNothing);
+    expect(find.text('Đang đăng xuất...'), findsOneWidget);
+    expect(
+      tester.state<NavigatorState>(find.byType(Navigator)).canPop(),
+      isFalse,
+    );
+
+    logoutResponse.complete(await jsonResponse(200, successEnvelope(null)));
+    await pumpUntil(
+      tester,
+      () => find.text('Đăng nhập hệ thống').evaluate().isNotEmpty,
+      reason: 'logout to finish without the previous route stack',
+    );
+    await tester.runAsync(() => signOut);
+
+    await tester.runAsync(
+      () => harness.api.signIn('user@example.test', 'password'),
+    );
+    await pumpUntil(
+      tester,
+      () => find.text('Tổng quan').evaluate().isNotEmpty,
+      reason: 'the new authenticated session to reach its own shell',
+    );
+    expect(find.text('Protected meeting', skipOffstage: false), findsNothing);
+    expect(
+      tester.state<NavigatorState>(find.byType(Navigator)).canPop(),
+      isFalse,
+    );
+  });
+
   testWidgets('failed credential deletion blocks login until safe retry', (
     tester,
   ) async {
