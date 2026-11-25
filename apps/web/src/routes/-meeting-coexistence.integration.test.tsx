@@ -535,7 +535,9 @@ describe('generated meeting route coexistence', () => {
     await expect.poll(() => warning.mock.calls.length).toBe(1)
     expect(router.state.location.pathname).toBe(`/meetings/${meetingA.id}`)
     await expect
-      .element(screen.getByRole('button', { name: 'Create official Action Item' }))
+      .element(
+        screen.getByRole('button', { name: 'Create official Action Item' })
+      )
       .toBeDisabled()
 
     history.flush()
