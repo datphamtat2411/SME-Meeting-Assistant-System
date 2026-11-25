@@ -62,7 +62,10 @@ class MinutesPanel extends StatelessWidget {
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
       for (final warning in warnings)
-        Text('• ${_warning(warning)}', style: const TextStyle(color: Palette.amber)),
+        Text(
+          '• ${_warning(warning)}',
+          style: const TextStyle(color: Palette.amber),
+        ),
     ],
   );
 
@@ -143,9 +146,19 @@ class MinutesPanel extends StatelessWidget {
                     if (meeting.description != null)
                       SelectableText(meeting.description!),
                     StatePill(meeting.status),
-                    _label('Người tổ chức', workspace.meetingIdentityLabel(meeting.organizerUserId) ?? meeting.organizerUserId),
-                    _label('Bắt đầu dự kiến', dateLabel(meeting.scheduledStartAt)),
-                    _label('Kết thúc dự kiến', dateLabel(meeting.scheduledEndAt)),
+                    _label(
+                      'Người tổ chức',
+                      workspace.meetingIdentityLabel(meeting.organizerUserId) ??
+                          meeting.organizerUserId,
+                    ),
+                    _label(
+                      'Bắt đầu dự kiến',
+                      dateLabel(meeting.scheduledStartAt),
+                    ),
+                    _label(
+                      'Kết thúc dự kiến',
+                      dateLabel(meeting.scheduledEndAt),
+                    ),
                     _label('Bắt đầu thực tế', dateLabel(meeting.startedAt)),
                     _label('Kết thúc thực tế', dateLabel(meeting.endedAt)),
                   ]),
@@ -187,8 +200,17 @@ class MinutesPanel extends StatelessWidget {
                     StatePill(decision.status),
                     SelectableText(decision.content),
                     Text(_source(decision.sourceType)),
-                    _label('Xác nhận bởi', workspace.meetingIdentityLabel(decision.confirmedByUserId) ?? decision.confirmedByUserId),
-                    _label('Thời điểm xác nhận', dateLabel(decision.confirmedAt)),
+                    _label(
+                      'Xác nhận bởi',
+                      workspace.meetingIdentityLabel(
+                            decision.confirmedByUserId,
+                          ) ??
+                          decision.confirmedByUserId,
+                    ),
+                    _label(
+                      'Thời điểm xác nhận',
+                      dateLabel(decision.confirmedAt),
+                    ),
                     if (decision.isStale)
                       const Text('Đã xác nhận; nguồn cần đối chiếu lại.'),
                     if (decision.aiUncertainty == 'MATERIAL')
@@ -196,7 +218,11 @@ class MinutesPanel extends StatelessWidget {
                     _warnings(decision.aiWarnings),
                     if (decision.transcriptId != null &&
                         decision.contentRevision != null)
-                      for (var i = 0; i < decision.evidenceSegmentIds.length; i++)
+                      for (
+                        var i = 0;
+                        i < decision.evidenceSegmentIds.length;
+                        i++
+                      )
                         TextButton(
                           onPressed: () => unawaited(
                             _openEvidence(
@@ -238,9 +264,23 @@ class MinutesPanel extends StatelessWidget {
                     if (action.details != null) SelectableText(action.details!),
                     StatePill(action.status),
                     Text(_source(action.sourceType)),
-                    _label('Người phụ trách', action.assigneeUserId == null ? 'Chưa giao' : workspace.meetingIdentityLabel(action.assigneeUserId) ?? 'Chưa rõ tên (${action.assigneeUserId})'),
+                    _label(
+                      'Người phụ trách',
+                      action.assigneeUserId == null
+                          ? 'Chưa giao'
+                          : workspace.meetingIdentityLabel(
+                                  action.assigneeUserId,
+                                ) ??
+                                'Chưa rõ tên (${action.assigneeUserId})',
+                    ),
                     _label('Hạn hoàn thành', action.dueDate),
-                    _label('Xác nhận bởi', workspace.meetingIdentityLabel(action.confirmedByUserId) ?? action.confirmedByUserId),
+                    _label(
+                      'Xác nhận bởi',
+                      workspace.meetingIdentityLabel(
+                            action.confirmedByUserId,
+                          ) ??
+                          action.confirmedByUserId,
+                    ),
                     _label('Thời điểm xác nhận', dateLabel(action.confirmedAt)),
                   ]);
                 },
@@ -253,15 +293,25 @@ class MinutesPanel extends StatelessWidget {
                   const SectionHeading('Tình trạng transcript'),
                   _card([
                     Text(_availability(transcript.availability)),
-                    if (transcript.status != null) StatePill(transcript.status!),
+                    if (transcript.status != null)
+                      StatePill(transcript.status!),
                     _label('Phiên bản', transcript.versionNumber),
                     _label('Revision', transcript.contentRevision),
                     _label('Ngôn ngữ', transcript.languageCode),
                     if (transcript.durationMs != null)
-                      _label('Thời lượng', '${transcript.durationMs! ~/ 1000} giây'),
+                      _label(
+                        'Thời lượng',
+                        '${transcript.durationMs! ~/ 1000} giây',
+                      ),
                     _label('Đoạn đáng ngờ', transcript.suspiciousSegments),
-                    _label('Đoạn chưa giải quyết', transcript.unresolvedSegments),
-                    _label('Vùng thiếu bằng chứng', transcript.unresolvedCoverageRegions),
+                    _label(
+                      'Đoạn chưa giải quyết',
+                      transcript.unresolvedSegments,
+                    ),
+                    _label(
+                      'Vùng thiếu bằng chứng',
+                      transcript.unresolvedCoverageRegions,
+                    ),
                   ]),
                   if (minutes.warnings.isNotEmpty) ...[
                     const SectionHeading('Cảnh báo và giới hạn nguồn'),

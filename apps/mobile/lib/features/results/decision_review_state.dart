@@ -109,9 +109,10 @@ class DecisionEvidenceReview {
           decision.evidenceSegmentIds.isEmpty;
     }
     if (!hasCompatibleSource ||
-        !const {'READY', 'READY_WITH_WARNINGS'}.contains(
-          projection!.transcript.status,
-        ) ||
+        !const {
+          'READY',
+          'READY_WITH_WARNINGS',
+        }.contains(projection!.transcript.status) ||
         decision.evidenceSegmentIds.isEmpty ||
         decision.evidenceSegmentIds.length > 50 ||
         decision.evidenceSegmentIds.toSet().length !=

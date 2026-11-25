@@ -279,9 +279,11 @@ class ResultsRepository {
       (raw) {
         final decision = MeetingDecision.fromJson(raw, response: response);
         _requireOwnership(sessionScope, meetingId, decision.meetingId);
-        if (!const {'PROPOSED', 'CONFIRMED', 'REJECTED'}.contains(
-              decision.status,
-            ) ||
+        if (!const {
+              'PROPOSED',
+              'CONFIRMED',
+              'REJECTED',
+            }.contains(decision.status) ||
             (status != null && decision.status != status)) {
           throw response.invalidDataFailure();
         }

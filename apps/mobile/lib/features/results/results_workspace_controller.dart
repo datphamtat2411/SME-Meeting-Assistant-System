@@ -105,8 +105,7 @@ class ResultsWorkspaceController extends ChangeNotifier
   String? get decisionStatus => _decisionStatus;
   Map<String, String> _meetingIdentityLabels = const {};
 
-  String? meetingIdentityLabel(String? id) =>
-      capabilities.canRead && id != null
+  String? meetingIdentityLabel(String? id) => capabilities.canRead && id != null
       ? _meetingIdentityLabels[id.toLowerCase()]
       : null;
 
@@ -114,7 +113,9 @@ class ResultsWorkspaceController extends ChangeNotifier
     if (!capabilities.canRead) return;
     final next = Map<String, String>.unmodifiable(labels);
     if (next.length == _meetingIdentityLabels.length &&
-        next.entries.every((entry) => _meetingIdentityLabels[entry.key] == entry.value)) {
+        next.entries.every(
+          (entry) => _meetingIdentityLabels[entry.key] == entry.value,
+        )) {
       return;
     }
     _meetingIdentityLabels = next;
@@ -1135,10 +1136,7 @@ class ResultsWorkspaceController extends ChangeNotifier
         source.contentRevision != snapshot.contentRevision) {
       return DecisionEvidenceReview(snapshot, null);
     }
-    await Future.wait([
-      loadCoverage(force: true),
-      loadSpeakers(force: true),
-    ]);
+    await Future.wait([loadCoverage(force: true), loadSpeakers(force: true)]);
     if (!ownsRead(epoch) ||
         !transcriptIsCurrent ||
         transcript.data?.etag != source.etag ||
@@ -1149,12 +1147,14 @@ class ResultsWorkspaceController extends ChangeNotifier
       snapshot,
       TranscriptReviewProjection(
         source,
-        coverage: !_dirty.contains(ResultsResourceKind.coverage) &&
+        coverage:
+            !_dirty.contains(ResultsResourceKind.coverage) &&
                 (coverage.phase == ResultsResourcePhase.available ||
                     coverage.phase == ResultsResourcePhase.empty)
             ? coverage.data
             : null,
-        speakers: !_dirty.contains(ResultsResourceKind.speakers) &&
+        speakers:
+            !_dirty.contains(ResultsResourceKind.speakers) &&
                 (speakers.phase == ResultsResourcePhase.available ||
                     speakers.phase == ResultsResourcePhase.empty)
             ? speakers.data

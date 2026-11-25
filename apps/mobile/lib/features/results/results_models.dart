@@ -402,7 +402,10 @@ class MinutesMeeting {
   final DateTime? startedAt;
   final DateTime? endedAt;
 
-  factory MinutesMeeting.fromJson(Map<String, dynamic> raw, ApiResult response) {
+  factory MinutesMeeting.fromJson(
+    Map<String, dynamic> raw,
+    ApiResult response,
+  ) {
     final value = MinutesMeeting(
       id: requiredIdentifier(raw, 'id', response: response),
       title: requiredString(raw, 'title', response: response),
@@ -426,8 +429,13 @@ class MinutesMeeting {
       startedAt: optionalTimestamp(raw, 'startedAt', response: response),
       endedAt: optionalTimestamp(raw, 'endedAt', response: response),
     );
-    if (!const {'DRAFT', 'SCHEDULED', 'IN_PROGRESS', 'ENDED', 'CANCELLED'}
-        .contains(value.status)) {
+    if (!const {
+      'DRAFT',
+      'SCHEDULED',
+      'IN_PROGRESS',
+      'ENDED',
+      'CANCELLED',
+    }.contains(value.status)) {
       invalidApiData(response: response);
     }
     return value;
@@ -461,7 +469,10 @@ class MinutesSummary {
   final bool isStale;
   final List<String> aiWarnings;
 
-  factory MinutesSummary.fromJson(Map<String, dynamic> raw, ApiResult response) {
+  factory MinutesSummary.fromJson(
+    Map<String, dynamic> raw,
+    ApiResult response,
+  ) {
     final value = MinutesSummary(
       availability: requiredString(raw, 'availability', response: response),
       id: optionalIdentifier(raw, 'id', response: response),
@@ -475,9 +486,11 @@ class MinutesSummary {
       isStale: requiredBool(raw, 'isStale', response: response),
       aiWarnings: _strings(raw, 'aiWarnings', response),
     );
-    if (!const {'NOT_AVAILABLE', 'AVAILABLE', 'NEEDS_REVIEW'}.contains(
-          value.availability,
-        ) ||
+    if (!const {
+          'NOT_AVAILABLE',
+          'AVAILABLE',
+          'NEEDS_REVIEW',
+        }.contains(value.availability) ||
         (value.availability == 'NOT_AVAILABLE'
             ? value.id != null || value.content != null
             : value.id == null ||
@@ -522,7 +535,10 @@ class MinutesDecision {
   final String? aiUncertainty;
   final List<String> aiWarnings;
 
-  factory MinutesDecision.fromJson(Map<String, dynamic> raw, ApiResult response) {
+  factory MinutesDecision.fromJson(
+    Map<String, dynamic> raw,
+    ApiResult response,
+  ) {
     final value = MinutesDecision(
       id: requiredIdentifier(raw, 'id', response: response),
       content: requiredString(raw, 'content', response: response),
@@ -596,9 +612,12 @@ class MinutesAction {
       ),
       confirmedAt: optionalTimestamp(raw, 'confirmedAt', response: response),
     );
-    if (!const {'OPEN', 'IN_PROGRESS', 'DONE', 'CANCELLED'}.contains(
-          value.status,
-        ) ||
+    if (!const {
+          'OPEN',
+          'IN_PROGRESS',
+          'DONE',
+          'CANCELLED',
+        }.contains(value.status) ||
         (value.sourceType != 'MANUAL' && value.confirmedByUserId == null)) {
       invalidApiData(response: response);
     }
@@ -633,7 +652,10 @@ class MinutesTranscript {
   final int unresolvedSegments;
   final int unresolvedCoverageRegions;
 
-  factory MinutesTranscript.fromJson(Map<String, dynamic> raw, ApiResult response) {
+  factory MinutesTranscript.fromJson(
+    Map<String, dynamic> raw,
+    ApiResult response,
+  ) {
     final value = MinutesTranscript(
       availability: requiredString(raw, 'availability', response: response),
       id: optionalIdentifier(raw, 'id', response: response),
@@ -716,7 +738,11 @@ class MeetingMinutes {
   factory MeetingMinutes.fromResult(ApiResult response) {
     final raw = response.objectData();
     final schemaVersion = requiredInt(raw, 'schemaVersion', response: response);
-    final completeness = requiredString(raw, 'completeness', response: response);
+    final completeness = requiredString(
+      raw,
+      'completeness',
+      response: response,
+    );
     final proposalsIncluded = requiredBool(
       raw,
       'proposalsIncluded',
@@ -799,4 +825,3 @@ List<Map<String, dynamic>> _nestedObjects(
 ) => List<Map<String, dynamic>>.unmodifiable(
   requireJsonObjectArray(raw[field], response: response),
 );
-

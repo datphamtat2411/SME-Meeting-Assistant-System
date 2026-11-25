@@ -235,11 +235,7 @@ void main() {
 
   test('canonical minutes can exist without a transcript', () {
     final minutes = MeetingMinutes.fromResult(
-      ApiResult(
-        minutesFixture(),
-        const {},
-        null,
-      ),
+      ApiResult(minutesFixture(), const {}, null),
     );
     expect(minutes.transcriptStatus, isNull);
     expect(minutes.transcriptAvailability, 'NOT_AVAILABLE');

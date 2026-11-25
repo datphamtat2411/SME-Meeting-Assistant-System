@@ -117,9 +117,13 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
       await workspace.loadTranscript(force: true);
       if (!mounted || !workspace.ownsReview(epoch)) return;
       source = workspace.transcript.data;
-      if (!workspace.transcriptIsCurrent || source == null || source.etag == null) {
+      if (!workspace.transcriptIsCurrent ||
+          source == null ||
+          source.etag == null) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Chưa thể tải transcript để chọn bằng chứng.')),
+          const SnackBar(
+            content: Text('Chưa thể tải transcript để chọn bằng chứng.'),
+          ),
         );
         return;
       }
@@ -187,7 +191,9 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
                   const Text('Không có bằng chứng đính kèm.'),
                 if (decision.evidenceSegmentIds.isNotEmpty &&
                     !evidence.hasCompatibleSource)
-                  const Text('Không còn nguồn transcript tương thích hoặc nguồn chưa tải được.'),
+                  const Text(
+                    'Không còn nguồn transcript tương thích hoặc nguồn chưa tải được.',
+                  ),
                 for (final id in decision.evidenceSegmentIds)
                   _evidenceTile(dialog, evidence, id),
                 if (decision.status == 'PROPOSED')
@@ -230,14 +236,15 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
       final id = action.substring('segment:'.length);
       final source = evidence.projection?.transcript;
       if (source == null) return;
-      final result = await TranscriptEvidenceNavigationBoundary(workspace).locate(
-        TranscriptEvidenceReference(
-          transcriptId: source.id,
-          segmentId: id,
-          contentRevision: source.contentRevision,
-          transcriptEtag: source.etag,
-        ),
-      );
+      final result = await TranscriptEvidenceNavigationBoundary(workspace)
+          .locate(
+            TranscriptEvidenceReference(
+              transcriptId: source.id,
+              segmentId: id,
+              contentRevision: source.contentRevision,
+              transcriptEtag: source.etag,
+            ),
+          );
       if (!mounted || !workspace.ownsRead(readEpoch)) return;
       if (result.status != TranscriptEvidenceNavigationStatus.opened) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -291,24 +298,28 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
   }
 
   List<Widget> _provenance(MeetingDecision decision) => [
-    Text(
-      switch (decision.sourceType) {
-        'AI_EXTRACTED' => 'Đề xuất từ AI',
-        'MANUAL' => 'Do người dùng tạo',
-        _ => 'Nguồn chưa xác định',
-      },
-    ),
+    Text(switch (decision.sourceType) {
+      'AI_EXTRACTED' => 'Đề xuất từ AI',
+      'MANUAL' => 'Do người dùng tạo',
+      _ => 'Nguồn chưa xác định',
+    }),
     Text('Tạo lúc: ${dateLabel(decision.createdAt)}'),
     if (decision.createdByUserId != null)
-      Text('Người tạo: ${widget.workspace.meetingIdentityLabel(decision.createdByUserId) ?? 'Chưa rõ tên (${decision.createdByUserId})'}'),
+      Text(
+        'Người tạo: ${widget.workspace.meetingIdentityLabel(decision.createdByUserId) ?? 'Chưa rõ tên (${decision.createdByUserId})'}',
+      ),
     if (decision.confirmedAt != null)
       Text('Xác nhận lúc: ${dateLabel(decision.confirmedAt)}'),
     if (decision.confirmedByUserId != null)
-      Text('Người xác nhận: ${widget.workspace.meetingIdentityLabel(decision.confirmedByUserId) ?? decision.confirmedByUserId}'),
+      Text(
+        'Người xác nhận: ${widget.workspace.meetingIdentityLabel(decision.confirmedByUserId) ?? decision.confirmedByUserId}',
+      ),
     if (decision.rejectedAt != null)
       Text('Từ chối lúc: ${dateLabel(decision.rejectedAt)}'),
     if (decision.rejectedByUserId != null)
-      Text('Người từ chối: ${widget.workspace.meetingIdentityLabel(decision.rejectedByUserId) ?? decision.rejectedByUserId}'),
+      Text(
+        'Người từ chối: ${widget.workspace.meetingIdentityLabel(decision.rejectedByUserId) ?? decision.rejectedByUserId}',
+      ),
     if (decision.stale)
       const Text('Nguồn transcript đã thay đổi; cần đối chiếu.'),
     if (decision.contentRevision != null)
@@ -392,8 +403,11 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
               subtitle: 'Đề xuất AI cần xác nhận để trở thành chính thức.',
               trailing: IconButton(
                 tooltip: 'Tạo quyết định',
-                onPressed: busy ||
-                        workspace.mutationBusy(ResultsMutationGroup.decisions) ||
+                onPressed:
+                    busy ||
+                        workspace.mutationBusy(
+                          ResultsMutationGroup.decisions,
+                        ) ||
                         !workspace.capabilities.canMutate
                     ? null
                     : createDecision,
@@ -410,12 +424,22 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
                 items: const [
                   DropdownMenuItem(value: 'ALL', child: Text('Tất cả')),
                   DropdownMenuItem(value: 'PROPOSED', child: Text('Đề xuất')),
-                  DropdownMenuItem(value: 'CONFIRMED', child: Text('Đã xác nhận')),
-                  DropdownMenuItem(value: 'REJECTED', child: Text('Đã từ chối')),
+                  DropdownMenuItem(
+                    value: 'CONFIRMED',
+                    child: Text('Đã xác nhận'),
+                  ),
+                  DropdownMenuItem(
+                    value: 'REJECTED',
+                    child: Text('Đã từ chối'),
+                  ),
                 ],
                 onChanged: (value) {
                   if (value != null) {
-                    unawaited(workspace.selectDecisionStatus(value == 'ALL' ? null : value));
+                    unawaited(
+                      workspace.selectDecisionStatus(
+                        value == 'ALL' ? null : value,
+                      ),
+                    );
                   }
                 },
               ),
@@ -447,9 +471,12 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
                   if (index == items.length + 1) {
                     return collection?.hasMore == true
                         ? OutlinedButton(
-                            onPressed: resource.phase == ResultsResourcePhase.refreshing
+                            onPressed:
+                                resource.phase ==
+                                    ResultsResourcePhase.refreshing
                                 ? null
-                                : () => unawaited(workspace.loadMoreDecisions()),
+                                : () =>
+                                      unawaited(workspace.loadMoreDecisions()),
                             child: const Text('Tải thêm quyết định'),
                           )
                         : const SizedBox.shrink();
@@ -461,7 +488,9 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
                       children: [
                         StatePill(decision.status),
                         SelectableText(decision.content),
-                        Text('${decision.evidenceSegmentIds.length} đoạn bằng chứng'),
+                        Text(
+                          '${decision.evidenceSegmentIds.length} đoạn bằng chứng',
+                        ),
                         if (decision.stale)
                           const Text('Nguồn transcript cần đối chiếu lại.'),
                         TextButton(
@@ -497,7 +526,9 @@ class _DecisionContentDialog extends StatefulWidget {
 }
 
 class _DecisionContentDialogState extends State<_DecisionContentDialog> {
-  late final TextEditingController _text = TextEditingController(text: widget.initial);
+  late final TextEditingController _text = TextEditingController(
+    text: widget.initial,
+  );
   bool _attach = false;
 
   @override
@@ -550,7 +581,8 @@ class _DecisionEvidencePicker extends StatefulWidget {
   final Transcript transcript;
 
   @override
-  State<_DecisionEvidencePicker> createState() => _DecisionEvidencePickerState();
+  State<_DecisionEvidencePicker> createState() =>
+      _DecisionEvidencePickerState();
 }
 
 class _DecisionEvidencePickerState extends State<_DecisionEvidencePicker> {

@@ -362,7 +362,11 @@ void main() {
     workspace.deactivate();
     await workspace.loadDecisions();
     expect(workspace.decisions.data?.items.length, 2);
-    repository.decisionReadFailure = const ApiFailure(503, 'UNAVAILABLE', 'Retry');
+    repository.decisionReadFailure = const ApiFailure(
+      503,
+      'UNAVAILABLE',
+      'Retry',
+    );
     await workspace.loadDecisions(force: true);
     expect(workspace.decisions.data?.items.length, 2);
     expect(workspace.decisions.phase, ResultsResourcePhase.failed);
