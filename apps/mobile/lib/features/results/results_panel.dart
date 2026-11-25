@@ -7,6 +7,7 @@ import '../meetings/meeting_foundation.dart';
 import 'decisions_review_panel.dart';
 import 'minutes_panel.dart';
 import 'results_workspace_controller.dart';
+import 'results_invalidation.dart';
 import 'speaker_mapping_panel.dart';
 import 'summary_history_panel.dart';
 import 'transcript_review_panel.dart';
@@ -35,6 +36,14 @@ class _ResultsPanelState extends State<ResultsPanel> {
   int selected = 0;
   ResultsWorkspaceController? workspace;
 
+  Set<ResultsResourceKind> _resourcesFor(int index) => switch (index) {
+    0 => {ResultsResourceKind.summary, ResultsResourceKind.summaryVersions},
+    1 => {ResultsResourceKind.transcript},
+    2 => {ResultsResourceKind.decisions},
+    3 => {ResultsResourceKind.speakers, ResultsResourceKind.transcript},
+    _ => {ResultsResourceKind.minutes},
+  };
+
   @override
   void initState() {
     super.initState();
@@ -58,6 +67,7 @@ class _ResultsPanelState extends State<ResultsPanel> {
         invalidation: dependencies.resultsInvalidation,
         processingManager: dependencies.processingManager,
       );
+      workspace!.setActiveResources(_resourcesFor(selected));
     }
   }
 
@@ -120,7 +130,10 @@ class _ResultsPanelState extends State<ResultsPanel> {
                     avatar: Icon(tabs[i].$2, size: 17),
                     label: Text(tabs[i].$1),
                     selected: selected == i,
-                    onSelected: (_) => setState(() => selected = i),
+                    onSelected: (_) => setState(() {
+                      current.setActiveResources(_resourcesFor(i));
+                      selected = i;
+                    }),
                   ),
                 ),
             ],

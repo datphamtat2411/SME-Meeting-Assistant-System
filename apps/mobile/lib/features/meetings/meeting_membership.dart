@@ -69,7 +69,9 @@ class MeetingMembershipRepository {
   }) async {
     _validateMeetingId(meetingId);
     api.requireCurrentAuthenticatedSession(sessionScope);
-    final response = await api.get('${_meetingPath(meetingId)}/participants');
+    final response = await api.get(
+      '${_meetingPath(meetingId)}/participants', sessionScope: sessionScope,
+    );
     api.requireCurrentAuthenticatedSession(sessionScope);
     final raw = response.objectArrayData();
     final records = <MeetingParticipant>[];

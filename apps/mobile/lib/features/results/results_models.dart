@@ -28,6 +28,7 @@ class ResultsResource<T> {
   bool get hasData =>
       data != null &&
       (phase == ResultsResourcePhase.available ||
+          phase == ResultsResourcePhase.empty ||
           phase == ResultsResourcePhase.refreshing ||
           phase == ResultsResourcePhase.failed);
 
@@ -37,9 +38,12 @@ class ResultsResource<T> {
     Object? failure,
     int? generation,
     bool clearFailure = false,
+    bool clearData = false,
   }) => ResultsResource<T>(
     phase: phase ?? this.phase,
-    data: data ?? this.data,
+    data: clearData || phase == ResultsResourcePhase.forbidden
+        ? null
+        : data ?? this.data,
     failure: clearFailure ? null : failure ?? this.failure,
     generation: generation ?? this.generation,
   );
@@ -215,7 +219,7 @@ class MeetingMinutes {
   final List<Map<String, dynamic>> confirmedDecisions;
   final List<Map<String, dynamic>> officialActionItems;
   final String transcriptAvailability;
-  final String transcriptStatus;
+  final String? transcriptStatus;
   final List<String> warnings;
 
   factory MeetingMinutes.fromResult(ApiResult response) {
@@ -243,11 +247,10 @@ class MeetingMinutes {
         response: response,
         nonEmpty: true,
       ),
-      transcriptStatus: requiredString(
+      transcriptStatus: optionalString(
         transcript,
         'status',
         response: response,
-        nonEmpty: true,
       ),
       warnings: _strings(raw, 'warnings', response),
     );

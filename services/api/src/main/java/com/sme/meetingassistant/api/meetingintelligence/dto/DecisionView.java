@@ -44,7 +44,7 @@ public record DecisionView(
         this(id,meetingId,content,status,sourceType,evidenceSegmentIds,
             transcriptId,contentRevision,isStale,version,createdAt,createdByUserId,
              confirmedAt,confirmedByUserId,rejectedAt,rejectedByUserId,
-             null,List.of(),null,null, null);
+             null,List.of(),null,null, IntelligenceVersionTags.decision(id, version, isStale));
     }
 
     /** Compatibility constructor for callers using the pre-token full view. */

@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import '../../core/api_client.dart';
 import '../meetings/meeting_invalidation.dart';
 import '../recording/processing_manager.dart';
+import '../recording/media_contracts.dart';
 
 enum ResultsResourceKind {
   transcript,
@@ -107,7 +108,7 @@ class ResultsProcessingBridge {
        _scope = scope {
     _manager.addListener(_changed);
     _observation = _manager.startObserving(meetingId, scope: scope);
-    _lastFingerprint = _fingerprint(_manager.stateFor(meetingId, scope: scope));
+    _remember(_manager.stateFor(meetingId, scope: scope), publish: false);
   }
 
   final ProcessingManager _manager;
@@ -116,22 +117,40 @@ class ResultsProcessingBridge {
   final String _meetingId;
   final AuthenticatedSessionScope _scope;
   late final ProcessingObservation _observation;
-  String? _lastFingerprint;
+  final Map<String, String> _seenOutcomes = <String, String>{};
   bool _disposed = false;
 
   void _changed() {
     if (_disposed || !_api.isCurrentAuthenticatedSession(_scope)) return;
-    final next = _fingerprint(_manager.stateFor(_meetingId, scope: _scope));
-    if (next == _lastFingerprint) return;
-    _lastFingerprint = next;
-    _invalidation.invalidate(sessionScope: _scope, meetingId: _meetingId);
+    _remember(_manager.stateFor(_meetingId, scope: _scope), publish: true);
   }
 
-  String? _fingerprint(ProcessingMeetingState? state) {
-    if (state == null) return null;
-    return state.jobs
-        .map((job) => '${job.id}:${job.status.name}:${job.jobType.wireValue}')
-        .join('|');
+  void _remember(ProcessingMeetingState? state, {required bool publish}) {
+    if (state == null || state.failure != null) return;
+    final affected = <ResultsResourceKind>{};
+    for (final job in state.jobs) {
+      if (!job.status.isTerminal && !job.isWaitingForReview) continue;
+      final outcome = '${job.status.wireValue}:${job.retryCount}';
+      if (_seenOutcomes[job.id] == outcome) continue;
+      _seenOutcomes[job.id] = outcome;
+      if (job.jobType == ProcessingJobType.offlineMeetingProcessing) {
+        affected.addAll(ResultsResourceKind.values);
+      } else {
+        // Derived jobs may publish summary, decisions, or other projections.
+        // No transcript reload is needed for a derived-stage job.
+        affected.addAll({
+          ResultsResourceKind.summary,
+          ResultsResourceKind.summaryVersions,
+          ResultsResourceKind.decisions,
+          ResultsResourceKind.minutes,
+        });
+      }
+    }
+    if (publish && affected.isNotEmpty) {
+      _invalidation.invalidate(
+        sessionScope: _scope, meetingId: _meetingId, resources: affected,
+      );
+    }
   }
 
   void dispose() {

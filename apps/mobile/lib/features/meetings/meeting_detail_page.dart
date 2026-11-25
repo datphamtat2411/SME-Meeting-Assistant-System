@@ -480,7 +480,7 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
                         meetingCapabilities: MeetingCapabilityPolicy.evaluate(
                           callerId: widget.api.userId,
                           meeting: snapshot.meeting,
-                          callerIsActiveParticipant: state.participants.any(
+                          callerIsActiveParticipant: state.participantsLoaded && state.participants.any(
                             (participant) =>
                                 participant.isActive &&
                                 participant.userId.toLowerCase() ==

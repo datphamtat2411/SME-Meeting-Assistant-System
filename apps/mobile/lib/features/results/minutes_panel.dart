@@ -103,7 +103,7 @@ class _MinutesPanelState extends State<MinutesPanel> {
             const SectionHeading('Tình trạng transcript'),
             ContentCard(
               child: Text(
-                '${minutes.transcriptAvailability} · ${minutes.transcriptStatus}',
+                [minutes.transcriptAvailability, if (minutes.transcriptStatus != null) minutes.transcriptStatus!].join(' · '),
               ),
             ),
             if (minutes.warnings.isNotEmpty) ...[

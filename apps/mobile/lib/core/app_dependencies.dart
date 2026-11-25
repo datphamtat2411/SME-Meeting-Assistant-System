@@ -78,7 +78,9 @@ class AppDependencies {
     );
     media = MediaRepository(api: api);
     processing = ProcessingRepository(api: api);
-    results = ResultsRepository(api);
+    results = ResultsRepository(
+      api, meetings: meetings, membership: meetingMembership,
+    );
     this.recording =
         recording ??
         RecordingCoordinator(

@@ -46,32 +46,29 @@ class ResultsWorkspaceController extends ChangeNotifier {
     required this.repository,
     required this.meetingId,
     required this.meeting,
-    required this.capabilities,
+    required ResultsCapabilities capabilities,
     required this.invalidation,
     this.processingManager,
-  }) : sessionScope = api.requireAuthenticatedSessionScope() {
+  }) : _capabilities = capabilities,
+       sessionScope = api.requireAuthenticatedSessionScope() {
     if (meeting.id.toLowerCase() != meetingId.toLowerCase()) {
       throw ArgumentError.value(meetingId, 'meetingId');
     }
     _seenInvalidation = invalidation.revision;
     invalidation.addListener(_onInvalidation);
     api.sessionCoordinator.addListener(_onSessionChanged);
-    if (processingManager != null) {
-      _processingBridge = ResultsProcessingBridge(
-        manager: processingManager!,
-        invalidation: invalidation,
-        api: api,
-        meetingId: meetingId,
-        scope: sessionScope,
-      );
-    }
+    _syncProcessingObservation();
   }
 
   final ApiClient api;
   final ResultsRepository repository;
   final String meetingId;
   final Meeting meeting;
-  ResultsCapabilities capabilities;
+  ResultsCapabilities _capabilities;
+  bool _accessDenied = false;
+  ResultsCapabilities get capabilities => _accessDenied || !ownsSession
+      ? const ResultsCapabilities(canRead: false, canMutate: false)
+      : _capabilities;
   final ResultsInvalidationSignal invalidation;
   final ProcessingManager? processingManager;
   final AuthenticatedSessionScope sessionScope;
@@ -93,42 +90,96 @@ class ResultsWorkspaceController extends ChangeNotifier {
       <ResultsResourceKind, Future<void>>{};
   final Map<ResultsResourceKind, int> _generations =
       <ResultsResourceKind, int>{};
-  final Set<ResultsResourceKind> _relevant = <ResultsResourceKind>{};
+  final Set<ResultsResourceKind> _active = <ResultsResourceKind>{};
+  final Set<ResultsResourceKind> _dirty = <ResultsResourceKind>{};
   ResultsProcessingBridge? _processingBridge;
   bool _disposed = false;
 
   bool get ownsSession =>
       !_disposed && api.isCurrentAuthenticatedSession(sessionScope);
 
-  void updateCapabilities(ResultsCapabilities next) {
-    if (_disposed ||
-        (next.canRead == capabilities.canRead &&
-            next.canMutate == capabilities.canMutate)) {
-      return;
+  void _syncProcessingObservation() {
+    if (!capabilities.canRead) {
+      _processingBridge?.dispose();
+      _processingBridge = null;
+    } else if (processingManager != null && _processingBridge == null) {
+      _processingBridge = ResultsProcessingBridge(
+        manager: processingManager!,
+        invalidation: invalidation,
+        api: api,
+        meetingId: meetingId,
+        scope: sessionScope,
+      );
     }
-    capabilities = next;
-    if (!next.canRead) {
-      transcript = const ResultsResource<Transcript>(
-        phase: ResultsResourcePhase.forbidden,
-      );
-      speakers = const ResultsResource<List<SpeakerCluster>>(
-        phase: ResultsResourcePhase.forbidden,
-      );
-      summary = const ResultsResource<ResultsSummary>(
-        phase: ResultsResourcePhase.forbidden,
-      );
-      summaryVersions = const ResultsResource<PagedCollection<SummaryVersion>>(
-        phase: ResultsResourcePhase.forbidden,
-      );
-      decisions = const ResultsResource<PagedCollection<MeetingDecision>>(
-        phase: ResultsResourcePhase.forbidden,
-      );
-      minutes = const ResultsResource<MeetingMinutes>(
-        phase: ResultsResourcePhase.forbidden,
-      );
+  }
+
+  void _clearProtectedState() {
+    for (final kind in ResultsResourceKind.values) {
+      _generations[kind] = (_generations[kind] ?? 0) + 1;
+      _dirty.add(kind);
+    }
+    _requests.clear();
+    transcript = const ResultsResource<Transcript>(
+      phase: ResultsResourcePhase.forbidden,
+    );
+    speakers = const ResultsResource<List<SpeakerCluster>>(
+      phase: ResultsResourcePhase.forbidden,
+    );
+    summary = const ResultsResource<ResultsSummary>(
+      phase: ResultsResourcePhase.forbidden,
+    );
+    summaryVersions = const ResultsResource<PagedCollection<SummaryVersion>>(
+      phase: ResultsResourcePhase.forbidden,
+    );
+    decisions = const ResultsResource<PagedCollection<MeetingDecision>>(
+      phase: ResultsResourcePhase.forbidden,
+    );
+    minutes = const ResultsResource<MeetingMinutes>(
+      phase: ResultsResourcePhase.forbidden,
+    );
+    _syncProcessingObservation();
+  }
+
+  void _denyAccess() {
+    _accessDenied = true;
+    _clearProtectedState();
+    notifyListeners();
+  }
+
+  void updateCapabilities(ResultsCapabilities next) {
+    if (_disposed) return;
+    final wasReadable = capabilities.canRead;
+    final changed = next.canRead != _capabilities.canRead ||
+        next.canMutate != _capabilities.canMutate;
+    if (!changed) return;
+    final newlyGranted = !_capabilities.canRead && next.canRead;
+    _capabilities = next;
+    if (newlyGranted) _accessDenied = false;
+    if (!capabilities.canRead) {
+      _clearProtectedState();
+    } else if (!wasReadable) {
+      _syncProcessingObservation();
+      for (final kind in _active.toList()) {
+        unawaited(_reload(kind));
+      }
     }
     notifyListeners();
   }
+
+  void setActiveResources(Set<ResultsResourceKind> kinds) {
+    _active
+      ..clear()
+      ..addAll(kinds);
+  }
+
+  Future<void> _reload(ResultsResourceKind kind) => switch (kind) {
+    ResultsResourceKind.transcript => loadTranscript(force: true),
+    ResultsResourceKind.speakers => loadSpeakers(force: true),
+    ResultsResourceKind.summary => loadSummary(force: true),
+    ResultsResourceKind.summaryVersions => loadSummaryVersions(force: true),
+    ResultsResourceKind.decisions => loadDecisions(force: true),
+    ResultsResourceKind.minutes => loadMinutes(force: true),
+  };
 
   Future<void> loadTranscript({bool force = false}) =>
       _loadTranscript(force: force);
@@ -231,7 +282,6 @@ class ResultsWorkspaceController extends ChangeNotifier {
     bool Function(T) isEmpty, {
     required bool force,
   }) {
-    _relevant.add(kind);
     if (!ownsSession || !capabilities.canRead) {
       write(
         ResultsResource<T>(
@@ -246,21 +296,27 @@ class ResultsWorkspaceController extends ChangeNotifier {
     if (currentRequest != null) return currentRequest;
     final generation = _generations[kind] ?? 0;
     final current = read();
+    if (!force && !_dirty.contains(kind) &&
+        (current.phase == ResultsResourcePhase.available ||
+            current.phase == ResultsResourcePhase.empty ||
+            current.phase == ResultsResourcePhase.notReady)) {
+      return Future<void>.value();
+    }
     write(
       current.copyWith(
-        phase: current.hasData && !force
+        phase: current.hasData
             ? ResultsResourcePhase.refreshing
             : ResultsResourcePhase.loading,
         clearFailure: true,
       ),
     );
     notifyListeners();
-    final invalidationAtStart = _seenInvalidation;
     late final Future<void> operation;
-    operation = request()
+    operation = Future<T>.sync(request)
         .then<void>(
           (value) {
             if (!_ownsGeneration(kind, generation)) return;
+            _dirty.remove(kind);
             write(
               ResultsResource<T>(
                 phase: isEmpty(value)
@@ -272,7 +328,7 @@ class ResultsWorkspaceController extends ChangeNotifier {
             );
             notifyListeners();
           },
-          onError: (Object error, StackTrace stack) {
+          onError: (Object error, StackTrace stack) async {
             if (!_ownsGeneration(kind, generation)) return;
             final failure = error is ApiFailure
                 ? error
@@ -281,28 +337,52 @@ class ResultsWorkspaceController extends ChangeNotifier {
                     'UNEXPECTED_FAILURE',
                     'Không thể tải dữ liệu.',
                   );
-            final forbidden = failure.status == 401 || failure.status == 403;
-            write(
-              current.copyWith(
-                phase: forbidden
-                    ? ResultsResourcePhase.forbidden
-                    : current.hasData
-                    ? ResultsResourcePhase.failed
-                    : failure.status == 404
-                    ? ResultsResourcePhase.notReady
-                    : ResultsResourcePhase.failed,
+            if (failure.status == 401 || failure.status == 403) {
+              _denyAccess();
+              return;
+            }
+            if (failure.status == 404) {
+              // Never retain a cached representation of a resource that the
+              // server no longer exposes, even during membership revalidation.
+              write(ResultsResource<T>(
+                phase: ResultsResourcePhase.loading,
+                generation: generation,
+              ));
+              notifyListeners();
+              bool allowed;
+              try {
+                allowed = await repository.verifyReadAccess(
+                  sessionScope: sessionScope, meetingId: meetingId,
+                );
+              } catch (_) {
+                allowed = false;
+              }
+              if (!_ownsGeneration(kind, generation)) return;
+              if (!allowed) {
+                _denyAccess();
+                return;
+              }
+              _dirty.remove(kind);
+              write(ResultsResource<T>(
+                phase: ResultsResourcePhase.notReady,
                 failure: failure,
-              ),
-            );
+                generation: generation,
+              ));
+            } else {
+              write(current.copyWith(
+                phase: ResultsResourcePhase.failed,
+                failure: failure,
+              ));
+            }
             notifyListeners();
           },
         )
         .whenComplete(() {
-          if (identical(_requests[kind], operation)) _requests.remove(kind);
-          if (ownsSession && _seenInvalidation > invalidationAtStart) {
-            unawaited(
-              _load<T>(kind, request, read, write, isEmpty, force: true),
-            );
+          if (!identical(_requests[kind], operation)) return;
+          _requests.remove(kind);
+          if (capabilities.canRead && _active.contains(kind) &&
+              (_generations[kind] ?? 0) != generation) {
+            unawaited(_load<T>(kind, request, read, write, isEmpty, force: true));
           }
         });
     _requests[kind] = operation;
@@ -310,7 +390,8 @@ class ResultsWorkspaceController extends ChangeNotifier {
   }
 
   bool _ownsGeneration(ResultsResourceKind kind, int generation) =>
-      ownsSession && (_generations[kind] ?? 0) == generation;
+      ownsSession && capabilities.canRead &&
+      (_generations[kind] ?? 0) == generation;
 
   void _onInvalidation() {
     if (_disposed || !ownsSession) return;
@@ -324,36 +405,17 @@ class ResultsWorkspaceController extends ChangeNotifier {
     final kinds = invalidation.resources;
     for (final kind in kinds) {
       _generations[kind] = (_generations[kind] ?? 0) + 1;
-      if (_relevant.contains(kind) && _requests[kind] == null) {
-        switch (kind) {
-          case ResultsResourceKind.transcript:
-            unawaited(loadTranscript(force: true));
-          case ResultsResourceKind.speakers:
-            unawaited(loadSpeakers(force: true));
-          case ResultsResourceKind.summary:
-            unawaited(loadSummary(force: true));
-          case ResultsResourceKind.summaryVersions:
-            unawaited(loadSummaryVersions(force: true));
-          case ResultsResourceKind.decisions:
-            unawaited(loadDecisions(force: true));
-          case ResultsResourceKind.minutes:
-            unawaited(loadMinutes(force: true));
-        }
+      _dirty.add(kind);
+      if (capabilities.canRead && _active.contains(kind) &&
+          _requests[kind] == null) {
+        unawaited(_reload(kind));
       }
     }
   }
 
   void _onSessionChanged() {
     if (_disposed || ownsSession) return;
-    _requests.clear();
-    _processingBridge?.dispose();
-    _processingBridge = null;
-    transcript = const ResultsResource<Transcript>();
-    speakers = const ResultsResource<List<SpeakerCluster>>();
-    summary = const ResultsResource<ResultsSummary>();
-    summaryVersions = const ResultsResource<PagedCollection<SummaryVersion>>();
-    decisions = const ResultsResource<PagedCollection<MeetingDecision>>();
-    minutes = const ResultsResource<MeetingMinutes>();
+    _clearProtectedState();
     notifyListeners();
   }
 

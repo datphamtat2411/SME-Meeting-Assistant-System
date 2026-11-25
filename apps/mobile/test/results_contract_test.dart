@@ -4,6 +4,38 @@ import 'package:sme_meeting_assistant/core/meeting_models.dart';
 import 'package:sme_meeting_assistant/features/results/results_models.dart';
 
 void main() {
+  test('forbidden resource cannot retain previous protected data', () {
+    const resource = ResultsResource<String>(
+      phase: ResultsResourcePhase.available,
+      data: 'protected',
+    );
+    final denied = resource.copyWith(phase: ResultsResourcePhase.forbidden);
+    expect(denied.data, isNull);
+    expect(denied.hasData, isFalse);
+  });
+
+  test('empty collection remains a reusable loaded resource', () {
+    const resource = ResultsResource<List<String>>(
+      phase: ResultsResourcePhase.empty, data: [],
+    );
+    expect(resource.hasData, isTrue);
+  });
+
+  test('canonical minutes can exist without a transcript', () {
+    final minutes = MeetingMinutes.fromResult(ApiResult({
+      'completeness': 'INCOMPLETE',
+      'assembledAt': '2026-11-23T10:00:00Z',
+      'summary': null,
+      'confirmedDecisions': <dynamic>[],
+      'officialActionItems': <dynamic>[],
+      'transcript': {'availability': 'NOT_AVAILABLE', 'status': null},
+      'warnings': <String>[],
+    }, const {}, null));
+    expect(minutes.transcriptStatus, isNull);
+    expect(minutes.transcriptAvailability, 'NOT_AVAILABLE');
+  });
+
+
   test('keeps item and header concurrency tokens opaque', () {
     final response = ApiResult(
       {

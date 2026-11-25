@@ -1,13 +1,50 @@
 import '../../core/api_client.dart';
 import '../../core/meeting_models.dart';
 import '../../core/paged_collection.dart';
+import '../meetings/meeting_membership.dart';
+import '../meetings/meeting_repository.dart';
+import '../meetings/meeting_foundation.dart';
 import 'results_models.dart';
 
 /// Typed transport boundary for all existing Meeting Results operations.
 class ResultsRepository {
-  ResultsRepository(this.api);
+  ResultsRepository(this.api, {this.meetings, this.membership});
 
   final ApiClient api;
+  final MeetingRepository? meetings;
+  final MeetingMembershipRepository? membership;
+
+  /// A concealed 404 is not evidence that a result is merely absent.
+  /// Re-check canonical meeting membership, not cached presentation state.
+  Future<bool> verifyReadAccess({
+    required AuthenticatedSessionScope sessionScope,
+    required String meetingId,
+  }) async {
+    api.requireCurrentAuthenticatedSession(sessionScope);
+    final meetingRepository = meetings;
+    final membershipRepository = membership;
+    if (meetingRepository == null || membershipRepository == null) return false;
+    final snapshot = await meetingRepository.detail(meetingId);
+    api.requireCurrentAuthenticatedSession(sessionScope);
+    final meeting = snapshot.meeting;
+    if (meeting.organizerId.toLowerCase() ==
+        sessionScope.userId.toLowerCase()) {
+      return MeetingCapabilityPolicy.evaluate(
+        callerId: sessionScope.userId, meeting: meeting,
+      ).canReadMedia;
+    }
+    final records = await membershipRepository.listParticipants(
+      meetingId, sessionScope: sessionScope,
+    );
+    api.requireCurrentAuthenticatedSession(sessionScope);
+    return MeetingCapabilityPolicy.evaluate(
+      callerId: sessionScope.userId,
+      meeting: meeting,
+      callerIsActiveParticipant: records.any((record) =>
+        record.isActive &&
+        record.userId.toLowerCase() == sessionScope.userId.toLowerCase()),
+    ).canReadMedia;
+  }
 
   Future<Transcript> currentTranscript({
     required AuthenticatedSessionScope sessionScope,
