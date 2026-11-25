@@ -3,12 +3,15 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Download, FileDown } from 'lucide-react'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
-import { currentUserQueryKey, type AuthContext } from '@/features/auth/session/current-user'
-import { useOptionalMeetingAuthorization } from '../meeting-authorization-context'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { RequestError } from '@/components/request-state'
+import {
+  currentUserQueryKey,
+  type AuthContext,
+} from '@/features/auth/session/current-user'
+import { useOptionalMeetingAuthorization } from '../meeting-authorization-context'
 import {
   accessMinutesExport,
   createMinutesExport,
@@ -161,14 +164,17 @@ export function ExportPanel({
 }) {
   const qc = useQueryClient()
   const authorization = useOptionalMeetingAuthorization()
-  const identity = authorization?.identity ??
-    qc.getQueryData<AuthContext>(currentUserQueryKey)
+  const identity =
+    authorization?.identity ?? qc.getQueryData<AuthContext>(currentUserQueryKey)
   const sessionScope = identity?.session?.id
     ? `${identity.userId}:${identity.session.id}:${meetingId}`
     : null
   const scope = sessionScope ?? `standalone:${meetingId}`
-  const authorized = canExport && (!authorization ||
-    (authorization.canReadProtectedData && !authorization.isConfirmedAccessLoss))
+  const authorized =
+    canExport &&
+    (!authorization ||
+      (authorization.canReadProtectedData &&
+        !authorization.isConfirmedAccessLoss))
   const canExportRef = useRef(authorized)
   const mounted = useRef(false)
   const lifecycleGeneration = useRef(0)
@@ -243,7 +249,12 @@ export function ExportPanel({
       idempotencyKey: string
       generation: number
       recovery: boolean
-    }) => createMinutesExport(meetingId, variables.format, variables.idempotencyKey),
+    }) =>
+      createMinutesExport(
+        meetingId,
+        variables.format,
+        variables.idempotencyKey
+      ),
     onSuccess: (data: ExportAdmission, variables) => {
       if (admissionOwner.current === variables.idempotencyKey)
         admissionOwner.current = null
@@ -251,8 +262,10 @@ export function ExportPanel({
         !mounted.current ||
         !canExportRef.current ||
         lifecycleGeneration.current !== variables.generation
-      ) return
-      const currentOperations = operationCache[scope] ?? loadOperations(sessionScope)
+      )
+        return
+      const currentOperations =
+        operationCache[scope] ?? loadOperations(sessionScope)
       // The admission intent was recorded before dispatch, so a receipt can be
       // stored independently of all subsequent status observation.
       const next = {
@@ -263,9 +276,11 @@ export function ExportPanel({
         },
       }
       updateOperations(next)
-      toast.success(variables.recovery
-        ? 'Original export request recovered'
-        : `${variables.format} export queued`)
+      toast.success(
+        variables.recovery
+          ? 'Original export request recovered'
+          : `${variables.format} export queued`
+      )
     },
     onError: (error, variables) => {
       if (admissionOwner.current === variables.idempotencyKey)
@@ -274,14 +289,19 @@ export function ExportPanel({
         !mounted.current ||
         !canExportRef.current ||
         lifecycleGeneration.current !== variables.generation
-      ) return
+      )
+        return
       const failure = normalizeCoreApiError(error)
-      const uncertain = failure.recoveryOutcome === 'uncertain' ||
-        failure.isNetworkError || failure.isServerError || failure.kind === 'malformed'
+      const uncertain =
+        failure.recoveryOutcome === 'uncertain' ||
+        failure.isNetworkError ||
+        failure.isServerError ||
+        failure.kind === 'malformed'
       // A rejected retry does not establish that an earlier uncertain request
       // failed. Keep its identity until the original outcome is resolved.
       if (!uncertain && !variables.recovery) {
-        const currentOperations = operationCache[scope] ?? loadOperations(sessionScope)
+        const currentOperations =
+          operationCache[scope] ?? loadOperations(sessionScope)
         updateOperations({ ...currentOperations, [variables.format]: {} })
       }
       if (failure.status === 422 || failure.status === 409) {
@@ -299,9 +319,13 @@ export function ExportPanel({
   function isTerminal(format: ExportFormat) {
     const observation = statusQueries[format]
     const status = observation.data
-    return !observation.isError && status?.exportId === operations[format].exportId &&
-      status?.meetingId === meetingId && status?.format === format &&
+    return (
+      !observation.isError &&
+      status?.exportId === operations[format].exportId &&
+      status?.meetingId === meetingId &&
+      status?.format === format &&
       (status?.status === 'READY' || status?.status === 'FAILED')
+    )
   }
 
   function beginExport(format: ExportFormat) {
@@ -312,13 +336,23 @@ export function ExportPanel({
       return
     }
     const recovery = Boolean(operation.idempotencyKey && !operation.exportId)
-    if (!recovery && (minutes.isError || minutes.data?.completeness !== 'COMPLETE' ||
-      minutes.data.proposalsIncluded)) return
+    if (
+      !recovery &&
+      (minutes.isError ||
+        minutes.data?.completeness !== 'COMPLETE' ||
+        minutes.data.proposalsIncluded)
+    )
+      return
     const key = recovery ? operation.idempotencyKey! : crypto.randomUUID()
     admissionOwner.current = key
     downloadOperationGeneration.current += 1
     updateOperations({ ...operations, [format]: { idempotencyKey: key } })
-    create.mutate({ format, idempotencyKey: key, generation: lifecycleGeneration.current, recovery })
+    create.mutate({
+      format,
+      idempotencyKey: key,
+      generation: lifecycleGeneration.current,
+      recovery,
+    })
   }
 
   const download = useMutation({
@@ -393,20 +427,33 @@ export function ExportPanel({
           <div className='flex flex-wrap gap-2'>
             {formats.map((format) => {
               const operation = operations[format]
-              const recovering = Boolean(operation.idempotencyKey && !operation.exportId)
-              const observing = Boolean(operation.exportId && !isTerminal(format))
+              const recovering = Boolean(
+                operation.idempotencyKey && !operation.exportId
+              )
+              const observing = Boolean(
+                operation.exportId && !isTerminal(format)
+              )
               const label = format === 'PDF' ? 'PDF' : 'Markdown'
               return (
                 <Button
                   key={format}
                   size='sm'
                   variant={format === 'PDF' ? 'default' : 'outline'}
-                  disabled={create.isPending || (!recovering && !observing &&
-                    (minutes.isError || minutes.data?.completeness !== 'COMPLETE' || proposalsIncluded))}
+                  disabled={
+                    create.isPending ||
+                    (!recovering &&
+                      !observing &&
+                      (minutes.isError ||
+                        minutes.data?.completeness !== 'COMPLETE' ||
+                        proposalsIncluded))
+                  }
                   onClick={() => beginExport(format)}
                 >
-                  {observing ? `Refresh ${label} status` :
-                    recovering ? `Recover ${label} request` : `Generate ${label}`}
+                  {observing
+                    ? `Refresh ${label} status`
+                    : recovering
+                      ? `Recover ${label} request`
+                      : `Generate ${label}`}
                 </Button>
               )
             })}
@@ -434,53 +481,61 @@ export function ExportPanel({
             retry={() => void minutes.refetch()}
           />
         )}
-        {authorized && formats.map((format) => {
-          const query = statusQueries[format]
-          const status = query.data
-          if (query.isError) {
+        {authorized &&
+          formats.map((format) => {
+            const query = statusQueries[format]
+            const status = query.data
+            if (query.isError) {
+              return (
+                <RequestError
+                  key={format}
+                  error={query.error}
+                  retry={() => void query.refetch()}
+                />
+              )
+            }
+            if (
+              !status ||
+              status.exportId !== operations[format].exportId ||
+              status.meetingId !== meetingId ||
+              status.format !== format
+            ) {
+              return null
+            }
             return (
-              <RequestError
+              <div
                 key={format}
-                error={query.error}
-                retry={() => void query.refetch()}
-              />
-            )
-          }
-          if (!status || status.exportId !== operations[format].exportId ||
-            status.meetingId !== meetingId || status.format !== format) {
-            return null
-          }
-          return (
-            <div
-              key={format}
-              className='flex flex-wrap items-center gap-3 rounded-lg border p-3 text-sm'
-            >
-              <span>Export {format}</span>
-              <Badge variant='outline'>{status.status}</Badge>
-              <Badge variant='outline'>{status.freshness}</Badge>
-              {status.status === 'READY' && status.freshness !== 'CURRENT' && (
-                <p className='text-xs text-amber-600'>
-                  This export no longer matches current Minutes. Generate a new
-                  version.
-                </p>
-              )}
-              {status.safeErrorCode && (
-                <span className='text-destructive'>{status.safeErrorCode}</span>
-              )}
-              {authorized &&
-                status.status === 'READY' &&
-                status.freshness === 'CURRENT' && (
-                  <Button
-                    size='sm'
-                    disabled={download.isPending}
-                    onClick={() => download.mutate(format)}
-                  >
-                    <Download className='size-4' /> Download
-                  </Button>
+                className='flex flex-wrap items-center gap-3 rounded-lg border p-3 text-sm'
+              >
+                <span>Export {format}</span>
+                <Badge variant='outline'>{status.status}</Badge>
+                <Badge variant='outline'>{status.freshness}</Badge>
+                {status.status === 'READY' &&
+                  status.freshness !== 'CURRENT' && (
+                    <p className='text-xs text-amber-600'>
+                      This export no longer matches current Minutes. Generate a
+                      new version.
+                    </p>
+                  )}
+                {status.safeErrorCode && (
+                  <span className='text-destructive'>
+                    {status.safeErrorCode}
+                  </span>
                 )}
-            </div>
-          )
-        })}
+                {authorized &&
+                  status.status === 'READY' &&
+                  status.freshness === 'CURRENT' && (
+                    <Button
+                      size='sm'
+                      disabled={download.isPending}
+                      onClick={() => download.mutate(format)}
+                    >
+                      <Download className='size-4' /> Download
+                    </Button>
+                  )}
+              </div>
+            )
+          })}
       </CardContent>
     </Card>
   )

@@ -1,10 +1,15 @@
-import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react'
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type FormEvent,
+} from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Check, Search } from 'lucide-react'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
-import { useOptionalMeetingSession } from '@/features/meetings/media/meeting-session-context'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -19,6 +24,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { invalidateMeetingArtifacts } from '@/features/meetings/intelligence/query-invalidation'
+import { useOptionalMeetingSession } from '@/features/meetings/media/meeting-session-context'
 import {
   actionDetail,
   actionDetailQuery,
@@ -85,7 +91,11 @@ export function ActionForm({
   const isFixedMeeting = Boolean(item || meetingId)
   const captureScope = useActionOperationScope(
     item?.id ?? `new:${meeting}`,
-    open && (item ? snapshot?.item.capabilities.canEdit === true && item.capabilities.canEdit : canManageActionItems)
+    open &&
+      (item
+        ? snapshot?.item.capabilities.canEdit === true &&
+          item.capabilities.canEdit
+        : canManageActionItems)
   )
   const setMeetingDirty = useOptionalMeetingSession()?.setIntelligenceDraftDirty
   const detail = useQuery({
@@ -142,7 +152,9 @@ export function ActionForm({
     recovering: boolean
   }
   const mutation = useMutation({
-    mutationFn: async (submission: Submission): Promise<ActionMutationResult> => {
+    mutationFn: async (
+      submission: Submission
+    ): Promise<ActionMutationResult> => {
       if (!submission.owns())
         throw new Error('The Action Item operation is no longer authorized.')
       if (submission.reviewed) {
@@ -153,7 +165,8 @@ export function ActionForm({
           buildActionPatch(reviewed.item, submission.pending)
         )
       }
-      if (!submission.creation) throw new Error('Creation intent is unavailable.')
+      if (!submission.creation)
+        throw new Error('Creation intent is unavailable.')
       return createAction(submission.creation.payload, submission.creation.key)
     },
     onSuccess: (result, submission) => {
@@ -170,7 +183,10 @@ export function ActionForm({
       submitting.current = false
       if (!submission.owns()) return
       const failure = normalizeCoreApiError(error)
-      if (submission.reviewed && (failure.status === 412 || failure.status === 409)) {
+      if (
+        submission.reviewed &&
+        (failure.status === 412 || failure.status === 409)
+      ) {
         const reviewed = submission.reviewed.item
         const pending = submission.pending
         setConflict({
@@ -183,7 +199,12 @@ export function ActionForm({
         try {
           const latest = await actionDetail(reviewed.id)
           if (!submission.owns()) return
-          setConflict({ reviewed, pending, latest: latest.item, latestResult: latest })
+          setConflict({
+            reviewed,
+            pending,
+            latest: latest.item,
+            latestResult: latest,
+          })
         } catch (error) {
           if (!submission.owns()) return
           setConflict({
@@ -191,7 +212,10 @@ export function ActionForm({
             pending,
             latest: null,
             latestResult: null,
-            message: error instanceof Error ? error.message : 'Current state is unavailable.',
+            message:
+              error instanceof Error
+                ? error.message
+                : 'Current state is unavailable.',
           })
         }
         return
@@ -204,7 +228,8 @@ export function ActionForm({
       if (submission.creation && (uncertain || submission.recovering)) {
         setUnresolvedCreate(submission.creation.payload)
         toast.error('Creation outcome is uncertain', {
-          description: 'Retry this unchanged intent to recover the same Action Item.',
+          description:
+            'Retry this unchanged intent to recover the same Action Item.',
         })
         return
       }
@@ -218,19 +243,24 @@ export function ActionForm({
 
   const editingAllowed = item
     ? snapshot?.item.capabilities.canEdit === true &&
-      item.capabilities.canEdit && !detail.isError
+      item.capabilities.canEdit &&
+      !detail.isError
     : canManageActionItems
   const canClearAssignee =
-    snapshot?.item.status === 'PROPOSED' &&
-    snapshot.item.capabilities.canAssign
+    snapshot?.item.status === 'PROPOSED' && snapshot.item.capabilities.canAssign
   const displayItem = snapshot?.item ?? item
   const pending = { title, details, assigneeUserId: assignee, dueDate }
-  const dirty = open && Boolean(
-    mutation.isPending || unresolvedCreate || conflict ||
-    (item
-      ? snapshot && Object.keys(buildActionPatch(snapshot.item, pending)).length
-      : title || details || assignee || dueDate)
-  )
+  const dirty =
+    open &&
+    Boolean(
+      mutation.isPending ||
+      unresolvedCreate ||
+      conflict ||
+      (item
+        ? snapshot &&
+          Object.keys(buildActionPatch(snapshot.item, pending)).length
+        : title || details || assignee || dueDate)
+    )
 
   useLayoutEffect(() => {
     setMeetingDirty?.('actions', dirty)
@@ -244,9 +274,15 @@ export function ActionForm({
   function submit(event: FormEvent) {
     event.preventDefault()
     if (
-      submitting.current || mutation.isPending || conflict || !editingAllowed ||
-      !title.trim() || !meeting || (!item && !assignee)
-    ) return
+      submitting.current ||
+      mutation.isPending ||
+      conflict ||
+      !editingAllowed ||
+      !title.trim() ||
+      !meeting ||
+      (!item && !assignee)
+    )
+      return
     const scope = captureScope()
     const identity = ++operation.current
     const owns = () => scope() && operation.current === identity
@@ -281,7 +317,12 @@ export function ActionForm({
       })
       return
     }
-    if (!next && dirty && !window.confirm('Discard your unsaved Action Item changes?')) return
+    if (
+      !next &&
+      dirty &&
+      !window.confirm('Discard your unsaved Action Item changes?')
+    )
+      return
     if (!next) operation.current += 1
     onOpenChange(next)
   }
@@ -331,10 +372,16 @@ export function ActionForm({
                 </p>
                 <div className='space-y-1 text-xs'>
                   <p>Server details: {conflict.latest.details ?? 'None'}</p>
-                  <p>Server assignee: {conflict.latest.assignee?.displayName ?? 'Unassigned'}</p>
+                  <p>
+                    Server assignee:{' '}
+                    {conflict.latest.assignee?.displayName ?? 'Unassigned'}
+                  </p>
                   <p>Server due date: {conflict.latest.dueDate ?? 'None'}</p>
                   <p>Server status: {conflict.latest.status}</p>
-                  <p>Only the fields you originally changed will be retained. Review any overlapping changes before saving again.</p>
+                  <p>
+                    Only the fields you originally changed will be retained.
+                    Review any overlapping changes before saving again.
+                  </p>
                 </div>
                 <Button
                   type='button'
@@ -343,7 +390,11 @@ export function ActionForm({
                   disabled={!conflict.latest.capabilities.canEdit}
                   onClick={() => {
                     const latest = conflict.latest!
-                    const next = rebaseActionDraft(conflict.reviewed, latest, conflict.pending)
+                    const next = rebaseActionDraft(
+                      conflict.reviewed,
+                      latest,
+                      conflict.pending
+                    )
                     setSnapshot(conflict.latestResult!)
                     setTitle(next.title)
                     setDetails(next.details)
@@ -373,13 +424,15 @@ export function ActionForm({
             {isFixedMeeting ? (
               <div className='rounded-lg border p-3 text-sm'>
                 <span>{meetingLabel || 'Authorized meeting'} · </span>
-                {(!item || displayItem?.capabilities.canAccessMeeting) && <Link
-                  to='/meetings/$meetingId'
-                  params={{ meetingId: meetingId ?? meeting }}
-                  className='font-medium underline'
-                >
-                  Open meeting
-                </Link>}
+                {(!item || displayItem?.capabilities.canAccessMeeting) && (
+                  <Link
+                    to='/meetings/$meetingId'
+                    params={{ meetingId: meetingId ?? meeting }}
+                    className='font-medium underline'
+                  >
+                    Open meeting
+                  </Link>
+                )}
               </div>
             ) : (
               <>
@@ -441,7 +494,12 @@ export function ActionForm({
               required
               maxLength={500}
               value={title}
-              disabled={!editingAllowed || mutation.isPending || Boolean(conflict) || Boolean(unresolvedCreate)}
+              disabled={
+                !editingAllowed ||
+                mutation.isPending ||
+                Boolean(conflict) ||
+                Boolean(unresolvedCreate)
+              }
               onChange={(event) => setTitle(event.target.value)}
             />
           </div>
@@ -451,7 +509,12 @@ export function ActionForm({
               id='action-details'
               maxLength={10000}
               value={details}
-              disabled={!editingAllowed || mutation.isPending || Boolean(conflict) || Boolean(unresolvedCreate)}
+              disabled={
+                !editingAllowed ||
+                mutation.isPending ||
+                Boolean(conflict) ||
+                Boolean(unresolvedCreate)
+              }
               onChange={(event) => setDetails(event.target.value)}
             />
           </div>
@@ -462,7 +525,12 @@ export function ActionForm({
               <Input
                 id='action-assignee'
                 value={userSearch}
-                disabled={!editingAllowed || mutation.isPending || Boolean(conflict) || Boolean(unresolvedCreate)}
+                disabled={
+                  !editingAllowed ||
+                  mutation.isPending ||
+                  Boolean(conflict) ||
+                  Boolean(unresolvedCreate)
+                }
                 placeholder='Search active organizational users (2+ characters)'
                 onChange={(event) => setUserSearch(event.target.value)}
               />
@@ -478,7 +546,9 @@ export function ActionForm({
                     type='button'
                     variant='link'
                     size='sm'
-                    disabled={!editingAllowed || mutation.isPending || Boolean(conflict)}
+                    disabled={
+                      !editingAllowed || mutation.isPending || Boolean(conflict)
+                    }
                     onClick={() => {
                       setAssignee('')
                       setAssigneeLabel('')
@@ -506,7 +576,12 @@ export function ActionForm({
                   key={candidate.id}
                   type='button'
                   className='flex w-full items-center justify-between rounded px-3 py-2 text-left text-sm hover:bg-accent'
-                  disabled={!editingAllowed || mutation.isPending || Boolean(conflict) || Boolean(unresolvedCreate)}
+                  disabled={
+                    !editingAllowed ||
+                    mutation.isPending ||
+                    Boolean(conflict) ||
+                    Boolean(unresolvedCreate)
+                  }
                   onClick={() => {
                     setAssignee(candidate.id)
                     setAssigneeLabel(candidate.displayName)
@@ -537,7 +612,12 @@ export function ActionForm({
               id='action-due'
               type='date'
               value={dueDate}
-              disabled={!editingAllowed || mutation.isPending || Boolean(conflict) || Boolean(unresolvedCreate)}
+              disabled={
+                !editingAllowed ||
+                mutation.isPending ||
+                Boolean(conflict) ||
+                Boolean(unresolvedCreate)
+              }
               onChange={(event) => setDueDate(event.target.value)}
             />
           </div>
@@ -554,7 +634,12 @@ export function ActionForm({
                 variant='outline'
                 disabled={mutation.isPending}
                 onClick={() => {
-                  if (!window.confirm('The Action Item may already exist. Abandon local recovery and close this form?')) return
+                  if (
+                    !window.confirm(
+                      'The Action Item may already exist. Abandon local recovery and close this form?'
+                    )
+                  )
+                    return
                   operation.current += 1
                   intent.current = null
                   invalidateMeetingArtifacts(qc, meeting, { actions: true })

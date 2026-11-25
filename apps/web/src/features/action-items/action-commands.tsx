@@ -78,7 +78,10 @@ export function ActionCommands({
 
   const commandMutation = useMutation({
     mutationFn: async (variables: { review: Review; owns: () => boolean }) => {
-      if (!variables.owns() || !eligible(variables.review.item, variables.review.command))
+      if (
+        !variables.owns() ||
+        !eligible(variables.review.item, variables.review.command)
+      )
         throw new Error('Action Item command is no longer eligible.')
       const snapshot = variables.review
       return actionCommand(snapshot.item.id, snapshot.command, snapshot.etag)
@@ -95,18 +98,26 @@ export function ActionCommands({
       if (!variables.owns()) return
       const status = normalizeCoreApiError(error).status
       if (status === 412 || status === 409) {
-        setConflict({ latest: null, message: 'Loading the current Action Item…' })
+        setConflict({
+          latest: null,
+          message: 'Loading the current Action Item…',
+        })
         setReviewPending(true)
         try {
           const latest = await actionDetail(variables.review.item.id)
           if (!variables.owns()) return
           setConflict({
             latest: { ...latest, command: variables.review.command },
-            message: 'The Action Item changed. Review its current state before applying this command.',
+            message:
+              'The Action Item changed. Review its current state before applying this command.',
           })
         } catch {
           if (variables.owns()) {
-            setConflict({ latest: null, message: 'The current Action Item is unavailable. Close and reopen this review.' })
+            setConflict({
+              latest: null,
+              message:
+                'The current Action Item is unavailable. Close and reopen this review.',
+            })
           }
         } finally {
           if (variables.owns()) setReviewPending(false)
@@ -129,8 +140,10 @@ export function ActionCommands({
     try {
       const snapshot = await actionDetail(item.id)
       if (!owns()) return
-      if (!snapshot.item.capabilities[capabilityFor[command]] ||
-          !allowed[snapshot.item.status].includes(command)) {
+      if (
+        !snapshot.item.capabilities[capabilityFor[command]] ||
+        !allowed[snapshot.item.status].includes(command)
+      ) {
         throw new Error('This Action Item command is no longer authorized.')
       }
       setReview({ item: snapshot.item, etag: snapshot.etag, command })
@@ -177,24 +190,43 @@ export function ActionCommands({
         desc={
           review ? (
             <div className='space-y-2'>
-              <p>Review the authoritative snapshot before applying this command.</p>
-              <ReviewContent item={review.item} showEvidence={item.capabilities.canAccessEvidence} />
-              {review.command === 'confirm' && !review.item.assignee?.active && (
-                <p role='alert'>Assign an eligible active primary owner before confirmation.</p>
-              )}
+              <p>
+                Review the authoritative snapshot before applying this command.
+              </p>
+              <ReviewContent
+                item={review.item}
+                showEvidence={item.capabilities.canAccessEvidence}
+              />
+              {review.command === 'confirm' &&
+                !review.item.assignee?.active && (
+                  <p role='alert'>
+                    Assign an eligible active primary owner before confirmation.
+                  </p>
+                )}
               {conflict && (
                 <div role='alert' className='space-y-2 rounded border p-3'>
                   <p>{conflict.message}</p>
                   {conflict.latest && (
                     <>
                       <p className='font-medium'>Current server state</p>
-                      <ReviewContent item={conflict.latest.item} showEvidence={item.capabilities.canAccessEvidence} />
-                      {eligible(conflict.latest.item, conflict.latest.command) ? (
-                        <Button type='button' variant='outline' size='sm' onClick={() => {
-                          setReview(conflict.latest)
-                          setConflict(null)
-                          operation.current += 1
-                        }}>
+                      <ReviewContent
+                        item={conflict.latest.item}
+                        showEvidence={item.capabilities.canAccessEvidence}
+                      />
+                      {eligible(
+                        conflict.latest.item,
+                        conflict.latest.command
+                      ) ? (
+                        <Button
+                          type='button'
+                          variant='outline'
+                          size='sm'
+                          onClick={() => {
+                            setReview(conflict.latest)
+                            setConflict(null)
+                            operation.current += 1
+                          }}
+                        >
                           Review updated state
                         </Button>
                       ) : (
@@ -212,7 +244,9 @@ export function ActionCommands({
         destructive={
           review?.command === 'reject' || review?.command === 'cancel'
         }
-        disabled={!review || Boolean(conflict) || !eligible(review.item, review.command)}
+        disabled={
+          !review || Boolean(conflict) || !eligible(review.item, review.command)
+        }
         isLoading={commandMutation.isPending || reviewPending}
         confirmText={labels[review?.command ?? 'start']}
         handleConfirm={() => {
@@ -227,23 +261,36 @@ export function ActionCommands({
   )
 }
 
-function ReviewContent({ item, showEvidence }: { item: ActionItem; showEvidence: boolean }) {
+function ReviewContent({
+  item,
+  showEvidence,
+}: {
+  item: ActionItem
+  showEvidence: boolean
+}) {
   return (
     <div className='space-y-2'>
       <p className='font-medium'>{item.title}</p>
       {item.details && <p className='whitespace-pre-wrap'>{item.details}</p>}
       <p className='text-xs text-muted-foreground'>
-        State: {item.status} · Assignee: {item.assignee?.displayName ?? 'Unassigned'}
-        {item.assignee && !item.assignee.active ? ' (inactive)' : ''} · Due: {item.dueDate ?? 'none'}
+        State: {item.status} · Assignee:{' '}
+        {item.assignee?.displayName ?? 'Unassigned'}
+        {item.assignee && !item.assignee.active ? ' (inactive)' : ''} · Due:{' '}
+        {item.dueDate ?? 'none'}
       </p>
       {item.evidence.limitation && <p>{item.evidence.limitation}</p>}
-      {showEvidence && item.capabilities.canAccessEvidence &&
+      {showEvidence &&
+        item.capabilities.canAccessEvidence &&
         item.evidence.references.map((reference, index) => (
           <div key={reference.segmentId} className='rounded border p-2'>
-            <p className='text-xs font-medium'>Evidence {index + 1} · {item.evidence.freshness}</p>
-            <p>{item.evidence.availability === 'AVAILABLE'
-              ? reference.preview ?? 'Preview unavailable'
-              : 'Original evidence unavailable'}</p>
+            <p className='text-xs font-medium'>
+              Evidence {index + 1} · {item.evidence.freshness}
+            </p>
+            <p>
+              {item.evidence.availability === 'AVAILABLE'
+                ? (reference.preview ?? 'Preview unavailable')
+                : 'Original evidence unavailable'}
+            </p>
           </div>
         ))}
     </div>

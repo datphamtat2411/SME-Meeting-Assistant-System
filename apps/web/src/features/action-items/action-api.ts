@@ -282,12 +282,14 @@ export function rebaseActionDraft(
   const changed = buildActionPatch(reviewed, pending)
   return {
     title: changed.title ?? latest.title,
-    details: (changed.details !== undefined ? changed.details : latest.details) ?? '',
+    details:
+      (changed.details !== undefined ? changed.details : latest.details) ?? '',
     assigneeUserId:
       (changed.assigneeUserId !== undefined
         ? changed.assigneeUserId
         : latest.assigneeUserId) ?? '',
-    dueDate: (changed.dueDate !== undefined ? changed.dueDate : latest.dueDate) ?? '',
+    dueDate:
+      (changed.dueDate !== undefined ? changed.dueDate : latest.dueDate) ?? '',
   }
 }
 

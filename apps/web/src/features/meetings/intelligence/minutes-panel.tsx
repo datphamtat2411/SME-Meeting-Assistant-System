@@ -105,14 +105,22 @@ export function MinutesPanel({
             </p>
             <p className='mt-1 font-medium'>{minutes.meeting.title}</p>
             <p className='text-xs text-muted-foreground'>
-              {minutes.meeting.status.replace(/_/g, ' ')}
-              · Organizer: {person(minutes.meeting.organizerUserId)}
+              {minutes.meeting.status.replace(/_/g, ' ')}· Organizer:{' '}
+              {person(minutes.meeting.organizerUserId)}
             </p>
             {minutes.meeting.description && (
-              <p className='mt-2 whitespace-pre-wrap'>{minutes.meeting.description}</p>
+              <p className='mt-2 whitespace-pre-wrap'>
+                {minutes.meeting.description}
+              </p>
             )}
-            <p>Scheduled: {time(minutes.meeting.scheduledStartAt)} – {time(minutes.meeting.scheduledEndAt)}</p>
-            <p>Actual: {time(minutes.meeting.startedAt)} – {time(minutes.meeting.endedAt)}</p>
+            <p>
+              Scheduled: {time(minutes.meeting.scheduledStartAt)} –{' '}
+              {time(minutes.meeting.scheduledEndAt)}
+            </p>
+            <p>
+              Actual: {time(minutes.meeting.startedAt)} –{' '}
+              {time(minutes.meeting.endedAt)}
+            </p>
           </div>
           <div>
             <p className='text-xs font-medium tracking-wide text-muted-foreground uppercase'>
@@ -148,13 +156,14 @@ export function MinutesPanel({
             <SnapshotBadge value={minutes.summary.availability} />
           </div>
           <p className='text-sm whitespace-pre-wrap'>
-            {minutes.summary.content ||
-              'No current Summary is available.'}
+            {minutes.summary.content || 'No current Summary is available.'}
           </p>
           <div className='flex flex-wrap gap-2 text-xs text-muted-foreground'>
             <span>Source: {minutes.summary.sourceType ?? 'not available'}</span>
             <span>Version: {minutes.summary.versionNumber ?? '—'}</span>
-            <span>Quality: {minutes.summary.qualityStatus ?? 'not available'}</span>
+            <span>
+              Quality: {minutes.summary.qualityStatus ?? 'not available'}
+            </span>
             <span>
               Transcript revision: {minutes.summary.contentRevision ?? '—'}
             </span>
@@ -203,10 +212,14 @@ export function MinutesPanel({
                     </p>
                   )}
                   {decision.aiUncertainty && (
-                    <p className='text-xs text-muted-foreground'>Uncertainty: {decision.aiUncertainty}</p>
+                    <p className='text-xs text-muted-foreground'>
+                      Uncertainty: {decision.aiUncertainty}
+                    </p>
                   )}
                   {decision.aiWarnings.map((warning) => (
-                    <p key={warning} className='text-xs text-amber-700'>{warning}</p>
+                    <p key={warning} className='text-xs text-amber-700'>
+                      {warning}
+                    </p>
                   ))}
                   {decision.evidenceSegmentIds.length > 0 && (
                     <p className='mt-1 text-xs text-muted-foreground'>
@@ -254,8 +267,8 @@ export function MinutesPanel({
                     <SnapshotBadge value={item.status} />
                   </div>
                   <p className='mt-2 text-xs text-muted-foreground'>
-                    {item.sourceType} · Assignee: {person(item.assigneeUserId)} · due {item.dueDate ?? 'none'} · version{' '}
-                    {item.version}
+                    {item.sourceType} · Assignee: {person(item.assigneeUserId)}{' '}
+                    · due {item.dueDate ?? 'none'} · version {item.version}
                   </p>
                 </article>
               ))}
@@ -285,7 +298,10 @@ export function MinutesPanel({
               Content revision: {minutes.transcript.contentRevision ?? '—'} ·
               duration {minutes.transcript.durationMs ?? '—'} ms
             </p>
-            <p>Suspicious segments: {minutes.transcript.suspiciousSegments ?? '—'}</p>
+            <p>
+              Suspicious segments:{' '}
+              {minutes.transcript.suspiciousSegments ?? '—'}
+            </p>
             <p>Unresolved segments: {minutes.transcript.unresolvedSegments}</p>
             <p>
               Unresolved speech regions:{' '}

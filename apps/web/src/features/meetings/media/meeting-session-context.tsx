@@ -84,7 +84,9 @@ export function MeetingSessionProvider({
     actions: false,
   })
   const hasUnsavedIntelligence =
-    intelligenceDrafts.summary || intelligenceDrafts.decisions || intelligenceDrafts.actions
+    intelligenceDrafts.summary ||
+    intelligenceDrafts.decisions ||
+    intelligenceDrafts.actions
   const setIntelligenceDraftDirty = useCallback(
     (feature: 'summary' | 'decisions' | 'actions', dirty: boolean) => {
       setIntelligenceDrafts((current) =>

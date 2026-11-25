@@ -84,7 +84,11 @@ export function ActionItemsPage() {
   const [dirty, setDirty] = useState(false)
   useBlocker({
     enableBeforeUnload: dirty,
-    shouldBlockFn: () => dirty && !window.confirm('Unsaved or unresolved Action Item work may be lost. Leave anyway?'),
+    shouldBlockFn: () =>
+      dirty &&
+      !window.confirm(
+        'Unsaved or unresolved Action Item work may be lost. Leave anyway?'
+      ),
   })
 
   function selectView(next: string) {

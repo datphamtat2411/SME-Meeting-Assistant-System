@@ -170,8 +170,12 @@ export function MeetingTools({
             ),
             [identity.userId, identity.displayName],
           ])}
-          onOpenActions={onSectionChange ? () => onSectionChange('action-items') : undefined}
-          onOpenTranscript={onSectionChange ? () => onSectionChange('transcript') : undefined}
+          onOpenActions={
+            onSectionChange ? () => onSectionChange('action-items') : undefined
+          }
+          onOpenTranscript={
+            onSectionChange ? () => onSectionChange('transcript') : undefined
+          }
         />
         <ExportPanel
           meetingId={meetingId}

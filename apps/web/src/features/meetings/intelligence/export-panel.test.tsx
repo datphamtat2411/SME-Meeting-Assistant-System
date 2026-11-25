@@ -3,8 +3,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
-import { ExportPanel } from './export-panel'
 import { CoreApiError } from '@/lib/core-api'
+import { ExportPanel } from './export-panel'
 
 const exportMocks = vi.hoisted(() => ({
   createMinutesExport: vi.fn(),
@@ -249,7 +249,9 @@ describe('ExportPanel authorization and download boundary', () => {
     const recover = screen.getByRole('button', { name: 'Recover PDF request' })
     await expect.element(recover).toBeEnabled()
     await userEvent.click(recover)
-    await expect.poll(() => exportMocks.createMinutesExport.mock.calls.length).toBe(2)
+    await expect
+      .poll(() => exportMocks.createMinutesExport.mock.calls.length)
+      .toBe(2)
     expect(exportMocks.createMinutesExport.mock.calls[0]).toEqual(
       exportMocks.createMinutesExport.mock.calls[1]
     )

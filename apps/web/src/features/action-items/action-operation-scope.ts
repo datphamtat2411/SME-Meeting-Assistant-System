@@ -1,10 +1,10 @@
 import { useCallback, useLayoutEffect, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
+import { getAuthLifecycleSnapshot } from '@/features/auth/session/auth-lifecycle'
 import {
   currentUserQueryKey,
   type AuthContext,
 } from '@/features/auth/session/current-user'
-import { getAuthLifecycleSnapshot } from '@/features/auth/session/auth-lifecycle'
 import { useOptionalMeetingAuthorization } from '@/features/meetings/meeting-authorization-context'
 
 /** Item-only readers need not have access to protected meeting content.

@@ -104,7 +104,10 @@ describe('Action Item adapter contracts', () => {
   })
 
   it('rebases only intended edits and preserves concurrent assignment', () => {
-    const latest = { ...item, assigneeUserId: '99999999-9999-4999-8999-999999999999' }
+    const latest = {
+      ...item,
+      assigneeUserId: '99999999-9999-4999-8999-999999999999',
+    }
     const pending = {
       title: item.title,
       details: '',
