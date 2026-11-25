@@ -429,6 +429,11 @@ class RecordingCoordinator extends ChangeNotifier with WidgetsBindingObserver {
     String? meetingId,
     AuthenticatedSessionScope? scope,
   }) {
+    if (_disposed || (_shuttingDown && (meetingId != null || scope != null))) {
+      throw const RecordingEligibilityException(
+        'Recording commands are unavailable during shutdown.',
+      );
+    }
     if (meetingId != null && _activeMeetingId != meetingId) {
       throw const RecordingEligibilityException(
         'The requested meeting does not own the active recording.',
@@ -1244,6 +1249,9 @@ class RecordingCoordinator extends ChangeNotifier with WidgetsBindingObserver {
     _importCancellation?.cancel();
     _captureCancellation?.cancel();
   }
+
+  /// Waits for the actual serialized commands, not their timeout wrappers.
+  Future<void> drainActiveWork() => _commandTail;
 
   Future<void> shutdown() {
     final existing = _shutdownFuture;

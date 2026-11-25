@@ -828,6 +828,21 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  /// Original futures may outlive the bounded shutdown wait.
+  Future<void> drainActiveWork() async {
+    await Future.wait<void>(
+      <Future<void>>[
+        ..._inFlight.values,
+        ..._mutationFlights.values.map((future) => future.then<void>((_) {})),
+      ].map(
+        (future) => future.then<void>(
+          (_) {},
+          onError: (Object _, StackTrace __) {},
+        ),
+      ),
+    );
+  }
+
   Future<void> shutdown() {
     final existing = _shutdownFuture;
     if (existing != null) return existing;

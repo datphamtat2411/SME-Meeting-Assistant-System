@@ -1895,6 +1895,18 @@ class SubmissionCoordinator extends ChangeNotifier {
     }
   }
 
+  /// Drains the original command futures even if shutdown reached its deadline.
+  Future<void> drainActiveWork() async {
+    await Future.wait<void>(
+      _active.values.map(
+        (future) => future.then<void>(
+          (_) {},
+          onError: (Object _, StackTrace __) {},
+        ),
+      ),
+    );
+  }
+
   /// Gives active transport calls a bounded opportunity to observe
   /// cancellation before their owning persistence is closed.
   Future<void> shutdown() {

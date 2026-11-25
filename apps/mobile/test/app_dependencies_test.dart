@@ -144,6 +144,28 @@ void main() {
       expect(client.closeCalls, 1);
     },
   );
+
+  test('bounded shutdown defers persistence close until actual drain', () async {
+    final client = NoNetworkHttpClient();
+    final api = TrackingApiClient(client);
+    final localMedia = _TrackingLocalMedia();
+    final manager = _DelayedDrainManager(api, localMedia);
+    final dependencies = AppDependencies(
+      api: api,
+      appearancePreferences: InMemoryAppearancePreferences(),
+      httpClient: client,
+      localMedia: localMedia,
+      processingManager: manager,
+    );
+
+    await dependencies.shutdown();
+    expect(client.closeCalls, 1);
+    expect(localMedia.closeCalls, 0);
+
+    manager.drained.complete();
+    await localMedia.closed.future;
+    expect(localMedia.closeCalls, 1);
+  });
 }
 
 Future<void> _eventually(bool Function() condition) async {
@@ -181,4 +203,40 @@ class _ClosingMeetingHttpClient extends MeetingTestHttpClient {
     closeCalls++;
     super.close();
   }
+}
+
+
+class _TrackingLocalMedia extends LocalMediaRepository {
+  _TrackingLocalMedia() : super.lazyDefault();
+
+  int closeCalls = 0;
+  final closed = Completer<void>();
+
+  @override
+  Future<void> dispose() async {
+    closeCalls++;
+    await super.dispose();
+    closed.complete();
+  }
+}
+
+class _DelayedDrainManager extends ProcessingManager {
+  _DelayedDrainManager(ApiClient api, LocalMediaRepository localMedia)
+    : super(
+        api: api,
+        localMedia: localMedia,
+        mediaRepository: MediaRepository(api: api),
+        processingRepository: ProcessingRepository(api: api),
+      );
+
+  final drained = Completer<void>();
+
+  @override
+  bool get hasActiveWork => !drained.isCompleted;
+
+  @override
+  Future<void> shutdown() async {}
+
+  @override
+  Future<void> drainActiveWork() => drained.future;
 }
