@@ -528,7 +528,7 @@ test('loads the fixed HTTP local Vite and same-origin proxy configuration', asyn
   assert.equal(httpDevelopment.server.host, '127.0.0.1')
   assert.equal(httpDevelopment.server.port, 5173)
   assert.equal(httpDevelopment.server.strictPort, true)
-  assert.equal(httpDevelopment.server.https, false)
+  assert.equal(httpDevelopment.server.https, undefined)
   assert.deepEqual(httpDevelopment.server.proxy?.['/api'], {
     target: 'http://127.0.0.1:8080',
     changeOrigin: false,
@@ -538,6 +538,6 @@ test('loads the fixed HTTP local Vite and same-origin proxy configuration', asyn
     WEB_DEV_HTTPS_KEY_FILE: trustedCertificate.keyFile,
     WEB_DEV_HTTPS_CERT_FILE: trustedCertificate.certFile,
   })
-  assert.equal(staleHttpsEnvironment.server.https, false)
+  assert.equal(staleHttpsEnvironment.server.https, undefined)
   assert.equal(staleHttpsEnvironment.server.port, 5173)
 })

@@ -210,7 +210,7 @@ class AuthTransportHttpIntegrationTests {
     @Test
     void loopbackAliasOriginIsNotTrustedByTheCanonicalHttpTransport() throws Exception {
         mvc.perform(get("/api/v1/auth/csrf")
-                .header(HttpHeaders.ORIGIN, "https://127.0.0.1:5173"))
+            .header(HttpHeaders.ORIGIN, "http://127.0.0.1:5173"))
             .andExpect(status().isForbidden());
     }
 
