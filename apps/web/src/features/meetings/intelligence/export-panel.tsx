@@ -104,6 +104,7 @@ export function ExportPanel({
     Boolean(
       authorization?.scopeReady &&
       authorization.canReadProtectedData &&
+      authorization.capabilities.canReadMeetingContent &&
       !authorization.isConfirmedAccessLoss &&
       exportOwner
     )
@@ -311,19 +312,35 @@ export function ExportPanel({
             Export is unavailable for the current meeting access.
           </p>
         )}
-        {minutes.data && minutes.data.completeness !== 'COMPLETE' && (
+        {authorized && exportOwner?.lastFailure && (
+          <div className='space-y-2'>
+            <p className='text-sm font-medium'>
+              {exportOwner.lastFailure.format} export request failed
+            </p>
+            <RequestError error={exportOwner.lastFailure.error} />
+            {operations[exportOwner.lastFailure.format]?.idempotencyKey &&
+              !operations[exportOwner.lastFailure.format]?.exportId && (
+                <p className='text-sm text-muted-foreground'>
+                  Recover the original request before starting a new export.
+                </p>
+              )}
+          </div>
+        )}
+        {authorized &&
+          minutes.data &&
+          minutes.data.completeness !== 'COMPLETE' && (
           <p className='text-sm text-amber-700'>
             Minutes are {minutes.data.completeness}. Review missing or stale
             content first.
           </p>
         )}
-        {proposalsIncluded && (
+        {authorized && proposalsIncluded && (
           <p className='text-sm text-amber-700'>
             Minutes contain unconfirmed AI proposals and are not eligible for
             export.
           </p>
         )}
-        {minutes.isError && (
+        {authorized && minutes.isError && (
           <RequestError
             error={minutes.error}
             retry={() => void minutes.refetch()}

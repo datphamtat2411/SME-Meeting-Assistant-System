@@ -26,6 +26,8 @@ const authorizationMocks = vi.hoisted(() => ({
     isConfirmedAccessLoss: false,
     status: 'verified',
     capabilities: {
+      authorizationResolution: 'allowed',
+      canReadMeetingContent: true,
       canReadMedia: false,
       canReadProcessing: false,
       canAdmitProcessing: false,
@@ -157,15 +159,45 @@ function renderPanel(canExport = true) {
 
 function ExportContextHarness() {
   const [canExport, setCanExport] = useState(true)
+  const [showPanel, setShowPanel] = useState(true)
   const [meetingId, setMeetingId] = useState(
     '11111111-1111-4111-8111-111111111111'
   )
   return (
     <>
-      <button type='button' onClick={() => setCanExport(false)}>
+      <button type='button' onClick={() => setShowPanel((value) => !value)}>
+        Toggle export panel
+      </button>
+      <button
+        type='button'
+        onClick={() => {
+          authorizationMocks.value = {
+            ...authorizationMocks.value,
+            capabilities: {
+              ...authorizationMocks.value.capabilities,
+              authorizationResolution: 'denied',
+              canReadMeetingContent: false,
+            },
+          }
+          setCanExport(false)
+        }}
+      >
         Revoke export access
       </button>
-      <button type='button' onClick={() => setCanExport(true)}>
+      <button
+        type='button'
+        onClick={() => {
+          authorizationMocks.value = {
+            ...authorizationMocks.value,
+            capabilities: {
+              ...authorizationMocks.value.capabilities,
+              authorizationResolution: 'allowed',
+              canReadMeetingContent: true,
+            },
+          }
+          setCanExport(true)
+        }}
+      >
         Restore export access
       </button>
       <button
@@ -179,7 +211,9 @@ function ExportContextHarness() {
         Switch meeting
       </button>
       <MeetingSessionProvider meetingId={meetingId}>
-        <ExportPanel meetingId={meetingId} canExport={canExport} />
+        {showPanel && (
+          <ExportPanel meetingId={meetingId} canExport={canExport} />
+        )}
       </MeetingSessionProvider>
     </>
   )
@@ -213,6 +247,8 @@ describe('ExportPanel authorization and download boundary', () => {
     vi.unstubAllEnvs()
     sessionStorage.clear()
     authorizationMocks.value.meetingId = '11111111-1111-4111-8111-111111111111'
+    authorizationMocks.value.capabilities.authorizationResolution = 'allowed'
+    authorizationMocks.value.capabilities.canReadMeetingContent = true
     vi.stubEnv('VITE_EXPORT_DOWNLOAD_HOSTS', 'localhost')
     minutesData.value = {
       ...minutesData.value,
@@ -296,6 +332,76 @@ describe('ExportPanel authorization and download boundary', () => {
     expect(exportMocks.createMinutesExport.mock.calls[0]).toEqual(
       exportMocks.createMinutesExport.mock.calls[1]
     )
+  })
+
+  it('records admission after the presentation unmounts without replaying POST', async () => {
+    const receipt = deferred<{ exportId: string }>()
+    exportMocks.createMinutesExport.mockReturnValue(receipt.promise)
+    const screen = await renderContextHarness()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Generate PDF' }))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Toggle export panel' })
+    )
+    receipt.resolve({ exportId })
+    const key =
+      'sme:meeting-minutes-export:v3:99999999-9999-4999-8999-999999999999:88888888-8888-4888-8888-888888888888:11111111-1111-4111-8111-111111111111'
+    await expect.poll(() => sessionStorage.getItem(key)).toContain(exportId)
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Toggle export panel' })
+    )
+    await expect
+      .element(screen.getByRole('button', { name: 'Download' }))
+      .toBeInTheDocument()
+    expect(exportMocks.createMinutesExport).toHaveBeenCalledOnce()
+  })
+
+  it('retires an admission on content denial with the same identity and no presentation', async () => {
+    const receipt = deferred<{ exportId: string }>()
+    exportMocks.createMinutesExport.mockReturnValue(receipt.promise)
+    const screen = await renderContextHarness()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Generate PDF' }))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Toggle export panel' })
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Revoke export access' })
+    )
+    const key =
+      'sme:meeting-minutes-export:v3:99999999-9999-4999-8999-999999999999:88888888-8888-4888-8888-888888888888:11111111-1111-4111-8111-111111111111'
+    await expect.poll(() => sessionStorage.getItem(key)).toBeNull()
+    receipt.resolve({ exportId })
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Restore export access' })
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Toggle export panel' })
+    )
+    await expect
+      .element(screen.getByRole('button', { name: 'Generate PDF' }))
+      .toBeEnabled()
+    expect(sessionStorage.getItem(key)).toBeNull()
+    expect(exportMocks.createMinutesExport).toHaveBeenCalledOnce()
+  })
+
+  it('shows definitive admission failure instead of silently returning to idle', async () => {
+    exportMocks.createMinutesExport.mockRejectedValueOnce(
+      new CoreApiError({
+        message: 'Minutes changed before export admission.',
+        code: 'EXPORT_CONFLICT',
+        status: 409,
+        kind: 'http',
+      })
+    )
+    const screen = await renderPanel()
+    await userEvent.click(screen.getByRole('button', { name: 'Generate PDF' }))
+    await expect
+      .element(screen.getByText('PDF export request failed'))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('Minutes changed before export admission.'))
+      .toBeInTheDocument()
   })
 
   it('does not offer export operations without meeting-content access', async () => {

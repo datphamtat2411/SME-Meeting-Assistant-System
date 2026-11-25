@@ -5,7 +5,9 @@ import {
   useRef,
   useState,
 } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { z } from 'zod'
+import { normalizeCoreApiError } from '@/lib/core-api'
 import {
   getAuthLifecycleSnapshot,
   subscribeAuthLifecycle,
@@ -67,6 +69,19 @@ function createIntentId(format: ExportFormat, key: string): string {
 
 function storageKey(actorId: string, sessionId: string, meetingId: string) {
   return `sme:meeting-minutes-export:v3:${actorId}:${sessionId}:${meetingId}`
+}
+
+export function clearPersistedExportOperations() {
+  try {
+    for (let index = sessionStorage.length - 1; index >= 0; index -= 1) {
+      const key = sessionStorage.key(index)
+      if (key?.startsWith('sme:meeting-minutes-export:')) {
+        sessionStorage.removeItem(key)
+      }
+    }
+  } catch {
+    // Browser storage is optional; auth containment still blocks access.
+  }
 }
 
 function removePersistedOperations(
@@ -214,6 +229,7 @@ export function useExportOperationOwner({
   meetingId: string
   authorization: MeetingAuthorizationContextValue | null
 }): ExportOperationOwnerValue {
+  const queryClient = useQueryClient()
   const authorizationRef = useRef(authorization)
   const operationsRef = useRef<ExportOperations>(emptyOperations())
   const activeScopeRef = useRef<
@@ -226,6 +242,7 @@ export function useExportOperationOwner({
     | undefined
   >(undefined)
   const retiredIntentIds = useRef(new Set<string>())
+  const executing = useRef<Partial<Record<ExportFormat, ExportOperation>>>({})
   const ownerGeneration = useRef(0)
   const ownerActive = useRef(false)
   const [lifecycle, setLifecycle] = useState(getAuthLifecycleSnapshot)
@@ -306,9 +323,22 @@ export function useExportOperationOwner({
           scope.meetingId
         )
       }
-      storeOperations(emptyOperations(), scope)
+      if (scope) {
+        const predicate = (query: { queryKey: readonly unknown[] }) =>
+          (query.queryKey[0] === 'export' &&
+            query.queryKey[2] === scope.meetingId) ||
+          (query.queryKey[0] === 'minutes' &&
+            query.queryKey[1] === scope.meetingId)
+        void queryClient.cancelQueries({ predicate })
+        queryClient.removeQueries({ predicate })
+      }
+      executing.current = {}
+      operationsRef.current = emptyOperations()
+      setOperations(emptyOperations())
+      setPending({ PDF: false, MARKDOWN: false })
+      setLastFailure(null)
     },
-    [storeOperations]
+    [queryClient]
   )
 
   useEffect(() => {
@@ -318,40 +348,26 @@ export function useExportOperationOwner({
       authorization?.isConfirmedAccessLoss ||
       authorization?.status === 'confirmed-authentication-loss' ||
       authorization?.status === 'confirmed-authorization-denial' ||
-      lifecycle.state === 'confirmed'
+      lifecycle.state === 'confirmed' ||
+      (authorization?.scopeReady &&
+        authorization.capabilities.authorizationResolution === 'denied')
 
-    if (!nextScope) {
-      if (confirmedLoss && previous) {
-        retireOperations(previous)
-        activeScopeRef.current = undefined
-      }
+    // Content access can be lost without losing the authenticated identity.
+    // Retire before comparing or hydrating scopes.
+    if (confirmedLoss) {
+      retireOperations(previous ?? nextScope)
+      activeScopeRef.current = undefined
       return
     }
 
     if (
-      previous &&
-      (previous.actorId !== nextScope.actorId ||
-        previous.sessionId !== nextScope.sessionId ||
-        previous.meetingId !== nextScope.meetingId ||
-        previous.lifecycleGeneration !== nextScope.lifecycleGeneration)
+      !nextScope ||
+      !authorization?.scopeReady ||
+      !authorization.canReadProtectedData ||
+      !authorization.capabilities.canReadMeetingContent ||
+      lifecycle.state !== 'idle'
     ) {
-      const previousScope = {
-        actorId: previous.actorId,
-        sessionId: previous.sessionId,
-        meetingId: previous.meetingId,
-      }
-      if (previous.lifecycleGeneration !== nextScope.lifecycleGeneration) {
-        retireOperations(previousScope)
-        removePersistedOperations(
-          nextScope.actorId,
-          nextScope.sessionId,
-          nextScope.meetingId
-        )
-        operationsRef.current = emptyOperations()
-        setOperations(emptyOperations())
-      } else {
-        retireOperations(previousScope)
-      }
+      return
     }
 
     const sameScope =
@@ -359,19 +375,35 @@ export function useExportOperationOwner({
       previous.sessionId === nextScope.sessionId &&
       previous.meetingId === nextScope.meetingId &&
       previous.lifecycleGeneration === nextScope.lifecycleGeneration
-    activeScopeRef.current = nextScope
-    if (!sameScope) {
-      const loaded = loadPersistedOperations(
-        nextScope,
-        lifecycle.generation,
-        ownerGeneration.current
-      )
-      operationsRef.current = loaded
-      setOperations(loaded)
+    if (sameScope) return
+
+    if (previous) {
+      const sameSession =
+        previous.actorId === nextScope.actorId &&
+        previous.sessionId === nextScope.sessionId &&
+        previous.lifecycleGeneration === nextScope.lifecycleGeneration
+      // A meeting switch is navigation, not revocation. Keep its recovery
+      // metadata while detaching the old local execution.
+      retireOperations(sameSession ? undefined : previous)
     }
+
+    activeScopeRef.current = nextScope
+    const loaded = loadPersistedOperations(
+      nextScope,
+      lifecycle.generation,
+      ownerGeneration.current
+    )
+    operationsRef.current = loaded
+    setOperations(loaded)
   }, [
     authorization?.isConfirmedAccessLoss,
     authorization?.status,
+    authorization?.scopeReady,
+    authorization?.canReadProtectedData,
+    authorization?.capabilities.authorizationResolution,
+    authorization?.capabilities.canReadMeetingContent,
+    authorization?.identity?.userId,
+    authorization?.identity?.session?.id,
     currentScope,
     lifecycle.generation,
     lifecycle.state,
@@ -391,6 +423,7 @@ export function useExportOperationOwner({
         scope.lifecycleGeneration === operation.lifecycleGeneration &&
         authorizationRef.current?.scopeReady === true &&
         authorizationRef.current.canReadProtectedData &&
+        authorizationRef.current.capabilities.canReadMeetingContent &&
         !authorizationRef.current.isConfirmedAccessLoss &&
         getAuthLifecycleSnapshot().state === 'idle' &&
         operationsRef.current[operation.format]?.intentId === operation.intentId
@@ -407,8 +440,15 @@ export function useExportOperationOwner({
       const scope = currentScope()
       if (
         !scope ||
+        !ownerActive.current ||
+        executing.current[format] ||
+        activeScopeRef.current?.actorId !== scope.actorId ||
+        activeScopeRef.current.sessionId !== scope.sessionId ||
+        activeScopeRef.current.meetingId !== scope.meetingId ||
+        activeScopeRef.current.lifecycleGeneration !== scope.lifecycleGeneration ||
         !authorizationRef.current?.scopeReady ||
         !authorizationRef.current.canReadProtectedData ||
+        !authorizationRef.current.capabilities.canReadMeetingContent ||
         authorizationRef.current.isConfirmedAccessLoss ||
         getAuthLifecycleSnapshot().state !== 'idle'
       ) {
@@ -428,8 +468,9 @@ export function useExportOperationOwner({
           : createIntentId(format, key),
         ownerGeneration: ownerGeneration.current,
       }
+      executing.current[format] = operation
       storeOperations({ ...operationsRef.current, [format]: operation }, scope)
-      setLastFailure(null)
+      setLastFailure((failure) => (failure?.format === format ? null : failure))
       setPending((currentPending) => ({
         ...currentPending,
         [format]: true,
@@ -453,26 +494,40 @@ export function useExportOperationOwner({
             ...operationsRef.current,
             [format]: { ...current, exportId: data.exportId },
           })
-          setLastFailure(null)
+          setLastFailure((failure) =>
+            failure?.format === format ? null : failure
+          )
         })
         .catch((error: unknown) => {
           if (!accepts(operation)) return
-          const failure = normalizeExportFailure(error)
-          if (!failure.uncertain && !recovery) {
+          const failure = normalizeCoreApiError(error)
+          const uncertain =
+            failure.recoveryOutcome === 'uncertain' ||
+            failure.isNetworkError ||
+            failure.isServerError ||
+            failure.kind === 'malformed'
+          if (!uncertain && !recovery) {
             storeOperations({
               ...operationsRef.current,
               [format]: undefined,
             })
           }
           setLastFailure({ format, error })
+          if (failure.status === 409 || failure.status === 422) {
+            void queryClient.invalidateQueries({
+              queryKey: ['minutes', meetingId],
+            })
+          }
         })
         .finally(() => {
           if (
             !ownerActive.current ||
-            ownerGeneration.current !== operation.ownerGeneration
+            ownerGeneration.current !== operation.ownerGeneration ||
+            executing.current[format] !== operation
           ) {
             return
           }
+          delete executing.current[format]
           setPending((currentPending) => ({
             ...currentPending,
             [format]: false,
@@ -480,7 +535,7 @@ export function useExportOperationOwner({
         })
       return true
     },
-    [accepts, currentScope, meetingId, storeOperations]
+    [accepts, currentScope, meetingId, queryClient, storeOperations]
   )
 
   const isCurrent = useCallback(
@@ -502,18 +557,3 @@ export function useExportOperationOwner({
   }
 }
 
-function normalizeExportFailure(error: unknown): { uncertain: boolean } {
-  const normalized = error as {
-    recoveryOutcome?: string
-    isNetworkError?: boolean
-    isServerError?: boolean
-    kind?: string
-  }
-  return {
-    uncertain:
-      normalized.recoveryOutcome === 'uncertain' ||
-      normalized.isNetworkError === true ||
-      normalized.isServerError === true ||
-      normalized.kind === 'malformed',
-  }
-}

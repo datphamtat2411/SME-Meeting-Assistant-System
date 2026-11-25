@@ -11,6 +11,7 @@ import { normalizeCoreApiError } from '@/lib/core-api'
 import { handleServerError } from '@/lib/handle-server-error'
 import { setRequestRecoverySessionLossHandler } from '@/lib/request-recovery'
 import { configureAuthLifecycle } from '@/features/auth/session/auth-lifecycle'
+import { clearPersistedExportOperations } from '@/features/meetings/media/use-export-operation-owner'
 import {
   clearCurrentUserCache,
   getSafeSessionRedirect,
@@ -87,6 +88,7 @@ function containProtectedState(): void {
   queryClient.removeQueries()
   queryClient.getMutationCache().clear()
   clearCurrentUserCache(queryClient)
+  clearPersistedExportOperations()
 }
 
 configureAuthLifecycle({

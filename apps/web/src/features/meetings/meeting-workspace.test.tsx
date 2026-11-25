@@ -208,6 +208,7 @@ function workspaceMinutes(
 async function renderWorkspaceResults(minutes: unknown) {
   const workspaceMeeting = {
     ...detail,
+    id: workspaceMinutesMeetingId,
     organizerUserId: 'current-user',
     createdByUserId: 'current-user',
     roomId: null,
@@ -218,9 +219,15 @@ async function renderWorkspaceResults(minutes: unknown) {
     etag: 'workspace-results-etag',
   })
   vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url) => {
-    if (url === '/meetings/meeting-1/participants') {
+    if (url === `/meetings/${workspaceMinutesMeetingId}/participants`) {
       return {
-        data: [{ ...participants[0], userId: 'current-user' }],
+        data: [
+          {
+            ...participants[0],
+            meetingId: workspaceMinutesMeetingId,
+            userId: 'current-user',
+          },
+        ],
         meta: {},
       }
     }
@@ -244,7 +251,7 @@ async function renderWorkspaceResults(minutes: unknown) {
   })
   const screen = await render(
     <QueryClientProvider client={queryClient}>
-      <MeetingWorkspacePage meetingId='meeting-1' />
+      <MeetingWorkspacePage meetingId={workspaceMinutesMeetingId} />
     </QueryClientProvider>
   )
   return { screen, queryClient }
@@ -885,14 +892,20 @@ describe('MeetingWorkspacePage', () => {
 
   it('shows ended lifecycle separately from unconfirmed media, processing, and results', async () => {
     vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
-      data: detail,
+      data: { ...detail, id: workspaceMinutesMeetingId },
       meta: {},
       etag: 'etag-ended',
     })
     vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url) => {
-      if (url === '/meetings/meeting-1/participants') {
+      if (url === `/meetings/${workspaceMinutesMeetingId}/participants`) {
         return {
-          data: [{ ...participants[0], userId: 'current-user' }],
+          data: [
+            {
+              ...participants[0],
+              meetingId: workspaceMinutesMeetingId,
+              userId: 'current-user',
+            },
+          ],
           meta: {},
         }
       }
@@ -912,7 +925,7 @@ describe('MeetingWorkspacePage', () => {
           proposalsIncluded: false,
           warnings: [],
           meeting: {
-            id: '66666666-6666-4666-8666-666666666666',
+            id: workspaceMinutesMeetingId,
             title: detail.title,
             description: detail.description,
             organizerUserId: '77777777-7777-4777-8777-777777777777',
@@ -959,7 +972,7 @@ describe('MeetingWorkspacePage', () => {
     })
     const screen = await render(
       <QueryClientProvider client={queryClient}>
-        <MeetingWorkspacePage meetingId='meeting-1' />
+        <MeetingWorkspacePage meetingId={workspaceMinutesMeetingId} />
       </QueryClientProvider>
     )
 
