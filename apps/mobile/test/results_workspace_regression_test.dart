@@ -1351,7 +1351,10 @@ void main() {
         reason: 'the updated canonical Minutes to load',
       );
       expect(minutesReads, greaterThan(initialMinutesReads));
-      expect(workspace.minutes.data!.confirmedDecisions.single.id, 'decision-1');
+      expect(
+        workspace.minutes.data!.confirmedDecisions.single.id,
+        'decision-1',
+      );
       expect(decisionRequests, hasLength(1));
       expect(tester.takeException(), isNull);
     } finally {
