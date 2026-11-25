@@ -131,7 +131,7 @@ export function MeetingAuthorizationProvider({
   const hasVerifiedSession = Boolean(
     identityId && verification.canReadProtectedData
   )
-  const scopeIdentity = `${meetingId}:${identityId ?? 'anonymous'}:${identity?.session.id ?? 'none'}`
+  const scopeIdentity = `${meetingId}:${identityId ?? 'anonymous'}:${identity?.session?.id ?? 'none'}`
 
   // Keep healthy /me revalidations from resetting meeting data. The error
   // revision changes only after a failed verification, so a recovered session
@@ -223,8 +223,7 @@ export function MeetingAuthorizationProvider({
       predicate: (query: {
         queryKey: readonly unknown[]
         state: { data: unknown }
-      }) =>
-        isMeetingContentQuery(query.queryKey, meetingId, query.state.data),
+      }) => isMeetingContentQuery(query.queryKey, meetingId, query.state.data),
     }
     const actions = {
       predicate: (query: {
@@ -236,12 +235,10 @@ export function MeetingAuthorizationProvider({
           query.queryKey[1] === 'list' &&
           query.queryKey[3] === undefined),
     }
-    void queryClient.cancelQueries(content).then(() => {
-      queryClient.removeQueries(content)
-    })
-    void queryClient.cancelQueries(actions).then(() => {
-      void queryClient.resetQueries(actions)
-    })
+    void queryClient.cancelQueries(content)
+    queryClient.removeQueries(content)
+    void queryClient.cancelQueries(actions)
+    void queryClient.resetQueries(actions)
   }, [contentDenied, meetingId, queryClient])
 
   const canReadProtectedData = Boolean(

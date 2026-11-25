@@ -30,7 +30,8 @@ describe('meeting artifact reconciliation', () => {
     const summary = ['meeting-intelligence', 'a', 'summary']
     const decisions = ['meeting-intelligence', 'a', 'decisions']
     const minutes = ['minutes', 'a']
-    for (const key of [summary, decisions, minutes]) client.setQueryData(key, {})
+    for (const key of [summary, decisions, minutes])
+      client.setQueryData(key, {})
     invalidateMeetingArtifacts(client, 'a', { intelligence: 'summary' })
     expect(client.getQueryState(summary)?.isInvalidated).toBe(true)
     expect(client.getQueryState(minutes)?.isInvalidated).toBe(true)

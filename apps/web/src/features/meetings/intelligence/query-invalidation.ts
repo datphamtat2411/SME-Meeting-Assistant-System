@@ -12,10 +12,7 @@ export function invalidateMeetingArtifacts(
   } = {}
 ) {
   const intelligence = options.intelligence ?? 'all'
-  const keys: (readonly unknown[])[] = [
-    ['minutes', meetingId],
-    ['dashboard'],
-  ]
+  const keys: (readonly unknown[])[] = [['minutes', meetingId], ['dashboard']]
   if (intelligence !== 'none') {
     keys.push(
       intelligence === 'all'

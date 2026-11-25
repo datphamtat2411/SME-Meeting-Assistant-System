@@ -273,6 +273,10 @@ export function MeetingTools({
         <MeetingActionsPanel
           meetingId={meetingId}
           canManageActionItems={capabilities.canManageActionItems}
+          resolveManagementCapability={
+            capabilities.actionItemManagementResolution === 'unresolved'
+          }
+          canReadMeetingContent={capabilities.canReadMeetingContent}
           onEvidenceNavigate={onEvidenceNavigate}
         />
       </div>

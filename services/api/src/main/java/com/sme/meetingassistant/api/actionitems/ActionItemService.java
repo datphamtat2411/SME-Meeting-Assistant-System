@@ -612,7 +612,15 @@ public class ActionItemService {
 
     @Transactional(readOnly = true)
     public ManagementCapability managementCapability(UUID actorId) {
+        return managementCapability(actorId, null);
+    }
+
+    @Transactional(readOnly = true)
+    public ManagementCapability managementCapability(UUID actorId, UUID meetingId) {
         meetingAccess.requireCurrentActiveActor(actorId);
+        if (meetingId != null) {
+            return new ManagementCapability(meetingAccess.canManageActionItems(meetingId, actorId));
+        }
         Boolean canCreate = jdbc.queryForObject("""
             SELECT EXISTS (
                 SELECT 1

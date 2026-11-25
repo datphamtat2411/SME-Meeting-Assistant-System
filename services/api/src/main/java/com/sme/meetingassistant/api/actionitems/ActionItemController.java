@@ -66,8 +66,9 @@ public class ActionItemController {
     }
 
     @GetMapping("/management-capability")
-    public ApiResponse<ActionItemService.ManagementCapability> managementCapability() {
-        return responses.success(service.managementCapability(caller.requireUserId()));
+    public ApiResponse<ActionItemService.ManagementCapability> managementCapability(
+            @RequestParam(required=false) UUID meetingId) {
+        return responses.success(service.managementCapability(caller.requireUserId(), meetingId));
     }
 
     @GetMapping("/assignee-candidates")

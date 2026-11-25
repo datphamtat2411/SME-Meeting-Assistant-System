@@ -471,12 +471,15 @@ export function managementTargetsQuery(search: string, page = 0) {
   })
 }
 
-export function managementCapabilityQuery() {
+export function managementCapabilityQuery(meetingId?: string) {
   return queryOptions({
-    queryKey: ['action-items', 'management-capability'] as const,
-    queryFn: async () => {
+    queryKey: meetingId
+      ? (['action-items', 'management-capability', meetingId] as const)
+      : (['action-items', 'management-capability'] as const),
+    queryFn: async ({ signal }) => {
       const response = await coreApi.getWithMeta<unknown>(
-        '/action-items/management-capability'
+        '/action-items/management-capability',
+        { signal, ...(meetingId ? { params: { meetingId } } : {}) }
       )
       return z.object({ canCreate: z.boolean() }).parse(response.data)
     },

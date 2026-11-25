@@ -38,6 +38,7 @@ export function isMeetingActionQuery(
 ): boolean {
   const [family, kind, filter, scope] = key
   if (family !== 'action-items') return false
+  if (kind === 'management-capability') return filter === meetingId
   if (kind === 'list' || kind === 'detail') {
     if (typeof scope === 'string') return scope === meetingId
     if (kind === 'list') return hasMeetingId(filter, meetingId)

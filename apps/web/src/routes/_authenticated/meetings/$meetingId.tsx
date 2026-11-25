@@ -170,17 +170,21 @@ function MeetingNavigationGuard() {
           'Unsaved transcript review work may be lost. Leave anyway?'
         )
       }
+      const currentSearch = normalizeMeetingWorkspaceSearch(current.search)
       const remainsInIntelligence =
         sameMeeting &&
         next.routeId === '/_authenticated/meetings/$meetingId' &&
         remainsInIntelligenceReview(
-          normalizeMeetingWorkspaceSearch(current.search),
+          currentSearch,
           normalizeMeetingWorkspaceSearch(next.search)
         )
       if (
         session.hasUnsavedIntelligence &&
         !remainsInIntelligence &&
-        session.authorization?.capabilities.authorizationResolution !== 'denied'
+        (currentSearch.section === 'action-items'
+          ? session.authorization?.capabilities.canReadActionItems !== false
+          : session.authorization?.capabilities.authorizationResolution !==
+            'denied')
       ) {
         return !window.confirm(
           'Unsaved meeting intelligence work may be lost. Leave anyway?'

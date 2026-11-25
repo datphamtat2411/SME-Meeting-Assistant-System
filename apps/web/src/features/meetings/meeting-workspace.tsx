@@ -257,7 +257,7 @@ function MeetingWorkspacePageContent({
           />
         ) : identity ? (
           <MeetingWorkspaceIdentityBoundary
-            key={`${meetingId}:${identity.userId}:${identity.session.id}`}
+            key={`${meetingId}:${identity.userId}:${identity.session?.id ?? 'none'}`}
             meetingId={meetingId}
             identity={identity}
             section={section}
@@ -1376,6 +1376,40 @@ function WorkspaceResultsOverview({
                     onClick: () => void minutes.refetch(),
                   }
                 : undefined
+          }
+        />
+        <WorkspaceResultRow
+          icon={<FileText />}
+          title='Canonical minutes'
+          state={
+            minutes.isPending
+              ? 'Checking availability'
+              : minutes.isError
+                ? 'Unable to verify'
+                : minutes.data.completeness.replace(/_/g, ' ')
+          }
+          description={
+            minutes.isSuccess
+              ? 'Review the authoritative document and its export eligibility.'
+              : 'Canonical document availability must be verified by Core.'
+          }
+          kind={
+            minutes.isPending
+              ? 'pending'
+              : minutes.isError
+                ? 'error'
+                : minutes.data.completeness === 'COMPLETE'
+                  ? 'available'
+                  : 'warning'
+          }
+          action={
+            minutes.isSuccess
+              ? {
+                  label: 'Open minutes',
+                  onClick: () =>
+                    onSectionChange?.('intelligence', false, 'minutes'),
+                }
+              : undefined
           }
         />
         <WorkspaceResultRow

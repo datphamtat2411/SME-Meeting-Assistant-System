@@ -18,6 +18,7 @@ import {
 } from '@/components/request-state'
 import {
   actionItemsQuery,
+  managementCapabilityQuery,
   type ActionFilter,
   type ActionItem,
   type ActionPage,
@@ -43,10 +44,14 @@ const filterFor = (
 export function MeetingActionsPanel({
   meetingId,
   canManageActionItems,
+  resolveManagementCapability = false,
+  canReadMeetingContent = true,
   onEvidenceNavigate,
 }: {
   meetingId: string
   canManageActionItems: boolean
+  resolveManagementCapability?: boolean
+  canReadMeetingContent?: boolean
   onEvidenceNavigate?: (
     transcriptId: string,
     segmentId: string,
@@ -58,6 +63,18 @@ export function MeetingActionsPanel({
   )
   const [open, setOpen] = useState(false)
   const [selected, setSelected] = useState<ActionItem | null>(null)
+  const management = useQuery({
+    ...managementCapabilityQuery(meetingId),
+    enabled: resolveManagementCapability && !canManageActionItems,
+    refetchOnMount: 'always',
+    staleTime: 0,
+  })
+  const canCreate =
+    canManageActionItems ||
+    (resolveManagementCapability &&
+      management.isSuccess &&
+      management.isFetchedAfterMount &&
+      management.data.canCreate)
   return (
     <>
       <Card>
@@ -71,7 +88,7 @@ export function MeetingActionsPanel({
               obligations assembled for this meeting.
             </CardDescription>
           </div>
-          {canManageActionItems && (
+          {canCreate && (
             <Button
               size='sm'
               onClick={() => {
@@ -84,6 +101,20 @@ export function MeetingActionsPanel({
           )}
         </CardHeader>
         <CardContent className='p-4 sm:p-6'>
+          {resolveManagementCapability &&
+            !canManageActionItems &&
+            management.isError && (
+              <div className='mb-4 flex flex-wrap items-center gap-2 text-sm text-muted-foreground'>
+                Creation authority could not be verified.
+                <Button
+                  variant='outline'
+                  size='sm'
+                  onClick={() => void management.refetch()}
+                >
+                  Retry permission check
+                </Button>
+              </div>
+            )}
           <Tabs
             value={view}
             onValueChange={(value) => setView(value as typeof view)}
@@ -100,7 +131,10 @@ export function MeetingActionsPanel({
                   setSelected(item)
                   setOpen(true)
                 }}
-                onEvidenceNavigate={onEvidenceNavigate}
+                canReadMeetingContent={canReadMeetingContent}
+                onEvidenceNavigate={
+                  canReadMeetingContent ? onEvidenceNavigate : undefined
+                }
               />
             </TabsContent>
             <TabsContent value='official' className='mt-0'>
@@ -118,14 +152,14 @@ export function MeetingActionsPanel({
           </Tabs>
         </CardContent>
       </Card>
-      {(selected?.capabilities.canEdit || canManageActionItems) && (
+      {(open || selected?.capabilities.canEdit || canCreate) && (
         <ActionForm
           key={open ? (selected?.id ?? `new-${meetingId}`) : 'closed'}
           open={open}
           onOpenChange={setOpen}
           item={selected}
           meetingId={meetingId}
-          canManageActionItems={canManageActionItems}
+          canManageActionItems={canCreate}
         />
       )}
     </>
@@ -135,10 +169,12 @@ export function MeetingActionsPanel({
 function ProposalCollection({
   meetingId,
   onSelect,
+  canReadMeetingContent,
   onEvidenceNavigate,
 }: {
   meetingId: string
   onSelect: (item: ActionItem) => void
+  canReadMeetingContent: boolean
   onEvidenceNavigate?: (
     transcriptId: string,
     segmentId: string,
@@ -184,12 +220,15 @@ function ProposalCollection({
                 ? `Suggested responsibility: ${item.assignee.displayName}`
                 : 'Unassigned proposal'}
             </span>
-            <span>Evidence: {item.evidence.references.length}</span>
+            {canReadMeetingContent && item.capabilities.canAccessEvidence && (
+              <span>Evidence: {item.evidence.references.length}</span>
+            )}
           </div>
-          {item.evidence.limitation && (
+          {canReadMeetingContent && item.evidence.limitation && (
             <p className='text-sm text-amber-700'>{item.evidence.limitation}</p>
           )}
-          {item.evidence.references.length > 0 &&
+          {canReadMeetingContent &&
+            item.evidence.references.length > 0 &&
             item.evidence.transcriptId &&
             item.capabilities.canAccessEvidence && (
               <div className='flex flex-wrap gap-2'>

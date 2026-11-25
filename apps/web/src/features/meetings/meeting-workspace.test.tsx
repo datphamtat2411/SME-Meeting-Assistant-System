@@ -427,6 +427,7 @@ function installSharedWorkspaceApi(options: {
   participantError?: unknown
   participants?: typeof participants
   actionItems?: unknown[]
+  canCreateActionItems?: boolean
 }) {
   const protectedReads: string[] = []
   const actionItemReads: string[] = []
@@ -452,6 +453,13 @@ function installSharedWorkspaceApi(options: {
     if (url === '/meeting-organizers/organizer-1') {
       return {
         data: { id: 'organizer-1', name: 'Meeting organizer' },
+        meta: {},
+      }
+    }
+    if (url === '/action-items/management-capability') {
+      expect(config?.params?.meetingId).toBe('meeting-1')
+      return {
+        data: { canCreate: options.canCreateActionItems ?? false },
         meta: {},
       }
     }
@@ -1833,7 +1841,9 @@ describe('MeetingWorkspacePage', () => {
   })
 
   it('keeps server-filtered Action Items available to a scoped Department Manager only', async () => {
-    const { actionItemReads, protectedReads } = installSharedWorkspaceApi({})
+    const { actionItemReads, protectedReads } = installSharedWorkspaceApi({
+      canCreateActionItems: true,
+    })
     const client = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     })
@@ -1857,6 +1867,9 @@ describe('MeetingWorkspacePage', () => {
       .element(screen.getByText('No proposals await review'))
       .toBeInTheDocument()
     await expect.poll(() => actionItemReads.length).toBeGreaterThan(0)
+    await expect
+      .element(screen.getByRole('button', { name: 'Add official work' }))
+      .toBeInTheDocument()
     expect(protectedReads).toEqual([])
   })
 

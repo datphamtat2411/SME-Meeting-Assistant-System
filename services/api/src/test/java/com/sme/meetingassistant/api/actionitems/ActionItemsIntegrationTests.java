@@ -369,6 +369,13 @@ class ActionItemsIntegrationTests {
             employeeWithGrant.getId(),unitId,organizer.getId());
         mvc.perform(get("/api/v1/action-items/{id}",id).principal(principal(employeeWithGrant)))
             .andExpect(status().isNotFound());
+        for (UserEntity actor : List.of(organizer, manager, employeeWithGrant, outsider)) {
+            MvcResult capability = mvc.perform(get("/api/v1/action-items/management-capability")
+                    .principal(principal(actor)).param("meetingId", meetingId.toString()))
+                .andExpect(status().isOk()).andReturn();
+            assertThat(body(capability).path("data").path("canCreate").asBoolean())
+                .isEqualTo(actor.equals(organizer) || actor.equals(manager));
+        }
         MvcResult old=mvc.perform(get("/api/v1/action-items/{id}",id)
                 .principal(principal(manager))).andExpect(status().isOk()).andReturn();
         MvcResult cancelled=mvc.perform(post("/api/v1/action-items/{id}/cancel",id)

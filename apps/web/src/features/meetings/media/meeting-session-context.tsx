@@ -164,7 +164,9 @@ export function MeetingSessionProvider({
         canRecoverProcessing: authorization.capabilities.canRecoverProcessing,
         canPerformProtectedOperation:
           authorization.canPerformProtectedOperation,
-        isConfirmedAccessLoss: authorization.isConfirmedAccessLoss,
+        isConfirmedAccessLoss:
+          authorization.isConfirmedAccessLoss ||
+          authorization.capabilities.authorizationResolution === 'denied',
       } satisfies ProcessingAuthorization)
     : null
   const processing = useProcessingCoordinator({
