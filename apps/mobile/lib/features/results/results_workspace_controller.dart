@@ -229,6 +229,7 @@ class ResultsWorkspaceController extends ChangeNotifier
       );
     }
   }
+
   ResultsRecoveryDraft? recoveryDraft(String key) =>
       capabilities.canMutate ? _mutations.draft(key) : null;
   String? draftFor(
@@ -1526,6 +1527,7 @@ class ResultsWorkspaceController extends ChangeNotifier
     _decisionRecoveryReview = null;
     _decisionRecoveryGeneration = null;
     if (!_mutations.decisionOutcomeUnknown) return null;
+    final accessEpoch = readEpoch;
     final generation = _generations[ResultsResourceKind.decisions] ?? 0;
     List<MeetingDecision>? review;
     try {
@@ -1541,7 +1543,7 @@ class ResultsWorkspaceController extends ChangeNotifier
             generation == (_generations[ResultsResourceKind.decisions] ?? 0),
       );
     } on ApiFailure catch (error) {
-      await handleProtectedReadFailure(error, epoch: readEpoch);
+      await handleProtectedReadFailure(error, epoch: accessEpoch);
       rethrow;
     }
     if (review == null || !ownsReview(epoch)) return null;

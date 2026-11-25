@@ -373,32 +373,74 @@ PagedCollection<MeetingDecision> _decisionPage(MeetingDecision decision) =>
     );
 
 void main() {
-  test('uncertain rejection is reconciled independently of status filter', () async {
-    final (:workspace, :repository) = await _setup();
-    final proposal = _decision('PROPOSED');
-    repository.decisionPages.add(_decisionPage(proposal));
-    await workspace.selectDecisionStatus('PROPOSED');
-    final epoch = workspace.reviewEpoch;
-    await expectLater(
-      workspace.reviewDecision(proposal, confirm: false, epoch: epoch),
-      throwsA(isA<ApiFailure>()),
+  test('decision command validates canonical response identity and status', () async {
+    var returnedId = 'wrong-decision';
+    var returnedStatus = 'REJECTED';
+    final client = MeetingTestHttpClient((request) async {
+      expect(request.method, 'POST');
+      expect(request.url.path, endsWith('/decisions/decision-1/reject'));
+      expect(request.headers['If-Match'], '"decision-reviewed"');
+      return meetingApiSuccess(
+        {
+          'id': returnedId,
+          'meetingId': testMeetingId,
+          'content': 'Decision under review',
+          'status': returnedStatus,
+          'version': 2,
+          'isStale': false,
+          'createdAt': '2026-11-24T00:00:00Z',
+          'etag': '"decision-new"',
+        },
+        headers: {'etag': '"decision-new"'},
+      );
+    });
+    final api = createMeetingTestApi(client);
+    addTearDown(api.dispose);
+    await signInMeetingTestApi(api);
+    final repository = ResultsRepository(api);
+    Future<ApiResult> submit() => repository.reviewDecision(
+      sessionScope: api.authenticatedSessionScope!,
+      meetingId: testMeetingId,
+      snapshot: _decision('PROPOSED'),
+      confirm: false,
     );
-    expect(repository.submittedTag, proposal.etag);
-    expect(workspace.unresolvedDecision?.command, DecisionCommand.reject);
-    expect(workspace.unresolvedDecision?.snapshot?.id, proposal.id);
-    await expectLater(
-      workspace.reviewDecision(proposal, confirm: false, epoch: epoch),
-      throwsA(isA<ApiFailure>()),
-    );
-    expect(repository.decisionReviews, 1);
-    repository.decisionPages[0] = _decisionPage(_decision('REJECTED'));
-    final observed = await workspace.reconcileUnknownDecision(epoch: epoch);
-    expect(repository.decisionFilters.last, isNull);
-    expect(observed?.single.status, 'REJECTED');
-    expect(workspace.decisionOutcomeUnknown, isTrue);
-    workspace.acknowledgeUnknownDecision(epoch: epoch, reviewed: observed!);
-    expect(workspace.decisionOutcomeUnknown, isFalse);
+    await expectLater(submit(), throwsA(isA<ApiFailure>()));
+    returnedId = 'decision-1';
+    returnedStatus = 'CONFIRMED';
+    await expectLater(submit(), throwsA(isA<ApiFailure>()));
+    returnedStatus = 'REJECTED';
+    expect((await submit()).etag, '"decision-new"');
   });
+
+  test(
+    'uncertain rejection is reconciled independently of status filter',
+    () async {
+      final (:workspace, :repository) = await _setup();
+      final proposal = _decision('PROPOSED');
+      repository.decisionPages.add(_decisionPage(proposal));
+      await workspace.selectDecisionStatus('PROPOSED');
+      final epoch = workspace.reviewEpoch;
+      await expectLater(
+        workspace.reviewDecision(proposal, confirm: false, epoch: epoch),
+        throwsA(isA<ApiFailure>()),
+      );
+      expect(repository.submittedTag, proposal.etag);
+      expect(workspace.unresolvedDecision?.command, DecisionCommand.reject);
+      expect(workspace.unresolvedDecision?.snapshot?.id, proposal.id);
+      await expectLater(
+        workspace.reviewDecision(proposal, confirm: false, epoch: epoch),
+        throwsA(isA<ApiFailure>()),
+      );
+      expect(repository.decisionReviews, 1);
+      repository.decisionPages[0] = _decisionPage(_decision('REJECTED'));
+      final observed = await workspace.reconcileUnknownDecision(epoch: epoch);
+      expect(repository.decisionFilters.last, isNull);
+      expect(observed?.single.status, 'REJECTED');
+      expect(workspace.decisionOutcomeUnknown, isTrue);
+      workspace.acknowledgeUnknownDecision(epoch: epoch, reviewed: observed!);
+      expect(workspace.decisionOutcomeUnknown, isFalse);
+    },
+  );
 
   test('decision review stamp is invalidated by transcript changes', () async {
     final (:workspace, :repository) = await _setup();
@@ -415,37 +457,38 @@ void main() {
     expect(workspace.decisionReviewIsCurrent(proposal, stamp), isFalse);
   });
 
-  testWidgets('manual decision content survives cancelling evidence selection', (
-    tester,
-  ) async {
-    final setup = await tester.runAsync(_setup);
-    final (:workspace, :repository) = setup!;
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(body: DecisionsReviewPanel(workspace: workspace)),
-      ),
-    );
-    await tester.tap(find.byTooltip('Tạo quyết định'));
-    await tester.pumpAndSettle();
-    await tester.enterText(find.byType(TextField), 'Retain this draft');
-    await tester.tap(find.text('Đính kèm bằng chứng transcript'));
-    await tester.pump();
-    await tester.tap(find.text('Tiếp tục'));
-    await tester.pumpAndSettle();
-    expect(find.text('Chọn bằng chứng (0/50)'), findsOneWidget);
-    await tester.tap(find.text('Hủy'));
-    await tester.pumpAndSettle();
-    expect(repository.decisionCreates, 0);
-    await tester.tap(find.byTooltip('Tạo quyết định'));
-    await tester.pumpAndSettle();
-    expect(find.text('Retain this draft'), findsOneWidget);
-    workspace.updateCapabilities(
-      const ResultsCapabilities(canRead: false, canMutate: false),
-    );
-    await tester.pumpAndSettle();
-    expect(find.text('Retain this draft'), findsNothing);
-    expect(workspace.manualDecisionDraft, isNull);
-  });
+  testWidgets(
+    'manual decision content survives cancelling evidence selection',
+    (tester) async {
+      final setup = await tester.runAsync(_setup);
+      final (:workspace, :repository) = setup!;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: DecisionsReviewPanel(workspace: workspace)),
+        ),
+      );
+      await tester.tap(find.byTooltip('Tạo quyết định'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'Retain this draft');
+      await tester.tap(find.text('Đính kèm bằng chứng transcript'));
+      await tester.pump();
+      await tester.tap(find.text('Tiếp tục'));
+      await tester.pumpAndSettle();
+      expect(find.text('Chọn bằng chứng (0/50)'), findsOneWidget);
+      await tester.tap(find.text('Hủy'));
+      await tester.pumpAndSettle();
+      expect(repository.decisionCreates, 0);
+      await tester.tap(find.byTooltip('Tạo quyết định'));
+      await tester.pumpAndSettle();
+      expect(find.text('Retain this draft'), findsOneWidget);
+      workspace.updateCapabilities(
+        const ResultsCapabilities(canRead: false, canMutate: false),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Retain this draft'), findsNothing);
+      expect(workspace.manualDecisionDraft, isNull);
+    },
+  );
 
   test('decision pages survive navigation and recoverable failures', () async {
     final (:workspace, :repository) = await _setup();

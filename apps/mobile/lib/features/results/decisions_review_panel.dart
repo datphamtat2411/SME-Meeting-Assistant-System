@@ -249,7 +249,9 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   if (!current())
-                    const Text('Nguồn hoặc quyết định đã đổi. Hãy mở lại để đối chiếu.'),
+                    const Text(
+                      'Nguồn hoặc quyết định đã đổi. Hãy mở lại để đối chiếu.',
+                    ),
                   StatePill(decision.status),
                   SelectableText(decision.content),
                   ..._provenance(decision),

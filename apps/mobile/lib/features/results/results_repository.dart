@@ -400,7 +400,8 @@ class ResultsRepository {
         (evidenceSegmentIds.isNotEmpty &&
             reviewedTranscript != null &&
             (decision.transcriptId != reviewedTranscript.id ||
-                decision.contentRevision != reviewedTranscript.contentRevision))) {
+                decision.contentRevision !=
+                    reviewedTranscript.contentRevision))) {
       throw response.invalidDataFailure();
     }
     return decision;
