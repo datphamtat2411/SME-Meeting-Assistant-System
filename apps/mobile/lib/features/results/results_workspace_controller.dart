@@ -189,7 +189,16 @@ class ResultsWorkspaceController extends ChangeNotifier
   DecisionCommandIntent? get unresolvedDecision =>
       capabilities.canMutate ? _mutations.decisionReview.unresolved : null;
   ManualDecisionDraft? get manualDecisionDraft =>
-      capabilities.canMutate ? _mutations.decisionReview.draft : null;
+      capabilities.canMutate &&
+          !_mutations.decisionReview.isUnresolvedManualCreation
+      ? _mutations.decisionReview.draft
+      : null;
+  ManualDecisionDraft? get unresolvedManualDecisionContext =>
+      capabilities.canMutate &&
+          _mutations.decisionReview.isUnresolvedManualCreation
+      ? (_mutations.decisionReview.unresolved?.creationContext ??
+            _mutations.decisionReview.draft)
+      : null;
 
   void keepManualDecisionDraft(ManualDecisionDraft? draft, int epoch) {
     if (ownsReview(epoch)) _mutations.decisionReview.draft = draft;
@@ -1274,7 +1283,16 @@ class ResultsWorkspaceController extends ChangeNotifier
         }
         return _dispatchDecision(
           ticket,
-          DecisionCommandIntent(DecisionCommand.create, content),
+          DecisionCommandIntent(
+            DecisionCommand.create,
+            content,
+            creationContext: ManualDecisionDraft(
+              content,
+              ids.isNotEmpty,
+              source: reviewedTranscript,
+              evidence: ids.toSet(),
+            ),
+          ),
           () => repository.createDecision(
             sessionScope: sessionScope,
             meetingId: meetingId,
@@ -1574,6 +1592,26 @@ class ResultsWorkspaceController extends ChangeNotifier
     required int epoch,
     required List<MeetingDecision> reviewed,
   }) {
+    _acknowledgeUnknownDecision(epoch: epoch, reviewed: reviewed);
+  }
+
+  void resolveUnknownManualCreation({
+    required int epoch,
+    required List<MeetingDecision> reviewed,
+    required ManualDecisionRecoveryDisposition disposition,
+  }) {
+    _acknowledgeUnknownDecision(
+      epoch: epoch,
+      reviewed: reviewed,
+      disposition: disposition,
+    );
+  }
+
+  void _acknowledgeUnknownDecision({
+    required int epoch,
+    required List<MeetingDecision> reviewed,
+    ManualDecisionRecoveryDisposition? disposition,
+  }) {
     _requireMutation(epoch);
     final state = _mutations.decisionReview;
     if (!state.matchesRecovery(
@@ -1592,6 +1630,30 @@ class ResultsWorkspaceController extends ChangeNotifier
         'RESULTS_COMMAND_PENDING',
         'Một thao tác trên quyết định đang được xử lý.',
       );
+    }
+    if (state.isUnresolvedManualCreation && disposition == null) {
+      throw const ApiFailure(
+        409,
+        'RESULTS_OUTCOME_UNKNOWN',
+        'Hãy chọn cách xử lý bản nháp của thao tác tạo trước đó.',
+      );
+    }
+    if (state.isUnresolvedManualCreation) {
+      final previous = state.unresolved?.creationContext ?? state.draft;
+      state.draft = switch (disposition!) {
+        ManualDecisionRecoveryDisposition.discard => null,
+        ManualDecisionRecoveryDisposition.reuse =>
+          previous == null
+              ? null
+              : ManualDecisionDraft(
+                  previous.content,
+                  previous.attachEvidence,
+                  // The old transcript identity and evidence selection are
+                  // deliberately not carried into the new unsent draft.
+                  requiresFreshEvidenceReview:
+                      previous.attachEvidence || previous.evidence.isNotEmpty,
+                ),
+      };
     }
     state.invalidateRecovery();
     state.unresolved = null;

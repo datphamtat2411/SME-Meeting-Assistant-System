@@ -63,71 +63,163 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
       final observed = target == null
           ? decisions
           : decisions.where((item) => item.id == target.id).toList();
-      final confirmed = await showResultsReviewDialog<bool>(
-        context: context,
-        workspace: workspace,
-        epoch: epoch,
-        builder: (dialog) => AlertDialog(
-          title: const Text('Kiểm tra quyết định trước đó'),
-          content: SizedBox(
-            width: 480,
-            height: 360,
-            child: ListView.builder(
-              itemCount: observed.length + 1,
-              itemBuilder: (context, index) {
-                if (index == 0) {
-                  return Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+      if (intent.command == DecisionCommand.create) {
+        final previousDraft =
+            intent.creationContext ?? workspace.unresolvedManualDecisionContext;
+        final disposition =
+            await showResultsReviewDialog<ManualDecisionRecoveryDisposition>(
+              context: context,
+              workspace: workspace,
+              epoch: epoch,
+              builder: (dialog) => AlertDialog(
+                title: const Text('Kiểm tra lần tạo quyết định trước'),
+                content: SizedBox(
+                  width: 480,
+                  height: 360,
+                  child: ListView(
                     children: [
                       const Text(
-                        'Yêu cầu trước có thể đã được lưu. Danh sách này không '
-                        'chứng minh yêu cầu thành công hay thất bại. Thao tác '
-                        'mới có thể tạo dữ liệu trùng lặp.',
+                        'Yêu cầu tạo trước có thể đã được lưu. Danh sách này '
+                        'không chứng minh thành công hay thất bại. Tạo lại '
+                        'có thể tạo một quyết định chính thức trùng lặp.',
                       ),
+                      const SizedBox(height: 12),
                       Text('Thao tác trước: ${_commandLabel(intent.command)}'),
                       SelectableText(intent.content),
+                      if (previousDraft != null) ...[
+                        const Divider(),
+                        Text(
+                          'Bằng chứng đã gửi: ${previousDraft.evidence.length} đoạn. '
+                          'Nguồn cũ chỉ được dùng để đối chiếu, không được '
+                          'tự động dùng lại.',
+                        ),
+                        if (previousDraft.source != null)
+                          Text(
+                            'Transcript cũ: ${previousDraft.source!.id}, '
+                            'revision ${previousDraft.source!.contentRevision}',
+                          ),
+                      ],
                       const Divider(),
                       if (observed.isEmpty)
                         const Text(
                           'Không tìm thấy quyết định trong kết quả kiểm tra.',
                         ),
+                      for (final decision in observed)
+                        ListTile(
+                          title: Text(decision.content),
+                          subtitle: Text(decision.status),
+                          contentPadding: EdgeInsets.zero,
+                        ),
                     ],
+                  ),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(dialog),
+                    child: const Text('Hủy, để nguyên trạng thái'),
+                  ),
+                  TextButton(
+                    onPressed: () => Navigator.pop(
+                      dialog,
+                      ManualDecisionRecoveryDisposition.discard,
+                    ),
+                    child: const Text('Bỏ bản nháp, tạo trống'),
+                  ),
+                  FilledButton(
+                    onPressed: () => Navigator.pop(
+                      dialog,
+                      ManualDecisionRecoveryDisposition.reuse,
+                    ),
+                    child: const Text('Giữ nội dung, tạo mới'),
+                  ),
+                ],
+              ),
+            );
+        if (disposition == null || !mounted || !workspace.ownsReview(epoch)) {
+          return;
+        }
+        await runCommand(
+          context,
+          operation: () async {
+            workspace.resolveUnknownManualCreation(
+              epoch: epoch,
+              reviewed: decisions,
+              disposition: disposition,
+            );
+          },
+          successText: disposition == ManualDecisionRecoveryDisposition.discard
+              ? 'Đã bỏ bản nháp. Bạn có thể tạo quyết định trống mới.'
+              : 'Đã giữ nội dung như một bản nháp mới; hãy xem lại và gửi lại.',
+        );
+      } else {
+        final confirmed = await showResultsReviewDialog<bool>(
+          context: context,
+          workspace: workspace,
+          epoch: epoch,
+          builder: (dialog) => AlertDialog(
+            title: const Text('Kiểm tra quyết định trước đó'),
+            content: SizedBox(
+              width: 480,
+              height: 360,
+              child: ListView.builder(
+                itemCount: observed.length + 1,
+                itemBuilder: (context, index) {
+                  if (index == 0) {
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Yêu cầu trước có thể đã được lưu. Danh sách này không '
+                          'chứng minh yêu cầu thành công hay thất bại. Thao tác '
+                          'mới có thể tạo dữ liệu trùng lặp.',
+                        ),
+                        Text(
+                          'Thao tác trước: ${_commandLabel(intent.command)}',
+                        ),
+                        SelectableText(intent.content),
+                        const Divider(),
+                        if (observed.isEmpty)
+                          const Text(
+                            'Không tìm thấy quyết định trong kết quả kiểm tra.',
+                          ),
+                      ],
+                    );
+                  }
+                  final decision = observed[index - 1];
+                  return ListTile(
+                    title: Text(decision.content),
+                    subtitle: Text(decision.status),
+                    contentPadding: EdgeInsets.zero,
                   );
-                }
-                final decision = observed[index - 1];
-                return ListTile(
-                  title: Text(decision.content),
-                  subtitle: Text(decision.status),
-                  contentPadding: EdgeInsets.zero,
-                );
-              },
+                },
+              ),
             ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialog, false),
+                child: const Text('Quay lại'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(dialog, true),
+                child: const Text('Đã kiểm tra, cho phép thao tác mới'),
+              ),
+            ],
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialog, false),
-              child: const Text('Quay lại'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(dialog, true),
-              child: const Text('Đã kiểm tra, cho phép thao tác mới'),
-            ),
-          ],
-        ),
-      );
-      if (confirmed != true || !mounted || !workspace.ownsReview(epoch)) {
-        return;
+        );
+        if (confirmed != true || !mounted || !workspace.ownsReview(epoch)) {
+          return;
+        }
+        await runCommand(
+          context,
+          operation: () async {
+            workspace.acknowledgeUnknownDecision(
+              epoch: epoch,
+              reviewed: decisions,
+            );
+          },
+          successText: 'Đã ghi nhận kết quả kiểm tra.',
+        );
       }
-      await runCommand(
-        context,
-        operation: () async {
-          workspace.acknowledgeUnknownDecision(
-            epoch: epoch,
-            reviewed: decisions,
-          );
-        },
-        successText: 'Đã ghi nhận kết quả kiểm tra.',
-      );
     } finally {
       if (mounted) setState(() => busy = false);
     }
@@ -163,6 +255,9 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
         input.$2,
         source: input.$2 ? draft?.source : null,
         evidence: input.$2 ? draft?.evidence ?? const {} : const {},
+        requiresFreshEvidenceReview: input.$2
+            ? draft?.requiresFreshEvidenceReview ?? false
+            : false,
       ),
       epoch,
     );
@@ -204,6 +299,7 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
           true,
           source: source,
           evidence: Set.unmodifiable(selected),
+          requiresFreshEvidenceReview: false,
         ),
         epoch,
       );
@@ -513,7 +609,18 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
               child: const Text('Kiểm tra thao tác chưa rõ kết quả'),
             ),
           if (workspace.manualDecisionDraft != null &&
-              !workspace.decisionOutcomeUnknown)
+              !workspace.decisionOutcomeUnknown) ...[
+            if (workspace.manualDecisionDraft!.requiresFreshEvidenceReview)
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 18),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    'Nội dung được giữ lại sau một lần tạo chưa rõ kết quả. '
+                    'Bằng chứng phải được chọn và đối chiếu lại trước khi gửi.',
+                  ),
+                ),
+              ),
             TextButton(
               onPressed: busy
                   ? null
@@ -526,6 +633,7 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
                     },
               child: const Text('Bỏ bản nháp quyết định chưa lưu'),
             ),
+          ],
           if (workspace.capabilities.canRead)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 18),

@@ -301,6 +301,34 @@ const _transcript = Transcript(
   etag: '"transcript-reviewed"',
 );
 
+const _creationTranscript = Transcript(
+  id: 'transcript-creation',
+  meetingId: testMeetingId,
+  sourceMediaId: null,
+  processingJobId: null,
+  versionNumber: 1,
+  languageCode: 'vi',
+  status: 'READY',
+  durationMs: 1000,
+  finalizedAt: null,
+  contentRevision: 4,
+  segments: [
+    SpeechSegment(
+      id: 'segment-creation',
+      ordinal: 0,
+      text: 'Reviewed evidence',
+      startMs: 0,
+      endMs: 1000,
+      speakerLabel: 'SPEAKER_01',
+      speakerClusterId: null,
+      quality: 'ACCEPTED',
+      version: 1,
+      etag: '"segment-creation"',
+    ),
+  ],
+  etag: '"transcript-creation"',
+);
+
 final _createdAt = DateTime.utc(2026, 11, 24);
 
 const _speaker = SpeakerCluster(
@@ -439,6 +467,193 @@ void main() {
       expect(workspace.decisionOutcomeUnknown, isTrue);
       workspace.acknowledgeUnknownDecision(epoch: epoch, reviewed: observed!);
       expect(workspace.decisionOutcomeUnknown, isFalse);
+    },
+  );
+
+  test(
+    'uncertain manual creation keeps recovery context and blocks replay',
+    () async {
+      final (:workspace, :repository) = await _setup();
+      const source = Transcript(
+        id: 'transcript-creation',
+        meetingId: testMeetingId,
+        sourceMediaId: null,
+        processingJobId: null,
+        versionNumber: 1,
+        languageCode: 'vi',
+        status: 'READY',
+        durationMs: 1000,
+        finalizedAt: null,
+        contentRevision: 4,
+        segments: [
+          SpeechSegment(
+            id: 'segment-creation',
+            ordinal: 0,
+            text: 'Reviewed evidence',
+            startMs: 0,
+            endMs: 1000,
+            speakerLabel: 'SPEAKER_01',
+            speakerClusterId: null,
+            quality: 'ACCEPTED',
+            version: 1,
+            etag: '"segment-creation"',
+          ),
+        ],
+        etag: '"transcript-creation"',
+      );
+      repository.transcriptValue = source;
+      final epoch = workspace.reviewEpoch;
+      await expectLater(
+        workspace.createDecision(
+          'Uncertain manual decision',
+          epoch: epoch,
+          reviewedTranscript: source,
+          evidenceSegmentIds: const ['segment-creation'],
+        ),
+        throwsA(isA<ApiFailure>()),
+      );
+
+      expect(workspace.decisionOutcomeUnknown, isTrue);
+      expect(workspace.unresolvedManualDecisionContext?.evidence, {
+        'segment-creation',
+      });
+      expect(
+        workspace.unresolvedManualDecisionContext?.source?.contentRevision,
+        4,
+      );
+      expect(workspace.manualDecisionDraft, isNull);
+      expect(repository.decisionCreates, 1);
+      expect(
+        () => workspace.acknowledgeUnknownDecision(
+          epoch: epoch,
+          reviewed: const [],
+        ),
+        throwsA(isA<ApiFailure>()),
+      );
+      expect(workspace.decisionOutcomeUnknown, isTrue);
+      expect(repository.decisionCreates, 1);
+    },
+  );
+
+  test('manual creation recovery disposition is explicit and reuse forgets evidence', () async {
+    final (:workspace, :repository) = await _setup();
+    final epoch = workspace.reviewEpoch;
+    await expectLater(
+      workspace.createDecision('Keep this content', epoch: epoch),
+      throwsA(isA<ApiFailure>()),
+    );
+    final review = await workspace.reconcileUnknownDecision(epoch: epoch);
+    expect(review, isNotNull);
+
+    workspace.resolveUnknownManualCreation(
+      epoch: epoch,
+      reviewed: review!,
+      disposition: ManualDecisionRecoveryDisposition.reuse,
+    );
+
+    expect(workspace.decisionOutcomeUnknown, isFalse);
+    expect(workspace.manualDecisionDraft?.content, 'Keep this content');
+    expect(workspace.manualDecisionDraft?.source, isNull);
+    expect(workspace.manualDecisionDraft?.evidence, isEmpty);
+    expect(workspace.manualDecisionDraft?.requiresFreshEvidenceReview, isFalse);
+    // Acknowledgment is only a disposition; it never dispatches a second
+    // create request.
+    expect(repository.decisionCreates, 1);
+  });
+
+  test('reused manual evidence is marked for fresh review', () async {
+    final (:workspace, :repository) = await _setup();
+    final epoch = workspace.reviewEpoch;
+    repository.transcriptValue = _creationTranscript;
+    workspace.keepManualDecisionDraft(
+      const ManualDecisionDraft(
+        'Keep content and review evidence',
+        true,
+        source: _creationTranscript,
+        evidence: {'segment-creation'},
+      ),
+      epoch,
+    );
+    await expectLater(
+      workspace.createDecision(
+        'Keep content and review evidence',
+        epoch: epoch,
+        reviewedTranscript: _creationTranscript,
+        evidenceSegmentIds: const ['segment-creation'],
+      ),
+      throwsA(isA<ApiFailure>()),
+    );
+    final review = await workspace.reconcileUnknownDecision(epoch: epoch);
+    workspace.resolveUnknownManualCreation(
+      epoch: epoch,
+      reviewed: review!,
+      disposition: ManualDecisionRecoveryDisposition.reuse,
+    );
+
+    expect(workspace.manualDecisionDraft?.source, isNull);
+    expect(workspace.manualDecisionDraft?.evidence, isEmpty);
+    expect(workspace.manualDecisionDraft?.requiresFreshEvidenceReview, isTrue);
+    expect(repository.decisionCreates, 1);
+  });
+
+  test(
+    'conditional recovery acknowledgment preserves an unrelated manual draft',
+    () async {
+      final (:workspace, :repository) = await _setup();
+      final epoch = workspace.reviewEpoch;
+      workspace.keepManualDecisionDraft(
+        const ManualDecisionDraft('Unrelated draft', false),
+        epoch,
+      );
+      final proposal = _decision('PROPOSED');
+      repository.decisionPages.add(_decisionPage(proposal));
+      await expectLater(
+        workspace.reviewDecision(proposal, confirm: false, epoch: epoch),
+        throwsA(isA<ApiFailure>()),
+      );
+      repository.decisionPages[0] = _decisionPage(_decision('REJECTED'));
+      final review = await workspace.reconcileUnknownDecision(epoch: epoch);
+      workspace.acknowledgeUnknownDecision(epoch: epoch, reviewed: review!);
+
+      expect(workspace.manualDecisionDraft?.content, 'Unrelated draft');
+      expect(repository.decisionCreates, 0);
+    },
+  );
+
+  testWidgets(
+    'manual creation recovery requires an explicit draft disposition',
+    (tester) async {
+      final setup = await tester.runAsync(_setup);
+      final (:workspace, :repository) = setup!;
+      await expectLater(
+        workspace.createDecision(
+          'Widget recovery content',
+          epoch: workspace.reviewEpoch,
+        ),
+        throwsA(isA<ApiFailure>()),
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: DecisionsReviewPanel(workspace: workspace)),
+        ),
+      );
+      await tester.tap(find.text('Kiểm tra thao tác chưa rõ kết quả'));
+      await tester.pumpAndSettle();
+      expect(find.text('Bỏ bản nháp, tạo trống'), findsOneWidget);
+      expect(find.text('Giữ nội dung, tạo mới'), findsOneWidget);
+
+      await tester.tap(find.text('Hủy, để nguyên trạng thái'));
+      await tester.pumpAndSettle();
+      expect(workspace.decisionOutcomeUnknown, isTrue);
+      expect(repository.decisionCreates, 1);
+
+      await tester.tap(find.text('Kiểm tra thao tác chưa rõ kết quả'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Bỏ bản nháp, tạo trống'));
+      await tester.pumpAndSettle();
+      expect(workspace.decisionOutcomeUnknown, isFalse);
+      expect(workspace.manualDecisionDraft, isNull);
+      expect(repository.decisionCreates, 1);
     },
   );
 
@@ -1594,7 +1809,11 @@ void main() {
     expect(acknowledgeOldReview, throwsA(isA<ApiFailure>()));
     expect(workspace.decisionOutcomeUnknown, isTrue);
     final fresh = await workspace.reconcileUnknownDecision(epoch: epoch);
-    workspace.acknowledgeUnknownDecision(epoch: epoch, reviewed: fresh!);
+    workspace.resolveUnknownManualCreation(
+      epoch: epoch,
+      reviewed: fresh!,
+      disposition: ManualDecisionRecoveryDisposition.discard,
+    );
     expect(workspace.decisionOutcomeUnknown, isFalse);
     expect(repository.decisionCreates, 1);
   });

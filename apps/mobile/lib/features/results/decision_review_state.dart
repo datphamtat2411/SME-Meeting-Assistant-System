@@ -71,11 +71,22 @@ class DecisionCollection {
 enum DecisionCommand { create, edit, confirm, reject }
 
 class DecisionCommandIntent {
-  const DecisionCommandIntent(this.command, this.content, {this.snapshot});
+  const DecisionCommandIntent(
+    this.command,
+    this.content, {
+    this.snapshot,
+    this.creationContext,
+  });
 
   final DecisionCommand command;
   final String content;
   final MeetingDecision? snapshot;
+
+  /// The exact content/source/evidence context dispatched for a manual create.
+  ///
+  /// This is recovery evidence only. It must never be used as a new command
+  /// without a fresh transcript review.
+  final ManualDecisionDraft? creationContext;
 }
 
 class ManualDecisionDraft {
@@ -84,13 +95,17 @@ class ManualDecisionDraft {
     this.attachEvidence, {
     this.source,
     this.evidence = const {},
+    this.requiresFreshEvidenceReview = false,
   });
 
   final String content;
   final bool attachEvidence;
   final Transcript? source;
   final Set<String> evidence;
+  final bool requiresFreshEvidenceReview;
 }
+
+enum ManualDecisionRecoveryDisposition { discard, reuse }
 
 /// Decision-owned recovery state, cleared by shared ownership revocation.
 class DecisionReviewState {
@@ -137,6 +152,9 @@ class DecisionReviewState {
       unresolved != null &&
       identical(_reviewed, reviewed) &&
       _recoveryGeneration == generation;
+
+  bool get isUnresolvedManualCreation =>
+      unresolved?.command == DecisionCommand.create;
 
   void clear() {
     draft = null;
