@@ -39,6 +39,18 @@ public class TranscriptSourceGuard {
         return transcripts.requireCurrentEvidence(meetingId, segmentIds);
     }
 
+    /** Validate a manually reviewed source while the caller holds the meeting lock. */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void requireReviewedSource(UUID meetingId, UUID transcriptId, long contentRevision) {
+        TranscriptSource source = transcripts.currentSource(meetingId).orElseThrow(() ->
+            new ResponseStatusException(HttpStatus.PRECONDITION_FAILED,
+                "Reviewed transcript is no longer current."));
+        if (!transcriptId.equals(source.transcriptId()) || contentRevision != source.contentRevision()) {
+            throw new ResponseStatusException(HttpStatus.PRECONDITION_FAILED,
+                "Reviewed transcript changed. Review the evidence again.");
+        }
+    }
+
     /**
      * MI-06: fail closed if an AI proposal's pinned transcript has changed,
      * or referenced segments intersect suspicious/unresolved evidence.

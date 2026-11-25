@@ -15,6 +15,8 @@ import 'package:sme_meeting_assistant/core/models.dart';
 import 'package:sme_meeting_assistant/core/paged_collection.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_invalidation.dart';
 import 'package:sme_meeting_assistant/features/results/results_invalidation.dart';
+import 'package:sme_meeting_assistant/features/results/decision_review_state.dart';
+import 'package:sme_meeting_assistant/features/results/decisions_review_panel.dart';
 import 'package:sme_meeting_assistant/features/results/results_models.dart';
 import 'package:sme_meeting_assistant/features/results/results_mutation_coordinator.dart';
 import 'package:sme_meeting_assistant/features/results/results_repository.dart';
@@ -44,6 +46,7 @@ class _Repository extends ResultsRepository {
   final List<String> regenerationKeys = <String>[];
   final List<PagedCollection<MeetingDecision>> decisionPages = [];
   int decisionCreates = 0;
+  int decisionReviews = 0;
   final List<String?> decisionFilters = [];
   ApiFailure? decisionReadFailure;
 
@@ -160,6 +163,23 @@ class _Repository extends ResultsRepository {
     Transcript? reviewedTranscript,
   }) async {
     decisionCreates++;
+    throw const ApiFailure(
+      0,
+      'TIMEOUT',
+      'Unknown',
+      remoteOutcomeAmbiguous: true,
+    );
+  }
+
+  @override
+  Future<ApiResult> reviewDecision({
+    required AuthenticatedSessionScope sessionScope,
+    required String meetingId,
+    required MeetingDecision snapshot,
+    required bool confirm,
+  }) async {
+    decisionReviews++;
+    submittedTag = snapshot.etag;
     throw const ApiFailure(
       0,
       'TIMEOUT',
@@ -327,7 +347,106 @@ _setup() async {
   return (workspace: workspace, repository: repository);
 }
 
+MeetingDecision _decision(String status) => MeetingDecision(
+  id: 'decision-1',
+  meetingId: testMeetingId,
+  content: 'Decision under review',
+  status: status,
+  version: 1,
+  stale: false,
+  createdAt: _createdAt,
+  confirmedAt: null,
+  rejectedAt: null,
+  etag: '"decision-reviewed"',
+  sourceType: 'AI_EXTRACTED',
+);
+
+PagedCollection<MeetingDecision> _decisionPage(MeetingDecision decision) =>
+    PagedCollection(
+      items: [decision],
+      page: 0,
+      size: 20,
+      totalElements: 1,
+      totalPages: 1,
+      hasNext: false,
+      hasPrevious: false,
+    );
+
 void main() {
+  test('uncertain rejection is reconciled independently of status filter', () async {
+    final (:workspace, :repository) = await _setup();
+    final proposal = _decision('PROPOSED');
+    repository.decisionPages.add(_decisionPage(proposal));
+    await workspace.selectDecisionStatus('PROPOSED');
+    final epoch = workspace.reviewEpoch;
+    await expectLater(
+      workspace.reviewDecision(proposal, confirm: false, epoch: epoch),
+      throwsA(isA<ApiFailure>()),
+    );
+    expect(repository.submittedTag, proposal.etag);
+    expect(workspace.unresolvedDecision?.command, DecisionCommand.reject);
+    expect(workspace.unresolvedDecision?.snapshot?.id, proposal.id);
+    await expectLater(
+      workspace.reviewDecision(proposal, confirm: false, epoch: epoch),
+      throwsA(isA<ApiFailure>()),
+    );
+    expect(repository.decisionReviews, 1);
+    repository.decisionPages[0] = _decisionPage(_decision('REJECTED'));
+    final observed = await workspace.reconcileUnknownDecision(epoch: epoch);
+    expect(repository.decisionFilters.last, isNull);
+    expect(observed?.single.status, 'REJECTED');
+    expect(workspace.decisionOutcomeUnknown, isTrue);
+    workspace.acknowledgeUnknownDecision(epoch: epoch, reviewed: observed!);
+    expect(workspace.decisionOutcomeUnknown, isFalse);
+  });
+
+  test('decision review stamp is invalidated by transcript changes', () async {
+    final (:workspace, :repository) = await _setup();
+    final proposal = _decision('PROPOSED');
+    repository.decisionPages.add(_decisionPage(proposal));
+    await workspace.loadDecisions();
+    final stamp = workspace.decisionReviewStamp;
+    expect(workspace.decisionReviewIsCurrent(proposal, stamp), isTrue);
+    workspace.invalidation.invalidate(
+      sessionScope: workspace.sessionScope,
+      meetingId: testMeetingId,
+      resources: {ResultsResourceKind.transcript},
+    );
+    expect(workspace.decisionReviewIsCurrent(proposal, stamp), isFalse);
+  });
+
+  testWidgets('manual decision content survives cancelling evidence selection', (
+    tester,
+  ) async {
+    final setup = await tester.runAsync(_setup);
+    final (:workspace, :repository) = setup!;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: DecisionsReviewPanel(workspace: workspace)),
+      ),
+    );
+    await tester.tap(find.byTooltip('Tạo quyết định'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'Retain this draft');
+    await tester.tap(find.text('Đính kèm bằng chứng transcript'));
+    await tester.pump();
+    await tester.tap(find.text('Tiếp tục'));
+    await tester.pumpAndSettle();
+    expect(find.text('Chọn bằng chứng (0/50)'), findsOneWidget);
+    await tester.tap(find.text('Hủy'));
+    await tester.pumpAndSettle();
+    expect(repository.decisionCreates, 0);
+    await tester.tap(find.byTooltip('Tạo quyết định'));
+    await tester.pumpAndSettle();
+    expect(find.text('Retain this draft'), findsOneWidget);
+    workspace.updateCapabilities(
+      const ResultsCapabilities(canRead: false, canMutate: false),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Retain this draft'), findsNothing);
+    expect(workspace.manualDecisionDraft, isNull);
+  });
+
   test('decision pages survive navigation and recoverable failures', () async {
     final (:workspace, :repository) = await _setup();
     for (var page = 0; page < 2; page++) {
@@ -1156,7 +1275,7 @@ void main() {
               status: 'CONFIRMED',
               version: 1,
               stale: false,
-              createdAt: _createdAt,
+              createdAt: _createdAt.subtract(Duration(seconds: page)),
               confirmedAt: _createdAt,
               rejectedAt: null,
               etag: '"decision-$page"',

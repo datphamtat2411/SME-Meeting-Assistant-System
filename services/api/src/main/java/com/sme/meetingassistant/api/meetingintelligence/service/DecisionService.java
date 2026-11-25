@@ -71,24 +71,20 @@ public class DecisionService {
         // Serialize current-transcript source checks with Transcript Review and
         // official Decision writes. MI-03 permissions are never inferred from body fields.
         decisions.lockMeeting(meetingId);
-        TranscriptSource source = evidence.isEmpty()
-            ? null : transcripts.requireCurrentEvidence(meetingId, evidence);
-        // Older clients may omit the reviewed source. Clients which supply it
-        // must supply both fields; compare under the same meeting lock as the
-        // evidence validation and insert, not in a separate preflight read.
+        // Older clients may omit the reviewed source. When supplied, verify
+        // the tuple under the meeting lock before validating the selected IDs.
         UUID reviewedId = request.reviewedTranscriptId();
         Long reviewedRevision = request.reviewedContentRevision();
         if ((reviewedId == null) != (reviewedRevision == null)
-                || (reviewedId != null && evidence.isEmpty())) {
+                || (reviewedId != null && (evidence.isEmpty() || reviewedRevision < 0))) {
             throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
                 "Reviewed transcript identity and revision require linked evidence.");
         }
-        if (reviewedId != null && (source == null
-                || !reviewedId.equals(source.transcriptId())
-                || reviewedRevision.longValue() != source.contentRevision())) {
-            throw new ResponseStatusException(HttpStatus.PRECONDITION_FAILED,
-                "Reviewed transcript changed. Review the evidence again.");
+        if (reviewedId != null) {
+            transcripts.requireReviewedSource(meetingId, reviewedId, reviewedRevision);
         }
+        TranscriptSource source = evidence.isEmpty()
+            ? null : transcripts.requireCurrentEvidence(meetingId, evidence);
         UUID decisionId = UUID.randomUUID();
         decisions.createConfirmed(decisionId, meetingId, actor, request.content(),
             source == null ? null : source.transcriptId(),

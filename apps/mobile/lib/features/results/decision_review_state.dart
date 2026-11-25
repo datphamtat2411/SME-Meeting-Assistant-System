@@ -105,6 +105,35 @@ class DecisionReviewState {
 
 typedef DecisionReviewStamp = (int, int, int, int);
 
+/// Recovery intentionally reads the unfiltered canonical collection. Its
+/// result is evidence for human review, not proof of command execution.
+Future<List<MeetingDecision>?> readDecisionRecovery({
+  required Future<PagedCollection<MeetingDecision>> Function(int page, int size)
+  readPage,
+  required bool Function() stillCurrent,
+}) async {
+  if (!stillCurrent()) return null;
+  final first = await readPage(0, 20);
+  if (!stillCurrent()) return null;
+  try {
+    var collection = DecisionCollection.first(first, null);
+    while (collection.hasMore) {
+      final next = await readPage(
+        collection.lastPage.page + 1,
+        collection.lastPage.size,
+      );
+      if (!stillCurrent()) return null;
+      collection = collection.append(next);
+    }
+    return collection.items.length == first.totalElements
+        ? collection.items
+        : null;
+  } on ApiFailure catch (error) {
+    if (error.code == 'DECISION_COLLECTION_CHANGED') return null;
+    rethrow;
+  }
+}
+
 enum DecisionEvidenceQuality { reviewable, unknown, unsafe }
 
 /// The backend rejects non-accepted segments and overlapping non-covered

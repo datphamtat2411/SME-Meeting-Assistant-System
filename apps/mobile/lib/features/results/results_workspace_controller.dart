@@ -1400,7 +1400,12 @@ class ResultsWorkspaceController extends ChangeNotifier
     Future<T> Function() send,
   ) async {
     try {
-      return await send();
+      final response = await send();
+      if (intent.command == DecisionCommand.create &&
+          _ownsOperation(ResultsMutationGroup.decisions, ticket)) {
+        _mutations.decisionReview.draft = null;
+      }
+      return response;
     } catch (error) {
       if (_ownsOperation(ResultsMutationGroup.decisions, ticket) &&
           ResultsMutationCoordinator.isUncertain(error)) {
@@ -1522,44 +1527,24 @@ class ResultsWorkspaceController extends ChangeNotifier
     _decisionRecoveryGeneration = null;
     if (!_mutations.decisionOutcomeUnknown) return null;
     final generation = _generations[ResultsResourceKind.decisions] ?? 0;
-    final items = <MeetingDecision>[];
-    final ids = <String>{};
+    List<MeetingDecision>? review;
     try {
-      final first = await repository.decisions(
-        sessionScope: sessionScope,
-        meetingId: meetingId,
-      );
-      var page = first;
-      for (var index = 0; index < first.totalPages || index == 0; index++) {
-        _requireMutation(epoch);
-        final current = _generations[ResultsResourceKind.decisions] ?? 0;
-        if (current != generation ||
-            page.page != index ||
-            page.totalPages != first.totalPages ||
-            page.totalElements != first.totalElements ||
-            page.size != first.size) {
-          return null;
-        }
-        for (final decision in page.items) {
-          if (!ids.add(decision.id)) return null;
-          items.add(decision);
-        }
-        if (!page.hasNext) break;
-        page = await repository.decisions(
+      review = await readDecisionRecovery(
+        readPage: (page, size) => repository.decisions(
           sessionScope: sessionScope,
           meetingId: meetingId,
-          page: index + 1,
-          size: first.size,
-        );
-      }
-      if (items.length != first.totalElements) return null;
+          page: page,
+          size: size,
+        ),
+        stillCurrent: () =>
+            ownsReview(epoch) &&
+            generation == (_generations[ResultsResourceKind.decisions] ?? 0),
+      );
     } on ApiFailure catch (error) {
-      if (ownsReview(epoch) && (error.status == 403 || error.status == 404)) {
-        await _verifyAuthorization();
-      }
+      await handleProtectedReadFailure(error, epoch: readEpoch);
       rethrow;
     }
-    final review = List<MeetingDecision>.unmodifiable(items);
+    if (review == null || !ownsReview(epoch)) return null;
     _decisionRecoveryReview = review;
     _decisionRecoveryGeneration = generation;
     return review;

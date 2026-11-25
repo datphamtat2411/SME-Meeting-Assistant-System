@@ -204,7 +204,7 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
         epoch,
       );
     }
-    final saved = await runCommand(
+    await runCommand(
       context,
       operation: () async {
         await workspace.createDecision(
@@ -216,7 +216,6 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
       },
       successText: 'Đã lưu quyết định.',
     );
-    if (saved) workspace.keepManualDecisionDraft(null, epoch);
   }
 
   Future<void> inspect(MeetingDecision decision) async {
@@ -505,6 +504,20 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
             TextButton(
               onPressed: busy ? null : recoverUnknownDecision,
               child: const Text('Kiểm tra thao tác chưa rõ kết quả'),
+            ),
+          if (workspace.manualDecisionDraft != null &&
+              !workspace.decisionOutcomeUnknown)
+            TextButton(
+              onPressed: busy
+                  ? null
+                  : () {
+                      workspace.keepManualDecisionDraft(
+                        null,
+                        workspace.reviewEpoch,
+                      );
+                      setState(() {});
+                    },
+              child: const Text('Bỏ bản nháp quyết định chưa lưu'),
             ),
           if (workspace.capabilities.canRead)
             Padding(
