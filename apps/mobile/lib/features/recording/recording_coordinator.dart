@@ -1,0 +1,787 @@
+import 'dart:async';
+import 'dart:io';
+import 'dart:math';
+
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/widgets.dart';
+import 'package:record/record.dart';
+
+import '../../core/api_client.dart';
+import '../../core/models.dart';
+import '../meetings/meeting_foundation.dart';
+import 'local_media_models.dart';
+import 'local_media_repository.dart';
+
+enum RecordingLifecycleState {
+  idle,
+  requestingPermission,
+  starting,
+  recording,
+  stopping,
+  completing,
+  localReady,
+  interrupted,
+  failed,
+  importing,
+}
+
+class RecordingCoordinatorState {
+  const RecordingCoordinatorState({
+    required this.lifecycle,
+    this.meetingId,
+    this.sessionScope,
+    this.asset,
+    this.elapsed = Duration.zero,
+    this.importProgress,
+    this.failure,
+    this.message,
+    this.sessionFenced = false,
+  });
+
+  final RecordingLifecycleState lifecycle;
+  final String? meetingId;
+  final AuthenticatedSessionScope? sessionScope;
+  final LocalMediaAsset? asset;
+  final Duration elapsed;
+  final double? importProgress;
+  final Object? failure;
+  final String? message;
+  final bool sessionFenced;
+
+  bool get isCapturing =>
+      lifecycle == RecordingLifecycleState.recording ||
+      lifecycle == RecordingLifecycleState.starting ||
+      lifecycle == RecordingLifecycleState.stopping ||
+      lifecycle == RecordingLifecycleState.completing ||
+      lifecycle == RecordingLifecycleState.requestingPermission;
+
+  bool get isReady => lifecycle == RecordingLifecycleState.localReady;
+
+  RecordingCoordinatorState copyWith({
+    RecordingLifecycleState? lifecycle,
+    String? meetingId,
+    AuthenticatedSessionScope? sessionScope,
+    LocalMediaAsset? asset,
+    Duration? elapsed,
+    double? importProgress,
+    Object? failure,
+    String? message,
+    bool? sessionFenced,
+    bool clearFailure = false,
+    bool clearMessage = false,
+    bool clearAsset = false,
+  }) => RecordingCoordinatorState(
+    lifecycle: lifecycle ?? this.lifecycle,
+    meetingId: meetingId ?? this.meetingId,
+    sessionScope: sessionScope ?? this.sessionScope,
+    asset: clearAsset ? null : asset ?? this.asset,
+    elapsed: elapsed ?? this.elapsed,
+    importProgress: importProgress ?? this.importProgress,
+    failure: clearFailure ? null : failure ?? this.failure,
+    message: clearMessage ? null : message ?? this.message,
+    sessionFenced: sessionFenced ?? this.sessionFenced,
+  );
+}
+
+typedef RecordingState = RecordingCoordinatorState;
+
+abstract interface class RecordingCaptureAdapter {
+  Future<bool> hasPermission();
+
+  Future<void> start(RecordConfig config, {required String path});
+
+  Future<String?> stop();
+
+  Future<void> dispose();
+}
+
+class NativeRecordingCaptureAdapter implements RecordingCaptureAdapter {
+  NativeRecordingCaptureAdapter({AudioRecorder? recorder})
+    : _recorder = recorder;
+
+  AudioRecorder? _recorder;
+  AudioRecorder get _instance => _recorder ??= AudioRecorder();
+
+  @override
+  Future<bool> hasPermission() => _instance.hasPermission();
+
+  @override
+  Future<void> start(RecordConfig config, {required String path}) =>
+      _instance.start(config, path: path);
+
+  @override
+  Future<String?> stop() => _instance.stop();
+
+  @override
+  Future<void> dispose() async {
+    final recorder = _recorder;
+    if (recorder != null) await recorder.dispose();
+  }
+}
+
+class AudioImportSource {
+  const AudioImportSource({
+    required this.name,
+    required this.sizeBytes,
+    required this.bytes,
+    this.path,
+    this.provenance,
+  });
+
+  final String name;
+  final int sizeBytes;
+  final Stream<List<int>> bytes;
+  final String? path;
+  final String? provenance;
+}
+
+typedef AudioImportPicker = Future<AudioImportSource?> Function();
+
+Future<AudioImportSource?> pickSupportedAudioFile() async {
+  final result = await FilePicker.pickFile(
+    type: FileType.custom,
+    allowedExtensions: <String>['wav', 'mp3', 'm4a'],
+  );
+  if (result == null) return null;
+  final path = result.path;
+  final size = await result.length();
+  if (size == null) {
+    throw const AudioImportException(
+      'IMPORT_READ_ERROR',
+      'The selected audio file could not be read.',
+    );
+  }
+  final bytes = path == null
+      ? result.readAsByteStream()
+      : File(path).openRead();
+  return AudioImportSource(
+    name: result.name,
+    sizeBytes: size,
+    bytes: bytes,
+    path: path,
+    provenance: path == null ? null : 'picker-path:${File(path).absolute.path}',
+  );
+}
+
+class RecordingPermissionException implements Exception {
+  const RecordingPermissionException();
+
+  @override
+  String toString() => 'Microphone permission is required to record audio.';
+}
+
+class RecordingEligibilityException implements Exception {
+  const RecordingEligibilityException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+class RecordingSessionChangedException implements Exception {
+  const RecordingSessionChangedException();
+
+  @override
+  String toString() => 'The authenticated session changed during recording.';
+}
+
+class AudioImportException implements Exception {
+  const AudioImportException(this.code, this.message);
+
+  final String code;
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+class AudioImportLimits {
+  const AudioImportLimits({this.maximumSizeBytes = 512 * 1024 * 1024});
+
+  final int maximumSizeBytes;
+}
+
+/// Application-scoped owner of native capture and managed local media
+/// lifecycle. It intentionally has no knowledge of upload or processing.
+class RecordingCoordinator extends ChangeNotifier with WidgetsBindingObserver {
+  RecordingCoordinator({
+    required this.api,
+    required this.localMedia,
+    RecordingCaptureAdapter? capture,
+    AudioImportPicker? picker,
+    this.limits = const AudioImportLimits(),
+    DateTime Function()? now,
+    bool observeAppLifecycle = true,
+  }) : _capture = capture ?? NativeRecordingCaptureAdapter(),
+       _picker = picker ?? pickSupportedAudioFile,
+       _now = now ?? DateTime.now,
+       _observeAppLifecycle = observeAppLifecycle {
+    _state = const RecordingCoordinatorState(
+      lifecycle: RecordingLifecycleState.idle,
+    );
+    if (observeAppLifecycle) {
+      try {
+        WidgetsBinding.instance.addObserver(this);
+        _lifecycleObserverRegistered = true;
+      } catch (_) {
+        // Non-widget composition tests may construct the dependency owner
+        // before a Flutter binding exists. Production main initializes it.
+      }
+    }
+    api.addListener(_sessionChanged);
+  }
+
+  final ApiClient api;
+  final LocalMediaRepository localMedia;
+  final RecordingCaptureAdapter _capture;
+  final AudioImportPicker _picker;
+  final AudioImportLimits limits;
+  final DateTime Function() _now;
+  final bool _observeAppLifecycle;
+
+  late RecordingCoordinatorState _state;
+  RecordingCoordinatorState get state => _state;
+
+  Future<void> _commandTail = Future<void>.value();
+  Future<RecordingCoordinatorState>? _startFuture;
+  Future<RecordingCoordinatorState>? _stopFuture;
+  UploadCancellationToken? _importCancellation;
+  Timer? _elapsedTimer;
+  Stopwatch? _stopwatch;
+  AuthenticatedSessionScope? _activeScope;
+  String? _activeMeetingId;
+  LocalMediaAsset? _activeAsset;
+  String? _activeStagingPath;
+  MeetingCapabilities? _activeCapabilities;
+  MeetingStatus? _activeMeetingStatus;
+  bool _sessionInvalidated = false;
+  bool _disposed = false;
+  bool _lifecycleObserverRegistered = false;
+
+  Future<RecordingCoordinatorState> start({
+    required String meetingId,
+    required MeetingCapabilities capabilities,
+    required MeetingStatus meetingStatus,
+  }) {
+    final existing = _startFuture;
+    if (existing != null) return existing;
+    if (_state.isCapturing ||
+        _state.lifecycle == RecordingLifecycleState.importing) {
+      return Future<RecordingCoordinatorState>.value(_state);
+    }
+    final scope = api.requireAuthenticatedSessionScope();
+    _validateStartEligibility(capabilities, meetingStatus);
+    _activeScope = scope;
+    _activeMeetingId = meetingId;
+    _activeCapabilities = capabilities;
+    _activeMeetingStatus = meetingStatus;
+    _sessionInvalidated = false;
+    _publish(
+      RecordingCoordinatorState(
+        lifecycle: RecordingLifecycleState.requestingPermission,
+        meetingId: meetingId,
+        sessionScope: scope,
+      ),
+    );
+    final future = _serialize(() => _startInternal(scope));
+    _startFuture = future;
+    unawaited(
+      future.then<void>(
+        (_) => _clearFuture(future, start: true),
+        onError: (Object error, StackTrace stack) {
+          _clearFuture(future, start: true);
+          return Future<void>.error(error, stack);
+        },
+      ),
+    );
+    return future;
+  }
+
+  Future<RecordingCoordinatorState> stop() {
+    final existing = _stopFuture;
+    if (existing != null) return existing;
+    if (!_state.isCapturing && _activeAsset == null) {
+      return Future<RecordingCoordinatorState>.value(_state);
+    }
+    final future = _serialize(() => _stopInternal());
+    _stopFuture = future;
+    unawaited(
+      future.then<void>(
+        (_) => _clearFuture(future, start: false),
+        onError: (Object error, StackTrace stack) {
+          _clearFuture(future, start: false);
+          return Future<void>.error(error, stack);
+        },
+      ),
+    );
+    return future;
+  }
+
+  Future<RecordingCoordinatorState> importAudio({
+    required String meetingId,
+    required MeetingCapabilities capabilities,
+  }) {
+    if (_state.isCapturing ||
+        _state.lifecycle == RecordingLifecycleState.importing) {
+      return Future<RecordingCoordinatorState>.value(_state);
+    }
+    final scope = api.requireAuthenticatedSessionScope();
+    if (!capabilities.allows(MeetingOperation.uploadMedia)) {
+      throw const RecordingEligibilityException(
+        'The meeting does not allow audio submission.',
+      );
+    }
+    final future = _serialize(() => _importInternal(scope, meetingId));
+    _startFuture = future;
+    unawaited(
+      future.then<void>(
+        (_) => _clearFuture(future, start: true),
+        onError: (Object error, StackTrace stack) {
+          _clearFuture(future, start: true);
+          return Future<void>.error(error, stack);
+        },
+      ),
+    );
+    return future;
+  }
+
+  void cancelImport() {
+    _importCancellation?.cancel();
+  }
+
+  Future<List<LocalMediaAsset>> listLocalMedia({
+    required AuthenticatedSessionScope scope,
+    String? meetingId,
+  }) => localMedia.listAssets(scope: scope, meetingId: meetingId);
+
+  Future<LocalMediaAsset> discardLocalMedia({
+    required AuthenticatedSessionScope scope,
+    required String assetId,
+  }) => localMedia.discard(scope: scope, assetId: assetId);
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.paused &&
+        state != AppLifecycleState.inactive) {
+      return;
+    }
+    if (_state.lifecycle == RecordingLifecycleState.recording ||
+        _state.lifecycle == RecordingLifecycleState.starting) {
+      _sessionInvalidated = false;
+      unawaited(_interrupt('APPLICATION_CAPTURE_STATE_UNSUPPORTED'));
+    }
+  }
+
+  Future<void> _interrupt(String reason) async {
+    if (_activeAsset == null) return;
+    try {
+      final result = await stop();
+      if (result.lifecycle == RecordingLifecycleState.localReady) {
+        _publish(
+          result.copyWith(
+            lifecycle: RecordingLifecycleState.interrupted,
+            message: reason,
+          ),
+        );
+      }
+    } catch (_) {
+      // _stopInternal records the durable interrupted state.
+    }
+  }
+
+  Future<RecordingCoordinatorState> _startInternal(
+    AuthenticatedSessionScope scope,
+  ) async {
+    try {
+      if (!await _capture.hasPermission()) {
+        throw const RecordingPermissionException();
+      }
+      api.requireCurrentAuthenticatedSession(scope);
+      _validateStartEligibility(_activeCapabilities!, _activeMeetingStatus!);
+
+      final filename =
+          'sme-meeting-${_now().toUtc().millisecondsSinceEpoch}.wav';
+      final asset = await localMedia.reserveAsset(
+        scope: scope,
+        meetingId: _activeMeetingId!,
+        sourceType: LocalMediaSourceType.recording,
+        originalFilename: filename,
+        contentType: 'audio/wav',
+        sourceProvenance:
+            'capture:${scope.deploymentScope}:${scope.userId}:'
+            '${scope.lifecycleEpoch}:$_activeMeetingId:$filename',
+      );
+      _activeAsset = asset;
+      _activeStagingPath = (await localMedia.stagingFileFor(
+        scope: scope,
+        asset: asset,
+      )).path;
+      _publish(_state.copyWith(lifecycle: RecordingLifecycleState.starting));
+      api.requireCurrentAuthenticatedSession(scope);
+      await _capture.start(
+        const RecordConfig(
+          encoder: AudioEncoder.wav,
+          sampleRate: 16000,
+          numChannels: 1,
+        ),
+        path: _activeStagingPath!,
+      );
+      _stopwatch = Stopwatch()..start();
+      _elapsedTimer = Timer.periodic(const Duration(milliseconds: 250), (_) {
+        if (_state.lifecycle == RecordingLifecycleState.recording &&
+            _stopwatch != null) {
+          _publish(_state.copyWith(elapsed: _stopwatch!.elapsed));
+        }
+      });
+      _publish(
+        _state.copyWith(
+          lifecycle: RecordingLifecycleState.recording,
+          elapsed: Duration.zero,
+          message: null,
+          clearMessage: true,
+          clearFailure: true,
+        ),
+      );
+      return _state;
+    } catch (error) {
+      await _markActiveInterrupted('RECORDING_START_FAILED');
+      _publish(
+        _state.copyWith(
+          lifecycle: RecordingLifecycleState.failed,
+          failure: error,
+          message: 'Recording could not be started.',
+        ),
+      );
+      rethrow;
+    }
+  }
+
+  Future<RecordingCoordinatorState> _stopInternal() async {
+    final asset = _activeAsset;
+    final scope = _activeScope;
+    if (asset == null || scope == null) return _state;
+    _elapsedTimer?.cancel();
+    _publish(_state.copyWith(lifecycle: RecordingLifecycleState.stopping));
+    String? stoppedPath;
+    try {
+      stoppedPath = await _capture.stop();
+      _stopwatch?.stop();
+      _publish(_state.copyWith(lifecycle: RecordingLifecycleState.completing));
+      if (stoppedPath == null ||
+          !_samePath(stoppedPath, _activeStagingPath ?? '')) {
+        throw const FileSystemException(
+          'The recorder did not return the reserved managed destination.',
+        );
+      }
+      if (_sessionInvalidated) {
+        // Local completion remains bound to the original owner. It is never
+        // published as active state to the new account.
+        final completed = await _completeLocal(scope, asset, stoppedPath);
+        _resetCapture();
+        _publish(
+          RecordingCoordinatorState(
+            lifecycle: RecordingLifecycleState.interrupted,
+            asset: completed,
+            meetingId: asset.meetingId,
+            sessionScope: scope,
+            sessionFenced: true,
+            message: 'Recording was saved under the original session.',
+          ),
+        );
+        return _state;
+      }
+      final completed = await _completeLocal(scope, asset, stoppedPath);
+      final elapsed = _stopwatch?.elapsed ?? Duration.zero;
+      _resetCapture();
+      _publish(
+        RecordingCoordinatorState(
+          lifecycle: RecordingLifecycleState.localReady,
+          asset: completed,
+          meetingId: completed.meetingId,
+          sessionScope: scope,
+          elapsed: elapsed,
+        ),
+      );
+      return _state;
+    } catch (error) {
+      await _markActiveInterrupted(
+        error is FileSystemException
+            ? 'RECORDING_COMPLETION_FAILED'
+            : 'RECORDING_STOP_FAILED',
+      );
+      _resetCapture();
+      _publish(
+        RecordingCoordinatorState(
+          lifecycle: RecordingLifecycleState.interrupted,
+          asset: asset,
+          meetingId: asset.meetingId,
+          sessionScope: scope,
+          failure: error,
+          sessionFenced: _sessionInvalidated,
+          message: 'Recording was interrupted and remains recoverable.',
+        ),
+      );
+      rethrow;
+    }
+  }
+
+  Future<LocalMediaAsset> _completeLocal(
+    AuthenticatedSessionScope scope,
+    LocalMediaAsset asset,
+    String stoppedPath,
+  ) async {
+    final file = File(stoppedPath);
+    if (!await file.exists()) {
+      throw const FileSystemException('The recorded file is missing.');
+    }
+    final size = await file.length();
+    if (size <= 0 || size > limits.maximumSizeBytes) {
+      throw const FileSystemException(
+        'The recorded file exceeded local limits.',
+      );
+    }
+    return localMedia.confirmFileCompletion(
+      scope: scope,
+      assetId: asset.id,
+      expectedSizeBytes: size,
+    );
+  }
+
+  Future<RecordingCoordinatorState> _importInternal(
+    AuthenticatedSessionScope scope,
+    String meetingId,
+  ) async {
+    AudioImportSource? source;
+    try {
+      _publish(
+        RecordingCoordinatorState(
+          lifecycle: RecordingLifecycleState.importing,
+          meetingId: meetingId,
+          sessionScope: scope,
+          importProgress: 0,
+        ),
+      );
+      source = await _picker();
+      if (source == null) {
+        _publish(
+          const RecordingCoordinatorState(
+            lifecycle: RecordingLifecycleState.idle,
+          ),
+        );
+        return _state;
+      }
+      final selectedSource = source;
+      api.requireCurrentAuthenticatedSession(scope);
+      final contentType = _contentTypeFor(selectedSource.name);
+      if (selectedSource.sizeBytes <= 0) {
+        throw const AudioImportException(
+          'EMPTY_AUDIO',
+          'The selected audio file is empty.',
+        );
+      }
+      if (selectedSource.sizeBytes > limits.maximumSizeBytes) {
+        throw const AudioImportException(
+          'AUDIO_TOO_LARGE',
+          'The selected audio file exceeds the local size limit.',
+        );
+      }
+      final cancellation = UploadCancellationToken();
+      _importCancellation = cancellation;
+      var consumed = 0;
+      final monitored = selectedSource.bytes.transform(
+        StreamTransformer<List<int>, List<int>>.fromHandlers(
+          handleData: (chunk, output) {
+            if (cancellation.isCancelled) {
+              throw const AudioImportException(
+                'IMPORT_CANCELLED',
+                'Audio import was cancelled.',
+              );
+            }
+            if (!api.isCurrentAuthenticatedSession(scope)) {
+              throw const RecordingSessionChangedException();
+            }
+            consumed += chunk.length;
+            if (consumed > selectedSource.sizeBytes) {
+              throw const AudioImportException(
+                'IMPORT_SIZE_MISMATCH',
+                'The selected audio changed while it was being imported.',
+              );
+            }
+            _publish(
+              _state.copyWith(
+                importProgress: selectedSource.sizeBytes == 0
+                    ? null
+                    : consumed / selectedSource.sizeBytes,
+              ),
+            );
+            output.add(chunk);
+          },
+        ),
+      );
+      final provenance =
+          selectedSource.provenance ??
+          'picker:${scope.deploymentScope}:${scope.userId}:$meetingId:'
+              '${selectedSource.name}:${selectedSource.sizeBytes}';
+      final asset = await localMedia.importStream(
+        scope: scope,
+        meetingId: meetingId,
+        bytes: monitored,
+        expectedSizeBytes: selectedSource.sizeBytes,
+        sourceType: LocalMediaSourceType.importFile,
+        originalFilename: selectedSource.name,
+        contentType: contentType,
+        sourceProvenance: provenance,
+      );
+      if (consumed != selectedSource.sizeBytes) {
+        throw const AudioImportException(
+          'IMPORT_SIZE_MISMATCH',
+          'The selected audio was not completely consumed.',
+        );
+      }
+      api.requireCurrentAuthenticatedSession(scope);
+      _publish(
+        RecordingCoordinatorState(
+          lifecycle: RecordingLifecycleState.localReady,
+          meetingId: meetingId,
+          sessionScope: scope,
+          asset: asset,
+          importProgress: 1,
+        ),
+      );
+      return _state;
+    } catch (error) {
+      final fenced = !api.isCurrentAuthenticatedSession(scope);
+      _publish(
+        RecordingCoordinatorState(
+          lifecycle: fenced
+              ? RecordingLifecycleState.interrupted
+              : RecordingLifecycleState.failed,
+          meetingId: meetingId,
+          sessionScope: scope,
+          failure: error,
+          sessionFenced: fenced,
+          message: fenced
+              ? 'Import was stopped after the session changed.'
+              : 'Audio import failed.',
+        ),
+      );
+      rethrow;
+    } finally {
+      _importCancellation = null;
+    }
+  }
+
+  void _validateStartEligibility(
+    MeetingCapabilities capabilities,
+    MeetingStatus status,
+  ) {
+    if (!capabilities.allows(MeetingOperation.uploadMedia) ||
+        status != MeetingStatus.inProgress) {
+      throw const RecordingEligibilityException(
+        'Recording is available only to an authorized organizer while the meeting is in progress.',
+      );
+    }
+  }
+
+  Future<void> _markActiveInterrupted(String reason) async {
+    final asset = _activeAsset;
+    final scope = _activeScope;
+    if (asset == null || scope == null) return;
+    try {
+      await localMedia.recordInterruption(
+        scope: scope,
+        assetId: asset.id,
+        reason: reason,
+      );
+    } catch (_) {}
+  }
+
+  void _sessionChanged() {
+    final scope = _activeScope;
+    if (scope == null || api.isCurrentAuthenticatedSession(scope)) return;
+    if (_sessionInvalidated) return;
+    _sessionInvalidated = true;
+    if (_activeAsset != null) unawaited(_interrupt('AUTH_SESSION_CHANGED'));
+  }
+
+  Future<T> _serialize<T>(Future<T> Function() action) {
+    final previous = _commandTail;
+    final release = Completer<void>();
+    _commandTail = release.future;
+    return () async {
+      await previous.catchError((_) {});
+      try {
+        return await action();
+      } finally {
+        release.complete();
+      }
+    }();
+  }
+
+  void _clearFuture(
+    Future<RecordingCoordinatorState> future, {
+    required bool start,
+  }) {
+    if (start) {
+      if (identical(_startFuture, future)) _startFuture = null;
+    } else {
+      if (identical(_stopFuture, future)) _stopFuture = null;
+    }
+  }
+
+  void _resetCapture() {
+    _elapsedTimer?.cancel();
+    _elapsedTimer = null;
+    _stopwatch = null;
+    _activeScope = null;
+    _activeMeetingId = null;
+    _activeAsset = null;
+    _activeStagingPath = null;
+    _activeCapabilities = null;
+    _activeMeetingStatus = null;
+    _sessionInvalidated = false;
+  }
+
+  void _publish(RecordingCoordinatorState next) {
+    if (_disposed) return;
+    _state = next;
+    notifyListeners();
+  }
+
+  static String _contentTypeFor(String filename) {
+    final lower = filename.toLowerCase();
+    if (lower.endsWith('.wav')) return 'audio/wav';
+    if (lower.endsWith('.mp3')) return 'audio/mpeg';
+    if (lower.endsWith('.m4a')) return 'audio/mp4';
+    throw const AudioImportException(
+      'UNSUPPORTED_AUDIO',
+      'Only WAV, MP3, and M4A audio files are supported.',
+    );
+  }
+
+  static bool _samePath(String first, String second) =>
+      File(first).absolute.path == File(second).absolute.path;
+
+  @override
+  void dispose() {
+    if (_disposed) return;
+    _disposed = true;
+    api.removeListener(_sessionChanged);
+    if (_lifecycleObserverRegistered) {
+      WidgetsBinding.instance.removeObserver(this);
+    }
+    _elapsedTimer?.cancel();
+    _importCancellation?.cancel();
+    unawaited(_capture.dispose());
+    super.dispose();
+  }
+
+  static String randomIdentity() {
+    final random = Random.secure();
+    return List<int>.generate(
+      16,
+      (_) => random.nextInt(256),
+    ).map((value) => value.toRadixString(16).padLeft(2, '0')).join();
+  }
+}

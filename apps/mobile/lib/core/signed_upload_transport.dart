@@ -140,7 +140,8 @@ class SignedUploadTransport {
     var responseClaimed = false;
     Timer? overallTimer;
     Timer? inactivityTimer;
-    var sent = 0;
+    var consumedBytes = 0;
+    var sourceCompleted = false;
     http.StreamedResponse? claimedResponse;
     var responseConsumed = false;
     final stopwatch = Stopwatch()..start();
@@ -162,10 +163,9 @@ class SignedUploadTransport {
     void reportProgress(int value) {
       if (!active) return;
       final bounded = value.clamp(0, length);
-      if (bounded < sent) return;
-      sent = bounded;
+      if (bounded < consumedBytes) return;
       try {
-        onProgress?.call(sent, length);
+        onProgress?.call(bounded, length);
       } catch (_) {
         // A UI progress listener must not fail the binary transfer.
       }
@@ -187,14 +187,19 @@ class SignedUploadTransport {
       try {
         await for (final chunk in file.openRead()) {
           if (!active) return;
-          final next = sent + chunk.length;
+          final next = consumedBytes + chunk.length;
           if (next > length) {
             abort(_UploadAbortReason.fileChanged);
             throw const _UploadFileChanged();
           }
           activity();
-          reportProgress(next);
           yield chunk;
+          // The generator resumes only after the request-body consumer has
+          // accepted this chunk. Progress is therefore source-consumption
+          // evidence, not a synthetic prediction made before yielding.
+          if (!active) return;
+          consumedBytes = next;
+          reportProgress(consumedBytes);
         }
       } on _UploadFileChanged {
         rethrow;
@@ -202,10 +207,11 @@ class SignedUploadTransport {
         if (active) abort(_UploadAbortReason.sourceFailure);
         rethrow;
       }
-      if (active && sent != length) {
+      if (active && consumedBytes != length) {
         abort(_UploadAbortReason.fileChanged);
         throw const _UploadFileChanged();
       }
+      if (active) sourceCompleted = true;
     }
 
     final request =
@@ -270,7 +276,16 @@ class SignedUploadTransport {
           responseHeaders: responseHeaders,
         );
       }
-      reportProgress(length);
+      if (!sourceCompleted || consumedBytes != length) {
+        throw TransportFailure(
+          response.statusCode,
+          'UPLOAD_SOURCE_NOT_CONSUMED',
+          'The upload source was not completely consumed.',
+          responseHeaders: responseHeaders,
+          remoteOutcomeAmbiguous: dispatchStarted,
+        );
+      }
+      reportProgress(consumedBytes);
       return SignedUploadResponse(
         statusCode: response.statusCode,
         headers: responseHeaders,

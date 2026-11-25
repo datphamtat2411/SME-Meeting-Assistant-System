@@ -862,10 +862,15 @@ void main() {
     ))!;
     expect(
       fullTransfer.checkpoint,
-      UploadOperationCheckpoint.binaryTransferConfirmed,
+      UploadOperationCheckpoint.intentNotConfirmed,
     );
-    expect(fullTransfer.confirmedBytes, 3);
+    expect(fullTransfer.confirmedBytes, 0);
     expect(fullTransfer.attemptOutcome, OperationAttemptOutcome.uncertain);
+    expect(fullTransfer.recoveryRequired, isTrue);
+    expect(
+      fullTransfer.lastFailureCode,
+      'HISTORICAL_TRANSFER_EVIDENCE_UNCONFIRMED',
+    );
 
     final insufficient = (await upgradedPersistence.findUploadOperation(
       deploymentScope: 'deployment-a',

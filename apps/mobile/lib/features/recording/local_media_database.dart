@@ -408,19 +408,11 @@ class LocalMediaDatabase {
               'BINARY_TRANSFER_CONFIRMED', 'FINALIZATION_CONFIRMED',
               'REMOTE_RECONCILIATION_REQUIRED', 'FAILED'
             )),
-           confirmed_bytes INTEGER NOT NULL DEFAULT 0 CHECK (
-             confirmed_bytes >= 0 AND (
-               (
-                 confirmed_checkpoint IN (
-                   'INTENT_NOT_CONFIRMED', 'INTENT_CONFIRMED'
-                 ) AND confirmed_bytes = 0
-               ) OR (
-                 confirmed_checkpoint IN (
-                   'BINARY_TRANSFER_CONFIRMED', 'FINALIZATION_CONFIRMED'
-                 ) AND confirmed_bytes = expected_size_bytes
-               )
-             )
-           ),
+           -- V3 is an intermediate compatibility schema. Historical V2 rows
+           -- may still contain FAILED/REMOTE_RECONCILIATION_REQUIRED and
+           -- non-zero byte evidence. The V5 normalizer is the first boundary
+           -- that is allowed to discard an obsolete confirmed checkpoint.
+           confirmed_bytes INTEGER NOT NULL DEFAULT 0 CHECK (confirmed_bytes >= 0),
            attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
            attempt_outcome TEXT NOT NULL DEFAULT 'NONE' CHECK (attempt_outcome IN (
              'NONE', 'SUCCEEDED', 'REJECTED', 'FAILED', 'INTERRUPTED',
@@ -501,13 +493,8 @@ class LocalMediaDatabase {
            created_at TEXT NOT NULL,
            updated_at TEXT NOT NULL,
            version INTEGER NOT NULL DEFAULT 0 CHECK (version >= 0),
-           CHECK (
-             resulting_job_id IS NULL OR confirmed_checkpoint IN (
-               'ADMISSION_CONFIRMED', 'RETRY_CONFIRMED', 'REPROCESS_CONFIRMED'
-             )
-           ),
            UNIQUE (deployment_scope, owner_user_id, idempotency_key)
-        )
+         )
       ''');
       await db.execute('''
         INSERT INTO processing_operations_v3 (
@@ -617,21 +604,28 @@ class LocalMediaDatabase {
       final hasRemoteIdentity = remoteMediaId?.trim().isNotEmpty == true;
       final hasAcknowledgedTransfer =
           expectedBytes > 0 && oldBytes == expectedBytes;
+      // A byte count without a remote identity is evidence that must remain
+      // recoverable, not proof that an object-storage resource was confirmed.
+      // A historical FINALIZATION_CONFIRMED row is retained only when both
+      // identity and complete-transfer evidence are present.
       var nextCheckpoint = switch (checkpoint) {
-        'FINALIZATION_CONFIRMED' => 'FINALIZATION_CONFIRMED',
-        'BINARY_TRANSFER_CONFIRMED' =>
-          hasAcknowledgedTransfer
+        'FINALIZATION_CONFIRMED' =>
+          hasRemoteIdentity && hasAcknowledgedTransfer
+              ? 'FINALIZATION_CONFIRMED'
+              : hasRemoteIdentity
+              ? 'INTENT_CONFIRMED'
+              : 'INTENT_NOT_CONFIRMED',
+        'BINARY_TRANSFER_CONFIRMED' ||
+        'FAILED' ||
+        'REMOTE_RECONCILIATION_REQUIRED' =>
+          hasRemoteIdentity && hasAcknowledgedTransfer
               ? 'BINARY_TRANSFER_CONFIRMED'
               : hasRemoteIdentity
               ? 'INTENT_CONFIRMED'
               : 'INTENT_NOT_CONFIRMED',
-        'INTENT_CONFIRMED' => 'INTENT_CONFIRMED',
-        _ =>
-          hasAcknowledgedTransfer
-              ? 'BINARY_TRANSFER_CONFIRMED'
-              : hasRemoteIdentity
-              ? 'INTENT_CONFIRMED'
-              : 'INTENT_NOT_CONFIRMED',
+        'INTENT_CONFIRMED' =>
+          hasRemoteIdentity ? 'INTENT_CONFIRMED' : 'INTENT_NOT_CONFIRMED',
+        _ => hasRemoteIdentity ? 'INTENT_CONFIRMED' : 'INTENT_NOT_CONFIRMED',
       };
       var nextBytes =
           nextCheckpoint == 'BINARY_TRANSFER_CONFIRMED' ||
@@ -655,9 +649,15 @@ class LocalMediaDatabase {
       var recoveryRequired = _integer(row['recovery_required']) == 1;
       if (checkpoint == 'FAILED' ||
           checkpoint == 'REMOTE_RECONCILIATION_REQUIRED' ||
-          outcome == 'UNCERTAIN') {
+          outcome == 'UNCERTAIN' ||
+          !hasRemoteIdentity && oldBytes > 0 ||
+          nextCheckpoint != checkpoint &&
+              checkpoint != 'INTENT_NOT_CONFIRMED') {
         recoveryRequired = true;
       }
+      final existingFailureCode = row['last_failure_code'] as String?;
+      final existingFailureMessage = row['last_failure_message'] as String?;
+      final preservedByteEvidence = !hasRemoteIdentity && oldBytes > 0;
       await db.update(
         'upload_operations',
         <String, Object?>{
@@ -665,6 +665,10 @@ class LocalMediaDatabase {
           'confirmed_bytes': nextBytes,
           'attempt_outcome': outcome,
           'recovery_required': recoveryRequired ? 1 : 0,
+          if (preservedByteEvidence && existingFailureCode == null)
+            'last_failure_code': 'HISTORICAL_TRANSFER_EVIDENCE_UNCONFIRMED',
+          if (preservedByteEvidence && existingFailureMessage == null)
+            'last_failure_message': 'Historical byte evidence was retained but no remote media identity was recorded.',
         },
         where: 'id = ?',
         whereArgs: <Object?>[row['id']],

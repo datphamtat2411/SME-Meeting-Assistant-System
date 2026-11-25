@@ -478,9 +478,14 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
                         meetingId: widget.meetingId,
                         enabled: mediaCapabilities.canUploadMedia,
                         capabilities: mediaCapabilities,
+                        meetingStatus: snapshot.meeting.lifecycleStatus,
                         localMedia: widget.dependencies.localMedia,
                         mediaRepository: widget.dependencies.media,
                         processingRepository: widget.dependencies.processing,
+                        recordingCoordinator: widget.dependencies.recording,
+                        submissionCoordinator: widget.dependencies.submissions,
+                        processingManager:
+                            widget.dependencies.processingManager,
                       ),
                       3 => MeetingParticipants(
                         key: ValueKey(
@@ -520,6 +525,8 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
                         meetingId: snapshot.meeting.id,
                         processingRepository: widget.dependencies.processing,
                         localMedia: widget.dependencies.localMedia,
+                        processingManager:
+                            widget.dependencies.processingManager,
                         canRetry: mediaCapabilities.canRetryProcessing,
                         capabilities: mediaCapabilities,
                       ),

@@ -10,6 +10,7 @@ import 'local_media_models.dart';
 import 'local_media_repository.dart';
 import 'media_contracts.dart';
 import 'processing_repository.dart';
+import 'processing_manager.dart';
 import '../meetings/meeting_foundation.dart';
 
 class ProcessingTimelinePanel extends StatefulWidget {
@@ -18,6 +19,7 @@ class ProcessingTimelinePanel extends StatefulWidget {
     required this.api,
     required this.meetingId,
     this.processingRepository,
+    this.processingManager,
     this.localMedia,
     this.canRetry = true,
     this.capabilities,
@@ -25,6 +27,7 @@ class ProcessingTimelinePanel extends StatefulWidget {
   final ApiClient api;
   final String meetingId;
   final ProcessingRepository? processingRepository;
+  final ProcessingManager? processingManager;
   final LocalMediaRepository? localMedia;
   final bool canRetry;
   final MeetingCapabilities? capabilities;
@@ -50,8 +53,17 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
         widget.processingRepository ?? ProcessingRepository(api: widget.api);
     sessionScope = widget.api.requireAuthenticatedSessionScope();
     _capabilities = widget.capabilities;
-    reload();
-    timer = Timer.periodic(const Duration(seconds: 12), (_) => reload());
+    if (widget.processingManager != null) {
+      widget.processingManager!.addListener(_managerChanged);
+      _managerChanged();
+      widget.processingManager!.startObserving(
+        widget.meetingId,
+        scope: sessionScope,
+      );
+    } else {
+      reload();
+      timer = Timer.periodic(const Duration(seconds: 12), (_) => reload());
+    }
   }
 
   @override
@@ -75,6 +87,7 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (widget.processingManager != null) return;
     if (state == AppLifecycleState.resumed) reload();
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.inactive)
@@ -89,6 +102,11 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     timer?.cancel();
+    if (widget.processingManager != null) {
+      widget.processingManager!
+        ..removeListener(_managerChanged)
+        ..stopObserving(widget.meetingId);
+    }
     super.dispose();
   }
 
@@ -101,6 +119,14 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
       return;
     }
     if (!widget.api.isCurrentAuthenticatedSession(sessionScope)) return;
+    final manager = widget.processingManager;
+    if (manager != null) {
+      unawaited(
+        manager.refresh(widget.meetingId, scope: sessionScope, explicit: true),
+      );
+      _managerChanged();
+      return;
+    }
     setState(() {
       future = processingRepository.list(
         widget.meetingId,
@@ -109,9 +135,37 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
     });
   }
 
+  void _managerChanged() {
+    if (!mounted) return;
+    final manager = widget.processingManager;
+    if (manager == null) return;
+    final state = manager.stateFor(widget.meetingId);
+    setState(
+      () => future = Future<List<ProcessingJobRecord>>.value(
+        state?.jobs ?? const <ProcessingJobRecord>[],
+      ),
+    );
+  }
+
   Future<void> retry(ProcessingJobRecord candidate) async {
     if (retrying || !_allows(MeetingOperation.retryProcessing)) return;
     setState(() => retrying = true);
+    final manager = widget.processingManager;
+    if (manager != null) {
+      try {
+        await manager.retryJob(
+          job: candidate,
+          scope: sessionScope,
+          capabilities: widget.capabilities,
+        );
+        if (mounted) showSuccess(context, 'Đã tiếp nhận yêu cầu thử lại.');
+      } catch (error) {
+        if (mounted) showFailure(context, error);
+      } finally {
+        if (mounted) setState(() => retrying = false);
+      }
+      return;
+    }
     ProcessingOperation? operation;
     final scope = sessionScope;
     try {

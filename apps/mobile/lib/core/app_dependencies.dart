@@ -12,6 +12,9 @@ import 'package:sme_meeting_assistant/features/meetings/participant_selection.da
 import 'package:sme_meeting_assistant/features/recording/local_media_repository.dart';
 import 'package:sme_meeting_assistant/features/recording/media_repository.dart';
 import 'package:sme_meeting_assistant/features/recording/processing_repository.dart';
+import 'package:sme_meeting_assistant/features/recording/processing_manager.dart';
+import 'package:sme_meeting_assistant/features/recording/recording_coordinator.dart';
+import 'package:sme_meeting_assistant/features/recording/submission_coordinator.dart';
 
 /// The application-scoped dependency holder and resource owner.
 ///
@@ -30,6 +33,9 @@ class AppDependencies {
   late final LocalMediaRepository localMedia;
   late final MediaRepository media;
   late final ProcessingRepository processing;
+  late final RecordingCoordinator recording;
+  late final SubmissionCoordinator submissions;
+  late final ProcessingManager processingManager;
   bool _disposed = false;
 
   AppDependencies({
@@ -37,10 +43,32 @@ class AppDependencies {
     required this.appearancePreferences,
     required this.httpClient,
     LocalMediaRepository? localMedia,
+    RecordingCoordinator? recording,
+    SubmissionCoordinator? submissions,
+    ProcessingManager? processingManager,
   }) {
     this.localMedia = localMedia ?? LocalMediaRepository.lazyDefault();
     media = MediaRepository(api: api);
     processing = ProcessingRepository(api: api);
+    this.recording =
+        recording ??
+        RecordingCoordinator(api: api, localMedia: this.localMedia);
+    this.submissions =
+        submissions ??
+        SubmissionCoordinator(
+          api: api,
+          localMedia: this.localMedia,
+          mediaRepository: media,
+          processingRepository: processing,
+        );
+    this.processingManager =
+        processingManager ??
+        ProcessingManager(
+          api: api,
+          mediaRepository: media,
+          processingRepository: processing,
+          localMedia: this.localMedia,
+        );
     meetingInvalidation = MeetingInvalidationSignal(api);
     meetingCreationRecovery = MeetingCreationRecoveryStore(
       storage: api.credentialStorage,
@@ -89,6 +117,9 @@ class AppDependencies {
     if (_disposed) return;
     _disposed = true;
     meetingInvalidation.dispose();
+    processingManager.dispose();
+    submissions.dispose();
+    recording.dispose();
     localMedia.close();
     try {
       api.dispose();

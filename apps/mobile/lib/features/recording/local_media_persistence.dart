@@ -307,15 +307,27 @@ class LocalMediaPersistence {
         operation.remoteMediaId != current.remoteMediaId) {
       throw const LocalMediaIdempotencyConflictException();
     }
+    // Validate the requested row before merging failure/outcome metadata with
+    // the persisted checkpoint. This keeps malformed direct writes as input
+    // errors while the transition guard below handles a valid regression.
+    _validateUploadOperationState(operation);
+    _requireUploadCheckpointTransition(current, operation);
     final requestedCheckpoint =
         operation.checkpoint == UploadOperationCheckpoint.failed ||
             operation.checkpoint ==
                 UploadOperationCheckpoint.remoteReconciliationRequired
         ? current.checkpoint
         : operation.checkpoint;
+    final isAttemptOutcomeOnly =
+        operation.checkpoint == UploadOperationCheckpoint.failed ||
+        operation.checkpoint ==
+            UploadOperationCheckpoint.remoteReconciliationRequired;
     final next = operation.copyWith(
       updatedAt: operation.updatedAt.toUtc(),
       checkpoint: requestedCheckpoint,
+      confirmedBytes: isAttemptOutcomeOnly
+          ? current.confirmedBytes
+          : operation.confirmedBytes,
       version: expectedVersion + 1,
     );
     _validateUploadOperationState(next);
@@ -504,15 +516,23 @@ class LocalMediaPersistence {
         operation.resultingJobId != current.resultingJobId) {
       throw const LocalMediaIdempotencyConflictException();
     }
+    _requireProcessingCheckpointTransition(current, operation);
     final requestedCheckpoint =
         operation.checkpoint == ProcessingOperationCheckpoint.failed ||
             operation.checkpoint ==
                 ProcessingOperationCheckpoint.remoteReconciliationRequired
         ? current.checkpoint
         : operation.checkpoint;
+    final isAttemptOutcomeOnly =
+        operation.checkpoint == ProcessingOperationCheckpoint.failed ||
+        operation.checkpoint ==
+            ProcessingOperationCheckpoint.remoteReconciliationRequired;
     final next = operation.copyWith(
       updatedAt: operation.updatedAt.toUtc(),
       checkpoint: requestedCheckpoint,
+      resultingJobId: isAttemptOutcomeOnly
+          ? current.resultingJobId
+          : operation.resultingJobId,
       version: expectedVersion + 1,
     );
     _validateProcessingOperationState(next);
@@ -878,8 +898,17 @@ class LocalMediaPersistence {
         operation.checkpoint ==
             UploadOperationCheckpoint.binaryTransferConfirmed ||
         operation.checkpoint == UploadOperationCheckpoint.finalizationConfirmed;
+    final hasRemoteIdentity =
+        operation.remoteMediaId?.trim().isNotEmpty == true;
+    if (operation.checkpoint != UploadOperationCheckpoint.intentNotConfirmed &&
+        !hasRemoteIdentity) {
+      throw ArgumentError(
+        'A confirmed upload checkpoint requires a remote media identity.',
+      );
+    }
     if ((isConfirmedTransfer &&
-            operation.confirmedBytes != operation.expectedSizeBytes) ||
+            (operation.confirmedBytes != operation.expectedSizeBytes ||
+                !hasRemoteIdentity)) ||
         (!isConfirmedTransfer && operation.confirmedBytes != 0)) {
       throw ArgumentError(
         'Upload bytes may only be confirmed after the binary transfer.',
@@ -925,7 +954,66 @@ class LocalMediaPersistence {
         'A resulting job requires a confirmed processing admission.',
       );
     }
+    if (operation.checkpoint == expectedCheckpoints.$2 &&
+        operation.resultingJobId?.trim().isNotEmpty != true) {
+      throw ArgumentError(
+        'A confirmed processing operation requires a resulting job identity.',
+      );
+    }
   }
+
+  static void _requireUploadCheckpointTransition(
+    UploadOperation current,
+    UploadOperation requested,
+  ) {
+    final currentRank = _uploadCheckpointRank(current.checkpoint);
+    final requestedRank = _uploadCheckpointRank(requested.checkpoint);
+    if (requestedRank < currentRank) {
+      throw const LocalMediaConflictException(
+        'A confirmed upload checkpoint cannot regress.',
+      );
+    }
+  }
+
+  static void _requireProcessingCheckpointTransition(
+    ProcessingOperation current,
+    ProcessingOperation requested,
+  ) {
+    if (current.operationType != requested.operationType) {
+      throw const LocalMediaConflictException(
+        'A processing operation type cannot change.',
+      );
+    }
+    final currentRank = _processingCheckpointRank(current.checkpoint);
+    final requestedRank = _processingCheckpointRank(requested.checkpoint);
+    if (requestedRank < currentRank) {
+      throw const LocalMediaConflictException(
+        'A confirmed processing checkpoint cannot regress.',
+      );
+    }
+  }
+
+  static int _uploadCheckpointRank(UploadOperationCheckpoint value) =>
+      switch (value) {
+        UploadOperationCheckpoint.intentNotConfirmed => 0,
+        UploadOperationCheckpoint.intentConfirmed => 1,
+        UploadOperationCheckpoint.binaryTransferConfirmed => 2,
+        UploadOperationCheckpoint.finalizationConfirmed => 3,
+        UploadOperationCheckpoint.remoteReconciliationRequired => 0,
+        UploadOperationCheckpoint.failed => 0,
+      };
+
+  static int _processingCheckpointRank(ProcessingOperationCheckpoint value) =>
+      switch (value) {
+        ProcessingOperationCheckpoint.admissionNotConfirmed ||
+        ProcessingOperationCheckpoint.retryNotConfirmed ||
+        ProcessingOperationCheckpoint.reprocessNotConfirmed => 0,
+        ProcessingOperationCheckpoint.admissionConfirmed ||
+        ProcessingOperationCheckpoint.retryConfirmed ||
+        ProcessingOperationCheckpoint.reprocessConfirmed => 1,
+        ProcessingOperationCheckpoint.remoteReconciliationRequired ||
+        ProcessingOperationCheckpoint.failed => 0,
+      };
 
   static void _requireEquivalentUploadRequest(
     UploadOperation actual,
