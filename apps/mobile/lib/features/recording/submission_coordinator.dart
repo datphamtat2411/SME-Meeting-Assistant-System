@@ -327,11 +327,12 @@ class SubmissionCoordinator extends ChangeNotifier {
     UploadOperation operation,
   ) {
     final lifecycle =
-        operation.attemptOutcome == OperationAttemptOutcome.cancelled
+        operation.recoveryRequired ||
+            operation.attemptOutcome == OperationAttemptOutcome.uncertain
+        ? SubmissionLifecycleState.reconciliationRequired
+        : operation.attemptOutcome == OperationAttemptOutcome.cancelled
         ? SubmissionLifecycleState.cancelled
-        : operation.recoveryRequired ||
-              operation.attemptOutcome == OperationAttemptOutcome.uncertain ||
-              operation.remoteMediaId != null ||
+        : operation.remoteMediaId != null ||
               operation.checkpoint ==
                   UploadOperationCheckpoint.binaryTransferConfirmed
         ? SubmissionLifecycleState.reconciliationRequired
