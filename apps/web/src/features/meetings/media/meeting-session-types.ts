@@ -75,6 +75,10 @@ export type PlaybackState = {
   currentTimeMs: number
   durationMs: number | null
   playbackRate: number
+  pendingSeek: {
+    sourceMediaId: string
+    positionMs: number
+  } | null
   error: string | null
 }
 
@@ -121,6 +125,7 @@ export type MeetingSessionContextValue = {
   play: () => Promise<void>
   pause: () => void
   seek: (positionMs: number) => void
+  seekToSource: (sourceMediaId: string, positionMs: number) => Promise<void>
   setPlaybackRate: (rate: number) => void
   stopPlayback: () => void
   selectProcessingJob: (jobId: string | null) => void

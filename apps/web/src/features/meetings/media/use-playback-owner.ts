@@ -29,6 +29,11 @@ export type PlaybackOwner = {
   play: () => Promise<void>
   pause: () => void
   seek: (positionMs: number) => void
+  seekToSource: (
+    sourceMediaId: string,
+    positionMs: number,
+    media: MeetingMedia[]
+  ) => Promise<void>
   setPlaybackRate: (rate: number) => void
   stopPlayback: () => void
   stopLocalArtifact: (artifactId: string) => void
@@ -48,6 +53,7 @@ function initialPlayback(): PlaybackState {
     currentTimeMs: 0,
     durationMs: null,
     playbackRate: 1,
+    pendingSeek: null,
     error: null,
   }
 }
@@ -62,12 +68,14 @@ export function usePlaybackOwner({
   authorizationRef,
   canReadMedia,
   getRecordingArtifact,
+  media,
 }: {
   meetingId: string
   authorization: MeetingAuthorizationContextValue | null
   authorizationRef: AuthorizationRef
   canReadMedia: () => boolean
   getRecordingArtifact: () => RecordingArtifactHandle | null
+  media: MeetingMedia[]
 }): PlaybackOwner {
   const [playback, setPlayback] = useState<PlaybackState>(initialPlayback)
   const playbackRef = useRef(playback)
@@ -78,6 +86,10 @@ export function usePlaybackOwner({
   const playbackRequest = useRef<AbortController | null>(null)
   const playbackGeneration = useRef(0)
   const playbackSourceGeneration = useRef(0)
+  const pendingSeek = useRef<{
+    sourceMediaId: string
+    positionMs: number
+  } | null>(null)
   const audioElement = useRef<HTMLAudioElement>(null)
   const audioSourceOwner = useRef<{
     url: string
@@ -143,6 +155,7 @@ export function usePlaybackOwner({
     playbackRequest.current = null
     playbackGeneration.current += 1
     playbackSourceGeneration.current += 1
+    pendingSeek.current = null
     clearAudioElement()
     releasePlaybackResource(playbackRef.current)
     setPlayback(initialPlayback())
@@ -171,10 +184,12 @@ export function usePlaybackOwner({
         if (audioSourceOwner.current?.sourceGeneration === generation) {
           audioSourceOwner.current = null
         }
+        pendingSeek.current = null
         setPlayback((current) => ({
           ...current,
           status: 'error',
           isLoading: false,
+          pendingSeek: null,
           error: 'The selected audio source could not be loaded.',
         }))
       }
@@ -202,6 +217,11 @@ export function usePlaybackOwner({
       const generation = ++playbackGeneration.current
       const sourceGeneration = ++playbackSourceGeneration.current
       const actorId = currentAuthorization?.identity?.userId ?? null
+      const requestedSeek =
+        pendingSeek.current?.sourceMediaId === media.id
+          ? pendingSeek.current
+          : null
+      if (!requestedSeek) pendingSeek.current = null
       clearAudioElement()
       releasePlaybackResource(playbackRef.current)
       setPlayback({
@@ -221,6 +241,7 @@ export function usePlaybackOwner({
         currentTimeMs: 0,
         durationMs: null,
         playbackRate: playbackRef.current.playbackRate,
+        pendingSeek: requestedSeek,
         error: null,
       })
       const isCurrent = () => {
@@ -264,8 +285,12 @@ export function usePlaybackOwner({
           ...current,
           status: 'error',
           isLoading: false,
+          pendingSeek: null,
           error: formatError(error),
         }))
+        if (pendingSeek.current?.sourceMediaId === media.id) {
+          pendingSeek.current = null
+        }
       }
     },
     [
@@ -323,6 +348,7 @@ export function usePlaybackOwner({
         currentTimeMs: 0,
         durationMs: null,
         playbackRate: playbackRef.current.playbackRate,
+        pendingSeek: null,
         error: null,
       })
       setAudioSource(artifact.previewUrl, sourceGeneration, 'local')
@@ -403,15 +429,57 @@ export function usePlaybackOwner({
         audio.currentTime = requested / 1000
         const acceptedPosition = audio.currentTime * 1000
         if (!Number.isFinite(acceptedPosition)) return
+        pendingSeek.current = null
         setPlayback((current) => ({
           ...current,
           currentTimeMs: Math.max(0, acceptedPosition),
+          pendingSeek: null,
         }))
       } catch {
         // A rejected browser seek is not a confirmed position change.
       }
     },
     [isOwnerAuthorized]
+  )
+
+  const seekToSource = useCallback(
+    async (
+      sourceMediaId: string,
+      positionMs: number,
+      media: MeetingMedia[]
+    ) => {
+      if (!Number.isFinite(positionMs) || positionMs < 0) return
+      const current = playbackRef.current
+      const owner = audioSourceOwner.current
+      if (
+        current.kind === 'remote' &&
+        current.sourceMediaId === sourceMediaId &&
+        owner &&
+        isOwnerAuthorized(owner)
+      ) {
+        seek(positionMs)
+        return
+      }
+
+      const source = media.find(
+        (item) =>
+          item.id === sourceMediaId &&
+          item.meetingId === meetingId &&
+          item.status === 'AVAILABLE'
+      )
+      if (!canReadMedia()) return
+
+      pendingSeek.current = {
+        sourceMediaId,
+        positionMs: Math.max(0, positionMs),
+      }
+      setPlayback((currentPlayback) => ({
+        ...currentPlayback,
+        pendingSeek: pendingSeek.current,
+      }))
+      if (source) await playRemoteMedia(source)
+    },
+    [canReadMedia, isOwnerAuthorized, meetingId, playRemoteMedia, seek]
   )
 
   const setPlaybackRate = useCallback(
@@ -445,6 +513,27 @@ export function usePlaybackOwner({
       selectLocalArtifact(getRecordingArtifact(), artifactId),
     [getRecordingArtifact, selectLocalArtifact]
   )
+
+  useEffect(() => {
+    const pending = pendingSeek.current
+    if (!pending || !canReadMedia()) return
+    const source = media.find(
+      (item) =>
+        item.id === pending.sourceMediaId &&
+        item.meetingId === meetingId &&
+        item.status === 'AVAILABLE'
+    )
+    if (!source) return
+    const current = playbackRef.current
+    if (
+      current.kind === 'remote' &&
+      current.sourceMediaId === pending.sourceMediaId &&
+      audioSourceOwner.current
+    ) {
+      return
+    }
+    void playRemoteMedia(source)
+  }, [canReadMedia, media, meetingId, playRemoteMedia])
 
   useEffect(() => {
     if (!authorization) return
@@ -484,18 +573,53 @@ export function usePlaybackOwner({
         ...values,
       }))
     }
-    const onLoadedMetadata = () =>
+    const applyPendingSeek = () => {
+      const pending = pendingSeek.current
+      const owner = audioSourceOwner.current
+      if (
+        !pending ||
+        !owner ||
+        owner.kind !== 'remote' ||
+        playbackRef.current.sourceMediaId !== pending.sourceMediaId ||
+        !ownsCurrentAudioSource()
+      ) {
+        return
+      }
+      const durationMs = Number.isFinite(audio.duration)
+        ? Math.max(0, audio.duration * 1000)
+        : playbackRef.current.durationMs
+      const upper = durationMs === null ? Number.POSITIVE_INFINITY : durationMs
+      const requested = Math.max(0, Math.min(pending.positionMs, upper))
+      try {
+        audio.currentTime = requested / 1000
+        const acceptedPosition = audio.currentTime * 1000
+        if (!Number.isFinite(acceptedPosition)) return
+        pendingSeek.current = null
+        setPlayback((current) => ({
+          ...current,
+          currentTimeMs: Math.max(0, acceptedPosition),
+          pendingSeek: null,
+        }))
+      } catch {
+        // A browser may defer a seek until more metadata is available.
+      }
+    }
+    const onLoadedMetadata = () => {
       update('ready', {
         durationMs: Number.isFinite(audio.duration)
           ? Math.max(0, audio.duration * 1000)
           : null,
       })
-    const onDurationChange = () =>
+      applyPendingSeek()
+    }
+    const onDurationChange = () => {
       update(undefined, {
         durationMs: Number.isFinite(audio.duration)
           ? Math.max(0, audio.duration * 1000)
           : null,
       })
+      applyPendingSeek()
+    }
     const onPlay = () => update('playing')
     const onPause = () => {
       if (!audio.ended) update('paused')
@@ -515,11 +639,14 @@ export function usePlaybackOwner({
           : playbackRef.current.currentTimeMs,
         isLoading: false,
       })
-    const onError = () =>
+    const onError = () => {
+      pendingSeek.current = null
       update('error', {
         isLoading: false,
+        pendingSeek: null,
         error: 'The selected audio source could not be played.',
       })
+    }
     audio.addEventListener('loadedmetadata', onLoadedMetadata)
     audio.addEventListener('durationchange', onDurationChange)
     audio.addEventListener('play', onPlay)
@@ -558,6 +685,7 @@ export function usePlaybackOwner({
     play,
     pause,
     seek,
+    seekToSource,
     setPlaybackRate,
     stopPlayback,
     stopLocalArtifact,

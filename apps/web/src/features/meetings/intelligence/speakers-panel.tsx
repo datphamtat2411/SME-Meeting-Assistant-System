@@ -11,7 +11,11 @@ import {
 } from '@/components/request-state'
 import { meetingParticipantCandidateQueryOptions } from '@/features/meetings/data/meeting-candidates-api'
 import { invalidateMeetingArtifacts } from './query-invalidation'
-import { mapSpeaker, speakerClustersQuery } from './transcript-api'
+import {
+  mapSpeaker,
+  speakerClustersQuery,
+  transcriptReviewQuery,
+} from './transcript-api'
 
 export function SpeakersPanel({
   meetingId,
@@ -26,6 +30,10 @@ export function SpeakersPanel({
     canMapRef.current = canMapSpeakers
   }, [canMapSpeakers])
   const speakers = useQuery(speakerClustersQuery(meetingId))
+  const transcript = useQuery({
+    ...transcriptReviewQuery(meetingId),
+    enabled: canMapSpeakers,
+  })
   const [searchInput, setSearchInput] = useState('')
   const [search, setSearch] = useState('')
   const candidateOptions = meetingParticipantCandidateQueryOptions({
@@ -43,7 +51,13 @@ export function SpeakersPanel({
       if (!canMapRef.current) {
         throw new Error('Speaker mapping is no longer authorized.')
       }
-      return mapSpeaker(meetingId, payload.speakerId, payload.userId)
+      const ifMatch = transcript.data?.etag
+      if (!ifMatch) {
+        throw new Error(
+          'Reload the canonical transcript before changing speaker mapping.'
+        )
+      }
+      return mapSpeaker(meetingId, payload.speakerId, payload.userId, ifMatch)
     },
     onSuccess: () => {
       toast.success('Speaker identity updated')
@@ -84,7 +98,7 @@ export function SpeakersPanel({
                     {speaker.displayName ?? 'Identity not confirmed'}
                   </p>
                 </div>
-                {canMapSpeakers && (
+                {canMapSpeakers && transcript.data?.etag && (
                   <div className='flex gap-2'>
                     <Button
                       size='sm'

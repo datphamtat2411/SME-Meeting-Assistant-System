@@ -2,9 +2,8 @@ import { MeetingActionsPanel } from '@/features/action-items/meeting-actions-pan
 import { DecisionsPanel } from './intelligence/decisions-panel'
 import { ExportPanel } from './intelligence/export-panel'
 import { MinutesPanel } from './intelligence/minutes-panel'
-import { SpeakersPanel } from './intelligence/speakers-panel'
 import { SummaryPanel } from './intelligence/summary-panel'
-import { TranscriptPanel } from './intelligence/transcript-panel'
+import { TranscriptReviewWorkspace } from './intelligence/transcript-review-workspace'
 import { ProcessingPanel } from './media/processing-panel'
 import { RecordingPanel } from './media/recording-panel'
 import { UploadPanel } from './media/upload-panel'
@@ -66,13 +65,12 @@ export function MeetingTools({
             organizer operations.
           </ReadOnlyNote>
         )}
-        <TranscriptPanel
+        <TranscriptReviewWorkspace
           meetingId={meetingId}
+          canReadMeetingContent={capabilities.canReadMeetingContent}
           canCorrectTranscript={capabilities.canCorrectTranscript}
-        />
-        <SpeakersPanel
-          meetingId={meetingId}
           canMapSpeakers={capabilities.canMapSpeakers}
+          canReadMedia={capabilities.canReadMedia}
         />
       </div>
     )

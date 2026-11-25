@@ -206,6 +206,7 @@ export function MeetingSessionProvider({
     authorizationRef,
     canReadMedia,
     getRecordingArtifact: getRecordingArtifact,
+    media: processing.media.data ?? [],
   })
   const {
     playback,
@@ -217,6 +218,7 @@ export function MeetingSessionProvider({
     play,
     pause,
     seek,
+    seekToSource: seekRemoteToSource,
     setPlaybackRate,
     stopPlayback,
     stopLocalArtifact,
@@ -332,6 +334,15 @@ export function MeetingSessionProvider({
       selectRemoteMedia(sourceMediaId, processing.media.data ?? []),
     [processing.media.data, selectRemoteMedia]
   )
+  const seekToSource = useCallback(
+    (sourceMediaId: string, positionMs: number) =>
+      seekRemoteToSource(
+        sourceMediaId,
+        positionMs,
+        processing.media.data ?? []
+      ),
+    [processing.media.data, seekRemoteToSource]
+  )
 
   const value = useMemo<MeetingSessionContextValue>(
     () => ({
@@ -362,6 +373,7 @@ export function MeetingSessionProvider({
       play,
       pause,
       seek,
+      seekToSource,
       setPlaybackRate,
       stopPlayback,
       selectProcessingJob: processing.selectProcessingJob,
@@ -379,6 +391,7 @@ export function MeetingSessionProvider({
       selectImportedFile,
       selectLocalArtifact,
       seek,
+      seekToSource,
       setPlaybackRate,
       stopPlayback,
       submitImportedMedia,
