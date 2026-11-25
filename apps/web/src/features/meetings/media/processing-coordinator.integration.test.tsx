@@ -739,16 +739,13 @@ describe('meeting-scoped processing command owner', () => {
           await expect
             .element(screen.getByTestId('recovery-state'))
             .toHaveTextContent('uncertain')
+          const jobsKey = ['processing-jobs', meetingId]
+          const mediaKey = ['meeting-media', meetingId]
           await expect
-            .poll(
-              () =>
-                client.getQueryState(['processing-jobs', meetingId])?.fetchStatus
-            )
+            .poll(() => client.getQueryState(jobsKey)?.fetchStatus)
             .toBe('idle')
           await expect
-            .poll(
-              () => client.getQueryState(['meeting-media', meetingId])?.fetchStatus
-            )
+            .poll(() => client.getQueryState(mediaKey)?.fetchStatus)
             .toBe('idle')
           processingMocks.requestSummaryRegeneration.mockResolvedValueOnce(
             admitted
@@ -760,18 +757,15 @@ describe('meeting-scoped processing command owner', () => {
         await expect
           .element(screen.getByTestId('recovered-job'))
           .toHaveTextContent(admitted.id)
-        expect(processingMocks.requestSummaryRegeneration).toHaveBeenCalledTimes(
-          knownReceipt ? 1 : 2
-        )
+        const request = processingMocks.requestSummaryRegeneration
+        expect(request).toHaveBeenCalledTimes(knownReceipt ? 1 : 2)
         if (knownReceipt) {
           expect(processingMocks.getProcessingJob).toHaveBeenCalledWith(
             admitted.id,
             expect.any(AbortSignal)
           )
         } else {
-          expect(
-            processingMocks.requestSummaryRegeneration.mock.calls[1][1]
-          ).toBe(processingMocks.requestSummaryRegeneration.mock.calls[0][1])
+          expect(request.mock.calls[1][1]).toBe(request.mock.calls[0][1])
         }
       } finally {
         sessionStorage.removeItem(storageKey)

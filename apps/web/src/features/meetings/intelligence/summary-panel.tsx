@@ -348,7 +348,9 @@ function SummaryPanelContent({
       const normalized = normalizeCoreApiError(error)
       const admitted =
         observing ||
-        (typeof error === 'object' && error !== null && 'admittedJobId' in error)
+        (typeof error === 'object' &&
+          error !== null &&
+          'admittedJobId' in error)
       toast.error(
         admitted
           ? 'Regeneration status is unavailable'
@@ -461,7 +463,10 @@ function SummaryPanelContent({
       </CardHeader>
       <CardContent className='space-y-6 p-5'>
         {session?.processing.summaryObservationStatus && (
-          <div className='space-y-2 rounded-md border p-3 text-sm' role='status'>
+          <div
+            className='space-y-2 rounded-md border p-3 text-sm'
+            role='status'
+          >
             <p>
               {session.processing.summaryObservationStatus === 'unavailable'
                 ? 'Regeneration was admitted, but its current status is unavailable. Refresh the exact job without requesting generation again.'

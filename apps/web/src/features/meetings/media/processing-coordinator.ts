@@ -257,9 +257,11 @@ function summaryObservationQuery(
 function latestStageAttempt(job: ProcessingJob, stageCode: string) {
   return job.stageRuns
     .filter((stage) => stage.stageCode === stageCode)
-    .reduce<
-      ProcessingJob['stageRuns'][number] | undefined
-    >((latest, stage) => (!latest || stage.attemptNumber > latest.attemptNumber ? stage : latest), undefined)
+    .reduce<ProcessingJob['stageRuns'][number] | undefined>(
+      (latest, stage) =>
+        !latest || stage.attemptNumber > latest.attemptNumber ? stage : latest,
+      undefined
+    )
 }
 
 function operationAuthorizationKind(
@@ -1572,11 +1574,7 @@ export function useProcessingCoordinator({
       return
     }
     await refetchSummaryObservation({ cancelRefetch: false })
-  }, [
-    refetchSummaryObservation,
-    summaryObservationRequired,
-    summaryOperationId,
-  ])
+  }, [refetchSummaryObservation, summaryObservationRequired, summaryOperationId])
   const summaryRegenerationJob =
     summaryOperationInScope && summaryOperation?.jobId
       ? summaryOperation.status === 'retired' || summaryObservationRequired
