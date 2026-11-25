@@ -22,6 +22,7 @@ import {
   useProcessingCoordinator,
   type ProcessingAuthorization,
 } from './processing-coordinator'
+import { useExportOperationOwner } from './use-export-operation-owner'
 import { useIngestionOwner } from './use-ingestion-owner'
 import { usePlaybackOwner } from './use-playback-owner'
 import { useRecordingOwner } from './use-recording-owner'
@@ -170,6 +171,10 @@ export function MeetingSessionProvider({
     meetingId,
     authorization: authForProcessing,
     fallback,
+  })
+  const exportOperations = useExportOperationOwner({
+    meetingId,
+    authorization,
   })
 
   const submissionLockRef = useRef<(artifactId: string) => boolean>(() => false)
@@ -402,6 +407,7 @@ export function MeetingSessionProvider({
       playback,
       media: processing.media,
       processing,
+      exportOperations,
       selectedProcessingJobId: processing.selectedJobId,
       hasUnsavedResources,
       hasUnsavedTranscriptReview,
@@ -461,6 +467,7 @@ export function MeetingSessionProvider({
       startRecording,
       meetingId,
       processing,
+      exportOperations,
       recording,
       selectRemoteSource,
       stopRecording,

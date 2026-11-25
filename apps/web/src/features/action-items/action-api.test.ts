@@ -1,6 +1,9 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { coreApi } from '@/lib/core-api'
 import {
   buildActionPatch,
+  actionDetail,
+  createAction,
   rebaseActionDraft,
   serializeActionFilter,
   type ActionEditValues,
@@ -64,6 +67,53 @@ const item: ActionItem = {
 }
 
 describe('Action Item adapter contracts', () => {
+  it('rejects a detail response from a different meeting', async () => {
+    const foreignMeetingId = '66666666-6666-4666-8666-666666666666'
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+      data: {
+        ...item,
+        meetingId: foreignMeetingId,
+        meeting: { ...item.meeting, id: foreignMeetingId },
+      },
+      meta: {},
+      etag: '"action-etag"',
+    })
+
+    await expect(actionDetail(item.id, item.meetingId)).rejects.toMatchObject({
+      code: 'MALFORMED_RESPONSE',
+      kind: 'malformed',
+    })
+  })
+
+  it('marks a cross-meeting creation receipt as uncertain', async () => {
+    const foreignMeetingId = '66666666-6666-4666-8666-666666666666'
+    vi.spyOn(coreApi, 'postWithMetaAndEtag').mockResolvedValue({
+      data: {
+        ...item,
+        meetingId: foreignMeetingId,
+        meeting: { ...item.meeting, id: foreignMeetingId },
+      },
+      meta: {},
+      etag: '"action-etag"',
+    })
+
+    await expect(
+      createAction(
+        {
+          meetingId: item.meetingId,
+          title: item.title,
+          details: item.details,
+          assigneeUserId: item.assigneeUserId!,
+          dueDate: item.dueDate,
+        },
+        'creation-intent'
+      )
+    ).rejects.toMatchObject({
+      code: 'ACTION_ITEM_CREATION_UNCERTAIN',
+      recoveryOutcome: 'uncertain',
+    })
+  })
+
   it('serializes every server-side collection parameter', () => {
     expect(
       serializeActionFilter({

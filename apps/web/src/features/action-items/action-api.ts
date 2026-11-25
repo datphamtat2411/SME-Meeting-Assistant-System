@@ -134,23 +134,77 @@ export function serializeActionFilter(
 
 export type ActionPage = { items: ActionItem[]; page: PageInfo }
 
+function malformedActionResponse(
+  message: string,
+  cause?: unknown
+): CoreApiError {
+  return new CoreApiError({
+    message,
+    code: 'MALFORMED_RESPONSE',
+    kind: 'malformed',
+    cause,
+  })
+}
+
+function parseAction(
+  value: unknown,
+  message = 'Core API returned a malformed Action Item response.'
+) {
+  const parsed = actionSchema.safeParse(value)
+  if (!parsed.success) throw malformedActionResponse(message, parsed.error)
+  if (parsed.data.meeting.id !== parsed.data.meetingId) {
+    throw malformedActionResponse(
+      'Core API returned an Action Item with inconsistent meeting identity.'
+    )
+  }
+  return parsed.data
+}
+
+function parseActions(value: unknown): ActionItem[] {
+  const parsed = actionSchema.array().safeParse(value)
+  if (!parsed.success) {
+    throw malformedActionResponse(
+      'Core API returned a malformed Action Item collection.',
+      parsed.error
+    )
+  }
+  return parsed.data.map((item) => parseAction(item))
+}
+
 export function actionItemsQuery(filter: ActionFilter) {
   const params = serializeActionFilter(filter)
   return queryOptions({
-    queryKey: ['action-items', 'list', params] as const,
+    queryKey: ['action-items', 'list', params, filter.meetingId] as const,
     queryFn: async ({ signal }): Promise<ActionPage> => {
       const response = await coreApi.getWithMeta<unknown>('/action-items', {
         params,
         signal,
       })
-      const items = actionSchema.array().parse(response.data)
+      const items = parseActions(response.data)
+      if (
+        filter.meetingId &&
+        items.some((item) => item.meetingId !== filter.meetingId)
+      ) {
+        throw malformedActionResponse(
+          'Core API returned an Action Item outside the requested meeting.'
+        )
+      }
       return {
         items,
-        page: validatedPageInfo(response.meta.pagination, {
-          requestedPage: Number(params.page),
-          requestedSize: Number(params.size),
-          itemCount: items.length,
-        }),
+        page: (() => {
+          try {
+            return validatedPageInfo(response.meta.pagination, {
+              requestedPage: Number(params.page),
+              requestedSize: Number(params.size),
+              itemCount: items.length,
+            })
+          } catch (error) {
+            throw malformedActionResponse(
+              'Core API returned inconsistent Action Item pagination metadata.',
+              error
+            )
+          }
+        })(),
       }
     },
     retry: false,
@@ -167,30 +221,43 @@ function requireEtag(value: string | undefined): string {
   return value
 }
 
-function parseAction(value: unknown): ActionItem {
-  return actionSchema.parse(value)
-}
-
-function parseActionResult(response: {
-  data: unknown
-  etag?: string
-}): ActionMutationResult {
-  return { item: parseAction(response.data), etag: requireEtag(response.etag) }
+function parseActionResult(
+  response: {
+    data: unknown
+    etag?: string
+  },
+  expected?: { id?: string; meetingId?: string }
+): ActionMutationResult {
+  const item = parseAction(response.data)
+  if (expected?.id && item.id !== expected.id) {
+    throw malformedActionResponse(
+      'Core API returned a different Action Item than the requested resource.'
+    )
+  }
+  if (expected?.meetingId && item.meetingId !== expected.meetingId) {
+    throw malformedActionResponse(
+      'Core API returned an Action Item from a different meeting.'
+    )
+  }
+  return { item, etag: requireEtag(response.etag) }
 }
 
 export type ActionMutationResult = { item: ActionItem; etag: string }
 
-export async function actionDetail(id: string): Promise<ActionMutationResult> {
+export async function actionDetail(
+  id: string,
+  expectedMeetingId?: string
+): Promise<ActionMutationResult> {
   const response = await coreApi.getWithMetaAndEtag<unknown>(
     '/action-items/' + encodeURIComponent(id)
   )
-  return parseActionResult(response)
+  return parseActionResult(response, { id, meetingId: expectedMeetingId })
 }
 
-export function actionDetailQuery(id?: string) {
+export function actionDetailQuery(id?: string, meetingId?: string) {
   return queryOptions({
-    queryKey: ['action-items', 'detail', id] as const,
-    queryFn: () => actionDetail(id as string),
+    queryKey: ['action-items', 'detail', id, meetingId] as const,
+    queryFn: () => actionDetail(id as string, meetingId),
     enabled: Boolean(id),
     staleTime: 0,
     refetchOnMount: 'always',
@@ -216,7 +283,7 @@ export async function createAction(
       data,
       { headers: { 'Idempotency-Key': idempotencyKey } }
     )
-    return parseActionResult(response)
+    return parseActionResult(response, { meetingId: data.meetingId })
   } catch (error) {
     const failure = normalizeCoreApiError(error)
     if (
@@ -296,7 +363,8 @@ export function rebaseActionDraft(
 export async function patchAction(
   id: string,
   etag: string,
-  patch: ReturnType<typeof buildActionPatch>
+  patch: ReturnType<typeof buildActionPatch>,
+  expectedMeetingId?: string
 ): Promise<ActionMutationResult> {
   if (!Object.keys(patch).length) {
     throw new Error('No Action Item changes to save.')
@@ -306,7 +374,7 @@ export async function patchAction(
     patch,
     { headers: { 'If-Match': etag } }
   )
-  return parseActionResult(response)
+  return parseActionResult(response, { id, meetingId: expectedMeetingId })
 }
 
 export type ActionCommand =
@@ -320,14 +388,15 @@ export type ActionCommand =
 export async function actionCommand(
   id: string,
   command: ActionCommand,
-  etag: string
+  etag: string,
+  expectedMeetingId?: string
 ): Promise<ActionMutationResult> {
   const response = await coreApi.postWithMetaAndEtag<unknown>(
     '/action-items/' + encodeURIComponent(id) + '/' + command,
     undefined,
     { headers: { 'If-Match': etag } }
   )
-  return parseActionResult(response)
+  return parseActionResult(response, { id, meetingId: expectedMeetingId })
 }
 
 const lookupPaginationSchema = z.object({

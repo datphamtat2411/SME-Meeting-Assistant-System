@@ -4,6 +4,7 @@ import com.sme.meetingassistant.api.meeting.entity.MeetingStatus;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -22,12 +23,26 @@ public record MinutesSnapshot(
         List<Action> officialActionItems,
         Transcript transcript,
         List<String> warnings,
-        boolean proposalsIncluded) {
+        boolean proposalsIncluded,
+        DisplayMetadata displayMetadata) {
 
     public MinutesSnapshot {
         confirmedDecisions = List.copyOf(confirmedDecisions);
         officialActionItems = List.copyOf(officialActionItems);
         warnings = List.copyOf(warnings);
+        displayMetadata = displayMetadata == null
+                ? new DisplayMetadata(Map.of()) : displayMetadata;
+    }
+
+    /** Compatibility constructor for renderers and fixtures without enrichment. */
+    public MinutesSnapshot(int schemaVersion, OffsetDateTime assembledAt,
+            String sourceFingerprint, String completeness, Meeting meeting,
+            Summary summary, List<Decision> confirmedDecisions,
+            List<Action> officialActionItems, Transcript transcript,
+            List<String> warnings, boolean proposalsIncluded) {
+        this(schemaVersion, assembledAt, sourceFingerprint, completeness, meeting, summary,
+                confirmedDecisions, officialActionItems, transcript, warnings,
+                proposalsIncluded, new DisplayMetadata(Map.of()));
     }
 
     public record Meeting(UUID id, String title, String description, UUID organizerUserId,
@@ -63,6 +78,18 @@ public record MinutesSnapshot(
     public record Action(UUID id, String title, String details, String status, String sourceType,
             UUID assigneeUserId, LocalDate dueDate, long version, OffsetDateTime createdAt,
             UUID confirmedByUserId, OffsetDateTime confirmedAt) { }
+
+    /**
+     * Permission-scoped presentation enrichment. It is deliberately outside
+     * CanonicalContent so names cannot change membership, export source bytes,
+     * or the canonical source fingerprint.
+     */
+    public record DisplayMetadata(Map<UUID, String> assigneeDisplayNames) {
+        public DisplayMetadata {
+            assigneeDisplayNames = assigneeDisplayNames == null
+                    ? Map.of() : Map.copyOf(assigneeDisplayNames);
+        }
+    }
 
     /**
      * Current transcript identity and quality reference only; not a wholesale

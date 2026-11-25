@@ -1,6 +1,7 @@
 import type { MeetingAuthorizationContextValue } from '../meeting-authorization-context'
 import type { MediaUploadPhase, MeetingMedia } from './media-api'
 import type { ProcessingCoordinatorValue } from './processing-coordinator'
+import type { ExportOperationOwnerValue } from './use-export-operation-owner'
 
 export type RecordingCaptureState =
   | 'idle'
@@ -104,6 +105,7 @@ export type MeetingSessionContextValue = {
   playback: PlaybackState
   media: ProcessingCoordinatorValue['media']
   processing: ProcessingCoordinatorValue
+  exportOperations: ExportOperationOwnerValue
   selectedProcessingJobId: string | null
   hasUnsavedResources: boolean
   hasUnsavedTranscriptReview: boolean

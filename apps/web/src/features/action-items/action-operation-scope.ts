@@ -17,7 +17,7 @@ export function useActionOperationScope(resource: string, allowed: boolean) {
     allowed &&
     (!authorization ||
       (authorization.scopeReady &&
-        authorization.canReadProtectedData &&
+        authorization.capabilities.canReadActionItems &&
         !authorization.isConfirmedAccessLoss))
   const scope = `${resource}:${identity?.userId ?? ''}:${identity?.session?.id ?? ''}:${available}`
   const generation = useRef(0)

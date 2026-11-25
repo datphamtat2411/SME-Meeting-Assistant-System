@@ -4,11 +4,42 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
 import { CoreApiError } from '@/lib/core-api'
+import { MeetingSessionProvider } from '../media/meeting-session-context'
 import { ExportPanel } from './export-panel'
 
 const exportMocks = vi.hoisted(() => ({
   createMinutesExport: vi.fn(),
   accessMinutesExport: vi.fn(),
+}))
+
+const authorizationMocks = vi.hoisted(() => ({
+  value: {
+    meetingId: '11111111-1111-4111-8111-111111111111',
+    identity: {
+      userId: '99999999-9999-4999-8999-999999999999',
+      session: { id: '88888888-8888-4888-8888-888888888888' },
+    },
+    scopeReady: true,
+    isEstablished: true,
+    canReadProtectedData: true,
+    canPerformProtectedOperation: true,
+    isConfirmedAccessLoss: false,
+    status: 'verified',
+    capabilities: {
+      canReadMedia: false,
+      canReadProcessing: false,
+      canAdmitProcessing: false,
+      canRecoverProcessing: false,
+      canRecordAudio: false,
+      canSubmitMedia: false,
+      canReadActionItems: true,
+      canManageActionItems: false,
+    },
+  },
+}))
+
+vi.mock('../meeting-authorization-context', () => ({
+  useOptionalMeetingAuthorization: () => authorizationMocks.value,
 }))
 
 const minutesData = vi.hoisted(() => ({
@@ -114,10 +145,12 @@ function renderPanel(canExport = true) {
         })
       }
     >
-      <ExportPanel
-        meetingId='11111111-1111-4111-8111-111111111111'
-        canExport={canExport}
-      />
+      <MeetingSessionProvider meetingId='11111111-1111-4111-8111-111111111111'>
+        <ExportPanel
+          meetingId='11111111-1111-4111-8111-111111111111'
+          canExport={canExport}
+        />
+      </MeetingSessionProvider>
     </QueryClientProvider>
   )
 }
@@ -137,11 +170,17 @@ function ExportContextHarness() {
       </button>
       <button
         type='button'
-        onClick={() => setMeetingId('22222222-2222-4222-8222-222222222222')}
+        onClick={() => {
+          const nextMeetingId = '22222222-2222-4222-8222-222222222222'
+          authorizationMocks.value.meetingId = nextMeetingId
+          setMeetingId(nextMeetingId)
+        }}
       >
         Switch meeting
       </button>
-      <ExportPanel meetingId={meetingId} canExport={canExport} />
+      <MeetingSessionProvider meetingId={meetingId}>
+        <ExportPanel meetingId={meetingId} canExport={canExport} />
+      </MeetingSessionProvider>
     </>
   )
 }
@@ -172,6 +211,8 @@ describe('ExportPanel authorization and download boundary', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.unstubAllEnvs()
+    sessionStorage.clear()
+    authorizationMocks.value.meetingId = '11111111-1111-4111-8111-111111111111'
     vi.stubEnv('VITE_EXPORT_DOWNLOAD_HOSTS', 'localhost')
     minutesData.value = {
       ...minutesData.value,

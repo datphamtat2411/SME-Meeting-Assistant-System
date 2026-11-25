@@ -99,7 +99,7 @@ export function ActionForm({
   )
   const setMeetingDirty = useOptionalMeetingSession()?.setIntelligenceDraftDirty
   const detail = useQuery({
-    ...actionDetailQuery(item?.id),
+    ...actionDetailQuery(item?.id, item?.meetingId),
     enabled: open && Boolean(item),
   })
   const targets = useQuery({
@@ -159,10 +159,20 @@ export function ActionForm({
         throw new Error('The Action Item operation is no longer authorized.')
       if (submission.reviewed) {
         const reviewed = submission.reviewed
+        const patch = buildActionPatch(reviewed.item, submission.pending)
+        if (
+          patch.assigneeUserId !== undefined &&
+          !reviewed.item.capabilities.canAssign
+        ) {
+          throw new Error(
+            'Action Item assignment is no longer authorized for this review.'
+          )
+        }
         return patchAction(
           reviewed.item.id,
           reviewed.etag,
-          buildActionPatch(reviewed.item, submission.pending)
+          patch,
+          reviewed.item.meetingId
         )
       }
       if (!submission.creation)
@@ -197,7 +207,7 @@ export function ActionForm({
           message: 'Loading the current Action Item…',
         })
         try {
-          const latest = await actionDetail(reviewed.id)
+          const latest = await actionDetail(reviewed.id, reviewed.meetingId)
           if (!submission.owns()) return
           setConflict({
             reviewed,

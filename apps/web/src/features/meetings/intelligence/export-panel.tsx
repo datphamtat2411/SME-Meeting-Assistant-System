@@ -1,89 +1,23 @@
-import { useLayoutEffect, useRef, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useEffect, useRef } from 'react'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { Download, FileDown } from 'lucide-react'
 import { toast } from 'sonner'
-import { normalizeCoreApiError } from '@/lib/core-api'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { RequestError } from '@/components/request-state'
-import {
-  currentUserQueryKey,
-  type AuthContext,
-} from '@/features/auth/session/current-user'
+import { useOptionalMeetingSession } from '../media/meeting-session-context'
 import { useOptionalMeetingAuthorization } from '../meeting-authorization-context'
 import {
   accessMinutesExport,
-  createMinutesExport,
   exportStatusQuery,
-  type ExportAdmission,
   type ExportStatus,
 } from './export-api'
 import { minutesQuery } from './minutes-api'
 
 type ExportFormat = ExportStatus['format']
-type ExportOperation = {
-  idempotencyKey?: string
-  exportId?: string
-}
-type ExportOperations = Record<ExportFormat, ExportOperation>
 
 const formats: ExportFormat[] = ['MARKDOWN', 'PDF']
-
-function newOperations(): ExportOperations {
-  return {
-    PDF: {},
-    MARKDOWN: {},
-  }
-}
-
-function storageKey(scope: string) {
-  return `sme:meeting-minutes-export:v2:${scope}`
-}
-
-function loadOperations(scope: string | null): ExportOperations {
-  const fallback = newOperations()
-  if (!scope) return fallback
-  try {
-    const raw = sessionStorage.getItem(storageKey(scope))
-    if (!raw) return fallback
-    const parsed: unknown = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object') return fallback
-    const record = parsed as Record<string, unknown>
-    return {
-      PDF: readOperation(record.PDF, fallback.PDF),
-      MARKDOWN: readOperation(record.MARKDOWN, fallback.MARKDOWN),
-    }
-  } catch {
-    return fallback
-  }
-}
-
-function readOperation(
-  value: unknown,
-  fallback: ExportOperation
-): ExportOperation {
-  if (!value || typeof value !== 'object') return fallback
-  const operation = value as Record<string, unknown>
-  return {
-    idempotencyKey:
-      typeof operation.idempotencyKey === 'string'
-        ? operation.idempotencyKey
-        : fallback.idempotencyKey,
-    exportId:
-      typeof operation.exportId === 'string' ? operation.exportId : undefined,
-  }
-}
-
-function persistOperations(scope: string | null, operations: ExportOperations) {
-  if (!scope) return
-  try {
-    sessionStorage.setItem(storageKey(scope), JSON.stringify(operations))
-  } catch {
-    // The server-side idempotency key remains authoritative when storage is
-    // unavailable; this only removes reload recovery for this browser.
-  }
-}
 
 function expectedContentType(format: ExportFormat) {
   return format === 'PDF' ? 'application/pdf' : 'text/markdown; charset=UTF-8'
@@ -162,64 +96,48 @@ export function ExportPanel({
   meetingId: string
   canExport: boolean
 }) {
-  const qc = useQueryClient()
   const authorization = useOptionalMeetingAuthorization()
-  const identity =
-    authorization?.identity ?? qc.getQueryData<AuthContext>(currentUserQueryKey)
-  const sessionScope = identity?.session?.id
-    ? `${identity.userId}:${identity.session.id}:${meetingId}`
-    : null
-  const scope = sessionScope ?? `standalone:${meetingId}`
+  const session = useOptionalMeetingSession()
+  const exportOwner = session?.exportOperations
   const authorized =
     canExport &&
-    (!authorization ||
-      (authorization.canReadProtectedData &&
-        !authorization.isConfirmedAccessLoss))
-  const canExportRef = useRef(authorized)
+    Boolean(
+      authorization?.scopeReady &&
+      authorization.canReadProtectedData &&
+      !authorization.isConfirmedAccessLoss &&
+      exportOwner
+    )
   const mounted = useRef(false)
-  const lifecycleGeneration = useRef(0)
+  const presentationGeneration = useRef(0)
   const downloadOperationGeneration = useRef(0)
-  const admissionOwner = useRef<string | null>(null)
-  const [operationCache, setOperationCache] = useState<
-    Record<string, ExportOperations>
-  >({})
-  const operations = operationCache[scope] ?? loadOperations(sessionScope)
+  const operations = exportOwner?.operations ?? {
+    PDF: undefined,
+    MARKDOWN: undefined,
+  }
 
-  useLayoutEffect(() => {
-    canExportRef.current = authorized
+  useEffect(() => {
     if (!authorized) downloadOperationGeneration.current += 1
   }, [authorized])
 
-  useLayoutEffect(() => {
-    if (!authorization?.isConfirmedAccessLoss || !sessionScope) return
-    try {
-      sessionStorage.removeItem(storageKey(sessionScope))
-    } catch {
-      // Storage may be unavailable.
-    }
-  }, [authorization?.isConfirmedAccessLoss, sessionScope])
-
-  useLayoutEffect(() => {
+  useEffect(() => {
     mounted.current = true
-    const generation = ++lifecycleGeneration.current
+    const generation = ++presentationGeneration.current
     return () => {
-      if (lifecycleGeneration.current !== generation) return
+      if (presentationGeneration.current !== generation) return
       mounted.current = false
-      lifecycleGeneration.current += 1
+      presentationGeneration.current += 1
       downloadOperationGeneration.current += 1
     }
-  }, [scope, authorized])
-
-  function updateOperations(next: ExportOperations) {
-    persistOperations(sessionScope, next)
-    setOperationCache((current) => ({ ...current, [scope]: next }))
-  }
+  }, [authorized, meetingId])
 
   const minutes = useQuery({ ...minutesQuery(meetingId), enabled: authorized })
   const statusQueries = {
     PDF: useQuery({
-      ...exportStatusQuery(operations.PDF.exportId ?? ''),
-      enabled: authorized && Boolean(operations.PDF.exportId),
+      ...exportStatusQuery(operations.PDF?.exportId ?? '', {
+        meetingId,
+        format: 'PDF',
+      }),
+      enabled: authorized && Boolean(operations.PDF?.exportId),
       refetchInterval: (query) => {
         const value = query.state.data as ExportStatus | undefined
         return !value ||
@@ -230,8 +148,11 @@ export function ExportPanel({
       },
     }),
     MARKDOWN: useQuery({
-      ...exportStatusQuery(operations.MARKDOWN.exportId ?? ''),
-      enabled: authorized && Boolean(operations.MARKDOWN.exportId),
+      ...exportStatusQuery(operations.MARKDOWN?.exportId ?? '', {
+        meetingId,
+        format: 'MARKDOWN',
+      }),
+      enabled: authorized && Boolean(operations.MARKDOWN?.exportId),
       refetchInterval: (query) => {
         const value = query.state.data as ExportStatus | undefined
         return !value ||
@@ -243,85 +164,14 @@ export function ExportPanel({
     }),
   } satisfies Record<ExportFormat, ReturnType<typeof useQuery<ExportStatus>>>
 
-  const create = useMutation({
-    mutationFn: (variables: {
-      format: ExportFormat
-      idempotencyKey: string
-      generation: number
-      recovery: boolean
-    }) =>
-      createMinutesExport(
-        meetingId,
-        variables.format,
-        variables.idempotencyKey
-      ),
-    onSuccess: (data: ExportAdmission, variables) => {
-      if (admissionOwner.current === variables.idempotencyKey)
-        admissionOwner.current = null
-      if (
-        !mounted.current ||
-        !canExportRef.current ||
-        lifecycleGeneration.current !== variables.generation
-      )
-        return
-      const currentOperations =
-        operationCache[scope] ?? loadOperations(sessionScope)
-      // The admission intent was recorded before dispatch, so a receipt can be
-      // stored independently of all subsequent status observation.
-      const next = {
-        ...currentOperations,
-        [variables.format]: {
-          idempotencyKey: variables.idempotencyKey,
-          exportId: data.exportId,
-        },
-      }
-      updateOperations(next)
-      toast.success(
-        variables.recovery
-          ? 'Original export request recovered'
-          : `${variables.format} export queued`
-      )
-    },
-    onError: (error, variables) => {
-      if (admissionOwner.current === variables.idempotencyKey)
-        admissionOwner.current = null
-      if (
-        !mounted.current ||
-        !canExportRef.current ||
-        lifecycleGeneration.current !== variables.generation
-      )
-        return
-      const failure = normalizeCoreApiError(error)
-      const uncertain =
-        failure.recoveryOutcome === 'uncertain' ||
-        failure.isNetworkError ||
-        failure.isServerError ||
-        failure.kind === 'malformed'
-      // A rejected retry does not establish that an earlier uncertain request
-      // failed. Keep its identity until the original outcome is resolved.
-      if (!uncertain && !variables.recovery) {
-        const currentOperations =
-          operationCache[scope] ?? loadOperations(sessionScope)
-        updateOperations({ ...currentOperations, [variables.format]: {} })
-      }
-      if (failure.status === 422 || failure.status === 409) {
-        void minutes.refetch()
-      }
-      toast.error(
-        uncertain || variables.recovery
-          ? 'Export admission is uncertain. Recover the same request.'
-          : 'Export request unavailable',
-        { description: error instanceof Error ? error.message : undefined }
-      )
-    },
-  })
-
   function isTerminal(format: ExportFormat) {
+    const operation = operations[format]
     const observation = statusQueries[format]
     const status = observation.data
     return (
+      Boolean(operation?.exportId) &&
       !observation.isError &&
-      status?.exportId === operations[format].exportId &&
+      status?.exportId === operation?.exportId &&
       status?.meetingId === meetingId &&
       status?.format === format &&
       (status?.status === 'READY' || status?.status === 'FAILED')
@@ -329,51 +179,49 @@ export function ExportPanel({
   }
 
   function beginExport(format: ExportFormat) {
-    if (!authorized || admissionOwner.current || create.isPending) return
+    if (!authorized || !exportOwner || exportOwner.pending[format]) return
     const operation = operations[format]
-    if (operation.exportId && !isTerminal(format)) {
+    if (operation?.exportId && !isTerminal(format)) {
       void statusQueries[format].refetch()
       return
     }
-    const recovery = Boolean(operation.idempotencyKey && !operation.exportId)
+    const recovery = Boolean(operation?.idempotencyKey && !operation.exportId)
     if (
       !recovery &&
       (minutes.isError ||
         minutes.data?.completeness !== 'COMPLETE' ||
         minutes.data.proposalsIncluded)
-    )
+    ) {
       return
-    const key = recovery ? operation.idempotencyKey! : crypto.randomUUID()
-    admissionOwner.current = key
+    }
     downloadOperationGeneration.current += 1
-    updateOperations({ ...operations, [format]: { idempotencyKey: key } })
-    create.mutate({
-      format,
-      idempotencyKey: key,
-      generation: lifecycleGeneration.current,
-      recovery,
+    exportOwner.admit(format, {
+      allowReplacement: Boolean(operation?.exportId && isTerminal(format)),
     })
   }
 
   const download = useMutation({
     mutationFn: async (format: ExportFormat) => {
-      if (!canExportRef.current) {
+      if (!authorized || !exportOwner) {
         throw new Error('Minutes export is no longer authorized.')
       }
-      const scopeMeetingId = meetingId
-      const exportId = operations[format].exportId
+      const operation = operations[format]
+      const exportId = operation?.exportId
       if (!exportId) throw new Error('No export operation is available.')
-      const operation = {
+      const presentationOperation = {
         exportId,
-        meetingId: scopeMeetingId,
-        lifecycle: lifecycleGeneration.current,
+        intentId: operation.intentId,
+        meetingId,
+        presentation: presentationGeneration.current,
         generation: ++downloadOperationGeneration.current,
       }
       const isCurrentOperation = () =>
         mounted.current &&
-        canExportRef.current &&
-        lifecycleGeneration.current === operation.lifecycle &&
-        downloadOperationGeneration.current === operation.generation
+        authorized &&
+        presentationGeneration.current === presentationOperation.presentation &&
+        downloadOperationGeneration.current ===
+          presentationOperation.generation &&
+        exportOwner.isCurrent(format, presentationOperation.intentId)
 
       if (!isCurrentOperation()) return
       const observed = await statusQueries[format].refetch()
@@ -384,7 +232,7 @@ export function ExportPanel({
         !status ||
         status.freshness !== 'CURRENT' ||
         status.exportId !== exportId ||
-        status.meetingId !== operation.meetingId ||
+        status.meetingId !== presentationOperation.meetingId ||
         status.format !== format ||
         status.status !== 'READY'
       ) {
@@ -419,7 +267,7 @@ export function ExportPanel({
         </CardTitle>
         <p className='text-sm text-muted-foreground'>
           Exports require a complete, reviewed Minutes snapshot. Each format has
-          its own durable operation and idempotency key.
+          its own meeting-scoped operation and idempotency key.
         </p>
       </CardHeader>
       <CardContent className='space-y-4'>
@@ -428,10 +276,10 @@ export function ExportPanel({
             {formats.map((format) => {
               const operation = operations[format]
               const recovering = Boolean(
-                operation.idempotencyKey && !operation.exportId
+                operation?.idempotencyKey && !operation.exportId
               )
               const observing = Boolean(
-                operation.exportId && !isTerminal(format)
+                operation?.exportId && !isTerminal(format)
               )
               const label = format === 'PDF' ? 'PDF' : 'Markdown'
               return (
@@ -440,7 +288,7 @@ export function ExportPanel({
                   size='sm'
                   variant={format === 'PDF' ? 'default' : 'outline'}
                   disabled={
-                    create.isPending ||
+                    exportOwner?.pending[format] === true ||
                     (!recovering &&
                       !observing &&
                       (minutes.isError ||
@@ -485,6 +333,7 @@ export function ExportPanel({
           formats.map((format) => {
             const query = statusQueries[format]
             const status = query.data
+            const operation = operations[format]
             if (query.isError) {
               return (
                 <RequestError
@@ -496,7 +345,7 @@ export function ExportPanel({
             }
             if (
               !status ||
-              status.exportId !== operations[format].exportId ||
+              status.exportId !== operation?.exportId ||
               status.meetingId !== meetingId ||
               status.format !== format
             ) {

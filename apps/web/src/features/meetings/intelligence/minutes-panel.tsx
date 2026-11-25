@@ -69,8 +69,12 @@ export function MinutesPanel({
 
   const minutes = query.data
   const proposalsIncluded = minutes.proposalsIncluded
+  const assigneeDisplayNames =
+    minutes.displayMetadata?.assigneeDisplayNames ?? {}
   const person = (id: string | null) =>
-    id ? (names[id] ?? 'Name unavailable') : 'Unassigned'
+    id
+      ? (assigneeDisplayNames[id] ?? names[id] ?? 'Name unavailable')
+      : 'Unassigned'
   const time = (value: string | null) =>
     value ? new Date(value).toLocaleString() : 'Not recorded'
   return (

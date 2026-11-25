@@ -91,6 +91,12 @@ describe('canonical Minutes adapter', () => {
     ).toThrowError(CoreApiError)
   })
 
+  it('rejects a snapshot whose meeting identity does not match the request', () => {
+    expect(() =>
+      parseMinutes(validMinutes(), '66666666-6666-4666-8666-666666666666')
+    ).toThrowError(/different meeting/i)
+  })
+
   it('rejects malformed fingerprints and unconfirmed work', () => {
     expect(() =>
       parseMinutes({

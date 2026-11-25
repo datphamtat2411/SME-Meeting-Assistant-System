@@ -16,6 +16,15 @@ export const exportStatusSchema = z.object({
 })
 export type ExportStatus = z.infer<typeof exportStatusSchema>
 
+function malformedExportResponse(message: string, cause?: unknown) {
+  return new CoreApiError({
+    message,
+    code: 'MALFORMED_RESPONSE',
+    kind: 'malformed',
+    cause,
+  })
+}
+
 const exportAdmissionSchema = z.object({
   exportId: z.string().uuid(),
   meetingId: z.string().uuid(),
@@ -68,32 +77,86 @@ export async function createMinutesExport(
     throw error
   }
 }
-export function exportStatusQuery(exportId: string) {
+export function parseExportStatus(
+  value: unknown,
+  expected?: {
+    exportId?: string
+    meetingId?: string
+    format?: ExportStatus['format']
+  }
+): ExportStatus {
+  const parsed = exportStatusSchema.safeParse(value)
+  if (!parsed.success) {
+    throw malformedExportResponse(
+      'Core API returned a malformed export status response.',
+      parsed.error
+    )
+  }
+  if (expected?.exportId && parsed.data.exportId !== expected.exportId) {
+    throw malformedExportResponse(
+      'Core API returned the status of a different export.'
+    )
+  }
+  if (expected?.meetingId && parsed.data.meetingId !== expected.meetingId) {
+    throw malformedExportResponse(
+      'Core API returned export status for a different meeting.'
+    )
+  }
+  if (expected?.format && parsed.data.format !== expected.format) {
+    throw malformedExportResponse(
+      'Core API returned export status for a different format.'
+    )
+  }
+  return parsed.data
+}
+
+export function exportStatusQuery(
+  exportId: string,
+  expected?: { meetingId?: string; format?: ExportStatus['format'] }
+) {
+  const expectedMeetingId = expected?.meetingId
+  const expectedFormat = expected?.format
   return queryOptions({
-    queryKey: ['export', exportId],
+    queryKey: ['export', exportId, expectedMeetingId, expectedFormat],
     queryFn: async ({ signal }) =>
-      exportStatusSchema.parse(
+      parseExportStatus(
         await coreApi.get<unknown>('/exports/' + encodeURIComponent(exportId), {
           signal,
-        })
+        }),
+        {
+          exportId,
+          meetingId: expectedMeetingId,
+          format: expectedFormat,
+        }
       ),
     retry: false,
   })
 }
 export async function accessMinutesExport(exportId: string) {
-  return z
-    .object({
-      exportId: z.string().uuid(),
-      accessUrl: z.string().url(),
-      filename: z.string().min(1).max(160),
-      contentType: z.string(),
-      expiresAt: z.string().datetime({ offset: true }),
-      freshness: z.enum(['CURRENT', 'STALE', 'NOT_APPLICABLE', 'UNKNOWN']),
-      freshnessCheckedAt: z.string().datetime({ offset: true }),
-    })
-    .parse(
-      await coreApi.post<unknown>(
-        '/exports/' + encodeURIComponent(exportId) + '/access-url'
-      )
+  const schema = z.object({
+    exportId: z.string().uuid(),
+    accessUrl: z.string().url(),
+    filename: z.string().min(1).max(160),
+    contentType: z.string(),
+    expiresAt: z.string().datetime({ offset: true }),
+    freshness: z.enum(['CURRENT', 'STALE', 'NOT_APPLICABLE', 'UNKNOWN']),
+    freshnessCheckedAt: z.string().datetime({ offset: true }),
+  })
+  const parsed = schema.safeParse(
+    await coreApi.post<unknown>(
+      '/exports/' + encodeURIComponent(exportId) + '/access-url'
     )
+  )
+  if (!parsed.success) {
+    throw malformedExportResponse(
+      'Core API returned a malformed export download capability.',
+      parsed.error
+    )
+  }
+  if (parsed.data.exportId !== exportId) {
+    throw malformedExportResponse(
+      'Core API returned a download capability for a different export.'
+    )
+  }
+  return parsed.data
 }

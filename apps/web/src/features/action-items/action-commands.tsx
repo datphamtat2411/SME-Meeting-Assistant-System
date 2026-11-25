@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { normalizeCoreApiError } from '@/lib/core-api'
@@ -43,6 +43,8 @@ type Review = {
   item: ActionItem
   etag: string
   command: ActionCommand
+  owns: () => boolean
+  sourceItem: ActionItem
 }
 
 function eligible(item: ActionItem, command: ActionCommand) {
@@ -62,8 +64,13 @@ export function ActionCommands({
 }) {
   const qc = useQueryClient()
   const operation = useRef(0)
-  const visibleCommands = allowed[item.status].filter(
-    (command) => item.capabilities[capabilityFor[command]]
+  const authoritativeItem = useRef(item)
+  const currentItem = useRef(item)
+  useLayoutEffect(() => {
+    currentItem.current = item
+  }, [item])
+  const visibleCommands = allowed[item.status].filter((command) =>
+    eligible(item, command)
   )
   const captureScope = useActionOperationScope(
     item.id,
@@ -75,6 +82,13 @@ export function ActionCommands({
     latest: Review | null
     message: string
   } | null>(null)
+  const activeReview =
+    review &&
+    review.sourceItem === item &&
+    eligible(item, review.command) &&
+    review.owns()
+      ? review
+      : null
 
   const commandMutation = useMutation({
     mutationFn: async (variables: { review: Review; owns: () => boolean }) => {
@@ -84,7 +98,12 @@ export function ActionCommands({
       )
         throw new Error('Action Item command is no longer eligible.')
       const snapshot = variables.review
-      return actionCommand(snapshot.item.id, snapshot.command, snapshot.etag)
+      return actionCommand(
+        snapshot.item.id,
+        snapshot.command,
+        snapshot.etag,
+        snapshot.item.meetingId
+      )
     },
     onSuccess: (result, variables) => {
       if (!variables.owns()) return
@@ -104,10 +123,18 @@ export function ActionCommands({
         })
         setReviewPending(true)
         try {
-          const latest = await actionDetail(variables.review.item.id)
+          const latest = await actionDetail(
+            variables.review.item.id,
+            variables.review.item.meetingId
+          )
           if (!variables.owns()) return
           setConflict({
-            latest: { ...latest, command: variables.review.command },
+            latest: {
+              ...latest,
+              command: variables.review.command,
+              owns: variables.review.owns,
+              sourceItem: variables.review.sourceItem,
+            },
             message:
               'The Action Item changed. Review its current state before applying this command.',
           })
@@ -133,12 +160,18 @@ export function ActionCommands({
   async function beginReview(command: ActionCommand) {
     const scope = captureScope()
     const identity = ++operation.current
-    const owns = () => scope() && operation.current === identity
+    const sourceItem = item
+    authoritativeItem.current = sourceItem
+    const owns = () =>
+      scope() &&
+      operation.current === identity &&
+      currentItem.current === sourceItem &&
+      eligible(authoritativeItem.current, command)
     if (!owns()) return
     setReviewPending(true)
     setConflict(null)
     try {
-      const snapshot = await actionDetail(item.id)
+      const snapshot = await actionDetail(item.id, item.meetingId)
       if (!owns()) return
       if (
         !snapshot.item.capabilities[capabilityFor[command]] ||
@@ -146,7 +179,14 @@ export function ActionCommands({
       ) {
         throw new Error('This Action Item command is no longer authorized.')
       }
-      setReview({ item: snapshot.item, etag: snapshot.etag, command })
+      authoritativeItem.current = snapshot.item
+      setReview({
+        item: snapshot.item,
+        etag: snapshot.etag,
+        command,
+        owns,
+        sourceItem,
+      })
     } catch (error) {
       if (!owns()) return
       toast.error('Unable to open the Action Item review', {
@@ -177,7 +217,7 @@ export function ActionCommands({
         ))}
       </div>
       <ConfirmDialog
-        open={Boolean(review)}
+        open={Boolean(activeReview)}
         onOpenChange={(open) => {
           if (!open && !commandMutation.isPending) {
             operation.current += 1
@@ -186,19 +226,19 @@ export function ActionCommands({
             setReviewPending(false)
           }
         }}
-        title={`${labels[review?.command ?? 'start']} Action Item`}
+        title={`${labels[activeReview?.command ?? 'start']} Action Item`}
         desc={
-          review ? (
+          activeReview ? (
             <div className='space-y-2'>
               <p>
                 Review the authoritative snapshot before applying this command.
               </p>
               <ReviewContent
-                item={review.item}
-                showEvidence={item.capabilities.canAccessEvidence}
+                item={activeReview.item}
+                showEvidence={activeReview.item.capabilities.canAccessEvidence}
               />
-              {review.command === 'confirm' &&
-                !review.item.assignee?.active && (
+              {activeReview.command === 'confirm' &&
+                !activeReview.item.assignee?.active && (
                   <p role='alert'>
                     Assign an eligible active primary owner before confirmation.
                   </p>
@@ -211,7 +251,9 @@ export function ActionCommands({
                       <p className='font-medium'>Current server state</p>
                       <ReviewContent
                         item={conflict.latest.item}
-                        showEvidence={item.capabilities.canAccessEvidence}
+                        showEvidence={
+                          conflict.latest.item.capabilities.canAccessEvidence
+                        }
                       />
                       {eligible(
                         conflict.latest.item,
@@ -222,9 +264,24 @@ export function ActionCommands({
                           variant='outline'
                           size='sm'
                           onClick={() => {
-                            setReview(conflict.latest)
+                            const scope = captureScope()
+                            const identity = ++operation.current
+                            const sourceItem = item
+                            const owns = () =>
+                              scope() &&
+                              operation.current === identity &&
+                              currentItem.current === sourceItem &&
+                              eligible(
+                                authoritativeItem.current,
+                                conflict.latest!.command
+                              )
+                            authoritativeItem.current = conflict.latest!.item
+                            setReview({
+                              ...conflict.latest!,
+                              owns,
+                              sourceItem,
+                            })
                             setConflict(null)
-                            operation.current += 1
                           }}
                         >
                           Review updated state
@@ -242,19 +299,24 @@ export function ActionCommands({
           )
         }
         destructive={
-          review?.command === 'reject' || review?.command === 'cancel'
+          activeReview?.command === 'reject' ||
+          activeReview?.command === 'cancel'
         }
         disabled={
-          !review || Boolean(conflict) || !eligible(review.item, review.command)
+          !activeReview ||
+          Boolean(conflict) ||
+          !eligible(activeReview.item, activeReview.command)
         }
         isLoading={commandMutation.isPending || reviewPending}
-        confirmText={labels[review?.command ?? 'start']}
+        confirmText={labels[activeReview?.command ?? 'start']}
         handleConfirm={() => {
-          if (!review || conflict || commandMutation.isPending) return
-          const scope = captureScope()
-          const identity = operation.current
-          const owns = () => scope() && operation.current === identity
-          if (owns()) commandMutation.mutate({ review, owns })
+          if (!activeReview || conflict || commandMutation.isPending) return
+          if (activeReview.owns()) {
+            commandMutation.mutate({
+              review: activeReview,
+              owns: activeReview.owns,
+            })
+          }
         }}
       />
     </>

@@ -87,6 +87,11 @@ export const minutesSchema = z
         unresolvedCoverageRegions: z.number(),
       })
       .passthrough(),
+    displayMetadata: z
+      .object({
+        assigneeDisplayNames: z.record(z.string(), z.string()),
+      })
+      .default({ assigneeDisplayNames: {} }),
   })
   .passthrough()
   .superRefine((minutes, context) => {
@@ -114,7 +119,10 @@ export const minutesSchema = z
   })
 export type MeetingMinutes = z.infer<typeof minutesSchema>
 
-export function parseMinutes(value: unknown): MeetingMinutes {
+export function parseMinutes(
+  value: unknown,
+  expectedMeetingId?: string
+): MeetingMinutes {
   const parsed = minutesSchema.safeParse(value)
   if (!parsed.success) {
     throw new CoreApiError({
@@ -122,6 +130,14 @@ export function parseMinutes(value: unknown): MeetingMinutes {
       code: 'MALFORMED_MINUTES_SNAPSHOT',
       kind: 'malformed',
       cause: parsed.error,
+    })
+  }
+  if (expectedMeetingId && parsed.data.meeting.id !== expectedMeetingId) {
+    throw new CoreApiError({
+      message:
+        'Core API returned a canonical Minutes snapshot for a different meeting.',
+      code: 'MALFORMED_MINUTES_SNAPSHOT',
+      kind: 'malformed',
     })
   }
   return parsed.data
@@ -135,7 +151,8 @@ export function minutesQuery(meetingId: string) {
         await coreApi.get<unknown>(
           '/meetings/' + encodeURIComponent(meetingId) + '/minutes',
           { signal }
-        )
+        ),
+        meetingId
       ),
     retry: false,
   })
