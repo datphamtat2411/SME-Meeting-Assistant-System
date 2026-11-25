@@ -67,6 +67,7 @@ export function ActionCommands({
   const authoritativeItem = useRef(item)
   const currentItem = useRef(item)
   useLayoutEffect(() => {
+    if (currentItem.current !== item) operation.current += 1
     currentItem.current = item
   }, [item])
   const visibleCommands = allowed[item.status].filter((command) =>
@@ -77,7 +78,10 @@ export function ActionCommands({
     visibleCommands.length > 0
   )
   const [review, setReview] = useState<Review | null>(null)
-  const [reviewPending, setReviewPending] = useState(false)
+  const [pendingReview, setPendingReview] = useState<{
+    owns: () => boolean
+  } | null>(null)
+  const reviewPending = pendingReview?.owns() === true
   const [conflict, setConflict] = useState<{
     latest: Review | null
     message: string
@@ -115,13 +119,18 @@ export function ActionCommands({
     },
     onError: async (error, variables) => {
       if (!variables.owns()) return
-      const status = normalizeCoreApiError(error).status
-      if (status === 412 || status === 409) {
+      const failure = normalizeCoreApiError(error)
+      const uncertain =
+        failure.recoveryOutcome === 'uncertain' ||
+        failure.isNetworkError ||
+        failure.isServerError ||
+        failure.kind === 'malformed'
+      if (failure.status === 412 || failure.status === 409 || uncertain) {
         setConflict({
           latest: null,
           message: 'Loading the current Action Item…',
         })
-        setReviewPending(true)
+        setPendingReview({ owns: variables.owns })
         try {
           const latest = await actionDetail(
             variables.review.item.id,
@@ -135,8 +144,9 @@ export function ActionCommands({
               owns: variables.review.owns,
               sourceItem: variables.review.sourceItem,
             },
-            message:
-              'The Action Item changed. Review its current state before applying this command.',
+            message: uncertain
+              ? 'The previous command could not be verified. Review the current state before applying another command.'
+              : 'The Action Item changed. Review its current state before applying this command.',
           })
         } catch {
           if (variables.owns()) {
@@ -147,7 +157,9 @@ export function ActionCommands({
             })
           }
         } finally {
-          if (variables.owns()) setReviewPending(false)
+          setPendingReview((pending) =>
+            pending?.owns === variables.owns ? null : pending
+          )
         }
         return
       }
@@ -168,7 +180,7 @@ export function ActionCommands({
       currentItem.current === sourceItem &&
       eligible(authoritativeItem.current, command)
     if (!owns()) return
-    setReviewPending(true)
+    setPendingReview({ owns })
     setConflict(null)
     try {
       const snapshot = await actionDetail(item.id, item.meetingId)
@@ -193,7 +205,9 @@ export function ActionCommands({
         description: error instanceof Error ? error.message : undefined,
       })
     } finally {
-      if (owns()) setReviewPending(false)
+      setPendingReview((pending) =>
+        pending?.owns === owns ? null : pending
+      )
     }
   }
 
@@ -223,7 +237,7 @@ export function ActionCommands({
             operation.current += 1
             setReview(null)
             setConflict(null)
-            setReviewPending(false)
+            setPendingReview(null)
           }
         }}
         title={`${labels[activeReview?.command ?? 'start']} Action Item`}
@@ -264,6 +278,7 @@ export function ActionCommands({
                           variant='outline'
                           size='sm'
                           onClick={() => {
+                            if (!activeReview.owns()) return
                             const scope = captureScope()
                             const identity = ++operation.current
                             const sourceItem = item

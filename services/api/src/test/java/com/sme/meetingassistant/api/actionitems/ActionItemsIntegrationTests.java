@@ -224,10 +224,16 @@ class ActionItemsIntegrationTests {
         assertThat(scoped.path("createdByUserId").isNull()).isTrue();
         assertThat(scoped.path("confirmedByUserId").isNull()).isTrue();
         assertThat(scoped.path("confirmedAt").isNull()).isTrue();
+        assertThat(scoped.path("isOfficial").asBoolean()).isTrue();
+        assertThat(scoped.path("capabilities").path("canComplete").asBoolean()).isTrue();
+        assertThat(scoped.path("capabilities").path("canCancel").asBoolean()).isFalse();
+        assertThat(scoped.path("capabilities").path("canAccessMeeting").asBoolean()).isFalse();
+        assertThat(scoped.path("capabilities").path("canAccessEvidence").asBoolean()).isFalse();
 
         MvcResult list = mvc.perform(get("/api/v1/action-items").principal(principal(outsider))
                 .param("assignee", "me").param("meetingId",meetingId.toString())
-                .param("status","OPEN").param("q","Gửi báo cáo").param("page","0").param("size","1"))
+                .param("status","OPEN").param("official","true")
+                .param("q","Gửi báo cáo").param("page","0").param("size","1"))
             .andExpect(status().isOk()).andReturn();
         assertThat(body(list).path("meta").path("pagination").path("totalElements").asLong())
             .isEqualTo(1);

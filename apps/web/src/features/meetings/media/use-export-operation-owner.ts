@@ -266,6 +266,8 @@ export function useExportOperationOwner({
     return () => {
       ownerActive.current = false
       ownerGeneration.current += 1
+      activeScopeRef.current = undefined
+      executing.current = {}
     }
   }, [])
 
@@ -322,8 +324,6 @@ export function useExportOperationOwner({
           scope.sessionId,
           scope.meetingId
         )
-      }
-      if (scope) {
         const predicate = (query: { queryKey: readonly unknown[] }) =>
           (query.queryKey[0] === 'export' &&
             query.queryKey[2] === scope.meetingId) ||
@@ -341,16 +341,41 @@ export function useExportOperationOwner({
     [queryClient]
   )
 
-  useEffect(() => {
-    const nextScope = currentScope()
-    const previous = activeScopeRef.current
-    const confirmedLoss =
-      authorization?.isConfirmedAccessLoss ||
+  const actorId =
+    authorization?.meetingId === meetingId
+      ? authorization.identity?.userId
+      : undefined
+  const sessionId =
+    authorization?.meetingId === meetingId
+      ? authorization.identity?.session?.id
+      : undefined
+  const confirmedLoss = Boolean(
+    authorization?.isConfirmedAccessLoss ||
       authorization?.status === 'confirmed-authentication-loss' ||
       authorization?.status === 'confirmed-authorization-denial' ||
       lifecycle.state === 'confirmed' ||
       (authorization?.scopeReady &&
         authorization.capabilities.authorizationResolution === 'denied')
+  )
+  const contentAuthorized = Boolean(
+    authorization?.scopeReady &&
+      authorization.canReadProtectedData &&
+      authorization.capabilities.canReadMeetingContent &&
+      !confirmedLoss &&
+      lifecycle.state === 'idle'
+  )
+
+  useEffect(() => {
+    const nextScope =
+      actorId && sessionId
+        ? {
+            actorId,
+            sessionId,
+            meetingId,
+            lifecycleGeneration: lifecycle.generation,
+          }
+        : undefined
+    let previous = activeScopeRef.current
 
     // Content access can be lost without losing the authenticated identity.
     // Retire before comparing or hydrating scopes.
@@ -361,14 +386,17 @@ export function useExportOperationOwner({
     }
 
     if (
-      !nextScope ||
-      !authorization?.scopeReady ||
-      !authorization.canReadProtectedData ||
-      !authorization.capabilities.canReadMeetingContent ||
-      lifecycle.state !== 'idle'
+      previous &&
+      nextScope &&
+      (previous.actorId !== nextScope.actorId ||
+        previous.sessionId !== nextScope.sessionId)
     ) {
-      return
+      retireOperations(previous)
+      activeScopeRef.current = undefined
+      previous = undefined
     }
+
+    if (!nextScope || !contentAuthorized) return
 
     const sameScope =
       previous?.actorId === nextScope.actorId &&
@@ -396,17 +424,12 @@ export function useExportOperationOwner({
     operationsRef.current = loaded
     setOperations(loaded)
   }, [
-    authorization?.isConfirmedAccessLoss,
-    authorization?.status,
-    authorization?.scopeReady,
-    authorization?.canReadProtectedData,
-    authorization?.capabilities.authorizationResolution,
-    authorization?.capabilities.canReadMeetingContent,
-    authorization?.identity?.userId,
-    authorization?.identity?.session?.id,
-    currentScope,
+    actorId,
+    sessionId,
+    meetingId,
+    confirmedLoss,
+    contentAuthorized,
     lifecycle.generation,
-    lifecycle.state,
     retireOperations,
   ])
 
@@ -445,7 +468,8 @@ export function useExportOperationOwner({
         activeScopeRef.current?.actorId !== scope.actorId ||
         activeScopeRef.current.sessionId !== scope.sessionId ||
         activeScopeRef.current.meetingId !== scope.meetingId ||
-        activeScopeRef.current.lifecycleGeneration !== scope.lifecycleGeneration ||
+        activeScopeRef.current.lifecycleGeneration !==
+          scope.lifecycleGeneration ||
         !authorizationRef.current?.scopeReady ||
         !authorizationRef.current.canReadProtectedData ||
         !authorizationRef.current.capabilities.canReadMeetingContent ||
@@ -548,8 +572,21 @@ export function useExportOperationOwner({
     [accepts]
   )
 
+  function visible(operation: ExportOperation | undefined) {
+    return contentAuthorized &&
+      operation?.actorId === actorId &&
+      operation?.sessionId === sessionId &&
+      operation?.meetingId === meetingId &&
+      operation?.lifecycleGeneration === lifecycle.generation
+      ? operation
+      : undefined
+  }
+
   return {
-    operations,
+    operations: {
+      PDF: visible(operations.PDF),
+      MARKDOWN: visible(operations.MARKDOWN),
+    },
     pending,
     lastFailure,
     admit,

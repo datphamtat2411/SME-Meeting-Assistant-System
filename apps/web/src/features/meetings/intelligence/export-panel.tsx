@@ -329,11 +329,11 @@ export function ExportPanel({
         {authorized &&
           minutes.data &&
           minutes.data.completeness !== 'COMPLETE' && (
-          <p className='text-sm text-amber-700'>
-            Minutes are {minutes.data.completeness}. Review missing or stale
-            content first.
-          </p>
-        )}
+            <p className='text-sm text-amber-700'>
+              Minutes are {minutes.data.completeness}. Review missing or stale
+              content first.
+            </p>
+          )}
         {authorized && proposalsIncluded && (
           <p className='text-sm text-amber-700'>
             Minutes contain unconfirmed AI proposals and are not eligible for

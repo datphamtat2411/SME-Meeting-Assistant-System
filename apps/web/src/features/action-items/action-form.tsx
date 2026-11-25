@@ -69,6 +69,7 @@ export function ActionForm({
   const [meetingSearch, setMeetingSearch] = useState('')
   const [userSearch, setUserSearch] = useState('')
   const [snapshot, setSnapshot] = useState<ActionMutationResult | null>(null)
+  const [reviewOwner, setReviewOwner] = useState<(() => boolean) | null>(null)
   const [conflict, setConflict] = useState<{
     reviewed: ActionItem
     latest: ActionItem | null
@@ -89,19 +90,28 @@ export function ActionForm({
   const initializedReview = useRef<string | null>(null)
   const operation = useRef(0)
   const isFixedMeeting = Boolean(item || meetingId)
-  const captureScope = useActionOperationScope(
-    item?.id ?? `new:${meeting}`,
-    open &&
-      (item
-        ? snapshot?.item.capabilities.canEdit === true &&
-          item.capabilities.canEdit
-        : canManageActionItems)
-  )
   const setMeetingDirty = useOptionalMeetingSession()?.setIntelligenceDraftDirty
   const detail = useQuery({
     ...actionDetailQuery(item?.id, item?.meetingId),
     enabled: open && Boolean(item),
   })
+  const canEditCurrent = Boolean(
+    item?.capabilities.canEdit &&
+      detail.data?.item.capabilities.canEdit &&
+      !detail.isError
+  )
+  const canAssignCurrent = Boolean(
+    item?.capabilities.canAssign &&
+      detail.data?.item.capabilities.canAssign &&
+      !detail.isError
+  )
+  const captureScope = useActionOperationScope(
+    item ? `${item.id}:assign:${canAssignCurrent}` : `new:${meeting}`,
+    open && (item ? canEditCurrent : canManageActionItems)
+  )
+  const assignmentAllowed = item
+    ? canAssignCurrent && snapshot?.item.capabilities.canAssign === true
+    : canManageActionItems
   const targets = useQuery({
     ...managementTargetsQuery(meetingSearch),
     enabled: open && !isFixedMeeting && meetingSearch.trim().length >= 2,
@@ -111,9 +121,7 @@ export function ActionForm({
     enabled:
       open &&
       Boolean(meeting) &&
-      (item
-        ? snapshot?.item.capabilities.canAssign === true
-        : canManageActionItems) &&
+      assignmentAllowed &&
       userSearch.trim().length >= 2,
   })
 
@@ -127,7 +135,10 @@ export function ActionForm({
       initializedReview.current === item.id
     )
       return
+    const owns = captureScope()
+    if (!owns()) return
     initializedReview.current = item.id
+    setReviewOwner(() => owns)
     setSnapshot(detail.data)
     setTitle(detail.data.item.title)
     setDetails(detail.data.item.details ?? '')
@@ -142,6 +153,7 @@ export function ActionForm({
     detail.isFetchedAfterMount,
     detail.isError,
     item,
+    captureScope,
   ])
 
   type Submission = {
@@ -162,7 +174,7 @@ export function ActionForm({
         const patch = buildActionPatch(reviewed.item, submission.pending)
         if (
           patch.assigneeUserId !== undefined &&
-          !reviewed.item.capabilities.canAssign
+          (!reviewed.item.capabilities.canAssign || !canAssignCurrent)
         ) {
           throw new Error(
             'Action Item assignment is no longer authorized for this review.'
@@ -193,9 +205,14 @@ export function ActionForm({
       submitting.current = false
       if (!submission.owns()) return
       const failure = normalizeCoreApiError(error)
+      const uncertain =
+        failure.recoveryOutcome === 'uncertain' ||
+        failure.isNetworkError ||
+        failure.isServerError ||
+        failure.kind === 'malformed'
       if (
         submission.reviewed &&
-        (failure.status === 412 || failure.status === 409)
+        (failure.status === 412 || failure.status === 409 || uncertain)
       ) {
         const reviewed = submission.reviewed.item
         const pending = submission.pending
@@ -214,6 +231,9 @@ export function ActionForm({
             pending,
             latest: latest.item,
             latestResult: latest,
+            message: uncertain
+              ? 'The previous save could not be verified. Review the current state before saving again.'
+              : undefined,
           })
         } catch (error) {
           if (!submission.owns()) return
@@ -230,11 +250,6 @@ export function ActionForm({
         }
         return
       }
-      const uncertain =
-        failure.recoveryOutcome === 'uncertain' ||
-        failure.isNetworkError ||
-        failure.isServerError ||
-        failure.kind === 'malformed'
       if (submission.creation && (uncertain || submission.recovering)) {
         setUnresolvedCreate(submission.creation.payload)
         toast.error('Creation outcome is uncertain', {
@@ -253,11 +268,11 @@ export function ActionForm({
 
   const editingAllowed = item
     ? snapshot?.item.capabilities.canEdit === true &&
-      item.capabilities.canEdit &&
-      !detail.isError
+      canEditCurrent &&
+      reviewOwner?.() === true
     : canManageActionItems
   const canClearAssignee =
-    snapshot?.item.status === 'PROPOSED' && snapshot.item.capabilities.canAssign
+    snapshot?.item.status === 'PROPOSED' && assignmentAllowed
   const displayItem = snapshot?.item ?? item
   const pending = { title, details, assigneeUserId: assignee, dueDate }
   const dirty =
@@ -293,7 +308,16 @@ export function ActionForm({
       (!item && !assignee)
     )
       return
-    const scope = captureScope()
+    const scope = item ? reviewOwner : captureScope()
+    if (!scope?.()) return
+    if (
+      item &&
+      snapshot &&
+      buildActionPatch(snapshot.item, pending).assigneeUserId !== undefined &&
+      !assignmentAllowed
+    ) {
+      return
+    }
     const identity = ++operation.current
     const owns = () => scope() && operation.current === identity
     if (!owns()) return
@@ -337,6 +361,25 @@ export function ActionForm({
     onOpenChange(next)
   }
 
+  if (item && snapshot && !editingAllowed) {
+    return (
+      <Dialog open={open} onOpenChange={close}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Action Item review expired</DialogTitle>
+            <DialogDescription>
+              Access or editing authority changed. Close this review and reopen
+              the Action Item to verify the current state.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button onClick={() => close(false)}>Close review</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    )
+  }
+
   return (
     <Dialog open={open} onOpenChange={close}>
       <DialogContent className='max-h-[90vh] overflow-auto sm:max-w-2xl'>
@@ -368,7 +411,8 @@ export function ActionForm({
             className='space-y-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-200'
           >
             <p className='font-medium'>
-              This Action Item changed while you were editing.
+              {conflict.message ??
+                'This Action Item changed while you were editing.'}
             </p>
             <p>
               Reviewed: {conflict.reviewed.title} · version{' '}
@@ -397,14 +441,25 @@ export function ActionForm({
                   type='button'
                   size='sm'
                   variant='outline'
-                  disabled={!conflict.latest.capabilities.canEdit}
+                  disabled={
+                    !conflict.latest.capabilities.canEdit || !editingAllowed
+                  }
                   onClick={() => {
+                    if (!reviewOwner?.() || !editingAllowed) return
                     const latest = conflict.latest!
                     const next = rebaseActionDraft(
                       conflict.reviewed,
                       latest,
                       conflict.pending
                     )
+                    if (
+                      buildActionPatch(latest, next).assigneeUserId !==
+                        undefined &&
+                      !latest.capabilities.canAssign
+                    ) {
+                      toast.error('Assignment is no longer authorized.')
+                      return
+                    }
                     setSnapshot(conflict.latestResult!)
                     setTitle(next.title)
                     setDetails(next.details)
@@ -537,6 +592,7 @@ export function ActionForm({
                 value={userSearch}
                 disabled={
                   !editingAllowed ||
+                  !assignmentAllowed ||
                   mutation.isPending ||
                   Boolean(conflict) ||
                   Boolean(unresolvedCreate)
@@ -581,18 +637,20 @@ export function ActionForm({
                   Searching active users…
                 </p>
               )}
-              {candidates.data?.items.map((candidate) => (
+              {assignmentAllowed && candidates.data?.items.map((candidate) => (
                 <button
                   key={candidate.id}
                   type='button'
                   className='flex w-full items-center justify-between rounded px-3 py-2 text-left text-sm hover:bg-accent'
                   disabled={
                     !editingAllowed ||
+                    !assignmentAllowed ||
                     mutation.isPending ||
                     Boolean(conflict) ||
                     Boolean(unresolvedCreate)
                   }
                   onClick={() => {
+                    if (!assignmentAllowed) return
                     setAssignee(candidate.id)
                     setAssigneeLabel(candidate.displayName)
                   }}

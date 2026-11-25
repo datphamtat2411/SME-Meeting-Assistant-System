@@ -246,18 +246,20 @@ export type ActionMutationResult = { item: ActionItem; etag: string }
 
 export async function actionDetail(
   id: string,
-  expectedMeetingId?: string
+  expectedMeetingId?: string,
+  signal?: AbortSignal
 ): Promise<ActionMutationResult> {
-  const response = await coreApi.getWithMetaAndEtag<unknown>(
-    '/action-items/' + encodeURIComponent(id)
-  )
+  const url = '/action-items/' + encodeURIComponent(id)
+  const response = signal
+    ? await coreApi.getWithMetaAndEtag<unknown>(url, { signal })
+    : await coreApi.getWithMetaAndEtag<unknown>(url)
   return parseActionResult(response, { id, meetingId: expectedMeetingId })
 }
 
 export function actionDetailQuery(id?: string, meetingId?: string) {
   return queryOptions({
     queryKey: ['action-items', 'detail', id, meetingId] as const,
-    queryFn: () => actionDetail(id as string, meetingId),
+    queryFn: ({ signal }) => actionDetail(id as string, meetingId, signal),
     enabled: Boolean(id),
     staleTime: 0,
     refetchOnMount: 'always',
