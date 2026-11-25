@@ -637,30 +637,31 @@ export function ActionForm({
                   Searching active users…
                 </p>
               )}
-              {assignmentAllowed && candidates.data?.items.map((candidate) => (
-                <button
-                  key={candidate.id}
-                  type='button'
-                  className='flex w-full items-center justify-between rounded px-3 py-2 text-left text-sm hover:bg-accent'
-                  disabled={
-                    !editingAllowed ||
-                    !assignmentAllowed ||
-                    mutation.isPending ||
-                    Boolean(conflict) ||
-                    Boolean(unresolvedCreate)
-                  }
-                  onClick={() => {
-                    if (!assignmentAllowed) return
-                    setAssignee(candidate.id)
-                    setAssigneeLabel(candidate.displayName)
-                  }}
-                >
-                  <span className='min-w-0 truncate'>
-                    {candidate.displayName} · {candidate.email}
-                  </span>
-                  {assignee === candidate.id && <Check className='size-4' />}
-                </button>
-              ))}
+              {assignmentAllowed &&
+                candidates.data?.items.map((candidate) => (
+                  <button
+                    key={candidate.id}
+                    type='button'
+                    className='flex w-full items-center justify-between rounded px-3 py-2 text-left text-sm hover:bg-accent'
+                    disabled={
+                      !editingAllowed ||
+                      !assignmentAllowed ||
+                      mutation.isPending ||
+                      Boolean(conflict) ||
+                      Boolean(unresolvedCreate)
+                    }
+                    onClick={() => {
+                      if (!assignmentAllowed) return
+                      setAssignee(candidate.id)
+                      setAssigneeLabel(candidate.displayName)
+                    }}
+                  >
+                    <span className='min-w-0 truncate'>
+                      {candidate.displayName} · {candidate.email}
+                    </span>
+                    {assignee === candidate.id && <Check className='size-4' />}
+                  </button>
+                ))}
               {candidates.isError && (
                 <p role='alert' className='px-2 py-3 text-xs text-destructive'>
                   Unable to load eligible assignees.

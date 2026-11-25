@@ -6,6 +6,7 @@ on:
       - develop
       - 'api/**'
       - 'integration/**'
+      - 'web/module-meeting-intelligence'
   pull_request:
     branches:
       - develop

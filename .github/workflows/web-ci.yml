@@ -54,7 +54,14 @@ jobs:
         run: pnpm run lint
 
       - name: Check Web formatting
+        id: web-format
         run: pnpm run format:check
+
+      - name: Show formatting diff on failure
+        if: failure() && steps.web-format.outcome == 'failure'
+        run: |
+          pnpm exec prettier --write . > /dev/null
+          git diff --no-color
 
       - name: Build Web
         run: pnpm run build

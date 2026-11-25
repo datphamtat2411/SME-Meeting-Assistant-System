@@ -1,8 +1,12 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
+import { userEvent } from 'vitest/browser'
+import { coreApi } from '@/lib/core-api'
+import { currentUserQueryKey } from '@/features/auth/session/current-user'
 import type { ActionItem } from './action-api'
 import { ActionCommands } from './action-commands'
+import { ActionForm } from './action-form'
 
 const officialOpenItem: ActionItem = {
   id: '11111111-1111-4111-8111-111111111111',
@@ -168,6 +172,144 @@ describe('ActionCommands workspace authorization', () => {
 
     await expect
       .element(screen.getByRole('button', { name: 'Reopen' }))
+      .not.toBeInTheDocument()
+  })
+})
+
+function reviewClient() {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  client.setQueryData(currentUserQueryKey, {
+    userId: officialOpenItem.assigneeUserId,
+    session: { id: '44444444-4444-4444-8444-444444444444' },
+  })
+  return client
+}
+
+function reviewResult(item: ActionItem, etag: string) {
+  return { data: item, meta: {}, etag }
+}
+
+describe('Action Item reviewed operation ownership', () => {
+  beforeEach(() => vi.restoreAllMocks())
+
+  it('does not revive a cancelled review when management authority returns', async () => {
+    const client = reviewClient()
+    const managed = {
+      ...officialOpenItem,
+      capabilities: { ...officialOpenItem.capabilities, canCancel: true },
+    }
+    const detail = vi
+      .spyOn(coreApi, 'getWithMetaAndEtag')
+      .mockResolvedValue(reviewResult(managed, '"reviewed"'))
+    const view = (item: ActionItem) => (
+      <QueryClientProvider client={client}>
+        <ActionCommands item={item} />
+      </QueryClientProvider>
+    )
+    const screen = await render(view(managed))
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await expect
+      .element(screen.getByRole('alertdialog'))
+      .toBeInTheDocument()
+
+    await screen.rerender(view(officialOpenItem))
+    await expect
+      .element(screen.getByRole('alertdialog'))
+      .not.toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('button', { name: 'Complete' }))
+      .toBeEnabled()
+
+    await screen.rerender(view(managed))
+    await expect
+      .element(screen.getByRole('alertdialog'))
+      .not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await expect
+      .element(screen.getByRole('alertdialog'))
+      .toBeInTheDocument()
+    expect(detail).toHaveBeenCalledTimes(2)
+  })
+
+  it('reconciles a malformed command receipt without replaying the command', async () => {
+    const client = reviewClient()
+    const latest: ActionItem = {
+      ...officialOpenItem,
+      status: 'DONE',
+      version: 2,
+      capabilities: {
+        ...officialOpenItem.capabilities,
+        canComplete: false,
+        canEdit: false,
+        canAssign: false,
+        canStart: false,
+        canReopen: true,
+      },
+    }
+    const detail = vi
+      .spyOn(coreApi, 'getWithMetaAndEtag')
+      .mockResolvedValueOnce(reviewResult(officialOpenItem, '"reviewed"'))
+      .mockResolvedValueOnce(reviewResult(latest, '"latest"'))
+    const post = vi.spyOn(coreApi, 'postWithMetaAndEtag').mockResolvedValue(
+      reviewResult(
+        { ...latest, id: '99999999-9999-4999-8999-999999999999' },
+        '"invalid"'
+      )
+    )
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <ActionCommands item={officialOpenItem} />
+      </QueryClientProvider>
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Complete' }))
+    const dialog = screen.getByRole('alertdialog')
+    await userEvent.click(dialog.getByRole('button', { name: 'Complete' }))
+    await expect
+      .element(screen.getByText('This command is no longer eligible.'))
+      .toBeInTheDocument()
+    await expect
+      .element(dialog.getByRole('button', { name: 'Complete' }))
+      .toBeDisabled()
+    expect(detail).toHaveBeenCalledTimes(2)
+    expect(post).toHaveBeenCalledOnce()
+  })
+
+  it('requires a new editor review after editing authority is lost and restored', async () => {
+    const client = reviewClient()
+    const item: ActionItem = {
+      ...officialOpenItem,
+      capabilities: {
+        ...officialOpenItem.capabilities,
+        canAccessMeeting: false,
+      },
+    }
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue(
+      reviewResult(item, '"reviewed"')
+    )
+    const view = (current: ActionItem) => (
+      <QueryClientProvider client={client}>
+        <ActionForm open onOpenChange={() => {}} item={current} />
+      </QueryClientProvider>
+    )
+    const screen = await render(view(item))
+    await expect
+      .element(screen.getByRole('button', { name: 'Save changed fields' }))
+      .toBeEnabled()
+
+    await screen.rerender(
+      view({
+        ...item,
+        capabilities: { ...item.capabilities, canEdit: false },
+      })
+    )
+    await expect
+      .element(screen.getByText('Action Item review expired'))
+      .toBeInTheDocument()
+    await screen.rerender(view(item))
+    await expect
+      .element(screen.getByRole('button', { name: 'Save changed fields' }))
       .not.toBeInTheDocument()
   })
 })
