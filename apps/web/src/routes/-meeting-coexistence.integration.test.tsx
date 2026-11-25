@@ -7,11 +7,16 @@ import {
 import { routeTree } from '@/routeTree.gen'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
+import { userEvent } from 'vitest/browser'
 import { CoreApiError, coreApi, resetCsrfToken } from '@/lib/core-api'
 import { DirectionProvider } from '@/context/direction-provider'
 import { FontProvider } from '@/context/font-provider'
 import { ThemeProvider } from '@/context/theme-provider'
 import { resetAuthLifecycleAfterSignIn } from '@/features/auth/session/auth-lifecycle'
+import type { Transcript } from '@/features/meetings/intelligence/transcript-api'
+import { computeTranscriptCorrectionDigest } from '@/features/meetings/intelligence/transcript-correction-digest'
+import type { MeetingMedia } from '@/features/meetings/media/media-api'
+import type { ProcessingJob } from '@/features/meetings/media/processing-api'
 
 vi.mock('react-top-loading-bar', () => ({
   default: () => null,
@@ -86,11 +91,18 @@ function apiError(status: number) {
   })
 }
 
-function installAuthorizedApi() {
+function installAuthorizedApi(review?: {
+  transcript: Transcript
+  media: MeetingMedia
+  job: ProcessingJob
+}) {
   const detailReads = vi
     .spyOn(coreApi, 'getWithMetaAndEtag')
     .mockImplementation(async (url) => {
       if (url.endsWith('/transcript')) {
+        if (review) {
+          return { data: review.transcript, meta: {}, etag: '"review-1"' }
+        }
         throw new CoreApiError({
           message: 'Transcript is not ready',
           status: 404,
@@ -126,8 +138,11 @@ function installAuthorizedApi() {
     })
   const reads = vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
     if (url === '/auth/me') return user
-    if (url.endsWith('/media')) return []
+    if (url.endsWith('/media')) return review ? [review.media] : []
+    if (url.endsWith('/processing-jobs')) return review ? [review.job] : []
+    if (url.endsWith('/transcript/coverage')) return []
     if (url.endsWith('/transcript')) {
+      if (review) return review.transcript
       throw new CoreApiError({
         message: 'Transcript is not ready',
         status: 404,
@@ -247,6 +262,161 @@ describe('generated meeting route coexistence', () => {
       .element(screen.getByText('Transcript not available yet'))
       .toBeInTheDocument()
     expect(router.state.location.search.section).toBe('transcript')
+  })
+
+  it('retains review acknowledgement and recovery through detail and live navigation', async () => {
+    const sourceMediaId = '33333333-3333-4333-8333-333333333333'
+    const jobId = '44444444-4444-4444-8444-444444444444'
+    const transcriptId = '55555555-5555-4555-8555-555555555555'
+    const transcript: Transcript = {
+      id: transcriptId,
+      meetingId: meetingA.id,
+      sourceMediaId,
+      processingJobId: jobId,
+      versionNumber: 1,
+      languageCode: 'vi',
+      status: 'READY',
+      durationMs: 1000,
+      finalizedAt: '2026-11-23T00:00:00Z',
+      contentRevision: 1,
+      segments: [
+        {
+          id: '66666666-6666-4666-8666-666666666666',
+          ordinal: 0,
+          startMs: 0,
+          endMs: 1000,
+          text: 'Reviewed transcript.',
+          qualityStatus: 'HIGH',
+          speakerClusterId: null,
+          speakerLabel: null,
+          version: 1,
+        },
+      ],
+    }
+    const media: MeetingMedia = {
+      id: sourceMediaId,
+      meetingId: meetingA.id,
+      sourceType: 'UPLOAD',
+      status: 'AVAILABLE',
+      originalFilename: 'meeting.wav',
+      contentType: 'audio/wav',
+      sizeBytes: 100,
+      durationMs: 1000,
+      sha256: null,
+      createdAt: '2026-11-23T00:00:00Z',
+      availableAt: '2026-11-23T00:00:00Z',
+      failureCode: null,
+    }
+    const job: ProcessingJob = {
+      id: jobId,
+      meetingId: meetingA.id,
+      sourceMediaId,
+      jobType: 'OFFLINE_MEETING_PROCESSING',
+      status: 'WAITING_FOR_REVIEW',
+      requestedByUserId: user.userId,
+      currentStage: null,
+      queuedAt: null,
+      startedAt: null,
+      completedAt: null,
+      errorCode: null,
+      errorSummary: null,
+      warningSummary: null,
+      createdAt: '2026-11-23T00:00:00Z',
+      updatedAt: '2026-11-23T00:00:00Z',
+      reprocessOfJobId: null,
+      retryable: false,
+      retryCount: 0,
+      stageRuns: [],
+    }
+    installAuthorizedApi({ transcript, media, job })
+    const correctionDigest = await computeTranscriptCorrectionDigest(
+      transcript.segments
+    )
+    const post = vi
+      .spyOn(coreApi, 'post')
+      .mockResolvedValueOnce({
+        reviewId: '88888888-8888-4888-8888-888888888888',
+        processingJobId: jobId,
+        meetingId: meetingA.id,
+        transcriptId,
+        contentRevision: 1,
+        correctionDigest,
+        transcriptStatus: 'READY',
+        acknowledgedByUserId: user.userId,
+        acknowledgedAt: '2026-11-23T00:00:00Z',
+        admittedByUserId: null,
+        admittedAt: null,
+      })
+      .mockRejectedValueOnce(
+        new CoreApiError({
+          message: 'Admission response lost.',
+          kind: 'network',
+          recoveryOutcome: 'uncertain',
+        })
+      )
+      .mockImplementationOnce(async () => {
+        job.status = 'RUNNING'
+        return job
+      })
+
+    const { router, screen } = await renderRoute(
+      `/meetings/${meetingA.id}?section=transcript`
+    )
+    const checkbox = screen.getByRole('checkbox', {
+      name: /I reviewed the complete transcript/,
+    })
+    await expect.element(checkbox).toBeEnabled()
+    await userEvent.click(checkbox)
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Acknowledge transcript review' })
+    )
+    await expect
+      .element(screen.getByText('Core acknowledgement confirmed'))
+      .toBeInTheDocument()
+
+    await router.navigate({
+      to: '/meetings/$meetingId/live',
+      params: { meetingId: meetingA.id },
+    })
+    await expect.element(screen.getByText('Live route')).toBeInTheDocument()
+    await router.navigate({
+      to: '/meetings/$meetingId',
+      params: { meetingId: meetingA.id },
+      search: { section: 'transcript' },
+    })
+    const admit = screen.getByRole('button', {
+      name: 'Admit Meeting Intelligence',
+    })
+    await expect.element(admit).toBeEnabled()
+    await userEvent.click(admit)
+    await expect
+      .element(screen.getByRole('button', { name: 'Recover admission' }))
+      .toBeEnabled()
+
+    await router.navigate({
+      to: '/meetings/$meetingId',
+      params: { meetingId: meetingA.id },
+      search: { section: 'recording' },
+    })
+    await expect
+      .element(screen.getByText(/Transcript review has unresolved work/))
+      .toBeInTheDocument()
+    await router.navigate({
+      to: '/meetings/$meetingId',
+      params: { meetingId: meetingA.id },
+      search: { section: 'transcript' },
+    })
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Recover admission' })
+    )
+    await expect
+      .element(screen.getByText(/admission confirmed by Core/i))
+      .toBeInTheDocument()
+    expect(post).toHaveBeenCalledTimes(3)
+    expect(post.mock.calls[1]?.[1]).toEqual(post.mock.calls[2]?.[1])
+    expect(post.mock.calls[1]?.[2]?.headers).toEqual(
+      post.mock.calls[2]?.[2]?.headers
+    )
   })
 
   it('redirects anonymous meeting deep links to sign-in without mounting descendants', async () => {

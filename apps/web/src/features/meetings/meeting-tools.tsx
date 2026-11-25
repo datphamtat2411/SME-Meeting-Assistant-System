@@ -3,8 +3,14 @@ import { DecisionsPanel } from './intelligence/decisions-panel'
 import { ExportPanel } from './intelligence/export-panel'
 import { MinutesPanel } from './intelligence/minutes-panel'
 import { SummaryPanel } from './intelligence/summary-panel'
-import { TranscriptReviewAdmissionPanel } from './intelligence/transcript-review-admission-panel'
-import { TranscriptReviewGateProvider } from './intelligence/transcript-review-gate'
+import {
+  TranscriptReviewAdmissionPanel,
+  TranscriptReviewWorkflowStatus,
+} from './intelligence/transcript-review-admission-panel'
+import {
+  TranscriptReviewGateBoundary,
+  useOptionalTranscriptReviewGate,
+} from './intelligence/transcript-review-gate'
 import { TranscriptReviewWorkspace } from './intelligence/transcript-review-workspace'
 import { MeetingSessionBoundary } from './media/meeting-session-context'
 import { ProcessingPanel } from './media/processing-panel'
@@ -35,6 +41,7 @@ export function MeetingTools({
   ) => void
 }) {
   const { identity, capabilities } = useMeetingWorkspace()
+  const reviewGate = useOptionalTranscriptReviewGate()
 
   if (section === 'recording') {
     if (!capabilities.canReadMeetingContent) return <WorkspaceAccessMessage />
@@ -70,6 +77,34 @@ export function MeetingTools({
 
   if (section === 'transcript') {
     if (!capabilities.canReadMeetingContent) return <WorkspaceAccessMessage />
+    const content = (
+      <div className='space-y-5'>
+        <FeatureSectionHeading
+          title='Transcript & speakers'
+          description='Review the available transcript and its speaker identities. Results appear only when Core confirms they exist.'
+        />
+        {!capabilities.canCorrectTranscript && (
+          <ReadOnlyNote>
+            You can review this transcript. Corrections and speaker mapping are
+            organizer operations.
+          </ReadOnlyNote>
+        )}
+        <TranscriptReviewWorkspace
+          meetingId={meetingId}
+          canReadMeetingContent={capabilities.canReadMeetingContent}
+          canCorrectTranscript={capabilities.canCorrectTranscript}
+          canMapSpeakers={capabilities.canMapSpeakers}
+          canReadMedia={capabilities.canReadMedia}
+          evidenceTranscriptId={evidenceTranscriptId}
+          evidenceSegmentId={evidenceSegmentId}
+          evidenceReferenceIssue={evidenceReferenceIssue}
+        />
+        <TranscriptReviewAdmissionPanel
+          onNavigateToIntelligence={() => onSectionChange?.('intelligence')}
+        />
+      </div>
+    )
+    if (reviewGate) return content
     return (
       <MeetingSessionBoundary
         meetingId={meetingId}
@@ -79,36 +114,12 @@ export function MeetingTools({
           canReadProcessing: capabilities.canReadProcessing,
         }}
       >
-        <TranscriptReviewGateProvider
+        <TranscriptReviewGateBoundary
           meetingId={meetingId}
           fallbackCanManageReview={capabilities.canAdmitProcessing}
         >
-          <div className='space-y-5'>
-            <FeatureSectionHeading
-              title='Transcript & speakers'
-              description='Review the available transcript and its speaker identities. Results appear only when Core confirms they exist.'
-            />
-            {!capabilities.canCorrectTranscript && (
-              <ReadOnlyNote>
-                You can review this transcript. Corrections and speaker mapping
-                are organizer operations.
-              </ReadOnlyNote>
-            )}
-            <TranscriptReviewWorkspace
-              meetingId={meetingId}
-              canReadMeetingContent={capabilities.canReadMeetingContent}
-              canCorrectTranscript={capabilities.canCorrectTranscript}
-              canMapSpeakers={capabilities.canMapSpeakers}
-              canReadMedia={capabilities.canReadMedia}
-              evidenceTranscriptId={evidenceTranscriptId}
-              evidenceSegmentId={evidenceSegmentId}
-              evidenceReferenceIssue={evidenceReferenceIssue}
-            />
-            <TranscriptReviewAdmissionPanel
-              onNavigateToIntelligence={() => onSectionChange?.('intelligence')}
-            />
-          </div>
-        </TranscriptReviewGateProvider>
+          {content}
+        </TranscriptReviewGateBoundary>
       </MeetingSessionBoundary>
     )
   }
@@ -127,6 +138,9 @@ export function MeetingTools({
             operations are available to the meeting organizer.
           </ReadOnlyNote>
         )}
+        <TranscriptReviewWorkflowStatus
+          onReview={() => onSectionChange?.('transcript')}
+        />
         <SummaryPanel
           meetingId={meetingId}
           canEdit={capabilities.canMutateIntelligence}

@@ -9,7 +9,11 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
-import { useTranscriptReviewGate } from './transcript-review-gate'
+import { presentProcessingStatus } from '../media/processing-status-presentation'
+import {
+  useOptionalTranscriptReviewGate,
+  useTranscriptReviewGate,
+} from './transcript-review-gate'
 
 export function TranscriptReviewAdmissionPanel({
   onNavigateToIntelligence,
@@ -26,6 +30,7 @@ export function TranscriptReviewAdmissionPanel({
     acknowledgementIntent.checked
 
   const evidenceReady = Boolean(
+    !gate.eligibilityMessage &&
     gate.evidence &&
     gate.digestStatus === 'ready' &&
     ['READY', 'READY_WITH_WARNINGS'].includes(gate.evidence.transcriptStatus) &&
@@ -36,12 +41,22 @@ export function TranscriptReviewAdmissionPanel({
     gate.receipt &&
     gate.acknowledgement.status === 'confirmed'
   )
-  const admissionConfirmed =
-    Boolean(gate.receipt?.admittedAt) || gate.admission.status === 'confirmed'
+  const admissionConfirmed = Boolean(
+    gate.evidence &&
+    ((gate.receipt?.processingJobId === gate.evidence.processingJobId &&
+      gate.receipt.admittedAt) ||
+      (gate.admission.processingJobId === gate.evidence.processingJobId &&
+        gate.admission.status === 'confirmed'))
+  )
+  const recovering =
+    gate.acknowledgement.status === 'uncertain' ||
+    gate.admission.status === 'uncertain'
 
   async function acknowledge() {
     try {
-      const result = await gate.acknowledge()
+      const result = await gate.acknowledge(
+        acknowledgementIntent.fingerprint ?? ''
+      )
       if (result === 'confirmed') {
         setAcknowledgementIntent({
           fingerprint: gate.evidence?.fingerprint ?? null,
@@ -63,7 +78,7 @@ export function TranscriptReviewAdmissionPanel({
 
   async function admit() {
     try {
-      await gate.admit()
+      await gate.admit(gate.evidence?.fingerprint ?? '')
     } catch {
       // The gate retains the truthful rejected or uncertain state.
     }
@@ -123,6 +138,52 @@ export function TranscriptReviewAdmissionPanel({
           </p>
         )}
 
+        <TranscriptReviewWorkflowStatus />
+        {gate.eligibilityMessage && !admissionConfirmed && (
+          <p role='status' className='text-sm text-muted-foreground'>
+            {gate.eligibilityMessage}
+          </p>
+        )}
+        {recovering && (
+          <div role='status' className='space-y-2 rounded-lg border p-3'>
+            <p className='text-sm'>
+              A prior request has an uncertain outcome. Recover the original
+              intent before starting another operation, even if the evidence
+              changed.
+            </p>
+            <p className='text-sm text-muted-foreground'>
+              {gate.admission.status === 'uncertain'
+                ? gate.admission.message
+                : gate.acknowledgement.message}
+            </p>
+            <Button
+              type='button'
+              variant='outline'
+              disabled={!gate.isAuthorized || gate.mutationBlocked}
+              onClick={() =>
+                void (gate.admission.status === 'uncertain'
+                  ? recoverAdmission()
+                  : recoverAcknowledgement())
+              }
+            >
+              {gate.admission.status === 'uncertain'
+                ? 'Recover admission'
+                : 'Recover acknowledgement'}
+            </Button>
+          </div>
+        )}
+        {gate.receipt && !gate.receiptIsCurrent && (
+          <p className='text-sm text-muted-foreground'>
+            Core confirmed an acknowledgement for revision{' '}
+            {gate.receipt.contentRevision}. Verify the evidence against the
+            current revision before using this receipt.
+          </p>
+        )}
+        {gate.admission.status === 'confirmed' && !admissionConfirmed && (
+          <p className='text-sm text-muted-foreground'>
+            A previous Meeting Intelligence admission was confirmed by Core.
+          </p>
+        )}
         {gate.evidence && (
           <div className='flex flex-wrap gap-2 text-xs'>
             <Badge variant='outline'>
@@ -148,7 +209,7 @@ export function TranscriptReviewAdmissionPanel({
           </div>
         )}
 
-        {!acknowledgementConfirmed && !admissionConfirmed && (
+        {!recovering && !acknowledgementConfirmed && !admissionConfirmed && (
           <div className='space-y-3 rounded-lg border p-3'>
             <label className='flex items-start gap-2 text-sm'>
               <input
@@ -175,32 +236,21 @@ export function TranscriptReviewAdmissionPanel({
               </span>
             </label>
             <div className='flex flex-wrap items-center gap-2'>
-              {gate.acknowledgement.status === 'uncertain' ? (
-                <Button
-                  type='button'
-                  variant='outline'
-                  onClick={() => void recoverAcknowledgement()}
-                  disabled={!gate.isAuthorized || gate.mutationBlocked}
-                >
-                  Recover acknowledgement
-                </Button>
-              ) : (
-                <Button
-                  type='button'
-                  onClick={() => void acknowledge()}
-                  disabled={
-                    !acknowledgementChecked ||
-                    !evidenceReady ||
-                    !gate.isAuthorized ||
-                    gate.mutationBlocked ||
-                    gate.acknowledgement.status === 'pending'
-                  }
-                >
-                  {gate.acknowledgement.status === 'pending'
-                    ? 'Acknowledging…'
-                    : 'Acknowledge transcript review'}
-                </Button>
-              )}
+              <Button
+                type='button'
+                onClick={() => void acknowledge()}
+                disabled={
+                  !acknowledgementChecked ||
+                  !evidenceReady ||
+                  !gate.isAuthorized ||
+                  gate.mutationBlocked ||
+                  gate.acknowledgement.status === 'pending'
+                }
+              >
+                {gate.acknowledgement.status === 'pending'
+                  ? 'Acknowledging…'
+                  : 'Acknowledge transcript review'}
+              </Button>
               {gate.acknowledgement.status === 'rejected' &&
                 gate.acknowledgement.message && (
                   <span role='alert' className='text-sm text-destructive'>
@@ -211,37 +261,27 @@ export function TranscriptReviewAdmissionPanel({
           </div>
         )}
 
-        {acknowledgementConfirmed && !admissionConfirmed && (
+        {!recovering && acknowledgementConfirmed && !admissionConfirmed && (
           <div className='space-y-3 rounded-lg border border-primary/40 bg-primary/5 p-3'>
             <p className='text-sm'>
               The review receipt is current. Admission is a separate, idempotent
               Core operation.
             </p>
             <div className='flex flex-wrap items-center gap-2'>
-              {gate.admission.status === 'uncertain' ? (
-                <Button
-                  type='button'
-                  variant='outline'
-                  onClick={() => void recoverAdmission()}
-                  disabled={!gate.isAuthorized || gate.mutationBlocked}
-                >
-                  Recover admission
-                </Button>
-              ) : (
-                <Button
-                  type='button'
-                  onClick={() => void admit()}
-                  disabled={
-                    !gate.isAuthorized ||
-                    gate.mutationBlocked ||
-                    gate.admission.status === 'pending'
-                  }
-                >
-                  {gate.admission.status === 'pending'
-                    ? 'Admitting…'
-                    : 'Admit Meeting Intelligence'}
-                </Button>
-              )}
+              <Button
+                type='button'
+                onClick={() => void admit()}
+                disabled={
+                  !gate.isAuthorized ||
+                  !evidenceReady ||
+                  gate.mutationBlocked ||
+                  gate.admission.status === 'pending'
+                }
+              >
+                {gate.admission.status === 'pending'
+                  ? 'Admitting…'
+                  : 'Admit Meeting Intelligence'}
+              </Button>
               {gate.admission.status === 'rejected' &&
                 gate.admission.message && (
                   <span role='alert' className='text-sm text-destructive'>
@@ -271,5 +311,46 @@ export function TranscriptReviewAdmissionPanel({
         )}
       </CardContent>
     </Card>
+  )
+}
+
+export function TranscriptReviewWorkflowStatus({
+  onReview,
+}: {
+  onReview?: () => void
+}) {
+  const gate = useOptionalTranscriptReviewGate()
+  if (!gate?.isAuthorized) return null
+  const job = gate.observedJob
+  if (!job && !gate.hasUnresolvedOperation) return null
+
+  return (
+    <div role='status' className='space-y-2 rounded-lg border p-3 text-sm'>
+      {job && (
+        <>
+          <p className='font-medium'>
+            Transcript processing: {presentProcessingStatus(job.status).label}
+          </p>
+          {job.currentStage && <p>Current stage: {job.currentStage}</p>}
+          {job.warningSummary && (
+            <p className='text-muted-foreground'>{job.warningSummary}</p>
+          )}
+          {job.errorSummary && (
+            <p className='text-muted-foreground'>{job.errorSummary}</p>
+          )}
+        </>
+      )}
+      {gate.hasUnresolvedOperation && (
+        <p>
+          A transcript review request is unresolved. Job progression alone does
+          not confirm that request.
+        </p>
+      )}
+      {onReview && (
+        <Button type='button' variant='outline' onClick={onReview}>
+          Open transcript review
+        </Button>
+      )}
+    </div>
   )
 }

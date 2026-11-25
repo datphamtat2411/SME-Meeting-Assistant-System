@@ -5,6 +5,10 @@ import {
   useMatchRoute,
 } from '@tanstack/react-router'
 import {
+  TranscriptReviewGateBoundary,
+  useTranscriptReviewGate,
+} from '@/features/meetings/intelligence/transcript-review-gate'
+import {
   MeetingSessionProvider,
   useMeetingSession,
 } from '@/features/meetings/media/meeting-session-context'
@@ -44,27 +48,29 @@ function MeetingRoute() {
   return (
     <MeetingAuthorizationProvider key={meetingId} meetingId={meetingId}>
       <MeetingSessionProvider key={meetingId} meetingId={meetingId}>
-        <MeetingNavigationGuard />
-        {isLiveRoute ? (
-          <Outlet />
-        ) : (
-          <MeetingWorkspacePage
-            key={meetingId}
-            meetingId={meetingId}
-            section={
-              search.evidenceTranscriptId ||
-              search.evidenceSegmentId ||
-              search.evidenceReferenceIssue
-                ? meetingWorkspaceSectionSchema.enum.transcript
-                : (search.section ??
-                  meetingWorkspaceSectionSchema.enum.overview)
-            }
-            evidenceTranscriptId={search.evidenceTranscriptId}
-            evidenceSegmentId={search.evidenceSegmentId}
-            evidenceReferenceIssue={search.evidenceReferenceIssue}
-            onSectionChange={changeSection}
-          />
-        )}
+        <TranscriptReviewGateBoundary meetingId={meetingId}>
+          <MeetingNavigationGuard />
+          {isLiveRoute ? (
+            <Outlet />
+          ) : (
+            <MeetingWorkspacePage
+              key={meetingId}
+              meetingId={meetingId}
+              section={
+                search.evidenceTranscriptId ||
+                search.evidenceSegmentId ||
+                search.evidenceReferenceIssue
+                  ? meetingWorkspaceSectionSchema.enum.transcript
+                  : (search.section ??
+                    meetingWorkspaceSectionSchema.enum.overview)
+              }
+              evidenceTranscriptId={search.evidenceTranscriptId}
+              evidenceSegmentId={search.evidenceSegmentId}
+              evidenceReferenceIssue={search.evidenceReferenceIssue}
+              onSectionChange={changeSection}
+            />
+          )}
+        </TranscriptReviewGateBoundary>
       </MeetingSessionProvider>
     </MeetingAuthorizationProvider>
   )
@@ -72,11 +78,18 @@ function MeetingRoute() {
 
 function MeetingNavigationGuard() {
   const session = useMeetingSession()
+  const gate = useTranscriptReviewGate()
   useBlocker({
     enableBeforeUnload: () =>
-      session.hasUnsavedResources || session.hasUnsavedTranscriptReview,
+      session.hasUnsavedResources ||
+      session.hasUnsavedTranscriptReview ||
+      gate.hasUnresolvedOperation,
     shouldBlockFn: ({ next }) => {
-      if (!session.hasUnsavedResources && !session.hasUnsavedTranscriptReview) {
+      if (
+        !session.hasUnsavedResources &&
+        !session.hasUnsavedTranscriptReview &&
+        !gate.hasUnresolvedOperation
+      ) {
         return false
       }
       const nextMeetingId =
@@ -94,6 +107,11 @@ function MeetingNavigationGuard() {
         return false
       }
       const sameMeeting = nextMeetingId === session.meetingId
+      if (!sameMeeting && gate.hasUnresolvedOperation) {
+        return !window.confirm(
+          'A transcript review request is unresolved. Leaving will lose its local recovery key. Leave anyway?'
+        )
+      }
       const remainsInTranscript =
         sameMeeting &&
         next.routeId === '/_authenticated/meetings/$meetingId' &&

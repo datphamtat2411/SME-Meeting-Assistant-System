@@ -14,6 +14,7 @@ export type ReviewExecution = {
   scope: ReviewScope
   kind: 'correction' | 'mapping'
   controller: AbortController
+  releaseCommand?: (owner: object) => void
 }
 
 function sameScope(a: ReviewScope, b: ReviewScope): boolean {
@@ -33,7 +34,11 @@ function canExecute(scope: ReviewScope, kind: ReviewExecution['kind']) {
 }
 
 /** One synchronous write boundary for the current review snapshot. */
-export function useTranscriptReviewOperation(scope: ReviewScope) {
+export function useTranscriptReviewOperation(
+  scope: ReviewScope,
+  claimCommand?: (owner: object) => boolean,
+  releaseCommand?: (owner: object) => void
+) {
   const scopeRef = useRef(scope)
   const executionRef = useRef<ReviewExecution | null>(null)
   const [pending, setPending] = useState(false)
@@ -42,9 +47,13 @@ export function useTranscriptReviewOperation(scope: ReviewScope) {
   useLayoutEffect(() => {
     scopeRef.current = scope
     const active = executionRef.current
-    if (active && (!sameScope(active.scope, scope) || !scope.canRead)) {
+    if (
+      active &&
+      (!sameScope(active.scope, scope) || !canExecute(scope, active.kind))
+    ) {
       executionRef.current = null
       active.controller.abort()
+      active.releaseCommand?.(active)
       setPending(false)
       if (sameScope(active.scope, scope) && !scope.confirmedAccessLoss) {
         setInterrupted(active)
@@ -57,23 +66,29 @@ export function useTranscriptReviewOperation(scope: ReviewScope) {
       const active = executionRef.current
       executionRef.current = null
       active?.controller.abort()
+      if (active) active.releaseCommand?.(active)
     },
     []
   )
 
-  const acquire = useCallback((kind: ReviewExecution['kind']) => {
-    const current = scopeRef.current
-    if (executionRef.current || !canExecute(current, kind)) return null
-    const execution: ReviewExecution = {
-      scope: current,
-      kind,
-      controller: new AbortController(),
-    }
-    executionRef.current = execution
-    setInterrupted(null)
-    setPending(true)
-    return execution
-  }, [])
+  const acquire = useCallback(
+    (kind: ReviewExecution['kind']) => {
+      const current = scopeRef.current
+      if (executionRef.current || !canExecute(current, kind)) return null
+      const execution: ReviewExecution = {
+        scope: current,
+        kind,
+        controller: new AbortController(),
+        releaseCommand,
+      }
+      if (claimCommand && !claimCommand(execution)) return null
+      executionRef.current = execution
+      setInterrupted(null)
+      setPending(true)
+      return execution
+    },
+    [claimCommand, releaseCommand]
+  )
 
   const isCurrent = useCallback((execution: ReviewExecution) => {
     const current = scopeRef.current
@@ -81,7 +96,7 @@ export function useTranscriptReviewOperation(scope: ReviewScope) {
       executionRef.current === execution &&
       !execution.controller.signal.aborted &&
       sameScope(execution.scope, current) &&
-      current.canRead
+      canExecute(current, execution.kind)
     )
   }, [])
 
@@ -90,6 +105,7 @@ export function useTranscriptReviewOperation(scope: ReviewScope) {
   const release = useCallback((execution: ReviewExecution) => {
     if (executionRef.current !== execution) return
     executionRef.current = null
+    execution.releaseCommand?.(execution)
     setPending(false)
   }, [])
 

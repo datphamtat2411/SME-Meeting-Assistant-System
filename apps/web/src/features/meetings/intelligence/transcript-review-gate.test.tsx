@@ -13,6 +13,13 @@ const sessionMocks = vi.hoisted(() => ({
   session: {
     processing: {
       reconcileJob: vi.fn(),
+      getAuthoritativeSnapshot: vi.fn(),
+      claimReviewCommand: vi.fn(),
+      releaseReviewCommand: vi.fn(),
+      setReviewWorkBlocked: vi.fn(),
+      unresolvedOperations: [],
+      jobs: { isSuccess: true, isFetching: false, data: [] as unknown[] },
+      media: { isSuccess: true, isFetching: false, data: [] as unknown[] },
     },
   },
 }))
@@ -99,13 +106,18 @@ function ReviewGateProbe() {
     <div>
       <span data-testid='digest-status'>{gate.digestStatus}</span>
       <span data-testid='ack-status'>{gate.acknowledgement.status}</span>
+      <span data-testid='receipt-current'>{String(gate.receiptIsCurrent)}</span>
       <span data-testid='admission-status'>{gate.admission.status}</span>
       <span data-testid='proof-invalidated'>
         {String(gate.proofInvalidated)}
       </span>
       <button
         type='button'
-        onClick={() => void gate.acknowledge().catch(() => undefined)}
+        onClick={() =>
+          void gate
+            .acknowledge(gate.evidence?.fingerprint ?? '')
+            .catch(() => undefined)
+        }
       >
         Acknowledge
       </button>
@@ -119,9 +131,25 @@ function ReviewGateProbe() {
       </button>
       <button
         type='button'
-        onClick={() => void gate.admit().catch(() => undefined)}
+        onClick={() =>
+          void gate
+            .admit(gate.evidence?.fingerprint ?? '')
+            .catch(() => undefined)
+        }
       >
         Admit
+      </button>
+      <button type='button' onClick={() => gate.setMutationBlocked(true)}>
+        Block review
+      </button>
+      <button type='button' onClick={() => gate.clearEvidence()}>
+        Clear evidence
+      </button>
+      <button
+        type='button'
+        onClick={() => void gate.recoverAdmission().catch(() => undefined)}
+      >
+        Recover admission
       </button>
       <button type='button' onClick={() => setRevision(9)}>
         Change evidence
@@ -134,6 +162,16 @@ describe('transcript review gate lifecycle', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
     sessionMocks.session.processing.reconcileJob.mockReset()
+    sessionMocks.session.processing.claimReviewCommand.mockReturnValue(true)
+    const snapshot = {
+      jobs: [{ ...admittedJob, status: 'WAITING_FOR_REVIEW' }],
+      media: [{ id: sourceMediaId, meetingId, status: 'AVAILABLE' }],
+    }
+    sessionMocks.session.processing.getAuthoritativeSnapshot.mockReturnValue(
+      snapshot
+    )
+    sessionMocks.session.processing.jobs.data = snapshot.jobs
+    sessionMocks.session.processing.media.data = snapshot.media
   })
 
   it('replays uncertain acknowledgement with the same idempotency key, then admits separately', async () => {
@@ -218,7 +256,155 @@ describe('transcript review gate lifecycle', () => {
       .toHaveTextContent('true')
     await expect
       .element(screen.getByTestId('ack-status'))
-      .toHaveTextContent('rejected')
+      .toHaveTextContent('confirmed')
+    await expect
+      .element(screen.getByTestId('receipt-current'))
+      .toHaveTextContent('false')
+  })
+
+  it('keeps the receipt across transcript panel unmount and remount', async () => {
+    const post = vi.spyOn(coreApi, 'post').mockResolvedValueOnce(receipt)
+    function Harness() {
+      const [showPanel, setShowPanel] = useState(true)
+      return (
+        <TranscriptReviewGateProvider
+          meetingId={meetingId}
+          fallbackCanManageReview
+        >
+          <ReviewGateProbe />
+          <button type='button' onClick={() => setShowPanel(!showPanel)}>
+            Toggle section
+          </button>
+          {showPanel && <TranscriptReviewAdmissionPanel />}
+        </TranscriptReviewGateProvider>
+      )
+    }
+    const screen = await render(<Harness />)
+    await expect
+      .element(screen.getByTestId('digest-status'))
+      .toHaveTextContent('ready')
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Acknowledge', exact: true })
+    )
+    await expect
+      .element(screen.getByText('Core acknowledgement confirmed'))
+      .toBeInTheDocument()
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Toggle section' })
+    )
+    await expect
+      .element(screen.getByTestId('transcript-review-admission'))
+      .not.toBeInTheDocument()
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Toggle section' })
+    )
+    await expect
+      .element(screen.getByText('Core acknowledgement confirmed'))
+      .toBeInTheDocument()
+    expect(post).toHaveBeenCalledTimes(1)
+  })
+
+  it('blocks fresh review when the exact job is no longer waiting', async () => {
+    sessionMocks.session.processing.getAuthoritativeSnapshot.mockReturnValue({
+      jobs: [admittedJob],
+      media: [{ id: sourceMediaId, meetingId, status: 'AVAILABLE' }],
+    })
+    const post = vi.spyOn(coreApi, 'post')
+    const screen = await render(
+      <TranscriptReviewGateProvider
+        meetingId={meetingId}
+        fallbackCanManageReview
+      >
+        <ReviewGateProbe />
+      </TranscriptReviewGateProvider>
+    )
+    await expect
+      .element(screen.getByTestId('digest-status'))
+      .toHaveTextContent('ready')
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Acknowledge', exact: true })
+    )
+    expect(post).not.toHaveBeenCalled()
+  })
+
+  it('blocks acknowledgement while review work is unsaved', async () => {
+    const post = vi.spyOn(coreApi, 'post')
+    const screen = await render(
+      <TranscriptReviewGateProvider
+        meetingId={meetingId}
+        fallbackCanManageReview
+      >
+        <ReviewGateProbe />
+      </TranscriptReviewGateProvider>
+    )
+    await expect
+      .element(screen.getByTestId('digest-status'))
+      .toHaveTextContent('ready')
+    await userEvent.click(screen.getByRole('button', { name: 'Block review' }))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Acknowledge', exact: true })
+    )
+    expect(post).not.toHaveBeenCalled()
+  })
+
+  it('preserves an uncertain admission and its key after evidence replacement', async () => {
+    const post = vi
+      .spyOn(coreApi, 'post')
+      .mockResolvedValueOnce(receipt)
+      .mockRejectedValueOnce(
+        new CoreApiError({
+          message: 'Response lost.',
+          code: 'ADMISSION_UNCERTAIN',
+          kind: 'network',
+          recoveryOutcome: 'uncertain',
+        })
+      )
+      .mockResolvedValueOnce(admittedJob)
+    const screen = await render(
+      <TranscriptReviewGateProvider
+        meetingId={meetingId}
+        fallbackCanManageReview
+      >
+        <ReviewGateProbe />
+      </TranscriptReviewGateProvider>
+    )
+    await expect
+      .element(screen.getByTestId('digest-status'))
+      .toHaveTextContent('ready')
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Acknowledge', exact: true })
+    )
+    await expect
+      .element(screen.getByTestId('ack-status'))
+      .toHaveTextContent('confirmed')
+    await userEvent.click(screen.getByRole('button', { name: 'Admit' }))
+    await expect
+      .element(screen.getByTestId('admission-status'))
+      .toHaveTextContent('uncertain')
+    sessionMocks.session.processing.getAuthoritativeSnapshot.mockReturnValue({
+      jobs: [admittedJob],
+      media: [{ id: sourceMediaId, meetingId, status: 'AVAILABLE' }],
+    })
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Change evidence' })
+    )
+    await expect
+      .element(screen.getByTestId('proof-invalidated'))
+      .toHaveTextContent('true')
+    await expect
+      .element(screen.getByTestId('admission-status'))
+      .toHaveTextContent('uncertain')
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Recover admission' })
+    )
+    await expect
+      .element(screen.getByTestId('admission-status'))
+      .toHaveTextContent('confirmed')
+    expect(post).toHaveBeenCalledTimes(3)
+    expect(post.mock.calls[1]?.[1]).toEqual(post.mock.calls[2]?.[1])
+    expect(post.mock.calls[1]?.[2]?.headers).toEqual(
+      post.mock.calls[2]?.[2]?.headers
+    )
   })
 
   it('blocks acknowledgement when the fallback authorization is denied', async () => {

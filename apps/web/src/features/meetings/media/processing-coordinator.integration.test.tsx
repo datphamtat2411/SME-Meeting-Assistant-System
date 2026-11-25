@@ -104,8 +104,25 @@ function deferred<T>() {
 function CoordinatorHarness() {
   const { processing } = useMeetingSession()
   const [reprocessResult, setReprocessResult] = useState('idle')
+  const [reviewOwner] = useState(() => ({}))
+  const [reviewClaimed, setReviewClaimed] = useState(false)
   return (
     <>
+      <button
+        type='button'
+        onClick={() =>
+          setReviewClaimed(processing.claimReviewCommand(reviewOwner))
+        }
+      >
+        Claim review command
+      </button>
+      <button
+        type='button'
+        onClick={() => processing.releaseReviewCommand(reviewOwner)}
+      >
+        Release review command
+      </button>
+      <output data-testid='review-claimed'>{String(reviewClaimed)}</output>
       <button
         type='button'
         onClick={() => {
@@ -209,6 +226,38 @@ describe('meeting-scoped processing command owner', () => {
       availableSource(secondMediaId),
     ]
     processingMocks.jobs = []
+  })
+
+  it('excludes processing and review commands in both directions', async () => {
+    const admission = deferred<ProcessingJob>()
+    processingMocks.requestProcessing.mockReturnValue(admission.promise)
+    const { screen } = await renderCoordinator()
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Claim review command' })
+    )
+    await expect
+      .element(screen.getByTestId('review-claimed'))
+      .toHaveTextContent('true')
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Double admission' })
+    )
+    expect(processingMocks.requestProcessing).not.toHaveBeenCalled()
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Release review command' })
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Double admission' })
+    )
+    await expect
+      .poll(() => processingMocks.requestProcessing.mock.calls.length)
+      .toBe(1)
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Claim review command' })
+    )
+    await expect
+      .element(screen.getByTestId('review-claimed'))
+      .toHaveTextContent('false')
+    admission.resolve(processingJob({ status: 'PENDING', retryable: false }))
   })
 
   it('claims same-intent admission synchronously and blocks a duplicate owner call', async () => {
