@@ -256,7 +256,10 @@ void main() {
         reason: 'the production cancellation control to become available',
         maxPumps: 400,
       );
-      final cancel = find.widgetWithText(TextButton, 'Hủy nhập âm thanh');
+      final cancel = find.ancestor(
+        of: find.text('Hủy nhập âm thanh'),
+        matching: find.byWidgetPredicate((widget) => widget is TextButton),
+      );
       expect(tester.widget<TextButton>(cancel).onPressed, isNotNull);
       await tester.ensureVisible(cancel);
       await tester.tap(cancel);
@@ -352,7 +355,10 @@ void main() {
         reason: 'the active submission cancellation control to appear',
         maxPumps: 400,
       );
-      final cancel = find.widgetWithText(FilledButton, 'Yêu cầu hủy');
+      final cancel = find.ancestor(
+        of: find.text('Yêu cầu hủy'),
+        matching: find.byWidgetPredicate((widget) => widget is FilledButton),
+      );
       expect(tester.widget<FilledButton>(cancel).onPressed, isNotNull);
       await tester.ensureVisible(cancel);
       await tester.tap(cancel);
