@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:sme_meeting_assistant/core/app_dependencies.dart';
 import 'package:sme_meeting_assistant/features/meetings/meeting_detail_page.dart';
+import 'package:sme_meeting_assistant/features/recording/processing_timeline_panel.dart';
 import 'package:sme_meeting_assistant/features/results/summary_history_controller.dart';
 import 'package:sme_meeting_assistant/features/results/transcript_evidence_navigation.dart';
 import 'package:sme_meeting_assistant/features/results/results_presentation.dart';
@@ -21,6 +22,7 @@ import 'package:sme_meeting_assistant/features/results/results_panel.dart';
 import 'package:sme_meeting_assistant/features/results/results_workspace_controller.dart';
 
 import 'support/meeting_test_support.dart';
+import 'support/widget_test_support.dart';
 
 class _Repository extends ResultsRepository {
   _Repository(super.api);
@@ -703,10 +705,16 @@ void main() {
   testWidgets('Meeting Detail keeps pending Results commands across tabs', (
     tester,
   ) async {
+    const jobId = '11111111-1111-4111-8111-111111111111';
     final pending = Completer<http.StreamedResponse>();
+    final regenerationRequests = <http.BaseRequest>[];
     final client = MeetingTestHttpClient((request) async {
       final path = request.url.path;
-      if (path.endsWith('/summary/regenerate')) return pending.future;
+      if (path.endsWith('/summary/regenerate')) {
+        expect(request.method, 'POST');
+        regenerationRequests.add(request);
+        return pending.future;
+      }
       if (path.endsWith('/summary/versions')) {
         return meetingApiSuccess(
           const <dynamic>[],
@@ -767,46 +775,136 @@ void main() {
     });
     final deps = dependencies!;
     addTearDown(deps.dispose);
-    await tester.pumpWidget(
-      MaterialApp(
-        home: MeetingDetailPage(dependencies: deps, meetingId: testMeetingId),
-      ),
-    );
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Biên bản AI'));
-    await tester.pumpAndSettle();
-    final workspace = tester
-        .widget<ResultsPanel>(find.byType(ResultsPanel))
-        .workspace;
-    final command = workspace.regenerateSummary(epoch: workspace.reviewEpoch);
-    await tester.pump();
-    expect(workspace.mutationBusy(ResultsMutationGroup.summary), isTrue);
-    final processingTab = find.text('Xử lý');
-    await tester.ensureVisible(processingTab);
-    await tester.tap(processingTab);
-    await tester.pumpAndSettle();
-    expect(find.byType(ResultsPanel), findsNothing);
-    expect(workspace.mutationBusy(ResultsMutationGroup.summary), isTrue);
-    pending.complete(
-      await meetingApiSuccess({
-        'meetingId': testMeetingId,
-        'processingJobId': '11111111-1111-4111-8111-111111111111',
-      }, status: 202),
-    );
-    await tester.pump();
-    await command;
-    final resultsTab = find.text('Biên bản AI');
-    await tester.ensureVisible(resultsTab);
-    await tester.tap(resultsTab);
-    await tester.pumpAndSettle();
-    final restored = tester
-        .widget<ResultsPanel>(find.byType(ResultsPanel))
-        .workspace;
-    expect(restored, same(workspace));
-    expect(restored.acceptedRegenerationJobId, isNotNull);
-    expect(tester.takeException(), isNull);
-    await tester.pumpWidget(const SizedBox.shrink());
-    await tester.runAsync(deps.shutdown);
+    bool commandCompleted = false;
+    Object? commandFailure;
+    bool shutdownCompleted = false;
+    Object? shutdownFailure;
+
+    // Keep the HTTP response, command completion and dependency shutdown in
+    // the widget test's scheduling context. Pump until explicit milestones:
+    // a pending command or a processing observer need not become idle.
+    Future<void> releaseAdmission() async {
+      if (pending.isCompleted) return;
+      pending.complete(
+        await meetingApiSuccess({
+          'meetingId': testMeetingId,
+          'processingJobId': jobId,
+          'status': 'QUEUED',
+          'transcriptId': '22222222-2222-4222-8222-222222222222',
+          'contentRevision': 1,
+        }, status: 202),
+      );
+    }
+
+    try {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: MeetingDetailPage(dependencies: deps, meetingId: testMeetingId),
+        ),
+      );
+      await pumpUntil(
+        tester,
+        () => find.text('Biên bản AI').evaluate().isNotEmpty,
+        reason: 'Meeting Detail to load its canonical meeting',
+      );
+      final resultsTab = find.text('Biên bản AI');
+      await tester.ensureVisible(resultsTab);
+      await tester.tap(resultsTab);
+      await pumpUntil(
+        tester,
+        () =>
+            find.byType(ResultsPanel).evaluate().isNotEmpty &&
+            find.text('Summary').evaluate().isNotEmpty,
+        reason: 'Results to load the existing summary',
+      );
+      final workspace = tester
+          .widget<ResultsPanel>(find.byType(ResultsPanel))
+          .workspace;
+      // Observe the command outcome without awaiting a fake-clock Future
+      // before the test has pumped the response and its continuations.
+      unawaited(
+        workspace.regenerateSummary(epoch: workspace.reviewEpoch).then<void>(
+          (_) => commandCompleted = true,
+          onError: (Object error, StackTrace stack) {
+            commandFailure = error;
+            commandCompleted = true;
+          },
+        ),
+      );
+      await pumpUntil(
+        tester,
+        () => regenerationRequests.isNotEmpty || commandCompleted,
+        reason: 'the regeneration HTTP request to reach the held response',
+      );
+      expect(commandFailure, isNull);
+      expect(regenerationRequests, hasLength(1));
+      expect(
+        regenerationRequests.single.headers['idempotency-key'],
+        isNotEmpty,
+      );
+      expect(commandCompleted, isFalse);
+      expect(workspace.mutationBusy(ResultsMutationGroup.summary), isTrue);
+
+      final processingTab = find.text('Xử lý');
+      await tester.ensureVisible(processingTab);
+      await tester.tap(processingTab);
+      await pumpUntil(
+        tester,
+        () =>
+            find.byType(ProcessingTimelinePanel).evaluate().isNotEmpty &&
+            find.byType(ResultsPanel).evaluate().isEmpty,
+        reason: 'Processing to replace the Results widget',
+      );
+      expect(commandCompleted, isFalse);
+      expect(workspace.mutationBusy(ResultsMutationGroup.summary), isTrue);
+
+      await releaseAdmission();
+      await pumpUntil(
+        tester,
+        () => commandCompleted,
+        reason: 'the held HTTP 202 to complete the original Results command',
+      );
+      expect(commandFailure, isNull);
+      expect(workspace.mutationBusy(ResultsMutationGroup.summary), isFalse);
+      expect(workspace.acceptedRegenerationJobId, jobId);
+
+      await tester.ensureVisible(resultsTab);
+      await tester.tap(resultsTab);
+      await pumpUntil(
+        tester,
+        () =>
+            find.byType(ResultsPanel).evaluate().isNotEmpty &&
+            find.text('Summary').evaluate().isNotEmpty,
+        reason: 'the same Results workspace to be rendered after navigation',
+      );
+      final restored = tester
+          .widget<ResultsPanel>(find.byType(ResultsPanel))
+          .workspace;
+      expect(restored, same(workspace));
+      expect(restored.acceptedRegenerationJobId, jobId);
+      expect(regenerationRequests, hasLength(1));
+      expect(tester.takeException(), isNull);
+    } finally {
+      // Even a failed assertion must release the held response, unmount the
+      // real page and drain its shared observers without crossing clock zones.
+      await releaseAdmission();
+      await tester.pumpWidget(const SizedBox.shrink());
+      unawaited(
+        deps.shutdown().then<void>(
+          (_) => shutdownCompleted = true,
+          onError: (Object error, StackTrace stack) {
+            shutdownFailure = error;
+            shutdownCompleted = true;
+          },
+        ),
+      );
+      await pumpUntil(
+        tester,
+        () => shutdownCompleted,
+        reason: 'application dependencies to finish shutdown',
+      );
+      expect(shutdownFailure, isNull);
+    }
   });
 
   test('pending Results commands survive section changes', () async {
