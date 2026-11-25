@@ -10,23 +10,13 @@ Use focused, deterministic frontend verification for the behavior changed by the
 - **Security-sensitive UI:** verify session-expired behavior, CSRF transport expectations when applicable, guarded presentation, and the absence of JavaScript-stored bearer tokens. UI tests do not replace server authorization tests.
 - **Media / AI workflows:** distinguish requested, accepted, processing, warning, failure, and completed states. Do not use fake timers or stubbed success as evidence of real upload, recording, transcription, or grounded answers.
 
-## Local HTTPS verification modes
+## Local transport
 
-The Web README is the primary procedure for local HTTPS testing. Use the
-explicit evidence label `LOCAL_FUNCTIONAL_TLS_EXCEPTION` for an isolated
-loopback functional session that manually accepts the browser warning or uses
-an explicitly opted-in temporary Playwright context with
-`ignoreHTTPSErrors: true`. This mode is suitable for UI, routing, frontend
-interactions, same-origin Core behavior, and approved disposable test
-identities; it does not verify certificate trust.
-
-Use `TRUSTED_HTTPS_ACCEPTANCE` when the result depends on certificate-chain or
-hostname validation, transport security, release readiness, or production
-acceptance. Follow the README's task-owned NSS procedure and normal browser
-validation. Never report a `LOCAL_FUNCTIONAL_TLS_EXCEPTION` result as trusted
-HTTPS evidence, and do not use it to dismiss missing credentials or unavailable
-Core behavior. Label an unattempted check `NOT_RUN`; reserve `BLOCKED` for a
-required prerequisite that is unavailable.
+Ordinary local browser and functional testing uses the HTTP-only origin
+`http://localhost:5173` with the same-origin `/api/v1` proxy to
+`http://127.0.0.1:8080`. It does not require certificates or a browser trust
+exception. This verifies local application behavior only; production HTTPS
+transport acceptance remains a separate deployment gate.
 
 ## Regression and Boundaries
 

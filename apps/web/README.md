@@ -16,18 +16,15 @@ pnpm install --frozen-lockfile
 cp .env.example .env.local
 ```
 
-The default `pnpm dev` mode is an HTTP development mode. It is useful for
-ordinary UI work, but it is **not** the secure integration runtime. For the
-approved local HTTPS runtime, edit `.env.local` with the browser-visible
-same-origin setting and the server-side transport settings below:
+The local development and functional-testing runtime is HTTP-only. The canonical
+Web origin is `http://localhost:5173`; Vite binds its development listener to
+loopback and fails instead of selecting a fallback port when 5173 is occupied.
+The Core API remains on `http://127.0.0.1:8080` and is reached through the
+same-origin `/api` proxy:
 
 ```ini
 VITE_CORE_API_BASE_URL=/api/v1
 VITE_CORE_API_PROXY_TARGET=http://127.0.0.1:8080
-
-# Server-only Vite HTTPS inputs; the files must already exist.
-WEB_DEV_HTTPS_KEY_FILE=/absolute/path/to/web-dev.key
-WEB_DEV_HTTPS_CERT_FILE=/absolute/path/to/web-dev.crt
 
 # Optional local-only signed-media adapter.
 VITE_LOCAL_MEDIA_STORAGE_ORIGIN=https://storage.internal:9443
@@ -40,100 +37,28 @@ LOCAL_MEDIA_STORAGE_CA_FILE=/absolute/path/to/storage-ca.crt
 # VITE_MEDIA_MAX_UPLOAD_BYTES=1073741824
 ```
 
-`WEB_DEV_HTTPS_KEY_FILE`, `WEB_DEV_HTTPS_CERT_FILE`, and
-`LOCAL_MEDIA_STORAGE_CA_FILE` are server-only paths. The existing
+`LOCAL_MEDIA_STORAGE_CA_FILE` is a server-only path. The existing
 `VITE_CORE_API_PROXY_TARGET` name is retained for Vite configuration
 compatibility, but its value must be an approved loopback Core listener and
 must never contain credentials. Do not place private keys, CA material,
 cookies, signed URLs, or service credentials in any `VITE_*` variable.
 
-Start the secure runtime on loopback:
+Start the local runtime:
 
 ```bash
-pnpm dev --host 127.0.0.1
+pnpm dev
 ```
-
-### HTTPS verification modes
-
-For **trusted HTTPS and security acceptance**
-(`TRUSTED_HTTPS_ACCEPTANCE`), the Web certificate must be trusted by the test
-browser and include the exact requested Web hostname. Open the matching
-`https://` URL with normal certificate validation. Both HTTPS variables are
-required together. An incomplete pair or unreadable/invalid certificate fails
-during Vite startup. Leaving them unset intentionally starts HTTP development
-mode and must be recorded as **not a secure integration runtime**.
 
 The browser sees only `/api/v1`; Vite proxies that path to the configured Core
-listener while preserving the existing cookie/CSRF transport. Set the target
-to the Core API reachable **from the Vite process** (important for
-WSL2/Docker). Do not expose internal worker/admin ports or storage credentials
-to the client. In production, reverse-proxy `/api/v1` to Core on the same
-trusted HTTPS origin rather than introducing a browser-visible Core origin.
+listener while preserving the browser's `http://localhost:5173` origin,
+cookies, and CSRF transport. Set the target to the Core API reachable from the
+Vite process (important for WSL2/Docker). Do not expose internal worker/admin
+ports or storage credentials to the client. Production deployment remains
+responsible for its own HTTPS reverse proxy and transport hardening.
 
-For `TRUSTED_HTTPS_ACCEPTANCE`, an isolated Chromium/Playwright check must trust
-only the existing approved public Development CA root in a task-owned NSS
-database. Do not import private keys, modify the global trust store, create a
-replacement CA, or use a browser certificate-error bypass:
-
-```bash
-TRUST_HOME="$(mktemp -d)"
-mkdir -m 700 -p "$TRUST_HOME/.pki/nssdb"
-certutil -N -d sql:"$TRUST_HOME/.pki/nssdb" --empty-password
-certutil -A -d sql:"$TRUST_HOME/.pki/nssdb" \
-  -n "Approved Development CA" -t "C,," -a \
-  -i /absolute/path/to/approved-development-root-ca.crt
-HOME="$TRUST_HOME" <normal-Chromium-or-Playwright-command>
-```
-
-Launch the browser with normal certificate validation and use the hostname
-covered by the certificate SAN (for example, `https://localhost:5173` when
-the certificate contains `DNS:localhost`). For this mode, never use
-`--ignore-certificate-errors` or Playwright `ignoreHTTPSErrors`.
-
-### Local functional testing with an untrusted development certificate
-
-For isolated local development, a deliberate certificate-warning exception is
-permitted for ordinary functional work. A browser warning does not by itself
-block local UI, navigation, frontend interaction, frontend-to-Core behavior,
-or local authentication checks. Label every result from this mode
-`LOCAL_FUNCTIONAL_TLS_EXCEPTION`.
-
-Use this exception only when all of the following are true:
-
-- the Web app is running on the intended loopback development origin, normally
-  `https://localhost:5173`;
-- the developer has confirmed that the target is the intended local server;
-- the environment is isolated from production and shared sensitive resources;
-- no real user credentials, production cookies, or production data are used;
-- local authentication uses only an explicitly approved disposable test
-  identity; and
-- the purpose is functional development, not TLS security acceptance.
-
-For manual Chromium testing:
-
-1. Start the existing local Web application.
-2. Open the intended local HTTPS URL.
-3. If Chromium displays a certificate warning, select **Advanced**.
-4. Select **Proceed to localhost (unsafe)** if the browser provides that
-   option.
-5. Continue the ordinary local functional test.
-6. Record the evidence as `LOCAL_FUNCTIONAL_TLS_EXCEPTION` and state that
-   certificate trust was not verified.
-
-This procedure does not make the certificate trusted. If the browser does not
-provide a permitted way to proceed, do not circumvent browser-enforced
-restrictions. Never use this exception for unfamiliar or remote HTTPS
-websites.
-
-For an explicitly opted-in, temporary, isolated Playwright functional run, a
-task-owned browser context may use a local-only option such as
-`ignoreHTTPSErrors: true`. Prefer an ephemeral invocation or an uncommitted
-task-owned verification harness. Do not commit this option as a global
-Playwright configuration, Vitest browser default, CI setting, or production
-application option. It must never replace trusted HTTPS tests or be reported
-as certificate-chain validation. Future agents do not need to install
-`certutil`, create an NSS database, or regenerate certificates merely to
-perform ordinary local UI tests under this explicitly authorized mode.
+Local HTTP functional acceptance does not prove production HTTPS deployment
+hardening. Keep production HTTPS requirements and security regression tests
+separate from this development workflow.
 
 When the optional local media settings are present, Vite enables the
 development-only `/__local-media` adapter. It accepts only the documented

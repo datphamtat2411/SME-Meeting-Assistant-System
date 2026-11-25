@@ -94,3 +94,28 @@ PLAN may inspect relevant history; REVIEW may inspect relevant diffs.
 BUILD does not inspect history or diffs unless required by the task or plan.
 
 Report only changes, focused test results, and blockers or deviations.
+
+## Local Development Transport Policy
+
+- The current project phase prioritizes functional implementation, integration,
+  and acceptance testing.
+- Ordinary local development and testing is HTTP-only.
+- The canonical local Web origin is `http://localhost:5173`.
+- The canonical local Core API endpoint is `http://127.0.0.1:8080`.
+- Local Web startup uses a fixed port and must fail clearly rather than
+  silently selecting another port.
+- Local Web/API proxy, origin, cookie, and service configuration must remain
+  consistent.
+- Do not introduce new HTTPS listeners, certificate-generation workflows, TLS
+  proxies, or deployment-hardening infrastructure during ordinary feature
+  development. HTTPS/TLS deployment work is deferred to production deployment
+  unless explicitly requested.
+- Existing production security requirements and security regression tests remain
+  preserved. HTTP-only development does not authorize disabling authentication,
+  authorization, CSRF, origin validation, session security, storage privacy,
+  or signed-capability verification.
+- Local HTTP exceptions are permitted only within explicitly isolated local
+  development/testing and must never silently become production defaults.
+- Production HTTPS deployment is not a prerequisite for local functional
+  acceptance. Investigate configuration and runtime causes before changing
+  application security behavior.

@@ -10,16 +10,16 @@ accessibility, and cross-feature reconciliation.
 
 ## Final result
 
-**NOT ACCEPTED**
+**LOCAL HTTP TRANSPORT CORRECTED — MI-06 FUNCTIONAL ACCEPTANCE NOT YET CLAIMED**
 
-The implementation and several isolated integration gates are green, but the
-mandatory live Web-to-Core acceptance sequence was not completed. The
-authorized browser could not establish trusted HTTPS against the local
-development CA (`ERR_CERT_AUTHORITY_INVALID`), so login, Core mutations,
-worker-backed processing, browser downloads, multi-session authorization,
-concurrency, recovery, and authenticated UI acceptance were not claimed.
+The prior live attempt used an inconsistent HTTPS Web runtime and did not
+complete the mandatory Web-to-Core sequence. Local acceptance now uses the
+canonical HTTP origin `http://localhost:5173` and the same-origin Core proxy to
+`http://127.0.0.1:8080`; it must not depend on a public HTTPS endpoint or
+certificate trust.
 
-No production defect was demonstrated or changed during this verification.
+Production HTTPS transport and deployment hardening remain deferred and are not
+represented as passed by local HTTP verification.
 
 ## Evidence rules
 
@@ -34,7 +34,7 @@ This report distinguishes:
 - **NOT_RUN:** the scenario was not executed.
 
 A fixture-backed browser result is not promoted to live Web-to-Core acceptance.
-The local HTTP RustFS export result is not promoted to browser HTTPS download
+Local HTTP browser acceptance is not promoted to production HTTPS transport
 acceptance.
 
 ## Verification matrix
@@ -48,27 +48,29 @@ acceptance.
 | Export persistence/storage | **PASS — verified, bounded** | `./mvnw -B -ntp -Dtest=DashboardExportModuleAcceptanceTests,ExportS3StorageIntegrationTests test`: 9 tests, 0 failures/errors/skips, real PostgreSQL/RustFS assertions. This is not browser HTTPS download proof. |
 | Broad API verification | **INCOMPLETE — not an acceptance gate** | `./mvnw -B -ntp verify` reached 745 tests, 0 failures, 0 errors, and 1 skip before the fork was intentionally terminated with exit 143 during `DiarizationLifecycleIntegrationTests`. No test assertion failure was reported. |
 | Full Web browser suite | **NOT ACCEPTED** | `pnpm test` was not green: the run observed one failure in `calendar-page.integration.test.tsx`, two failures in `-meeting-coexistence.integration.test.tsx`, and a later `processing-panel.int06.test.tsx` file with 0 tests before the run stalled. No production correction was inferred from these fixture/session failures. |
-| HTTPS server | **PASS — bounded** | Vite served `https://localhost:5173` with the existing local certificate/key configuration. |
-| Trusted browser HTTPS | **BLOCKED** | A normal Playwright context with `ignoreHTTPSErrors: false` failed at `/sign-in` with `ERR_CERT_AUTHORITY_INVALID`. No trust-store modification or certificate bypass was used. |
-| Same-origin secure context and Core auth | **BLOCKED / NOT_RUN** | The trust prerequisite failed before an authenticated browser session could be established. |
+| Local HTTP server | **REQUIRED** | Vite must serve `http://localhost:5173` with fixed port/strict-port behavior and no certificate prerequisite. |
+| Production HTTPS transport | **DEFERRED — NOT PASSED** | Deployment hardening and trusted HTTPS verification remain outside local functional acceptance. |
+| Same-origin Core auth | **PASS — live HTTP verified** | Chromium at `http://localhost:5173` established CSRF, completed valid and invalid login, preserved secure host-prefixed cookies through reload, completed refresh, rejected invalid CSRF, and completed protected logout. An untrusted-origin request was rejected by Core. |
 | Authenticated operator workflow | **BLOCKED / NOT_RUN** | No live `/auth/me` identity binding, meeting creation, media intent/finalization, processing admission, transcript review, MI admission, or result read-back was completed. |
 | Worker-backed transcription and MI | **BLOCKED / NOT_RUN** | Local transcription and MI workers were started and reported consuming, but no run-owned browser workflow reached them and no independent receipt was correlated to a Web run. |
 | Authorization | **PASS — deterministic; BLOCKED live** | Focused backend authorization/security tests passed. Wrong-user, multi-session, meeting/media scope, and live authenticated authorization were not executed. |
 | Concurrency | **PASS — deterministic; BLOCKED live** | Backend concurrency/idempotency coverage is included in the focused results. No two independent authenticated Web sessions were run against the same live resource. |
 | Interruption/recovery | **PASS — deterministic; BLOCKED live** | Existing fixture/recovery coverage remains supporting evidence only. No live post-commit interruption and recovery sequence was executed. |
-| Browser PDF/Markdown download over HTTPS | **BLOCKED / NOT_RUN** | Export persistence and RustFS storage passed through API integration. The trusted browser prerequisite failed, so no actual browser PDF/Markdown HTTPS download was observed. |
+| Browser PDF/Markdown download over local HTTP | **PENDING LIVE HTTP RUN** | Export persistence and RustFS storage remain API-verified; local browser download must be checked without claiming production HTTPS transport. |
 | Navigation/coexistence | **PASS — deterministic; BLOCKED live** | Existing route/source and fixture evidence remains bounded. The full browser run exposed two coexistence fixture failures; no live authenticated navigation was completed. |
-| UI/UX and accessibility | **PASS — bounded shell evidence** | Actual HTTPS-served sign-in shell was captured in dark desktop and 390×844 narrow viewports, with accessibility snapshots and keyboard focus traversal to email/password. Authenticated MI workspace, export controls, and live error/recovery states were not assessed. |
+| UI/UX and accessibility | **PASS — bounded shell evidence** | The sign-in shell was captured in dark desktop and 390×844 narrow viewports, with accessibility snapshots and keyboard focus traversal to email/password. Authenticated MI workspace, export controls, and live error/recovery states were not assessed. |
 | Cross-feature reconciliation | **BLOCKED / NOT_RUN** | MI and export passed in separate focused integration lanes. No single live meeting was processed through MI and then exported/downloaded through the browser with Core read-backs. |
 
 ## Live attempt and security boundary
 
-The attempted live browser sequence was prepared to use the approved dedicated
-local test account through the normal sign-in form and an approved Vietnamese
-fixture kept outside the repository. The run stopped at the first navigation
-before the form was submitted because the browser did not trust the local CA.
-It therefore created no meeting, media object, processing job, transcript
-review, MI result, export download, or cross-session mutation.
+The live browser sequence used the approved dedicated local test account
+through the normal sign-in form at the documented HTTP origin. Valid login
+returned the authenticated workspace, reload preserved `/auth/me`, refresh
+returned an active session, invalid credentials returned `401`, invalid CSRF
+returned `403`, and valid logout returned `200` while clearing the cookies.
+A direct request from the untrusted `http://127.0.0.1:5173` origin was blocked
+by Core's CORS/origin boundary. This is local HTTP functional evidence only;
+it does not promote local HTTP to production HTTPS acceptance.
 
 The following unsafe alternatives were deliberately not used:
 
@@ -92,15 +94,16 @@ prove authenticated operator-workspace usability or accessibility.
 
 ## Required completion before acceptance
 
-1. Provide a browser-trusted HTTPS origin and same-origin `/api/v1` route in a
-   disposable, run-owned environment.
+1. Start the documented HTTP Web origin at `http://localhost:5173` and verify
+   its same-origin `/api/v1` route reaches Core at `http://127.0.0.1:8080`.
 2. Re-run the exact authenticated sequence from
    [`PHASE1_E2E_CONTRACT.md`](./PHASE1_E2E_CONTRACT.md), retaining Core
    read-backs and independent storage/broker/worker receipts.
 3. Execute independent-session authorization and concurrency checks, followed
    by the approved interruption/recovery scenario.
-4. Verify actual browser PDF/Markdown downloads over trusted HTTPS, including
-   content type, filename, and no credential/capability leakage.
+4. Verify actual local HTTP browser PDF/Markdown downloads, including content
+   type, filename, and no credential/capability leakage. Treat production
+   HTTPS download transport as a separate deferred deployment gate.
 5. Reconcile one meeting across MI result read-back and export/download
    read-back, then capture authenticated desktop, narrow, dark, keyboard, and
    accessibility evidence.

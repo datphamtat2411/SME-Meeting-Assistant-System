@@ -523,34 +523,21 @@ test('rejects missing CA material, non-HTTPS storage, and non-loopback bindings'
   )
 })
 
-test('loads the approved Vite HTTPS and same-origin proxy configuration safely', async () => {
+test('loads the fixed HTTP local Vite and same-origin proxy configuration', async () => {
   const httpDevelopment = await loadWebConfig()
-  assert.equal(httpDevelopment.server.https, undefined)
+  assert.equal(httpDevelopment.server.host, '127.0.0.1')
+  assert.equal(httpDevelopment.server.port, 5173)
+  assert.equal(httpDevelopment.server.strictPort, true)
+  assert.equal(httpDevelopment.server.https, false)
   assert.deepEqual(httpDevelopment.server.proxy?.['/api'], {
     target: 'http://127.0.0.1:8080',
     changeOrigin: false,
   })
 
-  await assert.rejects(
-    loadWebConfig({ WEB_DEV_HTTPS_KEY_FILE: trustedCertificate.keyFile }),
-    /must be configured together/
-  )
-  await assert.rejects(
-    loadWebConfig({ WEB_DEV_HTTPS_CERT_FILE: trustedCertificate.certFile }),
-    /must be configured together/
-  )
-  await assert.rejects(
-    loadWebConfig({
-      WEB_DEV_HTTPS_KEY_FILE: join(tempDirectory, 'missing.key'),
-      WEB_DEV_HTTPS_CERT_FILE: join(tempDirectory, 'missing.crt'),
-    }),
-    /ENOENT/
-  )
-
-  const httpsDevelopment = await loadWebConfig({
+  const staleHttpsEnvironment = await loadWebConfig({
     WEB_DEV_HTTPS_KEY_FILE: trustedCertificate.keyFile,
     WEB_DEV_HTTPS_CERT_FILE: trustedCertificate.certFile,
   })
-  assert.ok(httpsDevelopment.server.https?.key)
-  assert.ok(httpsDevelopment.server.https?.cert)
+  assert.equal(staleHttpsEnvironment.server.https, false)
+  assert.equal(staleHttpsEnvironment.server.port, 5173)
 })
