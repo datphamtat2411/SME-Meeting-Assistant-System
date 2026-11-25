@@ -109,7 +109,7 @@ class RecordingWorkspaceController extends ChangeNotifier {
 
   bool get canSubmitSelected =>
       !isBusy &&
-      !isSessionFenced &&
+      canReadMedia &&
       _selectedAsset?.isReady == true &&
       _selectedSubmission?.processingAdmitted != true &&
       (_selectedSubmission?.remoteMediaAvailable == true
@@ -231,7 +231,9 @@ class RecordingWorkspaceController extends ChangeNotifier {
       _recoverableOperations = recovered;
       if (_selectedAsset != null) {
         final selectedId = _selectedAsset!.id;
-        _selectedAsset = _assets.where((asset) => asset.id == selectedId).firstOrNull;
+        _selectedAsset = _assets
+            .where((asset) => asset.id == selectedId)
+            .firstOrNull;
       }
       _selectedAsset ??= _findAssetForRecovery(recovered);
       _projectSelectedSubmission();
@@ -477,6 +479,7 @@ class RecordingWorkspaceController extends ChangeNotifier {
                 job: target,
                 scope: action.scope,
                 capabilities: capabilities,
+                expectedOperationId: operation.id,
               );
             } else {
               final mediaId = operation.sourceMediaId;
@@ -488,6 +491,7 @@ class RecordingWorkspaceController extends ChangeNotifier {
                 sourceMediaId: mediaId,
                 scope: action.scope,
                 capabilities: capabilities,
+                expectedOperationId: operation.id,
               );
             }
         }
@@ -649,7 +653,7 @@ class RecordingWorkspaceController extends ChangeNotifier {
 
   void _sessionChanged() {
     final next = api.authenticatedSessionScope;
-    if (next == _sessionScope) return;
+    if (_sessionScope == null || next == _sessionScope) return;
     _observation?.dispose();
     _observation = null;
     // The new session requires a newly authorized workspace.
