@@ -7,6 +7,7 @@ production release readiness. See
 current local results and the successful hosted GitHub Actions foundation run.
 For the M03-T08 meeting corrective patch, see
 [`M03_T08_ACCEPTANCE.md`](M03_T08_ACCEPTANCE.md).
+For the M05 Results workspace, see [`M05_ACCEPTANCE.md`](M05_ACCEPTANCE.md).
 
 ## Verified foundation capabilities
 
@@ -76,21 +77,18 @@ These checks are separate from the M01 foundation gate:
   required message `question`. Reconcile these contracts before treating the
   Mobile Assistant as integrated; never display fabricated AI output.
 
-## Known server-owned concurrency-token limitations
+## Server-owned concurrency tokens
 
 Do not infer or synthesize ETags from model versions or identifiers.
 
-- The Decisions list endpoint returns paginated `DecisionView` records but does
-  not attach an individual ETag to each item. The API requires `If-Match` for
-  edit/confirm/reject operations. Mobile keeps those actions disabled until the
-  read contract provides a current server-issued token.
-- The transcript read endpoint returns one ETag for the transcript. Segment
-  correction requires a segment-specific ETag, which is not provided by the
-  current read projection. Mobile keeps segment editing disabled rather than
-  deriving a token from the segment `version`.
-- Other conditional mutations must continue to fail closed when a response
-  lacks its server-issued ETag. HTTP 412/428 remain server outcomes, not a
-  signal to invent or retry a token.
+- The M05 API contract adds item-level server-issued ETags to Decisions and
+  transcript segment projections. The Mobile client uses the reviewed token
+  for conditional mutations and keeps missing-token records read-only.
+- Evidence-backed manual Decision creation additionally requires deployment
+  of the compatible reviewed-source API contract described in the M05
+  acceptance document.
+- HTTP 412/428 remain server outcomes, not a signal to invent or retry a
+  token. An obsolete reviewed intent requires a fresh human review.
 
 ## Non-blocking Android compatibility warnings
 
@@ -228,6 +226,6 @@ running compatible Core API and authenticated end-to-end environment.
   every remote media condition. Mobile preserves reconciliation-required state
   rather than inferring that an object is absent or retransmitting unsafely.
 - Processing completion and transcript review remain downstream service/module
-  boundaries. Mobile represents available processing stages and review-required
-  states but does not implement full transcript review or meeting intelligence.
+  boundaries. M04 represents available processing stages and review-required states;
+  transcript review and meeting intelligence belong to M05.
 - Android is the validated platform. iOS is preserved but deferred.
