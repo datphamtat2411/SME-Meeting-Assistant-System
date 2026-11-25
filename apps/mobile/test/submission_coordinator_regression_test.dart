@@ -681,6 +681,128 @@ void main() {
     );
   }
 
+  test('a failed remote read does not invent transfer uncertainty', () async {
+    var failRead = true;
+    var intentRequests = 0;
+    var putRequests = 0;
+    var finalizeRequests = 0;
+    final client = MeetingTestHttpClient((request) async {
+      final path = request.url.path;
+      if (request.method == 'GET' && path.endsWith('/media/$testMediaId')) {
+        if (failRead) throw http.ClientException('Read connection lost');
+        return meetingApiSuccess(_pendingMediaJson());
+      }
+      if (request.method == 'POST' && path.endsWith('/media/uploads')) {
+        intentRequests++;
+        expect(request.headers['Idempotency-Key'], 'known-pending-intent');
+        return meetingApiSuccess(<String, dynamic>{
+          'mediaId': testMediaId,
+          'status': 'PENDING_UPLOAD',
+          'uploadUrl': 'https://storage.example.test/object',
+          'expiresAt': DateTime.now()
+              .toUtc()
+              .add(const Duration(minutes: 10))
+              .toIso8601String(),
+          'requiredContentType': 'audio/wav',
+        });
+      }
+      if (request.method == 'PUT') {
+        putRequests++;
+        await request.finalize().drain<void>();
+        return streamedResponse(200);
+      }
+      if (request.method == 'POST' && path.endsWith('/finalize')) {
+        finalizeRequests++;
+        return meetingApiSuccess(_availableMediaJson());
+      }
+      throw StateError('Unexpected request $path');
+    });
+    final api = createMeetingTestApi(client);
+    await signInMeetingTestApi(api);
+    final directory = await Directory.systemTemp.createTemp('sme-read-fail-');
+    final database = await LocalMediaDatabase.open(
+      databasePath: '${directory.path}/media.db',
+      databaseFactory: databaseFactoryFfi,
+    );
+    final repository = LocalMediaRepository(
+      persistence: LocalMediaPersistence(database),
+      storage: ManagedMediaStorage(
+        root: Directory('${directory.path}/managed'),
+      ),
+    );
+    final coordinator = SubmissionCoordinator(
+      api: api,
+      localMedia: repository,
+      mediaRepository: MediaRepository(api: api),
+      processingRepository: ProcessingRepository(api: api),
+      automaticRetries: 0,
+    );
+    addTearDown(() async {
+      coordinator.dispose();
+      await repository.dispose();
+      await directory.delete(recursive: true);
+      api.dispose();
+    });
+
+    final scope = api.requireAuthenticatedSessionScope();
+    final source = File('${directory.path}/meeting.wav')
+      ..writeAsBytesSync(<int>[1, 2, 3]);
+    final asset = await repository.rememberSourceFile(
+      scope: scope,
+      meetingId: testMeetingId,
+      source: source,
+      sourceType: LocalMediaSourceType.recording,
+      originalFilename: 'meeting.wav',
+      contentType: 'audio/wav',
+      expectedSizeBytes: 3,
+    );
+    final operation = await repository.beginUploadOperation(
+      scope: scope,
+      asset: asset,
+      idempotencyKey: 'known-pending-intent',
+    );
+    await repository.updateUploadOperation(
+      operation,
+      scope: scope,
+      checkpoint: UploadOperationCheckpoint.intentConfirmed,
+      remoteMediaId: testMediaId,
+      attemptCount: 1,
+      attemptOutcome: OperationAttemptOutcome.succeeded,
+    );
+    final capabilities = MeetingCapabilityPolicy.evaluate(
+      callerId: testUserId,
+      meeting: Meeting.fromJson(meetingTestJson(status: 'IN_PROGRESS')),
+    );
+    final interrupted = await coordinator.resume(
+      operationId: operation.id,
+      scope: scope,
+      capabilities: capabilities,
+      admitProcessing: false,
+    );
+    expect(interrupted.uploadOperation?.recoveryRequired, isFalse);
+    expect(interrupted.uploadOperation?.attemptCount, 1);
+    expect(
+      interrupted.uploadOperation?.attemptOutcome,
+      OperationAttemptOutcome.failed,
+    );
+    expect(intentRequests, 0);
+    expect(putRequests, 0);
+    expect(finalizeRequests, 0);
+
+    failRead = false;
+    final resumed = await coordinator.resume(
+      operationId: operation.id,
+      scope: scope,
+      capabilities: capabilities,
+      admitProcessing: false,
+    );
+    expect(resumed.lifecycle, SubmissionLifecycleState.mediaAvailable);
+    expect(resumed.uploadOperation?.id, operation.id);
+    expect(intentRequests, 1);
+    expect(putRequests, 1);
+    expect(finalizeRequests, 1);
+  });
+
   test(
     'workspace recovery projects durable upload operations before retrying',
     () async {

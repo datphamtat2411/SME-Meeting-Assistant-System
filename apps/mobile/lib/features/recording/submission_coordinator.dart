@@ -577,6 +577,9 @@ class SubmissionCoordinator extends ChangeNotifier {
       );
       final lifecycle = uploadOperation.recoveryRequired
           ? SubmissionLifecycleState.reconciliationRequired
+          : uploadOperation.attemptOutcome == OperationAttemptOutcome.failed &&
+                (failure.isTransportFailure || failure.status >= 500)
+          ? SubmissionLifecycleState.waitingForConnectivity
           : _failureLifecycle(error);
       return _publish(
         failed.copyWith(
@@ -1405,7 +1408,6 @@ class SubmissionCoordinator extends ChangeNotifier {
     UploadOperation operation,
     ApiFailure failure,
   ) async {
-    final outcome = _operationOutcome(failure);
     try {
       final authoritative =
           await localMedia.findUploadOperationById(
@@ -1413,10 +1415,22 @@ class SubmissionCoordinator extends ChangeNotifier {
             operationId: operation.id,
           ) ??
           operation;
+      // A failed observation is not evidence that a remote mutation ran.
+      // Mutation attempts persist their unresolved marker before dispatch.
+      final hasUnresolvedEvidence =
+          authoritative.recoveryRequired ||
+          authoritative.attemptOutcome == OperationAttemptOutcome.uncertain;
+      final reportedOutcome = _operationOutcome(failure);
+      final outcome =
+          reportedOutcome == OperationAttemptOutcome.uncertain &&
+              !hasUnresolvedEvidence
+          ? OperationAttemptOutcome.failed
+          : reportedOutcome;
       final priorUnresolved =
+          hasUnresolvedEvidence &&
           (operation.recoveryRequired ||
-              (authoritative.recoveryRequired &&
-                  authoritative.attemptCount > operation.attemptCount + 1)) &&
+              operation.attemptOutcome == OperationAttemptOutcome.uncertain ||
+              authoritative.attemptCount > operation.attemptCount + 1) &&
           failure.code != 'MEDIA_REJECTED' &&
           failure.code != 'MEDIA_PROCESSING_FAILED';
       return await localMedia.updateUploadOperation(
