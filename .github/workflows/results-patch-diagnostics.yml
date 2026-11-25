@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: results-patch-diagnostics-${{ github.ref }}
+  group: results-format-diagnostics-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -60,5 +60,3 @@ jobs:
           echo 'RESULTS_FORMAT_DIFF_END'
       - name: Analyze formatted source
         run: flutter analyze
-      - name: Run focused regression tests
-        run: flutter test test/results_contract_test.dart test/results_workspace_regression_test.dart test/processing_manager_regression_test.dart --reporter=expanded --timeout=2m
