@@ -118,7 +118,7 @@ export function MeetingActionsPanel({
           </Tabs>
         </CardContent>
       </Card>
-      {canManageActionItems && (
+      {(selected?.capabilities.canEdit || canManageActionItems) && (
         <ActionForm
           key={open ? (selected?.id ?? `new-${meetingId}`) : 'closed'}
           open={open}
@@ -145,17 +145,16 @@ function ProposalCollection({
     contentRevision?: number
   ) => void
 }) {
-  const query = useQuery(
-    actionItemsQuery(
-      filterFor(meetingId, { official: false, status: 'PROPOSED' })
-    )
-  )
+  const { query, setPage } = useMeetingActionPage(meetingId, {
+    official: false,
+    status: 'PROPOSED',
+  })
   if (query.isPending) return <RequestLoading />
   if (query.isError)
     return (
       <RequestError error={query.error} retry={() => void query.refetch()} />
     )
-  if (!query.data.items.length)
+  if (!query.data.items.length && query.data.page.page === 0)
     return (
       <RequestEmpty
         title='No proposals await review'
@@ -239,7 +238,11 @@ function ProposalCollection({
           </div>
         </article>
       ))}
-      <CollectionPager page={query.data.page} pageLabel='Proposal page' />
+      <CollectionPager
+        page={query.data.page}
+        pageLabel='Proposal page'
+        onPageChange={setPage}
+      />
     </div>
   )
 }
@@ -251,12 +254,13 @@ function OfficialCollection({
   meetingId: string
   onSelect: (item: ActionItem) => void
 }) {
-  const query = useQuery(
-    actionItemsQuery(filterFor(meetingId, { official: true }))
-  )
+  const { query, setPage } = useMeetingActionPage(meetingId, {
+    official: true,
+  })
   return (
     <ActionListState
       query={query}
+      onPageChange={setPage}
       onSelect={onSelect}
       empty='No official follow-up work for this meeting.'
     />
@@ -264,26 +268,51 @@ function OfficialCollection({
 }
 
 function HistoryCollections({ meetingId }: { meetingId: string }) {
-  const done = useQuery(
-    actionItemsQuery(filterFor(meetingId, { official: true, status: 'DONE' }))
-  )
-  const cancelled = useQuery(
-    actionItemsQuery(
-      filterFor(meetingId, { official: true, status: 'CANCELLED' })
-    )
-  )
-  const rejected = useQuery(
-    actionItemsQuery(
-      filterFor(meetingId, { official: false, status: 'CANCELLED' })
-    )
-  )
+  const done = useMeetingActionPage(meetingId, {
+    official: true,
+    status: 'DONE',
+  })
+  const cancelled = useMeetingActionPage(meetingId, {
+    official: true,
+    status: 'CANCELLED',
+  })
+  const rejected = useMeetingActionPage(meetingId, {
+    official: false,
+    status: 'CANCELLED',
+  })
   return (
     <div className='space-y-5'>
-      <HistoryGroup title='Completed official work' query={done} />
-      <HistoryGroup title='Cancelled official work' query={cancelled} />
-      <HistoryGroup title='Rejected proposals' query={rejected} />
+      <HistoryGroup
+        title='Completed official work'
+        query={done.query}
+        onPageChange={done.setPage}
+      />
+      <HistoryGroup
+        title='Cancelled official work'
+        query={cancelled.query}
+        onPageChange={cancelled.setPage}
+      />
+      <HistoryGroup
+        title='Rejected proposals'
+        query={rejected.query}
+        onPageChange={rejected.setPage}
+      />
     </div>
   )
+}
+
+function useMeetingActionPage(
+  meetingId: string,
+  filter: Partial<ActionFilter>
+) {
+  const [page, setPage] = useState(0)
+  const query = useQuery(
+    actionItemsQuery(filterFor(meetingId, { ...filter, page }))
+  )
+  if (query.data && page > Math.max(0, query.data.page.totalPages - 1)) {
+    setPage(Math.max(0, query.data.page.totalPages - 1))
+  }
+  return { query, setPage }
 }
 
 type ActionItemsQuery = UseQueryResult<ActionPage, Error>
@@ -291,9 +320,11 @@ type ActionItemsQuery = UseQueryResult<ActionPage, Error>
 function HistoryGroup({
   title,
   query,
+  onPageChange,
 }: {
   title: string
   query: ActionItemsQuery
+  onPageChange: (page: number) => void
 }) {
   if (query.isPending)
     return (
@@ -331,6 +362,11 @@ function HistoryGroup({
           ))}
         </div>
       )}
+      <CollectionPager
+        page={query.data.page}
+        pageLabel={title}
+        onPageChange={onPageChange}
+      />
     </section>
   )
 }
@@ -339,8 +375,10 @@ function ActionListState({
   query,
   onSelect,
   empty,
+  onPageChange,
 }: {
   query: ActionItemsQuery
+  onPageChange: (page: number) => void
   onSelect: (item: ActionItem) => void
   empty: string
 }) {
@@ -349,7 +387,8 @@ function ActionListState({
     return (
       <RequestError error={query.error} retry={() => void query.refetch()} />
     )
-  if (!query.data.items.length) return <RequestEmpty title={empty} />
+  if (!query.data.items.length && query.data.page.page === 0)
+    return <RequestEmpty title={empty} />
   return (
     <div className='space-y-3'>
       {query.data.items.map((item) => (
@@ -392,7 +431,11 @@ function ActionListState({
           </div>
         </section>
       ))}
-      <CollectionPager page={query.data.page} pageLabel='Official work page' />
+      <CollectionPager
+        page={query.data.page}
+        pageLabel='Official work page'
+        onPageChange={onPageChange}
+      />
     </div>
   )
 }
@@ -400,7 +443,9 @@ function ActionListState({
 function CollectionPager({
   page,
   pageLabel,
+  onPageChange,
 }: {
+  onPageChange: (page: number) => void
   page: { hasPrevious: boolean; hasNext: boolean; page: number }
   pageLabel: string
 }) {
@@ -410,10 +455,20 @@ function CollectionPager({
         {pageLabel} {page.page + 1}
       </span>
       <div className='flex gap-2'>
-        <Button size='sm' variant='outline' disabled={!page.hasPrevious}>
+        <Button
+          size='sm'
+          variant='outline'
+          disabled={!page.hasPrevious}
+          onClick={() => onPageChange(page.page - 1)}
+        >
           Previous
         </Button>
-        <Button size='sm' variant='outline' disabled={!page.hasNext}>
+        <Button
+          size='sm'
+          variant='outline'
+          disabled={!page.hasNext}
+          onClick={() => onPageChange(page.page + 1)}
+        >
           Next
         </Button>
       </div>

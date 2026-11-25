@@ -97,7 +97,7 @@ export function ActionItemsPage() {
   }
 
   function change(update: Partial<ActionFilter>) {
-    setFilter((current) => ({ ...current, ...update, page: 0 }))
+    setFilter((current) => ({ ...current, page: 0, ...update }))
   }
 
   function openCreate() {
@@ -206,30 +206,51 @@ function HistoryView({
   search: string
   onSelect: (item: ActionItem) => void
 }) {
+  const [donePage, setDonePage] = useState(0)
+  const [cancelledPage, setCancelledPage] = useState(0)
+  const [rejectedPage, setRejectedPage] = useState(0)
   const done = useActionPage(
-    defaultFilter({ official: true, status: 'DONE', q: search })
+    defaultFilter({
+      official: true,
+      status: 'DONE',
+      q: search,
+      page: donePage,
+    })
   )
   const cancelledOfficial = useActionPage(
-    defaultFilter({ official: true, status: 'CANCELLED', q: search })
+    defaultFilter({
+      official: true,
+      status: 'CANCELLED',
+      q: search,
+      page: cancelledPage,
+    })
   )
   const rejected = useActionPage(
-    defaultFilter({ official: false, status: 'CANCELLED', q: search })
+    defaultFilter({
+      official: false,
+      status: 'CANCELLED',
+      q: search,
+      page: rejectedPage,
+    })
   )
   return (
     <div className='space-y-6'>
       <HistoryCollection
         title='Completed official work'
         result={done}
+        onPageChange={setDonePage}
         onSelect={onSelect}
       />
       <HistoryCollection
         title='Cancelled official work'
         result={cancelledOfficial}
+        onPageChange={setCancelledPage}
         onSelect={onSelect}
       />
       <HistoryCollection
         title='Rejected proposals'
         result={rejected}
+        onPageChange={setRejectedPage}
         onSelect={onSelect}
       />
     </div>
@@ -240,8 +261,10 @@ function HistoryCollection({
   title,
   result,
   onSelect,
+  onPageChange,
 }: {
   title: string
+  onPageChange: (page: number) => void
   result: ReturnType<typeof useActionPage>
   onSelect: (item: ActionItem) => void
 }) {
@@ -254,7 +277,11 @@ function HistoryCollection({
           state.
         </p>
       </div>
-      <ActionTable result={result} onSelect={onSelect} />
+      <ActionTable
+        result={result}
+        onSelect={onSelect}
+        onPageChange={onPageChange}
+      />
     </section>
   )
 }
@@ -275,16 +302,7 @@ function ActionCollection({
   emptyMessage: string
 }) {
   const result = useActionPage(filter)
-  useEffect(() => {
-    if (
-      result.query.data &&
-      result.query.data.items.length === 0 &&
-      filter.page > 0 &&
-      result.query.data.page.hasPrevious
-    ) {
-      onChange({ page: filter.page - 1 })
-    }
-  }, [filter.page, onChange, result.query.data])
+
   return (
     <div className='space-y-4'>
       <div className='flex flex-col gap-3 lg:flex-row lg:items-center'>
@@ -371,12 +389,19 @@ function ActionTable({
   onPageChange?: (page: number) => void
 }) {
   const { query, filter } = result
+  const lastPage = query.data
+    ? Math.max(0, query.data.page.totalPages - 1)
+    : filter.page
+  useEffect(() => {
+    if (filter.page > lastPage) onPageChange?.(lastPage)
+  }, [filter.page, lastPage, onPageChange])
   if (query.isPending) return <RequestLoading />
   if (query.isError)
     return (
       <RequestError error={query.error} retry={() => void query.refetch()} />
     )
-  if (!query.data.items.length) return <RequestEmpty title={emptyMessage} />
+  if (!query.data.items.length && filter.page === 0)
+    return <RequestEmpty title={emptyMessage} />
   return (
     <div className='space-y-4'>
       <div className='overflow-x-auto rounded-md border'>
