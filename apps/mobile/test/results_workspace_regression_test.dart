@@ -823,13 +823,15 @@ void main() {
       // Observe the command outcome without awaiting a fake-clock Future
       // before the test has pumped the response and its continuations.
       unawaited(
-        workspace.regenerateSummary(epoch: workspace.reviewEpoch).then<void>(
-          (_) => commandCompleted = true,
-          onError: (Object error, StackTrace stack) {
-            commandFailure = error;
-            commandCompleted = true;
-          },
-        ),
+        workspace
+            .regenerateSummary(epoch: workspace.reviewEpoch)
+            .then<void>(
+              (_) => commandCompleted = true,
+              onError: (Object error, StackTrace stack) {
+                commandFailure = error;
+                commandCompleted = true;
+              },
+            ),
       );
       await pumpUntil(
         tester,
