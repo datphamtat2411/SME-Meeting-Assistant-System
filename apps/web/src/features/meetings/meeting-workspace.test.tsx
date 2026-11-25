@@ -1,12 +1,22 @@
 import { useState } from 'react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import {
+  QueryClient,
+  QueryClientProvider,
+  useQueryClient,
+} from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
 import { CoreApiError, coreApi } from '@/lib/core-api'
-import { currentUserQueryKey } from '@/features/auth/session/current-user'
+import {
+  currentUserQueryKey,
+  type AuthContext,
+} from '@/features/auth/session/current-user'
 import type { MeetingView } from './data/detail-api'
 import type { MeetingListResponse } from './data/list-api'
+import { LiveMeetingPage } from './live-meeting'
+import { MeetingSessionProvider } from './media/meeting-session-context'
+import { MeetingAuthorizationProvider } from './meeting-authorization-context'
 import { MeetingWorkspacePage } from './meeting-workspace'
 import type { MeetingWorkspaceSection } from './meeting-workspace-navigation'
 
@@ -383,6 +393,103 @@ async function renderEditableWorkspace(
   return { queryClient, screen }
 }
 
+function workspaceIdentity(
+  userId: string,
+  globalRole: AuthContext['globalRole'] = 'EMPLOYEE'
+): AuthContext {
+  return {
+    userId,
+    email: `${userId}@example.com`,
+    displayName: 'Workspace identity',
+    globalRole,
+    accountStatus: 'ACTIVE',
+    primaryOrgUnitId: null,
+    directoryManagementScope: { allUnits: false, unitIds: [] },
+    session: {
+      id: '66666666-6666-4666-8666-666666666666',
+      clientType: 'WEB',
+      createdAt: '2026-09-01T00:00:00Z',
+      lastSeenAt: null,
+      absoluteExpiresAt: '2026-09-02T00:00:00Z',
+    },
+  }
+}
+
+function installSharedWorkspaceApi(options: {
+  organizerUserId?: string
+  participantError?: unknown
+  participants?: typeof participants
+  actionItems?: unknown[]
+}) {
+  const protectedReads: string[] = []
+  const actionItemReads: string[] = []
+  vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+    data: {
+      ...detail,
+      organizerUserId: options.organizerUserId ?? 'organizer-1',
+    },
+    meta: {},
+    etag: '"shared-meeting-etag"',
+  })
+  vi.spyOn(coreApi, 'getWithMeta').mockImplementation(async (url) => {
+    if (url === '/meetings/meeting-1/participants') {
+      if (options.participantError) throw options.participantError
+      return { data: options.participants ?? [], meta: {} }
+    }
+    if (url === '/rooms/room-1') {
+      return {
+        data: { id: 'room-1', name: 'Boardroom', location: 'HQ' },
+        meta: {},
+      }
+    }
+    if (url === '/meeting-organizers/organizer-1') {
+      return {
+        data: { id: 'organizer-1', name: 'Meeting organizer' },
+        meta: {},
+      }
+    }
+    if (url === '/action-items') {
+      actionItemReads.push(url)
+      return {
+        data: options.actionItems ?? [],
+        meta: { pagination: availabilityPagination },
+      }
+    }
+    throw new Error(`Unexpected shared metadata GET ${url}`)
+  })
+  vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
+    protectedReads.push(url)
+    if (/\/media$/.test(url) || /\/processing-jobs$/.test(url)) return []
+    throw new Error(`Unexpected shared protected GET ${url}`)
+  })
+  return { actionItemReads, protectedReads }
+}
+
+function SwitchIdentityHarness() {
+  const client = useQueryClient()
+  return (
+    <>
+      <button
+        type='button'
+        onClick={() =>
+          client.setQueryData(
+            currentUserQueryKey,
+            workspaceIdentity(
+              '77777777-7777-4777-8777-777777777777',
+              'DEPARTMENT_MANAGER'
+            )
+          )
+        }
+      >
+        Switch workspace identity
+      </button>
+      <MeetingAuthorizationProvider meetingId='meeting-1'>
+        <MeetingWorkspacePage meetingId='meeting-1' />
+      </MeetingAuthorizationProvider>
+    </>
+  )
+}
+
 describe('MeetingWorkspacePage', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
@@ -585,16 +692,29 @@ describe('MeetingWorkspacePage', () => {
       const [section, setSection] =
         useState<MeetingWorkspaceSection>('recording')
       const [meetingId, setMeetingId] = useState('meeting-1')
+      const [route, setRoute] = useState<'workspace' | 'live'>('workspace')
       return (
         <>
           <button type='button' onClick={() => setMeetingId('meeting-2')}>
             Switch meeting
           </button>
-          <MeetingWorkspacePage
-            meetingId={meetingId}
-            section={section}
-            onSectionChange={(nextSection) => setSection(nextSection)}
-          />
+          <button type='button' onClick={() => setRoute('live')}>
+            Open live meeting route
+          </button>
+          <button type='button' onClick={() => setRoute('workspace')}>
+            Open workspace route
+          </button>
+          <MeetingSessionProvider key={meetingId} meetingId={meetingId}>
+            {route === 'live' ? (
+              <LiveMeetingPage meetingId={meetingId} />
+            ) : (
+              <MeetingWorkspacePage
+                meetingId={meetingId}
+                section={section}
+                onSectionChange={(nextSection) => setSection(nextSection)}
+              />
+            )}
+          </MeetingSessionProvider>
         </>
       )
     }
@@ -616,20 +736,37 @@ describe('MeetingWorkspacePage', () => {
       .toBeInTheDocument()
     expect(recorder.instances).toHaveLength(1)
 
-    await userEvent.click(screen.getByRole('tab', { name: 'Overview' }))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Open live meeting route' })
+    )
     await expect
-      .element(screen.getByText('Recording in progress in this meeting'))
+      .element(screen.getByRole('button', { name: 'Stop recording' }))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByText('Recording in progress…'))
       .toBeInTheDocument()
     expect(track.stop).not.toHaveBeenCalled()
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Stop recording' })
+    )
+    await expect
+      .element(screen.getByText(/captured \(M4A\/AAC declaration\)/))
+      .toBeInTheDocument()
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Open workspace route' })
+    )
+    await expect
+      .element(screen.getByText(/captured \(M4A\/AAC declaration\)/))
+      .toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('tab', { name: 'Overview' }))
+    expect(track.stop).toHaveBeenCalledTimes(1)
 
     const retainedPanel = Array.from(
       document.querySelectorAll<HTMLElement>('[data-slot="tabs-content"]')
     ).find((element) => element.textContent?.includes('Record meeting audio'))
     expect(retainedPanel).toBeUndefined()
-
-    await userEvent.click(
-      screen.getByRole('button', { name: 'Stop recording' })
-    )
 
     await userEvent.click(screen.getByRole('tab', { name: 'Recording' }))
     await expect
@@ -1523,6 +1660,258 @@ describe('MeetingWorkspacePage', () => {
     })
     expect(invalidateSpy).toHaveBeenCalledWith({
       queryKey: ['rooms', 'availability'],
+    })
+  })
+
+  it('keeps organizer content authority when the unrelated participant query is denied', async () => {
+    const { protectedReads } = installSharedWorkspaceApi({
+      organizerUserId: 'organizer-1',
+      participantError: new CoreApiError({
+        message: 'The participant listing is not available.',
+        status: 403,
+        kind: 'http',
+      }),
+    })
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    client.setQueryData(currentUserQueryKey, workspaceIdentity('organizer-1'))
+
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <MeetingAuthorizationProvider meetingId='meeting-1'>
+          <MeetingWorkspacePage meetingId='meeting-1' />
+        </MeetingAuthorizationProvider>
+      </QueryClientProvider>
+    )
+
+    await expect
+      .element(
+        screen.getByRole('heading', { name: 'Authorized roadmap review' })
+      )
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('tab', { name: 'Recording' }))
+      .toBeEnabled()
+    await expect.poll(() => protectedReads.length).toBeGreaterThan(0)
+    expect(protectedReads).toContain('/meetings/meeting-1/media')
+    expect(protectedReads).toContain('/meetings/meeting-1/processing-jobs')
+  })
+
+  it('shows operational metadata to a metadata-only user without mounting protected content queries', async () => {
+    const { protectedReads } = installSharedWorkspaceApi({
+      participantError: new CoreApiError({
+        message: 'Membership details are unavailable',
+        status: 403,
+        kind: 'http',
+      }),
+    })
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    client.setQueryData(
+      currentUserQueryKey,
+      workspaceIdentity('88888888-8888-4888-8888-888888888888')
+    )
+
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <MeetingAuthorizationProvider meetingId='meeting-1'>
+          <MeetingWorkspacePage meetingId='meeting-1' />
+        </MeetingAuthorizationProvider>
+      </QueryClientProvider>
+    )
+
+    await expect
+      .element(
+        screen.getByRole('heading', { name: 'Authorized roadmap review' })
+      )
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('tab', { name: 'Overview' }))
+      .toBeEnabled()
+    await expect
+      .element(screen.getByRole('tab', { name: 'Recording' }))
+      .toBeDisabled()
+    expect(protectedReads).toEqual([])
+  })
+
+  it('preserves organizer access when participant lookup is denied', async () => {
+    const { protectedReads } = installSharedWorkspaceApi({
+      organizerUserId: 'organizer-1',
+      participantError: new CoreApiError({
+        message: 'Participant details are unavailable',
+        status: 403,
+        kind: 'http',
+      }),
+    })
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    client.setQueryData(currentUserQueryKey, workspaceIdentity('organizer-1'))
+
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <MeetingAuthorizationProvider meetingId='meeting-1'>
+          <MeetingWorkspacePage meetingId='meeting-1' />
+        </MeetingAuthorizationProvider>
+      </QueryClientProvider>
+    )
+
+    await expect
+      .element(
+        screen.getByRole('heading', { name: 'Authorized roadmap review' })
+      )
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('tab', { name: 'Recording' }))
+      .toBeEnabled()
+    await expect
+      .element(screen.getByText('Participant memberships are unavailable.'))
+      .toBeInTheDocument()
+    expect(protectedReads).toContain('/meetings/meeting-1/media')
+  })
+
+  it('keeps server-filtered Action Items available to a scoped Department Manager only', async () => {
+    const { actionItemReads, protectedReads } = installSharedWorkspaceApi({})
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    client.setQueryData(
+      currentUserQueryKey,
+      workspaceIdentity(
+        '99999999-9999-4999-8999-999999999999',
+        'DEPARTMENT_MANAGER'
+      )
+    )
+
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <MeetingAuthorizationProvider meetingId='meeting-1'>
+          <MeetingWorkspacePage meetingId='meeting-1' section='action-items' />
+        </MeetingAuthorizationProvider>
+      </QueryClientProvider>
+    )
+
+    await expect
+      .element(screen.getByText('No action items for this meeting'))
+      .toBeInTheDocument()
+    await expect.poll(() => actionItemReads.length).toBeGreaterThan(0)
+    expect(protectedReads).toEqual([])
+  })
+
+  it('keeps scoped Action Items available after participant lookup fails without opening general content', async () => {
+    const { actionItemReads, protectedReads } = installSharedWorkspaceApi({
+      participantError: new CoreApiError({
+        message: 'Participant details are unavailable',
+        status: 403,
+        kind: 'http',
+      }),
+    })
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    client.setQueryData(
+      currentUserQueryKey,
+      workspaceIdentity(
+        '99999999-9999-4999-8999-999999999999',
+        'DEPARTMENT_MANAGER'
+      )
+    )
+
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <MeetingAuthorizationProvider meetingId='meeting-1'>
+          <MeetingWorkspacePage meetingId='meeting-1' section='action-items' />
+        </MeetingAuthorizationProvider>
+      </QueryClientProvider>
+    )
+
+    await expect
+      .element(screen.getByText('No action items for this meeting'))
+      .toBeInTheDocument()
+    await expect
+      .element(screen.getByRole('tab', { name: 'Transcript' }))
+      .toBeDisabled()
+    await expect.poll(() => actionItemReads.length).toBeGreaterThan(0)
+    expect(protectedReads).toEqual([])
+  })
+
+  it('does not render actor A protected data while actor B scope reset is pending', async () => {
+    installSharedWorkspaceApi({ organizerUserId: 'organizer-1' })
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    client.setQueryData(currentUserQueryKey, workspaceIdentity('organizer-1'))
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <SwitchIdentityHarness />
+      </QueryClientProvider>
+    )
+    await expect
+      .element(
+        screen.getByRole('heading', { name: 'Authorized roadmap review' })
+      )
+      .toBeInTheDocument()
+    client.setQueryData(
+      ['meeting-media', 'meeting-1'],
+      [{ id: 'actor-a-secret-media' }]
+    )
+    client.setQueryData(['processing-job', 'actor-a-job'], {
+      id: 'actor-a-job',
+      meetingId: 'meeting-1',
+    })
+    client.setQueryData(['export', 'actor-a-export'], {
+      id: 'actor-a-export',
+      meetingId: 'meeting-1',
+    })
+    client.setQueryData(['export', 'other-meeting-export'], {
+      id: 'other-meeting-export',
+      meetingId: 'meeting-2',
+    })
+
+    let releaseReset!: () => void
+    let resetStarted!: () => void
+    const resetBarrier = new Promise<void>((resolve) => {
+      releaseReset = resolve
+    })
+    const resetObserved = new Promise<void>((resolve) => {
+      resetStarted = resolve
+    })
+    const resetQueries = client.resetQueries.bind(client)
+    vi.spyOn(client, 'resetQueries').mockImplementation(async (...args) => {
+      resetStarted()
+      await resetBarrier
+      return resetQueries(...args)
+    })
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Switch workspace identity' })
+    )
+    await resetObserved
+    await expect
+      .element(
+        screen.getByRole('heading', { name: 'Authorized roadmap review' })
+      )
+      .not.toBeInTheDocument()
+    expect(client.getQueryData(['meeting-media', 'meeting-1'])).toEqual([
+      { id: 'actor-a-secret-media' },
+    ])
+
+    releaseReset()
+    await expect
+      .element(
+        screen.getByRole('heading', { name: 'Authorized roadmap review' })
+      )
+      .toBeInTheDocument()
+    expect(client.getQueryData(['meeting-media', 'meeting-1'])).toBeUndefined()
+    expect(
+      client.getQueryData(['processing-job', 'actor-a-job'])
+    ).toBeUndefined()
+    expect(client.getQueryData(['export', 'actor-a-export'])).toBeUndefined()
+    expect(client.getQueryData(['export', 'other-meeting-export'])).toEqual({
+      id: 'other-meeting-export',
+      meetingId: 'meeting-2',
     })
   })
 })

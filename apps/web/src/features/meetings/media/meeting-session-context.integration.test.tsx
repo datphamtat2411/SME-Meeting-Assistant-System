@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
 import type { MeetingMedia } from './media-api'
@@ -12,6 +12,7 @@ import {
 const mediaMocks = vi.hoisted(() => ({
   fetchMediaCapability: vi.fn(),
   requestMediaAccess: vi.fn(),
+  sources: [] as Array<Record<string, unknown>>,
 }))
 
 vi.mock('./media-api', async (importOriginal) => {
@@ -21,7 +22,7 @@ vi.mock('./media-api', async (importOriginal) => {
     fetchMediaCapability: mediaMocks.fetchMediaCapability,
     meetingMediaQuery: (meetingId: string) => ({
       queryKey: ['meeting-media', meetingId],
-      queryFn: async () => [],
+      queryFn: async () => mediaMocks.sources,
       retry: false,
     }),
     requestMediaAccess: mediaMocks.requestMediaAccess,
@@ -41,10 +42,43 @@ function queryClient() {
 
 function deferred<T>() {
   let resolve!: (value: T) => void
-  const promise = new Promise<T>((resolvePromise) => {
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
     resolve = resolvePromise
+    reject = rejectPromise
   })
-  return { promise, resolve }
+  return { promise, resolve, reject }
+}
+
+function playableWaveFile(durationMs = 1000): Blob {
+  const sampleRate = 8000
+  const channelCount = 1
+  const bitsPerSample = 16
+  const frameCount = Math.floor((sampleRate * durationMs) / 1000)
+  const dataSize = frameCount * channelCount * (bitsPerSample / 8)
+  const bytes = new Uint8Array(44 + dataSize)
+  const view = new DataView(bytes.buffer)
+  const writeText = (offset: number, value: string) => {
+    for (let index = 0; index < value.length; index += 1) {
+      bytes[offset + index] = value.charCodeAt(index)
+    }
+  }
+
+  writeText(0, 'RIFF')
+  view.setUint32(4, 36 + dataSize, true)
+  writeText(8, 'WAVE')
+  writeText(12, 'fmt ')
+  view.setUint32(16, 16, true)
+  view.setUint16(20, 1, true)
+  view.setUint16(22, channelCount, true)
+  view.setUint32(24, sampleRate, true)
+  view.setUint32(28, sampleRate * channelCount * (bitsPerSample / 8), true)
+  view.setUint16(32, channelCount * (bitsPerSample / 8), true)
+  view.setUint16(34, bitsPerSample, true)
+  writeText(36, 'data')
+  view.setUint32(40, dataSize, true)
+
+  return new Blob([bytes.buffer], { type: 'audio/wav' })
 }
 
 function media(id: string, filename: string): MeetingMedia {
@@ -84,8 +118,21 @@ function PlaybackHarness() {
       >
         Play second source
       </button>
+      <button type='button' onClick={() => void session.play()}>
+        Play audio
+      </button>
+      <button type='button' onClick={() => session.seek(5000)}>
+        Seek to five seconds
+      </button>
       <output data-testid='playback-state'>
-        {session.playback.sourceMediaId ?? 'none'}:{session.playback.status}
+        {session.playback.sourceMediaId ?? 'none'}:{session.playback.status}:
+        {session.playback.currentTimeMs}
+      </output>
+      <output data-testid='playback-error'>
+        {session.playback.error ?? 'none'}
+      </output>
+      <output data-testid='media-state'>
+        {session.media.isSuccess ? 'ready' : 'pending'}
       </output>
     </>
   )
@@ -133,6 +180,20 @@ function ScopeContent() {
 }
 
 describe('meeting session ownership boundaries', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mediaMocks.sources = [
+      {
+        ...media(firstMediaId, 'first.wav'),
+        status: 'AVAILABLE',
+      },
+      {
+        ...media(secondMediaId, 'second.wav'),
+        status: 'AVAILABLE',
+      },
+    ]
+  })
+
   it('keeps a newer playback source authoritative when an older fetch resolves late', async () => {
     const firstFetch = deferred<Blob>()
     const secondFetch = deferred<Blob>()
@@ -160,6 +221,9 @@ describe('meeting session ownership boundaries', () => {
       </QueryClientProvider>
     )
 
+    await expect
+      .element(screen.getByTestId('media-state'))
+      .toHaveTextContent('ready')
     await userEvent.click(
       screen.getByRole('button', { name: 'Play first source' })
     )
@@ -170,10 +234,153 @@ describe('meeting session ownership boundaries', () => {
     await expect
       .element(screen.getByTestId('playback-state'))
       .toHaveTextContent(`${secondMediaId}:loading`)
-    firstFetch.resolve(new Blob(['first'], { type: 'audio/wav' }))
+    firstFetch.resolve(playableWaveFile())
     await expect
       .element(screen.getByTestId('playback-state'))
       .toHaveTextContent(`${secondMediaId}:loading`)
+  })
+
+  it('ignores a late play failure from a source replaced during playback', async () => {
+    mediaMocks.requestMediaAccess.mockImplementation(
+      async (_meetingId: string, sourceMediaId: string) => ({
+        url: sourceMediaId,
+        expiresAt: '2030-01-01T00:05:00Z',
+      })
+    )
+    mediaMocks.fetchMediaCapability.mockResolvedValue(playableWaveFile())
+    const firstPlay = deferred<void>()
+    const secondPlay = deferred<void>()
+    const play = vi
+      .spyOn(HTMLMediaElement.prototype, 'play')
+      .mockReturnValueOnce(firstPlay.promise)
+      .mockReturnValueOnce(secondPlay.promise)
+
+    const screen = await render(
+      <QueryClientProvider client={queryClient()}>
+        <MeetingSessionProvider
+          meetingId={meetingId}
+          fallbackCapabilities={{
+            canReadMedia: true,
+            canReadProcessing: false,
+          }}
+        >
+          <PlaybackHarness />
+        </MeetingSessionProvider>
+      </QueryClientProvider>
+    )
+
+    await expect
+      .element(screen.getByTestId('media-state'))
+      .toHaveTextContent('ready')
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Play first source' })
+    )
+    await expect
+      .element(screen.getByTestId('playback-state'))
+      .toHaveTextContent(`${firstMediaId}:ready`)
+    await userEvent.click(screen.getByRole('button', { name: 'Play audio' }))
+    await expect.poll(() => play.mock.calls.length).toBe(1)
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Play second source' })
+    )
+    await expect
+      .element(screen.getByTestId('playback-state'))
+      .toHaveTextContent(`${secondMediaId}:ready`)
+    await userEvent.click(screen.getByRole('button', { name: 'Play audio' }))
+    await expect.poll(() => play.mock.calls.length).toBe(2)
+
+    firstPlay.reject(new Error('The old source failed to start.'))
+    await expect
+      .element(screen.getByTestId('playback-state'))
+      .toHaveTextContent(`${secondMediaId}:ready`)
+  })
+
+  it('does not report a failed seek as a confirmed playback position', async () => {
+    mediaMocks.requestMediaAccess.mockImplementation(
+      async (_meetingId: string, sourceMediaId: string) => ({
+        url: sourceMediaId,
+        expiresAt: '2030-01-01T00:05:00Z',
+      })
+    )
+    mediaMocks.fetchMediaCapability.mockResolvedValue(playableWaveFile())
+
+    const screen = await render(
+      <QueryClientProvider client={queryClient()}>
+        <MeetingSessionProvider
+          meetingId={meetingId}
+          fallbackCapabilities={{
+            canReadMedia: true,
+            canReadProcessing: false,
+          }}
+        >
+          <PlaybackHarness />
+        </MeetingSessionProvider>
+      </QueryClientProvider>
+    )
+    await expect
+      .element(screen.getByTestId('media-state'))
+      .toHaveTextContent('ready')
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Play first source' })
+    )
+    await expect
+      .element(screen.getByTestId('playback-state'))
+      .toHaveTextContent(`${firstMediaId}:ready`)
+
+    const audio = document.querySelector('audio')
+    expect(audio).not.toBeNull()
+    Object.defineProperty(audio, 'duration', {
+      configurable: true,
+      value: 10,
+    })
+    Object.defineProperty(audio, 'currentTime', {
+      configurable: true,
+      get: () => 0,
+      set: () => {
+        throw new Error('The browser rejected this seek.')
+      },
+    })
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Seek to five seconds' })
+    )
+    await expect
+      .element(screen.getByTestId('playback-state'))
+      .toHaveTextContent(new RegExp(`${firstMediaId}:ready:\\s*0`))
+  })
+
+  it('preserves a real browser playback error for malformed audio', async () => {
+    mediaMocks.requestMediaAccess.mockImplementation(
+      async (_meetingId: string, sourceMediaId: string) => ({
+        url: sourceMediaId,
+        expiresAt: '2030-01-01T00:05:00Z',
+      })
+    )
+    mediaMocks.fetchMediaCapability.mockResolvedValue(
+      new Blob(['not a WAV file'], { type: 'audio/wav' })
+    )
+
+    const screen = await render(
+      <QueryClientProvider client={queryClient()}>
+        <MeetingSessionProvider
+          meetingId={meetingId}
+          fallbackCapabilities={{
+            canReadMedia: true,
+            canReadProcessing: false,
+          }}
+        >
+          <PlaybackHarness />
+        </MeetingSessionProvider>
+      </QueryClientProvider>
+    )
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Play first source' })
+    )
+    await expect
+      .element(screen.getByTestId('playback-error'))
+      .toHaveTextContent('The selected audio source could not be played.')
   })
 
   it('clears imported meeting resources when the provider scope changes', async () => {

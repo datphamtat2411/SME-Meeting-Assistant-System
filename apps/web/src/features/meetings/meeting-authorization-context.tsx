@@ -1,14 +1,22 @@
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useMemo,
-  useRef,
   useState,
   type ReactNode,
 } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  useQuery,
+  useQueryClient,
+  type UseQueryResult,
+} from '@tanstack/react-query'
 import { normalizeCoreApiError } from '@/lib/core-api'
+import {
+  currentUserQueryKey,
+  type AuthContext,
+} from '@/features/auth/session/current-user'
 import { useCurrentUserVerification } from '@/features/auth/session/current-user-verification'
 import {
   meetingDetailQueryOptions,
@@ -19,119 +27,144 @@ import {
 } from './data/detail-api'
 import {
   deriveMeetingWorkspaceCapabilities,
-  resolveMeetingWorkspaceAuthorization,
   type MeetingWorkspaceCapabilities,
   type MeetingWorkspaceMembership,
-  type MeetingWorkspaceAuthorizationResolution,
 } from './meeting-workspace-capabilities'
 
-type VerificationState = ReturnType<typeof useCurrentUserVerification>
+type AuthorizationStatus =
+  | 'initial-loading'
+  | 'verified'
+  | 'background-verification'
+  | 'transient-failure'
+  | 'confirmed-authentication-loss'
+  | 'confirmed-authorization-denial'
 
 export type MeetingAuthorizationContextValue = {
   meetingId: string
-  status: VerificationState['status']
-  failure: VerificationState['failure']
-  identity: VerificationState['identity'] | null
-  meeting: MeetingView | null
-  etag: string | null
-  participants: ParticipantView[]
+  identity?: AuthContext
+  meeting?: MeetingView
+  etag?: string
+  detailQuery: UseQueryResult<MeetingDetailResponse, unknown>
+  participantsQuery: UseQueryResult<ParticipantView[], unknown>
   membership: MeetingWorkspaceMembership
+  participants: ParticipantView[]
   capabilities: MeetingWorkspaceCapabilities
-  authorizationResolution: MeetingWorkspaceAuthorizationResolution
+  status: AuthorizationStatus
   scopeReady: boolean
   isEstablished: boolean
   canReadProtectedData: boolean
   canPerformProtectedOperation: boolean
   isConfirmedAccessLoss: boolean
-  detailQuery: ReturnType<typeof useQuery<MeetingDetailResponse>>
-  participantsQuery: ReturnType<typeof useQuery<ParticipantView[]>>
-  retry: () => Promise<unknown>
+  retry: () => Promise<void>
 }
 
 const MeetingAuthorizationContext =
   createContext<MeetingAuthorizationContextValue | null>(null)
 
-const protectedMeetingQueryKeys = new Set([
-  'meetings',
-  'meeting-media',
-  'processing-jobs',
-  'processing-job',
-  'meeting-intelligence',
-  'transcript',
-  'minutes',
-  'action-items',
-])
+const emptyCapabilities: MeetingWorkspaceCapabilities = {
+  authorizationResolution: 'unresolved',
+  actionItemManagementResolution: 'unresolved',
+  canReadOperationalMetadata: false,
+  canReadMeetingContent: false,
+  canManageMeeting: false,
+  canEditMeeting: false,
+  canManageParticipants: false,
+  canRecordAudio: false,
+  canSubmitMedia: false,
+  canReadMedia: false,
+  canReadProcessing: false,
+  canAdmitProcessing: false,
+  canRecoverProcessing: false,
+  canCorrectTranscript: false,
+  canMapSpeakers: false,
+  canReadIntelligence: false,
+  canMutateIntelligence: false,
+  canReadActionItems: false,
+  canManageActionItems: false,
+}
 
-function isProtectedMeetingQuery(
-  key: readonly unknown[],
-  meetingId: string
+function queryBelongsToMeeting(
+  queryKey: readonly unknown[],
+  meetingId: string,
+  data: unknown
 ): boolean {
-  if (key[0] === 'meetings') {
-    return (
-      (key[1] === 'detail' || key[1] === 'participants') && key[2] === meetingId
-    )
+  const [family, scope, filter] = queryKey
+  if (
+    family === 'meetings' &&
+    (scope === 'detail' || scope === 'participants') &&
+    queryKey[2] === meetingId
+  ) {
+    return true
   }
-  if (!protectedMeetingQueryKeys.has(String(key[0]))) return false
-  if (key[0] === 'action-items') {
-    return (
-      key[1] === 'list' &&
-      typeof key[2] === 'object' &&
-      key[2] !== null &&
-      'meetingId' in key[2] &&
-      key[2].meetingId === meetingId
-    )
+  if (
+    [
+      'meeting-media',
+      'processing-jobs',
+      'meeting-intelligence',
+      'transcript',
+      'minutes',
+    ].includes(String(family)) &&
+    scope === meetingId
+  ) {
+    return true
   }
-  return key[1] === meetingId
+  if (
+    family === 'action-items' &&
+    scope === 'list' &&
+    typeof filter === 'object' &&
+    filter !== null &&
+    'meetingId' in filter &&
+    filter.meetingId === meetingId
+  ) {
+    return true
+  }
+  if (
+    family === 'processing-job' &&
+    typeof data === 'object' &&
+    data !== null &&
+    'meetingId' in data &&
+    data.meetingId === meetingId
+  ) {
+    return true
+  }
+  return (
+    family === 'export' &&
+    typeof data === 'object' &&
+    data !== null &&
+    'meetingId' in data &&
+    data.meetingId === meetingId
+  )
 }
 
-async function resetProtectedMeetingQueries(
+async function resetMeetingQueries(
   queryClient: ReturnType<typeof useQueryClient>,
-  meetingId: string
+  meetingId: string,
+  includeMeetingDetail = true
 ) {
-  await queryClient.cancelQueries({
-    predicate: (query) => isProtectedMeetingQuery(query.queryKey, meetingId),
-  })
-  await queryClient.resetQueries({
-    predicate: (query) => isProtectedMeetingQuery(query.queryKey, meetingId),
-  })
-}
-
-function emptyCapabilities(
-  authorizationResolution: MeetingWorkspaceAuthorizationResolution
-): MeetingWorkspaceCapabilities {
-  return {
-    authorizationResolution,
-    actionItemManagementResolution: 'denied',
-    canReadOperationalMetadata: false,
-    canReadMeetingContent: false,
-    canManageMeeting: false,
-    canEditMeeting: false,
-    canManageParticipants: false,
-    canRecordAudio: false,
-    canSubmitMedia: false,
-    canReadMedia: false,
-    canReadProcessing: false,
-    canAdmitProcessing: false,
-    canRecoverProcessing: false,
-    canCorrectTranscript: false,
-    canMapSpeakers: false,
-    canReadIntelligence: false,
-    canMutateIntelligence: false,
-    canReadActionItems: false,
-    canManageActionItems: false,
+  const predicate = (query: {
+    queryKey: readonly unknown[]
+    state: { data: unknown }
+  }) => {
+    if (
+      !includeMeetingDetail &&
+      query.queryKey[0] === 'meetings' &&
+      query.queryKey[1] === 'detail' &&
+      query.queryKey[2] === meetingId
+    ) {
+      return false
+    }
+    return queryBelongsToMeeting(query.queryKey, meetingId, query.state.data)
   }
+
+  await queryClient.cancelQueries({ predicate })
+  await queryClient.resetQueries({ predicate })
 }
 
-function isConfirmedAccessError(error: unknown): boolean {
+function isMeetingAccessLoss(error: unknown): boolean {
   const status = normalizeCoreApiError(error).status
-  return status === 401 || status === 403 || status === 404
+  return status === 403 || status === 404
 }
 
-/**
- * The route-level meeting authorization boundary. It deliberately owns the
- * identity, detail, membership, and capability projection together so Detail
- * and Live Meeting never make separate authorization decisions.
- */
 export function MeetingAuthorizationProvider({
   meetingId,
   children,
@@ -141,141 +174,127 @@ export function MeetingAuthorizationProvider({
 }) {
   const queryClient = useQueryClient()
   const verification = useCurrentUserVerification()
-  const identity = verification.identity ?? null
+  const identity = verification.identity
   const identityId = identity?.userId ?? null
-  const [scopeReady, setScopeReady] = useState(false)
-  const previousScope = useRef<{
-    meetingId: string
-    identityId: string | null
-  }>({ meetingId, identityId: null })
+  const hasVerifiedSession = Boolean(
+    identityId && verification.canReadProtectedData
+  )
+  const scopeIdentity = `${meetingId}:${identityId ?? 'anonymous'}`
+
+  // Keep healthy /me revalidations from resetting meeting data. The error
+  // revision changes only after a failed verification, so a recovered session
+  // must re-establish the scope before protected queries resume.
+  const sessionFailureRevision =
+    queryClient.getQueryState(currentUserQueryKey)?.errorUpdateCount ?? 0
+  const scopeToken = `${scopeIdentity}:${sessionFailureRevision}`
+  const [readyScopeToken, setReadyScopeToken] = useState('')
+  const scopeReady = Boolean(
+    hasVerifiedSession && readyScopeToken === scopeToken
+  )
+
+  const detailQuery = useQuery({
+    ...meetingDetailQueryOptions(meetingId),
+    enabled: scopeReady,
+  })
+  const meeting = detailQuery.data?.meeting
+  const participantsQuery = useQuery(
+    meetingParticipantsQueryOptions(meetingId, scopeReady && Boolean(meeting))
+  )
 
   useEffect(() => {
-    const previous = previousScope.current
-    const changed =
-      previous.meetingId !== meetingId || previous.identityId !== identityId
-
-    if (!changed) {
-      return
-    }
-
-    previousScope.current = { meetingId, identityId }
-    setScopeReady(false)
     let active = true
-    void resetProtectedMeetingQueries(queryClient, meetingId).then(() => {
-      if (active && identityId) setScopeReady(true)
+    if (!hasVerifiedSession) return
+
+    void resetMeetingQueries(queryClient, meetingId).then(() => {
+      if (active) setReadyScopeToken(scopeToken)
     })
     return () => {
       active = false
     }
-  }, [identityId, meetingId, queryClient])
+  }, [hasVerifiedSession, meetingId, queryClient, scopeToken])
 
-  const trustedIdentity = Boolean(
-    identityId && verification.canReadProtectedData
+  const globalAccessLoss =
+    verification.status === 'confirmed-authentication-loss' ||
+    verification.status === 'confirmed-authorization-denial'
+  const meetingAccessLoss = Boolean(
+    detailQuery.isError && isMeetingAccessLoss(detailQuery.error)
   )
-  const detailQuery = useQuery({
-    ...meetingDetailQueryOptions(meetingId),
-    enabled: scopeReady && trustedIdentity,
-  })
-  const detail =
-    trustedIdentity && detailQuery.isSuccess ? detailQuery.data : undefined
-  const participantsQuery = useQuery(
-    meetingParticipantsQueryOptions(
-      meetingId,
-      scopeReady && trustedIdentity && Boolean(detail)
-    )
-  )
-  const participants =
-    trustedIdentity && detail && participantsQuery.isSuccess
-      ? participantsQuery.data
-      : []
-  const membership: MeetingWorkspaceMembership = {
-    status: participantsQuery.status,
-    data: participantsQuery.isError ? undefined : participants,
-    isFetching: participantsQuery.isFetching,
-    error: participantsQuery.error,
-  }
+  const isConfirmedAccessLoss = globalAccessLoss || meetingAccessLoss
 
-  const authorizationResolution = useMemo(() => {
-    if (!trustedIdentity) return 'unresolved' as const
-    if (detailQuery.isError && isConfirmedAccessError(detailQuery.error)) {
-      return 'denied' as const
+  useEffect(() => {
+    if (!globalAccessLoss && !meetingAccessLoss) return
+    void resetMeetingQueries(queryClient, meetingId, globalAccessLoss)
+  }, [globalAccessLoss, meetingAccessLoss, meetingId, queryClient])
+
+  const membership: MeetingWorkspaceMembership = useMemo(
+    () => ({
+      status: participantsQuery.status,
+      data: participantsQuery.isError ? undefined : participantsQuery.data,
+      isFetching: participantsQuery.isFetching,
+      error: participantsQuery.error,
+    }),
+    [
+      participantsQuery.data,
+      participantsQuery.error,
+      participantsQuery.isError,
+      participantsQuery.isFetching,
+      participantsQuery.status,
+    ]
+  )
+
+  const capabilities = useMemo(() => {
+    if (!identity || !meeting || !scopeReady || isConfirmedAccessLoss) {
+      return emptyCapabilities
     }
-    if (!detail) return 'unresolved' as const
-    if (
-      participantsQuery.isError &&
-      isConfirmedAccessError(participantsQuery.error)
-    ) {
-      return 'denied' as const
-    }
-    return resolveMeetingWorkspaceAuthorization({
-      identity: identity ?? undefined,
+    return deriveMeetingWorkspaceCapabilities({
+      identity,
       identityCanReadProtectedData: verification.canReadProtectedData,
-      meeting: detail.meeting,
+      meeting,
       membership,
     })
   }, [
-    detail,
-    detailQuery.error,
-    detailQuery.isError,
     identity,
+    isConfirmedAccessLoss,
+    meeting,
     membership,
-    participantsQuery.error,
-    participantsQuery.isError,
-    trustedIdentity,
+    scopeReady,
     verification.canReadProtectedData,
   ])
 
-  const capabilities = detail
-    ? deriveMeetingWorkspaceCapabilities({
-        identity: identity ?? undefined,
-        identityCanReadProtectedData: verification.canReadProtectedData,
-        meeting: detail.meeting,
-        membership,
-        authorizationResolution,
-      })
-    : emptyCapabilities(authorizationResolution)
+  const canReadProtectedData = Boolean(
+    scopeReady &&
+    identity &&
+    verification.canReadProtectedData &&
+    !isConfirmedAccessLoss
+  )
+  const isEstablished = Boolean(scopeReady && identity && meeting)
 
-  const confirmedAuthLoss =
-    verification.status === 'confirmed-authentication-loss' ||
-    verification.status === 'confirmed-authorization-denial'
-  const confirmedMeetingLoss =
-    (detailQuery.isError && isConfirmedAccessError(detailQuery.error)) ||
-    (participantsQuery.isError &&
-      isConfirmedAccessError(participantsQuery.error)) ||
-    authorizationResolution === 'denied'
-  const isConfirmedAccessLoss = confirmedAuthLoss || confirmedMeetingLoss
-  const isEstablished =
-    Boolean(detail && identity) &&
-    authorizationResolution === 'allowed' &&
-    verification.canReadProtectedData
-  const canPerformProtectedOperation =
-    isEstablished && verification.status === 'verified'
+  const refetchVerification = verification.query.refetch
+  const refetchMeetingDetail = detailQuery.refetch
+  const retry = useCallback(async () => {
+    const result = await refetchVerification()
+    if (result.data && scopeReady) await refetchMeetingDetail()
+  }, [refetchMeetingDetail, refetchVerification, scopeReady])
 
   const value: MeetingAuthorizationContextValue = {
     meetingId,
-    status: verification.status,
-    failure: verification.failure,
     identity,
-    meeting: detail?.meeting ?? null,
-    etag: detail?.etag ?? null,
-    participants,
-    membership,
-    capabilities,
-    authorizationResolution,
-    scopeReady,
-    isEstablished,
-    canReadProtectedData: Boolean(
-      verification.canReadProtectedData && authorizationResolution === 'allowed'
-    ),
-    canPerformProtectedOperation,
-    isConfirmedAccessLoss,
+    meeting,
+    etag: detailQuery.data?.etag,
     detailQuery,
     participantsQuery,
-    retry: async () => {
-      await verification.query.refetch()
-      await detailQuery.refetch()
-      await participantsQuery.refetch()
-    },
+    membership,
+    participants: participantsQuery.isError
+      ? []
+      : (participantsQuery.data ?? []),
+    capabilities,
+    status: verification.status,
+    scopeReady,
+    isEstablished,
+    canReadProtectedData,
+    canPerformProtectedOperation: canReadProtectedData,
+    isConfirmedAccessLoss,
+    retry,
   }
 
   return (
@@ -286,17 +305,17 @@ export function MeetingAuthorizationProvider({
 }
 
 // eslint-disable-next-line react-refresh/only-export-components
-export function useMeetingAuthorization(): MeetingAuthorizationContextValue {
-  const context = useContext(MeetingAuthorizationContext)
-  if (!context) {
-    throw new Error(
-      'Meeting authorization features must be composed inside MeetingAuthorizationProvider.'
-    )
-  }
-  return context
+export function useOptionalMeetingAuthorization(): MeetingAuthorizationContextValue | null {
+  return useContext(MeetingAuthorizationContext)
 }
 
 // eslint-disable-next-line react-refresh/only-export-components
-export function useOptionalMeetingAuthorization(): MeetingAuthorizationContextValue | null {
-  return useContext(MeetingAuthorizationContext)
+export function useMeetingAuthorization(): MeetingAuthorizationContextValue {
+  const context = useOptionalMeetingAuthorization()
+  if (!context) {
+    throw new Error(
+      'Meeting authorization must be composed inside MeetingAuthorizationProvider.'
+    )
+  }
+  return context
 }

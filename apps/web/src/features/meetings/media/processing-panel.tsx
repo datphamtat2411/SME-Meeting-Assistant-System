@@ -82,24 +82,21 @@ function ProcessingPanelContent({
   const available =
     media.data?.filter((item) => item.status === 'AVAILABLE') ?? []
   const sourceHasJob = new Set(
-    (jobs.data ?? []).map((job) => job.sourceMediaId)
+    (jobs.data ?? [])
+      .filter((job) => job.reprocessOfJobId === null)
+      .map((job) => job.sourceMediaId)
   )
   const initialSources = available.filter(
     (source) => !sourceHasJob.has(source.id)
   )
-  const uncertainAdmissionMediaId = processing.uncertainAdmissionMediaId
+  const unresolvedOperations = processing.unresolvedOperations
+  const hasUnresolvedOperation = unresolvedOperations.length > 0
   const selectedJobId = processing.selectedJobId
   const selectedJob = processing.selectedJob
   const actionableJob = processing.actionableJob
 
   async function submitProcessing() {
-    if (
-      !mediaId ||
-      !admissionAllowed ||
-      processing.isOperationPending(`admission:${mediaId}`) ||
-      (uncertainAdmissionMediaId !== null &&
-        uncertainAdmissionMediaId !== mediaId)
-    ) {
+    if (!mediaId || !admissionAllowed || hasUnresolvedOperation) {
       return
     }
     try {
@@ -148,8 +145,7 @@ function ProcessingPanelContent({
 
   async function submitRetry(jobId: string, stageCode?: string) {
     if (!recoveryAllowed) return
-    const identity = `retry:${jobId}:${stageCode ?? ''}`
-    if (processing.isOperationPending(identity)) return
+    if (hasUnresolvedOperation) return
     try {
       const result = await processing.retry(jobId, stageCode)
       if (result.status === 'confirmed')
@@ -166,6 +162,43 @@ function ProcessingPanelContent({
     }
   }
 
+  async function recoverOperation(
+    operation: (typeof unresolvedOperations)[number]
+  ) {
+    if (operation.status === 'pending') return
+    if (!operation.replayPermitted) {
+      await processing.refreshObservation()
+      return
+    }
+    try {
+      const result = await processing.recoverOperation(
+        operation.logicalIdentity
+      )
+      if (result.status !== 'confirmed') return
+      toast.success(
+        operation.kind === 'admission'
+          ? 'Processing job queued'
+          : operation.kind === 'reprocessing'
+            ? 'Reprocessing job queued'
+            : 'Processing retry accepted'
+      )
+    } catch (error) {
+      const uncertain = isUncertainProcessingError(error)
+      toast.error(
+        uncertain
+          ? 'Processing outcome is still uncertain'
+          : 'Recovery rejected',
+        {
+          description: uncertain
+            ? 'Check current server status before starting an independent operation.'
+            : error instanceof Error
+              ? error.message
+              : undefined,
+        }
+      )
+    }
+  }
+
   return (
     <Card>
       <CardHeader>
@@ -176,49 +209,102 @@ function ProcessingPanelContent({
         </p>
       </CardHeader>
       <CardContent className='space-y-4'>
+        {unresolvedOperations.length > 0 && (
+          <div
+            role='region'
+            aria-label='Unresolved processing operations'
+            className='space-y-2 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3'
+          >
+            {unresolvedOperations.map((operation) => {
+              const label =
+                operation.kind === 'admission'
+                  ? 'Processing admission'
+                  : operation.kind === 'reprocessing'
+                    ? 'Reprocessing'
+                    : 'Processing retry'
+              return (
+                <div
+                  key={operation.logicalIdentity}
+                  className='flex flex-wrap items-center justify-between gap-3'
+                >
+                  <div>
+                    <p
+                      role='status'
+                      className='text-sm font-medium text-amber-700'
+                    >
+                      {operation.status === 'pending'
+                        ? `${label} is in progress.`
+                        : `${label} outcome is uncertain.`}
+                    </p>
+                    <p className='text-xs text-muted-foreground'>
+                      {operation.status === 'uncertain'
+                        ? 'Check current server status. Matching server data alone does not confirm this operation.'
+                        : 'Wait for this operation to settle before issuing another command.'}
+                    </p>
+                    {operation.sourceMediaId && (
+                      <p className='text-xs text-muted-foreground'>
+                        Source media: {operation.sourceMediaId}
+                      </p>
+                    )}
+                    {operation.jobId && (
+                      <p className='text-xs text-muted-foreground'>
+                        Job: {operation.jobId}
+                        {operation.stageCode
+                          ? ` · Stage: ${operation.stageCode}`
+                          : ''}
+                      </p>
+                    )}
+                  </div>
+                  {operation.status === 'uncertain' && (
+                    <Button
+                      size='sm'
+                      variant='outline'
+                      onClick={() => void recoverOperation(operation)}
+                    >
+                      {operation.replayPermitted
+                        ? 'Replay original request'
+                        : 'Check current server status'}
+                    </Button>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )}
         {media.isError && (
           <RequestError
             error={media.error}
             retry={() => void media.refetch()}
           />
         )}
-        {admissionAllowed && initialSources.length > 0 && (
-          <div className='flex flex-wrap items-center gap-2'>
-            <Select
-              value={mediaId}
-              onValueChange={setMediaId}
-              disabled={processing.isOperationPending(`admission:${mediaId}`)}
-            >
-              <SelectTrigger className='max-w-sm min-w-48'>
-                <SelectValue placeholder='Select finalized source' />
-              </SelectTrigger>
-              <SelectContent>
-                {initialSources.map((source) => (
-                  <SelectItem key={source.id} value={source.id}>
-                    {source.originalFilename}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Button
-              disabled={
-                !mediaId ||
-                processing.isOperationPending(`admission:${mediaId}`) ||
-                (uncertainAdmissionMediaId !== null &&
-                  uncertainAdmissionMediaId !== mediaId)
-              }
-              onClick={() => void submitProcessing()}
-            >
-              Start processing
-            </Button>
-            {uncertainAdmissionMediaId && (
-              <p role='status' className='w-full text-sm text-amber-600'>
-                Processing request outcome is uncertain. Replaying the same
-                source reuses its original operation key.
-              </p>
-            )}
-          </div>
-        )}
+        {admissionAllowed &&
+          initialSources.length > 0 &&
+          !hasUnresolvedOperation && (
+            <div className='flex flex-wrap items-center gap-2'>
+              <Select
+                value={mediaId}
+                onValueChange={setMediaId}
+                disabled={hasUnresolvedOperation}
+              >
+                <SelectTrigger className='max-w-sm min-w-48'>
+                  <SelectValue placeholder='Select finalized source' />
+                </SelectTrigger>
+                <SelectContent>
+                  {initialSources.map((source) => (
+                    <SelectItem key={source.id} value={source.id}>
+                      {source.originalFilename}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button
+                disabled={!mediaId || hasUnresolvedOperation}
+                onClick={() => void submitProcessing()}
+              >
+                Start processing
+              </Button>
+            </div>
+          )}
         {jobs.isPending ? (
           <RequestLoading />
         ) : jobs.isError ? (
@@ -284,12 +370,6 @@ function ProcessingPanelContent({
                     {job.errorCode}: {job.errorSummary || 'Processing failed'}
                   </p>
                 )}
-                {processing.isProcessingRetryUncertain(`retry:${job.id}:`) && (
-                  <p role='status' className='text-sm text-amber-600'>
-                    Retry outcome is uncertain. Check the current job before
-                    deciding what to do next.
-                  </p>
-                )}
                 {job.stageRuns.length > 0 && (
                   <div className='space-y-1'>
                     {job.stageRuns.map((stage) => (
@@ -313,16 +393,18 @@ function ProcessingPanelContent({
                     ))}
                   </div>
                 )}
-                {recoveryAllowed && job.retryable && (
-                  <Button
-                    size='sm'
-                    variant='outline'
-                    disabled={processing.isOperationPending(`retry:${job.id}:`)}
-                    onClick={() => void submitRetry(job.id)}
-                  >
-                    Retry job
-                  </Button>
-                )}
+                {recoveryAllowed &&
+                  job.retryable &&
+                  !hasUnresolvedOperation && (
+                    <Button
+                      size='sm'
+                      variant='outline'
+                      disabled={hasUnresolvedOperation}
+                      onClick={() => void submitRetry(job.id)}
+                    >
+                      Retry job
+                    </Button>
+                  )}
                 <Button
                   size='sm'
                   variant={selectedJobId === job.id ? 'secondary' : 'ghost'}
@@ -341,15 +423,14 @@ function ProcessingPanelContent({
                     </p>
                   )}
                 {admissionAllowed &&
+                  !hasUnresolvedOperation &&
                   ['COMPLETED', 'COMPLETED_WITH_WARNINGS', 'FAILED'].includes(
                     job.status
                   ) && (
                     <Button
                       size='sm'
                       variant='outline'
-                      disabled={processing.isOperationPending(
-                        `reprocessing:${job.id}`
-                      )}
+                      disabled={hasUnresolvedOperation}
                       onClick={() =>
                         void submitReprocessing(job.id, job.sourceMediaId)
                       }

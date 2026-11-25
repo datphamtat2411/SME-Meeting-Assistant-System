@@ -23,11 +23,13 @@ const jobId = '44444444-4444-4444-8444-444444444444'
 const availableMedia = [
   {
     id: firstMediaId,
+    meetingId,
     originalFilename: 'first.wav',
     status: 'AVAILABLE',
   },
   {
     id: secondMediaId,
+    meetingId,
     originalFilename: 'second.mp3',
     status: 'AVAILABLE',
   },
@@ -168,11 +170,12 @@ describe('ProcessingPanel', () => {
       screen.getByRole('button', { name: 'Start processing' })
     )
     await expect
-      .poll(() => apiMocks.requestProcessing.mock.calls.length)
-      .toBe(1)
+      .element(screen.getByText('Processing admission outcome is uncertain.'))
+      .toBeInTheDocument()
+    expect(apiMocks.requestProcessing).toHaveBeenCalledOnce()
 
     await userEvent.click(
-      screen.getByRole('button', { name: 'Start processing' })
+      screen.getByRole('button', { name: 'Replay original request' })
     )
     await expect
       .poll(() => apiMocks.requestProcessing.mock.calls.length)
@@ -185,10 +188,14 @@ describe('ProcessingPanel', () => {
     expect(firstKey).toBeTruthy()
     expect(secondKey).toBe(firstKey)
 
-    await chooseSource(screen, 'second.mp3')
+    await expect
+      .element(
+        screen.getByRole('region', { name: 'Unresolved processing operations' })
+      )
+      .toBeInTheDocument()
     await expect
       .element(screen.getByRole('button', { name: 'Start processing' }))
-      .toBeDisabled()
+      .not.toBeInTheDocument()
     expect(apiMocks.requestProcessing).toHaveBeenCalledTimes(2)
   })
 
@@ -235,7 +242,9 @@ describe('ProcessingPanel', () => {
       name: 'Start processing',
     })
     await userEvent.click(submit)
-    await expect.element(submit).toBeDisabled()
+    await expect
+      .element(screen.getByText('Processing admission is in progress.'))
+      .toBeInTheDocument()
     expect(apiMocks.requestProcessing).toHaveBeenCalledOnce()
     resolveAdmission(confirmedJob)
   })

@@ -320,6 +320,68 @@ describe('normal signed media upload transport', () => {
     )
   })
 
+  it('resumes a possibly transferred intent by reading and finalizing its exact media identity', async () => {
+    const post = vi
+      .spyOn(coreApi, 'post')
+      .mockResolvedValueOnce(uploadIntent())
+      .mockResolvedValueOnce(finalizedMedia)
+    const get = vi.spyOn(coreApi, 'get').mockResolvedValue(pendingMedia())
+    const upload = vi.fn()
+    vi.stubGlobal('fetch', upload)
+    const controller = new AbortController()
+
+    await expect(
+      uploadMeetingFile(meetingId, file(), 'UPLOAD', {
+        idempotencyKey: 'original-logical-upload',
+        signal: controller.signal,
+        recovery: { mediaId, phase: 'storage-uploading' },
+      })
+    ).resolves.toEqual(finalizedMedia)
+
+    expect(get).toHaveBeenCalledExactlyOnceWith(
+      `/meetings/${meetingId}/media/${mediaId}`,
+      { signal: controller.signal }
+    )
+    expect(post).toHaveBeenNthCalledWith(
+      1,
+      `/meetings/${meetingId}/media/uploads`,
+      expect.anything(),
+      expect.objectContaining({
+        headers: { 'Idempotency-Key': 'original-logical-upload' },
+        signal: controller.signal,
+      })
+    )
+    expect(post).toHaveBeenNthCalledWith(
+      2,
+      `/meetings/${meetingId}/media/${mediaId}/finalize`,
+      undefined,
+      { signal: controller.signal }
+    )
+    expect(upload).not.toHaveBeenCalled()
+  })
+
+  it('fails closed when a replayed logical intent returns a different media identity', async () => {
+    const otherMediaId = '33333333-3333-4333-8333-333333333333'
+    vi.spyOn(coreApi, 'post').mockResolvedValue({
+      ...uploadIntent(),
+      mediaId: otherMediaId,
+    })
+    const upload = vi.fn()
+    vi.stubGlobal('fetch', upload)
+    const onMediaIdentity = vi.fn()
+
+    await expect(
+      uploadMeetingFile(meetingId, file(), 'UPLOAD', {
+        idempotencyKey: 'original-logical-upload',
+        recovery: { mediaId, phase: 'finalizing' },
+        onMediaIdentity,
+      })
+    ).rejects.toThrow(/different media identity/i)
+
+    expect(onMediaIdentity).not.toHaveBeenCalled()
+    expect(upload).not.toHaveBeenCalled()
+  })
+
   it('uses authoritative read-back when finalization response is lost', async () => {
     const post = vi
       .spyOn(coreApi, 'post')

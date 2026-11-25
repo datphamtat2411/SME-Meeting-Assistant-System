@@ -123,7 +123,13 @@ export type MediaUploadPhase =
 export type MediaUploadOptions = {
   idempotencyKey?: string
   onPhase?: (phase: MediaUploadPhase) => void
+  onRequestStart?: () => void
+  onMediaIdentity?: (mediaId: string) => void
   signal?: AbortSignal
+  recovery?: {
+    mediaId: string
+    phase: MediaUploadPhase | null
+  }
   /**
    * Called immediately before a consequential phase. The meeting-scoped
    * ingestion owner uses this to re-check operation identity and authorization
@@ -454,6 +460,68 @@ async function reconcileAfterUncertainMediaMutation(
   )
 }
 
+async function finalizeMediaUpload(
+  meetingId: string,
+  mediaId: string,
+  signal?: AbortSignal,
+  onUncertain?: () => void
+): Promise<MeetingMedia> {
+  let response: unknown
+  try {
+    response = signal
+      ? await coreApi.post<unknown>(
+          mediaItemPath(meetingId, mediaId) + '/finalize',
+          undefined,
+          { signal }
+        )
+      : await coreApi.post<unknown>(
+          mediaItemPath(meetingId, mediaId) + '/finalize'
+        )
+  } catch (error) {
+    if (error instanceof MediaUploadCancelledError || signal?.aborted) {
+      throw new MediaUploadCancelledError()
+    }
+    if (isUncertainCoreError(error)) {
+      onUncertain?.()
+      return reconcileAfterUncertainMediaMutation(
+        meetingId,
+        mediaId,
+        error,
+        signal
+      )
+    }
+    throw error
+  }
+
+  const finalized = assertMediaBinding(readMedia(response), meetingId, mediaId)
+  if (finalized.status === 'AVAILABLE') return finalized
+  if (finalized.status === 'REJECTED' || finalized.status === 'FAILED') {
+    throw mediaFailure(finalized)
+  }
+  throw new MediaUploadError(
+    'Core has not confirmed this media as available after finalization.',
+    { outcome: 'uncertain', mediaId }
+  )
+}
+
+async function readMediaForUploadRecovery(
+  meetingId: string,
+  mediaId: string,
+  signal?: AbortSignal
+): Promise<MeetingMedia> {
+  try {
+    return await getMeetingMedia(meetingId, mediaId, signal)
+  } catch (error) {
+    if (isUncertainCoreError(error)) {
+      throw new MediaUploadError(
+        'The media recovery status could not be confirmed. Check the same media intent before trying another upload.',
+        { outcome: 'uncertain', mediaId, cause: error }
+      )
+    }
+    throw error
+  }
+}
+
 export function meetingMediaQuery(meetingId: string) {
   return queryOptions({
     queryKey: ['meeting-media', meetingId],
@@ -502,6 +570,7 @@ export async function uploadMeetingFile(
 
   try {
     assertCanContinue()
+    options.onRequestStart?.()
     const response = await coreApi.post<unknown>(
       mediaPath(meetingId) + '/uploads',
       {
@@ -529,6 +598,16 @@ export async function uploadMeetingFile(
     throw error
   }
 
+  if (intent.mediaId === '' || !uuidPattern(intent.mediaId)) {
+    throw new Error('Core returned an invalid media identity.')
+  }
+  if (options.recovery && intent.mediaId !== options.recovery.mediaId) {
+    throw new MediaUploadError(
+      'Core returned a different media identity for the unresolved submission.',
+      { outcome: 'uncertain', mediaId: options.recovery.mediaId }
+    )
+  }
+  options.onMediaIdentity?.(intent.mediaId)
   if (
     intent.requiredContentType !== declaration.canonicalContentType ||
     !['audio/wav', 'audio/mpeg', 'audio/mp4'].includes(
@@ -539,18 +618,22 @@ export async function uploadMeetingFile(
       'Core returned an incompatible required media content type.'
     )
   }
-  if (intent.mediaId === '' || !uuidPattern(intent.mediaId)) {
-    throw new Error('Core returned an invalid media identity.')
-  }
 
   if (intent.status === 'AVAILABLE') {
     assertCanContinue()
     options.onPhase?.('available-replay')
-    const media = await getMeetingMedia(
-      meetingId,
-      intent.mediaId,
-      options.signal
-    )
+    let media: MeetingMedia
+    try {
+      media = await getMeetingMedia(meetingId, intent.mediaId, options.signal)
+    } catch (error) {
+      if (isUncertainCoreError(error)) {
+        throw new MediaUploadError(
+          'The available media replay could not be confirmed by read-back.',
+          { outcome: 'uncertain', mediaId: intent.mediaId, cause: error }
+        )
+      }
+      throw error
+    }
     if (media.status !== 'AVAILABLE') {
       throw new MediaUploadError(
         'Core reported an available replay but did not confirm available media.',
@@ -568,6 +651,50 @@ export async function uploadMeetingFile(
         : 'Core reported that this media upload failed.',
       { mediaId: intent.mediaId }
     )
+  }
+
+  const knownPhase = options.recovery?.phase
+  if (
+    options.recovery &&
+    knownPhase !== null &&
+    knownPhase !== undefined &&
+    knownPhase !== 'intent-created'
+  ) {
+    assertCanContinue()
+    options.onPhase?.('reconciling')
+    const current = await readMediaForUploadRecovery(
+      meetingId,
+      intent.mediaId,
+      options.signal
+    )
+    if (current.status === 'AVAILABLE') {
+      options.onPhase?.('available')
+      return current
+    }
+    if (current.status === 'REJECTED' || current.status === 'FAILED') {
+      throw mediaFailure(current)
+    }
+
+    assertCanContinue()
+    options.onPhase?.('finalizing')
+    try {
+      const finalized = await finalizeMediaUpload(
+        meetingId,
+        intent.mediaId,
+        options.signal,
+        () => options.onPhase?.('reconciling')
+      )
+      options.onPhase?.('available')
+      return finalized
+    } catch (error) {
+      if (error instanceof CoreApiError && error.status === 409) {
+        throw new MediaUploadError(
+          'The existing media intent is still pending. Its transfer outcome has not been confirmed; do not create a new upload yet.',
+          { outcome: 'uncertain', mediaId: intent.mediaId, cause: error }
+        )
+      }
+      throw error
+    }
   }
 
   if (!intent.uploadUrl || !intent.expiresAt) {
@@ -626,33 +753,12 @@ export async function uploadMeetingFile(
   assertCanContinue()
   options.onPhase?.('finalizing')
 
-  let finalized: MeetingMedia
-  try {
-    const response = options.signal
-      ? await coreApi.post<unknown>(
-          mediaItemPath(meetingId, intent.mediaId) + '/finalize',
-          undefined,
-          { signal: options.signal }
-        )
-      : await coreApi.post<unknown>(
-          mediaItemPath(meetingId, intent.mediaId) + '/finalize'
-        )
-    finalized = readMedia(response)
-  } catch (error) {
-    if (error instanceof MediaUploadCancelledError || options.signal?.aborted) {
-      throw new MediaUploadCancelledError()
-    }
-    options.onPhase?.('reconciling')
-    return await reconcileAfterUncertainMediaMutation(
-      meetingId,
-      intent.mediaId,
-      error,
-      options.signal
-    )
-  }
-
-  const bound = assertMediaBinding(finalized, meetingId, intent.mediaId)
-  if (bound.status !== 'AVAILABLE') throw mediaFailure(bound)
+  const bound = await finalizeMediaUpload(
+    meetingId,
+    intent.mediaId,
+    options.signal,
+    () => options.onPhase?.('reconciling')
+  )
   options.onPhase?.('available')
   return bound
 }

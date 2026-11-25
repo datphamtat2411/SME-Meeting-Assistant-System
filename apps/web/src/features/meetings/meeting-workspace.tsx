@@ -515,16 +515,19 @@ async function resetMeetingWorkspaceQueries(
   meetingId: string
 ) {
   await queryClient.cancelQueries({
-    predicate: (query) => isMeetingWorkspaceQuery(query.queryKey, meetingId),
+    predicate: (query) =>
+      isMeetingWorkspaceQuery(query.queryKey, meetingId, query.state.data),
   })
   await queryClient.resetQueries({
-    predicate: (query) => isMeetingWorkspaceQuery(query.queryKey, meetingId),
+    predicate: (query) =>
+      isMeetingWorkspaceQuery(query.queryKey, meetingId, query.state.data),
   })
 }
 
 function isMeetingWorkspaceQuery(
   key: readonly unknown[],
-  meetingId: string
+  meetingId: string,
+  data: unknown
 ): boolean {
   if (
     key[0] === 'meetings' &&
@@ -550,6 +553,15 @@ function isMeetingWorkspaceQuery(
     key[2] !== null &&
     'meetingId' in key[2] &&
     key[2].meetingId === meetingId
+  ) {
+    return true
+  }
+  if (
+    (key[0] === 'processing-job' || key[0] === 'export') &&
+    typeof data === 'object' &&
+    data !== null &&
+    'meetingId' in data &&
+    data.meetingId === meetingId
   ) {
     return true
   }

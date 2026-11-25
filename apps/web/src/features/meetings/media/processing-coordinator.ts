@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import {
   useQuery,
   useQueryClient,
@@ -15,6 +22,8 @@ import {
 
 export type ProcessingAuthorization = {
   identityId: string | null
+  scopeReady: boolean
+  canReadMedia: boolean
   canReadProcessing: boolean
   canAdmitProcessing: boolean
   canRecoverProcessing: boolean
@@ -22,11 +31,17 @@ export type ProcessingAuthorization = {
   isConfirmedAccessLoss: boolean
 }
 
-type ProcessingOperationKind =
+export type ProcessingOperationKind =
   | 'admission'
   | 'retry'
   | 'stage-retry'
   | 'reprocessing'
+
+type ProcessingExecution = {
+  executionId: string
+  controller: AbortController
+  requestStarted: boolean
+}
 
 type ProcessingOperation = {
   operationId: string
@@ -40,7 +55,17 @@ type ProcessingOperation = {
   idempotencyKey: string
   generation: number
   status: 'pending' | 'uncertain'
-  controller: AbortController
+  execution: ProcessingExecution | null
+}
+
+export type UnresolvedProcessingOperation = {
+  kind: ProcessingOperationKind
+  logicalIdentity: string
+  sourceMediaId: string | null
+  jobId: string | null
+  stageCode: string | null
+  status: 'pending' | 'uncertain'
+  replayPermitted: boolean
 }
 
 export type ProcessingCommandResult =
@@ -53,9 +78,9 @@ export type ProcessingCoordinatorValue = {
   selectedJobId: string | null
   selectedJob: ProcessingJob | undefined
   actionableJob: ProcessingJob | undefined
-  uncertainAdmissionMediaId: string | null
-  isOperationPending: (identity: string) => boolean
-  isOperationUncertain: (identity: string) => boolean
+  unresolvedOperations: UnresolvedProcessingOperation[]
+  isOperationPending: (logicalIdentity: string) => boolean
+  isOperationUncertain: (logicalIdentity: string) => boolean
   selectProcessingJob: (jobId: string | null) => void
   admit: (mediaId: string) => Promise<ProcessingCommandResult>
   retry: (jobId: string, stageCode?: string) => Promise<ProcessingCommandResult>
@@ -63,21 +88,27 @@ export type ProcessingCoordinatorValue = {
     jobId: string,
     sourceMediaId: string
   ) => Promise<ProcessingCommandResult>
+  recoverOperation: (
+    logicalIdentity: string
+  ) => Promise<ProcessingCommandResult>
+  refreshObservation: () => Promise<void>
   invalidate: () => void
-  getOperationKey: (operation: string) => string
-  markProcessingAdmissionUncertain: (mediaId: string | null) => void
-  markProcessingRetryUncertain: (operation: string, uncertain: boolean) => void
-  isProcessingRetryUncertain: (operation: string) => boolean
 }
 
 type CoordinatorOptions = {
   meetingId: string
   authorization?: ProcessingAuthorization | null
   fallback?: {
+    canReadMedia: boolean
     canReadProcessing: boolean
     canAdmitProcessing: boolean
     canRecoverProcessing: boolean
   }
+}
+
+type AuthoritativeSnapshot = {
+  jobs: ProcessingJob[]
+  media: MeetingMedia[]
 }
 
 function createOperationIdentity(): string {
@@ -87,12 +118,23 @@ function createOperationIdentity(): string {
   return crypto.randomUUID()
 }
 
-function canRead(
+function canReadMedia(
   authorization: ProcessingAuthorization | null | undefined,
   fallback: CoordinatorOptions['fallback']
 ): boolean {
-  if (authorization) return authorization.canReadProcessing
-  return fallback?.canReadProcessing ?? true
+  if (authorization)
+    return authorization.scopeReady && authorization.canReadMedia
+  return fallback?.canReadMedia ?? false
+}
+
+function canReadProcessing(
+  authorization: ProcessingAuthorization | null | undefined,
+  fallback: CoordinatorOptions['fallback']
+): boolean {
+  if (authorization) {
+    return authorization.scopeReady && authorization.canReadProcessing
+  }
+  return fallback?.canReadProcessing ?? false
 }
 
 function terminalStatus(status: string): boolean {
@@ -102,6 +144,14 @@ function terminalStatus(status: string): boolean {
     status === 'FAILED' ||
     status === 'CANCELLED'
   )
+}
+
+function activeStatus(status: string): boolean {
+  return ['PENDING', 'QUEUED', 'RUNNING', 'WAITING_FOR_REVIEW'].includes(status)
+}
+
+function reprocessableStatus(status: string): boolean {
+  return ['COMPLETED', 'COMPLETED_WITH_WARNINGS', 'FAILED'].includes(status)
 }
 
 function lifecycleSignature(job: ProcessingJob): string {
@@ -130,36 +180,98 @@ function selectObservedProcessingAttempt(
   if (selectedJobId) {
     return jobs.find((job) => job.id === selectedJobId)
   }
-  const relevant = jobs.filter((job) =>
-    ['PENDING', 'QUEUED', 'RUNNING', 'WAITING_FOR_REVIEW'].includes(job.status)
-  )
+  const relevant = jobs.filter((job) => activeStatus(job.status))
   if (relevant.length === 1) return relevant[0]
   if (relevant.length > 1) return undefined
   if (jobs.length === 1) return jobs[0]
-  if (
-    jobs.some(
-      (job) =>
-        ![
-          'COMPLETED',
-          'COMPLETED_WITH_WARNINGS',
-          'FAILED',
-          'CANCELLED',
-        ].includes(job.status)
-    )
-  ) {
-    return undefined
-  }
-  const terminal = jobs.filter((job) =>
-    ['COMPLETED', 'COMPLETED_WITH_WARNINGS', 'FAILED', 'CANCELLED'].includes(
-      job.status
-    )
-  )
+  if (jobs.some((job) => !terminalStatus(job.status))) return undefined
+  const terminal = jobs.filter((job) => terminalStatus(job.status))
   return terminal.length === 1 ? terminal[0] : undefined
 }
 
+function admissionIdentity(mediaId: string): string {
+  return `admission:${mediaId}`
+}
+
+function retryIdentity(jobId: string, stageCode?: string): string {
+  return `retry:${jobId}:${stageCode ?? ''}`
+}
+
+function reprocessingIdentity(jobId: string): string {
+  return `reprocessing:${jobId}`
+}
+
+function latestStageAttempt(job: ProcessingJob, stageCode: string) {
+  return job.stageRuns
+    .filter((stage) => stage.stageCode === stageCode)
+    .reduce<
+      ProcessingJob['stageRuns'][number] | undefined
+    >((latest, stage) => (!latest || stage.attemptNumber > latest.attemptNumber ? stage : latest), undefined)
+}
+
+function operationAuthorizationKind(
+  operation: ProcessingOperation
+): 'admission' | 'recovery' {
+  return operation.kind === 'retry' || operation.kind === 'stage-retry'
+    ? 'recovery'
+    : 'admission'
+}
+
+function authorizedForOperation(
+  kind: 'admission' | 'recovery',
+  authorization: ProcessingAuthorization | null | undefined,
+  fallback: CoordinatorOptions['fallback']
+): boolean {
+  if (authorization) {
+    if (
+      !authorization.scopeReady ||
+      authorization.isConfirmedAccessLoss ||
+      !authorization.canPerformProtectedOperation
+    ) {
+      return false
+    }
+    return kind === 'admission'
+      ? authorization.canAdmitProcessing
+      : authorization.canRecoverProcessing
+  }
+  return kind === 'admission'
+    ? (fallback?.canAdmitProcessing ?? false)
+    : (fallback?.canRecoverProcessing ?? false)
+}
+
+function canReplayFromSnapshot(
+  operation: ProcessingOperation,
+  snapshot: AuthoritativeSnapshot | null,
+  meetingId: string
+): boolean {
+  if (!snapshot) return false
+  const source = operation.sourceMediaId
+    ? snapshot.media.find(
+        (item) =>
+          item.id === operation.sourceMediaId &&
+          item.meetingId === meetingId &&
+          item.status === 'AVAILABLE'
+      )
+    : undefined
+  if (!source) return false
+  if (operation.kind === 'admission') return true
+  const job = operation.jobId
+    ? snapshot.jobs.find((item) => item.id === operation.jobId)
+    : undefined
+  if (
+    !job ||
+    job.meetingId !== meetingId ||
+    job.sourceMediaId !== operation.sourceMediaId
+  ) {
+    return false
+  }
+  return operation.kind !== 'reprocessing' || reprocessableStatus(job.status)
+}
+
 /**
- * Meeting-scoped processing owner. The observer and operation map live here,
- * above disposable panels, while authoritative job data remains in Query.
+ * Meeting-scoped processing owner. It owns the only mutation boundary for
+ * admission, retries and reprocessing; the job/media queries remain the
+ * authoritative observation source and outlive disposable panels.
  */
 export function useProcessingCoordinator({
   meetingId,
@@ -170,53 +282,71 @@ export function useProcessingCoordinator({
   const authorizationRef = useRef(authorization)
   const fallbackRef = useRef(fallback)
   const operations = useRef(new Map<string, ProcessingOperation>())
-  const legacyKeys = useRef(new Map<string, string>())
   const lifecycle = useRef(new Map<string, string>())
   const generation = useRef(0)
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null)
-  const [, setOperationVersion] = useState(0)
-  const [uncertainAdmissionMediaId, setUncertainAdmissionMediaId] = useState<
-    string | null
-  >(null)
-  const [legacyUncertain, setLegacyUncertain] = useState<Set<string>>(
-    () => new Set()
-  )
+  const [operationSnapshot, setOperationSnapshot] = useState<
+    ProcessingOperation[]
+  >([])
   const previousScope = useRef({
     meetingId,
     actorId: authorization?.identityId ?? null,
+    confirmedAccessLoss: authorization?.isConfirmedAccessLoss ?? false,
   })
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     authorizationRef.current = authorization
     fallbackRef.current = fallback
   }, [authorization, fallback])
 
+  const publishOperations = useCallback(() => {
+    setOperationSnapshot(
+      Array.from(operations.current.values(), (operation) => ({ ...operation }))
+    )
+  }, [])
+
   const invalidate = useCallback(() => {
     generation.current += 1
     for (const operation of operations.current.values()) {
-      operation.controller.abort()
+      operation.execution?.controller.abort()
     }
     operations.current.clear()
     lifecycle.current.clear()
     setSelectedJobId(null)
-    setUncertainAdmissionMediaId(null)
-    setOperationVersion((value) => value + 1)
-  }, [])
+    publishOperations()
+  }, [publishOperations])
 
-  const readEnabled = canRead(authorization, fallback)
+  const suspendExecutions = useCallback(() => {
+    let changed = false
+    for (const operation of operations.current.values()) {
+      const execution = operation.execution
+      if (!execution) continue
+      execution.controller.abort()
+      operation.execution = null
+      operation.status = execution.requestStarted ? 'uncertain' : 'pending'
+      changed = true
+    }
+    if (changed) publishOperations()
+  }, [publishOperations])
+
+  const mediaReadEnabled = canReadMedia(authorization, fallback)
+  const processingReadEnabled = canReadProcessing(authorization, fallback)
   const jobs = useQuery({
     ...processingJobsQuery(meetingId),
-    enabled: readEnabled && !authorization?.isConfirmedAccessLoss,
+    enabled: processingReadEnabled && !authorization?.isConfirmedAccessLoss,
   })
   const media = useQuery({
     ...meetingMediaQuery(meetingId),
-    enabled: readEnabled && !authorization?.isConfirmedAccessLoss,
+    enabled: mediaReadEnabled && !authorization?.isConfirmedAccessLoss,
   })
+  const refetchJobs = jobs.refetch
+  const refetchMedia = media.refetch
 
   const isAuthorized = useCallback((kind: 'admission' | 'recovery') => {
     const currentAuthorization = authorizationRef.current
     if (currentAuthorization) {
       if (
+        !currentAuthorization.scopeReady ||
         currentAuthorization.isConfirmedAccessLoss ||
         !currentAuthorization.canPerformProtectedOperation
       ) {
@@ -227,27 +357,31 @@ export function useProcessingCoordinator({
         : currentAuthorization.canRecoverProcessing
     }
     return kind === 'admission'
-      ? (fallbackRef.current?.canAdmitProcessing ?? true)
-      : (fallbackRef.current?.canRecoverProcessing ?? true)
+      ? (fallbackRef.current?.canAdmitProcessing ?? false)
+      : (fallbackRef.current?.canRecoverProcessing ?? false)
   }, [])
 
   useEffect(() => {
     const actorId = authorization?.identityId ?? null
+    const confirmedAccessLoss = authorization?.isConfirmedAccessLoss ?? false
     const previous = previousScope.current
-    if (
-      previous.meetingId !== meetingId ||
-      previous.actorId !== actorId ||
-      authorization?.isConfirmedAccessLoss
-    ) {
-      previousScope.current = { meetingId, actorId }
+    const scopeChanged =
+      previous.meetingId !== meetingId || previous.actorId !== actorId
+    const accessLossStarted =
+      confirmedAccessLoss && !previous.confirmedAccessLoss
+
+    previousScope.current = { meetingId, actorId, confirmedAccessLoss }
+    if (scopeChanged || accessLossStarted) {
       invalidate()
+      return
     }
-  }, [
-    authorization?.identityId,
-    authorization?.isConfirmedAccessLoss,
-    invalidate,
-    meetingId,
-  ])
+    if (authorization && !authorization.canPerformProtectedOperation) {
+      // This effect coordinates cancellation with an externally changing
+      // authorization source; publishing the resulting operation state is
+      // required for the recovery UI to reflect the interrupted request.
+      suspendExecutions()
+    }
+  }, [authorization, invalidate, meetingId, suspendExecutions])
 
   useEffect(() => {
     const observed = jobs.data ?? []
@@ -276,14 +410,62 @@ export function useProcessingCoordinator({
     }
   }, [jobs.data, meetingId, queryClient])
 
-  const refreshAfterMutation = useCallback(() => {
-    void queryClient.invalidateQueries({
-      queryKey: ['processing-jobs', meetingId],
-    })
-    void queryClient.invalidateQueries({
-      queryKey: ['meeting-media', meetingId],
-    })
-  }, [meetingId, queryClient])
+  const getAuthoritativeSnapshot =
+    useCallback((): AuthoritativeSnapshot | null => {
+      const jobsState = queryClient.getQueryState([
+        'processing-jobs',
+        meetingId,
+      ])
+      const mediaState = queryClient.getQueryState(['meeting-media', meetingId])
+      if (
+        !jobsState ||
+        !mediaState ||
+        jobsState.status !== 'success' ||
+        mediaState.status !== 'success' ||
+        jobsState.fetchStatus !== 'idle' ||
+        mediaState.fetchStatus !== 'idle' ||
+        jobsState.isInvalidated ||
+        mediaState.isInvalidated
+      ) {
+        return null
+      }
+      const currentJobs = queryClient.getQueryData<ProcessingJob[]>([
+        'processing-jobs',
+        meetingId,
+      ])
+      const currentMedia = queryClient.getQueryData<MeetingMedia[]>([
+        'meeting-media',
+        meetingId,
+      ])
+      if (!currentJobs || !currentMedia) return null
+      return { jobs: currentJobs, media: currentMedia }
+    }, [meetingId, queryClient])
+
+  const hasOtherUnresolvedOperation = useCallback(
+    (logicalIdentity: string) =>
+      Array.from(operations.current.values()).some(
+        (operation) =>
+          operation.logicalIdentity !== logicalIdentity &&
+          (operation.status === 'pending' || operation.status === 'uncertain')
+      ),
+    []
+  )
+
+  const canReplayOperation = useCallback(
+    (
+      operation: ProcessingOperation,
+      snapshot: AuthoritativeSnapshot | null
+    ): boolean => {
+      if (
+        !isAuthorized(operationAuthorizationKind(operation)) ||
+        hasOtherUnresolvedOperation(operation.logicalIdentity)
+      ) {
+        return false
+      }
+      return canReplayFromSnapshot(operation, snapshot, meetingId)
+    },
+    [hasOtherUnresolvedOperation, isAuthorized, meetingId]
+  )
 
   const acquireOperation = useCallback(
     (
@@ -295,11 +477,24 @@ export function useProcessingCoordinator({
         | 'idempotencyKey'
         | 'generation'
         | 'status'
-        | 'controller'
+        | 'execution'
       >
     ): ProcessingOperation | null => {
       const existing = operations.current.get(logicalIdentity)
-      if (existing) return existing
+      if (existing) {
+        if (existing.status === 'pending' && existing.execution) return null
+        if (hasOtherUnresolvedOperation(logicalIdentity)) return null
+        existing.execution = {
+          executionId: createOperationIdentity(),
+          controller: new AbortController(),
+          requestStarted: false,
+        }
+        existing.status = 'pending'
+        publishOperations()
+        return existing
+      }
+      if (hasOtherUnresolvedOperation(logicalIdentity)) return null
+
       const operation: ProcessingOperation = {
         ...input,
         operationId: createOperationIdentity(),
@@ -307,41 +502,76 @@ export function useProcessingCoordinator({
         idempotencyKey: createOperationIdentity(),
         generation: generation.current,
         status: 'pending',
-        controller: new AbortController(),
+        execution: {
+          executionId: createOperationIdentity(),
+          controller: new AbortController(),
+          requestStarted: false,
+        },
       }
       operations.current.set(logicalIdentity, operation)
-      setOperationVersion((value) => value + 1)
+      publishOperations()
       return operation
     },
-    []
+    [hasOtherUnresolvedOperation, publishOperations]
+  )
+
+  const reconcileConfirmedJob = useCallback(
+    (job: ProcessingJob) => {
+      const jobsKey = ['processing-jobs', meetingId] as const
+      const current = queryClient.getQueryData<ProcessingJob[]>(jobsKey) ?? []
+      const index = current.findIndex((item) => item.id === job.id)
+      const next = [...current]
+      if (index >= 0) next[index] = job
+      else next.push(job)
+      queryClient.setQueryData(jobsKey, next)
+      queryClient.setQueryData(['processing-job', job.id], job)
+      void queryClient.invalidateQueries({ queryKey: jobsKey })
+      void queryClient.invalidateQueries({
+        queryKey: ['meeting-media', meetingId],
+      })
+    },
+    [meetingId, queryClient]
   )
 
   const runOperation = useCallback(
     async (
       operation: ProcessingOperation,
-      request: () => Promise<ProcessingJob>
+      request: (signal: AbortSignal) => Promise<ProcessingJob>
     ): Promise<ProcessingCommandResult> => {
+      const execution = operation.execution
+      if (!execution) return { status: 'blocked' }
       const isCurrent = () => {
         const currentAuthorization = authorizationRef.current
         return (
           generation.current === operation.generation &&
           operations.current.get(operation.logicalIdentity) === operation &&
-          !operation.controller.signal.aborted &&
-          !currentAuthorization?.isConfirmedAccessLoss
+          operation.execution === execution &&
+          !execution.controller.signal.aborted &&
+          !currentAuthorization?.isConfirmedAccessLoss &&
+          (!currentAuthorization ||
+            (currentAuthorization.scopeReady &&
+              currentAuthorization.identityId === operation.actorId))
         )
       }
 
       try {
-        const job = await request()
+        execution.requestStarted = true
+        const job = await request(execution.controller.signal)
         if (!isCurrent()) return { status: 'blocked' }
-        operations.current.delete(operation.logicalIdentity)
-        if (operation.kind === 'admission') {
-          setUncertainAdmissionMediaId((current) =>
-            current === operation.sourceMediaId ? null : current
+        if (
+          job.meetingId !== operation.meetingId ||
+          job.sourceMediaId !== operation.sourceMediaId ||
+          (operation.jobId && job.id !== operation.jobId) ||
+          (operation.kind === 'reprocessing' &&
+            job.reprocessOfJobId !== operation.jobId)
+        ) {
+          throw new Error(
+            'Core returned a processing job for a different intent.'
           )
         }
-        setOperationVersion((value) => value + 1)
-        refreshAfterMutation()
+        reconcileConfirmedJob(job)
+        operations.current.delete(operation.logicalIdentity)
+        publishOperations()
         return { status: 'confirmed', job }
       } catch (error) {
         if (!isCurrent()) return { status: 'blocked' }
@@ -353,39 +583,56 @@ export function useProcessingCoordinator({
             'uncertain'
         if (uncertain) {
           operation.status = 'uncertain'
-          if (operation.kind === 'admission') {
-            setUncertainAdmissionMediaId(operation.sourceMediaId ?? null)
-          }
-          setOperationVersion((value) => value + 1)
+          operation.execution = null
         } else {
           operations.current.delete(operation.logicalIdentity)
-          if (operation.kind === 'admission') {
-            setUncertainAdmissionMediaId((current) =>
-              current === operation.sourceMediaId ? null : current
-            )
-          }
-          setOperationVersion((value) => value + 1)
         }
+        publishOperations()
         throw error
       }
     },
-    [refreshAfterMutation]
+    [publishOperations, reconcileConfirmedJob]
   )
 
   const admit = useCallback(
     async (mediaId: string): Promise<ProcessingCommandResult> => {
       if (!isAuthorized('admission')) return { status: 'blocked' }
-      const source = media.data?.find(
-        (item) => item.id === mediaId && item.status === 'AVAILABLE'
+      const logicalIdentity = admissionIdentity(mediaId)
+      const existing = operations.current.get(logicalIdentity)
+      const snapshot = getAuthoritativeSnapshot()
+      if (!snapshot) return { status: 'blocked' }
+
+      const source = snapshot.media.find(
+        (item) =>
+          item.id === mediaId &&
+          item.meetingId === meetingId &&
+          item.status === 'AVAILABLE'
       )
       if (!source) return { status: 'blocked' }
-      const existingJob = jobs.data?.some(
-        (job) => job.sourceMediaId === mediaId
-      )
-      const logicalIdentity = `admission:${mediaId}`
-      if (existingJob && !operations.current.has(logicalIdentity)) {
-        return { status: 'blocked' }
+
+      if (existing) {
+        if (existing.status === 'pending' && existing.execution) {
+          return { status: 'blocked' }
+        }
+        if (!canReplayOperation(existing, snapshot)) {
+          return { status: 'blocked' }
+        }
+      } else {
+        const hasInitialAdmission = snapshot.jobs.some(
+          (job) =>
+            job.sourceMediaId === mediaId &&
+            job.meetingId === meetingId &&
+            job.reprocessOfJobId === null
+        )
+        if (
+          hasInitialAdmission ||
+          snapshot.jobs.some((job) => activeStatus(job.status)) ||
+          hasOtherUnresolvedOperation(logicalIdentity)
+        ) {
+          return { status: 'blocked' }
+        }
       }
+
       const operation = acquireOperation(logicalIdentity, {
         kind: 'admission',
         meetingId,
@@ -393,18 +640,19 @@ export function useProcessingCoordinator({
         sourceMediaId: mediaId,
       })
       if (!operation) return { status: 'blocked' }
-      return runOperation(operation, () =>
+      return runOperation(operation, (signal) =>
         requestProcessing(meetingId, mediaId, undefined, {
           idempotencyKey: operation.idempotencyKey,
-          signal: operation.controller.signal,
+          signal,
         })
       )
     },
     [
       acquireOperation,
+      canReplayOperation,
+      getAuthoritativeSnapshot,
+      hasOtherUnresolvedOperation,
       isAuthorized,
-      jobs.data,
-      media.data,
       meetingId,
       runOperation,
     ]
@@ -416,9 +664,66 @@ export function useProcessingCoordinator({
       stageCode?: string
     ): Promise<ProcessingCommandResult> => {
       if (!isAuthorized('recovery')) return { status: 'blocked' }
-      const job = jobs.data?.find((item) => item.id === jobId)
-      if (!job?.retryable) return { status: 'blocked' }
-      const logicalIdentity = `retry:${jobId}:${stageCode ?? ''}`
+      const logicalIdentity = retryIdentity(jobId, stageCode)
+      const existing = operations.current.get(logicalIdentity)
+      const snapshot = getAuthoritativeSnapshot()
+      if (!snapshot) return { status: 'blocked' }
+      const job = snapshot.jobs.find((item) => item.id === jobId)
+      const source = job
+        ? snapshot.media.find(
+            (item) =>
+              item.id === job.sourceMediaId &&
+              item.meetingId === meetingId &&
+              item.status === 'AVAILABLE'
+          )
+        : undefined
+      if (!job || job.meetingId !== meetingId || !source) {
+        return { status: 'blocked' }
+      }
+
+      if (existing) {
+        if (existing.status === 'pending' && existing.execution) {
+          return { status: 'blocked' }
+        }
+        if (
+          existing.jobId !== job.id ||
+          existing.sourceMediaId !== job.sourceMediaId ||
+          !canReplayOperation(existing, snapshot)
+        ) {
+          return { status: 'blocked' }
+        }
+      } else {
+        const otherActiveJob = snapshot.jobs.some(
+          (item) => item.id !== jobId && activeStatus(item.status)
+        )
+        if (otherActiveJob || hasOtherUnresolvedOperation(logicalIdentity)) {
+          return { status: 'blocked' }
+        }
+        if (!stageCode) {
+          if (job.status !== 'FAILED' || !job.retryable) {
+            return { status: 'blocked' }
+          }
+        } else {
+          const latest = latestStageAttempt(job, stageCode)
+          if (!latest || latest.status !== 'FAILED') {
+            return { status: 'blocked' }
+          }
+          if (stageCode === 'DIARIZING') {
+            if (
+              ![
+                'WAITING_FOR_REVIEW',
+                'RUNNING',
+                'COMPLETED_WITH_WARNINGS',
+              ].includes(job.status)
+            ) {
+              return { status: 'blocked' }
+            }
+          } else if (job.status !== 'FAILED' || !job.retryable) {
+            return { status: 'blocked' }
+          }
+        }
+      }
+
       const operation = acquireOperation(logicalIdentity, {
         kind: stageCode ? 'stage-retry' : 'retry',
         meetingId,
@@ -428,16 +733,24 @@ export function useProcessingCoordinator({
         stageCode,
       })
       if (!operation) return { status: 'blocked' }
-      return runOperation(operation, () =>
+      return runOperation(operation, (signal) =>
         retryProcessing(jobId, stageCode, {
           idempotencyKey: operation.idempotencyKey,
-          signal: operation.controller.signal,
+          signal,
           expectedMeetingId: meetingId,
           expectedSourceMediaId: job.sourceMediaId,
         })
       )
     },
-    [acquireOperation, isAuthorized, jobs.data, meetingId, runOperation]
+    [
+      acquireOperation,
+      canReplayOperation,
+      getAuthoritativeSnapshot,
+      hasOtherUnresolvedOperation,
+      isAuthorized,
+      meetingId,
+      runOperation,
+    ]
   )
 
   const reprocess = useCallback(
@@ -446,20 +759,43 @@ export function useProcessingCoordinator({
       sourceMediaId: string
     ): Promise<ProcessingCommandResult> => {
       if (!isAuthorized('admission')) return { status: 'blocked' }
-      const job = jobs.data?.find((item) => item.id === jobId)
-      const source = media.data?.find(
-        (item) => item.id === sourceMediaId && item.status === 'AVAILABLE'
+      const logicalIdentity = reprocessingIdentity(jobId)
+      const existing = operations.current.get(logicalIdentity)
+      const snapshot = getAuthoritativeSnapshot()
+      if (!snapshot) return { status: 'blocked' }
+      const job = snapshot.jobs.find((item) => item.id === jobId)
+      const source = snapshot.media.find(
+        (item) =>
+          item.id === sourceMediaId &&
+          item.meetingId === meetingId &&
+          item.status === 'AVAILABLE'
       )
       if (
         !job ||
         !source ||
         job.meetingId !== meetingId ||
-        job.sourceMediaId !== sourceMediaId ||
-        !terminalStatus(job.status)
+        job.sourceMediaId !== sourceMediaId
       ) {
         return { status: 'blocked' }
       }
-      const logicalIdentity = `reprocessing:${jobId}`
+
+      if (existing) {
+        if (existing.status === 'pending' && existing.execution) {
+          return { status: 'blocked' }
+        }
+        if (!canReplayOperation(existing, snapshot)) {
+          return { status: 'blocked' }
+        }
+      } else {
+        if (
+          !reprocessableStatus(job.status) ||
+          snapshot.jobs.some((item) => activeStatus(item.status)) ||
+          hasOtherUnresolvedOperation(logicalIdentity)
+        ) {
+          return { status: 'blocked' }
+        }
+      }
+
       const operation = acquireOperation(logicalIdentity, {
         kind: 'reprocessing',
         meetingId,
@@ -468,22 +804,65 @@ export function useProcessingCoordinator({
         jobId,
       })
       if (!operation) return { status: 'blocked' }
-      return runOperation(operation, () =>
+      return runOperation(operation, (signal) =>
         requestProcessing(meetingId, sourceMediaId, jobId, {
           idempotencyKey: operation.idempotencyKey,
-          signal: operation.controller.signal,
+          signal,
         })
       )
     },
     [
       acquireOperation,
+      canReplayOperation,
+      getAuthoritativeSnapshot,
+      hasOtherUnresolvedOperation,
       isAuthorized,
-      jobs.data,
-      media.data,
       meetingId,
       runOperation,
     ]
   )
+
+  const recoverOperation = useCallback(
+    (logicalIdentity: string): Promise<ProcessingCommandResult> => {
+      const operation = operations.current.get(logicalIdentity)
+      if (
+        !operation ||
+        operation.execution ||
+        (operation.status !== 'uncertain' && operation.status !== 'pending')
+      ) {
+        return Promise.resolve({ status: 'blocked' })
+      }
+      if (operation.kind === 'admission' && operation.sourceMediaId) {
+        return admit(operation.sourceMediaId)
+      }
+      if (
+        (operation.kind === 'retry' || operation.kind === 'stage-retry') &&
+        operation.jobId
+      ) {
+        return retry(operation.jobId, operation.stageCode)
+      }
+      if (
+        operation.kind === 'reprocessing' &&
+        operation.jobId &&
+        operation.sourceMediaId
+      ) {
+        return reprocess(operation.jobId, operation.sourceMediaId)
+      }
+      return Promise.resolve({ status: 'blocked' })
+    },
+    [admit, reprocess, retry]
+  )
+
+  const refreshObservation = useCallback(async () => {
+    if (
+      !canReadMedia(authorizationRef.current, fallbackRef.current) ||
+      !canReadProcessing(authorizationRef.current, fallbackRef.current) ||
+      authorizationRef.current?.isConfirmedAccessLoss
+    ) {
+      return
+    }
+    await Promise.all([refetchJobs(), refetchMedia()])
+  }, [refetchJobs, refetchMedia])
 
   const observedSelectedJobId =
     selectedJobId && jobs.data?.some((job) => job.id === selectedJobId)
@@ -498,77 +877,65 @@ export function useProcessingCoordinator({
   )
   const actionableJob = useMemo(() => {
     if (!jobs.data) return undefined
-    const relevant = jobs.data.filter((job) =>
-      ['PENDING', 'QUEUED', 'RUNNING', 'WAITING_FOR_REVIEW'].includes(
-        job.status
-      )
-    )
+    const relevant = jobs.data.filter((job) => activeStatus(job.status))
     return relevant.length === 1 ? relevant[0] : undefined
   }, [jobs.data])
 
   const isOperationPending = useCallback(
-    (identity: string) =>
-      operations.current.get(identity)?.status === 'pending',
+    (logicalIdentity: string) =>
+      operations.current.get(logicalIdentity)?.status === 'pending',
     []
   )
   const isOperationUncertain = useCallback(
-    (identity: string) =>
-      operations.current.get(identity)?.status === 'uncertain',
+    (logicalIdentity: string) =>
+      operations.current.get(logicalIdentity)?.status === 'uncertain',
     []
   )
-
-  const getOperationKey = useCallback((operation: string) => {
-    const existing = legacyKeys.current.get(operation)
-    if (existing) return existing
-    const next = createOperationIdentity()
-    legacyKeys.current.set(operation, next)
-    return next
-  }, [])
-
-  const markProcessingAdmissionUncertain = useCallback(
-    (mediaId: string | null) => {
-      if (!mediaId) {
-        setUncertainAdmissionMediaId(null)
-        return
+  const unresolvedOperations = useMemo(() => {
+    const observationSettled =
+      jobs.data !== undefined &&
+      media.data !== undefined &&
+      !jobs.isFetching &&
+      !media.isFetching
+    const snapshot = observationSettled ? getAuthoritativeSnapshot() : null
+    return operationSnapshot.map((operation) => {
+      const hasOtherUnresolved = operationSnapshot.some(
+        (candidate) =>
+          candidate.logicalIdentity !== operation.logicalIdentity &&
+          (candidate.status === 'pending' || candidate.status === 'uncertain')
+      )
+      const replayPermitted = Boolean(
+        operation.execution === null &&
+        snapshot &&
+        authorizedForOperation(
+          operationAuthorizationKind(operation),
+          authorization,
+          fallback
+        ) &&
+        !hasOtherUnresolved &&
+        canReplayFromSnapshot(operation, snapshot, meetingId)
+      )
+      return {
+        kind: operation.kind,
+        logicalIdentity: operation.logicalIdentity,
+        sourceMediaId: operation.sourceMediaId ?? null,
+        jobId: operation.jobId ?? null,
+        stageCode: operation.stageCode ?? null,
+        status: operation.status,
+        replayPermitted,
       }
-      const operation = operations.current.get(`admission:${mediaId}`)
-      if (operation) {
-        operation.status = 'uncertain'
-        setUncertainAdmissionMediaId(mediaId)
-      }
-      setOperationVersion((value) => value + 1)
-    },
-    []
-  )
-
-  const markProcessingRetryUncertain = useCallback(
-    (operation: string, uncertain: boolean) => {
-      setLegacyUncertain((current) => {
-        const next = new Set(current)
-        if (uncertain) next.add(operation)
-        else next.delete(operation)
-        return next
-      })
-    },
-    []
-  )
-
-  const isProcessingRetryUncertain = useCallback(
-    (operation: string) => {
-      if (legacyUncertain.has(operation)) return true
-      for (const current of operations.current.values()) {
-        if (
-          current.status === 'uncertain' &&
-          (current.kind === 'retry' || current.kind === 'stage-retry') &&
-          current.logicalIdentity.startsWith(`retry:${operation}`)
-        ) {
-          return true
-        }
-      }
-      return false
-    },
-    [legacyUncertain]
-  )
+    })
+  }, [
+    authorization,
+    fallback,
+    getAuthoritativeSnapshot,
+    jobs.data,
+    jobs.isFetching,
+    meetingId,
+    media.data,
+    media.isFetching,
+    operationSnapshot,
+  ])
 
   return {
     jobs,
@@ -576,17 +943,15 @@ export function useProcessingCoordinator({
     selectedJobId: observedSelectedJobId,
     selectedJob,
     actionableJob,
-    uncertainAdmissionMediaId,
+    unresolvedOperations,
     isOperationPending,
     isOperationUncertain,
     selectProcessingJob: setSelectedJobId,
     admit,
     retry,
     reprocess,
+    recoverOperation,
+    refreshObservation,
     invalidate,
-    getOperationKey,
-    markProcessingAdmissionUncertain,
-    markProcessingRetryUncertain,
-    isProcessingRetryUncertain,
   }
 }
