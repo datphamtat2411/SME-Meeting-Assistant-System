@@ -10,6 +10,7 @@ import 'core/appearance_controller.dart';
 import 'features/auth/auth_page.dart';
 import 'features/dashboard/dashboard_page.dart';
 import 'features/meetings/meetings_page.dart';
+import 'features/meetings/meeting_detail_page.dart';
 import 'features/action_items/action_items_page.dart';
 import 'features/assistant/assistant_page.dart';
 import 'features/profile/profile_page.dart';
@@ -79,6 +80,8 @@ class MeetingAssistantApp extends StatefulWidget {
 }
 
 class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
+  final _navigatorKey = GlobalKey<NavigatorState>();
+  bool _openingRecording = false;
   late final ApiClient api = widget.dependencies.api;
   late final AppearanceController appearance = AppearanceController(
     preferences: widget.dependencies.appearancePreferences,
@@ -112,11 +115,72 @@ class _MeetingAssistantAppState extends State<MeetingAssistantApp> {
     theme: AppTheme.light(),
     darkTheme: AppTheme.dark(),
     themeMode: appearance.mode,
+    navigatorKey: _navigatorKey,
+    builder: (context, child) => AnimatedBuilder(
+      animation: applicationState,
+      builder: (context, _) => _recordingOverlay(child),
+    ),
     home: AnimatedBuilder(
       animation: applicationState,
       builder: (_, __) => _sessionHome(),
     ),
   );
+
+  Widget _recordingOverlay(Widget? child) {
+    final capture = widget.dependencies.recording.state;
+    final scope = capture.sessionScope;
+    final meetingId = capture.meetingId;
+    return Column(
+      children: [
+        if (capture.isCapturing &&
+            scope != null &&
+            meetingId != null &&
+            api.isCurrentAuthenticatedSession(scope))
+          SafeArea(
+            bottom: false,
+            child: _ActiveRecordingBanner(
+              key: ValueKey((scope, meetingId)),
+              dependencies: widget.dependencies,
+              meetingId: meetingId,
+              elapsed: capture.elapsed,
+              onOpen: () => _openRecording(meetingId, scope),
+            ),
+          ),
+        Expanded(child: child ?? const SizedBox.shrink()),
+      ],
+    );
+  }
+
+  Future<void> _openRecording(
+    String meetingId,
+    AuthenticatedSessionScope scope,
+  ) async {
+    if (_openingRecording || !api.isCurrentAuthenticatedSession(scope)) {
+      return;
+    }
+    final capture = widget.dependencies.recording.state;
+    if (!capture.isCapturing ||
+        capture.meetingId != meetingId ||
+        capture.sessionScope != scope) {
+      return;
+    }
+    final navigator = _navigatorKey.currentState;
+    if (navigator == null) return;
+    _openingRecording = true;
+    try {
+      await navigator.push<void>(
+        MaterialPageRoute<void>(
+          builder: (_) => MeetingDetailPage(
+            dependencies: widget.dependencies,
+            meetingId: meetingId,
+            openRecording: true,
+          ),
+        ),
+      );
+    } finally {
+      _openingRecording = false;
+    }
+  }
 
   Widget _sessionHome() {
     final session = api.sessionState;
@@ -366,7 +430,6 @@ class AppShell extends StatefulWidget {
 
 class _AppShellState extends State<AppShell> {
   int index = 0;
-  String? _focusMeetingId;
 
   @override
   Widget build(BuildContext context) {
@@ -403,11 +466,7 @@ class _AppShellState extends State<AppShell> {
         openMeetings: () => setState(() => index = 1),
         openActions: () => setState(() => index = 2),
       ),
-      MeetingsPage(
-        dependencies: widget.dependencies,
-        focusMeetingId: _focusMeetingId,
-        onFocusConsumed: () => setState(() => _focusMeetingId = null),
-      ),
+      MeetingsPage(dependencies: widget.dependencies),
       ActionItemsPage(api: widget.api),
       AssistantPage(api: widget.api),
       ProfilePage(
@@ -417,25 +476,10 @@ class _AppShellState extends State<AppShell> {
       ),
     ];
     final wide = MediaQuery.sizeOf(context).width >= 700;
-    final capture = widget.dependencies.recording.state;
-    final activeRecording =
-        capture.isCapturing &&
-        capture.meetingId != null &&
-        capture.sessionScope != null &&
-        widget.api.isCurrentAuthenticatedSession(capture.sessionScope!);
     return Scaffold(
       body: SafeArea(
         child: Column(
           children: [
-            if (activeRecording)
-              _ActiveRecordingBanner(
-                meetingId: capture.meetingId!,
-                elapsed: capture.elapsed,
-                onOpen: () => setState(() {
-                  _focusMeetingId = capture.meetingId;
-                  index = 1;
-                }),
-              ),
             Expanded(
               child: Row(
                 children: [
@@ -478,22 +522,34 @@ class _AppShellState extends State<AppShell> {
   }
 }
 
-class _ActiveRecordingBanner extends StatelessWidget {
+class _ActiveRecordingBanner extends StatefulWidget {
   const _ActiveRecordingBanner({
+    super.key,
+    required this.dependencies,
     required this.meetingId,
     required this.elapsed,
     required this.onOpen,
   });
 
+  final AppDependencies dependencies;
   final String meetingId;
   final Duration elapsed;
   final VoidCallback onOpen;
 
   @override
+  State<_ActiveRecordingBanner> createState() => _ActiveRecordingBannerState();
+}
+
+class _ActiveRecordingBannerState extends State<_ActiveRecordingBanner> {
+  late final Future<String> _title = widget.dependencies.meetings
+      .detail(widget.meetingId)
+      .then((snapshot) => snapshot.meeting.title);
+
+  @override
   Widget build(BuildContext context) => Material(
     color: Colors.red.withValues(alpha: 0.08),
     child: InkWell(
-      onTap: onOpen,
+      onTap: widget.onOpen,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(16, 10, 8, 10),
         child: Row(
@@ -501,13 +557,17 @@ class _ActiveRecordingBanner extends StatelessWidget {
             const Icon(Icons.fiber_manual_record, color: Colors.red, size: 16),
             const SizedBox(width: 8),
             Expanded(
-              child: Text(
-                'Đang ghi âm · ${elapsed.toString().split('.').first} · Cuộc họp $meetingId',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
+              child: FutureBuilder<String>(
+                future: _title,
+                builder: (context, snapshot) => Text(
+                  'Đang ghi âm · ${widget.elapsed.toString().split('.').first}'
+                  ' · ${snapshot.data ?? 'Cuộc họp hiện tại'}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
               ),
             ),
-            TextButton(onPressed: onOpen, child: const Text('Mở')),
+            TextButton(onPressed: widget.onOpen, child: const Text('Mở')),
           ],
         ),
       ),

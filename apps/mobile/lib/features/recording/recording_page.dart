@@ -88,11 +88,6 @@ class _RecordingPageState extends State<RecordingPage> {
   Widget build(BuildContext context) => AnimatedBuilder(
     animation: controller,
     builder: (context, _) {
-      controller.updateContext(
-        meetingId: widget.meetingId,
-        capabilities: widget.capabilities,
-        meetingStatus: widget.meetingStatus,
-      );
       return _buildWorkspace(context);
     },
   );
@@ -130,6 +125,12 @@ class _RecordingPageState extends State<RecordingPage> {
               icon: Icons.cloud_off_outlined,
               title: 'Không thể hoàn tất thao tác',
               description: _failureMessage(controller.failure),
+            ),
+          if (controller.warning != null)
+            const MessagePanel(
+              icon: Icons.warning_amber_outlined,
+              title: 'Cần làm mới trạng thái',
+              description: 'Kết quả quan sát có thể chưa được cập nhật.',
             ),
           _recordingCard(
             context,
@@ -185,14 +186,17 @@ class _RecordingPageState extends State<RecordingPage> {
             Padding(
               padding: const EdgeInsets.only(top: 4),
               child: Text(
-                'Cuộc họp ${capture.meetingId}',
+                'Cuộc họp hiện tại',
                 style: const TextStyle(color: Palette.muted, fontSize: 12),
               ),
             ),
           const SizedBox(height: 12),
           if (isCapturing)
             FilledButton.icon(
-              onPressed: controller.isBusy ? null : controller.stopRecording,
+              onPressed:
+                  controller.isBusy && controller.pendingAction != 'recording'
+                  ? null
+                  : controller.stopRecording,
               icon: const Icon(Icons.stop),
               label: const Text('Dừng ghi âm'),
             )
@@ -215,6 +219,12 @@ class _RecordingPageState extends State<RecordingPage> {
             icon: const Icon(Icons.audio_file_outlined),
             label: const Text('Nhập WAV / MP3 / M4A'),
           ),
+          if (controller.canCancelImport)
+            TextButton.icon(
+              onPressed: controller.cancelImport,
+              icon: const Icon(Icons.cancel_outlined),
+              label: const Text('Hủy nhập âm thanh'),
+            ),
           if (!canChange)
             const Padding(
               padding: EdgeInsets.only(top: 8),
@@ -298,14 +308,15 @@ class _RecordingPageState extends State<RecordingPage> {
   Widget _submissionCard(BuildContext context, SubmissionState? submission) {
     final asset = controller.selectedAsset!;
     final active =
+        controller.canCancelSubmission ||
         submission != null &&
-        <SubmissionLifecycleState>{
-          SubmissionLifecycleState.intentPending,
-          SubmissionLifecycleState.intentCreated,
-          SubmissionLifecycleState.transferring,
-          SubmissionLifecycleState.finalizing,
-          SubmissionLifecycleState.processingAdmissionPending,
-        }.contains(submission.lifecycle);
+            <SubmissionLifecycleState>{
+              SubmissionLifecycleState.intentPending,
+              SubmissionLifecycleState.intentCreated,
+              SubmissionLifecycleState.transferring,
+              SubmissionLifecycleState.finalizing,
+              SubmissionLifecycleState.processingAdmissionPending,
+            }.contains(submission.lifecycle);
     final remoteOnly =
         submission?.lifecycle == SubmissionLifecycleState.mediaAvailable;
     return ContentCard(
@@ -318,6 +329,8 @@ class _RecordingPageState extends State<RecordingPage> {
           ),
           const SizedBox(height: 6),
           Text(_submissionLabel(submission)),
+          if (submission?.failure != null)
+            Text(_failureMessage(submission!.failure)),
           if (submission?.progress != null) ...[
             const SizedBox(height: 8),
             LinearProgressIndicator(value: submission!.progress),
@@ -329,14 +342,13 @@ class _RecordingPageState extends State<RecordingPage> {
             ),
           const SizedBox(height: 10),
           FilledButton.icon(
-            onPressed:
-                !controller.canUpload ||
-                    controller.isBusy ||
-                    (submission?.processingAdmitted ?? false)
-                ? null
-                : active
-                ? controller.cancelSubmission
-                : controller.submitSelected,
+            onPressed: active
+                ? (controller.canCancelSubmission
+                      ? controller.cancelSubmission
+                      : null)
+                : (controller.canSubmitSelected
+                      ? controller.submitSelected
+                      : null),
             icon: Icon(active ? Icons.cancel_outlined : Icons.cloud_upload),
             label: Text(
               active
@@ -377,18 +389,18 @@ class _RecordingPageState extends State<RecordingPage> {
                 ListTile(
                   contentPadding: EdgeInsets.zero,
                   leading: const Icon(Icons.sync_problem_outlined),
-                  title: Text(operation.message ?? 'Thao tác cần khôi phục'),
+                  title: Text(_submissionLabel(operation)),
                   subtitle: Text(
                     operation.uploadOperation?.originalFilename ??
-                        'Nguồn từ xa · ${operation.meetingId ?? controller.meetingId}',
+                        'Nguồn từ xa',
                   ),
                 ),
                 Align(
                   alignment: Alignment.centerRight,
                   child: TextButton.icon(
-                    onPressed: controller.isBusy
-                        ? null
-                        : () => controller.resumeRecovery(operation),
+                    onPressed: controller.canResumeRecovery(operation)
+                        ? () => controller.resumeRecovery(operation)
+                        : null,
                     icon: const Icon(Icons.play_arrow),
                     label: const Text('Khôi phục thao tác này'),
                   ),
@@ -423,7 +435,13 @@ class _RecordingPageState extends State<RecordingPage> {
               ),
               title: Text(item.originalFilename),
               subtitle: Text(_mediaLabel(item)),
-              trailing: item.accepted && controller.canAdmitProcessing
+              trailing:
+                  item.accepted &&
+                      controller.canAdmitProcessing &&
+                      !(remote?.jobs.any(
+                            (job) => job.sourceMediaId == item.id,
+                          ) ??
+                          false)
                   ? TextButton(
                       onPressed: controller.isBusy
                           ? null
@@ -507,7 +525,7 @@ class _RecordingPageState extends State<RecordingPage> {
             Padding(
               padding: const EdgeInsets.only(top: 8),
               child: Text(
-                job.warningSummary!,
+                'Tác vụ có cảnh báo. Hãy kiểm tra kết quả.',
                 style: const TextStyle(color: Palette.amber),
               ),
             ),
@@ -515,7 +533,7 @@ class _RecordingPageState extends State<RecordingPage> {
             Padding(
               padding: const EdgeInsets.only(top: 8),
               child: Text(
-                job.errorSummary!,
+                'Tác vụ không hoàn tất. Kiểm tra khả năng thử lại.',
                 style: const TextStyle(color: Palette.red),
               ),
             ),
@@ -571,7 +589,7 @@ class _RecordingPageState extends State<RecordingPage> {
         ],
       ),
     );
-    if (confirmed == true) await controller.discardAsset(asset);
+    if (mounted && confirmed == true) await controller.discardAsset(asset);
   }
 
   Future<void> _confirmReprocess(ProcessingJobRecord job) async {
@@ -596,7 +614,7 @@ class _RecordingPageState extends State<RecordingPage> {
         ],
       ),
     );
-    if (confirmed == true) {
+    if (mounted && confirmed == true) {
       await controller.reprocess(job, sourceMediaId: source);
     }
   }
@@ -605,7 +623,7 @@ class _RecordingPageState extends State<RecordingPage> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          'Bản ghi ${handoff.jobId} sẵn sàng để duyệt; màn hình duyệt chưa khả dụng.',
+          'Bản ghi sẵn sàng để duyệt; màn hình duyệt chưa khả dụng.',
         ),
       ),
     );
@@ -669,7 +687,18 @@ class _RecordingPageState extends State<RecordingPage> {
   }
 
   String _failureMessage(Object? error) {
-    if (error is ApiFailure) return error.message;
+    if (error is ApiFailure) {
+      if (error.status == 401 || error.status == 403) {
+        return 'Phiên đăng nhập hoặc quyền truy cập đã thay đổi.';
+      }
+      if (error.status == 409) {
+        return 'Trạng thái đã thay đổi. Hãy làm mới và kiểm tra khôi phục.';
+      }
+      if (error.code == 'UPLOAD_CANCELLED') {
+        return 'Đã yêu cầu hủy. Kiểm tra trạng thái trước khi tiếp tục.';
+      }
+      return 'Không thể xác nhận thao tác. Hãy kiểm tra kết nối và thử lại.';
+    }
     if (error is AudioImportException) return error.message;
     if (error is RecordingEligibilityException) return error.message;
     return 'Đã xảy ra lỗi không mong muốn.';

@@ -299,7 +299,9 @@ class SubmissionCoordinator extends ChangeNotifier {
     final recovered = <SubmissionState>[];
     for (final operation in uploadOperations) {
       final value = _uploadRecoveryState(scope, operation);
-      _publish(value);
+      if (!hasActiveSubmission(value.assetId, scope: scope)) {
+        _publish(value);
+      }
       recovered.add(value);
     }
     for (final operation in processingOperations) {
@@ -312,7 +314,9 @@ class SubmissionCoordinator extends ChangeNotifier {
             'The processing request requires reconciliation before retrying.',
         sessionScope: scope,
       );
-      _publish(value);
+      if (!hasActiveSubmission(value.assetId, scope: scope)) {
+        _publish(value);
+      }
       recovered.add(value);
     }
     return List<SubmissionState>.unmodifiable(recovered);
@@ -347,8 +351,16 @@ class SubmissionCoordinator extends ChangeNotifier {
     );
   }
 
-  void cancel(String assetId) {
-    final scope = api.authenticatedSessionScope;
+  bool hasActiveSubmission(
+    String assetId, {
+    required AuthenticatedSessionScope scope,
+  }) =>
+      api.isCurrentAuthenticatedSession(scope) &&
+      _active.containsKey(_activeKey(scope, assetId));
+
+  void cancel(String assetId, {AuthenticatedSessionScope? scope}) {
+    scope ??= api.authenticatedSessionScope;
+    if (scope != null && !api.isCurrentAuthenticatedSession(scope)) return;
     if (scope != null) {
       final key = _activeKey(scope, assetId);
       _workflowCancellation[key]?.token.cancel();
@@ -562,7 +574,9 @@ class SubmissionCoordinator extends ChangeNotifier {
         uploadOperation,
         failure,
       );
-      final lifecycle = _failureLifecycle(error);
+      final lifecycle = uploadOperation.recoveryRequired
+          ? SubmissionLifecycleState.reconciliationRequired
+          : _failureLifecycle(error);
       return _publish(
         failed.copyWith(
           lifecycle: lifecycle,
@@ -1397,17 +1411,19 @@ class SubmissionCoordinator extends ChangeNotifier {
             operationId: operation.id,
           ) ??
           operation;
-      final attemptStarted =
-          authoritative.attemptOutcome == OperationAttemptOutcome.uncertain &&
-          authoritative.recoveryRequired;
+      final priorUnresolved =
+          (operation.recoveryRequired ||
+              (authoritative.recoveryRequired &&
+                  authoritative.attemptCount > operation.attemptCount + 1)) &&
+          failure.code != 'MEDIA_REJECTED' &&
+          failure.code != 'MEDIA_PROCESSING_FAILED';
       return await localMedia.updateUploadOperation(
         authoritative,
         scope: scope,
-        attemptCount: attemptStarted
-            ? authoritative.attemptCount
-            : authoritative.attemptCount + 1,
+        attemptCount: authoritative.attemptCount,
         attemptOutcome: outcome,
-        recoveryRequired: outcome == OperationAttemptOutcome.uncertain,
+        recoveryRequired:
+            priorUnresolved || outcome == OperationAttemptOutcome.uncertain,
         failureCode: failure.code,
         failureStatus: failure.status,
         failureMessage: failure.message,
@@ -1446,17 +1462,14 @@ class SubmissionCoordinator extends ChangeNotifier {
           authoritative.resultingJobId != null) {
         return authoritative;
       }
-      final attemptStarted =
-          authoritative.attemptOutcome == OperationAttemptOutcome.uncertain &&
-          authoritative.recoveryRequired;
       return await localMedia.updateProcessingOperation(
         authoritative,
         scope: scope,
-        attemptCount: attemptStarted
-            ? authoritative.attemptCount
-            : authoritative.attemptCount + 1,
+        attemptCount: authoritative.attemptCount,
         attemptOutcome: outcome,
-        recoveryRequired: outcome == OperationAttemptOutcome.uncertain,
+        recoveryRequired:
+            operation.recoveryRequired ||
+            outcome == OperationAttemptOutcome.uncertain,
         failureCode: failure.code,
         failureStatus: failure.status,
         failureMessage: failure.message,
@@ -1880,6 +1893,16 @@ class SubmissionCoordinator extends ChangeNotifier {
     for (final cancellation in _workflowCancellation.values) {
       cancellation.token.cancel();
     }
+  }
+
+  /// Drains the original command futures even if shutdown reached its deadline.
+  Future<void> drainActiveWork() async {
+    await Future.wait<void>(
+      _active.values.map(
+        (future) =>
+            future.then<void>((_) {}, onError: (Object _, StackTrace __) {}),
+      ),
+    );
   }
 
   /// Gives active transport calls a bounded opportunity to observe

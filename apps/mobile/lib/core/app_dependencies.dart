@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import 'api_client.dart';
@@ -194,11 +197,24 @@ class AppDependencies {
         processingManager.shutdown(),
       ]);
     } finally {
-      await _closeResources();
+      // A timed-out Future still runs. Capture actual command ownership before
+      // disposing the coordinators (which can clear their in-flight maps).
+      final hasPendingCleanup =
+          recording.hasActiveWork ||
+          submissions.hasActiveWork ||
+          processingManager.hasActiveWork;
+      final drain = hasPendingCleanup
+          ? Future.wait<void>([
+              recording.drainActiveWork(),
+              submissions.drainActiveWork(),
+              processingManager.drainActiveWork(),
+            ]).then<void>((_) {})
+          : null;
+      await _closeResources(drain: drain);
     }
   }
 
-  Future<void> _closeResources() async {
+  Future<void> _closeResources({Future<void>? drain}) async {
     if (_resourcesClosed) return;
     _resourcesClosed = true;
     meetingInvalidation.dispose();
@@ -210,6 +226,21 @@ class AppDependencies {
     } finally {
       httpClient.close();
     }
-    await localMedia.dispose();
+    if (drain == null) {
+      await localMedia.dispose();
+      return;
+    }
+    // Network closure is bounded, but persistence must remain available to
+    // original owned cleanup until it settles. The owner is already fenced.
+    unawaited(
+      drain.then<void>((_) => localMedia.dispose()).catchError((
+        Object error,
+        StackTrace stack,
+      ) {
+        FlutterError.reportError(
+          FlutterErrorDetails(exception: error, stack: stack),
+        );
+      }),
+    );
   }
 }
