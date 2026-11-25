@@ -55,7 +55,7 @@ class LocalMediaRepository {
       <String, Future<LocalMediaRecoveryReport>>{};
   final Map<String, LocalMediaRecoveryReport> _completedRecoveries =
       <String, LocalMediaRecoveryReport>{};
-  final Set<String> _activeAssetIds = <String>{};
+  final Map<String, int> _activeAssetLeases = <String, int>{};
   bool _disposed = false;
 
   static LocalMediaRepository fromReady({
@@ -105,18 +105,18 @@ class LocalMediaRepository {
     required String originalFilename,
     required String contentType,
     String? sourceProvenance,
-  }) => _withLifecycleLock(
-    () => _importStreamForOwner(
-      deploymentScope: scope.deploymentScope,
-      ownerUserId: scope.userId,
-      meetingId: meetingId,
-      bytes: bytes,
-      expectedSizeBytes: expectedSizeBytes,
-      sourceType: sourceType,
-      originalFilename: originalFilename,
-      contentType: contentType,
-      sourceProvenance: sourceProvenance,
-    ),
+    UploadCancellationToken? cancellationToken,
+  }) => _importStreamForOwner(
+    deploymentScope: scope.deploymentScope,
+    ownerUserId: scope.userId,
+    meetingId: meetingId,
+    bytes: bytes,
+    expectedSizeBytes: expectedSizeBytes,
+    sourceType: sourceType,
+    originalFilename: originalFilename,
+    contentType: contentType,
+    sourceProvenance: sourceProvenance,
+    cancellationToken: cancellationToken,
   );
 
   Future<List<LocalMediaAsset>> listAssets({
@@ -152,6 +152,18 @@ class LocalMediaRepository {
     );
   }
 
+  Future<UploadOperation?> findUploadOperationById({
+    required AuthenticatedSessionScope scope,
+    required String operationId,
+  }) async {
+    _requireScope(scope.deploymentScope, scope.userId);
+    return (await _persistence()).findUploadOperationById(
+      id: operationId,
+      deploymentScope: scope.deploymentScope,
+      ownerUserId: scope.userId,
+    );
+  }
+
   Future<List<ProcessingOperation>> listProcessingOperations({
     required AuthenticatedSessionScope scope,
     String? meetingId,
@@ -169,6 +181,18 @@ class LocalMediaRepository {
       operationId: operationId,
       remoteJobId: remoteJobId,
       recoverableOnly: recoverableOnly,
+    );
+  }
+
+  Future<ProcessingOperation?> findProcessingOperationById({
+    required AuthenticatedSessionScope scope,
+    required String operationId,
+  }) async {
+    _requireScope(scope.deploymentScope, scope.userId);
+    return (await _persistence()).findProcessingOperationById(
+      id: operationId,
+      deploymentScope: scope.deploymentScope,
+      ownerUserId: scope.userId,
     );
   }
 
@@ -192,13 +216,13 @@ class LocalMediaRepository {
           asset.lifecycle == LocalMediaLifecycle.discardPending) {
         throw const LocalMediaUnavailableException();
       }
-      _activeAssetIds.add(assetId);
+      _acquireAssetLease(assetId);
     });
     try {
       return await action();
     } finally {
       await _withLifecycleLock(() async {
-        _activeAssetIds.remove(assetId);
+        _releaseAssetLease(assetId);
       });
     }
   }
@@ -289,7 +313,7 @@ class LocalMediaRepository {
       );
       if (current == null ||
           current.version != expected.version ||
-          _activeAssetIds.contains(current.id) ||
+          _isAssetProtected(current.id) ||
           !current.isReady) {
         return;
       }
@@ -418,7 +442,7 @@ class LocalMediaRepository {
     // Registration and destination lookup are one lifecycle-critical section.
     // The section ends before the recorder starts, so it does not lock a
     // recording for its full duration.
-    _activeAssetIds.add(persisted.id);
+    _acquireAssetLease(persisted.id);
     return (await _storage()).fileFor(persisted.stagedRelativePath!);
   });
 
@@ -445,14 +469,15 @@ class LocalMediaRepository {
       throw const LocalMediaUnavailableException();
     }
     if (asset.lifecycle == LocalMediaLifecycle.discardPending) {
-      _activeAssetIds.remove(asset.id);
+      _releaseAssetLease(asset.id);
       return _discardAssetFiles(persistence, await _storage(), asset);
     }
     if (asset.stagedRelativePath == null) {
       throw const LocalMediaUnavailableException();
     }
     final storage = await _storage();
-    _activeAssetIds.add(asset.id);
+    final acquiredHere = !_isAssetProtected(asset.id);
+    if (acquiredHere) _acquireAssetLease(asset.id);
     try {
       final integrity = await storage.inspectFile(asset.stagedRelativePath!);
       if (integrity.sizeBytes <= 0 ||
@@ -509,7 +534,7 @@ class LocalMediaRepository {
       } catch (_) {}
       rethrow;
     } finally {
-      _activeAssetIds.remove(asset.id);
+      if (acquiredHere) _releaseAssetLease(asset.id);
     }
   });
 
@@ -530,10 +555,10 @@ class LocalMediaRepository {
       return asset;
     }
     if (asset.lifecycle == LocalMediaLifecycle.discardPending) {
-      _activeAssetIds.remove(asset.id);
+      _releaseAssetLease(asset.id);
       return _discardAssetFiles(persistence, await _storage(), asset);
     }
-    _activeAssetIds.remove(asset.id);
+    _releaseAssetLease(asset.id);
     return persistence.updateAsset(
       asset.copyWith(
         lifecycle: LocalMediaLifecycle.interrupted,
@@ -555,6 +580,9 @@ class LocalMediaRepository {
       ownerUserId: scope.userId,
     );
     if (asset == null) throw StateError('The local media asset was not found.');
+    if (_isAssetProtected(asset.id)) {
+      throw const LocalMediaBusyException();
+    }
     var pending = await persistence.updateAsset(
       asset.copyWith(
         lifecycle: LocalMediaLifecycle.discardPending,
@@ -562,7 +590,6 @@ class LocalMediaRepository {
       ),
       expectedVersion: asset.version,
     );
-    if (_activeAssetIds.contains(asset.id)) return pending;
     final storage = await _storage();
     await _deleteIfPresent(storage, pending.managedRelativePath);
     final stagedPath = pending.stagedRelativePath;
@@ -684,7 +711,7 @@ class LocalMediaRepository {
     var interrupted = 0;
     var orphaned = 0;
     for (final asset in assets) {
-      if (_activeAssetIds.contains(asset.id)) continue;
+      if (_isAssetProtected(asset.id)) continue;
       final result = await _reconcileAsset(persistence, storage, asset);
       switch (result.lifecycle) {
         case LocalMediaLifecycle.ready:
@@ -756,7 +783,7 @@ class LocalMediaRepository {
     );
     var count = 0;
     for (final asset in assets) {
-      if (_activeAssetIds.contains(asset.id)) continue;
+      if (_isAssetProtected(asset.id)) continue;
       final stagedPath = asset.stagedRelativePath;
       if (stagedPath == null ||
           !asset.updatedAt.isBefore(cutoff) ||
@@ -1425,7 +1452,7 @@ class LocalMediaRepository {
       );
       await persistence.insertAsset(asset);
     }
-    _activeAssetIds.add(asset.id);
+    _acquireAssetLease(asset.id);
     try {
       final stagedPath = asset.stagedRelativePath;
       if (stagedPath == null) {
@@ -1484,7 +1511,7 @@ class LocalMediaRepository {
       } catch (_) {}
       rethrow;
     } finally {
-      _activeAssetIds.remove(asset.id);
+      _releaseAssetLease(asset.id);
     }
   }
 
@@ -1498,6 +1525,7 @@ class LocalMediaRepository {
     required String originalFilename,
     required String contentType,
     String? sourceProvenance,
+    UploadCancellationToken? cancellationToken,
   }) async {
     _requireScope(deploymentScope, ownerUserId);
     _validateIdentifier(meetingId, 'meetingId');
@@ -1513,17 +1541,17 @@ class LocalMediaRepository {
     final persistence = await _persistence();
     final storage = await _storage();
     await storage.ensureDirectories();
+    // Picker paths and filename/size pairs are hints, not content identity.
+    // Every unverified stream gets a fresh staging identity; duplicate
+    // detection happens only after its streamed digest has been established.
     final provenance =
-        sourceProvenance ??
-        'stream:$deploymentScope:$ownerUserId:$meetingId:'
-            '$originalFilename:$expectedSizeBytes';
+        'import-attempt:${sourceProvenance ?? 'unknown'}:${_newId()}';
     final existing = await persistence.findAssetByProvenance(
       deploymentScope: deploymentScope,
       ownerUserId: ownerUserId,
       meetingId: meetingId,
       sourceProvenance: provenance,
     );
-    if (existing != null && existing.isReady) return existing;
     if (existing?.lifecycle == LocalMediaLifecycle.discarded ||
         existing?.lifecycle == LocalMediaLifecycle.quarantined) {
       throw const LocalMediaUnavailableException();
@@ -1559,7 +1587,7 @@ class LocalMediaRepository {
     }
 
     var current = asset;
-    _activeAssetIds.add(current.id);
+    _acquireAssetLease(current.id);
     try {
       final stagedPath = current.stagedRelativePath;
       if (stagedPath == null) {
@@ -1569,6 +1597,7 @@ class LocalMediaRepository {
         stagedPath,
         bytes,
         expectedSizeBytes: expectedSizeBytes,
+        cancellationToken: cancellationToken,
       );
       current = await persistence.updateAsset(
         current.copyWith(
@@ -1587,6 +1616,31 @@ class LocalMediaRepository {
         ),
         expectedVersion: current.version,
       );
+      final readyAssets = await persistence.listAssets(
+        deploymentScope: deploymentScope,
+        ownerUserId: ownerUserId,
+        meetingId: meetingId,
+      );
+      for (final candidate in readyAssets) {
+        if (candidate.id == current.id ||
+            candidate.sourceType != sourceType ||
+            candidate.originalFilename != originalFilename ||
+            candidate.contentType != contentType ||
+            candidate.sizeBytes != integrity.sizeBytes ||
+            candidate.sha256?.toLowerCase() != integrity.sha256.toLowerCase()) {
+          continue;
+        }
+        if (!await _verifyReadyAsset(candidate)) continue;
+        await _deleteIfPresent(storage, stagedPath);
+        await persistence.updateAsset(
+          current.copyWith(
+            lifecycle: LocalMediaLifecycle.discarded,
+            updatedAt: _utcNow(),
+          ),
+          expectedVersion: current.version,
+        );
+        return candidate;
+      }
       await storage.promote(stagedPath, current.managedRelativePath);
       final managedIntegrity = await storage.inspectFile(
         current.managedRelativePath,
@@ -1618,7 +1672,7 @@ class LocalMediaRepository {
       } catch (_) {}
       rethrow;
     } finally {
-      _activeAssetIds.remove(current.id);
+      _releaseAssetLease(current.id);
     }
   }
 
@@ -1647,6 +1701,7 @@ class LocalMediaRepository {
     final managed = storage.fileFor(asset.managedRelativePath);
     final stagedPath = asset.stagedRelativePath;
     final staged = stagedPath == null ? null : storage.fileFor(stagedPath);
+    final stagedExists = staged != null && await staged.exists();
     if (await managed.exists()) {
       if (!_hasCompletionEvidence(asset)) {
         return await persistence.updateAsset(
@@ -1661,7 +1716,7 @@ class LocalMediaRepository {
         );
       }
       try {
-        if (asset.lifecycle == LocalMediaLifecycle.ready && staged == null) {
+        if (asset.lifecycle == LocalMediaLifecycle.ready && !stagedExists) {
           // READY completion metadata is authoritative for routine recovery.
           // Existence and size are enough unless there is a conflicting
           // staged artifact or an explicit integrity-verification boundary.
@@ -1675,14 +1730,16 @@ class LocalMediaRepository {
               expectedVersion: asset.version,
             );
           }
-          return await persistence.updateAsset(
-            asset.copyWith(
-              lifecycle: LocalMediaLifecycle.ready,
-              readyAt: asset.readyAt ?? _utcNow(),
-              updatedAt: _utcNow(),
-            ),
-            expectedVersion: asset.version,
-          );
+          return asset.readyAt == null
+              ? await persistence.updateAsset(
+                  asset.copyWith(
+                    lifecycle: LocalMediaLifecycle.ready,
+                    readyAt: _utcNow(),
+                    updatedAt: _utcNow(),
+                  ),
+                  expectedVersion: asset.version,
+                )
+              : asset;
         }
         final integrity = await storage.inspectFile(asset.managedRelativePath);
         if (!_matchesConfirmed(asset, integrity)) {
@@ -1695,13 +1752,10 @@ class LocalMediaRepository {
             expectedVersion: asset.version,
           );
         }
-        if (staged != null && await staged.exists()) {
+        if (stagedExists) {
           // A staged artifact alongside a managed file is an interrupted
           // promotion. Both files must be hashed and compared before either
           // is removed or accepted.
-          final integrity = await storage.inspectFile(
-            asset.managedRelativePath,
-          );
           if (!_matchesConfirmed(asset, integrity)) {
             return await persistence.updateAsset(
               asset.copyWith(
@@ -1759,7 +1813,7 @@ class LocalMediaRepository {
       }
     }
 
-    if (staged != null && await staged.exists()) {
+    if (stagedExists) {
       if (!_hasCompletionEvidence(asset)) {
         return await persistence.updateAsset(
           asset.copyWith(
@@ -1924,6 +1978,22 @@ class LocalMediaRepository {
       }
     }();
   }
+
+  void _acquireAssetLease(String assetId) {
+    _activeAssetLeases[assetId] = (_activeAssetLeases[assetId] ?? 0) + 1;
+  }
+
+  void _releaseAssetLease(String assetId) {
+    final count = _activeAssetLeases[assetId];
+    if (count == null || count <= 1) {
+      _activeAssetLeases.remove(assetId);
+    } else {
+      _activeAssetLeases[assetId] = count - 1;
+    }
+  }
+
+  bool _isAssetProtected(String assetId) =>
+      (_activeAssetLeases[assetId] ?? 0) > 0;
 
   Future<T> _withMigrationLock<T>(Future<T> Function() action) {
     final previous = _migrationTail;
@@ -2334,6 +2404,13 @@ class LocalMediaUnavailableException implements Exception {
 
   @override
   String toString() => 'The local media asset is unavailable.';
+}
+
+class LocalMediaBusyException implements Exception {
+  const LocalMediaBusyException();
+
+  @override
+  String toString() => 'The local media asset is currently in use.';
 }
 
 class _InvalidLegacyMetadata implements Exception {

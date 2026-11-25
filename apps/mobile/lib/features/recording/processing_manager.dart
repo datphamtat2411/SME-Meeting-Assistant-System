@@ -73,6 +73,21 @@ class TranscriptReviewHandoff {
   final String? sourceMediaId;
 }
 
+class ProcessingObservation {
+  ProcessingObservation(this.manager, this.meetingId, this.key);
+
+  final ProcessingManager manager;
+  final String meetingId;
+  final String key;
+  bool _released = false;
+
+  void dispose() {
+    if (_released) return;
+    _released = true;
+    manager.stopObserving(meetingId, subscription: this);
+  }
+}
+
 /// Shared authorized remote media inventory and adaptive processing monitor.
 /// One manager is owned by the application, while observation counts are
 /// scoped by authenticated session and meeting.
@@ -84,6 +99,7 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
     required this.localMedia,
     DateTime Function()? now,
   }) : _now = now ?? DateTime.now {
+    api.addListener(_sessionChanged);
     try {
       WidgetsBinding.instance.addObserver(this);
       _lifecycleObserverRegistered = true;
@@ -108,39 +124,53 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
   final Map<String, Timer> _timers = <String, Timer>{};
   final Map<String, Future<void>> _inFlight = <String, Future<void>>{};
   final Map<String, int> _unchangedRefreshes = <String, int>{};
+  final Map<String, String> _meetingForKey = <String, String>{};
+  final Map<String, int> _failureCounts = <String, int>{};
+  final Map<String, Future<ProcessingJobRecord>> _mutationFlights =
+      <String, Future<ProcessingJobRecord>>{};
   bool _backgrounded = false;
   bool _disposed = false;
   bool _lifecycleObserverRegistered = false;
 
-  ProcessingMeetingState? stateFor(String meetingId) => _states[meetingId];
+  ProcessingMeetingState? stateFor(String meetingId) {
+    final scope = api.authenticatedSessionScope;
+    return scope == null ? null : _states[_key(scope, meetingId)];
+  }
 
-  int consumerCount(String meetingId) => _consumers[meetingId] ?? 0;
+  int consumerCount(String meetingId) {
+    final scope = api.authenticatedSessionScope;
+    return scope == null ? 0 : _consumers[_key(scope, meetingId)] ?? 0;
+  }
 
   /// Adds one interested consumer. Duplicate screens share the same timer and
   /// in-flight request; each caller must invoke [stopObserving] once.
-  void startObserving(
+  ProcessingObservation startObserving(
     String meetingId, {
     required AuthenticatedSessionScope scope,
   }) {
     api.requireCurrentAuthenticatedSession(scope);
-    final current = _scopes[meetingId];
-    if (current != null && current != scope) {
-      _cancelTimer(meetingId);
-      _consumers[meetingId] = 0;
-    }
-    _scopes[meetingId] = scope;
-    _consumers[meetingId] = (_consumers[meetingId] ?? 0) + 1;
+    final key = _key(scope, meetingId);
+    _meetingForKey[key] = meetingId;
+    _scopes[key] = scope;
+    _consumers[key] = (_consumers[key] ?? 0) + 1;
     unawaited(refresh(meetingId, scope: scope));
+    return ProcessingObservation(this, meetingId, key);
   }
 
-  void stopObserving(String meetingId) {
-    final next = (_consumers[meetingId] ?? 0) - 1;
+  void stopObserving(String meetingId, {ProcessingObservation? subscription}) {
+    final currentScope = api.authenticatedSessionScope;
+    final key =
+        subscription?.key ??
+        (currentScope == null ? meetingId : _key(currentScope, meetingId));
+    final next = (_consumers[key] ?? 0) - 1;
     if (next > 0) {
-      _consumers[meetingId] = next;
+      _consumers[key] = next;
       return;
     }
-    _consumers.remove(meetingId);
-    _cancelTimer(meetingId);
+    _consumers.remove(key);
+    _cancelTimer(key);
+    _scopes.remove(key);
+    _failureCounts.remove(key);
   }
 
   Future<void> refresh(
@@ -149,24 +179,32 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
     bool explicit = false,
   }) {
     api.requireCurrentAuthenticatedSession(scope);
-    final running = _inFlight[meetingId];
+    if (_disposed) return Future<void>.value();
+    final key = _key(scope, meetingId);
+    _scopes[key] ??= scope;
+    _meetingForKey[key] ??= meetingId;
+    final running = _inFlight[key];
     if (running != null) return running;
     final current =
-        _states[meetingId] ??
+        _states[key] ??
         ProcessingMeetingState(meetingId: meetingId, sessionScope: scope);
-    _states[meetingId] = current.copyWith(
+    _states[key] = current.copyWith(
       isRefreshing: true,
       failure: null,
       sessionScope: scope,
     );
     notifyListeners();
     final future = _fetch(meetingId, scope, explicit: explicit);
-    _inFlight[meetingId] = future;
+    _inFlight[key] = future;
     unawaited(
-      future.whenComplete(() {
-        if (identical(_inFlight[meetingId], future))
-          _inFlight.remove(meetingId);
-      }),
+      future.then<void>(
+        (_) {
+          if (identical(_inFlight[key], future)) _inFlight.remove(key);
+        },
+        onError: (Object _, StackTrace __) {
+          if (identical(_inFlight[key], future)) _inFlight.remove(key);
+        },
+      ),
     );
     return future;
   }
@@ -176,42 +214,71 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
     AuthenticatedSessionScope scope, {
     required bool explicit,
   }) async {
+    final key = _key(scope, meetingId);
     try {
       final results = await Future.wait<Object>(<Future<Object>>[
         mediaRepository.listMedia(meetingId, sessionScope: scope),
         processingRepository.list(meetingId, sessionScope: scope),
       ]);
-      if (!api.isCurrentAuthenticatedSession(scope) ||
-          _scopes[meetingId] != scope) {
+      if (_disposed ||
+          !api.isCurrentAuthenticatedSession(scope) ||
+          _scopes[key] != scope) {
         return;
       }
       final media = results[0] as List<MediaRecord>;
       final jobs = results[1] as List<ProcessingJobRecord>;
-      final previous = _states[meetingId];
+      final previous = _states[key];
+      _failureCounts.remove(key);
       final changed =
           previous == null ||
           !_sameRemoteInventory(previous.media, previous.jobs, media, jobs);
-      _unchangedRefreshes[meetingId] = changed
+      _unchangedRefreshes[key] = changed
           ? 0
-          : (_unchangedRefreshes[meetingId] ?? 0) + 1;
-      _states[meetingId] = ProcessingMeetingState(
+          : (_unchangedRefreshes[key] ?? 0) + 1;
+      _states[key] = ProcessingMeetingState(
         meetingId: meetingId,
         media: List<MediaRecord>.unmodifiable(media),
         jobs: List<ProcessingJobRecord>.unmodifiable(jobs),
         isRefreshing: false,
         lastRefreshedAt: _now().toUtc(),
-        nextRefreshIn: _intervalFor(jobs, changed, meetingId),
+        nextRefreshIn: _intervalFor(jobs, changed, key),
         sessionScope: scope,
       );
       notifyListeners();
-      _schedule(meetingId, scope, _intervalFor(jobs, changed, meetingId));
+      _schedule(key, meetingId, scope, _intervalFor(jobs, changed, key));
     } catch (error) {
-      if (!api.isCurrentAuthenticatedSession(scope) ||
-          _scopes[meetingId] != scope) {
+      if (_disposed ||
+          !api.isCurrentAuthenticatedSession(scope) ||
+          _scopes[key] != scope) {
         return;
       }
-      final previous = _states[meetingId];
-      _states[meetingId] =
+      if (error is ApiFailure && (error.status == 401 || error.status == 403)) {
+        _states[key] = ProcessingMeetingState(
+          meetingId: meetingId,
+          media: const <MediaRecord>[],
+          jobs: const <ProcessingJobRecord>[],
+          isRefreshing: false,
+          failure: error,
+          sessionScope: scope,
+        );
+        _cancelTimer(key);
+        _scopes.remove(key);
+        notifyListeners();
+        return;
+      }
+      final failureCount = (_failureCounts[key] ?? 0) + 1;
+      _failureCounts[key] = failureCount;
+      final serverDelay = error is ApiFailure
+          ? error.retryAfterDuration(now: _now())
+          : null;
+      final exponential = Duration(
+        seconds: min(60, 5 * (1 << (failureCount - 1))),
+      );
+      final retryDelay = serverDelay != null && serverDelay > exponential
+          ? serverDelay
+          : exponential;
+      final previous = _states[key];
+      _states[key] =
           (previous ??
                   ProcessingMeetingState(
                     meetingId: meetingId,
@@ -220,11 +287,11 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
               .copyWith(
                 isRefreshing: false,
                 failure: error,
-                nextRefreshIn: const Duration(seconds: 30),
+                nextRefreshIn: retryDelay,
                 sessionScope: scope,
               );
       notifyListeners();
-      _schedule(meetingId, scope, const Duration(seconds: 30));
+      _schedule(key, meetingId, scope, retryDelay);
     }
   }
 
@@ -232,21 +299,41 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
     required ProcessingJobRecord job,
     required AuthenticatedSessionScope scope,
     MeetingCapabilities? capabilities,
+  }) {
+    final key = '${_key(scope, job.meetingId)}\u0000retry\u0000${job.id}';
+    final running = _mutationFlights[key];
+    if (running != null) return running;
+    final future = _retryJobInternal(
+      job: job,
+      scope: scope,
+      capabilities: capabilities,
+    );
+    _mutationFlights[key] = future;
+    unawaited(
+      future.then<void>(
+        (_) {
+          _mutationFlights.remove(key);
+        },
+        onError: (Object _, StackTrace __) {
+          _mutationFlights.remove(key);
+        },
+      ),
+    );
+    return future;
+  }
+
+  Future<ProcessingJobRecord> _retryJobInternal({
+    required ProcessingJobRecord job,
+    required AuthenticatedSessionScope scope,
+    MeetingCapabilities? capabilities,
   }) async {
     api.requireCurrentAuthenticatedSession(scope);
-    if (capabilities != null &&
+    if (capabilities == null ||
         !capabilities.allows(MeetingOperation.retryProcessing)) {
       throw const ApiFailure(
         403,
         'PROCESSING_CAPABILITY_REQUIRED',
         'The current meeting capability does not allow retry.',
-      );
-    }
-    if (!job.retryable) {
-      throw const ApiFailure(
-        409,
-        'PROCESSING_RETRY_NOT_ALLOWED',
-        'The processing job is not eligible for retry.',
       );
     }
     var operation = await _unresolvedOperation(
@@ -255,6 +342,13 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
       remoteJobId: job.id,
       type: ProcessingOperationType.retry,
     );
+    if (operation == null && !job.retryable) {
+      throw const ApiFailure(
+        409,
+        'PROCESSING_RETRY_NOT_ALLOWED',
+        'The processing job is not eligible for retry.',
+      );
+    }
     operation ??= await localMedia.beginProcessingOperation(
       scope: scope,
       meetingId: job.meetingId,
@@ -313,9 +407,40 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
     required String sourceMediaId,
     required AuthenticatedSessionScope scope,
     MeetingCapabilities? capabilities,
+  }) {
+    final key =
+        '${_key(scope, parent.meetingId)}\u0000reprocess\u0000'
+        '${parent.id}\u0000$sourceMediaId';
+    final running = _mutationFlights[key];
+    if (running != null) return running;
+    final future = _reprocessInternal(
+      parent: parent,
+      sourceMediaId: sourceMediaId,
+      scope: scope,
+      capabilities: capabilities,
+    );
+    _mutationFlights[key] = future;
+    unawaited(
+      future.then<void>(
+        (_) {
+          _mutationFlights.remove(key);
+        },
+        onError: (Object _, StackTrace __) {
+          _mutationFlights.remove(key);
+        },
+      ),
+    );
+    return future;
+  }
+
+  Future<ProcessingJobRecord> _reprocessInternal({
+    required ProcessingJobRecord parent,
+    required String sourceMediaId,
+    required AuthenticatedSessionScope scope,
+    MeetingCapabilities? capabilities,
   }) async {
     api.requireCurrentAuthenticatedSession(scope);
-    if (capabilities != null &&
+    if (capabilities == null ||
         !capabilities.allows(MeetingOperation.admitProcessing)) {
       throw const ApiFailure(
         403,
@@ -421,14 +546,17 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.inactive) {
       _backgrounded = true;
-      for (final meetingId in _timers.keys.toList()) {
-        _cancelTimer(meetingId);
+      for (final key in _timers.keys.toList()) {
+        _cancelTimer(key);
       }
     } else if (state == AppLifecycleState.resumed) {
       _backgrounded = false;
       for (final entry in _scopes.entries) {
         if ((_consumers[entry.key] ?? 0) > 0) {
-          unawaited(refresh(entry.key, scope: entry.value, explicit: true));
+          final meetingId = _meetingForKey[entry.key];
+          if (meetingId != null) {
+            unawaited(refresh(meetingId, scope: entry.value, explicit: true));
+          }
         }
       }
     }
@@ -437,7 +565,7 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
   Duration _intervalFor(
     List<ProcessingJobRecord> jobs,
     bool changed,
-    String meetingId,
+    String observationKey,
   ) {
     final active = jobs.any(
       (job) =>
@@ -446,29 +574,33 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
           job.status == ProcessingJobStatus.running,
     );
     if (!active) return const Duration(seconds: 30);
-    if (changed || (_unchangedRefreshes[meetingId] ?? 0) == 0) {
+    if (changed || (_unchangedRefreshes[observationKey] ?? 0) == 0) {
       return const Duration(seconds: 5);
     }
     return const Duration(seconds: 15);
   }
 
   void _schedule(
+    String key,
     String meetingId,
     AuthenticatedSessionScope scope,
     Duration duration,
   ) {
-    _cancelTimer(meetingId);
-    if (_backgrounded || (_consumers[meetingId] ?? 0) == 0) return;
-    _timers[meetingId] = Timer(duration, () {
-      _timers.remove(meetingId);
-      if (!_backgrounded && (_consumers[meetingId] ?? 0) > 0) {
+    _cancelTimer(key);
+    if (_backgrounded || (_consumers[key] ?? 0) == 0) return;
+    _timers[key] = Timer(duration, () {
+      _timers.remove(key);
+      if (!_backgrounded &&
+          (_consumers[key] ?? 0) > 0 &&
+          _scopes[key] == scope &&
+          !_disposed) {
         unawaited(refresh(meetingId, scope: scope));
       }
     });
   }
 
-  void _cancelTimer(String meetingId) {
-    _timers.remove(meetingId)?.cancel();
+  void _cancelTimer(String key) {
+    _timers.remove(key)?.cancel();
   }
 
   Future<ProcessingOperation?> _unresolvedOperation({
@@ -518,6 +650,33 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
         jobKey(oldJobs) == jobKey(newJobs);
   }
 
+  String _key(AuthenticatedSessionScope scope, String meetingId) =>
+      '${scope.deploymentScope}\u0000${scope.userId}\u0000'
+      '${scope.lifecycleEpoch}\u0000$meetingId';
+
+  void _sessionChanged() {
+    final current = api.authenticatedSessionScope;
+    final obsolete = _scopes.entries
+        .where(
+          (entry) =>
+              current == null ||
+              _key(current, _meetingForKey[entry.key] ?? '') != entry.key,
+        )
+        .map((entry) => entry.key)
+        .toList(growable: false);
+    for (final key in obsolete) {
+      _cancelTimer(key);
+      _consumers.remove(key);
+      _scopes.remove(key);
+      _inFlight.remove(key);
+      _unchangedRefreshes.remove(key);
+      _failureCounts.remove(key);
+      _states.remove(key);
+      _meetingForKey.remove(key);
+    }
+    if (obsolete.isNotEmpty && !_disposed) notifyListeners();
+  }
+
   String _newKey() {
     final random = Random.secure();
     return List<int>.generate(
@@ -533,10 +692,16 @@ class ProcessingManager extends ChangeNotifier with WidgetsBindingObserver {
     if (_lifecycleObserverRegistered) {
       WidgetsBinding.instance.removeObserver(this);
     }
+    api.removeListener(_sessionChanged);
     for (final timer in _timers.values) {
       timer.cancel();
     }
     _timers.clear();
+    _states.clear();
+    _scopes.clear();
+    _consumers.clear();
+    _inFlight.clear();
+    _failureCounts.clear();
     super.dispose();
   }
 }

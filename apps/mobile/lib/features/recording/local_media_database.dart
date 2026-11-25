@@ -9,7 +9,7 @@ import 'package:path/path.dart' as path_utils;
 class LocalMediaDatabase {
   LocalMediaDatabase._(this.database, this.path);
 
-  static const int schemaVersion = 5;
+  static const int schemaVersion = 6;
   static const String defaultDatabaseName = 'sme_mobile_media.db';
 
   final sqflite.Database database;
@@ -275,6 +275,7 @@ class LocalMediaDatabase {
       END
     ''');
     await _createProcessingTargetTrigger(db);
+    await _createOperationEvidence(db);
   }
 
   static Future<void> _upgradeSchema(
@@ -310,6 +311,15 @@ class LocalMediaDatabase {
       await _rebuildSchemaForV3(db);
     }
     if (oldVersion < 5 && newVersion >= 5) {
+      await _createOperationEvidence(db);
+      await _normalizeHistoricalOperations(db);
+    }
+    if (oldVersion < 6 && newVersion >= 6) {
+      // V5 databases already have the strict final tables.  Run the
+      // normalizer again for them after installing the evidence table so a
+      // database interrupted between the two hardening releases converges in
+      // exactly the same way as a V2--V4 upgrade.
+      await _createOperationEvidence(db);
       await _normalizeHistoricalOperations(db);
     }
     if (oldVersion > newVersion) {
@@ -475,10 +485,11 @@ class LocalMediaDatabase {
           reprocess_of_job_id TEXT,
           stage_code TEXT,
            confirmed_checkpoint TEXT NOT NULL DEFAULT 'ADMISSION_NOT_CONFIRMED'
-             CHECK (confirmed_checkpoint IN (
+            CHECK (confirmed_checkpoint IN (
                'ADMISSION_NOT_CONFIRMED', 'ADMISSION_CONFIRMED',
                'RETRY_NOT_CONFIRMED', 'RETRY_CONFIRMED',
-               'REPROCESS_NOT_CONFIRMED', 'REPROCESS_CONFIRMED'
+               'REPROCESS_NOT_CONFIRMED', 'REPROCESS_CONFIRMED',
+               'REMOTE_RECONCILIATION_REQUIRED', 'FAILED'
              )),
            attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
            attempt_outcome TEXT NOT NULL DEFAULT 'NONE' CHECK (attempt_outcome IN (
@@ -557,6 +568,7 @@ class LocalMediaDatabase {
       ON processing_operations(deployment_scope, owner_user_id, updated_at DESC)
     ''');
     await _createRecoveryArtifacts(db);
+    await _createOperationEvidence(db);
     await _createUploadScopeTriggers(db);
     await _createProcessingTargetTrigger(db);
   }
@@ -581,6 +593,39 @@ class LocalMediaDatabase {
     await db.execute('''
       CREATE INDEX IF NOT EXISTS ix_local_media_recovery_artifacts_updated
       ON local_media_recovery_artifacts(updated_at DESC)
+    ''');
+  }
+
+  static Future<void> _createOperationEvidence(
+    sqflite.DatabaseExecutor db,
+  ) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS local_media_operation_evidence (
+        id TEXT PRIMARY KEY,
+        operation_kind TEXT NOT NULL CHECK (operation_kind IN ('UPLOAD', 'PROCESSING')),
+        operation_id TEXT NOT NULL,
+        deployment_scope TEXT,
+        owner_user_id TEXT,
+        original_checkpoint TEXT,
+        original_confirmed_bytes INTEGER,
+        expected_size_bytes INTEGER,
+        original_remote_media_id TEXT,
+        original_target_job_id TEXT,
+        original_resulting_job_id TEXT,
+        original_attempt_outcome TEXT,
+        original_recovery_required INTEGER,
+        original_failure_code TEXT,
+        original_failure_status INTEGER,
+        original_failure_message TEXT,
+        reason TEXT NOT NULL,
+        metadata TEXT,
+        created_at TEXT NOT NULL,
+        UNIQUE (operation_kind, operation_id, reason)
+      )
+    ''');
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS ix_operation_evidence_operation
+      ON local_media_operation_evidence(operation_kind, operation_id, created_at DESC)
     ''');
   }
 
@@ -658,6 +703,21 @@ class LocalMediaDatabase {
       final existingFailureCode = row['last_failure_code'] as String?;
       final existingFailureMessage = row['last_failure_message'] as String?;
       final preservedByteEvidence = !hasRemoteIdentity && oldBytes > 0;
+      final normalized = nextCheckpoint != checkpoint || nextBytes != oldBytes;
+      if (normalized ||
+          checkpoint == 'FAILED' ||
+          checkpoint == 'REMOTE_RECONCILIATION_REQUIRED') {
+        await _insertOperationEvidence(
+          db,
+          kind: 'UPLOAD',
+          row: row,
+          reason: 'HISTORICAL_NORMALIZATION',
+          originalCheckpoint: checkpoint,
+          originalConfirmedBytes: oldBytes,
+          expectedSizeBytes: expectedBytes,
+          originalRemoteMediaId: remoteMediaId,
+        );
+      }
       await db.update(
         'upload_operations',
         <String, Object?>{
@@ -706,8 +766,6 @@ class LocalMediaDatabase {
       final hasResultingJob = resultingJobId?.trim().isNotEmpty == true;
       var nextCheckpoint = checkpoint == confirmedCheckpoint && hasResultingJob
           ? confirmedCheckpoint
-          : checkpoint == confirmedCheckpoint && type == 'ADMISSION'
-          ? confirmedCheckpoint
           : pendingCheckpoint;
       final existingOutcome = row['attempt_outcome'] as String?;
       var outcome = existingOutcome;
@@ -737,6 +795,25 @@ class LocalMediaDatabase {
       // a failed admission into a fabricated resulting job.
       if (nextCheckpoint != confirmedCheckpoint) resultingJobId = null;
 
+      final normalized =
+          nextCheckpoint != checkpoint ||
+          targetJobId != row['target_job_id'] ||
+          resultingJobId != row['resulting_job_id'];
+      if (normalized ||
+          checkpoint == 'FAILED' ||
+          checkpoint == 'REMOTE_RECONCILIATION_REQUIRED' ||
+          checkpoint == confirmedCheckpoint && !hasResultingJob) {
+        await _insertOperationEvidence(
+          db,
+          kind: 'PROCESSING',
+          row: row,
+          reason: 'HISTORICAL_NORMALIZATION',
+          originalCheckpoint: checkpoint,
+          originalTargetJobId: row['target_job_id'] as String?,
+          originalResultingJobId: row['resulting_job_id'] as String?,
+        );
+      }
+
       await db.update(
         'processing_operations',
         <String, Object?>{
@@ -751,6 +828,45 @@ class LocalMediaDatabase {
       );
     }
     await _createProcessingTargetTrigger(db);
+  }
+
+  static Future<void> _insertOperationEvidence(
+    sqflite.DatabaseExecutor db, {
+    required String kind,
+    required Map<String, Object?> row,
+    required String reason,
+    String? originalCheckpoint,
+    int? originalConfirmedBytes,
+    int? expectedSizeBytes,
+    String? originalRemoteMediaId,
+    String? originalTargetJobId,
+    String? originalResultingJobId,
+  }) async {
+    final operationId = row['id'] as String;
+    final now = DateTime.now().toUtc().toIso8601String();
+    final id = '${kind.toLowerCase()}:$operationId:$reason';
+    await db.insert('local_media_operation_evidence', <String, Object?>{
+      'id': id,
+      'operation_kind': kind,
+      'operation_id': operationId,
+      'deployment_scope': row['deployment_scope'],
+      'owner_user_id': row['owner_user_id'],
+      'original_checkpoint': originalCheckpoint,
+      'original_confirmed_bytes': originalConfirmedBytes,
+      'expected_size_bytes': expectedSizeBytes ?? row['expected_size_bytes'],
+      'original_remote_media_id': originalRemoteMediaId,
+      'original_target_job_id': originalTargetJobId ?? row['target_job_id'],
+      'original_resulting_job_id':
+          originalResultingJobId ?? row['resulting_job_id'],
+      'original_attempt_outcome': row['attempt_outcome'],
+      'original_recovery_required': row['recovery_required'],
+      'original_failure_code': row['last_failure_code'],
+      'original_failure_status': row['last_failure_status'],
+      'original_failure_message': row['last_failure_message'],
+      'reason': reason,
+      'metadata': '{"historical":true}',
+      'created_at': now,
+    }, conflictAlgorithm: sqflite.ConflictAlgorithm.ignore);
   }
 
   static bool _validOutcome(String value) => const <String>{

@@ -5,6 +5,7 @@ import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 
+import '../../core/api_client.dart';
 import 'local_media_models.dart';
 
 /// Application-private filesystem boundary for local source audio.
@@ -75,47 +76,41 @@ class ManagedMediaStorage {
     String stagedRelativePath,
     Stream<List<int>> bytes, {
     int? expectedSizeBytes,
+    UploadCancellationToken? cancellationToken,
   }) async {
     final sink = await openStagedWrite(stagedRelativePath);
     final digestSink = _DigestSink();
     final converter = sha256.startChunkedConversion(digestSink);
     var size = 0;
-    var converterClosed = false;
+    final iterator = StreamIterator<List<int>>(bytes);
     try {
-      final transformed = bytes.transform(
-        StreamTransformer<List<int>, List<int>>.fromHandlers(
-          handleData: (chunk, output) {
-            size += chunk.length;
-            if (expectedSizeBytes != null && size > expectedSizeBytes) {
-              throw const FileSystemException(
-                'The staged file exceeded its size.',
-              );
-            }
-            converter.add(chunk);
-            output.add(chunk);
-          },
-          handleDone: (output) {
-            converter.close();
-            converterClosed = true;
-            output.close();
-          },
-        ),
-      );
-      // IOSink.addStream pauses the input subscription while its internal
-      // buffer is full. Do not replace this with an await-for/add loop: that
-      // loop can read an entire large source into pending IOSink memory.
-      await sink.addStream(transformed);
+      while (await _moveNext(iterator, cancellationToken)) {
+        final chunk = iterator.current;
+        if (cancellationToken?.isCancelled == true) {
+          throw const FileSystemException('The staged import was cancelled.');
+        }
+        size += chunk.length;
+        if (expectedSizeBytes != null && size > expectedSizeBytes) {
+          throw const FileSystemException('The staged file exceeded its size.');
+        }
+        converter.add(chunk);
+        // A single iterator owns the source subscription. Flushing after each
+        // chunk provides bounded backpressure while still allowing cancellation
+        // to cancel a stalled moveNext call.
+        sink.add(chunk);
+        await sink.flush();
+      }
+      converter.close();
       await sink.flush();
       await sink.close();
     } catch (_) {
+      await iterator.cancel();
       try {
         await sink.close();
       } catch (_) {}
       rethrow;
     }
-    if (!converterClosed) {
-      converter.close();
-    }
+    await iterator.cancel();
     if (size <= 0 || expectedSizeBytes != null && size != expectedSizeBytes) {
       throw const FileSystemException('The staged file size is invalid.');
     }
@@ -123,6 +118,21 @@ class ManagedMediaStorage {
       sizeBytes: size,
       sha256: digestSink.value.toString(),
     );
+  }
+
+  Future<bool> _moveNext(
+    StreamIterator<List<int>> iterator,
+    UploadCancellationToken? cancellationToken,
+  ) async {
+    final moving = iterator.moveNext();
+    if (cancellationToken == null) return moving;
+    final cancelled = cancellationToken.whenCancelled.then<bool>((_) => false);
+    final result = await Future.any<bool>(<Future<bool>>[moving, cancelled]);
+    if (!result && cancellationToken.isCancelled) {
+      await iterator.cancel();
+      throw const FileSystemException('The staged import was cancelled.');
+    }
+    return result;
   }
 
   Future<LocalMediaFileIntegrity> copyFileToStaging(

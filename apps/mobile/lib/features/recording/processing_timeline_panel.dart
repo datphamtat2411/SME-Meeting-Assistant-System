@@ -1,15 +1,11 @@
 import 'dart:async';
-import 'dart:math';
 
 import 'package:flutter/material.dart';
 
 import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
 import '../../core/widgets.dart';
-import 'local_media_models.dart';
-import 'local_media_repository.dart';
 import 'media_contracts.dart';
-import 'processing_repository.dart';
 import 'processing_manager.dart';
 import '../meetings/meeting_foundation.dart';
 
@@ -18,17 +14,13 @@ class ProcessingTimelinePanel extends StatefulWidget {
     super.key,
     required this.api,
     required this.meetingId,
-    this.processingRepository,
-    this.processingManager,
-    this.localMedia,
+    required this.processingManager,
     this.canRetry = true,
     this.capabilities,
   });
   final ApiClient api;
   final String meetingId;
-  final ProcessingRepository? processingRepository;
-  final ProcessingManager? processingManager;
-  final LocalMediaRepository? localMedia;
+  final ProcessingManager processingManager;
   final bool canRetry;
   final MeetingCapabilities? capabilities;
   @override
@@ -38,32 +30,24 @@ class ProcessingTimelinePanel extends StatefulWidget {
 
 class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
     with WidgetsBindingObserver {
-  late final ProcessingRepository processingRepository;
   late Future<List<ProcessingJobRecord>> future;
-  Timer? timer;
   bool retrying = false;
   late final AuthenticatedSessionScope sessionScope;
   MeetingCapabilities? _capabilities;
+  late final ProcessingObservation observation;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    processingRepository =
-        widget.processingRepository ?? ProcessingRepository(api: widget.api);
     sessionScope = widget.api.requireAuthenticatedSessionScope();
     _capabilities = widget.capabilities;
-    if (widget.processingManager != null) {
-      widget.processingManager!.addListener(_managerChanged);
-      _managerChanged();
-      widget.processingManager!.startObserving(
-        widget.meetingId,
-        scope: sessionScope,
-      );
-    } else {
-      reload();
-      timer = Timer.periodic(const Duration(seconds: 12), (_) => reload());
-    }
+    widget.processingManager.addListener(_managerChanged);
+    _managerChanged();
+    observation = widget.processingManager.startObserving(
+      widget.meetingId,
+      scope: sessionScope,
+    );
   }
 
   @override
@@ -75,38 +59,16 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
   bool _allows(MeetingOperation operation) =>
       _capabilities?.allows(operation) == true;
 
-  void _requireCapability(MeetingOperation operation) {
-    if (!_allows(operation)) {
-      throw const ApiFailure(
-        403,
-        'MEDIA_CAPABILITY_REQUIRED',
-        'Bạn không có quyền thực hiện thao tác xử lý này.',
-      );
-    }
-  }
-
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (widget.processingManager != null) return;
-    if (state == AppLifecycleState.resumed) reload();
-    if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.inactive)
-      timer?.cancel();
-    if (state == AppLifecycleState.resumed) {
-      timer?.cancel();
-      timer = Timer.periodic(const Duration(seconds: 12), (_) => reload());
-    }
+    // ProcessingManager owns the foreground/background polling lifecycle.
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    timer?.cancel();
-    if (widget.processingManager != null) {
-      widget.processingManager!
-        ..removeListener(_managerChanged)
-        ..stopObserving(widget.meetingId);
-    }
+    observation.dispose();
+    widget.processingManager.removeListener(_managerChanged);
     super.dispose();
   }
 
@@ -119,27 +81,19 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
       return;
     }
     if (!widget.api.isCurrentAuthenticatedSession(sessionScope)) return;
-    final manager = widget.processingManager;
-    if (manager != null) {
-      unawaited(
-        manager.refresh(widget.meetingId, scope: sessionScope, explicit: true),
-      );
-      _managerChanged();
-      return;
-    }
-    setState(() {
-      future = processingRepository.list(
+    unawaited(
+      widget.processingManager.refresh(
         widget.meetingId,
-        sessionScope: sessionScope,
-      );
-    });
+        scope: sessionScope,
+        explicit: true,
+      ),
+    );
+    _managerChanged();
   }
 
   void _managerChanged() {
     if (!mounted) return;
-    final manager = widget.processingManager;
-    if (manager == null) return;
-    final state = manager.stateFor(widget.meetingId);
+    final state = widget.processingManager.stateFor(widget.meetingId);
     setState(
       () => future = Future<List<ProcessingJobRecord>>.value(
         state?.jobs ?? const <ProcessingJobRecord>[],
@@ -150,103 +104,18 @@ class _ProcessingTimelinePanelState extends State<ProcessingTimelinePanel>
   Future<void> retry(ProcessingJobRecord candidate) async {
     if (retrying || !_allows(MeetingOperation.retryProcessing)) return;
     setState(() => retrying = true);
-    final manager = widget.processingManager;
-    if (manager != null) {
-      try {
-        await manager.retryJob(
-          job: candidate,
-          scope: sessionScope,
-          capabilities: widget.capabilities,
-        );
-        if (mounted) showSuccess(context, 'Đã tiếp nhận yêu cầu thử lại.');
-      } catch (error) {
-        if (mounted) showFailure(context, error);
-      } finally {
-        if (mounted) setState(() => retrying = false);
-      }
-      return;
-    }
-    ProcessingOperation? operation;
-    final scope = sessionScope;
     try {
-      _requireCapability(MeetingOperation.retryProcessing);
-      widget.api.requireCurrentAuthenticatedSession(scope);
-      final rand = Random.secure();
-      final key = List<int>.generate(
-        16,
-        (_) => rand.nextInt(256),
-      ).map((v) => v.toRadixString(16).padLeft(2, '0')).join();
-      final localMedia = widget.localMedia;
-      if (localMedia != null) {
-        operation = await localMedia.beginProcessingOperation(
-          scope: scope,
-          meetingId: candidate.meetingId,
-          idempotencyKey: key,
-          operationType: ProcessingOperationType.retry,
-          targetJobId: candidate.id,
-        );
-      }
-      _requireCapability(MeetingOperation.retryProcessing);
-      widget.api.requireCurrentAuthenticatedSession(scope);
-      final accepted = await processingRepository.retry(
-        candidate.id,
-        idempotencyKey: key,
-        sessionScope: scope,
+      await widget.processingManager.retryJob(
+        job: candidate,
+        scope: sessionScope,
+        capabilities: widget.capabilities,
       );
-      if (operation != null && localMedia != null) {
-        await localMedia.updateProcessingOperation(
-          operation,
-          scope: scope,
-          checkpoint: ProcessingOperationCheckpoint.retryConfirmed,
-          resultingJobId: accepted.id,
-        );
-      }
-      if (mounted && widget.api.isCurrentAuthenticatedSession(scope)) {
-        showSuccess(context, 'Đã tiếp nhận yêu cầu thử lại.');
-        reload();
-      }
+      if (mounted) showSuccess(context, 'Đã tiếp nhận yêu cầu thử lại.');
     } catch (error) {
-      final localMedia = widget.localMedia;
-      final activeScope = scope;
-      if (localMedia != null &&
-          widget.api.isCurrentAuthenticatedSession(activeScope) &&
-          operation != null) {
-        final failure = error is ApiFailure ? error : null;
-        final failedOperation = operation;
-        try {
-          await localMedia.updateProcessingOperation(
-            failedOperation,
-            scope: activeScope,
-            attemptCount: failedOperation.attemptCount + 1,
-            attemptOutcome: _operationOutcome(failure),
-            recoveryRequired:
-                failure == null ||
-                failure.remoteOutcomeAmbiguous ||
-                failure.isTransportFailure,
-            failureCode: failure?.code ?? 'PROCESSING_RETRY_FAILED',
-            failureStatus: failure?.status,
-            failureMessage: failure?.message,
-          );
-        } catch (_) {}
-      }
-      if (mounted && widget.api.isCurrentAuthenticatedSession(activeScope)) {
-        showFailure(context, error);
-      }
+      if (mounted) showFailure(context, error);
     } finally {
       if (mounted) setState(() => retrying = false);
     }
-  }
-
-  OperationAttemptOutcome _operationOutcome(ApiFailure? failure) {
-    if (failure == null ||
-        failure.remoteOutcomeAmbiguous ||
-        failure.isTransportFailure) {
-      return OperationAttemptOutcome.uncertain;
-    }
-    if (failure.status >= 400 && failure.status < 500) {
-      return OperationAttemptOutcome.rejected;
-    }
-    return OperationAttemptOutcome.failed;
   }
 
   @override

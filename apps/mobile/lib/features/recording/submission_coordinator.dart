@@ -10,6 +10,7 @@ import 'local_media_repository.dart';
 import 'media_contracts.dart';
 import 'media_repository.dart';
 import 'processing_repository.dart';
+import 'recording_coordinator.dart';
 
 enum SubmissionLifecycleState {
   localReady,
@@ -99,6 +100,13 @@ class SubmissionReconciliationException implements Exception {
   String toString() => message;
 }
 
+class SubmissionBusyException implements Exception {
+  const SubmissionBusyException();
+
+  @override
+  String toString() => 'Another media transfer is currently in progress.';
+}
+
 /// Durable owner of local-media submission and initial processing admission.
 /// Remote inventory and ongoing job observation belong to [ProcessingManager].
 class SubmissionCoordinator extends ChangeNotifier {
@@ -109,6 +117,7 @@ class SubmissionCoordinator extends ChangeNotifier {
     required this.processingRepository,
     DateTime Function()? now,
     Future<void> Function(Duration)? delay,
+    this.capabilityResolver,
     int automaticRetries = 2,
   }) : _now = now ?? DateTime.now,
        _delay = delay ?? ((duration) => Future<void>.delayed(duration)),
@@ -122,6 +131,7 @@ class SubmissionCoordinator extends ChangeNotifier {
   final ProcessingRepository processingRepository;
   final DateTime Function() _now;
   final Future<void> Function(Duration) _delay;
+  final RecordingCapabilityResolver? capabilityResolver;
   final int _automaticRetries;
 
   final Map<String, SubmissionState> _states = <String, SubmissionState>{};
@@ -129,37 +139,62 @@ class SubmissionCoordinator extends ChangeNotifier {
       <String, Future<SubmissionState>>{};
   final Map<String, UploadCancellationToken> _cancellation =
       <String, UploadCancellationToken>{};
+  final Map<String, UploadCancellationToken> _workflowCancellation =
+      <String, UploadCancellationToken>{};
+  String? _transferOwner;
   bool _disposed = false;
 
-  SubmissionState? stateFor(String assetId) => _states[assetId];
+  SubmissionState? stateFor(String assetId) {
+    final scope = api.authenticatedSessionScope;
+    if (scope == null) return null;
+    final value = _states[_stateKey(scope, assetId)];
+    return value;
+  }
 
-  List<SubmissionState> get states =>
-      List<SubmissionState>.unmodifiable(_states.values);
+  List<SubmissionState> get states {
+    final scope = api.authenticatedSessionScope;
+    if (scope == null) return const <SubmissionState>[];
+    final prefix = '${_scopeKey(scope)}\u0000';
+    return List<SubmissionState>.unmodifiable(
+      _states.entries
+          .where((entry) => entry.key.startsWith(prefix))
+          .map((entry) => entry.value),
+    );
+  }
 
   Future<SubmissionState> submit({
     required LocalMediaAsset asset,
     MeetingCapabilities? capabilities,
     bool admitProcessing = true,
   }) {
-    final existing = _active[asset.id];
-    if (existing != null) return existing;
     final scope = api.requireAuthenticatedSessionScope();
-    _requireCapability(capabilities, MeetingOperation.uploadMedia);
+    final activeKey = _activeKey(scope, asset.id);
+    final existing = _active[activeKey];
+    if (existing != null) return existing;
+    _requireCapabilityOrResolver(capabilities, MeetingOperation.uploadMedia);
     final meetingId = asset.meetingId;
     if (meetingId == null || meetingId.isEmpty) {
       throw const LocalMediaUnavailableException();
     }
+    _workflowCancellation[activeKey] = UploadCancellationToken();
     final future = _execute(
       scope: scope,
       asset: asset,
       capabilities: capabilities,
       admitProcessing: admitProcessing,
     );
-    _active[asset.id] = future;
+    _active[activeKey] = future;
     unawaited(
-      future.whenComplete(() {
-        if (identical(_active[asset.id], future)) _active.remove(asset.id);
-      }),
+      future.then<void>(
+        (_) {
+          if (identical(_active[activeKey], future)) _active.remove(activeKey);
+          _workflowCancellation.remove(activeKey);
+        },
+        onError: (Object _, StackTrace __) {
+          if (identical(_active[activeKey], future)) _active.remove(activeKey);
+          _workflowCancellation.remove(activeKey);
+        },
+      ),
     );
     return future;
   }
@@ -176,6 +211,38 @@ class SubmissionCoordinator extends ChangeNotifier {
       (candidate) => candidate.id == operationId,
       orElse: () => throw StateError('The upload operation was not found.'),
     );
+    _requireCapabilityOrResolver(capabilities, MeetingOperation.uploadMedia);
+    if (operation.remoteMediaId != null &&
+        operation.checkpoint ==
+            UploadOperationCheckpoint.finalizationConfirmed &&
+        admitProcessing) {
+      _requireCapabilityOrResolver(
+        capabilities,
+        MeetingOperation.admitProcessing,
+      );
+      final media = await mediaRepository.getMedia(
+        operation.meetingId,
+        operation.remoteMediaId!,
+        sessionScope: scope,
+      );
+      _validateRemoteMedia(media, operation);
+      if (media.accepted) {
+        final processing = await _existingOrNewProcessing(
+          scope: scope,
+          meetingId: operation.meetingId,
+          sourceMediaId: media.id,
+          operationType: ProcessingOperationType.admission,
+        );
+        return _admitProcessing(
+          scope: scope,
+          meetingId: operation.meetingId,
+          media: media,
+          operation: processing,
+          capabilities: capabilities,
+          assetId: 'remote:${media.id}',
+        );
+      }
+    }
     final asset = await localMedia.findReadyAsset(
       scope: scope,
       assetId: operation.assetId,
@@ -189,7 +256,12 @@ class SubmissionCoordinator extends ChangeNotifier {
   }
 
   void cancel(String assetId) {
-    _cancellation[assetId]?.cancel();
+    final scope = api.authenticatedSessionScope;
+    if (scope != null) {
+      final key = _activeKey(scope, assetId);
+      _workflowCancellation[key]?.cancel();
+      _cancellation[key]?.cancel();
+    }
   }
 
   Future<SubmissionState> admitAvailableMedia({
@@ -201,10 +273,21 @@ class SubmissionCoordinator extends ChangeNotifier {
     String? reprocessOfJobId,
   }) async {
     api.requireCurrentAuthenticatedSession(scope);
-    _requireCapability(capabilities, MeetingOperation.admitProcessing);
+    _requireCapabilityOrResolver(
+      capabilities,
+      MeetingOperation.admitProcessing,
+    );
+    await _requireCurrentCapability(
+      scope,
+      meetingId,
+      MeetingOperation.admitProcessing,
+      capabilities,
+    );
     final media = await _withTransientRetries(
       () => mediaRepository.getMedia(meetingId, mediaId, sessionScope: scope),
       phase: 'media-read',
+      cancellationToken:
+          _workflowCancellation[_activeKey(scope, 'remote:$mediaId')],
     );
     if (!media.accepted) {
       throw const SubmissionReconciliationException(
@@ -245,6 +328,7 @@ class SubmissionCoordinator extends ChangeNotifier {
     required MeetingCapabilities? capabilities,
     required bool admitProcessing,
   }) async {
+    _checkWorkflow(scope, asset.id);
     var uploadOperation = await _existingOrNewUpload(scope, asset);
     var current = SubmissionState(
       lifecycle: SubmissionLifecycleState.localReady,
@@ -263,8 +347,11 @@ class SubmissionCoordinator extends ChangeNotifier {
         operation: uploadOperation,
         capabilities: capabilities,
       );
-      uploadOperation = _states[asset.id]?.uploadOperation ?? uploadOperation;
-      current = _states[asset.id] ?? current;
+      _checkWorkflow(scope, asset.id);
+      uploadOperation =
+          _states[_stateKey(scope, asset.id)]?.uploadOperation ??
+          uploadOperation;
+      current = _states[_stateKey(scope, asset.id)] ?? current;
       if (!media.accepted) {
         return _publish(
           current.copyWith(
@@ -282,13 +369,23 @@ class SubmissionCoordinator extends ChangeNotifier {
           ),
         );
       }
-      _requireCapability(capabilities, MeetingOperation.admitProcessing);
+      _requireCapabilityOrResolver(
+        capabilities,
+        MeetingOperation.admitProcessing,
+      );
+      await _requireCurrentCapability(
+        scope,
+        asset.meetingId!,
+        MeetingOperation.admitProcessing,
+        capabilities,
+      );
       processingOperation = await _existingOrNewProcessing(
         scope: scope,
         meetingId: asset.meetingId!,
         sourceMediaId: media.id,
         operationType: ProcessingOperationType.admission,
       );
+      _checkWorkflow(scope, asset.id);
       return await _admitProcessing(
         scope: scope,
         meetingId: asset.meetingId!,
@@ -298,7 +395,7 @@ class SubmissionCoordinator extends ChangeNotifier {
         assetId: asset.id,
       );
     } catch (error) {
-      final failed = _states[asset.id] ?? current;
+      final failed = _states[_stateKey(scope, asset.id)] ?? current;
       final failure = _asApiFailure(error);
       if (processingOperation != null) {
         await _recordProcessingFailure(scope, processingOperation, failure);
@@ -335,6 +432,7 @@ class SubmissionCoordinator extends ChangeNotifier {
     required MeetingCapabilities? capabilities,
   }) async {
     var current = operation;
+    _checkWorkflow(scope, asset.id);
     if (current.remoteMediaId != null) {
       final remote = await _withTransientRetries(
         () => mediaRepository.getMedia(
@@ -343,6 +441,7 @@ class SubmissionCoordinator extends ChangeNotifier {
           sessionScope: scope,
         ),
         phase: 'media-reconciliation',
+        cancellationToken: _workflowCancellation[_activeKey(scope, asset.id)],
       );
       _validateRemoteMedia(remote, current);
       if (remote.accepted) {
@@ -374,6 +473,7 @@ class SubmissionCoordinator extends ChangeNotifier {
           scope: scope,
           asset: asset,
           operation: current,
+          capabilities: capabilities,
         );
         return finalized;
       }
@@ -384,7 +484,8 @@ class SubmissionCoordinator extends ChangeNotifier {
       operation: current,
       capabilities: capabilities,
     );
-    current = _states[asset.id]?.uploadOperation ?? current;
+    _checkWorkflow(scope, asset.id);
+    current = _states[_stateKey(scope, asset.id)]?.uploadOperation ?? current;
     if (intent.status == MediaStatus.available) {
       final available = await mediaRepository.getMedia(
         current.meetingId,
@@ -435,8 +536,12 @@ class SubmissionCoordinator extends ChangeNotifier {
     var uploadAttempt = 0;
     while (true) {
       final cancellation = UploadCancellationToken();
-      _cancellation[asset.id] = cancellation;
+      _cancellation[_activeKey(scope, asset.id)] = cancellation;
       try {
+        if (_transferOwner != null && _transferOwner != asset.id) {
+          throw const SubmissionBusyException();
+        }
+        _transferOwner = asset.id;
         _publish(
           SubmissionState(
             lifecycle: SubmissionLifecycleState.transferring,
@@ -507,18 +612,32 @@ class SubmissionCoordinator extends ChangeNotifier {
         }
         rethrow;
       } finally {
-        _cancellation.remove(asset.id);
+        _cancellation.remove(_activeKey(scope, asset.id));
+        if (_transferOwner == asset.id) _transferOwner = null;
       }
     }
 
-    return _finalizePending(scope: scope, asset: asset, operation: current);
+    return _finalizePending(
+      scope: scope,
+      asset: asset,
+      operation: current,
+      capabilities: capabilities,
+    );
   }
 
   Future<MediaRecord> _finalizePending({
     required AuthenticatedSessionScope scope,
     required LocalMediaAsset asset,
     required UploadOperation operation,
+    required MeetingCapabilities? capabilities,
   }) async {
+    _checkWorkflow(scope, asset.id);
+    await _requireCurrentCapability(
+      scope,
+      operation.meetingId,
+      MeetingOperation.finalizeMedia,
+      capabilities,
+    );
     _publish(
       SubmissionState(
         lifecycle: SubmissionLifecycleState.finalizing,
@@ -536,6 +655,7 @@ class SubmissionCoordinator extends ChangeNotifier {
         sessionScope: scope,
       ),
       phase: 'finalization',
+      cancellationToken: _workflowCancellation[_activeKey(scope, asset.id)],
     );
     _validateRemoteMedia(media, operation);
     if (!media.accepted) return media;
@@ -549,7 +669,13 @@ class SubmissionCoordinator extends ChangeNotifier {
     required UploadOperation operation,
     required MeetingCapabilities? capabilities,
   }) async {
-    _requireCapability(capabilities, MeetingOperation.uploadMedia);
+    _checkWorkflow(scope, operation.assetId);
+    await _requireCurrentCapability(
+      scope,
+      operation.meetingId,
+      MeetingOperation.uploadMedia,
+      capabilities,
+    );
     _publish(
       SubmissionState(
         lifecycle: SubmissionLifecycleState.intentPending,
@@ -575,6 +701,8 @@ class SubmissionCoordinator extends ChangeNotifier {
         sessionScope: scope,
       ),
       phase: 'upload-intent',
+      cancellationToken:
+          _workflowCancellation[_activeKey(scope, operation.assetId)],
     );
     if (intent.mediaId.trim().isEmpty) {
       throw const SubmissionReconciliationException(
@@ -630,7 +758,12 @@ class SubmissionCoordinator extends ChangeNotifier {
     required MeetingCapabilities? capabilities,
     required String assetId,
   }) async {
-    _requireCapability(capabilities, MeetingOperation.admitProcessing);
+    await _requireCurrentCapability(
+      scope,
+      meetingId,
+      MeetingOperation.admitProcessing,
+      capabilities,
+    );
     final confirmedCheckpoint = switch (operation.operationType) {
       ProcessingOperationType.admission =>
         ProcessingOperationCheckpoint.admissionConfirmed,
@@ -678,6 +811,7 @@ class SubmissionCoordinator extends ChangeNotifier {
         sessionScope: scope,
       ),
       phase: 'processing-admission',
+      cancellationToken: _workflowCancellation[_activeKey(scope, assetId)],
     );
     final confirmed = await localMedia.updateProcessingOperation(
       operation,
@@ -745,18 +879,20 @@ class SubmissionCoordinator extends ChangeNotifier {
       meetingId: meetingId,
       sourceMediaId: sourceMediaId,
     );
-    for (final operation in existing) {
-      if (operation.operationType == operationType &&
-          operation.reprocessOfJobId == reprocessOfJobId &&
-          operation.checkpoint !=
-              ProcessingOperationCheckpoint.admissionConfirmed &&
-          operation.checkpoint !=
-              ProcessingOperationCheckpoint.retryConfirmed &&
-          operation.checkpoint !=
-              ProcessingOperationCheckpoint.reprocessConfirmed) {
-        return operation;
-      }
+    final matches = existing
+        .where(
+          (operation) =>
+              operation.operationType == operationType &&
+              operation.reprocessOfJobId == reprocessOfJobId,
+        )
+        .toList(growable: false);
+    if (matches.length > 1 &&
+        matches.any((operation) => operation.recoveryRequired)) {
+      throw const SubmissionReconciliationException(
+        'Multiple processing operations require reconciliation.',
+      );
     }
+    if (matches.isNotEmpty) return matches.first;
     return localMedia.beginProcessingOperation(
       scope: scope,
       meetingId: meetingId,
@@ -795,17 +931,36 @@ class SubmissionCoordinator extends ChangeNotifier {
   ) async {
     final outcome = _operationOutcome(failure);
     try {
+      final authoritative =
+          await localMedia.findUploadOperationById(
+            scope: scope,
+            operationId: operation.id,
+          ) ??
+          operation;
       await localMedia.updateUploadOperation(
-        operation,
+        authoritative,
         scope: scope,
-        attemptCount: operation.attemptCount + 1,
+        attemptCount: authoritative.attemptCount + 1,
         attemptOutcome: outcome,
         recoveryRequired: outcome == OperationAttemptOutcome.uncertain,
         failureCode: failure.code,
         failureStatus: failure.status,
         failureMessage: failure.message,
       );
-    } catch (_) {}
+    } catch (error) {
+      _publish(
+        SubmissionState(
+          lifecycle: SubmissionLifecycleState.reconciliationRequired,
+          assetId: operation.assetId,
+          meetingId: operation.meetingId,
+          uploadOperation: operation,
+          failure: error,
+          message: 'The local upload failure could not be persisted.',
+          sessionScope: scope,
+        ),
+      );
+      rethrow;
+    }
   }
 
   Future<void> _recordProcessingFailure(
@@ -815,25 +970,52 @@ class SubmissionCoordinator extends ChangeNotifier {
   ) async {
     final outcome = _operationOutcome(failure);
     try {
+      final authoritative =
+          await localMedia.findProcessingOperationById(
+            scope: scope,
+            operationId: operation.id,
+          ) ??
+          operation;
       await localMedia.updateProcessingOperation(
-        operation,
+        authoritative,
         scope: scope,
-        attemptCount: operation.attemptCount + 1,
+        attemptCount: authoritative.attemptCount + 1,
         attemptOutcome: outcome,
         recoveryRequired: outcome == OperationAttemptOutcome.uncertain,
         failureCode: failure.code,
         failureStatus: failure.status,
         failureMessage: failure.message,
       );
-    } catch (_) {}
+    } catch (error) {
+      _publish(
+        SubmissionState(
+          lifecycle: SubmissionLifecycleState.reconciliationRequired,
+          assetId: 'remote:${operation.sourceMediaId ?? operation.id}',
+          meetingId: operation.meetingId,
+          processingOperation: operation,
+          failure: error,
+          message: 'The local processing failure could not be persisted.',
+          sessionScope: scope,
+        ),
+      );
+      rethrow;
+    }
   }
 
   Future<T> _withTransientRetries<T>(
     Future<T> Function() action, {
     required String phase,
+    UploadCancellationToken? cancellationToken,
   }) async {
     var attempt = 0;
     while (true) {
+      if (cancellationToken?.isCancelled == true) {
+        throw const ApiFailure(
+          0,
+          'UPLOAD_CANCELLED',
+          'Submission was cancelled.',
+        );
+      }
       try {
         return await action();
       } catch (error) {
@@ -844,7 +1026,27 @@ class SubmissionCoordinator extends ChangeNotifier {
         final delay = retryAfter != null && retryAfter > exponential
             ? retryAfter
             : exponential;
-        await _delay(delay);
+        if (delay > const Duration(seconds: 30)) {
+          throw const ApiFailure(
+            429,
+            'RETRY_DEFERRED',
+            'The server requested a retry outside the foreground retry budget.',
+          );
+        }
+        if (cancellationToken == null) {
+          await _delay(delay);
+        } else {
+          final delayed = _delay(delay);
+          final cancelled = cancellationToken.whenCancelled.then<void>((_) {});
+          await Future.any<void>(<Future<void>>[delayed, cancelled]);
+          if (cancellationToken.isCancelled) {
+            throw const ApiFailure(
+              0,
+              'UPLOAD_CANCELLED',
+              'Submission was cancelled.',
+            );
+          }
+        }
         attempt++;
       }
     }
@@ -899,6 +1101,9 @@ class SubmissionCoordinator extends ChangeNotifier {
     final failure = _asApiFailure(error);
     if (failure.code == 'UPLOAD_CANCELLED') {
       return SubmissionLifecycleState.cancelled;
+    }
+    if (failure.code == 'RETRY_DEFERRED') {
+      return SubmissionLifecycleState.waitingForConnectivity;
     }
     if (failure.status == 401 || failure.status == 403) {
       return SubmissionLifecycleState.authorizationConflict;
@@ -965,11 +1170,53 @@ class SubmissionCoordinator extends ChangeNotifier {
     MeetingCapabilities? capabilities,
     MeetingOperation operation,
   ) {
-    if (capabilities != null && !capabilities.allows(operation)) {
+    if (capabilities == null || !capabilities.allows(operation)) {
       throw const ApiFailure(
         403,
         'MEDIA_CAPABILITY_REQUIRED',
         'The current meeting capability does not allow this media operation.',
+      );
+    }
+  }
+
+  void _requireCapabilityOrResolver(
+    MeetingCapabilities? capabilities,
+    MeetingOperation operation,
+  ) {
+    if (capabilityResolver == null) {
+      _requireCapability(capabilities, operation);
+    }
+  }
+
+  Future<void> _requireCurrentCapability(
+    AuthenticatedSessionScope scope,
+    String meetingId,
+    MeetingOperation operation,
+    MeetingCapabilities? fallback,
+  ) async {
+    final resolver = capabilityResolver;
+    if (resolver == null) {
+      _requireCapability(fallback, operation);
+      return;
+    }
+    final current = await resolver(meetingId, scope);
+    if (current == null || !current.capabilities.allows(operation)) {
+      throw const ApiFailure(
+        403,
+        'MEDIA_CAPABILITY_REQUIRED',
+        'The current meeting capability does not allow this media operation.',
+      );
+    }
+  }
+
+  void _checkWorkflow(AuthenticatedSessionScope scope, String assetId) {
+    api.requireCurrentAuthenticatedSession(scope);
+    if (_workflowCancellation[_activeKey(scope, assetId)]?.isCancelled ==
+        true) {
+      throw const ApiFailure(
+        0,
+        'UPLOAD_CANCELLED',
+        'Submission was cancelled.',
       );
     }
   }
@@ -979,25 +1226,48 @@ class SubmissionCoordinator extends ChangeNotifier {
     for (final entry in _states.entries.toList()) {
       final scope = entry.value.sessionScope;
       if (scope != null && !api.isCurrentAuthenticatedSession(scope)) {
-        _publish(
-          entry.value.copyWith(
-            lifecycle: SubmissionLifecycleState.authorizationConflict,
-            message: 'The authenticated session changed.',
-          ),
-        );
+        _states.remove(entry.key);
       }
     }
-    for (final token in _cancellation.values) {
-      token.cancel();
+    for (final entry in _cancellation.entries.toList()) {
+      final separator = entry.key.indexOf('\u0000');
+      final scopeKey = separator < 0
+          ? entry.key
+          : entry.key.substring(0, separator);
+      final currentScope = api.authenticatedSessionScope;
+      if (currentScope == null || _scopeKey(currentScope) != scopeKey) {
+        entry.value.cancel();
+      }
+    }
+    for (final entry in _workflowCancellation.entries.toList()) {
+      final separator = entry.key.indexOf('\u0000');
+      final scopeKey =
+          separator < 0 ? entry.key : entry.key.substring(0, separator);
+      final currentScope = api.authenticatedSessionScope;
+      if (currentScope == null || _scopeKey(currentScope) != scopeKey) {
+        entry.value.cancel();
+      }
     }
   }
 
   SubmissionState _publish(SubmissionState value) {
     if (_disposed) return value;
-    _states[value.assetId] = value;
+    final scope = value.sessionScope;
+    if (scope == null || !api.isCurrentAuthenticatedSession(scope))
+      return value;
+    _states[_stateKey(scope, value.assetId)] = value;
     notifyListeners();
     return value;
   }
+
+  String _scopeKey(AuthenticatedSessionScope scope) =>
+      '${scope.deploymentScope}\u0000${scope.userId}\u0000${scope.lifecycleEpoch}';
+
+  String _activeKey(AuthenticatedSessionScope scope, String assetId) =>
+      '${_scopeKey(scope)}\u0000$assetId';
+
+  String _stateKey(AuthenticatedSessionScope scope, String assetId) =>
+      _activeKey(scope, assetId);
 
   static String _newKey() {
     final random = Random.secure();
@@ -1016,6 +1286,10 @@ class SubmissionCoordinator extends ChangeNotifier {
       token.cancel();
     }
     _cancellation.clear();
+    for (final token in _workflowCancellation.values) {
+      token.cancel();
+    }
+    _workflowCancellation.clear();
     super.dispose();
   }
 }

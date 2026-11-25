@@ -24,12 +24,12 @@ class RecordingPage extends StatefulWidget {
     required this.enabled,
     this.capabilities,
     this.meetingStatus,
-    this.localMedia,
-    this.mediaRepository,
-    this.processingRepository,
-    this.recordingCoordinator,
-    this.submissionCoordinator,
-    this.processingManager,
+    required this.localMedia,
+    required this.mediaRepository,
+    required this.processingRepository,
+    required this.recordingCoordinator,
+    required this.submissionCoordinator,
+    required this.processingManager,
   });
 
   final ApiClient api;
@@ -37,12 +37,12 @@ class RecordingPage extends StatefulWidget {
   final bool enabled;
   final MeetingCapabilities? capabilities;
   final MeetingStatus? meetingStatus;
-  final LocalMediaRepository? localMedia;
-  final MediaRepository? mediaRepository;
-  final ProcessingRepository? processingRepository;
-  final RecordingCoordinator? recordingCoordinator;
-  final SubmissionCoordinator? submissionCoordinator;
-  final ProcessingManager? processingManager;
+  final LocalMediaRepository localMedia;
+  final MediaRepository mediaRepository;
+  final ProcessingRepository processingRepository;
+  final RecordingCoordinator recordingCoordinator;
+  final SubmissionCoordinator submissionCoordinator;
+  final ProcessingManager processingManager;
 
   @override
   State<RecordingPage> createState() => _RecordingPageState();
@@ -54,9 +54,7 @@ class _RecordingPageState extends State<RecordingPage> {
   late final RecordingCoordinator recording;
   late final SubmissionCoordinator submissions;
   late final ProcessingManager processingManager;
-  late final bool ownsRecording;
-  late final bool ownsSubmission;
-  late final bool ownsProcessingManager;
+  late final ProcessingObservation observation;
 
   List<LocalMediaAsset> assets = <LocalMediaAsset>[];
   LocalMediaAsset? selectedAsset;
@@ -68,40 +66,18 @@ class _RecordingPageState extends State<RecordingPage> {
   void initState() {
     super.initState();
     sessionScope = widget.api.requireAuthenticatedSessionScope();
-    localMedia = widget.localMedia ?? LocalMediaRepository.lazyDefault();
-    ownsRecording = widget.recordingCoordinator == null;
-    ownsSubmission = widget.submissionCoordinator == null;
-    ownsProcessingManager = widget.processingManager == null;
-    recording =
-        widget.recordingCoordinator ??
-        RecordingCoordinator(api: widget.api, localMedia: localMedia);
-    submissions =
-        widget.submissionCoordinator ??
-        SubmissionCoordinator(
-          api: widget.api,
-          localMedia: localMedia,
-          mediaRepository:
-              widget.mediaRepository ?? MediaRepository(api: widget.api),
-          processingRepository:
-              widget.processingRepository ??
-              ProcessingRepository(api: widget.api),
-        );
-    processingManager =
-        widget.processingManager ??
-        ProcessingManager(
-          api: widget.api,
-          mediaRepository:
-              widget.mediaRepository ?? MediaRepository(api: widget.api),
-          processingRepository:
-              widget.processingRepository ??
-              ProcessingRepository(api: widget.api),
-          localMedia: localMedia,
-        );
+    localMedia = widget.localMedia;
+    recording = widget.recordingCoordinator;
+    submissions = widget.submissionCoordinator;
+    processingManager = widget.processingManager;
     recording.addListener(_changed);
     submissions.addListener(_changed);
     processingManager.addListener(_changed);
     unawaited(_load());
-    processingManager.startObserving(widget.meetingId, scope: sessionScope);
+    observation = processingManager.startObserving(
+      widget.meetingId,
+      scope: sessionScope,
+    );
   }
 
   Future<void> _load() async {
@@ -238,14 +214,10 @@ class _RecordingPageState extends State<RecordingPage> {
 
   @override
   void dispose() {
-    processingManager.stopObserving(widget.meetingId);
+    observation.dispose();
     recording.removeListener(_changed);
     submissions.removeListener(_changed);
     processingManager.removeListener(_changed);
-    if (ownsRecording) recording.dispose();
-    if (ownsSubmission) submissions.dispose();
-    if (ownsProcessingManager) processingManager.dispose();
-    if (widget.localMedia == null) localMedia.close();
     super.dispose();
   }
 

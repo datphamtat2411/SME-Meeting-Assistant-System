@@ -523,8 +523,6 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
                       _ => ProcessingTimelinePanel(
                         api: widget.api,
                         meetingId: snapshot.meeting.id,
-                        processingRepository: widget.dependencies.processing,
-                        localMedia: widget.dependencies.localMedia,
                         processingManager:
                             widget.dependencies.processingManager,
                         canRetry: mediaCapabilities.canRetryProcessing,
