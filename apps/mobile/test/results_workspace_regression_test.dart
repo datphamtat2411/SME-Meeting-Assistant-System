@@ -419,9 +419,8 @@ void main() {
                   context: context,
                   workspace: workspace,
                   epoch: workspace.reviewEpoch,
-                  builder: (dialog) => const AlertDialog(
-                    content: Text('Protected draft'),
-                  ),
+                  builder: (dialog) =>
+                      const AlertDialog(content: Text('Protected draft')),
                 );
               },
               child: const Text('Open protected dialog'),
@@ -509,10 +508,7 @@ void main() {
     addTearDown(deps.dispose);
     await tester.pumpWidget(
       MaterialApp(
-        home: MeetingDetailPage(
-          dependencies: deps,
-          meetingId: testMeetingId,
-        ),
+        home: MeetingDetailPage(dependencies: deps, meetingId: testMeetingId),
       ),
     );
     await tester.pumpAndSettle();
@@ -531,13 +527,10 @@ void main() {
     expect(find.byType(ResultsPanel), findsNothing);
     expect(workspace.mutationBusy(ResultsMutationGroup.summary), isTrue);
     pending.complete(
-      await meetingApiSuccess(
-        {
-          'meetingId': testMeetingId,
-          'processingJobId': '11111111-1111-4111-8111-111111111111',
-        },
-        status: 202,
-      ),
+      await meetingApiSuccess({
+        'meetingId': testMeetingId,
+        'processingJobId': '11111111-1111-4111-8111-111111111111',
+      }, status: 202),
     );
     await tester.pump();
     await command;

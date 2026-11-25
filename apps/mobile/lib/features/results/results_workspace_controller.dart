@@ -741,10 +741,7 @@ class ResultsWorkspaceController extends ChangeNotifier {
                 return;
               }
               if (failure.status == 404) {
-                await _verifyAuthorization(
-                  absentKind: kind,
-                  failure: failure,
-                );
+                await _verifyAuthorization(absentKind: kind, failure: failure);
                 return;
               } else {
                 write(
