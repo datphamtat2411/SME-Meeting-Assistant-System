@@ -373,13 +373,13 @@ PagedCollection<MeetingDecision> _decisionPage(MeetingDecision decision) =>
     );
 
 void main() {
-  test('decision command validates canonical response identity and status', () async {
+  test('decision command validates response identity and status', () async {
     var returnedId = 'wrong-decision';
     var returnedStatus = 'REJECTED';
     final client = MeetingTestHttpClient((request) async {
       expect(request.method, 'POST');
       expect(request.url.path, endsWith('/decisions/decision-1/reject'));
-      expect(request.headers['If-Match'], '"decision-reviewed"');
+      expect(request.headers['if-match'], '"decision-reviewed"');
       return meetingApiSuccess(
         {
           'id': returnedId,
