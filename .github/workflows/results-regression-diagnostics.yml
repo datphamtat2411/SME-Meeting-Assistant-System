@@ -1,0 +1,60 @@
+name: Results regression diagnostics
+
+on:
+  push:
+    branches:
+      - mobile/module-meeting-results
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    defaults:
+      run:
+        working-directory: apps/mobile
+    env:
+      CI: true
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Read the committed Flutter SDK pin
+        id: flutter-pin
+        run: |
+          version="$(python3 - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+
+          version = json.loads(Path(".fvmrc").read_text()).get("flutter")
+          if not isinstance(version, str) or not re.fullmatch(r"\d+\.\d+\.\d+", version):
+              raise SystemExit("apps/mobile/.fvmrc must contain a stable Flutter version.")
+          print(version)
+          PY
+          )"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ steps.flutter-pin.outputs.version }}
+          channel: stable
+          cache: true
+
+      - name: Resolve committed dependencies
+        run: flutter pub get --enforce-lockfile
+      - name: Emit formatter diff
+        run: |
+          dart format test/results_workspace_regression_test.dart
+          echo 'RESULTS_FORMAT_DIFF_BEGIN'
+          git diff --no-color -- test/results_workspace_regression_test.dart
+          echo 'RESULTS_FORMAT_DIFF_END'
+      - name: Analyze formatted source
+        run: flutter analyze
+      - name: Run the blocking widget regression
+        run: flutter test test/results_workspace_regression_test.dart --plain-name 'Meeting Detail keeps pending Results commands across tabs' --reporter=expanded
