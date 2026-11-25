@@ -1,0 +1,38 @@
+- generic [ref=f4e2] [box=0,0,390,844]:
+  - generic [ref=f4e7] [box=32,168,326,508]:
+    - generic [ref=f4e8] [box=32,200,326,28]:
+      - img "SME Meeting Assistant" [ref=f4e9] [box=71,202,24,24]
+      - heading "SME Meeting Assistant" [level=1] [ref=f4e11] [box=103,200,216,28]
+    - generic [ref=f4e12] [box=32,244,326,400]:
+      - generic [ref=f4e13] [box=33,269,324,74]:
+        - generic [ref=f4e14] [box=57,269,276,28]: Sign in
+        - generic [ref=f4e15] [box=57,303,276,40]: Enter your email and password below to log into your account.
+      - generic [ref=f4e17] [box=57,359,276,184]:
+        - generic [ref=f4e18] [box=57,359,276,58]:
+          - generic [ref=f4e19] [box=57,359,276,14]: Email
+          - textbox "Email" [ref=f4e20] [box=57,381,276,36]:
+            - /placeholder: name@example.com
+        - generic [ref=f4e21] [box=57,429,276,58]:
+          - generic [ref=f4e22] [box=57,429,276,14]: Password
+          - generic [ref=f4e23] [box=57,451,276,36]:
+            - textbox "Password" [ref=f4e24] [box=57,451,276,36]:
+              - /placeholder: "********"
+            - button "Show password" [ref=f4e25] [cursor=pointer] [box=305,457,24,24]
+          - link "Forgot password?" [ref=f4e27] [cursor=pointer] [box=213,427,120,20]:
+            - /url: /forgot-password
+        - button "Sign in" [ref=f4e28] [cursor=pointer] [box=57,507,276,36]
+      - paragraph [ref=f4e30] [box=57,559,276,60]:
+        - text: By clicking sign in, you agree to our
+        - link "Terms of Service" [ref=f4e31] [cursor=pointer] [box=137,580,113,17]:
+          - /url: /terms
+        - text: and
+        - link "Privacy Policy" [ref=f4e32] [cursor=pointer] [box=147,600,92,17]:
+          - /url: /privacy
+        - text: .
+  - region "Notifications alt+T" [box=0,844,390,0]
+  - button "Open Tanstack query devtools" [ref=f4e83] [cursor=pointer] [box=16,788,40,40]
+  - generic [box=0,844,390,0]:
+    - contentinfo [box=0,844,390,0]:
+      - button "Open TanStack Router Devtools" [ref=f4e132] [cursor=pointer] [box=234,806,148,30]:
+        - generic [ref=f4e204] [box=269,812,1,18]: "-"
+        - generic [ref=f4e205] [box=278,815,95,12]: TanStack Router
