@@ -78,6 +78,37 @@ void main() {
     await coordinator.stop();
   });
 
+  test('final capture authorization rejects an ended meeting', () async {
+    final fixture = await _Fixture.create();
+    addTearDown(fixture.dispose);
+    final capture = _ControlledCapture();
+    var resolutions = 0;
+    final coordinator = fixture.coordinator(
+      capture,
+      capabilityResolver: (meetingId, scope) async {
+        resolutions++;
+        return RecordingAuthorizationContext(
+          capabilities: fixture.capabilities,
+          status: resolutions == 1
+              ? MeetingStatus.inProgress
+              : MeetingStatus.ended,
+        );
+      },
+    );
+    addTearDown(coordinator.dispose);
+
+    await expectLater(
+      coordinator.start(
+        meetingId: testMeetingId,
+        capabilities: fixture.capabilities,
+        meetingStatus: MeetingStatus.inProgress,
+      ),
+      throwsA(isA<RecordingEligibilityException>()),
+    );
+    expect(resolutions, 2);
+    expect(capture.startCalls, 0);
+  });
+
   test(
     'live authorization also gates import instead of stale capabilities',
     () async {

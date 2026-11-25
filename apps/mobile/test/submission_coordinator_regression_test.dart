@@ -228,6 +228,108 @@ void main() {
     },
   );
 
+  for (final checkpoint in <UploadOperationCheckpoint>[
+    UploadOperationCheckpoint.intentConfirmed,
+    UploadOperationCheckpoint.binaryTransferConfirmed,
+  ]) {
+    test('resume reconciles $checkpoint without local audio', () async {
+      final client = MeetingTestHttpClient((request) async {
+        if (request.method == 'GET' &&
+            request.url.path.endsWith('/media/$testMediaId')) {
+          return meetingApiSuccess(_availableMediaJson());
+        }
+        throw StateError('Unexpected request ${request.url.path}');
+      });
+      final api = createMeetingTestApi(client);
+      await signInMeetingTestApi(api);
+      final directory = await Directory.systemTemp.createTemp('sme-resume-');
+      final database = await LocalMediaDatabase.open(
+        databasePath: '${directory.path}/media.db',
+        databaseFactory: databaseFactoryFfi,
+      );
+      final repository = LocalMediaRepository(
+        persistence: LocalMediaPersistence(database),
+        storage: ManagedMediaStorage(
+          root: Directory('${directory.path}/managed'),
+        ),
+      );
+      final coordinator = SubmissionCoordinator(
+        api: api,
+        localMedia: repository,
+        mediaRepository: MediaRepository(api: api),
+        processingRepository: ProcessingRepository(api: api),
+      );
+      addTearDown(() async {
+        coordinator.dispose();
+        await repository.dispose();
+        await directory.delete(recursive: true);
+        api.dispose();
+      });
+
+      final scope = api.requireAuthenticatedSessionScope();
+      final source = File('${directory.path}/meeting.wav')
+        ..writeAsBytesSync(<int>[1, 2, 3]);
+      final asset = await repository.rememberSourceFile(
+        scope: scope,
+        meetingId: testMeetingId,
+        source: source,
+        sourceType: LocalMediaSourceType.recording,
+        originalFilename: 'meeting.wav',
+        contentType: 'audio/wav',
+        expectedSizeBytes: 3,
+      );
+      final operation = await repository.beginUploadOperation(
+        scope: scope,
+        asset: asset,
+        idempotencyKey: 'remote-first-resume',
+      );
+      await repository.updateUploadOperation(
+        operation,
+        scope: scope,
+        checkpoint: checkpoint,
+        remoteMediaId: testMediaId,
+        confirmedBytes:
+            checkpoint == UploadOperationCheckpoint.binaryTransferConfirmed
+            ? 3
+            : 0,
+        attemptCount: 1,
+        attemptOutcome: OperationAttemptOutcome.succeeded,
+      );
+      await repository.discard(scope: scope, assetId: asset.id);
+      final capabilities = MeetingCapabilityPolicy.evaluate(
+        callerId: testUserId,
+        meeting: Meeting.fromJson(meetingTestJson(status: 'ENDED')),
+      );
+
+      final result = await coordinator.resume(
+        operationId: operation.id,
+        scope: scope,
+        capabilities: capabilities,
+        admitProcessing: false,
+      );
+
+      expect(result.lifecycle, SubmissionLifecycleState.mediaAvailable);
+      expect(result.media?.id, testMediaId);
+      expect(result.uploadOperation?.id, operation.id);
+      final persisted = await repository.findUploadOperationById(
+        scope: scope,
+        operationId: operation.id,
+      );
+      expect(
+        persisted?.checkpoint,
+        UploadOperationCheckpoint.finalizationConfirmed,
+      );
+      expect(persisted?.idempotencyKey, operation.idempotencyKey);
+      expect(persisted?.confirmedBytes, 3);
+      expect(
+        client.requests
+            .where((request) => request.url.path.contains('/media/'))
+            .map((request) => request.method),
+        <String>['GET'],
+      );
+    });
+  }
+
   test(
     'workspace recovery projects durable upload operations before retrying',
     () async {
@@ -307,7 +409,8 @@ Map<String, dynamic> _availableMediaJson({String id = testMediaId}) =>
       'contentType': 'audio/wav',
       'sizeBytes': 3,
       'durationMs': 1000,
-      'sha256': 'a' * 64,
+      'sha256':
+          '039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81',
       'createdAt': '2026-11-24T12:00:00Z',
       'availableAt': '2026-11-24T12:01:00Z',
       'failureCode': null,

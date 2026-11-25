@@ -384,6 +384,25 @@ class LocalMediaRepository {
     });
   }
 
+  /// Reads durable metadata without requiring the managed bytes to exist.
+  Future<LocalMediaAsset> findAssetMetadata({
+    required AuthenticatedSessionScope scope,
+    required String assetId,
+    required String meetingId,
+  }) async {
+    _requireScope(scope.deploymentScope, scope.userId);
+    _validateIdentifier(meetingId, 'meetingId');
+    final asset = await (await _persistence()).findAsset(
+      id: assetId,
+      deploymentScope: scope.deploymentScope,
+      ownerUserId: scope.userId,
+    );
+    if (asset == null || asset.meetingId != meetingId) {
+      throw const LocalMediaUnavailableException();
+    }
+    return asset;
+  }
+
   Future<LocalMediaAsset> findReadyAsset({
     required AuthenticatedSessionScope scope,
     required String assetId,

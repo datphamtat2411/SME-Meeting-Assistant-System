@@ -599,6 +599,7 @@ class RecordingCoordinator extends ChangeNotifier with WidgetsBindingObserver {
       api.requireCurrentAuthenticatedSession(scope);
       await _refreshAuthorization(scope, meetingId: _activeMeetingId!);
       _requireCaptureAttemptActive(scope);
+      _validateStartEligibility(_activeCapabilities!, _activeMeetingStatus!);
       _nativeStartAttempted = true;
       await _capture.start(
         const RecordConfig(
