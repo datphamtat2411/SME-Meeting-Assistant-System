@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { CoreApiError, coreApi } from '@/lib/core-api'
-import { requestProcessing, retryProcessing } from './processing-api'
+import {
+  requestProcessing,
+  retryProcessing,
+  selectProcessingAttempt,
+} from './processing-api'
 
 const meetingId = '11111111-1111-4111-8111-111111111111'
 const mediaId = '22222222-2222-4222-8222-222222222222'
@@ -236,5 +240,32 @@ describe('processing operation idempotency', () => {
       })
     ).rejects.toMatchObject({ code: 'PROCESSING_RETRY_UNCERTAIN' })
     expect(post).toHaveBeenCalledOnce()
+  })
+})
+
+describe('processing attempt selection', () => {
+  it('promotes one active attempt but does not guess between concurrent attempts', () => {
+    const running = jobWith({ status: 'RUNNING' })
+    const second = jobWith({
+      id: secondJobId,
+      status: 'QUEUED',
+    })
+
+    expect(selectProcessingAttempt([running])).toEqual(running)
+    expect(selectProcessingAttempt([running, second])).toBeUndefined()
+    expect(selectProcessingAttempt([running, second], secondJobId)).toEqual(
+      second
+    )
+  })
+
+  it('promotes a sole terminal attempt and leaves multiple history ambiguous', () => {
+    const completed = jobWith({ status: 'COMPLETED' })
+    const failed = jobWith({
+      id: secondJobId,
+      status: 'FAILED',
+    })
+
+    expect(selectProcessingAttempt([completed])).toEqual(completed)
+    expect(selectProcessingAttempt([completed, failed])).toBeUndefined()
   })
 })

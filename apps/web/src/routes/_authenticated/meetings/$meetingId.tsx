@@ -1,4 +1,5 @@
 import { createFileRoute, Outlet, useMatchRoute } from '@tanstack/react-router'
+import { MeetingSessionProvider } from '@/features/meetings/media/meeting-session-context'
 import { MeetingWorkspacePage } from '@/features/meetings/meeting-workspace'
 import {
   meetingWorkspaceSectionSchema,
@@ -31,14 +32,20 @@ function MeetingRoute() {
     })
   }
 
-  return isLiveRoute ? (
-    <Outlet />
-  ) : (
-    <MeetingWorkspacePage
-      key={meetingId}
-      meetingId={meetingId}
-      section={search.section ?? meetingWorkspaceSectionSchema.enum.overview}
-      onSectionChange={changeSection}
-    />
+  return (
+    <MeetingSessionProvider key={meetingId} meetingId={meetingId}>
+      {isLiveRoute ? (
+        <Outlet />
+      ) : (
+        <MeetingWorkspacePage
+          key={meetingId}
+          meetingId={meetingId}
+          section={
+            search.section ?? meetingWorkspaceSectionSchema.enum.overview
+          }
+          onSectionChange={changeSection}
+        />
+      )}
+    </MeetingSessionProvider>
   )
 }

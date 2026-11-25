@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
+import { MediaUploadError } from './media-api'
 import { RecordingPanel } from './recording-panel'
 
 const mediaMocks = vi.hoisted(() => ({
@@ -199,6 +200,39 @@ describe('RecordingPanel', () => {
       .toBeInTheDocument()
     expect(track.stop).toHaveBeenCalled()
     expect(mediaMocks.uploadMeetingFile).not.toHaveBeenCalled()
+  })
+
+  it('allows an explicit retry when the upload intent outcome is uncertain', async () => {
+    mediaMocks.uploadMeetingFile
+      .mockRejectedValueOnce(
+        new MediaUploadError('intent timeout', { outcome: 'uncertain' })
+      )
+      .mockResolvedValueOnce({
+        id: '22222222-2222-4222-8222-222222222222',
+        status: 'AVAILABLE',
+      })
+    installRecorder()
+    const screen = await renderPanel()
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Start recording' })
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Stop recording' })
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Submit recording' })
+    )
+
+    await expect
+      .element(screen.getByRole('button', { name: 'Retry submission' }))
+      .toBeEnabled()
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Retry submission' })
+    )
+    await expect
+      .poll(() => mediaMocks.uploadMeetingFile.mock.calls.length)
+      .toBe(2)
   })
 
   it('releases tracks when permission resolves after genuine unmount', async () => {

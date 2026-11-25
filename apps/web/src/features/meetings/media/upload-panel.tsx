@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { FileAudio, UploadCloud } from 'lucide-react'
+import { useQuery } from '@tanstack/react-query'
+import { FileAudio, Play, UploadCloud } from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -10,24 +10,15 @@ import {
   RequestError,
   RequestLoading,
 } from '@/components/request-state'
+import { meetingMediaQuery, type MeetingMedia } from './media-api'
 import {
-  fetchMediaCapability,
-  meetingMediaQuery,
-  reconcileMeetingMedia,
-  requestMediaAccess,
-  type MediaUploadPhase,
-  type MeetingMedia,
-  MediaUploadError,
-  uploadMeetingFile,
-  validateMeetingAudioFile,
-} from './media-api'
+  MeetingSessionBoundary,
+  useMeetingSession,
+} from './meeting-session-context'
 
-type UploadVariables = {
-  file: File
-  idempotencyKey: string
-}
-
-function phaseLabel(phase: MediaUploadPhase | null): string | null {
+function phaseLabel(
+  phase: ReturnType<typeof useMeetingSession>['importedMedia']['phase']
+): string | null {
   switch (phase) {
     case 'intent-created':
       return 'Upload intent created.'
@@ -48,10 +39,6 @@ function phaseLabel(phase: MediaUploadPhase | null): string | null {
   }
 }
 
-function errorMessage(error: unknown): string | undefined {
-  return error instanceof Error ? error.message : undefined
-}
-
 export function UploadPanel({
   meetingId,
   canSubmitMedia,
@@ -59,176 +46,74 @@ export function UploadPanel({
   meetingId: string
   canSubmitMedia: boolean
 }) {
-  const qc = useQueryClient()
-  const canSubmitMediaRef = useRef(canSubmitMedia)
-  useEffect(() => {
-    canSubmitMediaRef.current = canSubmitMedia
-  }, [canSubmitMedia])
-  const fileInput = useRef<HTMLInputElement>(null)
-  const operation = useRef<{
-    file: File
-    idempotencyKey: string
-  } | null>(null)
-  const [file, setFile] = useState<File | null>(null)
-  const [fileError, setFileError] = useState<string | null>(null)
-  const [uploadPhase, setUploadPhase] = useState<MediaUploadPhase | null>(null)
-  const [uncertainMediaId, setUncertainMediaId] = useState<string | null>(null)
-  const [checkingStatus, setCheckingStatus] = useState(false)
-  const [accessingMediaId, setAccessingMediaId] = useState<string | null>(null)
-  const [playbackUrl, setPlaybackUrl] = useState<string | null>(null)
-  const [playbackFilename, setPlaybackFilename] = useState<string | null>(null)
-  const query = useQuery(meetingMediaQuery(meetingId))
-
-  useEffect(
-    () => () => {
-      if (playbackUrl) URL.revokeObjectURL(playbackUrl)
-    },
-    [playbackUrl]
+  return (
+    <MeetingSessionBoundary meetingId={meetingId}>
+      <UploadPanelContent
+        meetingId={meetingId}
+        canSubmitMedia={canSubmitMedia}
+      />
+    </MeetingSessionBoundary>
   )
+}
 
-  const mutation = useMutation<MeetingMedia, Error, UploadVariables>({
-    mutationFn: ({ file: selectedFile, idempotencyKey }) => {
-      if (!canSubmitMediaRef.current) {
-        throw new Error('Media upload is no longer authorized.')
-      }
-      return uploadMeetingFile(meetingId, selectedFile, 'UPLOAD', {
-        idempotencyKey,
-        onPhase: setUploadPhase,
-      })
-    },
-    onSuccess: (media) => {
-      setUploadPhase('available')
-      setUncertainMediaId(null)
-      operation.current = null
-      setFile(null)
-      setFileError(null)
-      if (fileInput.current) fileInput.current.value = ''
+function UploadPanelContent({
+  meetingId,
+  canSubmitMedia,
+}: {
+  meetingId: string
+  canSubmitMedia: boolean
+}) {
+  const fileInput = useRef<HTMLInputElement>(null)
+  const session = useMeetingSession()
+  const imported = session.importedMedia
+  const playback = session.playback
+  const query = useQueryForMedia(meetingId)
+  const submitting = imported.status === 'submitting'
+  const [checking, setChecking] = useState(false)
+
+  useEffect(() => {
+    if (!imported.file && fileInput.current) fileInput.current.value = ''
+  }, [imported.file])
+
+  function selectFile(next: File | null) {
+    session.selectImportedFile(next)
+  }
+
+  async function submit() {
+    const media = await session.submitImportedMedia(canSubmitMedia)
+    if (media) {
       toast.success('Media is available for processing', {
         description: `${media.originalFilename} was finalized by Core.`,
       })
-      void qc.invalidateQueries({ queryKey: ['meeting-media', meetingId] })
-    },
-    onError: (error) => {
-      const uncertain =
-        error instanceof MediaUploadError && error.outcome === 'uncertain'
-      setUploadPhase(uncertain ? 'reconciling' : null)
-      setUncertainMediaId(
-        uncertain && error instanceof MediaUploadError
-          ? (error.mediaId ?? null)
-          : null
-      )
-      toast.error(uncertain ? 'Upload outcome is uncertain' : 'Upload failed', {
-        description: errorMessage(error),
-      })
-    },
-  })
-
-  function selectFile(next: File | null) {
-    mutation.reset()
-    operation.current = null
-    setUncertainMediaId(null)
-    setUploadPhase(null)
-    setFileError(null)
-    if (!next) {
-      setFile(null)
-      return
+    } else if (!canSubmitMedia) {
+      toast.error('Media upload is no longer authorized.')
+    } else if (imported.error && imported.status === 'failed') {
+      toast.error('Upload failed', { description: imported.error })
     }
-    try {
-      validateMeetingAudioFile(next)
-      setFile(next)
-    } catch (error) {
-      setFile(null)
-      setFileError(errorMessage(error) ?? 'The selected file is not supported.')
-      if (fileInput.current) fileInput.current.value = ''
-    }
-  }
-
-  function createOperationKey(selectedFile: File): string {
-    if (operation.current?.file === selectedFile) {
-      return operation.current.idempotencyKey
-    }
-    const idempotencyKey = crypto.randomUUID()
-    operation.current = { file: selectedFile, idempotencyKey }
-    return idempotencyKey
-  }
-
-  function submit() {
-    if (
-      !canSubmitMediaRef.current ||
-      !file ||
-      mutation.isPending ||
-      uncertainMediaId
-    )
-      return
-    mutation.mutate({
-      file,
-      idempotencyKey: createOperationKey(file),
-    })
   }
 
   async function checkUncertainStatus() {
-    if (!uncertainMediaId || checkingStatus) return
-    setCheckingStatus(true)
-    setUploadPhase('reconciling')
+    if (checking) return
+    setChecking(true)
     try {
-      const media = await reconcileMeetingMedia(meetingId, uncertainMediaId)
-      setUploadPhase('available')
-      setUncertainMediaId(null)
-      operation.current = null
-      setFile(null)
-      if (fileInput.current) fileInput.current.value = ''
-      toast.success('Media is available for processing')
-      void qc.invalidateQueries({ queryKey: ['meeting-media', meetingId] })
-      return media
-    } catch (error) {
-      setUploadPhase('reconciling')
-      toast.error('Media status is not resolved', {
-        description: errorMessage(error),
-      })
+      const media = await session.reconcileImportedMedia()
+      if (media) toast.success('Media is available for processing')
     } finally {
-      setCheckingStatus(false)
-    }
-  }
-
-  function startNewOperation() {
-    operation.current = null
-    setUncertainMediaId(null)
-    setUploadPhase(null)
-    mutation.reset()
-  }
-
-  async function openMedia(media: MeetingMedia) {
-    if (media.status !== 'AVAILABLE' || accessingMediaId) return
-    setAccessingMediaId(media.id)
-    try {
-      const capability = await requestMediaAccess(meetingId, media.id)
-      const blob = await fetchMediaCapability(capability.url)
-      if (typeof URL.createObjectURL !== 'function') {
-        throw new Error('This browser cannot create a temporary playback URL.')
-      }
-      const nextPlaybackUrl = URL.createObjectURL(blob)
-      setPlaybackUrl(nextPlaybackUrl)
-      setPlaybackFilename(media.originalFilename)
-    } catch (error) {
-      toast.error('Cannot access media', {
-        description: errorMessage(error),
-      })
-    } finally {
-      setAccessingMediaId(null)
+      setChecking(false)
     }
   }
 
   const phaseText =
-    mutation.isPending && !uploadPhase
+    submitting && !imported.phase
       ? 'Creating a Core upload intent…'
-      : phaseLabel(uploadPhase)
+      : phaseLabel(imported.phase)
 
   return (
     <Card>
       <CardHeader>
         <CardTitle className='flex items-center gap-2'>
           <FileAudio className='size-5' />
-          Source recordings
+          Import source audio
         </CardTitle>
         <p className='text-sm text-muted-foreground'>
           Original source media is retained for reprocessing. Core must inspect
@@ -242,36 +127,47 @@ export function UploadPanel({
               ref={fileInput}
               type='file'
               accept='.wav,.mp3,.m4a,audio/wav,audio/mpeg,audio/mp4'
-              disabled={mutation.isPending || checkingStatus}
+              disabled={submitting || checking}
               onChange={(event) => selectFile(event.target.files?.[0] ?? null)}
               aria-label='Select WAV, MP3, or AAC M4A audio file'
               className='max-w-full text-sm'
             />
-            {file && (
-              <span className='max-w-full truncate text-sm' title={file.name}>
-                {file.name}
+            {imported.file && (
+              <span
+                className='max-w-full truncate text-sm'
+                title={imported.file.name}
+              >
+                {imported.file.name}
               </span>
             )}
             <Button
-              disabled={!file || mutation.isPending || !!uncertainMediaId}
-              onClick={submit}
+              disabled={
+                !imported.file ||
+                submitting ||
+                Boolean(imported.uncertainMediaId)
+              }
+              onClick={() => void submit()}
             >
               <UploadCloud className='size-4' />
-              {mutation.isPending ? 'Uploading…' : 'Upload and finalize'}
+              {submitting
+                ? 'Uploading…'
+                : imported.status === 'uncertain'
+                  ? 'Retry submission'
+                  : 'Upload and finalize'}
             </Button>
-            {uncertainMediaId && (
+            {imported.uncertainMediaId && (
               <>
                 <Button
                   variant='outline'
-                  disabled={checkingStatus}
+                  disabled={checking}
                   onClick={() => void checkUncertainStatus()}
                 >
-                  {checkingStatus ? 'Checking…' : 'Check upload status'}
+                  {checking ? 'Checking…' : 'Check upload status'}
                 </Button>
                 <Button
                   variant='ghost'
-                  disabled={checkingStatus}
-                  onClick={startNewOperation}
+                  disabled={checking}
+                  onClick={session.startNewImportedSubmission}
                 >
                   Start a new upload
                 </Button>
@@ -279,9 +175,9 @@ export function UploadPanel({
             )}
           </div>
         )}
-        {fileError && canSubmitMedia && (
+        {imported.error && canSubmitMedia && (
           <p role='alert' className='text-sm text-destructive'>
-            {fileError}
+            {imported.error}
           </p>
         )}
         {phaseText && canSubmitMedia && (
@@ -306,55 +202,127 @@ export function UploadPanel({
         ) : query.data.length === 0 ? (
           <RequestEmpty title='No source files uploaded' />
         ) : (
-          query.data.map((media) => (
-            <div
-              key={media.id}
-              className='flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3'
-            >
-              <div className='min-w-0'>
-                <p className='truncate font-medium'>{media.originalFilename}</p>
-                <div className='mt-1 flex items-center gap-2 text-xs text-muted-foreground'>
-                  <Badge variant='outline'>{media.status}</Badge>
-                  <span>{media.sourceType}</span>
-                  <span>
-                    {media.sizeBytes != null
-                      ? (media.sizeBytes / 1048576).toFixed(1) + ' MB'
-                      : ''}
-                  </span>
-                </div>
-                {media.failureCode && (
-                  <p className='mt-1 text-xs text-destructive'>
-                    {media.failureCode}
-                  </p>
-                )}
-              </div>
-              <Button
-                size='sm'
-                variant='outline'
-                disabled={
-                  media.status !== 'AVAILABLE' || accessingMediaId !== null
+          <div className='space-y-3'>
+            {query.data.map((media) => (
+              <MediaRow
+                key={media.id}
+                media={media}
+                isOpening={
+                  playback.isLoading && playback.sourceMediaId === media.id
                 }
-                onClick={() => void openMedia(media)}
+                onPlay={() => void session.playRemoteMedia(media)}
+              />
+            ))}
+          </div>
+        )}
+        {playback.kind !== 'idle' && (
+          <div className='space-y-2 rounded-lg border bg-muted/10 p-3'>
+            <div className='flex items-center justify-between gap-2'>
+              <p className='text-sm font-medium'>
+                {playback.kind === 'local'
+                  ? 'Local preview'
+                  : 'Source playback'}
+                : {playback.filename ?? 'recording'}
+              </p>
+              <Button
+                type='button'
+                size='sm'
+                variant='ghost'
+                onClick={session.stopPlayback}
               >
-                {accessingMediaId === media.id ? 'Opening…' : 'Open'}
+                Stop
               </Button>
             </div>
-          ))
-        )}
-        {playbackUrl && (
-          <div className='space-y-2 rounded-lg border p-3'>
-            <p className='text-sm font-medium'>
-              Playback: {playbackFilename ?? 'source recording'}
-            </p>
-            <audio
-              controls
-              src={playbackUrl}
-              className='w-full'
-              aria-label={`Playback ${playbackFilename ?? 'source recording'}`}
-            />
+            {playback.error ? (
+              <p role='alert' className='text-sm text-destructive'>
+                {playback.error}
+              </p>
+            ) : playback.isLoading ? (
+              <p role='status' className='text-sm text-muted-foreground'>
+                Opening a protected playback resource…
+              </p>
+            ) : playback.objectUrl ? (
+              <audio
+                controls
+                preload='metadata'
+                src={playback.objectUrl}
+                className='w-full'
+                aria-label={`Playback ${playback.filename ?? 'source recording'}`}
+              />
+            ) : null}
           </div>
         )}
       </CardContent>
     </Card>
   )
+}
+
+function MediaRow({
+  media,
+  isOpening,
+  onPlay,
+}: {
+  media: MeetingMedia
+  isOpening: boolean
+  onPlay: () => void
+}) {
+  return (
+    <div className='flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3'>
+      <div className='min-w-0'>
+        <p className='truncate font-medium'>{media.originalFilename}</p>
+        <div className='mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground'>
+          <Badge variant='outline'>{media.status}</Badge>
+          <span>
+            {media.sourceType === 'RECORDING'
+              ? 'Browser recording'
+              : 'Imported file'}
+          </span>
+          <span>{media.contentType}</span>
+          {media.sizeBytes != null && (
+            <span>{(media.sizeBytes / 1048576).toFixed(1)} MB</span>
+          )}
+          {media.durationMs != null && (
+            <span>{formatDuration(media.durationMs)}</span>
+          )}
+          <span>{formatDate(media.createdAt)}</span>
+        </div>
+        {media.failureCode && (
+          <p className='mt-1 text-xs text-destructive'>{media.failureCode}</p>
+        )}
+      </div>
+      <Button
+        size='sm'
+        variant='outline'
+        disabled={media.status !== 'AVAILABLE' || isOpening}
+        onClick={onPlay}
+      >
+        {isOpening ? (
+          'Opening…'
+        ) : (
+          <>
+            <Play className='size-4' /> Play
+          </>
+        )}
+      </Button>
+    </div>
+  )
+}
+
+function useQueryForMedia(meetingId: string) {
+  return useQuery(meetingMediaQuery(meetingId))
+}
+
+function formatDuration(durationMs: number): string {
+  const totalSeconds = Math.floor(durationMs / 1000)
+  return `${Math.floor(totalSeconds / 60)}m ${totalSeconds % 60}s`
+}
+
+function formatDate(value: string): string {
+  const date = new Date(value)
+  return Number.isNaN(date.getTime())
+    ? 'Time unavailable'
+    : new Intl.DateTimeFormat(undefined, {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+      }).format(date)
 }

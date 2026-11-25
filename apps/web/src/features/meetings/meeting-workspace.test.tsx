@@ -622,17 +622,11 @@ describe('MeetingWorkspacePage', () => {
     const retainedPanel = Array.from(
       document.querySelectorAll<HTMLElement>('[data-slot="tabs-content"]')
     ).find((element) => element.textContent?.includes('Record meeting audio'))
-    expect(retainedPanel).toBeDefined()
-    expect(retainedPanel?.hidden).toBe(true)
-    expect(retainedPanel?.getAttribute('aria-hidden')).toBe('true')
-    expect(retainedPanel?.inert).toBe(true)
+    expect(retainedPanel).toBeUndefined()
 
     await userEvent.click(
       screen.getByRole('button', { name: 'Stop recording' })
     )
-    await expect
-      .poll(() => retainedPanel?.textContent ?? '')
-      .toContain('captured (M4A/AAC declaration)')
 
     await userEvent.click(screen.getByRole('tab', { name: 'Recording' }))
     await expect

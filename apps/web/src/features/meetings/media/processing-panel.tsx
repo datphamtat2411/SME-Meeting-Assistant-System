@@ -20,10 +20,15 @@ import {
 import { invalidateMeetingArtifacts } from '../intelligence/query-invalidation'
 import { meetingMediaQuery } from './media-api'
 import {
+  MeetingSessionBoundary,
+  useMeetingSession,
+} from './meeting-session-context'
+import {
   processingJobsQuery,
   requestProcessing,
   retryProcessing,
 } from './processing-api'
+import { presentProcessingStatus } from './processing-status-presentation'
 
 function isUncertainProcessingError(error: unknown): boolean {
   return error instanceof CoreApiError && error.recoveryOutcome === 'uncertain'
@@ -44,8 +49,32 @@ export function ProcessingPanel({
   canAdmitProcessing?: boolean
   canRecoverProcessing?: boolean
 }) {
+  return (
+    <MeetingSessionBoundary meetingId={meetingId}>
+      <ProcessingPanelContent
+        meetingId={meetingId}
+        canManageProcessing={canManageProcessing}
+        canAdmitProcessing={canAdmitProcessing}
+        canRecoverProcessing={canRecoverProcessing}
+      />
+    </MeetingSessionBoundary>
+  )
+}
+
+function ProcessingPanelContent({
+  meetingId,
+  canManageProcessing,
+  canAdmitProcessing,
+  canRecoverProcessing,
+}: {
+  meetingId: string
+  canManageProcessing?: boolean
+  canAdmitProcessing?: boolean
+  canRecoverProcessing?: boolean
+}) {
   const admissionAllowed = canAdmitProcessing ?? canManageProcessing ?? false
   const recoveryAllowed = canRecoverProcessing ?? canManageProcessing ?? false
+  const session = useMeetingSession()
   const admissionAllowedRef = useRef(admissionAllowed)
   const recoveryAllowedRef = useRef(recoveryAllowed)
   useEffect(() => {
@@ -56,23 +85,15 @@ export function ProcessingPanel({
   const media = useQuery(meetingMediaQuery(meetingId))
   const jobs = useQuery({
     ...processingJobsQuery(meetingId),
-    refetchInterval: 7000,
   })
   const [mediaId, setMediaId] = useState('')
   const completed = useRef(new Set<string>())
-  const admissionOperation = useRef<{
-    mediaId: string
-    idempotencyKey: string
-  } | null>(null)
-  const retryOperations = useRef(
-    new Map<string, { idempotencyKey: string; stageCode?: string }>()
+  const [selectedJobId, setSelectedJobId] = useState<string | null>(
+    () => session.selectedProcessingJobId
   )
   const [uncertainAdmissionMediaId, setUncertainAdmissionMediaId] = useState<
     string | null
-  >(null)
-  const [uncertainRetryOperations, setUncertainRetryOperations] = useState<
-    Set<string>
-  >(() => new Set())
+  >(() => session.processingAdmissionUncertainMediaId)
   useEffect(() => {
     for (const job of jobs.data ?? []) {
       if (
@@ -97,24 +118,24 @@ export function ProcessingPanel({
     mutationFn: ({
       selectedMediaId,
       idempotencyKey,
+      reprocessOfJobId,
     }: {
       selectedMediaId: string
       idempotencyKey: string
+      reprocessOfJobId?: string
     }) => {
       if (!admissionAllowedRef.current) {
         throw new Error('Processing admission is no longer authorized.')
       }
-      return requestProcessing(meetingId, selectedMediaId, undefined, {
+      return requestProcessing(meetingId, selectedMediaId, reprocessOfJobId, {
         idempotencyKey,
       })
     },
     onSuccess: (_, variables) => {
-      if (admissionOperation.current?.mediaId === variables.selectedMediaId) {
-        admissionOperation.current = null
-      }
       setUncertainAdmissionMediaId((current) =>
         current === variables.selectedMediaId ? null : current
       )
+      session.markProcessingAdmissionUncertain(null)
       toast.success('Processing job queued')
       refresh()
     },
@@ -122,6 +143,7 @@ export function ProcessingPanel({
       const uncertain = isUncertainProcessingError(e)
       if (uncertain) {
         setUncertainAdmissionMediaId(variables.selectedMediaId)
+        session.markProcessingAdmissionUncertain(variables.selectedMediaId)
       }
       toast.error(
         uncertain
@@ -153,25 +175,20 @@ export function ProcessingPanel({
       return retryProcessing(jobId, stageCode, { idempotencyKey })
     },
     onSuccess: (_, variables) => {
-      retryOperations.current.delete(
-        `${variables.jobId}:${variables.stageCode ?? ''}`
+      session.markProcessingRetryUncertain(
+        `${variables.jobId}:${variables.stageCode ?? ''}`,
+        false
       )
-      setUncertainRetryOperations((current) => {
-        const next = new Set(current)
-        next.delete(`${variables.jobId}:${variables.stageCode ?? ''}`)
-        return next
-      })
       toast.success('Processing retry accepted')
       refresh()
     },
     onError: (e, variables) => {
       const uncertain = isUncertainProcessingError(e)
       if (uncertain) {
-        setUncertainRetryOperations((current) => {
-          const next = new Set(current)
-          next.add(`${variables.jobId}:${variables.stageCode ?? ''}`)
-          return next
-        })
+        session.markProcessingRetryUncertain(
+          `${variables.jobId}:${variables.stageCode ?? ''}`,
+          true
+        )
       }
       toast.error(uncertain ? 'Retry outcome is uncertain' : 'Retry rejected', {
         description: uncertain
@@ -185,21 +202,13 @@ export function ProcessingPanel({
   const available = media.data?.filter((m) => m.status === 'AVAILABLE') ?? []
 
   function createKey(selectedMediaId: string): string {
-    if (admissionOperation.current?.mediaId === selectedMediaId) {
-      return admissionOperation.current.idempotencyKey
-    }
-    const idempotencyKey = crypto.randomUUID()
-    admissionOperation.current = { mediaId: selectedMediaId, idempotencyKey }
-    return idempotencyKey
+    return session.getOperationKey(`processing-admission:${selectedMediaId}`)
   }
 
   function retryKey(jobId: string, stageCode?: string): string {
-    const operationId = `${jobId}:${stageCode ?? ''}`
-    const existing = retryOperations.current.get(operationId)
-    if (existing) return existing.idempotencyKey
-    const idempotencyKey = crypto.randomUUID()
-    retryOperations.current.set(operationId, { idempotencyKey, stageCode })
-    return idempotencyKey
+    return session.getOperationKey(
+      `processing-retry:${jobId}:${stageCode ?? ''}`
+    )
   }
 
   function submitProcessing() {
@@ -216,6 +225,21 @@ export function ProcessingPanel({
     create.mutate({
       selectedMediaId,
       idempotencyKey: createKey(selectedMediaId),
+    })
+  }
+
+  function submitReprocessing(jobId: string, sourceMediaId: string) {
+    if (
+      !admissionAllowedRef.current ||
+      create.isPending ||
+      retry.isPending ||
+      !available.some((mediaItem) => mediaItem.id === sourceMediaId)
+    )
+      return
+    create.mutate({
+      selectedMediaId: sourceMediaId,
+      reprocessOfJobId: jobId,
+      idempotencyKey: session.getOperationKey(`processing-reprocess:${jobId}`),
     })
   }
 
@@ -294,13 +318,33 @@ export function ProcessingPanel({
         ) : (
           <div className='space-y-3'>
             {jobs.data.map((job) => (
-              <div key={job.id} className='space-y-2 rounded-lg border p-3'>
+              <div
+                key={job.id}
+                className={`space-y-2 rounded-lg border p-3 ${
+                  selectedJobId === job.id ? 'border-primary bg-primary/5' : ''
+                }`}
+              >
                 <div className='flex flex-wrap items-center justify-between gap-2'>
-                  <span className='font-medium'>
-                    {job.jobType} · {job.currentStage || 'Pending'}
-                  </span>
-                  <Badge variant='outline'>{job.status}</Badge>
+                  <div>
+                    <span className='font-medium'>
+                      {job.jobType} · {job.currentStage || 'Pending'}
+                    </span>
+                    <p className='text-xs text-muted-foreground'>
+                      Attempt {job.retryCount + 1} · {job.id}
+                    </p>
+                  </div>
+                  <Badge variant='outline'>
+                    {presentProcessingStatus(job.status).label}
+                  </Badge>
                 </div>
+                <p className='text-xs text-muted-foreground'>
+                  Source media: {job.sourceMediaId}
+                </p>
+                {job.reprocessOfJobId && (
+                  <p className='text-xs text-muted-foreground'>
+                    Reprocessing attempt based on {job.reprocessOfJobId}
+                  </p>
+                )}
                 {job.warningSummary && (
                   <p className='text-xs text-amber-600'>{job.warningSummary}</p>
                 )}
@@ -309,7 +353,7 @@ export function ProcessingPanel({
                     {job.errorCode}: {job.errorSummary || 'Processing failed'}
                   </p>
                 )}
-                {uncertainRetryOperations.has(`${job.id}:`) && (
+                {session.isProcessingRetryUncertain(`${job.id}:`) && (
                   <p role='status' className='text-sm text-amber-600'>
                     Retry outcome is uncertain. Check the current job before
                     deciding what to do next.
@@ -325,7 +369,15 @@ export function ProcessingPanel({
                         <span>
                           {stage.stageCode} · attempt {stage.attemptNumber}
                         </span>
-                        <Badge variant='secondary'>{stage.status}</Badge>
+                        <Badge variant='secondary'>
+                          {stage.status === 'COMPLETED'
+                            ? 'Completed'
+                            : stage.status === 'RUNNING'
+                              ? 'Running'
+                              : stage.status === 'FAILED'
+                                ? 'Failed'
+                                : stage.status}
+                        </Badge>
                       </div>
                     ))}
                   </div>
@@ -340,6 +392,41 @@ export function ProcessingPanel({
                     Retry job
                   </Button>
                 )}
+                <Button
+                  size='sm'
+                  variant={selectedJobId === job.id ? 'secondary' : 'ghost'}
+                  onClick={() => {
+                    setSelectedJobId(job.id)
+                    session.selectProcessingJob(job.id)
+                  }}
+                >
+                  {selectedJobId === job.id
+                    ? 'Observing this attempt'
+                    : 'Observe this attempt'}
+                </Button>
+                {job.status === 'FAILED' &&
+                  !job.retryable &&
+                  job.stageRuns.some((stage) => stage.status === 'FAILED') && (
+                    <p className='text-xs text-muted-foreground'>
+                      Core has not projected job-level retry eligibility for
+                      this failed stage.
+                    </p>
+                  )}
+                {admissionAllowed &&
+                  ['COMPLETED', 'COMPLETED_WITH_WARNINGS', 'FAILED'].includes(
+                    job.status
+                  ) && (
+                    <Button
+                      size='sm'
+                      variant='outline'
+                      disabled={create.isPending || retry.isPending}
+                      onClick={() =>
+                        submitReprocessing(job.id, job.sourceMediaId)
+                      }
+                    >
+                      Start new reprocessing attempt
+                    </Button>
+                  )}
               </div>
             ))}
           </div>

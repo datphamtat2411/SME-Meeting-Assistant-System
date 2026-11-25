@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import {
@@ -7,8 +8,10 @@ import {
   Clock3,
   FileText,
   MapPin,
+  Mic,
   RefreshCw,
   Radio,
+  Users,
 } from 'lucide-react'
 import { normalizeCoreApiError } from '@/lib/core-api'
 import { Badge } from '@/components/ui/badge'
@@ -32,6 +35,11 @@ import { MeetingLifecycleActions } from './components/meeting-lifecycle-actions'
 import { MeetingStatusBadge } from './components/meeting-status-badge'
 import { meetingDetailQueryOptions, type MeetingView } from './data/detail-api'
 import { formatMeetingSchedule as formatSchedule } from './data/meeting-schedule-format'
+import {
+  MeetingSessionBoundary,
+  useMeetingSession,
+} from './media/meeting-session-context'
+import { RecordingPanel } from './media/recording-panel'
 
 const presentationTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
 const meetingDateTimeFormatter = new Intl.DateTimeFormat('en-US', {
@@ -41,9 +49,32 @@ const meetingDateTimeFormatter = new Intl.DateTimeFormat('en-US', {
 })
 
 export function LiveMeetingPage({ meetingId }: { meetingId: string }) {
+  return (
+    <MeetingSessionBoundary meetingId={meetingId}>
+      <LiveMeetingContent meetingId={meetingId} />
+    </MeetingSessionBoundary>
+  )
+}
+
+function LiveMeetingContent({ meetingId }: { meetingId: string }) {
   const queryClient = useQueryClient()
+  const session = useMeetingSession()
+  const { recording, stopRecording } = session
   const detailQuery = useQuery(meetingDetailQueryOptions(meetingId))
   const currentUser = queryClient.getQueryData<AuthContext>(currentUserQueryKey)
+  const meetingStatus = detailQuery.data?.meeting.status
+
+  useEffect(() => {
+    if (
+      meetingStatus !== undefined &&
+      meetingStatus !== 'IN_PROGRESS' &&
+      (recording.state === 'requesting-permission' ||
+        recording.state === 'recording' ||
+        recording.state === 'stopping')
+    ) {
+      stopRecording()
+    }
+  }, [meetingStatus, recording.state, stopRecording])
 
   return (
     <>
@@ -70,6 +101,7 @@ export function LiveMeetingPage({ meetingId }: { meetingId: string }) {
           <LiveMeetingDetail
             detail={detailQuery.data}
             currentUserId={currentUser?.userId}
+            currentUserName={currentUser?.displayName}
           />
         )}
       </Main>
@@ -80,9 +112,11 @@ export function LiveMeetingPage({ meetingId }: { meetingId: string }) {
 function LiveMeetingDetail({
   detail,
   currentUserId,
+  currentUserName,
 }: {
   detail: { meeting: MeetingView; etag: string }
   currentUserId?: string
+  currentUserName?: string
 }) {
   const { meeting, etag } = detail
   const isLive = meeting.status === 'IN_PROGRESS'
@@ -102,7 +136,7 @@ function LiveMeetingDetail({
               </h1>
               <p className='mt-2 max-w-3xl text-muted-foreground'>
                 {isLive
-                  ? 'This route manages the authoritative meeting lifecycle. It does not start recording or AI processing.'
+                  ? 'Conduct the meeting here while capture remains an explicit, reviewable operation. Ending the meeting does not submit audio or start processing.'
                   : lifecycleDescription(meeting.status)}
               </p>
             </div>
@@ -140,38 +174,143 @@ function LiveMeetingDetail({
         </div>
       </section>
 
-      <Card className='border-dashed'>
-        <CardContent className='flex flex-col items-center justify-center px-6 py-16 text-center'>
-          <div className='flex size-12 items-center justify-center rounded-full bg-muted'>
-            {isLive ? (
-              <Radio className='size-5 text-emerald-600 dark:text-emerald-400' />
-            ) : meeting.status === 'ENDED' ? (
-              <FileText className='size-5 text-primary' />
-            ) : (
-              <Clock3 className='size-5 text-muted-foreground' />
-            )}
-          </div>
-          <h2 className='mt-4 text-lg font-semibold'>
-            {isLive ? 'Meeting is live' : lifecycleTitle(meeting.status)}
-          </h2>
-          <p className='mt-2 max-w-lg text-sm leading-6 text-muted-foreground'>
-            {isLive
-              ? 'Use End meeting when the authoritative Core API lifecycle should move to ENDED.'
-              : lifecycleDetail(meeting)}
-          </p>
-          {!isLive && (
-            <Button asChild variant='outline' className='mt-6'>
-              <Link
-                to='/meetings/$meetingId'
-                params={{ meetingId: meeting.id }}
-              >
-                <ArrowLeft />
-                Return to the meeting workspace
-              </Link>
-            </Button>
+      <div className='grid gap-6 xl:grid-cols-[minmax(0,1.35fr)_minmax(280px,0.8fr)]'>
+        <div className='space-y-6'>
+          <Card className='overflow-hidden'>
+            <CardHeader className='border-b bg-muted/20'>
+              <div className='flex items-start justify-between gap-4'>
+                <div>
+                  <CardTitle className='flex items-center gap-2'>
+                    <Radio className='size-4 text-emerald-600 dark:text-emerald-400' />
+                    {isLive
+                      ? 'Meeting is live'
+                      : lifecycleTitle(meeting.status)}
+                  </CardTitle>
+                  {!isLive && (
+                    <h2 className='sr-only'>
+                      {lifecycleTitle(meeting.status)}
+                    </h2>
+                  )}
+                  <CardDescription className='mt-1'>
+                    {isLive
+                      ? 'Meeting time and recording time are tracked independently.'
+                      : lifecycleDetail(meeting)}
+                  </CardDescription>
+                </div>
+                <div className='rounded-full bg-background p-2 shadow-sm'>
+                  {isLive ? (
+                    <Mic className='size-5 text-primary' />
+                  ) : (
+                    <Clock3 className='size-5 text-muted-foreground' />
+                  )}
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className='grid gap-4 p-5 sm:grid-cols-3'>
+              <LiveMetric
+                label='Meeting duration'
+                value={
+                  isLive && meeting.startedAt ? (
+                    <LiveElapsed startedAt={Date.parse(meeting.startedAt)} />
+                  ) : meeting.startedAt && meeting.endedAt ? (
+                    formatElapsedBetween(
+                      Date.parse(meeting.startedAt),
+                      Date.parse(meeting.endedAt)
+                    )
+                  ) : (
+                    'Not available'
+                  )
+                }
+              />
+              <LiveMetric
+                label='Scheduled window'
+                value={formatMeetingScheduleValue(meeting)}
+              />
+              <LiveMetric
+                label='Recording'
+                value={
+                  isLive
+                    ? currentUserId === meeting.organizerUserId
+                      ? 'Ready to start'
+                      : 'Organizer controlled'
+                    : 'Review in workspace'
+                }
+              />
+            </CardContent>
+          </Card>
+
+          {isLive && currentUserId === meeting.organizerUserId ? (
+            <RecordingPanel
+              meetingId={meeting.id}
+              canRecordAudio
+              canSubmitMedia
+            />
+          ) : (
+            <Card>
+              <CardContent className='flex items-start gap-3 p-5'>
+                <Mic className='mt-0.5 size-5 text-muted-foreground' />
+                <div>
+                  <p className='font-medium'>
+                    Recording is organizer controlled
+                  </p>
+                  <p className='mt-1 text-sm text-muted-foreground'>
+                    {isLive
+                      ? 'You can follow the live meeting, but only the organizer can capture and submit source audio.'
+                      : 'Return to the meeting workspace to review submitted source media.'}
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
           )}
-        </CardContent>
-      </Card>
+        </div>
+
+        <div className='space-y-6'>
+          <Card>
+            <CardHeader className='border-b'>
+              <CardTitle className='flex items-center gap-2'>
+                <Users className='size-4 text-primary' />
+                Meeting participants
+              </CardTitle>
+              <CardDescription>
+                Participant identities are shown only when supplied by Core.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className='space-y-3 pt-5'>
+              <div className='flex items-center justify-between gap-3 text-sm'>
+                <span className='text-muted-foreground'>Organizer</span>
+                <span className='text-end font-medium'>
+                  {currentUserId === meeting.organizerUserId
+                    ? (currentUserName ?? meeting.organizerUserId)
+                    : meeting.organizerUserId}
+                </span>
+              </div>
+              <p className='text-sm text-muted-foreground'>
+                Remote presence and speaking activity are not provided by the
+                current meeting contract.
+              </p>
+            </CardContent>
+          </Card>
+          {!isLive && (
+            <Card className='border-dashed'>
+              <CardContent className='flex flex-col items-center justify-center px-6 py-8 text-center'>
+                <FileText className='size-6 text-primary' />
+                <p className='mt-3 text-sm leading-6 text-muted-foreground'>
+                  {lifecycleDetail(meeting)}
+                </p>
+                <Button asChild variant='outline' className='mt-5'>
+                  <Link
+                    to='/meetings/$meetingId'
+                    params={{ meetingId: meeting.id }}
+                  >
+                    <ArrowLeft />
+                    Return to the meeting workspace
+                  </Link>
+                </Button>
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      </div>
 
       <LifecycleSummary meeting={meeting} />
     </>
@@ -260,6 +399,51 @@ function formatMeetingScheduleValue(meeting: MeetingView) {
 
 function formatDateTime(value: string) {
   return meetingDateTimeFormatter.format(new Date(value))
+}
+
+function formatElapsedBetween(startedAt: number, endedAt: number): string {
+  if (!Number.isFinite(startedAt) || !Number.isFinite(endedAt)) {
+    return 'Not available'
+  }
+  return formatDuration(Math.max(0, endedAt - startedAt))
+}
+
+function formatDuration(durationMs: number): string {
+  const seconds = Math.floor(durationMs / 1000)
+  const hours = Math.floor(seconds / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  const remainder = seconds % 60
+  return hours > 0
+    ? `${hours}h ${String(minutes).padStart(2, '0')}m`
+    : `${minutes}m ${String(remainder).padStart(2, '0')}s`
+}
+
+function LiveElapsed({ startedAt }: { startedAt: number }) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!Number.isFinite(startedAt)) return
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [startedAt])
+  if (!Number.isFinite(startedAt)) return 'Not available'
+  return formatDuration(Math.max(0, now - startedAt))
+}
+
+function LiveMetric({
+  label,
+  value,
+}: {
+  label: string
+  value: React.ReactNode
+}) {
+  return (
+    <div className='space-y-1'>
+      <p className='text-xs font-medium tracking-wide text-muted-foreground uppercase'>
+        {label}
+      </p>
+      <p className='text-sm font-semibold'>{value}</p>
+    </div>
+  )
 }
 
 function LiveMeetingError({

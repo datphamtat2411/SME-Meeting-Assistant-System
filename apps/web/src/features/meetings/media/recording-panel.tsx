@@ -1,371 +1,123 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
-import { Mic, Square, Upload } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { Mic, Play, Square, Upload } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
-  MediaUploadError,
-  reconcileMeetingMedia,
-  type MediaUploadPhase,
-  uploadMeetingFile,
-} from './media-api'
+  MeetingSessionBoundary,
+  useMeetingSession,
+  type RecordingCaptureState,
+} from './meeting-session-context'
 
-const recordingCandidates = [
-  'audio/mp4;codecs=mp4a.40.2',
-  'audio/mp4;codecs=mp4a.40.5',
-]
-
-export type RecordingStateChange = {
-  recording: boolean
-  stop: () => void
+function formatDuration(durationMs: number): string {
+  const seconds = Math.floor(durationMs / 1000)
+  const minutes = Math.floor(seconds / 60)
+  return `${String(minutes).padStart(2, '0')}:${String(seconds % 60).padStart(
+    2,
+    '0'
+  )}`
 }
 
-function supportedRecordingMimeType(): string | null {
-  if (
-    typeof MediaRecorder === 'undefined' ||
-    typeof MediaRecorder.isTypeSupported !== 'function'
-  ) {
-    return null
-  }
-  return (
-    recordingCandidates.find((candidate) =>
-      MediaRecorder.isTypeSupported(candidate)
-    ) ?? null
-  )
-}
-
-function normalizedMimeType(value: string): string {
-  return value.split(';', 1)[0]?.trim().toLowerCase() ?? ''
-}
-
-function phaseLabel(phase: MediaUploadPhase | null): string | null {
-  switch (phase) {
-    case 'intent-created':
-      return 'Upload intent created.'
-    case 'storage-uploading':
-      return 'Uploading the captured file…'
-    case 'storage-uploaded':
-      return 'Storage upload completed.'
-    case 'finalizing':
-      return 'Core is inspecting and finalizing the recording…'
-    case 'reconciling':
-      return 'Checking the authoritative Core media status…'
+function captureStateLabel(state: RecordingCaptureState): string | null {
+  switch (state) {
+    case 'requesting-permission':
+      return 'Requesting microphone permission…'
+    case 'stopping':
+      return 'Finalizing the local recording…'
+    case 'failed':
+      return 'Recording failed.'
     default:
       return null
   }
 }
 
-export function RecordingPanel({
-  meetingId,
-  canRecordAudio,
-  canSubmitMedia,
-  onRecordingStateChange,
-}: {
+export function RecordingPanel(props: {
   meetingId: string
   canRecordAudio: boolean
   canSubmitMedia: boolean
-  onRecordingStateChange?: (state: RecordingStateChange) => void
 }) {
-  const qc = useQueryClient()
-  const recorder = useRef<MediaRecorder | null>(null)
-  const stream = useRef<MediaStream | null>(null)
-  const releasedStreams = useRef(new WeakSet<MediaStream>())
-  const mounted = useRef(false)
-  const lifecycleGeneration = useRef(0)
-  const permissionRequestGeneration = useRef(0)
-  const activePermissionRequest = useRef<number | null>(null)
-  const operation = useRef<{ file: File; idempotencyKey: string } | null>(null)
-  const [recording, setRecording] = useState(false)
-  const [audio, setAudio] = useState<File | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [uploadPhase, setUploadPhase] = useState<MediaUploadPhase | null>(null)
-  const [uncertainMediaId, setUncertainMediaId] = useState<string | null>(null)
-  const [checkingStatus, setCheckingStatus] = useState(false)
-  const canRecordAudioRef = useRef(canRecordAudio)
-  const canSubmitMediaRef = useRef(canSubmitMedia)
-  useEffect(() => {
-    canRecordAudioRef.current = canRecordAudio
-    canSubmitMediaRef.current = canSubmitMedia
-  }, [canRecordAudio, canSubmitMedia])
+  return (
+    <MeetingSessionBoundary meetingId={props.meetingId}>
+      <RecordingPanelContent {...props} />
+    </MeetingSessionBoundary>
+  )
+}
 
-  function isLifecycleActive(generation: number): boolean {
-    return mounted.current && lifecycleGeneration.current === generation
-  }
-
-  function releaseStream(target: MediaStream | null | undefined) {
-    if (!target) return
-    if (!releasedStreams.current.has(target)) {
-      target.getTracks().forEach((track) => track.stop())
-      releasedStreams.current.add(target)
-    }
-    if (stream.current === target) {
-      stream.current = null
-    }
-  }
+function RecordingPanelContent({
+  canRecordAudio,
+  canSubmitMedia,
+}: {
+  canRecordAudio: boolean
+  canSubmitMedia: boolean
+}) {
+  const session = useMeetingSession()
+  const { recording } = session
+  const { stopRecording } = session
+  const [checkingUpload, setCheckingUpload] = useState(false)
+  const isRecording =
+    recording.state === 'recording' || recording.state === 'stopping'
+  const isBusy = recording.state === 'requesting-permission' || isRecording
 
   useEffect(() => {
-    mounted.current = true
-    const generation = ++lifecycleGeneration.current
-    return () => {
-      if (lifecycleGeneration.current !== generation) return
-      mounted.current = false
-      lifecycleGeneration.current += 1
-      permissionRequestGeneration.current += 1
-      activePermissionRequest.current = null
-      const currentRecorder = recorder.current
-      if (currentRecorder && currentRecorder.state !== 'inactive') {
-        currentRecorder.stop()
-      }
-      releaseStream(stream.current)
+    if (
+      !canRecordAudio &&
+      (recording.state === 'requesting-permission' ||
+        recording.state === 'recording' ||
+        recording.state === 'stopping')
+    ) {
+      stopRecording()
     }
-  }, [])
-
-  const stop = useCallback(() => {
-    if (recorder.current?.state === 'recording') recorder.current.stop()
-  }, [])
-
-  useEffect(() => {
-    onRecordingStateChange?.({ recording, stop })
-    return () => {
-      onRecordingStateChange?.({ recording: false, stop })
-    }
-  }, [onRecordingStateChange, recording, stop])
-
-  useEffect(() => {
-    if (!canRecordAudio && recorder.current?.state === 'recording') {
-      recorder.current.stop()
-    }
-    if (!canRecordAudio) {
-      permissionRequestGeneration.current += 1
-      activePermissionRequest.current = null
-    }
-    if (!canSubmitMedia && !recording && !busy) {
-      discard()
-    }
-  }, [busy, canRecordAudio, canSubmitMedia, recording])
+  }, [canRecordAudio, recording.state, stopRecording])
 
   async function begin() {
-    if (
-      !canRecordAudioRef.current ||
-      recording ||
-      busy ||
-      activePermissionRequest.current !== null
-    )
-      return
-    const mimeType = supportedRecordingMimeType()
-    if (!mimeType) {
-      toast.error(
-        'This browser cannot record the supported AAC-in-M4A format. Use the WAV, MP3, or M4A file upload panel instead.'
-      )
-      return
-    }
-    if (!navigator.mediaDevices?.getUserMedia) {
-      toast.error(
-        'This browser cannot request microphone access. Use the supported-file upload panel instead.'
-      )
-      return
-    }
-
-    const generation = lifecycleGeneration.current
-    const requestGeneration = ++permissionRequestGeneration.current
-    activePermissionRequest.current = requestGeneration
-    let media: MediaStream | undefined
-    try {
-      media = await navigator.mediaDevices.getUserMedia({ audio: true })
-      const ownsRequest = activePermissionRequest.current === requestGeneration
+    const result = await session.startRecording(canRecordAudio)
+    if (!result.ok) {
       if (
-        !isLifecycleActive(generation) ||
-        !ownsRequest ||
-        !canRecordAudioRef.current
+        result.title === 'Microphone access failed' ||
+        result.title === 'Recording could not be started'
       ) {
-        releaseStream(media)
-        if (ownsRequest) activePermissionRequest.current = null
-        return
-      }
-      activePermissionRequest.current = null
-      let instance: MediaRecorder
-      try {
-        instance = new MediaRecorder(media, { mimeType })
-      } catch (error) {
-        releaseStream(media)
-        toast.error(
-          'This browser cannot start the supported AAC-in-M4A recorder. Use the supported-file upload panel instead.',
-          { description: error instanceof Error ? error.message : undefined }
-        )
-        return
-      }
-
-      if (!canRecordAudioRef.current) {
-        releaseStream(media)
-        return
-      }
-      stream.current = media
-      const recordedChunks: Blob[] = []
-      setAudio(null)
-      setUncertainMediaId(null)
-      setUploadPhase(null)
-      operation.current = null
-      recorder.current = instance
-      instance.ondataavailable = (event) => {
-        if (
-          recorder.current === instance &&
-          stream.current === media &&
-          isLifecycleActive(generation) &&
-          event.data.size
-        ) {
-          recordedChunks.push(event.data)
-        }
-      }
-      instance.onerror = () => {
-        const ownsRecorder =
-          recorder.current === instance && stream.current === media
-        releaseStream(media)
-        if (recorder.current === instance) recorder.current = null
-        if (!ownsRecorder || !isLifecycleActive(generation)) return
-        setRecording(false)
-        toast.error(
-          'The browser recorder failed. Use the supported-file upload panel instead.'
-        )
-      }
-      instance.onstop = () => {
-        const ownsRecorder =
-          recorder.current === instance && stream.current === media
-        const producedMime = normalizedMimeType(instance.mimeType || mimeType)
-        const blob =
-          producedMime === 'audio/mp4'
-            ? new Blob(recordedChunks, { type: 'audio/mp4' })
-            : null
-        releaseStream(media)
-        if (recorder.current === instance) recorder.current = null
-        if (!ownsRecorder || !isLifecycleActive(generation)) return
-        if (!blob?.size) {
-          setRecording(false)
-          toast.error(
-            'The recorder produced no supported AAC-in-M4A audio. Use the supported-file upload panel instead.'
-          )
-          return
-        }
-        setAudio(
-          new File([blob], 'meeting-recording-' + Date.now() + '.m4a', {
-            type: 'audio/mp4',
-          })
-        )
-        setRecording(false)
-      }
-      try {
-        instance.start(1000)
-        setRecording(true)
-      } catch (error) {
-        releaseStream(media)
-        if (recorder.current === instance) recorder.current = null
-        if (!isLifecycleActive(generation)) return
-        setRecording(false)
-        toast.error('Recording could not be started', {
-          description: error instanceof Error ? error.message : undefined,
+        toast.error(result.title, {
+          description: result.description,
         })
+      } else {
+        toast.error(result.title)
       }
-    } catch (error) {
-      const ownsRequest = activePermissionRequest.current === requestGeneration
-      const isCurrentRequest =
-        isLifecycleActive(generation) &&
-        ownsRequest &&
-        canRecordAudioRef.current
-      releaseStream(media)
-      if (ownsRequest) activePermissionRequest.current = null
-      if (!isCurrentRequest) return
-      toast.error('Microphone access failed', {
-        description: error instanceof Error ? error.message : undefined,
+    }
+  }
+
+  async function submit() {
+    const media = await session.submitRecording(canSubmitMedia)
+    if (media) {
+      toast.success('Recording is available for processing', {
+        description: `${media.originalFilename} was finalized by Core.`,
       })
-    }
-  }
-
-  function operationKey(selectedAudio: File): string {
-    if (operation.current?.file === selectedAudio) {
-      return operation.current.idempotencyKey
-    }
-    const idempotencyKey = crypto.randomUUID()
-    operation.current = { file: selectedAudio, idempotencyKey }
-    return idempotencyKey
-  }
-
-  async function upload() {
-    if (!audio || busy || uncertainMediaId) return
-    if (!canSubmitMediaRef.current) {
-      discard()
+    } else if (!canSubmitMedia) {
       toast.error('Recording submission is no longer authorized')
-      return
-    }
-    setBusy(true)
-    setUploadPhase(null)
-    try {
-      await uploadMeetingFile(meetingId, audio, 'RECORDING', {
-        idempotencyKey: operationKey(audio),
-        onPhase: setUploadPhase,
+    } else if (recording.error) {
+      toast.error('Recording upload failed', {
+        description: recording.error,
       })
-      toast.success('Recording is available for processing')
-      setAudio(null)
-      operation.current = null
-      setUncertainMediaId(null)
-      void qc.invalidateQueries({ queryKey: ['meeting-media', meetingId] })
-    } catch (error) {
-      const uncertain =
-        error instanceof MediaUploadError && error.outcome === 'uncertain'
-      setUploadPhase(uncertain ? 'reconciling' : null)
-      setUncertainMediaId(
-        uncertain && error instanceof MediaUploadError
-          ? (error.mediaId ?? null)
-          : null
-      )
-      toast.error(
-        uncertain
-          ? 'Recording upload outcome is uncertain'
-          : 'Recording upload failed',
-        {
-          description: error instanceof Error ? error.message : undefined,
-        }
-      )
-    } finally {
-      setBusy(false)
     }
   }
 
-  async function checkStatus() {
-    if (!uncertainMediaId || checkingStatus) return
-    if (!canSubmitMediaRef.current) {
-      discard()
-      return
-    }
-    setCheckingStatus(true)
-    setUploadPhase('reconciling')
+  async function checkUploadStatus() {
+    if (checkingUpload) return
+    setCheckingUpload(true)
     try {
-      await reconcileMeetingMedia(meetingId, uncertainMediaId)
-      toast.success('Recording is available for processing')
-      setAudio(null)
-      operation.current = null
-      setUncertainMediaId(null)
-      void qc.invalidateQueries({ queryKey: ['meeting-media', meetingId] })
-    } catch (error) {
-      toast.error('Recording status is not resolved', {
-        description: error instanceof Error ? error.message : undefined,
-      })
+      const media = await session.reconcileRecording()
+      if (media) {
+        toast.success('Recording is available for processing')
+      }
     } finally {
-      setCheckingStatus(false)
+      setCheckingUpload(false)
     }
   }
 
-  function discard() {
-    setAudio(null)
-    operation.current = null
-    setUncertainMediaId(null)
-    setUploadPhase(null)
-  }
-
-  function startNewSubmission() {
-    operation.current = null
-    setUncertainMediaId(null)
-    setUploadPhase(null)
-  }
+  const stateLabel = captureStateLabel(recording.state)
+  const completed = recording.artifact && recording.state === 'completed'
+  const hasReconciliationTarget =
+    recording.uploadStatus === 'uncertain' &&
+    Boolean(recording.uncertainMediaId)
 
   return (
     <Card>
@@ -375,78 +127,203 @@ export function RecordingPanel({
           Record meeting audio
         </CardTitle>
         <p className='text-sm text-muted-foreground'>
-          Microphone access begins only when you click Start. The browser
-          recording is retained for review and is uploaded only after Submit.
-          Core remains authoritative for AAC/container validation.
+          Capture starts only after explicit microphone consent. Review the
+          completed AAC-in-M4A artifact before submitting it to Core.
         </p>
       </CardHeader>
-      <CardContent className='flex flex-wrap items-center gap-3'>
-        {recording ? (
-          <Button variant='destructive' onClick={stop}>
-            <Square className='size-4' /> Stop recording
-          </Button>
-        ) : canRecordAudio ? (
-          <Button
-            variant='outline'
-            disabled={busy || !!audio || checkingStatus}
-            onClick={() => void begin()}
-          >
-            <Mic className='size-4' /> Start recording
-          </Button>
-        ) : (
-          <span className='text-sm text-muted-foreground'>
-            New recording is not available for the current meeting state.
-          </span>
-        )}
-        {recording && (
-          <span role='status' className='text-sm text-destructive'>
-            Recording in progress…
-          </span>
-        )}
-        {audio && !recording && (
-          <>
-            <span className='text-sm'>
-              {(audio.size / 1048576).toFixed(1)} MB captured (M4A/AAC
-              declaration)
+      <CardContent className='space-y-4'>
+        <div className='flex flex-wrap items-center gap-3'>
+          {isRecording ? (
+            <Button
+              variant='destructive'
+              disabled={recording.state === 'stopping'}
+              onClick={session.stopRecording}
+            >
+              <Square className='size-4' />
+              {recording.state === 'stopping'
+                ? 'Finalizing…'
+                : 'Stop recording'}
+            </Button>
+          ) : canRecordAudio && !completed ? (
+            <Button
+              variant='outline'
+              disabled={isBusy || recording.state === 'requesting-permission'}
+              onClick={() => void begin()}
+            >
+              <Mic className='size-4' />
+              {recording.state === 'requesting-permission'
+                ? 'Requesting…'
+                : 'Start recording'}
+            </Button>
+          ) : !completed ? (
+            <span className='text-sm text-muted-foreground'>
+              New recording is not available for the current meeting state.
             </span>
-            <Button
-              disabled={!canSubmitMedia || busy || !!uncertainMediaId}
-              onClick={() => void upload()}
+          ) : null}
+          {isRecording && (
+            <span
+              role='status'
+              className='text-sm font-medium text-destructive'
             >
-              <Upload className='size-4' />
-              {busy ? 'Submitting…' : 'Submit recording'}
-            </Button>
-            {uncertainMediaId && (
-              <>
-                <Button
-                  variant='outline'
-                  disabled={checkingStatus}
-                  onClick={() => void checkStatus()}
-                >
-                  {checkingStatus ? 'Checking…' : 'Check upload status'}
-                </Button>
-                <Button
-                  variant='ghost'
-                  disabled={checkingStatus}
-                  onClick={startNewSubmission}
-                >
-                  Start a new submission
-                </Button>
-              </>
-            )}
-            <Button
-              variant='ghost'
-              disabled={busy || checkingStatus}
-              onClick={discard}
-            >
-              Discard
-            </Button>
-          </>
+              <span>Recording in progress…</span>{' '}
+              <span>{formatDuration(recording.durationMs)}</span>
+            </span>
+          )}
+        </div>
+
+        {isRecording && (
+          <div
+            className='rounded-lg border bg-muted/20 p-3'
+            aria-label={
+              recording.audioAnalysisAvailable
+                ? 'Live microphone activity'
+                : 'Microphone activity unavailable'
+            }
+          >
+            <div className='flex items-center justify-between gap-3 text-xs text-muted-foreground'>
+              <span>Microphone activity</span>
+              <span>
+                {recording.audioAnalysisAvailable
+                  ? `${Math.round(recording.microphoneLevel * 100)}%`
+                  : 'Unavailable in this browser'}
+              </span>
+            </div>
+            <div className='mt-2 flex h-8 items-end gap-1' aria-hidden='true'>
+              {Array.from({ length: 16 }, (_, index) => {
+                const active =
+                  recording.audioAnalysisAvailable &&
+                  recording.microphoneLevel > index / 16
+                return (
+                  <span
+                    key={index}
+                    className={`h-full flex-1 rounded-sm transition-[opacity] ${
+                      active ? 'bg-primary opacity-100' : 'bg-muted opacity-40'
+                    }`}
+                    style={{
+                      transform: `scaleY(${active ? 0.45 + recording.microphoneLevel * 0.55 : 0.18})`,
+                      transformOrigin: 'bottom',
+                    }}
+                  />
+                )
+              })}
+            </div>
+          </div>
         )}
-        {phaseLabel(uploadPhase) && (
-          <span role='status' className='w-full text-sm text-muted-foreground'>
-            {phaseLabel(uploadPhase)}
-          </span>
+
+        {stateLabel && (
+          <p
+            role={recording.state === 'failed' ? 'alert' : 'status'}
+            className='text-sm text-muted-foreground'
+          >
+            {stateLabel}
+          </p>
+        )}
+        {recording.error && recording.state !== 'failed' && (
+          <p role='alert' className='text-sm text-destructive'>
+            {recording.error}
+          </p>
+        )}
+        {recording.uploadPhase && (
+          <p role='status' className='text-sm text-muted-foreground'>
+            {recording.uploadPhase === 'intent-created'
+              ? 'Upload intent created.'
+              : recording.uploadPhase === 'storage-uploading'
+                ? 'Uploading the captured file…'
+                : recording.uploadPhase === 'storage-uploaded'
+                  ? 'Storage upload completed.'
+                  : recording.uploadPhase === 'finalizing'
+                    ? 'Core is inspecting and finalizing the recording…'
+                    : recording.uploadPhase === 'reconciling'
+                      ? 'Checking the authoritative Core media status…'
+                      : recording.uploadPhase === 'available'
+                        ? 'Media is available for processing.'
+                        : null}
+          </p>
+        )}
+
+        {completed && recording.artifact && (
+          <div className='space-y-3 rounded-lg border bg-muted/10 p-4'>
+            <div className='flex flex-wrap items-center justify-between gap-2'>
+              <div>
+                <p className='font-medium'>
+                  Captured recording ready for review
+                </p>
+                <p className='text-sm text-muted-foreground'>
+                  {formatDuration(recording.artifact.durationMs)} ·{' '}
+                  {(recording.artifact.file.size / 1048576).toFixed(1)} MB
+                  {' captured (M4A/AAC declaration)'}
+                </p>
+              </div>
+              {recording.artifact.previewUrl && (
+                <Button
+                  type='button'
+                  size='sm'
+                  variant='outline'
+                  onClick={session.playLocalRecording}
+                >
+                  <Play className='size-4' />
+                  Use shared player
+                </Button>
+              )}
+            </div>
+            {recording.artifact.previewUrl ? (
+              <audio
+                controls
+                preload='metadata'
+                src={recording.artifact.previewUrl}
+                className='w-full'
+                aria-label='Completed recording preview'
+              />
+            ) : (
+              <p className='text-sm text-muted-foreground'>
+                This browser cannot create a local preview URL. The recording
+                can still be submitted.
+              </p>
+            )}
+            <div className='flex flex-wrap gap-2'>
+              <Button
+                disabled={
+                  !canSubmitMedia ||
+                  recording.state !== 'completed' ||
+                  recording.uploadStatus === 'submitting' ||
+                  hasReconciliationTarget
+                }
+                onClick={() => void submit()}
+              >
+                <Upload className='size-4' />
+                {recording.uploadStatus === 'submitting'
+                  ? 'Submitting…'
+                  : recording.uploadStatus === 'uncertain'
+                    ? 'Retry submission'
+                    : 'Submit recording'}
+              </Button>
+              {hasReconciliationTarget && (
+                <>
+                  <Button
+                    variant='outline'
+                    disabled={checkingUpload}
+                    onClick={() => void checkUploadStatus()}
+                  >
+                    {checkingUpload ? 'Checking…' : 'Check upload status'}
+                  </Button>
+                  <Button
+                    variant='ghost'
+                    disabled={checkingUpload}
+                    onClick={session.startNewRecordingSubmission}
+                  >
+                    Start a new submission
+                  </Button>
+                </>
+              )}
+              <Button
+                variant='ghost'
+                disabled={recording.state !== 'completed'}
+                onClick={session.discardRecording}
+              >
+                Discard
+              </Button>
+            </div>
+          </div>
         )}
       </CardContent>
     </Card>

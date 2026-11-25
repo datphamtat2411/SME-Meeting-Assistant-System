@@ -118,7 +118,47 @@ export function processingJobsQuery(meetingId: string) {
         .array()
         .parse(await coreApi.get<unknown>(path(meetingId), { signal })),
     retry: false,
+    refetchOnWindowFocus: true,
+    refetchInterval: (query) => {
+      const jobs = query.state.data
+      if (!jobs) return 6000
+      return jobs.some((job) =>
+        ['PENDING', 'QUEUED', 'RUNNING'].includes(job.status)
+      )
+        ? 6000
+        : false
+    },
   })
+}
+
+const activeProcessingStatuses = new Set(['PENDING', 'QUEUED', 'RUNNING'])
+const terminalProcessingStatuses = new Set([
+  'COMPLETED',
+  'COMPLETED_WITH_WARNINGS',
+  'FAILED',
+  'CANCELLED',
+])
+
+/**
+ * A meeting may retain several historical attempts. Core does not expose a
+ * single "current attempt" pointer, so only an explicitly selected job or an
+ * unambiguous active/sole attempt is promoted for contextual presentation.
+ */
+export function selectProcessingAttempt(
+  jobs: ProcessingJob[],
+  selectedJobId?: string | null
+): ProcessingJob | undefined {
+  if (selectedJobId) {
+    return jobs.find((job) => job.id === selectedJobId)
+  }
+  const active = jobs.filter((job) => activeProcessingStatuses.has(job.status))
+  if (active.length === 1) return active[0]
+  if (active.length > 1) return undefined
+  if (jobs.length === 1) return jobs[0]
+  const terminal = jobs.filter((job) =>
+    terminalProcessingStatuses.has(job.status)
+  )
+  return terminal.length === 1 ? terminal[0] : undefined
 }
 
 async function listProcessingJobs(meetingId: string): Promise<ProcessingJob[]> {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import {
@@ -60,9 +60,15 @@ import {
 import type { MeetingParticipantRefresh } from './data/participant-management-api'
 import { minutesQuery } from './intelligence/minutes-api'
 import { meetingMediaQuery } from './media/media-api'
-import { processingJobsQuery } from './media/processing-api'
+import {
+  MeetingSessionBoundary,
+  useOptionalMeetingSession,
+} from './media/meeting-session-context'
+import {
+  processingJobsQuery,
+  selectProcessingAttempt,
+} from './media/processing-api'
 import { presentProcessingStatus } from './media/processing-status-presentation'
-import type { RecordingStateChange } from './media/recording-panel'
 import { MeetingTools } from './meeting-tools'
 import {
   deriveMeetingWorkspaceCapabilities,
@@ -96,6 +102,29 @@ type LookupState<T> = WorkspaceLookupState<T>
 type ParticipantState = WorkspaceParticipantState
 
 export function MeetingWorkspacePage({
+  meetingId,
+  section = 'overview',
+  onSectionChange,
+}: {
+  meetingId: string
+  section?: MeetingWorkspaceSection
+  onSectionChange?: (
+    section: MeetingWorkspaceSection,
+    replace?: boolean
+  ) => void
+}) {
+  return (
+    <MeetingSessionBoundary meetingId={meetingId}>
+      <MeetingWorkspacePageContent
+        meetingId={meetingId}
+        section={section}
+        onSectionChange={onSectionChange}
+      />
+    </MeetingSessionBoundary>
+  )
+}
+
+function MeetingWorkspacePageContent({
   meetingId,
   section = 'overview',
   onSectionChange,
@@ -429,26 +458,9 @@ function MeetingWorkspace({
 }) {
   const [editOpen, setEditOpen] = useState(false)
   const notifiedEditCommits = useRef(new Set<string>())
-  const [recordingState, setRecordingState] =
-    useState<RecordingStateChange | null>(null)
-  const [recordingHasBeenActivated, updateRecordingRetention] = useReducer(
-    (retained: boolean, action: { isActive: boolean; isAllowed: boolean }) =>
-      action.isAllowed ? retained || action.isActive : false,
-    false
-  )
+  const session = useOptionalMeetingSession()
   const activeSection = resolveMeetingWorkspaceSection(section, capabilities)
   const canEdit = capabilities.canEditMeeting
-  const recordingIsAllowed = isMeetingWorkspaceSectionAllowed(
-    'recording',
-    capabilities
-  )
-
-  useEffect(() => {
-    updateRecordingRetention({
-      isActive: activeSection === 'recording',
-      isAllowed: recordingIsAllowed,
-    })
-  }, [activeSection, recordingIsAllowed])
 
   useEffect(() => {
     if (section !== activeSection) {
@@ -462,12 +474,6 @@ function MeetingWorkspace({
   ) => {
     onSectionChange?.(nextSection, replace)
   }
-  const handleRecordingStateChange = useCallback(
-    (state: RecordingStateChange) =>
-      setRecordingState(state.recording ? state : null),
-    []
-  )
-
   const handleMeetingEdited = (commit: MeetingEditCommit) => {
     const key = `${commit.meetingId}:${commit.etag}:${commit.outcome}`
     if (notifiedEditCommits.current.has(key)) return
@@ -513,35 +519,38 @@ function MeetingWorkspace({
         />
       )}
       <div className='space-y-5'>
-        {capabilities.canReadMeetingContent && recordingState?.recording && (
-          <div
-            role='status'
-            aria-live='polite'
-            className='flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm'
-          >
-            <span className='font-medium text-destructive'>
-              Recording in progress in this meeting
-            </span>
-            <div className='flex flex-wrap gap-2'>
-              <Button
-                type='button'
-                size='sm'
-                variant='outline'
-                onClick={() => navigateToSection('recording')}
-              >
-                Open recording controls
-              </Button>
-              <Button
-                type='button'
-                size='sm'
-                variant='destructive'
-                onClick={recordingState.stop}
-              >
-                Stop recording
-              </Button>
+        {capabilities.canReadMeetingContent &&
+          session &&
+          (session.recording.state === 'recording' ||
+            session.recording.state === 'stopping') && (
+            <div
+              role='status'
+              aria-live='polite'
+              className='flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm'
+            >
+              <span className='font-medium text-destructive'>
+                Recording in progress in this meeting
+              </span>
+              <div className='flex flex-wrap gap-2'>
+                <Button
+                  type='button'
+                  size='sm'
+                  variant='outline'
+                  onClick={() => navigateToSection('recording')}
+                >
+                  Open recording controls
+                </Button>
+                <Button
+                  type='button'
+                  size='sm'
+                  variant='destructive'
+                  onClick={session.stopRecording}
+                >
+                  Stop recording
+                </Button>
+              </div>
             </div>
-          </div>
-        )}
+          )}
         {!capabilities.canReadMeetingContent && (
           <div
             role='status'
@@ -634,20 +643,11 @@ function MeetingWorkspace({
               capabilities
             )
             const isActive = activeSection === workspaceSection
-            const shouldRetain =
-              workspaceSection === 'recording' &&
-              recordingHasBeenActivated &&
-              isAllowed
-            const shouldRender = isAllowed && (isActive || shouldRetain)
+            const shouldRender = isAllowed && isActive
             return (
               <TabsContent
                 key={workspaceSection}
                 value={workspaceSection}
-                forceMount={
-                  workspaceSection === 'recording' && shouldRender
-                    ? true
-                    : undefined
-                }
                 className='mt-6'
                 hidden={!isActive}
                 aria-hidden={!isActive}
@@ -657,7 +657,6 @@ function MeetingWorkspace({
                   <MeetingTools
                     meetingId={meeting.id}
                     section={workspaceSection}
-                    onRecordingStateChange={handleRecordingStateChange}
                   />
                 ) : isActive && !isAllowed ? (
                   <WorkspaceAuthorizationState
@@ -804,6 +803,7 @@ function WorkspaceResultsOverview({
     replace?: boolean
   ) => void
 }) {
+  const session = useOptionalMeetingSession()
   const media = useQuery(meetingMediaQuery(meetingId))
   const jobs = useQuery(processingJobsQuery(meetingId))
   const minutes = useQuery(minutesQuery(meetingId))
@@ -811,15 +811,14 @@ function WorkspaceResultsOverview({
   const availableMedia = media.data?.filter(
     (item) => item.status === 'AVAILABLE'
   )
-  const latestJob = jobs.data?.reduce(
-    (latest, candidate) =>
-      !latest || Date.parse(candidate.updatedAt) > Date.parse(latest.updatedAt)
-        ? candidate
-        : latest,
-    undefined as NonNullable<typeof jobs.data>[number] | undefined
+  const observedJob = jobs.data
+    ? selectProcessingAttempt(jobs.data, session?.selectedProcessingJobId)
+    : undefined
+  const hasAmbiguousAttempts = Boolean(
+    jobs.data && jobs.data.length > 1 && !observedJob
   )
-  const processingState = latestJob
-    ? presentProcessingStatus(latestJob.status)
+  const processingState = observedJob
+    ? presentProcessingStatus(observedJob.status)
     : undefined
   const transcriptAvailability = minutes.isSuccess
     ? canonicalResultAvailability(minutes.data.transcript.availability)
@@ -909,47 +908,52 @@ function WorkspaceResultsOverview({
               ? 'Checking status'
               : jobs.isError
                 ? 'Unable to verify'
-                : latestJob
-                  ? (processingState?.label ?? 'Unknown status')
-                  : 'Not started'
+                : hasAmbiguousAttempts
+                  ? 'Select an attempt'
+                  : observedJob
+                    ? (processingState?.label ?? 'Unknown status')
+                    : 'Not started'
           }
           description={
             jobs.isPending
               ? 'Checking the current Core processing job list.'
               : jobs.isError
                 ? 'Processing status could not be verified.'
-                : latestJob
-                  ? [
-                      `Latest observed attempt: ${processingState?.label ?? 'Unknown status'}`,
-                      latestJob.currentStage
-                        ? `Current stage: ${latestJob.currentStage}`
-                        : undefined,
-                      latestJob.warningSummary ?? undefined,
-                      latestJob.errorSummary ?? undefined,
-                    ]
-                      .filter(Boolean)
-                      .join(' · ') ||
-                    'Status reported by the current processing job.'
-                  : 'An ended meeting does not imply that processing has been requested.'
+                : hasAmbiguousAttempts
+                  ? 'Several processing attempts are recorded. Open Recording to select the attempt that should remain in view.'
+                  : observedJob
+                    ? [
+                        `Observed attempt: ${processingState?.label ?? 'Unknown status'}`,
+                        observedJob.currentStage
+                          ? `Current stage: ${observedJob.currentStage}`
+                          : undefined,
+                        observedJob.warningSummary ?? undefined,
+                        observedJob.errorSummary ?? undefined,
+                      ]
+                        .filter(Boolean)
+                        .join(' · ') ||
+                      'Status reported by the current processing job.'
+                    : 'An ended meeting does not imply that processing has been requested.'
           }
           kind={
             jobs.isPending
               ? 'pending'
               : jobs.isError
                 ? 'error'
-                : latestJob
+                : observedJob
                   ? processingResultKind(processingState?.kind)
                   : 'unavailable'
           }
           action={
             jobs.isError
               ? { label: 'Retry', onClick: () => void jobs.refetch() }
-              : latestJob?.status === 'WAITING_FOR_REVIEW'
+              : observedJob?.status === 'WAITING_FOR_REVIEW'
                 ? {
                     label: 'Review transcript',
                     onClick: () => onSectionChange?.('transcript'),
                   }
-                : latestJob ||
+                : observedJob ||
+                    hasAmbiguousAttempts ||
                     (availableMedia?.length && capabilities.canAdmitProcessing)
                   ? {
                       label: 'Review processing',
