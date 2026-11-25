@@ -653,10 +653,9 @@ public class ActionItemService {
                        AND manager_actor.account_status='ACTIVE'
                        AND manager_actor.global_role='DEPARTMENT_MANAGER'
                     WHERE scope.meeting_id=meeting.id AND grant_record.user_id=?))
-               AND (lower(meeting.title) LIKE ? ESCAPE '\\'
-                    OR lower(coalesce(meeting.description,'')) LIKE ? ESCAPE '\\')
+               AND lower(meeting.title) LIKE ? ESCAPE '\\'
             """;
-        Object[] params = { actorId, actorId, pattern, pattern };
+        Object[] params = { actorId, actorId, pattern };
         Long total = jdbc.queryForObject("SELECT count(*) " + condition, Long.class, params);
         List<ManagementTarget> targets = jdbc.query("""
             SELECT meeting.id, meeting.title
@@ -665,34 +664,35 @@ public class ActionItemService {
              LIMIT ? OFFSET ?
             """, (rs, ignored) -> new ManagementTarget(
                 rs.getObject("id", UUID.class), rs.getString("title")),
-            actorId, actorId, pattern, pattern, size, page * size);
+            actorId, actorId, pattern, size, (long) page * size);
         return new PageImpl<>(targets, PageRequest.of(page, size), total == null ? 0 : total);
     }
 
     @Transactional(readOnly = true)
-    public Page<AssigneeCandidate> assigneeCandidates(UUID actorId, String query, int page, int size) {
+    public Page<AssigneeCandidate> assigneeCandidates(UUID actorId, UUID meetingId, String query, int page, int size) {
         meetingAccess.requireCurrentActiveActor(actorId);
+        meetingAccess.requireManageActionItems(meetingId, actorId);
         validateLookupPage(page, size);
         String pattern = lookupPattern(query);
         String condition = """
-            FROM users user
+            FROM users candidate
              LEFT JOIN organizational_units unit
-               ON unit.id=user.primary_org_unit_id AND unit.status='ACTIVE'
-             WHERE user.account_status='ACTIVE' AND user.id<>?
-               AND (lower(user.display_name) LIKE ? ESCAPE '\\'
-                    OR lower(user.email_normalized) LIKE ? ESCAPE '\\')
+               ON unit.id=candidate.primary_org_unit_id AND unit.status='ACTIVE'
+             WHERE candidate.account_status='ACTIVE'
+               AND (lower(candidate.display_name) LIKE ? ESCAPE '\\'
+                    OR lower(candidate.email_normalized) LIKE ? ESCAPE '\\')
             """;
-        Object[] params = { actorId, pattern, pattern };
+        Object[] params = { pattern, pattern };
         Long total = jdbc.queryForObject("SELECT count(*) " + condition, Long.class, params);
         List<AssigneeCandidate> candidates = jdbc.query("""
-            SELECT user.id, user.display_name, user.email, unit.name
+            SELECT candidate.id, candidate.display_name, candidate.email, unit.name
               """ + condition + """
-             ORDER BY lower(user.display_name), user.display_name, user.id
+             ORDER BY lower(candidate.display_name), candidate.display_name, candidate.id
              LIMIT ? OFFSET ?
             """, (rs, ignored) -> new AssigneeCandidate(
                 rs.getObject("id", UUID.class), rs.getString("display_name"),
                 rs.getString("email"), rs.getString("name"), true),
-            actorId, pattern, pattern, size, page * size);
+            pattern, pattern, size, (long) page * size);
         return new PageImpl<>(candidates, PageRequest.of(page, size), total == null ? 0 : total);
     }
 

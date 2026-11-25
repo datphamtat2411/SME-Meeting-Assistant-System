@@ -192,7 +192,8 @@ export function actionDetailQuery(id?: string) {
     queryKey: ['action-items', 'detail', id] as const,
     queryFn: () => actionDetail(id as string),
     enabled: Boolean(id),
-    staleTime: Infinity,
+    staleTime: 0,
+    refetchOnMount: 'always',
     retry: false,
   })
 }
@@ -392,7 +393,11 @@ export function managementCapabilityQuery() {
   })
 }
 
-export function assigneeCandidatesQuery(search: string, page = 0) {
+export function assigneeCandidatesQuery(
+  search: string,
+  meetingId: string,
+  page = 0
+) {
   const params = {
     ...Object.fromEntries(
       Object.entries(paginationParams(page, 20)).map(([key, value]) => [
@@ -401,6 +406,7 @@ export function assigneeCandidatesQuery(search: string, page = 0) {
       ])
     ),
     q: search.trim(),
+    meetingId,
   }
   return queryOptions({
     queryKey: ['action-items', 'assignee-candidates', params] as const,

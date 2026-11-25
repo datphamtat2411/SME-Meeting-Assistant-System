@@ -92,6 +92,18 @@ class ActionItemsIntegrationTests {
             Integer.class, id)).isEqualTo(3);
     }
 
+    @Test void assigneeLookupRequiresManagementScopeAndIncludesSelf() throws Exception {
+        MvcResult result = mvc.perform(get("/api/v1/action-items/assignee-candidates")
+                .principal(principal(organizer)).param("meetingId", meetingId.toString())
+                .param("q", organizer.getEmail()))
+            .andExpect(status().isOk()).andReturn();
+        assertThat(body(result).path("data").toString()).contains(organizer.getId().toString());
+        mvc.perform(get("/api/v1/action-items/assignee-candidates")
+                .principal(principal(outsider)).param("meetingId", meetingId.toString())
+                .param("q", organizer.getEmail()))
+            .andExpect(status().isNotFound());
+    }
+
     @Test void schemaUsesCanonicalStatusesAndDoesNotPersistOverdueState() {
         assertThat(jdbc.queryForList("""
             SELECT check_clause FROM information_schema.check_constraints

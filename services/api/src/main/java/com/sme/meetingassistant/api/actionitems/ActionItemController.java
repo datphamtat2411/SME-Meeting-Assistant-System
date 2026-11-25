@@ -72,10 +72,11 @@ public class ActionItemController {
 
     @GetMapping("/assignee-candidates")
     public ApiResponse<List<ActionItemService.AssigneeCandidate>> assigneeCandidates(
+            @RequestParam UUID meetingId,
             @RequestParam @Size(max=200) String q,
             @RequestParam(defaultValue="0") @Min(0) int page,
             @RequestParam(defaultValue="20") @Min(1) @Max(20) int size) {
-        return responses.successPage(service.assigneeCandidates(caller.requireUserId(), q, page, size));
+        return responses.successPage(service.assigneeCandidates(caller.requireUserId(), meetingId, q, page, size));
     }
 
     @PostMapping

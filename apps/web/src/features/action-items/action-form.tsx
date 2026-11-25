@@ -83,12 +83,26 @@ export function ActionForm({
     enabled: open && !isFixedMeeting && meetingSearch.trim().length >= 2,
   })
   const candidates = useQuery({
-    ...assigneeCandidatesQuery(userSearch),
-    enabled: open && userSearch.trim().length >= 2,
+    ...assigneeCandidatesQuery(userSearch, meeting),
+    enabled:
+      open &&
+      Boolean(meeting) &&
+      (item
+        ? snapshot?.item.capabilities.canAssign === true
+        : canManageActionItems) &&
+      userSearch.trim().length >= 2,
   })
 
   useEffect(() => {
-    if (!detail.data || !item || initializedReview.current === item.id) return
+    if (
+      !detail.data ||
+      detail.isFetching ||
+      !detail.isFetchedAfterMount ||
+      detail.isError ||
+      !item ||
+      initializedReview.current === item.id
+    )
+      return
     initializedReview.current = item.id
     setSnapshot(detail.data)
     setTitle(detail.data.item.title)
@@ -98,7 +112,13 @@ export function ActionForm({
     setMeeting(detail.data.item.meetingId)
     setMeetingLabel(detail.data.item.meeting?.label ?? '')
     setDueDate(detail.data.item.dueDate ?? '')
-  }, [detail.data, item])
+  }, [
+    detail.data,
+    detail.isFetching,
+    detail.isFetchedAfterMount,
+    detail.isError,
+    item,
+  ])
 
   const mutation = useMutation({
     mutationFn: async (): Promise<ActionMutationResult> => {
