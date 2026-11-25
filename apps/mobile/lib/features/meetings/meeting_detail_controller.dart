@@ -315,17 +315,22 @@ class MeetingDetailController extends ChangeNotifier {
   ///
   /// An active aggregate operation owns the reviewed version. Resuming during
   /// that operation fences later mutations without replacing its context.
-  Future<void> revalidateOnResume() {
-    if (_disposed || !ownsSession) return Future<void>.value();
+  Future<void> revalidateOnResume() async {
+    if (_disposed || !ownsSession) return;
+    final resultsVerification = _resultsWorkspace?.revalidateOnResume();
     if (_state.activeMutation != null) {
       _pendingInvalidation = true;
       if (!_state.needsRevalidation) {
         _state = _copy(needsRevalidation: true);
         notifyListeners();
       }
-      return Future<void>.value();
+      if (resultsVerification != null) await resultsVerification;
+      return;
     }
-    return refresh();
+    await Future.wait([
+      refresh(),
+      if (resultsVerification != null) resultsVerification,
+    ]);
   }
 
   Future<void> refresh() {

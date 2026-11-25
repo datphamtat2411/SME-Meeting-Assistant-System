@@ -1008,12 +1008,90 @@ void main() {
     const jobId = '11111111-1111-4111-8111-111111111111';
     final pending = Completer<http.StreamedResponse>();
     final regenerationRequests = <http.BaseRequest>[];
+    final pendingDecision = Completer<http.StreamedResponse>();
+    final decisionRequests = <http.BaseRequest>[];
+    var decisionSaved = false;
+    var minutesReads = 0;
+    Map<String, dynamic> decisionJson() => {
+      'id': 'decision-1',
+      'meetingId': testMeetingId,
+      'content': 'Canonical decision',
+      'status': 'CONFIRMED',
+      'sourceType': 'MANUAL',
+      'version': 0,
+      'isStale': false,
+      'createdAt': '2026-11-24T12:00:00Z',
+      'confirmedAt': '2026-11-24T12:00:00Z',
+      'createdByUserId': testUserId,
+      'confirmedByUserId': testUserId,
+      'evidenceSegmentIds': <String>[],
+      'aiWarnings': <String>[],
+      'etag': '"decision-v1"',
+    };
     final client = MeetingTestHttpClient((request) async {
       final path = request.url.path;
       if (path.endsWith('/summary/regenerate')) {
         expect(request.method, 'POST');
         regenerationRequests.add(request);
         return pending.future;
+      }
+      if (path.endsWith('/decisions')) {
+        if (request.method == 'POST') {
+          decisionRequests.add(request);
+          return pendingDecision.future;
+        }
+        return meetingApiSuccess(
+          decisionSaved ? [decisionJson()] : const <dynamic>[],
+          meta: {
+            ...meetingTestMeta,
+            'pagination': {
+              'page': 0,
+              'size': 20,
+              'totalElements': decisionSaved ? 1 : 0,
+              'totalPages': decisionSaved ? 1 : 0,
+              'hasNext': false,
+              'hasPrevious': false,
+            },
+          },
+        );
+      }
+      if (path.endsWith('/minutes')) {
+        minutesReads++;
+        return meetingApiSuccess({
+          'completeness': 'PARTIAL',
+          'schemaVersion': 1,
+          'sourceFingerprint': decisionSaved ? 'after-decision' : 'before',
+          'assembledAt': '2026-11-24T12:00:00Z',
+          'meeting': {
+            'id': testMeetingId,
+            'title': 'Meeting',
+            'organizerUserId': testUserId,
+            'status': 'ENDED',
+          },
+          'summary': {
+            'availability': 'AVAILABLE',
+            'id': 'summary-1',
+            'versionNumber': 1,
+            'content': 'Summary',
+            'sourceType': 'AI',
+            'qualityStatus': 'CONFIRMED',
+            'selectionEpoch': 1,
+            'isStale': false,
+            'aiWarnings': <String>[],
+          },
+          'confirmedDecisions': decisionSaved
+              ? [decisionJson()]
+              : const <dynamic>[],
+          'officialActionItems': <dynamic>[],
+          'transcript': {
+            'availability': 'NOT_AVAILABLE',
+            'suspiciousSegments': 0,
+            'unresolvedSegments': 0,
+            'unresolvedCoverageRegions': 0,
+          },
+          'warnings': <String>['TRANSCRIPT_NOT_AVAILABLE'],
+          'proposalsIncluded': false,
+        });
       }
       if (path.endsWith('/summary/versions')) {
         return meetingApiSuccess(
@@ -1077,6 +1155,8 @@ void main() {
     addTearDown(deps.dispose);
     bool commandCompleted = false;
     Object? commandFailure;
+    bool decisionCompleted = false;
+    Object? decisionFailure;
     bool shutdownCompleted = false;
     Object? shutdownFailure;
 
@@ -1093,6 +1173,18 @@ void main() {
           'transcriptId': '22222222-2222-4222-8222-222222222222',
           'contentRevision': 1,
         }, status: 202),
+      );
+    }
+
+    Future<void> releaseDecision() async {
+      if (pendingDecision.isCompleted) return;
+      decisionSaved = true;
+      pendingDecision.complete(
+        await meetingApiSuccess(
+          decisionJson(),
+          headers: const {'etag': '"decision-v1"'},
+          status: 201,
+        ),
       );
     }
 
@@ -1186,10 +1278,87 @@ void main() {
       expect(restored.acceptedRegenerationJobId, jobId);
       expect(regenerationRequests, hasLength(1));
       expect(tester.takeException(), isNull);
+
+      final minutesTab = find.widgetWithText(ChoiceChip, 'Biên bản');
+      await tester.ensureVisible(minutesTab);
+      await tester.tap(minutesTab);
+      await pumpUntil(
+        tester,
+        () => workspace.minutes.data?.sourceFingerprint == 'before',
+        reason: 'the original canonical Minutes to load',
+      );
+      final initialMinutesReads = minutesReads;
+      final decisionsTab = find.widgetWithText(ChoiceChip, 'Quyết định');
+      await tester.ensureVisible(decisionsTab);
+      await tester.tap(decisionsTab);
+      await pumpUntil(
+        tester,
+        () => workspace.decisions.phase == ResultsResourcePhase.empty,
+        reason: 'the empty canonical Decision collection to load',
+      );
+      unawaited(
+        workspace
+            .createDecision('Canonical decision', epoch: workspace.reviewEpoch)
+            .then<void>(
+              (_) => decisionCompleted = true,
+              onError: (Object error, StackTrace stack) {
+                decisionFailure = error;
+                decisionCompleted = true;
+              },
+            ),
+      );
+      await pumpUntil(
+        tester,
+        () => decisionRequests.isNotEmpty || decisionCompleted,
+        reason: 'the Decision creation request to reach the held response',
+      );
+      expect(decisionFailure, isNull);
+      expect(decisionRequests, hasLength(1));
+      expect(workspace.mutationBusy(ResultsMutationGroup.decisions), isTrue);
+      await tester.ensureVisible(processingTab);
+      await tester.tap(processingTab);
+      await pumpUntil(
+        tester,
+        () => find.byType(ResultsPanel).evaluate().isEmpty,
+        reason: 'the pending Decision to outlive the Results presentation',
+      );
+      await releaseDecision();
+      await pumpUntil(
+        tester,
+        () => decisionCompleted,
+        reason: 'the original Decision creation to finish',
+      );
+      expect(decisionFailure, isNull);
+      expect(workspace.mutationBusy(ResultsMutationGroup.decisions), isFalse);
+      expect(minutesReads, initialMinutesReads);
+
+      await tester.ensureVisible(resultsTab);
+      await tester.tap(resultsTab);
+      await pumpUntil(
+        tester,
+        () => find.byType(ResultsPanel).evaluate().isNotEmpty,
+        reason: 'Results to return after Decision creation',
+      );
+      expect(
+        tester.widget<ResultsPanel>(find.byType(ResultsPanel)).workspace,
+        same(workspace),
+      );
+      await tester.ensureVisible(minutesTab);
+      await tester.tap(minutesTab);
+      await pumpUntil(
+        tester,
+        () => workspace.minutes.data?.sourceFingerprint == 'after-decision',
+        reason: 'the updated canonical Minutes to load',
+      );
+      expect(minutesReads, greaterThan(initialMinutesReads));
+      expect(workspace.minutes.data!.confirmedDecisions.single.id, 'decision-1');
+      expect(decisionRequests, hasLength(1));
+      expect(tester.takeException(), isNull);
     } finally {
       // Even a failed assertion must release the held response, unmount the
       // real page and drain its shared observers without crossing clock zones.
       await releaseAdmission();
+      await releaseDecision();
       await tester.pumpWidget(const SizedBox.shrink());
       unawaited(
         deps.shutdown().then<void>(
@@ -1224,6 +1393,31 @@ void main() {
 
     expect(workspace.acceptedRegenerationJobId, 'processing-job-1');
     expect(workspace.mutationBusy(ResultsMutationGroup.summary), isFalse);
+  });
+
+  test('resume verifies access before reusing inactive Results data', () async {
+    final (:workspace, :repository) = await _setup();
+    await workspace.loadTranscript();
+    final epoch = workspace.readEpoch;
+    expect(workspace.transcript.data, isNotNull);
+    repository.pendingVerification = Completer<bool>();
+    final verification = workspace.revalidateOnResume();
+    await _eventually(() => workspace.isAuthorizationVerificationPending);
+    expect(workspace.capabilities.canRead, isFalse);
+    expect(workspace.transcript.data, isNull);
+    expect(workspace.ownsRead(epoch), isFalse);
+    repository.pendingVerification!.complete(true);
+    await verification;
+    expect(workspace.capabilities.canRead, isTrue);
+    expect(repository.reads, 1);
+    await workspace.loadTranscript();
+    expect(repository.reads, 2);
+    expect(workspace.transcript.data, isNotNull);
+    repository.pendingVerification = null;
+    repository.access = false;
+    await workspace.revalidateOnResume();
+    expect(workspace.capabilities.canRead, isFalse);
+    expect(workspace.transcript.data, isNull);
   });
 
   test('authorization verification failure stays fail-closed', () async {

@@ -542,6 +542,19 @@ class ResultsWorkspaceController extends ChangeNotifier
     }
   }
 
+  /// A foreground transition may follow external membership or artifact
+  /// changes. Verify the canonical access context before reusing snapshots;
+  /// inactive resources stay lazy after verification.
+  Future<void> revalidateOnResume() async {
+    if (!ownsSession) return;
+    _authorizationAbsent.clear();
+    if (_authorizationTicket != null) {
+      _authorizationRecheckRequested = true;
+      return;
+    }
+    await _verifyAuthorization();
+  }
+
   Future<void> retryAccess() async {
     if (!ownsSession ||
         _authorizationTicket != null ||
