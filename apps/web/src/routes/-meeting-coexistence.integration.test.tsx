@@ -90,6 +90,13 @@ function installAuthorizedApi() {
   const detailReads = vi
     .spyOn(coreApi, 'getWithMetaAndEtag')
     .mockImplementation(async (url) => {
+      if (url.endsWith('/transcript')) {
+        throw new CoreApiError({
+          message: 'Transcript is not ready',
+          status: 404,
+          kind: 'http',
+        })
+      }
       const parts = url.split('/')
       const id = decodeURIComponent(parts[parts.length - 1] ?? '')
       const meeting = id === meetingB.id ? meetingB : meetingA

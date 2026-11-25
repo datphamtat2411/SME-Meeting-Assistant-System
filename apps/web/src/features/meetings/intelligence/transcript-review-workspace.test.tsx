@@ -41,7 +41,16 @@ const sessionMocks = vi.hoisted(() => ({
         ],
       },
     },
-    playback: { kind: 'idle' },
+    playback: {
+      kind: 'idle',
+      sourceMediaId: null as string | null,
+      status: 'idle',
+      currentTimeMs: 0,
+      durationMs: 4000,
+      filename: 'cuoc-hop.wav',
+      playbackRate: 1,
+      objectUrl: 'blob:test',
+    },
     seekToSource: vi.fn(),
     cancelPendingSeek: vi.fn(),
     setTranscriptReviewDirty: vi.fn(),
@@ -137,6 +146,10 @@ describe('TranscriptReviewWorkspace', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
     sessionMocks.session.seekToSource.mockReset()
+    sessionMocks.session.playback.kind = 'idle'
+    sessionMocks.session.playback.sourceMediaId = null
+    sessionMocks.session.playback.status = 'idle'
+    sessionMocks.session.playback.currentTimeMs = 0
   })
 
   it('renders chronological Vietnamese evidence, filters it, and seeks the shared source', async () => {
@@ -268,6 +281,7 @@ describe('TranscriptReviewWorkspace', () => {
   })
 
   it('maps and unmaps only with the observed transcript collection ETag', async () => {
+    const client = createQueryClient()
     const candidate = {
       id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       displayName: 'Nguyễn Văn A',
@@ -307,9 +321,7 @@ describe('TranscriptReviewWorkspace', () => {
         etag: `"t-transcript-${currentTranscript.contentRevision}"`,
       })
     )
-    const participants = vi
-      .spyOn(coreApi, 'getWithMeta')
-      .mockResolvedValue({
+    const participants = vi.spyOn(coreApi, 'getWithMeta').mockResolvedValue({
         data: [
           {
             id: 'participant-1',
@@ -355,7 +367,7 @@ describe('TranscriptReviewWorkspace', () => {
     })
 
     const screen = await render(
-      <QueryClientProvider client={createQueryClient()}>
+      <QueryClientProvider client={client}>
         <TranscriptReviewWorkspace
           meetingId={meetingId}
           canReadMeetingContent
@@ -387,7 +399,22 @@ describe('TranscriptReviewWorkspace', () => {
       `/meetings/${meetingId}/participants`,
       expect.objectContaining({ signal: expect.any(AbortSignal) })
     )
+    currentTranscript = { ...currentTranscript, contentRevision: 9 }
+    await client.refetchQueries({
+      queryKey: ['transcript', meetingId, 'review'],
+      exact: true,
+    })
     await userEvent.click(screen.getByRole('button', { name: /Nguyễn Văn A/ }))
+    await expect
+      .element(screen.getByText(/The speaker list changed/))
+      .toBeInTheDocument()
+    expect(patch).not.toHaveBeenCalled()
+    await expect
+      .element(screen.getByRole('button', { name: 'Reapply intended mapping' }))
+      .toBeEnabled()
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Reapply intended mapping' })
+    )
     await expect
       .element(screen.getByRole('button', { name: 'Unmap' }))
       .toBeInTheDocument()
@@ -406,7 +433,7 @@ describe('TranscriptReviewWorkspace', () => {
       `/meetings/${meetingId}/speaker-clusters/${speakerId}`,
       { userId: candidate.id },
       {
-        headers: { 'If-Match': '"t-transcript-8"' },
+        headers: { 'If-Match': '"t-transcript-9"' },
         signal: expect.any(AbortSignal),
       }
     )
@@ -415,7 +442,7 @@ describe('TranscriptReviewWorkspace', () => {
       `/meetings/${meetingId}/speaker-clusters/${speakerId}`,
       { userId: null },
       {
-        headers: { 'If-Match': '"t-transcript-9"' },
+        headers: { 'If-Match': '"t-transcript-10"' },
         signal: expect.any(AbortSignal),
       }
     )
@@ -476,5 +503,52 @@ describe('TranscriptReviewWorkspace', () => {
       .element(screen.getByRole('textbox', { name: 'Corrected text' }))
       .toHaveValue('My unsaved correction')
     expect(patch).not.toHaveBeenCalled()
+  })
+
+  it('highlights playback only within an interval of the exact source', async () => {
+    vi.spyOn(coreApi, 'get').mockImplementation(async (url) => {
+      if (url.endsWith('/transcript/coverage')) return coverage
+      if (url.endsWith('/speaker-clusters')) return speakers
+      throw new Error(`Unexpected GET ${url}`)
+    })
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+      data: initialTranscript,
+      meta: {},
+      etag: '"t-transcript-8"',
+    })
+    const client = createQueryClient()
+    const view = () => (
+      <QueryClientProvider client={client}>
+        <TranscriptReviewWorkspace
+          meetingId={meetingId}
+          canReadMeetingContent
+          canCorrectTranscript={false}
+          canMapSpeakers={false}
+          canReadMedia
+        />
+      </QueryClientProvider>
+    )
+    Object.assign(sessionMocks.session.playback, {
+      kind: 'remote',
+      sourceMediaId,
+      status: 'playing',
+      currentTimeMs: 2500,
+    })
+    const screen = await render(view())
+    await expect
+      .element(screen.getByText('Nội dung thứ hai'))
+      .toBeInTheDocument()
+    const activeSegment = () =>
+      document.querySelector('[data-playback-active="true"]')?.getAttribute(
+        'data-segment-id'
+      )
+    expect(activeSegment()).toBe(secondSegmentId)
+    sessionMocks.session.playback.currentTimeMs = 1500
+    await screen.rerender(view())
+    expect(activeSegment()).toBeUndefined()
+    sessionMocks.session.playback.currentTimeMs = 2500
+    sessionMocks.session.playback.sourceMediaId = processingJobId
+    await screen.rerender(view())
+    expect(activeSegment()).toBeUndefined()
   })
 })

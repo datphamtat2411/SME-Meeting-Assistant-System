@@ -261,7 +261,12 @@ export function TranscriptReviewWorkspace({
   evidenceSegmentId?: string
 }) {
   const authorization = useOptionalMeetingAuthorization()
-  const scopeKey = `${meetingId}:${authorization?.identity?.userId ?? 'standalone'}`
+  const denied = Boolean(
+    authorization?.isConfirmedAccessLoss ||
+    authorization?.capabilities.authorizationResolution === 'denied' ||
+    (!authorization && !canReadMeetingContent)
+  )
+  const scopeKey = `${meetingId}:${authorization?.identity?.userId ?? 'standalone'}:${denied}`
   return (
     <MeetingSessionBoundary
       meetingId={meetingId}
@@ -302,6 +307,7 @@ function TranscriptReviewWorkspaceContent({
     !authorization ||
     (authorization.scopeReady &&
       authorization.canReadProtectedData &&
+      authorization.capabilities.canReadMeetingContent &&
       !authorization.isConfirmedAccessLoss)
   const canRead = canReadMeetingContent && protectedScopeReady
   const confirmedAccessLoss = Boolean(
@@ -354,14 +360,15 @@ function TranscriptReviewWorkspaceContent({
   )
   const [editingSegmentId, setEditingSegmentId] = useState<string | null>(null)
   const [drafts, setDrafts] = useState<Record<string, SegmentDraft>>({})
-  const [correctionNotice, setCorrectionNotice] =
+  const [storedCorrectionNotice, setCorrectionNotice] =
     useState<CorrectionNotice | null>(null)
   const [mappingDraft, setMappingDraft] = useState<MappingDraft | null>(null)
   const mappingSpeakerId = mappingDraft?.speakerId ?? null
   const [followPlayback, setFollowPlayback] = useState(false)
   const [candidateSearchInput, setCandidateSearchInput] = useState('')
   const [candidateSearch, setCandidateSearch] = useState('')
-  const [mappingNotice, setMappingNotice] = useState<MappingNotice | null>(null)
+  const [storedMappingNotice, setMappingNotice] =
+    useState<MappingNotice | null>(null)
   const segmentNodes = useRef<Record<string, HTMLDivElement | null>>({})
   const transcriptRef = useRef<TranscriptReview | null>(null)
   const canCorrectRef = useRef(canEditCanonicalTranscript)
@@ -375,7 +382,24 @@ function TranscriptReviewWorkspaceContent({
     canCorrect: canEditCanonicalTranscript,
     canMap: canMapCanonicalSpeakers,
   })
-  const { acquire, isCurrent, release, interrupted } = operation
+  const { acquire, isCurrent, release, interrupted, clearInterrupted } =
+    operation
+  const correctionNotice: CorrectionNotice | null =
+    interrupted?.kind === 'correction' && editingSegmentId
+      ? {
+          kind: 'uncertain',
+          segmentId: editingSegmentId,
+          message: 'Authorization was interrupted while the write was pending.',
+        }
+      : storedCorrectionNotice
+  const mappingNotice: MappingNotice | null =
+    interrupted?.kind === 'mapping' && mappingSpeakerId
+      ? {
+          kind: 'uncertain',
+          speakerId: mappingSpeakerId,
+          message: 'Authorization was interrupted while the write was pending.',
+        }
+      : storedMappingNotice
   const hasUncertainty =
     correctionNotice?.kind === 'uncertain' ||
     mappingNotice?.kind === 'uncertain'
@@ -398,35 +422,7 @@ function TranscriptReviewWorkspaceContent({
     canMapRef.current = canMapCanonicalSpeakers
   }, [transcriptSnapshot, canEditCanonicalTranscript, canMapCanonicalSpeakers])
 
-  useEffect(() => {
-    if (!confirmedAccessLoss) return
-    setDrafts({})
-    setEditingSegmentId(null)
-    setMappingDraft(null)
-    setCorrectionNotice(null)
-    setMappingNotice(null)
-    setSelectedSegmentId(null)
-  }, [confirmedAccessLoss])
-
-  useEffect(() => {
-    if (!interrupted || confirmedAccessLoss) return
-    const message = 'Authorization was interrupted while the write was pending.'
-    if (interrupted.kind === 'correction' && editingSegmentId) {
-      setCorrectionNotice({
-        kind: 'uncertain',
-        segmentId: editingSegmentId,
-        message,
-      })
-    } else if (interrupted.kind === 'mapping' && mappingSpeakerId) {
-      setMappingNotice({
-        kind: 'uncertain',
-        speakerId: mappingSpeakerId,
-        message,
-      })
-    }
-  }, [confirmedAccessLoss, editingSegmentId, interrupted, mappingSpeakerId])
-
-  useEffect(() => {
+  useLayoutEffect(() => {
     setReviewDirty?.(!confirmedAccessLoss && reviewDirty)
     return () => setReviewDirty?.(false)
   }, [confirmedAccessLoss, reviewDirty, setReviewDirty])
@@ -509,11 +505,15 @@ function TranscriptReviewWorkspaceContent({
           job.sourceMediaId === transcriptValue.sourceMediaId
       )
     : undefined
-  const pendingJob = session.processing.jobs.data?.find(
-    (job) =>
-      job.meetingId === meetingId &&
-      ['PENDING', 'QUEUED', 'RUNNING', 'WAITING_FOR_REVIEW'].includes(job.status)
+  const meetingJobs =
+    session.processing.jobs.data?.filter((job) => job.meetingId === meetingId) ??
+    []
+  const activeJobs = meetingJobs.filter((job) =>
+    ['PENDING', 'QUEUED', 'RUNNING', 'WAITING_FOR_REVIEW'].includes(job.status)
   )
+  const pendingJob =
+    (activeJobs.length === 1 ? activeJobs[0] : undefined) ??
+    (meetingJobs.length === 1 ? meetingJobs[0] : undefined)
   const detail = useQuery({
     ...meetingDetailQueryOptions(meetingId),
     enabled: canMap && !authorization && Boolean(mappingSpeakerId),
@@ -525,6 +525,7 @@ function TranscriptReviewWorkspaceContent({
   const membershipQuery = authorization?.participantsQuery ?? participants
   const candidateMeeting = authorization?.meeting ?? detail.data?.meeting
   const candidateParticipants = authorization?.participants ?? participants.data
+  const candidateIdentity = authorization?.identity
   const eligibleCandidates = useMemo(() => {
     const members = new Map<string, SpeakerCandidate>()
     if (!canMap || candidateMeeting?.id !== meetingId) return []
@@ -532,8 +533,8 @@ function TranscriptReviewWorkspaceContent({
     members.set(organizerId, {
       id: organizerId,
       displayName:
-        authorization?.identity?.userId === organizerId
-          ? authorization.identity.displayName
+        candidateIdentity?.userId === organizerId
+          ? candidateIdentity.displayName
           : organizerId,
     })
     if (membershipQuery.isSuccess && !membershipQuery.isFetching) {
@@ -549,7 +550,7 @@ function TranscriptReviewWorkspaceContent({
     }
     return [...members.values()]
   }, [
-    authorization?.identity,
+    candidateIdentity,
     canMap,
     candidateMeeting,
     candidateParticipants,
@@ -557,6 +558,14 @@ function TranscriptReviewWorkspaceContent({
     membershipQuery.isFetching,
     membershipQuery.isSuccess,
   ])
+  const canReapplyMapping = Boolean(
+    mappingDraft &&
+    mappingDraft.userId !== undefined &&
+    mappingDraft.transcriptId === transcriptValue?.id &&
+    availableSpeakers.some((speaker) => speaker.id === mappingDraft.speakerId) &&
+    (mappingDraft.userId === null ||
+      eligibleCandidates.some((member) => member.id === mappingDraft.userId))
+  )
   const candidateResults = eligibleCandidates.filter((candidate) =>
     `${candidate.displayName} ${candidate.id}`
       .toLocaleLowerCase()
@@ -684,7 +693,10 @@ function TranscriptReviewWorkspaceContent({
       if (isConflict(error)) {
         await refreshEvidence()
         if (!isCurrent(payload.execution)) return
-        setMappingNotice({ kind: 'conflict', speakerId: payload.draft.speakerId })
+        setMappingNotice({
+          kind: 'conflict',
+          speakerId: payload.draft.speakerId,
+        })
         return
       }
       const uncertain = isUncertainMutation(error)
@@ -694,7 +706,10 @@ function TranscriptReviewWorkspaceContent({
       setMappingNotice({
         kind: uncertain ? 'uncertain' : 'error',
         speakerId: payload.draft.speakerId,
-        message: operationErrorMessage(error, 'Unable to update speaker identity.'),
+        message: operationErrorMessage(
+          error,
+          'Unable to update speaker identity.'
+        ),
       })
     },
     onSettled: (_, __, payload) => release(payload.execution),
@@ -781,31 +796,34 @@ function TranscriptReviewWorkspaceContent({
       : undefined
 
   useEffect(() => {
-    if (followPlayback && !editingSegmentId && !mappingDraft && activeSegmentId) {
+    if (
+      followPlayback &&
+      !editingSegmentId &&
+      !mappingDraft &&
+      activeSegmentId
+    ) {
       segmentNodes.current[activeSegmentId]?.scrollIntoView?.({
         block: 'nearest',
       })
     }
   }, [activeSegmentId, editingSegmentId, followPlayback, mappingDraft])
 
-  useEffect(() => {
-    if (
-      evidenceTranscriptId !== transcriptValue?.id ||
-      !evidenceSegmentId ||
-      !orderedSegments.some((segment) => segment.id === evidenceSegmentId)
-    ) {
-      return
+  const requestedEvidence =
+    evidenceTranscriptId === transcriptValue?.id &&
+    evidenceSegmentId &&
+    orderedSegments.some((segment) => segment.id === evidenceSegmentId)
+      ? `${evidenceTranscriptId}:${evidenceSegmentId}`
+      : null
+  const [handledEvidence, setHandledEvidence] = useState<string | null>(null)
+  if (requestedEvidence !== handledEvidence) {
+    setHandledEvidence(requestedEvidence)
+    if (requestedEvidence && evidenceSegmentId) {
+      setSearchInput('')
+      setSpeakerFilter('all')
+      setQualityFilter('all')
+      setSelectedSegmentId(evidenceSegmentId)
     }
-    setSearchInput('')
-    setSpeakerFilter('all')
-    setQualityFilter('all')
-    setSelectedSegmentId(evidenceSegmentId)
-  }, [
-    evidenceSegmentId,
-    evidenceTranscriptId,
-    orderedSegments,
-    transcriptValue?.id,
-  ])
+  }
 
   function playFrom(positionMs: number) {
     if (!canRead || !sourceMediaId || (!sourceMedia && !sourceLoading)) return
@@ -1046,6 +1064,7 @@ function TranscriptReviewWorkspaceContent({
                   type='button'
                   variant='outline'
                   onClick={() => {
+                    clearInterrupted()
                     setDrafts({})
                     setEditingSegmentId(null)
                     setMappingDraft(null)
@@ -1074,6 +1093,7 @@ function TranscriptReviewWorkspaceContent({
                         'The original outcome is not confirmed. Discard the unresolved local intent?'
                       )
                     ) {
+                      clearInterrupted()
                       setDrafts({})
                       setEditingSegmentId(null)
                       setMappingDraft(null)
@@ -1168,6 +1188,23 @@ function TranscriptReviewWorkspaceContent({
                 </Button>
               )}
             </div>
+            {editingSegmentId &&
+              !filteredSegments.some(
+                (segment) => segment.id === editingSegmentId
+              ) && (
+                <Button
+                  type='button'
+                  variant='outline'
+                  onClick={() => {
+                    setSearchInput('')
+                    setSpeakerFilter('all')
+                    setQualityFilter('all')
+                    setSelectedSegmentId(editingSegmentId)
+                  }}
+                >
+                  Return to unsaved correction
+                </Button>
+              )}
             {filteredSegments.length === 0 ? (
               <RequestEmpty
                 title='No matching transcript segments'
@@ -1177,6 +1214,8 @@ function TranscriptReviewWorkspaceContent({
               <div
                 className='max-h-[min(70vh,54rem)] space-y-3 overflow-auto pr-1'
                 aria-label='Chronological transcript'
+                onWheel={() => setFollowPlayback(false)}
+                onTouchStart={() => setFollowPlayback(false)}
               >
                 {filteredSegments.map((segment) => {
                   const draft = drafts[segment.id]
@@ -1252,7 +1291,7 @@ function TranscriptReviewWorkspaceContent({
                               disabled={
                                 blocked ||
                                 Boolean(mappingDraft) ||
-                                Boolean(editingSegmentId && !isEditing)
+                                Boolean(editingSegmentId)
                               }
                               onClick={() => beginCorrection(segment)}
                             >
@@ -1378,7 +1417,8 @@ function TranscriptReviewWorkspaceContent({
                           }}
                           onKeepDraft={() => {
                             if (
-                              transcriptValue.id !== drafts[segment.id]?.transcriptId ||
+                              transcriptValue.id !==
+                                drafts[segment.id]?.transcriptId ||
                               transcriptReview.isFetching
                             ) {
                               return
@@ -1461,6 +1501,7 @@ function TranscriptReviewWorkspaceContent({
           }}
           mutationPending={blocked || Boolean(editingSegmentId)}
           onReapply={reapplyMapping}
+          canReapply={canReapplyMapping}
           intendedUserId={mappingDraft?.userId}
           notice={mappingNotice}
           onDismissNotice={() => {
@@ -1681,6 +1722,7 @@ function SpeakerMappingCard({
   notice,
   onDismissNotice,
   onReapply,
+  canReapply,
   intendedUserId,
 }: {
   speakers: UseQueryResult<Speaker[], unknown>
@@ -1700,6 +1742,7 @@ function SpeakerMappingCard({
   notice: MappingNotice | null
   onDismissNotice: () => void
   onReapply: () => void
+  canReapply: boolean
   intendedUserId?: string | null
 }) {
   return (
@@ -1858,7 +1901,7 @@ function SpeakerMappingCard({
                   type='button'
                   size='sm'
                   variant='outline'
-                  disabled={mutationPending}
+                  disabled={mutationPending || !canReapply}
                   onClick={onReapply}
                 >
                   Reapply intended mapping

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { coreApi } from '@/lib/core-api'
 import {
   mapSpeaker,
+  reviewCoverageQuery,
   transcriptReviewQuery,
   transcriptSchema,
   transcriptSegmentEtag,
@@ -110,5 +111,35 @@ describe('transcript API concurrency contracts', () => {
     })
 
     expect(parsed.success).toBe(false)
+  })
+
+  it('rejects coverage observed across a transcript replacement', async () => {
+    const etag = '"t-transcript-7"'
+    vi.spyOn(coreApi, 'getWithMetaAndEtag')
+      .mockResolvedValueOnce({ data: transcript, meta: {}, etag })
+      .mockResolvedValueOnce({
+        data: { ...transcript, contentRevision: 8 },
+        meta: {},
+        etag: '"t-transcript-8"',
+      })
+    const read = vi.spyOn(coreApi, 'get').mockResolvedValue([])
+    const client = new QueryClient()
+    const snapshot = { transcript: transcriptSchema.parse(transcript), etag }
+    await expect(
+      client.fetchQuery(reviewCoverageQuery(meetingId, snapshot))
+    ).rejects.toMatchObject({ code: 'TRANSCRIPT_EVIDENCE_CHANGED' })
+    expect(read).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects a transcript from a different meeting', async () => {
+    vi.spyOn(coreApi, 'getWithMetaAndEtag').mockResolvedValue({
+      data: { ...transcript, meetingId: sourceMediaId },
+      meta: {},
+      etag: '"t-transcript-7"',
+    })
+    const client = new QueryClient()
+    await expect(
+      client.fetchQuery(transcriptReviewQuery(meetingId))
+    ).rejects.toMatchObject({ code: 'MALFORMED_RESPONSE' })
   })
 })

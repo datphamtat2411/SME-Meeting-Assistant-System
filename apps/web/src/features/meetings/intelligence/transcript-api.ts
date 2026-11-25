@@ -124,20 +124,44 @@ export function transcriptReviewQuery(meetingId: string) {
   })
 }
 
-export function sameTranscriptEvidence(
-  left: TranscriptReview,
-  right: TranscriptReview
+type TranscriptEvidenceIdentity = {
+  meetingId: string
+  transcriptId: string
+  sourceMediaId: string
+  processingJobId: string
+  versionNumber: number
+  contentRevision: number
+  etag: string
+}
+
+export function transcriptEvidenceIdentity(
+  snapshot: TranscriptReview
+): TranscriptEvidenceIdentity {
+  const transcript = snapshot.transcript
+  return {
+    meetingId: transcript.meetingId,
+    transcriptId: transcript.id,
+    sourceMediaId: transcript.sourceMediaId,
+    processingJobId: transcript.processingJobId,
+    versionNumber: transcript.versionNumber,
+    contentRevision: transcript.contentRevision,
+    etag: snapshot.etag,
+  }
+}
+
+function sameTranscriptEvidence(
+  expected: TranscriptEvidenceIdentity,
+  current: TranscriptReview
 ): boolean {
-  const a = left.transcript
-  const b = right.transcript
+  const observed = transcriptEvidenceIdentity(current)
   return (
-    a.meetingId === b.meetingId &&
-    a.id === b.id &&
-    a.sourceMediaId === b.sourceMediaId &&
-    a.processingJobId === b.processingJobId &&
-    a.versionNumber === b.versionNumber &&
-    a.contentRevision === b.contentRevision &&
-    left.etag === right.etag
+    expected.meetingId === observed.meetingId &&
+    expected.transcriptId === observed.transcriptId &&
+    expected.sourceMediaId === observed.sourceMediaId &&
+    expected.processingJobId === observed.processingJobId &&
+    expected.versionNumber === observed.versionNumber &&
+    expected.contentRevision === observed.contentRevision &&
+    expected.etag === observed.etag
   )
 }
 
@@ -145,13 +169,13 @@ export function sameTranscriptEvidence(
 // read with canonical evidence checks; do not treat the result as atomic.
 async function readBoundEvidence<T>(
   meetingId: string,
-  snapshot: TranscriptReview,
+  evidence: TranscriptEvidenceIdentity,
   signal: AbortSignal,
   read: () => Promise<T>
 ): Promise<T> {
   const check = async () => {
     const current = await fetchTranscriptReview(meetingId, signal)
-    if (!sameTranscriptEvidence(snapshot, current)) {
+    if (!sameTranscriptEvidence(evidence, current)) {
       throw new CoreApiError({
         message: 'Transcript evidence changed. Reload the current snapshot.',
         code: 'TRANSCRIPT_EVIDENCE_CHANGED',
@@ -169,19 +193,13 @@ export function reviewCoverageQuery(
   meetingId: string,
   snapshot: TranscriptReview | undefined
 ) {
+  const evidence = snapshot ? transcriptEvidenceIdentity(snapshot) : null
   return queryOptions({
-    queryKey: [
-      'transcript',
-      meetingId,
-      'coverage',
-      snapshot?.transcript.id,
-      snapshot?.transcript.contentRevision,
-      snapshot?.etag,
-    ],
-    enabled: Boolean(snapshot),
+    queryKey: ['transcript', meetingId, 'coverage', evidence],
+    enabled: Boolean(evidence),
     queryFn: ({ signal }) => {
-      if (!snapshot) throw new Error('A transcript snapshot is required.')
-      return readBoundEvidence(meetingId, snapshot, signal, async () =>
+      if (!evidence) throw new Error('A transcript snapshot is required.')
+      return readBoundEvidence(meetingId, evidence, signal, async () =>
         coverageSchema.array().parse(
           await coreApi.get<unknown>(route(meetingId) + '/transcript/coverage', {
             signal,
@@ -197,19 +215,13 @@ export function reviewSpeakersQuery(
   meetingId: string,
   snapshot: TranscriptReview | undefined
 ) {
+  const evidence = snapshot ? transcriptEvidenceIdentity(snapshot) : null
   return queryOptions({
-    queryKey: [
-      'transcript',
-      meetingId,
-      'speakers',
-      snapshot?.transcript.id,
-      snapshot?.transcript.contentRevision,
-      snapshot?.etag,
-    ],
-    enabled: Boolean(snapshot),
+    queryKey: ['transcript', meetingId, 'speakers', evidence],
+    enabled: Boolean(evidence),
     queryFn: ({ signal }) => {
-      if (!snapshot) throw new Error('A transcript snapshot is required.')
-      return readBoundEvidence(meetingId, snapshot, signal, async () =>
+      if (!evidence) throw new Error('A transcript snapshot is required.')
+      return readBoundEvidence(meetingId, evidence, signal, async () =>
         speakerSchema.array().parse(
           await coreApi.get<unknown>(route(meetingId) + '/speaker-clusters', {
             signal,

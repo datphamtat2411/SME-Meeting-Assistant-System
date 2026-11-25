@@ -167,6 +167,19 @@ function installReadOnlyCore() {
     if (/\/minutes$/.test(url)) return minutes
     throw new Error(`Unexpected GET ${url}`)
   })
+  const getWithMetaAndEtagSpy = vi
+    .spyOn(coreApi, 'getWithMetaAndEtag')
+    .mockImplementation(async (url) => {
+      mediaReads.push(url)
+      if (url.endsWith('/transcript')) {
+        throw new CoreApiError({
+          message: 'Transcript is not ready.',
+          status: 404,
+          kind: 'http',
+        })
+      }
+      throw new Error(`Unexpected GET with ETag ${url}`)
+    })
   const getWithMetaSpy = vi
     .spyOn(coreApi, 'getWithMeta')
     .mockImplementation(async (url) => {
@@ -200,6 +213,7 @@ function installReadOnlyCore() {
     mediaReads,
     getSpy,
     getWithMetaSpy,
+    getWithMetaAndEtagSpy,
     mutationSpies: { postSpy, patchSpy, putSpy, deleteSpy },
   }
 }

@@ -124,6 +124,31 @@ function PlaybackHarness() {
       <button type='button' onClick={() => session.seek(5000)}>
         Seek to five seconds
       </button>
+      <button
+        type='button'
+        onClick={() =>
+          void session.seekToSource(firstMediaId, 700, 'transcript-a')
+        }
+      >
+        Seek from transcript A
+      </button>
+      <button
+        type='button'
+        onClick={() =>
+          void session.seekToSource(firstMediaId, 300, 'transcript-b')
+        }
+      >
+        Seek from transcript B
+      </button>
+      <button
+        type='button'
+        onClick={() => session.cancelPendingSeek('transcript-a')}
+      >
+        Cancel transcript A
+      </button>
+      <output data-testid='pending-seek'>
+        {session.playback.pendingSeek?.ownerKey ?? 'none'}
+      </output>
       <output data-testid='playback-state'>
         {session.playback.sourceMediaId ?? 'none'}:{session.playback.status}:
         {session.playback.currentTimeMs}
@@ -238,6 +263,54 @@ describe('meeting session ownership boundaries', () => {
     await expect
       .element(screen.getByTestId('playback-state'))
       .toHaveTextContent(`${secondMediaId}:loading`)
+  })
+
+  it('cancels only the obsolete transcript seek while the source loads', async () => {
+    const fetch = deferred<Blob>()
+    mediaMocks.requestMediaAccess.mockResolvedValue({
+      url: firstMediaId,
+      expiresAt: '2030-01-01T00:05:00Z',
+    })
+    mediaMocks.fetchMediaCapability.mockReturnValue(fetch.promise)
+    const screen = await render(
+      <QueryClientProvider client={queryClient()}>
+        <MeetingSessionProvider
+          meetingId={meetingId}
+          fallbackCapabilities={{
+            canReadMedia: true,
+            canReadProcessing: false,
+          }}
+        >
+          <PlaybackHarness />
+        </MeetingSessionProvider>
+      </QueryClientProvider>
+    )
+    await expect
+      .element(screen.getByTestId('media-state'))
+      .toHaveTextContent('ready')
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Seek from transcript A' })
+    )
+    await expect
+      .element(screen.getByTestId('pending-seek'))
+      .toHaveTextContent('transcript-a')
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Seek from transcript B' })
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Cancel transcript A' })
+    )
+    await expect
+      .element(screen.getByTestId('pending-seek'))
+      .toHaveTextContent('transcript-b')
+    fetch.resolve(playableWaveFile())
+    await expect
+      .element(screen.getByTestId('pending-seek'))
+      .toHaveTextContent('none')
+    await expect
+      .element(screen.getByTestId('playback-state'))
+      .toHaveTextContent(':300')
+    expect(mediaMocks.fetchMediaCapability).toHaveBeenCalledTimes(1)
   })
 
   it('ignores a late play failure from a source replaced during playback', async () => {

@@ -85,11 +85,13 @@ export function useTranscriptReviewOperation(scope: ReviewScope) {
     )
   }, [])
 
+  const clearInterrupted = useCallback(() => setInterrupted(null), [])
+
   const release = useCallback((execution: ReviewExecution) => {
     if (executionRef.current !== execution) return
     executionRef.current = null
     setPending(false)
   }, [])
 
-  return { acquire, isCurrent, release, pending, interrupted }
+  return { acquire, isCurrent, release, pending, interrupted, clearInterrupted }
 }
