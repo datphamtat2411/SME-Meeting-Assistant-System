@@ -104,6 +104,8 @@ class TranscriptReviewIntegrationTests {
         var transcript = mvc.perform(get(transcriptUrl()).principal(as(participant)))
             .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("READY"))
             .andExpect(jsonPath("$.data.segments[0].text").value("Chúng ta bắt đầu cuộc họp."))
+            .andExpect(jsonPath("$.data.segments[0].etag")
+                .value("\"s-" + segment + "-0\""))
             .andReturn().getResponse();
         assertThat(transcript.getHeader("Cache-Control")).contains("no-store");
         String etag = "\"s-" + segment + "-0\"";
@@ -115,7 +117,9 @@ class TranscriptReviewIntegrationTests {
         mvc.perform(patch(transcriptUrl() + "/segments/" + segment).principal(as(organizer))
                 .header("If-Match", etag).contentType(MediaType.APPLICATION_JSON)
                 .content("{\"text\":\"Chúng ta bắt đầu cuộc họp nhé.\",\"reason\":\"Punctuation\"}"))
-            .andExpect(status().isOk()).andExpect(jsonPath("$.data.text").value("Chúng ta bắt đầu cuộc họp nhé."));
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.text").value("Chúng ta bắt đầu cuộc họp nhé."))
+            .andExpect(jsonPath("$.data.etag").value("\"s-" + segment + "-1\""));
         mvc.perform(patch(transcriptUrl() + "/segments/" + segment).principal(as(organizer))
                 .header("If-Match", etag).contentType(MediaType.APPLICATION_JSON)
                 .content("{\"text\":\"stale\"}"))

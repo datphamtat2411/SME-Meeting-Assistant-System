@@ -1,54 +1,33 @@
-import 'dart:math';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 
-import '../../core/api_client.dart';
+import '../../core/app_theme.dart';
 import '../../core/command_actions.dart';
-import '../../core/models.dart';
-import '../../core/paged_collection.dart';
 import '../../core/widgets.dart';
+import 'results_models.dart';
+import 'results_workspace_controller.dart';
 
 class SummaryHistoryPanel extends StatefulWidget {
-  const SummaryHistoryPanel({
-    super.key,
-    required this.api,
-    required this.meetingId,
-  });
-  final ApiClient api;
-  final String meetingId;
+  const SummaryHistoryPanel({super.key, required this.workspace});
+  final ResultsWorkspaceController workspace;
+
   @override
   State<SummaryHistoryPanel> createState() => _SummaryHistoryPanelState();
 }
 
 class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
-  late Future<ApiResult> current;
-  late Future<List<Map<String, dynamic>>> versions;
   bool busy = false;
+
   @override
   void initState() {
     super.initState();
-    reload();
+    unawaited(widget.workspace.loadSummary());
+    unawaited(widget.workspace.loadSummaryVersions());
   }
 
-  void reload() => setState(() {
-    final path = '/meetings/' + widget.meetingId + '/summary';
-    current = widget.api.get(path);
-    versions = widget.api
-        .get(path + '/versions', query: {'page': '0', 'size': '50'})
-        .then(
-          (response) => PagedCollection<Map<String, dynamic>>.fromResult(
-            response,
-            (raw) => raw,
-            requestedPage: 0,
-            requestedSize: 50,
-          ).items,
-        );
-  });
-
-  Future<void> edit(ApiResult response) async {
-    final ctrl = TextEditingController(
-      text: textValue(response.objectData()['content']),
-    );
+  Future<void> edit(ResultsSummary summary) async {
+    final controller = TextEditingController(text: summary.content);
     final ok = await showDialog<bool>(
       context: context,
       builder: (dialog) => AlertDialog(
@@ -56,7 +35,7 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
         content: SizedBox(
           width: 500,
           child: TextField(
-            controller: ctrl,
+            controller: controller,
             maxLength: 20000,
             minLines: 5,
             maxLines: 12,
@@ -74,51 +53,30 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
         ],
       ),
     );
-    final value = ctrl.text.trim();
-    ctrl.dispose();
+    final value = controller.text.trim();
+    controller.dispose();
     if (ok != true || value.isEmpty || !mounted) return;
     setState(() => busy = true);
-    try {
-      await widget.api.patch(
-        '/meetings/' + widget.meetingId + '/summary',
-        {'content': value},
-        headers: {'If-Match': requireEtag(response)},
-      );
-      if (mounted) {
-        showSuccess(context, 'Đã lưu phiên bản mới.');
-        reload();
-      }
-    } catch (error) {
-      if (mounted) showFailure(context, error);
-    } finally {
-      if (mounted) setState(() => busy = false);
-    }
+    await runCommand(
+      context,
+      operation: () => widget.workspace.editSummary(summary, value),
+      successText: 'Đã lưu phiên bản mới.',
+    );
+    if (mounted) setState(() => busy = false);
   }
 
-  Future<void> activateVersion(String id) async {
+  Future<void> activateVersion(
+    ResultsSummary summary,
+    SummaryVersion version,
+  ) async {
     setState(() => busy = true);
-    try {
-      final fresh = await widget.api.get(
-        '/meetings/' + widget.meetingId + '/summary',
-      );
-      await widget.api.post(
-        '/meetings/' +
-            widget.meetingId +
-            '/summary/versions/' +
-            id +
-            '/activate',
-        {},
-        headers: {'If-Match': requireEtag(fresh)},
-      );
-      if (mounted) {
-        showSuccess(context, 'Đã kích hoạt phiên bản.');
-        reload();
-      }
-    } catch (error) {
-      if (mounted) showFailure(context, error);
-    } finally {
-      if (mounted) setState(() => busy = false);
-    }
+    await runCommand(
+      context,
+      operation: () =>
+          widget.workspace.activateSummaryVersion(summary, version.id),
+      successText: 'Đã kích hoạt phiên bản.',
+    );
+    if (mounted) setState(() => busy = false);
   }
 
   Future<void> regenerate() async {
@@ -130,142 +88,130 @@ class _SummaryHistoryPanelState extends State<SummaryHistoryPanel> {
     );
     if (!ok || !mounted) return;
     setState(() => busy = true);
-    try {
-      final rand = Random.secure();
-      final key = List<int>.generate(
-        16,
-        (_) => rand.nextInt(256),
-      ).map((v) => v.toRadixString(16).padLeft(2, '0')).join();
-      final response = await widget.api.post(
-        '/meetings/' + widget.meetingId + '/summary/regenerate',
-        {},
-        headers: {'Idempotency-Key': key},
-      );
-      if (mounted) {
-        showSuccess(
-          context,
-          'Đã tiếp nhận tác vụ ' +
-              textValue(response.objectData()['processingJobId']),
-        );
-        reload();
-      }
-    } catch (error) {
-      if (mounted) showFailure(context, error);
-    } finally {
-      if (mounted) setState(() => busy = false);
-    }
+    await runCommand(
+      context,
+      operation: widget.workspace.regenerateSummary,
+      successText: 'Đã tiếp nhận tác vụ xử lý.',
+    );
+    if (mounted) setState(() => busy = false);
   }
 
   @override
-  Widget build(BuildContext context) => ListView(
-    padding: const EdgeInsets.all(18),
-    children: [
-      SectionHeading(
-        'Tóm tắt cuộc họp',
-        trailing: IconButton(
-          onPressed: reload,
-          icon: const Icon(Icons.refresh),
-        ),
-      ),
-      FutureBuilder<ApiResult>(
-        future: current,
-        builder: (context, snap) {
-          if (snap.connectionState != ConnectionState.done) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          if (snap.hasError)
-            return MessagePanel(
-              title: 'Tóm tắt chưa sẵn sàng',
-              description: snap.error.toString(),
-              onRetry: reload,
-            );
-          final value = snap.data!;
-          final summary = value.objectData();
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              ContentCard(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            'Phiên bản ' + textValue(summary['versionNumber']),
-                            style: const TextStyle(fontWeight: FontWeight.w700),
-                          ),
-                        ),
-                        if (summary['isStale'] == true)
-                          const StatePill(
-                            'COMPLETED_WITH_WARNINGS',
-                            label: 'Nguồn đã cập nhật',
-                          ),
-                      ],
-                    ),
-                    const SizedBox(height: 10),
-                    SelectableText(textValue(summary['content'])),
-                    if (summary['aiWarnings'] is List &&
-                        (summary['aiWarnings'] as List).isNotEmpty)
-                      Text((summary['aiWarnings'] as List).join('\n')),
-                  ],
-                ),
-              ),
-              Row(
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: widget.workspace,
+    builder: (context, _) {
+      final current = widget.workspace.summary.data;
+      final versions = widget.workspace.summaryVersions.data?.items;
+      return ListView(
+        padding: const EdgeInsets.all(18),
+        children: [
+          SectionHeading(
+            'Tóm tắt cuộc họp',
+            trailing: IconButton(
+              onPressed: () {
+                unawaited(widget.workspace.loadSummary(force: true));
+                unawaited(widget.workspace.loadSummaryVersions(force: true));
+              },
+              icon: const Icon(Icons.refresh),
+            ),
+          ),
+          if (current == null)
+            MessagePanel(
+              title:
+                  widget.workspace.summary.phase ==
+                      ResultsResourcePhase.forbidden
+                  ? 'Bạn không có quyền xem kết quả này'
+                  : 'Tóm tắt chưa sẵn sàng',
+              onRetry:
+                  widget.workspace.summary.phase == ResultsResourcePhase.failed
+                  ? () => unawaited(widget.workspace.loadSummary(force: true))
+                  : null,
+            )
+          else ...[
+            ContentCard(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: busy ? null : () => edit(value),
-                      icon: const Icon(Icons.edit_outlined),
-                      label: const Text('Chỉnh sửa'),
-                    ),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          'Phiên bản ${current.versionNumber}',
+                          style: const TextStyle(fontWeight: FontWeight.w700),
+                        ),
+                      ),
+                      if (current.isStale)
+                        const StatePill(
+                          'COMPLETED_WITH_WARNINGS',
+                          label: 'Nguồn đã cập nhật',
+                        ),
+                    ],
                   ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: busy ? null : regenerate,
-                      icon: const Icon(Icons.auto_awesome),
-                      label: const Text('Tạo lại AI'),
+                  const SizedBox(height: 10),
+                  SelectableText(current.content),
+                  if (current.aiWarnings.isNotEmpty)
+                    Text(
+                      current.aiWarnings.join('\n'),
+                      style: const TextStyle(color: Palette.amber),
                     ),
-                  ),
                 ],
               ),
-            ],
-          );
-        },
-      ),
-      const SizedBox(height: 16),
-      const SectionHeading('Lịch sử phiên bản'),
-      AsyncContent<List<Map<String, dynamic>>>(
-        future: versions,
-        retry: reload,
-        builder: (items) => Column(
-          children: [
-            if (items.isEmpty) const MessagePanel(title: 'Chưa có lịch sử'),
-            ...items.map(
-              (item) => ContentCard(
+            ),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: busy || !widget.workspace.capabilities.canMutate
+                        ? null
+                        : () => edit(current),
+                    icon: const Icon(Icons.edit_outlined),
+                    label: const Text('Chỉnh sửa'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: busy || !widget.workspace.capabilities.canMutate
+                        ? null
+                        : regenerate,
+                    icon: const Icon(Icons.auto_awesome),
+                    label: const Text('Tạo lại AI'),
+                  ),
+                ),
+              ],
+            ),
+          ],
+          const SizedBox(height: 16),
+          const SectionHeading('Lịch sử phiên bản'),
+          if (versions == null)
+            const MessagePanel(title: 'Chưa tải được lịch sử phiên bản')
+          else if (versions.isEmpty)
+            const MessagePanel(title: 'Chưa có lịch sử')
+          else
+            ...versions.map(
+              (version) => ContentCard(
                 child: ListTile(
                   contentPadding: EdgeInsets.zero,
-                  title: Text('Phiên bản ' + textValue(item['versionNumber'])),
+                  title: Text('Phiên bản ${version.versionNumber}'),
                   subtitle: Text(
-                    textValue(item['sourceType']) +
-                        ' · ' +
-                        textValue(item['qualityStatus']),
+                    '${version.sourceType} · ${version.qualityStatus}',
                   ),
-                  trailing: item['isCurrent'] == true
+                  trailing: version.isCurrent
                       ? const StatePill('CONFIRMED', label: 'Hiện tại')
                       : TextButton(
-                          onPressed: busy
+                          onPressed:
+                              busy ||
+                                  current == null ||
+                                  !widget.workspace.capabilities.canMutate
                               ? null
-                              : () => activateVersion(textValue(item['id'])),
+                              : () => activateVersion(current, version),
                           child: const Text('Kích hoạt'),
                         ),
                 ),
               ),
             ),
-          ],
-        ),
-      ),
-    ],
+        ],
+      );
+    },
   );
 }

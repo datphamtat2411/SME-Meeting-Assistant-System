@@ -147,6 +147,7 @@ class SpeechSegment {
     required this.speakerClusterId,
     required this.quality,
     required this.version,
+    required this.etag,
   });
 
   final String id;
@@ -158,6 +159,7 @@ class SpeechSegment {
   final String? speakerClusterId;
   final String quality;
   final int version;
+  final String etag;
 
   factory SpeechSegment.fromJson(
     Map<String, dynamic> raw, {
@@ -185,6 +187,7 @@ class SpeechSegment {
         nonEmpty: true,
       ),
       version: requiredInt(raw, 'version', response: response),
+      etag: requiredString(raw, 'etag', response: response, nonEmpty: true),
     );
   }
 }
@@ -276,6 +279,7 @@ class MeetingDecision {
     required this.createdAt,
     required this.confirmedAt,
     required this.rejectedAt,
+    required this.etag,
   });
 
   final String id;
@@ -287,6 +291,7 @@ class MeetingDecision {
   final DateTime createdAt;
   final DateTime? confirmedAt;
   final DateTime? rejectedAt;
+  final String etag;
 
   factory MeetingDecision.fromJson(
     Map<String, dynamic> raw, {
@@ -301,6 +306,7 @@ class MeetingDecision {
     createdAt: requiredTimestamp(raw, 'createdAt', response: response),
     confirmedAt: optionalTimestamp(raw, 'confirmedAt', response: response),
     rejectedAt: optionalTimestamp(raw, 'rejectedAt', response: response),
+    etag: requiredString(raw, 'etag', response: response, nonEmpty: true),
   );
 }
 

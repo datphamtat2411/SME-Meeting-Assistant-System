@@ -1,65 +1,45 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
-import '../../core/api_client.dart';
 import '../../core/command_actions.dart';
 import '../../core/models.dart';
-import '../../core/paged_collection.dart';
 import '../../core/widgets.dart';
+import 'results_models.dart';
+import 'results_workspace_controller.dart';
 
 class SpeakerMappingPanel extends StatefulWidget {
-  const SpeakerMappingPanel({
-    super.key,
-    required this.api,
-    required this.meetingId,
-  });
-  final ApiClient api;
-  final String meetingId;
+  const SpeakerMappingPanel({super.key, required this.workspace});
+  final ResultsWorkspaceController workspace;
 
   @override
   State<SpeakerMappingPanel> createState() => _SpeakerMappingPanelState();
 }
 
 class _SpeakerMappingPanelState extends State<SpeakerMappingPanel> {
-  late Future<List<Map<String, dynamic>>> future;
   bool busy = false;
+
   @override
   void initState() {
     super.initState();
-    reload();
+    unawaited(widget.workspace.loadSpeakers());
+    unawaited(widget.workspace.loadTranscript());
   }
 
-  void reload() => setState(() {
-    future = widget.api
-        .get('/meetings/' + widget.meetingId + '/speaker-clusters')
-        .then((response) => response.objectArrayData());
-  });
-
-  Future<void> assign(String cluster, String? user) async {
+  Future<void> assign(String clusterId, String? userId) async {
     if (busy) return;
     setState(() => busy = true);
-    try {
-      final transcript = await widget.api.get(
-        '/meetings/' + widget.meetingId + '/transcript',
-      );
-      await widget.api.patch(
-        '/meetings/' + widget.meetingId + '/speaker-clusters/' + cluster,
-        {'userId': user},
-        headers: {'If-Match': requireEtag(transcript)},
-      );
-      if (mounted) {
-        showSuccess(context, 'Đã cập nhật người nói.');
-        reload();
-      }
-    } catch (error) {
-      if (mounted) showFailure(context, error);
-    } finally {
-      if (mounted) setState(() => busy = false);
-    }
+    await runCommand(
+      context,
+      operation: () => widget.workspace.mapSpeaker(clusterId, userId),
+      successText: 'Đã cập nhật người nói.',
+    );
+    if (mounted) setState(() => busy = false);
   }
 
-  Future<void> choose(String cluster) async {
+  Future<void> choose(String clusterId) async {
     final search = TextEditingController();
-    List<Map<String, dynamic>> found = [];
+    List<Map<String, dynamic>> found = const [];
     final user = await showDialog<String>(
       context: context,
       builder: (dialog) => StatefulBuilder(
@@ -78,20 +58,10 @@ class _SpeakerMappingPanelState extends State<SpeakerMappingPanel> {
                   onSubmitted: (value) async {
                     if (value.trim().length < 2) return;
                     try {
-                      final response = await widget.api.get(
-                        '/users/meeting-candidates',
-                        query: {'q': value.trim(), 'size': '20'},
+                      final items = await widget.workspace.meetingCandidates(
+                        value.trim(),
                       );
-                      if (dialog.mounted) {
-                        final page =
-                            PagedCollection<Map<String, dynamic>>.fromResult(
-                              response,
-                              (raw) => raw,
-                              requestedPage: 0,
-                              requestedSize: 20,
-                            );
-                        update(() => found = page.items);
-                      }
+                      if (dialog.mounted) update(() => found = items);
                     } catch (error) {
                       if (dialog.mounted) showFailure(dialog, error);
                     }
@@ -124,58 +94,70 @@ class _SpeakerMappingPanelState extends State<SpeakerMappingPanel> {
       ),
     );
     search.dispose();
-    if (user != null && mounted) await assign(cluster, user);
+    if (user != null && mounted) await assign(clusterId, user);
   }
 
   @override
-  Widget build(BuildContext context) =>
-      AsyncContent<List<Map<String, dynamic>>>(
-        future: future,
-        retry: reload,
-        builder: (items) => ListView(
-          padding: const EdgeInsets.all(18),
-          children: [
-            const SectionHeading(
-              'Nhận diện người nói',
-              subtitle: 'Có thể hiệu chỉnh nhãn do AI nhận dạng.',
-            ),
-            if (items.isEmpty)
-              const MessagePanel(title: 'Chưa có nhóm người nói'),
-            ...items.map(
-              (entry) => ContentCard(
-                child: ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: const CircleAvatar(
-                    child: Icon(Icons.record_voice_over_outlined),
-                  ),
-                  title: Text(textValue(entry['label'], 'Speaker')),
-                  subtitle: Text(
-                    textValue(entry['displayName'], 'Chưa gán nhân viên'),
-                  ),
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: widget.workspace,
+    builder: (context, _) {
+      final resource = widget.workspace.speakers;
+      final items = resource.data;
+      if (items == null) {
+        return MessagePanel(
+          title: resource.phase == ResultsResourcePhase.forbidden
+              ? 'Bạn không có quyền xem kết quả này'
+              : 'Chưa có nhóm người nói',
+          onRetry: resource.phase == ResultsResourcePhase.failed
+              ? () => unawaited(widget.workspace.loadSpeakers(force: true))
+              : null,
+        );
+      }
+      return ListView(
+        padding: const EdgeInsets.all(18),
+        children: [
+          const SectionHeading(
+            'Nhận diện người nói',
+            subtitle: 'Có thể hiệu chỉnh nhãn do AI nhận dạng.',
+          ),
+          if (items.isEmpty)
+            const MessagePanel(title: 'Chưa có nhóm người nói'),
+          ...items.map(
+            (entry) => ContentCard(
+              child: ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const CircleAvatar(
+                  child: Icon(Icons.record_voice_over_outlined),
+                ),
+                title: Text(entry.label),
+                subtitle: Text(entry.displayName ?? 'Chưa gán nhân viên'),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      onPressed:
+                          busy || !widget.workspace.capabilities.canMutate
+                          ? null
+                          : () => choose(entry.id),
+                      icon: const Icon(Icons.person_add_outlined),
+                      tooltip: 'Gán người nói',
+                    ),
+                    if (entry.userId != null)
                       IconButton(
-                        onPressed: busy
+                        onPressed:
+                            busy || !widget.workspace.capabilities.canMutate
                             ? null
-                            : () => choose(textValue(entry['id'])),
-                        icon: const Icon(Icons.person_add_outlined),
-                        tooltip: 'Gán người nói',
+                            : () => assign(entry.id, null),
+                        icon: const Icon(Icons.link_off_outlined),
+                        tooltip: 'Bỏ gán',
                       ),
-                      if (entry['userId'] != null)
-                        IconButton(
-                          onPressed: busy
-                              ? null
-                              : () => assign(textValue(entry['id']), null),
-                          icon: const Icon(Icons.link_off_outlined),
-                          tooltip: 'Bỏ gán',
-                        ),
-                    ],
-                  ),
+                  ],
                 ),
               ),
             ),
-          ],
-        ),
+          ),
+        ],
       );
+    },
+  );
 }

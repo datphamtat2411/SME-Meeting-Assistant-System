@@ -20,6 +20,8 @@ import 'package:sme_meeting_assistant/features/recording/processing_repository.d
 import 'package:sme_meeting_assistant/features/recording/processing_manager.dart';
 import 'package:sme_meeting_assistant/features/recording/recording_coordinator.dart';
 import 'package:sme_meeting_assistant/features/recording/submission_coordinator.dart';
+import 'package:sme_meeting_assistant/features/results/results_invalidation.dart';
+import 'package:sme_meeting_assistant/features/results/results_repository.dart';
 
 /// The application-scoped dependency holder and resource owner.
 ///
@@ -41,6 +43,8 @@ class AppDependencies {
   late final RecordingCoordinator recording;
   late final SubmissionCoordinator submissions;
   late final ProcessingManager processingManager;
+  late final ResultsRepository results;
+  late final ResultsInvalidationSignal resultsInvalidation;
   bool _disposed = false;
   bool _resourcesClosed = false;
   Future<void>? _shutdownFuture;
@@ -56,6 +60,10 @@ class AppDependencies {
   }) {
     this.localMedia = localMedia ?? LocalMediaRepository.lazyDefault();
     meetingInvalidation = MeetingInvalidationSignal(api);
+    resultsInvalidation = ResultsInvalidationSignal(
+      api: api,
+      meetingInvalidation: meetingInvalidation,
+    );
     meetings = MeetingRepository(api: api, invalidation: meetingInvalidation);
     roomScheduling = RoomSchedulingRepository(api);
     participantCandidates = ParticipantCandidateRepository(api);
@@ -70,6 +78,7 @@ class AppDependencies {
     );
     media = MediaRepository(api: api);
     processing = ProcessingRepository(api: api);
+    results = ResultsRepository(api);
     this.recording =
         recording ??
         RecordingCoordinator(
@@ -217,6 +226,7 @@ class AppDependencies {
   Future<void> _closeResources({Future<void>? drain}) async {
     if (_resourcesClosed) return;
     _resourcesClosed = true;
+    resultsInvalidation.dispose();
     meetingInvalidation.dispose();
     processingManager.dispose();
     submissions.dispose();

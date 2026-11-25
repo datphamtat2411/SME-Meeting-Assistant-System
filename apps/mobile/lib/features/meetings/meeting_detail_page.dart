@@ -475,6 +475,18 @@ class _MeetingDetailPageState extends State<MeetingDetailPage>
                       1 => ResultsPanel(
                         api: widget.api,
                         meetingId: widget.meetingId,
+                        dependencies: widget.dependencies,
+                        meeting: snapshot.meeting,
+                        meetingCapabilities: MeetingCapabilityPolicy.evaluate(
+                          callerId: widget.api.userId,
+                          meeting: snapshot.meeting,
+                          callerIsActiveParticipant: state.participants.any(
+                            (participant) =>
+                                participant.isActive &&
+                                participant.userId.toLowerCase() ==
+                                    widget.api.userId.toLowerCase(),
+                          ),
+                        ),
                       ),
                       2 => RecordingPage(
                         api: widget.api,

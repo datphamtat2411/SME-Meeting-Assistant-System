@@ -114,6 +114,13 @@ Job progress and failures are exposed through Core API resources, including part
 Retry-sensitive creation or job-trigger endpoints may use `Idempotency-Key`; concurrency-sensitive updates may use `ETag` and `If-Match`.
 For operations requiring `If-Match`, a missing header returns 428; a stale value returns 412.
 
+Meeting Results conditional resources expose the complete server-issued token in
+the item representation as `etag` as well as the HTTP `ETag` response header
+where the response represents the same resource. Transcript segment tokens are
+valid for the segment correction endpoint; decision tokens are valid for
+decision edit and review endpoints. Clients must treat these values as opaque
+and must not construct them from identifiers or version fields.
+
 ## Boundary
 
 This file records shared HTTP conventions, not an endpoint catalog. Feature paths, DTO fields, authorization specifics, and error codes are defined by the active Task Specification and implemented contract.

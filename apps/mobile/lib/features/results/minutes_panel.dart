@@ -1,64 +1,57 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
-import '../../core/api_client.dart';
 import '../../core/app_theme.dart';
 import '../../core/models.dart';
 import '../../core/widgets.dart';
+import 'results_models.dart';
+import 'results_workspace_controller.dart';
 
 class MinutesPanel extends StatefulWidget {
-  const MinutesPanel({super.key, required this.api, required this.meetingId});
-  final ApiClient api;
-  final String meetingId;
+  const MinutesPanel({super.key, required this.workspace});
+  final ResultsWorkspaceController workspace;
+
   @override
   State<MinutesPanel> createState() => _MinutesPanelState();
 }
 
 class _MinutesPanelState extends State<MinutesPanel> {
-  late Future<Map<String, dynamic>> future;
   @override
   void initState() {
     super.initState();
-    reload();
+    unawaited(widget.workspace.loadMinutes());
   }
 
-  void reload() => setState(() {
-    future = widget.api
-        .get('/meetings/' + widget.meetingId + '/minutes')
-        .then((r) => r.objectData());
-  });
-
   @override
-  Widget build(BuildContext context) => AsyncContent<Map<String, dynamic>>(
-    future: future,
-    retry: reload,
-    builder: (minutes) {
-      final meeting = objectOf(minutes['meeting']);
-      final summary = objectOf(minutes['summary']);
-      final transcript = objectOf(minutes['transcript']);
-      final decisions = objectsOf(minutes['confirmedDecisions']);
-      final actions = objectsOf(minutes['officialActionItems']);
-      final warnings = minutes['warnings'] is List
-          ? minutes['warnings'] as List
-          : [];
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: widget.workspace,
+    builder: (context, _) {
+      final resource = widget.workspace.minutes;
+      final minutes = resource.data;
+      if (minutes == null) {
+        return MessagePanel(
+          title: resource.phase == ResultsResourcePhase.forbidden
+              ? 'Bạn không có quyền xem kết quả này'
+              : 'Biên bản chưa sẵn sàng',
+          onRetry: resource.phase == ResultsResourcePhase.failed
+              ? () => unawaited(widget.workspace.loadMinutes(force: true))
+              : null,
+        );
+      }
       return RefreshIndicator(
-        onRefresh: () async {
-          reload();
-          await future;
-        },
+        onRefresh: () => widget.workspace.loadMinutes(force: true),
         child: ListView(
           padding: const EdgeInsets.all(18),
           children: [
-            SectionHeading(
-              'Biên bản chính thức',
-              subtitle: textValue(meeting['title']),
-            ),
+            const SectionHeading('Biên bản chính thức'),
             ContentCard(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  StatePill(textValue(minutes['completeness'])),
+                  StatePill(minutes.completeness),
                   const SizedBox(height: 8),
-                  Text('Lập lúc: ' + dateLabel(minutes['assembledAt'])),
+                  Text('Lập lúc: ${dateLabel(minutes.assembledAt)}'),
                   const SizedBox(height: 7),
                   const Text(
                     'Chỉ gồm nội dung đã được xác nhận theo quy tắc Core API.',
@@ -70,27 +63,27 @@ class _MinutesPanelState extends State<MinutesPanel> {
             const SectionHeading('Tóm tắt đã chọn'),
             ContentCard(
               child: SelectableText(
-                textValue(summary['content'], 'Chưa có bản tóm tắt phù hợp.'),
+                minutes.summaryContent ?? 'Chưa có bản tóm tắt phù hợp.',
               ),
             ),
             SectionHeading(
               'Quyết định đã xác nhận',
-              subtitle: decisions.length.toString() + ' quyết định',
+              subtitle: '${minutes.confirmedDecisions.length} quyết định',
             ),
-            if (decisions.isEmpty)
+            if (minutes.confirmedDecisions.isEmpty)
               const MessagePanel(title: 'Chưa có quyết định chính thức'),
-            ...decisions.map(
+            ...minutes.confirmedDecisions.map(
               (entry) => ContentCard(
                 child: SelectableText(textValue(entry['content'])),
               ),
             ),
             SectionHeading(
               'Đầu việc chính thức',
-              subtitle: actions.length.toString() + ' công việc',
+              subtitle: '${minutes.officialActionItems.length} công việc',
             ),
-            if (actions.isEmpty)
+            if (minutes.officialActionItems.isEmpty)
               const MessagePanel(title: 'Chưa có đầu việc chính thức'),
-            ...actions.map(
+            ...minutes.officialActionItems.map(
               (entry) => ContentCard(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -110,20 +103,18 @@ class _MinutesPanelState extends State<MinutesPanel> {
             const SectionHeading('Tình trạng transcript'),
             ContentCard(
               child: Text(
-                textValue(transcript['availability']) +
-                    ' · ' +
-                    textValue(transcript['status']),
+                '${minutes.transcriptAvailability} · ${minutes.transcriptStatus}',
               ),
             ),
-            if (warnings.isNotEmpty) ...[
+            if (minutes.warnings.isNotEmpty) ...[
               const SectionHeading('Cảnh báo và giới hạn nguồn'),
               ContentCard(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
-                  children: warnings
+                  children: minutes.warnings
                       .map(
                         (warning) => Text(
-                          '• ' + warning.toString(),
+                          '• $warning',
                           style: const TextStyle(color: Palette.amber),
                         ),
                       )

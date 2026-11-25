@@ -3,6 +3,7 @@ package com.sme.meetingassistant.api.meetingintelligence.repository;
 import com.sme.meetingassistant.api.meetingintelligence.dto.DecisionView;
 import com.sme.meetingassistant.api.meetingintelligence.dto.AiProducerView;
 import com.sme.meetingassistant.api.meetingintelligence.service.AiQualityMetadata;
+import com.sme.meetingassistant.api.meetingintelligence.service.IntelligenceVersionTags;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.OffsetDateTime;
@@ -182,8 +183,9 @@ public class DecisionRepository {
             s.id(), s.meetingId(), s.content(), s.status(), s.sourceType(),
             evidence.getOrDefault(s.id(), List.of()), s.transcriptId(), s.contentRevision(),
             s.stale(), s.version(), s.createdAt(), s.createdBy(),
-            s.confirmedAt(), s.confirmedBy(), s.rejectedAt(), s.rejectedBy(),
-             s.aiUncertainty(),s.aiWarnings(),s.aiProducer(),s.processingJobId())).toList();
+             s.confirmedAt(), s.confirmedBy(), s.rejectedAt(), s.rejectedBy(),
+             s.aiUncertainty(),s.aiWarnings(),s.aiProducer(),s.processingJobId(),
+             IntelligenceVersionTags.decision(s.id(), s.version(), s.stale()))).toList();
     }
 
     private record State(

@@ -9,6 +9,7 @@ import com.sme.meetingassistant.api.transcript.dto.TranscriptViews.CoverageView;
 import com.sme.meetingassistant.api.transcript.dto.TranscriptViews.SpeakerView;
 import com.sme.meetingassistant.api.transcript.dto.TranscriptViews.TranscriptView;
 import com.sme.meetingassistant.api.transcript.service.TranscriptReviewService;
+import com.sme.meetingassistant.api.transcript.service.TranscriptVersionTags;
 import com.sme.meetingassistant.api.transcript.repository.TranscriptRepository.SpeakerMapResult;
 import jakarta.validation.Valid;
 import java.util.List;
@@ -39,7 +40,7 @@ public class TranscriptReviewController {
     @GetMapping("/transcript")
     public ResponseEntity<ApiResponse<TranscriptView>> transcript(@PathVariable UUID meetingId) {
         TranscriptView view = this.service.current(meetingId);
-        return ResponseEntity.ok().eTag(transcriptTag(view.id(), view.contentRevision()))
+        return ResponseEntity.ok().eTag(TranscriptVersionTags.transcript(view.id(), view.contentRevision()))
             .cacheControl(CacheControl.noStore()).body(this.responses.success(view));
     }
 
@@ -53,7 +54,7 @@ public class TranscriptReviewController {
             @PathVariable UUID segmentId, @RequestHeader(value = HttpHeaders.IF_MATCH, required = false) String ifMatch,
             @Valid @RequestBody CorrectTranscriptSegmentRequest request) {
         CorrectionView result = this.service.correct(meetingId, segmentId, ifMatch, request);
-        return ResponseEntity.ok().eTag("\"s-" + segmentId + "-" + result.version() + "\"")
+        return ResponseEntity.ok().eTag(result.etag())
             .cacheControl(CacheControl.noStore()).body(this.responses.success(result));
     }
 
@@ -68,12 +69,8 @@ public class TranscriptReviewController {
             @RequestHeader(value = HttpHeaders.IF_MATCH, required = false) String ifMatch,
             @RequestBody(required = false) MapSpeakerRequest request) {
         SpeakerMapResult mapped = this.service.mapSpeaker(meetingId, clusterId, ifMatch, request);
-        return ResponseEntity.ok().eTag(transcriptTag(mapped.transcriptId(), mapped.contentRevision()))
+        return ResponseEntity.ok().eTag(TranscriptVersionTags.transcript(mapped.transcriptId(), mapped.contentRevision()))
             .cacheControl(CacheControl.noStore()).body(this.responses.success(mapped.speaker()));
-    }
-
-    private static String transcriptTag(UUID id, long revision) {
-        return "\"t-" + id + "-" + revision + "\"";
     }
 
     private static <T> ResponseEntity<ApiResponse<T>> privateResponse(ApiResponse<T> body) {

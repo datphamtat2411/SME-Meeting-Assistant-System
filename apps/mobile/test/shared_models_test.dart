@@ -303,7 +303,7 @@ void main() {
       );
     });
 
-    test('does not expose a fabricated decision ETag', () {
+    test('retains the server-issued decision ETag', () {
       final decision = MeetingDecision.fromJson({
         'id': 'decision-1',
         'meetingId': 'meeting-1',
@@ -312,14 +312,12 @@ void main() {
         'version': 4,
         'isStale': false,
         'createdAt': '2026-11-23T10:00:00Z',
+        'etag': '"dec-decision-1-4"',
       });
 
       expect(decision.version, 4);
       expect(decision.stale, isFalse);
-      expect(
-        () => (decision as dynamic).etag,
-        throwsA(isA<NoSuchMethodError>()),
-      );
+      expect(decision.etag, '"dec-decision-1-4"');
     });
 
     test('model failures retain response status and request correlation', () {
@@ -449,4 +447,5 @@ Map<String, dynamic> _segmentJson() => {
   'speakerClusterId': null,
   'speakerLabel': null,
   'version': 0,
+  'etag': '"s-segment-1-0"',
 };

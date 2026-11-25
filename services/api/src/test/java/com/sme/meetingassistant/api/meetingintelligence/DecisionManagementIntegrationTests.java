@@ -120,6 +120,7 @@ class DecisionManagementIntegrationTests {
             .andExpect(jsonPath("$.data[0].status").value("CONFIRMED"))
             .andExpect(jsonPath("$.data[0].sourceType").value("MANUAL"))
             .andExpect(jsonPath("$.data[0].content").value("Approved project scope"))
+            .andExpect(jsonPath("$.data[0].etag").value("\"dec-" + id + "-0\""))
             .andExpect(jsonPath("$.data[0].createdByUserId").value(organizer.toString()))
             .andExpect(jsonPath("$.data[0].confirmedByUserId").value(organizer.toString()))
             .andExpect(jsonPath("$.data[0].isStale").value(false))
