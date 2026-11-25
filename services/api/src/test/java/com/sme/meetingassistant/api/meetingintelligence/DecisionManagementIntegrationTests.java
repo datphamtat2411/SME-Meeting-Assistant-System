@@ -183,6 +183,22 @@ class DecisionManagementIntegrationTests {
     }
 
     @Test
+    void reviewedManualEvidenceRejectsChangedRevisionBeforeCreation() throws Exception {
+        String body = evidence("Reviewed evidence", segment);
+        body = body.substring(0, body.length() - 1)
+            + ",\"reviewedTranscriptId\":\"" + transcript
+            + "\",\"reviewedContentRevision\":2}";
+        jdbc.update("UPDATE transcripts SET content_revision=3 WHERE id=?", transcript);
+        mvc.perform(post(url()).principal(as(organizer))
+                .contentType(MediaType.APPLICATION_JSON).content(body))
+            .andExpect(status().isPreconditionFailed());
+        assertThat(jdbc.queryForObject(
+            "SELECT count(*) FROM meeting_decisions WHERE meeting_id=?",
+            Integer.class, meeting)).isZero();
+        create(body.replace("\"reviewedContentRevision\":2", "\"reviewedContentRevision\":3"));
+    }
+
+    @Test
     void replacingTranscriptWithSameRevisionStalesEvidenceWithoutRevertingConfirmation() throws Exception {
         var created = create(evidence("Evidence-based confirmation", segment));
         UUID decision = id(created);

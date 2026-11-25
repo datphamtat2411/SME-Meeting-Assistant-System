@@ -149,7 +149,7 @@ class MinutesPanel extends StatelessWidget {
                     _label(
                       'Người tổ chức',
                       workspace.meetingIdentityLabel(meeting.organizerUserId) ??
-                          meeting.organizerUserId,
+                          'Chưa rõ tên',
                     ),
                     _label(
                       'Bắt đầu dự kiến',
@@ -205,7 +205,7 @@ class MinutesPanel extends StatelessWidget {
                       workspace.meetingIdentityLabel(
                             decision.confirmedByUserId,
                           ) ??
-                          decision.confirmedByUserId,
+                          'Chưa rõ tên',
                     ),
                     _label(
                       'Thời điểm xác nhận',
@@ -271,7 +271,7 @@ class MinutesPanel extends StatelessWidget {
                           : workspace.meetingIdentityLabel(
                                   action.assigneeUserId,
                                 ) ??
-                                'Chưa rõ tên (${action.assigneeUserId})',
+                                'Chưa rõ tên',
                     ),
                     _label('Hạn hoàn thành', action.dueDate),
                     _label(
@@ -279,7 +279,7 @@ class MinutesPanel extends StatelessWidget {
                       workspace.meetingIdentityLabel(
                             action.confirmedByUserId,
                           ) ??
-                          action.confirmedByUserId,
+                          'Chưa rõ tên',
                     ),
                     _label('Thời điểm xác nhận', dateLabel(action.confirmedAt)),
                   ]);

@@ -73,6 +73,22 @@ public class DecisionService {
         decisions.lockMeeting(meetingId);
         TranscriptSource source = evidence.isEmpty()
             ? null : transcripts.requireCurrentEvidence(meetingId, evidence);
+        // Older clients may omit the reviewed source. Clients which supply it
+        // must supply both fields; compare under the same meeting lock as the
+        // evidence validation and insert, not in a separate preflight read.
+        UUID reviewedId = request.reviewedTranscriptId();
+        Long reviewedRevision = request.reviewedContentRevision();
+        if ((reviewedId == null) != (reviewedRevision == null)
+                || (reviewedId != null && evidence.isEmpty())) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
+                "Reviewed transcript identity and revision require linked evidence.");
+        }
+        if (reviewedId != null && (source == null
+                || !reviewedId.equals(source.transcriptId())
+                || reviewedRevision.longValue() != source.contentRevision())) {
+            throw new ResponseStatusException(HttpStatus.PRECONDITION_FAILED,
+                "Reviewed transcript changed. Review the evidence again.");
+        }
         UUID decisionId = UUID.randomUUID();
         decisions.createConfirmed(decisionId, meetingId, actor, request.content(),
             source == null ? null : source.transcriptId(),

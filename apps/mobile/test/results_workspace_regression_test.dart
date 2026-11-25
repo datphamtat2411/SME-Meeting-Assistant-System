@@ -157,6 +157,7 @@ class _Repository extends ResultsRepository {
     required String meetingId,
     required String content,
     List<String> evidenceSegmentIds = const [],
+    Transcript? reviewedTranscript,
   }) async {
     decisionCreates++;
     throw const ApiFailure(

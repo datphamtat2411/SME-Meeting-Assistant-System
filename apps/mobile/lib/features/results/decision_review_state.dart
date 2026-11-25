@@ -68,6 +68,31 @@ class DecisionCollection {
   );
 }
 
+enum DecisionEvidenceQuality { reviewable, unknown, unsafe }
+
+/// The backend rejects non-accepted segments and overlapping non-covered
+/// regions. Absence of a coverage map is not evidence of complete coverage.
+DecisionEvidenceQuality decisionEvidenceQuality(
+  TranscriptReviewProjection? projection,
+  SpeechSegment segment,
+) {
+  final coverage = projection?.coverage;
+  if (segment.quality != 'ACCEPTED' ||
+      (coverage?.regions.any(
+            (region) =>
+                region.status != 'COVERED' &&
+                region.startMs < segment.endMs &&
+                region.endMs > segment.startMs,
+          ) ??
+          false)) {
+    return DecisionEvidenceQuality.unsafe;
+  }
+  if (coverage == null || coverage.regions.isEmpty) {
+    return DecisionEvidenceQuality.unknown;
+  }
+  return DecisionEvidenceQuality.reviewable;
+}
+
 /// A review is bound to the decision's recorded source, never substituted by
 /// the current transcript just because the segment text still looks similar.
 class DecisionEvidenceReview {
@@ -89,17 +114,12 @@ class DecisionEvidenceReview {
             .firstOrNull
       : null;
 
-  bool isUnsafe(SpeechSegment segment) {
-    final coverage = projection?.coverage;
-    return segment.quality != 'ACCEPTED' ||
-        coverage == null ||
-        coverage.regions.any(
-          (region) =>
-              region.status != 'COVERED' &&
-              region.startMs < segment.endMs &&
-              region.endMs > segment.startMs,
-        );
-  }
+  DecisionEvidenceQuality quality(SpeechSegment segment) =>
+      decisionEvidenceQuality(projection, segment);
+
+  bool isUnsafe(SpeechSegment segment) =>
+      projection?.coverage == null ||
+      quality(segment) == DecisionEvidenceQuality.unsafe;
 
   bool get canConfirm {
     if (decision.status != 'PROPOSED' || decision.stale) return false;

@@ -374,18 +374,35 @@ class ResultsRepository {
     required String meetingId,
     required String content,
     List<String> evidenceSegmentIds = const [],
+    Transcript? reviewedTranscript,
   }) async {
     final response = await _post(
       sessionScope,
       '/meetings/$meetingId/decisions',
-      {'content': content, 'evidenceSegmentIds': evidenceSegmentIds},
+      {
+        'content': content,
+        'evidenceSegmentIds': evidenceSegmentIds,
+        if (reviewedTranscript != null && evidenceSegmentIds.isNotEmpty) ...{
+          'reviewedTranscriptId': reviewedTranscript.id,
+          'reviewedContentRevision': reviewedTranscript.contentRevision,
+        },
+      },
     );
     final decision = MeetingDecision.fromJson(
       _validatedMutationResponse(response, requireBodyEtag: true).objectData(),
       response: response,
     );
     _requireOwnership(sessionScope, meetingId, decision.meetingId);
-    if (decision.status != 'CONFIRMED') throw response.invalidDataFailure();
+    if (decision.status != 'CONFIRMED' ||
+        decision.content != content ||
+        decision.evidenceSegmentIds.length != evidenceSegmentIds.length ||
+        !decision.evidenceSegmentIds.toSet().containsAll(evidenceSegmentIds) ||
+        (evidenceSegmentIds.isNotEmpty &&
+            reviewedTranscript != null &&
+            (decision.transcriptId != reviewedTranscript.id ||
+                decision.contentRevision != reviewedTranscript.contentRevision))) {
+      throw response.invalidDataFailure();
+    }
     return decision;
   }
 
@@ -402,7 +419,14 @@ class ResultsRepository {
       {'content': content},
       etag: snapshot.etag,
     );
-    return _validatedMutationResponse(response, requireBodyEtag: true);
+    return _validateDecisionMutation(
+      response,
+      sessionScope: sessionScope,
+      meetingId: meetingId,
+      snapshot: snapshot,
+      expectedStatus: 'CONFIRMED',
+      expectedContent: content,
+    );
   }
 
   Future<ApiResult> reviewDecision({
@@ -418,7 +442,39 @@ class ResultsRepository {
       const <String, dynamic>{},
       etag: _requireEtag(snapshot.etag),
     );
-    return _validatedMutationResponse(response, requireBodyEtag: true);
+    return _validateDecisionMutation(
+      response,
+      sessionScope: sessionScope,
+      meetingId: meetingId,
+      snapshot: snapshot,
+      expectedStatus: confirm ? 'CONFIRMED' : 'REJECTED',
+      expectedContent: snapshot.content,
+    );
+  }
+
+  ApiResult _validateDecisionMutation(
+    ApiResult response, {
+    required AuthenticatedSessionScope sessionScope,
+    required String meetingId,
+    required MeetingDecision snapshot,
+    required String expectedStatus,
+    required String expectedContent,
+  }) {
+    final validated = _validatedMutationResponse(
+      response,
+      requireBodyEtag: true,
+    );
+    final decision = MeetingDecision.fromJson(
+      validated.objectData(),
+      response: response,
+    );
+    _requireOwnership(sessionScope, meetingId, decision.meetingId);
+    if (decision.id != snapshot.id ||
+        decision.status != expectedStatus ||
+        decision.content != expectedContent) {
+      throw response.invalidDataFailure();
+    }
+    return validated;
   }
 
   Future<String> regenerateSummary({

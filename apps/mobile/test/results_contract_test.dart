@@ -129,7 +129,26 @@ void main() {
             ),
           ),
         );
-    expect(review(const []).canConfirm, isTrue);
+    final unknown = review(const []);
+    expect(unknown.canConfirm, isTrue);
+    expect(
+      unknown.quality(transcript.segments.single),
+      DecisionEvidenceQuality.unknown,
+    );
+    final covered = review(const [
+      TranscriptCoverageRegion(
+        id: 'region-covered',
+        startMs: 0,
+        endMs: 1000,
+        status: 'COVERED',
+        recovered: false,
+        retryCount: 0,
+      ),
+    ]);
+    expect(
+      covered.quality(transcript.segments.single),
+      DecisionEvidenceQuality.reviewable,
+    );
     expect(
       review(const [
         TranscriptCoverageRegion(

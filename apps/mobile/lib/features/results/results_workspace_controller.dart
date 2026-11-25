@@ -1222,6 +1222,7 @@ class ResultsWorkspaceController extends ChangeNotifier
           meetingId: meetingId,
           content: content,
           evidenceSegmentIds: ids,
+          reviewedTranscript: reviewedTranscript,
         );
       },
       unresolvedIntent: content,

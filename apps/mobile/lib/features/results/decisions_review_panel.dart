@@ -287,7 +287,11 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
       title: Text(segment.text),
       subtitle: Text(
         '$speaker · ${segment.startMs ~/ 1000}s–${segment.endMs ~/ 1000}s'
-        '\n${review.isUnsafe(segment) ? 'Cần đối chiếu chất lượng' : 'Có thể đối chiếu'}',
+        '\n${switch (review.quality(segment)) {
+          DecisionEvidenceQuality.unsafe => 'Cần đối chiếu chất lượng',
+          DecisionEvidenceQuality.unknown => 'Chưa đủ thông tin coverage',
+          DecisionEvidenceQuality.reviewable => 'Có thể đối chiếu',
+        }}',
       ),
       trailing: IconButton(
         tooltip: 'Mở transcript',
@@ -306,19 +310,19 @@ class _DecisionsReviewPanelState extends State<DecisionsReviewPanel> {
     Text('Tạo lúc: ${dateLabel(decision.createdAt)}'),
     if (decision.createdByUserId != null)
       Text(
-        'Người tạo: ${widget.workspace.meetingIdentityLabel(decision.createdByUserId) ?? 'Chưa rõ tên (${decision.createdByUserId})'}',
+        'Người tạo: ${widget.workspace.meetingIdentityLabel(decision.createdByUserId) ?? 'Chưa rõ tên'}',
       ),
     if (decision.confirmedAt != null)
       Text('Xác nhận lúc: ${dateLabel(decision.confirmedAt)}'),
     if (decision.confirmedByUserId != null)
       Text(
-        'Người xác nhận: ${widget.workspace.meetingIdentityLabel(decision.confirmedByUserId) ?? decision.confirmedByUserId}',
+        'Người xác nhận: ${widget.workspace.meetingIdentityLabel(decision.confirmedByUserId) ?? 'Chưa rõ tên'}',
       ),
     if (decision.rejectedAt != null)
       Text('Từ chối lúc: ${dateLabel(decision.rejectedAt)}'),
     if (decision.rejectedByUserId != null)
       Text(
-        'Người từ chối: ${widget.workspace.meetingIdentityLabel(decision.rejectedByUserId) ?? decision.rejectedByUserId}',
+        'Người từ chối: ${widget.workspace.meetingIdentityLabel(decision.rejectedByUserId) ?? 'Chưa rõ tên'}',
       ),
     if (decision.stale)
       const Text('Nguồn transcript đã thay đổi; cần đối chiếu.'),
